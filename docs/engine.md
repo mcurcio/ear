@@ -566,25 +566,29 @@ bank). Each cycle the block runs a code:
 1. Each port's input span: PipeWire's buffer, or zeros for a port with none.
 2. Each bound source plays into scratch of the block's own (one `maxBlock` buffer per inside input
    port, made with the block; the bank's engine ports stay, unlinked), and the code reads that
-   scratch for the bank. Its `SourceCycle` is the cycle's position, frames, raw start, facts
-   and the playback latency the block last told on the bank (published per input port as a packed
-   atomic, as each output's is for sinks).
+   scratch for the bank, by the one play rule (`SourceRing::play`) with the source's clock, if it
+   has one. Its `SourceTick` (`sourceTick` in `block_rules.hpp`) is the cycle whole (its
+   `GraphCycle`, the facts the clock reads), the cycle's frames, the graph rate, and the playback
+   latency the block last told on the bank (published per input port as a packed atomic, as each
+   output's is for sinks). The ring keeps no time: what it skips is only what the source's clock
+   asks ([writing-a-node-type.md](writing-a-node-type.md#a-sources-clock)).
 3. The code (or zeros, when none is driven).
 4. The fade on the faded outputs.
 5. Each bound sink's tap ([above](#sinks)).
 6. Metering of the public ports.
 
 A cycle too large to run plays no source and taps no sink; the next cycle states `oversized`, which
-a source takes as a new clock (the facts carry no frames for it; the quantum guard means the engine
-never makes one: [above](#the-quantum-guard)). The source, the code and its sinks run in one `process`, at one
+a source's clock reads in its tick and decides on (the facts carry no frames for it; the quantum
+guard means the engine never makes one: [above](#the-quantum-guard)). The source, the code and its sinks run in one `process`, at one
 position, swapped together between two cycles, so a cycle the block does not run none of them runs.
 `SourceTap::play` makes no system call but its wakes, each at most one eventfd write and only when
-someone waits (a writer for room; the played wake once until answered); tested to allocate nothing
-with a writer waiting and the wake ringing. Once a stop's silence completed, `NodeHost` tells each
+someone waits (a writer for room; the clock wake once until answered, and only when the clock
+asks); the clock's calls are realtime-safe by its contract. Tested to allocate nothing with a
+writer waiting, a clock told every tick and its wake ringing. Once a stop's silence completed, `NodeHost` tells each
 source `stopped()` (its ring dropped); at a teardown's first step it closes each writer, and frees
-the sources after the instance. The rules a source plays by are
+the sources, each with its clock, after the instance. The rules a source plays by are
 [writing-a-node-type.md](writing-a-node-type.md#sources)'s; `EventSources` adds only the writer's
-wait (`poll` on an eventfd) and the played wake's eventfd, and three test seams:
+wait (`poll` on an eventfd), the clock wake's eventfd and the clock it owns, and three test seams:
 `EventSources::waitsBegun(source)` counts the waits a writer began, each past its last look at the
 ring, `waitsWoken(source)` how many of them the room descriptor ended (a play or the close, not the
 patience), and `waitDeadline(patience)` is when a wait of that patience ends, so a
@@ -625,7 +629,7 @@ By the plan, which names roles:
   sink on the bank stamps its chunks with the most of it ([sinks](#sinks)).
 - An input bank tells downstream (**playback**) latency: over the pairs that start at it, what lies
   beyond the pair's output bank plus the pair's `onPair` delay, combined; plus its own `onBank`. A
-  source on the bank dates its `Played` with the most of it ([sources](#sources)).
+  source on the bank tells its clock the most of it, its tick's `playback` ([sources](#sources)).
 - A bank in no pair tells its `onBank` alone. A paired bank with no peer is a zero path through its
   pair (an empty combination finishes at zero), so it lowers the least of what the pair's other side
   tells.
@@ -699,8 +703,10 @@ graph's rate; nothing else in ear uses a rate as an operand of `*`, `/` or `%` t
   converts whole seconds and the rest apart, so no count overflows on the way: a week of frames at
   96 kHz converts exactly where `frames * 1e9` would leave `int64`.
 - **`heardRawNs(startRawNs, offset, downstream)`**: frame `offset` of a cycle that started at
-  `startRawNs` is heard once its downstream's most has played. A source's `Played`
-  ([writing-a-node-type.md](writing-a-node-type.md#sources)) and `sendspin`'s progress use it.
+  `startRawNs` is heard once its downstream's most has played. `sendspin`'s progress uses it, and so
+  does a source's clock that dates what played, from its tick's start and `playback`
+  ([writing-a-node-type.md](writing-a-node-type.md#a-sources-clock)); the framework dates nothing
+  for a source.
 - **`enteredRawNs(startRawNs, offset, upstream)`**: that frame entered the graph its upstream's most
   before. `offset` may be negative, a frame taken before the cycle's first. A sink's chunk entered
   at `enteredRawNs(startRawNs, 0, {0, upstreamFrames})` ([above](#sinks)); `sendspin`'s capture is
@@ -952,13 +958,14 @@ Verified by `spikes_test.cpp` (S1 to S3, and S5's part B) against 1.4.2's `loop.
   wake then finds it no longer triggered. S5 makes both shapes this way (U overruns, and B), since
   a host cuts cycles short only by chance (a GitHub runner: 9 in 60 s beside a busy thread per
   core). The driver may cut a cycle or two more catching up.
-- **A source keeps to the clock across them** (S5's part A, on a test filter, then on the real block
-  in `source_test.cpp`). An upstream probe sleeping 12 ms past the 5.3 ms quantum every 50th cycle
-  cuts that cycle short after itself, as above: the block does not run it, and the next cycle's
-  position has jumped by whole blocks within the source's capacity. Across every cycle the block
-  ran, the source's `Played` count equals the frames since its first position, and the node after
-  the block hears each position's frame of the stream. So the source keeps time by summing what it
-  played and skipped.
+- **A source's clock sees every cut in its tick's facts** (S5's part A, on a test filter, then on
+  the real block in `source_test.cpp`). An upstream probe sleeping 12 ms past the 5.3 ms quantum
+  every 50th cycle cuts that cycle short after itself, as above: the block does not run it, and the
+  next cycle states a catch-up whose jump is whole blocks within the source's capacity. A clock
+  that skips each catch-up's jump has the ring drop exactly that, the node after the block hearing
+  each frame of the stream the clock was told it read; a clock that skips nothing (or no clock)
+  has the ring play on in order across the cuts. So a source's clock can keep time by the facts
+  alone, and the ring keeps none of its own.
 - **One data loop.** `context.num-data-loops` reads 1, the process has one `data-loop.0` thread, and
   a filter's `pw_filter_get_data_loop` is that loop. Adapters and the RTP module name `data-loop.0`
   in their info; `pw_filter`s name no loop.

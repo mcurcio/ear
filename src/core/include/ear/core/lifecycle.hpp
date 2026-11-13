@@ -153,8 +153,9 @@ public:
 	/// plays it into the bank before the code every cycle the code runs; its ring's capacity is declared beyond the bank
 	/// (LatencyPlan::beyond, Latency{0, capacity}). A second companion on the bank, `shape.frames == 0` or a call outside
 	/// configure is a std::logic_error; an adapter that cannot make it fails the node start-failed. The writer is valid
-	/// until the configuration is freed (teardown step 5), closed at teardown step 1.
-	virtual SourceWriter& source(std::string_view bank, SourceShape shape) = 0;
+	/// until the configuration is freed (teardown step 5), closed at teardown step 1. `clock` (null for a source with no
+	/// clock) is the source's own, owned by it and freed with it at teardown step 5.
+	virtual SourceWriter& source(std::string_view bank, SourceShape shape, std::unique_ptr<SourceClock> clock) = 0;
 	/// The type's own code's latency (docs/engine.md#latency-per-bank-pair): `latency` on the path from `from` to `to`.
 	/// The plan carries that path (LatencyPlan::pairs, added for a code of the type's own) with the delay on it
 	/// (LatencyPlan::onPair), so it counts both ways: in what `to` tells downstream and in what `from` tells upstream.
@@ -246,12 +247,13 @@ public:
 		return context_->sink(Bank::name, shape);
 	}
 	/// A source on an inside input bank (docs/writing-a-node-type.md#sources): what the type's ordinary thread writes,
-	/// played into the bank by the block before the code.
-	template <class Bank> SourceWriter& source(Bank, SourceShape shape) {
+	/// played into the bank by the block before the code; `clock` its own clock, null for a source with no clock
+	/// (docs/writing-a-node-type.md#a-sources-clock).
+	template <class Bank> SourceWriter& source(Bank, SourceShape shape, std::unique_ptr<SourceClock> clock = nullptr) {
 		static_assert(ownBank<Bank>, "a context takes only its spec's banks");
 		static_assert(Bank::reach == PortBank::Reach::inside && Bank::direction == Direction::input,
 		              "a source plays into an inside input bank of the spec");
-		return context_->source(Bank::name, shape);
+		return context_->source(Bank::name, shape, std::move(clock));
 	}
 	/// The type's own code's latency, from an input bank to an output bank (it lands on `To`).
 	template <class From, class To> void declareLatency(From, To, Latency latency) {

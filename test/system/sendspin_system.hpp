@@ -481,9 +481,14 @@ inline RampCheck checkRamp(const Wav& wav, std::vector<std::int64_t> lostSyncsUs
 /// How far before the time a ramp skip's frame was due its cycles may have been lost: the file node's `running` record
 /// is stamped a main-loop turn after the cycle its WAV's first frame came from.
 inline constexpr std::chrono::milliseconds rampDueBefore{100};
-/// How far after its own blocks: the records' and the WAV's clocks, and a beat of slack. Every cycle the file node
-/// missed is a skip of the ramp it records (the node upstream keeps in step), so no loss the WAV does not show moves
-/// its frames later.
+/// How far after its own blocks: the records' and the WAV's clocks, and a beat of slack. The due times are worked out
+/// from the skips the WAV shows, which are the sendspin node's own clock's (docs/node-types.md#clock): it skips at most
+/// the graph's jump (min(jump, what its feed holds)), and a cycle cut after its block shows as the block it lost, so
+/// the skips before a frame never add up to more than the cycles the file node lost before it, and no loss moves a
+/// skip's due time later than its frames were due; a stall past the feed only moves it earlier, by what the node could
+/// not skip. The framework keeps no time for anyone (docs/architecture.md#the-timing-model): a node upstream of the
+/// file with no clock of its own would skip nothing, so this reckoning holds only behind a node whose clock skips the
+/// graph's lost time, as sendspin's does.
 inline constexpr std::chrono::milliseconds rampDueAfter{100};
 
 /// The ramp's skips that no record of ear's losses pays (unpaidSkips), named: each skip's cycles were lost from when

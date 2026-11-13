@@ -261,12 +261,13 @@ TEST_CASE("The stamps carry the cycle's facts and the most of the latency told o
 	                                                       .causes = CycleCause::drive | CycleCause::catchUp,
 	                                                       .lostFrames = 128,
 	                                                       .upstreamFrames = 40});
-	const SourceCycle played = sourceCycle(cycle, 64, Latency{7, 9});
-	CHECK(played.position == 22);
-	CHECK(played.frames == 64);
-	CHECK(played.startRawNs == 33);
-	CHECK(played.facts == caughtUp);
-	CHECK(played.downstream == Latency{7, 9});
+	// A source's tick: the cycle whole (its facts the clock's to read), the frames, the rate and the told playback.
+	const SourceTick tick = sourceTick(cycle, 64, 48000, Latency{7, 9});
+	CHECK(&tick.cycle == &cycle);
+	CHECK(tick.cycle.facts == caughtUp);
+	CHECK(tick.frames == 64);
+	CHECK(tick.rate == 48000);
+	CHECK(tick.playback == Latency{7, 9});
 	// Lost frames are a catch-up's alone: any other jump the graph made is no loss a sink can write.
 	for (const CycleCauses other : {CycleCauses(CycleCause::absent), CycleCauses(CycleCause::reposition),
 	                                CycleCauses(CycleCause::driverChange), CycleCauses{}}) {

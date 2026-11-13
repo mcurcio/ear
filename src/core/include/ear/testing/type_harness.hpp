@@ -74,9 +74,10 @@ public:
 		              "a source plays into an inside input bank");
 		return node_->feed(Bank::name, interleaved);
 	}
-	template <class Bank> Played played(Bank) const {
+	/// What the last process() did with the source's ring: exactly what its clock was told (SourcePlayed).
+	template <class Bank> SourcePlayed lastPlayed(Bank) const {
 		static_assert(ownBank<Bank>, "the harness takes only its spec's banks");
-		return node_->played(Bank::name);
+		return node_->lastPlayed(Bank::name);
 	}
 	template <class Bank> std::uint64_t shortfall(Bank) const {
 		static_assert(ownBank<Bank>, "the harness takes only its spec's banks");

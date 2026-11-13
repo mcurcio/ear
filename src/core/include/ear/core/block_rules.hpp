@@ -145,14 +145,11 @@ constexpr ChunkStamp chunkStamp(const GraphCycle& cycle, Latency toldOnBank) noe
 	                  .upstreamFrames = toldOnBank.maxFrames};
 }
 
-/// The cycle a source's tap plays for `cycle` of `frames` (docs/engine.md#sources): its facts and the playback
-/// latency the block last told on the source's bank.
-constexpr SourceCycle sourceCycle(const GraphCycle& cycle, std::uint32_t frames, Latency toldOnBank) noexcept {
-	return SourceCycle{.position = cycle.position,
-	                   .frames = frames,
-	                   .startRawNs = cycle.startRawNs,
-	                   .facts = cycle.facts,
-	                   .downstream = toldOnBank};
+/// The tick a source's tap plays for `cycle` of `frames` at the graph's `rate` (docs/engine.md#sources): the cycle
+/// whole, and the playback latency the block last told on the source's bank. `cycle` outlives the tick.
+constexpr SourceTick sourceTick(const GraphCycle& cycle, std::uint32_t frames, std::uint32_t rate,
+                                Latency toldOnBank) noexcept {
+	return SourceTick{.cycle = cycle, .frames = frames, .rate = rate, .playback = toldOnBank};
 }
 
 } // namespace ear

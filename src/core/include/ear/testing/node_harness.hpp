@@ -12,9 +12,10 @@
 // NodeHost names it. The sink fake is core's own SinkRing (every rule of a sink's rings) with its consumer on the
 // test's thread: begin at configure's return (or, with holdSinks, at ready(bank)), each chunk drained at once from the
 // tap written after the fade in process(), in two calls where it wraps the ring's end (a ring of sinkRingFrames, or the
-// type's own size), finish at the close. The source fake is core's own SourceRing (every source rule), its writer never
-// waiting: the test feeds it (feed), process() plays it into its bank before the code, and the test reads what it
-// played (played, shortfall).
+// type's own size), finish at the close. The source fake is core's own SourceRing (every source rule, by the block's own
+// SourceRing::play, with the type's clock if it gave one), its writer never waiting: the test feeds it (feed), process()
+// plays it into its bank before the code, and the test reads what its last tick did (lastPlayed, exactly what a clock
+// was told) and its shortfall.
 #pragma once
 #include <chrono>
 #include <cstddef>
@@ -143,8 +144,8 @@ public:
 	/// with a GraphCycle the harness advances on its driver, its facts (GraphCycle::facts, and facts()) stated by the
 	/// real block's rule,
 	/// CycleAccount (a discontinuity on the first cycle, each drive's first, and wherever loseCycles, changeDriver or
-	/// reposition made one), each bound source first played into its bank's input buffers (its SourceCycle's
-	/// downstream the playback latency workOut gives its bank under the plan, with no peers); then the fade on the
+	/// reposition made one), each bound source first played into its bank's input buffers (its SourceTick's
+	/// playback the latency workOut gives its bank under the plan, with no peers); then the fade on the
 	/// faded outputs by the real block's BlockFade (in over 5 ms from each drive; a fade-out ramps down from the next
 	/// cycle and, once a cycle ended it at zero, is acknowledged); then each bound sink's tap, its stamp's
 	/// upstreamFrames the most capture latency workOut gives its bank, as a real block with no peers tells
@@ -209,9 +210,10 @@ public:
 	/// The newest companion on `bank`; std::logic_error when none.
 	CompanionFake& companion(std::string_view bank);
 	/// The newest source on `bank` (std::logic_error when none): its writer takes what fits of `interleaved` (whole
-	/// frames of the bank's channels) at once, never waiting; returns the frames taken. played and shortfall read it.
+	/// frames of the bank's channels) at once, never waiting; returns the frames taken. lastPlayed and shortfall read
+	/// it: what the last process() did with its ring (all zero before the first), as SourceRing::play told its clock.
 	std::uint32_t feed(std::string_view bank, std::span<const float> interleaved);
-	Played played(std::string_view bank) const;
+	SourcePlayed lastPlayed(std::string_view bank) const;
 	std::uint64_t shortfall(std::string_view bank) const;
 	/// Legacy only: frames handed through handoff `index` to its consumer, and the run object its recipe built.
 	std::uint64_t handoffFrames(std::size_t index) const;

@@ -283,14 +283,19 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	};
 
 	/// A source over core's own SourceRing, so a type's tests play by the engine's rules
-	/// (docs/writing-a-node-type.md#sources): its writer offers what fits and never waits, an idle returns at once, and
-	/// nobody watches its played wake (it is never rung: the ring's signals are ignored).
-	struct FakeSource final : Source, SourceWriter, SourceRing::Signals, Wake {
-		FakeSource(Impl& h, std::size_t i, std::uint32_t channels, std::uint32_t frames, std::uint32_t rate)
-			: harness(h), index(i), rules(channels, frames, rate, *this) {}
+	/// (docs/writing-a-node-type.md#sources), with the type's clock if it gave one, played by the same SourceRing::play as
+	/// the block: its writer offers what fits and never waits, an idle returns at once, nobody watches its clock wake
+	/// (rung, it does nothing), and the last tick's SourcePlayed is kept for lastPlayed.
+	struct FakeSource final : Source, SourceWriter, SourceTap, SourceRing::Signals, Wake {
+		FakeSource(Impl& h, std::size_t i, std::uint32_t channels, std::uint32_t frames, std::uint32_t rate,
+		           std::unique_ptr<SourceClock> own)
+			: harness(h), index(i), clock(std::move(own)), rules(channels, frames, rate, *this) {}
 		~FakeSource() override { harness.companionList.at(index).destroyed = true; }
 		SourceWriter& writer() noexcept override { return *this; }
-		SourceTap& tap() noexcept override { return rules; }
+		SourceTap& tap() noexcept override { return *this; }
+		void play(std::span<const std::span<float>> bank, const SourceTick& tick) noexcept override {
+			lastPlayed = rules.play(bank, tick, clock.get());
+		}
 		void stopped() noexcept override { rules.dropForStop(); }
 		void stopping() noexcept override { rules.markIdle(); }
 		void close() noexcept override { rules.close(); }
@@ -304,21 +309,23 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		void clear() noexcept override { rules.clear(); }
 		bool closed() const noexcept override { return rules.closed(); }
 		std::uint32_t capacityFrames() const noexcept override { return rules.capacityFrames(); }
-		Played played() const noexcept override { return rules.played(); }
-		Wake& playedWake() noexcept override { return *this; }
+		Wake& clockWake() noexcept override { return *this; }
 		void ring() noexcept override {}
 		int descriptor() const noexcept override { return -1; }
 		void answer() noexcept override {}
 		void roomFreed() noexcept override {}
-		void playedChanged() noexcept override {}
+		void clockAsked() noexcept override { ring(); }
 		Impl& harness;
 		std::size_t index;
+		std::unique_ptr<SourceClock> clock; // the type's, or null
 		SourceRing rules;
+		SourcePlayed lastPlayed{}; // the last tick's, as the ring told the clock
 	};
 	struct FakeSources final : SourceAdapter {
 		explicit FakeSources(Impl& h) : harness(h) {}
 		std::unique_ptr<Source> make(const NodeName& node, std::string_view bank, std::uint32_t channels,
-		                             std::uint32_t capacityFrames, std::uint32_t rate) override {
+		                             std::uint32_t capacityFrames, std::uint32_t rate,
+		                             std::unique_ptr<SourceClock> clock) override {
 			harness.companionList.push_back(CompanionFake{CompanionKind::source,
 			                                              std::string(bank),
 			                                              node + "." + std::string(bank),
@@ -328,8 +335,8 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			                                              false,
 			                                              {}});
 			harness.engineEvents.push_back(nullptr); // a source has no engine companion's events
-			auto made =
-				std::make_unique<FakeSource>(harness, harness.companionList.size() - 1, channels, capacityFrames, rate);
+			auto made = std::make_unique<FakeSource>(harness, harness.companionList.size() - 1, channels,
+			                                         capacityFrames, rate, std::move(clock));
 			harness.sourceList.push_back(made.get());
 			return made;
 		}
@@ -392,7 +399,9 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			return create.openRecording(request);
 		}
 		SinkRequest& sink(std::string_view bank, SinkShape shape) override { return create.sink(bank, shape); }
-		SourceWriter& source(std::string_view bank, SourceShape shape) override { return create.source(bank, shape); }
+		SourceWriter& source(std::string_view bank, SourceShape shape, std::unique_ptr<SourceClock> clock) override {
+			return create.source(bank, shape, std::move(clock));
+		}
 		void declareLatency(std::string_view from, std::string_view to, Latency latency) override {
 			create.declareLatency(from, to, latency);
 		}
@@ -789,7 +798,8 @@ void NodeHarness::process(std::uint32_t frames) {
 			std::vector<std::span<float>> bank;
 			for (std::size_t c = 0; c < binding.channels && binding.firstInput + c < h.inputs.size(); ++c)
 				bank.emplace_back(h.inputs[binding.firstInput + c].data(), frames);
-			binding.tap->play(bank, sourceCycle(cycle, frames, h.toldOnInput(binding.firstInput)));
+			binding.tap->play(bank,
+			                  sourceTick(cycle, frames, h.options.format.rate, h.toldOnInput(binding.firstInput)));
 		}
 	if (h.driven != nullptr) h.driven->process(in, out, frames, cycle);
 	else
@@ -958,7 +968,7 @@ std::uint32_t NodeHarness::feed(std::string_view bank, std::span<const float> in
 	                    std::chrono::milliseconds(0));
 }
 
-Played NodeHarness::played(std::string_view bank) const { return impl_->sourceOn(bank).played(); }
+SourcePlayed NodeHarness::lastPlayed(std::string_view bank) const { return impl_->sourceOn(bank).lastPlayed; }
 
 std::uint64_t NodeHarness::shortfall(std::string_view bank) const { return impl_->sourceOn(bank).shortfallFrames(); }
 

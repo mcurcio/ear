@@ -59,6 +59,32 @@ struct Upstreams final : SinkConsumer {
 /// What every Probe instance did, in order: "made <node>", "configure", "start", "stop", "destroyed".
 std::vector<std::string> calls;
 
+/// What the "clocked" mode's source clock heard, in order: each tick's jump and playback latency, what it was told, and
+/// whether it was freed.
+struct ClockHeard {
+	std::vector<std::int64_t> jumps;
+	std::vector<Latency> playbacks;
+	std::vector<SourcePlayed> played;
+	bool freed = false;
+};
+ClockHeard clockHeard;
+
+/// A source's clock that skips a catch-up's whole jump and asks after every tick that read frames.
+struct JumpClock final : SourceClock {
+	~JumpClock() override { clockHeard.freed = true; }
+	std::uint64_t skipBefore(const SourceTick& tick, SourceHeld) noexcept override {
+		clockHeard.jumps.push_back(tick.cycle.facts.jumpFrames);
+		clockHeard.playbacks.push_back(tick.playback);
+		return tick.cycle.facts.causes.has(CycleCause::catchUp)
+		           ? static_cast<std::uint64_t>(tick.cycle.facts.jumpFrames)
+		           : 0;
+	}
+	bool played(const SourceTick&, const SourcePlayed& played) noexcept override {
+		clockHeard.played.push_back(played);
+		return played.read > 0;
+	}
+};
+
 class Probe {
 public:
 	explicit Probe(NodeOf<spec>& node) : node_(node) { calls.push_back("made " + node.node()); }
@@ -89,6 +115,11 @@ public:
 		}
 		if (mode == "source") {
 			cx.source(fromDevice, SourceShape{.frames = 1000});
+			cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
+			return Configured::applied();
+		}
+		if (mode == "clocked") {
+			cx.source(fromDevice, SourceShape{.frames = 1000}, std::make_unique<JumpClock>());
 			cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
 			return Configured::applied();
 		}
@@ -365,21 +396,58 @@ TEST_CASE("The harness plays what a test feeds a source into its bank before the
 		CHECK(harness.output(out, 0)[i] == static_cast<float>(i + 1));
 		CHECK(harness.output(out, 1)[i] == -static_cast<float>(i + 1));
 	}
-	CHECK(harness.played(fromDevice) == Played{16, 16'000'000});
+	CHECK(harness.lastPlayed(fromDevice) == SourcePlayed{.read = 16});
 	harness.process(16); // 8 frames, then dry
 	CHECK(harness.output(out, 0)[7] == 24.0F);
-	CHECK(harness.played(fromDevice).totalFrames == 24);
+	CHECK(harness.lastPlayed(fromDevice) == SourcePlayed{.read = 8, .zeros = 8});
 	CHECK(harness.shortfall(fromDevice) == 8);
-	// A stop drops what the ring holds; the writer waits as at a full ring until the next cycle after a start.
+	// No clock: a catch-up skips nothing, the ring plays on in order.
 	CHECK(harness.feed(fromDevice, interleaved) == 24);
+	harness->loseCycles(1, testing::Lost::cut);
+	harness.process(16);
+	REQUIRE(harness->facts().causes == CycleCause::catchUp);
+	CHECK(harness.lastPlayed(fromDevice) == SourcePlayed{.read = 16});
+	CHECK(harness.output(out, 0)[15] == 16.0F);
+	// A stop drops what the ring holds; the writer waits as at a full ring until the next cycle after a start.
 	REQUIRE(harness.stop());
 	CHECK(harness.feed(fromDevice, interleaved) == 0);
 	REQUIRE(harness.start());
 	harness.process(16);
-	CHECK(harness.played(fromDevice).totalFrames == 24);
+	CHECK(harness.lastPlayed(fromDevice) == SourcePlayed{.zeros = 16});
 	CHECK(harness.feed(fromDevice, interleaved) == 24);
 	harness.remove();
 	CHECK(harness.companion(fromDevice).destroyed);
+}
+
+TEST_CASE("The harness plays a source with a clock by the block's own play rule, and frees the clock with the source",
+          "[type-spec]") {
+	clockHeard = {};
+	Harness harness(testing::HarnessOptions{.format = {.rate = 1000, .maxBlock = 16}});
+	REQUIRE_FALSE(harness.parse({{"mode", "clocked"}, {"channels", 1}}));
+	harness.add();
+	harness.blockReady();
+	REQUIRE(harness.phase() == "running");
+	std::vector<float> stream;
+	for (int frame = 0; frame < 48; ++frame) stream.push_back(static_cast<float>(frame + 1));
+	CHECK(harness.feed(fromDevice, stream) == 48);
+	harness.process(16);
+	CHECK(harness.lastPlayed(fromDevice) == SourcePlayed{.read = 16});
+	// A cycle cut: the next states a catch-up of 16, and the clock skips it (16 of the 32 held), exactly.
+	harness->loseCycles(1, testing::Lost::cut);
+	harness.process(16);
+	CHECK(harness.lastPlayed(fromDevice) == SourcePlayed{.skipped = 16, .read = 16});
+	for (std::uint32_t i = 0; i < 16; ++i) CHECK(harness.output(out, 0)[i] == static_cast<float>(32 + i + 1));
+	// A stall past what is held: capped at nothing held.
+	harness->loseCycles(4, testing::Lost::cut);
+	harness.process(16);
+	CHECK(harness.lastPlayed(fromDevice) == SourcePlayed{.zeros = 16});
+	REQUIRE(clockHeard.jumps == std::vector<std::int64_t>{0, 16, 64});
+	REQUIRE(clockHeard.played.size() == 3);
+	CHECK(clockHeard.played[1] == SourcePlayed{.skipped = 16, .read = 16});
+	CHECK(clockHeard.playbacks[0] == Latency{}); // `out` is linked to nothing: no playback latency is told
+	CHECK_FALSE(clockHeard.freed);
+	harness.remove();
+	CHECK(clockHeard.freed);
 }
 
 TEST_CASE("A configure that answers failed fails the node start-failed with its detail", "[type-spec]") {

@@ -453,16 +453,20 @@ struct TestSinks final : SinkAdapter {
 };
 
 /// Sources over core's SourceRing (docs/writing-a-node-type.md#sources), logging what NodeHost does to them: stopped,
-/// closed, destroyed. The writer never waits: it offers what fits.
-struct TestSource final : Source, SourceWriter, SourceRing::Signals {
+/// closed, destroyed, and its clock's freeing. The writer never waits: it offers what fits.
+struct TestSource final : Source, SourceWriter, SourceTap, SourceRing::Signals {
 	Log& log;
 	std::string name;
 	SourceRing ring;
-	TestSource(Log& l, std::string n, std::uint32_t channels, std::uint32_t frames, std::uint32_t rate)
-		: log(l), name(std::move(n)), ring(channels, frames, rate, *this) {}
+	TestSource(Log& l, std::string n, std::uint32_t channels, std::uint32_t frames, std::uint32_t rate,
+	           std::unique_ptr<SourceClock> own)
+		: log(l), name(std::move(n)), ring(channels, frames, rate, *this), clock(std::move(own)) {}
 	~TestSource() override { log.push_back("source " + name + " destroyed"); }
 	SourceWriter& writer() noexcept override { return *this; }
-	SourceTap& tap() noexcept override { return ring; }
+	SourceTap& tap() noexcept override { return *this; }
+	void play(std::span<const std::span<float>> bank, const SourceTick& tick) noexcept override {
+		ring.play(bank, tick, clock.get());
+	}
 	void stopped() noexcept override {
 		log.push_back("source " + name + " stopped");
 		ring.dropForStop();
@@ -484,10 +488,10 @@ struct TestSource final : Source, SourceWriter, SourceRing::Signals {
 	void clear() noexcept override { ring.clear(); }
 	bool closed() const noexcept override { return ring.closed(); }
 	std::uint32_t capacityFrames() const noexcept override { return ring.capacityFrames(); }
-	Played played() const noexcept override { return ring.played(); }
-	Wake& playedWake() noexcept override { std::terminate(); } // no test watches it here
+	Wake& clockWake() noexcept override { std::terminate(); } // no test watches it here
 	void roomFreed() noexcept override {}
-	void playedChanged() noexcept override {}
+	void clockAsked() noexcept override {}
+	std::unique_ptr<SourceClock> clock; // freed with the source (its destructor runs after the log line above)
 };
 
 struct TestSources final : SourceAdapter {
@@ -496,12 +500,13 @@ struct TestSources final : SourceAdapter {
 	std::vector<TestSource*> made; // every source made, in order (a destroyed one dangles: unused)
 	explicit TestSources(Log& l) : log(l) {}
 	std::unique_ptr<Source> make(const NodeName& node, std::string_view bank, std::uint32_t channels,
-	                             std::uint32_t capacityFrames, std::uint32_t rate) override {
+	                             std::uint32_t capacityFrames, std::uint32_t rate,
+	                             std::unique_ptr<SourceClock> clock) override {
 		if (throwInMake) throw std::system_error(EMFILE, std::generic_category(), "no eventfd for " + node);
 		const std::string name = node + "." + std::string(bank);
 		log.push_back("source " + name + " " + std::to_string(channels) + " channels " +
 		              std::to_string(capacityFrames) + " frames at " + std::to_string(rate));
-		auto source = std::make_unique<TestSource>(log, name, channels, capacityFrames, rate);
+		auto source = std::make_unique<TestSource>(log, name, channels, capacityFrames, rate, std::move(clock));
 		made.push_back(source.get());
 		return source;
 	}
@@ -4183,7 +4188,7 @@ TEST_CASE("Every rule a type breaks at a call or at configure's return fails its
 
 // Regression (the class of 3b.2, 6c1299b556): a type's own code declares its delay from `record` to `pb`; with no
 // pass-through to name the pair, the delay must still lie on that path, so it reaches what `record` tells upstream
-// (and a source there dates Played late enough), not only what `pb` tells.
+// (and a source there tells its clock enough playback latency), not only what `pb` tells.
 TEST_CASE("A typed declareLatency is a latency path: carried as a pair with its delay on it, for a code of the type's "
           "own as for a pass-through",
           "[node_host][latency][class]") {
@@ -4279,7 +4284,9 @@ TEST_CASE("One companion per inside bank, whatever the kinds: a card and a sink 
 	const auto sink = [&](InstanceContexts& cx) {
 		cx.create.sink("pb", SinkShape{.frames = 64}).consumedBy(std::make_unique<TestSinkConsumer>(codes));
 	};
-	const auto source = [](InstanceContexts& cx) { static_cast<void>(cx.create.source("cap", SourceShape{64})); };
+	const auto source = [](InstanceContexts& cx) {
+		static_cast<void>(cx.create.source("cap", SourceShape{64}, nullptr));
+	};
 	const auto then = [&](InstanceContexts& cx) {
 		cx.create.use(std::make_unique<TestAudioCode>(codes));
 		return Configured::applied();
@@ -4833,10 +4840,20 @@ TEST_CASE("A sink whose close never reports is said by ear.close-overdue, counte
 
 namespace {
 
-/// configure on the probe: a source on "cap" (one port, 1000 frames asked) and a code; the writer kept in `writer`.
+/// A source's clock that skips nothing and logs its freeing.
+struct LoggedClock final : SourceClock {
+	Log& log;
+	explicit LoggedClock(Log& l) : log(l) {}
+	~LoggedClock() override { log.push_back("source clock freed"); }
+	std::uint64_t skipBefore(const SourceTick&, SourceHeld) noexcept override { return 0; }
+	bool played(const SourceTick&, const SourcePlayed&) noexcept override { return false; }
+};
+
+/// configure on the probe: a source on "cap" (one port, 1000 frames asked) with a clock, and a code; the writer kept in
+/// `writer`.
 std::function<Configured(InstanceContexts&)> withSource(Log& log, SourceWriter** writer) {
 	return [&log, writer](InstanceContexts& cx) {
-		*writer = &cx.create.source("cap", SourceShape{.frames = 1000});
+		*writer = &cx.create.source("cap", SourceShape{.frames = 1000}, std::make_unique<LoggedClock>(log));
 		cx.create.use(std::make_unique<TestAudioCode>(log));
 		return Configured::applied();
 	};
@@ -4900,6 +4917,9 @@ TEST_CASE("A source is ready at once, every drive binds it with its capacity bey
 	CHECK(indexOf(f.log, "stop()") < indexOf(f.log, "drive nothing"));
 	CHECK(indexOf(f.log, "instance destroyed") < indexOf(f.log, "source rx.cap destroyed"));
 	CHECK(countOf(f.log, "source rx.cap destroyed") == 1);
+	// The source's clock is freed with it, after the instance, so a reference the type's threads kept never dangles.
+	CHECK(indexOf(f.log, "source rx.cap destroyed") < indexOf(f.log, "source clock freed"));
+	CHECK(countOf(f.log, "source clock freed") == 1);
 	CHECK(f.allGone == 1);
 }
 
@@ -4930,7 +4950,7 @@ TEST_CASE("A source on a bank that is no inside input, a second companion on its
 	using Configure = std::function<Configured(InstanceContexts&)>;
 	Log codes;
 	const auto source = [](InstanceContexts& cx, const char* bank, std::uint32_t frames = 1000) -> SourceWriter& {
-		return cx.create.source(bank, SourceShape{.frames = frames});
+		return cx.create.source(bank, SourceShape{.frames = frames}, nullptr);
 	};
 	struct Case {
 		Configure configure;
@@ -5177,7 +5197,7 @@ TEST_CASE("A sink's consumer that began in time cancels its deadline, and a sour
 	auto config = std::make_shared<ProbeConfig>(f.log);
 	config->onConfigure = [&log = f.log](InstanceContexts& cx) {
 		cx.create.sink("pb", SinkShape{.frames = 1024}).consumedBy(std::make_unique<TestSinkConsumer>(log));
-		static_cast<void>(cx.create.source("cap", SourceShape{.frames = 64}));
+		static_cast<void>(cx.create.source("cap", SourceShape{.frames = 64}, nullptr));
 		cx.create.use(std::make_unique<TestAudioCode>(log));
 		return Configured::applied();
 	};

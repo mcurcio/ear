@@ -155,7 +155,7 @@ filter's mapping from the listener (it goes with the filter); the listener must 
 first block (an async invoke the data loop runs before any block's node reaches the driver);
 removing it is a blocking invoke, so on a wedged loop the hook is left and the boundary keeps it and the
 ring it tells (the `RealtimeListener` holds its target, so no owner has to leak itself). The facts
-are the one home of what was lost: a source's `SourceCycle` and a sink's `ChunkStamp` carry them
+are the one home of what was lost: a source's clock reads them in its `SourceTick` and a sink's `ChunkStamp` carries them
 (the stamp as `causes` and `lostFrames`), and nothing in ear works a loss out from the position
 (`GraphCycle::xruns` and `discontinuity` are gone).
 

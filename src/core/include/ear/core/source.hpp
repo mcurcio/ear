@@ -1,10 +1,11 @@
 // The source (docs/writing-a-node-type.md#sources, the home of its rules; docs/engine.md#sources, how the block plays it):
 // audio a type's ordinary thread writes, played into one of the node's inside input banks by the port block in its own
-// cycle, before the code. One home for the source: what a type writes against (SourceShape, Played, Wake,
-// SourceWriter) and what the framework runs a source with (SourceCycle, SourceTap, SourceBinding, Source,
-// SourceAdapter). NodeHost implements CreateOf::source on it, ResourceRegistry takes a SourceAdapter, DriveRequest
-// carries SourceBindings, core's SourceRing holds every rule, and ear_pipewire implements SourceAdapter as EventSources
-// (ear/pipewire/sources.hpp). Pure: nothing but the standard library and ear_core.
+// cycle, before the code. One home for the source: what a type writes against (SourceShape, Wake, SourceWriter, and a
+// source's own clock: SourceClock, told SourceTick, SourceHeld and SourcePlayed) and what the framework runs a source
+// with (SourceTap, SourceBinding, Source, SourceAdapter). NodeHost implements CreateOf::source on it, ResourceRegistry
+// takes a SourceAdapter, DriveRequest carries SourceBindings, core's SourceRing holds every rule, and ear_pipewire
+// implements SourceAdapter as EventSources (ear/pipewire/sources.hpp). Pure: nothing but the standard library and
+// ear_core.
 #pragma once
 #include <chrono>
 #include <cstddef>
@@ -28,17 +29,47 @@ struct SourceShape {
 /// enough that the ring, its latency and its positions stay sane.
 inline constexpr std::uint32_t maxSourceFrames = std::uint32_t{1} << 24U;
 
-/// What a source has played (docs/writing-a-node-type.md#sources), published after each cycle that played or skipped
-/// frames.
-struct Played {
-	/// Frames played or skipped since the source was made; a skip (the graph lost time and caught it up, however long)
-	/// counts as played, so the count moves with the graph's clock. Frames cleared or dropped at a stop are not
-	/// counted.
-	std::uint64_t totalFrames = 0;
-	/// When the last frame counted is heard, on CLOCK_MONOTONIC_RAW: the cycle's start, plus the frames it played, plus
-	/// the most latency downstream of the outputs its bank is paired with (a following card's buffer).
-	std::int64_t heardRawNs = 0;
-	friend bool operator==(const Played&, const Played&) = default;
+/// What a source's ring holds as a tick begins, for its clock to decide on.
+struct SourceHeld {
+	std::uint32_t frames = 0; // of the current stream, after any clear this tick applies
+	bool clearing = false;    // this tick applies a clear: the ended stream's 5 ms plays faded, the rest is dropped
+	friend bool operator==(const SourceHeld&, const SourceHeld&) = default;
+};
+
+/// What one tick did with a source's ring, every count in the ring's frames (its rate: SourceTick::rate). `read`,
+/// `ended` and `zeros` add up to the tick's frames.
+struct SourcePlayed {
+	std::uint64_t skipped =
+		0;                   // of the current stream, dropped unplayed at the clock's word: at most SourceHeld::frames
+	std::uint32_t read = 0;  // of the current stream, played into the bank (faded in where audio came back)
+	std::uint32_t ended = 0; // of a stream a clear ended, played faded to zero: never the current stream's
+	std::uint32_t zeros = 0; // played as zeros, an underrun's decay or a clear's fade past the ended stream's frames
+	friend bool operator==(const SourcePlayed&, const SourcePlayed&) = default;
+};
+
+/// One tick as a source's clock sees it.
+struct SourceTick {
+	const GraphCycle& cycle; // the tick and its facts (docs/engine.md#graphcycle): the graph's, at the graph rate
+	std::uint32_t frames;    // ring frames this tick plays: the cycle's (behind a converter, what its resampler asks)
+	std::uint32_t rate;      // the ring's rate: the graph frequency (behind a converter, its node rate)
+	Latency playback;        // the most playback latency the block told on the source's bank, in graph frames
+};
+
+/// A source's own clock, reconciled with the tick inside the node (docs/architecture.md#the-timing-model, rule 3;
+/// docs/writing-a-node-type.md#a-sources-clock). Realtime thread only, called by whoever plays the ring
+/// (SourceRing::play), never concurrently: never blocks, locks, allocates or makes a system call. Owned by its source
+/// and freed with it (teardown step 5, after the instance and every thread it owns), so a reference the type keeps to
+/// read its reports never dangles.
+class SourceClock {
+public:
+	virtual ~SourceClock() = default;
+	/// Before the ring plays this tick: how much of the current stream to drop unplayed first. The ring drops
+	/// min(answer, held.frames), and nothing on a tick whose held.clearing is set (a clear ends the stream: nothing of
+	/// the next is skipped for the old one's lost time). Any count: a stall has no bound.
+	virtual std::uint64_t skipBefore(const SourceTick& tick, SourceHeld held) noexcept = 0;
+	/// After it played: what the tick did, exactly. True rings the source's clock wake (SourceWriter::clockWake), at
+	/// most once until answered.
+	virtual bool played(const SourceTick& tick, const SourcePlayed& played) noexcept = 0;
 };
 
 /// A "look now" from any thread, the realtime one included, to one watcher
@@ -73,17 +104,16 @@ public:
 	/// The writing thread, with nothing to give: says the writer is idle (an empty ring is then no shortfall) and waits
 	/// `patience`, accepting nothing; woken early by a close. The next write ends the idle.
 	virtual void idle(std::chrono::milliseconds patience) = 0;
-	/// Any ordinary thread: what was written so far is gone at the next cycle, not counted played; the next 5 ms of it
-	/// is played faded to zero, counted played (docs/writing-a-node-type.md#sources).
+	/// Any ordinary thread: what was written so far is gone at the next cycle: its next 5 ms is played faded to zero,
+	/// the rest dropped unplayed (docs/writing-a-node-type.md#sources).
 	virtual void clear() noexcept = 0;
 	/// Any thread: whether teardown closed the writer.
 	virtual bool closed() const noexcept = 0;
 	/// Any thread: the ring's capacity in frames (at least SourceShape::frames).
 	virtual std::uint32_t capacityFrames() const noexcept = 0;
-	/// Any thread: the last Played published (all zero before the first cycle that played).
-	virtual Played played() const noexcept = 0;
-	/// Rung after each cycle that published a new Played, at most once until answered. One watcher.
-	virtual Wake& playedWake() noexcept = 0;
+	/// Rung when the source's clock asks after a tick (SourceClock::played returned true), at most once until answered.
+	/// One watcher (a loop's onWake, slice 3c). Never rung for a source with no clock.
+	virtual Wake& clockWake() noexcept = 0;
 
 protected:
 	~SourceWriter() = default;
@@ -91,24 +121,14 @@ protected:
 
 // ---- What the framework runs a source with (no type sees these) ----
 
-/// One cycle as a source's tap sees it: GraphCycle's, plus what lies downstream of its bank.
-struct SourceCycle {
-	std::uint64_t position;  // the driver's position of the cycle's first frame
-	std::uint32_t frames;    // the cycle's frames, at most maxBlock
-	std::int64_t startRawNs; // the cycle's start on CLOCK_MONOTONIC_RAW
-	CycleFacts facts;        // GraphCycle::facts: what was lost before it, which the source keeps time by
-	Latency downstream;      // the most downstream of any output bank the source's bank is paired with
-};
-
 /// The realtime end of one source: the port block calls play() once per cycle a code runs, before that code.
 class SourceTap {
 public:
-	/// Realtime thread only: never blocks, locks, allocates or makes a syscall but a wake. Writes exactly
-	/// `cycle.frames` frames into every span of `bank` (the source's inside input bank, `bank.size()` its channel
-	/// count, each span at least `cycle.frames` long): the ring's frames, then zeros. Keeps time (a catch-up the
-	/// cycle's facts state skips its whole jump, counted played), fades at its edges, counts the shortfall,
-	/// publishes Played and rings the played wake, and wakes a writer waiting for room.
-	virtual void play(std::span<const std::span<float>> bank, const SourceCycle& cycle) noexcept = 0;
+	/// Realtime thread only: never blocks, locks, allocates or makes a syscall but a wake. Plays the tick by
+	/// SourceRing::play with the source's clock (none for a source with no clock): exactly `tick.frames` frames into
+	/// every span of `bank` (the source's inside input bank, `bank.size()` its channel count, each span at least
+	/// `tick.frames` long).
+	virtual void play(std::span<const std::span<float>> bank, const SourceTick& tick) noexcept = 0;
 
 protected:
 	~SourceTap() = default;
@@ -123,11 +143,12 @@ struct SourceBinding {
 	std::size_t channels;   // the bank's size
 };
 
-/// One source: its ring, its writer's room and played wakes, its counters. Made inside configure by CreateOf::source,
-/// for the configuration's life. Main thread for every call but the counters.
+/// One source: its ring, its clock (if it has one), its writer's room and clock wakes, its counters. Made inside
+/// configure by CreateOf::source, for the configuration's life. Main thread for every call but the counters.
 class Source {
 public:
-	/// Main thread, at teardown step 5, after the instance (whose threads may hold the writer) is freed.
+	/// Main thread, at teardown step 5, after the instance (whose threads may hold the writer or the clock) is freed:
+	/// frees the clock with the ring.
 	virtual ~Source() = default;
 	/// The type's end, valid for the source's life.
 	virtual SourceWriter& writer() noexcept = 0;
@@ -144,7 +165,8 @@ public:
 	virtual void close() noexcept = 0;
 	/// Any thread: frames played as zeros while the writer was not idle, since the source was made.
 	virtual std::uint64_t shortfallFrames() const noexcept = 0;
-	/// Any thread: frames written and never played (dropped by a clear or a stop), since the source was made.
+	/// Any thread: frames written and never played (dropped by a clear or a stop; not those its clock skipped), since
+	/// the source was made.
 	virtual std::uint64_t droppedFrames() const noexcept = 0;
 };
 
@@ -152,11 +174,13 @@ public:
 class SourceAdapter {
 public:
 	/// Main thread. A source of `channels` channels and `capacityFrames` frames of ring for `node`'s inside input bank
-	/// `bank`, at the graph frequency `rate` (its fades and Played's dating). Refuses only by std::bad_alloc or
-	/// std::system_error (an eventfd it cannot make): the node fails start-failed. A std::logic_error is its own bug:
-	/// the node fails lost, told as ear.internal-error (docs/architecture.md#faults-by-owner).
+	/// `bank`, at the graph frequency `rate` (its fades' length), owning `clock` (null for a source with no clock) for
+	/// its life. Refuses only by std::bad_alloc or std::system_error (an eventfd it cannot make): the node fails
+	/// start-failed. A std::logic_error is its own bug: the node fails lost, told as ear.internal-error
+	/// (docs/architecture.md#faults-by-owner).
 	virtual std::unique_ptr<Source> make(const NodeName& node, std::string_view bank, std::uint32_t channels,
-	                                     std::uint32_t capacityFrames, std::uint32_t rate) = 0;
+	                                     std::uint32_t capacityFrames, std::uint32_t rate,
+	                                     std::unique_ptr<SourceClock> clock) = 0;
 
 protected:
 	~SourceAdapter() = default;

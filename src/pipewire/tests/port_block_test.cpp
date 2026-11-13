@@ -1151,12 +1151,12 @@ private:
 };
 
 /// A source's realtime end that plays silence and keeps the newest playback latency its cycle carried: what the block
-/// published for the bank, which a real source dates its Played by.
+/// published for the bank, which a real source's clock is told (SourceTick::playback).
 class DownstreamTap final : public SourceTap {
 public:
-	void play(std::span<const std::span<float>> bank, const SourceCycle& cycle) noexcept override {
-		for (const std::span<float> span : bank) std::fill_n(span.begin(), cycle.frames, 0.0F);
-		const Latency latency = cycle.downstream;
+	void play(std::span<const std::span<float>> bank, const SourceTick& tick) noexcept override {
+		for (const std::span<float> span : bank) std::fill_n(span.begin(), tick.frames, 0.0F);
+		const Latency latency = tick.playback;
 		seen_.store((std::uint64_t{latency.minFrames} << 32U) | latency.maxFrames, std::memory_order_relaxed);
 		played_.store(true, std::memory_order_release);
 	}
@@ -1342,6 +1342,18 @@ struct Discard final : SinkConsumer {
 	void finish() override {}
 };
 
+/// The playback latency the source's clock was last told (SourceTick::playback), none before its first tick.
+inline std::optional<Latency> toldPlayback;
+
+/// A source's clock that skips nothing and keeps the playback latency each tick tells it.
+struct PlaybackClock final : SourceClock {
+	std::uint64_t skipBefore(const SourceTick& tick, SourceHeld) noexcept override {
+		toldPlayback = tick.playback;
+		return 0;
+	}
+	bool played(const SourceTick&, const SourcePlayed&) noexcept override { return false; }
+};
+
 /// A sink and a source on inside banks, each paired with a public bank by the pass-through, a path declared on each:
 /// so the plan NodeHost builds carries a pair, an onPair delay both ways and a source's beyond.
 struct Conform {
@@ -1350,7 +1362,7 @@ struct Conform {
 	}
 	Configured configure(CreateOf<spec>& cx, const Checked&) {
 		cx.sink(toDevice, SinkShape{.frames = 1024}).consumedBy(std::make_unique<Discard>());
-		cx.source(fromDevice, SourceShape{.frames = 1000});
+		cx.source(fromDevice, SourceShape{.frames = 1000}, std::make_unique<PlaybackClock>());
 		cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
 		cx.declareLatency(in, toDevice, Latency{30, 40});
 		cx.declareLatency(fromDevice, out, Latency{7, 9});
@@ -1361,8 +1373,9 @@ struct Conform {
 } // namespace latency_conformance
 
 // The harness's side of the latency model's conformance, through its own NodeHost: the plan a type's configuration
-// builds in the type harness, carried on a real block with no peer, stamps a sink's chunks and dates a source's Played
-// as the harness's block did (docs/writing-a-node-type.md#testing-a-type, docs/engine.md#latency-per-bank-pair).
+// builds in the type harness, carried on a real block with no peer, stamps a sink's chunks and tells a source's clock its
+// playback latency as the harness's block did (docs/writing-a-node-type.md#testing-a-type,
+// docs/engine.md#latency-per-bank-pair).
 TEST_CASE("The plan a type builds in the harness, carried on a real block with no peer, gives its sink's stamps and "
           "its source's playback latency what the harness gave them",
           "[port_blocks][latency][conformance]") {
@@ -1379,7 +1392,8 @@ TEST_CASE("The plan a type builds in the harness, carried on a real block with n
 	const LatencyPlan plan = harness->latencyPlan();
 	REQUIRE(harness.companion(conform::toDevice).chunks.size() == 1);
 	const std::uint32_t harnessUpstream = harness.companion(conform::toDevice).chunks[0].stamp.upstreamFrames;
-	const Played harnessPlayed = harness.played(conform::fromDevice);
+	const SourcePlayed harnessPlayed = harness.lastPlayed(conform::fromDevice);
+	const std::optional<Latency> harnessPlayback = conform::toldPlayback;
 	harness.remove();
 
 	auto engine = makeEngine();
@@ -1398,9 +1412,10 @@ TEST_CASE("The plan a type builds in the harness, carried on a real block with n
 	CHECK(harnessUpstream != 0); // the declared path reaches the sink's bank
 	const Latency downstream = real.fed[0].second;
 	CHECK(downstream.maxFrames != 0); // the declared path reaches the source's bank
-	// The harness's cycle started at zero on its clock: its source played kBlock frames, heard once what lies
-	// downstream of its bank has played.
-	CHECK(harnessPlayed == Played{kBlock, FrameClock(kRate).heardRawNs(0, kBlock, downstream)});
+	// The harness's source read the kBlock frames fed, and its clock was told the playback latency the real block
+	// publishes for the bank.
+	CHECK(harnessPlayed == SourcePlayed{.read = kBlock});
+	CHECK(harnessPlayback == downstream);
 }
 
 // A peer's negative latency is clamped to zero at the port, before what lies in series beyond the bank adds to it: an

@@ -791,8 +791,9 @@ constexpr std::chrono::seconds kS5Deadline{30};
 constexpr std::size_t kS5Log = 750 * 40;
 
 /// B: a test-only source served by its block. Before its code (which here does nothing more) it plays a ring of
-/// kS5Capacity frames into its output and keeps time as slice 3b's source will: a cycle whose position
-/// jumped ahead of the last one's end by at most the capacity skips that many frames and counts them played; any other
+/// kS5Capacity frames into its output and keeps time as a source whose clock skips the graph's jump would: a cycle
+/// whose position jumped ahead of the last one's end by at most the capacity skips that many frames and counts them
+/// played; any other
 /// jump is a new clock, played on from where the ring is (so `total - (position - first position)` takes a new value
 /// there, the anchor S5's model re-takes). `total` counts frames played and skipped, as a source's totalFrames. The
 /// ring's frame k is rampAt(k), and the writer side is not under test: the ring is kept full, each frame consumed

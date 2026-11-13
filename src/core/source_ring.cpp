@@ -1,6 +1,8 @@
 // Every rule a source plays by (ear/core/source_ring.hpp; docs/writing-a-node-type.md#sources holds them in words): its
-// ring, keeping time, the fades at its edges, the shortfall, the frames dropped at a clear or a stop, and Played. Pure:
-// one FrameRing and atomics, no thread, descriptor or wait; play() allocates nothing (its state is made here, once).
+// ring, the fades at its edges, the shortfall, the frames dropped at a clear or a stop, and the one play rule around a
+// source's clock. It keeps no audio time (docs/architecture.md#the-timing-model, rule 1): what to skip is the clock's
+// alone. Pure: one FrameRing and atomics, no thread, descriptor or wait; play() allocates nothing (its state is made
+// here, once).
 #include "ear/core/source_ring.hpp"
 
 #include <algorithm>
@@ -17,51 +19,44 @@ namespace {
 /// clear()'s word: how many clears were asked (high half) and the ring's write position at the last (low half).
 constexpr std::uint64_t oneClear = std::uint64_t{1} << 32U;
 
+/// 5 ms at `rate`, at least one frame: every fade's length.
+std::uint32_t fadeFramesAt(std::uint32_t rate) {
+	return std::max(static_cast<std::uint32_t>(FrameClock(std::max(rate, 1U)).frames(std::chrono::milliseconds{5})),
+	                1U);
+}
+
 } // namespace
 
 struct SourceRing::State {
 	State(std::uint32_t channelCount, std::uint32_t capacity, std::uint32_t frequency, Signals& told)
-		: ring(channelCount, capacity), channels(channelCount), clock(std::max(frequency, 1U)),
-		  fadeFrames(std::max(static_cast<std::uint32_t>(clock.frames(std::chrono::milliseconds{5})), 1U)),
-		  signals(told), last(channelCount, 0.0F), tail(static_cast<std::size_t>(fadeFrames) * channelCount, 0.0F) {}
+		: ring(channelCount, capacity), channels(channelCount), fadeFrames(fadeFramesAt(frequency)), signals(told),
+		  last(channelCount, 0.0F), tail(static_cast<std::size_t>(fadeFrames) * channelCount, 0.0F) {}
 
 	FrameRing ring;
 	std::uint32_t channels;
-	FrameClock clock;         // the graph's rate: the fades' length and Played's dating
 	std::uint32_t fadeFrames; // 5 ms: every fade's length
 	Signals& signals;
 
 	// Written by the writer, the main thread or a clearing thread; read by play().
 	std::atomic<bool> closed{false};
-	std::atomic<bool> idle{true};            // until the writer's first offer, an empty ring is no shortfall
-	std::atomic<std::uint32_t> idleEpoch{0}; // markIdle's count: an idle the cycles never saw still ends a debt
-	std::atomic<bool> stopped{false};        // dropForStop ran and no cycle played since: offer accepts nothing
+	std::atomic<bool> idle{true};     // until the writer's first offer, an empty ring is no shortfall
+	std::atomic<bool> stopped{false}; // dropForStop ran and no cycle played since: offer accepts nothing
 	std::atomic<std::uint64_t> clearWord{0};
 	// Counters, any thread.
 	std::atomic<std::uint64_t> shortfall{0};
 	std::atomic<std::uint64_t> dropped{0};
-	// Played, published by play() under a sequence lock: odd while it writes, so a reader on any thread retries and
-	// play() never waits.
-	std::atomic<std::uint32_t> playedSequence{0};
-	std::atomic<std::uint64_t> playedTotal{0};
-	std::atomic<std::int64_t> playedHeard{0};
 
 	// play()'s own (the realtime thread's).
-	bool started = false;           // a cycle played since the source was made or last stopped
 	std::uint32_t clearsSeen = 0;   // clearWord's count as play() last applied it
-	std::uint32_t idlesSeen = 0;    // idleEpoch as play() last saw it
 	std::uint32_t gain = 0;         // the fades' level, 0 (silent) to fadeFrames (full): gain / fadeFrames
 	bool clearing = false;          // a clear's fade to zero is not over: new frames wait for it
-	std::uint64_t debt = 0;         // frames the clock skipped that the ring did not hold yet: counted played, and
-									// dropped from what is written next, so the stream keeps to the clock exactly
 	std::vector<float> last;        // the last frame played, which an underrun or a clear decays from
 	std::vector<float> tail;        // a clear's next 5 ms, played faded out; interleaved
 	std::uint32_t tailAt = 0;       // frames of `tail` played
 	std::uint32_t tailFrames = 0;   // frames `tail` holds
-	std::uint64_t totalFrames = 0;  // Played::totalFrames, as play() counts it
-	std::uint32_t consumedRing = 0; // frames this cycle took out of the ring (played, skipped or dropped)
-	bool roomFreed = false;         // this cycle freed room, or ended a stop: a waiting writer may go on
-	bool cycleEndedStop = false;    // this cycle is the first since a stop: its zeros are no shortfall
+	std::uint32_t consumedRing = 0; // frames this tick took out of the ring (played, skipped or dropped)
+	bool roomFreed = false;         // this tick freed room, or ended a stop: a waiting writer may go on
+	bool tickEndedStop = false;     // this tick is the first since a stop: its zeros are no shortfall
 
 	float level() const noexcept { return static_cast<float>(gain) / static_cast<float>(fadeFrames); }
 
@@ -72,31 +67,28 @@ struct SourceRing::State {
 		if (frames > 0) dropped.fetch_add(frames, std::memory_order_relaxed);
 	}
 
-	/// The first cycle after a stop: what a writer slipped in while the stop was dropping is dropped too, the clear
-	/// in flight forgotten, the time kept afresh, and the writer let go (its wait is for room).
+	/// The first tick after a stop: what a writer slipped in while the stop was dropping is dropped too, the clear in
+	/// flight forgotten, and the writer let go (its wait is for room).
 	void endStop() noexcept {
 		const std::uint32_t stragglers = held();
 		ring.skip(stragglers);
 		drop(stragglers + (tailFrames - tailAt));
 		tailAt = tailFrames = 0;
 		clearing = false;
-		debt = 0;
 		gain = 0;
-		started = false;
 		clearsSeen = static_cast<std::uint32_t>(clearWord.load(std::memory_order_acquire) >> 32U);
-		cycleEndedStop = true;
+		tickEndedStop = true;
 		roomFreed = true; // the writer waits out a stop as a full ring: always woken here
 		stopped.store(false, std::memory_order_release);
 	}
 
-	/// A clear asked since the last cycle: the next 5 ms of what was written before it becomes the tail, faded out
-	/// from here; the rest is dropped (counted, never played).
-	void applyClear() noexcept {
+	/// A clear asked since the last tick: the next 5 ms of what was written before it becomes the tail, faded out from
+	/// here; the rest is dropped (counted, never played). True when this tick applied one.
+	bool applyClear() noexcept {
 		const std::uint64_t word = clearWord.load(std::memory_order_acquire);
 		const auto asked = static_cast<std::uint32_t>(word >> 32U);
-		if (asked == clearsSeen) return;
+		if (asked == clearsSeen) return false;
 		clearsSeen = asked;
-		debt = 0;                  // owed by the stream the clear ends, never by the next one
 		drop(tailFrames - tailAt); // an earlier clear's tail, not played yet
 		tailAt = tailFrames = 0;
 		const auto to = static_cast<std::uint32_t>(word);
@@ -117,42 +109,7 @@ struct SourceRing::State {
 		consumedRing += ring.skip(cleared);
 		drop(cleared);
 		clearing = true;
-	}
-
-	/// Keeping time, on the cycle's facts (docs/writing-a-node-type.md#sources): a catch-up, however long, skips its
-	/// whole jump of the stream, counted played: a clear's tail first, then what the ring holds (not while a clear
-	/// fades), and what it does not hold yet is a debt, dropped from the frames written next, while the writer is not
-	/// idle (an idle writer's next frames begin a stream with no place on the clock yet). Any other cause is a new clock,
-	/// and so is the first cycle after a stop: nothing skipped. Returns the frames skipped.
-	std::uint64_t keepTime(const CycleFacts& facts) noexcept {
-		const bool keeps = started && facts.causes.has(CycleCause::catchUp) && facts.jumpFrames > 0;
-		started = true;
-		if (!keeps) return 0;
-		// The whole jump is counted played, whatever of it the ring holds now.
-		const auto skipped = static_cast<std::uint64_t>(facts.jumpFrames);
-		std::uint64_t gap = skipped;
-		const auto fromTail = static_cast<std::uint32_t>(std::min<std::uint64_t>(gap, tailFrames - tailAt));
-		if (fromTail > 0) {
-			tailAt += fromTail;
-			std::copy_n(tail.begin() + static_cast<std::ptrdiff_t>(tailAt - 1) * channels, channels, last.begin());
-		}
-		gap -= fromTail;
-		if (!clearing && gap > 0) {
-			const std::uint32_t fromRing = ring.skip(static_cast<std::uint32_t>(std::min<std::uint64_t>(gap, held())));
-			gap -= fromRing;
-			consumedRing += fromRing;
-		}
-		if (!idle.load(std::memory_order_relaxed)) debt += gap;
-		return skipped;
-	}
-
-	void publish(std::uint64_t total, std::int64_t heardRawNs) noexcept {
-		const std::uint32_t sequence = playedSequence.load(std::memory_order_relaxed);
-		playedSequence.store(sequence + 1, std::memory_order_relaxed);
-		std::atomic_thread_fence(std::memory_order_release);
-		playedTotal.store(total, std::memory_order_relaxed);
-		playedHeard.store(heardRawNs, std::memory_order_relaxed);
-		playedSequence.store(sequence + 2, std::memory_order_release);
+		return true;
 	}
 };
 
@@ -161,57 +118,56 @@ SourceRing::SourceRing(std::uint32_t channels, std::uint32_t capacityFrames, std
 
 SourceRing::~SourceRing() = default;
 
-void SourceRing::play(std::span<const std::span<float>> bank, const SourceCycle& cycle) noexcept {
+SourcePlayed SourceRing::play(std::span<const std::span<float>> bank, const SourceTick& tick,
+                              SourceClock* clock) noexcept {
 	State& s = *state_;
-	const std::uint32_t frames = cycle.frames;
+	const std::uint32_t frames = tick.frames;
 	const std::size_t spans = std::min<std::size_t>(bank.size(), s.channels);
 	// Spans past the source's channels (a bank wider than the ring: never, by NodeHost) are silent.
 	for (std::size_t c = spans; c < bank.size(); ++c) std::fill_n(bank[c].begin(), frames, 0.0F);
 	s.consumedRing = 0;
 	s.roomFreed = false;
-	s.cycleEndedStop = false;
+	s.tickEndedStop = false;
 	if (s.stopped.load(std::memory_order_acquire)) s.endStop();
-	s.applyClear();
-	// An idle writer owes nothing (docs/writing-a-node-type.md#sources): its next frames begin a new stream, so a debt
-	// left from before it said it was idle is forgotten here, not taken from them, even when it wrote again before
-	// this cycle (the idle latched by its count, not read as it stands now).
-	if (const std::uint32_t idles = s.idleEpoch.load(std::memory_order_acquire); idles != s.idlesSeen) {
-		s.idlesSeen = idles;
-		s.debt = 0;
+	const bool clearedNow = s.applyClear();
+
+	SourcePlayed played{};
+	// The clock's skip, of the current stream only, never more than the ring holds of it, and nothing on the tick that
+	// applies a clear (docs/writing-a-node-type.md#a-sources-clock). With no clock nothing is skipped: the ring keeps
+	// no time of its own (docs/architecture.md#the-timing-model, rule 1).
+	if (clock != nullptr) {
+		const SourceHeld held{.frames = s.held(), .clearing = clearedNow};
+		const std::uint64_t asked = clock->skipBefore(tick, held);
+		if (!held.clearing && asked > 0) {
+			const auto skip = static_cast<std::uint32_t>(std::min<std::uint64_t>(asked, held.frames));
+			s.ring.skip(skip);
+			s.consumedRing += skip;
+			played.skipped = skip;
+		}
 	}
-	const std::uint64_t skipped = s.keepTime(cycle.facts);
 
 	const auto put = [&](std::uint32_t at, const float* frame) noexcept {
 		const float gain = s.level();
 		for (std::size_t c = 0; c < spans; ++c) bank[c][at] = frame[c] * gain;
 	};
 	std::uint32_t i = 0;
-	std::uint32_t played = 0;
-	std::uint32_t playedEnd = 0; // where the last frame played this cycle ends
-	// A clear's tail, faded out from the level the stream had, counted played.
+	// A clear's tail, faded out from the level the stream had: the ended stream's frames.
 	for (; i < frames && s.tailAt < s.tailFrames; ++i, ++s.tailAt) {
 		const float* frame = s.tail.data() + static_cast<std::size_t>(s.tailAt) * s.channels;
 		put(i, frame);
 		std::copy_n(frame, s.channels, s.last.begin());
 		if (s.gain > 0) --s.gain;
-		++played;
-		playedEnd = i + 1;
+		++played.ended;
 	}
 	// The clear's fade goes on from its last frame until silent; only then does the new stream fade in.
 	for (; i < frames && s.clearing && s.gain > 0; ++i) {
 		put(i, s.last.data());
 		--s.gain;
+		++played.zeros;
 	}
 	if (s.tailAt == s.tailFrames && s.gain == 0) s.clearing = false;
-	// The ring's frames, fading in from the level the last cycle left.
+	// The ring's frames, fading in from the level the last tick left.
 	while (i < frames && !s.clearing) {
-		if (s.debt > 0) { // the frames the clock already passed: dropped, counted played when skipped
-			const std::uint32_t paid =
-				s.ring.skip(static_cast<std::uint32_t>(std::min<std::uint64_t>(s.debt, s.ring.capacityFrames())));
-			s.debt -= paid;
-			s.consumedRing += paid;
-			if (s.debt > 0) break; // the ring is dry
-		}
 		const std::span<const float> run = s.ring.readSpan();
 		const std::uint32_t got = std::min(static_cast<std::uint32_t>(run.size() / s.channels), frames - i);
 		if (got == 0) break;
@@ -223,10 +179,9 @@ void SourceRing::play(std::span<const std::span<float>> bank, const SourceCycle&
 		s.ring.skip(got);
 		s.consumedRing += got;
 		i += got;
-		played += got;
-		playedEnd = i;
+		played.read += got;
 	}
-	// Dry: a decay from the last frame played, then zeros; a shortfall unless the writer is idle (or the cycle ends a
+	// Dry: a decay from the last frame played, then zeros; a shortfall unless the writer is idle (or the tick ends a
 	// stop, the writer held back until now) or a clear's fade is what keeps the frames back.
 	const std::uint32_t dry = frames - i;
 	const bool waitingForClear = s.clearing;
@@ -238,15 +193,13 @@ void SourceRing::play(std::span<const std::span<float>> bank, const SourceCycle&
 			for (std::size_t c = 0; c < spans; ++c) bank[c][i] = 0.0F;
 		}
 	}
-	if (dry > 0 && !waitingForClear && !s.cycleEndedStop && !s.idle.load(std::memory_order_relaxed))
+	played.zeros += dry;
+	if (dry > 0 && !waitingForClear && !s.tickEndedStop && !s.idle.load(std::memory_order_relaxed))
 		s.shortfall.fetch_add(dry, std::memory_order_relaxed);
 
-	if (played + skipped > 0) {
-		s.totalFrames += played + skipped;
-		s.publish(s.totalFrames, s.clock.heardRawNs(cycle.startRawNs, playedEnd, cycle.downstream));
-		s.signals.playedChanged();
-	}
+	if (clock != nullptr && clock->played(tick, played)) s.signals.clockAsked();
 	if (s.consumedRing > 0 || s.roomFreed) s.signals.roomFreed();
+	return played;
 }
 
 std::uint32_t SourceRing::offer(std::span<const float> interleaved, std::uint32_t frames) noexcept {
@@ -257,10 +210,7 @@ std::uint32_t SourceRing::offer(std::span<const float> interleaved, std::uint32_
 	return s.ring.writeInterleaved(interleaved, whole);
 }
 
-void SourceRing::markIdle() noexcept {
-	state_->idle.store(true, std::memory_order_relaxed);
-	state_->idleEpoch.fetch_add(1, std::memory_order_release);
-}
+void SourceRing::markIdle() noexcept { state_->idle.store(true, std::memory_order_relaxed); }
 
 void SourceRing::clear() noexcept {
 	State& s = *state_;
@@ -273,7 +223,7 @@ void SourceRing::clear() noexcept {
 
 void SourceRing::dropForStop() noexcept {
 	State& s = *state_;
-	// First, so an offer from here on accepts nothing; what one slipped in meanwhile the next cycle drops.
+	// First, so an offer from here on accepts nothing; what one slipped in meanwhile the next tick drops.
 	s.stopped.store(true, std::memory_order_release);
 	const std::uint32_t from = s.ring.readPosition();
 	const std::uint32_t to = s.ring.writePosition();
@@ -287,16 +237,6 @@ void SourceRing::close() noexcept { state_->closed.store(true, std::memory_order
 bool SourceRing::closed() const noexcept { return state_->closed.load(std::memory_order_acquire); }
 
 std::uint32_t SourceRing::capacityFrames() const noexcept { return state_->ring.capacityFrames(); }
-
-Played SourceRing::played() const noexcept {
-	const State& s = *state_;
-	for (;;) {
-		const std::uint32_t before = s.playedSequence.load(std::memory_order_acquire);
-		const Played seen{s.playedTotal.load(std::memory_order_relaxed), s.playedHeard.load(std::memory_order_relaxed)};
-		std::atomic_thread_fence(std::memory_order_acquire);
-		if ((before & 1U) == 0 && s.playedSequence.load(std::memory_order_relaxed) == before) return seen;
-	}
-}
 
 std::uint64_t SourceRing::shortfallFrames() const noexcept { return state_->shortfall.load(std::memory_order_relaxed); }
 

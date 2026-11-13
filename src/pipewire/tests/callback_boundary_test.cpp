@@ -496,8 +496,8 @@ struct NoSinks final : SinkAdapter {
 	}
 };
 struct NoSources final : SourceAdapter {
-	std::unique_ptr<Source> make(const NodeName&, std::string_view, std::uint32_t, std::uint32_t,
-	                             std::uint32_t) override {
+	std::unique_ptr<Source> make(const NodeName&, std::string_view, std::uint32_t, std::uint32_t, std::uint32_t,
+	                             std::unique_ptr<SourceClock>) override {
 		return nullptr;
 	}
 };

@@ -91,7 +91,7 @@ inline std::vector<LatencyRow> latencyRows() {
 	     {{0, 0}, {0, 0}, {0, 200}},
 	     {{0, 0}}},
 		// Regression (3b.2, 6c1299b556): a code's delay declared on its pair reaches the input bank's told playback
-		// latency, so a source on it dates Played late enough; and the output's capture likewise.
+		// latency, so a source on it tells its clock enough playback latency; and the output's capture likewise.
 		{"a pair's delay counts both ways on its path",
 	     {{Direction::output, "out", numbered(1)}, {Direction::input, "src", numbered(1), R::inside}},
 	     {.pairs = {{"src", "out"}},

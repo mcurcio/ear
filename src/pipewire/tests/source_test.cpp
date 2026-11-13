@@ -1,11 +1,12 @@
 // The sources (docs/writing-a-node-type.md#sources, docs/engine.md#sources): the real EventSources, first on real
 // threads with no engine (a write waits for room and play wakes it, an idle waits its patience, a close wakes a waiting
-// write at once and a later one sleeps its whole patience, the played wake rung once until answered, play allocating
-// nothing), then served by a real block on the in-process engine: played into its inside input bank before the code in
-// the same cycle and unbound by a silence, the latency the block tells on its bank dating what it played, nothing
-// allocated on the data thread, and spike S5's part A on the real block (docs/engine.md#the-one-data-loop-and-invokes):
-// its played count keeps to the clock across cycles cut short by an upstream probe that sleeps past the quantum. Every
-// wait is event-gated: a test waits for the event it needs; the deadline only fails the test.
+// write at once and a later one sleeps its whole patience, the clock wake rung once until answered and only when the
+// source's clock asks, play allocating nothing), then served by a real block on the in-process engine: played into its
+// inside input bank before the code in the same cycle and unbound by a silence, its clock told every tick exactly and
+// the playback latency the block tells on its bank, nothing allocated on the data thread, and spike S5's part A on the
+// real block (docs/engine.md#the-one-data-loop-and-invokes): across cycles cut short by an upstream probe that sleeps
+// past the quantum, a clockless source plays its ring on in order and a clock's skip is honoured exactly. Every wait is
+// event-gated: a test waits for the event it needs; the deadline only fails the test.
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -59,20 +60,39 @@ std::vector<float> ramp(std::uint64_t from, std::uint32_t count) {
 	return out;
 }
 
-/// One cycle of `frames` at `position`, as the block would hand it.
-SourceCycle cycleAt(std::uint64_t position, std::uint32_t frames, Latency downstream = {}) {
-	return SourceCycle{.position = position,
-	                   .frames = frames,
-	                   .startRawNs = static_cast<std::int64_t>(position) * 1000,
-	                   .downstream = downstream};
-}
-
 /// A one-channel bank of `frames` frames for play().
 struct Bank {
 	explicit Bank(std::uint32_t frames) : data(frames), spans{std::span<float>(data)} {}
 	std::span<const std::span<float>> view() { return spans; }
 	std::vector<float> data;
 	std::vector<std::span<float>> spans;
+};
+
+/// One tick of `frames` at `position` played into `bank`, as the block would hand it: its playback latency `playback`.
+void playAt(Source& source, Bank& bank, std::uint64_t position, std::uint32_t frames, Latency playback = {}) {
+	const GraphCycle cycle{
+		.startNs = 0, .position = position, .startRawNs = static_cast<std::int64_t>(position) * 1000};
+	source.tap().play(bank.view(), SourceTick{.cycle = cycle, .frames = frames, .rate = kRate, .playback = playback});
+}
+
+/// A source's clock for the tests with no engine: asks after the ticks `asks` says, and counts what it was told. Any
+/// thread reads the counts once the playing thread is done.
+struct CountingClock final : SourceClock {
+	bool asks = false;
+	std::uint64_t ticks = 0;
+	std::uint64_t read = 0;
+	SourcePlayed last{};
+	Latency playback{};
+	std::uint64_t skipBefore(const SourceTick& tick, SourceHeld) noexcept override {
+		playback = tick.playback;
+		return 0;
+	}
+	bool played(const SourceTick&, const SourcePlayed& played) noexcept override {
+		++ticks;
+		read += played.read;
+		last = played;
+		return asks;
+	}
 };
 
 /// Whether `fd` is readable now.
@@ -103,7 +123,7 @@ std::int64_t threadCpuNs() {
 
 TEST_CASE("A source's write waits for room and is woken by play, and takes what fits", "[source]") {
 	EventSources sources;
-	auto source = sources.make("rx", "from_writer", 1, 64, kRate);
+	auto source = sources.make("rx", "from_writer", 1, 64, kRate, nullptr);
 	SourceWriter& writer = source->writer();
 	CHECK(writer.capacityFrames() == 64);
 	REQUIRE(writer.write(ramp(0, 64), 64, 0ms) == 64);
@@ -120,7 +140,7 @@ TEST_CASE("A source's write waits for room and is woken by play, and takes what 
 	REQUIRE(writerWaiting(*source)); // the write found the ring full and waits for room
 	CHECK_FALSE(returned.load());
 	Bank bank(16);
-	source->tap().play(bank.view(), cycleAt(0, 16));
+	playAt(*source, bank, 0, 16);
 	writing.join();
 	CHECK(accepted == 16);
 	CHECK(took < 5s); // woken by play, not by its patience
@@ -128,17 +148,17 @@ TEST_CASE("A source's write waits for room and is woken by play, and takes what 
 
 TEST_CASE("A source's idle waits its patience and makes an empty ring no shortfall", "[source]") {
 	EventSources sources;
-	auto source = sources.make("rx", "from_writer", 1, 64, kRate);
+	auto source = sources.make("rx", "from_writer", 1, 64, kRate, nullptr);
 	SourceWriter& writer = source->writer();
 	REQUIRE(writer.write(ramp(0, 16), 16, 0ms) == 16);
 	Bank bank(16);
-	source->tap().play(bank.view(), cycleAt(0, 16));
-	source->tap().play(bank.view(), cycleAt(16, 16)); // dry, not idle
+	playAt(*source, bank, 0, 16);
+	playAt(*source, bank, 16, 16); // dry, not idle
 	CHECK(source->shortfallFrames() == 16);
 	const auto began = Clock::now();
 	writer.idle(100ms);
 	CHECK(Clock::now() - began >= 100ms);
-	source->tap().play(bank.view(), cycleAt(32, 16)); // dry, idle
+	playAt(*source, bank, 32, 16); // dry, idle
 	CHECK(source->shortfallFrames() == 16);
 }
 
@@ -146,7 +166,7 @@ TEST_CASE("A close wakes a waiting write at once, and a write or idle after it s
           "spinning",
           "[source]") {
 	EventSources sources;
-	auto source = sources.make("rx", "from_writer", 1, 64, kRate);
+	auto source = sources.make("rx", "from_writer", 1, 64, kRate, nullptr);
 	SourceWriter& writer = source->writer();
 	REQUIRE(writer.write(ramp(0, 64), 64, 0ms) == 64);
 	std::uint32_t accepted = ~0U;
@@ -196,7 +216,7 @@ TEST_CASE("A write or an idle waiting with a patience of milliseconds::max() is 
 	EventSources sources;
 	for (const bool idling : {false, true}) {
 		INFO((idling ? "idle" : "write"));
-		auto source = sources.make("rx", "from_writer", 1, 64, kRate);
+		auto source = sources.make("rx", "from_writer", 1, 64, kRate, nullptr);
 		SourceWriter& writer = source->writer();
 		REQUIRE(writer.write(ramp(0, 64), 64, 0ms) == 64);
 		std::uint32_t accepted = ~0U;
@@ -232,37 +252,60 @@ TEST_CASE("A wait's patience of milliseconds::max() ends a year away, never soon
 	CHECK(EventSources::waitDeadline(20ms) - now >= 20ms);
 }
 
-TEST_CASE("A source's played wake rings once until answered, and Played says what played", "[source]") {
+// The clock wake is the clock's (docs/writing-a-node-type.md#a-sources-clock): rung only on a tick whose
+// SourceClock::played says so, once until answered, and never for a source with no clock (revert proof: ringing it
+// after every tick that played, as the played wake was, fails the first check below).
+TEST_CASE("A source's clock wake rings once until answered and only when its clock asks, and the clock is told each "
+          "tick",
+          "[source]") {
 	EventSources sources;
-	auto source = sources.make("rx", "from_writer", 1, 64, kRate);
+	auto made = std::make_unique<CountingClock>();
+	CountingClock& clock = *made;
+	auto source = sources.make("rx", "from_writer", 1, 64, kRate, std::move(made));
 	SourceWriter& writer = source->writer();
-	Wake& wake = writer.playedWake();
+	Wake& wake = writer.clockWake();
 	CHECK_FALSE(readable(wake.descriptor()));
 	REQUIRE(writer.write(ramp(0, 48), 48, 0ms) == 48);
 	Bank bank(16);
-	source->tap().play(bank.view(), cycleAt(0, 16, Latency{0, 100}));
+	playAt(*source, bank, 0, 16, Latency{0, 100});
+	CHECK_FALSE(readable(wake.descriptor())); // it played, and the clock did not ask
+	CHECK(clock.ticks == 1);
+	CHECK(clock.last == SourcePlayed{.read = 16});
+	CHECK(clock.playback == Latency{0, 100});
+	clock.asks = true;
+	playAt(*source, bank, 16, 16);
 	CHECK(readable(wake.descriptor()));
-	source->tap().play(bank.view(), cycleAt(16, 16));
-	source->tap().play(bank.view(), cycleAt(32, 16));
-	// One write for three cycles: the eventfd's count is 1.
+	playAt(*source, bank, 32, 16);
+	// One write for two asks: the eventfd's count is 1.
 	std::uint64_t count = 0;
 	REQUIRE(::read(wake.descriptor(), &count, sizeof count) == sizeof count);
 	CHECK(count == 1);
 	wake.answer();
 	CHECK_FALSE(readable(wake.descriptor()));
-	CHECK(writer.played() == Played{48, 32 * 1000 + 16 * 1'000'000'000LL / kRate});
-	REQUIRE(writer.write(ramp(48, 16), 16, 0ms) == 16);
-	source->tap().play(bank.view(), cycleAt(48, 16));
+	// A dry tick still tells the clock, which decides.
+	playAt(*source, bank, 48, 16);
+	CHECK(clock.last == SourcePlayed{.zeros = 16});
 	CHECK(readable(wake.descriptor()));
 	wake.answer();
-	// A cycle that played nothing publishes nothing and rings nothing.
-	source->tap().play(bank.view(), cycleAt(64, 16));
+	clock.asks = false;
+	playAt(*source, bank, 64, 16);
 	CHECK_FALSE(readable(wake.descriptor()));
+	CHECK(clock.ticks == 5);
+	CHECK(clock.read == 48);
+
+	// A source with no clock never rings it.
+	auto clockless = sources.make("rx", "from_writer", 1, 64, kRate, nullptr);
+	REQUIRE(clockless->writer().write(ramp(0, 32), 32, 0ms) == 32);
+	for (std::uint64_t at = 0; at < 64; at += 16) playAt(*clockless, bank, at, 16);
+	CHECK_FALSE(readable(clockless->writer().clockWake().descriptor()));
 }
 
-TEST_CASE("A source's play allocates nothing, a writer waiting and the played wake ringing included", "[source]") {
+TEST_CASE("A source's play allocates nothing, a writer waiting and its clock's wake ringing included", "[source]") {
 	EventSources sources;
-	auto source = sources.make("rx", "from_writer", 1, 256, kRate);
+	auto made = std::make_unique<CountingClock>();
+	made->asks = true;
+	CountingClock& clock = *made;
+	auto source = sources.make("rx", "from_writer", 1, 256, kRate, std::move(made));
 	SourceWriter& writer = source->writer();
 	REQUIRE(writer.write(ramp(0, 256), 256, 0ms) == 256);
 	std::atomic<bool> stop{false};
@@ -277,8 +320,9 @@ TEST_CASE("A source's play allocates nothing, a writer waiting and the played wa
 		const std::uint64_t before = ear::pipewire::testing::countedAllocations();
 		ear::pipewire::testing::countAllocationsOnThisThread(true);
 		for (std::uint64_t cycle = 0; cycle < 2000; ++cycle) {
-			source->tap().play(bank.view(), cycleAt(cycle * 64, 64));
+			playAt(*source, bank, cycle * 64, 64);
 			if (cycle % 7 == 0) writer.clear();
+			if (cycle % 5 == 0) writer.clockWake().answer();
 		}
 		ear::pipewire::testing::countAllocationsOnThisThread(false);
 		allocations = ear::pipewire::testing::countedAllocations() - before;
@@ -288,7 +332,8 @@ TEST_CASE("A source's play allocates nothing, a writer waiting and the played wa
 	source->close();
 	writing.join();
 	CHECK(allocations == 0);
-	CHECK(writer.played().totalFrames > 0);
+	CHECK(clock.ticks == 2000);
+	CHECK(clock.read > 0);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -380,26 +425,61 @@ private:
 	std::atomic<std::size_t> count_{0};
 };
 
-/// What the block's code saw of a cycle: its position and frames, its start, and the source's Played after it played;
-/// with a source and a writer to watch, the source's shortfall after it played, and the frames the writer had written
-/// by the cycle's end (so by the next cycle's play, at least that many); and the facts its block stated of it.
+/// The source's clock on a real block (docs/writing-a-node-type.md#a-sources-clock), on the data thread: it keeps what
+/// the newest tick asked it and told it, which the code logs right after on the same thread; with `skipsJumps` it skips
+/// a catch-up's whole jump (the ring caps it at what it holds), as a source whose own clock is the graph's would, else
+/// nothing. `ticks` counts the ticks it was told, for any thread.
+class RecordingClock final : public SourceClock {
+public:
+	explicit RecordingClock(bool skipsJumps) : skipsJumps_(skipsJumps) {}
+	std::uint64_t skipBefore(const SourceTick& tick, SourceHeld held) noexcept override {
+		held_ = held;
+		playback_ = tick.playback;
+		const CycleFacts& facts = tick.cycle.facts;
+		asked_ = skipsJumps_ && facts.causes.has(CycleCause::catchUp) && facts.jumpFrames > 0
+		             ? static_cast<std::uint64_t>(facts.jumpFrames)
+		             : 0;
+		return asked_;
+	}
+	bool played(const SourceTick&, const SourcePlayed& played) noexcept override {
+		played_ = played;
+		ticks.fetch_add(1, std::memory_order_release);
+		return false;
+	}
+	// The newest tick's, read by the code on the data thread.
+	SourceHeld held_{};
+	SourcePlayed played_{};
+	Latency playback_{};
+	std::uint64_t asked_ = 0;
+	std::atomic<std::uint64_t> ticks{0};
+
+private:
+	bool skipsJumps_;
+};
+
+/// What the block's code saw of a cycle: its position and frames, and what the source's clock was asked and told in
+/// the tick before it; with a writer to watch, the source's shortfall after it played, and the frames the writer had
+/// written by the cycle's end (so by the next cycle's play, at least that many); and the facts its block stated of it.
 struct CodeCycle {
 	std::uint64_t position;
 	std::uint32_t frames;
-	std::int64_t startRawNs;
-	Played played;
+	std::uint64_t ticks = 0; // the clock's count of ticks told, after this cycle's
+	SourceHeld held{};
+	std::uint64_t asked = 0;
+	SourcePlayed played{};
+	Latency playback{};
 	std::uint64_t shortfall = 0;
 	std::uint64_t written = 0;
 	CycleFacts facts{};
 };
 
-/// The block's code: out = from_writer (the source's bank, as the code reads it), each cycle logged with the source's
-/// Played; the first position recorded for the listener downstream. It can turn on the allocation counter for the data
-/// thread.
+/// The block's code: out = from_writer (the source's bank, as the code reads it), each cycle logged with what the
+/// source's clock heard in its tick; the first position recorded for the listener downstream. It can turn on the
+/// allocation counter for the data thread.
 class SourceCode final : public AudioCode {
 public:
-	SourceCode(Waiter& waiter, const SourceWriter& writer, std::size_t capacity)
-		: waiter_(waiter), writer_(writer), log(capacity) {}
+	SourceCode(Waiter& waiter, const RecordingClock& clock, std::size_t capacity)
+		: waiter_(waiter), clock_(clock), log(capacity) {}
 	void prepare(const AudioFormat&) override {}
 	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
 	             std::uint32_t frames, const GraphCycle& cycle) noexcept override {
@@ -410,9 +490,16 @@ public:
 			started.store(true, std::memory_order_release);
 		}
 		const std::atomic<std::uint64_t>* written = writtenBy.load(std::memory_order_acquire);
-		log.add(CodeCycle{cycle.position, frames, cycle.startRawNs, writer_.played(),
-		                  source != nullptr ? source->shortfallFrames() : 0,
-		                  written != nullptr ? written->load(std::memory_order_acquire) : 0, cycle.facts});
+		log.add(CodeCycle{.position = cycle.position,
+		                  .frames = frames,
+		                  .ticks = clock_.ticks.load(std::memory_order_relaxed),
+		                  .held = clock_.held_,
+		                  .asked = clock_.asked_,
+		                  .played = clock_.played_,
+		                  .playback = clock_.playback_,
+		                  .shortfall = source != nullptr ? source->shortfallFrames() : 0,
+		                  .written = written != nullptr ? written->load(std::memory_order_acquire) : 0,
+		                  .facts = cycle.facts});
 		calls.fetch_add(1, std::memory_order_release);
 		waiter_.wake();
 	}
@@ -427,7 +514,7 @@ public:
 
 private:
 	Waiter& waiter_;
-	const SourceWriter& writer_;
+	const RecordingClock& clock_;
 
 public:
 	CycleLog<CodeCycle> log;
@@ -541,19 +628,22 @@ private:
 	std::thread thread_; // last: it reads `written`
 };
 
-/// The code's cycles judged by the source rule (docs/writing-a-node-type.md#sources), cycle by cycle: Played's count
-/// moves on by the jump and the frames of each cycle that states a catch-up, however long (one past the ring's capacity
-/// too: a host's stall past it makes one, recorded, never required); any other jump is a new clock, nothing skipped; a
-/// cycle short of frames is excused only when the writer had not yet written them by the cycle before (its own
-/// progress, logged by the code: a host that starves the writer thread). Each jump is the one its block stated
-/// (CycleFacts::jumpFrames); whether it was the driver's cut is the judge's (docs/testing.md#the-cycle-judge).
+/// The code's cycles judged by the play rule (docs/writing-a-node-type.md#sources), cycle by cycle, from what the clock
+/// was asked and told in each tick: one tick per cycle; the ring dropped exactly min(what the clock asked, what it
+/// held), never on its own (a clock that skips nothing sees every cycle read on in order, cut cycles or not); the counts
+/// add up to the cycle's frames, with nothing of an ended stream (no clear here); the ring held at least what the writer
+/// had written by the cycle before and not yet consumed; and a cycle short of frames is excused only when the writer
+/// had not yet written them by the cycle before (its own progress, logged by the code: a host that starves the writer
+/// thread). Each jump is the one its block stated (CycleFacts::jumpFrames); whether it was the driver's cut is the
+/// judge's (docs/testing.md#the-cycle-judge). The stream frame each cycle began reading at is kept for judgeHeard.
 struct SourceJudged {
-	std::size_t cycles = 0, jumps = 0, beyond = 0, clocks = 0, skippedNothing = 0, drift = 0, lagged = 0;
+	std::size_t cycles = 0, jumps = 0, beyond = 0, skips = 0, drift = 0, lagged = 0;
 	std::size_t positionOff = 0; // cycles on the same driver whose position is not the last end and the stated jump
-	std::uint64_t largestJump = 0, excusedDry = 0;
+	std::uint64_t largestJump = 0, skipped = 0, excusedDry = 0;
 	std::string firstDrift;
-	/// Per cycle: the source played every frame of it, as its count says; and played it so with no dry cycle just before
-	/// (whose decay and fade-in would shape its first frames).
+	/// Per cycle: the stream frame it read first; the source read every frame of it; and read it so with no dry cycle
+	/// just before (whose decay and fade-in would shape its first frames).
+	std::vector<std::uint64_t> from;
 	std::vector<std::uint8_t> played, whole;
 	// What the listener heard (judgeHeard()).
 	std::size_t heard = 0, judged = 0, wrong = 0;
@@ -563,13 +653,19 @@ struct SourceJudged {
 SourceJudged judgeSource(std::span<const CodeCycle> cycles, std::uint32_t capacity) {
 	SourceJudged j;
 	j.cycles = cycles.size();
+	j.from.assign(cycles.size(), 0);
 	j.played.assign(cycles.size(), 0);
 	j.whole.assign(cycles.size(), 0);
-	bool dryBefore = true; // the first cycle fades in
+	bool dryBefore = true;      // the first cycle fades in
+	std::uint64_t consumed = 0; // stream frames skipped or read before this cycle
 	for (std::size_t n = 0; n < cycles.size(); ++n) {
 		const CodeCycle& c = cycles[n];
 		const CodeCycle* p = n > 0 ? &cycles[n - 1] : nullptr;
-		std::uint64_t jump = 0;
+		std::string wrong;
+		const auto fail = [&](const std::string& what) {
+			if (wrong.empty()) wrong = what;
+		};
+		if (p != nullptr && c.ticks != p->ticks + 1) fail("not one tick");
 		// The stated jump is the code's own view too: on the same driver, the position is the last cycle's end moved
 		// by it (worked out modulo 2^64, as the facts are).
 		const bool sameDriver = !c.facts.causes.has(CycleCause::start) && !c.facts.causes.has(CycleCause::driverChange);
@@ -578,34 +674,40 @@ SourceJudged judgeSource(std::span<const CodeCycle> cycles, std::uint32_t capaci
 			++j.positionOff;
 		if (p != nullptr && c.facts.jumpFrames > 0) {
 			++j.jumps;
-			jump = static_cast<std::uint64_t>(c.facts.jumpFrames);
+			const auto jump = static_cast<std::uint64_t>(c.facts.jumpFrames);
 			j.largestJump = std::max(j.largestJump, jump);
+			if (jump > capacity) ++j.beyond;
 		}
-		if (jump > capacity) ++j.beyond;
-		// What the count moves by when nothing is short: a catch-up's whole jump and the frames; a new clock skips none.
-		const bool keeps = c.facts.causes.has(CycleCause::catchUp);
-		const std::uint64_t before = p != nullptr ? p->played.totalFrames : 0;
-		const std::uint64_t expected = (keeps ? jump : 0) + c.frames;
-		const std::uint64_t moved = c.played.totalFrames - before;
+		// The ring held at least what the writer had written by the cycle before and the source had not consumed.
+		if (p != nullptr && p->written > consumed && c.held.frames < p->written - consumed) fail("held too little");
+		if (c.held.clearing) fail("a clear");
+		// The play rule's skip: exactly min(asked, held).
+		if (c.played.skipped != std::min<std::uint64_t>(c.asked, c.held.frames)) fail("skip not min(asked, held)");
+		if (c.played.read + c.played.ended + c.played.zeros != c.frames || c.played.ended != 0) fail("counts");
+		if (c.played.skipped > 0) {
+			++j.skips;
+			j.skipped += c.played.skipped;
+		}
+		j.from[n] = consumed + c.played.skipped;
 		const std::uint64_t dry = c.shortfall - (p != nullptr ? p->shortfall : 0);
+		const bool good = c.played.read == c.frames;
 		// The writer's own progress: frames it had written by the end of the cycle before, so ready for this one.
-		const bool written = p == nullptr || p->written >= before + expected;
-		const bool good = moved == expected && dry == 0;
-		if (!good && moved < expected && moved + dry == expected && !written) {
-			++j.lagged; // the writer had not written them yet: its thread was starved; the count re-anchors
+		const bool written = p == nullptr || p->written >= j.from[n] + c.frames;
+		if (!good && dry == c.played.zeros && !written) {
+			++j.lagged; // the writer had not written them yet: its thread was starved
 			j.excusedDry += dry;
 		} else if (!good) {
-			if (j.drift++ == 0)
-				j.firstDrift = "cycle " + std::to_string(n) + " at " + std::to_string(c.position) + ": moved " +
-				               std::to_string(moved) + ", expected " + std::to_string(expected) + ", dry " +
-				               std::to_string(dry) + ", jump " + std::to_string(jump);
+			fail("short");
 		}
-		if (!keeps && jump > 0) ++j.clocks; // a jump the source took as a new clock: no catch-up stated it
-		// A count that skipped nothing over a catch-up: a new clock the rule does not make.
-		if (keeps && moved + dry == c.frames) ++j.skippedNothing;
+		if (!wrong.empty() && j.drift++ == 0)
+			j.firstDrift = "cycle " + std::to_string(n) + " at " + std::to_string(c.position) + ": " + wrong +
+			               "; asked " + std::to_string(c.asked) + ", held " + std::to_string(c.held.frames) +
+			               ", skipped " + std::to_string(c.played.skipped) + ", read " + std::to_string(c.played.read) +
+			               ", zeros " + std::to_string(c.played.zeros) + ", dry " + std::to_string(dry);
+		consumed = j.from[n] + c.played.read;
 		j.played[n] = good ? 1 : 0;
 		j.whole[n] = good && !dryBefore ? 1 : 0;
-		dryBefore = dry > 0;
+		dryBefore = c.played.zeros > 0;
 	}
 	return j;
 }
@@ -615,8 +717,8 @@ void feedJudge(ear::test::CycleJudge& judge, std::span<const CodeCycle> cycles, 
 	for (; fed < cycles.size(); ++fed) judge.at(cycles[fed].facts, cycles[fed].frames);
 }
 
-/// The listener's cycles judged against `j`: in every cycle the source played whole and unfaded, it heard the ramp
-/// frames the source's count says it played, the stream frame it began the cycle with first and no break after.
+/// The listener's cycles judged against `j`: in every cycle the source read whole and unfaded, it heard the ramp from
+/// the stream frame the clock's counts say the cycle began reading at, and no break after.
 void judgeHeard(SourceJudged& j, std::span<const CodeCycle> cycles, std::span<const StreamCycle> heardLog) {
 	std::vector<std::uint64_t> ran;
 	ran.reserve(cycles.size());
@@ -628,11 +730,10 @@ void judgeHeard(SourceJudged& j, std::span<const CodeCycle> cycles, std::span<co
 		const auto n = static_cast<std::size_t>(at - ran.begin());
 		if (j.whole[n] == 0) continue;
 		++j.judged;
-		const std::uint64_t from = cycles[n].played.totalFrames - cycles[n].frames;
-		if (heard.first != rampAt(from) || heard.breaks != 0) {
+		if (heard.first != rampAt(j.from[n]) || heard.breaks != 0) {
 			if (j.wrong++ == 0)
 				j.firstWrong = "heard at " + std::to_string(heard.position) + ": first " + std::to_string(heard.first) +
-				               ", wanted " + std::to_string(rampAt(from)) + ", " + std::to_string(heard.breaks) +
+				               ", wanted " + std::to_string(rampAt(j.from[n])) + ", " + std::to_string(heard.breaks) +
 				               " breaks";
 		}
 	}
@@ -640,8 +741,10 @@ void judgeHeard(SourceJudged& j, std::span<const CodeCycle> cycles, std::span<co
 
 } // namespace
 
+// A clock that skips nothing sees every cycle read on in order across the judge's cuts: the ring keeps no time of its
+// own (docs/architecture.md#the-timing-model, rule 1).
 TEST_CASE("A bound source plays its ramp into its bank before the code, reaching the public output in the same cycle, "
-          "dated by the latency downstream of its paired output and the code's own, and a silence unbinds it",
+          "its clock told the latency downstream of its paired output and the code's own, and a silence unbinds it",
           "[source][blocks]") {
 	auto engine = makeEngine();
 	Waiter waiter(*engine);
@@ -649,13 +752,15 @@ TEST_CASE("A bound source plays its ramp into its bank before the code, reaching
 	FilterPortBlocks blocks(*engine, bell);
 	Wiring wiring(*engine, waiter);
 	EventSources sources;
-	auto source = sources.make("rx", "from_writer", 1, 8192, kRate);
-	SourceCode code(waiter, source->writer(), 4000);
+	auto made = std::make_unique<RecordingClock>(false);
+	const RecordingClock& clock = *made;
+	auto source = sources.make("rx", "from_writer", 1, 8192, kRate, std::move(made));
+	SourceCode code(waiter, clock, 4000);
 	code.source = source.get();
 	ListeningCode listening(waiter, code, 4000);
 	// The code's every cycle through the one judge (docs/testing.md#the-cycle-judge), its first its drive. An upstream
-	// probe makes the judge's stalls once the code runs, each cutting its cycle before rx ran it, so the source keeps
-	// time over cycles the driver cut, and the excuse is taken, and proven, on every run.
+	// probe makes the judge's stalls once the code runs, each cutting its cycle before rx ran it, so the source plays on
+	// over cycles the driver cut, and the excuse is taken, and proven, on every run.
 	ear::test::CycleJudge judge(ear::test::JudgePlan{.judged = 200, .expected = {.drives = 1}}, FrameClock(kRate),
 	                            &engine->cuts());
 	SleepingUpstream upstreamCode(4000, judge.stalls());
@@ -683,21 +788,16 @@ TEST_CASE("A bound source plays its ramp into its bank before the code, reaching
 	});
 	REQUIRE(waiter.until([&] { return driven; }));
 	upstreamCode.armed.store(true);
-	// Dated by the cycle's start, the frames it played, dst's 960 beyond `out` and the code's 4800 on it.
-	const auto heardAt = [](const CodeCycle& cycle, std::uint64_t played, std::uint32_t downstream) {
-		return cycle.startRawNs + static_cast<std::int64_t>(played + downstream) * 1'000'000'000 / kRate;
-	};
-	const auto dated = [&] {
+	// The clock is told dst's 960 beyond `out` and the code's 4800 on it.
+	const auto told = [&] {
 		const auto cycles = code.log.entries();
-		return !cycles.empty() &&
-		       cycles.back().played.heardRawNs == heardAt(cycles.back(), cycles.back().frames, 960 + 4800);
+		return !cycles.empty() && cycles.back().playback.maxFrames == 960 + 4800;
 	};
-	REQUIRE(waiter.until(dated)); // once dst's latency reached rx
-	const std::size_t datedFrom = code.log.count() - 1;
-	// The source keeps to the clock by its rule, judged cycle by cycle as part A's is (judgeSource): a host that starves
-	// the writer thread or stalls the data thread past the ring only makes a cycle that is not judged against dst, never
-	// a pass or a failure. dst is judged on the cycles the source played whole, and the date with both latencies on
-	// those it played every frame of once dst's latency arrived, each to a planned count; and the judge to its own.
+	REQUIRE(waiter.until(told)); // once dst's latency reached rx
+	const std::size_t toldFrom = code.log.count() - 1;
+	// The source plays on by the play rule, judged cycle by cycle (judgeSource): a host that starves the writer thread
+	// only makes a cycle that is not judged against dst, never a pass or a failure. dst is judged on the cycles the
+	// source read whole, each to a planned count; and the judge to its own.
 	std::size_t fed = 0;
 	constexpr std::size_t kJudged = 200;
 	const auto judgeAll = [&] {
@@ -706,18 +806,18 @@ TEST_CASE("A bound source plays its ramp into its bank before the code, reaching
 		judgeHeard(j, cycles, listening.log.entries());
 		return j;
 	};
-	const auto playedSinceDated = [&](const SourceJudged& j) {
+	const auto playedSinceTold = [&](const SourceJudged& j) {
 		return static_cast<std::size_t>(
-			std::count(j.played.begin() + static_cast<std::ptrdiff_t>(datedFrom), j.played.end(), std::uint8_t{1}));
+			std::count(j.played.begin() + static_cast<std::ptrdiff_t>(toldFrom), j.played.end(), std::uint8_t{1}));
 	};
 	REQUIRE(waiter.until(
 		[&] {
 			if (code.log.full()) return true;
-			if (code.log.count() <= datedFrom) return false;
+			if (code.log.count() <= toldFrom) return false;
 			feedJudge(judge, code.log.entries(), fed);
 			if (judge.report().failed > 0) return true;
 			const SourceJudged j = judgeAll();
-			return j.judged >= kJudged && playedSinceDated(j) >= kJudged && judge.done();
+			return j.judged >= kJudged && playedSinceTold(j) >= kJudged && judge.done();
 		},
 		30s));
 	{
@@ -727,10 +827,10 @@ TEST_CASE("A bound source plays its ramp into its bank before the code, reaching
 	}
 	upstreamCode.armed.store(false);
 	REQUIRE(ear::testing::driveNow(*block, nullptr));
-	const Played stopped = source->writer().played();
+	const std::uint64_t ticks = clock.ticks.load(std::memory_order_acquire);
 	const std::size_t heardBefore = listening.log.count();
 	REQUIRE(waiter.until([&] { return listening.log.count() >= heardBefore + 20; }));
-	CHECK(source->writer().played() == stopped); // unbound: the block plays it no more
+	CHECK(clock.ticks.load(std::memory_order_acquire) == ticks); // unbound: the block plays it no more
 	REQUIRE(ear::testing::driveNow(*dst, nullptr));
 	source->close();
 
@@ -738,27 +838,16 @@ TEST_CASE("A bound source plays its ramp into its bank before the code, reaching
 	REQUIRE_FALSE(cycles.empty());
 	const std::uint64_t last = cycles.back().position;
 	const SourceJudged j = judgeSource(cycles, source->writer().capacityFrames());
-	// Played is dated by the last frame the cycle played, so a cycle the writer left short (a starved writer thread) is
-	// dated earlier by the frames it lacked, its shortfall; one that moved the count not at all keeps the last date.
+	// The playback latency the clock is told: before dst's arrived, the code's own alone; from then on, both.
 	for (std::size_t n = 0; n < cycles.size(); ++n) {
-		const CodeCycle& c = cycles[n];
-		INFO("cycle " << n << " at " << c.position << ", played every frame: " << int{j.played[n]});
-		const CodeCycle* p = n > 0 ? &cycles[n - 1] : nullptr;
-		if (p != nullptr && c.played.totalFrames == p->played.totalFrames) {
-			CHECK(c.played.heardRawNs == p->played.heardRawNs);
-			continue;
-		}
-		const std::uint64_t dry = c.shortfall - (p != nullptr ? p->shortfall : 0);
-		const std::uint64_t played = c.frames - std::min<std::uint64_t>(dry, c.frames);
-		// Before dst's latency arrived, the code's own alone; from then on, both.
-		if (n >= datedFrom) CHECK(c.played.heardRawNs == heardAt(c, played, 960 + 4800));
-		else
-			CHECK((c.played.heardRawNs == heardAt(c, played, 4800) ||
-			       c.played.heardRawNs == heardAt(c, played, 960 + 4800)));
+		INFO("cycle " << n << " at " << cycles[n].position);
+		const std::uint32_t most = cycles[n].playback.maxFrames;
+		if (n >= toldFrom) CHECK(most == 960 + 4800);
+		else CHECK((most == 4800 || most == 960 + 4800));
 	}
-	CHECK(playedSinceDated(j) >= kJudged);
-	// Played keeps to the clock by the source rule, and dst heard, in each cycle the source played whole, the ramp
-	// frames its count says it played: no offset in position. Then silence.
+	CHECK(playedSinceTold(j) >= kJudged);
+	// Nothing skipped, the ramp read on in order by the play rule, and dst heard, in each cycle the source read whole,
+	// the ramp frames the clock was told it read: no offset in position. Then silence.
 	SourceJudged heard = j;
 	judgeHeard(heard, cycles, listening.log.entries());
 	std::size_t silent = 0;
@@ -768,17 +857,16 @@ TEST_CASE("A bound source plays its ramp into its bank before the code, reaching
 		++silent;
 	}
 	INFO(j.jumps << " position jumps in " << cycles.size() << " cycles (largest " << j.largestJump << ", " << j.beyond
-	             << " beyond the ring, kept in step; " << j.clocks << " new clocks); " << j.lagged
-	             << " cycles the writer had not filled (" << j.excusedDry << " frames short)");
+	             << " beyond the ring); " << j.lagged << " cycles the writer had not filled (" << j.excusedDry
+	             << " frames short)");
 	INFO(j.firstDrift);
 	INFO(heard.firstWrong);
 	feedJudge(judge, cycles, fed);
 	INFO(judge.report());
 	CHECK(judge.report().ok());
 	CHECK(j.positionOff == 0);
-	// Every jump was a catch-up, kept in step however long, and none was skipped as nothing.
-	CHECK(j.clocks == 0);
-	CHECK(j.skippedNothing == 0);
+	CHECK(j.jumps > 0); // the judge's cuts reached rx's cycles as stated jumps
+	CHECK(j.skips == 0);
 	CHECK(j.drift == 0);
 	// Every frame short was one the writer had not written, and the source counted no other.
 	CHECK(source->shortfallFrames() == cycles.back().shortfall);
@@ -788,16 +876,18 @@ TEST_CASE("A bound source plays its ramp into its bank before the code, reaching
 	CHECK(heard.wrong == 0);
 }
 
-TEST_CASE("A bound source, its played wake and its writer's room allocate nothing on the data thread, re-driven "
-          "again and again",
+TEST_CASE("A bound source, its clock and its writer's room allocate nothing on the data thread, re-driven again and "
+          "again",
           "[source][blocks]") {
 	auto engine = makeEngine();
 	Waiter waiter(*engine);
 	NoBell bell;
 	FilterPortBlocks blocks(*engine, bell);
 	EventSources sources;
-	auto source = sources.make("rx", "from_writer", 1, 2048, kRate);
-	SourceCode code(waiter, source->writer(), 0);
+	auto made = std::make_unique<RecordingClock>(true);
+	const RecordingClock& clock = *made;
+	auto source = sources.make("rx", "from_writer", 1, 2048, kRate, std::move(made));
+	SourceCode code(waiter, clock, 0);
 	BlockEvents events(waiter);
 	auto block = blocks.make("rx", rxPorts, kFormat, events);
 	REQUIRE(waiter.until([&] { return events.isReady; }));
@@ -828,21 +918,20 @@ TEST_CASE("A bound source, its played wake and its writer's room allocate nothin
 	REQUIRE(ear::testing::driveNow(*block, nullptr));
 	source->close();
 	CHECK(counted == 0);
-	CHECK(source->writer().played().totalFrames > 0);
+	CHECK(clock.ticks.load() > 0);
 }
 
-// Spike S5's part A on the real block (docs/engine.md#the-one-data-loop-and-invokes): a source served by its block keeps
-// its played count on the clock across cycles the block did not run. An upstream probe sleeps past the quantum every
-// 50th cycle, so the driver's next timeout comes while the cycle is still running: the graph runs that cycle as far as
-// it got, or catches up by whole blocks, and either way the block skips positions, which its source must keep time
-// over. The gate, cycle by cycle, by the source rule (docs/writing-a-node-type.md#sources): Played's count moves on by
-// the jump and the frames of each cycle that states a catch-up, however long (a host's stall past the ring's 170 ms
-// too; recorded, never required); and a cycle short of frames is excused only when the writer
-// had not yet written them by the cycle before (its own progress, logged by the code: a host that starves the writer
-// thread), never otherwise. The listener after the block hears, in every cycle the source played whole and unfaded,
-// the ramp frames the source's count says it played.
-TEST_CASE("A source on a real block keeps its played count to the clock across cycles cut short by a probe sleeping "
-          "past the quantum",
+// Spike S5's part A on the real block (docs/engine.md#the-one-data-loop-and-invokes), under the timing model: a source
+// whose clock skips each catch-up's jump, served by its block across cycles the block did not run. An upstream probe
+// sleeps past the quantum every 50th cycle, so the driver's next timeout comes while the cycle is still running: the
+// graph runs that cycle as far as it got, or catches up by whole blocks, and either way the block skips positions. The
+// gate, cycle by cycle, by the play rule (docs/writing-a-node-type.md#sources): the ring dropped exactly min(the jump
+// the clock asked, what it held), and nothing else; and a cycle short of frames is excused only when the writer had
+// not yet written them by the cycle before (its own progress, logged by the code: a host that starves the writer
+// thread), never otherwise. The listener after the block hears, in every cycle the source read whole and unfaded, the
+// ramp frames the clock was told it read.
+TEST_CASE("A source on a real block skips exactly what its clock asks, capped at what it holds, across cycles cut "
+          "short by a probe sleeping past the quantum",
           "[source][blocks][s5]") {
 	constexpr std::size_t kCycles = 1500;   // the cycles run before judging
 	constexpr std::size_t kJudged = 1000;   // listener cycles judged against the ramp, planned
@@ -854,9 +943,11 @@ TEST_CASE("A source on a real block keeps its played count to the clock across c
 	FilterPortBlocks blocks(*engine, bell);
 	Wiring wiring(*engine, waiter);
 	EventSources sources;
-	auto source = sources.make("rx", "from_writer", 1, kRing, kRate);
+	auto made = std::make_unique<RecordingClock>(true);
+	const RecordingClock& clock = *made;
+	auto source = sources.make("rx", "from_writer", 1, kRing, kRate, std::move(made));
 	const std::uint32_t capacity = source->writer().capacityFrames();
-	SourceCode code(waiter, source->writer(), kCapacity);
+	SourceCode code(waiter, clock, kCapacity);
 	code.source = source.get();
 	StreamListener listenerCode(waiter, code, kCapacity);
 	// The code's every cycle through the one judge (docs/testing.md#the-cycle-judge), its first its drive; its stalls
@@ -916,13 +1007,13 @@ TEST_CASE("A source on a real block keeps its played count to the clock across c
 	for (const CodeCycle& c : cycles) ran.push_back(c.position);
 	for (const std::uint64_t at : upstreamCode.log.entries())
 		if (at >= first && at <= last && !std::ranges::binary_search(ran, at)) ++cutAfterUpstream;
-	std::printf(
-		"S5 part A on the real block: %zu cycles, %" PRIu64 " sleeps, %zu position jumps (largest %" PRIu64
-		" frames, %zu beyond the ring's %u, kept in step; %zu new clocks), %zu cut short after the upstream; %zu "
-		"cycles the writer had not filled (%" PRIu64 " frames short); %zu heard, %zu judged, %zu wrong\n",
-		j.cycles, upstreamCode.slept(), j.jumps, j.largestJump, j.beyond, capacity, j.clocks, cutAfterUpstream,
-		j.lagged, j.excusedDry, j.heard, j.judged, j.wrong);
-	INFO(j.jumps << " jumps (largest " << j.largestJump << "), " << cutAfterUpstream
+	std::printf("S5 part A on the real block: %zu cycles, %" PRIu64 " sleeps, %zu position jumps (largest %" PRIu64
+	            " frames, %zu beyond the ring's %u), %zu skips of %" PRIu64 " frames, %zu cut short after the "
+	            "upstream; %zu cycles the writer had not filled (%" PRIu64 " frames short); %zu heard, %zu judged, %zu "
+	            "wrong\n",
+	            j.cycles, upstreamCode.slept(), j.jumps, j.largestJump, j.beyond, capacity, j.skips, j.skipped,
+	            cutAfterUpstream, j.lagged, j.excusedDry, j.heard, j.judged, j.wrong);
+	INFO(j.jumps << " jumps (largest " << j.largestJump << "), " << j.skips << " skips, " << cutAfterUpstream
 	             << " cut short after the upstream, " << upstreamCode.slept() << " sleeps");
 	INFO(j.firstDrift);
 	INFO(j.firstWrong);
@@ -935,9 +1026,8 @@ TEST_CASE("A source on a real block keeps its played count to the clock across c
 	// Every jump was cycles the driver cut, each within the time the raw clock lost, by the one judge.
 	CHECK(judge.report().ok());
 	CHECK(j.positionOff == 0);
-	// Every jump was a catch-up, kept in step however long, and none was skipped as nothing.
-	CHECK(j.clocks == 0);
-	CHECK(j.skippedNothing == 0);
+	// The clock asked for each catch-up's jump and the ring dropped exactly what it asked, capped at what it held.
+	CHECK(j.skips > 0);
 	CHECK(j.drift == 0);
 	// Every frame short was one the writer had not written; the source's own count of them agrees.
 	CHECK(source->shortfallFrames() >= j.excusedDry);

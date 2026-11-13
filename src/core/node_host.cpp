@@ -595,10 +595,11 @@ struct NodeHost::Impl {
 			});
 		}
 		/// A source (docs/writing-a-node-type.md#sources): made at once on the inside input bank, ready at once, bound
-		/// by every drive of the configuration; its capacity declared beyond the bank. An adapter that cannot make it
+		/// by every drive of the configuration; its capacity declared beyond the bank; its clock, if it has one, kept
+		/// with it (the source owns it, freed with it at teardown step 5). An adapter that cannot make it
 		/// (no eventfd) fails the node through configure, recorded so a type that catches it still fails; an adapter's
 		/// own bug fails it lost (adapter()).
-		SourceWriter& source(std::string_view bank, SourceShape shape) override {
+		SourceWriter& source(std::string_view bank, SourceShape shape, std::unique_ptr<SourceClock> clock) override {
 			return guarded([&]() -> SourceWriter& {
 				requireConfiguring("source");
 				const std::string name(bank);
@@ -613,7 +614,7 @@ struct NodeHost::Impl {
 				SourceAdapter& sources = host_.resources.sources();
 				std::unique_ptr<Source> made = adapter("SourceAdapter::make", [&] {
 					auto source = sources.make(name_, found.name, static_cast<std::uint32_t>(found.ports.size()),
-					                           shape.frames, host_.format.rate);
+					                           shape.frames, host_.format.rate, std::move(clock));
 					if (!source) throw std::logic_error("the source adapter made no source for bank " + found.name);
 					return source;
 				});

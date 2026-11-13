@@ -1,7 +1,8 @@
 // The source companions (ear/pipewire/sources.hpp; docs/writing-a-node-type.md#sources): core's SourceRing, which holds
 // every rule, wrapped with what only a thread can do: the writer's wait for room (poll on an eventfd that play()
-// writes only while a writer waits, and close() writes once) and the played wake's eventfd. The eventfd wake moves to
-// ear_runtime's EventWake in slice 3c.
+// writes only while a writer waits, and close() writes once) and the clock wake's eventfd; and the source's clock,
+// owned with its ring and handed to SourceRing::play each tick. The eventfd wake moves to ear_runtime's EventWake in
+// slice 3c.
 #include "ear/pipewire/sources.hpp"
 
 #include <atomic>
@@ -80,14 +81,15 @@ private:
 	std::atomic<bool> pending_{false};
 };
 
-class EventSource final : public Source, public SourceWriter, private SourceRing::Signals {
+class EventSource final : public Source, public SourceWriter, public SourceTap, private SourceRing::Signals {
 public:
-	EventSource(std::uint32_t channels, std::uint32_t capacityFrames, std::uint32_t rate)
-		: ring_(channels, capacityFrames, rate, *this) {}
+	EventSource(std::uint32_t channels, std::uint32_t capacityFrames, std::uint32_t rate,
+	            std::unique_ptr<SourceClock> clock)
+		: clock_(std::move(clock)), ring_(channels, capacityFrames, rate, *this) {}
 
 	// Source.
 	SourceWriter& writer() noexcept override { return *this; }
-	SourceTap& tap() noexcept override { return ring_; }
+	SourceTap& tap() noexcept override { return *this; }
 	void stopped() noexcept override { ring_.dropForStop(); }
 	void stopping() noexcept override { ring_.markIdle(); }
 	void close() noexcept override {
@@ -140,8 +142,12 @@ public:
 	void clear() noexcept override { ring_.clear(); }
 	bool closed() const noexcept override { return ring_.closed(); }
 	std::uint32_t capacityFrames() const noexcept override { return ring_.capacityFrames(); }
-	Played played() const noexcept override { return ring_.played(); }
-	Wake& playedWake() noexcept override { return playedWake_; }
+	Wake& clockWake() noexcept override { return clockWake_; }
+
+	// SourceTap: the realtime thread, once per tick a code runs: the one play rule, with the source's clock.
+	void play(std::span<const std::span<float>> bank, const SourceTick& tick) noexcept override {
+		ring_.play(bank, tick, clock_.get());
+	}
 
 	/// EventSources::waitsBegun and waitsWoken.
 	std::uint64_t waitsBegun() const noexcept { return waitsBegun_.load(std::memory_order_acquire); }
@@ -153,7 +159,7 @@ private:
 		std::atomic_thread_fence(std::memory_order_seq_cst);
 		if (writerWaits_.exchange(false, std::memory_order_relaxed)) room_.ring();
 	}
-	void playedChanged() noexcept override { playedWake_.ring(); }
+	void clockAsked() noexcept override { clockWake_.ring(); }
 
 	/// A call after the close: accepts nothing and sleeps its whole patience, so a library thread calling in a loop
 	/// never spins. Only close() wrote the descriptor after the close, once; it is drained and slept on again.
@@ -174,17 +180,19 @@ private:
 	std::atomic<bool> writerWaits_{false};
 	mutable std::atomic<std::uint64_t> waitsBegun_{0}; // test seams: EventSources::waitsBegun and waitsWoken
 	mutable std::atomic<std::uint64_t> waitsWoken_{0};
-	EventWake playedWake_;
-	SourceRing ring_; // last: its Signals are the members above
+	EventWake clockWake_;
+	std::unique_ptr<SourceClock> clock_; // the source's own (null: none), freed with it
+	SourceRing ring_;                    // last: its Signals are the members above
 };
 
 } // namespace
 
 std::unique_ptr<Source> EventSources::make(const NodeName& node, std::string_view bank, std::uint32_t channels,
-                                           std::uint32_t capacityFrames, std::uint32_t rate) {
+                                           std::uint32_t capacityFrames, std::uint32_t rate,
+                                           std::unique_ptr<SourceClock> clock) {
 	static_cast<void>(node);
 	static_cast<void>(bank);
-	return std::make_unique<EventSource>(channels, capacityFrames, rate);
+	return std::make_unique<EventSource>(channels, capacityFrames, rate, std::move(clock));
 }
 
 std::uint64_t EventSources::waitsBegun(const Source& source) noexcept {

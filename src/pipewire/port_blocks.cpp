@@ -605,7 +605,7 @@ private:
 			const Latency downstream =
 				unpacked(inputToldNow_[binding.firstInput].load(std::memory_order_acquire)); // the bank's told
 			binding.tap->play(std::span<const std::span<float>>(sourceSpans_.data(), binding.channels),
-			                  sourceCycle(cycle, frames, downstream));
+			                  sourceTick(cycle, frames, rate_, downstream));
 			for (std::size_t c = 0; c < binding.channels; ++c) inputs_[binding.firstInput + c] = sourceSpans_[c];
 		}
 		if (AudioCode* code = code_.load(std::memory_order_acquire)) {

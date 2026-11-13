@@ -192,8 +192,8 @@ struct NoSinks final : SinkAdapter {
 
 /// No node here asks for a source.
 struct NoSources final : SourceAdapter {
-	std::unique_ptr<Source> make(const NodeName&, std::string_view, std::uint32_t, std::uint32_t,
-	                             std::uint32_t) override {
+	std::unique_ptr<Source> make(const NodeName&, std::string_view, std::uint32_t, std::uint32_t, std::uint32_t,
+	                             std::unique_ptr<SourceClock>) override {
 		throw std::logic_error("no source in these tests");
 	}
 };

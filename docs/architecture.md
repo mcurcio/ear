@@ -346,7 +346,9 @@ same lost time.
    network sender, a sound card) reconciles that clock with the tick inside itself: buffering,
    rate matching, drift, and recovery after lost ticks. A card's ALSA node and an RTP receiver do
    it in PipeWire ([engine.md](engine.md#sound-cards), [engine.md](engine.md#rtp-receivers));
-   `sendspin` does it in its code ([node-types.md](node-types.md#clock)).
+   `sendspin` does it in its code ([node-types.md](node-types.md#clock)); a type's source does it
+   in the `SourceClock` it gives the source, which alone decides what the ring skips
+   ([writing-a-node-type.md](writing-a-node-type.md#a-sources-clock)).
 4. **One rate inside the graph.** Every port in the graph runs at the graph rate, and conversion
    happens only in edge nodes. The rate is configurable (`graph_frequency` in `ear.conf`, the
    `--graph-frequency` flag as fallback: [boot](#boot)) but fixed for the engine's life, and it is
@@ -366,13 +368,11 @@ same lost time.
 **Where the code still departs**, each removed by
 [`design/timing-model.md`](design/timing-model.md):
 
-- A source's ring (`SourceRing`) still keeps time for its node: its `Played` count and dating,
-  and its skip of a catch-up's jump with the rest owed
-  ([writing-a-node-type.md](writing-a-node-type.md#sources)).
 - `sendspin`'s clock follows the model (an honest sink with a local skip of lost time, its
   reports deferred from overdue ticks under a 2 s bound, with `sendspin-starved-floor.patch`:
-  [node-types.md](node-types.md#clock)), but in the node's own code over its own feed, not as the
-  clock of a source, which a source cannot have yet.
+  [node-types.md](node-types.md#clock)), but in the node's own code over its own feed, not yet as
+  the `SourceClock` of a source ([writing-a-node-type.md](writing-a-node-type.md#a-sources-clock)),
+  which comes when the node moves off the old interface.
 - The converter companion has only its module-run mode
   ([engine.md](engine.md#module-run-converters)), whose one user is the RTP receiver: there is no
   set or tracked converter yet for a ring whose clock is a type's own, so only cards and RTP
@@ -616,6 +616,6 @@ the legacy adapter); recovery of failed nodes; sound cards opened off the main l
 clock anchored to one card; serving PipeWire's socket, a program supervisor and the `airplay`
 type; a login on port 7777; automatic card retry and hotplug; `@include`; undo; changing the graph
 frequency or block size while ear runs; arm64 images; a fault caught at the callback boundary
-failing only the node that owns it (today it ends the process); sources that keep no time in the
-framework, and the converter companion ([the timing model](#the-timing-model)). The design pages for the unbuilt slices
+failing only the node that owns it (today it ends the process); a source whose clock is a type's own on any shipped type,
+and the converter companion's set and tracked modes ([the timing model](#the-timing-model)). The design pages for the unbuilt slices
 remain in `docs/design/`.

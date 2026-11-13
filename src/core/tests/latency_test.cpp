@@ -311,8 +311,8 @@ TEST_CASE("Each dating site's case, by FrameClock", "[latency]") {
 	};
 	constexpr std::int64_t start = 5'000'000'000'000; // well past boot, as the raw clock is
 	const std::vector<Row> rows{
-		{"a source's Played: 256 frames played, no peer", 48000, start, 256, {}, true, start + 5'333'333},
-		{"a source's Played behind a card's 1024", 48000, start, 256, Latency{256, 1024}, true, start + 26'666'666},
+		{"256 frames played, no peer", 48000, start, 256, {}, true, start + 5'333'333},
+		{"256 frames played behind a card's 1024", 48000, start, 256, Latency{256, 1024}, true, start + 26'666'666},
 		{"sendspin's progress: one division over the frames and the downstream", 44100, start, 100, Latency{0, 512},
 	     true, start + 13'877'551},
 		{"sendspin's capture, 256 frames after its anchor", 48000, start, 256, {}, false, start + 5'333'333},

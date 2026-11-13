@@ -128,7 +128,7 @@ optional row read as a plain value does not compile.
 | `cx.rtpReceiver(bank, RtpReceiverShape{...})` | An RTP receiver, an [engine companion](#engine-companions) on an inside input bank, `<node>.rtp`; its `latencyMs` is latency beyond the bank | Inside input banks only (compile time); one companion per bank |
 | `cx.openRecording(RecordingRequest{path})` | A file created or truncated beneath the recordings folder; its descriptor, or why not. The framework closes it after the instance | Answer `Configured::failed("cannot open " + path + ": " + error)` on a refusal |
 | `cx.sink(bank, SinkShape{.frames = n}).consumedBy(std::make_unique<Consumer>(...))` | An interim sink on an inside output bank ([sinks](#sinks)) | Inside output banks only; exactly one consumer; one companion per bank |
-| `SourceWriter& w = cx.source(bank, SourceShape{.frames = n})` | A source on an inside input bank ([sources](#sources)): what the type's own thread writes, played into the bank before the code | Inside input banks only (compile time); `0 < n <= maxSourceFrames` (2^24); one companion per bank |
+| `SourceWriter& w = cx.source(bank, SourceShape{.frames = n}, clock)` | A source on an inside input bank ([sources](#sources)): what the type's own thread writes, played into the bank before the code; `clock`, a `std::unique_ptr<SourceClock>`, its own clock ([a source's clock](#a-sources-clock)), left out for a source with none | Inside input banks only (compile time); `0 < n <= maxSourceFrames` (2^24); one companion per bank |
 | `cx.declareLatency(from, to, Latency{min, max})` | The code's own latency on the path from an input bank to an output bank, in frames: carried as a path through the block, so it counts in both banks' told latency ([latency](#latency)) | Once per path (a mixer declares each of its inputs' paths into one output); with a pass-through, one of its pairs; a plan that does not fit the ports fails the node `start-failed` |
 
 Then answer `Configured::applied()`, or `Configured::failed(detail)` for what only the type can see
@@ -274,38 +274,22 @@ engine and the harness both run, so a type's tests and the engine never disagree
   nothing to give (an empty ring is then no shortfall) and waits `patience`; the next write ends the
   idle. `clear()` (any ordinary thread) drops what was written so far at the next cycle. A writer
   starts idle. The ring holds `frames` rounded up to a power of two (`capacityFrames()`).
-- **It keeps time, on the cycle's facts.** A cycle that states a catch-up (`catchUp`: the graph
-  lost cycles the driver cut short, and caught them up: an xrun, a stall, however long) skips its
-  whole jump (`jumpFrames`) of the stream and counts it played at once, so the audio moves on with
-  the graph and `Played` stays on the clock exactly. What of it the ring does not hold yet (the
-  writer behind, or the new stream during a clear's fade) is owed while the writer is not idle: the
-  next frames written are dropped up to it, already counted. An idle writer owes nothing: its next
-  frames begin a stream with no place on the clock yet, so a debt left when it says it is idle is
-  forgotten at the next cycle, and a catch-up while it is idle owes none. A clear forgets what the
-  stream it ends owed. Any other cause (`start`, a `drive` alone, `driverChange`, `absent`,
-  `reposition`, `oversized`), and the first cycle after a stop, is a new clock: nothing is skipped.
-  So a pause (`absent`: the block was not scheduled, no cycle cut) leaves `Played` behind the
-  graph's clock by the pause's frames, on purpose: the stream was not played over that time, and
-  a source's writer has no timeline of its own to re-anchor from, so its audio carries on where it
-  stopped rather than lose what the pause held.
+- **It keeps no time.** The ring plays what it holds, in order, on each tick, and nothing else: it
+  skips nothing of its own, owes nothing and counts nothing played
+  ([the timing model](architecture.md#the-timing-model), rule 1). After a stall the graph caught up
+  (`catchUp`), a pause, a reposition or a driver change, a source with no clock plays its ring on
+  from where it was; the stall's time is time the writer did not need to fill. A source whose audio
+  has a clock of its own (a server's timeline, a network sender's) gives the source that clock, and
+  the clock decides what to skip ([below](#a-sources-clock)). `white` needs none: it makes its audio
+  on the tick.
 - **It fades at its edges, with no lookahead**, so the latency it adds stays `[0, capacity]`: audio
   that starts or comes back fades in over 5 ms; at an underrun (the ring dry) it decays from the
   last frame it played to zero over 5 ms; after `clear()` it plays the next 5 ms of what was
-  written before the clear, faded to zero (counted played), drops the rest (counted dropped), and
-  only then fades the new audio in. A source's bank is never faded by the drive: its fades are its
-  own.
+  written before the clear, faded to zero, drops the rest (counted dropped), and only then fades
+  the new audio in. A source's bank is never faded by the drive: its fades are its own.
 - **The shortfall.** Frames played as zeros (or as an underrun's decay) while the writer was not
-  idle are counted, readable at any time (`Source::shortfallFrames()`).
-- **`Played` says what played.** After each cycle that played or skipped frames,
-  `writer.played()` gives `Played{totalFrames, heardRawNs}`: the frames played or skipped since the
-  source was made, and when the last of them is heard on `CLOCK_MONOTONIC_RAW` (the cycle's start,
-  plus the frames it played, plus the most playback latency the block told on the bank: for each
-  output it is paired with, what lies downstream of it, a following card's buffer included, plus
-  what the configuration declared on that output with `declareLatency`; `FrameClock::heardRawNs`,
-  [engine.md](engine.md#dating)). It means the graph's clock
-  moved past those frames, not that a device sounded them: a cycle cut short after the block loses frames it played, and no node can
-  see that. `writer.playedWake()` is rung after each new `Played`, at most once until answered: its
-  `descriptor()` is readable while rung, and its one watcher calls `answer()` before it looks.
+  idle are counted, readable at any time (`Source::shortfallFrames()`). A skip that leaves the ring
+  dry is a shortfall too, if the writer is not idle.
 - **A stop** unbinds the source with the code; once the silence completed, what its ring holds is
   dropped (counted, never played), so a start never plays audio written before it. Meanwhile a
   write waits as at a full ring; the first cycle after the next start lets it go, with no shortfall
@@ -327,6 +311,54 @@ engine and the harness both run, so a type's tests and the engine never disagree
 No shipped type uses a source yet: `sendspin`'s feed moves onto one when its node moves off the old
 interface.
 
+### A source's clock
+
+A source whose audio keeps time on a clock of its own reconciles that clock with the tick inside
+the node ([the timing model](architecture.md#the-timing-model), rule 3), through a `SourceClock`
+(`ear/core/source.hpp`) it hands the source when it asks for it:
+
+```cpp
+auto clock = std::make_unique<ServerClock>(/* what it reports to */);
+ServerClock& mine = *clock; // kept: the source frees it after the instance and its threads
+SourceWriter& writer = cx.source(fromServer, SourceShape{.frames = 2048}, std::move(clock));
+```
+
+Each tick, the one play rule (`SourceRing::play(bank, tick, clock)`, the same code in the block and
+the harness) runs in this order:
+
+1. A clear asked for is applied: the ended stream's next 5 ms queued to play faded, the rest dropped.
+2. `clock.skipBefore(tick, held)` is asked how much of the current stream to drop unplayed:
+   `held.frames` is what the ring holds of it, `held.clearing` whether this tick applied a clear.
+   The ring drops **min(answer, held.frames)**, and **nothing on a clearing tick** (a clear ends the
+   stream: nothing of the next is skipped for the old one's lost time). Any answer is allowed; the
+   clock reads the tick's facts (`tick.cycle.facts`: a `catchUp` and its `jumpFrames`,
+   [lost cycles](#lost-cycles)) or its own reckoning (its network fell behind) and decides.
+3. The tick's frames are played: the ended stream's faded 5 ms, the current stream's frames (faded
+   in where audio came back), then an underrun's decay and zeros.
+4. `clock.played(tick, played)` is told exactly what the tick did, a `SourcePlayed`: `skipped` (of
+   the current stream, at the clock's word), `read` (of the current stream, played), `ended` (of a
+   stream a clear ended, never the current one's) and `zeros` (zeros, a decay or a clear's fade past
+   its frames); `read + ended + zeros` is the tick's frames. A clock counting what its library
+   wrote counts `skipped + read`, never `ended` or `zeros`.
+5. If `played` returned true, the source's **clock wake** (`writer.clockWake()`) is rung, at most
+   once until answered: its `descriptor()` is readable while rung, and its one watcher calls
+   `answer()` before it looks. It is never rung for a source with no clock.
+
+`SourceTick` carries the tick whole (`cycle`, its `GraphCycle`), the ring frames it plays
+(`frames`), the ring's rate (`rate`, the graph frequency), and `playback`: the most playback latency
+the block told on the source's bank, for each output it is paired with what lies downstream of it
+(a following card's buffer) plus what the configuration declared on that output with
+`declareLatency`, in graph frames. A clock dates what played from the tick's start, its frames and
+that latency (`FrameClock::heardRawNs`, [engine.md](engine.md#dating)); what the date means (heard
+by a device, or only passed by the graph's clock: a cycle cut short after the block loses frames it
+played, and no node can see that) is the clock's to know.
+
+Both calls run on the realtime thread, never concurrently: a clock never blocks, locks, allocates
+or makes a system call. It reports to its type's threads in a lock-free mailbox it owns, and they
+read it through the reference the type kept; the source owns the clock and frees it with itself at
+teardown step 5, after the instance and every thread it owns, so that reference never dangles. A
+source with no clock (`cx.source(bank, shape)`) skips nothing and is never asked.
+
 ## Latency
 
 A type declares only **its own** latency: how long its code holds audio between an input bank and
@@ -339,7 +371,7 @@ reads the latency downstream of its outputs in `GraphCycle`
 `cx.declareLatency(from, to, delay)` makes `from` to `to` a path the block carries, whether the code
 is a pass-through (which must copy that pair) or the type's own, with `delay` on it both ways, once
 per path (a mixer declares each of its inputs' paths into one output): what lies beyond `to` plus the
-delay is what `from` tells upstream (so a source on `from` dates its `Played` late enough), and what
+delay is what `from` tells upstream (so a source on `from` tells its clock enough playback latency), and what
 lies beyond `from` plus the delay is what `to` tells downstream (so a sink on `to` stamps its chunks
 early enough). The framework works the configuration's plan out at configure's return; one that
 does not fit the node's ports fails it `start-failed` with `configure gave a latency plan that does
@@ -417,10 +449,10 @@ fakes allow. Banks are named by the spec's handles.
 | `h.blockReady()` | The block becomes ready: the code drives, the node runs |
 | `h.ready(bank)`, `h.lose(bank, detail)` | The companion on `bank` becomes ready (an engine companion told ready; a sink held by `holdSinks` begins its consumer; a sink that began or a source is ready already), or an engine companion is lost (a sink or a source is never lost by the framework: `std::logic_error`) |
 | `h->advance(ms)` | The fake clock moves on: the framework's bounds and each companion's readiness deadline fire on it |
-| `h.process(frames)` | One cycle, by the real block's own rules (`ear/core/block_rules.hpp`, `ear/core/cycle_facts.hpp`): its facts stated by `CycleAccount` ([below](#lost-cycles)), a discontinuity where they say (the first cycle, each drive's first, and where the calls below made one); each source played into its bank's input buffers first (by the same `SourceRing`, dated by the playback latency its bank tells), outputs NaN-filled, the fade applied (in over 5 ms from each drive; a fade-out ramps down from the gain it has); each sink's chunk stamped with the capture latency its bank tells: what the real block works out by the same model, `workOut`, with no peer on any port ([engine.md](engine.md#latency-per-bank-pair)), and handed to its consumer at once through the same `SinkRing` |
+| `h.process(frames)` | One cycle, by the real block's own rules (`ear/core/block_rules.hpp`, `ear/core/cycle_facts.hpp`): its facts stated by `CycleAccount` ([below](#lost-cycles)), a discontinuity where they say (the first cycle, each drive's first, and where the calls below made one); each source played into its bank's input buffers first (by the same `SourceRing::play`, with its clock if it has one, its `SourceTick` carrying the playback latency its bank tells), outputs NaN-filled, the fade applied (in over 5 ms from each drive; a fade-out ramps down from the gain it has); each sink's chunk stamped with the capture latency its bank tells: what the real block works out by the same model, `workOut`, with no peer on any port ([engine.md](engine.md#latency-per-bank-pair)), and handed to its consumer at once through the same `SinkRing` |
 | `h->loseCycles(n, Lost::cut)`, `h->loseCycles(n, Lost::notScheduled)`, `h->changeDriver(id)`, `h->reposition(frames)` | Before the next `process()`: `n` graph cycles start without the block (its position and time move on by that cycle's frames; past 2^32 - 1 before one `process()`, `std::logic_error`), each cut short or each run whole without it (paused); the block runs on another driver from then on; its position moves with no cycle missed and no time gone ([below](#lost-cycles)) |
 | `h->facts()`, `h->cuts()` | The last cycle's `CycleFacts`, and the cut record the block's account reads |
-| `h.feed(bank, interleaved)`, `h.played(bank)`, `h.shortfall(bank)` | A source's writer, never waiting (it takes what fits and returns the frames taken), its `Played`, its shortfall |
+| `h.feed(bank, interleaved)`, `h.lastPlayed(bank)`, `h.shortfall(bank)` | A source's writer, never waiting (it takes what fits and returns the frames taken); what the last `process()` did with its ring (the `SourcePlayed` its clock was told, all zero before the first); its shortfall |
 | `h.input(bank, i)`, `h.output(bank, i)` | A port's buffer |
 | `h.stop()`, `h.start()`, `h.restart()`, `h.change(settings)`, `h.disable()`, `h.enable()`, `h.remove()` | The operations |
 | `h.phase()`, `h.health()`, `h.gone()`, `h.droppedFrames()` | What the node shows |
@@ -460,7 +492,7 @@ every cycle counted. Only its ring of `cutRecordCycles` (2^16) slots, which answ
 was cut (`cut(cycle)`), has a reach, and it is asked only when some missed cycle was not cut:
 past its reach, with some but not all of the cuts since the last cycle, whether that cycle was one
 of them stays undecided (`lastCut` none, `missedCut` one fewer than it may be). The facts are the
-one home of what was lost: a source's tap and a sink's stamp carry them from `GraphCycle`
+one home of what was lost: a source's clock reads them in its tick and a sink's stamp carries them from `GraphCycle`
 ([engine.md](engine.md#graphcycle)), and no consumer works a loss out from `position`.
 
 The harness's fake block runs `CycleAccount` over its own `HarnessCuts`
