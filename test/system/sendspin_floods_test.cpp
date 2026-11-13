@@ -31,15 +31,22 @@ namespace {
 
 using namespace ear::test;
 
+/// How long a silent peer's read waits for an answer it ignores: it only paces the peer, so a round never waits long on
+/// one socket. Never an honest peer's patience.
+constexpr std::chrono::seconds silentPatience{1};
+
 /// A socket to `port` on 127.0.0.1 from `source`, or -1. Every 127/8 address is this host's, so one test can be peers on
-/// several addresses. It closes with a reset, so a thousand of them leave no TIME_WAIT behind.
-int connectFrom(const std::string& source, std::uint16_t port) {
+/// several addresses. It closes with a reset, so a thousand of them leave no TIME_WAIT behind. Its reads wait at most
+/// `patience`: for an honest peer the shared deadline, which only fails a test. A loaded host was seen to leave every one
+/// of ear's threads runnable and not run for most of a second while an upgrade waited, so a second's patience judged the
+/// host, not the transport, whose refusal closes the socket at once.
+int connectFrom(const std::string& source, std::uint16_t port, std::chrono::seconds patience = deadline) {
 	const int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
 	if (fd < 0) return -1;
 	const linger reset{1, 0};
 	::setsockopt(fd, SOL_SOCKET, SO_LINGER, &reset, sizeof reset);
-	const timeval patience{.tv_sec = 1, .tv_usec = 0};
-	::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &patience, sizeof patience);
+	const timeval wait{.tv_sec = static_cast<time_t>(patience.count()), .tv_usec = 0};
+	::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &wait, sizeof wait);
 	sockaddr_in from{};
 	from.sin_family = AF_INET;
 	::inet_pton(AF_INET, source.c_str(), &from.sin_addr);
@@ -100,11 +107,17 @@ public:
 	SilentPeers(const SilentPeers&) = delete;
 	SilentPeers& operator=(const SilentPeers&) = delete;
 
-	/// Until `rounds` more rounds have opened; false if the deadline came first.
+	/// Until `rounds` more rounds have opened, each within the deadline of the one before; false if one did not. Each round
+	/// is the event: a loaded host only makes many of them take longer (100 rounds of 32 upgrades were seen to take over
+	/// 10 s, every one answered or refused at once), and only a round that never comes fails.
 	bool waitForRounds(std::size_t rounds) {
 		std::unique_lock lock(mutex_);
 		const std::size_t until = rounds_ + rounds;
-		return changed_.wait_for(lock, deadline, [&] { return rounds_ >= until; });
+		while (rounds_ < until) {
+			const std::size_t next = rounds_ + 1;
+			if (!changed_.wait_for(lock, deadline, [&] { return rounds_ >= next; })) return false;
+		}
+		return true;
 	}
 
 	/// Until `rounds` more rounds have opened or `within` has passed, whichever is first: how many did.
@@ -138,7 +151,7 @@ private:
 			std::vector<int> round;
 			for (const std::string& source : shape_.sources) {
 				for (std::size_t i = 0; i < shape_.perSource; ++i) {
-					const int fd = connectFrom(source, port_);
+					const int fd = connectFrom(source, port_, silentPatience);
 					if (fd < 0) continue;
 					round.push_back(fd);
 					if (shape_.upgrades && ::send(fd, request.data(), request.size(), MSG_NOSIGNAL) > 0)
@@ -164,7 +177,8 @@ private:
 		for (const int fd : sockets) {
 			char buffer[4096];
 			for (;;) {
-				const ssize_t got = ::recv(fd, buffer, sizeof buffer, 0); // each read waits at most 1 s (SO_RCVTIMEO)
+				// Each read waits at most silentPatience (SO_RCVTIMEO).
+				const ssize_t got = ::recv(fd, buffer, sizeof buffer, 0);
 				if (got > 0 || (got < 0 && (errno == EAGAIN || errno == EINTR))) {
 					if (std::chrono::steady_clock::now() < until) continue;
 					++left;
