@@ -26,7 +26,8 @@ changing this code.
 | Links | `links.cpp`, `link_proxy.hpp` | `link-factory` links by port global id |
 | Engine companions | `engine_companions.cpp` (`joinEngineCompanion`) | The one lifecycle of every engine node a node's configuration asks for |
 | Sound cards | `sound_cards.cpp` | One ALSA adapter node per card and direction |
-| RTP receivers | `rtp_receivers.cpp` | `libpipewire-module-rtp-source`, one per `rtp` node |
+| Module-run converters | `module_converter_body.hpp`, `converter_modules.hpp`, `module_converters.hpp` | The engine companion a PipeWire module runs: loaded, found by name, linked, its latency carried, its life judged ([below](#module-run-converters)) |
+| RTP receivers | `rtp_receivers.cpp` | The first module-run converter: `libpipewire-module-rtp-source`, one per `rtp` node |
 | Sinks and handoffs | `handoffs.cpp` | `ThreadSinks` (interim sinks) and `ThreadHandoffs` (the legacy handoff `sendspin` uses) |
 | The engine's log | `engine_log.cpp` | ear's own `pw_log` and alsa-lib's error handler ([output-records.md](output-records.md#how-output-is-written)), both `noexcept` and registered through the callback boundary as realtime functions |
 | The wedge mark | `data_loop_wedge.hpp` | Once the data loop is judged wedged, the adapters stop calling into it |
@@ -206,7 +207,7 @@ them). A key ending in `.*` is every key under it.
 | `libpipewire-module-adapter` | Makes a sound card: an ALSA PCM node wrapped in a converter |
 
 `libpipewire-module-rtp-source` is not listed: `RtpReceivers` loads one per `rtp` node with
-`pw_context_load_module`. Debian's `libpipewire-0.3-modules` holds it. The internal clock has no
+`pw_context_load_module` ([module-run converters](#module-run-converters)). Debian's `libpipewire-0.3-modules` holds it. The internal clock has no
 ports, so it never shows as a live port.
 
 ## The clock
@@ -611,8 +612,8 @@ By the plan, which names roles:
 
 - What lies **beyond** a bank is its ports' peers combined (only ports whose peers reported one),
   plus the plan's `beyond` entry for the bank **added in series** (to the least and to the most):
-  what a companion adds beyond an inside bank, such as a receiver's buffer or a source's ring
-  (`[0, capacity]`), which no engine node reports. *Why in series:* the buffer lies behind the
+  what a companion adds beyond an inside bank, such as a module-run converter's buffer or a source's
+  ring (`[0, capacity]`), which no engine node reports. *Why in series:* the buffer lies behind the
   companion's own ports, and rtp-source's output ports report a latency of zero once linked;
   combined as one more peer (least of the leasts) every path would read a least of zero. A bank with
   neither comes to zero.
@@ -629,7 +630,8 @@ By the plan, which names roles:
   tells.
 
 `NodeHost` makes the plan at configure's return and carries it with each drive: `pairs` are the
-pass-through's; `beyond` holds each source's ring and each RTP receiver's `latencyMs`. A typed
+pass-through's; `beyond` holds each source's ring and each module-run converter's buffer
+(`moduleRunDelay`, [module-run converters](#module-run-converters)). A typed
 `declareLatency(from, to, delay)` makes `from` to `to` a path, with `delay` as its `onPair`, so
 the delay counts both ways on it (as PipeWire adds a node's process latency to both), in what `to`
 tells and in what `from` tells. For a code of the type's own the pair is added to `pairs`; a
@@ -672,7 +674,8 @@ the model ([testing.md](testing.md#what-each-test-program-proves)).
 
 The pairs are the pass-through's, so a card block forwards the card's playback latency from
 `to_card` to `play`, and its capture latency from `from_card` to `capture`. An RTP receiver's
-`latencyMs` is its `beyond` entry on `from_rtp` (rtp-source's ports report zero, not the buffer),
+`latencyMs` is its `beyond` entry on `from_rtp` (`moduleRunDelay`; rtp-source's ports report zero,
+not the buffer, resampling or not),
 which the framework adds and `rtp`'s pass-through carries to `stream`. A configuration declares its
 own with `declareLatency`: `sendspin` its feed on `from` (in no pair: `onBank`). Frames are at the
 graph frequency. ALSA's playback node reports one quantum plus its headroom (`alsa-pcm-sink.c`,
@@ -719,13 +722,15 @@ conversion can go wrong ([testing.md](testing.md#what-each-test-program-proves))
 
 An engine companion is a PipeWire node a node's configuration asks for, joined channel for channel
 to the ports of one of its block's inside banks and torn down with the configuration. Sound cards
-and RTP receivers are the two kinds. A type asks with its bank and a shape (`companions.hpp`:
+and RTP receivers are the two kinds; an RTP receiver is a module-run converter
+([below](#module-run-converters)). A type asks with its bank and a shape (`companions.hpp`:
 `SoundCardShape{card}`, `RtpReceiverShape{...}`); a card's direction is its bank's (playback on an
 inside output bank, capture on an inside input bank), and an inside bank has at most one companion
 of any kind ([writing-a-node-type.md](writing-a-node-type.md#engine-companions)). `NodeHost` works
 out each one's `CompanionTarget` (its engine name, the block, the bank's direction, ports and name) and,
 once the block is ready, hands it with the shape to the kind's `EngineCompanionAdapter`
-(`AlsaSoundCards`, `RtpReceivers`), which tells `ready` and `lost` through `EngineCompanionEvents`.
+(`AlsaSoundCards`, `RtpReceivers` = `ModuleConverters<RtpReceiverShape>`), which tells `ready` and
+`lost` through `EngineCompanionEvents`.
 Both kinds share one lifecycle (`NodeHost` in `ear_core`, `joinEngineCompanion` in `ear_pipewire`),
 and a kind says only how its node is made, how ear hears from it, and what fails it:
 
@@ -740,9 +745,9 @@ and a kind says only how its node is made, how ear hears from it, and what fails
    round trip, and only then tells `lost(detail)`: the node fails `engine-refused: <detail>`, its
    block and routes stay.
 
-Engine companions are named `<node>.playback`, `<node>.capture` and `<node>.rtp`. An RTP
-receiver's `latencyMs` enters the configuration's latency plan as `beyond` its bank
-([latency](#latency-per-bank-pair)); a card reports its own through its links.
+Engine companions are named `<node>.playback`, `<node>.capture` and `<node>.rtp`. A module-run
+converter's buffer enters the configuration's latency plan as `beyond` its bank (`moduleRunDelay`,
+[latency](#latency-per-bank-pair)); a card reports its own through its links.
 
 ### Readiness deadlines
 
@@ -807,19 +812,88 @@ correction climbs). Engine tests therefore make it with `clocklessCardProperties
 matching on. Drift tracking, follower resyncs, a real card's latency and its errors on a running PCM
 are checked only on the hardware (the `ear-on-talos` skill).
 
-### RTP receivers
+### Module-run converters
 
-`RtpReceivers` loads `libpipewire-module-rtp-source` into the engine, one per `rtp` node. Its
-arguments are built in one place from parsed values only (an `RtpAddress`, an enum, ranged numbers,
-the engine node name): the `RTP receiver` and `RTP stream` rows of [the table](#properties-ear-sets),
-which say why each. `cleanup.sec` (60), `net.mtu` (1280), packet times and `local.ifname` are left at
-their defaults.
+A converter companion is PipeWire's converter (audioconvert in an adapter, with its resampler)
+between a node's own side and one of its block's inside banks: the one place a clock and a rate
+other than the graph's meet the graph ([architecture.md](architecture.md#the-timing-model)). In
+**module-run** mode a PipeWire module owns all of it: it makes the stream, keeps its own buffer and
+runs the loop that steers its resampler. ear loads the module, finds its node, links it, carries
+its latency and judges its life. RTP receivers are the first and only shipped one.
+
+The code is one shared body for every module-run shape, and a description per module:
+
+- **`ModuleConverters<Shape>`** (`module_converters.hpp`) is the shape's `EngineCompanionAdapter`:
+  `make` joins the body to the block through `joinEngineCompanion` with the module's kind, flow and
+  port names. `RtpReceivers` is `ModuleConverters<RtpReceiverShape>`, instantiated in
+  `rtp_receivers.cpp`.
+- **`ModuleConverterBody<Shape>`** (`module_converter_body.hpp`) loads the module and finds its node
+  (below), hears its state (`tellNodeState`: RUNNING, ERROR) and fails on its node's removal or the
+  module's destruction. Its failure details use the module's words: `cannot load PipeWire's <word>
+  module: <errno>`, `the engine removed the <kind>`, `the engine removed the <kind>'s module`,
+  `cannot watch the <kind>: ...`. A module that will not load is told later, never inside `make`.
+- **`ModuleRun<Shape>`** (`converter_modules.hpp`, specialised beside the adapter's instantiation)
+  is what is the module's own: `module` (a `ConverterModule`: its `kind` word, its module `word`, the
+  `body` name its fault reports use, its `flow` and its node's port for each channel), `Arguments`
+  and `arguments(engineNode, shape, channels)`, built only from parsed values, and `load`. A shipped
+  module loads through `engine_property_set`'s `loadModule`, so its keys come from
+  [the table](#properties-ear-sets) and the property guard holds.
+- **`moduleRunDelay(shape, graph)`** (`companions.hpp`, `ear_core`) is the one latency rule: what
+  the module buffers beyond the bank, at the graph rate, least and most alike. `NodeHost`'s plan
+  enters it as `beyond` the bank for every shape that has one (`ModuleRunShape`), and for no other.
+  RTP's is `latencyMs` through `FrameClock`.
+- **The readiness deadline and its failure text** stay the shape's kind's, in `NodeHost`
+  ([readiness deadlines](#readiness-deadlines)): a node that never runs tells nothing here.
+- **Fault reports** name a body's callbacks by its module's `body`, not by the template's spelling
+  (`NamesItself` in `callback_boundary.hpp`): RTP's are `RtpReceiverBody::onCoreDone` and its
+  siblings, as before the body was shared, so a report says which module's converter threw.
 
 **How ear finds its node.** The module makes the node through its own connection, so there is no
 proxy to watch. ear binds a registry on its own connection and sends a `pw_core_sync`; node globals
-of the name seen before its done are stale (a restart's old receiver still going), and the first
-node of the name after it that is not stale is bound. A stale id is forgotten when its global goes,
+of the name seen before its done are stale (a restart's old node still going), and the first node
+of the name after it that is not stale is bound. A stale id is forgotten when its global goes,
 because the engine may reuse the id.
+
+**What the base relies on, measured** (`spikes_test.cpp`, S7, on the real receiver):
+
+- **The module's node finishes before the block wakes, in every cycle.** PipeWire's own profiler
+  (`module-profiler`, loaded into a copy of `engine.conf`) over 2,000 cycles of a 44.1 kHz sender
+  resampled into the graph: in every cycle both ran to the end, the receiver finished before the
+  block was signalled, and neither reported an earlier cycle's run (the stream is not `node.async`).
+  So the block reads this cycle's frames from the module, never the last cycle's.
+- **The module's ports tell no latency of their own**, at the graph's rate and resampling 44.1 kHz
+  alike: rtp-source's `receive_AUX0` tells 0 frames once linked, and the block tells exactly
+  `moduleRunDelay` downstream. So the module's buffer enters the plan once, and the resampler's own
+  delay is not counted anywhere.
+
+**The card is not a module-run converter.** It is PipeWire's converter too (audioconvert inside the
+ALSA adapter, steered by the follower's loop), but ear makes it itself with
+`pw_core_create_object("adapter")` on its own connection and holds its proxy, so there is nothing to
+find by name; it sends its `PortConfig` itself (`adapter.auto-port-config` fails for the ALSA adapter
+on 1.4.2), where a module's stream configures its own ports; it reports its latency through its
+links, so it has nothing `beyond` its bank; it flows either way (playback and capture), and its
+quantum-guard sizing and test seam are its own ([sound cards](#sound-cards)). What the two share is
+the lifecycle, and both already use `joinEngineCompanion`; the module-run body would add a registry
+search and a latency rule the card does not use.
+
+**Tested apart from RTP** (`module_converter_test.cpp`) through a test-only shape whose module is
+`libpipewire-module-pipe-tunnel` in source mode: like rtp-source it owns its stream, its buffer and
+the loop steering its resampler, reads from outside the graph (a FIFO the test writes) and makes its
+node on its own connection, but it needs no network or sender thread, its ports are `capture_AUX<n>`
+and a bad `pipe.filename` makes it refuse to load. Ready and channel order, the stale-name rule, a
+module that will not load, a node that never runs, a node removed, a module destroyed and a fault
+named by the module's body are each proved through the shared code in its words.
+
+### RTP receivers
+
+`RtpReceivers` loads `libpipewire-module-rtp-source` into the engine, one per `rtp` node: a
+[module-run converter](#module-run-converters) whose `ModuleRun<RtpReceiverShape>`
+(`rtp_receivers.cpp`) holds what is RTP's own. Its arguments are built in one place from parsed
+values only (an `RtpAddress`, an enum, ranged numbers, the engine node name): the `RTP receiver` and
+`RTP stream` rows of [the table](#properties-ear-sets), which say why each. `cleanup.sec` (60),
+`net.mtu` (1280), packet times and `local.ifname` are left at their defaults. Its node's ports are
+`receive_AUX<n>` (a `node.network` stream's), and its words are `RTP receiver` and `rtp-source`.
+PipeWire keeps the jitter buffer, the tracking of the sender's clock and the resampler.
 
 **What PipeWire 1.4.2 does that ear cannot see or change:**
 

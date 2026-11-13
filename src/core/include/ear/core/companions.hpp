@@ -5,11 +5,13 @@
 // engine companions' adapter interface.
 //
 // Built so far: the shapes and the engine companions' interfaces (docs/engine.md#engine-companions), which NodeHost
-// and ear_pipewire's adapters use, and the kinds' readiness bounds, which NodeHost's deadlines use
-// (docs/engine.md#readiness-deadlines); the counters' paces and the wire's view are declarations until the slice's
-// later steps build them. Pure: nothing but the standard library and ear_core.
+// and ear_pipewire's adapters use, the kinds' readiness bounds, which NodeHost's deadlines use
+// (docs/engine.md#readiness-deadlines), and the module-run converters' latency rule, which NodeHost's latency plan
+// uses; the counters' paces and the wire's view are declarations until the slice's later steps build them.
+// Pure: nothing but the standard library and ear_core.
 #pragma once
 #include <chrono>
+#include <concepts>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -20,6 +22,7 @@
 #include <variant>
 #include <vector>
 #include "ear/core/graph_spec.hpp"
+#include "ear/core/latency.hpp"
 #include "ear/core/node_type.hpp"
 #include "ear/core/rtp_receiver.hpp"
 #include "ear/core/sound_card.hpp"
@@ -45,6 +48,21 @@ struct RtpReceiverShape {
 
 /// An engine companion's shape, as NodeHost keeps it until the block is ready.
 using EngineCompanionShape = std::variant<SoundCardShape, RtpReceiverShape>;
+
+// ---- Module-run converters (docs/engine.md#module-run-converters) ----
+
+/// What a module-run converter's module buffers beyond its bank, at the graph rate: the one latency rule for every
+/// module-run converter (its module owns the stream, its buffer and its resampler, and its ports report 0), which
+/// NodeHost's latency plan enters as `beyond` the bank (docs/engine.md#latency-per-bank-pair). A module-run shape is
+/// one this has an overload for; RtpReceiverShape's is its latencyMs, in whole frames through `graph`.
+Delay moduleRunDelay(const RtpReceiverShape& shape, FrameClock graph) noexcept;
+/// A shape whose engine companion is a module-run converter: it says what its module buffers. A card is not one: it
+/// reports its own latency through its links.
+template <class Shape>
+concept ModuleRunShape = requires(const Shape& shape, FrameClock graph) {
+	{ moduleRunDelay(shape, graph) } -> std::same_as<Delay>;
+};
+static_assert(ModuleRunShape<RtpReceiverShape> && !ModuleRunShape<SoundCardShape>);
 
 // ---- The kinds ----
 

@@ -1,7 +1,9 @@
 # ear_pipewire: PipeWire's engine inside EAR, and the adapters that implement ear_core's
 # interfaces with it: port blocks (with their levels), links, live ports, handoffs, sound cards,
-# RTP receivers and the main-loop executor (docs/architecture.md#packages, docs/node-types.md#rtp).
-# engine_names.hpp, link_proxy.hpp, engine_companions.hpp, latency_spa.hpp, engine_properties.hpp (every PipeWire
+# module-run converters (RTP receivers) and the main-loop executor (docs/architecture.md#packages,
+# docs/node-types.md#rtp).
+# engine_names.hpp, link_proxy.hpp, engine_companions.hpp, converter_modules.hpp, module_converter_body.hpp,
+# latency_spa.hpp, engine_properties.hpp (every PipeWire
 # property ear sets, docs/engine.md#properties-ear-sets), engine_property_set.hpp (the only writer of them) and
 # callback_boundary.hpp (every C callback ear gives PipeWire, docs/architecture.md#the-callback-boundary) and
 # driver_cuts.hpp (the internal clock's cuts, docs/engine.md#graphcycle) are private to this package: its sources
@@ -32,6 +34,7 @@ target_sources(ear_pipewire PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/pipewire/links.hpp
 	include/ear/pipewire/live_graph.hpp
 	include/ear/pipewire/main_loop_executor.hpp
+	include/ear/pipewire/module_converters.hpp
 	include/ear/pipewire/port_blocks.hpp
 	include/ear/pipewire/rtp_receivers.hpp
 	include/ear/pipewire/sound_cards.hpp
@@ -54,6 +57,7 @@ if(BUILD_TESTS)
 		tests/handoff_test.cpp
 		tests/latency_spa_test.cpp
 		tests/main_loop_executor_test.cpp
+		tests/module_converter_test.cpp
 		tests/port_block_test.cpp
 		tests/rtp_receiver_test.cpp
 		tests/sink_test.cpp

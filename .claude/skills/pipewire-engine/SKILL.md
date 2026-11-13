@@ -1,6 +1,6 @@
 ---
 name: pipewire-engine
-description: How EAR runs PipeWire's engine inside its own process (no daemon, no session manager, no socket), the property table of every PipeWire property ear sets (engine.conf and code) and its four checks, the internal clock (the dummy driver, which always drives and tracks the raw clock) and the sound cards that follow it, the graph group, GraphCycle's clock facts, latency carried per bank pair, denormals, engine companions (sound cards and RTP receivers loaded from module-rtp-source), the asynchronous drive() and fadeOut() with their bounds and the wedged data loop, the interim sinks' taps, what the slice 3a spikes proved about invokes and the one data loop, level metering, realtime priority (CAP_SYS_NICE), the traps found while building it, telling xruns under host load from bugs, and how to bump the PipeWire version. Use when changing src/pipewire/ (engine, port blocks, links, live ports, handoffs, engine companions, sound cards, RTP receivers, the main-loop executor) or engine.conf, when adding or changing a PipeWire property, when a port block never processes, a link never goes active, a card never follows or never becomes ready, latency never arrives, an rtp node stays configuring, fails "the RTP receiver never ran" or is silent, a card fails "never started", a node never reaches running or a fade or barrier is overdue, ear says the data loop is wedged, a sink drops or misses cycles, levels stop, engine or RTP tests fail only on a loaded host, the data thread is not realtime, a stop signal kills the process, or the block size is not the one asked for, and before bumping the build image's PipeWire.
+description: How EAR runs PipeWire's engine inside its own process (no daemon, no session manager, no socket), the property table of every PipeWire property ear sets (engine.conf and code) and its four checks, the internal clock (the dummy driver, which always drives and tracks the raw clock) and the sound cards that follow it, the graph group, GraphCycle's clock facts, latency carried per bank pair, denormals, engine companions (sound cards, and the module-run converters: RTP receivers loaded from module-rtp-source), the asynchronous drive() and fadeOut() with their bounds and the wedged data loop, the interim sinks' taps, what the slice 3a spikes proved about invokes and the one data loop, level metering, realtime priority (CAP_SYS_NICE), the traps found while building it, telling xruns under host load from bugs, and how to bump the PipeWire version. Use when changing src/pipewire/ (engine, port blocks, links, live ports, handoffs, engine companions, sound cards, module-run converters, RTP receivers, the main-loop executor) or engine.conf, when adding or changing a PipeWire property, when a port block never processes, a link never goes active, a card never follows or never becomes ready, latency never arrives, an rtp node stays configuring, fails "the RTP receiver never ran" or is silent, a card fails "never started", a node never reaches running or a fade or barrier is overdue, ear says the data loop is wedged, a sink drops or misses cycles, levels stop, engine or RTP tests fail only on a loaded host, the data thread is not realtime, a stop signal kills the process, or the block size is not the one asked for, and before bumping the build image's PipeWire.
 ---
 
 # Running PipeWire's engine inside EAR
@@ -26,7 +26,8 @@ Debian 13 (trixie) ships in the build image (`docker/Dockerfile`).
 | Links | `links.cpp`, `link_proxy.hpp` | `link-factory` links by port global id, owned by EAR's connection |
 | Engine companions | `engine_companions.cpp` (`joinEngineCompanion`) | The one lifecycle of every engine node a node's insides ask for: runs alone, then linked to the block (the engine companion by global id, the block by node name, ports by name), ready, lost |
 | Sound cards | `sound_cards.cpp` | One kind of engine companion: one ALSA adapter node per card and direction |
-| RTP receivers | `rtp_receivers.cpp` | The other kind: `libpipewire-module-rtp-source` loaded into the context, one per `rtp` node |
+| Module-run converters | `module_converter_body.hpp`, `converter_modules.hpp`, `module_converters.hpp` | The shared body of every engine companion a PipeWire module runs: load, find by name, link, latency (`moduleRunDelay`), life |
+| RTP receivers | `rtp_receivers.cpp` | The other kind, the first module-run converter: `libpipewire-module-rtp-source` loaded into the context, one per `rtp` node |
 | Sinks and handoffs | `handoffs.cpp` | Realtime thread to an ordinary thread: `ThreadSinks` (the interim sink: a frame ring and a stamp ring, written by the block's taps, and one `pw_thread_loop` handing chunks to its consumer) and `ThreadHandoffs` (the legacy handoff `sendspin` alone uses until slice 3c): `spa_ringbuffer` plus one `pw_thread_loop` each |
 | The wedge mark | `data_loop_wedge.hpp` | Once ear says the data loop is wedged, `main.cpp` marks the engine and the adapters stop calling into it (section "drive()") |
 | Main-loop executor | `main_loop_executor.cpp` | Work posted from any thread (the control port's graph calls) runs on the main loop: a mutex-guarded queue plus a `pw_loop` event source |
@@ -238,12 +239,52 @@ proves the wiring (running, linked) and nothing about following. Drift tracking,
 the rate a real card refuses and a real card's latency are checked only on the hardware (the
 `ear-on-talos` skill).
 
+## Module-run converters (the converter companion's base)
+
+`docs/engine.md#module-run-converters` is the home. A module-run converter is an engine companion
+whose PipeWire module owns the stream, its buffer, its resampler and the loop steering it; ear
+loads it, finds its node, links it, carries its latency and judges its life. One shared body for
+every shape, and a description per module:
+
+- `ModuleConverters<Shape>` (public `module_converters.hpp`): the shape's `EngineCompanionAdapter`,
+  `make` = `joinEngineCompanion` + the body. `RtpReceivers` is `ModuleConverters<RtpReceiverShape>`,
+  instantiated once in `rtp_receivers.cpp` (`extern template` in its header).
+- `ModuleConverterBody<Shape>` (private `module_converter_body.hpp`): the registry, the sync and the
+  stale-name rule (below), the module load, `tellNodeState`, and failures in the module's words
+  (`cannot load PipeWire's <word> module: <errno>`, `the engine removed the <kind>`, `the engine
+  removed the <kind>'s module`).
+- `ModuleRun<Shape>` (`converter_modules.hpp`; specialise it beside the adapter's instantiation):
+  `module` (a `ConverterModule`: `kind`, `word`, `body`, `flow`, `nodePort`), `Arguments`,
+  `arguments(engineNode, shape, channels)` and `load`. A shipped module's `load` goes through
+  `engine_property_set`'s `loadModule` with keys from the table (the property guard refuses
+  `pw_context_load_module` anywhere else under `src/` but tests).
+- `moduleRunDelay(shape, FrameClock)` and `ModuleRunShape` (`ear_core`'s `companions.hpp`): the one
+  latency rule; NodeHost's plan enters it `beyond` the bank for every module-run shape. A new
+  module-run shape adds an overload, a `CompanionKind`, a readiness bound and `neverReady` text.
+- **Fault names.** The boundary names a guarded callback by its class's spelling, unless the class
+  names itself (`NamesItself`: `static constexpr std::string_view boundaryName`). The body takes
+  its module's `body`, so RTP's faults still read `RtpReceiverBody::onCoreDone`; renaming the body
+  would change fault details an RTP test pins.
+- **Measured (S7):** the module's node finishes before the block wakes in every cycle (PipeWire's
+  `module-profiler` over 2,000 cycles; the stream is not `node.async`), and its ports tell a
+  latency of 0, resampling or not, so `moduleRunDelay` is its only entry. To profile a test
+  engine, load `libpipewire-module-profiler` into a copy of `engine.conf` (`profiledEngine` in
+  `spikes_test.cpp`): it learns drivers only as they are added, so loaded later it never sees the
+  Dummy-Driver.
+- **Tested apart from RTP** (`module_converter_test.cpp`) through a test-only shape on
+  `libpipewire-module-pipe-tunnel` (`tunnel.mode = source`, a FIFO in a temp folder): its ports
+  are `capture_AUX<n>`, a bad `pipe.filename` refuses the load, and without
+  `node.always-process` its node never runs.
+- **The card is not one** (it is ear's own proxy, configures its ports itself, reports its latency
+  through its links): it shares only `joinEngineCompanion`.
+
 ## RTP receivers (module-rtp-source in-process)
 
 An `rtp` node is a port block (public outputs `stream.1`..`stream.N`, inside inputs
 `from_rtp.1`..`from_rtp.N`, passed straight through) plus one RTP receiver, engine node
-`<node>.rtp`, made by `RtpReceivers` (`rtp_receivers.cpp`). Its module arguments are built in one
-place, `moduleArguments`, from parsed values only (`RtpAddress`, an enum, ranged numbers, the
+`<node>.rtp`, made by `RtpReceivers` (`rtp_receivers.cpp`, the first module-run converter). Its
+module arguments are built in one place, `ModuleRun<RtpReceiverShape>::arguments`, from parsed
+values only (`RtpAddress`, an enum, ranged numbers, the
 engine node name), each key from the table: the `RTP receiver` and `RTP stream` rows of
 `docs/engine.md#properties-ear-sets` say what each is for (`remote.name = "internal"`,
 `adapter.auto-port-config`, `node.always-process`, `sess.ignore-ssrc`, `source.ip`, ...). Beyond
@@ -258,8 +299,8 @@ the table:
   (docs/engine.md#rtp-receivers). Check a received tone window by window.
 - **Left at PipeWire's defaults:** `cleanup.sec` (60), `net.mtu` (1280), the packet times.
 
-How the body finds its node: the module makes the node through its own connection, so there is
-no proxy to watch. The body binds a registry on EAR's connection and sends a `pw_core_sync`.
+How the module-run body finds its node: the module makes the node through its own connection, so
+there is no proxy to watch. The body binds a registry on EAR's connection and sends a `pw_core_sync`.
 Node globals named `<node>.rtp` seen before its done are **stale** (a restart's old receiver,
 still being removed); after it the module is loaded, and the first node of that name that is not
 stale is bound for its info. A stale id is forgotten when its global goes, because the engine may
@@ -352,7 +393,7 @@ on uses `ear::testing::driveNow` (`ear/testing/drive_now.hpp`).
 - **One invoke in flight per block is a requirement** (S1 below): an unbounded producer of
   invokes wedges the data loop. Never post invokes to the data loop in a loop of your own.
 
-## What the spikes proved (S1 to S3 in slice 3a, S5 in 3b; `spikes_test.cpp`)
+## What the spikes proved (S1 to S3 in slice 3a, S5 in 3b, S7 in 3c's T4; `spikes_test.cpp`)
 
 Recorded in `docs/engine.md#the-one-data-loop-and-invokes` with PipeWire's sources (`loop.c`, `context.c`,
 `filter.c`):
@@ -567,6 +608,8 @@ pins the base image by digest, not the packages. To move to another PipeWire:
 3. Check each module named in `engine.conf`, and `libpipewire-module-rtp-source`, still exists:
    `scripts/dev.sh bash -c 'ls /usr/lib/*/pipewire-0.3/'`.
 4. Run `scripts/dev.sh make test`: `ear_pipewire_tests` cover the engine facts (`[rtp]` the
-   receiver) and `ear_system_tests` the whole path.
+   receiver, `[module_run]` the shared body on pipe-tunnel, `[s7]` the order and latency it relies
+   on) and `ear_system_tests` the whole path. Check `libpipewire-module-pipe-tunnel` and
+   `libpipewire-module-profiler` still exist too (tests only).
 5. Update the tested-against line in `engine.conf`'s header and the version named in this
    skill's first section and in `AGENTS.md` and `docs/engine.md`.

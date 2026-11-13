@@ -92,6 +92,7 @@ if(BUILD_TESTS)
 		tests/latency_test.cpp
 		tests/levels_test.cpp
 		tests/main_loop_activity_test.cpp
+		tests/module_run_test.cpp
 		tests/node_host_test.cpp
 		tests/node_lifecycle_test.cpp
 		tests/ports_test.cpp

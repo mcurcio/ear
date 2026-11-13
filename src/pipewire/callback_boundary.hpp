@@ -131,16 +131,34 @@ template <auto Member> consteval std::string_view spelt() {
 	}
 	return name;
 }
+template <class Pointer> struct MemberParts;
+/// A class that names itself to the boundary: its callbacks are "<boundaryName>::member" in place of its spelling. A
+/// class template whose instances are different things to a reader of a report says which one in this (a module-run
+/// converter's body names its module's, module_converter_body.hpp).
+template <class C>
+concept NamesItself = requires {
+	{ C::boundaryName } -> std::convertible_to<std::string_view>;
+};
 template <auto Member> inline constexpr auto spelling = [] {
 	constexpr std::string_view name = spelt<Member>();
-	std::array<char, name.size()> text{};
-	std::ranges::copy(name, text.begin());
-	return text;
+	using Class = typename MemberParts<decltype(Member)>::Class;
+	if constexpr (NamesItself<Class>) {
+		constexpr std::string_view owner = Class::boundaryName;
+		constexpr std::string_view member = name.substr(name.rfind("::") + 2);
+		std::array<char, owner.size() + 2 + member.size()> text{};
+		auto out = std::ranges::copy(owner, text.begin()).out;
+		out = std::ranges::copy(std::string_view("::"), out).out;
+		std::ranges::copy(member, out);
+		return text;
+	} else {
+		std::array<char, name.size()> text{};
+		std::ranges::copy(name, text.begin());
+		return text;
+	}
 }();
 template <auto Member> inline constexpr std::string_view memberName{spelling<Member>.data(), spelling<Member>.size()};
 
 /// A member function's parts: its class, result, arguments and whether it is noexcept.
-template <class Pointer> struct MemberParts;
 template <class C, class R, class... A> struct MemberParts<R (C::*)(A...)> {
 	using Class = C;
 	using Signature = R(A...);

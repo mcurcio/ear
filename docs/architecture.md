@@ -48,7 +48,7 @@ Each C++ package lives in `src/<package>/` with its own `CMakeLists.txt`, public
 | `ear_folder` (`src/folder`) | `ConfinedFolder`: a folder held open from boot, every path resolved beneath it by the kernel (`openat2` with `RESOLVE_BENEATH`); files replaced only if unchanged (`renameat2(RENAME_EXCHANGE)`); `requireApart`, the boot check that no two folders overlap | Following `..`, absolute paths or (for the graph file) any symlink |
 | `ear_node_white`, `ear_node_file`, `ear_node_card`, `ear_node_rtp`, `ear_node_sendspin` (`src/nodes/<type>`) | One built-in node type each ([node-types.md](node-types.md)) | Another node type; PipeWire (only `ear_core`'s interfaces) |
 | `ear_all_node_types` (`src/all_node_types`) | `allNodeTypes()`, the one list of node types, generated at configure from the folders in `src/nodes/` | Naming a type by hand |
-| `ear_pipewire` (`src/pipewire`) | The in-process engine and the adapters that implement `ear_core`'s interfaces: port blocks, links, live ports, sinks and handoffs, engine companions (sound cards, RTP receivers), the main-loop executor, the engine's log ([engine.md](engine.md)); the callback boundary every C callback ear gives PipeWire goes through ([below](#the-callback-boundary)) | Policy; a C callback registered outside the boundary |
+| `ear_pipewire` (`src/pipewire`) | The in-process engine and the adapters that implement `ear_core`'s interfaces: port blocks, links, live ports, sinks and handoffs, engine companions (sound cards, module-run converters: RTP receivers), the main-loop executor, the engine's log ([engine.md](engine.md)); the callback boundary every C callback ear gives PipeWire goes through ([below](#the-callback-boundary)) | Policy; a C callback registered outside the boundary |
 | `ear_output` (`src/output`) | Where standard output goes: the output thread, the capture of descriptors 1 and 2, the main-loop watchdog ([output-records.md](output-records.md)) | A record's text |
 | `ear_control` (`src/control`) | Standard output's one encoder (`StatusLog`); the JSON-RPC protocol (envelope, decoding, commands, events, sessions); the wire types of the graph file and the lifecycle; `MainLoopGateway`, the one crossing between the main loop and the control thread | Sockets; graph rules; knobly |
 | `ear_config` (`src/config`) | The graph file keeper: `ear.conf`'s model through knobly, the keeper's thread (working copy, folder watch, writes) and its main-loop side (plan and commit, the running version) | Judging a graph; letting a knobly type leave its thread |
@@ -356,8 +356,10 @@ same lost time.
    (audioconvert in an adapter, with its resampler) between the node's own side and the graph,
    hidden from the graph file and owned by the node; the node either sets its ratio or lets it
    track a rate the node reports. A card's ALSA adapter and an RTP receiver's stream are such
-   converters inside their engine companions ([engine.md](engine.md#engine-companions)). Simple
-   work in code, such as converting a sample format, stays a library function.
+   converters inside their engine companions ([engine.md](engine.md#engine-companions)); the RTP
+   receiver is the first converter companion, in module-run mode, where a PipeWire module owns the
+   stream, its resampler and its loop ([engine.md](engine.md#module-run-converters)). Simple work in
+   code, such as converting a sample format, stays a library function.
 6. **The internal clock drives.** Cards follow it and adapt to the graph, never the reverse
    ([engine.md](engine.md#the-internal-clock)).
 
@@ -371,7 +373,9 @@ same lost time.
   its deferral of reports from overdue ticks and `sendspin-starved-floor.patch` stay under the
   model
   ([node-types.md](node-types.md#clock)).
-- There is no converter companion for a ring whose clock is a type's own: only cards and RTP
+- The converter companion has only its module-run mode
+  ([engine.md](engine.md#module-run-converters)), whose one user is the RTP receiver: there is no
+  set or tracked converter yet for a ring whose clock is a type's own, so only cards and RTP
   receivers convert.
 - `sendspin` is not yet a source and a sink: its audio crosses through its own feed and a legacy
   handoff ([writing-a-node-type.md](writing-a-node-type.md#the-old-interface)) until it moves

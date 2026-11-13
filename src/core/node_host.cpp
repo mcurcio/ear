@@ -1350,21 +1350,23 @@ struct NodeHost::Impl {
 		}
 
 		/// The configuration's latency plan, by role (docs/engine.md#latency-per-bank-pair). What each source's ring
-		/// may hold is latency beyond its bank: the most its frames wait before they play; and an RTP receiver's
-		/// buffer, which its ports report as zero. A typed declaration (from, to) is a path of its own: its pair is
-		/// carried (added for a code of the type's own; a pass-through must already copy it, checked at configure's
-		/// return) with the delay on it, both ways. A legacy declaration on one bank is the delay on the
-		/// pass-through's pair that ends at the bank, or, on a bank no pair ends at, that bank's alone.
+		/// may hold is latency beyond its bank: the most its frames wait before they play; and a module-run
+		/// converter's buffer (moduleRunDelay), which its ports report as zero. A typed declaration (from, to) is a
+		/// path of its own: its pair is carried (added for a code of the type's own; a pass-through must already copy
+		/// it, checked at configure's return) with the delay on it, both ways. A legacy declaration on one bank is the
+		/// delay on the pass-through's pair that ends at the bank, or, on a bank no pair ends at, that bank's alone.
 		LatencyPlan latencyPlan(const Configuration& c) const {
 			LatencyPlan plan{.pairs = c.pairs};
 			for (const SourceSlot& slot : c.sources)
 				plan.beyond.emplace_back(slot.bank, Delay{Latency{0, slot.source->writer().capacityFrames()}});
 			for (const EngineAsk& asked : c.engineAsks)
-				if (const auto* receiver = std::get_if<RtpReceiverShape>(&asked.shape)) {
-					const auto buffered = static_cast<std::uint32_t>(
-						FrameClock(host_.format.rate).frames(std::chrono::milliseconds{receiver->latencyMs}));
-					plan.beyond.emplace_back(asked.target.insideBank, Delay{Latency{buffered, buffered}});
-				}
+				std::visit(
+					[&]<class Shape>(const Shape& shape) {
+						if constexpr (ModuleRunShape<Shape>)
+							plan.beyond.emplace_back(asked.target.insideBank,
+						                             moduleRunDelay(shape, FrameClock(host_.format.rate)));
+					},
+					asked.shape);
 			for (const DeclaredLatency& declared : c.latency) {
 				if (declared.from) {
 					const BankPair pair{*declared.from, declared.bank};

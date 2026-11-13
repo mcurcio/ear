@@ -20,6 +20,9 @@
 //    #the-internal-clock): every cycle a node misses is one it reported cut short, clock.cycle moves with its starts, a
 //    running node's position jumps by whole missed cycles only, and what makes the other jumps (a restart, the default
 //    resync.ms).
+//  - S7: what a module-run converter relies on (docs/engine.md#module-run-converters): the module's node finishes its
+//    cycle before the block it feeds wakes, in every cycle PipeWire's own profiler records, and its ports tell no
+//    latency of their own, resampling or not, so its module's buffer enters the plan once, by moduleRunDelay.
 // Everything here is test-only: the probes are bare pw_filters (probes.hpp, shared with port_block_test.cpp), S2's
 // take-up block implements a deferred take-up itself (FilterPortBlock applies its drive in its invoke instead,
 // docs/engine.md#drive-and-fade), and S5's source keeps its ring itself. Every wait is event-gated: the main loop runs
@@ -51,6 +54,12 @@
 #include <pipewire/filter.h>
 #include <pipewire/impl.h>
 #include <pipewire/pipewire.h>
+// After pipewire.h, whose spa/utils/hook.h it needs.
+#include <pipewire/extensions/profiler.h>
+#include <spa/param/latency-utils.h>
+#include <spa/param/profiler.h>
+#include <spa/pod/iter.h>
+#include <spa/pod/parser.h>
 #include <spa/utils/result.h>
 
 #include "../driver_tick.hpp"
@@ -2094,4 +2103,400 @@ TEST_CASE("S6: with node-driver.c's default resync.ms a stall past 10 ms moves t
 	            found.runs, found.notWhole, found.firstNotWhole.c_str(), back, found.missed, found.silent);
 	CHECK(found.notWhole > 0);
 	CHECK(found.silent == 0);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// S7 (the module-run converter's facts, docs/engine.md#module-run-converters)
+
+namespace {
+
+/// PipeWire's activation status of a node that ran its cycle to the end (PW_NODE_ACTIVATION_FINISHED in 1.4.2's
+/// private.h, which is not installed; module-profiler.c reports it as is).
+constexpr std::int32_t kActivationFinished = 3;
+
+/// One follower's cycle as module-profiler reports it: when it was signalled, woke and finished (CLOCK_MONOTONIC ns;
+/// a node marked async reports its previous cycle's instead, module-profiler.c) and its status.
+struct FollowerCycle {
+	std::int64_t signal = 0;
+	std::int64_t awake = 0;
+	std::int64_t finish = 0;
+	std::int32_t status = 0;
+};
+
+/// One driver cycle: module-profiler's count of it, the driver's signal, and the two followers the test watches.
+struct ProfiledCycle {
+	std::int64_t count = 0;
+	std::int64_t driverSignal = 0;
+	std::optional<FollowerCycle> upstream;
+	std::optional<FollowerCycle> block;
+};
+
+/// PipeWire's own profiler (libpipewire-module-profiler, what pw-profiler and pw-top read), bound on ear's connection:
+/// once a client binds it, it reports every cycle of every driver it knows. It learns drivers as they are added, so
+/// the engine loads it before its Dummy-Driver is made (profiledEngine). Keeps the cycles `upstream` or `block` ran in.
+class Profile {
+public:
+	Profile(Engine& engine, Waiter& waiter, std::string upstream, std::string block)
+		: waiter_(waiter), upstream_(std::move(upstream)), block_(std::move(block)) {
+		registry_ = pw_core_get_registry(engine.core(), PW_VERSION_REGISTRY, 0);
+		pw_registry_add_listener(registry_, &registryHook_, &registryEvents(), this);
+	}
+	~Profile() {
+		if (profiler_ != nullptr) {
+			spa_hook_remove(&profilerHook_);
+			pw_proxy_destroy(profiler_);
+		}
+		spa_hook_remove(&registryHook_);
+		pw_proxy_destroy(reinterpret_cast<pw_proxy*>(registry_));
+	}
+	Profile(const Profile&) = delete;
+	Profile& operator=(const Profile&) = delete;
+
+	const std::vector<ProfiledCycle>& cycles() const { return cycles_; }
+
+private:
+	static const pw_registry_events& registryEvents() {
+		static const pw_registry_events table = [] {
+			pw_registry_events events{};
+			events.version = PW_VERSION_REGISTRY_EVENTS;
+			events.global = &Profile::onGlobal;
+			return events;
+		}();
+		return table;
+	}
+	static const pw_profiler_events& profilerEvents() {
+		static const pw_profiler_events table = [] {
+			pw_profiler_events events{};
+			events.version = PW_VERSION_PROFILER_EVENTS;
+			events.profile = &Profile::onProfile;
+			return events;
+		}();
+		return table;
+	}
+	static void onGlobal(void* data, std::uint32_t id, std::uint32_t /*permissions*/, const char* type,
+	                     std::uint32_t /*version*/, const spa_dict* /*props*/) {
+		auto* self = static_cast<Profile*>(data);
+		if (self->profiler_ != nullptr || std::string_view(type) != PW_TYPE_INTERFACE_Profiler) return;
+		self->profiler_ = static_cast<pw_proxy*>(
+			pw_registry_bind(self->registry_, id, PW_TYPE_INTERFACE_Profiler, PW_VERSION_PROFILER, 0));
+		pw_profiler_add_listener(reinterpret_cast<pw_profiler*>(self->profiler_), &self->profilerHook_,
+		                         &profilerEvents(), self);
+		self->waiter_.wake();
+	}
+	/// A driverBlock or followerBlock: id, name, previous signal, signal, awake, finish, status, ...
+	static FollowerCycle block(const spa_pod* value, std::string& name) {
+		spa_pod_parser parser;
+		spa_pod_parser_pod(&parser, value);
+		std::int32_t id = 0;
+		const char* named = nullptr;
+		std::int64_t previous = 0;
+		FollowerCycle cycle;
+		spa_pod_parser_get_struct(&parser, SPA_POD_Int(&id), SPA_POD_String(&named), SPA_POD_Long(&previous),
+		                          SPA_POD_Long(&cycle.signal), SPA_POD_Long(&cycle.awake), SPA_POD_Long(&cycle.finish),
+		                          SPA_POD_Int(&cycle.status));
+		name = named != nullptr ? named : "";
+		return cycle;
+	}
+	static void onProfile(void* data, const spa_pod* pod) {
+		auto* self = static_cast<Profile*>(data);
+		if (!spa_pod_is_struct(pod)) return;
+		// SPA_POD_STRUCT_FOREACH, spelt out: its iterator is a void* in C++.
+		const void* body = SPA_POD_BODY_CONST(pod);
+		for (auto* object = static_cast<const spa_pod*>(body); spa_pod_is_inside(body, SPA_POD_BODY_SIZE(pod), object);
+		     object = static_cast<const spa_pod*>(spa_pod_next(object))) {
+			if (!spa_pod_is_object_type(object, SPA_TYPE_OBJECT_Profiler)) continue;
+			ProfiledCycle cycle;
+			const spa_pod_prop* prop = nullptr;
+			SPA_POD_OBJECT_FOREACH(reinterpret_cast<const spa_pod_object*>(object), prop) {
+				std::string name;
+				if (prop->key == SPA_PROFILER_info) {
+					spa_pod_parser parser;
+					spa_pod_parser_pod(&parser, &prop->value);
+					spa_pod_parser_get_struct(&parser, SPA_POD_Long(&cycle.count));
+				} else if (prop->key == SPA_PROFILER_driverBlock) {
+					cycle.driverSignal = block(&prop->value, name).signal;
+				} else if (prop->key == SPA_PROFILER_followerBlock) {
+					const FollowerCycle seen = block(&prop->value, name);
+					if (name == self->upstream_) cycle.upstream = seen;
+					if (name == self->block_) cycle.block = seen;
+				}
+			}
+			if (cycle.upstream || cycle.block) self->cycles_.push_back(cycle);
+		}
+		self->waiter_.wake();
+	}
+
+	Waiter& waiter_;
+	std::string upstream_;
+	std::string block_;
+	pw_registry* registry_ = nullptr;
+	spa_hook registryHook_{};
+	pw_proxy* profiler_ = nullptr;
+	spa_hook profilerHook_{};
+	std::vector<ProfiledCycle> cycles_;
+};
+
+/// The engine on engine.conf with module-profiler loaded after its own modules, so it sees the Dummy-Driver made.
+std::unique_ptr<Engine> profiledEngine(const ear::test::TempFolder& folder) {
+	std::string conf;
+	{
+		std::ifstream in(EAR_ENGINE_CONF);
+		for (std::string line; std::getline(in, line);) {
+			conf += line + "\n";
+			if (line.find("{ name = libpipewire-module-adapter }") != std::string::npos)
+				conf += "    { name = libpipewire-module-profiler }\n";
+		}
+	}
+	REQUIRE(conf.find("libpipewire-module-profiler") != std::string::npos);
+	const std::filesystem::path path = folder.path() / "engine.conf";
+	std::ofstream(path) << conf;
+	for (const char* name : {"XDG_RUNTIME_DIR", "PIPEWIRE_RUNTIME_DIR", "PIPEWIRE_REMOTE", "DBUS_SESSION_BUS_ADDRESS",
+	                         "DBUS_SYSTEM_BUS_ADDRESS"})
+		unsetenv(name);
+	auto made = Engine::create(EngineSettings{path.string(), kRate, kBlock});
+	if (!made) FAIL("Engine::create: " << made.error().detail);
+	return std::move(*made);
+}
+
+/// The capture (upstream) latency one port tells, as any client reads it: a registry binding finds the port by its
+/// node's global id and its name, binds it, and keeps its newest Latency param of direction output.
+class PortLatency {
+public:
+	PortLatency(Engine& engine, Waiter& waiter, std::uint32_t nodeId, std::string portName)
+		: waiter_(waiter), nodeId_(nodeId), portName_(std::move(portName)) {
+		registry_ = pw_core_get_registry(engine.core(), PW_VERSION_REGISTRY, 0);
+		pw_registry_add_listener(registry_, &registryHook_, &registryEvents(), this);
+	}
+	~PortLatency() {
+		if (port_ != nullptr) {
+			spa_hook_remove(&portHook_);
+			pw_proxy_destroy(port_);
+		}
+		spa_hook_remove(&registryHook_);
+		pw_proxy_destroy(reinterpret_cast<pw_proxy*>(registry_));
+	}
+	PortLatency(const PortLatency&) = delete;
+	PortLatency& operator=(const PortLatency&) = delete;
+
+	std::optional<Latency> told() const { return told_; }
+	std::size_t tellings() const { return tellings_; }
+
+private:
+	static const pw_registry_events& registryEvents() {
+		static const pw_registry_events table = [] {
+			pw_registry_events events{};
+			events.version = PW_VERSION_REGISTRY_EVENTS;
+			events.global = &PortLatency::onGlobal;
+			return events;
+		}();
+		return table;
+	}
+	static const pw_port_events& portEvents() {
+		static const pw_port_events table = [] {
+			pw_port_events events{};
+			events.version = PW_VERSION_PORT_EVENTS;
+			events.param = &PortLatency::onParam;
+			return events;
+		}();
+		return table;
+	}
+	static void onGlobal(void* data, std::uint32_t id, std::uint32_t /*permissions*/, const char* type,
+	                     std::uint32_t /*version*/, const spa_dict* props) {
+		auto* self = static_cast<PortLatency*>(data);
+		if (self->port_ != nullptr || std::string_view(type) != PW_TYPE_INTERFACE_Port || props == nullptr) return;
+		const char* node = spa_dict_lookup(props, PW_KEY_NODE_ID);
+		const char* name = spa_dict_lookup(props, PW_KEY_PORT_NAME);
+		if (node == nullptr || name == nullptr || std::to_string(self->nodeId_) != node || self->portName_ != name)
+			return;
+		self->port_ =
+			static_cast<pw_proxy*>(pw_registry_bind(self->registry_, id, PW_TYPE_INTERFACE_Port, PW_VERSION_PORT, 0));
+		pw_proxy_add_object_listener(self->port_, &self->portHook_, &portEvents(), self);
+		std::uint32_t wanted = SPA_PARAM_Latency;
+		pw_port_subscribe_params(reinterpret_cast<pw_port*>(self->port_), &wanted, 1);
+	}
+	static void onParam(void* data, int /*seq*/, std::uint32_t id, std::uint32_t /*index*/, std::uint32_t /*next*/,
+	                    const spa_pod* param) {
+		auto* self = static_cast<PortLatency*>(data);
+		spa_latency_info info{};
+		if (id != SPA_PARAM_Latency || param == nullptr || spa_latency_parse(param, &info) < 0 ||
+		    info.direction != SPA_DIRECTION_OUTPUT)
+			return;
+		self->told_ = Latency{static_cast<std::uint32_t>(info.min_rate), static_cast<std::uint32_t>(info.max_rate)};
+		++self->tellings_;
+		self->waiter_.wake();
+	}
+
+	Waiter& waiter_;
+	std::uint32_t nodeId_;
+	std::string portName_;
+	pw_registry* registry_ = nullptr;
+	spa_hook registryHook_{};
+	pw_proxy* port_ = nullptr;
+	spa_hook portHook_{};
+	std::optional<Latency> told_;
+	std::size_t tellings_ = 0;
+};
+
+/// Writes zeros, and counts its runs and the frames of its inside input 1 that were not silent.
+class Heard final : public AudioCode {
+public:
+	explicit Heard(Waiter& waiter) : waiter_(waiter) {}
+	void prepare(const AudioFormat&) override {}
+	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
+	             std::uint32_t frames, const ear::GraphCycle&) noexcept override {
+		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
+		const auto sound = static_cast<std::uint64_t>(
+			std::ranges::count_if(inputs[0].first(frames), [](float sample) { return sample != 0.0F; }));
+		sound_.fetch_add(sound, std::memory_order_relaxed);
+		runs_.fetch_add(1, std::memory_order_release);
+		waiter_.wake();
+	}
+	void release() noexcept override {}
+	std::uint64_t runs() const { return runs_.load(std::memory_order_acquire); }
+	std::uint64_t sound() const { return sound_.load(std::memory_order_relaxed); }
+
+private:
+	Waiter& waiter_;
+	std::atomic<std::uint64_t> runs_{0};
+	std::atomic<std::uint64_t> sound_{0};
+};
+
+/// A block "fpp" (outputs stream.1, stream.2; the inside input bank from_rtp) running Heard, and the receivers.
+struct S7Graph {
+	explicit S7Graph(std::unique_ptr<Engine> made)
+		: engine(std::move(made)), waiter(*engine), registry(*engine, waiter), blocks(*engine, bell),
+		  receivers(*engine), heard(waiter), blockEvents(waiter), events(waiter) {
+		block = blocks.make("fpp",
+		                    Ports{{{Direction::output, "stream", {"1", "2"}},
+		                           {Direction::input, "from_rtp", {"1", "2"}, PortBank::Reach::inside}}},
+		                    kFormat, blockEvents);
+		REQUIRE(ear::testing::driveNow(*block, &heard));
+		REQUIRE(waiter.until([&] { return blockEvents.isReady; }));
+	}
+	~S7Graph() {
+		receiver.reset();
+		ear::testing::silenceOrAbort(*block);
+	}
+	void receive(const RtpReceiverShape& shape) {
+		receiver = receivers.make(
+			CompanionTarget{
+				"fpp.rtp", "fpp", Direction::input, {"from_rtp.1", "from_rtp.2"}, kFormat, block->blockId()},
+			shape, events);
+		REQUIRE(waiter.until([&] { return events.isReady || events.lostDetail; }));
+		REQUIRE(events.lostDetail.value_or("") == "");
+	}
+	/// The block ran `cycles` more times.
+	bool runs(std::uint64_t cycles) {
+		const std::uint64_t until = heard.runs() + cycles;
+		return waiter.until([&] { return heard.runs() >= until; });
+	}
+
+	std::unique_ptr<Engine> engine;
+	Waiter waiter;
+	Registry registry;
+	NoBell bell;
+	FilterPortBlocks blocks;
+	RtpReceivers receivers;
+	Heard heard;
+	BlockEvents blockEvents;
+	CompanionEvents events;
+	std::unique_ptr<PortBlock> block;
+	std::unique_ptr<EngineCompanion> receiver;
+};
+
+} // namespace
+
+TEST_CASE("S7: a module-run converter's node finishes before its block wakes, in every cycle the profiler records",
+          "[spike][s7]") {
+	// What set and tracked converters will rely on as module-run ones do: the stream feeding an inside input bank has
+	// run its cycle before the block reads it, so the block reads this cycle's frames, never the last's. Measured by
+	// PipeWire's own profiler on the real receiver, resampling a 44.1 kHz sender's tone, over 2,000 cycles.
+	ear::test::TempFolder folder("s7-order");
+	S7Graph graph(profiledEngine(folder));
+	const RtpReceiverShape shape{*RtpAddress::parse("0.0.0.0"), ear::test::freeUdpPort(), RtpEncoding::l16, 44100, 100};
+	graph.receive(shape);
+	ear::test::RtpSender sender(shape.port, ear::test::RtpPcm::l16, shape.rate,
+	                            ear::test::RtpTone{{750.0, 1500.0}, 0.5});
+	sender.send(60 * shape.rate);
+	REQUIRE(graph.waiter.until([&] { return graph.heard.sound() > 0; }));
+
+	constexpr std::size_t kCycles = 2000;
+	Profile profile(*graph.engine, graph.waiter, "fpp.rtp", "fpp");
+	const auto both = [&] {
+		return static_cast<std::size_t>(std::ranges::count_if(
+			profile.cycles(), [](const ProfiledCycle& cycle) { return cycle.upstream && cycle.block; }));
+	};
+	REQUIRE(graph.waiter.until([&] { return both() >= kCycles; }, 60s));
+	REQUIRE(graph.registry.props("fpp.rtp") != nullptr);
+	const auto& props = *graph.registry.props("fpp.rtp");
+	const auto async = props.find("node.async");
+
+	std::size_t judged = 0, before = 0, earlier = 0, unfinished = 0, gaps = 0;
+	std::int64_t least = INT64_MAX;
+	std::string firstWrong;
+	const std::vector<ProfiledCycle>& cycles = profile.cycles();
+	for (std::size_t n = 0; n < cycles.size(); ++n) {
+		const ProfiledCycle& cycle = cycles[n];
+		if (n > 0 && cycle.count != cycles[n - 1].count + 1) ++gaps;
+		if (!cycle.upstream || !cycle.block) continue;
+		const FollowerCycle& upstream = *cycle.upstream;
+		const FollowerCycle& block = *cycle.block;
+		if (upstream.status != kActivationFinished || block.status != kActivationFinished) {
+			++unfinished; // a cycle an xrun cut short: neither ran it to the end
+			continue;
+		}
+		++judged;
+		if (upstream.signal < cycle.driverSignal || block.signal < cycle.driverSignal) ++earlier;
+		least = std::min(least, block.awake - upstream.finish);
+		if (upstream.finish <= block.signal && block.signal <= block.awake) {
+			++before;
+		} else if (firstWrong.empty()) {
+			firstWrong = "cycle " + std::to_string(cycle.count) + ": the receiver finished at " +
+			             std::to_string(upstream.finish) + ", the block was signalled at " +
+			             std::to_string(block.signal) + " and woke at " + std::to_string(block.awake);
+		}
+	}
+	std::printf("S7 order: %zu cycles judged; in %zu the receiver finished before the block was signalled (least gap "
+	            "to its wake %" PRId64 " ns); %zu reported from an earlier cycle; %zu cut short; %zu profiler gaps; "
+	            "fpp.rtp node.async %s\n",
+	            judged, before, least, earlier, unfinished, gaps,
+	            async == props.end() ? "unset" : async->second.c_str());
+	INFO(firstWrong);
+	CHECK(judged >= kCycles / 2);
+	CHECK(before == judged);
+	CHECK(earlier == 0);
+	CHECK((async == props.end() || async->second == "false"));
+}
+
+TEST_CASE("S7: a module-run converter's ports tell no latency of their own, resampling or not, so its module's "
+          "buffer enters once, by moduleRunDelay",
+          "[spike][s7]") {
+	// docs/engine.md#latency-per-bank-pair: a module-run converter's delay is entered `beyond` its bank, which is right
+	// only if nothing the engine carries already counts it. What rtp-source's output port tells, with its resampler at
+	// 1:1 (a sender at the graph's rate) and converting (44.1 kHz into 48 kHz), once the sound has started, and what
+	// the block then tells downstream.
+	for (const std::uint32_t senderRate : {kRate, 44100U}) {
+		INFO("the sender at " << senderRate << " Hz");
+		S7Graph graph(makeEngine());
+		const RtpReceiverShape shape{*RtpAddress::parse("0.0.0.0"), ear::test::freeUdpPort(), RtpEncoding::l16,
+		                             senderRate, 100};
+		const Delay delay = moduleRunDelay(shape, FrameClock(kRate));
+		graph.block->carryLatency(LatencyPlan{.pairs = {{"from_rtp", "stream"}}, .beyond = {{"from_rtp", delay}}});
+		PortLatency stream(*graph.engine, graph.waiter, graph.block->blockId(), "stream.1");
+		REQUIRE(graph.waiter.until([&] { return stream.told() == delay.latency; }));
+
+		graph.receive(shape);
+		ear::test::RtpSender sender(shape.port, ear::test::RtpPcm::l16, senderRate,
+		                            ear::test::RtpTone{{750.0, 1500.0}, 0.5});
+		sender.send(10 * senderRate);
+		PortLatency receiverPort(*graph.engine, graph.waiter, *graph.registry.id("fpp.rtp"), "receive_AUX0");
+		REQUIRE(graph.waiter.until([&] { return receiverPort.told().has_value() && graph.heard.sound() > 0; }));
+		REQUIRE(graph.runs(64)); // the main loop turned meanwhile, with any retell among it
+		std::printf("S7 latency, sender at %u Hz: the receiver's port tells %u-%u frames (%zu times); stream tells "
+		            "%u-%u; moduleRunDelay %u\n",
+		            senderRate, receiverPort.told()->minFrames, receiverPort.told()->maxFrames, receiverPort.tellings(),
+		            stream.told()->minFrames, stream.told()->maxFrames, delay.latency.maxFrames);
+		CHECK(receiverPort.told() == Latency{0, 0});
+		CHECK(stream.told() == delay.latency);
+	}
 }

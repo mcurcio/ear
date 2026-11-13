@@ -1,8 +1,9 @@
 # The timing model: one tick, one rate, clocks at the edges
 
 Status: designed to module level (2026-11-13), part of slice 3c (`node-primitives.md`); Q-TM1 answered (RTP is the
-converter's first user), Q-TM2 narrowed and its default decided unless the owner objects; nothing of it built beyond
-what section 2 says is already true. It states how audio time works in ear (the owner's model, section 1), takes the
+converter's first user), Q-TM2 narrowed and its default decided unless the owner objects; T4 built (the converter's
+base in module-run mode, RTP on it: 5.6); nothing else of it built beyond what section 2 says is already
+true. It states how audio time works in ear (the owner's model, section 1), takes the
 framework's timekeeping out of the source (`SourceRing`'s `Played` and its keep-in-step), moves `sendspin`'s sync onto
 the spike's "honest sink plus local skip" (section 6), and adds the converter companion (section 5). The model itself
 is `docs/architecture.md#the-timing-model`, which says where the code still departs from it; this page designs the
@@ -49,7 +50,7 @@ it later is a separate step, gated on evidence [U: 6.5].
 | TM2 | The pass-through (`card`, `rtp`, `sendspin`'s public banks) reads and writes on the tick; no other transform exists yet | — |
 | TM3 | A card's ALSA node and an RTP receiver reconcile their clocks in PipeWire (a delay-locked loop steering a resampler) [V]; `sendspin` reconciles the server's clock in its code | `sendspin`'s code owes lost time and models the library (`LibraryView`, the debt, `untoldBound`'s owing role, `Feed::skipThenRead`) (`docs/node-types.md#clock`) [V]; its overdue deferral and `sendspin-starved-floor.patch` stay |
 | TM4 | One rate and one quantum (`docs/engine.md#the-clock`, `#the-quantum-guard`); a 44.1 kHz RTP sender into a 48 kHz graph is resampled by its receiver [V] | — |
-| TM5 | Cards and RTP receivers are PipeWire's converter inside their engine companions (5.5) | No converter companion for a ring whose clock is a type's own |
+| TM5 | Cards and RTP receivers are PipeWire's converter inside their engine companions (5.5); the converter's base in module-run mode, RTP its user (T4, `docs/engine.md#module-run-converters`) | No converter companion for a ring whose clock is a type's own (set and tracked, T5) |
 | TM6 | Built [V] | — |
 
 No shipped type uses a source yet (`docs/writing-a-node-type.md#sources`) [V]: today's users of `SourceRing` are
@@ -401,6 +402,52 @@ within a block; tracked: a writer paced at 44100 x (1 + 200 ppm) on the raw cloc
 kind's; bound and unbound by the drive; a compile-fail case (a set converter asked for a `RateReport`); the harness's
 fake converter (frames 1:1, each `set` and `report` recorded).
 
+### 5.6 Found building T4
+
+What T4 built is described where it lives (`docs/engine.md#module-run-converters` and `#rtp-receivers`,
+`docs/architecture.md#the-timing-model`, `docs/testing.md`'s `ear_core_tests` and `ear_pipewire_tests` rows, the
+`pipewire-engine` skill); this section keeps only where it departs from 5.1 to 5.5, and what T5 must know. Every RTP
+test passed unedited, "L16 sent at 44100 into the 48000 graph is resampled" among them.
+
+- **The body is a template over the shape, and names itself to the boundary.** The callback boundary names a guarded
+  callback by its class's spelling, so a shared non-template `ModuleConverterBody` would have renamed RTP's fault
+  reports (`RtpReceiverBody::onCoreDone` to `ModuleConverterBody::onCoreDone`), which an RTP test pins: behaviour that
+  moved. So `ModuleConverterBody<Shape>` is a class template and the boundary takes a class's own name where it gives
+  one (`NamesItself`: a static `boundaryName`, the module's `ConverterModule::body`). A report still says which
+  module's converter threw. T5's `StreamConverterBody` needs no such name unless it is shared the same way.
+- **`ConverterModule` is the module's words, not its loading**: `kind` (the loss details' word), `word` (`cannot load
+  PipeWire's <word> module`), `body`, `flow` and `nodePort` (returning a `std::string`). The module's file name moved
+  into `ModuleRun<Shape>::load`, with `using Arguments` beside `arguments(...)`: a shipped module's arguments are
+  `ModuleArguments<Home>` and it loads through `engine_property_set`'s `loadModule`, so the property guard holds; a
+  test's stand-in, which has no rows in the property table, loads its own under a tests folder, as tests may.
+- **`ModuleConverters<Shape>` is public** (`ear/pipewire/module_converters.hpp`), because `RtpReceivers`, its alias, is
+  named in a public header (`main.cpp` and the tests use it). Its `make` is defined in the private body header and
+  instantiated once per shipped shape (`template class ModuleConverters<RtpReceiverShape>` in `rtp_receivers.cpp`,
+  `extern template` in `rtp_receivers.hpp`).
+- **Core gained `ModuleRunShape`** beside `moduleRunDelay`: a shape is module-run when it has the rule, and
+  NodeHost's plan visits each engine ask and enters the rule for those, naming no shape. The readiness text stayed as
+  it was (`neverReady`, one overload per shape, which was never a branch on RTP); its deadline is the kind's.
+- **The stand-in module is `libpipewire-module-pipe-tunnel`** in source mode (`module_converter_test.cpp`): of 1.4.2's
+  modules it is the one closest to rtp-source that needs no network (it owns its stream, its buffer and a loop steering
+  its resampler, reads from outside the graph, a FIFO, and makes its node on its own connection), it refuses to load on
+  a bad `pipe.filename` (so a load failure is real, not injected), and its ports are `capture_AUX<n>`, not
+  `receive_AUX<n>`, so the port names provably come from the module's description. `module-loopback` makes two nodes,
+  `vban-recv` makes its node only once packets arrive, and `roc-source` needs a sender of its own.
+- **S7 settled, for module-run** (`spikes_test.cpp`): (a) the module's node finishes before its block wakes in every
+  cycle (PipeWire's `module-profiler`, loaded into a copy of `engine.conf` so it sees the Dummy-Driver made, over 2,000
+  cycles of the real receiver resampling a 44.1 kHz sender: every cycle both ran to the end, the receiver finished
+  before the block was signalled, none reported an earlier cycle; the stream is not `node.async`); (b) the module-run
+  latency entry is right as built: rtp-source's port tells 0 frames once linked, at the graph's rate and resampling
+  44.1 kHz alike, and the block tells exactly `moduleRunDelay`, so nothing counts twice and the resampler's delay is
+  counted nowhere. The ear-made stream's checks in 5.5's list (a `pw_stream` at 44.1 kHz in the graph group,
+  `requested`, `pw_stream_set_rate` and its clamp, `io_changed`'s position, the resampler's delay per quality and
+  whether an ear-made stream's ports report it, `module-rtp/audio.c`'s constants) are the set and tracked modes' own
+  and stay T5's [U]; (b) suggests an adapter's ports report no resampler delay, which T5 checks for its own stream.
+- **The card stays on its own body** (5.4, D-TM10), confirmed against `sound_cards.cpp`: made by
+  `pw_core_create_object("adapter")` with ear's proxy (nothing to find by name), its `PortConfig` sent by ear, its
+  latency told through its links (nothing `beyond`), either direction, and its quantum-guard sizing and test seam its
+  own. `docs/engine.md#module-run-converters` says so.
+
 ## 6. `sendspin` under the model
 
 ### 6.1 The wrapper's contract: the honest sink plus local skip, told only on time
@@ -567,7 +614,7 @@ stale in the same commit.
 | **T1** | `GraphCycle::ranRawNs()` (for the report the bound forces, 6.2) | nothing | none | the rule's rows: on time, overdue, a test's tick with no `nextNs` |
 | **T2** | `sendspin` honest, on today's feed and the legacy adapter: `SendspinCode` keeps the capture half and becomes the honest wrapper with the local skip, told only on time under the bound, and the clamp for the forced report (6.1, 6.2); both carried patches kept; optionally, runs of both burst shapes without the floor patch, as evidence for a later step (6.5); `docs/node-types.md#clock` and the skill (and its report's measurement, 6.5) | 6.3's table | yes: one library correction after a stall with cuts, where ear's silence was; none after a stall that loses nothing, proven on CI | 6.4 |
 | **T3** | The clockless source: `SourceClock`, `SourceTick`, `SourceHeld`, `SourcePlayed`, `clockWake`; `SourceRing` without time (4.1 to 4.3); `EventSources`, the block, the harness; `docs/writing-a-node-type.md#sources`, `docs/engine.md#sources`, `#latency-per-bank-pair`, `#dating` | `Played`, the played wake, `SourceCycle`, the keep-time and debt code | none for any shipped type (none uses a source) | 4.4's rows, and the system tests' ramp-skip windows reworked (`rampDueBefore`, `rampDueAfter`, `unpaidRampSkips`, 4.4) |
-| **T4** | The converter base from RTP's wiring, module-run mode, RTP on it (5.1 to 5.5), with S7's checks folded in (test only) | `RtpReceiverBody` and NodeHost's RTP branches, moved | none: every RTP test passes unedited | 5.5's new tests and S7's checks |
+| **T4** | **Done** (5.6). The converter base from RTP's wiring, module-run mode, RTP on it (5.1 to 5.5), with S7's checks folded in (test only) | `RtpReceiverBody` and NodeHost's RTP branches, moved | none: every RTP test passes unedited | 5.5's new tests and S7's checks |
 | *S3c.1 to S3c.5* | As `node-primitives.md` 13 has them | | | |
 | **S3c.6** | As planned, with the honest wrapper moved onto `from_server`'s source as `SendspinClock` (the feed, its skip and its dry counts go; the clock's report replaces the bell and the played wake in `node-primitives.md` 4.1's worker) | `feed.*`, `sendspin_code.*`'s playback half | as `node-primitives.md` 8 says, and no timing change: T2's tests pass unchanged on the source | T2's tests on the source; the clock's unit rows through `TypeHarness<spec, Sendspin>` |
 | **T5** | Set and tracked modes (5.2), with their first user (AirPlay, slice 9, for tracked): `StreamConverterBody`, `ConverterShape`, `SetRatio`, `RateReport`, `convertedSource`, `convertedSink`, the harness's fake; `docs/engine.md#engine-companions`, `docs/writing-a-node-type.md#engine-companions` | nothing | none until its user | 5.5's T5 tests |
