@@ -359,8 +359,10 @@ The server reads commands from its standard input. On `connected <id>`, type `pa
   unlogged. A skip that takes the library's soft-sync frame with it moves the ramp one less (an insert) or one more (a
   drop) than its frames.
 - **The source's stamps are judged step by step:** the server says each chunk (`source-chunk <frames> <stamp> <lag>`); each
-  stamp must step by the last chunk's length within 200 us, or by a block or more where the graph skipped cycles (counted),
-  until a second of frames came on clean steps and one chunk arrived within 250 ms of its stamp.
+  stamp must step by the last chunk's length within 200 us, or by a block or more where the graph skipped cycles, the
+  skipped blocks together no more than ear's counter records say it lost (`docs/testing.md#the-counters-own-word`),
+  until a second of frames came on clean steps and one chunk arrived within 250 ms of its stamp. A ramp's skips are held
+  to the same count.
 - **Tests running side by side (`ctest --parallel`) share one network.** A browser would dial its neighbours' nodes, so `--discover` takes the
   instance to look for. Keep the default port 8928 out of every test but "a connect to it is refused". A test's listening port comes from below the kernel's
   outgoing range (`freeTcpPort`), or a neighbour's flood can hold it as a socket's near end.

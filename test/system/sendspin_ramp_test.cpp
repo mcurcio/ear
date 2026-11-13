@@ -99,11 +99,14 @@ TEST_CASE("A whole frame that is not the next one, by a step no skip makes, is a
 	CHECK(ramp.lastRunFrames == 2);
 }
 
-TEST_CASE("A skip's block multiple is still allowed", "[system][sendspin][ramp]") {
-	const RampCheck ramp = check({whole(100), whole(101 + blockSize), whole(102 + blockSize)});
+TEST_CASE("A skip's block multiple is a skip, its blocks counted for ear's records to account for",
+          "[system][sendspin][ramp]") {
+	const RampCheck ramp =
+		check({whole(100), whole(101 + blockSize), whole(102 + blockSize), whole(103 + 4 * blockSize)});
 	INFO(ramp);
 	CHECK(ramp.badSteps == 0);
-	CHECK(ramp.lastRunFrames == 3);
+	CHECK(ramp.lastRunFrames == 4);
+	CHECK(ramp.skippedBlocks == 4); // one, then three: what the test's ear must have lost (LostCycles::budget)
 }
 
 TEST_CASE("A skip a frame either way of whole blocks is a bad step, as is a step back of whole blocks",

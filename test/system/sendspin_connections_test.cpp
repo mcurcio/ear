@@ -197,6 +197,10 @@ TEST_CASE("A listening node says how it is known, and a server that dials it pai
 	CHECK(ramp.rampFrames >= rampFramesAtLeast);
 	CHECK(ramp.badFrames == 0);
 	CHECK(ramp.badSteps == 0);
+	// Every skip is a cycle ear says it lost: the graph cut it, or a node missed it (docs/engine.md#counters).
+	const LostCycles lost = lostCycles(ear);
+	INFO(lost);
+	CHECK(ramp.skippedBlocks <= lost.budget());
 }
 
 TEST_CASE("A port another program holds fails the node with the kernel's reason, and a free port "

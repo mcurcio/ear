@@ -74,6 +74,10 @@ TEST_CASE("A wrong code then the right one pairs in band, and a ramp the server 
 	CHECK(ramp.rampFrames >= rampFramesAtLeast);
 	CHECK(ramp.badFrames == 0);
 	CHECK(ramp.badSteps == 0);
+	// Every skip is a cycle ear says it lost: the graph cut it, or a node missed it (docs/engine.md#counters).
+	const LostCycles lost = lostCycles(ear);
+	INFO(lost);
+	CHECK(ramp.skippedBlocks <= lost.budget());
 }
 
 TEST_CASE("A restarted ear keeps its identity and its pairing, at 0600, and is asked for no code",
@@ -289,5 +293,9 @@ TEST_CASE("One dialling and one listening node have separate identities, on one 
 		CHECK(ramp.rampFrames >= rampFramesAtLeast);
 		CHECK(ramp.badFrames == 0);
 		CHECK(ramp.badSteps == 0);
+		// Every skip is a cycle ear says it lost: the graph cut it, or a node missed it (docs/engine.md#counters).
+		const LostCycles lost = lostCycles(ear);
+		INFO(lost);
+		CHECK(ramp.skippedBlocks <= lost.budget());
 	}
 }

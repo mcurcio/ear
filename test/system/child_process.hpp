@@ -12,6 +12,7 @@
 #include <cerrno>
 #include <chrono>
 #include <csignal>
+#include <functional>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -96,6 +97,18 @@ public:
 			if (line.starts_with(prefix)) return std::string(line);
 		}
 		return std::nullopt;
+	}
+
+	/// Waits until the child has printed a record `wanted` accepts, at index `from` or after in records(), and returns
+	/// the first. Nothing if its output ends or the deadline passes first.
+	std::optional<nlohmann::json> waitForRecord(const std::function<bool(const nlohmann::json&)>& wanted,
+	                                            std::chrono::milliseconds deadline, std::size_t from = 0) {
+		const auto until = std::chrono::steady_clock::now() + deadline;
+		for (std::size_t seen = from;;) {
+			for (; seen < records_.size(); ++seen)
+				if (wanted(records_[seen])) return records_[seen];
+			if (!readMore(until)) return std::nullopt;
+		}
 	}
 
 	void signal(int signalNumber) { ::kill(pid_, signalNumber); }

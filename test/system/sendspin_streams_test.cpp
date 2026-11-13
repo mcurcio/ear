@@ -21,9 +21,10 @@ namespace {
 
 using namespace ear::test;
 
-/// How far a chunk's stamp may stand from the last one's plus that one's length and still be the frames' own time: the
-/// stamps are dated by the graph's cycles (docs/node-types.md#clock), so between cycles the host left alone they step by
-/// the frames exactly, but for the microseconds each is rounded to and the internal clock's loop moves.
+/// How far a chunk's stamp may stand from the last one's plus that one's length, or that and whole blocks, and still be
+/// the frames' own time: the stamps are dated by the graph's cycles (docs/node-types.md#clock), so between cycles the
+/// host left alone they step by the frames exactly, but for the microseconds each is rounded to and the internal clock's
+/// loop moves. It only reads a step's shape; a step of whole blocks is excused by ear's records of the cycles it lost.
 constexpr std::int64_t stampSlackUs = 200;
 /// The least a chunk takes from its capture to the server when nothing holds it up: its own length (a piece is at most
 /// 100 ms), the library's send and the socket. Judged on the quickest chunk of the stream, which only a stamp on another
@@ -34,15 +35,17 @@ constexpr std::int64_t quickestArrivalBoundUs = 250000;
 constexpr std::int64_t blockNs = std::int64_t{blockSize} * 1000000000 / graphFrequency;
 
 /// The source's chunks as they arrive, judged against their stamps: each step from the last stamp is the last chunk's
-/// length (a clean step), or more by whole blocks when cycles were skipped (counted, and in all no more than the time
-/// that passed on the server's clock: the frames skip nothing, the stamps move on by the graph's lost time, which is
-/// whole cycles: spike S6 in spikes_test.cpp), each within the slack, and never anything else.
+/// length (a clean step), or more by whole blocks when cycles were skipped (counted, and in all no more than the cycles
+/// ear's records say it lost, nor the time that passed on the server's clock: the frames skip nothing, the stamps move
+/// on by the graph's lost time, which is whole cycles: spike S6 in spikes_test.cpp), each within the slack, and never
+/// anything else.
 struct SourceStamps {
 	std::size_t chunks = 0;
-	std::size_t cleanFrames = 0; // frames whose chunk followed the last with a clean step
-	std::size_t skips = 0;       // steps longer by whole blocks: the host skipped cycles while capturing
-	std::int64_t skippedUs = 0;  // what those steps added: the graph's lost time
-	std::size_t offSteps = 0;    // any other step: not the frames' time
+	std::size_t cleanFrames = 0;     // frames whose chunk followed the last with a clean step
+	std::size_t skips = 0;           // steps longer by whole blocks: the host skipped cycles while capturing
+	std::int64_t skippedUs = 0;      // what those steps added: the graph's lost time
+	std::uint64_t skippedBlocks = 0; // and in blocks: no more than the cycles ear's records lost
+	std::size_t offSteps = 0;        // any other step: not the frames' time
 	std::int64_t worstCleanUs = 0;
 	std::int64_t quickestLagUs = INT64_MAX;
 	std::int64_t leastLagUs = INT64_MAX; // arrival - stamp: below 0 the stamp is in the server's future
@@ -66,6 +69,7 @@ struct SourceStamps {
 			if (excessUs > 0 && blocks >= 1 && std::abs(offUs) <= stampSlackUs) {
 				++skips;
 				skippedUs += excessUs;
+				skippedBlocks += static_cast<std::uint64_t>(blocks);
 			} else if (excessUs > stampSlackUs || excessUs < -stampSlackUs) {
 				++offSteps;
 			} else {
@@ -80,8 +84,9 @@ struct SourceStamps {
 
 inline std::ostream& operator<<(std::ostream& out, const SourceStamps& stamps) {
 	return out << stamps.chunks << " chunks, clean frames " << stamps.cleanFrames << ", skips " << stamps.skips
-	           << " adding " << stamps.skippedUs << " us, steps off " << stamps.offSteps << ", worst clean step "
-	           << stamps.worstCleanUs << " us off its length, quickest arrival " << stamps.quickestLagUs << " us";
+	           << " adding " << stamps.skippedUs << " us (" << stamps.skippedBlocks << " blocks), steps off "
+	           << stamps.offSteps << ", worst clean step " << stamps.worstCleanUs
+	           << " us off its length, quickest arrival " << stamps.quickestLagUs << " us";
 }
 
 } // namespace
@@ -155,6 +160,10 @@ TEST_CASE("Paired, routed noise reaches the server on the routed channel, with e
 	ear.signal(SIGTERM);
 	CHECK(waitForStop(ear) == 0);
 	CHECK(ear.hasLine("node ma removed dropped=0"));
+	// Every skipped block is a cycle ear says it lost (docs/engine.md#counters), its records complete once it stopped.
+	const LostCycles lost = lostCycles(ear);
+	INFO(lost);
+	CHECK(stamps.skippedBlocks <= lost.budget());
 }
 
 TEST_CASE("A server lost mid-stream leaves the node running, and restarted with its state it "

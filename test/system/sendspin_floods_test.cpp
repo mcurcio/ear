@@ -243,6 +243,10 @@ void checkPairsAndPlays(ChildProcess& ear, const TempDirectory& directory, Sends
 	CHECK(ramp.rampFrames >= rampFramesAtLeast);
 	CHECK(ramp.badFrames == 0);
 	CHECK(ramp.badSteps == 0);
+	// Every skip is a cycle ear says it lost: the graph cut it, or a node missed it (docs/engine.md#counters).
+	const LostCycles lost = lostCycles(ear);
+	INFO(lost);
+	CHECK(ramp.skippedBlocks <= lost.budget());
 }
 
 /// How a slow upgrade ended.

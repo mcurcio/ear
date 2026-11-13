@@ -18,7 +18,9 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <map>
 #include <optional>
+#include <ostream>
 #include <span>
 #include <sstream>
 #include <stdexcept>
@@ -145,6 +147,52 @@ inline std::optional<std::chrono::microseconds> stopTook(const ChildProcess& ear
 	return recordsSpan(
 		ear, [](const std::string& msg) { return msg.starts_with("node ") && msg.ends_with(" stopping: removing"); },
 		[](const std::string& msg) { return msg == stoppedLine; });
+}
+
+/// What ear's counter records said (docs/output-records.md#diagnostic): the graph's cut cycles and the stalls they
+/// made, and each node's missed cycles and overruns, each the sum of its records. After ear's stop every record held
+/// back has been written (docs/engine.md#reporting-the-counters), so then these are ear's own totals.
+struct LostCycles {
+	struct Node {
+		std::uint64_t missed = 0;
+		std::uint64_t overruns = 0;
+	};
+	std::uint64_t cutCycles = 0;
+	std::uint64_t stalls = 0;
+	std::size_t graphRecords = 0;
+	std::map<std::string, Node, std::less<>> nodes;
+	/// The most blocks any file's audio can have skipped: each cycle the graph cut, and each one a node missed uncut,
+	/// skips at most one block of what reaches a file (docs/engine.md#counters).
+	std::uint64_t budget() const {
+		std::uint64_t cycles = cutCycles;
+		for (const auto& [name, node] : nodes) cycles += node.missed;
+		return cycles;
+	}
+};
+
+inline LostCycles lostCycles(const ChildProcess& ear) {
+	LostCycles lost;
+	for (const json& record : ear.records()) {
+		const std::string code = record.value("code", "");
+		if (code == "ear.graph-lost-cycles") {
+			lost.cutCycles += record.value("cycles", std::uint64_t{0});
+			lost.stalls += record.value("stalls", std::uint64_t{0});
+			++lost.graphRecords;
+		} else if (code == "ear.node-missed-cycles") {
+			LostCycles::Node& node = lost.nodes[record.value("node", "")];
+			node.missed += record.value("missed", std::uint64_t{0});
+			node.overruns += record.value("overruns", std::uint64_t{0});
+		}
+	}
+	return lost;
+}
+
+inline std::ostream& operator<<(std::ostream& out, const LostCycles& lost) {
+	out << "the records: " << lost.cutCycles << " cycles cut in " << lost.stalls << " stalls over " << lost.graphRecords
+		<< " records";
+	for (const auto& [name, node] : lost.nodes)
+		out << "; node " << name << " missed " << node.missed << ", overran " << node.overruns;
+	return out;
 }
 
 inline std::string linkedLine(const std::string& from, const std::string& to) {

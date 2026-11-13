@@ -229,6 +229,7 @@ struct RampCheck {
 	std::size_t badSteps = 0;      // steps between exact frames that are neither +1, a block's multiple, a drop's 3 nor
 								   // a logged hard sync's drop
 	std::size_t hardSyncSteps = 0; // steps a hard sync the library logged as late accounts for
+	std::uint64_t skippedBlocks = 0;   // what the steps of whole blocks skipped: no more than ear's records lost
 	std::size_t stepsInSilentLoss = 0; // of them, those inside a loss that began with silence (lossDropFrames)
 	std::size_t stepsInLoss = 0; // forward steps past what a line says, one per logged loss: unbounded by its line
 	std::vector<std::string> stepsInLossSeen;
@@ -243,8 +244,9 @@ struct RampCheck {
 /// What a red needs to say about a ramp.
 inline std::ostream& operator<<(std::ostream& out, const RampCheck& ramp) {
 	out << "ramp frames " << ramp.rampFrames << ", blends " << ramp.blends << ", not ramp " << ramp.badFrames
-		<< ", bad steps " << ramp.badSteps << ", steps of a logged hard sync " << ramp.hardSyncSteps << " ("
-		<< ramp.stepsInSilentLoss << " in a loss that began with silence)"
+		<< ", bad steps " << ramp.badSteps << ", blocks skipped " << ramp.skippedBlocks
+		<< ", steps of a logged hard sync " << ramp.hardSyncSteps << " (" << ramp.stepsInSilentLoss
+		<< " in a loss that began with silence)"
 		<< ", zeros inside " << ramp.zeroFramesInside << ", indices " << ramp.firstIndex << " to " << ramp.lastIndex
 		<< ", frames of the last run " << ramp.lastRunFrames << ", bad steps seen:";
 	for (const std::string& step : ramp.badStepsSeen) out << " " << step;
@@ -288,10 +290,13 @@ inline std::int64_t rampStep(std::uint32_t from, std::uint32_t to) {
 	return static_cast<std::int64_t>(to) - static_cast<std::int64_t>(from);
 }
 
-/// Whether a step between exact ramp frames is a skip's: the node skips the frames the graph jumped, and with
-/// engine.conf's resync.ms a running block's jumps are whole blocks, exactly (spike S6 in spikes_test.cpp, every missed
-/// cycle of 30 loaded runs; the frames off whole blocks it once saw came from PipeWire's default resync.ms).
-inline bool isSkipStep(std::int64_t step) { return step > 1 && (step - 1) % blockSize == 0; }
+/// The blocks a step between exact ramp frames skipped, if it is a skip's (else 0): the node skips the frames the graph
+/// jumped, and with engine.conf's resync.ms a running block's jumps are whole blocks, exactly (spike S6 in
+/// spikes_test.cpp, every missed cycle of 30 loaded runs). The shape only says which steps are skips; what excuses them
+/// is ear's own count of the cycles lost (LostCycles::budget), which the skips' blocks together may not pass.
+inline std::int64_t skippedBlocks(std::int64_t step) {
+	return step > 1 && (step - 1) % blockSize == 0 ? (step - 1) / blockSize : 0;
+}
 
 /// The ramp index a frame names, if it names one: both channels whole samples.
 inline std::optional<std::uint32_t> rampIndexOf(float left, float right) {
@@ -347,7 +352,7 @@ struct RampSoFar {
 			const std::optional<std::uint32_t> index = rampIndexOf(fresh[at], fresh[at + 1]);
 			if (!index || (fresh[at] == 0.0F && fresh[at + 1] == 0.0F)) continue;
 			const std::int64_t step = lastIndex ? rampStep(*lastIndex, *index) : 1;
-			lastRunFrames = step == 1 || isSkipStep(step) || step == 3 ? lastRunFrames + 1 : 1;
+			lastRunFrames = step == 1 || skippedBlocks(step) > 0 || step == 3 ? lastRunFrames + 1 : 1;
 			lastIndex = index;
 			++rampFrames;
 		}
@@ -436,12 +441,12 @@ inline RampCheck checkRamp(const Wav& wav, std::vector<std::int64_t> lostSyncsUs
 			const auto logged = std::ranges::min_element(lostSyncsUs, [&](std::int64_t a, std::int64_t b) {
 				return covers(a) != covers(b) ? covers(a) : lossDropFrames(a) < lossDropFrames(b);
 			});
-			const bool hardSync = logged != lostSyncsUs.end() && covers(*logged) && !isSkipStep(step);
+			const bool hardSync = logged != lostSyncsUs.end() && covers(*logged) && skippedBlocks(step) == 0;
 			if (hardSync) {
 				++result.hardSyncSteps;
 				if (*logged > 0) ++result.stepsInSilentLoss;
 				lostSyncsUs.erase(logged);
-			} else if (step > 1 && !isSkipStep(step) && !(afterBlend && step == 3) && !lostSyncsUs.empty()) {
+			} else if (step > 1 && skippedBlocks(step) == 0 && !(afterBlend && step == 3) && !lostSyncsUs.empty()) {
 				// A forward step past what any line says, inside a loss the library logged: its later hard syncs in the
 				// same loss say nothing at warn, so the line is the only evidence, and it accounts for one such step,
 				// counted apart: an interim limit (root-classes.md 5.7).
@@ -449,7 +454,9 @@ inline RampCheck checkRamp(const Wav& wav, std::vector<std::int64_t> lostSyncsUs
 				if (result.stepsInLossSeen.size() < 8)
 					result.stepsInLossSeen.push_back(std::to_string(step) + " at " + std::to_string(frame));
 				lostSyncsUs.erase(lostSyncsUs.begin());
-			} else if (step != 1 && !isSkipStep(step) && !(afterBlend && step == 3)) {
+			} else if (const std::int64_t skipped = skippedBlocks(step); skipped > 0) {
+				result.skippedBlocks += static_cast<std::uint64_t>(skipped);
+			} else if (step != 1 && !(afterBlend && step == 3)) {
 				++result.badSteps;
 				if (result.badStepsSeen.size() < 8)
 					result.badStepsSeen.push_back(std::to_string(step) + " at " + std::to_string(frame));

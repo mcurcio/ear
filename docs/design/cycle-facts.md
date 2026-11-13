@@ -11,8 +11,10 @@ and sink tests and S5 on the judge, described in `docs/testing.md#the-cycle-judg
 `GraphCycle::xruns` and `discontinuity` gone, described in `docs/node-types.md#clock`, `docs/engine.md#graphcycle`
 and `docs/writing-a-node-type.md#sources` and `#sinks`); step C3c built (section 9.11: the `sendspin` clock and RTP
 tests on the judge, library settles, the feed's dry count, described in `docs/testing.md#the-cycle-judge`); step D1 built
-(section 9.12: the diagnostics counters kept, per graph and per node, described in `docs/engine.md#counters`), the rest
-not. Its steps
+(section 9.12: the diagnostics counters kept, per graph and per node, described in `docs/engine.md#counters`); step D2
+built (section 9.13: the counters reported on the control port and standard output, described in
+`docs/engine.md#reporting-the-counters`, `docs/control-port.md#counters` and `docs/output-records.md#diagnostic`), the
+rest not. Its steps
 (section 9) follow `root-classes.md`'s and come before slice 3c, whose `sendspin` on a source takes the source rule this page changes (section 4.4). The built system
 it changes is described in `docs/engine.md` (`#graphcycle`, `#the-internal-clock`, `#sinks`, `#sources`, `#dating`,
 `#the-one-data-loop-and-invokes`), `docs/testing.md` (`#making-the-rare-event`, `#the-sleep-guard`),
@@ -282,7 +284,7 @@ and each test splits off the rest:
 | `engine_test.cpp` ramp, `sink_test.cpp` take-ups | `CycleLedger::clean`, `xruns` | `CycleLedger` records facts, `clean` is `whole()`; the judge | the ledger's own clean rule and `stalled` special case |
 | `sendspin/tests/clock_test.cpp` | `Judge` with 1.5 s windows, the library's lines read from standard error, `lossSteps`, `dryCycles`, `lastSkipped`, `lastHeld`, `lastGot` | 5.4 | `kSettleNs`, `lastSkipped()`, `lastHeld()`, the window logic (below) |
 | `rtp_receiver_test.cpp`, `test/system/rtp_test.cpp` | clean cycles plus 0.5 s, late sends within 600 ms | 5.4 | the two fixed windows |
-| `test/system/*` ramps and stamps | `isSkipStep`, the 200 µs step | the counters and records (section 8) | both |
+| `test/system/*` ramps and stamps | `isSkipStep`, the 200 µs step | the counters and records (section 8). Built in D2 (9.13): the excuse is the records' count; the shapes stay as classifiers | the excuse by shape |
 | The branch's `DriverCycles` | the only reader of the driver's account | `DriverCuts`, in the product | `src/pipewire/tests/driver_cycles.hpp` |
 
 The windows the R5 review left in those tests, each with what it becomes and the step that does it:
@@ -291,7 +293,7 @@ The windows the R5 review left in those tests, each with what it becomes and the
 |---|---|---|---|---|
 | `kLogReach` (a line matched within the feed and a chunk of cycles from where it was read) and `kLogLag` (32 cycles of reading lag) | `clock_test.cpp` | a library line is stamped with the cycle count when the reading thread got it, not where its audio plays | deleted: the library's log through a callback (the carried patch slice 3c owes) stamped with the feed's write position, so a line names the frame it acts on | 3c's patch (C3c kept it: 9.11) |
 | `inLoss` (a loss from its line less `kLogLag` to its end plus `kLogLag`) | `clock_test.cpp` | the same stamping | the loss's frames, from the stamped lines; timing inside it stays unjudged, declared as `librarySettle` (C3c declares it so already) | 3c's patch (C3c kept the lag: 9.11) |
-| `heldBy` (a tenth's time as when the WAV was first seen to hold it, looked at every 50 ms) | `test/system/rtp_test.cpp` | ear is another process, with no ledger the test can read | the counters and records (section 8), each late tenth matched to a record | D2 |
+| `heldBy` (a tenth's time as when the WAV was first seen to hold it, looked at every 50 ms) | `test/system/rtp_test.cpp` | ear is another process, with no ledger the test can read | stays: it times the test sender's own late sends, which no counter of ear's counts (9.13) | none |
 | A `Lost sync` line matched by size to any step it covers | `test/system/sendspin_system.hpp` | ear prints the library's warning with no position | the line stamped with the frames written when ear printed it, its drop exact | D2, C3c |
 
 ## 6. Interfaces
@@ -673,6 +675,13 @@ to put on the wire as a diagnostic.
 
 ### 8.3 How they are reported
 
+Built in D2 and corrected in place (9.13 says what moved and why): the library pages hold it as built
+(`docs/engine.md#reporting-the-counters`, `docs/control-port.md#counters`, `docs/output-records.md#diagnostic`). What
+D2 settled beyond the first writing: the counters are read at the main loop's 100 ms heartbeat; a *loss* (`cutCycles`,
+`stalls`, a node's counters) is a change and `cycles` alone never is; `node.added` carries counters too (zero, or what a
+port-caused replace carries on); a gone node's last counts reach standard output only; the records wait for the cuts to
+hold still for a beat, so a long stall is one record; and every record held back is written at a stop.
+
 **On the control port.** A wire change, so `docs/control-port.md`, the fixtures in `test/protocol/`, `src/control/` and
 `web/src/protocol.ts` change in one commit (`docs/control-port.md#changing-the-wire`). It is additive, so it is a
 **feature, `counters`**, not a new `protocol`:
@@ -691,11 +700,12 @@ to put on the wire as a diagnostic.
 
 **On standard output** (`docs/output-records.md#diagnostic`, and its JSON schema):
 
-- **`ear.graph-lost-cycles`**, no node: fields `cycles` (cut in the second it covers), `stalls`, `ms`, `totalCycles`
-  (since start). At most one a second, and only for a second in which something was cut. Like the other node-less
+- **`ear.graph-lost-cycles`**, no node: fields `cycles` (cut since the last such record), `stalls`, `ms`,
+  `totalCycles` (since start). At most one a second, once the cuts held still for a beat (or kept moving 10 s). Like the other node-less
   diagnostics it is standard output only; its numbers are on the wire as the graph's counters.
 - **`ear.node-missed-cycles`**, with the node: fields `missed`, `overruns` (since its last such record) and their
-  totals. At most once per 10 s per node, only when either moved: a node that misses cycles is a fault worth a line, but
+  totals, `totalMissed` and `totalOverruns`. At most once per 10 s per node, only when either moved, and at once as the
+  node goes: a node that misses cycles is a fault worth a line, but
   one that keeps missing must not flood the log (`companions.md`'s K2 paces its companions' drops the same way). It goes
   on the wire as a `node.diagnostic` once slice 5 builds that, as `ear.sink-dropped` does.
 - The pace is the records', not the counters': the counters are exact whatever the records leave out.
@@ -759,46 +769,36 @@ NodeCounts counts() const;       // NodeHost::counts of the harness's node: its 
 GraphCounts graphCounts() const; // its HarnessCuts' counts: what loseCycles(n, Lost::cut) moves
 ```
 
-D2 adds, with their consumer:
+D2 added, with their consumer, as built (9.13; `ear/core/counter_watch.hpp` is their home):
 
 ```cpp
 // ear/core/counter_watch.hpp (ear_core, public): the one pacer of 8.3, on the main loop.
 namespace ear {
-/// Where the graph's counters come from (ear_pipewire's Engine, through the graphCounts() D1 gives it; a test's
-/// fake): declared with CounterWatch, its consumer.
-class GraphCounterSource {
-public:
-	/// Any thread.
-	virtual GraphCounts graphCounts() const noexcept = 0;
-
-protected:
-	~GraphCounterSource() = default;
+class GraphCounterSource { virtual GraphCounts graphCounts() const noexcept = 0; };            // Engine; any thread
+class NodeCounterSource { virtual std::optional<NodeCounts> counts(const NodeName&) const = 0; }; // NodeHost
+/// Told by NodeHost (NodeHost::subscribeCounts): where each name's span of counts begins and ends.
+class NodeCountsListener {
+	virtual void countsBegan(const NodeName& node) = 0;                          // not for a port-caused replace
+	virtual void countsEnded(const NodeName& node, const NodeCounts& total) = 0; // its final counts, before nodeGone
 };
-/// Told the counters that changed, at most once a second. Implemented by ear_control (StatusLog's records and the
-/// gateway's counters.changed); declared here, with its consumer.
+struct NamedCounts { NodeName name; NodeCounts counts; };
+/// Each call at its own pace; a listener overrides what it reports (the gateway the first, StatusLog the others).
 class CounterListener {
-public:
-	struct NodeEntry {
-		std::string name;
-		NodeCounts total;
-		NodeCounts sinceLast;
-	};
-	virtual void countersChanged(const GraphCounts& total, const GraphCounts& sinceLast,
-	                             std::span<const NodeEntry> nodes) = 0;
-
-protected:
-	~CounterListener() = default;
+	virtual void countersChanged(const GraphCounts& graph, std::uint64_t lostMs, std::span<const NamedCounts> nodes);
+	virtual void graphLostCycles(const GraphCounts& total, const GraphCounts& since, std::uint64_t sinceMs);
+	virtual void nodeMissedCycles(const NodeName& node, const NodeCounts& total, const NodeCounts& since);
 };
-/// Main thread. Each second (a Timers timer) reads the graph's counts and every node's (NodeHost::counts), compares
-/// them with what it last told, and tells the listener only what changed. Keeps one entry per node, made at add and
-/// dropped at remove (main thread; never on the data loop). StatusLog paces the per-node record to 10 s itself.
-class CounterWatch {
-public:
-	CounterWatch(Timers& timers, const GraphCounterSource& graph, const NodeHost& nodes, CounterListener& listener);
+/// Main thread: tick() at the heartbeat, flush() at a stop.
+class CounterWatch final : public NodeCountsListener {
+	CounterWatch(const Timers& timers, const GraphCounterSource& graph, const NodeCounterSource& nodes,
+	             AudioFormat format);
+	void subscribe(CounterListener& listener);
+	void tick();
+	void flush();
 };
 } // namespace ear
-
-// ear/pipewire/engine.hpp: Engine implements GraphCounterSource with D1's graphCounts()
+// Engine implements GraphCounterSource; NodeHost implements NodeCounterSource and tells NodeCountsListener;
+// GraphStatus reads both into the snapshot; MainLoopGateway::readCounts gives node.added a port-caused replace's counts.
 ```
 
 - **Threads.** The data thread writes a block's `CycleCounters` and the record's counts; the main loop reads them
@@ -865,7 +865,7 @@ R5d).
 | **C4b** | **Done** (9.8). `SourceRing::keepTime` on facts; `Chunk`/`ChunkStamp` gain `causes`, `lostFrames`; `GraphCycle::xruns` and `discontinuity` removed (mechanical) | the source's position arithmetic, the two members | `Played` keeps in step across any stall (Q-CF2); `docs/writing-a-node-type.md#sources` and `#sinks` change |
 | **C3c** | **Done** (9.11, which keeps `kLogReach`, `kLogLag` and `inLoss`'s lag for 3c's patch). `clock_test.cpp`, the RTP tests onto the judge (5.4); the feed's dry count | `kSettleNs`, `kSettleCycles`, `lossSteps`, `dryCycles` from `lastGot()` (and `lastGot()`), the 600 ms and 0.5 s windows (5.5) | none |
 | **D1** | **Done** (9.12). Counters kept (8.4): `cycle_counters.hpp`, `CycleCounters` in the block and the harness (`NodeHarness::counts`), `PortBlock::counts`, `NodeHost::counts` carrying a destroyed block's, `DriverCuts`' stalls, `Engine::graphCounts`; tests: each counter moved by its induced cause (an induced cut moves the graph's and no node's; a `PAUSED` block moves its `missedCycles`; a code that stalls past a cycle moves its `overruns`), in the harness and the engine | nothing | none visible |
-| **D2** | Counters reported (8.3): `CounterWatch`, `CounterListener` in `ear_control`; the `counters` feature, `counters.changed`, the fixtures, `web/src/protocol.ts` and `docs/control-port.md` in one commit; `ear.graph-lost-cycles` and `ear.node-missed-cycles` in `docs/output-records.md` and its JSON; the system tests judging from them | `isSkipStep`, the 200 µs step rule | the `counters` feature and two records |
+| **D2** | **Done** (9.13). Counters reported (8.3): `CounterWatch`, `CounterListener` in `ear_control`; the `counters` feature, `counters.changed`, the fixtures, `web/src/protocol.ts` and `docs/control-port.md` in one commit; `ear.graph-lost-cycles` and `ear.node-missed-cycles` in `docs/output-records.md` and its JSON; the system tests judging from them | `isSkipStep`, the 200 µs step rule | the `counters` feature and two records |
 | **D3** | The editor (8.5): panel totals, recent marks (Q-CF4); `docs/editor.md` | nothing | the marks and badge |
 | **C6a** | `SampleRate`, `FrameClock(SampleRate)` beside the old constructor, `framesCeil`, `framesNearest`; compile-fail cases | nothing | none |
 | **C6b** | `AudioFormat::rate` and every rate to `SampleRate`; the `.hz()` check | `frame_guard.cmake`, `test/frame_guard/`, the `uint32_t` constructor | none |
@@ -1570,6 +1570,61 @@ keeps only where it departs from 8.1, 8.2 and 8.4 as first written (8.4 is corre
   the block's work timed as nothing fails the engine's; no reposition or driver change counted fails the table and
   the harness (the engine makes neither: S6); a destroyed block's counts dropped, or a port-caused replace's not
   carried, fails NodeHost's test.
+
+### 9.13 Found building D2
+
+What D2 built is described in `docs/engine.md#reporting-the-counters`, `docs/control-port.md#counters`,
+`docs/output-records.md#diagnostic` and `docs/testing.md#the-counters-own-word`; this section keeps only where it departs
+from 8.3 and 8.4 as first written (both are corrected in place).
+
+- **Read at the heartbeat, not on a timer of its own.** 8.4 armed a 1 s `Timers` timer. The main loop already wakes
+  every 100 ms for the watchdog's heartbeat (`main.cpp`'s `Heartbeat`), which now also calls `CounterWatch::tick()`; a
+  tick is a few relaxed and acquire loads and a NodeHost lookup per node. An event from the data thread was the other
+  way, and was refused: a cut or a miss would then cost the data thread a system call (an eventfd write) inside a
+  stall's catch-up burst, the moment it is furthest behind. It is not a sleep in a test, so `test/sleeps.txt` has no
+  role for it; the one sleep D2 adds is `counters_test.cpp`'s induced stall.
+- **A loss is the change, never `cycles`.** 8.3's "only when something changed" would have sent `counters.changed`
+  every second, as `cycles` moves every cycle. A change is `cutCycles`, `stalls` or any node counter; `cycles` and
+  `lostMs` ride along.
+- **The records wait for the cuts to hold still.** 8.3's "one a second, for a second in which something was cut" would
+  split a stall whose catch-up burst crosses a second's edge into two records, and a host that cuts every few cycles
+  into one a second. A record is written once its counter held still over a beat (100 ms), at most once per its pace
+  (1 s graph, 10 s a node), and at least once every 10 s while it never holds still. Measured on the dev host: a 500 ms
+  SIGSTOP of the whole process is one record of 93 or 94 cycles in 1 stall, every run (`counters_test.cpp` asks for one
+  record with three quarters of the stall's 93.75 cycles).
+- **All the pacing is CounterWatch's.** 8.4 had StatusLog pace the node record itself. The hold needs the beats, which
+  only CounterWatch has, so it paces all three and `CounterListener` has a call for each (defaults do nothing; the
+  gateway overrides the wire's, StatusLog the two records). `ms` is the difference of the totals' times, so the
+  records' `ms` add up to `lostMs`.
+- **Spans, told by NodeHost.** 8.4's "one entry per node, made at add and dropped at remove" needs to tell a newer node
+  of a name from the older (a remove and an add in one commit leaves the name's counts stepping back to zero, or, by
+  chance, equal) and needs the final counts, which `NodeHost::counts` stops answering once a node is gone. NodeHost
+  alone knows both, so it tells `countsBegan` (a node that carries no older node's counts) and `countsEnded` (with the
+  final counts, before `nodeGone`), the latter not for a superseded node nor a port-caused replace's older node.
+  `NodeCounterSource` is the read CounterWatch needs of NodeHost, so its tests run on a fake.
+- **A gone node.** On the wire a client drops a node at `node.removed`; a `counters.changed` naming it while it closes
+  is ignored, as any event naming a node the client does not hold. On standard output its end writes what it moved
+  since its last record at once, pace and hold waived, so a node removed within 10 s of its last record still says it.
+  A superseded node's last beat or less of movement is lost (its name's span is the newer node's from the add): a
+  replace by another type of a node that was missing cycles in the 100 ms before it.
+- **`node.added` carries counters.** 8.3 gave counters to the snapshot alone. A port-caused replace is `node.removed`
+  and `node.added` on the wire but one node to NodeHost, whose counts carry on; a client holding zero until the next
+  sample would see the carried counts as a sudden loss (D3's mark). The gateway hears the replace before NodeHost does
+  (observers first), so it reads the older node's counts then (`MainLoopGateway::readCounts`); any other add carries
+  zero.
+- **A flush at the stop.** So the records' sums are the totals, the graph's record held back is written after the main
+  loop ends, before `exit` (each node's went with it). The system tests judge from that.
+- **The system tests' excuse moved, their shapes stayed.** `isSkipStep` became `skippedBlocks`, which says which steps
+  are skips (whole blocks, exactly) and how many blocks; the ramp's and the source stamps' skipped blocks may not pass
+  ear's own count (`LostCycles::budget`: cut cycles and every node's uncut misses). The 200 µs `stampSlackUs` stays: it
+  is the stamps' rounding to the microsecond and the clock's loop, read on clean steps as on skips, not an excuse.
+  Deleting the shapes would let a drop of a few frames pass whenever the budget had room.
+- **The RTP test's `heldBy` stays** (5.5 gave it to D2): it times the test's own sender, whose late sends no counter of
+  ear's counts.
+- **`snapshot.json`'s counters and the reducer.** Every fixture's snapshots and `node.added` carry `counters` (zero
+  where nothing was lost); the editor's reducer keeps them whole, an unknown counter among them, and folds
+  `counters.changed`, so D3 has totals per node and graph from the first snapshot on.
+- **Proven to fail a broken report**, each injected, run and reverted (the report of this step lists the runs).
 
 ## 10. Decided here (technical)
 
