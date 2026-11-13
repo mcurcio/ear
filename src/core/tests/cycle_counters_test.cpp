@@ -95,21 +95,25 @@ TEST_CASE("A cycle's facts move each node counter by its own cause and no other"
 	const std::vector<Row> rows{
 		{"a whole cycle", {}, false, {}},
 		{"a catch-up over three cut cycles: the graph's, not the node's",
-		 {.missed = 3, .missedCut = 3, .causes = CycleCause::catchUp},
-		 false,
-		 {}},
+	     {.missed = 3, .missedCut = 3, .causes = CycleCause::catchUp},
+	     false,
+	     {}},
 		{"a pause of five cycles, none cut", {.missed = 5, .causes = CycleCause::absent}, false, {.missedCycles = 5}},
-		{"seven missed, two of them cut", {.missed = 7, .missedCut = 2, .causes = CycleCause::absent}, false,
-		 {.missedCycles = 5}},
+		{"seven missed, two of them cut",
+	     {.missed = 7, .missedCut = 2, .causes = CycleCause::absent},
+	     false,
+	     {.missedCycles = 5}},
 		{"a reposition", {.causes = CycleCause::reposition}, false, {.repositions = 1}},
-		{"a reposition over two cycles not cut", {.missed = 2, .causes = CycleCause::reposition}, false,
-		 {.missedCycles = 2, .repositions = 1}},
+		{"a reposition over two cycles not cut",
+	     {.missed = 2, .causes = CycleCause::reposition},
+	     false,
+	     {.missedCycles = 2, .repositions = 1}},
 		{"another driver", {.causes = CycleCause::driverChange}, false, {.driverChanges = 1}},
 		{"a whole cycle whose work overran", {}, true, {.overruns = 1}},
 		{"a drive, a start and a cycle after one too large: none is counted",
-		 {.causes = CycleCause::start | CycleCause::drive | CycleCause::oversized},
-		 false,
-		 {}},
+	     {.causes = CycleCause::start | CycleCause::drive | CycleCause::oversized},
+	     false,
+	     {}},
 	};
 	for (const Row& row : rows) {
 		INFO(row.what);
@@ -132,7 +136,7 @@ TEST_CASE("An overrun is work longer than the cycle, and the graph's lost time i
 	CHECK_FALSE(cycleOverran(8'000'000, clock, 512));
 	CHECK(GraphCounts{}.lostMs(clock, 256) == 0);
 	CHECK(GraphCounts{.cycles = 100, .cutCycles = 3, .stalls = 1}.lostMs(clock, 256) == 16); // 16 ms of 3 blocks
-	CHECK(GraphCounts{.cutCycles = 187'500}.lostMs(clock, 256) == 1'000'000);             // 1000 s
+	CHECK(GraphCounts{.cutCycles = 187'500}.lostMs(clock, 256) == 1'000'000);                // 1000 s
 	CHECK(GraphCounts{.cutCycles = 1}.lostMs(clock, 48) == 1);
 	CHECK((NodeCounts{1, 2, 3, 4} + NodeCounts{10, 20, 30, 40}) == NodeCounts{11, 22, 33, 44});
 }

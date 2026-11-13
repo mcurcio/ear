@@ -1541,7 +1541,18 @@ keeps only where it departs from 8.1, 8.2 and 8.4 as first written (8.4 is corre
   some but not all of the cycles since the last cut, `missedCut` is a lower bound by one (9.2); the counter then may
   count one cycle more than the block missed uncut. Only a pause of over 2^16 cycles with cuts in it makes it.
 - **The pause is made with `pw_impl_node_set_active(false)`**, as C2's runner makes it (9.3): the step table's
-  "a `PAUSED` block" is a block made inactive. A suspended node is never brought back.
+  "a `PAUSED` block" is a block made inactive. A suspended node is never brought back. Another block runs beside it,
+  so the driver has a node to drive and the test's waiter is woken while the paused block runs nothing.
+- **Proven to fail a broken count**, each injected, run and reverted: no stall counted fails the record's table, the
+  harness's cut test and the engine's induced cut (0 stalls against at least 4); every cut a stall fails the table and
+  the harness (on the engine four 1.5-cycle stalls forty cycles apart make as many stalls as cuts, so only the scripted
+  record tells the rule apart); cycles read as cuts fails all three; cut cycles read as stalls fails the table and the
+  harness; no missed cycle counted fails the table, the harness's pause and the engine's pause (0 against 33); the
+  graph's cut cycles counted as a node's fails the table, the harness's cut test and the engine's tail (4 against 0);
+  no overrun counted fails the table, the harness's stalling code and the engine's (the wait for three never ends);
+  the block's work timed as nothing fails the engine's; no reposition or driver change counted fails the table and
+  the harness (the engine makes neither: S6); a destroyed block's counts dropped, or a port-caused replace's not
+  carried, fails NodeHost's test.
 
 ## 10. Decided here (technical)
 

@@ -2879,7 +2879,13 @@ TEST_CASE("An induced cut moves the graph's counters and no node's missed cycles
 	REQUIRE(waiter.until([&] { return head.stalls() == 4 && head.ledger().count() >= 200; }));
 	REQUIRE(ear::testing::driveNow(*headBlock, nullptr));
 	REQUIRE(ear::testing::driveNow(*tailBlock, nullptr));
+	// The graph's counters are the record's own counts, read between two readings of the record while it runs on.
+	const std::uint64_t cutsBefore = engine->cuts().cutsSoFar(), startedBefore = engine->cuts().started();
 	const GraphCounts after = engine->graphCounts();
+	CHECK(after.cutCycles >= cutsBefore);
+	CHECK(after.cutCycles <= engine->cuts().cutsSoFar());
+	CHECK(after.cycles >= startedBefore);
+	CHECK(after.cycles <= engine->cuts().started());
 
 	INFO("the graph's counters moved from " << before.cycles << " cycles, " << before.cutCycles << " cut, "
 	                                        << before.stalls << " stalls to " << after.cycles << ", " << after.cutCycles
