@@ -113,6 +113,9 @@ public:
 	void controlListening(std::string_view address, std::uint16_t port);
 	/// Why ear exits with `status` (a folder it cannot open, a port it cannot bind).
 	void exiting(int status, std::string_view reason);
+	/// A stop has done all ear does (every node removed, the control port closed, ear.conf's last write made): status
+	/// 0, reason `stopped`, ear's last record of a clean exit (a library may still log from its teardown after it).
+	void stopped();
 
 private:
 	/// A record's own fields, in order: each a key and its value as JSON text.

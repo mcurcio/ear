@@ -4,7 +4,7 @@ Every line ear writes on standard output is one JSON object, a **record**, from 
 (`src/control/status_log.cpp`). The schema's home is the fixture
 `test/protocol/output-records.json`, which holds a record of every kind; ear's tests check the
 encoder against it field for field and in order. Bad flags and `--help` come before any record, as
-plain text; every later reason to exit 1 is an `exit` record.
+plain text; every later reason to exit 1 is an `exit` record, and so is the end of a clean stop.
 
 ```json
 {"v":1,"seq":15,"t":"2026-11-07T19:32:03.096982Z","kind":"route","from":"noise:noise.mono","to":"rec:record.left","status":"linked","msg":"route noise:noise.mono -> rec:record.left linked"}
@@ -42,11 +42,11 @@ UTF-8 becomes U+FFFD.
 | `log` | `node` or `unattributed: true`, `level`, `source`, `topic`?, `text`, `cut`?, `heldBack`? | `[node <name> ]<source>[ <topic>] <level>: <text>` |
 | `diagnostic` | `node`?, `code`, the code's fields, `detail` | below |
 | `action` | `node`, `action`, `result`, `detail`? | below |
-| `exit` | `status`, `reason` | `ear: <reason>` |
+| `exit` | `status`, `reason` | `ear: <reason>` (`ear: stopped` at a clean stop) |
 
 The order at boot: `engine` (how the audio thread is scheduled), then `control`, then the first
 `graph-file` (cause `disk`, once the main loop runs) and the records it causes; then a record for
-every change.
+every change; at a stop, every node's `removed`, then `exit` with status 0.
 
 ### `node`
 
@@ -163,6 +163,14 @@ record says so.
 
 Why ear exits 1 after the flags were read: a folder it cannot make or open, folders that overlap,
 an engine that does not start, a folder watch it cannot arm, a control port it cannot bind.
+
+At a stop (SIGINT or SIGTERM), `exit` with status 0 and reason `stopped` (`ear: stopped`) says ear
+has done all it does: every node removed, the control port closed, `ear.conf`'s last write made (or
+its `graph-file-write-failed` written). It is ear's last record; a library's log line from the
+teardown after it (PipeWire's, as the engine is destroyed) may still follow. What comes between it
+and the process's end is not ear's work
+([architecture.md](architecture.md#stop-sigint-or-sigterm)), so whoever stops ear judges the stop by
+this record, and the end of the process only for its status.
 
 ## How output is written
 

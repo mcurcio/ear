@@ -294,6 +294,7 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 		[](StatusLog& log, Lines&) {
 			log.internalError({.callback = "LinkProxy::onInfo", .node = {}, .where = {}, .what = "bad info"});
 		},
+		[](StatusLog& log, Lines&) { log.stopped(); },
 	};
 }
 

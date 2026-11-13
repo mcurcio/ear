@@ -6,7 +6,7 @@
 // (docs/output-records.md): from then on everything on standard output is one JSON record a line, from the one encoder
 // (StatusLog), written by the output thread. Stopping closes the graph to edits, stops the keeper taking edits, stops
 // every node, then closes the control port, stops the control thread and ends the main loop; the keeper's last write
-// runs as its thread is joined.
+// runs as its thread is joined, and the record `ear: stopped` ends the stop.
 
 #include <array>
 #include <chrono>
@@ -371,6 +371,8 @@ int main(int argc, char** argv) {
 
 	// The keeper's last write runs as its thread ends; its failure reaches standard output only.
 	if (const auto failed = keeper.join()) log.graphFileWriteFailed(*failed);
+	// ear's last record: what follows is destruction and the kernel's teardown of the process, ear's work no more.
+	log.stopped();
 	// A run leaked past its close deadline may still post to the main loop or signal an engine source from its own
 	// threads, and a wedged data loop's blocks and engine companions were leaked because destroying them would wait on
 	// it (docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog); destroying the executor and the engine

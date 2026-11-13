@@ -115,3 +115,35 @@ TEST_CASE("The graph file keeper on its thread: start announces, an edit replies
 	CHECK_FALSE(keeper.join().has_value());
 	CHECK(contents(file) == replaced(recordExample, "take1.wav", "take2.wav"));
 }
+
+TEST_CASE("A stopped keeper removes its folder watch while it still answers, before it is joined",
+          "[graph_file_keeper]") {
+	TempFolder dir("facade_unwatch");
+	std::ofstream(dir.path() / "ear.conf", std::ios::binary) << recordExample;
+	auto folder = folder::ConfinedFolder::open(dir.path());
+	REQUIRE(folder.has_value());
+	NodeCatalogue catalogue{testTypes()};
+	DesiredGraph graph{catalogue};
+	NoReader reader;
+	BlockingQueue mainLoop;
+	Log log;
+	FileLog fileLog{log};
+	FakeOperations operations{log};
+	GraphFileKeeper keeper(GraphFileKeeper::load(*folder, catalogue), *folder, {48000, 256}, graph, reader, operations,
+	                       mainLoop);
+	keeper.subscribe(fileLog);
+	REQUIRE(keeper.start().has_value());
+	REQUIRE(mainLoop.runUntil([&] { return !fileLog.changes.empty(); }));
+	REQUIRE(inotifyWatches() == 1);
+
+	// The watch goes as the stop begins, so the kernel reaps it while the nodes stop; a close that still finds it
+	// waits for that reaping, after ear's last record (docs/architecture.md#stop-sigint-or-sigterm).
+	graph.close();
+	keeper.stop();
+	std::optional<std::vector<control::CommandResult>> reply;
+	keeper.submit({control::GetGraphFile{}},
+	              [&](std::vector<control::CommandResult> results) { reply = std::move(results); });
+	REQUIRE(mainLoop.runUntil([&] { return reply.has_value(); })); // a read after the stop, on the keeper's thread
+	CHECK(inotifyWatches() == 0);
+	CHECK_FALSE(keeper.join().has_value());
+}

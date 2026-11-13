@@ -2,6 +2,7 @@
 // that routes white noise into one channel of a file node, is stopped with SIGTERM and leaves a
 // finished WAV file with the noise on that channel only. Everything it prints is a record
 // (docs/output-records.md), seq from 1 with no gap.
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <csignal>
@@ -44,7 +45,7 @@ void recordNoise(const std::string& to, int noisy) {
 	// The recording window: until the WAV holds a second of noise; the checks below need at least half of it.
 	CHECK(waitForNoiseSecond(directory.recordings() / "rec.wav", noisy, 48000));
 	ear.signal(SIGTERM);
-	const auto exitStatus = ear.waitForExit(deadline);
+	const auto exitStatus = waitForStop(ear);
 	INFO("ear printed:\n" << ear.output());
 	REQUIRE(exitStatus == 0);
 	CHECK(ear.hasLine("node rec removed dropped=0"));
@@ -57,6 +58,33 @@ void recordNoise(const std::string& to, int noisy) {
 TEST_CASE("White noise routed to record.left lands on left only", "[system]") { recordNoise("record.left", 0); }
 
 TEST_CASE("White noise routed to record.right lands on right only", "[system]") { recordNoise("record.right", 1); }
+
+TEST_CASE("A stop ends with the record ear: stopped, after every node is removed, and ear exits 0", "[system]") {
+	TempDirectory directory;
+	writeGraphFile(directory, noiseToRec());
+	ChildProcess ear(EAR_BINARY, earArguments(directory));
+	const bool linked = ear.waitForLine(linkedLine("noise:noise.mono", "rec:record.left"), deadline);
+	INFO("ear printed:\n" << ear.output());
+	REQUIRE(linked);
+	ear.signal(SIGTERM);
+	// ear's own word that its stop is done, waited for alone: the process's end after it is the kernel's teardown,
+	// which a starved host stretches past any bound a test could judge.
+	REQUIRE(ear.waitForLine(std::string(stoppedLine), deadline));
+	CHECK(waitForStop(ear) == 0);
+	checkAllRecords(ear);
+	const auto& records = ear.records();
+	const auto at = [&](const std::string& msg) {
+		return std::ranges::find_if(records, [&](const json& record) { return record["msg"] == msg; }) -
+		       records.begin();
+	};
+	const auto stopped = at(std::string(stoppedLine));
+	CHECK(at("node noise removed dropped=0") < stopped);
+	CHECK(at("node rec removed dropped=0") < stopped);
+	CHECK(records[static_cast<std::size_t>(stopped)]["kind"] == "exit");
+	CHECK(records[static_cast<std::size_t>(stopped)]["status"] == 0);
+	CHECK(records[static_cast<std::size_t>(stopped)]["reason"] == "stopped");
+	CHECK(headerFinished(directory.recordings() / "rec.wav"));
+}
 
 TEST_CASE("A recordings folder ear cannot make stops ear with exit status 1", "[system]") {
 	TempDirectory directory;

@@ -445,4 +445,6 @@ void StatusLog::exiting(int status, std::string_view reason) {
 	emit("exit", {{"status", json(status)}, {"reason", json(reason)}}, std::format("ear: {}", reason));
 }
 
+void StatusLog::stopped() { exiting(0, "stopped"); }
+
 } // namespace ear::control

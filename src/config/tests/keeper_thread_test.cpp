@@ -1,6 +1,6 @@
 // The keeper's thread (keeper_thread.hpp) on a real thread and a real folder:
 // posted work in post order on its own thread, a rename of ear.conf as a disk event (and another
-// file's as none), free after each wake, and stop. Every wait is for an event; the deadline only
+// file's as none), free after each wake, unwatch, and stop. Every wait is for an event; the deadline only
 // fails the test.
 #include <algorithm>
 #include <atomic>
@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -132,4 +133,28 @@ TEST_CASE("stop() runs the work already posted, then joins, and work posted afte
 	CHECK(sentinel.use_count() == 1); // destroyed
 	thread->stop();                   // idempotent
 	CHECK(seen.countOf("late") == 0);
+}
+
+TEST_CASE("unwatch() removes the folder watch while the thread still runs, and no disk event follows",
+          "[keeper_thread]") {
+	TempFolder dir("thread_unwatch");
+	Seen seen;
+	auto thread = startThread(dir, seen);
+	int markers = 0;
+	settle(*thread, seen, markers);
+	REQUIRE(inotifyWatches() == 1);
+
+	// The watch goes as the keeper stops, not when its descriptor is closed: a close that still finds the watch waits
+	// for the kernel to reap it (docs/architecture.md#stop-sigint-or-sigterm).
+	thread->unwatch();
+	settle(*thread, seen, markers);
+	CHECK(inotifyWatches() == 0);
+
+	handEdit(dir.path() / "ear.conf", "graph");
+	settle(*thread, seen, markers);
+	CHECK(seen.countOf("disk") == 0);
+	thread->unwatch(); // idempotent
+	thread->post([&seen] { seen.add("work after"); });
+	CHECK(seen.waitFor("work after"));
+	thread->stop();
 }

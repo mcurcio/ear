@@ -166,7 +166,7 @@ void checkFoundOverMdns(const std::string& node, const std::string& settings, co
 	REQUIRE_SEEN(ear, ear.waitForLine(prefix + "connected \"ear-test-server\" paired", deadline));
 
 	ear.signal(SIGTERM);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 	const auto removed = server.waitForEvent("service-removed ", playDeadline);
 	INFO("the server then printed:\n" << server.events());
 	REQUIRE_SEEN(ear, removed);
@@ -206,7 +206,7 @@ TEST_CASE("A server browsing mDNS comes back by itself after a new name restarts
 	REQUIRE_SEEN(ear, again);
 	ear.signal(SIGTERM);
 	CHECK(rpc.readUntilClosed() == 1001);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 }
 
 TEST_CASE("A listening node announces itself unasked, with its PTR, SRV, TXT and A", "[system][sendspin]") {
@@ -229,7 +229,7 @@ TEST_CASE("A listening node announces itself unasked, with its PTR, SRV, TXT and
 	CHECK(count(6) == 1);  // the PTR
 	CHECK(count(10) >= 3); // the SRV, the A and the TXT
 	ear.signal(SIGTERM);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 }
 
 TEST_CASE("One datagram of many questions gets one answer, and a response or a runt gets none", "[system][sendspin]") {
@@ -262,7 +262,7 @@ TEST_CASE("One datagram of many questions gets one answer, and a response or a r
 	CHECK(answers(many.substr(0, 6)) == std::optional<std::size_t>(0));      // shorter than a header
 	CHECK(answers(mdnsQuery(1)) == std::optional<std::size_t>(1));           // and it still answers
 	ear.signal(SIGTERM);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 }
 
 TEST_CASE("A burst of multicast queries gets at most an answer a second", "[system][sendspin]") {
@@ -285,5 +285,5 @@ TEST_CASE("A burst of multicast queries gets at most an answer a second", "[syst
 	CHECK(answers >= 1);
 	CHECK(static_cast<double>(answers) <= seconds + 2.0); // one at each whole second, the announcement among them
 	ear.signal(SIGTERM);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 }

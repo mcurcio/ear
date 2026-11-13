@@ -30,7 +30,8 @@ std::expected<std::unique_ptr<KeeperThread>, std::string> KeeperThread::start(st
                                                                               std::string fileName, Handlers handlers) {
 	const int watch = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
 	if (watch < 0) return std::unexpected(failed("inotify_init1"));
-	if (inotify_add_watch(watch, directory.c_str(), fileEvents | folderEvents | IN_ONLYDIR) < 0) {
+	const int watched = inotify_add_watch(watch, directory.c_str(), fileEvents | folderEvents | IN_ONLYDIR);
+	if (watched < 0) {
 		auto error = failed(std::format("cannot watch {}", directory));
 		::close(watch);
 		return std::unexpected(std::move(error));
@@ -41,13 +42,14 @@ std::expected<std::unique_ptr<KeeperThread>, std::string> KeeperThread::start(st
 		::close(watch);
 		return std::unexpected(std::move(error));
 	}
-	std::unique_ptr<KeeperThread> thread(new KeeperThread(wake, watch, std::move(fileName), std::move(handlers)));
+	std::unique_ptr<KeeperThread> thread(
+		new KeeperThread(wake, watch, watched, std::move(fileName), std::move(handlers)));
 	thread->thread_ = std::thread([self = thread.get()] { self->run(); });
 	return thread;
 }
 
-KeeperThread::KeeperThread(int wake, int watch, std::string fileName, Handlers handlers)
-	: wake_(wake), watch_(watch), fileName_(std::move(fileName)), handlers_(std::move(handlers)) {}
+KeeperThread::KeeperThread(int wake, int watch, int watched, std::string fileName, Handlers handlers)
+	: wake_(wake), watch_(watch), watched_(watched), fileName_(std::move(fileName)), handlers_(std::move(handlers)) {}
 
 KeeperThread::~KeeperThread() {
 	stop();
@@ -65,6 +67,16 @@ void KeeperThread::post(std::move_only_function<void()> work) {
 	[[maybe_unused]] const auto written = ::write(wake_, &one, sizeof one);
 }
 
+void KeeperThread::unwatch() {
+	post([this] {
+		if (watched_ < 0) return;
+		// Removing the watch only hands it to the kernel's reaper, which a close of the descriptor would wait for (an
+		// RCU grace period: some 16 ms, seconds on a starved host). It fails harmlessly when the folder went first.
+		[[maybe_unused]] const int removed = inotify_rm_watch(watch_, watched_);
+		watched_ = -1;
+	});
+}
+
 void KeeperThread::stop() {
 	{
 		const std::scoped_lock lock(mutex_);
@@ -79,12 +91,13 @@ void KeeperThread::run() {
 	std::array<pollfd, 2> fds{{{wake_, POLLIN, 0}, {watch_, POLLIN, 0}}};
 	alignas(inotify_event) std::array<char, 4096> buffer{};
 	for (;;) {
+		fds[1].fd = watched_ < 0 ? -1 : watch_; // poll() skips a negative descriptor
 		if (::poll(fds.data(), fds.size(), -1) < 0) {
 			if (errno == EINTR) continue;
 			return;
 		}
 		bool disk = false;
-		for (;;) { // drain the watch: every event read is judged together
+		while (watched_ >= 0) { // drain the watch: every event read is judged together
 			const auto got = ::read(watch_, buffer.data(), buffer.size());
 			if (got <= 0) break;
 			disk = disk || namesFile(buffer.data(), got);
@@ -100,7 +113,8 @@ void KeeperThread::run() {
 		}
 		for (auto& work : batch) work();
 		batch.clear();
-		if (disk && !last) handlers_.diskEvent(); // after the work posted before it (the keeper's start first)
+		if (disk && !last && watched_ >= 0)
+			handlers_.diskEvent(); // after the work posted before it (the keeper's start first)
 		bool idle = false;
 		{
 			const std::scoped_lock lock(mutex_);

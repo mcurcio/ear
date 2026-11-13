@@ -100,12 +100,13 @@ void checkHeldDial(const TempDirectory& directory, const std::string& url) {
 		CHECK(std::chrono::steady_clock::now() - before < stopBound);
 
 		ear.signal(SIGTERM);
-		const auto stopping = std::chrono::steady_clock::now();
 		CHECK(rpc.readUntilClosed() == 1001);
-		const auto exitStatus = ear.waitForExit(stopBound);
-		CHECK(std::chrono::steady_clock::now() - stopping < stopBound);
+		const auto exitStatus = waitForStop(ear);
 		INFO("ear printed:\n" << ear.output());
 		CHECK(exitStatus == 0);
+		const auto took = removalTook(ear, "ma");
+		REQUIRE(took);
+		CHECK(*took < stopBound);
 	}
 }
 
@@ -136,7 +137,7 @@ TEST_CASE("With no server at all the sendspin node runs, its meters silent, and 
 		}
 	}
 	ear.signal(SIGTERM);
-	const auto exitStatus = ear.waitForExit(stopBound);
+	const auto exitStatus = waitForStop(ear);
 	INFO("ear printed:\n" << ear.output());
 	CHECK(exitStatus == 0);
 	CHECK_FALSE(ear.lineStartingWith("node ma failed"));
@@ -168,7 +169,7 @@ TEST_CASE("A slow upgrade sees one connection and no another_server, then connec
 	CHECK(server.count("upgrade") == 1);
 	CHECK(server.count("disconnected ") == 0);
 	ear.signal(SIGTERM);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 }
 
 TEST_CASE("A listening node says how it is known, and a server that dials it pairs and plays", "[system][sendspin]") {
@@ -190,7 +191,7 @@ TEST_CASE("A listening node says how it is known, and a server that dials it pai
 	REQUIRE_SEEN(ear, endStream(ear, server));
 
 	ear.signal(SIGTERM);
-	REQUIRE_SEEN(ear, ear.waitForExit(deadline) == 0);
+	REQUIRE_SEEN(ear, waitForStop(ear) == 0);
 	CHECK(ear.hasLine("node rec removed dropped=0"));
 	const RampCheck ramp = checkRamp(readWav(directory.recordings() / "rec.wav"), lostSyncUs(ear));
 	INFO(ramp);
@@ -229,7 +230,7 @@ TEST_CASE("A port another program holds fails the node with the kernel's reason,
 	CHECK_FALSE(connectRefused(freePort));
 	ear.signal(SIGTERM);
 	CHECK(rpc.readUntilClosed() == 1001);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 }
 
 TEST_CASE("Two sendspin nodes on one port: the second fails naming the first, and a free port "
@@ -271,7 +272,7 @@ TEST_CASE("Two sendspin nodes on one port: the second fails naming the first, an
 	CHECK_FALSE(ear.lineStartingWith("node " + winner + " failed"));
 	ear.signal(SIGTERM);
 	CHECK(rpc.readUntilClosed() == 1001);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 }
 
 TEST_CASE("A new name while a server is connected keeps the port: the node still listens and a "
@@ -303,7 +304,7 @@ TEST_CASE("A new name while a server is connected keeps the port: the node still
 	REQUIRE_SEEN(ear, waitForNthLine(ear, "node ma says connected ", 1, playDeadline));
 	ear.signal(SIGTERM);
 	CHECK(rpc.readUntilClosed() == 1001);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 }
 
 TEST_CASE("A dialling node opens no listening socket", "[system][sendspin]") {
@@ -317,7 +318,7 @@ TEST_CASE("A dialling node opens no listening socket", "[system][sendspin]") {
 	CHECK(connectRefused(8928)); // the library's default, and no test here listens on it
 	CHECK_FALSE(ear.lineStartingWith("node ma says listening"));
 	ear.signal(SIGTERM);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 }
 
 TEST_CASE("A node removed and added back while a server is connected takes its port back, once the "
@@ -349,5 +350,5 @@ TEST_CASE("A node removed and added back while a server is connected takes its p
 	REQUIRE_SEEN(ear, waitForNthLine(ear, "node ma says connected ", 1, playDeadline));
 	ear.signal(SIGTERM);
 	CHECK(rpc.readUntilClosed() == 1001);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 }

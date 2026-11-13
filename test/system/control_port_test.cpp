@@ -407,7 +407,7 @@ TEST_CASE("Edits sent while ear stops are refused as stopping and ear exits clea
 	if (!closeCode) closeCode = rpc.readUntilClosed();
 	CHECK(*closeCode == 1001);
 
-	const auto exitStatus = ear.process().waitForExit(deadline);
+	const auto exitStatus = waitForStop(ear.process());
 	INFO("ear printed:\n" << ear.process().output());
 	CHECK(exitStatus == 0);
 	CHECK(ear.process().output().find("terminate") == std::string::npos);

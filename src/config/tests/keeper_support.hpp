@@ -2,11 +2,13 @@
 // file, a hand edit made the way editors save (a temporary file renamed over ear.conf), and
 // listeners that write what they are told into one ordered log.
 #pragma once
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include "ear/control/lifecycle_wire.hpp"
@@ -16,6 +18,19 @@
 #include "temp_folder.hpp"
 
 namespace ear::config::test {
+
+/// The inotify watches this process holds, read from the kernel's own account of each inotify descriptor
+/// (/proc/self/fdinfo, one `inotify wd:` line a watch).
+inline std::size_t inotifyWatches() {
+	std::size_t watches = 0;
+	for (const auto& entry : std::filesystem::directory_iterator("/proc/self/fd")) {
+		std::error_code ignored;
+		if (std::filesystem::read_symlink(entry.path(), ignored) != "anon_inode:inotify") continue;
+		std::ifstream info("/proc/self/fdinfo/" + entry.path().filename().string());
+		for (std::string line; std::getline(info, line);) watches += line.starts_with("inotify wd:") ? 1U : 0U;
+	}
+	return watches;
+}
 
 /// The record's file format example (docs/graph-file.md#edits-at-the-source).
 inline const std::string recordExample = R"(graph_frequency 48000;

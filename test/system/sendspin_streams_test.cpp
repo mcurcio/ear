@@ -153,7 +153,7 @@ TEST_CASE("Paired, routed noise reaches the server on the routed channel, with e
 	CHECK(stamps.skippedUs <= stamps.lastArrivalUs - stamps.firstArrivalUs.value_or(stamps.lastArrivalUs));
 
 	ear.signal(SIGTERM);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 	CHECK(ear.hasLine("node ma removed dropped=0"));
 }
 
@@ -217,7 +217,7 @@ TEST_CASE("A server lost mid-stream leaves the node running, and restarted with 
 	REQUIRE_SEEN(ear, endStream(ear, server));
 
 	ear.signal(SIGTERM);
-	REQUIRE_SEEN(ear, ear.waitForExit(deadline) == 0);
+	REQUIRE_SEEN(ear, waitForStop(ear) == 0);
 	const RampCheck ramp = checkRamp(readWav(directory.recordings() / "rec.wav"), lostSyncUs(ear));
 	INFO(ramp);
 	CHECK(ramp.lastRunFrames >= rampFramesAtLeast);
@@ -250,7 +250,7 @@ TEST_CASE("A server cannot change the depth of a running stream: asked for 16 bi
 	                              [](const RampSoFar& ramp) { return ramp.lastRunFrames >= graphFrequency * 5 / 2; }));
 	REQUIRE_SEEN(ear, endStream(ear, server));
 	ear.signal(SIGTERM);
-	REQUIRE(ear.waitForExit(deadline) == 0);
+	REQUIRE(waitForStop(ear) == 0);
 	CHECK(countLines(ear, "node ma says stream ") == 1);
 	CHECK(ear.hasLine("node ma says stream flac 48000 2 24"));
 	const RampCheck ramp = checkRamp(readWav(directory.recordings() / "rec.wav"), lostSyncUs(ear));
@@ -273,5 +273,5 @@ TEST_CASE("A large block raises the lead the player reports to what still plays 
 	REQUIRE(lead);
 	CHECK(*lead == "lead 256"); // the feed's 8192 frames and a block of 4096, at 48 kHz
 	ear.signal(SIGTERM);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 }

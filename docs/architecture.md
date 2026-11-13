@@ -521,7 +521,8 @@ engine that does not start, a folder watch it cannot arm, or a control port it c
 ### Stop (SIGINT or SIGTERM)
 
 1. `DesiredGraph::close()`: every later edit is refused `stopping`.
-2. The keeper is told to stop: edits still queued get `stopping`; reads are still answered.
+2. The keeper is told to stop: edits still queued get `stopping`; reads are still answered. Its
+   thread removes its folder watch (a stopped keeper takes no disk event).
 3. `NodeHost::stopAll` takes every node through `stopping` (cause `removing`) and tears it down
    (a `file` node finishes its WAV file).
 4. The control port closes every client with WebSocket code 1001; the control thread stops; the
@@ -529,11 +530,21 @@ engine that does not start, a folder watch it cannot arm, or a control port it c
 5. The main thread joins the keeper's thread, which first writes the last accepted version of
    `ear.conf` if it was not written yet (a failure is a `graph-file-write-failed` record; a hung
    disk delays exit without limit).
-6. Every queued record is written; ear exits 0 (through `std::_Exit(0)` if anything was leaked).
+6. ear writes its last record, `exit` with status 0 (`ear: stopped`,
+   [output-records.md](output-records.md#exit)).
+7. Every queued record is written; ear exits 0 (through `std::_Exit(0)` if anything was leaked).
 
 *Why stop in this order:* recordings are finished before anything waits on the disk, and the
 last `ear.conf` write happens before Kubernetes' grace period ends whatever the data loop or a
 card does.
+
+*Why the watch goes at step 2:* closing an inotify descriptor that still holds a watch waits for
+the kernel to reap it: a delayed work item and an RCU grace period that every process on the host
+shares, some 16 ms on an idle host and whole seconds on a starved one, all of it after ear's last
+record. Removing the watch only hands it to that reaper, so it is reaped while the nodes stop and
+the close as ear ends finds nothing to wait for. A starved host can still hold the end of the
+process past `ear: stopped` (its destructors and the kernel's teardown): the record, not the
+process's end, says when ear's stop is done.
 
 ## Not built yet
 

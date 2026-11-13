@@ -157,7 +157,7 @@ TEST_CASE("A tone sent over RTP to an rtp node lands in the file node's WAV, cha
 	INFO("judged " << tenths.size() << " tenths, excused " << excused);
 	REQUIRE(held);
 	ear.signal(SIGTERM);
-	const auto exitStatus = ear.waitForExit(deadline);
+	const auto exitStatus = waitForStop(ear);
 	INFO("ear printed:\n" << ear.output());
 	REQUIRE(exitStatus == 0);
 	CHECK(ear.hasLine("node rec removed dropped=0"));
@@ -206,7 +206,7 @@ TEST_CASE("With no sender the rtp node runs and its meters show silence", "[syst
 		CHECK(channel1[1].get<double>() == 0.0); // RMS
 	}
 	ear.signal(SIGTERM);
-	const auto exitStatus = ear.waitForExit(deadline);
+	const auto exitStatus = waitForStop(ear);
 	INFO("ear printed:\n" << ear.output());
 	CHECK(exitStatus == 0);
 }

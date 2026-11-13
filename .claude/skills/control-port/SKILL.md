@@ -167,7 +167,9 @@ then on every edit, including one already queued, gets -32000 `stopping`, while 
 node has stopped (files finished), `ControlPort::stop` closes every client with 1001 and returns
 only once every close handshake has ended; then the control thread stops and the engine quits.
 Last, the keeper's thread writes the last accepted version if it was not written; a failure is
-printed (`graph-file write-failed <detail>`) and reaches no client.
+printed (`graph-file write-failed <detail>`) and reaches no client. Then `ear: stopped` (an `exit`
+record, status 0) says the stop is done; a script waiting on ear's exit judges the stop by it
+(`docs/architecture.md#stop-sigint-or-sigterm`).
 
 ## Traps
 

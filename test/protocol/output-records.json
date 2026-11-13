@@ -737,6 +737,18 @@
         "detail": "LinkProxy::onInfo threw: bad info",
         "msg": "ear.internal-error: LinkProxy::onInfo threw: bad info"
       }
+    },
+    {
+      "case": "a stop has done all ear does: every node removed, the control port closed, ear.conf's last write made; ear's last record before it exits 0",
+      "record": {
+        "v": 1,
+        "seq": 83,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "exit",
+        "status": 0,
+        "reason": "stopped",
+        "msg": "ear: stopped"
+      }
     }
   ]
 }

@@ -41,6 +41,13 @@ using nlohmann::json;
 
 /// Fails a test whose awaited event never comes; never paces one.
 inline constexpr auto deadline = 10s;
+/// ear's last record at a clean stop (docs/output-records.md#exit).
+inline constexpr std::string_view stoppedLine = "ear: stopped";
+/// Fails a test whose ear never ends after its last record. What is left then is not ear's work but its destructors
+/// and the kernel's teardown of the process, which a starved host can stretch to seconds (closing an inotify
+/// descriptor waits for the host's RCU grace period: docs/architecture.md#stop-sigint-or-sigterm), so this catches a
+/// hang and judges no time.
+inline constexpr auto exitDeadline = 60s;
 inline constexpr std::string_view listeningPrefix = "control listening on 127.0.0.1:";
 
 /// A fresh folder for one test, holding its config folder and recordings folder, removed afterwards.
@@ -91,6 +98,43 @@ inline std::vector<std::string> earArguments(const TempDirectory& directory,
 	return arguments;
 }
 
+/// After SIGTERM: ear's stop, judged by its own last record (`ear: stopped`, under the shared deadline), then its exit
+/// status once the process has ended. Nothing if the record never came, the process did not end, or a signal ended it.
+inline std::optional<int> waitForStop(ChildProcess& ear) {
+	if (!ear.waitForLine(stoppedLine, deadline)) return std::nullopt;
+	return ear.waitForExit(exitDeadline);
+}
+
+/// The `t` of the first record whose msg is `msg`, on ear's clock; nothing if there is none.
+inline std::optional<std::chrono::sys_time<std::chrono::microseconds>> recordTime(const ChildProcess& ear,
+                                                                                  std::string_view msg) {
+	for (const json& record : ear.records()) {
+		if (record.value("msg", "") != msg) continue;
+		std::istringstream text(record.value("t", ""));
+		std::chrono::sys_time<std::chrono::microseconds> t;
+		text >> std::chrono::parse("%FT%TZ", t);
+		if (!text) return std::nullopt;
+		return t;
+	}
+	return std::nullopt;
+}
+
+/// How long ear's stop took to tear `node` down, from its records: `stopping: removing` to `removed`, on ear's clock.
+/// Nothing if either record is missing.
+inline std::optional<std::chrono::microseconds> removalTook(const ChildProcess& ear, const std::string& node) {
+	const auto stopping = recordTime(ear, "node " + node + " stopping: removing");
+	std::optional<std::chrono::sys_time<std::chrono::microseconds>> removed;
+	for (const json& record : ear.records()) {
+		const std::string msg = record.value("msg", "");
+		if (msg.starts_with("node " + node + " removed ")) {
+			removed = recordTime(ear, msg);
+			break;
+		}
+	}
+	if (!stopping || !removed) return std::nullopt;
+	return *removed - *stopping;
+}
+
 inline std::string linkedLine(const std::string& from, const std::string& to) {
 	return "route " + from + " -> " + to + " linked";
 }
@@ -118,10 +162,10 @@ public:
 	ChildProcess& process() noexcept { return process_; }
 	std::uint16_t port() const noexcept { return port_; }
 
-	/// SIGTERM, then ear's exit status.
+	/// SIGTERM, then ear's exit status (waitForStop).
 	std::optional<int> stop() {
 		process_.signal(SIGTERM);
-		return process_.waitForExit(deadline);
+		return waitForStop(process_);
 	}
 
 	/// SIGTERM with `client` connected: ear finishes the close handshake with each client before
@@ -129,7 +173,7 @@ public:
 	template <typename Client> std::optional<int> stop(Client& client) {
 		process_.signal(SIGTERM);
 		CHECK(client.readUntilClosed() == 1001);
-		return process_.waitForExit(deadline);
+		return waitForStop(process_);
 	}
 
 private:

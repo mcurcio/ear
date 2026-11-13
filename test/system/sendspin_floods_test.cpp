@@ -221,7 +221,7 @@ void checkPairsAndPlays(ChildProcess& ear, const TempDirectory& directory, Sends
 	REQUIRE_SEEN(ear, endStream(ear, server));
 	CHECK(server.count("disconnected ") == 0);
 	ear.signal(SIGTERM);
-	REQUIRE_SEEN(ear, ear.waitForExit(stopBound) == 0);
+	REQUIRE_SEEN(ear, waitForStop(ear) == 0);
 	CHECK(ear.hasLine("node rec removed dropped=0"));
 	const RampCheck ramp = checkRamp(readWav(directory.recordings() / "rec.wav"), lostSyncUs(ear));
 	INFO(ramp);
@@ -500,7 +500,7 @@ TEST_CASE("Peers resetting sockets as they are closed do not end the process", "
 		REQUIRE(peers.waitForRounds(100));
 	}
 	node.ear.signal(SIGTERM);
-	REQUIRE_SEEN(node.ear, node.ear.waitForExit(stopBound) == 0);
+	REQUIRE_SEEN(node.ear, waitForStop(node.ear) == 0);
 }
 
 TEST_CASE("A flood of silent sockets holds up neither the graph nor a stop", "[system][sendspin]") {
@@ -517,10 +517,11 @@ TEST_CASE("A flood of silent sockets holds up neither the graph nor a stop", "[s
 	CHECK(std::chrono::steady_clock::now() - before < stopBound);
 
 	node.ear.signal(SIGTERM);
-	const auto stopping = std::chrono::steady_clock::now();
 	CHECK(rpc.readUntilClosed() == 1001);
-	const auto exitStatus = node.ear.waitForExit(stopBound);
-	CHECK(std::chrono::steady_clock::now() - stopping < stopBound);
+	const auto exitStatus = waitForStop(node.ear);
 	INFO("ear printed:\n" << node.ear.output());
 	CHECK(exitStatus == 0);
+	const auto took = removalTook(node.ear, "ma");
+	REQUIRE(took);
+	CHECK(*took < stopBound);
 }
