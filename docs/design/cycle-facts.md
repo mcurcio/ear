@@ -1337,6 +1337,76 @@ What C4b built is described in `docs/engine.md` (`#graphcycle`, `#sinks`, `#sour
   held whole; never a dry one), never short of a floor of a chunk and two
   cycles past the return, inside which a host disturbance fails the run naming it.
 
+### 9.11 C3c as built: the plan
+
+Written before the code, from the tests as they stood after C4 (a96f841750), before 9.10's follow-up.
+
+**Inventory: the windows still there, and what each still excuses after C4.** C4 made ear pay a catch-up's lost
+time itself while the library is not starved (`LibraryView`, 9.9), so most of what the windows were for no longer
+happens on a quiet host; each is still there and still wide:
+
+| Window | Still there | What it excuses in practice now |
+|---|---|---|
+| `kSettleNs` (1.5 s after any unclean cycle, dry cycle, library silence, logged hard-sync step or loss) | yes, `clock_test.cpp` `Judge::one` | every catch-up, even one ear paid exactly and the library never saw: 1.5 s of timing unjudged after each. A paid catch-up needs nothing; only a library that realigns itself does (a dry feed with nothing owed, a catch-up while starved, a debt forgotten at `untoldBound`, a hard sync it logged) |
+| `kSettleCycles` | defined, unused | nothing |
+| `lossSteps` | yes, `checkStep` | a forward step of `lost_` ± 1 with a line near, `lost_` counting every short skip (which ear now pays, so the library loses nothing), every dry frame (owed ones too) and the raw clock's time across any non-catch-up jump (a pause or reposition, which the judge now fails anyway) |
+| `dryCycles` from `lastGot() < frames` | yes | a dry cycle starts the 1.5 s, owed or not, and its frames go into `lost_` |
+| `kLogReach`, `kLogLag` | yes, `takeDrops`, `takeLogged`, `loggedNear`, `Judge::read` | a library line stamped with the cycle count when standard error was read, matched within the feed and a chunk of cycles |
+| `inLoss` with `kLogLag` | yes | timing unjudged from a `Lost sync` line less 32 cycles to its `Regained` plus 32 |
+| `kLateHeardWithin` 600 ms, `kSettleFrames` 0.5 s | yes, `rtp_receiver_test.cpp` | a tenth with a late send up to 600 ms before it; a tenth with any unclean cycle in the half second before it |
+| 600 ms and 0.2 s | yes, `test/system/rtp_test.cpp` | a late send up to 600 ms before a tenth's `heldBy` time (its buffer plus the WAV's coarse looks); the first 0.2 s of sound |
+| `stepsInLoss` | `test/system/sendspin_system.hpp` only, not the clock test | a step past a `Lost sync` line's frames in a system test: D2's row (ear is another process, and the library's later hard syncs reach it only at verbose), so not this step's |
+
+**Decided: `kLogReach`, `kLogLag` and `inLoss`'s lag stay** until slice 3c's log patch. C4 changed what makes the
+library correct itself, not how its lines reach the test: they are still a bare `fprintf` read on another thread,
+stamped with the tap's count when read, and the hard syncs and losses they report are the only evidence of what the
+library did on its own (a time-filter step, its worker held by the host, a network gap). Deleting them would fail a
+loaded run on the library's own corrections, or excuse them by a window again. They stay, each with a comment pointing
+here, and nothing else in the test may use them.
+
+**The interfaces added.**
+
+- `Feed::dryReads()` and `Feed::dryFrames()`: the reads that found the feed short, and the frames they lacked, counted
+  by the feed on the reading thread (relaxed atomics, realtime-safe), read by a test after the cycle is published. The
+  feed's own word for a dry cycle; `SendspinCode::lastGot()` goes (the tap works what was read out of the count).
+- `CycleJudge::librarySettle(LibrarySettle cause, std::uint32_t chunks)`: a settle of the library past the graph,
+  declared by the test with the evidence that makes it (`dry` with nothing owed, `starvedCatchUp`, `forgottenDebt`,
+  `logged`), in the library's own units (chunks of its audio), counted per cause in `JudgeReport`. The judge only
+  counts; where the settle ends is the test's, by the server's chunks.
+- `ear::test::ArmedStall` (`inducers.hpp`): an `AudioCode` that writes silence and makes the next stall of a
+  `Stalls` when armed, the counting block `sink_test.cpp` had; the clock tests and the RTP receiver tests put it
+  upstream of the judged node, so the judge's stalls cut a cycle it misses.
+- `ear::test::lateSendReaches` and `receiverStartSettle` (`rtp_tone.hpp`): the one rule both RTP tests use for a late
+  send.
+
+**What each deleted window becomes.**
+
+- `kSettleNs`: the judge's verdict per cycle (a catch-up excuses its own cycles, nothing after), and a `librarySettle`
+  of two chunks only where the library realigns itself: a dry cycle the code does not owe (the feed's count moved; the
+  code tells it from that cycle, so it sees itself starved and floors at now), a catch-up while the model says it is
+  starved, a debt forgotten at `untoldBound`, or a hard sync or loss it logged. Two chunks: the floor acts at the next
+  chunk it syncs, which plays late by up to two blocks (`docs/node-types.md#library-facts-and-carried-patches`), and
+  the chunk after drops that once more; from the first frame of the second chunk past the one playing at the
+  disturbance the stream is on the stamps. A settle ends at that frame, by the server's own chunks, not by time.
+- `lossSteps`: a forward step inside an open settle, at most the settle's evidence (the feed's dry frames, the starved
+  catch-up's `jumpFrames`, the forgotten debt) and two blocks for the floor, give or take one soft-sync frame, with a
+  line of the library's near. Outside a settle a step must be a skip, a blend or a logged drop.
+- `dryCycles` from `lastGot()`: the feed's `dryReads()`; a dry cycle opens a settle only when the code did not owe its
+  zeros (the model's `catchingUp`), and the code's read is checked against the count.
+- `kSettleCycles`: deleted.
+- `kLateHeardWithin` and `kSettleFrames` (both RTP tests): a late send reaches from when its packet was due to one
+  receiver buffer after it was sent (the configured `latencyMs` through `FrameClock`); in the engine test a tenth is
+  judged when every recorder cycle of it and of one buffer before it is `judge` in the judge (the same reach), and an
+  upstream `ArmedStall` makes the judge's four stalls while the tone plays. The first sound's settling is `expected`
+  once per start (`receiverStartSettle`, 0.5 s, the same in both). The system test's `heldBy` lag is D2's and stays,
+  named apart from the buffer.
+
+**Also:** the clock test feeds every cycle of its block to a `CycleJudge`, so a cycle the judge fails (an absence, a
+reposition, an unconfirmed catch-up) fails the test, which it did not before; the steady tests make the judge's four
+1.5-cycle stalls during the judged span and must judge timing straight after each; the stall and gap tests make their
+own disturbance and plan none. A step of the code's reports between two whole cycles prints both cycles' `startRawNs`,
+facts and `rateDiff`.
+
 ## 10. Decided here (technical)
 
 - One carrier (`GraphCycle::facts`), not a second view.
