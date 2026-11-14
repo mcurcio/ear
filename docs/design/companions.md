@@ -1,6 +1,6 @@
 # Companions: slice 3b of the node framework
 
-Status: steps 3b.0 to 3b.5 built (8.10; 3b.5 on 2026-11-13), the wire, the editor and the words to come; module
+Status: steps 3b.0 to 3b.6 built (8.10; 3b.6, the wire, on 2026-11-14), the editor's badges and the words to come; module
 design in section 8 (2026-11-09), its headers landed as declarations. Slice 3b follows
 slice 3a (the lifecycle, built 2026-11-09) and comes before slice 3c (node primitives, `node-primitives.md`), because
 companions remove two of 3c's would-be primitives (feeds and late handoffs) and a third's use (sendspin's bell). The
@@ -712,7 +712,7 @@ stamp's `upstreamFrames` into each `Chunk` [3b.1]. **`ear/pipewire/port_blocks.h
 | Old | New |
 |---|---|
 | `using GraphEvent = std::variant<NodeAdded, ..., RouteChanged>;` | adds `NodeCompanionsChanged` (`companions_wire.hpp`); `encodeEvent` writes `node.companionsChanged` |
-| `struct NodeAdded { NodeSpec node; Ports ports; NodeHealth health; ... since; }` | adds `std::vector<CompanionView> companions;` (always empty at an add; written as `"companions": []`) |
+| `struct NodeAdded { NodeSpec node; Ports ports; NodeHealth health; ... since; }` | ~~adds `std::vector<CompanionView> companions;`~~ Dropped in 3b.6: unchanged, the encoder writes `"companions": []` (always empty at an add) |
 | `inline constexpr std::array<std::string_view, 1> wireFeatures{"lifecycle"};` | `inline constexpr std::array<std::string_view, 2> wireFeatures{"lifecycle", companionsFeature};` |
 | `class MainLoopGateway final : public GraphGateway, ..., public SnapshotStamp` | adds `public NodeCompanionsListener` and `void companionsChanged(const NodeName& node, std::span<const CompanionView> companions) override;` (main: copies and posts `NodeCompanionsChanged`, in order with health) |
 | `encodeGraph`: each node with its health | each node also `"companions": encodeCompanions(view.companions)` |
@@ -984,7 +984,7 @@ makes stale (the rule in `AGENTS.md`).
 | **3b.3 Engine companions on shapes** | `companions.hpp`'s engine interfaces replace the `Outside*` ones; shapes replace requests; the legacy acquires go (`node_host_test.cpp`'s legacy card and receiver configs become classes); `engine_companions.*`; `AlsaSoundCards`, `RtpReceivers`; `card`, `rtp`; `docs/engine.md`'s Outside nodes section becomes Engine companions, `docs/writing-a-node-type.md` | Churn: mechanical, but every card and receiver test moves |
 | **3b.4 Readiness deadlines, the quantum guard** | `NodeHost`'s timers per kind and their texts; the harness's clock; `quantum-limit` at the block size; the card seam's refusal; `docs/node-types.md#rtp` (a held port fails after 5 s), `docs/engine.md` | The [U] of 3.6: if cards or rtp-source will not run at the limit, the limit stays `max(block, 8192)` and the step keeps only the refusal |
 | **3b.5 Companions in core's view** (done, 2026-11-13) | `CompanionView`, `NodeCompanionsListener`, `subscribeCompanions`, `companionsOf`, the counter sampling, the two diagnostics through `StatusLog`; `docs/output-records.md#diagnostic` and `output-records.json`. Found building: below the table | Low |
-| **3b.6 The wire** | feature `companions`; `companions_wire.cpp`; `GraphEvent`, `NodeAdded`, `encodeGraph`, the gateway, `GraphStatus`; `docs/control-port.md`, `test/protocol/companions.json`, `web/src/protocol.ts` in this one commit | Low; the order rules are the subtle part (`gateway_test.cpp`) |
+| **3b.6 The wire** (done, 2026-11-14) | feature `companions`; `companions_wire.cpp`; `GraphEvent`, `NodeAdded`, `encodeGraph`, the gateway, `GraphStatus`; `docs/control-port.md`, `test/protocol/companions.json`, `web/src/protocol.ts` in this one commit. Found building: below the table | Low; the order rules are the subtle part (`gateway_test.cpp`) |
 | **3b.7 The editor's badges** | `companions.ts`, `graph.ts`, `EarNode.tsx`, `Panels.tsx`; `docs/editor.md` | Low |
 | **3b.8 Words** | what lasts of this page moved into the library docs (most already moved step by step), the `pipewire-engine` and `control-port` skills updated, this page deleted and `docs/design/README.md`'s row removed | — |
 
@@ -1012,6 +1012,30 @@ says, with these settled in the building:
 - The harness's `companionList()` reads `NodeHost::companionsOf` (no `CounterWatch` in the harness; a type's tests read
   the counters directly). 3b.6's gateway subscribes to both `NodeHost::subscribeCompanions` and
   `CounterWatch::subscribeCompanions` with one `NodeCompanionsListener`; until then only the records reach anyone.
+
+**Found building 3b.6** (what lasts is `docs/control-port.md#companions`; `docs/engine.md#companions-in-a-nodes-list`
+names the gateway as the tellers' one listener). Built as "3b.6 as built against today's code" (8.7) says, with these
+settled in the building:
+
+- **The order rules needed no code in the gateway.** NodeHost already tells the list in its order against the health
+  (3b.5), and the gateway posts both, list and health, in the order it hears them on the main loop. What the gateway
+  adds is only the comparison with the last list sent; the order proofs are the session replay of `companions.json`
+  and the system test, not `gateway_test.cpp`.
+- **The comparison is whole-entry, counters included,** and keyed by name: `node.removed` forgets the name (it then
+  holds `[]`; a replace is told as a removal first, so `node.added` needs no forgetting of its own), so a removed
+  node's teardown `[]` is dropped and a node added again under the name sends its first list even when it equals the
+  older node's last (`session_test.cpp`).
+- **`NodeAdded` gained no member**, its encoder writes `[]` (8.3's row dropped): a member always empty would be
+  dead weight on every `node.added` the gateway builds.
+- **Every fixture's snapshot and `node.added` carry `companions`**, and `features` the third name; `snapshot.json`'s
+  running `rec` lists its sink, so the main snapshot fixture shows the shape. No fixture holds a source (no shipped type
+  has one); its encoding is `commands_test.cpp`'s.
+- **The system test** (`control_port_test.cpp`) proves the snapshot's list through `GraphStatus` (`rec.writer` ready
+  once `rec` runs), no list across a stop and a start, and a restart's `[]` after its `stopping` and the ready list
+  before its `configured`. 8.9's other system cases (a held UDP port, a route naming `rec.writer`) were already proved
+  by 3b.4 and by the name rule; they are not repeated.
+- **The editor's reducer** keeps a node's `companions` as sent and replaces it on `node.companionsChanged` (`graph.ts`),
+  enough for the fixtures; `companions.ts` and the badges are 3b.7's.
 
 ### 8.11 Decided
 
