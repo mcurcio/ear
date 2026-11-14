@@ -37,6 +37,11 @@ struct SourceHeld {
 	/// first tick after a stop counts those it forgot unapplied (its clearing stays false), so a clock that counts by
 	/// stream knows exactly which stream `frames` and this tick's SourcePlayed are of. Wraps at 2^32.
 	std::uint32_t clears = 0;
+	/// Frames of the stream `clears` names that the ring dropped unplayed since the last tick, none at the clock's word:
+	/// what a stop dropped (Source::stopped) and what a writer slipped in during it, told at the stop's first tick. Never
+	/// a clear's frames, which are of a stream that ended. A clock that tells what played counts them as a sink that
+	/// played them would (docs/writing-a-node-type.md#a-sources-clock).
+	std::uint32_t dropped = 0;
 	friend bool operator==(const SourceHeld&, const SourceHeld&) = default;
 };
 

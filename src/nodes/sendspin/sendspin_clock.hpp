@@ -24,14 +24,25 @@ std::int64_t rawNowNs() noexcept;
 inline constexpr std::chrono::nanoseconds untoldBound = std::chrono::seconds{2};
 
 /// What the library is told: the timeline as a cumulative count over every stream, where the current stream's count
-/// began (frames below `base` are of a stream the library forgot at its end, never told), and when the library's next
-/// frame is heard, on CLOCK_MONOTONIC_RAW.
+/// began (frames below `base` are of a stream the library forgot at its end, never told), when the library's next
+/// frame is heard, on CLOCK_MONOTONIC_RAW, and which stream it counts (the writer's clears, SendspinClock::stream()).
 struct PlayProgress {
 	std::uint64_t played = 0;
 	std::uint64_t base = 0;
 	std::int64_t finishRawNs = 0;
+	std::uint32_t stream = 0;
 	friend bool operator==(const PlayProgress&, const PlayProgress&) = default;
 };
+
+/// What the notifier tells the library of `progress`: the frames counted since `reported` (the count as last told),
+/// none below the stream's base, and none at all of a stream that is no longer the one the library writes (`stream`,
+/// SendspinClock::stream()): it zeroed its count when that stream ended, so a report published before the end and read
+/// after it would land in the next stream's count.
+inline std::uint64_t framesToTell(const PlayProgress& progress, std::uint64_t reported, std::uint32_t stream) noexcept {
+	if (progress.stream != stream) return 0;
+	const std::uint64_t from = reported > progress.base ? reported : progress.base;
+	return progress.played > from ? progress.played - from : 0;
+}
 
 class SendspinClock final : public SourceClock {
 public:
@@ -61,8 +72,11 @@ public:
 	/// writer, is idle): the stream is over, what was written of it goes at the next tick, and nothing of it is told
 	/// from now on (the library zeroed its count). The writer counts as idle until it writes again.
 	void clear() noexcept;
-	/// Any thread: the newest report, nothing before the first.
+	/// Any thread: the newest report of whoever advances the timeline now, nothing before the first. Each owner writes
+	/// its own box, so the reader never waits on the other's (sendspin_clock.cpp).
 	std::optional<PlayProgress> progress() const noexcept;
+	/// Any thread: the stream the library writes now, as PlayProgress::stream counts it.
+	std::uint32_t stream() const noexcept { return writerStream_.load(std::memory_order_acquire); }
 	/// The source's clock wake: rung after each report, by the tick or the pacer. One watcher (the notifier).
 	Wake& wake() noexcept { return writer_->clockWake(); }
 	std::uint32_t capacityFrames() const noexcept { return capacity_; }
@@ -79,11 +93,18 @@ public:
 	std::uint32_t lastResumeSkipped() const noexcept { return lastResumeSkipped_; } // skipped as late on it
 	std::uint64_t lastResumePlayed() const noexcept { return resumePlayed_; } // the count it took back, once taken
 	/// What this tick told, if it told (the pacer's reports are not the tick's), and whether it would have told but
-	/// left its report to the next tick: it ended before the pacer's reach, or found the pacer mid-publish.
+	/// left its report to the next tick: its finish was before the pacer's last, so it would have stepped back.
 	std::optional<PlayProgress> lastTold() const noexcept { return lastTold_; }
 	bool lastTellDeferred() const noexcept { return lastTellDeferred_; }
 	/// The reports whose finish the clamp moved: only the one after a report the bound forced from an overdue tick.
 	std::uint64_t clamped() const noexcept { return clamped_; }
+	/// The pacer's box left mid-write, as by a writer preempted inside a report (true), until released (false). Only
+	/// while the writer is not writing.
+	void holdPacerBox(bool held) noexcept {
+		Box& box = pacerBox();
+		const std::uint64_t sequence = box.sequence.load(std::memory_order_relaxed);
+		if (((sequence & 1U) != 0) != held) box.sequence.store(sequence + 1, std::memory_order_release);
+	}
 	// Any thread:
 	/// Ticks that read short of their frames, and the frames they lacked (zeros where the stream should be).
 	std::uint64_t dryTicks() const noexcept { return dryTicks_.load(std::memory_order_relaxed); }
@@ -107,10 +128,17 @@ private:
 	bool takeOver(std::uint64_t word, std::int64_t now) noexcept;
 	bool reanchor(std::uint64_t word, std::uint64_t played, std::uint64_t base, std::uint32_t stream,
 	              std::int64_t paceRawNs) noexcept;
-	bool tryLockBox() noexcept;
-	void lockBox() noexcept;
-	void publish(const PlayProgress& progress) noexcept; // under the box's lock, which it releases
-	void unlockBox() noexcept;
+	/// One owner's report: a seqlock with one writer (the tick's box or the pacer's), read by any thread.
+	struct Box {
+		std::atomic<std::uint64_t> sequence{0}; // odd while written, 0 until the first report
+		std::atomic<std::uint64_t> played{0};
+		std::atomic<std::uint64_t> base{0};
+		std::atomic<std::int64_t> finishRawNs{0};
+		std::atomic<std::uint32_t> stream{0};
+	};
+	static void publish(Box& box, const PlayProgress& progress) noexcept;
+	Box& tickBox() noexcept { return boxes_[0]; }
+	Box& pacerBox() noexcept { return boxes_[1]; }
 
 	FrameClock clock_;
 	std::chrono::nanoseconds bound_;
@@ -132,12 +160,8 @@ private:
 	std::atomic<std::uint32_t> writerStream_{0};
 	std::atomic<std::uint64_t> written_{0};
 
-	// The report box: a seqlock two owners write, the tick by one try, the pacer waiting its turn.
-	std::atomic<std::uint64_t> boxSeq_{0};
-	std::atomic<std::uint64_t> boxPlayed_{0};
-	std::atomic<std::uint64_t> boxBase_{0};
-	std::atomic<std::int64_t> boxFinish_{0};
-	std::atomic<bool> published_{false};
+	// The reports: the tick's box and the pacer's, the owner word naming which is current.
+	std::array<Box, 2> boxes_{};
 
 	// The tick's own.
 	std::uint64_t played_ = 0; // the timeline's count, over every stream
@@ -148,14 +172,14 @@ private:
 	std::int64_t lastFinish_ = 0;
 	bool afterForced_ = false;
 	std::optional<std::int64_t> untoldSince_;
-	std::uint32_t staleLeft_ = 0;            // frames in the ring the pacer counted played, not yet consumed
-	bool anchored_ = false;                  // back from the pacer: late frames measured from its finish
-	std::int64_t resumeFromRawNs_ = 0;       // the pacer's finish: when the first frame written since is heard
-	std::optional<std::int64_t> reachRawNs_; // the pacer's reach, until a tick that ends past it reports
-	std::uint64_t consumedSince_ = 0;        // fresh frames skipped and read since the hand-over
-	std::uint64_t ranSince_ = 0;             // frames of the ticks run since: the anchor expires at a ring's worth
-	std::int64_t late_ = 0;                  // skipBefore to played: what it found late
-	std::uint64_t jumpAsked_ = 0;            // and what it asked for the graph's lost time
+	std::uint32_t staleLeft_ = 0;                // frames in the ring the pacer counted played, not yet consumed
+	bool anchored_ = false;                      // back from the pacer: late frames measured from its finish
+	std::int64_t resumeFromRawNs_ = 0;           // the pacer's finish: when the first frame written since is heard
+	std::optional<std::int64_t> handedFinishNs_; // that finish, until a tick whose own finish is past it reports
+	std::uint64_t consumedSince_ = 0;            // fresh frames skipped and read since the hand-over
+	std::uint64_t ranSince_ = 0;                 // frames of the ticks run since: the anchor expires at a ring's worth
+	std::int64_t late_ = 0;                      // skipBefore to played: what it found late
+	std::uint64_t jumpAsked_ = 0;                // and what it asked for the graph's lost time
 	std::uint64_t clamped_ = 0;
 	SourceHeld lastHeld_{};
 	SourcePlayed lastPlayed_{};

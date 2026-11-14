@@ -53,11 +53,18 @@ void PlayerSlot::set(::sendspin::PlayerRole* player) noexcept {
 	player_ = player;
 }
 
-bool PlayerSlot::notify(std::uint32_t frames, std::int64_t finishUs) {
+PlayerSlot::Told PlayerSlot::notify(const SendspinClock& clock, const PlayProgress& progress, std::uint64_t reported) {
 	const std::scoped_lock lock(mutex_);
-	if (player_ == nullptr) return false;
-	player_->notify_audio_played(frames, finishUs);
-	return true;
+	const std::uint64_t frames = framesToTell(progress, reported, clock.stream());
+	if (frames == 0) return Told::nothing;
+	if (player_ == nullptr) return Told::noPlayer;
+	player_->notify_audio_played(static_cast<std::uint32_t>(frames), progress.finishRawNs / 1000);
+	return Told::told;
+}
+
+void PlayerSlot::endStream(SendspinClock& clock) {
+	const std::scoped_lock lock(mutex_);
+	clock.clear();
 }
 
 Worker::Worker(WorkerParts parts)
@@ -237,7 +244,7 @@ void Worker::on_stream_start() {
 /// The spec: "MUST stop output and clear its buffers". Gone at the next cycle, and not counted played, since the
 /// library zeroed its count. Heard from stop() too, whatever was streaming.
 void Worker::on_stream_end() {
-	clock_.clear();
+	player_.endStream(clock_);
 	if (std::exchange(streaming_, false)) handle_.say(notes::streamEnded());
 }
 
@@ -281,15 +288,13 @@ void Notifier::begin() {
 	watch_ = self_.onWake(clock_.wake(), [this] { notify(); });
 }
 
-/// The frames counted since the last report of this stream (none of a stream the library forgot at its end), dated by
-/// the clock's newest finish. Before the client started nothing is told and nothing counted told: the library learns it
-/// all at its first report.
+/// The frames counted since the last report of this stream (none of a stream the library forgot at its end, judged
+/// under the lock its end takes), dated by the clock's newest finish. Before the client started nothing is told and
+/// nothing counted told: the library learns it all at its first report.
 void Notifier::notify() {
 	const std::optional<PlayProgress> progress = clock_.progress();
 	if (!progress) return;
-	const std::uint64_t from = std::max(reported_, progress->base);
-	if (progress->played <= from) return;
-	if (!player_.notify(static_cast<std::uint32_t>(progress->played - from), progress->finishRawNs / 1000)) return;
+	if (player_.notify(clock_, *progress, reported_) != PlayerSlot::Told::told) return;
 	if (lastFinish_ && progress->finishRawNs < *lastFinish_) steppedBack_.fetch_add(1, std::memory_order_acq_rel);
 	lastFinish_ = progress->finishRawNs;
 	reported_ = progress->played;

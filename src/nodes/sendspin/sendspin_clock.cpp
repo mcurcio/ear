@@ -5,6 +5,12 @@
 // of the two anchors the pacer reads, and the rest a count: while ticking, the ticks' sequence (so a takeover that read
 // a tick's facts fails if another tick ran since); while pacing, the frames paced since the anchor. Every change of
 // owner is one compare-and-swap of it, so no frame is counted by both sides and the tick never waits for the pacer.
+//
+// The reports: each owner writes its own box (the tick's, the pacer's), each a seqlock with one writer, and a reader
+// takes the box the word names. A box is written only while the word names its writer, or before the word comes to:
+// the takeover fills the pacer's box before its swap, the tick that takes the timeline back copies the pacer's last
+// report into its own at once. So a report the pacer finishes after the tick took the timeline back lands in a box
+// nobody reads, and no owner ever waits for the other's write: who tells is decided by the word alone.
 #include "sendspin_clock.hpp"
 
 #include <algorithm>
@@ -88,13 +94,16 @@ std::uint64_t SendspinClock::skipBefore(const SourceTick& tick, SourceHeld held)
 		base_ = anchor.base.load(std::memory_order_relaxed);
 		played_ = anchor.played.load(std::memory_order_relaxed) + paced;
 		resumePlayed_ = played_;
-		reachRawNs_ = anchor.paceRawNs.load(std::memory_order_relaxed) + clock_.ns(static_cast<std::int64_t>(paced));
 		resumeFromRawNs_ =
 			anchor.paceRawNs.load(std::memory_order_relaxed) +
 			clock_.ns(static_cast<std::int64_t>(paced) + anchor.downstreamFrames.load(std::memory_order_relaxed));
 		anchored_ = true;
 		consumedSince_ = 0;
 		ranSince_ = 0;
+		// The pacer's last report becomes the tick's, as the word now names the tick's box: the count it reached and the
+		// finish it dated (the frame after them, once what lay downstream as it dated them has played).
+		publish(tickBox(), {.played = played_, .base = base_, .finishRawNs = resumeFromRawNs_, .stream = stream_});
+		handedFinishNs_ = resumeFromRawNs_;
 		// Whatever the pacer told, the next report this side may give is told again: the count told is cumulative.
 		told_ = ~std::uint64_t{0};
 		afterForced_ = false;
@@ -114,8 +123,11 @@ std::uint64_t SendspinClock::skipBefore(const SourceTick& tick, SourceHeld held)
 		} else countable_ = false;
 	}
 	// Back from the pacer, everything the ring holds of the stream was counted played as it took over (it wrote none
-	// into it since): skipped now, uncounted.
+	// into it since): skipped now, uncounted. So was what a stop dropped of it, if the pacer took over during the stop;
+	// otherwise those frames are counted played now, as a sink that played them would have (docs/node-types.md#clock):
+	// the library counts every frame it wrote as buffered until it is told it played.
 	if (lastTookBack_ && countable_) staleLeft_ = held.frames;
+	else if (countable_) played_ += held.dropped;
 	if (anchored_ && ranSince_ >= capacity_) anchored_ = false; // a ring's worth of ticks at most
 	lastAnchored_ = anchored_ && countable_;
 	if (!countable_) return 0;
@@ -173,33 +185,28 @@ bool SendspinClock::played(const SourceTick& tick, const SourcePlayed& played) n
 	// untoldBound of the graph's nominal time, the next tick tells even if overdue, dated by when it ran, and the report
 	// after that one is clamped to it: dated nominally it would step back. Reports from on-time ticks follow one
 	// another by their nominal starts, so the clamp has no other case. Back from the pacer, a tick tells only once its
-	// end is past the pacer's reach, so the finish never steps back across a hand-over by construction: the pacer never
-	// reached past now, and the tick after the one that took the timeline back began after that, so it ends after it
+	// own finish, downstream included, is at or past the pacer's last, so the finish never steps back across a
+	// hand-over by construction, whatever the graph's edits did to what lies downstream meanwhile
 	// (docs/node-types.md#clock).
 	if (played_ != told_ && stream_ == writerStream_.load(std::memory_order_acquire)) {
 		const std::int64_t startRawNs = tick.cycle.startRawNs;
 		if (!untoldSince_) untoldSince_ = startRawNs;
 		const bool onTime = tick.cycle.overdueNs <= 0;
-		const bool pastReach = !reachRawNs_ || tick.cycle.ranRawNs() + clock_.ns(tick.frames) >= *reachRawNs_;
-		if (!pastReach) lastTellDeferred_ = true;
+		// Where the library's next frame plays: the end of this tick (zeros for what the ring lacked), once what lies
+		// downstream of the outputs has played (a following card's buffer).
+		const std::int64_t heard = clock_.heardRawNs(tick.cycle.ranRawNs(), tick.frames, tick.playback);
+		const std::int64_t finish = afterForced_ ? std::max(heard, lastFinish_) : heard;
+		if (handedFinishNs_ && finish < *handedFinishNs_) lastTellDeferred_ = true;
 		else if (onTime || startRawNs - *untoldSince_ >= untoldBound.count()) {
-			// Where the library's next frame plays: the end of this tick (zeros for what the ring lacked), once what lies
-			// downstream of the outputs has played (a following card's buffer).
-			const std::int64_t heard = clock_.heardRawNs(tick.cycle.ranRawNs(), tick.frames, tick.playback);
-			const std::int64_t finish = afterForced_ ? std::max(heard, lastFinish_) : heard;
-			// The pacer mid-publish (it publishes only while it owned the timeline, so before this tick took it): this
-			// report waits for the next tick, which counts these frames too.
-			if (tryLockBox()) {
-				lastTold_ = PlayProgress{.played = played_, .base = base_, .finishRawNs = finish};
-				publish(*lastTold_);
-				if (afterForced_ && heard < lastFinish_) ++clamped_;
-				lastFinish_ = finish;
-				afterForced_ = !onTime;
-				told_ = played_;
-				untoldSince_.reset();
-				reachRawNs_.reset();
-				told = true;
-			} else lastTellDeferred_ = true;
+			lastTold_ = PlayProgress{.played = played_, .base = base_, .finishRawNs = finish, .stream = stream_};
+			publish(tickBox(), *lastTold_);
+			if (afterForced_ && heard < lastFinish_) ++clamped_;
+			lastFinish_ = finish;
+			afterForced_ = !onTime;
+			told_ = played_;
+			untoldSince_.reset();
+			handedFinishNs_.reset();
+			told = true;
 		}
 	}
 
@@ -239,15 +246,14 @@ bool SendspinClock::takeOver(std::uint64_t word, std::int64_t now) noexcept {
 	const std::uint64_t played = std::max(base + written_.load(std::memory_order_relaxed), tickPlayed);
 	const std::int64_t reach = now;
 	const std::uint32_t downstream = downstreamFrames_.load(std::memory_order_relaxed);
+	// Into the pacer's box before the word names it: no reader takes it until then, and a failed swap leaves it
+	// unread until the next takeover writes it again.
+	publish(pacerBox(),
+	        {.played = played, .base = base, .finishRawNs = reach + clock_.ns(downstream), .stream = stream});
 	if (!reanchor(word, played, base, stream, reach)) return false;
 	lastStaleCounted_.store(played - tickPlayed, std::memory_order_release);
 	pacedFrames_.fetch_add(played - tickPlayed, std::memory_order_acq_rel);
 	takeovers_.fetch_add(1, std::memory_order_acq_rel);
-	lockBox();
-	const std::uint64_t now_word = word_.load(std::memory_order_acquire);
-	if (pacing(now_word) && countOf(now_word) == 0 && anchorOf(now_word) != anchorOf(word))
-		publish({.played = played, .base = base, .finishRawNs = reach + clock_.ns(downstream)});
-	else unlockBox();
 	writer_->clockWake().ring();
 	return true;
 }
@@ -311,14 +317,13 @@ std::uint32_t SendspinClock::pace(std::span<const float> interleaved, std::uint3
 			continue; // taken back meanwhile: the next look writes the ring
 		written_.fetch_add(taken, std::memory_order_relaxed);
 		pacedFrames_.fetch_add(taken, std::memory_order_acq_rel);
-		// Told only while still the owner, so a count older than a tick's never lands after it.
-		lockBox();
-		const std::uint64_t now_word = word_.load(std::memory_order_acquire);
-		if (now_word == word + taken)
-			publish({.played = played + taken,
-			         .base = base,
-			         .finishRawNs = paceRawNs + clock_.ns(static_cast<std::int64_t>(paced + taken) + downstream)});
-		else unlockBox();
+		// Read only while the word names the pacer: once a tick took the timeline back, this lands unread, its count in
+		// the tick's.
+		publish(pacerBox(),
+		        {.played = played + taken,
+		         .base = base,
+		         .finishRawNs = paceRawNs + clock_.ns(static_cast<std::int64_t>(paced + taken) + downstream),
+		         .stream = stream});
 		writer_->clockWake().ring();
 		return taken;
 	}
@@ -332,45 +337,40 @@ void SendspinClock::clear() noexcept {
 	writer_->idle(std::chrono::milliseconds{0}); // no stream: an empty ring is no shortfall
 }
 
-// ---- The report box ----
+// ---- The reports ----
 
-bool SendspinClock::tryLockBox() noexcept {
-	std::uint64_t sequence = boxSeq_.load(std::memory_order_relaxed);
-	if ((sequence & 1U) != 0) return false;
-	if (!boxSeq_.compare_exchange_strong(sequence, sequence + 1, std::memory_order_acquire, std::memory_order_relaxed))
-		return false;
+void SendspinClock::publish(Box& box, const PlayProgress& progress) noexcept {
+	const std::uint64_t sequence = box.sequence.load(std::memory_order_relaxed);
+	box.sequence.store(sequence + 1, std::memory_order_relaxed);
 	std::atomic_thread_fence(std::memory_order_release);
-	return true;
-}
-
-void SendspinClock::lockBox() noexcept {
-	while (!tryLockBox()) std::this_thread::yield(); // the tick holds it for three stores
-}
-
-void SendspinClock::publish(const PlayProgress& progress) noexcept {
-	boxPlayed_.store(progress.played, std::memory_order_relaxed);
-	boxBase_.store(progress.base, std::memory_order_relaxed);
-	boxFinish_.store(progress.finishRawNs, std::memory_order_relaxed);
-	boxSeq_.store(boxSeq_.load(std::memory_order_relaxed) + 1, std::memory_order_release);
-	published_.store(true, std::memory_order_release);
-}
-
-void SendspinClock::unlockBox() noexcept {
-	boxSeq_.store(boxSeq_.load(std::memory_order_relaxed) + 1, std::memory_order_release);
+	box.played.store(progress.played, std::memory_order_relaxed);
+	box.base.store(progress.base, std::memory_order_relaxed);
+	box.finishRawNs.store(progress.finishRawNs, std::memory_order_relaxed);
+	box.stream.store(progress.stream, std::memory_order_relaxed);
+	box.sequence.store(sequence + 2, std::memory_order_release);
 }
 
 std::optional<PlayProgress> SendspinClock::progress() const noexcept {
-	if (!published_.load(std::memory_order_acquire)) return std::nullopt;
+	// Who owns the timeline and which anchor it paces from: a box read while these held is the owner's report (a
+	// takeover's report, written before its swap, is read only once the swap named it).
+	constexpr std::uint64_t owner = pacingBit | anchorBit;
 	for (;;) {
-		const std::uint64_t before = boxSeq_.load(std::memory_order_acquire);
+		const std::uint64_t word = word_.load(std::memory_order_acquire);
+		const Box& box = boxes_[pacing(word) ? 1 : 0];
+		const std::uint64_t before = box.sequence.load(std::memory_order_acquire);
+		if (before == 0) return std::nullopt;
 		if ((before & 1U) == 0) {
-			const PlayProgress value{.played = boxPlayed_.load(std::memory_order_relaxed),
-			                         .base = boxBase_.load(std::memory_order_relaxed),
-			                         .finishRawNs = boxFinish_.load(std::memory_order_relaxed)};
+			const PlayProgress value{.played = box.played.load(std::memory_order_relaxed),
+			                         .base = box.base.load(std::memory_order_relaxed),
+			                         .finishRawNs = box.finishRawNs.load(std::memory_order_relaxed),
+			                         .stream = box.stream.load(std::memory_order_relaxed)};
 			std::atomic_thread_fence(std::memory_order_acquire);
-			if (boxSeq_.load(std::memory_order_relaxed) == before) return value;
+			if (box.sequence.load(std::memory_order_relaxed) == before &&
+			    (word_.load(std::memory_order_relaxed) & owner) == (word & owner))
+				return value;
 		}
-		std::this_thread::yield(); // a writer mid-publish, for three stores
+		// Its owner mid-write, for four stores, or the owner changed: look again, at the word first.
+		std::this_thread::yield();
 	}
 }
 

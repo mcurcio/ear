@@ -19,6 +19,14 @@ namespace {
 /// clear()'s word: how many clears were asked (high half) and the ring's write position at the last (low half).
 constexpr std::uint64_t oneClear = std::uint64_t{1} << 32U;
 
+/// Of the ring's frames from `from` to `to`, those written since the last clear asked in `word` (clearWord's): the
+/// newest stream's. A clear not yet applied lies ahead of the read position (applying one reads up to its position).
+std::uint32_t newestOf(std::uint32_t from, std::uint32_t to, std::uint64_t word) noexcept {
+	const auto clearedAt = static_cast<std::uint32_t>(word);
+	const std::uint32_t start = static_cast<std::int32_t>(clearedAt - from) > 0 ? clearedAt : from;
+	return static_cast<std::int32_t>(to - start) > 0 ? to - start : 0;
+}
+
 /// 5 ms at `rate`, at least one frame: every fade's length.
 std::uint32_t fadeFramesAt(SampleRate rate) {
 	return std::max(static_cast<std::uint32_t>(FrameClock(rate).frames(std::chrono::milliseconds{5})), 1U);
@@ -41,6 +49,9 @@ struct SourceRing::State {
 	std::atomic<bool> idle{true};     // until the writer's first offer, an empty ring is no shortfall
 	std::atomic<bool> stopped{false}; // dropForStop ran and no cycle played since: offer accepts nothing
 	std::atomic<std::uint64_t> clearWord{0};
+	/// What dropForStop dropped of the newest stream (low half), and the clears asked as it did (high half): the stop's
+	/// first tick tells its clock those frames, unless a clear asked since ended their stream.
+	std::atomic<std::uint64_t> stopDrop{0};
 	// Counters, any thread.
 	std::atomic<std::uint64_t> shortfall{0};
 	std::atomic<std::uint64_t> dropped{0};
@@ -56,6 +67,7 @@ struct SourceRing::State {
 	std::uint32_t consumedRing = 0; // frames this tick took out of the ring (played, skipped or dropped)
 	bool roomFreed = false;         // this tick freed room, or ended a stop: a waiting writer may go on
 	bool tickEndedStop = false;     // this tick is the first since a stop: its zeros are no shortfall
+	std::uint32_t stopDropped = 0;  // of the current stream, dropped by the stop this tick ends (SourceHeld::dropped)
 
 	float level() const noexcept { return static_cast<float>(gain) / static_cast<float>(fadeFrames); }
 
@@ -69,13 +81,20 @@ struct SourceRing::State {
 	/// The first tick after a stop: what a writer slipped in while the stop was dropping is dropped too, the clear in
 	/// flight forgotten, and the writer let go (its wait is for room).
 	void endStop() noexcept {
+		const std::uint64_t word = clearWord.load(std::memory_order_acquire);
 		const std::uint32_t stragglers = held();
+		// The current stream's frames among them, and among what the stop dropped if no clear came since: dropped
+		// unplayed, never by the clock's word, so told to it (SourceHeld::dropped).
+		const std::uint64_t stop = stopDrop.load(std::memory_order_acquire);
+		const std::uint32_t from = ring.readPosition();
+		stopDropped = newestOf(from, from + stragglers, word) +
+		              ((stop >> 32U) == (word >> 32U) ? static_cast<std::uint32_t>(stop) : 0);
 		ring.skip(stragglers);
 		drop(stragglers + (tailFrames - tailAt));
 		tailAt = tailFrames = 0;
 		clearing = false;
 		gain = 0;
-		clearsSeen = static_cast<std::uint32_t>(clearWord.load(std::memory_order_acquire) >> 32U);
+		clearsSeen = static_cast<std::uint32_t>(word >> 32U);
 		tickEndedStop = true;
 		roomFreed = true; // the writer waits out a stop as a full ring: always woken here
 		stopped.store(false, std::memory_order_release);
@@ -127,6 +146,7 @@ SourcePlayed SourceRing::play(std::span<const std::span<float>> bank, const Sour
 	s.consumedRing = 0;
 	s.roomFreed = false;
 	s.tickEndedStop = false;
+	s.stopDropped = 0;
 	if (s.stopped.load(std::memory_order_acquire)) s.endStop();
 	const bool clearedNow = s.applyClear();
 
@@ -135,7 +155,8 @@ SourcePlayed SourceRing::play(std::span<const std::span<float>> bank, const Sour
 	// applies a clear (docs/writing-a-node-type.md#a-sources-clock). With no clock nothing is skipped: the ring keeps
 	// no time of its own (docs/architecture.md#the-timing-model, rule 1).
 	if (clock != nullptr) {
-		const SourceHeld held{.frames = s.held(), .clearing = clearedNow, .clears = s.clearsSeen};
+		const SourceHeld held{
+			.frames = s.held(), .clearing = clearedNow, .clears = s.clearsSeen, .dropped = s.stopDropped};
 		const std::uint64_t asked = clock->skipBefore(tick, held);
 		if (!held.clearing && asked > 0) {
 			const auto skip = static_cast<std::uint32_t>(std::min<std::uint64_t>(asked, held.frames));
@@ -226,6 +247,8 @@ void SourceRing::dropForStop() noexcept {
 	s.stopped.store(true, std::memory_order_release);
 	const std::uint32_t from = s.ring.readPosition();
 	const std::uint32_t to = s.ring.writePosition();
+	const std::uint64_t word = s.clearWord.load(std::memory_order_acquire);
+	s.stopDrop.store((word & ~std::uint64_t{0xFFFFFFFFU}) | newestOf(from, to, word), std::memory_order_release);
 	s.ring.skipTo(to);
 	s.drop(to - from);
 	s.idle.store(true, std::memory_order_relaxed);

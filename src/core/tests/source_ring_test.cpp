@@ -434,11 +434,11 @@ TEST_CASE("A stop drops and counts what the ring holds, plays nothing of it and 
 	CHECK(offer(ring, 100, 8) == 0); // stopped: waits as at a full ring
 	const int room = signals.room;
 	// The first tick after the next drive: silent (the fade was reset), no shortfall, the writer let go; the clock is
-	// told zeros, holds nothing to skip, and an answer is capped at that.
+	// told zeros and the frames the stop dropped, holds nothing to skip, and an answer is capped at that.
 	clock.lose(3, 16);
 	time.skip = 48;
 	CHECK(play(ring, bank, clock.next(16), 16, &time) == SourcePlayed{.zeros = 16});
-	CHECK(time.heard.back().held == SourceHeld{});
+	CHECK(time.heard.back().held == SourceHeld{.dropped = 24});
 	for (std::uint32_t i = 0; i < 16; ++i) CHECK(bank.data[0][i] == 0.0F);
 	CHECK(ring.shortfallFrames() == 0);
 	CHECK(signals.room == room + 1);
@@ -488,4 +488,50 @@ TEST_CASE("The clock is told every clear the ring applied, those coalesced into 
 	play(ring, bank, clock.next(16), 16, &time);
 	CHECK_FALSE(time.heard.back().held.clearing);
 	CHECK(time.heard.back().held.clears == 3);
+}
+
+// docs/writing-a-node-type.md#a-sources-clock: a frame a stop drops is one the clock never asked to skip, so the stop's
+// first tick tells it, of the stream it plays: what the stop dropped and a writer slipped in, never what a clear ended,
+// before the stop or during it. Every frame of the current stream is then told once: skipped, read or dropped.
+TEST_CASE(
+	"A stop's first tick tells the clock what the stop dropped of the current stream, and nothing of an ended one",
+	"[source_ring]") {
+	CountingSignals signals;
+	TestClock time;
+	Bank bank(1, 16);
+	Clock clock;
+	SECTION("what the stop dropped, told once") {
+		SourceRing ring(1, 64, ear::SampleRate::fixed<kRate>(), signals);
+		REQUIRE(offer(ring, 0, 40) == 40);
+		play(ring, bank, clock.next(16), 16, &time);
+		ring.dropForStop();
+		play(ring, bank, clock.next(16), 16, &time);
+		CHECK(time.heard.back().held.dropped == 24);
+		REQUIRE(offer(ring, 40, 16) == 16);
+		play(ring, bank, clock.next(16), 16, &time);
+		CHECK(time.heard.back().held.dropped == 0);
+		// Written 56, read 32, dropped 24 told: nothing of the stream unaccounted for.
+		std::uint64_t told = 0;
+		for (const TestClock::Heard& heard : time.heard)
+			told += heard.played.skipped + heard.played.read + heard.held.dropped;
+		CHECK(told == 56);
+	}
+	SECTION("a clear asked before the stop: only what was written after it") {
+		SourceRing ring(1, 64, ear::SampleRate::fixed<kRate>(), signals);
+		REQUIRE(offer(ring, 0, 20) == 20);
+		ring.clear();
+		REQUIRE(offer(ring, 20, 12) == 12);
+		ring.dropForStop();
+		play(ring, bank, clock.next(16), 16, &time);
+		CHECK(time.heard.back().held == SourceHeld{.clears = 1, .dropped = 12});
+		CHECK(ring.droppedFrames() == 32);
+	}
+	SECTION("a clear asked during the stop: nothing of the stream it ended") {
+		SourceRing ring(1, 64, ear::SampleRate::fixed<kRate>(), signals);
+		REQUIRE(offer(ring, 0, 20) == 20);
+		ring.dropForStop();
+		ring.clear();
+		play(ring, bank, clock.next(16), 16, &time);
+		CHECK(time.heard.back().held == SourceHeld{.clears = 1, .dropped = 0});
+	}
 }

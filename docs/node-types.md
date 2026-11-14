@@ -311,8 +311,9 @@ connects again and rests stopped.
   the library waits on the stopped source as through a stall; after that its writes are played into
   nothing at the graph's rate and told to the library, so a stream goes on for as long as the stop
   lasts and the connection holds. At the start the stream plays from where it has got to. A stop
-  shorter than the bound starts on what the library writes next, and the library corrects once,
-  for the time it was held back and the frames the stop dropped.
+  shorter than the bound starts on what the library writes next: what the stop dropped is told
+  played at the start (as a stop past the bound counts it with everything written), so the library
+  corrects once, for the time it was held back, and is on the server's stamps after.
 - **What is routed to `to` while stopped** does not reach the server: the node's code does not
   run, so nothing reaches its sink and the source role sends nothing (a server listening to it
   hears it go quiet; its stream is not ended). It resumes at the start.
@@ -422,20 +423,35 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   underran), which it corrects itself as it does outside a hand-over rather than ear skipping the
   gap's length of fresh audio. A stream end applied by that tick with nothing of the next stream
   paced ends it too: the next stream is the library's to place.
+- **Why the late skip is ear's, not left to the library.** The honest sink leaves lost time to the
+  library's one correction, but that correction is a hard sync, which the library makes only past
+  5 ms off; under it, it moves one frame a chunk (21 us each 96 ms). The lateness at a hand-over
+  back is under a block plus the tick's wait, so left to the library the stream would sit milliseconds
+  off for tens of seconds after each, and past 5 ms it would be an audible step at every start. It is
+  also ear's own making (the graph's tick against the pacer's phase), not time the library lost, so
+  ear skips it; the window ends by the rule above, never by a model of the library.
 - **Never a step back across a hand-over, by construction.** Back from the pacer, a tick tells only
-  once its end is past the pacer's reach; the pacer never reached past now, and the tick after the
-  one that took the timeline back began after that, so at most that one tick leaves its report to the
-  next (no clamp: nothing told is moved). The tick tries the report box once and leaves its report to
-  the next tick if the pacer is mid-publish; the pacer publishes only while it still owns the
-  timeline, so an older count never lands after a newer. *Why not a block behind now, which would
-  need no waiting:* the library hard-syncs when its playtime is 5 ms off, and a pacer telling it a
-  block (5.3 ms) behind now made it drop and add silence in turn, a correction each chunk.
-  What the library must correct is only the time it was held back first, the bound, which it does once.
+  once its own finish, what lies downstream included, is at or past the pacer's last finish, so
+  neither the tick's phase nor a graph edited while stopped (a following card gone, its latency
+  shrunk) can step it back; the reports it leaves wait for the next tick, which counts their frames
+  too (no clamp: nothing told is moved). *Why not a block behind now, which would need no waiting:*
+  the library hard-syncs when its playtime is 5 ms off, and a pacer telling it a block (5.3 ms)
+  behind now made it drop and add silence in turn, a correction each chunk. What the library must
+  correct is only the time it was held back first, the bound, which it does once.
+- **Who tells is the owner word alone.** Each owner writes its own report box (one writer each, its
+  own sequence), and a reader takes the box the word names: the takeover fills the pacer's box before
+  its swap, and the tick that takes the timeline back copies the pacer's last report into its own at
+  once. A report the pacer finishes after the tick took the timeline back lands in a box nobody reads
+  (its frames are in the tick's count), so neither owner waits on the other, and a reader waits only
+  while the owner itself is mid-write.
 - **Streams.** The source tells the clock which stream it plays (the clears it applied,
   `SourceHeld::clears`), and the clock's `clear()` (the worker's `on_stream_end`) counts the
-  library's. The report carries where the current stream's count began (`base`); the notifier tells
-  only frames above it, and a tick tells only while both agree: the library zeroed its count at the
-  stream's end.
+  library's. A tick tells only while both agree: the library zeroed its count at the stream's end.
+  The report carries its stream and where its count began (`base`); the notifier tells only frames
+  above the base, and nothing of a report whose stream is no longer the library's, judged and told
+  under the lock the worker's `on_stream_end` clears the clock under (`PlayerSlot`), so no frame of an
+  ended stream lands in the next one's count. (The library itself resets its count when its sync
+  task goes idle, before it calls `on_stream_end`; a report told in that window is the library's.)
 - **The bound is derived from what it protects** (`undrainedBoundFor`, `worker.hpp`): a server that
   fills the player's advertised buffer (two thirds of its 1 MB quota in the library's inbound ring)
   leaves a third for what arrives while nothing is taken; at the stream's worst-case byte rate
@@ -455,10 +471,18 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   (the clear ended the stream the jump was lost from). A cycle the source leaves short plays zeros (an underrun's
   decay, the source's fade),
   which are not counted.
-- **It counts every frame.** The frames told played grow by exactly what was skipped and read,
-  never the zeros of a short cycle nor anything of a cleared stream: the library takes what it is
-  told played from what it wrote (clamping at zero with a warning), so a frame it did not write,
-  told played, would be taken from audio still to play.
+- **It counts every frame.** The frames told played grow by exactly what was skipped and read, and
+  what a stop dropped of the stream, never the zeros of a short cycle nor anything of a cleared
+  stream: the library takes what it is told played from what it wrote (clamping at zero with a
+  warning), so a frame it did not write, told played, would be taken from audio still to play, and
+  one it wrote and is never told stays in its count, which puts its next audio that far late in its
+  own reckoning and so plays it that far early.
+- **What a stop drops** is told, one rule for both kinds of stop. The source drops its ring at a
+  stop's silence (and what a writer slipped in during it at the first tick back), unplayed and not at
+  the clock's word, and tells the clock at the stop's first tick what it dropped of the stream it
+  plays (`SourceHeld::dropped`; none of a stream a clear ended). Shorter than the bound, that tick
+  counts it played and tells it at its report; past the bound the takeover already counted it with
+  everything written, so the tick back counts nothing again.
 - **It tells only from a cycle that began on time** (`GraphCycle::overdueNs` 0). *Why:* the driver
   catches a stall up in a burst of timeouts, of which the block runs as many as the host lets it,
   from none to every one ([engine.md](engine.md#the-internal-clock)). A burst's cycle starts on the

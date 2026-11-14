@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <future>
 #include <optional>
 #include <span>
 #include <thread>
@@ -159,9 +160,9 @@ struct Rig {
 	void notify() {
 		const auto progress = clock.progress();
 		if (!progress) return;
-		const std::uint64_t from = std::max(reported, progress->base);
-		if (progress->played <= from) return;
-		told.push_back({progress->played - from, progress->finishRawNs});
+		const std::uint64_t frames = framesToTell(*progress, reported, clock.stream());
+		if (frames == 0) return;
+		told.push_back({frames, progress->finishRawNs});
 		reported = progress->played;
 	}
 	bool rang() { return writer.rung.exchange(false); }
@@ -566,6 +567,65 @@ TEST_CASE("Cleared frames are never told: each stream's count begins at its base
 	CHECK(rig.told[1].frames == block); // the next stream's, none of the cleared two blocks
 }
 
+// docs/node-types.md#clock: a report published before a stream ended and read after it is of a stream the library
+// forgot (it zeroed its count): the notifier drops it rather than tell its frames into the next stream's count.
+TEST_CASE("A report of a stream that ended before the notifier read it is never told", "[sendspin][code]") {
+	Rig rig;
+	rig.write(block);
+	rig.tick();
+	REQUIRE(rig.clock.progress().has_value());
+	REQUIRE(rig.clock.progress()->stream == 0);
+	rig.clock.clear(); // the stream ends before the notifier's turn
+	rig.notify();
+	CHECK(rig.told.empty());
+	rig.write(block);
+	fakeRaw += frameClock.ns(block);
+	rig.tick();
+	rig.notify();
+	REQUIRE(rig.told.size() == 1);
+	// The next stream's (what this tick read past the ended stream's 5 ms fade), none of the ended one's.
+	CHECK(rig.clock.progress()->base == block);
+	CHECK(rig.told[0].frames == rig.clock.lastPlayed().read);
+}
+
+// docs/node-types.md#clock: a stop drops what the ring holds without the clock asking, and the library counts every
+// frame it wrote as buffered until it is told it played. The stop's first tick counts the drop played, so after a stop
+// shorter than the undrained bound (no takeover) what the library wrote less what it was told is what the ring holds,
+// as after a long one.
+TEST_CASE("After a stop shorter than the bound, what the library wrote less what it was told is what the ring holds",
+          "[sendspin][code]") {
+	Rig rig(310'000 * msNs);
+	const auto told = [&] {
+		std::uint64_t sum = 0;
+		for (const Rig::Told& one : rig.told) sum += one.frames;
+		return sum;
+	};
+	for (int i = 0; i < 10; ++i) {
+		rig.fill();
+		rig.tick();
+		rig.notify();
+		fakeRaw += frameClock.ns(block);
+	}
+	rig.fill();
+	REQUIRE(rig.written - told() == capacity); // full: the library writes ahead
+	rig.stop();
+	rig.away(500); // under the bound: the writer waits on the stopped ring, never paces
+	REQUIRE(rig.clock.takeovers() == 0);
+	fakeRaw += frameClock.ns(block);
+	rig.tick(drive()); // the start: the stop's drop counted played
+	CHECK(rig.clock.lastHeld().dropped == capacity);
+	rig.notify();
+	CHECK(rig.written - told() == 0); // the ring holds nothing
+	REQUIRE(rig.fill() == capacity);
+	for (int i = 0; i < 3; ++i) {
+		fakeRaw += frameClock.ns(block);
+		rig.tick();
+		rig.notify();
+		CHECK(rig.written - told() == capacity - (i + 1) * block);
+	}
+	CHECK(rig.clock.takeovers() == 0);
+}
+
 TEST_CASE("The clock's undrained bound is the ring's room behind a full advertised buffer at the PCM byte rate, less "
           "the library's wait, and never under two rings",
           "[sendspin][code]") {
@@ -848,6 +908,74 @@ TEST_CASE("Back from the pacer, a tick that ends before the pacer's reach leaves
 	REQUIRE(rig.clock.lastTold().has_value());
 	CHECK(rig.clock.lastTold()->finishRawNs >= reach);
 	CHECK(rig.clock.clamped() == 0);
+}
+
+// docs/node-types.md#clock: the deferral compares finishes, what lies downstream included, so a graph edited while the
+// node was stopped (the card that followed it gone) cannot make the first report back step behind the pacer's last.
+TEST_CASE("Back from the pacer with less downstream than it dated by, the reports wait until their finish is past "
+          "its last",
+          "[sendspin][code]") {
+	Rig rig(250'000 * msNs, 1024);
+	for (int i = 0; i < 20; ++i) {
+		rig.fill();
+		rig.tick();
+		rig.notify();
+		fakeRaw += frameClock.ns(block);
+	}
+	rig.stop();
+	rig.away(2000);
+	REQUIRE(rig.clock.takeovers() == 1);
+	const std::int64_t pacedFinish = rig.told.back().finishRawNs; // its reach plus the card's 1024 frames (21.3 ms)
+	rig.downstreamFrames = 0;                                     // the card is gone when the node starts
+	fakeRaw += msNs;
+	rig.tick(drive());
+	CHECK(rig.clock.lastTookBack());
+	CHECK(rig.clock.lastTellDeferred()); // its end is 6.3 ms past the pacer's reach, 15 ms short of its finish
+	CHECK(rig.finish() == pacedFinish);  // the pacer's last report, now the tick's
+	rig.notify();
+	int deferred = 1;
+	for (int i = 0; i < 6; ++i) {
+		rig.fill();
+		fakeRaw += frameClock.ns(block);
+		rig.tick();
+		deferred += rig.clock.lastTellDeferred() ? 1 : 0;
+		if (const auto told = rig.clock.lastTold()) CHECK(told->finishRawNs >= pacedFinish);
+		rig.notify();
+	}
+	CHECK(deferred == 3); // the ticks ending 6.3, 11.7 and 17 ms past the reach
+	REQUIRE(rig.told.size() > 2);
+	for (std::size_t i = 1; i < rig.told.size(); ++i) {
+		INFO("report " << i << " of " << rig.told.size());
+		CHECK(rig.told[i].finishRawNs >= rig.told[i - 1].finishRawNs);
+	}
+}
+
+// docs/node-types.md#clock: each owner writes its own report box and the word names the one read, so a pacer held
+// mid-report (its thread preempted) as a tick takes the timeline back neither holds the tick's report back nor keeps
+// a reader waiting.
+TEST_CASE("A pacer held mid-report as the tick takes the timeline back: the tick tells at once, and the reader takes "
+          "its report without waiting",
+          "[sendspin][code]") {
+	Rig rig(270'000 * msNs);
+	rig.fill();
+	rig.tick();
+	rig.stop();
+	rig.away(2000);
+	REQUIRE(rig.clock.takeovers() == 1);
+	rig.clock.holdPacerBox(true);
+	fakeRaw += 10 * msNs; // past the pacer's last finish: nothing to wait for but the box
+	rig.tick(drive());
+	REQUIRE(rig.clock.lastTookBack());
+	rig.fill();
+	fakeRaw += frameClock.ns(block);
+	rig.tick();
+	CHECK_FALSE(rig.clock.lastTellDeferred());
+	REQUIRE(rig.clock.lastTold().has_value());
+	auto read = std::async(std::launch::async, [&] { return rig.clock.progress(); });
+	const bool readable = read.wait_for(5s) == std::future_status::ready;
+	rig.clock.holdPacerBox(false); // so a reader stuck on it returns
+	CHECK(readable);
+	CHECK(read.get() == rig.clock.lastTold());
 }
 
 TEST_CASE("A stream ended while paced, before anything of the next: the tick back ends the timeline and starts the "

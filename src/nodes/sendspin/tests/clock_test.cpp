@@ -130,7 +130,7 @@ struct Cycle {
 	bool dry;              // the clock's own count of short ticks moved in it (SendspinClock::dryTicks)
 	std::uint32_t fed;     // frames the ring played of the stream: its frames less those the clock counted lacking
 	double rateDiff;       // the driver's rate correction, as the code was handed it
-	bool deferred;         // the clock would have told but found the pacer mid-publish (lastTellDeferred)
+	bool deferred;         // the clock would have told, but behind the pacer's last finish (lastTellDeferred)
 	PlayProgress progress; // the newest the tick itself told the library, after it ran (lastTold)
 	// Worked out by the Judge from the facts and what the ring held, by the clock's rule (docs/node-types.md#clock): the
 	// frames it skips in it for the graph's lost time, whether it tells the library of this cycle, and whether that
@@ -1043,6 +1043,13 @@ public:
 		const auto found = std::ranges::find_if(unabsorbed_, [&](std::size_t at) { return at >= from; });
 		return found != unabsorbed_.end() ? std::optional<std::size_t>(*found) : std::nullopt;
 	}
+	/// How far the first ramp frame of `cycle` was heard from the time filter's prediction, now, for the stamp the
+	/// server sent it with: its time at the block's port plus what lies downstream of it.
+	double errorUs(const Cycle& cycle) {
+		const double outputUs = static_cast<double>(cycle.startRawNs) / 1000.0 +
+		                        static_cast<double>(cycle.firstAt + cycle.delayFrames) * 1e6 / kRate;
+		return outputUs - static_cast<double>(rig_.worker->clientTimeOf(sentUs(cycle.firstIndex)));
+	}
 	/// Dry cycles from cycle `from` up to and not including `to`, read so far.
 	std::size_t dryBetween(std::size_t from, std::size_t to) const {
 		return static_cast<std::size_t>(
@@ -1110,8 +1117,8 @@ private:
 		const bool owed = pendingTold_ > 0 || mustTell_;
 		if (owed && !untoldSince_) untoldSince_ = cycle.startRawNs;
 		cycle.forced = cycle.overdueNs > 0 && untoldSince_ && cycle.startRawNs - *untoldSince_ >= untoldBound.count();
-		// A report the pacer held the box for waits for the next tick (lastTellDeferred: its race, which this side
-		// cannot see).
+		// Back from the pacer, a report whose finish would be behind the pacer's last waits for the next tick
+		// (lastTellDeferred: the pacer's finish, which this side does not model).
 		cycle.published = owed && (cycle.overdueNs == 0 || cycle.forced) && !cycle.deferred;
 		if (cycle.published) {
 			untoldSince_.reset();
@@ -1171,8 +1178,6 @@ private:
 			return;
 		}
 		if (!firstFrameNs_) firstFrameNs_ = cycle.startRawNs;
-		// The chunks the server sent up to this cycle's first frame, which the step and the timing are judged by.
-		const std::int64_t rampUs = sentUs(cycle.firstIndex);
 		const std::int64_t libraryStep = lastIndex_ ? static_cast<std::int64_t>(cycle.firstIndex) -
 		                                                  static_cast<std::int64_t>(*lastIndex_) - 1 - pendingSkipped_
 		                                            : 0;
@@ -1197,12 +1202,9 @@ private:
 		const std::int64_t skippedSince = pendingSkipped_;
 		pendingSkipped_ = 0;
 
-		// When the first of them is heard: at the block's port, plus what lies downstream of it.
-		const double outputUs = static_cast<double>(cycle.startRawNs) / 1000.0 +
-		                        static_cast<double>(cycle.firstAt + cycle.delayFrames) * 1e6 / kRate;
 		errors.mostDelayFrames = std::max(errors.mostDelayFrames, cycle.delayFrames);
 		errors.leastDelayFrames = std::min(errors.leastDelayFrames, cycle.delayFrames);
-		const double errorUs = outputUs - static_cast<double>(rig_.worker->clientTimeOf(rampUs));
+		const double errorUs = this->errorUs(cycle);
 		ramp_.push_back({index, errorUs, libraryStep, !cycle.ramp, cycle.innerStep, skippedSince});
 		if (cycle.startRawNs - *firstFrameNs_ <= 3000000000) return;
 		++errors.afterFirst3s;
@@ -2267,6 +2269,80 @@ TEST_CASE("A starving network gap: one correction of the lost time, no silence, 
 	CHECK(blocksToBack <= boundBlocks);
 	// Every report exact, and the 750 cycles after the gap within 1 ms.
 	checkSync(judge.errors);
+}
+
+// docs/node-types.md#clock: a stop drops what the source's ring holds, which the library wrote and counts buffered
+// until told it played. Shorter than the undrained bound, no pacer takes over, so the stop's first tick counts the drop
+// played; the library is then late only by the time it was held back, corrects that once, and plays on the server's
+// stamps. Untold, the ring's frames would stay in the library's count for the rest of the stream, and it would play
+// that far early (a full ring: 43 ms), with nothing to correct it.
+TEST_CASE("A stop shorter than the bound while the server streams: the library corrects once and plays on the "
+          "server's stamps after",
+          "[sendspin][clock]") {
+	Rig rig;
+	rig.play(kStreamSeconds);
+	Judge judge(rig, rig.log, ear::test::StallPlan{});
+	INFO("the node said:\n" << rig.notes.all());
+	constexpr std::size_t kSecond = kRate / kBlock;
+	// Three seconds of the ramp out, so the time filter has settled and the library writes ahead of the ring.
+	REQUIRE(rig.waiter.until(
+		[&] {
+			const std::size_t first = rig.firstRampCycle();
+			return first < rig.tap.count() && rig.tap.count() > first + 3 * kSecond;
+		},
+		60s));
+	// The stop, as NodeHost makes it: the writer counts as idle, the block silent, then the ring dropped.
+	const std::uint64_t droppedBefore = rig.source->droppedFrames();
+	rig.source->stopping();
+	ear::testing::silenceOrAbort(*rig.block);
+	rig.source->stopped();
+	const std::uint64_t dropped = rig.source->droppedFrames() - droppedBefore;
+	ear::sleeps::pace(500ms, "the stop's length: what this test does to the node, under the undrained bound");
+	const std::size_t resumed = rig.tap.count();
+	bool driven = false;
+	rig.block->drive(DriveRequest{&rig.tap, {}, {}, rig.bound}, [&](std::uint64_t) {
+		driven = true;
+		rig.waiter.wake();
+	});
+	REQUIRE(rig.waiter.until([&] { return driven; }));
+	// Three seconds back: the library's correction and its settle, then two seconds judged.
+	REQUIRE(rig.waiter.until([&] { return rig.tap.count() > resumed + 3 * kSecond; }, 60s));
+	INFO("the ring held " << dropped << " frames at the stop; the first cycle back is " << resumed);
+	REQUIRE(dropped >= kBlock); // a stop that dropped nothing would prove nothing here
+	CHECK(rig.clock().takeovers() == 0);
+
+	// The library's own word after the stop: never told more than it wrote, and one correction (a hard sync, which a
+	// settle step of the next chunk may follow), for the time it was held back.
+	std::size_t underflows = 0;
+	std::size_t drops = 0;
+	std::string library;
+	for (const LibraryLog::Line& line : rig.log.lines()) {
+		if (line.cycle < resumed) continue;
+		library += " " + std::to_string(static_cast<int>(line.kind)) + ":" + std::to_string(line.value) + "@" +
+		           std::to_string(line.cycle);
+		underflows += line.kind == LibraryLog::Kind::underflow ? 1 : 0;
+		drops += line.kind == LibraryLog::Kind::drop ? 1 : 0;
+	}
+	INFO("the library's lines after the stop (kind:value@cycle):" << library);
+	CHECK(underflows == 0);
+	CHECK(drops >= 1);
+	CHECK(drops <= 2);
+	// Then on the server's stamps: the cycles of the last two seconds, each within 1 ms of the time filter's prediction
+	// but those the host disturbed (a catch-up the block missed moves the ramp, not the library's timing).
+	std::size_t judged = 0;
+	std::size_t within = 0;
+	double worstUs = 0.0;
+	for (std::size_t i = resumed + kSecond; i < resumed + 3 * kSecond; ++i) {
+		const Cycle& cycle = rig.tap.at(i);
+		if (cycle.got != cycle.frames || !cycle.clean) continue;
+		const double errorUs = judge.errorUs(cycle);
+		++judged;
+		within += std::abs(errorUs) < 1000.0 ? 1 : 0;
+		if (std::abs(errorUs) > std::abs(worstUs)) worstUs = errorUs;
+	}
+	INFO("judged " << judged << " cycles after the stop, " << within << " within 1 ms, worst " << worstUs << " us");
+	REQUIRE(judged >= kSecond);
+	CHECK(static_cast<double>(within) >= 0.99 * static_cast<double>(judged));
 }
 
 TEST_CASE("A stream ended mid-play leaves zeros within two blocks", "[sendspin][clock]") {

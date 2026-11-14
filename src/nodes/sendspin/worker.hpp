@@ -60,12 +60,19 @@ constexpr std::chrono::nanoseconds undrainedBoundFor(SampleRate rate, std::uint3
 }
 
 /// The library's player as the worker lends it to the notifier: set once the client started, cleared before the
-/// client stops, so the notifier never calls a player that is going. Every call under one lock; any thread.
+/// client stops, so the notifier never calls a player that is going. Every call under one lock; any thread. The same
+/// lock orders a report against the stream's end: a report is judged against the clock's current stream and told under
+/// it, and the end clears the clock under it, so no report of an ended stream reaches the library after its end.
 class PlayerSlot {
 public:
 	void set(::sendspin::PlayerRole* player) noexcept;
-	/// notify_audio_played on the player; false (and nothing called) while there is none.
-	bool notify(std::uint32_t frames, std::int64_t finishUs);
+	enum class Told { nothing, told, noPlayer };
+	/// notify_audio_played on the player with what `progress` holds past `reported` of `clock`'s current stream
+	/// (framesToTell), dated by its finish: `nothing` when there is nothing to tell, `noPlayer` (nothing called) while
+	/// there is no player.
+	Told notify(const SendspinClock& clock, const PlayProgress& progress, std::uint64_t reported);
+	/// The worker's on_stream_end: clears `clock` (SendspinClock::clear) under the lock.
+	void endStream(SendspinClock& clock);
 
 private:
 	std::mutex mutex_;

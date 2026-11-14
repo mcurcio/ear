@@ -79,7 +79,8 @@ client is the configuration's. What that means to an operator (the owner's answe
 
 - **A stop keeps the connection.** `node.stop` fades and silences the node's code, and nothing else: the worker, the
   connection, the pairing and the library keep running, so Music Assistant still lists the player with its roles. Its
-  outputs are silent, nothing it is sent is played (the source drops what it held at the stop's silence; past the
+  outputs are silent, nothing it is sent is played (the source drops what it held at the stop's silence, and its clock
+  counts that played at the start, so the library leaves no phantom frames buffered; past the
   clock's undrained bound what it is sent is played into nothing and reported played: `docs/node-types.md#clock`), and
   the sink takes nothing. `node.start` drives the code again, with no code asked. While stopped past the bound (its
   value and derivation: `docs/node-types.md#clock`) the library's writes take the clock's one timeline over and are
@@ -123,7 +124,12 @@ client is the configuration's. What that means to an operator (the owner's answe
   word, never two tellers merged. The feed, `SendspinCode` and `PlayedTeller` it replaced (S3c.6b) kept them apart and
   reconciled them after the fact, and three review rounds found hand-over and timeline bugs between them. **A pacer a
   block behind now makes the library hunt**: it hard-syncs at 5 ms, so a reach 5.3 ms behind now made it drop and add
-  silence each chunk while paced; the reach is now, and a tick back from the pacer tells only once it ends past it.
+  silence each chunk while paced; the reach is now, and a tick back from the pacer tells only once its finish,
+  downstream included, is past the pacer's last. **A frame a stop drops must be told**: the library counts it buffered
+  until told, so untold it plays the rest of the stream that far early (42.7 ms for a full ring, the clock test "a stop
+  shorter than the bound"). **Each owner writes its own report box**; the word names the one read, so neither ever
+  waits on the other, and a report the notifier reads after the stream ended is dropped (`framesToTell`, judged under
+  `PlayerSlot`'s lock, which `on_stream_end` clears the clock under).
 - **Audio time is the graph's.** The library is told when frames play from the cycle's start on the raw clock
   (`GraphCycle::startRawNs`, which the framework makes by sampling both clocks; the code reads no clock), never from when the
   thread woke. Wake time failed the spike: 52% within 1 ms against 100%.

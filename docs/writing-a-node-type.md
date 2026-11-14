@@ -388,6 +388,9 @@ the harness) runs in this order:
    and `held.clears` how many clears the ring has applied so far (every `clear()` counts once, and
    the first tick after a stop counts those it forgot unapplied, saying no clear), so a clock that
    counts by stream knows exactly which stream `frames` and this tick's frames are of.
+   `held.dropped` is what the ring dropped of that stream since the last tick without the clock
+   asking: on the first tick after a stop, what the stop dropped and what a writer slipped in during
+   it (never a clear's frames, which are of a stream that ended).
    The ring drops **min(answer, held.frames)**, and **nothing on a clearing tick** (a clear ends the
    stream: nothing of the next is skipped for the old one's lost time). Any answer is allowed; the
    clock reads the tick's facts (`tick.cycle.facts`: a `catchUp` and its `jumpFrames`,
@@ -398,7 +401,8 @@ the harness) runs in this order:
    the current stream, at the clock's word), `read` (of the current stream, played), `ended` (of a
    stream a clear ended, never the current one's) and `zeros` (zeros, a decay or a clear's fade past
    its frames); `read + ended + zeros` is the tick's frames. A clock counting what its library
-   wrote counts `skipped + read`, never `ended` or `zeros`.
+   wrote counts `skipped + read` and `held.dropped`, never `ended` or `zeros`: every frame of the
+   stream is then counted once, whether skipped, read or dropped by a stop.
 5. If `played` returned true, the source's **clock wake** (`writer.clockWake()`) is rung, at most
    once until answered: its `descriptor()` is readable while rung, and its one watcher calls
    `answer()` before it looks. It is never rung for a source with no clock.
