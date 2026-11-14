@@ -1,0 +1,459 @@
+{
+  "description": "A node's own knobly text (docs/control-port.md#a-nodes-own-text), the feature node-text, over a file with a snippet that makes a node (t1) and a comment owned by rec's statement. graphFile.subscribe's GraphFile carries nodeTexts: where each node's statement is in its text, owned comments included, t1's in its snippet and shared. In order: node.setText replacing rec's statement (graphFile.changed cause edit with the new text and nodeTexts, node.updated, then the reply); the same version again (file-changed); a text whose setting is given twice (invalid-text, the diagnostic placed in the text sent); a text naming another node (ear/node-renamed at the name); t1, whose statement is a snippet's (shared-definition at it); two statements (ear/not-one-node). file is the graph file the client holds at the end, graph the graph.",
+  "requests": [
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graphFile.subscribe\"}",
+    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"graph.subscribe\"}",
+    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"node.setText\",\"params\":{\"name\":\"rec\",\"text\":\"# the take, now its own block\\nnode file rec {\\n    path \\\"take2.wav\\\";\\n}\",\"version\":\"v1\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"node.setText\",\"params\":{\"name\":\"rec\",\"text\":\"node file rec { path \\\"take3.wav\\\"; }\",\"version\":\"v1\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"node.setText\",\"params\":{\"name\":\"rec\",\"text\":\"node file rec {\\n    path \\\"take3.wav\\\";\\n    path \\\"take4.wav\\\";\\n}\",\"version\":\"v2\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"node.setText\",\"params\":{\"name\":\"noise\",\"text\":\"node white hiss;\",\"version\":\"v2\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"node.setText\",\"params\":{\"name\":\"t1\",\"text\":\"node white t1;\",\"version\":\"v2\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"node.setText\",\"params\":{\"name\":\"noise\",\"text\":\"node white noise;\\nnode white more;\",\"version\":\"v2\"}}"
+  ],
+  "messages": [
+    {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "version": "v1",
+        "text": "graph {\n    rate 48khz;\n    block_size 256;\n}\n@snippet tap $n {                # one line, a node for each use\n    node white $n;\n}\n@use tap t1;\nnode white noise;\n# the take\nnode file rec { path \"take1.wav\"; }\nroute noise:noise.mono rec:record.left;\n",
+        "diagnostics": [],
+        "running": "v1",
+        "pendingRestart": [],
+        "nodeTexts": [
+          {
+            "name": "t1",
+            "start": {
+              "line": 6,
+              "column": 5
+            },
+            "end": {
+              "line": 6,
+              "column": 19
+            },
+            "shared": true
+          },
+          {
+            "name": "noise",
+            "start": {
+              "line": 9,
+              "column": 1
+            },
+            "end": {
+              "line": 9,
+              "column": 18
+            }
+          },
+          {
+            "name": "rec",
+            "start": {
+              "line": 10,
+              "column": 1
+            },
+            "end": {
+              "line": 11,
+              "column": 36
+            }
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "result": {
+        "protocol": 1,
+        "features": [
+          "lifecycle",
+          "counters",
+          "companions",
+          "node-text"
+        ],
+        "graphFrequency": 48000,
+        "blockSize": 256,
+        "realtime": false,
+        "scheduling": "SCHED_OTHER",
+        "types": [
+          "file",
+          "white"
+        ],
+        "counters": {
+          "cycles": 0,
+          "cutCycles": 0,
+          "stalls": 0,
+          "lostMs": 0
+        },
+        "nodes": [
+          {
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "name": "noise",
+            "type": "white",
+            "settings": {},
+            "inputs": [],
+            "outputs": [
+              "noise.mono"
+            ],
+            "state": "running",
+            "phase": "running",
+            "wanted": "running",
+            "blockLost": false,
+            "companions": []
+          },
+          {
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "name": "rec",
+            "type": "file",
+            "settings": {
+              "path": "take1.wav"
+            },
+            "inputs": [
+              "record.left",
+              "record.right"
+            ],
+            "outputs": [],
+            "state": "running",
+            "phase": "running",
+            "wanted": "running",
+            "blockLost": false,
+            "companions": []
+          },
+          {
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "name": "t1",
+            "type": "white",
+            "settings": {},
+            "inputs": [],
+            "outputs": [
+              "noise.mono"
+            ],
+            "state": "running",
+            "phase": "running",
+            "wanted": "running",
+            "blockLost": false,
+            "companions": []
+          }
+        ],
+        "routes": [
+          {
+            "from": {
+              "node": "noise",
+              "port": "noise.mono"
+            },
+            "to": {
+              "node": "rec",
+              "port": "record.left"
+            },
+            "status": "linked"
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "graphFile.changed",
+      "params": {
+        "version": "v2",
+        "text": "graph {\n    rate 48khz;\n    block_size 256;\n}\n@snippet tap $n {                # one line, a node for each use\n    node white $n;\n}\n@use tap t1;\nnode white noise;\n# the take, now its own block\nnode file rec {\n    path \"take2.wav\";\n}\nroute noise:noise.mono rec:record.left;\n",
+        "diagnostics": [],
+        "running": "v2",
+        "pendingRestart": [],
+        "nodeTexts": [
+          {
+            "name": "t1",
+            "start": {
+              "line": 6,
+              "column": 5
+            },
+            "end": {
+              "line": 6,
+              "column": 19
+            },
+            "shared": true
+          },
+          {
+            "name": "noise",
+            "start": {
+              "line": 9,
+              "column": 1
+            },
+            "end": {
+              "line": 9,
+              "column": 18
+            }
+          },
+          {
+            "name": "rec",
+            "start": {
+              "line": 10,
+              "column": 1
+            },
+            "end": {
+              "line": 13,
+              "column": 2
+            }
+          }
+        ],
+        "cause": "edit"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.updated",
+      "params": {
+        "name": "rec",
+        "settings": {
+          "path": "take2.wav"
+        },
+        "applied": "restart"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 4,
+      "error": {
+        "code": -32000,
+        "message": "file-changed",
+        "data": {
+          "code": "file-changed"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 5,
+      "error": {
+        "code": -32000,
+        "message": "invalid-text",
+        "data": {
+          "code": "invalid-text",
+          "diagnostics": [
+            {
+              "severity": "error",
+              "code": "ear/bad-directive",
+              "message": "setting path is given twice",
+              "line": 3,
+              "column": 5
+            }
+          ]
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 6,
+      "error": {
+        "code": -32000,
+        "message": "invalid-text",
+        "data": {
+          "code": "invalid-text",
+          "diagnostics": [
+            {
+              "severity": "error",
+              "code": "ear/node-renamed",
+              "message": "this text edits node noise: rename it in ear.conf, where its routes are renamed with it",
+              "line": 1,
+              "column": 12
+            }
+          ]
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 7,
+      "error": {
+        "code": -32000,
+        "message": "shared-definition 6:5",
+        "data": {
+          "code": "shared-definition",
+          "line": 6,
+          "column": 5
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 8,
+      "error": {
+        "code": -32000,
+        "message": "invalid-text",
+        "data": {
+          "code": "invalid-text",
+          "diagnostics": [
+            {
+              "severity": "error",
+              "code": "ear/not-one-node",
+              "message": "the text must be one node statement: node <type> <name> { <setting> <value>; ... }",
+              "line": 1,
+              "column": 1
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "graph": {
+    "protocol": 1,
+    "features": [
+      "lifecycle",
+      "counters",
+      "companions",
+      "node-text"
+    ],
+    "graphFrequency": 48000,
+    "blockSize": 256,
+    "realtime": false,
+    "scheduling": "SCHED_OTHER",
+    "types": [
+      "file",
+      "white"
+    ],
+    "counters": {
+      "cycles": 0,
+      "cutCycles": 0,
+      "stalls": 0,
+      "lostMs": 0
+    },
+    "nodes": [
+      {
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "name": "noise",
+        "type": "white",
+        "settings": {},
+        "inputs": [],
+        "outputs": [
+          "noise.mono"
+        ],
+        "state": "running",
+        "phase": "running",
+        "wanted": "running",
+        "blockLost": false,
+        "companions": []
+      },
+      {
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "name": "rec",
+        "type": "file",
+        "settings": {
+          "path": "take2.wav"
+        },
+        "inputs": [
+          "record.left",
+          "record.right"
+        ],
+        "outputs": [],
+        "state": "running",
+        "phase": "running",
+        "wanted": "running",
+        "blockLost": false,
+        "companions": []
+      },
+      {
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "name": "t1",
+        "type": "white",
+        "settings": {},
+        "inputs": [],
+        "outputs": [
+          "noise.mono"
+        ],
+        "state": "running",
+        "phase": "running",
+        "wanted": "running",
+        "blockLost": false,
+        "companions": []
+      }
+    ],
+    "routes": [
+      {
+        "from": {
+          "node": "noise",
+          "port": "noise.mono"
+        },
+        "to": {
+          "node": "rec",
+          "port": "record.left"
+        },
+        "status": "linked"
+      }
+    ]
+  },
+  "file": {
+    "version": "v2",
+    "text": "graph {\n    rate 48khz;\n    block_size 256;\n}\n@snippet tap $n {                # one line, a node for each use\n    node white $n;\n}\n@use tap t1;\nnode white noise;\n# the take, now its own block\nnode file rec {\n    path \"take2.wav\";\n}\nroute noise:noise.mono rec:record.left;\n",
+    "diagnostics": [],
+    "running": "v2",
+    "pendingRestart": [],
+    "nodeTexts": [
+      {
+        "name": "t1",
+        "start": {
+          "line": 6,
+          "column": 5
+        },
+        "end": {
+          "line": 6,
+          "column": 19
+        },
+        "shared": true
+      },
+      {
+        "name": "noise",
+        "start": {
+          "line": 9,
+          "column": 1
+        },
+        "end": {
+          "line": 9,
+          "column": 18
+        }
+      },
+      {
+        "name": "rec",
+        "start": {
+          "line": 10,
+          "column": 1
+        },
+        "end": {
+          "line": 13,
+          "column": 2
+        }
+      }
+    ]
+  }
+}

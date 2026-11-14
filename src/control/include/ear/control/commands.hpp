@@ -34,6 +34,11 @@ struct SetGraphFile {
 	std::string text;
 	std::string version;
 }; // graphFile.set
+struct SetNodeText {
+	NodeName node;
+	std::string text;
+	std::string version;
+}; // node.setText {"name", "text", "version"} (feature node-text)
 struct StartNode {
 	NodeName node;
 }; // node.start {"name"}
@@ -50,17 +55,20 @@ struct EnableNode {
 	NodeName node;
 }; // node.enable {"name"}
 using Command = std::variant<GetGraph, AddNode, UpdateNode, RemoveNode, AddRoute, RemoveRoute, GetGraphFile,
-                             SetGraphFile, StartNode, StopNode, RestartNode, DisableNode, EnableNode>;
+                             SetGraphFile, StartNode, StopNode, RestartNode, DisableNode, EnableNode, SetNodeText>;
 using CommandResult =
 	std::variant<GraphView, std::expected<void, CommandError>, GraphFile, FileRefusal, Applied, ControlRefusal>;
 /// The wire's frame (docs/control-port.md#protocol-and-features): graph.get's "protocol" and "features".
 inline constexpr int wireProtocol = 1;
-inline constexpr std::array<std::string_view, 3> wireFeatures{"lifecycle", "counters", companionsFeature};
+/// A node's own knobly text: nodeTexts on the GraphFile and node.setText (docs/control-port.md#a-nodes-own-text).
+inline constexpr std::string_view nodeTextFeature = "node-text";
+inline constexpr std::array<std::string_view, 4> wireFeatures{"lifecycle", "counters", companionsFeature,
+                                                              nodeTextFeature};
 /// Control thread. Named params only, decoded with graph_json. Unknown method: methodNotFound;
 /// a missing, extra or mistyped key: invalidParams whose message is the JsonError
 /// ("/from/port: missing") and whose data is {"pointer"} (the JSON pointer it names). graphFile.get and
 /// graphFile.subscribe (params absent or {}) are GetGraphFile; graphFile.set is SetGraphFile (text and version, each a
-/// required string); node.start, node.stop, node.restart, node.disable and node.enable take {"name"}. The
+/// required string); node.setText is SetNodeText (name, text and version); node.start, node.stop, node.restart, node.disable and node.enable take {"name"}. The
 /// graph file keeper runs every command (requests.hpp).
 std::expected<Command, RpcError> decodeCommand(std::string_view method, const nlohmann::json& params);
 /// Control thread. GraphView -> encodeGraph; success -> {}; CommandError ->
@@ -74,7 +82,8 @@ std::expected<nlohmann::json, RpcError> encodeCommandResult(const CommandResult&
 /// "routes"}.
 nlohmann::json encodeGraph(const GraphView& view);
 /// {"version", "text", "diagnostics": [{"severity", "code", "message", "line", "column"}], "running"?,
-/// "refusal"?: {"code", "message", "line"?, "column"?}, "pendingRestart", "writeFailed"?}: an absent
+/// "refusal"?: {"code", "message", "line"?, "column"?}, "pendingRestart", "writeFailed"?, "nodeTexts"?: [{"name", "start": {"line", "column"}, "end": {...},
+/// "shared"?: true}]}: an absent
 /// optional is left out, never null.
 nlohmann::json encodeGraphFile(const GraphFile& file);
 } // namespace ear::control

@@ -217,6 +217,24 @@ export interface Refusal {
 
 export type FormatKey = "graphFrequency" | "blockSize";
 
+/** A place in ear.conf's text: line from 1; column from 1 in UTF-16 code units. */
+export interface TextPlace {
+  line: number;
+  column: number;
+}
+
+/**
+ * Where one node's statement is written in the GraphFile's text (feature node-text): from start to one past its last
+ * character, the comments it owns included. shared: the statement sits in a snippet (one text, maybe several nodes),
+ * so node.setText refuses it (shared-definition) and the editor only shows it.
+ */
+export interface NodeText {
+  name: string;
+  start: TextPlace;
+  end: TextPlace;
+  shared?: true;
+}
+
 /** graphFile.get's and graphFile.subscribe's result, and graphFile.changed's params. */
 export interface GraphFile {
   /** Opaque; changes whenever the text changes. */
@@ -233,6 +251,8 @@ export interface GraphFile {
   pendingRestart: FormatKey[];
   /** The disk refused the last write. */
   writeFailed?: string;
+  /** Feature node-text: where each node's statement is in `text`; absent when the file has errors. */
+  nodeTexts?: NodeText[];
 }
 
 /** edit: an editor or pane edit; disk: ear.conf changed on disk; write: writeFailed set or cleared. */
@@ -256,6 +276,12 @@ export interface Methods {
   "graphFile.subscribe": { params: undefined; result: GraphFile };
   /** ear.conf's whole new text and the version it was based on; {} once the graph runs it. */
   "graphFile.set": { params: { text: string; version: string }; result: Record<string, never> };
+  /**
+   * Feature node-text: the node's whole statement in knobly, replacing its own in ear.conf (every other byte kept),
+   * against the version its text was cut from; {} once the graph runs it. invalid-text's diagnostics are placed in
+   * `text`.
+   */
+  "node.setText": { params: { name: string; text: string; version: string }; result: Record<string, never> };
   /** The lifecycle (feature lifecycle). Start, stop and restart edit nothing; disable and enable edit ear.conf. */
   "node.start": { params: { name: string }; result: { applied: Applied } };
   "node.stop": { params: { name: string }; result: { applied: Applied } };
@@ -415,6 +441,7 @@ const methodSet: { [M in MethodName]: true } = {
   "node.restart": true,
   "node.disable": true,
   "node.enable": true,
+  "node.setText": true,
 };
 export const methodNames = Object.keys(methodSet) as MethodName[];
 
@@ -466,6 +493,7 @@ export const controlErrorCodes = Object.keys(controlErrorCodeSet) as ControlErro
 export const lifecycleFeature = "lifecycle";
 export const countersFeature = "counters";
 export const companionsFeature = "companions";
+export const nodeTextFeature = "node-text";
 
 // ----- The conformance fixtures (test/protocol/*.json) -----
 

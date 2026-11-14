@@ -7,6 +7,7 @@ add_executable(ear_system_tests control_port_test.cpp counters_test.cpp graph_fi
 	sendspin_pairing_test.cpp sendspin_ramp_test.cpp sendspin_streams_test.cpp white_to_file_test.cpp)
 target_link_libraries(ear_system_tests PRIVATE ear_catch_main nlohmann_json::nlohmann_json
 	PkgConfig::SNDFILE ear_ws_client ear_rtp_tone ear_sendspin_server ear_temp_folder ear_statistics)
-target_compile_definitions(ear_system_tests PRIVATE EAR_BINARY="${PROJECT_BINARY_DIR}/ear")
+target_compile_definitions(ear_system_tests PRIVATE EAR_BINARY="${PROJECT_BINARY_DIR}/ear"
+	EAR_PROTOCOL_DIR="${PROJECT_SOURCE_DIR}/test/protocol")
 add_dependencies(ear_system_tests ear)
 ear_catch_tests(ear_system_tests)

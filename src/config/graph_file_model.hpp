@@ -30,6 +30,8 @@ inline constexpr std::string_view missingDirectiveCode = "ear/missing-directive"
 inline constexpr std::string_view badRateCode = "ear/bad-rate";
 inline constexpr std::string_view tooLargeCode = "ear/too-large";
 inline constexpr std::string_view unwritableEditCode = "ear/unwritable-edit";
+inline constexpr std::string_view notOneNodeCode = "ear/not-one-node";  // node.setText: not one node statement
+inline constexpr std::string_view nodeRenamedCode = "ear/node-renamed"; // node.setText: another name
 /// ear.conf as read from disk: its text; std::nullopt when it is not there; or why it cannot be read.
 using DiskText = std::expected<std::optional<std::string>, std::string>;
 /// Where each wanted item is written: parallel to GraphSpec::nodes and GraphSpec::routes.
@@ -49,6 +51,8 @@ struct GraphFileRead {
 	std::optional<AudioFormat> format;            // graph's rate and block_size read, no diagnostic placed on them
 	std::optional<GraphSpec> wanted;              // only when no diagnostic is an error
 	Placements placements;                        // empty when wanted is absent
+	/// Where each wanted node's statement is written, parallel to wanted's nodes; only when wanted is present.
+	std::optional<std::vector<control::NodeText>> nodeTexts;
 	bool hasErrors() const noexcept;
 };
 /// One knobly graph of ear.conf and its read. Used on one thread at a time (knobly handles are not
@@ -100,6 +104,15 @@ public:
 	EditOutcome addRoute(const Route& route) const;
 	/// Removes its statement; SharedDefinition when it makes more than one rendered directive.
 	EditOutcome removeRoute(const Route& route) const;
+	/// node.setText (docs/control-port.md#a-nodes-own-text): `text`, with the whitespace around it dropped, replaces the
+	/// node's own statement (its byte range, owned comments included), and every other byte of the file is kept.
+	/// UnknownNode; SharedDefinition at the statement when it is not the node's own (it sits in a snippet or makes
+	/// several directives). The candidate is read whole, so the file's @set and @snippet lines apply; when it has
+	/// errors, or where the text went it holds anything but one top-level `node` statement (notOneNodeCode) of the same
+	/// name (nodeRenamedCode), InvalidText whose diagnostics are placed in `text` (a diagnostic elsewhere in the file
+	/// is placed at the text's start, or its end when after it, its message prefixed with its place in this model's
+	/// text). Nothing when the text is the statement's own.
+	EditOutcome setNodeText(const NodeName& node, const std::string& text) const;
 
 private:
 	struct Impl;

@@ -55,6 +55,27 @@ control::TextPlace placeOf(std::string_view text, const vl::place& place) {
 	return placeIn(text, static_cast<std::uint32_t>(start.line()), static_cast<std::uint32_t>(start.column()));
 }
 
+/// The wire's place of byte `offset` of `text`.
+control::TextPlace placeAt(std::string_view text, std::size_t offset) {
+	offset = std::min(offset, text.size());
+	const auto before = text.substr(0, offset);
+	const auto line0 = static_cast<std::uint32_t>(std::count(before.begin(), before.end(), '\n'));
+	const auto lineStart = before.rfind('\n');
+	const std::size_t column0 = lineStart == std::string_view::npos ? offset : offset - lineStart - 1;
+	return placeIn(text, line0, static_cast<std::uint32_t>(column0));
+}
+
+/// A node's statement is its own when it is written at the top level and read once: node.setText may replace it
+/// (docs/control-port.md#a-nodes-own-text). One in a snippet, however many use it, is shared.
+bool ownStatement(const vw::statement& statement) { return !statement.parent() && statement.copies().size() == 1; }
+
+/// Where `statement` (a wanted node's, named `name`) is written in `text`, owned comments included.
+control::NodeText nodeTextOf(std::string_view text, const std::string& name, const vw::statement& statement) {
+	const auto span = statement.place().span();
+	return control::NodeText{name, placeAt(text, static_cast<std::size_t>(span.start().offset())),
+	                         placeAt(text, static_cast<std::size_t>(span.end().offset())), !ownStatement(statement)};
+}
+
 control::Diagnostic plain(std::string_view text, const vl::located_diagnostic& diagnostic) {
 	const auto code = diagnostic.code();
 	std::string name = std::holds_alternative<vl::diagnostic_code>(code)
@@ -179,6 +200,7 @@ public:
 	std::vector<NodeSpec> nodes;
 	std::vector<Route> routes;
 	Placements placements;
+	std::vector<control::NodeText> nodeTexts; // parallel to nodes
 
 private:
 	void report(const vl::diagnostic_error& error) { found_.push_back(error.diagnostic()); }
@@ -354,6 +376,7 @@ private:
 		if (!ok) return;
 		nodes.push_back(NodeSpec{*name, *type, std::move(settings), disabled});
 		placements.nodes.push_back(placeOf(text_, directive.written().place()));
+		nodeTexts.push_back(nodeTextOf(text_, *name, directive.written()));
 	}
 
 	/// A rate setting's value written with its unit (docs/graph-file.md#rates); nothing, reported, otherwise.
@@ -800,6 +823,7 @@ GraphFileModel GraphFileModel::load(const DiskText& disk, const NodeCatalogue& c
 		read.wanted =
 			GraphSpec{read.format->rate, read.format->maxBlock, std::move(reader.nodes), std::move(reader.routes)};
 		read.placements = std::move(reader.placements);
+		read.nodeTexts = std::move(reader.nodeTexts);
 	}
 	return GraphFileModel(std::move(impl));
 }
@@ -990,6 +1014,128 @@ EditOutcome GraphFileModel::removeRoute(const Route& route) const {
 		if (auto shared = editing.shared(found->written())) return refuse(std::move(*shared));
 		found->written().remove();
 		return finish(editing, *impl_->catalogue);
+	});
+}
+
+namespace {
+
+/// node.setText's text in its candidate (docs/control-port.md#a-nodes-own-text): where it went, and how a place in the
+/// candidate maps into the text as the client sent it.
+class BoxMap {
+public:
+	BoxMap(std::string_view sent, std::size_t lead, std::size_t length, const std::string& file, std::size_t from,
+	       std::size_t to, const std::string& candidate)
+		: start_(placeAt(candidate, from)), end_(placeAt(candidate, from + length)), fileEnd_(placeAt(file, to)) {
+		const std::string_view dropped = sent.substr(0, lead);
+		leadLines_ = static_cast<std::uint32_t>(std::count(dropped.begin(), dropped.end(), '\n'));
+		const auto lastBreak = dropped.rfind('\n');
+		leadColumn_ = static_cast<std::uint32_t>(lastBreak == std::string_view::npos ? lead : lead - lastBreak - 1);
+	}
+
+	/// A place inside the text, in the text as sent.
+	control::TextPlace inText(control::TextPlace place) const {
+		return control::TextPlace{place.line - start_.line + 1 + leadLines_,
+		                          place.line == start_.line ? place.column - start_.column + 1 + leadColumn_
+		                                                    : place.column};
+	}
+	control::TextPlace textStart() const { return inText(start_); }
+
+	/// A candidate's diagnostic placed in the text; one outside it at the text's start or end, saying where it is in
+	/// the file as it stands (after the text, lines move by what the text changed).
+	control::Diagnostic map(control::Diagnostic diagnostic) const {
+		const auto before = [](control::TextPlace a, control::TextPlace b) {
+			return std::pair{a.line, a.column} < std::pair{b.line, b.column};
+		};
+		const auto elsewhere = [&](control::TextPlace inFile, control::TextPlace shown) {
+			diagnostic.message =
+				std::format("{} {}:{}: {}", rootDocument, inFile.line, inFile.column, diagnostic.message);
+			diagnostic.place = shown;
+		};
+		const control::TextPlace at = diagnostic.place;
+		if (before(at, start_)) elsewhere(at, textStart());
+		else if (!before(at, end_))
+			elsewhere(control::TextPlace{at.line - end_.line + fileEnd_.line,
+			                             at.line == end_.line ? at.column - end_.column + fileEnd_.column : at.column},
+			          inText(end_));
+		else diagnostic.place = inText(at);
+		return diagnostic;
+	}
+
+private:
+	control::TextPlace start_;
+	control::TextPlace end_;
+	control::TextPlace fileEnd_;
+	std::uint32_t leadLines_ = 0;
+	std::uint32_t leadColumn_ = 0;
+};
+
+constexpr std::string_view textWhitespace = " \t\r\n";
+constexpr std::string_view notOneNodeMessage =
+	"the text must be one node statement: node <type> <name> { <setting> <value>; ... }";
+
+std::unexpected<EditRefusal> invalidText(std::vector<control::Diagnostic> diagnostics) {
+	return refuse(control::FileRefusal{control::InvalidText{std::move(diagnostics)}});
+}
+
+} // namespace
+
+EditOutcome GraphFileModel::setNodeText(const NodeName& name, const std::string& text) const {
+	return guarded([&]() -> EditOutcome {
+		if (heldNode(wantedOf(impl_->read), name) == nullptr) return refuse(UnknownNode{name});
+		std::size_t from = 0;
+		std::size_t to = 0;
+		{
+			const Editing editing(impl_->text);
+			const auto node = editing.node(name);
+			if (!node) throw std::logic_error("graph file model: a wanted node is not in its render");
+			const vw::written_directive statement = node->written();
+			if (!ownStatement(statement))
+				return refuse(control::SharedDefinition{placeOf(impl_->text, statement.place())});
+			const auto span = statement.place().span();
+			from = static_cast<std::size_t>(span.start().offset());
+			to = static_cast<std::size_t>(span.end().offset());
+		}
+		const std::size_t lead = std::min(text.size(), text.find_first_not_of(textWhitespace));
+		const std::size_t last = text.find_last_not_of(textWhitespace);
+		const std::string trimmed = last == std::string::npos ? std::string() : text.substr(lead, last + 1 - lead);
+		if (trimmed.empty())
+			return invalidText({control::Diagnostic{control::Severity::error, std::string(notOneNodeCode),
+			                                        std::string(notOneNodeMessage), control::TextPlace{1, 1}}});
+		std::string after = impl_->text.substr(0, from) + trimmed + impl_->text.substr(to);
+		if (after == impl_->text) return std::optional<GraphFileModel>{};
+		GraphFileModel candidate = load(DiskText{after}, *impl_->catalogue);
+		const BoxMap box(text, lead, trimmed.size(), impl_->text, from, to, after);
+		const GraphFileRead& read = candidate.read();
+		if (read.hasErrors()) {
+			std::vector<control::Diagnostic> mapped;
+			for (const auto& diagnostic : read.diagnostics) mapped.push_back(box.map(diagnostic));
+			return invalidText(std::move(mapped));
+		}
+		if (!candidate.impl_->graph) throw std::logic_error("graph file model: a candidate that reads has no graph");
+		const vw::document_graph& graph = *candidate.impl_->graph;
+		// Where the text went, the candidate holds exactly one top-level statement: a node of the same name.
+		std::vector<vw::statement> inside;
+		for (const vw::statement& statement : graph.root().block()) {
+			const auto at = static_cast<std::size_t>(statement.place().span().start().offset());
+			if (at >= from && at < from + trimmed.size()) inside.push_back(statement);
+		}
+		const auto written = inside.size() == 1 ? inside.front().as<vw::written_directive>() : std::nullopt;
+		if (!written || written->name() != nodeName)
+			return invalidText({control::Diagnostic{control::Severity::error, std::string(notOneNodeCode),
+			                                        std::string(notOneNodeMessage), box.textStart()}});
+		const vr::rendered tree = vr::render(graph);
+		for (const vr::directive& directive : tree.block().directives(nodeName)) {
+			if (!(directive.written() == *written)) continue;
+			const std::string given = directive.values().at(1).string(); // it read, so it has a type and a name
+			if (given == name) break;
+			// Routes name the node: a rename of its statement alone would leave them naming a node that is gone.
+			return invalidText({control::Diagnostic{
+				control::Severity::error, std::string(nodeRenamedCode),
+				std::format("this text edits node {}: rename it in {}, where its routes are renamed with it", name,
+			                rootDocument),
+				box.inText(placeOf(after, written->values().at(1).place()))}});
+		}
+		return std::optional<GraphFileModel>(std::move(candidate));
 	});
 }
 

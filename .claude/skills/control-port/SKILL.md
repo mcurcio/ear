@@ -48,7 +48,7 @@ use`).
 
 ## The frame and the lifecycle (protocol 1)
 
-- **The frame.** `graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions"]`; an absent
+- **The frame.** `graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions", "node-text"]`; an absent
   `protocol` is 0. Gate every method and request member on its feature, never on a -32601
   probe. Every enum is open: draw a value you do not know neutrally, never fail on it.
 - **Health.** Each node of a snapshot, `node.added` and every `node.state` carries `state` (the
@@ -122,6 +122,15 @@ Every edit is an edit of `ear.conf` (knobly), the one source of the wanted graph
   `node.*` and `route.*` edit is `file-invalid`; only `graphFile.set` (or a hand edit) fixes it.
   A port change (a card's channel count) replaces the node: its routes and the node are removed
   and added again; there is no `ports-changed`.
+- **A person edits knobly; JSON is the machine API.** With the feature `node-text` the GraphFile
+  carries `nodeTexts` (`{name, start, end, shared?}`: where each node's statement is in `text`,
+  owned comments included; absent while the file has errors), and `node.setText {"name", "text",
+  "version"}` replaces that node's own statement with `text`, every other byte of the file kept.
+  The candidate is read whole by the file's reader, so `@set` and `@snippet` apply; `invalid-text`
+  places its diagnostics in `text` (`ear/not-one-node`, `ear/node-renamed`: a rename is made in the
+  pane, with its routes). Checks: `stopping`, `file-changed` (strict, as `graphFile.set`),
+  `file-invalid`, `unknown-node`, `shared-definition` (a node whose statement is a snippet's), then
+  the text's. `node.add` and `node.update` stay for scripts (`docs/control-port.md#a-nodes-own-text`).
 - Order: `graphFile.changed` first, then the node and route events it causes, then the reply. A
   refused edit announces nothing; only its reply carries the code.
 - **Handling `file-changed`:** another client, or a hand edit, changed the file since your
@@ -247,11 +256,12 @@ record, status 0) says the stop is done; a script waiting on ear's exit judges t
   `127.0.0.1:0`, a thread-backed fake main loop and a fake gateway: files, Host and Origin,
   round trips, two clients, the 1008 bound, a client that resets mid-write, stop with 1001.
 - `ear_control_tests`: the envelope, commands, events, gateway and sessions, all pure, against
-  `test/protocol` (`graph-file.json` for the graph file).
+  `test/protocol` (`graph-file.json` for the graph file, `node-text.json` for `node.setText`).
 - `ear_config_tests`: the keeper stepped by hand on one thread over a real folder, both
   hand-edit collisions included; its thread with inotify.
 - `ear_system_tests` (`test/system/control_port_test.cpp`, `graph_file_test.cpp`): the real
-  `out/ear`, end to end, edits written back and hand edits winning.
+  `out/ear`, end to end, edits written back and hand edits winning; `node-text.json`'s requests
+  are sent to the real ear and its replies must be the fixture's.
 - `scripts/image-smoke.sh`: the run image serves `/` and answers `graph.get` and
   `graphFile.get`.
 - `web/` vitest: the editor's client and reducer against the same fixtures.

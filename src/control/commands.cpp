@@ -83,6 +83,17 @@ std::expected<Command, RpcError> decodeSetGraphFile(const json& params, const Js
 	return SetGraphFile{std::move(*text), std::move(*version)};
 }
 
+std::expected<Command, RpcError> decodeSetNodeText(const json& params, const JsonPointer& at) {
+	if (auto checked = requireObject(params, at, {"name", "text", "version"}); !checked) return refuse(checked.error());
+	auto name = requireName(params, at, "name");
+	if (!name) return refuse(name.error());
+	auto text = requireText(params, at, "text");
+	if (!text) return refuse(text.error());
+	auto version = requireText(params, at, "version");
+	if (!version) return refuse(version.error());
+	return SetNodeText{std::move(*name), std::move(*text), std::move(*version)};
+}
+
 /// node.start, node.stop, node.restart, node.disable and node.enable: {"name"}.
 template <class Verb> std::expected<Command, RpcError> decodeNamed(const json& params, const JsonPointer& at) {
 	if (auto checked = requireObject(params, at, {"name"}); !checked) return refuse(checked.error());
@@ -139,6 +150,7 @@ constexpr Method methods[] = {
 	{"node.restart", decodeNamed<RestartNode>},
 	{"node.disable", decodeNamed<DisableNode>},
 	{"node.enable", decodeNamed<EnableNode>},
+	{"node.setText", decodeSetNodeText},
 };
 
 RpcError encodeControlRefusal(const ControlRefusal& refusal) {
@@ -187,6 +199,17 @@ json encodeGraphFile(const GraphFile& file) {
 	for (const FormatKey key : file.pendingRestart) pending.push_back(formatKeyName(key));
 	out["pendingRestart"] = std::move(pending);
 	if (file.writeFailed) out["writeFailed"] = *file.writeFailed;
+	if (file.nodeTexts) {
+		json texts = json::array();
+		for (const NodeText& node : *file.nodeTexts) {
+			json entry = {{"name", node.name}, {"start", json::object()}, {"end", json::object()}};
+			addPlace(entry["start"], node.start);
+			addPlace(entry["end"], node.end);
+			if (node.shared) entry["shared"] = true;
+			texts.push_back(std::move(entry));
+		}
+		out["nodeTexts"] = std::move(texts);
+	}
 	return out;
 }
 

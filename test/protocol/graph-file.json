@@ -26,7 +26,53 @@
         "text": "graph {\n    rate 48khz;\n    block_size 256;\n}\n@set $ch 2;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take1.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:noise.mono rec:record.left;\nroute noise:noise.mono desk:play.1;\n",
         "diagnostics": [],
         "running": "v1",
-        "pendingRestart": []
+        "pendingRestart": [],
+        "nodeTexts": [
+          {
+            "name": "noise",
+            "start": {
+              "line": 10,
+              "column": 1
+            },
+            "end": {
+              "line": 10,
+              "column": 18
+            }
+          },
+          {
+            "name": "rec",
+            "start": {
+              "line": 11,
+              "column": 1
+            },
+            "end": {
+              "line": 11,
+              "column": 36
+            }
+          },
+          {
+            "name": "desk",
+            "start": {
+              "line": 12,
+              "column": 1
+            },
+            "end": {
+              "line": 12,
+              "column": 39
+            }
+          },
+          {
+            "name": "porch",
+            "start": {
+              "line": 13,
+              "column": 1
+            },
+            "end": {
+              "line": 13,
+              "column": 40
+            }
+          }
+        ]
       }
     },
     {
@@ -37,7 +83,8 @@
         "features": [
           "lifecycle",
           "counters",
-          "companions"
+          "companions",
+          "node-text"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -190,7 +237,53 @@
         "diagnostics": [],
         "running": "v2",
         "pendingRestart": [],
-        "cause": "edit"
+        "cause": "edit",
+        "nodeTexts": [
+          {
+            "name": "noise",
+            "start": {
+              "line": 10,
+              "column": 1
+            },
+            "end": {
+              "line": 10,
+              "column": 18
+            }
+          },
+          {
+            "name": "rec",
+            "start": {
+              "line": 11,
+              "column": 1
+            },
+            "end": {
+              "line": 11,
+              "column": 36
+            }
+          },
+          {
+            "name": "desk",
+            "start": {
+              "line": 12,
+              "column": 1
+            },
+            "end": {
+              "line": 12,
+              "column": 39
+            }
+          },
+          {
+            "name": "porch",
+            "start": {
+              "line": 13,
+              "column": 1
+            },
+            "end": {
+              "line": 13,
+              "column": 40
+            }
+          }
+        ]
       }
     },
     {
@@ -291,7 +384,53 @@
         "diagnostics": [],
         "running": "v4",
         "pendingRestart": [],
-        "cause": "disk"
+        "cause": "disk",
+        "nodeTexts": [
+          {
+            "name": "noise",
+            "start": {
+              "line": 10,
+              "column": 1
+            },
+            "end": {
+              "line": 10,
+              "column": 18
+            }
+          },
+          {
+            "name": "rec",
+            "start": {
+              "line": 11,
+              "column": 1
+            },
+            "end": {
+              "line": 11,
+              "column": 36
+            }
+          },
+          {
+            "name": "desk",
+            "start": {
+              "line": 12,
+              "column": 1
+            },
+            "end": {
+              "line": 12,
+              "column": 39
+            }
+          },
+          {
+            "name": "porch",
+            "start": {
+              "line": 13,
+              "column": 1
+            },
+            "end": {
+              "line": 13,
+              "column": 40
+            }
+          }
+        ]
       }
     },
     {
@@ -303,7 +442,53 @@
         "diagnostics": [],
         "running": "v5",
         "pendingRestart": [],
-        "cause": "edit"
+        "cause": "edit",
+        "nodeTexts": [
+          {
+            "name": "noise",
+            "start": {
+              "line": 10,
+              "column": 1
+            },
+            "end": {
+              "line": 10,
+              "column": 18
+            }
+          },
+          {
+            "name": "rec",
+            "start": {
+              "line": 11,
+              "column": 1
+            },
+            "end": {
+              "line": 11,
+              "column": 36
+            }
+          },
+          {
+            "name": "desk",
+            "start": {
+              "line": 12,
+              "column": 1
+            },
+            "end": {
+              "line": 12,
+              "column": 39
+            }
+          },
+          {
+            "name": "porch",
+            "start": {
+              "line": 13,
+              "column": 1
+            },
+            "end": {
+              "line": 13,
+              "column": 40
+            }
+          }
+        ]
       }
     },
     {
@@ -332,7 +517,53 @@
         "running": "v6",
         "pendingRestart": [],
         "cause": "disk",
-        "droppedEdits": 1
+        "droppedEdits": 1,
+        "nodeTexts": [
+          {
+            "name": "noise",
+            "start": {
+              "line": 10,
+              "column": 1
+            },
+            "end": {
+              "line": 10,
+              "column": 18
+            }
+          },
+          {
+            "name": "rec",
+            "start": {
+              "line": 11,
+              "column": 1
+            },
+            "end": {
+              "line": 11,
+              "column": 36
+            }
+          },
+          {
+            "name": "desk",
+            "start": {
+              "line": 12,
+              "column": 1
+            },
+            "end": {
+              "line": 12,
+              "column": 39
+            }
+          },
+          {
+            "name": "porch",
+            "start": {
+              "line": 13,
+              "column": 1
+            },
+            "end": {
+              "line": 13,
+              "column": 40
+            }
+          }
+        ]
       }
     },
     {
@@ -368,7 +599,53 @@
         "diagnostics": [],
         "running": "v7",
         "pendingRestart": [],
-        "cause": "edit"
+        "cause": "edit",
+        "nodeTexts": [
+          {
+            "name": "noise",
+            "start": {
+              "line": 10,
+              "column": 1
+            },
+            "end": {
+              "line": 10,
+              "column": 18
+            }
+          },
+          {
+            "name": "rec",
+            "start": {
+              "line": 11,
+              "column": 1
+            },
+            "end": {
+              "line": 11,
+              "column": 36
+            }
+          },
+          {
+            "name": "desk",
+            "start": {
+              "line": 12,
+              "column": 1
+            },
+            "end": {
+              "line": 12,
+              "column": 39
+            }
+          },
+          {
+            "name": "porch",
+            "start": {
+              "line": 13,
+              "column": 1
+            },
+            "end": {
+              "line": 13,
+              "column": 40
+            }
+          }
+        ]
       }
     },
     {
@@ -522,7 +799,53 @@
         "running": "v7",
         "pendingRestart": [],
         "writeFailed": "ear.conf: No space left on device",
-        "cause": "write"
+        "cause": "write",
+        "nodeTexts": [
+          {
+            "name": "noise",
+            "start": {
+              "line": 10,
+              "column": 1
+            },
+            "end": {
+              "line": 10,
+              "column": 18
+            }
+          },
+          {
+            "name": "rec",
+            "start": {
+              "line": 11,
+              "column": 1
+            },
+            "end": {
+              "line": 11,
+              "column": 36
+            }
+          },
+          {
+            "name": "desk",
+            "start": {
+              "line": 12,
+              "column": 1
+            },
+            "end": {
+              "line": 12,
+              "column": 39
+            }
+          },
+          {
+            "name": "porch",
+            "start": {
+              "line": 13,
+              "column": 1
+            },
+            "end": {
+              "line": 13,
+              "column": 40
+            }
+          }
+        ]
       }
     },
     {
@@ -534,7 +857,53 @@
         "diagnostics": [],
         "running": "v7",
         "pendingRestart": [],
-        "cause": "write"
+        "cause": "write",
+        "nodeTexts": [
+          {
+            "name": "noise",
+            "start": {
+              "line": 10,
+              "column": 1
+            },
+            "end": {
+              "line": 10,
+              "column": 18
+            }
+          },
+          {
+            "name": "rec",
+            "start": {
+              "line": 11,
+              "column": 1
+            },
+            "end": {
+              "line": 11,
+              "column": 36
+            }
+          },
+          {
+            "name": "desk",
+            "start": {
+              "line": 12,
+              "column": 1
+            },
+            "end": {
+              "line": 12,
+              "column": 39
+            }
+          },
+          {
+            "name": "porch",
+            "start": {
+              "line": 13,
+              "column": 1
+            },
+            "end": {
+              "line": 13,
+              "column": 40
+            }
+          }
+        ]
       }
     },
     {
@@ -546,7 +915,53 @@
         "diagnostics": [],
         "running": "v8",
         "pendingRestart": [],
-        "cause": "edit"
+        "cause": "edit",
+        "nodeTexts": [
+          {
+            "name": "noise",
+            "start": {
+              "line": 10,
+              "column": 1
+            },
+            "end": {
+              "line": 10,
+              "column": 18
+            }
+          },
+          {
+            "name": "rec",
+            "start": {
+              "line": 11,
+              "column": 1
+            },
+            "end": {
+              "line": 11,
+              "column": 36
+            }
+          },
+          {
+            "name": "desk",
+            "start": {
+              "line": 12,
+              "column": 1
+            },
+            "end": {
+              "line": 12,
+              "column": 39
+            }
+          },
+          {
+            "name": "porch",
+            "start": {
+              "line": 13,
+              "column": 1
+            },
+            "end": {
+              "line": 13,
+              "column": 40
+            }
+          }
+        ]
       }
     },
     {
@@ -581,7 +996,53 @@
         },
         "pendingRestart": [],
         "cause": "disk",
-        "droppedEdits": 1
+        "droppedEdits": 1,
+        "nodeTexts": [
+          {
+            "name": "noise",
+            "start": {
+              "line": 10,
+              "column": 1
+            },
+            "end": {
+              "line": 10,
+              "column": 18
+            }
+          },
+          {
+            "name": "rec",
+            "start": {
+              "line": 11,
+              "column": 1
+            },
+            "end": {
+              "line": 11,
+              "column": 36
+            }
+          },
+          {
+            "name": "desk",
+            "start": {
+              "line": 12,
+              "column": 1
+            },
+            "end": {
+              "line": 12,
+              "column": 39
+            }
+          },
+          {
+            "name": "porch",
+            "start": {
+              "line": 13,
+              "column": 1
+            },
+            "end": {
+              "line": 13,
+              "column": 40
+            }
+          }
+        ]
       }
     },
     {
@@ -595,7 +1056,53 @@
         "pendingRestart": [
           "graphFrequency"
         ],
-        "cause": "edit"
+        "cause": "edit",
+        "nodeTexts": [
+          {
+            "name": "noise",
+            "start": {
+              "line": 10,
+              "column": 1
+            },
+            "end": {
+              "line": 10,
+              "column": 18
+            }
+          },
+          {
+            "name": "rec",
+            "start": {
+              "line": 11,
+              "column": 1
+            },
+            "end": {
+              "line": 11,
+              "column": 36
+            }
+          },
+          {
+            "name": "desk",
+            "start": {
+              "line": 12,
+              "column": 1
+            },
+            "end": {
+              "line": 12,
+              "column": 39
+            }
+          },
+          {
+            "name": "porch",
+            "start": {
+              "line": 13,
+              "column": 1
+            },
+            "end": {
+              "line": 13,
+              "column": 40
+            }
+          }
+        ]
       }
     },
     {
@@ -625,7 +1132,53 @@
         "pendingRestart": [
           "graphFrequency"
         ],
-        "cause": "edit"
+        "cause": "edit",
+        "nodeTexts": [
+          {
+            "name": "noise",
+            "start": {
+              "line": 10,
+              "column": 1
+            },
+            "end": {
+              "line": 10,
+              "column": 18
+            }
+          },
+          {
+            "name": "rec",
+            "start": {
+              "line": 11,
+              "column": 1
+            },
+            "end": {
+              "line": 11,
+              "column": 36
+            }
+          },
+          {
+            "name": "desk",
+            "start": {
+              "line": 12,
+              "column": 1
+            },
+            "end": {
+              "line": 12,
+              "column": 39
+            }
+          },
+          {
+            "name": "porch",
+            "start": {
+              "line": 13,
+              "column": 1
+            },
+            "end": {
+              "line": 13,
+              "column": 40
+            }
+          }
+        ]
       }
     },
     {
@@ -653,7 +1206,8 @@
           "features": [
             "lifecycle",
             "counters",
-            "companions"
+            "companions",
+            "node-text"
           ],
           "graphFrequency": 48000,
           "blockSize": 256,
@@ -813,7 +1367,8 @@
           "features": [
             "lifecycle",
             "counters",
-            "companions"
+            "companions",
+            "node-text"
           ],
           "graphFrequency": 48000,
           "blockSize": 256,
@@ -973,6 +1528,52 @@
           "running": "v11",
           "pendingRestart": [
             "graphFrequency"
+          ],
+          "nodeTexts": [
+            {
+              "name": "noise",
+              "start": {
+                "line": 10,
+                "column": 1
+              },
+              "end": {
+                "line": 10,
+                "column": 18
+              }
+            },
+            {
+              "name": "rec",
+              "start": {
+                "line": 11,
+                "column": 1
+              },
+              "end": {
+                "line": 11,
+                "column": 36
+              }
+            },
+            {
+              "name": "desk",
+              "start": {
+                "line": 12,
+                "column": 1
+              },
+              "end": {
+                "line": 12,
+                "column": 39
+              }
+            },
+            {
+              "name": "porch",
+              "start": {
+                "line": 13,
+                "column": 1
+              },
+              "end": {
+                "line": 13,
+                "column": 40
+              }
+            }
           ]
         }
       }
@@ -987,6 +1588,52 @@
         "running": "v11",
         "pendingRestart": [
           "graphFrequency"
+        ],
+        "nodeTexts": [
+          {
+            "name": "noise",
+            "start": {
+              "line": 10,
+              "column": 1
+            },
+            "end": {
+              "line": 10,
+              "column": 18
+            }
+          },
+          {
+            "name": "rec",
+            "start": {
+              "line": 11,
+              "column": 1
+            },
+            "end": {
+              "line": 11,
+              "column": 36
+            }
+          },
+          {
+            "name": "desk",
+            "start": {
+              "line": 12,
+              "column": 1
+            },
+            "end": {
+              "line": 12,
+              "column": 39
+            }
+          },
+          {
+            "name": "porch",
+            "start": {
+              "line": 13,
+              "column": 1
+            },
+            "end": {
+              "line": 13,
+              "column": 40
+            }
+          }
         ]
       }
     }
@@ -996,7 +1643,8 @@
     "features": [
       "lifecycle",
       "counters",
-      "companions"
+      "companions",
+      "node-text"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -1152,6 +1800,52 @@
     "running": "v11",
     "pendingRestart": [
       "graphFrequency"
+    ],
+    "nodeTexts": [
+      {
+        "name": "noise",
+        "start": {
+          "line": 10,
+          "column": 1
+        },
+        "end": {
+          "line": 10,
+          "column": 18
+        }
+      },
+      {
+        "name": "rec",
+        "start": {
+          "line": 11,
+          "column": 1
+        },
+        "end": {
+          "line": 11,
+          "column": 36
+        }
+      },
+      {
+        "name": "desk",
+        "start": {
+          "line": 12,
+          "column": 1
+        },
+        "end": {
+          "line": 12,
+          "column": 39
+        }
+      },
+      {
+        "name": "porch",
+        "start": {
+          "line": 13,
+          "column": 1
+        },
+        "end": {
+          "line": 13,
+          "column": 40
+        }
+      }
     ]
   }
 }

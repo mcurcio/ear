@@ -160,6 +160,8 @@ codes look like `E2001`; ear's are:
 | `ear/bad-rate` | A rate not written as a number and `hz` or `khz`, not whole hertz, or (the graph's) outside 8 kHz to 768 kHz ([rates](#rates)) |
 | `ear/too-large` | An edit's or a `graphFile.set`'s text over 1 MiB (answered `invalid-text`) |
 | `ear/unwritable-edit` | An edit knobly could not write (answered `invalid-text`) |
+| `ear/not-one-node` | A `node.setText` text that is not exactly one `node` statement ([below](#a-nodes-own-text)) |
+| `ear/node-renamed` | A `node.setText` text naming another node, at the name |
 
 **A file with any error does not apply.** The graph keeps running what it ran, the editor shows
 why, and every `node.*` and `route.*` edit is refused `file-invalid` until the text is fixed by
@@ -193,6 +195,18 @@ nodes or routes is refused `shared-definition`, with that line's place. Removing
 `desk` above is refused, because that line sits in the snippet both cards use; so is a
 `node.disable` whose `disabled` line sits in a shared snippet. Edit the text instead
 (`graphFile.set`, or by hand), which changes every user in one judged commit.
+
+### A node's own text
+
+`node.setText` ([control-port.md](control-port.md#a-nodes-own-text)) is the edit a person makes:
+it replaces one node's own statement, comments it owns included, with the text given, and leaves
+every other byte as it was. It never edits where a value is defined: in the example above,
+writing `node card desk { card MOTU; playback 4; }` for `desk` changes `desk` alone, and
+`@set $ch` and the snippet stay as they are for `porch`. The text is checked as part of the whole
+file, by the same reader, so a `$ch` or an `@use card_out USB2;` in it reads as it would by hand.
+A node whose statement is written in a snippet (`@snippet two $n { node white $n; }` used at the
+top level) has no text of its own: replacing it would change every node it makes, so it is
+`shared-definition`, and the pane edits it.
 
 **Judge before keep.** Every edit becomes a candidate text, is judged by the desired graph
 against the whole wanted graph, and becomes the working copy only if accepted

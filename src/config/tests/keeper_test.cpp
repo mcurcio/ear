@@ -395,6 +395,40 @@ TEST_CASE("graphFile.set: a stale version, a text with errors, the same text and
 	CHECK(f.graphFile().text == handText);
 }
 
+TEST_CASE("node.setText: a stale version first, file-invalid, then the text's own checks; accepted, it is an edit",
+          "[keeper][node-text]") {
+	Fixture f("set_text");
+	f.start();
+	const auto boot = f.graphFile();
+	REQUIRE(boot.nodeTexts.has_value()); // the file's state carries where each node is written
+	CHECK(boot.nodeTexts->front() == control::NodeText{"noise", {10, 1}, {10, 18}, false});
+	const auto setText = [&](std::string node, std::string text, std::string version) {
+		auto results = f.run({control::SetNodeText{std::move(node), std::move(text), std::move(version)}});
+		REQUIRE(results.size() == 1);
+		return results[0];
+	};
+	f.log.clear();
+
+	// A stale version is file-changed even with a text that would be refused for itself.
+	CHECK(code(setText("rec", "oops", boot.version + "0")) == "file-changed");
+	CHECK(code(setText("nope", "node white nope;", boot.version)) == "unknown-node");
+	CHECK(code(setText("rec", "node file rec { path take2.wav }", boot.version)) == "invalid-text");
+	CHECK(f.log.lines == Lines{"reply", "reply", "reply"}); // nothing announced, nothing run
+	f.log.clear();
+
+	CHECK(ok(setText("rec", R"(node file rec { path "take2.wav"; })", boot.version)));
+	CHECK(f.log.lines == Lines{"file edit", "node.updated rec", "reply"});
+	CHECK(f.lastChange().cause == FileChangeCause::edit);
+	CHECK(f.lastChange().file.text == replaced(recordExample, "take1.wav", "take2.wav"));
+	CHECK(f.lastChange().file.nodeTexts == boot.nodeTexts); // the same length: every node where it was
+
+	handEdit(f.file, replaced(recordExample, "node white noise;", "nod white noise;"));
+	f.diskEvent();
+	CHECK_FALSE(f.lastChange().file.nodeTexts.has_value()); // a file with errors says where no node is
+	CHECK(code(setText("rec", R"(node file rec { path "take3.wav"; })", f.lastChange().file.version)) ==
+	      "file-invalid");
+}
+
 TEST_CASE("The watch event for the keeper's own write announces nothing", "[keeper]") {
 	Fixture f("own_write");
 	f.start();

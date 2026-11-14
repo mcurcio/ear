@@ -28,6 +28,16 @@ struct Diagnostic {
 };
 enum class FormatKey { graphFrequency, blockSize };
 std::string_view formatKeyName(FormatKey key) noexcept; // "graphFrequency" | "blockSize": the wire's pendingRestart
+/// Where one node's statement is written in the text (feature node-text, docs/control-port.md#a-nodes-own-text): from
+/// `start` to one past its last character, the comments it owns included. `shared` when the statement is not the node's
+/// own (it sits in a snippet that top-level @use lines splice in), so the editor shows it and cannot replace it.
+struct NodeText {
+	std::string name;
+	TextPlace start;
+	TextPlace end;
+	bool shared = false;
+	friend bool operator==(const NodeText&, const NodeText&) = default;
+};
 struct Refusal {
 	CommandError error;
 	std::optional<TextPlace> place;
@@ -40,6 +50,8 @@ struct GraphFile {
 	std::optional<Refusal> refusal;         // only when the desired graph refused `version`
 	std::vector<FormatKey> pendingRestart;  // FormatKey order
 	std::optional<std::string> writeFailed; // the disk refused the last write
+	/// Each node's statement, in the file's node order; absent when the file has errors (feature node-text).
+	std::optional<std::vector<NodeText>> nodeTexts = std::nullopt;
 };
 enum class FileChangeCause { edit, disk, write };
 std::string_view causeName(FileChangeCause cause) noexcept; // "edit" | "disk" | "write"
@@ -48,10 +60,10 @@ struct GraphFileChanged {
 	FileChangeCause cause;
 	std::uint32_t droppedEdits;
 }; // > 0 only with disk
-struct FileChanged {}; // graphFile.set: version is stale
+struct FileChanged {}; // graphFile.set, node.setText: version is stale
 struct InvalidText {
 	std::vector<Diagnostic> diagnostics;
-}; // graphFile.set: the text has errors
+}; // graphFile.set, an edit's candidate, node.setText (placed in its text): the text has errors
 struct FileInvalid {}; // node.*/route.*: the working copy has errors
 struct SharedDefinition {
 	TextPlace place;

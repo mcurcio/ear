@@ -33,6 +33,11 @@ describe("the graph file reducer", () => {
     expect(replay(messages)?.file).toStrictEqual(fixtures.graphFile.file);
   });
 
+  it("turns the node-text fixture's messages into its file, nodeTexts and all", () => {
+    expect(fixtures.nodeText.file?.nodeTexts).toBeDefined();
+    expect(replay(messagesOf(fixtures.nodeText.messages))?.file).toStrictEqual(fixtures.nodeText.file);
+  });
+
   for (const name of ["snapshot", "edits", "levels", "errors"] as const) {
     it(`leaves the ${name} fixture's state null`, () => {
       expect(replay(messagesOf(fixtures[name].messages))).toBeNull();

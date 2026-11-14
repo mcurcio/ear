@@ -181,6 +181,11 @@ std::optional<CommandResult> Keeper::take(const control::Command& command) {
 		if (set->version != version()) return CommandResult{control::FileRefusal{control::FileChanged{}}};
 		if (workingFromText_ && set->text == working_.text()) return done();
 		edit = EditOutcome{std::optional<GraphFileModel>{working_.fresh(DiskText{set->text})}};
+	} else if (const auto* replace = std::get_if<control::SetNodeText>(&command)) {
+		// The box's text was cut from `version` (docs/control-port.md#a-nodes-own-text): stale is file-changed first.
+		if (replace->version != version()) return CommandResult{control::FileRefusal{control::FileChanged{}}};
+		if (working_.read().hasErrors()) return CommandResult{control::FileRefusal{control::FileInvalid{}}};
+		edit = working_.setNodeText(replace->node, replace->text);
 	} else {
 		if (working_.read().hasErrors()) return CommandResult{control::FileRefusal{control::FileInvalid{}}};
 		edit = std::visit(Overloaded{
@@ -369,7 +374,7 @@ FileState Keeper::fileState(const GraphFileModel& model, const std::string& vers
 		if (read.format->rate != engine_.rate) pending.push_back(control::FormatKey::graphFrequency);
 		if (read.format->maxBlock != engine_.maxBlock) pending.push_back(control::FormatKey::blockSize);
 	}
-	return FileState{version, model.text(), read.diagnostics, std::move(pending), writeFailed_};
+	return FileState{version, model.text(), read.diagnostics, std::move(pending), writeFailed_, read.nodeTexts};
 }
 
 } // namespace ear::config

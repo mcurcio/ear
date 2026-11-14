@@ -13,7 +13,8 @@
         "features": [
           "lifecycle",
           "counters",
-          "companions"
+          "companions",
+          "node-text"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -206,7 +207,8 @@
         "features": [
           "lifecycle",
           "counters",
-          "companions"
+          "companions",
+          "node-text"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -397,7 +399,8 @@
     "features": [
       "lifecycle",
       "counters",
-      "companions"
+      "companions",
+      "node-text"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,

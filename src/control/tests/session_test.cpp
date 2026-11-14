@@ -83,6 +83,7 @@ std::string describe(const Command& command) {
 			else if constexpr (std::is_same_v<C, RestartNode>) return "restartNode " + c.node;
 			else if constexpr (std::is_same_v<C, DisableNode>) return "disableNode " + c.node;
 			else if constexpr (std::is_same_v<C, EnableNode>) return "enableNode " + c.node;
+			else if constexpr (std::is_same_v<C, SetNodeText>) return "setNodeText " + c.node + " " + c.version;
 			else {
 				static_assert(std::is_same_v<C, SetGraphFile>);
 				return "setGraphFile " + c.version;
@@ -829,7 +830,7 @@ TEST_CASE("graph-file.json: file changes come before the events they cause, and 
 
 	World w;
 	w.graph.view = fx::graphView(2, "take1.wav");
-	w.graph.file = fx::file("v1", t.t1, "v1");
+	w.graph.file = fx::recordFile("v1", t.t1, "v1");
 	RecordingOutbox out;
 	ControlSession session(*w.hub, out);
 	// An edit the keeper accepts: its file change, then rec's update.
@@ -846,7 +847,7 @@ TEST_CASE("graph-file.json: file changes come before the events they cause, and 
 	w.receive(session, requests[1]); // graph.subscribe
 
 	w.graph.script.push_back(
-		{R"(updateNode rec {"path":"take2.wav"})", recEdit(fx::file("v2", t.t2, "v2"), "take2.wav")});
+		{R"(updateNode rec {"path":"take2.wav"})", recEdit(fx::recordFile("v2", t.t2, "v2"), "take2.wav")});
 	w.receive(session, requests[2]);
 
 	w.graph.script.push_back({"setGraphFile v1", refused(FileRefusal{FileChanged{}})});
@@ -864,13 +865,13 @@ TEST_CASE("graph-file.json: file changes come before the events they cause, and 
 	w.onMain([&] { w.fileChanged(included, FileChangeCause::disk); }); // a hand edit with @include
 	w.graph.script.push_back({R"(updateNode rec {"path":"take3.wav"})", refused(FileRefusal{FileInvalid{}})});
 	w.receive(session, requests[6]);
-	w.onMain([&] { w.fileChanged(fx::file("v4", t.t2, "v4"), FileChangeCause::disk); }); // the hand fix
+	w.onMain([&] { w.fileChanged(fx::recordFile("v4", t.t2, "v4"), FileChangeCause::disk); }); // the hand fix
 
 	w.graph.script.push_back(
-		{R"(updateNode rec {"path":"take3.wav"})", recEdit(fx::file("v5", t.t5, "v5"), "take3.wav")});
+		{R"(updateNode rec {"path":"take3.wav"})", recEdit(fx::recordFile("v5", t.t5, "v5"), "take3.wav")});
 	w.receive(session, requests[7]);
 	w.onMain([&] { // a hand save over it before it was written: the hand edit wins
-		w.fileChanged(fx::file("v6", t.t2, "v6"), FileChangeCause::disk, 1);
+		w.fileChanged(fx::recordFile("v6", t.t2, "v6"), FileChangeCause::disk, 1);
 		w.gateway.nodeUpdated({"rec", "file", {{"path", "take2.wav"}}}, config(recPorts));
 	});
 
@@ -878,7 +879,7 @@ TEST_CASE("graph-file.json: file changes come before the events they cause, and 
 	w.receive(session, requests[8]);
 
 	w.graph.script.push_back({R"(updateNode desk {"card":"MOTU","playback":4})", [&]() -> CommandResult {
-								  w.fileChanged(fx::file("v7", t.t7, "v7"), FileChangeCause::edit);
+								  w.fileChanged(fx::recordFile("v7", t.t7, "v7"), FileChangeCause::edit);
 								  w.gateway.routeRemoved(toDesk);
 								  w.gateway.nodeRemoved("desk");
 								  w.gateway.nodeRemoved("porch");
@@ -894,24 +895,24 @@ TEST_CASE("graph-file.json: file changes come before the events they cause, and 
 		w.state("porch", NodeState::failed,
 		        ear::FailureReason{Code::engineRefused, "cannot open hw:CARD=USB2,DEV=0: No such device"});
 	});
-	GraphFile failed = fx::file("v7", t.t7, "v7");
+	GraphFile failed = fx::recordFile("v7", t.t7, "v7");
 	failed.writeFailed = "ear.conf: No space left on device";
 	w.onMain([&] { w.fileChanged(failed, FileChangeCause::write); });
-	w.onMain([&] { w.fileChanged(fx::file("v7", t.t7, "v7"), FileChangeCause::write); });
+	w.onMain([&] { w.fileChanged(fx::recordFile("v7", t.t7, "v7"), FileChangeCause::write); });
 
 	w.graph.script.push_back(
-		{R"(updateNode rec {"path":"take3.wav"})", recEdit(fx::file("v8", t.t8, "v8"), "take3.wav")});
+		{R"(updateNode rec {"path":"take3.wav"})", recEdit(fx::recordFile("v8", t.t8, "v8"), "take3.wav")});
 	w.receive(session, requests[10]);
-	GraphFile refusedByJudge = fx::file("v9", t.t9, "v8");
+	GraphFile refusedByJudge = fx::recordFile("v9", t.t9, "v8");
 	refusedByJudge.refusal = Refusal{ear::UnknownPort{{"rec", "FX"}}, TextPlace{16, 1}};
 	w.onMain([&] { w.fileChanged(refusedByJudge, FileChangeCause::disk, 1); });
 
-	GraphFile pending = fx::file("v10", t.t10, "v10");
+	GraphFile pending = fx::recordFile("v10", t.t10, "v10");
 	pending.pendingRestart = {FormatKey::graphFrequency};
 	w.graph.script.push_back({"setGraphFile v9", recEdit(pending, "take2.wav")});
 	w.receive(session, requests[11]);
 
-	GraphFile last = fx::file("v11", t.t11, "v11");
+	GraphFile last = fx::recordFile("v11", t.t11, "v11");
 	last.pendingRestart = {FormatKey::graphFrequency};
 	w.graph.view = fx::graphView(4, "take4.wav");
 	w.graph.file = last;
@@ -927,6 +928,81 @@ TEST_CASE("graph-file.json: file changes come before the events they cause, and 
 	const std::vector<std::string> tail(w.graph.calls.end() - 5, w.graph.calls.end());
 	CHECK(tail ==
 	      std::vector<std::string>{R"(updateNode rec {"path":"take4.wav"})", "read", "read", "readFile", "readFile"});
+}
+
+TEST_CASE("node-text.json: where each node is written, and node.setText's success and refusals",
+          "[session][protocol][node-text]") {
+	const json document = fixture("node-text");
+	const auto requests = requestsOf(document);
+	REQUIRE(requests.size() == 8);
+	const std::string t1 = "graph {\n    rate 48khz;\n    block_size 256;\n}\n"
+						   "@snippet tap $n {                # one line, a node for each use\n"
+						   "    node white $n;\n}\n"
+						   "@use tap t1;\n"
+						   "node white noise;\n"
+						   "# the take\n"
+						   "node file rec { path \"take1.wav\"; }\n"
+						   "route noise:noise.mono rec:record.left;\n";
+	const std::string t2 =
+		ear::control::testing::replaced(t1, "# the take\nnode file rec { path \"take1.wav\"; }",
+	                                    "# the take, now its own block\nnode file rec {\n    path \"take2.wav\";\n}");
+	const auto fileAt = [](std::string version, std::string text, TextPlace recEnd) {
+		GraphFile f = ear::control::testing::file(version, std::move(text), version);
+		f.nodeTexts = {{"t1", {6, 5}, {6, 19}, true}, {"noise", {9, 1}, {9, 18}}, {"rec", {10, 1}, recEnd}};
+		return f;
+	};
+	const ear::Ports white{{{ear::Direction::output, "noise", {"mono"}}}};
+	const ear::Ports recPorts{{{ear::Direction::input, "record", {"left", "right"}}}};
+
+	World w;
+	w.graph.view =
+		ear::GraphView{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {"file", "white"}, {}, {}};
+	w.graph.view.nodes.push_back({{"noise", "white", json::object()}, white, health("noise", NodeState::running)});
+	w.graph.view.nodes.push_back(
+		{{"rec", "file", {{"path", "take1.wav"}}}, recPorts, health("rec", NodeState::running)});
+	w.graph.view.nodes.push_back({{"t1", "white", json::object()}, white, health("t1", NodeState::running)});
+	w.graph.view.routes.push_back({{{"noise", "noise.mono"}, {"rec", "record.left"}}, ear::RouteMatch::linked, ""});
+	w.graph.file = fileAt("v1", t1, {11, 36});
+	RecordingOutbox out;
+	ControlSession session(*w.hub, out);
+	const auto refused = [](CommandResult result) { return [result] { return result; }; };
+	const auto invalid = [&](std::string code, std::string message, TextPlace at) {
+		return refused(
+			FileRefusal{InvalidText{{Diagnostic{Severity::error, std::move(code), std::move(message), at}}}});
+	};
+
+	w.receive(session, requests[0]); // graphFile.subscribe
+	w.receive(session, requests[1]); // graph.subscribe
+	w.graph.script.push_back({"setNodeText rec v1", [&]() -> CommandResult {
+								  w.fileChanged(fileAt("v2", t2, {13, 2}), FileChangeCause::edit);
+								  w.gateway.nodeUpdated({"rec", "file", {{"path", "take2.wav"}}},
+		                                                std::make_shared<Config>(recPorts));
+								  return Result{};
+							  }});
+	w.receive(session, requests[2]);
+	w.graph.script.push_back({"setNodeText rec v1", refused(FileRefusal{FileChanged{}})});
+	w.receive(session, requests[3]);
+	w.graph.script.push_back(
+		{"setNodeText rec v2", invalid("ear/bad-directive", "setting path is given twice", TextPlace{3, 5})});
+	w.receive(session, requests[4]);
+	w.graph.script.push_back(
+		{"setNodeText noise v2",
+	     invalid("ear/node-renamed",
+	             "this text edits node noise: rename it in ear.conf, where its routes are renamed with it",
+	             TextPlace{1, 12})});
+	w.receive(session, requests[5]);
+	w.graph.script.push_back({"setNodeText t1 v2", refused(FileRefusal{SharedDefinition{{6, 5}}})});
+	w.receive(session, requests[6]);
+	w.graph.script.push_back(
+		{"setNodeText noise v2",
+	     invalid("ear/not-one-node",
+	             "the text must be one node statement: node <type> <name> { <setting> <value>; ... }",
+	             TextPlace{1, 1})});
+	w.receive(session, requests[7]);
+
+	checkMessages(out, document["messages"]);
+	CHECK(w.graph.script.empty());
+	CHECK(w.graph.offLoop == 0);
 }
 
 TEST_CASE("graph.subscribe gets graph events only, graphFile.subscribe file changes only", "[session][graph-file]") {

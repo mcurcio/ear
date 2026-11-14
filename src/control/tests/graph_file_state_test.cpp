@@ -77,17 +77,28 @@ TEST_CASE("A graph file's JSON leaves out each absent optional and holds each pr
 	full.refusal = Refusal{ear::Stopping{}, std::nullopt};
 	full.pendingRestart = {FormatKey::graphFrequency, FormatKey::blockSize};
 	full.writeFailed = "no space";
-	CHECK(encodeGraphFile(full) == json{{"version", "v2"},
-	                                    {"text", "x"},
-	                                    {"diagnostics", json::array({{{"severity", "warning"},
-	                                                                  {"code", "W3005"},
-	                                                                  {"message", "nothing matched"},
-	                                                                  {"line", 2},
-	                                                                  {"column", 3}}})},
-	                                    {"running", "v1"},
-	                                    {"refusal", {{"code", "stopping"}, {"message", "stopping"}}},
-	                                    {"pendingRestart", json::array({"graphFrequency", "blockSize"})},
-	                                    {"writeFailed", "no space"}});
+	full.nodeTexts = {{"a", {1, 1}, {1, 15}}, {"t1", {3, 5}, {3, 20}, true}};
+	CHECK(encodeGraphFile(full) ==
+	      json{{"version", "v2"},
+	           {"text", "x"},
+	           {"diagnostics", json::array({{{"severity", "warning"},
+	                                         {"code", "W3005"},
+	                                         {"message", "nothing matched"},
+	                                         {"line", 2},
+	                                         {"column", 3}}})},
+	           {"running", "v1"},
+	           {"refusal", {{"code", "stopping"}, {"message", "stopping"}}},
+	           {"pendingRestart", json::array({"graphFrequency", "blockSize"})},
+	           {"writeFailed", "no space"},
+	           {"nodeTexts",
+	            json::array(
+					{{{"name", "a"}, {"start", {{"line", 1}, {"column", 1}}}, {"end", {{"line", 1}, {"column", 15}}}},
+	                 {{"name", "t1"},
+	                  {"start", {{"line", 3}, {"column", 5}}},
+	                  {"end", {{"line", 3}, {"column", 20}}},
+	                  {"shared", true}}})}});
+	full.nodeTexts = std::vector<NodeText>{};
+	CHECK(encodeGraphFile(full)["nodeTexts"] == json::array()); // a file that reads with no nodes says so
 }
 
 TEST_CASE("Every graph-file.json message encodes as the fixture has it", "[graph_file_state][protocol]") {
@@ -98,9 +109,9 @@ TEST_CASE("Every graph-file.json message encodes as the fixture has it", "[graph
 	const ear::Route toDesk{{"noise", "noise.mono"}, {"desk", "play.1"}};
 
 	SECTION("graphFile.subscribe, graph.subscribe and the first edit") {
-		CHECK(resultOf(1, file("v1", t.t1, "v1")) == m[0]);
+		CHECK(resultOf(1, recordFile("v1", t.t1, "v1")) == m[0]);
 		CHECK(resultOf(2, graphView(2, "take1.wav")) == m[1]);
-		CHECK(changed(file("v2", t.t2, "v2"), FileChangeCause::edit) == m[2]);
+		CHECK(changed(recordFile("v2", t.t2, "v2"), FileChangeCause::edit) == m[2]);
 		CHECK(event(NodeUpdated{"rec", {{"path", "take2.wav"}}, false, ear::NodeOutcome::restart}) == m[3]);
 		CHECK(resultOf(3, std::expected<void, ear::CommandError>{}) == m[4]);
 	}
@@ -117,14 +128,14 @@ TEST_CASE("Every graph-file.json message encodes as the fixture has it", "[graph
 		GraphFile included = file("v3", t.t3, "v2");
 		included.diagnostics = {includeUnsupported};
 		CHECK(changed(included, FileChangeCause::disk) == m[8]);
-		CHECK(changed(file("v4", t.t2, "v4"), FileChangeCause::disk) == m[10]);
-		CHECK(changed(file("v5", t.t5, "v5"), FileChangeCause::edit) == m[11]);
-		CHECK(changed(file("v6", t.t2, "v6"), FileChangeCause::disk, 1) == m[14]);
+		CHECK(changed(recordFile("v4", t.t2, "v4"), FileChangeCause::disk) == m[10]);
+		CHECK(changed(recordFile("v5", t.t5, "v5"), FileChangeCause::edit) == m[11]);
+		CHECK(changed(recordFile("v6", t.t2, "v6"), FileChangeCause::disk, 1) == m[14]);
 		CHECK(event(NodeUpdated{"rec", {{"path", "take2.wav"}}, false, ear::NodeOutcome::restart}) == m[15]);
 	}
 	SECTION("playback 4 through @set $ch replaces both cards") {
 		const ear::Ports four{{{ear::Direction::input, "play", ear::numbered(4)}}};
-		CHECK(changed(file("v7", t.t7, "v7"), FileChangeCause::edit) == m[17]);
+		CHECK(changed(recordFile("v7", t.t7, "v7"), FileChangeCause::edit) == m[17]);
 		CHECK(event(RouteRemoved{toDesk}) == m[18]);
 		CHECK(event(NodeRemoved{"desk"}) == m[19]);
 		CHECK(event(NodeRemoved{"porch"}) == m[20]);
@@ -143,22 +154,22 @@ TEST_CASE("Every graph-file.json message encodes as the fixture has it", "[graph
 		CHECK(event(NodeChanged{view.nodes[2].health, reading(3)}) == m[26]);
 	}
 	SECTION("a write that fails, then succeeds") {
-		GraphFile failed = file("v7", t.t7, "v7");
+		GraphFile failed = recordFile("v7", t.t7, "v7");
 		failed.writeFailed = "ear.conf: No space left on device";
 		CHECK(changed(failed, FileChangeCause::write) == m[27]);
-		CHECK(changed(file("v7", t.t7, "v7"), FileChangeCause::write) == m[28]);
+		CHECK(changed(recordFile("v7", t.t7, "v7"), FileChangeCause::write) == m[28]);
 	}
 	SECTION("a hand edit the graph refuses, then graphFile.set with another graph frequency") {
-		CHECK(changed(file("v8", t.t8, "v8"), FileChangeCause::edit) == m[29]);
-		GraphFile refused = file("v9", t.t9, "v8");
+		CHECK(changed(recordFile("v8", t.t8, "v8"), FileChangeCause::edit) == m[29]);
+		GraphFile refused = recordFile("v9", t.t9, "v8");
 		refused.refusal = Refusal{ear::UnknownPort{{"rec", "FX"}}, TextPlace{16, 1}};
 		CHECK(changed(refused, FileChangeCause::disk, 1) == m[32]);
-		GraphFile pending = file("v10", t.t10, "v10");
+		GraphFile pending = recordFile("v10", t.t10, "v10");
 		pending.pendingRestart = {FormatKey::graphFrequency};
 		CHECK(changed(pending, FileChangeCause::edit) == m[33]);
 	}
 	SECTION("the two batches, graphFile.get, and what the client holds at the end") {
-		GraphFile last = file("v11", t.t11, "v11");
+		GraphFile last = recordFile("v11", t.t11, "v11");
 		last.pendingRestart = {FormatKey::graphFrequency};
 		CHECK(changed(last, FileChangeCause::edit) == m[36]);
 		ear::GraphView view = graphView(4, "take4.wav");

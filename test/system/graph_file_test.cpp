@@ -6,6 +6,8 @@
 #include <chrono>
 #include <csignal>
 #include <filesystem>
+#include <fstream>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -160,6 +162,62 @@ TEST_CASE("T2: an editor edit is announced, applied, answered and written back, 
 		from);
 	CHECK(ear.stop(rpc) == 0);
 	CHECK(readText(directory.graphFile()) == hand);
+}
+
+TEST_CASE("node-text.json against the real ear: where each node is written, node.setText's replies, and only rec's "
+          "statement written back",
+          "[system][graph-file][node-text]") {
+	std::ifstream fixtureFile(std::string(EAR_PROTOCOL_DIR) + "/node-text.json");
+	REQUIRE(fixtureFile);
+	const json document = json::parse(fixtureFile);
+	const json& messages = document["messages"];
+	const json& boot = messages[0]["result"];
+	const auto expectedReply = [&](const json& id) {
+		for (const json& message : messages)
+			if (message.contains("id") && message["id"] == id) return message;
+		FAIL("node-text.json has no reply to " << id);
+		return json();
+	};
+
+	TempDirectory directory;
+	writeGraphFile(directory, boot["text"].get<std::string>());
+	Ear ear(directory, {linkedLine("noise:noise.mono", "rec:record.left")});
+	INFO("ear printed:\n" << ear.process().output());
+	Rpc rpc(ear.port());
+	const json file = rpc.call("graphFile.subscribe")["result"];
+	CHECK(file["text"] == boot["text"]);
+	CHECK(file["nodeTexts"] == boot["nodeTexts"]); // the real reader's places are the fixture's
+	REQUIRE(rpc.call("graph.subscribe").contains("result"));
+	// The fixture's versions (v1, v2) are this ear's, in the order they appear.
+	std::map<std::string, std::string> versions{{"v1", file["version"].get<std::string>()}};
+
+	const auto requests = document["requests"];
+	for (std::size_t i = 2; i < requests.size(); ++i) {
+		const json request = json::parse(requests[i].get<std::string>());
+		json params = request["params"];
+		params["version"] = versions.at(params["version"].get<std::string>());
+		const std::size_t from = rpc.notifications.size();
+		const json reply = rpc.call(request["method"].get<std::string>(), params);
+		const json expected = expectedReply(request["id"]);
+		INFO("request " << request.dump() << "\nreply " << reply.dump());
+		if (expected.contains("error")) {
+			CHECK(reply["error"] == expected["error"]);
+			continue;
+		}
+		CHECK(reply["result"] == expected["result"]);
+		const std::size_t changed = rpc.indexOf("graphFile.changed", {{"cause", "edit"}}, from);
+		REQUIRE(changed < rpc.notifications.size()); // before the reply
+		const json& params2 = rpc.notifications[changed]["params"];
+		CHECK(params2["text"] == document["file"]["text"]);
+		CHECK(params2["nodeTexts"] == document["file"]["nodeTexts"]);
+		versions["v2"] = params2["version"].get<std::string>();
+		CHECK(rpc.indexOf("node.updated", {{"name", "rec"}, {"settings", {{"path", "take2.wav"}}}}, from) <
+		      rpc.notifications.size());
+	}
+	REQUIRE(versions.contains("v2"));
+	CHECK(ear.process().waitForLine("graph-file written " + versions["v2"], deadline));
+	CHECK(readText(directory.graphFile()) == document["file"]["text"]); // every other byte as it was
+	CHECK(ear.stop(rpc) == 0);
 }
 
 TEST_CASE("T3: a hand typo stops edits until a fixing graphFile.set, and the graph keeps running",

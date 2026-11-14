@@ -71,6 +71,11 @@ TEST_CASE("Every method decodes into its command", "[commands]") {
 	CHECK(std::get<SetGraphFile>(set.value()).version == "a.3");
 	const auto empty = decodeCommand("graphFile.set", json::parse(R"({"text": "", "version": ""})"));
 	CHECK(std::get<SetGraphFile>(empty.value()).text.empty()); // an empty file is a text
+	const auto setText = decodeCommand(
+		"node.setText", json::parse(R"({"name": "rec", "text": "node file rec { path x; }", "version": "a.3"})"));
+	CHECK(std::get<SetNodeText>(setText.value()).node == "rec");
+	CHECK(std::get<SetNodeText>(setText.value()).text == "node file rec { path x; }");
+	CHECK(std::get<SetNodeText>(setText.value()).version == "a.3");
 
 	CHECK(std::get<StartNode>(decodeCommand("node.start", json::parse(R"({"name": "porch"})")).value()).node ==
 	      "porch");
@@ -102,12 +107,12 @@ TEST_CASE("The lifecycle's five methods take a name and nothing else, and node.a
 	CHECK(invalid("node.add", R"({"name": "q", "type": "white", "colour": "red"})") == "/colour: unknown key");
 }
 
-TEST_CASE("The frame: graph.get says protocol 1 and the lifecycle, counters and companions features",
+TEST_CASE("The frame: graph.get says protocol 1 and the lifecycle, counters, companions and node-text features",
           "[commands][lifecycle]") {
 	const json graph =
 		encodeGraph(ear::GraphView{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {}, {}, {}});
 	CHECK(graph["protocol"] == 1);
-	CHECK(graph["features"] == json::array({"lifecycle", "counters", "companions"}));
+	CHECK(graph["features"] == json::array({"lifecycle", "counters", "companions", "node-text"}));
 }
 
 TEST_CASE("A snapshot's node carries its companion list in request order, each counter only on its kind, and [] for "
@@ -208,6 +213,12 @@ TEST_CASE("Every missing, extra and mistyped key is invalid params naming its po
 	CHECK(invalid("graphFile.set", R"({"text": 1, "version": "a.1"})") == "/text: must be a string");
 	CHECK(invalid("graphFile.set", R"({"text": "", "version": null})") == "/version: must be a string");
 	CHECK(invalid("graphFile.set", "null") == "/text: missing");
+	CHECK(invalid("node.setText", R"({"text": "", "version": "a.1"})") == "/name: missing");
+	CHECK(invalid("node.setText", R"({"name": "rec", "version": "a.1"})") == "/text: missing");
+	CHECK(invalid("node.setText", R"({"name": "rec", "text": ""})") == "/version: missing");
+	CHECK(invalid("node.setText", R"({"name": "rec", "text": [], "version": "a.1"})") == "/text: must be a string");
+	CHECK(invalid("node.setText", R"({"name": "rec", "text": "", "version": "a.1", "type": "file"})") ==
+	      "/type: unknown key");
 
 	for (const std::string_view method : {"route.add", "route.remove"}) {
 		INFO(method);

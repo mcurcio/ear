@@ -27,6 +27,7 @@ if(BUILD_TESTS)
 		tests/graph_file_edit_test.cpp
 		tests/graph_file_keeper_test.cpp
 		tests/graph_file_model_test.cpp
+		tests/graph_file_node_text_test.cpp
 		tests/keeper_test.cpp
 		tests/keeper_thread_test.cpp
 		tests/main_loop_side_test.cpp

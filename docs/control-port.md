@@ -72,7 +72,7 @@ snapshots include every edit the batch made.
 
 ## Protocol and features
 
-`graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions"]`. An absent `protocol` is 0 (the
+`graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions", "node-text"]`. An absent `protocol` is 0 (the
 wire before the lifecycle). The number moves only on a breaking change: removing or renaming a
 method, notification, member or code, changing a member's type, or changing an order guarantee.
 Additive growth is a new **feature** name.
@@ -83,7 +83,9 @@ Additive growth is a new **feature** name.
   `disabled`; the codes `node-disabled` and `not-restartable`; and `node.gone`. `counters` adds
   `counters` on the Graph and on each node of a snapshot and `node.added`, and `counters.changed`
   ([below](#counters)). `companions` adds `companions` on each node of a snapshot and `node.added`, and
-  `node.companionsChanged` ([below](#companions)).
+  `node.companionsChanged` ([below](#companions)). `node-text` adds `nodeTexts` on the GraphFile,
+  `node.setText`, and the diagnostic codes `ear/not-one-node` and `ear/node-renamed`
+  ([below](#a-nodes-own-text)).
 - **Every enum is open.** `state`, `phase`, `cause.kind`, `waitingFor`'s `kind`, a route's `status`,
   `reason.code`, `applied`, `severity`, a companion's `kind` and every code may gain values, and the counters' names
   are an open set. Draw a value you do not know
@@ -100,7 +102,7 @@ Additive growth is a new **feature** name.
 `graph.get` and `graph.subscribe` answer with the Graph (`test/protocol/snapshot.json`):
 
 ```json
-{"protocol": 1, "features": ["lifecycle", "counters", "companions"],
+{"protocol": 1, "features": ["lifecycle", "counters", "companions", "node-text"],
  "graphFrequency": 48000, "blockSize": 256, "realtime": true, "scheduling": "SCHED_FIFO 88",
  "types": ["card", "file", "white"],
  "counters": {"cycles": 18750, "cutCycles": 39, "stalls": 1, "lostMs": 208},
@@ -173,9 +175,10 @@ three or four `node.state`s within milliseconds.
 | `graphFile.get` | none | GraphFile | none |
 | `graphFile.subscribe` | none | GraphFile; then every `graphFile.changed` | none |
 | `graphFile.set` | `{"text", "version"}` | `{}` once the graph runs the text | `file-changed`, `invalid-text`, any code the graph refuses the text with, `stopping` |
+| `node.setText` | `{"name", "text", "version"}`: the node's whole statement in knobly | `{}` once the graph runs it | `file-changed`, `file-invalid`, `unknown-node`, `shared-definition`, `invalid-text`, any code the graph refuses it with, `stopping` |
 
 **Edits** (`node.add`, `node.update`, `node.remove`, `route.*`, `node.disable`, `node.enable`,
-`graphFile.set`) are edits of `ear.conf` made at the source, judged before they are kept, and written
+`node.setText`, `graphFile.set`) are edits of `ear.conf` made at the source, judged before they are kept, and written
 behind ([graph-file.md](graph-file.md#edits-at-the-source)). A node whose ports change (a card's
 channel count) is replaced: `route.removed` for its routes, `node.removed`, then `node.added` and
 `route.added` again. An update with the same settings changes nothing. `disabled` is not a
@@ -248,6 +251,13 @@ type GraphFile = {
   refusal?: Refusal;            // the desired graph refused `version`
   pendingRestart: ("graphFrequency" | "blockSize")[];  // the graph block's rate or block_size differs from the engine's
   writeFailed?: string;         // the disk refused the last write
+  nodeTexts?: NodeText[];       // feature node-text: where each node is written; absent while there are errors
+};
+type NodeText = {
+  name: string;
+  start: { line: number; column: number };  // its first owned character (a comment line above it is its own)
+  end: { line: number; column: number };    // one past its last
+  shared?: true;                // written in a snippet: shown, never replaced by node.setText
 };
 type GraphFileChanged = GraphFile & {
   cause: "edit"                 // an edit through the control port, from any client
@@ -286,6 +296,44 @@ An absent optional member is left out, never `null`. ear's diagnostic codes are 
   change. Unwritten edits are lost if ear crashes, or dropped (and counted in `droppedEdits`) when
   a hand edit lands first.
 
+## A node's own text
+
+**A person edits knobly; JSON is the machine API.** `node.add` and `node.update` take settings
+as JSON, for scripts; the editor's node panel shows and edits the node's statement as it is in
+`ear.conf`, units, `@use` lines, `$variables` and comments included, through the feature
+`node-text` (`test/protocol/node-text.json`):
+
+- **`nodeTexts`** on the GraphFile says where each node's statement is in `text`, in the file's
+  node order, from its first owned token to one past its last: knobly's statement, with the comment
+  lines right above it and a comment after it on its line. It is present whenever the file reads
+  without errors and absent otherwise. A client cuts the node's text from the `text` it holds, so
+  the text is never sent twice. A node whose statement is written in a `@snippet` (spliced in by
+  top-level `@use` lines, however many) is `shared`: its entry points into the snippet, and
+  several names may share one range.
+- **`node.setText {"name", "text", "version"}`** replaces the node's own statement (its byte range)
+  with `text`, the whitespace around it dropped; every other byte of the file is kept. The
+  candidate is read whole by the file's reader ([graph-file.md](graph-file.md#a-nodes-own-text)),
+  so the file's `@set` and `@snippet` lines apply in it and are never changed by it. It may change
+  anything in the statement: settings and their spelling, `@use` lines, `$variable` uses,
+  comments, `disabled true;`, the type (the graph replaces the node). Where the text went, the
+  candidate must hold exactly one top-level `node` statement of the same name: otherwise
+  `invalid-text` with `ear/not-one-node`, or `ear/node-renamed` at the name. *Why no rename:*
+  routes name the node, so renaming its statement alone would leave them naming a node that is
+  gone; a rename is made in the pane, where its routes are renamed in the same text. Removing a
+  node is `node.remove`.
+- **Checks, in order:** `stopping`; `file-changed` when `version` is not the current one (the
+  text was cut from that version: strict, as for `graphFile.set`, whatever changed);
+  `file-invalid` while the file has errors; `unknown-node`; `shared-definition` with the shared
+  statement's place in `ear.conf`; then the text's own: `invalid-text`, whose `data.diagnostics`
+  are **placed in the text sent** (its first line is 1, columns in UTF-16 units, whitespace dropped
+  before it counted). A diagnostic the text caused elsewhere (in the body of a snippet it `@use`s)
+  is placed at the text's start, or at its end when it is after it, and its message starts with
+  its place in `ear.conf` as it stands (`ear.conf 7:5: setting card is given twice`). A candidate
+  that reads is judged by the graph like any edit, so the graph's codes come back as they would
+  for `graphFile.set`. The node's own text again is `{}` and changes nothing.
+- **Accepted,** it is an edit like the others: `graphFile.changed` (cause `edit`, with the new
+  `nodeTexts`), the node events it causes, then `{}`; written behind.
+
 ## Error codes
 
 Every refusal is -32000 with `data.code`. Its message is the code and what it names.
@@ -301,10 +349,10 @@ Every refusal is -32000 with `data.code`. Its message is the code and what it na
 | `wrong-direction` | A route not from an output to an input | |
 | `unknown-route` | `route.remove` of a route that does not exist | |
 | `stopping` | ear is stopping: every edit and lifecycle verb, even one already queued | |
-| `file-changed` | `graphFile.set` with a stale `version` | |
-| `invalid-text` | `graphFile.set`, or an edit whose candidate text has errors | `diagnostics` |
+| `file-changed` | `graphFile.set` or `node.setText` with a stale `version` | |
+| `invalid-text` | `graphFile.set`, or an edit whose candidate text has errors (`node.setText`'s placed in its text) | `diagnostics` |
 | `file-invalid` | An edit while `ear.conf` has errors | |
-| `shared-definition` | The line the edit must change or remove also makes other nodes or routes | `line`, `column` |
+| `shared-definition` | The line the edit must change or remove also makes other nodes or routes; `node.setText` on a node written in a snippet | `line`, `column` |
 | `node-disabled` | `node.start`, `node.stop` or `node.restart` on a node `ear.conf` disables | |
 | `not-restartable` | `node.start` or `node.restart` on a node whose block is lost; `node.restart` on a node still `added` | `reason`: `block-lost` or `not-started` |
 
@@ -450,6 +498,7 @@ breaking change moves `protocol`; anything else is a new feature name
 | `edits.json` | Adds, updates, removals and their statuses |
 | `lifecycle.json` | A node's whole life: start, stop, restart, disable, enable, failure and retry, removal, refusals, `waitingFor` |
 | `graph-file.json` | `graphFile.*`, edits at the source, hand edits, refusals; also its `requests` and final `file` |
+| `node-text.json` | `nodeTexts` (a comment owned, a snippet's node shared) and `node.setText`: success, `file-changed`, `invalid-text` placed in the text, `ear/node-renamed`, `shared-definition`, `ear/not-one-node`; the system tests send its requests to the real ear and expect its replies |
 | `errors.json` | Every refusal code and envelope error |
 | `levels.json` | `levels.subscribe` and `levels` |
 | `counters-changed.json` | The counters in a snapshot, `counters.changed`, one naming a node not held, and a port-caused replace's `node.added` carrying its counters |

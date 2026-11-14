@@ -91,6 +91,22 @@ inline GraphFile file(std::string version, std::string text, std::optional<std::
 	return GraphFile{std::move(version), std::move(text), {}, std::move(running), std::nullopt, {}, std::nullopt};
 }
 
+/// Where the record example's four nodes are written (feature node-text): the same in every text of the session that
+/// reads, since its edits change values of the same length or lines above the nodes.
+inline std::vector<NodeText> recordNodeTexts() {
+	return {{"noise", {10, 1}, {10, 18}},
+	        {"rec", {11, 1}, {11, 36}},
+	        {"desk", {12, 1}, {12, 39}},
+	        {"porch", {13, 1}, {13, 40}}};
+}
+
+/// file() of one of the session's texts that reads, with its nodeTexts.
+inline GraphFile recordFile(std::string version, std::string text, std::optional<std::string> running) {
+	GraphFile f = file(std::move(version), std::move(text), std::move(running));
+	f.nodeTexts = recordNodeTexts();
+	return f;
+}
+
 inline const Diagnostic includeUnsupported{Severity::error, "ear/include-unsupported",
                                            "@include is not supported yet: write the whole graph in ear.conf",
                                            TextPlace{16, 1}};
