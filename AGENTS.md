@@ -90,8 +90,10 @@ Toolchain notes:
   checkout may have none. Bump Boost by changing `boost_url` and `boost_sha256` in
   `CMakeLists.txt` together.
 - knobly has one pin for C++ and JS, `cmake/knobly.json`: its `version` (the one constant), the
-  SHA-256 of the C++ release asset (`cppSha256`) and the SHA-512 integrity of the npm tarball
-  (`jsIntegrity`); the URLs follow from the version by knobly's release naming. Configure reads it
+  URL templates of the C++ release asset, the npm tarball and the release's `SHA256SUMS`
+  (`cppUrl`, `jsUrl`, `sumsUrl`: knobly's release naming, `{version}` replaced by the version),
+  the SHA-256 of the C++ asset (`cppSha256`) and the SHA-512 integrity of the npm tarball
+  (`jsIntegrity`). Configure reads it
   and fetches `knobly-cpp-<version>.tar.gz` (`CMakeLists.txt` and `include/` with the generated
   headers) by URL and SHA-256, kept in `.cache/deps/knobly-src/` as Boost's is, and copies its
   licence to `out/licenses/`; ear adds it as a subproject in compiled mode
@@ -100,8 +102,9 @@ Toolchain notes:
   same version. npm cannot read the pin, so `web/package.json` and `web/package-lock.json` repeat
   the URL and integrity, and two checks hold them to it: configure stops naming each mismatch, and
   `node scripts/knobly-pin.mjs --check` (first in `make web-test`) does the same. Bump knobly with
-  `scripts/dev.sh node scripts/knobly-pin.mjs <version>`, which downloads both assets, rewrites the
-  pin and runs `npm install` of the tarball in `web/`; the script's header says the rest.
+  `scripts/dev.sh node scripts/knobly-pin.mjs <version>`, which downloads both assets, checks them
+  against the release's `SHA256SUMS`, runs `npm install` of the tarball in `web/` and only then
+  rewrites the pin, putting all three files back on any failure; the script's header says the rest.
 - The `sendspin` node's fetched dependencies are in `cmake/SendspinDeps.cmake`, each at a full
   commit or by SHA-256: sendspin-cpp (with `cmake/sendspin-listener.patch`,
   `sendspin-starved-floor.patch` and `sendspin-late-chunk.patch`; a failed apply, or a tree without

@@ -46,9 +46,9 @@ unset(CMAKE_POLICY_VERSION_MINIMUM)
 
 # knobly, the graph file's language (docs/graph-file.md): its C++ release asset, knobly-cpp-<version>.tar.gz
 # (CMakeLists.txt and include/ with the generated headers, so configure needs no Python), fetched by URL and SHA-256
-# and kept in .cache/deps as Boost is. Its one pin, cmake/knobly.json, is the graph editor's too: the version, this
-# asset's SHA-256 and the npm tarball's integrity; scripts/knobly-pin.mjs moves it
-# (AGENTS.md#build-run-and-test). The URLs follow knobly's release naming, as that script's do. Compiled mode:
+# and kept in .cache/deps as Boost is. Its one pin, cmake/knobly.json, is the graph editor's too: the version, the
+# URL templates (knobly's release naming, {version} replaced by the version), this asset's SHA-256 and the npm
+# tarball's integrity; scripts/knobly-pin.mjs moves it (AGENTS.md#build-run-and-test). Compiled mode:
 # knobly's definitions are compiled once, in src/config/knobly_implementation.cpp. As a subproject it builds no tests;
 # SYSTEM keeps its headers' warnings out of EAR's. FETCHCONTENT_SOURCE_DIR_KNOBLY names another tree of the same
 # version (an extracted asset, or a knobly checkout's cpp/ with its headers generated).
@@ -57,8 +57,10 @@ file(READ "${knobly_pin_file}" knobly_pin)
 string(JSON knobly_version GET "${knobly_pin}" version)
 string(JSON knobly_sha256 GET "${knobly_pin}" cppSha256)
 string(JSON knobly_integrity GET "${knobly_pin}" jsIntegrity)
-set(knobly_release https://github.com/mcurcio/knobly/releases/download/v${knobly_version})
-set(knobly_url ${knobly_release}/knobly-cpp-${knobly_version}.tar.gz)
+string(JSON knobly_url GET "${knobly_pin}" cppUrl)
+string(JSON knobly_js_url GET "${knobly_pin}" jsUrl)
+string(REPLACE "{version}" "${knobly_version}" knobly_url "${knobly_url}")
+string(REPLACE "{version}" "${knobly_version}" knobly_js_url "${knobly_js_url}")
 set(KNOBLY_COMPILED ON)   # knobly's option (CMP0077 NEW): KNOBLY_HEADER_ONLY=0 for every user
 kept_fetchcontent(knobly "${knobly_url}\n${knobly_sha256}"
 	URL ${knobly_url}
@@ -85,7 +87,6 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${knobly_pin_fil
 	"${CMAKE_CURRENT_SOURCE_DIR}/web/package.json" "${CMAKE_CURRENT_SOURCE_DIR}/web/package-lock.json")
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/web/package.json" knobly_web_package)
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/web/package-lock.json" knobly_web_lock)
-set(knobly_js_url ${knobly_release}/knobly-${knobly_version}.tgz)
 string(JSON knobly_found_package ERROR_VARIABLE error GET "${knobly_web_package}" dependencies knobly)
 string(JSON knobly_found_root ERROR_VARIABLE error GET "${knobly_web_lock}" packages "" dependencies knobly)
 string(JSON knobly_found_resolved ERROR_VARIABLE error GET "${knobly_web_lock}" packages node_modules/knobly resolved)
