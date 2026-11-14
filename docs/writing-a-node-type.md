@@ -33,10 +33,11 @@ src/nodes/<type>/
   public header, or a stray file beside the folders in `src/nodes/`, stops configure.
 - Plain CMake after the call adds any outside library the type needs, `PRIVATE`, so no other
   target sees it (`target_link_libraries(ear_node_file PRIVATE PkgConfig::SNDFILE)`).
-- **No type links another, nor `ear_runtime` or `ear_pipewire`**: configure refuses it once the
-  whole project is read, through a helper library, an alias or a generator expression too. A type
-  reaches the engine and the framework's threads only through `ear_core`'s interfaces; its test
-  program may link what it needs.
+- **No type links another, nor a package only `main.cpp` links** (`ear_runtime`, `ear_pipewire`,
+  `ear_control`, `ear_config`, `ear_server`): configure refuses it once the whole project is read,
+  through a helper library, an alias or a generator expression too. A type reaches the engine and
+  the framework's threads only through `ear_core`'s interfaces; its test program may link what it
+  needs.
 - **No type writes to standard output or error**: a CTest test refuses any file under `src/nodes/`
   that names `std::cout`, `std::cerr`, `stdout`, `stderr`, `printf`, `std::print` or writes to
   descriptor 1 or 2. A type speaks through notes (`say`) and failures (`lost`); see

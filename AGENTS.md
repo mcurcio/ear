@@ -127,7 +127,7 @@ Toolchain notes:
 The packages, what each owns and must never do, and the dependency rules are in
 [`docs/architecture.md#packages`](docs/architecture.md#packages); keep them: dependencies point
 one way, an interface lives with the package that consumes it, no node type links another, nor
-`ear_runtime` or `ear_pipewire` (configure refuses each), and no Boost, knobly or sendspin-cpp type
+a package only `main.cpp` links (configure refuses each), and no Boost, knobly or sendspin-cpp type
 appears in a public header.
 
 ## Conventions

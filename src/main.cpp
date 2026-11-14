@@ -301,7 +301,7 @@ int main(int argc, char** argv) {
 
 	// The framework's one thread for blocking work (docs/architecture.md#threads), before anything that posts to it and
 	// stopped after all of them; after Engine::create, so it inherits the blocked stop signals.
-	ear::runtime::IoThread io;
+	ear::runtime::IoThread io(log); // a job's throw no adapter caught: ear.internal-error, then the end
 
 	ear::pipewire::MainLoopExecutor mainLoop(*engine);
 	// The main-loop watchdog: its thread reads the heartbeat, asks MainLoopActivity where the loop is (ear_output sees

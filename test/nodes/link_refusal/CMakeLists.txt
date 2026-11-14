@@ -1,5 +1,5 @@
-# Run by the ear_node_type_link_* tests (test/nodes/CMakeLists.txt): two node types, a helper library and the two
-# packages no type may link (ear_runtime, ear_pipewire), linked as EAR_LINK says. The check is asked for before any link is made, as src/nodes asks before later directories are read, so
+# Run by the ear_node_type_link_* tests (test/nodes/CMakeLists.txt): two node types, a helper library and the packages
+# no type may link (ear_runtime, ear_pipewire, ear_control, ear_config, ear_server), linked as EAR_LINK says. The check is asked for before any link is made, as src/nodes asks before later directories are read, so
 # every refusal here is of a link made after it. No languages, so it configures in moments.
 cmake_minimum_required(VERSION 3.28...4.2)
 project(LinkRefusal LANGUAGES NONE)
@@ -14,6 +14,9 @@ add_library(ear_alias ALIAS ear_node_c)
 add_library(ear_runtime INTERFACE)
 add_library(ear_pipewire INTERFACE)
 add_library(ear_runtime_alias ALIAS ear_runtime)
+add_library(ear_control INTERFACE)
+add_library(ear_config INTERFACE)
+add_library(ear_server INTERFACE)
 if(EAR_LINK STREQUAL "direct")
 	target_link_libraries(ear_node_a INTERFACE ear_node_c)
 elseif(EAR_LINK STREQUAL "helper")
@@ -43,10 +46,17 @@ elseif(EAR_LINK STREQUAL "pipewire")
 	target_link_libraries(ear_node_a INTERFACE ear_pipewire)
 elseif(EAR_LINK STREQUAL "pipewire-in-generator-expression")
 	target_link_libraries(ear_node_a INTERFACE $<BUILD_INTERFACE:ear_pipewire>)
+elseif(EAR_LINK STREQUAL "control")
+	target_link_libraries(ear_node_a INTERFACE ear_control)
+elseif(EAR_LINK STREQUAL "config-through-helper")
+	target_link_libraries(ear_node_a INTERFACE ear_helper)
+	target_link_libraries(ear_helper INTERFACE ear_config)
+elseif(EAR_LINK STREQUAL "server-in-generator-expression")
+	target_link_libraries(ear_node_a INTERFACE $<BUILD_INTERFACE:ear_server>)
 elseif(EAR_LINK STREQUAL "packages-from-a-test-program")
 	# Not a type's library: a type's test program may link the engine and the runtime (sendspin's does).
 	add_library(ear_node_a_tests INTERFACE)
-	target_link_libraries(ear_node_a_tests INTERFACE ear_node_a ear_runtime ear_pipewire)
+	target_link_libraries(ear_node_a_tests INTERFACE ear_node_a ear_runtime ear_pipewire ear_control ear_config ear_server)
 elseif(NOT EAR_LINK STREQUAL "none")
 	message(FATAL_ERROR "Unknown EAR_LINK: ${EAR_LINK}")
 endif()

@@ -98,3 +98,81 @@ TEST_CASE("A completion of a configuration that ended is dropped, and the descri
 	CHECK_FALSE(isOpen(fd));
 	CHECK(mainLoop.queued() == 0);
 }
+
+namespace {
+
+/// The I/O executor, turned by the test.
+class QueueIo final : public ear::IoExecutor {
+public:
+	using ear::IoExecutor::post;
+	void post(std::string job, std::move_only_function<void()> work) override {
+		jobs.push_back(std::move(job));
+		queue_.push_back(std::move(work));
+	}
+	void post(std::move_only_function<void()> work) override { post("a job", std::move(work)); }
+	std::size_t queued() const noexcept { return queue_.size(); }
+	/// Runs what is queued on a thread of its own, as the I/O thread would.
+	void runOnItsThread() {
+		std::thread thread([this] {
+			while (!queue_.empty()) {
+				auto work = std::move(queue_.front());
+				queue_.pop_front();
+				work();
+			}
+		});
+		thread.join();
+	}
+	std::vector<std::string> jobs;
+
+private:
+	std::deque<std::move_only_function<void()>> queue_;
+};
+
+/// A job's handle that says where it was released.
+struct Handle {
+	Opened opened;
+	std::thread::id* releasedOn;
+	explicit Handle(std::thread::id* on) : releasedOn(on) {}
+	Handle(const Handle&) = delete;
+	Handle& operator=(const Handle&) = delete;
+	~Handle() { *releasedOn = std::this_thread::get_id(); }
+};
+
+} // namespace
+
+TEST_CASE("An I/O job's completion hands its handle to the main loop while attached, and once ended releases it on "
+          "the I/O thread, never on the main loop",
+          "[completions]") {
+	QueueLoop mainLoop;
+	QueueIo io;
+	const auto completions = std::make_shared<Completions>(mainLoop);
+	std::thread::id releasedOn;
+	const std::thread::id main = std::this_thread::get_id();
+
+	SECTION("attached: landed with the handle") {
+		auto handle = std::make_shared<Handle>(&releasedOn);
+		const int fd = handle->opened.fd;
+		int seen = -1;
+		completions->postHolding<Handle>(std::move(handle), io, "close store",
+		                                 [&](Handle& landed) { seen = landed.opened.fd; });
+		mainLoop.run();
+		CHECK(seen == fd);
+		CHECK(io.queued() == 0);
+	}
+	SECTION("ended: released on the I/O thread") {
+		auto handle = std::make_shared<Handle>(&releasedOn);
+		const int fd = handle->opened.fd;
+		bool ran = false;
+		completions->postHolding<Handle>(std::move(handle), io, "close store", [&](Handle&) { ran = true; });
+		completions->detach();
+		mainLoop.run();
+		CHECK_FALSE(ran);
+		CHECK(isOpen(fd)); // not closed on the main loop
+		CHECK(releasedOn == std::thread::id{});
+		REQUIRE(io.jobs == std::vector<std::string>{"close store"});
+		io.runOnItsThread();
+		CHECK_FALSE(isOpen(fd));
+		CHECK(releasedOn != std::thread::id{});
+		CHECK(releasedOn != main);
+	}
+}

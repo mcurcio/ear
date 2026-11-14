@@ -9,8 +9,8 @@ target_compile_definitions(ear_node_types_tests PRIVATE
 add_dependencies(ear_node_types_tests ear_all_node_types_verify_interface_header_sets)
 ear_catch_tests(ear_node_types_tests)
 
-# Configure stops when one node type links another, or links ear_runtime or ear_pipewire, however it is spelled, and
-# goes on when none does: link_refusal is a project of its own, because the refusal stops the whole configure.
+# Configure stops when one node type links another, or a package only main.cpp links (ear_runtime, ear_pipewire,
+# ear_control, ear_config, ear_server), however it is spelled, and goes on when none does: link_refusal is a project of its own, because the refusal stops the whole configure.
 function(ear_node_type_link_test name link)
 	add_test(NAME ${name} COMMAND "${CMAKE_COMMAND}" -S "${CMAKE_CURRENT_SOURCE_DIR}/link_refusal"
 		-B "${CMAKE_CURRENT_BINARY_DIR}/${name}" "-DEAR_CMAKE_DIR=${PROJECT_SOURCE_DIR}/cmake" -DEAR_LINK=${link})
@@ -32,6 +32,14 @@ foreach(link pipewire pipewire-in-generator-expression)
 	ear_node_type_link_test(ear_node_type_link_refused_${link} ${link})
 	set_tests_properties(ear_node_type_link_refused_${link} PROPERTIES
 		PASS_REGULAR_EXPRESSION "ear_node_a links ear_pipewire \\(through [a-z_]+\\): no node type links[ \n]+ear_pipewire;")
+endforeach()
+foreach(case control:ear_control config-through-helper:ear_config server-in-generator-expression:ear_server)
+	string(REPLACE ":" ";" parts "${case}")
+	list(GET parts 0 link)
+	list(GET parts 1 package)
+	ear_node_type_link_test(ear_node_type_link_refused_${link} ${link})
+	set_tests_properties(ear_node_type_link_refused_${link} PROPERTIES
+		PASS_REGULAR_EXPRESSION "ear_node_a links ${package} \\(through [a-z_]+\\): no node type links[ \n]+${package};")
 endforeach()
 ear_node_type_link_test(ear_node_type_link_allowed none)
 ear_node_type_link_test(ear_node_type_link_allowed_packages_from_a_test_program packages-from-a-test-program)

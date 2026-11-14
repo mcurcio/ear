@@ -2,6 +2,7 @@
 
 #include <condition_variable>
 #include <deque>
+#include <exception>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -14,9 +15,22 @@ struct Job {
 	std::string name;
 	std::move_only_function<void()> work;
 };
+
+/// What the exception being handled said.
+std::string thrownWhat() {
+	try {
+		throw;
+	} catch (const std::exception& error) {
+		return error.what();
+	} catch (...) {
+		return "an exception that is not a std::exception";
+	}
+}
 } // namespace
 
 struct IoThread::Impl {
+	explicit Impl(InternalErrorListener& listener) : faults(listener) {}
+	InternalErrorListener& faults;
 	std::mutex mutex;
 	std::condition_variable changed;
 	std::deque<Job> queue;              // mutex
@@ -34,13 +48,29 @@ struct IoThread::Impl {
 			queue.pop_front();
 			running = job.name;
 			lock.unlock();
-			job.work();
+			try {
+				job.work();
+			} catch (...) {
+				fault(job.name);
+			}
 			job = {}; // what the job held goes before it counts as done (a descriptor it opened closes here)
 			lock.lock();
 			running.reset();
 		}
 		ended = true;
 		changed.notify_all();
+	}
+	/// This thread, inside the handler of a job's throw no adapter caught: the record, then the end (a job's state is
+	/// the framework's, and nothing it was filling can be trusted to be told).
+	[[noreturn]] void fault(const std::string& job) noexcept {
+		try {
+			const std::string what = thrownWhat();
+			faults.internalError(
+				InternalError{.callback = "IoThread job", .node = {}, .where = job, .what = what, .fatal = true});
+		} catch (...) {
+			// The listener's own throw: the end all the same.
+		}
+		std::terminate();
 	}
 	/// Any thread: no job starts from now on; the jobs not yet run, taken out of the queue for the caller to destroy
 	/// outside the lock.
@@ -56,7 +86,7 @@ struct IoThread::Impl {
 	}
 };
 
-IoThread::IoThread() : impl_(std::make_unique<Impl>()) {
+IoThread::IoThread(InternalErrorListener& faults) : impl_(std::make_unique<Impl>(faults)) {
 	impl_->thread = std::thread([impl = impl_.get()] { impl->run(); });
 	// The name ps and a debugger show (at most 15 bytes); a failure only leaves the process's name.
 	::pthread_setname_np(impl_->thread.native_handle(), "ear-io");
