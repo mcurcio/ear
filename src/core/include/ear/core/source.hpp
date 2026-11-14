@@ -33,6 +33,10 @@ inline constexpr std::uint32_t maxSourceFrames = std::uint32_t{1} << 24U;
 struct SourceHeld {
 	std::uint32_t frames = 0; // of the current stream, after any clear this tick applies
 	bool clearing = false;    // this tick applies a clear: the ended stream's 5 ms plays faded, the rest is dropped
+	/// The clears the ring has applied so far, this tick's included: every SourceWriter::clear() counts once, and the
+	/// first tick after a stop counts those it forgot unapplied (its clearing stays false), so a clock that counts by
+	/// stream knows exactly which stream `frames` and this tick's SourcePlayed are of. Wraps at 2^32.
+	std::uint32_t clears = 0;
 	friend bool operator==(const SourceHeld&, const SourceHeld&) = default;
 };
 

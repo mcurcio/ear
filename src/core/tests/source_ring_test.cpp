@@ -282,7 +282,7 @@ TEST_CASE("Nothing is skipped on a tick that applies a clear, and the clock is t
 	clock.lose(3, 16);
 	time.skip = 30;
 	const SourcePlayed cleared = play(ring, bank, clock.next(16), 16, &time);
-	CHECK(time.heard.back().held == SourceHeld{.frames = 20, .clearing = true});
+	CHECK(time.heard.back().held == SourceHeld{.frames = 20, .clearing = true, .clears = 1});
 	CHECK(cleared == SourcePlayed{.skipped = 0, .read = 11, .ended = kFade, .zeros = 0});
 	for (std::uint32_t i = 0; i < kFade; ++i) CHECK(bank.data[0][i] == faded(streamAt(16 + i), kFade - i));
 	for (std::uint32_t i = kFade; i < 16; ++i)
@@ -460,4 +460,32 @@ TEST_CASE("A closed source accepts nothing and still plays what it holds", "[sou
 	Bank bank(1, 16);
 	Clock clock;
 	CHECK(play(ring, bank, clock.next(16), 16).read == 16);
+}
+
+// A clock that counts by stream reads which stream the ring plays from SourceHeld::clears: every clear counts once,
+// two asked before one tick count two, and one a stop forgets unapplied still counts at the stop's first tick, which
+// says no clear.
+TEST_CASE("The clock is told every clear the ring applied, those coalesced into one tick and one a stop forgot",
+          "[source_ring]") {
+	CountingSignals signals;
+	SourceRing ring(1, 64, ear::SampleRate::fixed<kRate>(), signals);
+	TestClock time;
+	Bank bank(1, 16);
+	Clock clock;
+	REQUIRE(offer(ring, 0, 16) == 16);
+	play(ring, bank, clock.next(16), 16, &time);
+	CHECK(time.heard.back().held.clears == 0);
+	ring.clear();
+	ring.clear();
+	play(ring, bank, clock.next(16), 16, &time);
+	CHECK(time.heard.back().held.clearing);
+	CHECK(time.heard.back().held.clears == 2);
+	play(ring, bank, clock.next(16), 16, &time);
+	CHECK_FALSE(time.heard.back().held.clearing);
+	CHECK(time.heard.back().held.clears == 2);
+	ring.dropForStop();
+	ring.clear(); // asked while stopped: the stop's first tick forgets it unapplied
+	play(ring, bank, clock.next(16), 16, &time);
+	CHECK_FALSE(time.heard.back().held.clearing);
+	CHECK(time.heard.back().held.clears == 3);
 }

@@ -16,11 +16,8 @@
 #include <span>
 
 #include "ear/core/lifecycle.hpp"
-#include "event_fd.hpp"
-#include "feed.hpp"
 #include "key_store.hpp"
-#include "mailbox.hpp"
-#include "sendspin_code.hpp"
+#include "sendspin_clock.hpp"
 #include "settings.hpp"
 #include "worker.hpp"
 
@@ -30,8 +27,8 @@ inline constexpr auto to = bank::input<"to">;
 inline constexpr auto from = bank::output<"from">;
 /// The sink's bank: `to` passed straight through, read by ToServer on the sink's thread; never faded.
 inline constexpr auto toServer = bank::insideOutput<"to_server">;
-/// What the server sends, before `from`. Nothing joins it yet: the feed plays into `from` in the node's code, and its
-/// latency is declared on the path from here to `from` (docs/writing-a-node-type.md#latency).
+/// What the server sends: a source the library's sync thread writes through the node's clock (sendspin_clock.hpp),
+/// passed to `from`.
 inline constexpr auto fromServer = bank::insideInput<"from_server">;
 /// `sendspin-<node>.key` in the graph file folder: mode 0600, at most 64 KiB, created as an empty key record, trusted
 /// only as one (docs/node-types.md#the-identity-file).
@@ -47,27 +44,16 @@ inline constexpr TypeSpec spec{.settings = settingsTable,
                                .loops = Loops<worker, notifier>{}};
 using Checked = CheckedOf<spec>;
 
-/// Small, so a correction lands within a chunk: the next power of two at or above 40 ms and two blocks.
-inline std::uint32_t feedFramesFor(const AudioFormat& format) {
+/// The source's ring: small, so a correction lands within a chunk: the next power of two at or above 40 ms and two
+/// blocks.
+inline std::uint32_t sourceFramesFor(const AudioFormat& format) {
 	const auto forty = static_cast<std::uint32_t>(FrameClock(format.rate).frames(std::chrono::milliseconds{40}));
 	return std::bit_ceil(std::max(forty, 2 * format.maxBlock));
 }
 
-/// The node's code: `to` passed to the sink's bank, and the feed played into `from` (sendspin_code.hpp).
-struct SendspinNodeCode {
-	std::unique_ptr<SendspinCode> playback;
-	void process(Io<spec> io, const GraphCycle& cycle) noexcept {
-		const auto in = io[to];
-		const auto out = io[toServer];
-		for (std::size_t channel = 0; channel < in.size(); ++channel)
-			std::ranges::copy(in[channel], out[channel].begin());
-		playback->process(io[from], io.frames(), cycle);
-	}
-};
-
-/// One configuration's instance. It owns what the code and both loops' states share (the feed, the bell and the
-/// mailbox the code tells what played through, the player slot), freed at teardown step 5 after the code and the
-/// states. Main loop only; it reaches the states only through the framework.
+/// One configuration's instance. It owns the player slot both loops' states share, freed at teardown step 5 after
+/// the states; the clock is the source's, freed with it after the instance. Main loop only; it reaches the states only
+/// through the framework.
 class Sendspin {
 public:
 	static Members<spec> ports(const Checked&) {
@@ -76,15 +62,13 @@ public:
 	}
 	explicit Sendspin(NodeOf<spec>& node) : node_(node) {}
 	/// A listening node claims its port (judged before anything opens); the key store opens before the loops run.
-	/// Makes the feed, the worker and the notifier states (nothing armed), the sink on `to_server` consumed by the
-	/// worker's ToServer, and the code; the loops start the client and the watch once the node is configured.
+	/// Makes the source on `from_server` with its clock, the worker and the notifier states (nothing armed), the sink
+	/// on `to_server` consumed by the worker's ToServer, and the pass-through; the loops start the client and the watch
+	/// once the node is configured.
 	Configured configure(CreateOf<spec>& cx, const Checked& s);
 
 private:
 	NodeOf<spec>& node_;
-	std::unique_ptr<Feed> feed_;
-	std::unique_ptr<EventFd> bell_;
-	Mailbox<PlayProgress> progress_;
 	PlayerSlot player_;
 };
 

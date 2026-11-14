@@ -321,7 +321,7 @@ TEST_CASE("A large block raises the lead the player reports to what still plays 
 	const auto lead = server.waitForEvent("lead ", playDeadline);
 	INFO("the server printed:\n" << server.events());
 	REQUIRE(lead);
-	CHECK(*lead == "lead 256"); // the feed's 8192 frames and a block of 4096, at 48 kHz
+	CHECK(*lead == "lead 256"); // the source's 8192 frames and a block of 4096, at 48 kHz
 	ear.signal(SIGTERM);
 	CHECK(waitForStop(ear) == 0);
 }

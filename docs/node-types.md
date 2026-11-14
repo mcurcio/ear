@@ -306,12 +306,13 @@ lists the player with its roles, and `node.start` plays again at once, with no c
 client lives as long as the node's configuration, not its run: a node restarted while stopped
 connects again and rests stopped.
 
-- **What Music Assistant sends while stopped** is not played. For the feed's undrained bound
-  ([clock](#clock)) the library waits on the full feed as through a stall;
-  after that the feed plays what it writes into nothing at the graph's rate and tells the library
-  so, so a stream goes on for as long as the stop lasts and the connection holds. At the start,
-  what the feed held from before the stop is skipped, and the stream plays from where it has got
-  to. A shorter stop plays the feed's 43 ms from before first.
+- **What Music Assistant sends while stopped** is not played. The stop drops what the node's
+  source held, unplayed (the source's rule), and for the clock's undrained bound ([clock](#clock))
+  the library waits on the stopped source as through a stall; after that its writes are played into
+  nothing at the graph's rate and told to the library, so a stream goes on for as long as the stop
+  lasts and the connection holds. At the start the stream plays from where it has got to. A stop
+  shorter than the bound starts on what the library writes next, and the library corrects once,
+  for the time it was held back and the frames the stop dropped.
 - **What is routed to `to` while stopped** does not reach the server: the node's code does not
   run, so nothing reaches its sink and the source role sends nothing (a server listening to it
   hears it go quiet; its stream is not ended). It resumes at the start.
@@ -378,7 +379,7 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   card's buffer, carried back by the framework), never from when the thread woke. *Why:* wake time
   failed the spike, 52% of cycles within 1 ms against 100% from the cycle's start.
 - The finish it tells is where the library's next frame plays, the end of the telling cycle: the
-  library puts its next audio at the finish plus what it still holds, and a cycle the feed left
+  library puts its next audio at the finish plus what it still holds, and a cycle the source left
   short played zeros to its end.
 - The audio sent to the server (`to`) is dated by when its cycle started, each piece from its own
   chunk's cycle start by its frames ([engine.md](engine.md#dating)). The capture latency upstream
@@ -388,49 +389,59 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   rule 3): it plays every frame the library wrote, in order, and tells the library what played and
   when, true when told. It keeps no debt and no model of the library: what it could not skip of lost
   time, the library sees in the next finish it is told and corrects once, on its own.
-- **It never holds the library back for long.** Each cycle stamps the feed as drained (and the
-  feed counts as drained when it is made, so a node configured during a stream buffers its first
-  chunks for its first cycle). Left undrained past its bound (a stop, or a host stall the graph
-  does not come back from in that time), the feed's writer stops waiting and plays what the library
-  writes into nothing at the graph's rate, up to now and never ahead, so the library runs on its
-  own time and its inbound ring never pins behind audio no cycle will read (which closes the
-  connection). What the feed held as the writer began is consumed then (stale: the first cycle back
-  skips it; a clear asked and not yet applied discards its part first), and both are told played by
-  the notifier, each report dated by when the next frame would be heard at that rate: never later
-  than now plus what lies downstream of the outputs, the same downstream the code adds to its own
-  finishes (each cycle tells the feed it), so both tellers are on one timeline. They must be told,
-  and in that order: the library needs a report to leave a stream's priming silence, and puts its
-  next frame at the finish told plus what it wrote and was not told.
-- **The hand-over back is one step.** The first cycle back stamps the feed, then takes it back
-  (`Feed::skipStale`): from that instant the writer's drops are refused (one under way when it came
-  is not counted, and its frames go to the ring), so the drop's last finish is final, and the
-  writer publishes each total with its finish under a sequence count, so neither the notifier nor
-  the code reads a total with another drop's finish. The cycle skips the stale frames, nothing for
-  its jump (the drop covered it), and then, as late, what the library wrote since that is heard by
-  the cycle's run on the drop's timeline (the graph's cycle comes later by up to a block), counted
-  played, so the stream plays on from the drop's time with nothing for the library to correct. The
-  drop's timeline holds until a cycle reads with nothing late left, and for a feed's worth of
-  cycles at most: a library that keeps pace has written every late frame by then, so what is still
-  late is a gap of its own (a network gap, a server that underran), which it corrects itself as it
-  does outside a drop rather than ear skipping the gap's length of fresh audio. The cycle anchors
-  the timeline when it reads the drop's last finish; a writer it found mid-publish (preempted there
-  on a loaded host, maybe for many cycles) leaves it pending until a cycle reads it. Anchored, a
-  catch-up's jump is not skipped: the late skip, measured from when a frame is heard, already
-  covers the graph's lost time, and both would skip it twice. Pending, nothing measures lateness,
-  so the jump is skipped as outside a drop and counted consumed on the timeline, so the late skip
-  once it anchors does not skip that time again. What
-  it read in the instant the writer began is counted twice, so as many of its next frames go
-  uncounted, counted from what the reader read of its own, never from a read position a clear moved;
-  a clear forgets that debt, and keeps the drop's timeline only if the writer has dropped some of the
-  next stream since. Where the two tellers meet, the notifier never tells a finish earlier than the
-  last it told (`PlayedTeller` holds it at the last and counts it, which no test sees happen). What
-  the library must correct is only the time it was held back first, the bound, which it does once.
+- **One owner of the played timeline.** The library's audio reaches `from` through a
+  [source](writing-a-node-type.md#sources) on the inside bank `from_server`, whose clock,
+  `SendspinClock` (`sendspin_clock.hpp`), owns the one timeline the library is told: one played
+  count and one finish. Each tick advances it while the graph drains the source; while nothing
+  drains it, the library's own writes do, and which side may is one atomic owner word, so a
+  hand-over either way is a single compare-and-swap and no frame is counted by both. The library's
+  sync thread writes through the clock (`SendspinClock::write`), never the source's writer directly.
+- **It never holds the library back for long.** The clock counts as drained when it is made (a node
+  configured during a stream buffers its first chunks for its first tick). When no tick has run for
+  its bound (a stop, or a host stall the graph does not come back from in that time), the next write
+  takes the timeline over from a tick that is done (one between its skip and its play holds it):
+  everything the library wrote of its stream counts played then (what the source still holds, and
+  what a stop dropped), dated now, and from then on what it writes is played into nothing at the
+  graph's rate, up to now and never ahead, so the library runs on its
+  own time and its inbound ring never pins behind audio no tick will read (which closes the
+  connection). Each step is told at once, dated by when the next frame would be heard at that rate
+  plus what lies downstream of the outputs, the same downstream the ticks add, so it is one timeline.
+  It must be told: the library needs a report to leave a stream's priming silence, and puts its next
+  frame at the finish told plus what it wrote and was not told. A stream that ends while paced starts
+  its count afresh, the time going on; a writer away for longer than the ring lasts gets no credit
+  for the time it missed.
+- **The hand-over back is one step.** The first tick, overdue or not, swaps the timeline back and
+  reads the pacer's anchor and count, written whole before the owner word named them, so it is
+  never half read. It skips what the source holds of the stream, uncounted (the pacer counted it and
+  wrote nothing into the source), nothing for its jump (the pacer covered it), and then, as late,
+  what the library wrote since that is heard by the tick's run on the pacer's timeline (the graph's
+  tick comes later by up to a block and its wait), counted played, so the stream plays on from the
+  pacer's time with nothing for the library to correct. That holds until a tick reads with nothing
+  late left, and for a ring's worth of ticks at most: a library that keeps pace has written every
+  late frame by then, so what is still late is a gap of its own (a network gap, a server that
+  underran), which it corrects itself as it does outside a hand-over rather than ear skipping the
+  gap's length of fresh audio. A stream end applied by that tick with nothing of the next stream
+  paced ends it too: the next stream is the library's to place.
+- **Never a step back across a hand-over, by construction.** Back from the pacer, a tick tells only
+  once its end is past the pacer's reach; the pacer never reached past now, and the tick after the
+  one that took the timeline back began after that, so at most that one tick leaves its report to the
+  next (no clamp: nothing told is moved). The tick tries the report box once and leaves its report to
+  the next tick if the pacer is mid-publish; the pacer publishes only while it still owns the
+  timeline, so an older count never lands after a newer. *Why not a block behind now, which would
+  need no waiting:* the library hard-syncs when its playtime is 5 ms off, and a pacer telling it a
+  block (5.3 ms) behind now made it drop and add silence in turn, a correction each chunk.
+  What the library must correct is only the time it was held back first, the bound, which it does once.
+- **Streams.** The source tells the clock which stream it plays (the clears it applied,
+  `SourceHeld::clears`), and the clock's `clear()` (the worker's `on_stream_end`) counts the
+  library's. The report carries where the current stream's count began (`base`); the notifier tells
+  only frames above it, and a tick tells only while both agree: the library zeroed its count at the
+  stream's end.
 - **The bound is derived from what it protects** (`undrainedBoundFor`, `worker.hpp`): a server that
   fills the player's advertised buffer (two thirds of its 1 MB quota in the library's inbound ring)
   leaves a third for what arrives while nothing is taken; at the stream's worst-case byte rate
   (FLAC's verbatim frames, as large as 24-bit stereo PCM at the graph's rate) that lasts
   `room / rate`, less the library's 100 ms wait for ring room before it closes the connection; and
-  never less than two feeds' worth (about 85 ms), so a scheduling hiccup never drops. About 1.06 s
+  never less than two rings' worth (about 85 ms), so a scheduling hiccup never paces. About 1.06 s
   at 48 kHz, 0.48 s at 96 kHz and 0.19 s at 192 kHz. The clock tests' 200 ms and 700 ms stalls stay
   under it at 48 kHz by a clear margin with their catch-up burst (a `static_assert` holds the 700 ms
   one to it), so they keep the rules below exactly, and one more stalls for twice it, so its
@@ -438,10 +449,11 @@ instead, or filter both, if that matters. What a peer can and cannot do:
 - **It skips only the graph's lost time.** On the cycle that states a catch-up or a pause
   (`GraphCycle::facts`: cycles missed, the position moved by exactly their frames, cut or not;
   [writing-a-node-type.md](writing-a-node-type.md#lost-cycles)) with a jump above 0, overdue or not,
-  it skips min(jump, what the feed holds now): that audio is stale. Every other cause (a
+  it skips min(jump, what the source holds now): that audio is stale. Every other cause (a
   reposition, a driver change, a drive, a first cycle, the cycle after an oversized one) is a new
   clock and skips nothing, and nothing of a stream is skipped on the cycle that applies a clear
-  (the clear ended the stream the jump was lost from). A cycle the feed leaves short plays zeros,
+  (the clear ended the stream the jump was lost from). A cycle the source leaves short plays zeros (an underrun's
+  decay, the source's fade),
   which are not counted.
 - **It counts every frame.** The frames told played grow by exactly what was skipped and read,
   never the zeros of a short cycle nor anything of a cleared stream: the library takes what it is
@@ -472,14 +484,14 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   since), trailing now through a burst of either shape with frames still buffered; upstream's floor
   would take that for an underrun and realign mid-burst, so the floor patch, which floors only when
   nothing is buffered, is carried with the deferral ([below](#library-facts-and-carried-patches)).
-- **After a stall past the feed** the library corrects once what the feed did not hold (the stall's
-  lost frames less the skip) and the zeros ear played meanwhile (a skip that empties the feed leaves
+- **After a stall past the source's ring** the library corrects once what the ring did not hold (the stall's
+  lost frames less the skip) and the zeros ear played meanwhile (a skip that empties the ring leaves
   its cycle to read nothing), at the next chunk it syncs: until then, what it had already written
-  (the feed and the rest of its chunk) plays late by that much, and ear's own silence after the
-  burst is at most a block, while the library refills the feed. *Why not pay it locally:* a node
+  (the ring and the rest of its chunk) plays late by that much, and ear's own silence after the
+  burst is at most a block, while the library refills the ring. *Why not pay it locally:* a node
   that owed the rest kept a model of the library to know when it could, and the library corrected
   the same time again whenever the model was wrong. The trade, accepted by the owner: up to about a
-  chunk played late where the old wrapper played ear's silence. A stall the feed holds (a missed
+  chunk played late where the old wrapper played ear's silence. A stall the ring holds (a missed
   cycle or two) is skipped exactly and the library corrects nothing. A burst that runs every cycle
   loses nothing, so it needs no correction and plays no silence. The clock tests prove each on the
   real server with stalls of the data thread of 200 ms and 1 s and a 1.5-cycle hiccup, made
@@ -487,12 +499,14 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   inside the block, judged in whichever shape the host gives and recorded
   (`out/Testing/sendspin-stall-shapes.txt`, which CI prints): with frames lost, one correction of what was not
   skipped and the zeros, within the library's 500 us settle threshold, and at most one settle step
-  of up to two blocks after it, only where a cycle between was dry or began with the feed empty
+  of up to two blocks after it, only where a cycle between was dry or began with the ring empty
   (its next write landing late, as after a network gap); with none, no correction, no silence and nothing told from an overdue cycle. Every report's frames and finish are checked
   against the rule, and a finish behind the last fails.
-- The feed (the library's decoded audio waiting for the block) is about 43 ms at 48 kHz, small on
-  purpose: with 2.7 s a correction lands 2.7 s late. The node declares it as its latency on its path
-  from `from_server` to `from`.
+- The source's ring (the library's decoded audio waiting for the block) is about 43 ms at 48 kHz,
+  small on purpose: with 2.7 s a correction lands 2.7 s late. It is the source's latency beyond
+  `from_server`, which `from` tells through the pass-through
+  ([sources](writing-a-node-type.md#sources)). The source fades at its edges: after an underrun the
+  audio decays, and fades in over 5 ms when it comes back.
 - Only routed paths count toward the downstream latency (unrouted, or routed to a `file` node, it
   is 0). A resampler before the card and anything past the card are left to the output delay in
   Music Assistant, which the library keeps in the key file.
@@ -511,11 +525,11 @@ threads at teardown; the node writes no thread.
 
 | Thread | Runs |
 |---|---|
-| Data loop | The node's code: passes `to` to the sink's bank `to_server`, reads the feed into `from`, publishes what played through a mailbox and rings a bell |
+| Data loop | The block plays the source on `from_server` by its clock (skip, count, tell, ring the clock wake), then the node's pass-through: `from_server` to `from`, `to` to the sink's bank `to_server` |
 | Worker loop `ear-sendspin <node>` | Its state is the library's "main loop": on a 10 ms tick, the client's making (the key record read, start, listen or dial) at its first run, then `loop()`, the connection watch and mDNS; every listener callback but `on_audio_write`; the key store's writes; at teardown, stop and destruction |
-| Notifier loop `ear-notify <node>` | Its state watches the bell, then calls `notify_audio_played` (apart from the worker, whose disk writes would delay it), through a slot the worker clears before it stops the client |
+| Notifier loop `ear-notify <node>` | Its state watches the source's clock wake, then calls `notify_audio_played` with the frames counted since its last report of the stream (apart from the worker, whose disk writes would delay it), through a slot the worker clears before it stops the client |
 | The sink's thread | `ToServer`, a member of the worker's state: `write_audio` |
-| The library's own | Protocol, sync (`on_audio_write`), source, IXWebSocket's |
+| The library's own | Protocol, sync (`on_audio_write`, writing through the clock, which paces there while no tick drains), source, IXWebSocket's |
 
 Teardown, by the framework's steps ([architecture.md](architecture.md#teardown-by-dependency)): the
 block goes silent, the sink drains into `ToServer` and finishes, then each loop runs what was posted
@@ -576,7 +590,9 @@ takes up to 3 s.
   frame gives `n-1`, the blend of `n-1` and `n`, `n`; dropping one gives `n-1`, the blend of `n` and
   `n+1`, `n+2` (a step of 3). A recorded ramp is exact but for those, which the system tests' ramp
   check (`checkRamp`) allows and counts. At the low word's wrap the blends are not `k + 0.5`, because
-  each channel is a signed sample.
+  each channel is a signed sample. The node's source fades its own edges (an underrun's decay, the
+  fade-in after it, a clear's 5 ms tail): `checkRamp` reads each such frame as the ramp frame it
+  fades, at gain `g/240`, against the exact ramp around it, and counts it apart (`fades`).
 - What Music Assistant does was read in its source (`providers/sendspin/{provider,player}.py`), never
   run: **pairing with a real Music Assistant has not been tested.** Every test runs against
   `aiosendspin`, Music Assistant's pinned server.
@@ -595,6 +611,6 @@ a question's type and class past the buffer.
 
 Not yet checked: a real Music Assistant (above); real hardware, and so a real card's latency in
 the clock; realtime scheduling; a pod with a CPU limit (the library's unprioritised threads refill
-a 43 ms feed); a real `fsGroup` mount; an off-link mDNS query from a real other subnet.
+a 43 ms ring); a real `fsGroup` mount; an off-link mDNS query from a real other subnet.
 Operating it is also the `sendspin` skill's (`.claude/skills/sendspin/SKILL.md`), and running it in
 a pod the `ear-on-talos` skill's.

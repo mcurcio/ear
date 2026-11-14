@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cmath>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -228,6 +229,7 @@ struct RampCheck {
 	std::size_t rampFrames = 0;    // exact ramp frames
 	std::size_t blends = 0;        // blends accepted by their shape; those over the limit also count in badFrames
 	std::size_t badFrames = 0;     // frames neither of those, and each blend past blendLimit()
+	std::size_t fades = 0;         // frames of the node's source's own fades (rampFadeKinds), neither ramp nor bad
 	std::size_t badSteps = 0;      // steps between exact frames that are neither +1, a block's multiple, a drop's 3 nor
 								   // a logged hard sync's drop
 	std::size_t hardSyncSteps = 0; // steps a hard sync the library logged as late accounts for
@@ -238,7 +240,7 @@ struct RampCheck {
 	std::vector<std::string> stepsInLossSeen;
 	std::vector<std::int64_t> lostSyncUs; // what the library logged, as checkRamp was given it
 	std::size_t zeroFramesInside = 0;
-	/// Each run of zeros inside the ramp: its first WAV frame and its frames (where the feed ran dry, or silence the
+	/// Each run of zeros inside the ramp: its first WAV frame and its frames (where the ring ran dry, or silence the
 	/// library added), so a red can say whether one lies between a skip and a correction.
 	std::vector<std::pair<std::size_t, std::size_t>> zeroRuns;
 	std::uint32_t firstIndex = 0;
@@ -259,9 +261,9 @@ struct RampCheck {
 /// What a red needs to say about a ramp.
 inline std::ostream& operator<<(std::ostream& out, const RampCheck& ramp) {
 	out << "ramp frames " << ramp.rampFrames << ", blends " << ramp.blends << ", not ramp " << ramp.badFrames
-		<< ", bad steps " << ramp.badSteps << ", blocks skipped " << ramp.skippedBlocks
-		<< ", steps of a logged hard sync " << ramp.hardSyncSteps << " (" << ramp.stepsInSilentLoss
-		<< " in a loss that began with silence)"
+		<< ", bad steps " << ramp.badSteps << ", fade frames " << ramp.fades << ", blocks skipped "
+		<< ramp.skippedBlocks << ", steps of a logged hard sync " << ramp.hardSyncSteps << " ("
+		<< ramp.stepsInSilentLoss << " in a loss that began with silence)"
 		<< ", zeros inside " << ramp.zeroFramesInside << ", indices " << ramp.firstIndex << " to " << ramp.lastIndex
 		<< ", frames of the last run " << ramp.lastRunFrames << ", bad steps seen:";
 	for (const std::string& step : ramp.badStepsSeen) out << " " << step;
@@ -356,6 +358,83 @@ inline bool isBlend(const Wav& wav, std::size_t frame) {
 	return false;
 }
 
+/// The sendspin node's source fades at its edges (docs/writing-a-node-type.md#sources), over 5 ms: each faded frame is a
+/// ramp frame times gain/240 (the ring's float gain), the gain stepping by one a frame. Whether the frame is ramp frame
+/// `n` so faded, gain 0 to full.
+inline bool isFadeOf(std::uint32_t n, float left, float right) {
+	constexpr int fadeFrames = static_cast<int>(graphFrequency) * 5 / 1000;
+	const auto sample = [](std::uint32_t word) {
+		return static_cast<float>(static_cast<std::int16_t>(word & 0xFFFFU)) / 32768.0F;
+	};
+	const float lo = sample(n);
+	const float hi = sample(n >> 16U);
+	const float big = std::abs(lo) >= std::abs(hi) ? lo : hi;
+	if (big == 0.0F) return false;
+	const int k = static_cast<int>(std::lround((std::abs(lo) >= std::abs(hi) ? left : right) / big * fadeFrames));
+	for (int g = std::max(k - 1, 0); g <= std::min(k + 1, fadeFrames); ++g) {
+		const float gain = static_cast<float>(g) / static_cast<float>(fadeFrames);
+		if (left == lo * gain && right == hi * gain) return true;
+	}
+	return false;
+}
+
+/// What each frame of a WAV is of the source's fades: none, one of the stream's own frames faded (a fade-in after an
+/// underrun or at the start, the 5 ms a clear plays of the ended stream), or an underrun's decay from the last frame
+/// played (no frame of the stream). A frame is judged against the ramp around it: the ramp's frames are anchored where
+/// two exact frames step by +1 (a faded frame is exact only by chance, and never two in a row on the ramp), a fade-out
+/// continues the anchor before, a fade-in leads into the anchor after, and a decay repeats the last frame played.
+enum class RampFade : std::uint8_t { none, stream, decay };
+inline std::vector<RampFade> rampFadeKinds(const Wav& wav, std::size_t first, std::size_t last) {
+	constexpr std::size_t reach = static_cast<std::size_t>(graphFrequency) * 5 / 1000 + 1;
+	const auto left = [&](std::size_t at) { return wav.samples[at * 2]; };
+	const auto right = [&](std::size_t at) { return wav.samples[at * 2 + 1]; };
+	const auto zero = [&](std::size_t at) { return left(at) == 0.0F && right(at) == 0.0F; };
+	std::vector<std::optional<std::uint32_t>> exact(last + 2);
+	for (std::size_t f = first; f <= last; ++f)
+		if (!zero(f)) exact[f] = rampIndexOf(left(f), right(f));
+	std::vector<bool> anchor(last + 2, false);
+	for (std::size_t f = first; f < last; ++f)
+		if (exact[f] && exact[f + 1] && *exact[f + 1] == *exact[f] + 1) anchor[f] = anchor[f + 1] = true;
+	std::vector<RampFade> kinds(last + 2, RampFade::none);
+	std::optional<std::size_t> before;
+	for (std::size_t f = first; f <= last; ++f) {
+		if (anchor[f]) {
+			before = f;
+			continue;
+		}
+		if (zero(f) || isBlend(wav, f)) continue; // a blend's shape is the library's, judged as one
+		const float l = left(f);
+		const float r = right(f);
+		if (before && f - *before <= reach) {
+			const auto continuing = static_cast<std::uint32_t>(*exact[*before] + (f - *before));
+			if (isFadeOf(continuing, l, r)) {
+				kinds[f] = RampFade::stream;
+				continue;
+			}
+		}
+		// A decay from the frame played just before it began (itself, or a faded frame before it).
+		for (std::size_t back = f; back > first && f - back < reach; --back) {
+			if (kinds[back - 1] == RampFade::decay || zero(back - 1)) continue;
+			const std::optional<std::uint32_t> was =
+				anchor[back - 1] ? exact[back - 1]
+				: kinds[back - 1] == RampFade::stream && before
+					? std::optional<std::uint32_t>(*exact[*before] + static_cast<std::uint32_t>(back - 1 - *before))
+					: std::nullopt;
+			if (was && isFadeOf(*was, l, r)) kinds[f] = RampFade::decay;
+			break;
+		}
+		if (kinds[f] != RampFade::none) continue;
+		for (std::size_t next = f + 1; next <= last && next - f <= reach; ++next) {
+			if (!anchor[next]) continue;
+			if (isFadeOf(static_cast<std::uint32_t>(*exact[next] - (next - f)), l, r)) kinds[f] = RampFade::stream;
+			break;
+		}
+		// A fade-in's first frame plays at gain 0: the silence just before it is that frame of the stream.
+		if (kinds[f] == RampFade::stream && f > first && zero(f - 1) && !anchor[f - 1]) kinds[f - 1] = RampFade::stream;
+	}
+	return kinds;
+}
+
 /// How far the ramp has come in what a file node has written, counted as the frames arrive: exact ramp frames, and those
 /// since the last step that is neither +1 nor a block's multiple (a new stream, a drop). Only when to stop waiting;
 /// checkRamp judges the finished file.
@@ -435,9 +514,16 @@ inline RampCheck checkRamp(const Wav& wav, std::vector<std::int64_t> lostSyncsUs
 	std::size_t previousFrame = first;
 	std::int64_t drift = 0;
 	bool afterBlend = false;
+	const std::vector<RampFade> fades = rampFadeKinds(wav, first, last);
+	std::int64_t fadedSince = 0; // the stream's own faded frames since the last exact one
 	for (std::size_t frame = first; frame <= last; ++frame) {
 		const float left = wav.samples[frame * 2];
 		const float right = wav.samples[frame * 2 + 1];
+		if (fades[frame] != RampFade::none) {
+			++result.fades;
+			if (fades[frame] == RampFade::stream) ++fadedSince;
+			continue;
+		}
 		if (left == 0.0F && right == 0.0F) {
 			++result.zeroFramesInside;
 			if (!result.zeroRuns.empty() && result.zeroRuns.back().first + result.zeroRuns.back().second == frame)
@@ -452,8 +538,10 @@ inline RampCheck checkRamp(const Wav& wav, std::vector<std::int64_t> lostSyncsUs
 			continue;
 		}
 		if (previous) {
-			const std::int64_t step = rampStep(*previous, *index);
-			if (const std::int64_t moved = (step - 1) - static_cast<std::int64_t>(frame - previousFrame - 1);
+			// The stream's faded frames moved it on as its exact frames do: the step is judged past them.
+			const std::int64_t step = rampStep(*previous, *index) - fadedSince;
+			if (const std::int64_t moved =
+			        (step - 1) - static_cast<std::int64_t>(frame - previousFrame - 1) + fadedSince;
 			    moved != 0) {
 				drift += moved;
 				result.drifts.push_back({frame, drift});
@@ -493,6 +581,7 @@ inline RampCheck checkRamp(const Wav& wav, std::vector<std::int64_t> lostSyncsUs
 			result.firstIndex = *index;
 		}
 		afterBlend = false;
+		fadedSince = 0;
 		previous = index;
 		previousFrame = frame;
 		result.lastIndex = *index;
@@ -509,16 +598,16 @@ inline RampCheck checkRamp(const Wav& wav, std::vector<std::int64_t> lostSyncsUs
 inline constexpr std::chrono::milliseconds rampDueBefore{100};
 /// How far after the time its lost frames last: the records' and the WAV's clocks, and a beat of slack.
 inline constexpr std::chrono::milliseconds rampDueAfter{100};
-/// The sendspin node's feed at the tests' rate: 40 ms rounded up to a power of two, about 43 ms
+/// The sendspin node's source ring at the tests' rate: 40 ms rounded up to a power of two, about 43 ms
 /// (docs/node-types.md#clock).
-inline constexpr std::size_t rampFeedFrames = 2048;
+inline constexpr std::size_t rampRingFrames = 2048;
 /// How long after a skip the library's correction of what it left is taken to belong to the same loss: the sendspin
-/// node skips at most what its feed holds of a stall, and the library corrects the rest once, at the next chunk it
-/// syncs, after the feed and the rest of its chunk, so within the feed, a chunk and two blocks of the skip (the bound
+/// node skips at most what its ring holds of a stall, and the library corrects the rest once, at the next chunk it
+/// syncs, after the ring and the rest of its chunk, so within the ring, a chunk and two blocks of the skip (the bound
 /// the honest wrapper's stall tests found; the longest seen was 26 blocks: docs/node-types.md#clock), about 150 ms;
 /// and a beat of slack, 100 ms.
 inline constexpr std::size_t rampSettleFrames =
-	rampFeedFrames + chunkFrames + 2 * blockSize + static_cast<std::size_t>(graphFrequency) / 10;
+	rampRingFrames + chunkFrames + 2 * blockSize + static_cast<std::size_t>(graphFrequency) / 10;
 
 /// What a ramp lost at one skip, as the time the WAV lost there (docs/testing.md#the-counters-own-word).
 struct RampLoss {
@@ -530,7 +619,7 @@ struct RampLoss {
 
 /// Each skip's loss: its own blocks, or, where the stream's drift (RampCheck::drifts) moved further by the time the
 /// library had corrected what the node could not skip (the most the drift reached from the skip until the next skip or
-/// rampSettleFrames on), that whole loss. A stall past the sendspin node's feed is lost whole from the WAV but skipped
+/// rampSettleFrames on), that whole loss. A stall past the sendspin node's ring is lost whole from the WAV but skipped
 /// only in part (docs/node-types.md#clock): taken from the skips alone, every later due time would come early by the
 /// rest, and the stall's record would keep the rest as cycles to spare for any later skip.
 /// The WAV frame up to which skip `k`'s loss may still be corrected (rampLosses): the next skip's, or rampSettleFrames on.
@@ -585,7 +674,7 @@ inline std::vector<SeenSkip> rampSkipsSeen(RecordTime began, const RampCheck& ra
 
 /// What a red needs to judge one skip's charge (a skip's loss is the most the drift reached in its window: rampLosses):
 /// its own blocks and those charged, its due window, the drift in its window of WAV frames, the runs of zeros there (the
-/// feed running dry after a stall past it, or the library's added silence), and the library's sync lines ear logged in
+/// ring running dry after a stall past it, or the library's added silence), and the library's sync lines ear logged in
 /// its due window, as late as its correction may come, with their times.
 inline std::string rampSkipEvidence(const std::vector<json>& records, const RampCheck& ramp, std::size_t k,
                                     const RampLoss& loss, const SeenSkip& seen) {
@@ -607,7 +696,7 @@ inline std::string rampSkipEvidence(const std::vector<json>& records, const Ramp
 			out << " " << frames << "@" << at;
 			dry = true;
 		}
-	if (!dry) out << " none (the feed never ran dry there)";
+	if (!dry) out << " none (the ring never ran dry there)";
 	out << "; sync lines:";
 	const auto correctedBy =
 		seen.to + std::chrono::microseconds(static_cast<std::int64_t>(rampSettleFrames) * 1'000'000 / graphFrequency);

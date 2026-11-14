@@ -9,8 +9,6 @@
 #include <string>
 #include <utility>
 
-#include <time.h>
-
 #include "notes.hpp"
 #include "pcm.hpp"
 
@@ -48,13 +46,6 @@ std::string_view abortReasonName(::sendspin::SendspinPairAbortReason reason) noe
 	}
 }
 
-/// The sync thread's patience, spent with nothing to do: a format not listed leaves the feed unwritten.
-void idleFor(std::uint32_t ms) noexcept {
-	timespec wait{.tv_sec = static_cast<time_t>(ms / 1000), .tv_nsec = static_cast<long>(ms % 1000) * 1'000'000};
-	while (::nanosleep(&wait, &wait) != 0) {
-	}
-}
-
 } // namespace
 
 void PlayerSlot::set(::sendspin::PlayerRole* player) noexcept {
@@ -70,13 +61,13 @@ bool PlayerSlot::notify(std::uint32_t frames, std::int64_t finishUs) {
 }
 
 Worker::Worker(WorkerParts parts)
-	: toServer(parts.format.rate, *this), handle_(parts.handle), keys_(parts.keys), feed_(parts.feed),
-	  player_(parts.player), self_(parts.self), settings_(std::move(parts.settings)), format_(parts.format),
-	  scratch_(std::size_t{parts.feed.capacityFrames()} * nodeChannels) {}
+	: toServer(parts.format.rate, *this), handle_(parts.handle), keys_(parts.keys), clock_(parts.clock),
+	  writer_(parts.writer), player_(parts.player), self_(parts.self), settings_(std::move(parts.settings)),
+	  format_(parts.format), scratch_(std::size_t{parts.writer.capacityFrames()} * nodeChannels) {}
 
 Worker::~Worker() {
-	// The block is gone or silent by now, so nothing rings the bell that matters, and the sink has finished, so nothing
-	// writes audio. The notifier is cut off from the player before the client goes; the client goes last of what uses
+	// The block is gone or silent by now, so no report the clock wakes the notifier for matters, and the sink has
+	// finished, so nothing writes audio. The notifier is cut off from the player before the client goes; the client goes last of what uses
 	// it, the key store after the client.
 	tick_.reset();
 	advertiser_.reset(); // its mDNS goodbye
@@ -161,8 +152,8 @@ std::unique_ptr<::sendspin::SendspinClient> Worker::makeClient(NodeKeyStore& key
 	::sendspin::PlayerRoleConfig playerConfig;
 	using Codec = ::sendspin::SendspinCodecFormat;
 	playerConfig.audio_formats = {{Codec::FLAC, nodeChannels, format_.rate.hz(), playerBytesPerSample * 8}};
-	playerConfig.required_lead_time_ms = requiredLeadMs(feed_.capacityFrames(), format_.maxBlock, format_.rate);
-	playerConfig.audio_buffer_capacity = playerBufferBytes; // what the feed's undrained bound is derived from
+	playerConfig.required_lead_time_ms = requiredLeadMs(writer_.capacityFrames(), format_.maxBlock, format_.rate);
+	playerConfig.audio_buffer_capacity = playerBufferBytes; // what the clock's undrained bound is derived from
 	playerRole_ = &client->add_player(std::move(playerConfig));
 	playerRole_->set_listener(this);
 	playerRole_->set_volume_adjustable(false); // deferred
@@ -222,14 +213,14 @@ void Worker::turn() {
 std::size_t Worker::on_audio_write(std::uint8_t* data, std::size_t length, std::uint32_t timeout_ms) {
 	if (!streamAsked_.load(std::memory_order_acquire)) {
 		// A format not listed breaks the spec: the sink stays full, and the library closes the connection when its
-		// ring pins. This keeps the thread from spinning until then.
-		idleFor(timeout_ms);
+		// ring pins. This keeps the thread from spinning until then, the source idle meanwhile.
+		writer_.idle(std::chrono::milliseconds(timeout_ms));
 		return 0;
 	}
 	const auto frames =
-		static_cast<std::uint32_t>(std::min<std::size_t>(length / playerBytesPerFrame, feed_.capacityFrames()));
+		static_cast<std::uint32_t>(std::min<std::size_t>(length / playerBytesPerFrame, writer_.capacityFrames()));
 	pcm::toFloat(data, std::size_t{frames} * nodeChannels, playerBytesPerSample, scratch_.data());
-	return feed_.write(scratch_, frames, std::chrono::milliseconds(timeout_ms)) * playerBytesPerFrame;
+	return clock_.write(scratch_, frames, std::chrono::milliseconds(timeout_ms)) * playerBytesPerFrame;
 }
 
 void Worker::on_stream_start() {
@@ -246,7 +237,7 @@ void Worker::on_stream_start() {
 /// The spec: "MUST stop output and clear its buffers". Gone at the next cycle, and not counted played, since the
 /// library zeroed its count. Heard from stop() too, whatever was streaming.
 void Worker::on_stream_end() {
-	feed_.clear();
+	clock_.clear();
 	if (std::exchange(streaming_, false)) handle_.say(notes::streamEnded());
 }
 
@@ -283,51 +274,31 @@ void Worker::writeAudio(const std::uint8_t* pcm, std::size_t bytes, std::int64_t
 	source_->write_audio(pcm, bytes, stampUs);
 }
 
-Notifier::Notifier(Loop& self, const EventFd& bell, const Mailbox<PlayProgress>& progress, const Feed& feed,
-                   PlayerSlot& player) noexcept
-	: self_(self), bell_(bell), progress_(progress), feed_(feed), player_(player) {}
+Notifier::Notifier(Loop& self, SendspinClock& clock, PlayerSlot& player) noexcept
+	: self_(self), clock_(clock), player_(player) {}
 
 void Notifier::begin() {
-	watch_ = self_.onReadable(bell_.fd(), [this] { notify(); });
+	watch_ = self_.onWake(clock_.wake(), [this] { notify(); });
 }
 
-std::optional<PlayedTeller::Report> PlayedTeller::next(const std::optional<PlayProgress>& code,
-                                                       const Feed::Dropped& dropped) const noexcept {
-	const std::uint64_t played = code ? code->totalFrames : reported_;
-	const std::uint64_t droppedFrom = std::max(reportedDropped_, dropped.forgotten);
-	const std::uint64_t droppedNow = dropped.total > droppedFrom ? dropped.total - droppedFrom : 0;
-	if (played == reported_ && droppedNow == 0) return std::nullopt;
-	const std::int64_t finish = played != reported_ ? code->finishRawNs : dropped.finishRawNs;
-	const bool clamped = lastFinish_ && finish < *lastFinish_;
-	return Report{.frames = static_cast<std::uint32_t>(played - reported_ + droppedNow),
-	              .finishRawNs = clamped ? *lastFinish_ : finish,
-	              .clamped = clamped};
-}
-
-void PlayedTeller::told(const std::optional<PlayProgress>& code, const Feed::Dropped& dropped,
-                        const Report& report) noexcept {
-	if (code) reported_ = code->totalFrames;
-	reportedDropped_ = std::max(reportedDropped_, dropped.total);
-	lastFinish_ = report.finishRawNs;
-	if (report.clamped) ++clamped_;
-}
-
+/// The frames counted since the last report of this stream (none of a stream the library forgot at its end), dated by
+/// the clock's newest finish. Before the client started nothing is told and nothing counted told: the library learns it
+/// all at its first report.
 void Notifier::notify() {
-	bell_.drain();
-	const std::optional<PlayProgress> progress = progress_.read();
-	const Feed::Dropped dropped = feed_.dropped();
-	const auto report = teller_.next(progress, dropped);
-	// Before the client started nothing is told and nothing counted told: the library learns it all at its first report.
-	if (report && player_.notify(report->frames, report->finishRawNs / 1000)) {
-		teller_.told(progress, dropped, *report);
-		clamped_.store(teller_.clamped(), std::memory_order_release);
-	}
+	const std::optional<PlayProgress> progress = clock_.progress();
+	if (!progress) return;
+	const std::uint64_t from = std::max(reported_, progress->base);
+	if (progress->played <= from) return;
+	if (!player_.notify(static_cast<std::uint32_t>(progress->played - from), progress->finishRawNs / 1000)) return;
+	if (lastFinish_ && progress->finishRawNs < *lastFinish_) steppedBack_.fetch_add(1, std::memory_order_acq_rel);
+	lastFinish_ = progress->finishRawNs;
+	reported_ = progress->played;
 }
 
-std::uint16_t requiredLeadMs(std::uint32_t feedFrames, std::uint32_t maxBlock, SampleRate rate) noexcept {
+std::uint16_t requiredLeadMs(std::uint32_t sourceFrames, std::uint32_t maxBlock, SampleRate rate) noexcept {
 	// Whole milliseconds rounded up, so the lead is never short of what the frames last (docs/engine.md#dating).
 	constexpr std::int64_t nsPerMs = 1'000'000;
-	const std::int64_t ns = FrameClock(rate).ns(std::int64_t{feedFrames} + maxBlock);
+	const std::int64_t ns = FrameClock(rate).ns(std::int64_t{sourceFrames} + maxBlock);
 	return static_cast<std::uint16_t>(std::min<std::int64_t>((ns + nsPerMs - 1) / nsPerMs, UINT16_MAX));
 }
 

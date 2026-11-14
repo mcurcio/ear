@@ -1,15 +1,14 @@
 # ear_node_sendspin: the "sendspin" node type (docs/node-types.md#sendspin): Music Assistant's audio in and out over the
 # protocol library sendspin-cpp. The only package that sees that library, privately, as ear_config is knobly's. It
 # reaches the engine only through ear_core's interfaces. The library never touches a realtime thread or PipeWire's main
-# loop: the node's two loops (the worker and the notifier) call it, and the audio crosses through the feed and the sink.
+# loop: the node's two loops (the worker and the notifier) call it, and the audio crosses through the source, its clock and the sink.
 ear_node_type(
 	SOURCES
 		advertiser.cpp
 		connection_watch.cpp
-		feed.cpp
 		key_store.cpp
 		sendspin.cpp
-		sendspin_code.cpp
+		sendspin_clock.cpp
 		settings.cpp
 		to_server.cpp
 		worker.cpp
@@ -17,7 +16,6 @@ ear_node_type(
 		tests/advertiser_test.cpp
 		tests/clock_test.cpp
 		tests/code_test.cpp
-		tests/feed_test.cpp
 		tests/keys_test.cpp
 		tests/notes_test.cpp
 		tests/pcm_test.cpp

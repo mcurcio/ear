@@ -3,8 +3,10 @@
 Status: designed to module level (2026-11-13), part of slice 3c (`node-primitives.md`); Q-TM1 answered (RTP is the
 converter's first user), Q-TM2 narrowed and its default decided unless the owner objects; T1, T2 and T3 built (T3: the
 source keeps no time and a source's clock decides its skip, now `docs/writing-a-node-type.md#a-sources-clock`; 4.6),
-T4 built (the converter's base in module-run mode, RTP on it: 5.6); nothing else of it built beyond what section 2
-says is already true. It states how audio time works in ear (the owner's model, section 1), takes the
+T4 built (the converter's base in module-run mode, RTP on it: 5.6), and section 6 built by S3c.6c (`sendspin`'s
+`SendspinClock` on its source, the one owner of the played timeline: `docs/node-types.md#clock`, and why it departs
+from 6.1 in `node-primitives.md` 0.3, found building S3c.6c); nothing else of it built beyond what section 2 says is
+already true. It states how audio time works in ear (the owner's model, section 1), takes the
 framework's timekeeping out of the source (`SourceRing`'s `Played` and its keep-in-step), moves `sendspin`'s sync onto
 the spike's "honest sink plus local skip" (section 6), and adds the converter companion (section 5). The model itself
 is `docs/architecture.md#the-timing-model`, which says where the code still departs from it; this page designs the
@@ -59,9 +61,9 @@ it later is a separate step, gated on evidence [U: 6.5].
 | TM5 | Cards and RTP receivers are PipeWire's converter inside their engine companions (5.5); the converter's base in module-run mode, RTP its user (T4, `docs/engine.md#module-run-converters`) | No converter companion for a ring whose clock is a type's own (set and tracked, T5) |
 | TM6 | Built [V] | — |
 
-No shipped type uses a source yet (`docs/writing-a-node-type.md#sources`) [V]: today's users of `SourceRing` are
-`EventSources` (`ear_pipewire`), the type harness, and their tests. So section 4's change moves no shipped node's
-audio; `sendspin` meets it when S3c.6 moves it onto a source.
+When T3 was built no shipped type used a source: its users of `SourceRing` were `EventSources` (`ear_pipewire`),
+the type harness, and their tests, so section 4's change moved no shipped node's audio; `sendspin` met it when S3c.6c
+moved it onto a source.
 
 ## 3. The design in one paragraph
 

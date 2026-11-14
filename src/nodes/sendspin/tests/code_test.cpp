@@ -1,11 +1,14 @@
-// A sendspin node's audio code, cycle by cycle, with a real feed and real clocks (docs/node-types.md#clock).
+// A sendspin node's clock, tick by tick (docs/node-types.md#clock): SendspinClock on core's own SourceRing, played by
+// the one play rule the block and the harness run (SourceRing::play), with scripted facts and a scripted raw clock, the
+// library's writes going through the clock as the worker's do. The same rows through the type as a whole are
+// type_test.cpp's; through the real engine and the real library, clock_test.cpp's.
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
-#include <ctime>
+#include <optional>
 #include <span>
 #include <thread>
 #include <vector>
@@ -14,8 +17,9 @@
 #include "ear/core/cut_ring.hpp"
 #include "ear/core/cycle_facts.hpp"
 #include "ear/core/latency.hpp"
-#include "feed.hpp"
-#include "sendspin_code.hpp"
+#include "ear/core/source_ring.hpp"
+#include "sleeps.hpp"
+#include "sendspin_clock.hpp"
 #include "worker.hpp"
 
 using namespace ear::nodes::sendspin;
@@ -26,19 +30,16 @@ namespace {
 constexpr std::uint32_t rate = 48000;
 constexpr std::uint32_t block = 256;
 constexpr std::uint32_t capacity = 2048;
+constexpr std::int64_t msNs = 1'000'000;
+const ear::FrameClock frameClock(ear::SampleRate::fixed<rate>());
 
-std::int64_t nowNs(clockid_t clock) {
-	timespec now{};
-	clock_gettime(clock, &now);
-	return static_cast<std::int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
-}
+std::atomic<std::int64_t> fakeRaw{0};
+std::int64_t fakeRawNow() noexcept { return fakeRaw.load(std::memory_order_relaxed); }
 
 /// The graph's driver as the engine tells a block (docs/writing-a-node-type.md#lost-cycles): cycles numbered and cuts
-/// recorded in a CutRing, each cycle's facts worked out by the one rule, CycleAccount, so the code is handed the facts
-/// the engine would hand it, whatever a test makes the graph lose.
+/// recorded in a CutRing, each cycle's facts worked out by the one rule, CycleAccount.
 class Driver {
 public:
-	/// The next cycle the block runs, of `frames`, starting at `startRawNs`.
 	ear::CycleFacts next(std::uint32_t frames, std::int64_t startRawNs) {
 		cuts_.start();
 		const ear::CycleAccount::Step step = account_.next(ear::DriverTick{.driverId = driverId_,
@@ -50,8 +51,7 @@ public:
 		position_ += frames;
 		return step.facts;
 	}
-	/// `count` cycles of `frames` start without the block running them, each cut short by the driver: a stall the
-	/// graph caught up (catchUp); with `cut` false, a pause (absent).
+	/// `count` cycles of `frames` start without the block running them: catchUp, or with `cut` false a pause (absent).
 	void lose(std::uint32_t count, std::uint32_t frames, bool cut = true) {
 		for (std::uint32_t i = 0; i < count; ++i) {
 			cuts_.start();
@@ -59,94 +59,150 @@ public:
 			position_ += frames;
 		}
 	}
-	/// The next cycle runs on another driver (a card made driver): driverChange.
 	void changeDriver() { ++driverId_; }
-	/// The next cycle's position moves by `frames` with no cycle missed: reposition.
 	void reposition(std::int64_t frames) { position_ += static_cast<std::uint64_t>(frames); }
 	std::uint64_t position() const noexcept { return position_; }
 
 private:
 	ear::CutRing cuts_;
-	ear::CycleAccount account_{ear::FrameClock(ear::SampleRate::fixed<rate>()), &cuts_};
+	ear::CycleAccount account_{frameClock, &cuts_};
 	std::uint32_t driverId_ = 1;
 	std::uint64_t position_ = 0;
 };
 
-struct Rig {
-	Rig() : feed(2, capacity), code(feed, progress, bell, ear::SampleRate::fixed<rate>()) {
-		left.resize(block);
-		right.resize(block);
+/// The source's writer over core's SourceRing, never waiting (as the harness's), its clock wake a flag.
+class RingWriter final : public ear::SourceWriter, public ear::SourceRing::Signals, public ear::Wake {
+public:
+	RingWriter() : rules(2, capacity, ear::SampleRate::fixed<rate>(), *this) {}
+	std::uint32_t write(std::span<const float> interleaved, std::uint32_t frames, std::chrono::milliseconds) override {
+		return rules.offer(interleaved, frames);
 	}
+	void idle(std::chrono::milliseconds) override { rules.markIdle(); }
+	void clear() noexcept override { rules.clear(); }
+	bool closed() const noexcept override { return rules.closed(); }
+	std::uint32_t capacityFrames() const noexcept override { return rules.capacityFrames(); }
+	ear::Wake& clockWake() noexcept override { return *this; }
+	void ring() noexcept override { rung.store(true); }
+	int descriptor() const noexcept override { return -1; }
+	void answer() noexcept override { rung.store(false); }
+	void roomFreed() noexcept override {}
+	void clockAsked() noexcept override { ring(); }
+	ear::SourceRing rules;
+	std::atomic<bool> rung{false};
+};
 
-	/// Frames whose left channel counts on from what was written before.
-	void write(std::uint32_t frames) {
+/// The clock, its source's ring and the library's writes, tick by tick on the fake raw clock.
+struct Rig {
+	explicit Rig(std::int64_t at = 1'000'000, std::uint32_t downstream = 0)
+		: madeAt((fakeRaw = at, at)),
+		  clock(SendspinClock::Config{
+			  .rate = ear::SampleRate::fixed<rate>(), .undrainedBound = 1500ms, .nowRawNs = &fakeRawNow}),
+		  downstreamFrames(downstream), left(block), right(block) {
+		clock.attach(writer);
+	}
+	/// Up to `frames` frames through the clock, each left sample counting on from what was taken before (the right 0);
+	/// returns the frames taken.
+	std::uint32_t write(std::uint32_t frames) {
 		std::vector<float> samples;
-		for (std::uint32_t i = 0; i < frames; ++i) {
-			samples.push_back(static_cast<float>(++written));
+		for (std::uint32_t i = 1; i <= frames; ++i) {
+			samples.push_back(static_cast<float>(written + i));
 			samples.push_back(0.0F);
 		}
-		REQUIRE(feed.write(samples, frames, 0ms) == frames);
+		const std::uint32_t taken = clock.write(samples, frames, 0ms);
+		written += taken;
+		return taken;
 	}
-	/// One cycle as the framework tells it: its facts from the driver, its start on the raw clock,
-	/// `downstreamFrames` downstream of both outputs (a following card's buffer), and how long the next cycle had been
-	/// due as it began (`overdueNs`: above 0 in a catch-up's burst). Returns its facts.
-	ear::CycleFacts cycle(std::int64_t startRawNs = 1000, std::uint32_t downstreamFrames = 0,
-	                      std::int64_t overdueNs = 0) {
-		const std::array<std::span<float>, 2> outputs{left, right};
-		const std::array<ear::Latency, 2> downstream{ear::Latency{downstreamFrames, downstreamFrames},
-		                                             ear::Latency{downstreamFrames, downstreamFrames}};
-		const std::uint64_t position = driver.position();
-		const ear::CycleFacts facts = driver.next(block, startRawNs);
-		const std::int64_t startNs = startRawNs - 7; // another clock: the code must not read it
-		code.process(outputs, block,
-		             ear::GraphCycle{.startNs = startNs,
-		                             .position = position,
-		                             .startRawNs = startRawNs,
-		                             .nextNs = startNs + ear::FrameClock(ear::SampleRate::fixed<rate>()).ns(block),
-		                             .overdueNs = overdueNs,
-		                             .facts = facts,
-		                             .downstream = downstream});
-		return facts;
+	/// As much as it takes now, a block at a time.
+	std::uint32_t fill() {
+		std::uint32_t taken = 0;
+		while (const std::uint32_t now = write(block)) taken += now;
+		return taken;
 	}
-	/// One on-time cycle stating `facts` as given: a cause the driver here does not make (a drive, the cycle after an
-	/// oversized one) or a jump too long to lose cycle by cycle.
-	void scripted(ear::CycleFacts facts) {
-		const std::array<std::span<float>, 2> outputs{left, right};
-		code.process(outputs, block, ear::GraphCycle{.startNs = 0, .position = 0, .startRawNs = 1000, .facts = facts});
+	/// One tick as the block plays it: its facts from the driver (or `facts` as given), starting at `startRawNs`, the
+	/// next due one block on unless `overdueNs` says it was due that long before.
+	ear::CycleFacts cycle(std::int64_t startRawNs, std::int64_t overdueNs = 0,
+	                      std::optional<ear::CycleFacts> facts = std::nullopt) {
+		const ear::CycleFacts stated = facts ? *facts : driver.next(block, startRawNs);
+		const std::int64_t startNs = startRawNs - 7; // another clock: the clock must not read it
+		const ear::GraphCycle graphCycle{.startNs = startNs,
+		                                 .position = driver.position(),
+		                                 .startRawNs = startRawNs,
+		                                 .nextNs = startNs + frameClock.ns(block),
+		                                 .overdueNs = overdueNs,
+		                                 .facts = stated};
+		const std::array<std::span<float>, 2> bank{left, right};
+		writer.rules.play(bank,
+		                  ear::SourceTick{.cycle = graphCycle,
+		                                  .frames = block,
+		                                  .rate = ear::SampleRate::fixed<rate>(),
+		                                  .playback = ear::Latency{downstreamFrames, downstreamFrames}},
+		                  &clock);
+		return stated;
 	}
-	/// Whether the bell rang since the last look.
-	bool rang() { return bell.drain(); }
-	/// The frames the code last told the library were played (0 before it told any).
-	std::uint64_t told() const { return progress.read().value_or(PlayProgress{}).totalFrames; }
+	/// One on-time tick at the fake clock's now.
+	ear::CycleFacts tick(std::optional<ear::CycleFacts> facts = std::nullopt) { return cycle(fakeRaw, 0, facts); }
+	/// A stop's silence completed: the ring drops what it holds and refuses writes until the next tick.
+	void stop() { writer.rules.dropForStop(); }
+	/// The node not running for `ms`: the library writing every 5 ms, the notifier telling.
+	void away(std::int64_t ms) {
+		for (std::int64_t at = 0; at < ms; at += 5) {
+			fakeRaw += 5 * msNs;
+			fill();
+			notify();
+		}
+	}
+	/// The notifier's turn (worker.cpp's Notifier::notify): what the library is told now, if anything.
+	struct Told {
+		std::uint64_t frames;
+		std::int64_t finishRawNs;
+	};
+	void notify() {
+		const auto progress = clock.progress();
+		if (!progress) return;
+		const std::uint64_t from = std::max(reported, progress->base);
+		if (progress->played <= from) return;
+		told.push_back({progress->played - from, progress->finishRawNs});
+		reported = progress->played;
+	}
+	bool rang() { return writer.rung.exchange(false); }
+	std::uint64_t played() const { return clock.progress().value_or(PlayProgress{}).played; }
+	std::int64_t finish() const { return clock.progress().value_or(PlayProgress{}).finishRawNs; }
+	/// The value of the last frame the tick played into the left output (past the 5 ms fade-in of a stream's start).
+	float last() const { return left[block - 1]; }
 
+	std::int64_t madeAt; // the fake clock set first: the clock counts as drained when made
 	Driver driver;
-	Feed feed;
-	Mailbox<PlayProgress> progress;
-	EventFd bell;
-	SendspinCode code;
+	RingWriter writer;
+	SendspinClock clock;
+	std::uint32_t downstreamFrames;
 	std::vector<float> left;
 	std::vector<float> right;
 	std::uint32_t written = 0;
+	std::uint64_t reported = 0;
+	std::vector<Told> told;
 };
+
+ear::CycleFacts drive() {
+	ear::CycleFacts facts;
+	facts.causes = ear::CycleCause::drive;
+	return facts;
+}
 
 } // namespace
 
-TEST_CASE("A block read counts its frames, and finishes at the cycle's start on the raw clock, as the framework "
-          "made it, plus the frames' duration",
+TEST_CASE("A block read counts its frames, and finishes at the tick's start on the raw clock plus their duration",
           "[sendspin][code]") {
 	Rig rig;
 	rig.write(block);
-	const std::int64_t start = nowNs(CLOCK_MONOTONIC_RAW) - 5000000; // the code reads no clock of its own
+	const std::int64_t start = 5'000'000'000;
 	rig.cycle(start);
-
-	const auto progress = rig.progress.read();
+	const auto progress = rig.clock.progress();
 	REQUIRE(progress.has_value());
-	CHECK(progress->totalFrames == block);
-	const std::int64_t blockNs = std::int64_t{block} * 1000000000 / rate;
-	CHECK(progress->finishRawNs == start + blockNs);
+	CHECK(progress->played == block);
+	CHECK(progress->base == 0);
+	CHECK(progress->finishRawNs == start + frameClock.ns(block));
 	CHECK(rig.rang());
-	CHECK(rig.left[0] == 1.0F);
-	CHECK(rig.left[block - 1] == static_cast<float>(block));
+	CHECK(rig.last() == static_cast<float>(block));
 }
 
 TEST_CASE("What lies downstream of the outputs is added: a frame finishes when the card that follows has played it",
@@ -154,13 +210,11 @@ TEST_CASE("What lies downstream of the outputs is added: a frame finishes when t
 	const std::uint32_t held = 512 + 32; // a quantum ahead of the card's buffer and its headroom, as ALSA reports it
 	Rig plain;
 	plain.write(block);
-	Rig delayed;
+	Rig delayed(1'000'000, held);
 	delayed.write(block);
-	const std::int64_t start = nowNs(CLOCK_MONOTONIC_RAW);
-	plain.cycle(start);
-	delayed.cycle(start, held);
-	const std::int64_t difference = delayed.progress.read()->finishRawNs - plain.progress.read()->finishRawNs;
-	CHECK(difference == std::int64_t{block + held} * 1000000000 / rate - std::int64_t{block} * 1000000000 / rate);
+	plain.cycle(1'000'000);
+	delayed.cycle(1'000'000);
+	CHECK(delayed.finish() - plain.finish() == frameClock.ns(block + held) - frameClock.ns(block));
 }
 
 TEST_CASE("The lead a player reports covers what still plays after a clear, whatever the block", "[sendspin][code]") {
@@ -179,214 +233,207 @@ TEST_CASE("The lead a player reports covers what still plays after a clear, what
 // a whole ms (with frames * 1000 = k * rate + r and 0 < r < rate, the frames last at least 1e6 / rate > 1 ns past k ms),
 // so rounding up never falls short. At 1 MHz and above it would not hold, and no graph runs there.
 TEST_CASE("The lead a player reports is ceil(frames * 1000 / rate) at every rate below 1 MHz", "[sendspin][code]") {
-	const auto before = [](std::uint64_t frames, std::uint64_t rate) {
-		return static_cast<std::uint16_t>(std::min<std::uint64_t>((frames * 1000 + rate - 1) / rate, UINT16_MAX));
+	const auto before = [](std::uint64_t frames, std::uint64_t at) {
+		return static_cast<std::uint16_t>(std::min<std::uint64_t>((frames * 1000 + at - 1) / at, UINT16_MAX));
 	};
-	for (const std::uint32_t rate : {1U, 3U, 7U, 8000U, 11025U, 22050U, 32000U, 44100U, 48000U, 88200U, 96000U, 176400U,
-	                                 192000U, 352800U, 384000U, 705600U, 768000U, 999'999U}) {
-		INFO("at " << rate << " Hz");
+	for (const std::uint32_t at : {1U, 3U, 7U, 8000U, 11025U, 22050U, 32000U, 44100U, 48000U, 88200U, 96000U, 176400U,
+	                               192000U, 352800U, 384000U, 705600U, 768000U, 999'999U}) {
+		INFO("at " << at << " Hz");
 		for (const std::uint32_t maxBlock : {1U, 64U, 256U, 1024U, 4096U, 8192U}) {
-			std::vector<std::uint32_t> feeds{0, 1, rate / 1000, rate, rate - 1, rate + 1, 4'000'000'000U};
-			for (std::uint32_t feed = 0; feed <= 200'000; feed += 97) feeds.push_back(feed);
-			for (const std::uint32_t feed : feeds) {
-				INFO("feed " << feed << ", block " << maxBlock);
-				REQUIRE(requiredLeadMs(feed, maxBlock, *ear::SampleRate::of(rate)) ==
-				        before(std::uint64_t{feed} + maxBlock, rate));
+			std::vector<std::uint32_t> rings{0, 1, at / 1000, at, at - 1, at + 1, 4'000'000'000U};
+			for (std::uint32_t frames = 0; frames <= 200'000; frames += 97) rings.push_back(frames);
+			for (const std::uint32_t frames : rings) {
+				INFO("ring " << frames << ", block " << maxBlock);
+				REQUIRE(requiredLeadMs(frames, maxBlock, *ear::SampleRate::of(at)) ==
+				        before(std::uint64_t{frames} + maxBlock, at));
 			}
 		}
 	}
 }
 
-// docs/node-types.md#clock: on the cycle that states a catch-up, what the feed holds of the lost time is skipped and
+// docs/node-types.md#clock: on the tick that states a catch-up, what the ring holds of the lost time is skipped and
 // counted played; a catch-up on time is told at once.
-TEST_CASE("A cycle the graph lost and caught up is skipped and counted played, and told at once when on time",
+TEST_CASE("A tick the graph lost and caught up is skipped and counted played, and told at once when on time",
           "[sendspin][code]") {
 	Rig rig;
 	rig.write(4 * block);
-	rig.cycle();
+	rig.cycle(1000);
 	REQUIRE(rig.rang());
 	rig.driver.lose(1, block);
 	const std::int64_t start = 1'000'000;
 	REQUIRE(rig.cycle(start).causes == ear::CycleCause::catchUp);
-	CHECK(rig.code.lastHeldAtStart() == 3 * block);
-	CHECK(rig.code.lastSkipped() == block);
-	CHECK(rig.left[0] == static_cast<float>(2 * block + 1)); // that block's frames are gone
+	CHECK(rig.clock.lastHeld().frames == 3 * block);
+	CHECK(rig.clock.lastSkipped() == block);
+	CHECK(rig.last() == static_cast<float>(3 * block)); // that block's frames are gone
 	CHECK(rig.rang());
-	const auto progress = rig.progress.read();
-	REQUIRE(progress.has_value());
-	CHECK(progress->totalFrames == 3 * block); // the first block, the skip and this cycle's read
-	CHECK(progress->finishRawNs == ear::FrameClock(ear::SampleRate::fixed<rate>()).heardRawNs(start, block, {}));
+	CHECK(rig.played() == 3 * block); // the first block, the skip and this tick's read
+	CHECK(rig.finish() == frameClock.heardRawNs(start, block, {}));
 }
 
-// docs/node-types.md#clock: the node keeps no debt. What the feed did not hold of a jump is the library's to correct,
+// docs/node-types.md#clock: the node keeps no debt. What the ring did not hold of a jump is the library's to correct,
 // which it sees in the next finish it is told; nothing more is skipped from what it writes next.
-TEST_CASE("A catch-up past what the feed holds skips what it holds and no more, and owes nothing after",
+TEST_CASE("A catch-up past what the ring holds skips what it holds and no more, and owes nothing after",
           "[sendspin][code]") {
 	SECTION("past what it held") {
 		Rig rig;
 		rig.write(3 * block);
-		rig.cycle();
-		rig.driver.lose(4, block); // 1024 frames lost; the feed holds 512
-		REQUIRE(rig.cycle().jumpFrames == 4 * block);
-		CHECK(rig.code.lastSkipped() == 2 * block);
-		CHECK(rig.left[0] == 0.0F); // nothing left to read
-		CHECK(rig.told() == 3 * block);
+		rig.cycle(1000);
+		rig.driver.lose(4, block); // 1024 frames lost; the ring holds 512
+		REQUIRE(rig.cycle(2000).jumpFrames == 4 * block);
+		CHECK(rig.clock.lastSkipped() == 2 * block);
+		CHECK(rig.clock.lastPlayed().read == 0); // nothing left to read
+		CHECK(rig.played() == 3 * block);
 		rig.write(block);
-		rig.cycle();
-		CHECK(rig.code.lastSkipped() == 0);
-		CHECK(rig.left[0] == static_cast<float>(3 * block + 1)); // what came next plays from its first frame
-		CHECK(rig.told() == 4 * block);
+		rig.cycle(3000);
+		CHECK(rig.clock.lastSkipped() == 0);
+		CHECK(rig.clock.lastPlayed().read == block); // what came next plays whole
+		CHECK(rig.last() == static_cast<float>(4 * block));
+		CHECK(rig.played() == 4 * block);
 	}
 	SECTION("past 2^32 frames: what it holds, never a wrapped few") {
 		Rig rig;
 		rig.write(3 * block);
-		rig.cycle();
+		rig.cycle(1000);
 		constexpr std::int64_t jump = (std::int64_t{1} << 32) + block;
-		rig.scripted({.missed = static_cast<std::uint32_t>(jump / block),
-		              .missedCut = static_cast<std::uint32_t>(jump / block),
-		              .jumpFrames = jump,
-		              .causes = ear::CycleCause::catchUp});
-		CHECK(rig.code.lastSkipped() == 2 * block);
-		CHECK(rig.left[0] == 0.0F);
+		rig.cycle(2000, 0,
+		          ear::CycleFacts{.missed = static_cast<std::uint32_t>(jump / block),
+		                          .missedCut = static_cast<std::uint32_t>(jump / block),
+		                          .jumpFrames = jump,
+		                          .causes = ear::CycleCause::catchUp});
+		CHECK(rig.clock.lastSkipped() == 2 * block);
 		rig.write(block);
-		rig.scripted({});
-		CHECK(rig.left[0] == static_cast<float>(3 * block + 1));
-		CHECK(rig.told() == 4 * block);
+		rig.cycle(3000, 0, ear::CycleFacts{});
+		CHECK(rig.last() == static_cast<float>(4 * block));
+		CHECK(rig.played() == 4 * block);
 	}
 }
 
-// A pause (cycles missed and not cut) moved the graph on as a catch-up does: the feed's audio of that time is stale, so
-// it is skipped rather than played late, and the library re-anchors from the finish it is told.
-TEST_CASE("A pause skips what the feed holds of it, as a catch-up does", "[sendspin][code]") {
+// A pause (cycles missed and not cut) moved the graph on as a catch-up does: the ring's audio of that time is stale.
+TEST_CASE("A pause skips what the ring holds of it, as a catch-up does", "[sendspin][code]") {
 	Rig rig;
 	rig.write(4 * block);
-	rig.cycle();
+	rig.cycle(1000);
 	rig.driver.lose(2, block, false);
-	REQUIRE(rig.cycle().causes == ear::CycleCause::absent);
-	CHECK(rig.code.lastSkipped() == 2 * block);
-	CHECK(rig.left[0] == static_cast<float>(3 * block + 1)); // two blocks skipped, the third read
-	CHECK(rig.told() == 4 * block);
+	REQUIRE(rig.cycle(2000).causes == ear::CycleCause::absent);
+	CHECK(rig.clock.lastSkipped() == 2 * block);
+	CHECK(rig.last() == static_cast<float>(4 * block)); // two blocks skipped, the third read
+	CHECK(rig.played() == 4 * block);
 	rig.write(block);
-	rig.cycle();
-	CHECK(rig.told() == 5 * block);
+	rig.cycle(3000);
+	CHECK(rig.played() == 5 * block);
 }
 
-TEST_CASE("Any other cause is a new clock: a driver change, a reposition, the first cycle, a drive and the cycle after "
+TEST_CASE("Any other cause is a new clock: a driver change, a reposition, the first tick, a drive and the tick after "
           "an oversized one skip nothing",
           "[sendspin][code]") {
 	SECTION("a driver change") {
 		Rig rig;
 		rig.write(3 * block);
-		rig.cycle();
+		rig.cycle(1000);
 		rig.driver.changeDriver();
-		REQUIRE(rig.cycle().causes == ear::CycleCause::driverChange);
-		CHECK(rig.code.lastSkipped() == 0);
-		CHECK(rig.told() == 2 * block);
-		CHECK(rig.left[0] == static_cast<float>(block + 1));
+		REQUIRE(rig.cycle(2000).causes == ear::CycleCause::driverChange);
+		CHECK(rig.clock.lastSkipped() == 0);
+		CHECK(rig.played() == 2 * block);
+		CHECK(rig.last() == static_cast<float>(2 * block));
 	}
 	SECTION("a reposition, ahead or back") {
 		for (const std::int64_t by : {std::int64_t{block} + 1, -std::int64_t{block}}) {
 			Rig rig;
 			rig.write(3 * block);
-			rig.cycle();
-			rig.cycle();
+			rig.cycle(1000);
+			rig.cycle(2000);
 			rig.driver.reposition(by);
-			const ear::CycleFacts facts = rig.cycle();
+			const ear::CycleFacts facts = rig.cycle(3000);
 			REQUIRE(facts.causes == ear::CycleCause::reposition);
 			REQUIRE(facts.jumpFrames != 0);
-			CHECK(rig.code.lastSkipped() == 0);
-			CHECK(rig.told() == 3 * block);
-			CHECK(rig.left[0] == static_cast<float>(2 * block + 1));
+			CHECK(rig.clock.lastSkipped() == 0);
+			CHECK(rig.played() == 3 * block);
 		}
 	}
-	SECTION("the first cycle knows no gap") {
+	SECTION("the first tick knows no gap") {
 		Rig rig;
 		rig.write(3 * block);
 		rig.driver.reposition(block);
-		REQUIRE(rig.cycle().causes == ear::CycleCause::start);
-		CHECK(rig.code.lastSkipped() == 0);
-		CHECK(rig.told() == block);
+		REQUIRE(rig.cycle(1000).causes == ear::CycleCause::start);
+		CHECK(rig.clock.lastSkipped() == 0);
+		CHECK(rig.played() == block);
 	}
-	SECTION("a drive, and the cycle after an oversized one, each stating a jump") {
+	SECTION("a drive, and the tick after an oversized one, each stating a jump") {
 		for (const ear::CycleCause cause : {ear::CycleCause::drive, ear::CycleCause::oversized}) {
 			Rig rig;
 			rig.write(3 * block);
-			rig.scripted({});
-			rig.scripted({.jumpFrames = block, .causes = cause});
-			CHECK(rig.code.lastSkipped() == 0);
-			CHECK(rig.left[0] == static_cast<float>(block + 1));
-			CHECK(rig.told() == 2 * block);
+			rig.cycle(1000, 0, ear::CycleFacts{});
+			rig.cycle(2000, 0, ear::CycleFacts{.jumpFrames = block, .causes = cause});
+			CHECK(rig.clock.lastSkipped() == 0);
+			CHECK(rig.last() == static_cast<float>(2 * block));
+			CHECK(rig.played() == 2 * block);
 		}
 	}
 }
 
-// docs/node-types.md#clock: a clear ends the stream, so a catch-up on the cycle that applies it skips nothing of the
+// docs/node-types.md#clock: a clear ends the stream, so a catch-up on the tick that applies it skips nothing of the
 // stream after it.
-TEST_CASE("A catch-up on the cycle that applies a clear skips nothing of the next stream", "[sendspin][code]") {
+TEST_CASE("A catch-up on the tick that applies a clear skips nothing of the next stream", "[sendspin][code]") {
 	Rig rig;
 	rig.write(2 * block);
-	rig.cycle();
-	rig.feed.clear();
+	rig.cycle(1000);
+	rig.clock.clear();
 	rig.write(2 * block); // the next stream, written after the clear
 	rig.driver.lose(1, block);
-	REQUIRE(rig.cycle().causes == ear::CycleCause::catchUp);
-	CHECK(rig.code.lastHeldAtStart() == 2 * block);
-	CHECK(rig.code.lastSkipped() == 0);
-	CHECK(rig.left[0] == static_cast<float>(2 * block + 1));
-	CHECK(rig.told() == 2 * block); // the first stream's block and the next's first
+	REQUIRE(rig.cycle(2000).causes == ear::CycleCause::catchUp);
+	CHECK(rig.clock.lastHeld() == ear::SourceHeld{.frames = 2 * block, .clearing = true, .clears = 1});
+	CHECK(rig.clock.lastSkipped() == 0);
+	const auto progress = rig.clock.progress();
+	REQUIRE(progress.has_value());
+	CHECK(progress->base == block);                                          // the first stream's block, forgotten
+	CHECK(progress->played - progress->base == rig.clock.lastPlayed().read); // the next stream's first frames
 }
 
-// docs/node-types.md#clock: a cycle that began while the next was already due is one of a catch-up's burst, behind now
-// until the burst ends, so it tells nothing, whether the block runs every timeout (whole, overdue) or misses some (a
-// catch-up, overdue), and it still skips what its jump states. The first cycle on time tells every frame of the burst,
-// dated by its own nominal start.
-TEST_CASE("A burst of overdue cycles tells nothing, and the first on time tells every frame of it, dated nominally",
+// docs/node-types.md#clock: a tick that began while the next was already due is one of a catch-up's burst, behind now
+// until the burst ends, so it tells nothing, and it still skips what its jump states. The first tick on time tells
+// every frame of the burst, dated by its own nominal start.
+TEST_CASE("A burst of overdue ticks tells nothing, and the first on time tells every frame of it, dated nominally",
           "[sendspin][code]") {
 	Rig rig;
-	const std::int64_t blockNs = ear::FrameClock(ear::SampleRate::fixed<rate>()).ns(block);
+	const std::int64_t blockNs = frameClock.ns(block);
 	rig.write(6 * block);
 	rig.cycle(0);
-	REQUIRE(rig.told() == block);
+	REQUIRE(rig.played() == block);
 	REQUIRE(rig.rang());
-	// Four cycles of the burst, each overdue (the last by less): two whole, then a catch-up of a block, then whole.
 	for (int i = 0; i < 4; ++i) {
 		if (i == 2) rig.driver.lose(1, block);
-		const ear::CycleFacts facts = rig.cycle((i + 1) * blockNs, 0, (40 - 10 * i) * blockNs);
+		const ear::CycleFacts facts = rig.cycle((i + 1) * blockNs, (40 - 10 * i) * blockNs);
 		REQUIRE(facts.causes == (i == 2 ? ear::CycleCauses(ear::CycleCause::catchUp) : ear::CycleCauses{}));
-		CHECK(rig.code.lastSkipped() == (i == 2 ? block : 0));
-		CHECK(rig.told() == block);
+		CHECK(rig.clock.lastSkipped() == (i == 2 ? block : 0));
+		CHECK(rig.played() == block);
 		CHECK_FALSE(rig.rang());
 	}
 	const std::int64_t start = 6 * blockNs;
 	REQUIRE(rig.cycle(start).whole());
-	const auto progress = rig.progress.read();
-	REQUIRE(progress.has_value());
-	CHECK(progress->totalFrames == 6 * block); // the burst's four reads and its skip, and this cycle's block
-	CHECK(progress->finishRawNs == ear::FrameClock(ear::SampleRate::fixed<rate>()).heardRawNs(start, block, {}));
+	CHECK(rig.played() == 6 * block); // the burst's four reads and its skip, and this tick's block
+	CHECK(rig.finish() == frameClock.heardRawNs(start, block, {}));
 	CHECK(rig.rang());
-	CHECK(rig.code.clamped() == 0);
+	CHECK(rig.clock.clamped() == 0);
 }
 
-TEST_CASE("One overdue cycle under load tells nothing, and the next on time tells it", "[sendspin][code]") {
+TEST_CASE("One overdue tick under load tells nothing, and the next on time tells it", "[sendspin][code]") {
 	Rig rig;
-	const std::int64_t blockNs = ear::FrameClock(ear::SampleRate::fixed<rate>()).ns(block);
+	const std::int64_t blockNs = frameClock.ns(block);
 	rig.write(3 * block);
 	rig.cycle(0);
 	REQUIRE(rig.rang());
-	REQUIRE(rig.cycle(blockNs, 0, 1000).whole()); // the next due a microsecond before it began
-	CHECK(rig.told() == block);
+	REQUIRE(rig.cycle(blockNs, 1000).whole()); // the next due a microsecond before it began
+	CHECK(rig.played() == block);
 	CHECK_FALSE(rig.rang());
 	REQUIRE(rig.cycle(2 * blockNs).whole());
-	CHECK(rig.told() == 3 * block);
-	CHECK(rig.progress.read()->finishRawNs ==
-	      ear::FrameClock(ear::SampleRate::fixed<rate>()).heardRawNs(2 * blockNs, block, {}));
+	CHECK(rig.played() == 3 * block);
+	CHECK(rig.finish() == frameClock.heardRawNs(2 * blockNs, block, {}));
 }
 
-// docs/node-types.md#clock: with no debt there is nothing for a lossy cycle to wait for. A host whose every cycle loses
-// frames, each on time, tells the library every cycle.
-TEST_CASE("A cycle that lost frames, on time, tells", "[sendspin][code]") {
+// docs/node-types.md#clock: with no debt there is nothing for a lossy tick to wait for.
+TEST_CASE("A tick that lost frames, on time, tells", "[sendspin][code]") {
 	Rig rig;
-	const std::int64_t blockNs = ear::FrameClock(ear::SampleRate::fixed<rate>()).ns(block);
+	const std::int64_t blockNs = frameClock.ns(block);
 	std::int64_t at = 0;
 	rig.cycle(at);
 	std::uint64_t written = 0;
@@ -396,701 +443,489 @@ TEST_CASE("A cycle that lost frames, on time, tells", "[sendspin][code]") {
 		written += 2 * block;
 		rig.driver.lose(1, block);
 		REQUIRE(rig.cycle(at).causes == ear::CycleCause::catchUp);
-		CHECK(rig.code.lastSkipped() == block);
-		CHECK(rig.told() == written);
-		CHECK(rig.progress.read()->finishRawNs ==
-		      ear::FrameClock(ear::SampleRate::fixed<rate>()).heardRawNs(at, block, {}));
+		CHECK(rig.clock.lastSkipped() == block);
+		CHECK(rig.played() == written);
+		CHECK(rig.finish() == frameClock.heardRawNs(at, block, {}));
 	}
 }
 
-// docs/node-types.md#clock: untold for untoldBound of the graph's nominal time, the library is told from the next cycle
-// even if it is overdue, dated by when that cycle really ran (GraphCycle::ranRawNs); the on-time report after it is
+// docs/node-types.md#clock: untold for untoldBound of the graph's nominal time, the library is told from the next tick
+// even if it is overdue, dated by when that tick really ran (GraphCycle::ranRawNs); the on-time report after it is
 // clamped to it, never stepping back, and the one after that is dated nominally again.
-TEST_CASE("Overdue for untoldBound, the library is told from a cycle of the burst, dated by when it ran, and the next "
+TEST_CASE("Overdue for untoldBound, the library is told from a tick of the burst, dated by when it ran, and the next "
           "report is clamped to it",
           "[sendspin][code]") {
 	Rig rig;
-	const std::int64_t blockNs = ear::FrameClock(ear::SampleRate::fixed<rate>()).ns(block);
+	const std::int64_t blockNs = frameClock.ns(block);
 	const std::int64_t overdue = 3 * untoldBound.count();
 	rig.write(capacity);
 	rig.cycle(0);
-	REQUIRE(rig.told() == block);
+	REQUIRE(rig.played() == block);
 	std::int64_t at = blockNs;
 	const std::int64_t untoldSince = at;
 	std::uint64_t deferred = 0;
 	for (; at - untoldSince < untoldBound.count(); at += blockNs, ++deferred) {
 		rig.write(block);
-		REQUIRE(rig.cycle(at, 0, overdue).whole());
-		CHECK(rig.told() == block);
+		REQUIRE(rig.cycle(at, overdue).whole());
+		CHECK(rig.played() == block);
 	}
 	REQUIRE(deferred > 1);
 	rig.write(block);
-	REQUIRE(rig.cycle(at, 0, overdue).whole());
+	REQUIRE(rig.cycle(at, overdue).whole());
 	const std::uint64_t forcedTotal = block + (deferred + 1) * block;
-	CHECK(rig.told() == forcedTotal);                // told at the bound, though still overdue
-	const std::int64_t ran = at + blockNs + overdue; // the next cycle's due time plus how long it was overdue
-	const std::int64_t forced = ear::FrameClock(ear::SampleRate::fixed<rate>()).heardRawNs(ran, block, {});
-	CHECK(rig.progress.read()->finishRawNs == forced);
-	CHECK(rig.code.clamped() == 0);
-	// The first cycle on time after it began within a cycle before the forced one ran: dated nominally it would step
-	// back, so it is clamped to the forced finish.
+	CHECK(rig.played() == forcedTotal);              // told at the bound, though still overdue
+	const std::int64_t ran = at + blockNs + overdue; // the next tick's due time plus how long it was overdue
+	const std::int64_t forced = frameClock.heardRawNs(ran, block, {});
+	CHECK(rig.finish() == forced);
+	CHECK(rig.clock.clamped() == 0);
 	rig.write(block);
 	const std::int64_t onTime = ran - blockNs / 2;
 	REQUIRE(rig.cycle(onTime).whole());
-	CHECK(rig.told() == forcedTotal + block);
-	CHECK(rig.progress.read()->finishRawNs == forced);
-	CHECK(rig.code.clamped() == 1);
-	// Then nominal again.
+	CHECK(rig.played() == forcedTotal + block);
+	CHECK(rig.finish() == forced);
+	CHECK(rig.clock.clamped() == 1);
 	rig.write(block);
 	REQUIRE(rig.cycle(onTime + blockNs).whole());
-	CHECK(rig.progress.read()->finishRawNs ==
-	      ear::FrameClock(ear::SampleRate::fixed<rate>()).heardRawNs(onTime + blockNs, block, {}));
-	CHECK(rig.code.clamped() == 1);
+	CHECK(rig.finish() == frameClock.heardRawNs(onTime + blockNs, block, {}));
+	CHECK(rig.clock.clamped() == 1);
 }
 
 // docs/node-types.md#clock: the clamp acts only on the report after one the bound forced. Through bursts below the
-// bound, catch-ups, dry cycles, a pause and a following card's latency changing, every report is the cycle's own
-// nominal finish, exactly: even one behind the last, when what lies downstream shrank, is told as it is.
-TEST_CASE("Below the bound the clamp never acts: every report is its cycle's nominal finish", "[sendspin][code]") {
+// bound, catch-ups, dry ticks, a pause and a following card's latency changing, every report is the tick's own nominal
+// finish, exactly: even one behind the last, when what lies downstream shrank, is told as it is.
+TEST_CASE("Below the bound the clamp never acts: every report is its tick's nominal finish", "[sendspin][code]") {
 	Rig rig;
-	const std::int64_t blockNs = ear::FrameClock(ear::SampleRate::fixed<rate>()).ns(block);
+	const std::int64_t blockNs = frameClock.ns(block);
 	std::int64_t at = 0;
-	std::uint32_t downstream = 4 * block + 32;
+	rig.downstreamFrames = 4 * block + 32;
 	std::size_t reports = 0;
 	std::size_t backwards = 0;
 	std::int64_t lastFinish = 0;
 	std::uint64_t lastTold = 0;
 	const auto check = [&](const ear::CycleFacts& facts, std::int64_t overdueNs) {
-		INFO("the cycle at " << at << " ns, causes " << int{facts.causes.bits()} << ", overdue " << overdueNs);
-		if (rig.told() == lastTold) return;
+		INFO("the tick at " << at << " ns, causes " << int{facts.causes.bits()} << ", overdue " << overdueNs);
+		if (rig.played() == lastTold) return;
 		++reports;
 		CHECK(overdueNs == 0);
-		const std::int64_t finish = rig.progress.read()->finishRawNs;
-		CHECK(finish ==
-		      ear::FrameClock(ear::SampleRate::fixed<rate>()).heardRawNs(at, block, {downstream, downstream}));
-		if (finish < lastFinish) ++backwards;
-		lastFinish = finish;
-		lastTold = rig.told();
+		CHECK(rig.finish() == frameClock.heardRawNs(at, block, {rig.downstreamFrames, rig.downstreamFrames}));
+		if (rig.finish() < lastFinish) ++backwards;
+		lastFinish = rig.finish();
+		lastTold = rig.played();
 	};
 	for (int round = 0; round < 40; ++round) {
-		rig.write(8 * block);
-		// On time, a short burst (overdue, then cut once), a catch-up on time, a cycle the feed leaves short, a pause.
+		// What the round's ticks take but half a block: the fifth tick reads short, and the pause after it finds
+		// nothing to skip or read.
+		rig.write(6 * block + block / 2);
 		const std::array<std::int64_t, 6> overdue{0, 9 * blockNs, 4 * blockNs, 0, 0, 0};
 		for (std::size_t i = 0; i < overdue.size(); ++i) {
 			if (i == 2 || i == 3) rig.driver.lose(1, block);
 			if (i == 5) rig.driver.lose(1, block, false);
 			at += blockNs;
-			if (i == 4) rig.feed.skip(rig.feed.held() - block / 2); // half a block left: this cycle reads short
-			check(rig.cycle(at, downstream, overdue[i]), overdue[i]);
+			check(rig.cycle(at, overdue[i]), overdue[i]);
 		}
-		if (round == 20) downstream = 32; // the card that followed is gone: what lies downstream shrinks
+		if (round == 20) rig.downstreamFrames = 32; // the card that followed is gone: what lies downstream shrinks
 	}
+	CHECK(rig.clock.dryTicks() > 0);
 	CHECK(reports == 3 * 40);
 	CHECK(backwards == 1); // at the shrink, told as it is
-	CHECK(rig.code.clamped() == 0);
+	CHECK(rig.clock.clamped() == 0);
 }
 
 TEST_CASE("Nothing read rings nothing, and plays zeros", "[sendspin][code]") {
 	Rig rig;
 	rig.left[0] = 9.0F;
-	rig.right[0] = 9.0F;
-	rig.cycle();
+	rig.cycle(1000);
 	CHECK_FALSE(rig.rang());
-	CHECK_FALSE(rig.progress.read().has_value());
+	CHECK_FALSE(rig.clock.progress().has_value());
 	CHECK(rig.left[0] == 0.0F);
-	CHECK(rig.right[0] == 0.0F);
+	CHECK(rig.clock.dryTicks() == 1);
+	CHECK(rig.clock.dryFrames() == block);
 }
 
-TEST_CASE("Cleared frames are never reported", "[sendspin][code]") {
+TEST_CASE("Cleared frames are never told: each stream's count begins at its base", "[sendspin][code]") {
 	Rig rig;
 	rig.write(block);
-	rig.cycle();
-	REQUIRE(rig.progress.read()->totalFrames == block);
+	rig.cycle(1000);
+	REQUIRE(rig.played() == block);
 	REQUIRE(rig.rang());
-
+	rig.notify();
 	rig.write(2 * block);
-	rig.feed.clear();
-	rig.cycle();
-	CHECK(rig.progress.read()->totalFrames == block);
-	CHECK_FALSE(rig.rang());
-	CHECK(rig.left[0] == 0.0F);
-
+	rig.clock.clear();
+	rig.cycle(2000);
+	CHECK(rig.clock.lastPlayed().read == 0);
+	CHECK_FALSE(rig.rang()); // nothing of the next stream yet
 	// A catch-up before the next stream plays has nothing to skip.
 	rig.driver.lose(1, block);
-	rig.cycle();
+	rig.cycle(3000);
 	rig.write(block);
-	rig.cycle();
-	CHECK(rig.left[0] == static_cast<float>(3 * block + 1));
-	CHECK(rig.progress.read()->totalFrames == 2 * block);
-
-	// One while the feed holds frames skips them; nothing is owed, so the stream after a clear plays from its first
-	// frame.
-	rig.write(block);
-	rig.driver.lose(2, block);
-	rig.cycle(); // the block held skipped
-	CHECK(rig.code.lastSkipped() == block);
-	CHECK(rig.progress.read()->totalFrames == 3 * block);
-	rig.write(block);
-	rig.feed.clear();
-	rig.write(block);
-	rig.cycle();
-	CHECK(rig.left[0] == static_cast<float>(6 * block + 1));
-	CHECK(rig.progress.read()->totalFrames == 4 * block);
+	rig.cycle(4000);
+	REQUIRE(rig.rang());
+	rig.notify();
+	CHECK(rig.clock.progress()->base == block);
+	REQUIRE(rig.told.size() == 2);
+	CHECK(rig.told[1].frames == block); // the next stream's, none of the cleared two blocks
 }
 
-TEST_CASE("The mailbox holds the newest value, and nothing before the first", "[sendspin][code]") {
-	Mailbox<PlayProgress> mailbox;
-	CHECK_FALSE(mailbox.read().has_value());
-	mailbox.publish({1, 2});
-	mailbox.publish({3, 4});
-	const auto value = mailbox.read();
-	REQUIRE(value.has_value());
-	CHECK(value->totalFrames == 3);
-	CHECK(value->finishRawNs == 4);
-}
-
-TEST_CASE("The mailbox's fields, read while it is written from another thread, always belong together",
-          "[sendspin][code]") {
-	Mailbox<PlayProgress> mailbox;
-	std::atomic<bool> done{false};
-	std::thread writer([&] {
-		for (std::uint64_t value = 1; !done.load(std::memory_order_relaxed); ++value) {
-			mailbox.publish({value, static_cast<std::int64_t>(value) * 3});
-		}
-	});
-	std::uint64_t mixed = 0;
-	std::uint64_t reads = 0;
-	std::uint64_t newest = 0;
-	std::uint64_t backwards = 0;
-	const auto until = std::chrono::steady_clock::now() + 500ms;
-	while (std::chrono::steady_clock::now() < until) {
-		const auto value = mailbox.read();
-		if (!value) continue;
-		++reads;
-		if (value->finishRawNs != static_cast<std::int64_t>(value->totalFrames) * 3) ++mixed;
-		if (value->totalFrames < newest) ++backwards;
-		newest = value->totalFrames;
-	}
-	done = true;
-	writer.join();
-	INFO(reads << " reads");
-	CHECK(reads > 0);
-	CHECK(mixed == 0);
-	CHECK(backwards == 0);
-}
-
-namespace {
-std::int64_t fakeRaw = 0;
-std::int64_t fakeRawNow() noexcept { return fakeRaw; }
-} // namespace
-
-TEST_CASE(
-	"After the feed was left undrained past its bound, what it held is skipped stale, and that and what it dropped "
-	"are the feed's to say, not the code's",
-	"[sendspin][code]") {
-	constexpr std::int64_t msNs = 1'000'000;
-	fakeRaw = 50'000 * msNs;
-	Feed feed(2, capacity, FeedDrain{.rate = ear::SampleRate::fixed<rate>(), .bound = 1500ms, .nowRawNs = &fakeRawNow});
-	Mailbox<PlayProgress> progress;
-	EventFd bell;
-	SendspinCode code(feed, progress, bell, ear::SampleRate::fixed<rate>());
-	std::vector<float> left(block);
-	std::vector<float> right(block);
-	const std::array<std::span<float>, 2> outputs{left, right};
-	const auto cycle = [&](std::int64_t startRawNs, ear::CycleFacts facts) {
-		code.process(outputs, block,
-		             ear::GraphCycle{.startNs = 0, .position = 0, .startRawNs = startRawNs, .facts = facts});
-	};
-	std::uint32_t written = 0;
-	const auto write = [&](std::uint32_t frames) {
-		std::vector<float> samples;
-		for (std::uint32_t i = 1; i <= frames; ++i) {
-			samples.push_back(static_cast<float>(written + i));
-			samples.push_back(0.0F);
-		}
-		const std::uint32_t accepted = feed.write(samples, frames, 0ms);
-		written += accepted;
-		return accepted;
-	};
-
-	cycle(fakeRaw, {}); // drained now
-	REQUIRE(write(capacity) == capacity);
-	cycle(fakeRaw, {});
-	CHECK(progress.read()->totalFrames == block);
-	REQUIRE(write(block) == block); // full again: 2048 held
-
-	fakeRaw += 2000 * msNs; // stopped for 2 s: the writer drops what it is given rather than wait, up to now
-	REQUIRE(write(1000) == 0);
-	fakeRaw += 21 * msNs;
-	REQUIRE(write(1000) == 1000);
-	CHECK(feed.dropped().total == capacity + 1000); // what the feed held, and what was dropped: the notifier's to tell
-
-	ear::CycleFacts drive;
-	drive.causes = ear::CycleCause::drive;
-	cycle(fakeRaw, drive); // the start: what the feed held is stale
-	CHECK(code.lastStaleSkipped() == capacity);
-	CHECK(left[0] == 0.0F);                       // nothing fresh to read yet
-	CHECK(progress.read()->totalFrames == block); // nothing new of the code's: the stale frames are the feed's to tell
-	REQUIRE(write(block) == block);               // the reader is back: the feed takes it to be read
-	cycle(fakeRaw + 5 * msNs, {});
-	CHECK(code.lastStaleSkipped() == 0);
-	// The frames written since were due from the last drop on: 5 ms of them late by this cycle, skipped.
-	CHECK(code.lastResumeSkipped() == 248);
-	CHECK(left[0] == static_cast<float>(capacity + block + 1000 + 248 + 1));
-	CHECK(progress.read()->totalFrames == block + block);
-}
-
-TEST_CASE("The finish told never steps back: across a stop and a start, and across a stall past the feed's bound",
-          "[sendspin][code]") {
-	constexpr std::int64_t msNs = 1'000'000;
-	const std::int64_t blockNs = ear::FrameClock(ear::SampleRate::fixed<rate>()).ns(block);
-	fakeRaw = 90'000 * msNs;
-	Feed feed(2, capacity, FeedDrain{.rate = ear::SampleRate::fixed<rate>(), .bound = 1500ms, .nowRawNs = &fakeRawNow});
-	Mailbox<PlayProgress> progress;
-	EventFd bell;
-	SendspinCode code(feed, progress, bell, ear::SampleRate::fixed<rate>());
-	PlayedTeller teller;
-	std::vector<float> left(block);
-	std::vector<float> right(block);
-	const std::array<std::span<float>, 2> outputs{left, right};
-	std::vector<std::int64_t> finishes;
-	// The notifier's turn: what the library is told now, if anything.
-	const auto notify = [&] {
-		const auto read = progress.read();
-		const auto dropped = feed.dropped();
-		if (const auto report = teller.next(read, dropped)) {
-			finishes.push_back(report->finishRawNs);
-			teller.told(read, dropped, *report);
-		}
-	};
-	const std::vector<float> samples(std::size_t{block} * 2, 0.5F);
-	// The library's sync thread: as much as the feed takes now.
-	const auto write = [&] {
-		while (feed.write(samples, block, 0ms) > 0) {
-		}
-	};
-	// `cycles` on-time cycles from now, the clock moving a block each, the library writing and the notifier telling
-	// between them; the first stating `facts`.
-	const auto run = [&](int cycles, ear::CycleFacts facts) {
-		for (int i = 0; i < cycles; ++i) {
-			write();
-			code.process(
-				outputs, block,
-				ear::GraphCycle{
-					.startNs = 0, .position = 0, .startRawNs = fakeRaw, .facts = i == 0 ? facts : ear::CycleFacts{}});
-			notify();
-			fakeRaw += blockNs;
-		}
-	};
-	// The node not running for `ms`: the library writing every 5 ms, the notifier telling what was dropped.
-	const auto away = [&](std::int64_t ms) {
-		for (std::int64_t at = 0; at < ms; at += 5) {
-			fakeRaw += 5 * msNs;
-			write();
-			notify();
-		}
-	};
-
-	run(50, {});
-	away(3000); // a stop: dropped from 1.5 s on
-	ear::CycleFacts drive;
-	drive.causes = ear::CycleCause::drive;
-	run(50, drive); // the start
-	away(2500);     // a stall past the bound
-	ear::CycleFacts caughtUp;
-	caughtUp.causes = ear::CycleCause::catchUp;
-	caughtUp.jumpFrames = static_cast<std::int64_t>(ear::FrameClock(ear::SampleRate::fixed<rate>()).frames(2500ms));
-	run(50, caughtUp);
-
-	REQUIRE(feed.dropped().total > 0);
-	REQUIRE(finishes.size() > 100);
-	for (std::size_t i = 1; i < finishes.size(); ++i) {
-		INFO("report " << i << " of " << finishes.size());
-		CHECK(finishes[i] >= finishes[i - 1]);
-	}
-}
-
-TEST_CASE("The feed's undrained bound is the ring's room behind a full advertised buffer at the PCM byte rate, less "
-          "the library's wait, and never under two feeds",
+TEST_CASE("The clock's undrained bound is the ring's room behind a full advertised buffer at the PCM byte rate, less "
+          "the library's wait, and never under two rings",
           "[sendspin][code]") {
 	using std::chrono::nanoseconds;
 	// A third of 1 MB at 24-bit stereo: 333333 B / 288000 B/s = 1.1574 s, less 100 ms.
 	CHECK(undrainedBoundFor(ear::SampleRate::fixed<48000>(), 2048) == nanoseconds{1'157'406'250 - 100'000'000});
 	CHECK(undrainedBoundFor(ear::SampleRate::fixed<96000>(), 4096) == nanoseconds{578'703'125 - 100'000'000});
 	CHECK(undrainedBoundFor(ear::SampleRate::fixed<192000>(), 8192) == nanoseconds{289'351'562 - 100'000'000});
-	// A feed so long that two of it outlast the room: the floor.
+	// A ring so long that two of it outlast the room: the floor.
 	CHECK(undrainedBoundFor(ear::SampleRate::fixed<192000>(), 65536) ==
 	      nanoseconds{ear::FrameClock(ear::SampleRate::fixed<192000>()).ns(2 * 65536)});
 }
 
-// docs/node-types.md#clock: the code's finishes add what lies downstream (a following card's buffer), so the drops the
-// feed's writer tells are dated with it too, and the frames the code skips as late on its return are counted on that
-// one timeline: the first report back is the drop's last finish plus the frames it tells, with nothing to correct.
-TEST_CASE("Behind a following card, the first report after a drop is the drop's finish plus the frames it tells",
+// ---- The hand-over: one timeline, two who advance it (docs/node-types.md#clock) ----
+
+TEST_CASE("Past the bound the writer counts everything written played, paces at the graph's rate up to now, and the "
+          "first tick back skips the stale frames uncounted",
           "[sendspin][code]") {
-	constexpr std::int64_t msNs = 1'000'000;
-	constexpr std::uint32_t held = 512 + 32; // the card's buffer, as the framework carries it back
-	const ear::FrameClock clock(ear::SampleRate::fixed<rate>());
-	fakeRaw = 120'000 * msNs;
-	Feed feed(2, capacity, FeedDrain{.rate = ear::SampleRate::fixed<rate>(), .bound = 1500ms, .nowRawNs = &fakeRawNow});
-	Mailbox<PlayProgress> progress;
-	EventFd bell;
-	SendspinCode code(feed, progress, bell, ear::SampleRate::fixed<rate>());
-	PlayedTeller teller;
-	std::vector<float> left(block);
-	std::vector<float> right(block);
-	const std::array<std::span<float>, 2> outputs{left, right};
-	const std::array<ear::Latency, 2> downstream{ear::Latency{held, held}, ear::Latency{held, held}};
-	const auto cycle = [&](ear::CycleFacts facts) {
-		code.process(outputs, block,
-		             ear::GraphCycle{
-						 .startNs = 0, .position = 0, .startRawNs = fakeRaw, .facts = facts, .downstream = downstream});
-	};
-	std::vector<PlayedTeller::Report> told;
-	const auto notify = [&] {
-		const auto read = progress.read();
-		const auto dropped = feed.dropped();
-		if (const auto report = teller.next(read, dropped)) {
-			told.push_back(*report);
-			teller.told(read, dropped, *report);
-		}
-	};
-	const std::vector<float> samples(std::size_t{block} * 2, 0.5F);
-	const auto write = [&] {
-		while (feed.write(samples, block, 0ms) > 0) {
-		}
-	};
+	Rig rig(50'000 * msNs);
+	rig.tick();
+	REQUIRE(rig.write(capacity) == capacity);
+	rig.tick();
+	CHECK(rig.played() == block);
+	REQUIRE(rig.write(block) == block); // full again: 2048 held
 
-	for (int i = 0; i < 20; ++i) {
-		write();
-		cycle({});
-		notify();
-		fakeRaw += clock.ns(block);
-	}
-	for (int at = 0; at < 2000; at += 5) { // stopped for 2 s: dropped from 1.5 s on, each drop told
-		fakeRaw += 5 * msNs;
-		write();
-		notify();
-	}
-	REQUIRE(feed.dropped().total > 0);
-	const PlayedTeller::Report lastDrop = told.back();
-	fakeRaw += 5 * msNs; // the start comes 5 ms after the last drop
-	ear::CycleFacts drive;
-	drive.causes = ear::CycleCause::drive;
-	cycle(drive); // takes the feed back: the stale skipped, nothing fresh yet
-	notify();
-	write();
-	fakeRaw += clock.ns(block);
-	cycle({});
-	CHECK(code.lastResumeSkipped() > 0);
-	const std::size_t before = told.size();
-	notify();
-	REQUIRE(told.size() == before + 1);
-	const PlayedTeller::Report back = told.back();
-	INFO("the drop's last finish " << lastDrop.finishRawNs << ", the report back " << back.finishRawNs << " for "
-	                               << back.frames << " frames");
-	// Within the rounding of frames to ns, once for the late skip and once for the block.
-	CHECK(std::abs(back.finishRawNs - (lastDrop.finishRawNs + clock.ns(back.frames))) <= 2);
-	CHECK(teller.clamped() == 0);
-}
+	fakeRaw += 2000 * msNs; // no tick for 2 s: the writer takes the timeline over, its reach now
+	REQUIRE(rig.write(1000) == 0);
+	CHECK(rig.clock.takeovers() == 1);
+	CHECK(rig.clock.lastStaleCounted() == capacity);
+	CHECK(rig.played() == block + capacity); // told at once, everything written
+	CHECK(rig.finish() == fakeRaw);
+	CHECK(rig.rang());
+	fakeRaw += 21 * msNs; // 1008 frames' time more
+	REQUIRE(rig.write(1000) == 1000);
+	CHECK(rig.played() == block + capacity + 1000);
+	CHECK(rig.clock.pacedFrames() == capacity + 1000);
+	const std::int64_t paced = rig.finish();
 
-TEST_CASE("A stop that spans a stream's end keeps the drop's timeline for the next stream's frames",
-          "[sendspin][code]") {
-	constexpr std::int64_t msNs = 1'000'000;
-	const ear::FrameClock clock(ear::SampleRate::fixed<rate>());
-	fakeRaw = 140'000 * msNs;
-	Feed feed(2, capacity, FeedDrain{.rate = ear::SampleRate::fixed<rate>(), .bound = 1500ms, .nowRawNs = &fakeRawNow});
-	Mailbox<PlayProgress> progress;
-	EventFd bell;
-	SendspinCode code(feed, progress, bell, ear::SampleRate::fixed<rate>());
-	std::vector<float> left(block);
-	std::vector<float> right(block);
-	const std::array<std::span<float>, 2> outputs{left, right};
-	const auto cycle = [&](ear::CycleFacts facts) {
-		code.process(outputs, block,
-		             ear::GraphCycle{.startNs = 0, .position = 0, .startRawNs = fakeRaw, .facts = facts});
-	};
-	const std::vector<float> samples(std::size_t{block} * 2, 0.5F);
-	const auto write = [&] {
-		while (feed.write(samples, block, 0ms) > 0) {
-		}
-	};
-
-	write();
-	cycle({});
-	for (int at = 0; at < 2000; at += 5) { // stopped: dropped from 1.5 s on
-		fakeRaw += 5 * msNs;
-		write();
-	}
-	feed.clear(); // the stream ends while stopped, and the next begins: the writer drops its frames too
-	for (int at = 0; at < 100; at += 5) {
-		fakeRaw += 5 * msNs;
-		write();
-	}
-	const auto dropped = feed.dropped();
-	REQUIRE(dropped.total > dropped.forgotten); // the library counts the next stream's drops
+	rig.tick(drive()); // the start: takes the timeline back; what the ring held is stale
+	CHECK(rig.clock.lastTookBack());
+	CHECK(rig.clock.lastAnchored());
+	CHECK(rig.clock.lastResumeFrom() == paced);
+	CHECK(rig.clock.lastStaleSkipped() == capacity);
+	CHECK(rig.clock.lastPlayed().skipped == capacity);
+	CHECK(rig.clock.lastPlayed().read == 0);        // nothing fresh to read yet
+	CHECK(rig.played() == block + capacity + 1000); // nothing counted twice
+	REQUIRE(rig.write(capacity) == capacity);       // the tick is back: the ring takes it
 	fakeRaw += 5 * msNs;
-	ear::CycleFacts drive;
-	drive.causes = ear::CycleCause::drive;
-	cycle(drive); // the start: the clear applied, the feed taken back
-	write();
-	fakeRaw += clock.ns(block);
-	cycle({});
-	// What the library wrote since the drop's last finish is late by this cycle's run, on the next stream's timeline.
-	CHECK(code.lastResumeSkipped() == clock.framesNearest(std::chrono::nanoseconds{fakeRaw - dropped.finishRawNs}));
+	rig.tick();
+	// The frames written since were due from the pacer's last finish on: those heard by this tick's run, late, skipped.
+	const std::int64_t late = frameClock.framesNearest(std::chrono::nanoseconds{fakeRaw - paced});
+	CHECK(rig.clock.lastResumeSkipped() == late);
+	CHECK(rig.last() == static_cast<float>(block + capacity + 1000 + late + block));
+	CHECK(rig.played() == block + capacity + 1000 + late + block);
+	CHECK(rig.finish() >= paced);
 }
 
-TEST_CASE("A frame read twice in the instant the writer began dropping is repaid in its own stream, never the next",
+TEST_CASE("The finish told never steps back: across a stop and a start, and across a stall past the bound",
           "[sendspin][code]") {
-	constexpr std::int64_t msNs = 1'000'000;
-	fakeRaw = 160'000 * msNs;
-	Feed feed(2, capacity, FeedDrain{.rate = ear::SampleRate::fixed<rate>(), .bound = 1500ms, .nowRawNs = &fakeRawNow});
-	Mailbox<PlayProgress> progress;
-	EventFd bell;
-	SendspinCode code(feed, progress, bell, ear::SampleRate::fixed<rate>());
-	std::vector<float> left(block);
-	std::vector<float> right(block);
-	const std::array<std::span<float>, 2> outputs{left, right};
-	const auto cycle = [&] {
-		code.process(outputs, block, ear::GraphCycle{.startNs = 0, .position = 0, .startRawNs = fakeRaw});
+	Rig rig(90'000 * msNs);
+	const std::int64_t blockNs = frameClock.ns(block);
+	const auto run = [&](int ticks, ear::CycleFacts facts) {
+		for (int i = 0; i < ticks; ++i) {
+			rig.fill();
+			rig.tick(i == 0 ? facts : ear::CycleFacts{});
+			rig.notify();
+			fakeRaw += blockNs;
+		}
 	};
-	const std::vector<float> samples(std::size_t{block} * 2, 0.5F);
+	run(50, {});
+	rig.stop();
+	rig.away(3000); // paced from 1.5 s on
+	// The start's first tick is dated 3 ms before the writer's last look: its end is past the pacer's reach, the
+	// block's 5.3 ms on, but the ticks back may begin before what the pacer reached.
+	fakeRaw -= 3 * msNs;
+	run(50, drive());
+	rig.away(2500); // a stall past the bound, the ring left holding
+	ear::CycleFacts caughtUp;
+	caughtUp.causes = ear::CycleCause::catchUp;
+	caughtUp.jumpFrames = frameClock.frames(2500ms);
+	fakeRaw -= 12 * msNs; // its first two ticks back end before the pacer's reach: their reports wait
+	run(50, caughtUp);
 
-	REQUIRE(feed.write(samples, block, 0ms) == block);
-	cycle();
-	REQUIRE(progress.read()->totalFrames == block);
-	std::vector<float> chunk(std::size_t{capacity} * 2, 0.5F);
-	REQUIRE(feed.write(chunk, capacity, 0ms) == capacity);
-	fakeRaw += 1600 * msNs;
-	REQUIRE(feed.write(samples, block, 0ms) == 0); // the writer begins: the 2048 held counted dropped
-	// The reader's cycle in flight that instant read a block of them: the test reads it as that cycle did.
-	REQUIRE(feed.read(outputs, block) == block);
-	cycle(); // takes the feed back: one block read twice, owed; nothing of the code's to tell
-	CHECK(code.lastStaleSkipped() == capacity - block);
-	feed.clear(); // the stream ends before anything repaid it: the library forgot that stream's count
-	cycle();
-	REQUIRE(feed.write(samples, block, 0ms) == block); // the next stream's first frames
-	cycle();
-	CHECK(progress.read()->totalFrames == block + block); // counted whole: nothing of the old stream is repaid from it
+	CHECK(rig.clock.takeovers() == 2);
+	REQUIRE(rig.told.size() > 100);
+	for (std::size_t i = 1; i < rig.told.size(); ++i) {
+		INFO("report " << i << " of " << rig.told.size());
+		CHECK(rig.told[i].finishRawNs >= rig.told[i - 1].finishRawNs);
+	}
 }
 
-TEST_CASE("Where the two tellers meet a finish that would step back is held at the last told, and counted",
+// docs/node-types.md#clock: the pacer dates its frames with what lies downstream too, so the frames the first ticks
+// back skip as late are counted on that one timeline: the first report back is the pacer's last finish plus the frames
+// it tells, with nothing to correct.
+TEST_CASE("Behind a following card, the first report after a hand-over is the pacer's finish plus the frames it tells",
           "[sendspin][code]") {
-	PlayedTeller teller;
-	const std::optional<PlayProgress> code = PlayProgress{.totalFrames = 256, .finishRawNs = 1'000'000};
-	const Feed::Dropped none{.total = 0, .forgotten = 0, .finishRawNs = 0};
-	const auto first = teller.next(code, none);
-	REQUIRE(first.has_value());
-	CHECK_FALSE(first->clamped);
-	teller.told(code, none, *first);
-	// A drop dated before the code's last finish (a hand-over gone wrong): told at the last finish, never before it.
-	const Feed::Dropped earlier{.total = 100, .forgotten = 0, .finishRawNs = 900'000};
-	const auto second = teller.next(code, earlier);
-	REQUIRE(second.has_value());
-	CHECK(second->frames == 100);
-	CHECK(second->finishRawNs == 1'000'000);
-	CHECK(second->clamped);
-	teller.told(code, earlier, *second);
-	CHECK(teller.clamped() == 1);
-	const Feed::Dropped later{.total = 200, .forgotten = 0, .finishRawNs = 1'100'000};
-	const auto third = teller.next(code, later);
-	REQUIRE(third.has_value());
-	CHECK(third->finishRawNs == 1'100'000);
-	CHECK_FALSE(third->clamped);
+	constexpr std::uint32_t held = 512 + 32; // the card's buffer, as the framework carries it back
+	Rig rig(120'000 * msNs, held);
+	for (int i = 0; i < 20; ++i) {
+		rig.fill();
+		rig.tick();
+		rig.notify();
+		fakeRaw += frameClock.ns(block);
+	}
+	rig.stop();
+	rig.away(2000);
+	REQUIRE(rig.clock.takeovers() == 1);
+	const Rig::Told lastPaced = rig.told.back();
+	fakeRaw += 5 * msNs; // the start comes 5 ms after the last write
+	rig.tick(drive());   // takes the timeline back: the ring empty (the stop dropped it)
+	rig.notify();
+	rig.fill();
+	fakeRaw += frameClock.ns(block);
+	rig.tick();
+	CHECK(rig.clock.lastResumeSkipped() > 0);
+	const std::size_t before = rig.told.size();
+	rig.notify();
+	REQUIRE(rig.told.size() == before + 1);
+	const Rig::Told back = rig.told.back();
+	INFO("the pacer's last finish " << lastPaced.finishRawNs << ", the report back " << back.finishRawNs << " for "
+	                                << back.frames << " frames");
+	// Within the late skip's rounding to the nearest frame.
+	CHECK(
+		std::abs(back.finishRawNs - (lastPaced.finishRawNs + frameClock.ns(static_cast<std::int64_t>(back.frames)))) <=
+		frameClock.ns(1) / 2 + 2);
+}
+
+TEST_CASE("A stop that spans a stream's end keeps the pacer's timeline for the next stream's frames",
+          "[sendspin][code]") {
+	Rig rig(140'000 * msNs);
+	rig.fill();
+	rig.tick();
+	rig.stop();
+	rig.away(2000);    // paced from 1.5 s on
+	rig.clock.clear(); // the stream ends while stopped, and the next begins: the writer paces it too
+	rig.away(100);
+	const auto progress = rig.clock.progress();
+	REQUIRE(progress.has_value());
+	REQUIRE(progress->played > progress->base); // the library counts the next stream's frames
+	fakeRaw += 5 * msNs;
+	rig.tick(drive()); // the start: the clear applied, the timeline taken back
+	CHECK(rig.clock.lastAnchored());
+	rig.fill();
+	fakeRaw += frameClock.ns(block);
+	rig.tick();
+	CHECK(rig.clock.lastResumeSkipped() ==
+	      frameClock.framesNearest(std::chrono::nanoseconds{fakeRaw - progress->finishRawNs}));
+}
+
+// docs/node-types.md#clock: one owner, so a frame is never counted by both sides: a tick between its skip and its play
+// holds the timeline, and a writer past the bound meanwhile waits on the ring; it takes over only from a tick that is
+// done, counting what that tick did not.
+TEST_CASE("A tick between its skip and its play holds the timeline: the writer takes over only once it is done",
+          "[sendspin][code]") {
+	Rig rig(160'000 * msNs);
+	REQUIRE(rig.write(block) == block);
+	rig.tick();
+	REQUIRE(rig.played() == block);
+	REQUIRE(rig.write(capacity) == capacity);
+	fakeRaw += 1600 * msNs;
+	// A tick in flight: asked, not yet told what it did.
+	const ear::GraphCycle graphCycle{.startRawNs = fakeRaw.load()};
+	const ear::SourceTick inFlight{
+		.cycle = graphCycle, .frames = block, .rate = ear::SampleRate::fixed<rate>(), .playback = {}};
+	REQUIRE(rig.clock.skipBefore(inFlight, ear::SourceHeld{.frames = capacity}) == 0);
+	CHECK(rig.write(block) == 0); // into the full ring: no takeover while the tick holds the timeline
+	CHECK(rig.clock.takeovers() == 0);
+	rig.clock.played(inFlight, ear::SourcePlayed{.read = block});
+	CHECK(rig.played() == 2 * block);
+	fakeRaw += 1600 * msNs;
+	CHECK(rig.write(block) == 0); // now it takes over, from the tick that read a block of the 2048
+	CHECK(rig.clock.takeovers() == 1);
+	CHECK(rig.clock.lastStaleCounted() == capacity - block);
+	CHECK(rig.played() == block + capacity); // every frame written, each counted once
 }
 
 namespace {
 
-/// A feed left undrained past its bound and taken back, cycle by cycle on the fake raw clock: the drop's timeline
-/// (docs/node-types.md#clock) as the code sees it, the writer filling the ring as the library would.
-struct HandOver {
-	static constexpr std::int64_t msNs = 1'000'000;
-	static constexpr std::uint32_t held = 512; // a following card's buffer, so the timeline's heard time adds it
-	explicit HandOver(std::int64_t at)
-		: feed(2, capacity,
-	           FeedDrain{.rate = ear::SampleRate::fixed<rate>(), .bound = 1500ms, .nowRawNs = &fakeRawNow}),
-		  code(feed, progress, bell, ear::SampleRate::fixed<rate>()), left(block), right(block) {
-		fakeRaw = at;
-	}
-	/// One on-time cycle at the fake clock's now, stating `facts`.
-	void cycle(ear::CycleFacts facts = {}) {
-		const std::array<std::span<float>, 2> outputs{left, right};
-		const std::array<ear::Latency, 2> downstream{ear::Latency{held, held}, ear::Latency{held, held}};
-		code.process(outputs, block,
-		             ear::GraphCycle{
-						 .startNs = 0, .position = 0, .startRawNs = fakeRaw, .facts = facts, .downstream = downstream});
-	}
-	/// As much as the feed takes now; the frames it took.
-	std::uint32_t write() {
-		const std::vector<float> samples(std::size_t{block} * 2, 0.5F);
-		std::uint32_t taken = 0;
-		while (const std::uint32_t accepted = feed.write(samples, block, 0ms)) taken += accepted;
-		return taken;
-	}
-	/// Played, stopped for 2 s (dropped from 1.5 s on), and started 5 ms after the last drop: the cycle that takes the
-	/// feed back, which reads nothing (the writer refills the ring only after it).
-	void stopAndStart() {
-		write();
-		cycle();
-		for (int at = 0; at < 2000; at += 5) {
-			fakeRaw += 5 * msNs;
-			write();
-		}
-		REQUIRE(feed.dropped().total > 0);
-		fakeRaw += 5 * msNs;
-		ear::CycleFacts drive;
-		drive.causes = ear::CycleCause::drive;
-		cycle(drive);
-		REQUIRE(code.lastStale());
-		REQUIRE(code.lastResumeSkipped() == 0);
-	}
-	/// Frames from the drop's last finish to when this cycle's first frame is heard: what the drop's timeline makes late.
-	std::int64_t lateNow() const {
-		const ear::FrameClock clock(ear::SampleRate::fixed<rate>());
-		return clock.framesNearest(std::chrono::nanoseconds{fakeRaw + clock.ns(held) - feed.dropped().finishRawNs});
-	}
+/// A rig stopped for 2 s (paced from 1.5 s on, behind a card of 512 frames) and started 5 ms after the last write:
+/// the tick that takes the timeline back, which reads nothing (the stop dropped the ring).
+Rig& stoppedAndStarted(Rig& rig) {
+	rig.fill();
+	rig.tick();
+	rig.stop();
+	rig.away(2000);
+	REQUIRE(rig.clock.takeovers() == 1);
+	fakeRaw += 5 * msNs;
+	rig.tick(drive());
+	REQUIRE(rig.clock.lastTookBack());
+	REQUIRE(rig.clock.lastResumeSkipped() == 0);
+	return rig;
+}
 
-	Feed feed;
-	Mailbox<PlayProgress> progress;
-	EventFd bell;
-	SendspinCode code;
-	std::vector<float> left;
-	std::vector<float> right;
-};
+/// Frames from the pacer's finish to when this tick's first frame is heard: what the timeline makes late.
+std::int64_t lateNow(const Rig& rig) {
+	return frameClock.framesNearest(
+		std::chrono::nanoseconds{fakeRaw + frameClock.ns(rig.downstreamFrames) - rig.clock.lastResumeFrom()});
+}
 
 } // namespace
 
-TEST_CASE("A catch-up while the drop's timeline holds skips its late frames once, never its jump as well",
+TEST_CASE("A catch-up while the pacer's timeline holds skips its late frames once, never its jump as well",
           "[sendspin][code]") {
-	const ear::FrameClock clock(ear::SampleRate::fixed<rate>());
-	HandOver rig(180'000 * HandOver::msNs);
-	rig.stopAndStart();
-	REQUIRE(rig.write() == capacity); // the ring refilled
-	// The graph stalls past a block and catches up: the next cycle states a jump of 512 frames, 512 frames' time on.
+	Rig rig(180'000 * msNs, 512);
+	stoppedAndStarted(rig);
+	REQUIRE(rig.fill() == capacity);
 	constexpr std::int64_t jump = 512;
-	fakeRaw += clock.ns(block + jump);
+	fakeRaw += frameClock.ns(block + jump);
 	ear::CycleFacts caughtUp;
 	caughtUp.causes = ear::CycleCause::catchUp;
 	caughtUp.jumpFrames = jump;
-	const std::int64_t late = rig.lateNow();
+	const std::int64_t late = lateNow(rig);
 	REQUIRE(late > jump);
 	REQUIRE(late < capacity);
-	rig.cycle(caughtUp);
-	CHECK(rig.code.lastAnchored());
-	CHECK(rig.code.lastSkipped() == 0);
-	CHECK(rig.code.lastSkipped() + rig.code.lastResumeSkipped() == late);
+	rig.tick(caughtUp);
+	CHECK(rig.clock.lastAnchored());
+	CHECK(rig.clock.lastSkipped() == 0);
+	CHECK(rig.clock.lastResumeSkipped() == late);
 }
 
-TEST_CASE("A gap in the library's writes after a hand-over ends the drop's timeline after a feed's worth of cycles",
+TEST_CASE("A gap in the library's writes after a hand-over ends the pacer's timeline after a ring's worth of ticks",
           "[sendspin][code]") {
-	const ear::FrameClock clock(ear::SampleRate::fixed<rate>());
-	HandOver rig(200'000 * HandOver::msNs);
-	rig.stopAndStart();
-	// The library writes nothing for 100 ms (a network gap with no stream end): the cycles play zeros.
-	std::uint32_t ran = block; // the cycle that took the feed back
-	for (; clock.ns(ran) < 100 * HandOver::msNs; ran += block) {
-		fakeRaw += clock.ns(block);
-		rig.cycle();
-		INFO("cycle " << ran / block);
-		CHECK(rig.code.lastAnchored() == (ran < capacity));
+	Rig rig(200'000 * msNs, 512);
+	stoppedAndStarted(rig);
+	// The library writes nothing for 100 ms (a network gap with no stream end): the ticks play zeros.
+	std::uint32_t ran = block; // the tick that took it back
+	for (; frameClock.ns(ran) < 100 * msNs; ran += block) {
+		fakeRaw += frameClock.ns(block);
+		rig.tick();
+		INFO("tick " << ran / block);
+		CHECK(rig.clock.lastAnchored() == (ran < capacity));
 	}
-	REQUIRE(rig.write() == capacity); // its audio comes back
-	fakeRaw += clock.ns(block);
-	REQUIRE(rig.lateNow() > capacity);
-	rig.cycle();
-	// The gap is the library's to correct, as outside a drop: what it wrote plays, none of it skipped and told played.
-	CHECK_FALSE(rig.code.lastAnchored());
-	CHECK(rig.code.lastResumeSkipped() == 0);
-	CHECK(rig.left[0] == 0.5F);
+	REQUIRE(rig.fill() == capacity); // its audio comes back
+	fakeRaw += frameClock.ns(block);
+	REQUIRE(lateNow(rig) > capacity);
+	rig.tick();
+	// The gap is the library's to correct, as outside a hand-over: what it wrote plays, none of it skipped.
+	CHECK_FALSE(rig.clock.lastAnchored());
+	CHECK(rig.clock.lastResumeSkipped() == 0);
+	CHECK(rig.clock.lastPlayed().read == block);
 }
 
-// docs/node-types.md#clock: a hand-over that finds the writer mid-publish leaves the drop's timeline pending, which a
-// loaded host can stretch past many cycles. Nothing measures lateness then, so a catch-up's jump is skipped as outside
-// a drop, and counted on the timeline: once it anchors, the late skip does not skip that time again.
-TEST_CASE("A catch-up while the drop's finish cannot be read yet skips its jump, and the late skip counts it",
+// The resume state machine's pending state (a drop's finish not yet readable) is gone: the pacer writes its anchor
+// before the owner word names it, so the tick that takes the timeline back reads it whole, at once, whatever the
+// writer was doing.
+TEST_CASE("The first tick back reads the pacer's anchor whole: anchored at once, at the last finish it told",
           "[sendspin][code]") {
-	const ear::FrameClock clock(ear::SampleRate::fixed<rate>());
-	HandOver rig(220'000 * HandOver::msNs);
-	rig.write();
-	rig.cycle();
-	for (int at = 0; at < 2000; at += 5) {
-		fakeRaw += 5 * HandOver::msNs;
-		rig.write();
-	}
-	const Feed::Dropped drop = rig.feed.dropped();
-	REQUIRE(drop.total > 0);
-	rig.feed.holdMidPublish(true); // the writer preempted inside a drop's publish
-	fakeRaw += 5 * HandOver::msNs;
-	ear::CycleFacts drive;
-	drive.causes = ear::CycleCause::drive;
-	rig.cycle(drive);
-	REQUIRE(rig.code.lastStale());
-	CHECK_FALSE(rig.code.lastAnchored());
-	CHECK_FALSE(rig.code.lastResumeFacts().has_value());
-	REQUIRE(rig.write() == capacity); // the ring refilled
-	constexpr std::uint32_t jump = 512;
-	fakeRaw += clock.ns(block + jump);
-	ear::CycleFacts caughtUp;
-	caughtUp.causes = ear::CycleCause::catchUp;
-	caughtUp.jumpFrames = jump;
-	rig.cycle(caughtUp);
-	CHECK_FALSE(rig.code.lastAnchored());
-	CHECK(rig.code.lastSkipped() == jump);
-	CHECK(rig.code.lastResumeSkipped() == 0);
-	rig.feed.holdMidPublish(false);
-	fakeRaw += clock.ns(block);
-	rig.cycle();
-	REQUIRE(rig.code.lastAnchored());
-	REQUIRE(rig.code.lastResumeFacts().has_value());
-	CHECK(rig.code.lastResumeFacts()->finishRawNs == drop.finishRawNs);
-	// Late by this cycle's run on the drop's timeline, less what the catch-up consumed: its jump and its block.
-	const std::int64_t late =
-		clock.framesNearest(std::chrono::nanoseconds{fakeRaw + clock.ns(HandOver::held) - drop.finishRawNs}) -
-		(jump + block);
-	REQUIRE(late > 0);
-	REQUIRE(late < capacity - jump - block);
-	CHECK(rig.code.lastResumeSkipped() == late);
-	CHECK(rig.code.lastSkipped() == 0);
+	Rig rig(220'000 * msNs, 512);
+	rig.fill();
+	rig.tick();
+	rig.stop();
+	rig.away(2000);
+	const std::int64_t lastTold = rig.finish();
+	fakeRaw += 5 * msNs;
+	rig.tick(drive());
+	CHECK(rig.clock.lastTookBack());
+	CHECK(rig.clock.lastAnchored());
+	CHECK(rig.clock.lastResumeFrom() == lastTold);
 }
 
-// docs/testing.md: the judge models the drop's timeline from the facts the code read in its cycle
-// (SendspinCode::lastResumeFacts), not from a read after it: a clear between the two would make them disagree.
-TEST_CASE("The drop's facts a cycle used are its own read, which a later clear does not move", "[sendspin][code]") {
-	HandOver rig(240'000 * HandOver::msNs);
-	rig.stopAndStart();
-	REQUIRE(rig.code.lastAnchored());
-	const auto used = rig.code.lastResumeFacts();
-	REQUIRE(used.has_value());
-	CHECK(used->total > used->forgotten);
-	rig.feed.clear(); // on_stream_end, after the cycle
-	const Feed::Dropped after = rig.feed.dropped();
-	CHECK(after.total == after.forgotten);
-	CHECK(rig.code.lastResumeFacts()->forgotten == used->forgotten);
-}
-
-TEST_CASE("A clear while the drop's finish cannot be read yet ends the timeline, by the facts the cycle read",
+// docs/node-types.md#clock: the finish told never steps back across a hand-over, by construction rather than a clamp:
+// the pacer never reaches past now, and a tick tells only once it ends past the pacer's reach, which the tick after
+// the one that took the timeline back always does (it began after that one ran).
+TEST_CASE("Back from the pacer, a tick that ends before the pacer's reach leaves its report to the next, which ends "
+          "past it",
           "[sendspin][code]") {
-	const ear::FrameClock clock(ear::SampleRate::fixed<rate>());
-	HandOver rig(260'000 * HandOver::msNs);
-	rig.write();
-	rig.cycle();
-	for (int at = 0; at < 2000; at += 5) {
-		fakeRaw += 5 * HandOver::msNs;
-		rig.write();
+	Rig rig(240'000 * msNs);
+	rig.fill();
+	rig.tick();
+	rig.stop();
+	rig.away(2000);
+	const std::int64_t reach = rig.finish();        // nothing downstream: the pacer's reach itself
+	const std::int64_t start = fakeRaw - 10 * msNs; // on time, its start 10 ms before the pacer's reach
+	rig.cycle(start, 0, drive());
+	CHECK(rig.clock.lastTookBack());
+	CHECK_FALSE(rig.clock.lastTold().has_value());
+	CHECK(rig.clock.lastTellDeferred());
+	CHECK(rig.finish() == reach);
+	rig.cycle(start + frameClock.ns(block), 0, ear::CycleFacts{});
+	REQUIRE(rig.clock.lastTold().has_value());
+	CHECK(rig.clock.lastTold()->finishRawNs >= reach);
+	CHECK(rig.clock.clamped() == 0);
+}
+
+TEST_CASE("A stream ended while paced, before anything of the next: the tick back ends the timeline and starts the "
+          "next stream's count",
+          "[sendspin][code]") {
+	Rig rig(260'000 * msNs, 512);
+	rig.fill();
+	rig.tick();
+	rig.stop();
+	rig.away(2000);
+	const std::uint64_t paced = rig.played();
+	rig.clock.clear(); // the stream ends; the library writes nothing of the next before the start
+	fakeRaw += 5 * msNs;
+	rig.tick(drive());
+	CHECK(rig.clock.lastTookBack());
+	CHECK_FALSE(rig.clock.lastAnchored());
+	rig.fill();
+	fakeRaw += frameClock.ns(block);
+	rig.tick();
+	CHECK(rig.clock.lastResumeSkipped() == 0);
+	const auto progress = rig.clock.progress();
+	REQUIRE(progress.has_value());
+	CHECK(progress->base == paced);
+	CHECK(progress->played == paced + rig.clock.lastPlayed().read);
+}
+
+// The one owner, raced for real: the library's thread writing through the clock while the ticks come and go on
+// another, stopping for past the bound and coming back. Every frame the clock took is counted played exactly once
+// (no clear, no jump: every one is played or skipped as stale or late), and the count told never goes back.
+TEST_CASE("Ticks and the pacer on two threads count every frame written exactly once, and the count told never goes "
+          "back",
+          "[sendspin][code]") {
+	Rig rig(300'000 * msNs);
+	std::atomic<bool> done{false};
+	std::atomic<std::uint64_t> taken{0};
+	std::thread library([&] {
+		const std::vector<float> samples(std::size_t{64} * 2, 0.5F);
+		while (!done.load()) {
+			const std::uint32_t got = rig.clock.write(samples, 64, 0ms);
+			taken.fetch_add(got);
+			if (got == 0) std::this_thread::yield();
+		}
+	});
+	std::uint64_t lastPlayed = 0;
+	std::size_t backwards = 0;
+	const std::int64_t blockNs = frameClock.ns(block);
+	for (int round = 0; round < 30; ++round) {
+		for (int i = 0; i < 200; ++i) {
+			fakeRaw += blockNs;
+			rig.tick();
+			const std::uint64_t played = rig.played();
+			if (played < lastPlayed) ++backwards;
+			lastPlayed = played;
+		}
+		// No tick for past the bound, until the writer has taken the timeline over (its own event: takeovers()), and
+		// a while more of pacing; the deadline only fails the test.
+		const std::uint64_t before = rig.clock.takeovers();
+		fakeRaw += 1600 * msNs;
+		const auto deadline = std::chrono::steady_clock::now() + 10s;
+		while (rig.clock.takeovers() == before && std::chrono::steady_clock::now() < deadline)
+			ear::sleeps::poll(50us, "between looks at the writer's takeovers(): the count decides");
+		REQUIRE(rig.clock.takeovers() == before + 1);
+		for (int i = 0; i < 20; ++i) {
+			fakeRaw += 5 * msNs;
+			ear::sleeps::pace(50us, "the stand-in graph's tick-less stretch, in steps the writer thread sees");
+			const std::uint64_t played = rig.played();
+			if (played < lastPlayed) ++backwards;
+			lastPlayed = played;
+		}
 	}
-	rig.feed.holdMidPublish(true);
-	fakeRaw += 5 * HandOver::msNs;
-	ear::CycleFacts drive;
-	drive.causes = ear::CycleCause::drive;
-	rig.cycle(drive);
-	REQUIRE(rig.code.lastStale());
-	REQUIRE_FALSE(rig.code.lastResumeFacts().has_value());
-	rig.feed.clear(); // the stream ends while the timeline is pending
-	rig.feed.holdMidPublish(false);
-	fakeRaw += clock.ns(block);
-	rig.cycle();
-	const auto used = rig.code.lastResumeFacts();
-	REQUIRE(used.has_value());
-	CHECK(used->total == used->forgotten);
-	CHECK_FALSE(rig.code.lastAnchored());
+	done = true;
+	library.join();
+	// Drain what is left, on time, until told.
+	for (int i = 0; i < 64; ++i) {
+		fakeRaw += blockNs;
+		rig.tick();
+	}
+	CHECK(rig.clock.takeovers() == 30);
+	CHECK(backwards == 0);
+	CHECK(rig.played() == taken.load());
 }

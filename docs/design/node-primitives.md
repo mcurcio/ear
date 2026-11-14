@@ -533,6 +533,80 @@ seams replace the feed's (`dryTicks()`, `dryFrames()`, `lastHeld()`, `lastSkippe
 `CycleJudge::librarySettle`'s `dry` cause reads the clock, not a feed. The companion's `shortfall` counter is the
 operator's view; the judge does not read it.
 
+*Found building S3c.6c* (the clock as built: `docs/node-types.md#clock`; this note keeps why it departs):
+
+- **The pacer runs on the writer's thread, through the clock.** `SourceClock`'s calls are the tick's alone (realtime,
+  never concurrent, no syscall), and while nothing drains no tick runs, so nothing on the realtime side can advance
+  the timeline then. The library's sync thread writes through `SendspinClock::write` instead of the source's writer,
+  and there the clock either writes the ring (the tick owns the timeline) or, past the bound, paces. Both sides
+  advance the same state, and which one may is decided by one atomic **owner word**, so a hand-over is a single
+  compare-and-swap, not two tellers merged after the fact:
+
+  ```cpp
+  class SendspinClock final : public SourceClock { // sendspin_clock.hpp
+  public:
+  	struct Config {
+  		SampleRate rate;
+  		std::chrono::nanoseconds undrainedBound; // undrainedBoundFor: how long no tick may drain before it paces
+  		std::int64_t (*nowRawNs)() noexcept = &rawNowNs;
+  	};
+  	explicit SendspinClock(Config config) noexcept;
+  	void attach(SourceWriter& writer) noexcept; // configure, once, before any thread writes
+  	// SourceClock, the tick: takes the timeline back if the pacer had it, skips, counts, tells.
+  	std::uint64_t skipBefore(const SourceTick& tick, SourceHeld held) noexcept override;
+  	bool played(const SourceTick& tick, const SourcePlayed& played) noexcept override;
+  	// The library's sync thread, the one writer: into the ring while ticks drain it, paced into nothing past the
+  	// bound. Returns the frames taken, as SourceWriter::write.
+  	std::uint32_t write(std::span<const float> interleaved, std::uint32_t frames, std::chrono::milliseconds patience);
+  	void clear() noexcept;                             // the worker's on_stream_end, never while write() runs
+  	std::optional<PlayProgress> progress() const noexcept; // the notifier: the newest report
+  	Wake& wake() noexcept;                             // the source's clock wake, rung by both sides after a report
+  };
+  struct PlayProgress {   // the cumulative timeline, as told
+  	std::uint64_t played; // every frame counted played, over every stream
+  	std::uint64_t base;   // where the current stream's count began: below it, a stream the library forgot
+  	std::int64_t finishRawNs;
+  };
+  ```
+
+- **The state machine.** The owner word holds who advances (`ticking`, `pacing`), a busy bit the tick holds from
+  `skipBefore` to `played`, and a count (the ticks' sequence while ticking, the frames paced since the anchor while
+  pacing). (1) *Ticking*: every tick sets busy, counts `skipped + read` of its stream, tells by T2's rules (on time,
+  `untoldBound`, the clamp after a forced report) and publishes what the pacer would need, then clears busy. (2) *The
+  hand-over to the pacer*: a write that finds the word ticking, not busy and the last tick's run older than the
+  bound writes an anchor (into the slot of two the tick is not reading) and swaps the word to pacing; the swap fails
+  if a tick ran meanwhile (the sequence moved), so the anchor is of a quiescent tick, and no frame is ever read and
+  counted by both sides (`countedTwice` disappears). The anchor counts **everything written of the stream as
+  played** (its `played` is the stream's base plus what the writer wrote of it), which is the stale frames whether
+  the ring still holds them (a stall) or a stop dropped them, and dates them at the pacer's reach. (3) *Pacing*:
+  each write takes what time allows up to its reach and swaps the count up; a stream end re-anchors (the time goes
+  on, the count starts its new stream at its base), and a writer away longer than the ring's length jumps its reach
+  forward (re-anchored too) rather than crediting the time. (4) *The hand-over back*: the first tick swaps the word
+  back to ticking (any tick, overdue or not: the pacer stops at once), reads the anchor and the count, and is the
+  timeline's one owner again: it skips what the ring holds of the stream (all of it stale, as the pacer wrote none
+  into it), then, as late, what the library wrote since that is heard by its run on the pacer's timeline, as S3c.6b
+  did, until a tick reads with nothing late left, for a ring's worth of ticks at most. *Pending disappears*: the
+  anchor is written before the word names it, so the tick always reads it whole.
+- **Streams by clear counts (a core change).** `SourceHeld` gains `clears`, the clears the ring has applied (a stop's
+  first tick forgets an unapplied one, so `clearing` alone cannot say), so the tick knows exactly which stream it
+  counts; the clock's `clear()` counts the writer's. A tick tells only while both agree (the library zeroed its
+  count at the clear), and a tick in a new stream moves the base. `forgotten` and its sequence counter go.
+- **Telling, two writers, never a step back by construction.** The report box is a seqlock both owners write: the
+  tick tries it once and defers its report if the pacer is mid-publish (its frames are told by the next tick), the
+  pacer waits its turn and publishes only while it still owns the word, so an older count never lands after a newer.
+  The finish told never steps back across a hand-over because a tick back from the pacer tells only once its end is
+  past the pacer's reach (up to now, never ahead), and the tick after the one that took the timeline back began after
+  that, so ends after it: at most one tick's report waits, and nothing told is moved. First built with the reach a
+  block behind now (no tick would wait), the stall past the bound failed: the library hard-syncs at 5 ms, and a pacer
+  a block (5.3 ms) behind now made it drop and add silence in turn while paced. `PlayedTeller` and its clamp go; T2's
+  clamp after a forced report stays, the only clamp.
+- **What a stop drops.** A stop shorter than the bound drops the ring at its silence (`SourceRing`'s rule) and tells
+  the library nothing of those frames: at the start the library corrects once, by the time it was held back and the
+  ring's frames. S3c.6b played the feed's 43 ms from before the stop instead. Past the bound the anchor counts them.
+- **The source fades.** An underrun now decays and the audio after it fades in over 5 ms, and a clear plays 5 ms of
+  the ended stream faded: the clock tests read a faded frame as one of the ring's frames (`SourcePlayed::read`), not
+  as a step.
+
 **`TypeSpec`** (S3c.3 and S3c.4, built): 6.11's members `stores` and `loops` after `banks`, each defaulting to an
 empty list, under the `requires` clause. U1 held (found building S3c.4, above): the designated spelling stands.
 
@@ -582,7 +656,7 @@ companion's deadline does not start until the earlier step is ready (S3c.0's row
 | **S3c.5c The leaked record** (done: e309f28d00; the claim parts moved to S3c.5a and S3c.5b, found building it, 0.3) | The `Channel` re-pointed at the leaked record at a close-deadline leak; the record hears each close (sinks, handoffs, loops, the run object) and carries the teardown on; a throw from it an `ear` log record; `ear.close-late` and `leaked()` counting it down | Only after a leak, which no shipped type makes in tests: `ear.close-late`, and a stop after it ends normally rather than through `std::_Exit` | `node_host_test.cpp`'s leaked-record rows: what a leaked configuration may still report, in order (its sink's close, its consumer's throw as a log record, its loop's finish and close, then `ear.close-late`), and what it may not (its handle's notes, losses and log entries, a store write's completion; nothing reaching the node or a newer configuration); S3c.1's leaked cross-generation row unedited. Revert proof: with `detach()` in place of the re-point, "a configuration leaked at the close deadline is said `ear.close-late` once its loop finally finishes, and `leaked()` drops to 0" fails |
 | **S3c.6a Core's tests off the legacy SPI** (done: 62ad973d0a; found building it, 0.3) | `node_host_test.cpp`, `graph_status_test.cpp`, `desired_graph_test.cpp` (and `settings_table_test.cpp`): their legacy test types rewritten as classes (on `makeNodeType` where a test goes through the catalogue, at the erased layer in `node_host_test.cpp`), a handoff case as a sink, a run object with threads as a dedicated loop | None (tests only) | Each ported case asserts what it asserted. Only the legacy-only cases (a recipe, a run object's close, the two-phase start, a `StartContext`, a latency on one bank, a handoff consumer's throw) stay on the legacy SPI, tagged `[legacy]`, until S3c.6e deletes them with it. Spot revert checks: loops finished before the sinks closed, a sink's drops not counted, the instance freed before the code, the `Channel` not detached at step 5: each fails a moved case |
 | **S3c.6b `sendspin` on the class** (done: 9ad571a98e; found building it, 0.3) | `sendspin_spec.hpp` and `Sendspin`; the worker and the notifier dedicated loops' states; the key file a store; the listening port a claim; `to` passed to `to_server`, a sink consumed by `ToServer` (`consumedBy(worker, &Worker::toServer)`, built here), dated by each chunk's start; the feed and today's code kept as the type's own spec code (`from` played from the feed); `NodeFolders` and `allNodeTypes`' argument go; `notYetInHarness` goes; the thread guard | Visible change 1 (a corrupt key file fails before `running`); Q-3c1 answered: a stop keeps the connection and pairing, a restart, a disable and a removal say goodbye. The key store's `save_blob` (`replace`) treats an `unconfirmed` outcome as neither success nor failure: it compares `text()` with what it wrote | `type_test.cpp`; `sendspin` in the all-type harness test; every `sendspin` system test, with only the corrupt-key test's `running`-or-not branch narrowed to `start-failed` (U4); a system test that a stopped node is still seen by the server (its roles) and a start plays again with no code; `clock_test.cpp`'s and `code_test.cpp`'s judging unedited (their rigs and the three handoff and anchor rows moved, 0.3); the guard per spelling. Run (9ad571a98e): with the goodbye posted by `stop()`, `type_test.cpp`'s stop row and the stopped-node system test fail (`roles none`, the server hears `disconnected`, a third `connected` line); without `cx.claim`, "Two sendspin nodes on one port" sees no refusal; with `unconfirmed` read as failure, `keys_test.cpp`'s landed section fails; without the store's distrust, the corrupt-key system test sees `running` then `lost`, and `type_test.cpp`'s row rests `starting` |
-| **S3c.6c The source and its clock** | `from_server` a source with `SendspinClock` (T2's wrapper, and S3c.6b's drop path, on one timeline: 0.3's paragraph on the source and its clock), its clock wake watched on the notifier loop; `feed.*`, `sendspin_code.*` and `PlayedTeller` go, the undrained pacer and the hand-over now the clock's (`timing-model.md` 6.1, "One played timeline"); the node's code is `passThrough` | None in timing on the tick's path: `timing-model.md` 6.4's tests pass unedited on the source. Not a move on the drop's path: it changes owner, from the feed's writer and the notifier's merge to the clock, and Q-3c1 still holds (a stopped node the server streams to stays connected) | T2's tests on the source (`clock_test.cpp`, through the real engine); the clock's unit rows through `TypeHarness<spec, Sendspin>` with scripted facts; `requiredLeadMs` from the source's frames. T2's clamp-idle row is its mutation check. The revert proofs that carry over, each shown failing again on the clock: "A node stopped while the server streams stays connected, and a start plays the stream again" (`sendspin_connections_test.cpp`) with the undrained pacer removed; `code_test.cpp`'s hand-over rows (the finish never steps back across a stop and a stall past the bound; behind a following card the first report after a drop is its finish plus the frames told; a stop spanning a stream's end keeps the timeline; a frame read twice is repaid in its own stream; a catch-up anchored skips its late frames once and pending skips its jump; a gap ends the timeline after a feed's worth of cycles; a clear while pending ends it) re-expressed on the clock, the pending rows reduced to whatever of them the one owner leaves |
+| **S3c.6c The source and its clock** (done; found building it, 0.3) | `from_server` a source with `SendspinClock` (T2's wrapper, and S3c.6b's drop path, on one timeline: 0.3's paragraph on the source and its clock), its clock wake watched on the notifier loop; `feed.*`, `sendspin_code.*` and `PlayedTeller` go, the undrained pacer and the hand-over now the clock's (`timing-model.md` 6.1, "One played timeline"); the node's code is `passThrough` | None in timing on the tick's path: `timing-model.md` 6.4's tests pass unedited on the source. Not a move on the drop's path: it changes owner, from the feed's writer and the notifier's merge to the clock, and Q-3c1 still holds (a stopped node the server streams to stays connected) | T2's tests on the source (`clock_test.cpp`, through the real engine); the clock's unit rows through `TypeHarness<spec, Sendspin>` with scripted facts; `requiredLeadMs` from the source's frames. T2's clamp-idle row is its mutation check. The revert proofs that carry over, each shown failing again on the clock: "A node stopped while the server streams stays connected, and a start plays the stream again" (`sendspin_connections_test.cpp`) with the undrained pacer removed; `code_test.cpp`'s hand-over rows (the finish never steps back across a stop and a stall past the bound; behind a following card the first report after a drop is its finish plus the frames told; a stop spanning a stream's end keeps the timeline; a frame read twice is repaid in its own stream; a catch-up anchored skips its late frames once and pending skips its jump; a gap ends the timeline after a feed's worth of cycles; a clear while pending ends it) re-expressed on the clock, the pending rows reduced to whatever of them the one owner leaves. Run (S3c.6c): with the pacer removed, the stopped-node system test fails (the server hears `disconnected`, close 1006; a third `connected` line; `says disconnected`), as do the unit hand-over rows; with the reach deferral removed, "the finish told never steps back" and "a tick that ends before the pacer's reach" fail (a pacer run ahead of now alone is held by the deferral); with the late skip measured without what lies downstream, "behind a following card" fails; with no re-anchor at a stream's end, "a stop that spans a stream's end" fails; with no busy hold, "a tick between its skip and its play" and the two-thread race fail; with the jump also skipped while anchored, "a catch-up while the pacer's timeline holds" fails; with no expiry, "a gap ... after a ring's worth" fails; with a stream end keeping the anchor, "a stream ended while paced" fails; with the other anchor read, "the first tick back reads the pacer's anchor whole" and seven more fail (the pending rows' reduction: nothing is left to be pending); with the clamp made unconditional, T2's clamp-idle row fails. `SourceHeld::clears` without the count fails core's new row |
 | **S3c.6d Capture dated by its upstream** | `ToServer` dates by `enteredRawNs` with the chunk's `upstreamFrames`; `docs/node-types.md#clock` loses its "not counted yet" | Yes: a card's capture reaches the server dated earlier by the card's capture latency | A unit row: a chunk with `upstreamFrames` 480 dates its first frame 10 ms before its cycle's start at 48 kHz; `sendspin_streams_test.cpp`'s steps unchanged; whether `overdueNs` should date burst chunks measured and recorded [U]. Revert proof: the unit row fails |
 | **S3c.6e The legacy adapter retired** | `LegacyInstance`, `StartContext`, `StartResult`, `RunRecipe`, `Ready`, `RunObject`, `HandoffRequest`, `RtWriter`, `HandoffConsumer`, `HandoffAdapter`, `ThreadHandoffs`, `NodeTypeOf`, `NodeConfig::start`; `src/pipewire/handoffs.cpp` and its header, `main.cpp`'s `ThreadHandoffs`, the type harness's `FakeHandoff`/`FakeHandoffs` and `runObject()` (`node_harness.cpp`); `handoff_test.cpp`; `docs/writing-a-node-type.md#the-old-interface` | None | The tree builds without them and every test passes; no name of them is left under `src/` or `test/` |
 | **S3c.7 The log patch** | Section 9 as written, with 0.4's stamp; `kLogReach`, `kLogLag` and `inLoss`'s lag go; the system tests' `Lost sync` matching by size and their `stepsInLoss` bound become matching by place (`docs/testing.md#the-librarys-own-word`) | The library's lines become `log` records naming their node | Section 13's S3c.7 list; U2's count of unattributed lines. Revert proof: without the patch, the two-node attribution test fails |

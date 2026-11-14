@@ -17,35 +17,34 @@
 #include "ear/core/loop.hpp"
 #include "ear/core/node_handle.hpp"
 #include "ear/core/node_type.hpp"
+#include "ear/core/source.hpp"
 #include "ear/core/store.hpp"
-#include "event_fd.hpp"
-#include "feed.hpp"
 #include "key_store.hpp"
-#include "mailbox.hpp"
 #include "sendspin/client.h"
 #include "sendspin/player_role.h"
 #include "sendspin/source_role.h"
-#include "sendspin_code.hpp"
+#include "sendspin_clock.hpp"
 #include "settings.hpp"
 #include "to_server.hpp"
 namespace ear::nodes::sendspin {
-/// The lead a player reports (spec "required_lead_time_ms": at least what still plays after a stream/clear): all a feed
-/// of `feedFrames` holds, and the block being played. The library reports its own pipeline's lead if that is larger.
-std::uint16_t requiredLeadMs(std::uint32_t feedFrames, std::uint32_t maxBlock, SampleRate rate) noexcept;
+/// The lead a player reports (spec "required_lead_time_ms": at least what still plays after a stream/clear): all a
+/// source ring of `sourceFrames` holds, and the block being played. The library reports its own pipeline's lead if
+/// that is larger.
+std::uint16_t requiredLeadMs(std::uint32_t sourceFrames, std::uint32_t maxBlock, SampleRate rate) noexcept;
 /// The player's buffer in the library's inbound ring (PlayerRoleConfig::audio_buffer_capacity), which the worker sets:
-/// the library's default, named here because the feed's undrained bound is derived from it.
+/// the library's default, named here because the clock's undrained bound is derived from it.
 inline constexpr std::size_t playerBufferBytes = ::sendspin::PlayerRoleConfig::DEFAULT_AUDIO_BUFFER_CAPACITY;
 /// The player's one format: the graph frequency (spec "player@v1", the server resamples) and one depth, so nothing the
 /// sync thread writes can change depth under it: on_audio_write carries no format, and a stream/start reaches the
 /// worker while chunks of the last format are still being written.
 inline constexpr std::uint32_t playerBytesPerSample = 3;
 inline constexpr std::uint32_t playerBytesPerFrame = playerBytesPerSample * nodeChannels;
-/// How long the code may leave the feed undrained before its writer stops waiting (docs/node-types.md#clock), derived
-/// from what it protects: the room a server that fills the player's advertised buffer leaves in the library's inbound
-/// ring, at the stream's worst-case byte rate, less the library's wait for room before it closes the connection; and
-/// no less than two feeds' worth (`feedFrames` at `rate`), so a scheduling hiccup never drops. Constant, so a test can
-/// hold its stalls against it at compile time.
-constexpr std::chrono::nanoseconds undrainedBoundFor(SampleRate rate, std::uint32_t feedFrames) noexcept {
+/// How long no tick may drain the source before the clock's writer stops waiting on it (docs/node-types.md#clock),
+/// derived from what it protects: the room a server that fills the player's advertised buffer leaves in the library's
+/// inbound ring, at the stream's worst-case byte rate, less the library's wait for room before it closes the
+/// connection; and no less than two rings' worth (`sourceFrames` at `rate`), so a scheduling hiccup never paces.
+/// Constant, so a test can hold its stalls against it at compile time.
+constexpr std::chrono::nanoseconds undrainedBoundFor(SampleRate rate, std::uint32_t sourceFrames) noexcept {
 	// The library advertises (N-1)/N of the player's quota to the server as buffer_capacity, N being 3
 	// (player_role.cpp, AUDIO_BUFFER_ADVERTISE_DENOMINATOR at the pinned commit), so a server that fills it leaves a
 	// third of the quota for what arrives while nothing is taken. A ring that cannot take a message within 100 ms
@@ -56,7 +55,7 @@ constexpr std::chrono::nanoseconds undrainedBoundFor(SampleRate rate, std::uint3
 	constexpr std::int64_t room = static_cast<std::int64_t>(playerBufferBytes) / advertiseDenominator;
 	const std::int64_t bytesPerSecond = std::int64_t{rate.hz()} * playerBytesPerFrame;
 	const std::chrono::nanoseconds lasts{room * 1'000'000'000 / bytesPerSecond};
-	const std::chrono::nanoseconds floor{FrameClock(rate).ns(std::int64_t{feedFrames} * 2)};
+	const std::chrono::nanoseconds floor{FrameClock(rate).ns(std::int64_t{sourceFrames} * 2)};
 	return std::max<std::chrono::nanoseconds>(lasts - acquireTimeout, floor);
 }
 
@@ -76,11 +75,12 @@ private:
 /// What the worker's state is made with, in configure (on the main loop): references the configuration keeps until
 /// teardown step 5, after the state is destroyed.
 struct WorkerParts {
-	NodeHandle& handle; // the configuration's: notes and losses
-	Store& keys;        // the key file, open and trusted once the node is configured
-	Feed& feed;         // what the library's sync thread writes
-	PlayerSlot& player; // lent to the notifier
-	Loop& self;         // the worker loop, its 10 ms tick
+	NodeHandle& handle;   // the configuration's: notes and losses
+	Store& keys;          // the key file, open and trusted once the node is configured
+	SendspinClock& clock; // what the library's sync thread writes through, and the stream's end told to
+	SourceWriter& writer; // the source's: its size, and the writer's idle
+	PlayerSlot& player;   // lent to the notifier
+	Loop& self;           // the worker loop, its 10 ms tick
 	SendspinSettings settings;
 	AudioFormat format;
 };
@@ -136,12 +136,13 @@ private:
 
 	NodeHandle& handle_;
 	Store& keys_;
-	Feed& feed_;
+	SendspinClock& clock_;
+	SourceWriter& writer_;
 	PlayerSlot& player_;
 	Loop& self_;
 	SendspinSettings settings_;
 	AudioFormat format_;
-	std::vector<float> scratch_;           // the sync thread's; a feed's worth of floats
+	std::vector<float> scratch_;           // the sync thread's; a ring's worth of floats
 	std::atomic<bool> streamAsked_{false}; // the stream's format is the one the node listed
 	bool streaming_ = false;               // worker only
 	bool saidDialling_ = false;            // worker only
@@ -155,55 +156,27 @@ private:
 	std::unique_ptr<::sendspin::SendspinClient> client_;
 };
 
-/// What the notifier tells the library, from two tellers (docs/node-types.md#clock): the code's frames (its mailbox),
-/// and those the feed's writer played into nothing while no cycle drained it. One report: the frames of both since the
-/// last, dated by the code's finish when the code played anything since (the graph is live), else by the feed's, and
-/// never earlier than the last finish told: where the two tellers meet, a finish that would step back is held at the
-/// last (counted, clamped()). Dropped frames of a stream since ended are not told: the library forgot them. Pure: the
-/// notifier's state, and the tests'.
-class PlayedTeller {
-public:
-	struct Report {
-		std::uint32_t frames;
-		std::int64_t finishRawNs;
-		bool clamped; // the finish was held at the last one told
-	};
-	/// What to tell now, if anything.
-	std::optional<Report> next(const std::optional<PlayProgress>& code, const Feed::Dropped& dropped) const noexcept;
-	/// That report was told (the player took it): what it counted is told, and its finish is the last.
-	void told(const std::optional<PlayProgress>& code, const Feed::Dropped& dropped, const Report& report) noexcept;
-	/// Test seam: the reports told whose finish was held at the last, which no teller should ever cause.
-	std::uint64_t clamped() const noexcept { return clamped_; }
-
-private:
-	std::uint64_t reported_ = 0;        // of the code's frames
-	std::uint64_t reportedDropped_ = 0; // of the feed's dropped frames
-	std::optional<std::int64_t> lastFinish_;
-	std::uint64_t clamped_ = 0;
-};
-
-/// The notifier loop's state: tells the library what played, one call per ring of the code's bell. Apart from the
-/// worker, whose writes sync to disk: a late notify can cost a hard sync. Made in configure; begin() watches the bell
+/// The notifier loop's state: tells the library what played, one call per ring of the clock's wake. Apart from the
+/// worker, whose writes sync to disk: a late notify can cost a hard sync. Made in configure; begin() watches the wake
 /// once the node is configured; destroyed on its loop at teardown step 4, the watch with it.
 class Notifier {
 public:
-	/// `bell` and `progress` (the code's), `feed` (what its writer dropped) and `player` outlive the state.
-	Notifier(Loop& self, const EventFd& bell, const Mailbox<PlayProgress>& progress, const Feed& feed,
-	         PlayerSlot& player) noexcept;
+	/// `clock` (the source's) and `player` outlive the state.
+	Notifier(Loop& self, SendspinClock& clock, PlayerSlot& player) noexcept;
 	/// The notifier loop, once.
 	void begin();
-	/// Test seam, any thread: the reports told whose finish was held at the last (PlayedTeller::clamped).
-	std::uint64_t clamped() const noexcept { return clamped_.load(std::memory_order_acquire); }
+	/// Test seam, any thread: the reports told whose finish was earlier than the last told. Only what lies downstream
+	/// shrinking may make one (docs/node-types.md#clock): the clock's one timeline never steps back otherwise.
+	std::uint64_t steppedBack() const noexcept { return steppedBack_.load(std::memory_order_acquire); }
 
 private:
 	void notify();
 	Loop& self_;
-	const EventFd& bell_;
-	const Mailbox<PlayProgress>& progress_;
-	const Feed& feed_;
+	SendspinClock& clock_;
 	PlayerSlot& player_;
-	PlayedTeller teller_;
-	std::atomic<std::uint64_t> clamped_{0};
+	std::uint64_t reported_ = 0; // the clock's count as last told
+	std::optional<std::int64_t> lastFinish_;
+	std::atomic<std::uint64_t> steppedBack_{0};
 	std::unique_ptr<Timer> watch_;
 };
 } // namespace ear::nodes::sendspin

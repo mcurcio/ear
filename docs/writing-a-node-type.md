@@ -364,7 +364,8 @@ engine and the harness both run, so a type's tests and the engine never disagree
   rule broken (`start-failed`), and so is `frames == 0` or a source on any other bank (which does
   not compile).
 
-No shipped type uses a source yet: `sendspin`'s feed moves onto one next.
+`sendspin` plays the server's audio through one, with its own clock
+([node-types.md](node-types.md#clock)).
 
 ### A source's clock
 
@@ -383,7 +384,10 @@ the harness) runs in this order:
 
 1. A clear asked for is applied: the ended stream's next 5 ms queued to play faded, the rest dropped.
 2. `clock.skipBefore(tick, held)` is asked how much of the current stream to drop unplayed:
-   `held.frames` is what the ring holds of it, `held.clearing` whether this tick applied a clear.
+   `held.frames` is what the ring holds of it, `held.clearing` whether this tick applied a clear,
+   and `held.clears` how many clears the ring has applied so far (every `clear()` counts once, and
+   the first tick after a stop counts those it forgot unapplied, saying no clear), so a clock that
+   counts by stream knows exactly which stream `frames` and this tick's frames are of.
    The ring drops **min(answer, held.frames)**, and **nothing on a clearing tick** (a clear ends the
    stream: nothing of the next is skipped for the old one's lost time). Any answer is allowed; the
    clock reads the tick's facts (`tick.cycle.facts`: a `catchUp` and its `jumpFrames`,
@@ -690,7 +694,7 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
 ## Latency
 
 A type declares only **its own** latency: how long its code holds audio between an input bank and
-an output bank (`sendspin`'s feed). The framework carries everything else, a companion's included
+an output bank. The framework carries everything else, a companion's included
 (an RTP receiver's buffer, a source's ring, as latency beyond its bank):
 a pass-through's pair forwards what lies beyond it, each block tells its linked ports, and the code
 reads the latency downstream of its outputs in `GraphCycle`

@@ -43,10 +43,10 @@ struct JudgePlan {
 
 /// Why a library past the graph realigns itself, which the test saw the evidence of (docs/testing.md#the-cycle-judge).
 enum class LibrarySettle : std::uint8_t {
-	dry,       // a dry cycle: the feed's own count moved
-	unskipped, // a catch-up's jump the feed did not hold whole: the node skipped what it held, the library the rest
+	dry,       // a dry cycle: the node's own count of short reads moved
+	unskipped, // a catch-up's jump the node's ring did not hold whole: it skipped what it held, the library the rest
 	logged,    // a correction or loss of sync the library logged itself
-	dropped, // the feed, left undrained past its bound, played the library's audio into nothing and skipped what it held
+	dropped, // left undrained past its bound, the node played the library's audio into nothing and skipped what it held
 };
 
 enum class Verdict : std::uint8_t {

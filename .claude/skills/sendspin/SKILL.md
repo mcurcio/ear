@@ -70,19 +70,22 @@ operate it, and what bites.
 
 `sendspin` is a class on the framework (`sendspin_spec.hpp`: `spec`, `Sendspin`; `docs/writing-a-node-type.md#the-class`).
 Its `configure` claims a listening node's port (`claim::TcpListen`, judged across every node and probed before anything
-opens), takes the key store, makes the feed, gives its two dedicated loops their states (`Worker`, `Notifier`, nothing armed),
-posts their `begin()` (staged until the node is configured), names the worker's `ToServer` as the consumer of the sink on
-`to_server` (`consumedBy(worker, &Worker::toServer)`) and uses `SendspinNodeCode`. It has no `start()` or `stop()`: the
+opens), takes the key store, makes the source on `from_server` with its clock (`SendspinClock`, which the source owns),
+gives its two dedicated loops their states (`Worker`, `Notifier`, nothing armed), posts their `begin()` (staged until the
+node is configured), names the worker's `ToServer` as the consumer of the sink on `to_server`
+(`consumedBy(worker, &Worker::toServer)`) and uses the framework's pass-through (`from_server` to `from`, `to` to
+`to_server`). It has no `start()` or `stop()`: the
 client is the configuration's. What that means to an operator (the owner's answer, Q-3c1):
 
 - **A stop keeps the connection.** `node.stop` fades and silences the node's code, and nothing else: the worker, the
   connection, the pairing and the library keep running, so Music Assistant still lists the player with its roles. Its
-  outputs are silent, nothing it is sent is played (past the feed's undrained bound what it is sent is played into
-  nothing and reported played: `docs/node-types.md#clock`), and the sink takes nothing. `node.start` drives
-  the code again, with no code asked. While stopped past the feed's undrained bound (its value and derivation:
-  `docs/node-types.md#clock`) the feed plays what the library writes into nothing at the graph's rate and the notifier
-  tells it, so a live stream neither pins the library's inbound ring (which closes the connection: "ring pinned behind
-  held items") nor stays in its priming; the first cycle back takes the feed back and skips its stale contents.
+  outputs are silent, nothing it is sent is played (the source drops what it held at the stop's silence; past the
+  clock's undrained bound what it is sent is played into nothing and reported played: `docs/node-types.md#clock`), and
+  the sink takes nothing. `node.start` drives the code again, with no code asked. While stopped past the bound (its
+  value and derivation: `docs/node-types.md#clock`) the library's writes take the clock's one timeline over and are
+  paced into nothing at the graph's rate, each told, so a live stream neither pins the library's inbound ring (which
+  closes the connection: "ring pinned behind held items") nor stays in its priming; the first tick back takes the
+  timeline back and plays on from the pacer's time.
   Nothing reaches `to_server` while stopped, so the server's source goes quiet.
 - **A restart, a disable or a removal drops it.** The configuration is torn down: the sink drains, then the worker's
   state, destroyed on its loop, says goodbye (`shutdown`) and stops the client; a restart or an enable builds a new client
@@ -113,18 +116,24 @@ client is the configuration's. What that means to an operator (the owner's answe
 ## Threads and clock
 
 - **The library never touches a realtime thread or PipeWire's main loop.** `notify_audio_played` and `write_audio` take
-  mutexes on host; `stop()` and the destructor can wait. So: feed (network to audio), a sink (audio to network), mailboxes
-  and a bell the notifier loop watches.
+  mutexes on host; `stop()` and the destructor can wait. So: a source (network to audio) whose clock the sync thread
+  writes through, a sink (audio to network), and the source's clock wake the notifier loop watches.
+- **One owner of the played timeline** (`SendspinClock`, `docs/node-types.md#clock`): the tick advances it while the
+  graph drains the source, the library's own writes past the bound; a hand-over is one compare-and-swap of an owner
+  word, never two tellers merged. The feed, `SendspinCode` and `PlayedTeller` it replaced (S3c.6b) kept them apart and
+  reconciled them after the fact, and three review rounds found hand-over and timeline bugs between them. **A pacer a
+  block behind now makes the library hunt**: it hard-syncs at 5 ms, so a reach 5.3 ms behind now made it drop and add
+  silence each chunk while paced; the reach is now, and a tick back from the pacer tells only once it ends past it.
 - **Audio time is the graph's.** The library is told when frames play from the cycle's start on the raw clock
   (`GraphCycle::startRawNs`, which the framework makes by sampling both clocks; the code reads no clock), never from when the
   thread woke. Wake time failed the spike: 52% within 1 ms against 100%.
 - **The node's clock is an honest sink with a local skip** (`docs/node-types.md#clock`, the timing model's rule 3). It plays
-  every frame in order. On a cycle whose facts say `catchUp` or `absent` (a pause) it skips the jump as far as the feed
-  holds it, on that cycle, overdue or not, counted played; any other cause (a driver change, a jump back, a drive, the
+  every frame in order. On a cycle whose facts say `catchUp` or `absent` (a pause) it skips the jump as far as the
+  source holds it, on that cycle, overdue or not, counted played; any other cause (a driver change, a jump back, a drive, the
   cycle after an oversized one) is a new clock, and a clearing cycle skips nothing of the next stream. Not counting a skip
   costs 25 ms (the library sees -5.3 ms, drops a chunk and inserts silence). **Never tell the library a frame ear did not
   take from what it wrote**: it subtracts what it is told from what it wrote and clamps at zero with a `Buffered frames
-  underflow` warning (`sync_task.cpp`, `process_playback_progress`). What the feed did not hold of a jump is the
+  underflow` warning (`sync_task.cpp`, `process_playback_progress`). What the source did not hold of a jump is the
   library's: it sees it in the next finish it is told and corrects once at its next chunk's sync. No debt, no model of
   the library: the earlier wrapper (339149bf53 to a96f841750) owed that remainder from the library's next writes and kept `LibraryView` to know when it
   could, and both correcting the same lost time was the bug class it existed to fence off.
@@ -140,7 +149,9 @@ client is the configuration's. What that means to an operator (the owner's answe
   library's playtime runs open loop and trails now, so the floor patch stays with the deferral (below).
   Before cycle facts the code worked the skip out from the position itself, and took a stall past the feed for a change
   of driver.
-- **The feed is small on purpose**, about 43 ms at 48 kHz: with 2.7 s a correction lands 2.7 s late.
+- **The source's ring is small on purpose**, about 43 ms at 48 kHz: with 2.7 s a correction lands 2.7 s late. It fades
+  at its edges: an underrun decays and the audio after it fades in over 5 ms (the clock tests read those frames as the
+  stream's).
 - **No card moves the clock** (`docs/engine.md#the-internal-clock`): the internal clock (the dummy driver)
   always drives and tracks the raw clock, and a linked card follows it. Before, a card joining sent the position from 2.3e10 to
   0 and losing it forward by 2.3e10; a driver change is a new clock to the code (`GraphCycle::facts` says
@@ -150,8 +161,8 @@ client is the configuration's. What that means to an operator (the owner's answe
   `from` outputs (`GraphCycle::downstream`), which the card block's pass-through carries back from the card's playback node
   (one quantum plus its headroom; 256 frames on the test card), in the finish time. Only routed paths count: unrouted, or
   routed to a `file` node, it is 0. A resampler before the card and anything past the card are left to the output delay in
-  Music Assistant, which the library keeps in the key file. The node declares its feed (0 to its size) as the latency on
-  its path from `from_server` to `from`. PipeWire 1.4.2 never tells a block a port's last link went, so after a card is lost the old latency stays until a
+  Music Assistant, which the library keeps in the key file. The source adds its ring (0 to its size) as latency beyond
+  `from_server`, which the pass-through carries to `from`. PipeWire 1.4.2 never tells a block a port's last link went, so after a card is lost the old latency stays until a
   new card reports (the `pipewire-engine` skill's latency trap).
 - **One format, FLAC 24.** The library's sync thread gives ear audio with no format beside it, and a `stream/start` reaches the
   worker out of step with it, so a server changing depth mid-stream would turn it to noise if a second depth were listed.
@@ -219,7 +230,7 @@ Thrown away; its numbers are in `docs/node-types.md#library-facts-and-carried-pa
   5 ms late, so a catch-up of 154 ms skipped two 96 ms chunks, overshot by 37 ms and filled that with silence: two steps.
   The patch decodes first and skips only a chunk whose last frame is late (`SyncTask::chunk_too_late`); the hard sync
   drops the late front of the next, one step, no silence. It is the path the library's one correction after a stall past
-  the feed takes, as after a network gap: both are the library's own behaviour made right for any sink.
+  the source takes, as after a network gap: both are the library's own behaviour made right for any sink.
 - **Each patch has a deterministic test in the library's suite**, ear's build compiles none of them: `PlayerHardSync.
   AnEstimateWithFramesBufferedIsNotFloored` (the floor), `AChunkIsTooLateOnlyOnceItsLastFrameIs` and
   `AChunkLateAtItsStartGetsItsFrontDropped` (the late chunk). Reverting either patch's change alone fails its tests;
@@ -267,10 +278,10 @@ Thrown away; its numbers are in `docs/node-types.md#library-facts-and-carried-pa
   the clamp-idle row (a shrinking downstream latency is told as it is); the clamp taken out fails the bound's row.
 - **What the stall tests measured on the dev host** (20 runs each beside four busy threads on four cores): every burst
   was cut, one catch-up of the whole stall, never an overdue cycle, so the uncut shape has not run here. The library's
-  correction was the stall's lost frames less the feed's 2048, plus the zeros ear played (0 to 512), within 4 frames;
+  correction was the stall's lost frames less the ring's 2048, plus the zeros ear played (0 to 512), within 4 frames;
   a 200 ms stall is about 8700 frames, a 1 s one about 52000 upstream and 46000 in the block; a 1.5-cycle hiccup was
   skipped whole and corrected nothing. Under heavier load (another suite beside them, load 8 to 10) the library once
-  followed its correction with a settle step of one block and once of two, neither with a dry or empty-feed cycle
+  followed its correction with a settle step of one block and once of two, neither with a dry or empty-ring cycle
   between them (the test now fails such a step, listing the cycles between), and host-starved runs failed the run's 1%
   blend bound; a timing test that fails on a loaded host is rerun
   alone before the code is suspected.
@@ -375,12 +386,12 @@ The server reads commands from its standard input. On `connected <id>`, type `pa
 - **The clock tests judge every cycle through the one cycle judge** (`docs/testing.md#the-cycle-judge`). A cycle's timing
   is judged when the judge judged it whole, 3 s into the ramp, outside a library settle and a loss of sync the library
   logged, and a test plays a 90 s stream until it has judged 750; the steady tests make the judge's four 1.5-cycle
-  stalls upstream of the node meanwhile, and judge the next whole cycle after each (the feed holds each, and ear skips
-  it exactly). A library settle is declared only where the library realigns itself (a dry cycle, by the feed's own
-  count `dryReads()`; a catch-up's jump the feed did not hold whole, `unskipped`; a hard sync or loss it logged), two
+  stalls upstream of the node meanwhile, and judge the next whole cycle after each (the ring holds each, and ear skips
+  it exactly). A library settle is declared only where the library realigns itself (a dry cycle, by the clock's own
+  count `dryTicks()`; a catch-up's jump the ring did not hold whole, `unskipped`; a hard sync or loss it logged), two
   of its chunks long. Before playing they wait for the internal clock to reach the raw clock's rate over the whole cycles of two
   seconds, and fail naming it if it never does. Every step and stretch of silence is accounted for by the code's skips,
-  worked out from each cycle's facts, what the feed held (`lastHeldAtStart()`, checked against `lastSkipped()`) and
+  worked out from each cycle's facts, what the ring held (`lastHeld()`, checked against `lastSkipped()`) and
   what it lacked (`dryFrames()`), by a
   settle's evidence, or by the library's own lines, read from standard error at verbose
   (`docs/testing.md#the-librarys-own-word`): `Hard sync: dropping/adding <n> frames`, and whole late chunks it skips
@@ -400,7 +411,7 @@ The server reads commands from its standard input. On `connected <id>`, type `pa
 - **A comma in a Catch filter means OR, and a filter that matches nothing exits 0.** A probe that filters on a name holding a
   comma can stay green having run nothing. CTest takes these names as they are. Keep `;` out of test names.
 - The ramp: left is the low 16 bits of the frame index and right the high 16, so FR's meter is silent for its first 1.4 s.
-- **A clock error past 100 us leaves a fractional frame in the WAV, without a bug.** The library averages two frames, at most once a chunk (4608 frames): `n-1`, the blend of `n-1` and `n`, `n` to add one, and `n-1`, the blend of `n` and `n+1`, `n+2` to drop one, a step of 3. `checkRamp` passes only those, and counts them in `blends`; a red prints them. To force some, add 150 us to the finish `SendspinCode::process` publishes, for instance every other 24000 frames. The averages at the low word's wrap are not `k + 0.5`, because each channel is a signed sample: left -0.5 at both `0x7FFF` and `0xFFFF`, and right `h + 0.5` at `0xFFFF` (`docs/node-types.md#library-facts-and-carried-patches`).
+- **A clock error past 100 us leaves a fractional frame in the WAV, without a bug.** The library averages two frames, at most once a chunk (4608 frames): `n-1`, the blend of `n-1` and `n`, `n` to add one, and `n-1`, the blend of `n` and `n+1`, `n+2` to drop one, a step of 3. `checkRamp` passes only those, and counts them in `blends`; a red prints them. To force some, add 150 us to the finish `SendspinClock::played` publishes, for instance every other 24000 frames. The averages at the low word's wrap are not `k + 0.5`, because each channel is a signed sample: left -0.5 at both `0x7FFF` and `0xFFFF`, and right `h + 0.5` at `0xFFFF` (`docs/node-types.md#library-facts-and-carried-patches`).
 - `mdns.h` and the library parse what any peer sends, unfuzzed, inside the audio process: a crash silences every node.
 
 ## NOT RUN: the real Music Assistant

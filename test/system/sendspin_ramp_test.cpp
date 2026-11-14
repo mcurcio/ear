@@ -94,6 +94,47 @@ TEST_CASE("A clean ramp is all exact frames with no blend", "[system][sendspin][
 	CHECK(ramp.lastRunFrames == 999);
 }
 
+namespace {
+
+/// Ramp frame `index` as the sendspin node's source fades it, at gain `g` of 240 (the ring's float gain), in units.
+Units faded(std::uint32_t index, int g) {
+	const Units frame = whole(index);
+	const float gain = static_cast<float>(g) / 240.0F;
+	return {frame[0] / 32768.0F * gain * 32768.0F, frame[1] / 32768.0F * gain * 32768.0F};
+}
+
+} // namespace
+
+// docs/writing-a-node-type.md#sources: the node's source fades at its edges. An underrun decays from the last frame
+// played (that frame first, at full gain), and the audio after it fades in over 5 ms (its first frame at gain 0), the
+// stream's own frames in order; a clear plays 5 ms of the ended stream faded out. None is a step, a bad frame or a
+// blend, even where a faded frame happens to be exact; a frame faded off the ramp's place still is bad.
+TEST_CASE("The source's fades are its own: a decay, a fade-in and a clear's tail are neither steps nor bad frames",
+          "[system][sendspin][ramp]") {
+	std::vector<Units> frames = run(1000, 2000);
+	for (int g = 240; g > 0; --g) frames.push_back(faded(1999, g)); // the decay from the last frame played
+	frames.insert(frames.end(), 100, Units{0.0F, 0.0F});            // the ring dry
+	for (int g = 0; g < 240; ++g) frames.push_back(faded(2000 + static_cast<std::uint32_t>(g), g)); // fades in
+	frames = joined({frames, run(2240, 3000)});
+	for (int g = 240; g > 0; --g) frames.push_back(faded(3000 + static_cast<std::uint32_t>(240 - g), g)); // the tail
+	const RampCheck ramp = check(frames);
+	INFO(ramp);
+	CHECK(ramp.badSteps == 0);
+	CHECK(ramp.badFrames == 0);
+	CHECK(ramp.blends == 0);
+	CHECK(ramp.fades == 240 + 240 + 239); // the tail's first frame, at full gain, is the stream's exact frame
+	CHECK(ramp.zeroFramesInside == 100);
+	CHECK(ramp.lastIndex == 3000);
+	// A fade-in of the wrong frames (two frames on from where the stream is) is no fade of the stream.
+	std::vector<Units> off = run(1000, 2000);
+	off.insert(off.end(), 100, Units{0.0F, 0.0F});
+	for (int g = 1; g < 240; ++g) off.push_back(faded(2002 + static_cast<std::uint32_t>(g), g));
+	off = joined({off, run(2240, 2400)});
+	const RampCheck wrong = check(off);
+	INFO(wrong);
+	CHECK(wrong.badFrames + wrong.badSteps > 0);
+}
+
 TEST_CASE("A whole frame that is not the next one, by a step no skip makes, is a bad step",
           "[system][sendspin][ramp]") {
 	const RampCheck ramp = check({whole(100), whole(103), whole(104)});
@@ -374,9 +415,9 @@ TEST_CASE("A skip is paid by the first record written after its cycles were lost
 
 namespace {
 
-/// A ramp the file node recorded across one stall of the whole graph past the sendspin node's feed, its frame 0 at the
+/// A ramp the file node recorded across one stall of the whole graph past the sendspin node's ring, its frame 0 at the
 /// fixed instant: a second of ramp; the stall, `stallBlocks` blocks of the WAV's time lost, of which the node skipped
-/// the 8 its feed held (docs/node-types.md#clock); 20 blocks of what the feed held, then 64 zeros (the feed dry); then
+/// the 8 its ring held (docs/node-types.md#clock); 20 blocks of what the ring held, then 64 zeros (the ring dry); then
 /// the library's one correction of the rest and of the zeros, a hard sync it logged. Then, `dropAfterMs` after the
 /// stall ended, one block dropped with no cut behind it (a product bug), unless `dropAfterMs` is negative; then half a
 /// second more.
@@ -388,16 +429,16 @@ struct StalledRamp {
 
 StalledRamp stalledRamp(std::uint32_t stallBlocks, std::int64_t dropAfterMs) {
 	constexpr std::uint32_t first = 1000; // index 0 is silent
-	constexpr std::uint32_t feedBlocks = 8;
+	constexpr std::uint32_t ringBlocks = 8;
 	constexpr std::uint32_t zeros = 64;
 	const std::uint32_t second = graphFrequency;
 	const std::uint32_t stall = stallBlocks * blockSize;
 	std::vector<Units> frames = run(first, first + second);
-	std::uint32_t index = first + second + feedBlocks * blockSize; // the node's skip of what its feed held
+	std::uint32_t index = first + second + ringBlocks * blockSize; // the node's skip of what its ring held
 	frames = joined({frames, run(index, index + 20 * blockSize)});
 	index += 20 * blockSize;
 	frames.insert(frames.end(), zeros, Units{0.0F, 0.0F});
-	index += stall - feedBlocks * blockSize + zeros; // the library's correction: the rest of the stall, and the zeros
+	index += stall - ringBlocks * blockSize + zeros; // the library's correction: the rest of the stall, and the zeros
 	if (dropAfterMs >= 0) {
 		const auto upTo = static_cast<std::uint32_t>(second + dropAfterMs * graphFrequency / 1000 - frames.size());
 		frames = joined({frames, run(index, index + upTo)});
@@ -409,13 +450,13 @@ StalledRamp stalledRamp(std::uint32_t stallBlocks, std::int64_t dropAfterMs) {
 
 } // namespace
 
-// After a stall past the sendspin node's feed the WAV loses the whole stall, but the node skips only what its feed held
+// After a stall past the sendspin node's ring the WAV loses the whole stall, but the node skips only what its ring held
 // and the library corrects the rest (docs/node-types.md#clock). Each loss is taken as the time the WAV lost there
 // (rampLosses), so the stall's record pays the stall whole with nothing to spare, and a block dropped after it with no
 // cut behind it is paid by nothing: deny by default (docs/testing.md#the-counters-own-word). Revert proof: losses from
 // the skips alone (rampLosses counting only each skip's own blocks) put the drop's window early by the rest of the
 // stall, and the stall's record pays the drop from its spare cycles: the unpaid checks below fail.
-TEST_CASE("A block dropped after a stall past the feed is paid by no record of the stall, and the stall is paid whole",
+TEST_CASE("A block dropped after a stall past the ring is paid by no record of the stall, and the stall is paid whole",
           "[system][sendspin][ramp][skips]") {
 	const RecordTime at{std::chrono::seconds(1'800'000'000)};
 	constexpr std::uint32_t stallBlocks = 180; // 960 ms
@@ -435,16 +476,16 @@ TEST_CASE("A block dropped after a stall past the feed is paid by no record of t
 		INFO(json(unpaid).dump());
 		CHECK(unpaid.size() == 1);
 		if (!unpaid.empty()) CHECK(unpaid[0].starts_with("a skip of 1 blocks at frame "));
-		// A red carries each unpaid skip's evidence: its blocks and charge, the drift in its window, whether the feed ran
+		// A red carries each unpaid skip's evidence: its blocks and charge, the drift in its window, whether the ring ran
 		// dry there, and the library's sync lines in its due window. The library's line came as the stall ended.
 		const json lostSync = {
 			{"kind", "log"}, {"t", lossRecord(stalled.stallEndMs + 50, 0)["t"]}, {"text", "Lost sync (-60000us off)"}};
 		const auto told = unpaidRampSkipsOf({stallRecord, lostSync}, at, ramp);
 		REQUIRE(told.size() == 1);
 		CHECK(told[0].find("evidence: skipped 1 blocks, charged 1 blocks (256 frames)") != std::string::npos);
-		CHECK(told[0].find("zeros: none (the feed never ran dry there)") != std::string::npos);
+		CHECK(told[0].find("zeros: none (the ring never ran dry there)") != std::string::npos);
 		CHECK(told[0].find("sync lines: none") != std::string::npos);
-		// Unpaid, the stall shows its whole charge, the zeros of the feed running dry and the library's line.
+		// Unpaid, the stall shows its whole charge, the zeros of the ring running dry and the library's line.
 		const auto stallTold = unpaidRampSkipsOf({lostSync}, at, ramp);
 		REQUIRE(stallTold.size() == 2);
 		INFO(stallTold[0]);

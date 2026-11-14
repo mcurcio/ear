@@ -716,9 +716,10 @@ The pairs are the pass-through's, so a card block forwards the card's playback l
 `latencyMs` is its `beyond` entry on `from_rtp` (`moduleRunDelay`; rtp-source's ports report zero,
 not the buffer, resampling or not),
 which the framework adds and `rtp`'s pass-through carries to `stream`. A configuration declares its
-own with `declareLatency`: `sendspin` its feed on its path from `from_server` (its inside bank of
-what the server sends) to `from`, and nothing on its path from `to` to `to_server` (its sink's
-bank), so the sink's chunks carry what lies upstream of `to`. Frames are at the
+own with `declareLatency` (no shipped type does today); `sendspin`'s source on `from_server` (its
+inside bank of what the server sends) adds its ring beyond that bank, which its pass-through carries
+to `from`, and its pair from `to` to `to_server` (its sink's bank) adds nothing, so the sink's
+chunks carry what lies upstream of `to`. Frames are at the
 graph frequency. ALSA's playback node reports one quantum plus its headroom (`alsa-pcm-sink.c`,
 `alsa-pcm.c`): 256 frames on the test card at a 256 quantum.
 

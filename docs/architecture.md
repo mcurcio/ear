@@ -455,12 +455,13 @@ count that kept it is deleted, and a source with a clock of its own keeps its ti
    network sender, a sound card) reconciles that clock with the tick inside itself: buffering,
    rate matching, drift, and recovery after lost ticks. A card's ALSA node and an RTP receiver do
    it in PipeWire ([engine.md](engine.md#sound-cards), [engine.md](engine.md#rtp-receivers));
-   `sendspin` does it in its code ([node-types.md](node-types.md#clock)); a type's source does it
-   in the `SourceClock` it gives the source, which alone decides what the ring skips
-   ([writing-a-node-type.md](writing-a-node-type.md#a-sources-clock)). A node's own-clock side may
-   keep time without the tick through a stop or a host stall: past its feed's bound, `sendspin`
-   plays what its library writes into nothing at the graph rate and tells it so, so the library is
-   never held back by a graph that does not tick (the rule's home: [node-types.md](node-types.md#clock)).
+   a type's source does it in the `SourceClock` it gives the source, which alone decides what the
+   ring skips ([writing-a-node-type.md](writing-a-node-type.md#a-sources-clock)): `sendspin`'s
+   `SendspinClock` ([node-types.md](node-types.md#clock)). A node's own-clock side may keep time
+   without the tick through a stop or a host stall: past its bound with no tick, `sendspin`'s clock
+   plays what its library writes into nothing at the graph rate and tells it so, on the same one
+   timeline the ticks advance, so the library is never held back by a graph that does not tick (the
+   rule's home: [node-types.md](node-types.md#clock)).
 4. **One rate inside the graph.** Every port in the graph runs at the graph rate, and conversion
    happens only in edge nodes. The rate is configurable (`graph { rate 48khz; }` in `ear.conf`, the
    `--rate` flag as fallback: [boot](#boot)) but fixed for the engine's life, and it is
@@ -480,16 +481,10 @@ count that kept it is deleted, and a source with a clock of its own keeps its ti
 **Where the code still departs**, each removed by
 [`design/timing-model.md`](design/timing-model.md):
 
-- `sendspin`'s clock follows the model (an honest sink with a local skip of lost time, its
-  reports deferred from overdue ticks under a 2 s bound, with `sendspin-starved-floor.patch`:
-  [node-types.md](node-types.md#clock)), but in the node's own code over its own feed, not yet as
-  the `SourceClock` of a source ([writing-a-node-type.md](writing-a-node-type.md#a-sources-clock)).
 - The converter companion has only its module-run mode
   ([engine.md](engine.md#module-run-converters)), whose one user is the RTP receiver: there is no
   set or tracked converter yet for a ring whose clock is a type's own, so only cards and RTP
   receivers convert.
-- `sendspin` is on the type's class with a sink to the server, but not yet a source: the server's
-  audio crosses through the node's own feed, which its code plays into `from`.
 
 ## The node lifecycle
 
@@ -787,7 +782,7 @@ of the process: the record, not the process's end, says when ear's stop is done.
 
 These are designed or wanted but not in the code: routes naming a whole bank; changing a node's
 settings in place without a restart (a type's change version of `configure` compiles but is
-never called); `sendspin`'s server audio on a source (it still plays its own feed); recovery of failed nodes; sound cards opened off the main loop; an internal
+never called); recovery of failed nodes; sound cards opened off the main loop; an internal
 clock anchored to one card; serving PipeWire's socket, a program supervisor and the `airplay`
 type; a login on port 7777; automatic card retry and hotplug; `@include`; undo; changing the graph
 frequency or block size while ear runs; arm64 images; a fault caught at the callback boundary

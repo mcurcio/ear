@@ -135,7 +135,7 @@ SourcePlayed SourceRing::play(std::span<const std::span<float>> bank, const Sour
 	// applies a clear (docs/writing-a-node-type.md#a-sources-clock). With no clock nothing is skipped: the ring keeps
 	// no time of its own (docs/architecture.md#the-timing-model, rule 1).
 	if (clock != nullptr) {
-		const SourceHeld held{.frames = s.held(), .clearing = clearedNow};
+		const SourceHeld held{.frames = s.held(), .clearing = clearedNow, .clears = s.clearsSeen};
 		const std::uint64_t asked = clock->skipBefore(tick, held);
 		if (!held.clearing && asked > 0) {
 			const auto skip = static_cast<std::uint32_t>(std::min<std::uint64_t>(asked, held.frames));
