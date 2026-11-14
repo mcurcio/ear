@@ -51,7 +51,7 @@ struct SourcePlayed {
 struct SourceTick {
 	const GraphCycle& cycle; // the tick and its facts (docs/engine.md#graphcycle): the graph's, at the graph rate
 	std::uint32_t frames;    // ring frames this tick plays: the cycle's (behind a converter, what its resampler asks)
-	std::uint32_t rate;      // the ring's rate: the graph frequency (behind a converter, its node rate)
+	SampleRate rate;         // the ring's rate: the graph frequency (behind a converter, its node rate)
 	Latency playback;        // the most playback latency the block told on the source's bank, in graph frames
 };
 
@@ -179,7 +179,7 @@ public:
 	/// start-failed. A std::logic_error is its own bug: the node fails lost, told as ear.internal-error
 	/// (docs/architecture.md#faults-by-owner).
 	virtual std::unique_ptr<Source> make(const NodeName& node, std::string_view bank, std::uint32_t channels,
-	                                     std::uint32_t capacityFrames, std::uint32_t rate,
+	                                     std::uint32_t capacityFrames, SampleRate rate,
 	                                     std::unique_ptr<SourceClock> clock) = 0;
 
 protected:

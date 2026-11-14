@@ -33,7 +33,7 @@ using namespace std::chrono_literals;
 
 constexpr std::uint32_t kRate = 48000;
 constexpr std::uint32_t kBlock = 256;
-constexpr AudioFormat kFormat{kRate, kBlock};
+constexpr AudioFormat kFormat{ear::SampleRate::fixed<kRate>(), kBlock};
 
 /// The engine; with `faults`, the callback boundary reports to it rather than ending this test program.
 inline std::unique_ptr<Engine> makeEngine(Faults* faults = nullptr) {
@@ -41,7 +41,7 @@ inline std::unique_ptr<Engine> makeEngine(Faults* faults = nullptr) {
 	                         "DBUS_SYSTEM_BUS_ADDRESS"}) {
 		unsetenv(name);
 	}
-	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, kRate, kBlock, faults});
+	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, ear::SampleRate::fixed<kRate>(), kBlock, faults});
 	if (!engine) FAIL("Engine::create: " << engine.error().detail);
 	return std::move(*engine);
 }

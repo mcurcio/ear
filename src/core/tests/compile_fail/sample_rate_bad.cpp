@@ -6,7 +6,10 @@
 #include <cstdint>
 
 #include "ear/core/latency.hpp"
+#include "ear/core/levels.hpp"
+#include "ear/core/node_type.hpp"
 #include "ear/core/sample_rate.hpp"
+#include "ear/core/sink_ring.hpp"
 
 namespace sample_rate_bad {
 
@@ -23,6 +26,11 @@ void control() {
 	const bool same = rate == parsed || rate < parsed;
 	const std::uint32_t edge = rate.hz(); // a library's or the wire's edge
 	takesRate(rate);
+	const AudioFormat format{rate, 256};
+	const SinkRing ring(2, 1024, format.rate);
+	const std::uint32_t window = levelWindowFrames(format.rate);
+	static_cast<void>(ring);
+	static_cast<void>(window);
 	static_cast<void>(ns);
 	static_cast<void>(same);
 	static_cast<void>(edge);
@@ -132,6 +140,44 @@ void bad() {
 	const FrameClock clock(SampleRate::fixed<48000>());
 	const std::int64_t second = clock.ns(SampleRate::fixed<48000>());
 	static_cast<void>(second);
+}
+#endif
+
+#ifdef EAR_CASE_frame_clock_from_integer
+// FrameClock is made only from a rate: its constructor from a number is deleted.
+void bad() {
+	const FrameClock clock(48000);
+	static_cast<void>(clock);
+}
+#endif
+
+#ifdef EAR_CASE_frame_clock_from_unsigned
+void bad() {
+	const FrameClock clock{48000U};
+	static_cast<void>(clock);
+}
+#endif
+
+#ifdef EAR_CASE_format_from_integer
+// The graph's format holds a rate, never a number.
+void bad() {
+	const AudioFormat format{48000, 256};
+	static_cast<void>(format);
+}
+#endif
+
+#ifdef EAR_CASE_sink_ring_at_integer
+// What dates by the rate takes a rate.
+void bad() {
+	const SinkRing ring(2, 1024, 48000);
+	static_cast<void>(ring);
+}
+#endif
+
+#ifdef EAR_CASE_level_window_at_integer
+void bad() {
+	const std::uint32_t window = levelWindowFrames(48000);
+	static_cast<void>(window);
 }
 #endif
 

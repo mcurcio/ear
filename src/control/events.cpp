@@ -102,9 +102,8 @@ double fourDecimals(float value) { return std::round(static_cast<double>(value) 
 } // namespace
 
 json encodeGraph(const GraphView& view) {
-	// A view with no engine's rate (a test's empty read) has lost nothing it could time.
 	const AudioFormat& format = view.engine.format;
-	const std::uint64_t lostMs = format.rate == 0 ? 0 : view.counts.lostMs(FrameClock(format.rate), format.maxBlock);
+	const std::uint64_t lostMs = view.counts.lostMs(FrameClock(format.rate), format.maxBlock);
 	json nodes = json::array();
 	for (const NodeView& node : view.nodes)
 		nodes.push_back(
@@ -115,7 +114,7 @@ json encodeGraph(const GraphView& view) {
 	for (const std::string_view feature : wireFeatures) features.push_back(feature);
 	return {{"protocol", wireProtocol},
 	        {"features", std::move(features)},
-	        {"graphFrequency", view.engine.format.rate},
+	        {"graphFrequency", view.engine.format.rate.hz()},
 	        {"blockSize", view.engine.format.maxBlock},
 	        {"realtime", view.engine.realtime},
 	        {"scheduling", view.engine.scheduling},

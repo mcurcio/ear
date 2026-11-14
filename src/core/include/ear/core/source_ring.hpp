@@ -29,7 +29,7 @@ public:
 
 	/// Main thread. `capacityFrames` is rounded up to a power of two (FrameRing's); `rate` sets the 5 ms fades
 	/// (FrameClock::frames(5 ms), at least 1). `signals` outlives the ring. May allocate; throws std::bad_alloc only.
-	SourceRing(std::uint32_t channels, std::uint32_t capacityFrames, std::uint32_t rate, Signals& signals);
+	SourceRing(std::uint32_t channels, std::uint32_t capacityFrames, SampleRate rate, Signals& signals);
 	~SourceRing();
 	SourceRing(const SourceRing&) = delete;
 	SourceRing& operator=(const SourceRing&) = delete;

@@ -12,6 +12,7 @@
 #include "ear/core/command_error.hpp"
 #include "ear/core/cycle_facts.hpp"
 #include "ear/core/latency.hpp" // Latency, BankPair
+#include "ear/core/sample_rate.hpp"
 namespace ear {
 /// One named group of a node's ports, all one way. Each is "<name>.<member>" (portName). A routable bank's ports are
 /// public: routes name them. An inside bank's ports belong to the port block only: nothing reaches them but the node's
@@ -76,7 +77,7 @@ struct FailureReason {
 };
 std::string_view failureCode(FailureReason::Code code) noexcept; // "engine-refused" | "start-failed" | "lost"
 struct AudioFormat {
-	std::uint32_t rate;
+	SampleRate rate;
 	std::uint32_t maxBlock;
 }; // fixed at boot in M1
 

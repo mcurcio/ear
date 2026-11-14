@@ -48,11 +48,14 @@ struct Rtp {
 
 	Configured configure(CreateOf<spec>& cx, const Checked& s) {
 		// The receive buffer's latency reaches `stream` through the pass-through: the framework puts the receiver's
-		// latencyMs beyond from_rtp (docs/writing-a-node-type.md#engine-companions).
+		// latencyMs beyond from_rtp (docs/writing-a-node-type.md#engine-companions). The sender's rate is its own (the
+		// row's range makes it one), the graph's when the file gives none.
+		const std::optional<SampleRate> sender =
+			s.get<rateRow>().and_then([](auto number) { return SampleRate::of(static_cast<std::uint32_t>(number)); });
 		cx.rtpReceiver(fromRtp, RtpReceiverShape{.address = s.get<addressRow>(),
 		                                         .port = static_cast<std::uint16_t>(s.get<portRow>()),
 		                                         .encoding = s.get<formatRow>(),
-		                                         .rate = s.get<rateRow>().value_or(cx.format().rate),
+		                                         .rate = sender.value_or(cx.format().rate),
 		                                         .latencyMs = s.get<latencyRow>()});
 		cx.use(passThrough({bankPair(fromRtp, stream)}));
 		return Configured::applied();

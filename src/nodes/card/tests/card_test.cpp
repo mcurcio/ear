@@ -23,7 +23,7 @@ using Harness = ear::testing::TypeHarness<card::spec, card::Card>;
 
 /// A harness on a node named "motu" whose settings parsed.
 Harness parsed(const ear::NodeSettings& settings) {
-	Harness harness({.format = {48000, 256}, .node = "motu"});
+	Harness harness({.format = {ear::SampleRate::fixed<48000>(), 256}, .node = "motu"});
 	const auto refused = harness.parse(settings);
 	INFO(settings.dump() << ": " << refused.value_or(""));
 	REQUIRE_FALSE(refused);

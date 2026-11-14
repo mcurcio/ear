@@ -128,7 +128,7 @@ TEST_CASE("A tone sent over RTP to an rtp node lands in the file node's WAV, cha
 	// docs/testing.md#the-senders-own-counter). A tenth's time is when the WAV was first seen to hold it, looked at every
 	// 50 ms: coarse, and later than its frames were due by up to heldByLag. Long enough that a loaded host still leaves a
 	// second alone.
-	const auto reach = receiverReach(ear::FrameClock(graphFrequency), receiverHeadroom);
+	const auto reach = receiverReach(ear::FrameClock(*ear::SampleRate::of(graphFrequency)), receiverHeadroom);
 	RtpSender sender(port, RtpPcm::l24, graphFrequency, RtpTone{{750.0, 1500.0}, amplitude});
 	sender.send(graphFrequency * 25);
 	const auto path = directory.recordings() / "rec.wav";
@@ -152,7 +152,8 @@ TEST_CASE("A tone sent over RTP to an rtp node lands in the file node's WAV, cha
 				if (fresh[at] != 0.0F || fresh[at + 1] != 0.0F) {
 					firstSound = framesHeld + at / channels;
 					next = *firstSound +
-				           static_cast<std::size_t>(ear::FrameClock(graphFrequency).frames(receiverStartSettle));
+				           static_cast<std::size_t>(
+							   ear::FrameClock(*ear::SampleRate::of(graphFrequency)).frames(receiverStartSettle));
 				}
 			const auto now = std::chrono::steady_clock::now();
 			// heldByLag's evidence, every look: the WAV's frame n after the first sound is the sender's frame n (the

@@ -190,6 +190,11 @@ if(BUILD_TESTS)
 	ear_sample_rate_compile_fail(duration-over-rate "no match for 'operator/' \\(operand types are 'std::chrono::nanoseconds'.* and 'ear::SampleRate'")
 	ear_sample_rate_compile_fail(rate-compared-with-integer "no match for 'operator==' \\(operand types are 'ear::SampleRate' and 'int'\\)")
 	ear_sample_rate_compile_fail(rate-as-frames "cannot convert 'ear::SampleRate' to 'int64_t'")
+	ear_sample_rate_compile_fail(frame-clock-from-integer "use of deleted function 'ear::FrameClock::FrameClock\\(auto:[0-9]+\\) \\[with auto:[0-9]+ = int\\]'")
+	ear_sample_rate_compile_fail(frame-clock-from-unsigned "use of deleted function 'ear::FrameClock::FrameClock\\(auto:[0-9]+\\) \\[with auto:[0-9]+ = unsigned int\\]'")
+	ear_sample_rate_compile_fail(format-from-integer "could not convert '48000' from 'int' to 'ear::SampleRate'")
+	ear_sample_rate_compile_fail(sink-ring-at-integer "no matching function for call to 'ear::SinkRing::SinkRing\\(int, int, int\\)'")
+	ear_sample_rate_compile_fail(level-window-at-integer "could not convert '48000' from 'int' to 'ear::SampleRate'")
 
 	# What must not compile about a type spec, its class, the contexts its configure is handed, Io and the harness
 	# (docs/writing-a-node-type.md#the-class; docs/writing-a-node-type.md#rules-the-framework-enforces):

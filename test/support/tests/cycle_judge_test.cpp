@@ -25,7 +25,7 @@ using ear::test::StallPlan;
 using ear::test::Verdict;
 
 constexpr std::uint32_t kFrames = 256;
-const FrameClock kClock(48000);
+const FrameClock kClock(ear::SampleRate::fixed<48000>());
 
 /// A judge of `judged` boundaries that makes no stall: the verdicts alone.
 JudgePlan plain(std::size_t judged = 1, JudgePlan::Expected expected = {}) {
@@ -172,7 +172,7 @@ TEST_CASE("A cycle judge is done only when its planned boundaries were judged an
 	// it was made in, the record's running one.
 	for (std::size_t n = 0; n < 30; ++n) {
 		ring.start();
-		judge.stalls()(n, kFrames, 48000);
+		judge.stalls()(n, kFrames, ear::SampleRate::fixed<48000>());
 	}
 	CHECK(judge.stalls().made() == 2);
 	CHECK(judge.stalls().madeIn(0) == 4);
@@ -208,7 +208,7 @@ TEST_CASE("A cycle judge counts a card's missing block as covering the stall mad
 	ear::CutRing ring;
 	CycleJudge judge(JudgePlan{.judged = 1, .induce = StallPlan::every(1, 0, 1, StallLength::of(0ms))}, kClock, &ring);
 	ring.start(); // cycle 1: the stall's, cut
-	judge.stalls()(0, kFrames, 48000);
+	judge.stalls()(0, kFrames, ear::SampleRate::fixed<48000>());
 	ring.incomplete();
 	ring.start();
 	CHECK(judge.blockHeard() == Verdict::judge);

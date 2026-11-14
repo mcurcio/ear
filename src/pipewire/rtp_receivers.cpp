@@ -46,7 +46,7 @@ template <> struct ModuleRun<RtpReceiverShape> {
 			.add(property<Home::rtpReceiver>("sess.ignore-ssrc"), "true")
 			.add(property<Home::rtpReceiver>("audio.format"),
 		         shape.encoding == RtpEncoding::l24 ? "\"S24BE\"" : "\"S16BE\"")
-			.add(property<Home::rtpReceiver>("audio.rate"), std::to_string(shape.rate))
+			.add(property<Home::rtpReceiver>("audio.rate"), std::to_string(shape.rate.hz()))
 			.add(property<Home::rtpReceiver>("audio.channels"), std::to_string(channels))
 			.add(property<Home::rtpReceiver>("audio.position"), auxPositions(channels))
 			.add(property<Home::rtpReceiver>("node.name"), name)

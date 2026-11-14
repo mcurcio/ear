@@ -4,6 +4,7 @@
 // ear's model combines it; what a block tells its peers goes back in rate units only. The graph has one quantum and
 // one rate, fixed at boot, so the conversion is exact.
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -15,17 +16,17 @@
 
 namespace ear::pipewire {
 
-/// A peer's latency in frames: a quantum is `quantum` frames, ns are at `rate`; each bound rounded to the nearest
-/// frame, a negative one to zero. None for an empty combination (spa_latency_info_combine_start's, not finished): no
-/// path.
-inline std::optional<Latency> fromSpa(const spa_latency_info& info, std::uint32_t quantum,
-                                      std::uint32_t rate) noexcept {
+/// A peer's latency in frames: a quantum is `quantum` frames, ns are frames at the graph's rate through `graph`
+/// (FrameClock::framesNearest); each bound rounded to the nearest frame, a negative one to zero. None for an empty
+/// combination (spa_latency_info_combine_start's, not finished): no path.
+inline std::optional<Latency> fromSpa(const spa_latency_info& info, std::uint32_t quantum, FrameClock graph) noexcept {
 	if (info.min_quantum == std::numeric_limits<float>::max() &&
 	    info.min_rate == std::numeric_limits<std::int32_t>::max() &&
 	    info.min_ns == std::numeric_limits<std::int64_t>::max())
 		return std::nullopt;
 	const auto frames = [&](float quanta, std::int32_t rateFrames, std::int64_t ns) {
-		const double total = static_cast<double>(quanta) * quantum + rateFrames + static_cast<double>(ns) * rate / 1e9;
+		const double nsFrames = static_cast<double>(graph.framesNearest(std::chrono::nanoseconds{ns}));
+		const double total = static_cast<double>(quanta) * quantum + rateFrames + nsFrames;
 		if (total <= 0.0) return std::uint32_t{0};
 		if (total >= static_cast<double>(std::numeric_limits<std::uint32_t>::max()))
 			return std::numeric_limits<std::uint32_t>::max();

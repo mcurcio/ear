@@ -263,7 +263,8 @@ TEST_CASE("A sink's consumer begins on its own thread before the first consume, 
 	Shared shared;
 	constexpr std::uint32_t kBlock = 64;
 	constexpr std::uint32_t kBlocks = 100;
-	auto sink = sinks.make("a-node-with-a-long-name", "writer", 2, kBlock * kBlocks, kTestRate);
+	auto sink =
+		sinks.make("a-node-with-a-long-name", "writer", 2, kBlock * kBlocks, ear::SampleRate::fixed<kTestRate>());
 	beginAndWait(loop, *sink, std::make_unique<TestConsumer>(shared));
 
 	std::thread::id writerThread;
@@ -307,7 +308,7 @@ TEST_CASE("A chunk that wraps the ring's end is consumed in two calls, the secon
 	// A 256-frame ring and 100-frame chunks: reads split at its end at varying offsets.
 	constexpr std::uint32_t kBlock = 100;
 	constexpr std::uint32_t kBlocks = 50;
-	auto sink = sinks.make("rec", "writer", 2, 256, kTestRate);
+	auto sink = sinks.make("rec", "writer", 2, 256, ear::SampleRate::fixed<kTestRate>());
 	beginAndWait(loop, *sink, std::make_unique<TestConsumer>(shared));
 	Signal signal(kBlock);
 	for (std::uint32_t b = 0; b < kBlocks; ++b) {
@@ -351,7 +352,7 @@ TEST_CASE("A sink's stamp ring and frame ring drop together: a full stamp ring d
 	Shared shared;
 	// A 4096-frame ring holds 128 stamps (4096 / 32), so 1-frame chunks run the stamp ring out first; 100-frame chunks
 	// run the frame ring out first.
-	auto sink = sinks.make("rec", "writer", 2, 4096, kTestRate);
+	auto sink = sinks.make("rec", "writer", 2, 4096, ear::SampleRate::fixed<kTestRate>());
 	beginAndWait(loop, *sink, std::make_unique<TestConsumer>(shared, nullptr, true));
 	struct Release {
 		Gate& gate;
@@ -379,7 +380,7 @@ TEST_CASE("A sink's stamp ring and frame ring drop together: a full stamp ring d
 
 	// The frame ring: 100-frame chunks into a 256-frame ring while the consumer stalls on the first.
 	Shared second;
-	auto small = sinks.make("rec", "writer", 2, 256, kTestRate);
+	auto small = sinks.make("rec", "writer", 2, 256, ear::SampleRate::fixed<kTestRate>());
 	beginAndWait(loop, *small, std::make_unique<TestConsumer>(second, nullptr, true));
 	struct Release2 {
 		Gate& gate;
@@ -413,7 +414,7 @@ TEST_CASE("A sink's close drains what its ring holds, then finishes a consumer t
 	TestLoop loop;
 	ThreadSinks sinks(loop);
 	Shared shared;
-	auto sink = sinks.make("rec", "writer", 2, 1024, kTestRate);
+	auto sink = sinks.make("rec", "writer", 2, 1024, ear::SampleRate::fixed<kTestRate>());
 	beginAndWait(loop, *sink, std::make_unique<TestConsumer>(shared));
 	Signal signal(64);
 	for (std::uint64_t at = 0; at < 512; at += 64) sink->tap().write(signal.block(at, 64), 64, stampAt(at));
@@ -428,7 +429,7 @@ TEST_CASE("A sink's close drains what its ring holds, then finishes a consumer t
 
 	// Never begun: written frames (none a block would write before begun, but a tap is a tap) are skipped, and close
 	// calls neither begin nor finish.
-	auto unbegun = sinks.make("rec", "other", 2, 1024, kTestRate);
+	auto unbegun = sinks.make("rec", "other", 2, 1024, ear::SampleRate::fixed<kTestRate>());
 	unbegun->tap().write(signal.block(0, 64), 64, stampAt(0));
 	CHECK(closeAndWait(loop, *unbegun) == 0);
 }
@@ -438,7 +439,7 @@ TEST_CASE("A lost said inside a sink consumer's begin lands on the main loop bef
 	TestLoop loop;
 	ThreadSinks sinks(loop);
 	Shared shared;
-	auto sink = sinks.make("rec", "writer", 2, 1024, kTestRate);
+	auto sink = sinks.make("rec", "writer", 2, 1024, ear::SampleRate::fixed<kTestRate>());
 	bool begun = false;
 	sink->begin(std::make_unique<TestConsumer>(shared, &loop), [&] {
 		const std::scoped_lock lock(shared.mutex);
@@ -458,7 +459,7 @@ TEST_CASE("A sink's tap allocates nothing", "[sink]") {
 	Shared shared;
 	constexpr std::uint32_t kBlock = 64;
 	constexpr std::uint32_t kBlocks = 50;
-	auto sink = sinks.make("rec", "writer", 2, kBlock * kBlocks, kTestRate);
+	auto sink = sinks.make("rec", "writer", 2, kBlock * kBlocks, ear::SampleRate::fixed<kTestRate>());
 	beginAndWait(loop, *sink, std::make_unique<TestConsumer>(shared));
 	std::uint64_t allocations = ~0ULL;
 	std::thread writer([&] {
@@ -517,13 +518,15 @@ TEST_CASE("A chunk split at the ring's end reaches its consumer the same through
 	constexpr std::uint32_t kRing = 256;
 	constexpr std::uint32_t kBlock = 100;
 	constexpr std::uint32_t kBlocks = 12;
-	const FrameClock clock(kTestRate);
+	const FrameClock clock(ear::SampleRate::fixed<kTestRate>());
 
 	Shared throughHarness;
 	conform::recorded = &throughHarness;
 	{
 		ear::testing::TypeHarness<conform::spec, conform::Recorder> harness(
-			{.format = {.rate = kTestRate, .maxBlock = kBlock}, .node = "rec", .sinkRingFrames = kRing});
+			{.format = {.rate = ear::SampleRate::fixed<kTestRate>(), .maxBlock = kBlock},
+		     .node = "rec",
+		     .sinkRingFrames = kRing});
 		REQUIRE_FALSE(harness.parse({}));
 		harness.add();
 		harness.blockReady();
@@ -548,7 +551,7 @@ TEST_CASE("A chunk split at the ring's end reaches its consumer the same through
 	TestLoop loop;
 	ThreadSinks sinks(loop);
 	Shared throughEngine;
-	auto sink = sinks.make("rec", "writer", 2, kRing, kTestRate);
+	auto sink = sinks.make("rec", "writer", 2, kRing, ear::SampleRate::fixed<kTestRate>());
 	beginAndWait(loop, *sink, std::make_unique<TestConsumer>(throughEngine));
 	Signal signal(kBlock);
 	for (std::uint32_t b = 0; b < kBlocks; ++b) {
@@ -677,7 +680,7 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
 		{{Direction::input, "in", {"1"}}, {Direction::output, "writer", {"left", "right"}, PortBank::Reach::inside}}};
 	auto block = blocks.make("rec", ports, kFormat, events);
 	auto clock = blocks.make("clock", Ports{{{Direction::output, "out", {"1"}}}}, kFormat, clockEvents);
-	auto sink = sinks.make("rec", "writer", 2, 2 * kFormat.rate, kFormat.rate);
+	auto sink = sinks.make("rec", "writer", 2, 2 * kFormat.rate.hz(), kFormat.rate);
 	auto owned = std::make_unique<RampConsumer>(waiter);
 	RampConsumer& consumer = *owned;
 	bool begun = false;
@@ -885,7 +888,7 @@ TEST_CASE("A sink's chunks carry the capture latency its block tells on the sink
 	                   {Direction::input, "from_rtp", {"1"}, PortBank::Reach::inside},
 	                   {Direction::output, "writer", {"1"}, PortBank::Reach::inside}}};
 	auto block = blocks.make("rec", ports, kFormat, events);
-	auto sink = sinks.make("rec", "writer", 1, 2 * kFormat.rate, kFormat.rate);
+	auto sink = sinks.make("rec", "writer", 1, 2 * kFormat.rate.hz(), kFormat.rate);
 	auto owned = std::make_unique<RampConsumer>(waiter);
 	RampConsumer& consumer = *owned;
 	bool begun = false;

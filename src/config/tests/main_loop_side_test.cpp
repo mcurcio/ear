@@ -18,7 +18,7 @@ namespace {
 
 /// A wanted graph whose items sit on lines 1..8, in order: four nodes, then four routes.
 GraphSpec wanted() {
-	return GraphSpec{48000,
+	return GraphSpec{ear::SampleRate::fixed<48000>(),
 	                 256,
 	                 {{"noise", "white", json::object()},
 	                  {"rec", "file", {{"path", "a.wav"}}},
@@ -60,7 +60,9 @@ namespace {
 
 class NoReader final : public GraphReader {
 public:
-	GraphView read() const override { return {}; }
+	GraphView read() const override {
+		return GraphView{{{ear::SampleRate::fixed<48000>(), 256}, false, ""}, {}, {}, {}};
+	}
 };
 
 class Listener final : public control::GraphFileListener {
@@ -193,7 +195,7 @@ TEST_CASE("Each graph read is stamped at once by every SnapshotStamp", "[main_lo
 	class OneNode final : public GraphReader {
 	public:
 		GraphView read() const override {
-			GraphView view{};
+			GraphView view{{{ear::SampleRate::fixed<48000>(), 256}, false, ""}, {}, {}, {}};
 			view.nodes.push_back({{"noise", "white", json::object()}, Ports{}, healthFromSpec({"noise", "white", {}})});
 			return view;
 		}

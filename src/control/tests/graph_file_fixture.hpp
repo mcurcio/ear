@@ -97,7 +97,8 @@ inline const Diagnostic includeUnsupported{Severity::error, "ear/include-unsuppo
 inline ear::GraphView graphView(int playback, const std::string& recPath) {
 	using ear::NodeState;
 	using Code = ear::FailureReason::Code;
-	ear::GraphView view{{{48000, 256}, false, "SCHED_OTHER"}, {"card", "file", "white"}, {}, {}};
+	ear::GraphView view{
+		{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {"card", "file", "white"}, {}, {}};
 	const ear::Ports cardPorts{{{ear::Direction::input, "play", ear::numbered(static_cast<std::uint32_t>(playback))}}};
 	view.nodes.push_back(
 		{{"desk", "card", {{"card", "MOTU"}, {"playback", playback}}},
@@ -126,7 +127,8 @@ inline ear::GraphView graphView(int playback, const std::string& recPath) {
 inline ear::GraphView snapshotView() {
 	using ear::NodeState;
 	using Code = ear::FailureReason::Code;
-	ear::GraphView view{{{48000, 256}, true, "SCHED_FIFO 88"}, {"card", "file", "white"}, {}, {}};
+	ear::GraphView view{
+		{{ear::SampleRate::fixed<48000>(), 256}, true, "SCHED_FIFO 88"}, {"card", "file", "white"}, {}, {}};
 	view.nodes.push_back(
 		{{"motu", "card", {{"card", "Pro24"}, {"playback", 2}}},
 	     ear::Ports{{{ear::Direction::input, "play", {"1", "2"}}}},

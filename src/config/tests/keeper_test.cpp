@@ -49,7 +49,7 @@ public:
 	Reader(const DesiredGraph& graph, Log& log) : graph_(graph), log_(log) {}
 	GraphView read() const override {
 		log_.push("read graph");
-		GraphView view{{{48000, 256}, false, "SCHED_OTHER"}, {}, {}, {}};
+		GraphView view{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {}, {}, {}};
 		for (auto& node : graph_.nodes()) view.nodes.push_back({node.spec, node.ports, healthFromSpec(node.spec)});
 		return view;
 	}
@@ -87,7 +87,7 @@ folder::ConfinedFolder openFolder(const std::filesystem::path& path) {
 struct Fixture {
 	/// ear.conf holds `boot` (nothing: missing). `fake`: the disk to use instead of the folder.
 	explicit Fixture(const std::string& name, std::optional<std::string> boot = recordExample, FakeDisk* fake = nullptr,
-	                 AudioFormat engine = {48000, 256})
+	                 AudioFormat engine = {ear::SampleRate::fixed<48000>(), 256})
 		: dir(name), file(dir.path() / "ear.conf"), folder(openFolder(dir.path())) {
 		if (boot) std::ofstream(file, std::ios::binary) << *boot;
 		graph.subscribe(static_cast<DesiredNodeListener&>(graphLog));
@@ -636,7 +636,7 @@ TEST_CASE("A file at another rate is accepted with a pending restart, and a miss
           "created by a set",
           "[keeper]") {
 	SECTION("pending restart") {
-		Fixture f("pending", recordExample, nullptr, {48000, 256});
+		Fixture f("pending", recordExample, nullptr, {ear::SampleRate::fixed<48000>(), 256});
 		f.start();
 		const auto other = replaced(recordExample, "graph_frequency 48000;", "graph_frequency 44100;");
 		CHECK(ok(f.set(other, f.graphFile().version)));

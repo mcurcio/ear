@@ -40,7 +40,7 @@ negative | src/output/tests/stall_watch_test.cpp | std::this_thread::sleep_for(1
 poll | src/output/tests/output_writer_test.cpp | std::this_thread::sleep_for(std::chrono::milliseconds(1)); // between looks at the pipe, which decide | until the pipe's page fills again: the writer took the line and is stuck in its write
 
 # Test support
-induce | test/support/inducers.hpp | std::this_thread::sleep_for(length->at(frames, rate)); // the data thread stalls, on purpose | Stalls: every planned data-thread stall, the one place a test makes one
+induce | test/support/inducers.hpp | std::this_thread::sleep_for(length->at(frames, clock)); // the data thread stalls, on purpose | Stalls: every planned data-thread stall, the one place a test makes one
 poll | src/core/include/ear/testing/drive_now.hpp | std::this_thread::sleep_for(std::chrono::microseconds(100)); | driveNow polls settle() for the drive's completion; the completion decides
 pace | test/support/rtp_tone.hpp | std::this_thread::sleep_until(dueAt); | the RTP sender sends each packet when its last frame is due, as a device clock would (a packet sent late is counted: lateSends)
 induce | test/support/rtp_tone.hpp | std::this_thread::sleep_for(holdFor); // the stall holdOnce asked for, on purpose | a sender held and then catching up, made by the test that asks for it

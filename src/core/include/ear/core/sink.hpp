@@ -171,7 +171,7 @@ public:
 	/// start): the node fails start-failed. A std::logic_error is its own bug: the node fails lost, told as
 	/// ear.internal-error (docs/architecture.md#faults-by-owner).
 	virtual std::unique_ptr<Sink> make(const NodeName& node, std::string_view bank, std::uint32_t channels,
-	                                   std::uint32_t capacityFrames, std::uint32_t rate) = 0;
+	                                   std::uint32_t capacityFrames, SampleRate rate) = 0;
 
 protected:
 	~SinkAdapter() = default;

@@ -206,7 +206,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	/// companion; close finishes a consumer that began, marks the companion destroyed and posts `closed` with the
 	/// frames dropped.
 	struct FakeSink final : Sink, SinkTap {
-		FakeSink(Impl& h, std::size_t i, std::uint32_t channels, std::uint32_t frames, std::uint32_t rate)
+		FakeSink(Impl& h, std::size_t i, std::uint32_t channels, std::uint32_t frames, SampleRate rate)
 			: harness(h), index(i), rules(channels, frames, rate) {
 			harness.sinkFakes[index] = this;
 		}
@@ -265,7 +265,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	struct FakeSinks final : SinkAdapter {
 		explicit FakeSinks(Impl& h) : harness(h) {}
 		std::unique_ptr<Sink> make(const NodeName& node, std::string_view bank, std::uint32_t channels,
-		                           std::uint32_t capacityFrames, std::uint32_t rate) override {
+		                           std::uint32_t capacityFrames, SampleRate rate) override {
 			CompanionFake fake{CompanionKind::sink,
 			                   std::string(bank),
 			                   node + "." + std::string(bank),
@@ -287,7 +287,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	/// the block: its writer offers what fits and never waits, an idle returns at once, nobody watches its clock wake
 	/// (rung, it does nothing), and the last tick's SourcePlayed is kept for lastPlayed.
 	struct FakeSource final : Source, SourceWriter, SourceTap, SourceRing::Signals, Wake {
-		FakeSource(Impl& h, std::size_t i, std::uint32_t channels, std::uint32_t frames, std::uint32_t rate,
+		FakeSource(Impl& h, std::size_t i, std::uint32_t channels, std::uint32_t frames, SampleRate rate,
 		           std::unique_ptr<SourceClock> own)
 			: harness(h), index(i), clock(std::move(own)), rules(channels, frames, rate, *this) {}
 		~FakeSource() override { harness.companionList.at(index).destroyed = true; }
@@ -324,7 +324,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	struct FakeSources final : SourceAdapter {
 		explicit FakeSources(Impl& h) : harness(h) {}
 		std::unique_ptr<Source> make(const NodeName& node, std::string_view bank, std::uint32_t channels,
-		                             std::uint32_t capacityFrames, std::uint32_t rate,
+		                             std::uint32_t capacityFrames, SampleRate rate,
 		                             std::unique_ptr<SourceClock> clock) override {
 			harness.companionList.push_back(CompanionFake{CompanionKind::source,
 			                                              std::string(bank),

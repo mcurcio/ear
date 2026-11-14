@@ -31,7 +31,7 @@ static_assert(!std::is_convertible_v<Delay, std::optional<Latency>>);
 static_assert(Latency{1, 2} + Latency{10, 20} == Latency{11, 22});
 static_assert(Paths{}.combined() == std::nullopt);
 static_assert(Paths{}.orZero() == Latency{});
-static_assert(FrameClock(48000).ns(48000) == 1'000'000'000);
+static_assert(FrameClock(ear::SampleRate::fixed<48000>()).ns(48000) == 1'000'000'000);
 
 namespace {
 
@@ -167,7 +167,7 @@ TEST_CASE("FrameClock: frames as time at the graph's rate, and the two dating ru
 	};
 	for (const Row& row : rows) {
 		INFO(row.what);
-		CHECK(FrameClock(row.rate).ns(row.frames) == row.ns);
+		CHECK(FrameClock(*SampleRate::of(row.rate)).ns(row.frames) == row.ns);
 	}
 }
 
@@ -199,7 +199,7 @@ TEST_CASE("FrameClock: a duration as whole frames at the graph's rate", "[latenc
 	};
 	for (const Row& row : rows) {
 		INFO(row.what);
-		CHECK(FrameClock(row.rate).frames(row.duration) == row.frames);
+		CHECK(FrameClock(*SampleRate::of(row.rate)).frames(row.duration) == row.frames);
 	}
 }
 
@@ -208,7 +208,7 @@ TEST_CASE("FrameClock: a duration as whole frames at the graph's rate", "[latenc
 TEST_CASE("FrameClock gives what each site's one division gave", "[latency]") {
 	for (const std::uint32_t rate : {1U, 8000U, 22050U, 44100U, 48000U, 96000U, 192000U, 384000U, 768000U}) {
 		INFO("at " << rate << " Hz");
-		const FrameClock clock(rate);
+		const FrameClock clock(*ear::SampleRate::of(rate));
 		for (std::int64_t frames = -2048; frames <= 100'000; frames += 7)
 			REQUIRE(clock.ns(frames) == frames * 1'000'000'000 / std::int64_t{rate});
 		for (std::int64_t ms = 0; ms <= 2000; ++ms)
@@ -256,7 +256,7 @@ std::vector<Wide> edgeCounts(std::uint32_t rate, Wide perSecond, Wide largest) {
 TEST_CASE("FrameClock agrees with the exact quotient at every rate and every edge count", "[latency]") {
 	for (const std::uint32_t rate : oracleRates) {
 		INFO("at " << rate << " Hz");
-		const FrameClock clock(rate);
+		const FrameClock clock(*ear::SampleRate::of(rate));
 		// ns(frames): the largest frame count whose time fits is int64_max * rate / 1e9.
 		for (const Wide frames : edgeCounts(rate, rate, int64Max * Wide{rate} / nsPerSecond)) {
 			const Wide exact = frames * nsPerSecond / Wide{rate};
@@ -309,19 +309,9 @@ static_assert(!std::is_convertible_v<SampleRate, std::uint32_t> && !std::is_conv
 static_assert(FrameClock(SampleRate::fixed<48000>()).ns(48000) == 1'000'000'000);
 static_assert(FrameClock(SampleRate::fixed<48000>())
                   .framesCeil(std::chrono::duration<std::int64_t, std::ratio<1, 30>>{1}) == 1600);
-
-TEST_CASE("FrameClock(SampleRate) converts as FrameClock at the same number does", "[latency]") {
-	for (const std::uint32_t rate : oracleRates) {
-		INFO("at " << rate << " Hz");
-		const FrameClock clock(*SampleRate::of(rate));
-		const FrameClock number(rate);
-		CHECK(clock.rate() == number.rate());
-		for (std::int64_t frames = -2048; frames <= 100'000; frames += 7)
-			REQUIRE(clock.ns(frames) == number.ns(frames));
-		for (std::int64_t ms = -50; ms <= 2000; ++ms)
-			REQUIRE(clock.frames(std::chrono::milliseconds{ms}) == number.frames(std::chrono::milliseconds{ms}));
-	}
-}
+// FrameClock is made only from a rate, and gives back the rate it was made from.
+static_assert(!std::is_constructible_v<FrameClock, std::uint32_t> && !std::is_constructible_v<FrameClock, int>);
+static_assert(FrameClock(SampleRate::fixed<44100>()).rate() == SampleRate::fixed<44100>());
 
 // framesCeil: exact for any period, so the level window's thirtieth of a second is ceil(rate / 30), the rule
 // levelWindowFrames wrote by hand ((rate + 29) / 30).
@@ -413,7 +403,7 @@ TEST_CASE("FrameClock::framesNearest rounds to the nearest frame, exactly", "[la
 }
 
 TEST_CASE("FrameClock dates a frame by its offset and the latency beside it", "[latency]") {
-	const FrameClock clock(44100);
+	const FrameClock clock(ear::SampleRate::fixed<44100>());
 	const std::int64_t start = 1'000'000'000;
 	// Heard once what lies downstream has played: its most, with the offset, in one division.
 	CHECK(clock.heardRawNs(start, 0, {}) == start);
@@ -452,7 +442,7 @@ TEST_CASE("Each dating site's case, by FrameClock", "[latency]") {
 	};
 	for (const Row& row : rows) {
 		INFO(row.what);
-		const FrameClock clock(row.rate);
+		const FrameClock clock(*SampleRate::of(row.rate));
 		if (row.heard)
 			CHECK(clock.heardRawNs(row.startRawNs, static_cast<std::uint32_t>(row.offset), row.beside) == row.ns);
 		else CHECK(clock.enteredRawNs(row.startRawNs, row.offset, row.beside) == row.ns);
@@ -462,7 +452,7 @@ TEST_CASE("Each dating site's case, by FrameClock", "[latency]") {
 // Regression (e4b72cf661): a sink chunk that wraps its ring's end is two calls, and the second's start is its own
 // first frame's: the cycle's start advanced by the first call's frames, never the cycle's start again.
 TEST_CASE("A wrapped chunk's second call is dated by its own first frame", "[latency]") {
-	const FrameClock clock(48000);
+	const FrameClock clock(ear::SampleRate::fixed<48000>());
 	const std::int64_t startRawNs = 7'000'000'000;
 	const std::uint32_t frames = 256;
 	for (const std::uint32_t first : {1U, 100U, 255U}) {

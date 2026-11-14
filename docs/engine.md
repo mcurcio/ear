@@ -718,13 +718,14 @@ a PipeWire that fixes it fails it.
 ### Dating
 
 `FrameClock` (`ear/core/latency.hpp`) is the one code that converts between frames and time at the
-graph's rate; nothing else in ear uses a rate as an operand of `*`, `/` or `%` to get one from the other.
-It is made from a `SampleRate` (`ear/core/sample_rate.hpp`): a rate in hertz with no arithmetic,
-made only by `SampleRate::of(hz)` (none for 0) or `SampleRate::fixed<hz>()`, comparing only with
-another rate and converting to nothing; `hz()` is its one way out, for a library or the wire.
-`src/core/tests/compile_fail/sample_rate_bad.cpp` holds what must not compile: a number made,
-converted or passed as a rate, a rate read or cast as a number, a rate as an operand beside frames
-or a duration, a rate compared with a number, a rate passed as frames.
+graph's rate. It is made only from a `SampleRate` (`ear/core/sample_rate.hpp`; its constructor from a
+number is deleted): a rate in hertz with no arithmetic, made only by `SampleRate::of(hz)` (none for
+0) or `SampleRate::fixed<hz>()`, comparing only with another rate and converting to nothing. Every
+rate ear holds is one: the graph's format (`AudioFormat::rate`), `GraphSpec`'s and the engine's
+settings', the fades', the rings', a source's tick, a card's, and an RTP sender's own rate
+(`RtpReceiverShape::rate`, which is not the graph's and is never made into a `FrameClock`). The
+graph frequency is a number only as `ear.conf` or `--graph-frequency` writes it, and becomes a rate
+where it is read.
 
 - **`ns(frames)`** is how long frames last, and **`frames(duration)`** how many whole frames a
   duration holds. Each is the exact quotient of the whole count, truncated toward zero (one
@@ -745,17 +746,20 @@ or a duration, a rate compared with a number, a rate passed as frames.
   dated from its newest anchor with no upstream yet (its `to` bank is not a sink's, so the capture
   latency a card adds is not counted yet: [node-types.md](node-types.md#clock)).
 
-The rule is a guard, not a list: the frame guard (`test/frame_guard.cmake`, the CTest
-`ear_frames_through_frame_clock`) refuses any line in `src/` outside `latency.hpp` and
-`latency.cpp` where a rate (an identifier spelled `rate`, `…_rate`, `…Rate`, `frequency`,
-`…_frequency` or `…Frequency`) is an operand of `*`, `/` or `%`; its header says what it cannot see
-(a rate under another name, a literal rate). Two conversions are not frames and time at the
-graph's rate, and the guard names them as its only exceptions: a peer's latency in PipeWire's units
-converted at the port (`latency_spa.hpp`, rounded to the nearest frame,
-[above](#latency-per-bank-pair)) and the level window (`levels.cpp`'s `levelWindowFrames`, a stated
-display rate rounded up, [below](#levels)). `ear_core_tests` checks `FrameClock` against the exact
-quotient worked out in 128 bits, at every rate from 1 Hz to 768 kHz and at each count where a
-conversion can go wrong ([testing.md](testing.md#what-each-test-program-proves)).
+The rule is a type, not a guard: since a rate has no operator, using one as an operand of `*`, `/`,
+`%` or `+` does not compile, nor does making a rate from a number, a `FrameClock`, a format or a
+ring at a number, or reading a rate as a number
+(`src/core/tests/compile_fail/sample_rate_bad.cpp` holds each case). A peer's latency in PipeWire's
+units is converted at the port through `framesNearest` (`latency_spa.hpp`,
+[above](#latency-per-bank-pair)) and the level window through `framesCeil` (`levelWindowFrames`,
+[below](#levels)). A rate's number leaves only through `hz()`, for a library or the wire, and the
+check `ear_sample_rate_exits` (`test/sample_rate_exits.cmake`) refuses the word `hz` anywhere under
+`src/` outside tests but in the files it lists: the type, `FrameClock`, and the edges (the engine's
+clock properties, a card's and an RTP receiver's `audio.rate`, the WAV writer, `sendspin`'s library
+adapter, the wire's encoder). A new edge is a file added to that list. `ear_core_tests` checks
+`FrameClock` against the exact quotient worked out in 128 bits, at every rate from 1 Hz to 768 kHz
+and at each count where a conversion can go wrong
+([testing.md](testing.md#what-each-test-program-proves)).
 
 ## Engine companions
 

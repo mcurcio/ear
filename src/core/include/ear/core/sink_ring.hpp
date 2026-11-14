@@ -20,10 +20,10 @@ namespace ear {
 class SinkRing {
 public:
 	/// A ring of `channels` and at least `capacityFrames` frames (FrameRing rounds up to a power of two) at the graph's
-	/// `rate` (> 0, by which a chunk handed in two calls dates the second), with a stamp entry per 32 frames of it, at
+	/// `rate` (by which a chunk handed in two calls dates the second), with a stamp entry per 32 frames of it, at
 	/// least 64.
-	SinkRing(std::uint32_t channels, std::uint32_t capacityFrames, std::uint32_t rate)
-		: clock_(std::max<std::uint32_t>(rate, 1)), ring_(channels, capacityFrames),
+	SinkRing(std::uint32_t channels, std::uint32_t capacityFrames, SampleRate rate)
+		: clock_(rate), ring_(channels, capacityFrames),
 		  stamps_(std::bit_ceil(std::max<std::uint32_t>(64, ring_.capacityFrames() / 32))) {}
 	SinkRing(const SinkRing&) = delete;
 	SinkRing& operator=(const SinkRing&) = delete;

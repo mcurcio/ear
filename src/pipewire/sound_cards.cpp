@@ -51,7 +51,7 @@ public:
 		const NodeName& engineNode = target.engineNode;
 		const AudioFormat& format = target.format;
 		const auto channels = std::to_string(channels_);
-		const auto rate = std::to_string(format.rate);
+		const auto rate = std::to_string(format.rate.hz());
 		const auto priority = std::to_string(cardPriority);
 		const auto periodSize = std::to_string(format.maxBlock);
 		const auto periods = std::to_string(cardPeriods(format.maxBlock));
@@ -108,7 +108,7 @@ private:
 		spa_pod_builder builder = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
 		spa_audio_info_raw raw{};
 		raw.format = SPA_AUDIO_FORMAT_F32P;
-		raw.rate = rate_;
+		raw.rate = rate_.hz();
 		raw.channels = static_cast<std::uint32_t>(channels_);
 		for (std::uint32_t i = 0; i < raw.channels && i < SPA_AUDIO_MAX_CHANNELS; ++i) {
 			raw.position[i] = SPA_AUDIO_CHANNEL_START_Aux + i;
@@ -132,7 +132,7 @@ private:
 
 	Direction bank_;
 	std::size_t channels_;
-	std::uint32_t rate_;
+	SampleRate rate_;
 	CompanionBodyEvents& events_;
 	OwnedProxy node_;
 	Listener proxyListener_;

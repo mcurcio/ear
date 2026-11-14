@@ -99,7 +99,7 @@ struct World {
 	HandTimers timers;
 	HandGraph graph;
 	HandNodes nodes;
-	CounterWatch watch{timers, graph, nodes, AudioFormat{48000, 256}};
+	CounterWatch watch{timers, graph, nodes, AudioFormat{ear::SampleRate::fixed<48000>(), 256}};
 	Told told;
 	ToldLists lists{told.lines};
 	World() {

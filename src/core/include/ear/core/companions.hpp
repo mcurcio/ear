@@ -41,7 +41,8 @@ struct RtpReceiverShape {
 	RtpAddress address;
 	std::uint16_t port; // UDP port, 1-65535
 	RtpEncoding encoding;
-	std::uint32_t rate;      // the sender's rate, 8000-192000 Hz; resampled to the graph frequency when it differs
+	SampleRate rate; // the sender's own rate (8000-192000 Hz from the rtp type), not the graph's: resampled to the
+					 // graph frequency when it differs
 	std::uint32_t latencyMs; // the receive buffer, 1-1000; declared upstream of the bank by the framework
 };
 

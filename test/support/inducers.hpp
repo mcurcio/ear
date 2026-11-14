@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -31,10 +32,11 @@ class StallLength {
 public:
 	static constexpr StallLength of(std::chrono::nanoseconds length) noexcept { return StallLength(length, 0.0); }
 	static constexpr StallLength cycles(double count) noexcept { return StallLength({}, count); }
-	/// For a cycle of `frames` at `rate`.
-	constexpr std::chrono::nanoseconds at(std::uint64_t frames, std::uint32_t rate) const noexcept {
-		if (cycles_ == 0.0 || rate == 0) return fixed_;
-		return std::chrono::nanoseconds(static_cast<std::int64_t>(cycles_ * static_cast<double>(frames) * 1e9 / rate));
+	/// For a cycle of `frames` at the graph's rate (`graph`); a length in cycles with no rate known (a code never
+	/// prepared) is its fixed part, none.
+	constexpr std::chrono::nanoseconds at(std::uint64_t frames, std::optional<FrameClock> graph) const noexcept {
+		if (cycles_ == 0.0 || !graph) return fixed_;
+		return std::chrono::nanoseconds(graph->ns(std::llround(cycles_ * static_cast<double>(frames))));
 	}
 
 private:
@@ -93,12 +95,13 @@ public:
 	explicit Stalls(StallPlan plan = {}, const CutRecord* cuts = nullptr)
 		: plan_(std::move(plan)), cuts_(cuts), cycles_(std::min<std::size_t>(plan_.size(), kKept)) {}
 	/// Data thread: stalls if cycle `n` is planned (`frames` at `rate` size a stall given in cycles); true if it did.
-	bool operator()(std::size_t n, std::uint64_t frames, std::uint32_t rate) noexcept {
+	bool operator()(std::size_t n, std::uint64_t frames, std::optional<SampleRate> rate) noexcept {
 		const std::optional<StallLength> length = plan_.planned(n);
 		if (!length) return false;
 		const std::size_t at = made_.load(std::memory_order_relaxed);
 		if (at < cycles_.size()) cycles_[at] = cuts_ != nullptr ? cuts_->started() : 0; // published by made_ below
-		std::this_thread::sleep_for(length->at(frames, rate)); // the data thread stalls, on purpose
+		const auto clock = rate.transform([](SampleRate graph) { return FrameClock(graph); });
+		std::this_thread::sleep_for(length->at(frames, clock)); // the data thread stalls, on purpose
 		made_.fetch_add(1, std::memory_order_release);
 		return true;
 	}
@@ -194,7 +197,7 @@ private:
 	CycleLedger ledger_;
 	Stalls stalls_;
 	std::function<void()> wake_;
-	std::uint32_t rate_ = 0;
+	std::optional<SampleRate> rate_; // from prepare, if it ran
 };
 
 /// An AudioCode that writes silence, counts its cycles and, when armed, makes the next stall of a judge's Stalls in its
@@ -204,7 +207,7 @@ private:
 class ArmedStall final : public AudioCode {
 public:
 	/// `rate`: the graph's, which sizes a stall given in cycles.
-	explicit ArmedStall(std::uint32_t rate, std::function<void()> wake = {}) : wake_(std::move(wake)), rate_(rate) {}
+	explicit ArmedStall(SampleRate rate, std::function<void()> wake = {}) : wake_(std::move(wake)), rate_(rate) {}
 	void prepare(const AudioFormat&) override {}
 	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
 	             std::uint32_t frames, const GraphCycle&) noexcept override {
@@ -226,7 +229,7 @@ private:
 	std::atomic<std::uint64_t> calls_{0};
 	std::atomic<Stalls*> armed_{nullptr};
 	std::size_t stalled_ = 0; // the data thread's
-	std::uint32_t rate_;
+	SampleRate rate_;
 };
 
 } // namespace ear::test

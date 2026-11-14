@@ -51,7 +51,7 @@ struct Recordings {
 
 /// A harness on a node named "rec" recording to `path` beneath `recordings`, its settings parsed.
 std::unique_ptr<Harness> parsed(ear::RecordingAdapter& recordings, const std::string& path,
-                                ear::AudioFormat format = {.rate = 48000, .maxBlock = 256}) {
+                                ear::AudioFormat format = {.rate = ear::SampleRate::fixed<48000>(), .maxBlock = 256}) {
 	auto harness =
 		std::make_unique<Harness>(Harness::Options{.format = format, .node = "rec", .recordings = &recordings});
 	REQUIRE_FALSE(harness->parse({{"path", path}}));
@@ -215,7 +215,7 @@ TEST_CASE("File records record.left and record.right through its sink as a 32-bi
 		std::ofstream old{wav, std::ios::binary};
 		old << std::string(1 << 20, 'x');
 	}
-	constexpr ear::AudioFormat format{.rate = 32000, .maxBlock = 256};
+	constexpr ear::AudioFormat format{.rate = ear::SampleRate::fixed<32000>(), .maxBlock = 256};
 	constexpr std::uint32_t blocks = 3;
 	Recordings recordings(dir.path());
 	auto harness = parsed(*recordings.adapter, "rec.wav", format);
@@ -228,8 +228,8 @@ TEST_CASE("File records record.left and record.right through its sink as a 32-bi
 	ear::testing::CompanionFake& sink = harness->companion(file::writer);
 	CHECK(sink.kind == ear::CompanionKind::sink);
 	CHECK(sink.name == "rec.writer");
-	CHECK(std::get<ear::SinkShape>(sink.shape).frames == 2 * format.rate); // 2 s ring
-	CHECK(sink.ready);                                                     // its consumer began: the WAV is open
+	CHECK(std::get<ear::SinkShape>(sink.shape).frames == 2 * format.rate.hz()); // 2 s ring
+	CHECK(sink.ready);                                                          // its consumer began: the WAV is open
 	CHECK(harness->handoffs().empty());
 
 	std::vector<float> left;
@@ -250,7 +250,7 @@ TEST_CASE("File records record.left and record.right through its sink as a 32-bi
 	CHECK(harness->droppedFrames() == 0);
 
 	const Wav read = readWav(wav);
-	CHECK(read.info.samplerate == static_cast<int>(format.rate));
+	CHECK(read.info.samplerate == static_cast<int>(format.rate.hz()));
 	CHECK(read.info.format == (SF_FORMAT_WAV | SF_FORMAT_FLOAT));
 	checkFrames(read, left, right);
 }
@@ -390,10 +390,11 @@ TEST_CASE("File: a sink whose consumer has not begun within 5 s fails the node s
           "[file][deadline]") {
 	TempFolder dir{"deadline"};
 	Recordings recordings(dir.path());
-	auto harness = std::make_unique<Harness>(Harness::Options{.format = {.rate = 48000, .maxBlock = 256},
-	                                                          .node = "rec",
-	                                                          .recordings = recordings.adapter.get(),
-	                                                          .holdSinks = true});
+	auto harness =
+		std::make_unique<Harness>(Harness::Options{.format = {.rate = ear::SampleRate::fixed<48000>(), .maxBlock = 256},
+	                                               .node = "rec",
+	                                               .recordings = recordings.adapter.get(),
+	                                               .holdSinks = true});
 	REQUIRE_FALSE(harness->parse({{"path", "rec.wav"}}));
 	harness->add();
 	harness->blockReady();

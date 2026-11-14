@@ -140,7 +140,10 @@ public:
 		for (const auto& diagnostic : knobly)
 			if (frequency_.range->holds(diagnostic.place()) || blockSize_.range->holds(diagnostic.place()))
 				return std::nullopt;
-		return AudioFormat{*frequency_.value, *blockSize_.value};
+		// The frequency as written (refused at 0 when read) becomes a rate here.
+		const std::optional<SampleRate> rate = SampleRate::of(*frequency_.value);
+		if (!rate) return std::nullopt;
+		return AudioFormat{*rate, *blockSize_.value};
 	}
 
 	/// ear's diagnostics, in text order.

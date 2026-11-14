@@ -399,7 +399,9 @@ TEST_CASE("Every property ear sets is held by PipeWire as the property table say
 	const std::uint16_t udpPort = ear::test::freeUdpPort();
 	auto receiver = receivers.make(
 		CompanionTarget{"fpp.rtp", "fpp", Direction::input, {"from_rtp.1", "from_rtp.2"}, kFormat, fppId},
-		RtpReceiverShape{*RtpAddress::parse("0.0.0.0"), udpPort, RtpEncoding::l24, kRate, 100}, receiverLog);
+		RtpReceiverShape{*RtpAddress::parse("0.0.0.0"), udpPort, RtpEncoding::l24, ear::SampleRate::fixed<kRate>(),
+	                     100},
+		receiverLog);
 	REQUIRE(waiter.until([&] { return cardLog.settled() && receiverLog.settled(); }, 15s));
 	REQUIRE(cardLog.lostDetail.value_or("") == "");
 	REQUIRE(receiverLog.lostDetail.value_or("") == "");

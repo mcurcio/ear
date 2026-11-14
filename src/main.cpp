@@ -204,7 +204,7 @@ int main(int argc, char** argv) {
 	                                                    : std::vector<std::string>{},
 	};
 
-	const auto flagRate = positive(arguments["graph-frequency"].as<std::int64_t>());
+	const auto flagRate = positive(arguments["graph-frequency"].as<std::int64_t>()).and_then(ear::SampleRate::of);
 	const auto flagBlock = positive(arguments["block-size"].as<std::int64_t>());
 	if (!flagRate || !flagBlock) {
 		std::cerr << "ear: --graph-frequency and --block-size must be whole numbers above 0\n";

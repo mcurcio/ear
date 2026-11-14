@@ -327,7 +327,7 @@ TEST_CASE("An account with no cut record confirms nothing and knows no last cut"
 TEST_CASE("An account with no record and no cycle numbers: a discontinuity on the first cycle, a drive's first, a new "
           "driver's, a position jump and after a cycle too large to run",
           "[cycle_facts]") {
-	CycleAccount account(FrameClock(48000), nullptr);
+	CycleAccount account(FrameClock(ear::SampleRate::fixed<48000>()), nullptr);
 	struct Row {
 		const char* what;
 		bool drive; // a drive installed a code before the cycle

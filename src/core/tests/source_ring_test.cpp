@@ -40,7 +40,7 @@ struct TestClock final : SourceClock {
 		std::uint64_t position;
 		CycleFacts facts;
 		std::uint32_t frames;
-		std::uint32_t rate;
+		SampleRate rate;
 		Latency playback;
 		SourceHeld held;
 		SourcePlayed played;
@@ -54,7 +54,8 @@ struct TestClock final : SourceClock {
 	}
 	bool played(const SourceTick& tick, const SourcePlayed& played) noexcept override {
 		// Told after the same tick it was asked about, with the same tick.
-		if (heard.empty() || heard.back().position != tick.cycle.position) heard.push_back(Heard{});
+		if (heard.empty() || heard.back().position != tick.cycle.position)
+			heard.push_back(Heard{0, {}, 0, tick.rate, {}, {}, {}});
 		heard.back().played = played;
 		return ask;
 	}
@@ -124,7 +125,7 @@ public:
 
 private:
 	CutRing cuts_;
-	CycleAccount account_{FrameClock(kRate), &cuts_};
+	CycleAccount account_{FrameClock(ear::SampleRate::fixed<kRate>()), &cuts_};
 	std::uint32_t driver_ = 1;
 	std::uint64_t position_;
 };
@@ -132,8 +133,10 @@ private:
 /// One tick of `cycle`, as the block plays it (its frames, at kRate), with `clock` (none by default).
 SourcePlayed play(SourceRing& ring, Bank& bank, const GraphCycle& cycle, std::uint32_t frames,
                   SourceClock* clock = nullptr, Latency playback = {}) {
-	return ring.play(bank.view(), SourceTick{.cycle = cycle, .frames = frames, .rate = kRate, .playback = playback},
-	                 clock);
+	return ring.play(
+		bank.view(),
+		SourceTick{.cycle = cycle, .frames = frames, .rate = ear::SampleRate::fixed<kRate>(), .playback = playback},
+		clock);
 }
 
 /// What the ring plays for `value` at fade level `level` (of kFade), as play() computes it.
@@ -150,7 +153,7 @@ std::uint32_t offer(SourceRing& ring, std::uint64_t from, std::uint32_t count, s
 TEST_CASE("A source plays its ring's frames in order, fading in over its first 5 ms, and says what it read",
           "[source_ring]") {
 	CountingSignals signals;
-	SourceRing ring(2, 64, kRate, signals);
+	SourceRing ring(2, 64, ear::SampleRate::fixed<kRate>(), signals);
 	CHECK(ring.capacityFrames() == 64);
 	CHECK(offer(ring, 0, 40, 2) == 40);
 	Bank bank(2, 16);
@@ -172,7 +175,7 @@ TEST_CASE("A source plays its ring's frames in order, fading in over its first 5
 	CHECK(ring.droppedFrames() == 0);
 	// A capacity that is no power of two is rounded up; a full ring takes what fits.
 	CountingSignals other;
-	SourceRing rounded(1, 100, kRate, other);
+	SourceRing rounded(1, 100, ear::SampleRate::fixed<kRate>(), other);
 	CHECK(rounded.capacityFrames() == 128);
 	CHECK(offer(rounded, 0, 200) == 128);
 	CHECK(offer(rounded, 128, 1) == 0);
@@ -183,7 +186,7 @@ TEST_CASE("A source plays its ring's frames in order, fading in over its first 5
 // catch-up's jump with no clock fails every row).
 TEST_CASE("A source with no clock skips nothing, whatever the tick states", "[source_ring]") {
 	CountingSignals signals;
-	SourceRing ring(1, 64, kRate, signals);
+	SourceRing ring(1, 64, ear::SampleRate::fixed<kRate>(), signals);
 	REQUIRE(offer(ring, 0, 64) == 64);
 	Bank bank(1, 8);
 	Clock clock(1000);
@@ -226,7 +229,7 @@ TEST_CASE("A source with no clock skips nothing, whatever the tick states", "[so
 TEST_CASE("A clock's skip is honoured exactly and capped at what the ring holds, and the clock is told the tick",
           "[source_ring]") {
 	CountingSignals signals;
-	SourceRing ring(1, 64, kRate, signals);
+	SourceRing ring(1, 64, ear::SampleRate::fixed<kRate>(), signals);
 	TestClock time;
 	REQUIRE(offer(ring, 0, 64) == 64);
 	Bank bank(1, 8);
@@ -235,7 +238,7 @@ TEST_CASE("A clock's skip is honoured exactly and capped at what the ring holds,
 	REQUIRE(time.heard.size() == 1);
 	CHECK(time.heard[0].position == 1000);
 	CHECK(time.heard[0].frames == 8);
-	CHECK(time.heard[0].rate == kRate);
+	CHECK(time.heard[0].rate.hz() == kRate);
 	CHECK(time.heard[0].playback == Latency{3, 40});
 	CHECK(time.heard[0].held == SourceHeld{.frames = 64, .clearing = false}); // asked before the tick plays
 	CHECK(time.heard[0].played == SourcePlayed{.read = 8});
@@ -268,7 +271,7 @@ TEST_CASE("A clock's skip is honoured exactly and capped at what the ring holds,
 // answer on the clearing tick drops the new stream's first frames).
 TEST_CASE("Nothing is skipped on a tick that applies a clear, and the clock is told it clears", "[source_ring]") {
 	CountingSignals signals;
-	SourceRing ring(1, 64, kRate, signals);
+	SourceRing ring(1, 64, ear::SampleRate::fixed<kRate>(), signals);
 	TestClock time;
 	REQUIRE(offer(ring, 0, 40) == 40);
 	Bank bank(1, 16);
@@ -294,7 +297,7 @@ TEST_CASE("Nothing is skipped on a tick that applies a clear, and the clock is t
 // clockAsked after every tick, or never, fails it).
 TEST_CASE("The clock wake is signalled only when the clock asks", "[source_ring]") {
 	CountingSignals signals;
-	SourceRing ring(1, 64, kRate, signals);
+	SourceRing ring(1, 64, ear::SampleRate::fixed<kRate>(), signals);
 	TestClock time;
 	REQUIRE(offer(ring, 0, 64) == 64);
 	Bank bank(1, 8);
@@ -316,7 +319,7 @@ TEST_CASE("The clock wake is signalled only when the clock asks", "[source_ring]
 
 TEST_CASE("A clear plays the next 5 ms faded to zero, drops the rest, and the next audio fades in", "[source_ring]") {
 	CountingSignals signals;
-	SourceRing ring(1, 64, kRate, signals);
+	SourceRing ring(1, 64, ear::SampleRate::fixed<kRate>(), signals);
 	TestClock time;
 	REQUIRE(offer(ring, 0, 40) == 40);
 	Bank bank(1, 16);
@@ -339,7 +342,7 @@ TEST_CASE("A clear plays the next 5 ms faded to zero, drops the rest, and the ne
 TEST_CASE("A clear with less than 5 ms written decays from its last frame to zero before the next audio",
           "[source_ring]") {
 	CountingSignals signals;
-	SourceRing ring(1, 64, kRate, signals);
+	SourceRing ring(1, 64, ear::SampleRate::fixed<kRate>(), signals);
 	REQUIRE(offer(ring, 0, 18) == 18);
 	Bank bank(1, 16);
 	Clock clock;
@@ -362,7 +365,7 @@ TEST_CASE("At an underrun a source decays from its last frame over 5 ms and coun
           "audio returns",
           "[source_ring]") {
 	CountingSignals signals;
-	SourceRing ring(2, 64, kRate, signals);
+	SourceRing ring(2, 64, ear::SampleRate::fixed<kRate>(), signals);
 	TestClock time;
 	REQUIRE(offer(ring, 0, 20, 2) == 20);
 	Bank bank(2, 16);
@@ -397,7 +400,7 @@ TEST_CASE("At an underrun a source decays from its last frame over 5 ms and coun
 
 TEST_CASE("A source's shortfall counts only while its writer is not idle", "[source_ring]") {
 	CountingSignals signals;
-	SourceRing ring(1, 64, kRate, signals);
+	SourceRing ring(1, 64, ear::SampleRate::fixed<kRate>(), signals);
 	Bank bank(1, 16);
 	Clock clock;
 	play(ring, bank, clock.next(16), 16); // never written: idle
@@ -420,7 +423,7 @@ TEST_CASE("A source's shortfall counts only while its writer is not idle", "[sou
 TEST_CASE("A stop drops and counts what the ring holds, plays nothing of it and refuses writes until the next tick",
           "[source_ring]") {
 	CountingSignals signals;
-	SourceRing ring(1, 64, kRate, signals);
+	SourceRing ring(1, 64, ear::SampleRate::fixed<kRate>(), signals);
 	TestClock time;
 	REQUIRE(offer(ring, 0, 40) == 40);
 	Bank bank(1, 16);
@@ -447,7 +450,7 @@ TEST_CASE("A stop drops and counts what the ring holds, plays nothing of it and 
 
 TEST_CASE("A closed source accepts nothing and still plays what it holds", "[source_ring]") {
 	CountingSignals signals;
-	SourceRing ring(1, 64, kRate, signals);
+	SourceRing ring(1, 64, ear::SampleRate::fixed<kRate>(), signals);
 	REQUIRE(offer(ring, 0, 16) == 16);
 	CHECK_FALSE(ring.closed());
 	ring.close();

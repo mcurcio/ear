@@ -25,7 +25,7 @@ class ThreadSinks final : public SinkAdapter {
 public:
 	explicit ThreadSinks(Executor& mainLoop); // outlives every sink made
 	std::unique_ptr<Sink> make(const NodeName& node, std::string_view bank, std::uint32_t channels,
-	                           std::uint32_t capacityFrames, std::uint32_t rate) override;
+	                           std::uint32_t capacityFrames, SampleRate rate) override;
 
 private:
 	Executor& mainLoop_;

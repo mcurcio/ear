@@ -33,11 +33,12 @@ ear::GraphCycle cycleAt(std::uint64_t position) {
 } // namespace
 
 TEST_CASE("A stall length is a fixed time, or a number of the stalled cycle's durations", "[inducers]") {
-	CHECK(StallLength::of(12ms).at(256, 48000) == 12ms);
-	CHECK(StallLength::of(12ms).at(64, 44100) == 12ms);
-	CHECK(StallLength::cycles(1.5).at(256, 48000) == 8ms);        // 1.5 x 5.333 ms
-	CHECK(StallLength::cycles(1.5).at(64, 48000) == 2'000'000ns); // 1.5 x 1.333 ms
-	CHECK(StallLength::cycles(2.0).at(480, 48000) == 20ms);
+	CHECK(StallLength::of(12ms).at(256, ear::FrameClock(ear::SampleRate::fixed<48000>())) == 12ms);
+	CHECK(StallLength::of(12ms).at(64, ear::FrameClock(ear::SampleRate::fixed<44100>())) == 12ms);
+	CHECK(StallLength::cycles(1.5).at(256, ear::FrameClock(ear::SampleRate::fixed<48000>())) == 8ms); // 1.5 x 5.333 ms
+	CHECK(StallLength::cycles(1.5).at(64, ear::FrameClock(ear::SampleRate::fixed<48000>())) ==
+	      2'000'000ns); // 1.5 x 1.333 ms
+	CHECK(StallLength::cycles(2.0).at(480, ear::FrameClock(ear::SampleRate::fixed<48000>())) == 20ms);
 }
 
 TEST_CASE("A plan names the cycles listed, or every n-th from its phase up to its limit, and nothing else",
@@ -49,8 +50,8 @@ TEST_CASE("A plan names the cycles listed, or every n-th from its phase up to it
 	const StallPlan listed = StallPlan::at({{200, StallLength::of(30ms)}, {600, StallLength::of(60ms)}});
 	CHECK(listed.size() == 2);
 	REQUIRE(listed.planned(200));
-	CHECK(listed.planned(200)->at(256, 48000) == 30ms);
-	CHECK(listed.planned(600)->at(256, 48000) == 60ms);
+	CHECK(listed.planned(200)->at(256, ear::FrameClock(ear::SampleRate::fixed<48000>())) == 30ms);
+	CHECK(listed.planned(600)->at(256, ear::FrameClock(ear::SampleRate::fixed<48000>())) == 60ms);
 	CHECK_FALSE(listed.planned(199));
 	CHECK_FALSE(listed.planned(201));
 
@@ -72,12 +73,12 @@ TEST_CASE("Stalls sleep the planned length at a planned cycle, return at once at
           "[inducers]") {
 	Stalls stalls(StallPlan::at({{1, StallLength::of(20ms)}}));
 	const auto before = std::chrono::steady_clock::now();
-	CHECK_FALSE(stalls(0, 256, 48000));
+	CHECK_FALSE(stalls(0, 256, ear::SampleRate::fixed<48000>()));
 	CHECK(stalls.made() == 0);
-	CHECK(stalls(1, 256, 48000));
+	CHECK(stalls(1, 256, ear::SampleRate::fixed<48000>()));
 	CHECK(std::chrono::steady_clock::now() - before >= 20ms); // a sleep is at least its length
 	CHECK(stalls.made() == 1);
-	CHECK_FALSE(stalls(2, 256, 48000));
+	CHECK_FALSE(stalls(2, 256, ear::SampleRate::fixed<48000>()));
 	CHECK(stalls.made() == 1);
 }
 
@@ -107,7 +108,7 @@ TEST_CASE("StallingCode writes silence, records every cycle, stalls at its plan'
           "[inducers]") {
 	std::size_t wakes = 0;
 	StallingCode code(4, StallPlan::at({{1, StallLength::cycles(1.5)}}), [&] { ++wakes; });
-	code.prepare(ear::AudioFormat{48000, 256});
+	code.prepare(ear::AudioFormat{ear::SampleRate::fixed<48000>(), 256});
 	std::vector<float> out(256, std::nanf(""));
 	const std::vector<std::span<float>> outputs{out};
 	for (std::uint64_t n = 0; n < 6; ++n) code.process({}, outputs, 256, cycleAt(n * 256));

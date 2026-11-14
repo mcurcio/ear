@@ -24,7 +24,7 @@ inline constexpr std::uint32_t sourceBits = 24;
 class ToServer final : public HandoffConsumer {
 public:
 	/// `sink` and `anchor` outlive every consume(): the handoff closes before the worker stops.
-	ToServer(std::uint32_t rate, SourceSink& sink, const Mailbox<CaptureAnchor>& anchor);
+	ToServer(SampleRate rate, SourceSink& sink, const Mailbox<CaptureAnchor>& anchor);
 	/// The server's commands: whether anyone wants the audio.
 	void streaming(bool wanted) noexcept { streaming_.store(wanted, std::memory_order_release); }
 	/// Pieces of at most 100 ms: one write must fit 5/8 of the 500 ms capture buffer. When this thread woke does

@@ -127,7 +127,7 @@ private:
 class ThreadSink final : public Sink, public SinkTap {
 public:
 	ThreadSink(Executor& mainLoop, const NodeName& node, std::string_view bank, std::uint32_t channels,
-	           std::uint32_t capacityFrames, std::uint32_t rate)
+	           std::uint32_t capacityFrames, SampleRate rate)
 		: mainLoop_(mainLoop), rules_(channels, capacityFrames, rate) {
 		const std::string name = node + "." + std::string(bank); // its engine name
 		thread_.reset(pw_thread_loop_new(name.c_str(), nullptr));
@@ -234,7 +234,7 @@ std::unique_ptr<Handoff> ThreadHandoffs::make(const NodeName& node, std::uint32_
 ThreadSinks::ThreadSinks(Executor& mainLoop) : mainLoop_(mainLoop) {}
 
 std::unique_ptr<Sink> ThreadSinks::make(const NodeName& node, std::string_view bank, std::uint32_t channels,
-                                        std::uint32_t capacityFrames, std::uint32_t rate) {
+                                        std::uint32_t capacityFrames, SampleRate rate) {
 	return std::make_unique<ThreadSink>(mainLoop_, node, bank, channels, capacityFrames, rate);
 }
 

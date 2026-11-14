@@ -47,7 +47,8 @@ constexpr double kAmplitude = 0.5;
 constexpr std::chrono::milliseconds kReceiverHeadroom{100};
 /// How long the receivers' buffer lasts, through the graph's FrameClock: the reach of a late send, and of a lost cycle
 /// that starved or flooded the buffer (docs/testing.md#the-senders-own-counter).
-const std::chrono::nanoseconds kReceiverReach = ear::test::receiverReach(FrameClock(kRate), kReceiverHeadroom);
+const std::chrono::nanoseconds kReceiverReach =
+	ear::test::receiverReach(FrameClock(ear::SampleRate::fixed<kRate>()), kReceiverHeadroom);
 /// How long after its first sound a receiver's output is left unjudged, once per start: its resampler's rate control
 /// steering to the packets' arrival, which this test has always given half a second. What follows is judged unless a
 /// late send or a lost cycle reaches it (docs/testing.md#the-senders-own-counter).
@@ -194,7 +195,8 @@ struct Graph {
 	enum class Pulse { none, stalls };
 	explicit Graph(Faults* faults = nullptr, Pulse pulse = Pulse::none)
 		: engine(makeEngine(faults)), waiter(*engine), registry(*engine, waiter), blocks(*engine, bell),
-		  receivers(*engine), recorder(waiter, 2), stall(kRate), blockEvents(waiter), pulseEvents(waiter) {
+		  receivers(*engine), recorder(waiter, 2), stall(ear::SampleRate::fixed<kRate>()), blockEvents(waiter),
+		  pulseEvents(waiter) {
 		// Inside inputs come after the public ones in a code's inputs, each bank in declaration order, so the recorder's
 		// inputs 0 and 1 are from_rtp's whether or not pulse is there.
 		std::vector<PortBank> banks{{Direction::output, "stream", {"1", "2"}},
@@ -233,7 +235,7 @@ struct Graph {
 		auto receiver = receivers.make(
 			CompanionTarget{
 				"fpp.rtp", "fpp", Direction::input, {"from_rtp.1", "from_rtp.2"}, kFormat, block->blockId()},
-			RtpReceiverShape{*RtpAddress::parse("0.0.0.0"), port, encoding, rate,
+			RtpReceiverShape{*RtpAddress::parse("0.0.0.0"), port, encoding, *SampleRate::of(rate),
 		                     static_cast<std::uint32_t>(kReceiverHeadroom.count())},
 			events);
 		events.insideMake = false;
@@ -298,13 +300,14 @@ struct TonesJudged {
 TonesJudged judgeTones(Graph& graph, const RtpSender& sender, std::size_t from, const std::array<Tone, 2>& tones,
                        std::size_t stallsFrom, std::size_t planned = kPlannedTenths) {
 	constexpr std::size_t tenth = kRate / 10;
-	const auto reachFrames = static_cast<std::size_t>(FrameClock(kRate).frames(kReceiverReach));
+	const auto reachFrames =
+		static_cast<std::size_t>(FrameClock(ear::SampleRate::fixed<kRate>()).frames(kReceiverReach));
 	REQUIRE(graph.pulseBlock != nullptr);
 	ear::test::CycleJudge judge(
 		ear::test::JudgePlan{.judged = planned * tenth / kBlock,
 	                         .induce = ear::test::StallPlan::every(1, 0, 4, ear::test::StallLength::cycles(1.5)),
 	                         .expected = {.drives = 1}},
-		FrameClock(kRate), &graph.engine->cuts());
+		FrameClock(ear::SampleRate::fixed<kRate>()), &graph.engine->cuts());
 	std::vector<ear::test::Verdict> verdicts;
 	const auto feed = [&] {
 		const ear::test::CycleLedger& ledger = graph.recorder.ledger();
@@ -397,7 +400,8 @@ void checkTwoTones(RtpPcm pcm, RtpEncoding encoding, std::uint32_t senderRate) {
 	sender.send(25 * senderRate);
 	REQUIRE(graph.waiter.until([&] { return graph.recorder.first() != Recorder::kNone; }));
 	const std::size_t from =
-		graph.recorder.first() + static_cast<std::size_t>(FrameClock(kRate).frames(kReceiverStartSettle));
+		graph.recorder.first() +
+		static_cast<std::size_t>(FrameClock(ear::SampleRate::fixed<kRate>()).frames(kReceiverStartSettle));
 	judgeTones(graph, sender, from, {Tone{750.0, 1500.0}, Tone{1500.0, 750.0}}, from);
 	CHECK_FALSE(events.lostDetail.has_value());
 }
@@ -452,8 +456,8 @@ TEST_CASE("A receiver joins its block by the block's id: beside an older block o
 	ReceiverEvents events(graph.waiter, graph.registry);
 	const auto receiver = graph.receivers.make(
 		CompanionTarget{"fpp.rtp", "fpp", Direction::input, {"from_rtp.1", "from_rtp.2"}, kFormat, newerId},
-		RtpReceiverShape{*RtpAddress::parse("0.0.0.0"), ear::test::freeUdpPort(), RtpEncoding::l24, kRate,
-	                     static_cast<std::uint32_t>(kReceiverHeadroom.count())},
+		RtpReceiverShape{*RtpAddress::parse("0.0.0.0"), ear::test::freeUdpPort(), RtpEncoding::l24,
+	                     ear::SampleRate::fixed<kRate>(), static_cast<std::uint32_t>(kReceiverHeadroom.count())},
 		events);
 	REQUIRE(graph.waiter.until([&] { return events.settled(); }));
 	REQUIRE(events.lostDetail.value_or("") == "");
@@ -519,7 +523,8 @@ TEST_CASE("A sender held 20 ms and then catching up is heard as a clean tone: it
 		sender.send(25 * kRate);
 		REQUIRE(graph.waiter.until([&] { return graph.recorder.first() != Recorder::kNone; }));
 		const std::size_t from =
-			graph.recorder.first() + static_cast<std::size_t>(FrameClock(kRate).frames(kReceiverStartSettle));
+			graph.recorder.first() +
+			static_cast<std::size_t>(FrameClock(ear::SampleRate::fixed<kRate>()).frames(kReceiverStartSettle));
 		// The tenths the hold reaches: from its frame to as far again as the hold and the buffer last.
 		const std::size_t heldAt = graph.recorder.first() + kRate;
 		const std::size_t reach = heldAt + static_cast<std::size_t>((hold + kReceiverHeadroom).count()) * kRate / 1000;
@@ -560,7 +565,8 @@ TEST_CASE("A sender that restarts with a new SSRC is heard again", "[rtp][ssrc]"
 	second.send(25 * kRate);
 	REQUIRE(graph.waiter.until([&] { return graph.recorder.onsetFrom(mark) != Recorder::kNone; }));
 	const std::size_t from =
-		graph.recorder.onsetFrom(mark) + static_cast<std::size_t>(FrameClock(kRate).frames(kReceiverStartSettle));
+		graph.recorder.onsetFrom(mark) +
+		static_cast<std::size_t>(FrameClock(ear::SampleRate::fixed<kRate>()).frames(kReceiverStartSettle));
 	judgeTones(graph, second, from, {Tone{500.0, 750.0}, Tone{1000.0, 1500.0}}, from);
 	CHECK_FALSE(events.lostDetail.has_value());
 }

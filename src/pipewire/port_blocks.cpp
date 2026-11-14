@@ -373,7 +373,7 @@ private:
 			}
 			spa_latency_info info{};
 			if (spa_latency_parse(param, &info) < 0 || info.direction != farSide) return true;
-			peers[index] = fromSpa(info, maxBlock_, rate_);
+			peers[index] = fromSpa(info, maxBlock_, FrameClock(rate_));
 			return true;
 		};
 		if (heard(inputPorts_, inputPeers_, SPA_DIRECTION_OUTPUT) ||
@@ -659,7 +659,7 @@ private:
 	std::shared_ptr<Levels> levels_;
 	RegisteredBlock registered_;
 	Ports ports_;
-	std::uint32_t rate_;
+	SampleRate rate_;
 	const CutRecord& cuts_;       // the engine's record of the internal clock's cuts
 	std::uint32_t internalClock_; // the internal clock's id: its cycles are numbered by cuts_
 	CycleAccount account_;        // each cycle's facts, from the clock as the realtime side last saw it; data loop only

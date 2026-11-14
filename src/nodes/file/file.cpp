@@ -29,7 +29,7 @@ public:
 
 	void begin() override {
 		SF_INFO info{};
-		info.samplerate = static_cast<int>(format_.rate);
+		info.samplerate = static_cast<int>(format_.rate.hz());
 		info.channels = 2;
 		info.format = SF_FORMAT_WAV | SF_FORMAT_FLOAT;
 		std::string refused;

@@ -104,7 +104,8 @@ TEST_CASE("The lifecycle's five methods take a name and nothing else, and node.a
 
 TEST_CASE("The frame: graph.get says protocol 1 and the lifecycle, counters and companions features",
           "[commands][lifecycle]") {
-	const json graph = encodeGraph(ear::GraphView{{{48000, 256}, false, "SCHED_OTHER"}, {}, {}, {}});
+	const json graph =
+		encodeGraph(ear::GraphView{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {}, {}, {}});
 	CHECK(graph["protocol"] == 1);
 	CHECK(graph["features"] == json::array({"lifecycle", "counters", "companions"}));
 }
@@ -112,7 +113,7 @@ TEST_CASE("The frame: graph.get says protocol 1 and the lifecycle, counters and 
 TEST_CASE("A snapshot's node carries its companion list in request order, each counter only on its kind, and [] for "
           "none",
           "[commands][companions]") {
-	ear::GraphView view{{{48000, 256}, false, "SCHED_OTHER"}, {}, {}, {}};
+	ear::GraphView view{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {}, {}, {}};
 	view.nodes.push_back({{"n", "white", json::object()}, ear::Ports{}, ear::NodeHealth{"n"}});
 	view.nodes.push_back(
 		{{"x", "test", json::object()},
@@ -135,7 +136,7 @@ TEST_CASE("A snapshot's node carries its companion list in request order, each c
 
 TEST_CASE("A snapshot's counters: the graph's with lostMs at its own rate and block size, and every node's",
           "[commands][counters]") {
-	ear::GraphView view{{{44100, 512}, false, "SCHED_OTHER"}, {}, {}, {}};
+	ear::GraphView view{{{ear::SampleRate::fixed<44100>(), 512}, false, "SCHED_OTHER"}, {}, {}, {}};
 	view.counts = ear::GraphCounts{.cycles = 900, .cutCycles = 10, .stalls = 3};
 	view.nodes.push_back({{"n", "white", json::object()},
 	                      ear::Ports{},
@@ -160,7 +161,7 @@ TEST_CASE("Each health member is encoded once for snapshots: state, phase, wante
 	health.blockLost = true;
 	ear::NodeSpec spec{"desk", "card", json::object()};
 	spec.disabled = true;
-	ear::GraphView view{{{48000, 256}, false, "SCHED_OTHER"}, {}, {}, {}};
+	ear::GraphView view{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {}, {}, {}};
 	view.nodes.push_back({spec, ear::Ports{}, health, ear::control::testing::reading(1)});
 	ear::NodeHealth waits{"fpp"};
 	waits.phase = NodePhase::configuring;
@@ -275,7 +276,7 @@ TEST_CASE("unknown-values.json starts from a snapshot ear makes", "[commands][pr
 	using ear::NodeState;
 	using ear::control::testing::health;
 	const json document = fixture("unknown-values");
-	ear::GraphView view{{{48000, 256}, false, "SCHED_OTHER"}, {"file", "white"}, {}, {}};
+	ear::GraphView view{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {"file", "white"}, {}, {}};
 	view.nodes.push_back({{"noise", "white", json::object()},
 	                      ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}},
 	                      health("noise", NodeState::running),

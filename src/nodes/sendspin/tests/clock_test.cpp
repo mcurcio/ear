@@ -146,7 +146,7 @@ public:
 					if (stalledIn != 0 && cycle.facts.graphCycle > stalledIn)
 						stalledAt_.store(at - 1, std::memory_order_release);
 				} else {
-					(mode == kOwnShort ? ownShort_ : ownLong_)(0, frames, kRate);
+					(mode == kOwnShort ? ownShort_ : ownLong_)(0, frames, ear::SampleRate::fixed<kRate>());
 					stalledAt_.store(at, std::memory_order_release);
 				}
 			}
@@ -371,9 +371,9 @@ struct Rig {
 		: engine(makeEngine()), waiter(*engine), blocks(*engine, bell), feed(2, kFeedFrames), notes(waiter),
 		  worker(keys.held, "clock", SendspinSettings{ServerUrl::parse(server.url()), defaultListenPort, "clock"},
 	             kFormat, feed, notes),
-		  code(feed, worker.progress(), worker.bell(), kRate, toServer, worker.capture()),
-		  tap(code, feed, worker.progress(), waiter), pulse(kRate), blockEvents(waiter), pulseEvents(waiter),
-		  registry(*engine, waiter) {
+		  code(feed, worker.progress(), worker.bell(), ear::SampleRate::fixed<kRate>(), toServer, worker.capture()),
+		  tap(code, feed, worker.progress(), waiter), pulse(ear::SampleRate::fixed<kRate>()), blockEvents(waiter),
+		  pulseEvents(waiter), registry(*engine, waiter) {
 		notes.connectTap(tap);
 		log.connectTap(tap.counter());
 		block = blocks.make(
@@ -601,7 +601,9 @@ struct StallProbe {
 			const int armed = armed_.load(std::memory_order_acquire);
 			if (armed == 0 || caughtUp_) return;
 			if (!stalled_) {
-				(armed == 1 ? shortStall_ : armed == 2 ? longStall_ : hiccup_)(0, frames, kRate);
+				(armed == 1   ? shortStall_
+				 : armed == 2 ? longStall_
+				              : hiccup_)(0, frames, ear::SampleRate::fixed<kRate>());
 				stalled_ = true;
 				stalledIn.store(cycle.facts.graphCycle, std::memory_order_release);
 				return;
@@ -610,7 +612,7 @@ struct StallProbe {
 										 std::chrono::steady_clock::now().time_since_epoch())
 			                             .count(); // CLOCK_MONOTONIC on Linux, as nextNs
 			if (cycle.nextNs <= now) {
-				burstHolds_(held_++, frames, kRate);
+				burstHolds_(held_++, frames, ear::SampleRate::fixed<kRate>());
 				return;
 			}
 			caughtUp_ = true;
@@ -776,7 +778,7 @@ public:
 		: rig_(rig), log_(log),
 		  cycles_(
 			  ear::test::JudgePlan{.judged = kPlannedCycles, .induce = std::move(induce), .expected = {.drives = 1}},
-			  FrameClock(kRate), &rig.engine->cuts()) {}
+			  FrameClock(ear::SampleRate::fixed<kRate>()), &rig.engine->cuts()) {}
 
 	/// Every cycle not read yet but the newest kLogLag, whose log lines may still be on their way, and the time filter
 	/// as it is now; arms the next planned stall when it is due.
@@ -1099,7 +1101,8 @@ private:
 		const std::uint64_t total = told_ + pendingTold_;
 		pendingTold_ = 0;
 		const std::int64_t heard =
-			FrameClock(kRate).heardRawNs(cycle.ranRawNs, cycle.frames, Latency{cycle.delayFrames, cycle.delayFrames});
+			FrameClock(ear::SampleRate::fixed<kRate>())
+				.heardRawNs(cycle.ranRawNs, cycle.frames, Latency{cycle.delayFrames, cycle.delayFrames});
 		std::int64_t finish = heard;
 		if (afterForced_ && heard < lastFinish_) {
 			++errors.clamps;
@@ -1148,7 +1151,7 @@ private:
 			                               std::to_string(cycle.progress.totalFrames - before.progress.totalFrames) +
 			                               " frames" + both());
 		const double driftUs = static_cast<double>(cycle.progress.finishRawNs - before.progress.finishRawNs -
-		                                           FrameClock(kRate).ns(before.frames)) /
+		                                           FrameClock(ear::SampleRate::fixed<kRate>()).ns(before.frames)) /
 		                       1000.0;
 		if (std::abs(driftUs) > std::abs(errors.worstProgressDriftUs)) errors.worstProgressDriftUs = driftUs;
 		if (std::abs(driftUs) >= 1000.0 && errors.progressSteps.size() < 64)
@@ -1608,8 +1611,9 @@ static void judgeStall(StallKind kind, StallMade made) {
 	INFO("the first report after the stall at cycle " << firstTold << ", overdue " << firstReport.overdueNs << " ns");
 	CHECK(firstReport.overdueNs == 0);
 	CHECK(firstReport.progress.finishRawNs ==
-	      FrameClock(kRate).heardRawNs(firstReport.startRawNs, firstReport.frames,
-	                                   Latency{firstReport.delayFrames, firstReport.delayFrames}));
+	      FrameClock(ear::SampleRate::fixed<kRate>())
+	          .heardRawNs(firstReport.startRawNs, firstReport.frames,
+	                      Latency{firstReport.delayFrames, firstReport.delayFrames}));
 
 	// Back on the server's stamps: the first ramp cycle from the burst's end on whose first frame left within the band
 	// the library leaves hard sync at (sync_task.cpp's settle threshold, 500 us), inside which only its soft sync acts.

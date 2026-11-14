@@ -4,7 +4,7 @@
 
 namespace ear::sendspin {
 
-SendspinCode::SendspinCode(Feed& feed, Mailbox<PlayProgress>& progress, const EventFd& bell, std::uint32_t rate,
+SendspinCode::SendspinCode(Feed& feed, Mailbox<PlayProgress>& progress, const EventFd& bell, SampleRate rate,
                            RtWriter& toServer, Mailbox<CaptureAnchor>& capture) noexcept
 	: feed_(feed), progress_(progress), bell_(bell), clock_(rate), toServer_(toServer), capture_(capture) {}
 

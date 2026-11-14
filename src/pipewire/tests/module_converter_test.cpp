@@ -353,7 +353,7 @@ TEST_CASE("A module-run converter whose node never runs tells nothing while its 
 	REQUIRE(graph.waiter.until([&] { return graph.registry.state("fpp.pipe").has_value(); }));
 	const std::uint32_t node = *graph.registry.id("fpp.pipe");
 	// As long as an RTP receiver's deadline, counted in the block's cycles: what would have told it is not coming.
-	REQUIRE(graph.runs(FrameClock(kRate).frames(rtpReceiverReadinessBound) / kBlock, 30s));
+	REQUIRE(graph.runs(FrameClock(ear::SampleRate::fixed<kRate>()).frames(rtpReceiverReadinessBound) / kBlock, 30s));
 	CHECK_FALSE(events.settled());
 	CHECK(graph.registry.state("fpp.pipe") != PW_NODE_STATE_RUNNING);
 	CHECK(graph.registry.linksOf(node).empty());

@@ -83,7 +83,7 @@ private:
 
 class EventSource final : public Source, public SourceWriter, public SourceTap, private SourceRing::Signals {
 public:
-	EventSource(std::uint32_t channels, std::uint32_t capacityFrames, std::uint32_t rate,
+	EventSource(std::uint32_t channels, std::uint32_t capacityFrames, SampleRate rate,
 	            std::unique_ptr<SourceClock> clock)
 		: clock_(std::move(clock)), ring_(channels, capacityFrames, rate, *this) {}
 
@@ -188,7 +188,7 @@ private:
 } // namespace
 
 std::unique_ptr<Source> EventSources::make(const NodeName& node, std::string_view bank, std::uint32_t channels,
-                                           std::uint32_t capacityFrames, std::uint32_t rate,
+                                           std::uint32_t capacityFrames, SampleRate rate,
                                            std::unique_ptr<SourceClock> clock) {
 	static_cast<void>(node);
 	static_cast<void>(bank);

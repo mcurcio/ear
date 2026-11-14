@@ -58,7 +58,8 @@ spa_latency_info spaCombined(const std::vector<spa_latency_info>& peers, bool fi
 /// ear's: each peer converted at the port, then Paths.
 Paths earCombined(const std::vector<spa_latency_info>& peers) {
 	Paths paths;
-	for (const spa_latency_info& peer : peers) paths.add(fromSpa(peer, kQuantum, kRate));
+	for (const spa_latency_info& peer : peers)
+		paths.add(fromSpa(peer, kQuantum, FrameClock(ear::SampleRate::fixed<kRate>())));
 	return paths;
 }
 
@@ -105,13 +106,14 @@ TEST_CASE("A peer's triple comes to frames at the graph's quantum and rate", "[l
 	};
 	for (const Row& row : rows) {
 		INFO(row.what);
-		CHECK(fromSpa(row.info, kQuantum, kRate) == row.frames);
+		CHECK(fromSpa(row.info, kQuantum, FrameClock(ear::SampleRate::fixed<kRate>())) == row.frames);
 	}
 	// The same ns at another rate.
-	CHECK(fromSpa(info(0, 0, 0, 0, 10'000'000, 10'000'000), kQuantum, 44100) == Latency{441, 441});
+	CHECK(fromSpa(info(0, 0, 0, 0, 10'000'000, 10'000'000), kQuantum, FrameClock(ear::SampleRate::fixed<44100>())) ==
+	      Latency{441, 441});
 	// An unfinished empty combination is no path, not zero.
-	CHECK(fromSpa(spaCombined({}, false), kQuantum, kRate) == std::nullopt);
-	CHECK(fromSpa(spaCombined({}, true), kQuantum, kRate) == Latency{});
+	CHECK(fromSpa(spaCombined({}, false), kQuantum, FrameClock(ear::SampleRate::fixed<kRate>())) == std::nullopt);
+	CHECK(fromSpa(spaCombined({}, true), kQuantum, FrameClock(ear::SampleRate::fixed<kRate>())) == Latency{});
 }
 
 TEST_CASE("What a block tells goes back in rate units only, and reads back the same", "[latency]") {
@@ -123,7 +125,7 @@ TEST_CASE("What a block tells goes back in rate units only, and reads back the s
 			CHECK(told.max_quantum == 0.0F);
 			CHECK(told.min_ns == 0);
 			CHECK(told.max_ns == 0);
-			CHECK(fromSpa(told, kQuantum, kRate) == latency);
+			CHECK(fromSpa(told, kQuantum, FrameClock(ear::SampleRate::fixed<kRate>())) == latency);
 		}
 	}
 	CHECK(toSpa(Latency{0, UINT32_MAX}, SPA_DIRECTION_INPUT).max_rate == std::numeric_limits<std::int32_t>::max());
@@ -142,8 +144,10 @@ TEST_CASE("ear's parallel combine is PipeWire's spa_latency_info_combine, unit b
 			INFO("unit " << static_cast<int>(unit) << ", trial " << trial << ", " << count << " peers");
 			const Paths ours = earCombined(peers);
 			// Unfinished, PipeWire's empty combination is ear's no path; finished, ear's orZero.
-			CHECK(fromSpa(spaCombined(peers, false), kQuantum, kRate) == ours.combined());
-			CHECK(fromSpa(spaCombined(peers, true), kQuantum, kRate) == ours.orZero());
+			CHECK(fromSpa(spaCombined(peers, false), kQuantum, FrameClock(ear::SampleRate::fixed<kRate>())) ==
+			      ours.combined());
+			CHECK(fromSpa(spaCombined(peers, true), kQuantum, FrameClock(ear::SampleRate::fixed<kRate>())) ==
+			      ours.orZero());
 		}
 	}
 }
@@ -152,7 +156,7 @@ TEST_CASE("Peers in mixed units: frames first is exact, inside PipeWire's per-un
 	// One peer a quantum (256 frames), the other 100 rate units: per unit PipeWire takes the least quantum (0) and the
 	// least rate (0), and the most of each (1 and 100), so {0, 356}; the paths are 256 and 100, so {100, 256}.
 	const std::vector<spa_latency_info> peers{inUnit(Unit::quantum, 4, 4), inUnit(Unit::rate, 100, 100)};
-	const Latency bound = *fromSpa(spaCombined(peers, true), kQuantum, kRate);
+	const Latency bound = *fromSpa(spaCombined(peers, true), kQuantum, FrameClock(ear::SampleRate::fixed<kRate>()));
 	CHECK(bound == Latency{0, 356});
 	CHECK(earCombined(peers).combined() == Latency{100, 256});
 
@@ -164,7 +168,7 @@ TEST_CASE("Peers in mixed units: frames first is exact, inside PipeWire's per-un
 			mixed.push_back(inUnit(unit, least, least + sequence.next(2000)));
 		}
 		INFO("trial " << trial);
-		const Latency outer = *fromSpa(spaCombined(mixed, true), kQuantum, kRate);
+		const Latency outer = *fromSpa(spaCombined(mixed, true), kQuantum, FrameClock(ear::SampleRate::fixed<kRate>()));
 		const Latency exact = earCombined(mixed).orZero();
 		CHECK(exact.minFrames >= outer.minFrames);
 		CHECK(exact.maxFrames <= outer.maxFrames);
@@ -180,7 +184,7 @@ TEST_CASE("A peer's negative latency is clamped at the port, before a companion'
 	negative.direction = SPA_DIRECTION_OUTPUT;
 	negative.min_rate = -100;
 	negative.max_rate = -100;
-	const std::optional<Latency> peer = fromSpa(negative, kQuantum, kRate);
+	const std::optional<Latency> peer = fromSpa(negative, kQuantum, FrameClock(ear::SampleRate::fixed<kRate>()));
 	CHECK(peer == Latency{0, 0});
 	const Ports ports({{Direction::output, "stream", numbered(1)},
 	                   {Direction::input, "from_rtp", numbered(1), PortBank::Reach::inside}});

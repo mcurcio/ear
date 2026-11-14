@@ -118,7 +118,7 @@ std::unique_ptr<Engine> makeEngine(Faults* faults) {
 	                         "DBUS_SYSTEM_BUS_ADDRESS"}) {
 		unsetenv(name);
 	}
-	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, 48000, 256, faults});
+	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, ear::SampleRate::fixed<48000>(), 256, faults});
 	if (!engine) FAIL("Engine::create: " << engine.error().detail);
 	return std::move(*engine);
 }
@@ -245,7 +245,7 @@ TEST_CASE("A second holder of the boundary is refused while one holds it", "[bou
 	const Installed installed(faults);
 	RecordingFaults other;
 	CHECK_FALSE(boundary::install(&other));
-	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, 48000, 256, &other});
+	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, ear::SampleRate::fixed<48000>(), 256, &other});
 	REQUIRE_FALSE(engine);
 	CHECK(engine.error().detail == "another engine is running in this process: ear runs one at a time");
 	Thrower thrower;
@@ -490,13 +490,12 @@ struct NoHandoffs final : HandoffAdapter {
 	}
 };
 struct NoSinks final : SinkAdapter {
-	std::unique_ptr<Sink> make(const NodeName&, std::string_view, std::uint32_t, std::uint32_t,
-	                           std::uint32_t) override {
+	std::unique_ptr<Sink> make(const NodeName&, std::string_view, std::uint32_t, std::uint32_t, SampleRate) override {
 		return nullptr;
 	}
 };
 struct NoSources final : SourceAdapter {
-	std::unique_ptr<Source> make(const NodeName&, std::string_view, std::uint32_t, std::uint32_t, std::uint32_t,
+	std::unique_ptr<Source> make(const NodeName&, std::string_view, std::uint32_t, std::uint32_t, SampleRate,
 	                             std::unique_ptr<SourceClock>) override {
 		return nullptr;
 	}
@@ -545,7 +544,7 @@ TEST_CASE("A std::logic_error of NodeHost's own, out of a block's callback, ends
 		NoSinks sinks;
 		NoSources sources;
 		ResourceRegistry resources(cards, receivers, handoffs, sinks, sources);
-		NodeHost host(AudioFormat{48000, 256}, blocks, resources, loop, loop);
+		NodeHost host(AudioFormat{ear::SampleRate::fixed<48000>(), 256}, blocks, resources, loop, loop);
 		host.nodeAdded(NodeSpec{"amp", "silent", {}}, std::make_shared<SilentConfig>());
 		loop.runPosted(); // the flush makes the block
 		if (blocks.made == nullptr) ::_exit(92);

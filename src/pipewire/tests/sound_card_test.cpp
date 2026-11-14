@@ -87,8 +87,8 @@ public:
 		downstream_.store(cycle.downstreamOf(0).maxFrames, std::memory_order_relaxed);
 		calls_.fetch_add(1, std::memory_order_release);
 		// The stalled cycle is cut short straight after it (docs/testing.md#the-cycle-judge).
-		if (stalls_ != nullptr && armed_.load(std::memory_order_acquire) && (*stalls_)(armedCycles_++, frames, kRate) &&
-		    recorded) {
+		if (stalls_ != nullptr && armed_.load(std::memory_order_acquire) &&
+		    (*stalls_)(armedCycles_++, frames, ear::SampleRate::fixed<kRate>()) && recorded) {
 			const std::size_t at = stalledCount_.load(std::memory_order_relaxed);
 			if (at < stalledAt_.size()) {
 				stalledAt_[at] = *recorded;
@@ -139,7 +139,7 @@ private:
 /// nothing: the card's clock tests judge the clock a card leaves the blocks on, and the excuse path is proven every run
 /// by the ramp onto channel 2, through the same Code (which judges its own block through this too).
 ear::test::JudgeReport judgeClock(const Code& code, std::size_t from = 0) {
-	const FrameClock clock(kRate);
+	const FrameClock clock(ear::SampleRate::fixed<kRate>());
 	ear::test::CycleJudge before(ear::test::JudgePlan{.judged = 1, .induce = StallPlan{}, .expected = {.drives = 1}},
 	                             clock, nullptr);
 	ear::test::CycleJudge after(ear::test::JudgePlan{.judged = 16,
@@ -194,7 +194,9 @@ struct Graph {
 	explicit Graph(std::optional<std::size_t> rampOn = std::nullopt, Faults* faults = nullptr,
 	               std::optional<ear::test::JudgePlan> plan = std::nullopt)
 		: out(useTestAlsa(alsaOut)), engine(makeEngine(faults)), waiter(*engine),
-		  judge(plan ? std::make_unique<ear::test::CycleJudge>(*plan, FrameClock(kRate), &engine->cuts()) : nullptr),
+		  judge(plan ? std::make_unique<ear::test::CycleJudge>(*plan, FrameClock(ear::SampleRate::fixed<kRate>()),
+	                                                           &engine->cuts())
+	                 : nullptr),
 		  registry(*engine, waiter), blocks(*engine, bell), cards(*engine, clocklessCardProperties()),
 		  cardCode(waiter, rampOn, judge ? &judge->stalls() : nullptr), otherCode(waiter), cardBlockEvents(waiter),
 		  otherBlockEvents(waiter) {

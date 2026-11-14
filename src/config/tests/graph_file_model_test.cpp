@@ -47,7 +47,7 @@ std::vector<Placed> placed(const GraphFileRead& read) {
 }
 
 bool sameFormat(const std::optional<AudioFormat>& format, std::uint32_t rate, std::uint32_t block) {
-	return format && format->rate == rate && format->maxBlock == block;
+	return format && format->rate.hz() == rate && format->maxBlock == block;
 }
 
 } // namespace
@@ -62,7 +62,7 @@ TEST_CASE("The record's example loads with no diagnostic into its wanted graph",
 	CHECK_FALSE(read.hasErrors());
 	CHECK(sameFormat(read.format, 48000, 256));
 	REQUIRE(read.wanted.has_value());
-	CHECK(read.wanted->graphFrequency == 48000);
+	CHECK(read.wanted->graphFrequency.hz() == 48000);
 	CHECK(read.wanted->blockSize == 256);
 	CHECK(read.wanted->nodes == std::vector<NodeSpec>{
 									{"noise", "white", json::object()},

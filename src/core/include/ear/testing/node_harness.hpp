@@ -81,7 +81,7 @@ enum class Lost : std::uint8_t {
 
 /// How a harness runs (outside the class, so a default argument can use its member initializers).
 struct HarnessOptions {
-	AudioFormat format = {.rate = 48000, .maxBlock = 256};
+	AudioFormat format = {.rate = SampleRate::fixed<48000>(), .maxBlock = 256};
 	NodeName node = "node";
 	RecordingAdapter* recordings = nullptr; // null: every recording is refused ("no recordings folder"); until 3c
 	bool autoComplete = true;               // fades acknowledged and barriers completed as soon as posted

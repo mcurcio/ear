@@ -30,8 +30,8 @@ inline constexpr std::chrono::nanoseconds untoldBound = std::chrono::seconds{2};
 class SendspinCode final : public AudioCode {
 public:
 	/// `bell`: rung when progress changed. All outlive the code.
-	SendspinCode(Feed& feed, Mailbox<PlayProgress>& progress, const EventFd& bell, std::uint32_t rate,
-	             RtWriter& toServer, Mailbox<CaptureAnchor>& capture) noexcept;
+	SendspinCode(Feed& feed, Mailbox<PlayProgress>& progress, const EventFd& bell, SampleRate rate, RtWriter& toServer,
+	             Mailbox<CaptureAnchor>& capture) noexcept;
 	void prepare(const AudioFormat& format) override;
 	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
 	             std::uint32_t frames, const GraphCycle& cycle) noexcept override;

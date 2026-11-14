@@ -25,7 +25,7 @@ using namespace ear;
 
 constexpr auto out = bank::output<"out">;
 constexpr TypeSpec spec{.settings = SettingsTable<>{"counted"}, .banks = Banks<out>{}};
-constexpr AudioFormat format{.rate = 48000, .maxBlock = 256};
+constexpr AudioFormat format{.rate = ear::SampleRate::fixed<48000>(), .maxBlock = 256};
 
 /// The stalls the code makes, by its own cycle count; none when null.
 test::Stalls* stalls = nullptr;
@@ -128,7 +128,7 @@ TEST_CASE("A cycle's facts move each node counter by its own cause and no other"
 
 TEST_CASE("An overrun is work longer than the cycle, and the graph's lost time is a block per cut cycle",
           "[cycle_counters]") {
-	const FrameClock clock(48000);
+	const FrameClock clock(ear::SampleRate::fixed<48000>());
 	CHECK_FALSE(cycleOverran(0, clock, 256));
 	CHECK_FALSE(cycleOverran(5'333'333, clock, 256)); // 256 frames last 5,333,333 ns: the whole cycle is no overrun
 	CHECK(cycleOverran(5'333'334, clock, 256));

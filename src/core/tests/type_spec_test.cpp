@@ -124,7 +124,7 @@ public:
 			return Configured::applied();
 		}
 		if (mode == "fail") return Configured::failed("asked to");
-		if (mode == "say") node_.handle().say("configured at " + std::to_string(cx.format().rate));
+		if (mode == "say") node_.handle().say("configured at " + std::to_string(cx.format().rate.hz()));
 		cx.use(Doubler{&prepares});
 		return Configured::applied();
 	}
@@ -202,7 +202,7 @@ TEST_CASE("The class is made from NodeOf for each configuration, configured, sta
           "[type-spec]") {
 	calls.clear();
 	prepares = 0;
-	Harness harness({.format = {.rate = 48000, .maxBlock = 64}, .node = "probe"});
+	Harness harness({.format = {.rate = ear::SampleRate::fixed<48000>(), .maxBlock = 64}, .node = "probe"});
 	REQUIRE_FALSE(harness.parse({{"channels", 2}}));
 	harness.add();
 	CHECK(calls == std::vector<std::string>{"made probe", "configure"});
@@ -220,7 +220,7 @@ TEST_CASE("The class is made from NodeOf for each configuration, configured, sta
 
 TEST_CASE("A code reads and writes by bank through Io, bound by use to the node's ports", "[type-spec]") {
 	prepares = 0;
-	Harness harness({.format = {.rate = 48000, .maxBlock = 64}});
+	Harness harness({.format = {.rate = ear::SampleRate::fixed<48000>(), .maxBlock = 64}});
 	REQUIRE_FALSE(harness.parse({{"channels", 2}}));
 	harness.add();
 	harness.blockReady();
@@ -316,7 +316,8 @@ TEST_CASE("The harness's fade-out ramps down from the next cycle and a cycle tha
           "the real block's does",
           "[type-spec]") {
 	// At 1000 Hz a fade is 5 frames. out = 2 * in, faded.
-	Harness harness(testing::HarnessOptions{.format = {.rate = 1000, .maxBlock = 16}, .autoComplete = false});
+	Harness harness(testing::HarnessOptions{.format = {.rate = ear::SampleRate::fixed<1000>(), .maxBlock = 16},
+	                                        .autoComplete = false});
 	REQUIRE_FALSE(harness.parse({{"channels", 1}}));
 	harness.add();
 	harness.blockReady();
@@ -342,7 +343,8 @@ TEST_CASE("A drive applied while the harness's fade-out waits cancels it, as the
           "unacknowledged for 100 ms, then a start, fades in from zero and leaves nothing to acknowledge",
           "[type-spec]") {
 	// At 1000 Hz a fade is 5 frames. out = 2 * in, faded.
-	Harness harness(testing::HarnessOptions{.format = {.rate = 1000, .maxBlock = 16}, .autoComplete = false});
+	Harness harness(testing::HarnessOptions{.format = {.rate = ear::SampleRate::fixed<1000>(), .maxBlock = 16},
+	                                        .autoComplete = false});
 	REQUIRE_FALSE(harness.parse({{"channels", 1}}));
 	harness.add();
 	harness.blockReady();
@@ -373,7 +375,7 @@ TEST_CASE("A drive applied while the harness's fade-out waits cancels it, as the
 TEST_CASE("The harness plays what a test feeds a source into its bank before the code, by the source's own rules",
           "[type-spec]") {
 	// At 1000 Hz a fade is 5 frames and a frame lasts 1 ms.
-	Harness harness(testing::HarnessOptions{.format = {.rate = 1000, .maxBlock = 16}});
+	Harness harness(testing::HarnessOptions{.format = {.rate = ear::SampleRate::fixed<1000>(), .maxBlock = 16}});
 	REQUIRE_FALSE(harness.parse({{"mode", "source"}, {"channels", 2}}));
 	harness.add();
 	CHECK(harness.companion(fromDevice).kind == CompanionKind::source);
@@ -422,7 +424,7 @@ TEST_CASE("The harness plays what a test feeds a source into its bank before the
 TEST_CASE("The harness plays a source with a clock by the block's own play rule, and frees the clock with the source",
           "[type-spec]") {
 	clockHeard = {};
-	Harness harness(testing::HarnessOptions{.format = {.rate = 1000, .maxBlock = 16}});
+	Harness harness(testing::HarnessOptions{.format = {.rate = ear::SampleRate::fixed<1000>(), .maxBlock = 16}});
 	REQUIRE_FALSE(harness.parse({{"mode", "clocked"}, {"channels", 1}}));
 	harness.add();
 	harness.blockReady();
@@ -469,7 +471,7 @@ TEST_CASE("A layout that disagrees with the spec is a logic error at prepare", "
 	CHECK_THROWS_AS(Io<spec>::resolve(turned), std::logic_error);
 	int unused = 0;
 	const auto erased = eraseSpecCode(Doubler{&unused});
-	CHECK_THROWS_WITH(erased->prepare({48000, 64}),
+	CHECK_THROWS_WITH(erased->prepare({ear::SampleRate::fixed<48000>(), 64}),
 	                  "a code written against a spec runs only in a type made by makeNodeType");
 }
 

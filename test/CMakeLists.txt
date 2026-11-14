@@ -211,49 +211,45 @@ ear_sleep_guard_case(refuses_malformed sleep_for.snippet malformed.txt "malforme
 ear_sleep_guard_case(refuses_missing_listing sleep_for.snippet no-such-listing.txt "does not exist")
 ear_sleep_guard_case(refuses_checking_nothing no-such-file.snippet empty.txt "the guard would check nothing")
 
-# The frame guard (docs/engine.md#dating): no arithmetic with a rate in src/ outside FrameClock and its named
-# exceptions; and the guard itself refusing each spelling it knows (frame_guard/<spelling>.snippet, a "//" inside a
-# string, a digit separator before a character literal, code between two block comments and an expression split
-# before or after its operator among them), letting through what only looks like one
-# (allowed.snippet: a dereference, calls, other names, comments, strings, ns-to-timespec and ms conversions), skipping
-# exactly the exempt path and tests but not a namesake elsewhere, and refusing to check nothing.
-set(ear_frame_guard "${CMAKE_CURRENT_SOURCE_DIR}/frame_guard.cmake")
-set(ear_frame_snippets "${CMAKE_CURRENT_SOURCE_DIR}/frame_guard")
-set(ear_frame_exempt "-DEXEMPT=exempt/latency.snippet")
-add_test(NAME ear_frames_through_frame_clock
-	COMMAND "${CMAKE_COMMAND}" "-DROOT=${PROJECT_SOURCE_DIR}/src" -P "${ear_frame_guard}")
-foreach(spelling times_rate member rate_first frequency graph_frequency sample_rate k_rate cast cast_first braced call
-		compound remainder comment_in_string separator between_block_comments)
-	add_test(NAME ear_frame_guard_refuses_${spelling}
-		COMMAND "${CMAKE_COMMAND}" "-DROOT=${ear_frame_snippets}" "-DGLOB=${spelling}.snippet" -P "${ear_frame_guard}")
-	set_tests_properties(ear_frame_guard_refuses_${spelling} PROPERTIES
-		PASS_REGULAR_EXPRESSION "${spelling}\\.snippet:1: frame-rate arithmetic outside FrameClock")
+# Where a rate leaves its type (docs/engine.md#dating): SampleRate has no arithmetic, so the compiler refuses a rate as
+# an operand (src/core/tests/compile_fail/sample_rate_bad.cpp). What is left is one word: `hz`, a rate's number,
+# appears in src/ outside tests only in the edges sample_rate_exits.cmake lists; and the check itself refusing each way
+# of taking it (sample_rate_exits/<way>.snippet: a call, a member pointer, a name of its own), letting lookalikes
+# through (allowed.snippet: khz, hzFrames, "Hz"), taking a listed file and skipping tests (listed/), refusing a listed
+# file that is not there, and refusing to check nothing.
+set(ear_rate_exits "${CMAKE_CURRENT_SOURCE_DIR}/sample_rate_exits.cmake")
+set(ear_rate_snippets "${CMAKE_CURRENT_SOURCE_DIR}/sample_rate_exits")
+add_test(NAME ear_sample_rate_exits
+	COMMAND "${CMAKE_COMMAND}" "-DROOT=${PROJECT_SOURCE_DIR}/src" -P "${ear_rate_exits}")
+set_tests_properties(ear_sample_rate_exits PROPERTIES
+	PASS_REGULAR_EXPRESSION "sample_rate_exits: [0-9]+ files under .*, 8 listed, none takes a rate's number elsewhere")
+foreach(way call member_pointer own_name)
+	add_test(NAME ear_sample_rate_exits_refuses_${way}
+		COMMAND "${CMAKE_COMMAND}" "-DROOT=${ear_rate_snippets}" "-DGLOB=${way}.snippet" "-DALLOWED="
+			-P "${ear_rate_exits}")
+	set_tests_properties(ear_sample_rate_exits_refuses_${way} PROPERTIES
+		PASS_REGULAR_EXPRESSION "${way}\\.snippet:1: a rate's number taken outside the listed edges")
 endforeach()
-foreach(spelling split_after_operator split_before_operator)
-	add_test(NAME ear_frame_guard_refuses_${spelling}
-		COMMAND "${CMAKE_COMMAND}" "-DROOT=${ear_frame_snippets}" "-DGLOB=${spelling}.snippet" -P "${ear_frame_guard}")
-	set_tests_properties(ear_frame_guard_refuses_${spelling} PROPERTIES
-		PASS_REGULAR_EXPRESSION "${spelling}\\.snippet:2: frame-rate arithmetic outside FrameClock")
-endforeach()
-add_test(NAME ear_frame_guard_allows_lookalikes
-	COMMAND "${CMAKE_COMMAND}" "-DROOT=${ear_frame_snippets}" "-DGLOB=allowed.snippet" -P "${ear_frame_guard}")
-set_tests_properties(ear_frame_guard_allows_lookalikes PROPERTIES
-	PASS_REGULAR_EXPRESSION "frame_guard: 1 files under .*, none does arithmetic with a rate outside FrameClock")
-add_test(NAME ear_frame_guard_skips_the_clock_and_tests
-	COMMAND "${CMAKE_COMMAND}" "-DROOT=${ear_frame_snippets}"
-		"-DGLOB=allowed.snippet\;exempt/latency.snippet\;tests/excluded.snippet" "${ear_frame_exempt}"
-		-P "${ear_frame_guard}")
-set_tests_properties(ear_frame_guard_skips_the_clock_and_tests PROPERTIES
-	PASS_REGULAR_EXPRESSION "frame_guard: 1 files under .*, none does arithmetic with a rate outside FrameClock")
-add_test(NAME ear_frame_guard_refuses_a_namesake_of_the_clock
-	COMMAND "${CMAKE_COMMAND}" "-DROOT=${ear_frame_snippets}" "-DGLOB=elsewhere/latency.snippet" "${ear_frame_exempt}"
-		-P "${ear_frame_guard}")
-set_tests_properties(ear_frame_guard_refuses_a_namesake_of_the_clock PROPERTIES
-	PASS_REGULAR_EXPRESSION "elsewhere/latency\\.snippet:2: frame-rate arithmetic outside FrameClock")
-add_test(NAME ear_frame_guard_refuses_checking_nothing
-	COMMAND "${CMAKE_COMMAND}" "-DROOT=${ear_frame_snippets}" "-DGLOB=no-such-file.snippet" -P "${ear_frame_guard}")
-set_tests_properties(ear_frame_guard_refuses_checking_nothing PROPERTIES
-	PASS_REGULAR_EXPRESSION "the guard would check nothing")
+add_test(NAME ear_sample_rate_exits_allows_lookalikes
+	COMMAND "${CMAKE_COMMAND}" "-DROOT=${ear_rate_snippets}" "-DGLOB=allowed.snippet" "-DALLOWED="
+		-P "${ear_rate_exits}")
+set_tests_properties(ear_sample_rate_exits_allows_lookalikes PROPERTIES
+	PASS_REGULAR_EXPRESSION "sample_rate_exits: 1 files under .*, 0 listed, none takes a rate's number elsewhere")
+add_test(NAME ear_sample_rate_exits_takes_listed_and_skips_tests
+	COMMAND "${CMAKE_COMMAND}" "-DROOT=${ear_rate_snippets}/listed" "-DGLOB=*.snippet" "-DALLOWED=edge.snippet"
+		-P "${ear_rate_exits}")
+set_tests_properties(ear_sample_rate_exits_takes_listed_and_skips_tests PROPERTIES
+	PASS_REGULAR_EXPRESSION "sample_rate_exits: 2 files under .*, 1 listed, none takes a rate's number elsewhere")
+add_test(NAME ear_sample_rate_exits_refuses_a_listed_file_not_there
+	COMMAND "${CMAKE_COMMAND}" "-DROOT=${ear_rate_snippets}" "-DGLOB=allowed.snippet" "-DALLOWED=listed/gone.snippet"
+		-P "${ear_rate_exits}")
+set_tests_properties(ear_sample_rate_exits_refuses_a_listed_file_not_there PROPERTIES
+	PASS_REGULAR_EXPRESSION "listed/gone\\.snippet is listed but not found")
+add_test(NAME ear_sample_rate_exits_refuses_checking_nothing
+	COMMAND "${CMAKE_COMMAND}" "-DROOT=${ear_rate_snippets}" "-DGLOB=no-such-file.snippet" "-DALLOWED="
+		-P "${ear_rate_exits}")
+set_tests_properties(ear_sample_rate_exits_refuses_checking_nothing PROPERTIES
+	PASS_REGULAR_EXPRESSION "the check would check nothing")
 
 # The guard of the engine's callback boundary (docs/architecture.md#the-callback-boundary), and its own tests.
 add_subdirectory(pipewire)

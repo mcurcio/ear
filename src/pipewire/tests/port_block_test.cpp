@@ -67,15 +67,15 @@ using ear::test::StallPlan;
 
 constexpr std::uint32_t kRate = 48000;
 constexpr std::uint32_t kBlock = 256;
-constexpr AudioFormat kFormat{kRate, kBlock};
-constexpr std::uint64_t kWindow = 1600; // levelWindowFrames(48000)
+constexpr AudioFormat kFormat{ear::SampleRate::fixed<kRate>(), kBlock};
+constexpr std::uint64_t kWindow = 1600; // levelWindowFrames at 48 kHz
 
 std::unique_ptr<Engine> makeEngine() {
 	for (const char* name : {"XDG_RUNTIME_DIR", "PIPEWIRE_RUNTIME_DIR", "PIPEWIRE_REMOTE", "DBUS_SESSION_BUS_ADDRESS",
 	                         "DBUS_SYSTEM_BUS_ADDRESS"}) {
 		unsetenv(name);
 	}
-	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, kRate, kBlock});
+	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, ear::SampleRate::fixed<kRate>(), kBlock});
 	if (!engine) FAIL("Engine::create: " << engine.error().detail);
 	return std::move(*engine);
 }
@@ -186,7 +186,8 @@ public:
 	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
 	             std::uint32_t frames, const ear::GraphCycle&) noexcept override {
 		for (std::uint32_t i = 0; i < frames; ++i) outputs[0][i] = static_cast<float>(++next_);
-		if (stalls_ != nullptr && armed.load(std::memory_order_acquire)) (*stalls_)(armedCycles_++, frames, kRate);
+		if (stalls_ != nullptr && armed.load(std::memory_order_acquire))
+			(*stalls_)(armedCycles_++, frames, ear::SampleRate::fixed<kRate>());
 	}
 	void release() noexcept override {}
 	std::atomic<bool> armed{false};
@@ -656,7 +657,7 @@ TEST_CASE("A block with inside ports: the inside output is live and routable, le
 	// that follows lost ones is excused only as cycles the driver cut, each counted, and anything else fails. The ramp
 	// makes the judge's planned stalls itself once it is heard (one and a half cycles each, so the driver cuts the cycle
 	// before the pass-through and the recorder ran it), so the excuse is taken, and proven, on every run.
-	CycleJudge judge(JudgePlan{.judged = 32}, FrameClock(kRate), &engine->cuts());
+	CycleJudge judge(JudgePlan{.judged = 32}, FrameClock(ear::SampleRate::fixed<kRate>()), &engine->cuts());
 	Ramp ramp(judge.stalls());
 	PassThrough through;
 	Recorder recorder(waiter);
@@ -1514,7 +1515,7 @@ TEST_CASE("A source's clock is asked and told the same on a real block as in the
 	auto made = std::make_unique<conform::ScriptedClock>();
 	conform::ScriptedClock& clock = *made;
 	const Ports::Bank& bank = ports.bank("from_device");
-	auto source = sources.make("scripted", bank.name, 2, 1000, kRate, std::move(made));
+	auto source = sources.make("scripted", bank.name, 2, 1000, ear::SampleRate::fixed<kRate>(), std::move(made));
 	clock.writer = &source->writer();
 	REQUIRE(source->writer().write(prefill, kPrefill, std::chrono::milliseconds(0)) == kPrefill);
 	BlockEvents events(waiter);
@@ -1988,7 +1989,7 @@ TEST_CASE("A cycle too large to run counts as one that ended at zero", "[blocks]
 	BlockEvents events(waiter), witnessEvents(waiter);
 	Done done(waiter);
 	// The engine runs 256-frame cycles; a block whose largest is 128 runs none of them (its outputs zeros).
-	auto block = blocks.make("small", oneOutput, AudioFormat{kRate, kBlock / 2}, events);
+	auto block = blocks.make("small", oneOutput, AudioFormat{ear::SampleRate::fixed<kRate>(), kBlock / 2}, events);
 	auto other = blocks.make("witness", oneOutput, kFormat, witnessEvents);
 	other->drive(DriveRequest{&witness, {}}, done.drive(0));
 	REQUIRE(waiter.until([&] { return events.readyCount == 1 && witness.calls() >= 4; }));
@@ -2497,7 +2498,7 @@ TEST_CASE("A cycle the block runs while the next is already due states how long 
 	REQUIRE(ear::testing::driveNow(*block, nullptr));
 	REQUIRE(code.stalls() == 1);
 
-	const std::int64_t cycleNs = 1'000'000'000LL * kBlock / kFormat.rate;
+	const std::int64_t cycleNs = 1'000'000'000LL * kBlock / kFormat.rate.hz();
 	const std::int64_t first = log[stallAt + 1].overdueNs;
 	const auto k = static_cast<std::int64_t>(log[stallAt + 1].facts.graphCycle - log[stallAt].facts.graphCycle);
 	std::size_t onTime = stallAt + 1;
@@ -3053,7 +3054,7 @@ public:
 		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
 		if (!armed_.load(std::memory_order_acquire) || caughtUp_.load(std::memory_order_relaxed)) return;
 		if (!stalled_) {
-			stall_(0, frames, kRate);
+			stall_(0, frames, ear::SampleRate::fixed<kRate>());
 			stalled_ = true;
 			return;
 		}
@@ -3061,7 +3062,7 @@ public:
 			std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
 				.count(); // CLOCK_MONOTONIC on Linux, as nextNs
 		if (cycle.nextNs <= now) {
-			if (overdue_++ % 2 == 0) holds_(held_++, frames, kRate);
+			if (overdue_++ % 2 == 0) holds_(held_++, frames, ear::SampleRate::fixed<kRate>());
 			return;
 		}
 		caughtUp_.store(true, std::memory_order_release);

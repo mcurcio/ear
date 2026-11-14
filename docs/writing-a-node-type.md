@@ -122,7 +122,7 @@ optional row read as a plain value does not compile.
 
 | Call | What | Rules |
 |---|---|---|
-| `cx.format()`, `cx.node()` | The graph's rate and block size; the node's name | |
+| `cx.format()`, `cx.node()` | The graph's rate (a `SampleRate`: frames and time convert through `FrameClock`, and its number, `hz()`, is for a library's edge, [engine.md](engine.md#dating)) and block size; the node's name | |
 | `cx.use(code)` | The code: a struct with `process`, or `passThrough({bankPair(in, out), ...})` | Exactly once |
 | `cx.soundCard(bank, SoundCardShape{.card})` | A sound card, an [engine companion](#engine-companions) on an inside bank: playback on an inside output, capture on an inside input (the bank's direction is the card's). Named `<node>.playback` or `<node>.capture`; made once the block is ready | Inside banks only (compile time); one companion per bank |
 | `cx.rtpReceiver(bank, RtpReceiverShape{...})` | An RTP receiver, an [engine companion](#engine-companions) on an inside input bank, `<node>.rtp`; its `latencyMs` is latency beyond the bank | Inside input banks only (compile time); one companion per bank |
@@ -211,7 +211,7 @@ cx.use(passThrough({bankPair(play, toCard), bankPair(fromRtp, stream)}));
 A sink takes audio off the realtime thread. The type asks for one on an inside output bank:
 
 ```cpp
-cx.sink(writer, SinkShape{.frames = 2 * cx.format().rate})
+cx.sink(writer, SinkShape{.frames = static_cast<std::uint32_t>(FrameClock(cx.format().rate).frames(2s))})
 	.consumedBy(std::make_unique<WavWriter>(...));
 cx.use(passThrough({bankPair(record, writer)}));
 ```
@@ -610,7 +610,7 @@ struct Tone {
 	static Members<spec> ports(const Checked& s) { return {out(members(s.get<channelsRow>()))}; }
 
 	Configured configure(CreateOf<spec>& cx, const Checked& s) {
-		const double rate = cx.format().rate;
+		const double rate = cx.format().rate.hz(); // its number, for the sine's step (engine.md#dating)
 		const double frequency = s.get<frequencyRow>();
 		if (frequency * 2 >= rate)
 			return Configured::failed("frequency " + std::to_string(s.get<frequencyRow>()) +
@@ -662,7 +662,7 @@ TEST_CASE("Tone declares out.1 to out.N and no inputs", "[tone]") {
 }
 
 TEST_CASE("Tone runs once its block is ready and writes a sine on every channel", "[tone]") {
-	Harness harness({.format = {.rate = 48000, .maxBlock = 256}, .node = "beep"});
+	Harness harness({.format = {.rate = ear::SampleRate::fixed<48000>(), .maxBlock = 256}, .node = "beep"});
 	REQUIRE_FALSE(harness.parse({{"frequency", 1000}, {"channels", 2}}));
 	harness.add();
 	CHECK(harness.phase() == "starting"); // nothing to acquire: configured, waiting for its block
@@ -680,7 +680,7 @@ TEST_CASE("Tone runs once its block is ready and writes a sine on every channel"
 }
 
 TEST_CASE("Tone fails a frequency at or above half the graph frequency", "[tone]") {
-	Harness harness({.format = {.rate = 16000, .maxBlock = 256}});
+	Harness harness({.format = {.rate = ear::SampleRate::fixed<16000>(), .maxBlock = 256}});
 	REQUIRE_FALSE(harness.parse({{"frequency", 8000}}));
 	harness.add();
 	CHECK(harness.phase() == "failed");

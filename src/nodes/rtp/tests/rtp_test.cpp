@@ -45,7 +45,7 @@ NodeSettings settingsWith(const NodeSettings& change = NodeSettings::object()) {
 
 /// A harness on a node named "fpp" at `graphRate`, whose settings parsed.
 Harness parseOk(const NodeSettings& settings, std::uint32_t graphRate = 48000) {
-	Harness harness({.format = {graphRate, 256}, .node = "fpp"});
+	Harness harness({.format = {*ear::SampleRate::of(graphRate), 256}, .node = "fpp"});
 	const auto refused = harness.parse(settings);
 	INFO(settings.dump());
 	if (refused) FAIL("refused: " << *refused);
@@ -90,12 +90,12 @@ TEST_CASE("Rtp's configure asks for exactly one receiver with its settings, join
 	CHECK(shape.address == *ear::RtpAddress::parse("239.69.0.1"));
 	CHECK(shape.port == 6000);
 	CHECK(shape.encoding == ear::RtpEncoding::l24);
-	CHECK(shape.rate == 96000);
+	CHECK(shape.rate.hz() == 96000);
 	CHECK(shape.latencyMs == 250);
 
 	SECTION("an absent rate is the graph frequency, taken at configure") {
 		const auto defaulted = startOk(settingsWith({{"rate", nullptr}}), 44100);
-		CHECK(defaulted.rate == 44100);
+		CHECK(defaulted.rate.hz() == 44100);
 	}
 	SECTION("an absent latencyMs is 100") { CHECK(startOk(settingsWith({{"latencyMs", nullptr}})).latencyMs == 100); }
 }

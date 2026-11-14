@@ -84,16 +84,16 @@ public:
 
 private:
 	ear::CutRing cuts_;
-	ear::CycleAccount account_{ear::FrameClock(rate), &cuts_};
+	ear::CycleAccount account_{ear::FrameClock(ear::SampleRate::fixed<rate>()), &cuts_};
 	std::uint32_t driverId_ = 1;
 	std::uint64_t position_ = 0;
 };
 
 struct Rig {
 	Rig()
-		: feed(2, capacity), code(feed, progress, bell, rate, toServer, capture), inLeft(block, 0.25F),
-		  inRight(block, -0.5F) {
-		code.prepare({rate, block});
+		: feed(2, capacity), code(feed, progress, bell, ear::SampleRate::fixed<rate>(), toServer, capture),
+		  inLeft(block, 0.25F), inRight(block, -0.5F) {
+		code.prepare({ear::SampleRate::fixed<rate>(), block});
 		left.resize(block);
 		right.resize(block);
 	}
@@ -123,7 +123,7 @@ struct Rig {
 		             ear::GraphCycle{.startNs = startNs,
 		                             .position = position,
 		                             .startRawNs = startRawNs,
-		                             .nextNs = startNs + ear::FrameClock(rate).ns(block),
+		                             .nextNs = startNs + ear::FrameClock(ear::SampleRate::fixed<rate>()).ns(block),
 		                             .overdueNs = overdueNs,
 		                             .facts = facts,
 		                             .downstream = downstream});
@@ -191,11 +191,14 @@ TEST_CASE("What lies downstream of the outputs is added: a frame finishes when t
 }
 
 TEST_CASE("The lead a player reports covers what still plays after a clear, whatever the block", "[sendspin][code]") {
-	CHECK(requiredLeadMs(2048, 256, 48000) == 48);   // 42.67 + 5.33 ms; the library's own 150 ms then rules
-	CHECK(requiredLeadMs(8192, 4096, 48000) == 256); // past it: a block of 2049 to 4096 frames
-	CHECK(requiredLeadMs(8193, 4096, 48000) == 257); // rounded up, never under
-	CHECK(requiredLeadMs(2048, 256, 44100) == 53);   // 52.24 ms at 44.1 kHz, rounded up
-	CHECK(requiredLeadMs(4'000'000'000U, 4096, 48000) == UINT16_MAX); // past what the field holds: its most
+	CHECK(requiredLeadMs(2048, 256, ear::SampleRate::fixed<48000>()) ==
+	      48); // 42.67 + 5.33 ms; the library's own 150 ms then rules
+	CHECK(requiredLeadMs(8192, 4096, ear::SampleRate::fixed<48000>()) ==
+	      256); // past it: a block of 2049 to 4096 frames
+	CHECK(requiredLeadMs(8193, 4096, ear::SampleRate::fixed<48000>()) == 257); // rounded up, never under
+	CHECK(requiredLeadMs(2048, 256, ear::SampleRate::fixed<44100>()) == 53);   // 52.24 ms at 44.1 kHz, rounded up
+	CHECK(requiredLeadMs(4'000'000'000U, 4096, ear::SampleRate::fixed<48000>()) ==
+	      UINT16_MAX); // past what the field holds: its most
 }
 
 // requiredLeadMs rounds FrameClock's truncated ns up to whole ms. That equals the exact ceil(frames * 1000 / rate), its
@@ -214,7 +217,8 @@ TEST_CASE("The lead a player reports is ceil(frames * 1000 / rate) at every rate
 			for (std::uint32_t feed = 0; feed <= 200'000; feed += 97) feeds.push_back(feed);
 			for (const std::uint32_t feed : feeds) {
 				INFO("feed " << feed << ", block " << maxBlock);
-				REQUIRE(requiredLeadMs(feed, maxBlock, rate) == before(std::uint64_t{feed} + maxBlock, rate));
+				REQUIRE(requiredLeadMs(feed, maxBlock, *ear::SampleRate::of(rate)) ==
+				        before(std::uint64_t{feed} + maxBlock, rate));
 			}
 		}
 	}
@@ -238,7 +242,7 @@ TEST_CASE("A cycle the graph lost and caught up is skipped and counted played, a
 	const auto progress = rig.progress.read();
 	REQUIRE(progress.has_value());
 	CHECK(progress->totalFrames == 3 * block); // the first block, the skip and this cycle's read
-	CHECK(progress->finishRawNs == ear::FrameClock(rate).heardRawNs(start, block, {}));
+	CHECK(progress->finishRawNs == ear::FrameClock(ear::SampleRate::fixed<rate>()).heardRawNs(start, block, {}));
 }
 
 // docs/node-types.md#clock: the node keeps no debt. What the feed did not hold of a jump is the library's to correct,
@@ -366,7 +370,7 @@ TEST_CASE("A catch-up on the cycle that applies a clear skips nothing of the nex
 TEST_CASE("A burst of overdue cycles tells nothing, and the first on time tells every frame of it, dated nominally",
           "[sendspin][code]") {
 	Rig rig;
-	const std::int64_t blockNs = ear::FrameClock(rate).ns(block);
+	const std::int64_t blockNs = ear::FrameClock(ear::SampleRate::fixed<rate>()).ns(block);
 	rig.write(6 * block);
 	rig.cycle(0);
 	REQUIRE(rig.told() == block);
@@ -385,14 +389,14 @@ TEST_CASE("A burst of overdue cycles tells nothing, and the first on time tells 
 	const auto progress = rig.progress.read();
 	REQUIRE(progress.has_value());
 	CHECK(progress->totalFrames == 6 * block); // the burst's four reads and its skip, and this cycle's block
-	CHECK(progress->finishRawNs == ear::FrameClock(rate).heardRawNs(start, block, {}));
+	CHECK(progress->finishRawNs == ear::FrameClock(ear::SampleRate::fixed<rate>()).heardRawNs(start, block, {}));
 	CHECK(rig.rang());
 	CHECK(rig.code.clamped() == 0);
 }
 
 TEST_CASE("One overdue cycle under load tells nothing, and the next on time tells it", "[sendspin][code]") {
 	Rig rig;
-	const std::int64_t blockNs = ear::FrameClock(rate).ns(block);
+	const std::int64_t blockNs = ear::FrameClock(ear::SampleRate::fixed<rate>()).ns(block);
 	rig.write(3 * block);
 	rig.cycle(0);
 	REQUIRE(rig.rang());
@@ -401,14 +405,15 @@ TEST_CASE("One overdue cycle under load tells nothing, and the next on time tell
 	CHECK_FALSE(rig.rang());
 	REQUIRE(rig.cycle(2 * blockNs).whole());
 	CHECK(rig.told() == 3 * block);
-	CHECK(rig.progress.read()->finishRawNs == ear::FrameClock(rate).heardRawNs(2 * blockNs, block, {}));
+	CHECK(rig.progress.read()->finishRawNs ==
+	      ear::FrameClock(ear::SampleRate::fixed<rate>()).heardRawNs(2 * blockNs, block, {}));
 }
 
 // docs/node-types.md#clock: with no debt there is nothing for a lossy cycle to wait for. A host whose every cycle loses
 // frames, each on time, tells the library every cycle.
 TEST_CASE("A cycle that lost frames, on time, tells", "[sendspin][code]") {
 	Rig rig;
-	const std::int64_t blockNs = ear::FrameClock(rate).ns(block);
+	const std::int64_t blockNs = ear::FrameClock(ear::SampleRate::fixed<rate>()).ns(block);
 	std::int64_t at = 0;
 	rig.cycle(at);
 	std::uint64_t written = 0;
@@ -420,7 +425,8 @@ TEST_CASE("A cycle that lost frames, on time, tells", "[sendspin][code]") {
 		REQUIRE(rig.cycle(at).causes == ear::CycleCause::catchUp);
 		CHECK(rig.code.lastSkipped() == block);
 		CHECK(rig.told() == written);
-		CHECK(rig.progress.read()->finishRawNs == ear::FrameClock(rate).heardRawNs(at, block, {}));
+		CHECK(rig.progress.read()->finishRawNs ==
+		      ear::FrameClock(ear::SampleRate::fixed<rate>()).heardRawNs(at, block, {}));
 	}
 }
 
@@ -431,7 +437,7 @@ TEST_CASE("Overdue for untoldBound, the library is told from a cycle of the burs
           "report is clamped to it",
           "[sendspin][code]") {
 	Rig rig;
-	const std::int64_t blockNs = ear::FrameClock(rate).ns(block);
+	const std::int64_t blockNs = ear::FrameClock(ear::SampleRate::fixed<rate>()).ns(block);
 	const std::int64_t overdue = 3 * untoldBound.count();
 	rig.write(capacity);
 	rig.cycle(0);
@@ -450,7 +456,7 @@ TEST_CASE("Overdue for untoldBound, the library is told from a cycle of the burs
 	const std::uint64_t forcedTotal = block + (deferred + 1) * block;
 	CHECK(rig.told() == forcedTotal);                // told at the bound, though still overdue
 	const std::int64_t ran = at + blockNs + overdue; // the next cycle's due time plus how long it was overdue
-	const std::int64_t forced = ear::FrameClock(rate).heardRawNs(ran, block, {});
+	const std::int64_t forced = ear::FrameClock(ear::SampleRate::fixed<rate>()).heardRawNs(ran, block, {});
 	CHECK(rig.progress.read()->finishRawNs == forced);
 	CHECK(rig.code.clamped() == 0);
 	// The first cycle on time after it began within a cycle before the forced one ran: dated nominally it would step
@@ -464,7 +470,8 @@ TEST_CASE("Overdue for untoldBound, the library is told from a cycle of the burs
 	// Then nominal again.
 	rig.write(block);
 	REQUIRE(rig.cycle(onTime + blockNs).whole());
-	CHECK(rig.progress.read()->finishRawNs == ear::FrameClock(rate).heardRawNs(onTime + blockNs, block, {}));
+	CHECK(rig.progress.read()->finishRawNs ==
+	      ear::FrameClock(ear::SampleRate::fixed<rate>()).heardRawNs(onTime + blockNs, block, {}));
 	CHECK(rig.code.clamped() == 1);
 }
 
@@ -473,7 +480,7 @@ TEST_CASE("Overdue for untoldBound, the library is told from a cycle of the burs
 // nominal finish, exactly: even one behind the last, when what lies downstream shrank, is told as it is.
 TEST_CASE("Below the bound the clamp never acts: every report is its cycle's nominal finish", "[sendspin][code]") {
 	Rig rig;
-	const std::int64_t blockNs = ear::FrameClock(rate).ns(block);
+	const std::int64_t blockNs = ear::FrameClock(ear::SampleRate::fixed<rate>()).ns(block);
 	std::int64_t at = 0;
 	std::uint32_t downstream = 4 * block + 32;
 	std::size_t reports = 0;
@@ -486,7 +493,8 @@ TEST_CASE("Below the bound the clamp never acts: every report is its cycle's nom
 		++reports;
 		CHECK(overdueNs == 0);
 		const std::int64_t finish = rig.progress.read()->finishRawNs;
-		CHECK(finish == ear::FrameClock(rate).heardRawNs(at, block, {downstream, downstream}));
+		CHECK(finish ==
+		      ear::FrameClock(ear::SampleRate::fixed<rate>()).heardRawNs(at, block, {downstream, downstream}));
 		if (finish < lastFinish) ++backwards;
 		lastFinish = finish;
 		lastTold = rig.told();

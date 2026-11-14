@@ -184,15 +184,14 @@ struct Links final : LinkMaker {
 
 /// No node here asks for a sink.
 struct NoSinks final : SinkAdapter {
-	std::unique_ptr<Sink> make(const NodeName&, std::string_view, std::uint32_t, std::uint32_t,
-	                           std::uint32_t) override {
+	std::unique_ptr<Sink> make(const NodeName&, std::string_view, std::uint32_t, std::uint32_t, SampleRate) override {
 		throw std::logic_error("no sink in these tests");
 	}
 };
 
 /// No node here asks for a source.
 struct NoSources final : SourceAdapter {
-	std::unique_ptr<Source> make(const NodeName&, std::string_view, std::uint32_t, std::uint32_t, std::uint32_t,
+	std::unique_ptr<Source> make(const NodeName&, std::string_view, std::uint32_t, std::uint32_t, SampleRate,
 	                             std::unique_ptr<SourceClock>) override {
 		throw std::logic_error("no source in these tests");
 	}
@@ -211,9 +210,10 @@ struct Fixture {
 	NoSinks sinks;
 	NoSources sources;
 	ResourceRegistry resources{cards, receivers, handoffs, sinks, sources};
-	NodeHost nodes{AudioFormat{48000, 256}, blocks, resources, mainLoop, timers};
+	NodeHost nodes{AudioFormat{ear::SampleRate::fixed<48000>(), 256}, blocks, resources, mainLoop, timers};
 	Reconciler routes{links};
-	GraphStatus status{EngineView{AudioFormat{48000, 256}, true, "SCHED_FIFO 88"}, catalogue, graph, nodes, routes};
+	GraphStatus status{EngineView{AudioFormat{ear::SampleRate::fixed<48000>(), 256}, true, "SCHED_FIFO 88"}, catalogue,
+	                   graph, nodes, routes};
 	Fixture() {
 		graph.subscribe(static_cast<DesiredNodeListener&>(nodes));
 		graph.subscribe(static_cast<DesiredRouteListener&>(routes));
@@ -264,7 +264,7 @@ TEST_CASE("The graph read joins the wanted graph with node and route status", "[
 
 	const GraphView view = f.status.read();
 
-	CHECK(view.engine.format.rate == 48000);
+	CHECK(view.engine.format.rate.hz() == 48000);
 	CHECK(view.engine.format.maxBlock == 256);
 	CHECK(view.engine.realtime);
 	CHECK(view.engine.scheduling == "SCHED_FIFO 88");
@@ -304,8 +304,12 @@ TEST_CASE("The graph read carries the graph's counters and each node's, read wit
 	Fixture f;
 	HandGraphCounts engine;
 	engine.counts = GraphCounts{.cycles = 900, .cutCycles = 4, .stalls = 1};
-	const GraphStatus status{
-		EngineView{AudioFormat{48000, 256}, true, "SCHED_FIFO 88"}, f.catalogue, f.graph, f.nodes, f.routes, &engine};
+	const GraphStatus status{EngineView{AudioFormat{ear::SampleRate::fixed<48000>(), 256}, true, "SCHED_FIFO 88"},
+	                         f.catalogue,
+	                         f.graph,
+	                         f.nodes,
+	                         f.routes,
+	                         &engine};
 	apply(f.graph, {{"rec", "recorder", noSettings}, {"noise", "source", noSettings}}, {});
 	f.settle();
 	f.blocks.made.at("rec")->counted = NodeCounts{.missedCycles = 3, .overruns = 1};

@@ -72,7 +72,9 @@ struct Bank {
 void playAt(Source& source, Bank& bank, std::uint64_t position, std::uint32_t frames, Latency playback = {}) {
 	const GraphCycle cycle{
 		.startNs = 0, .position = position, .startRawNs = static_cast<std::int64_t>(position) * 1000};
-	source.tap().play(bank.view(), SourceTick{.cycle = cycle, .frames = frames, .rate = kRate, .playback = playback});
+	source.tap().play(
+		bank.view(),
+		SourceTick{.cycle = cycle, .frames = frames, .rate = ear::SampleRate::fixed<kRate>(), .playback = playback});
 }
 
 /// A source's clock for the tests with no engine: asks after the ticks `asks` says, and counts what it was told. Any
@@ -123,7 +125,7 @@ std::int64_t threadCpuNs() {
 
 TEST_CASE("A source's write waits for room and is woken by play, and takes what fits", "[source]") {
 	EventSources sources;
-	auto source = sources.make("rx", "from_writer", 1, 64, kRate, nullptr);
+	auto source = sources.make("rx", "from_writer", 1, 64, ear::SampleRate::fixed<kRate>(), nullptr);
 	SourceWriter& writer = source->writer();
 	CHECK(writer.capacityFrames() == 64);
 	REQUIRE(writer.write(ramp(0, 64), 64, 0ms) == 64);
@@ -148,7 +150,7 @@ TEST_CASE("A source's write waits for room and is woken by play, and takes what 
 
 TEST_CASE("A source's idle waits its patience and makes an empty ring no shortfall", "[source]") {
 	EventSources sources;
-	auto source = sources.make("rx", "from_writer", 1, 64, kRate, nullptr);
+	auto source = sources.make("rx", "from_writer", 1, 64, ear::SampleRate::fixed<kRate>(), nullptr);
 	SourceWriter& writer = source->writer();
 	REQUIRE(writer.write(ramp(0, 16), 16, 0ms) == 16);
 	Bank bank(16);
@@ -166,7 +168,7 @@ TEST_CASE("A close wakes a waiting write at once, and a write or idle after it s
           "spinning",
           "[source]") {
 	EventSources sources;
-	auto source = sources.make("rx", "from_writer", 1, 64, kRate, nullptr);
+	auto source = sources.make("rx", "from_writer", 1, 64, ear::SampleRate::fixed<kRate>(), nullptr);
 	SourceWriter& writer = source->writer();
 	REQUIRE(writer.write(ramp(0, 64), 64, 0ms) == 64);
 	std::uint32_t accepted = ~0U;
@@ -216,7 +218,7 @@ TEST_CASE("A write or an idle waiting with a patience of milliseconds::max() is 
 	EventSources sources;
 	for (const bool idling : {false, true}) {
 		INFO((idling ? "idle" : "write"));
-		auto source = sources.make("rx", "from_writer", 1, 64, kRate, nullptr);
+		auto source = sources.make("rx", "from_writer", 1, 64, ear::SampleRate::fixed<kRate>(), nullptr);
 		SourceWriter& writer = source->writer();
 		REQUIRE(writer.write(ramp(0, 64), 64, 0ms) == 64);
 		std::uint32_t accepted = ~0U;
@@ -261,7 +263,7 @@ TEST_CASE("A source's clock wake rings once until answered and only when its clo
 	EventSources sources;
 	auto made = std::make_unique<CountingClock>();
 	CountingClock& clock = *made;
-	auto source = sources.make("rx", "from_writer", 1, 64, kRate, std::move(made));
+	auto source = sources.make("rx", "from_writer", 1, 64, ear::SampleRate::fixed<kRate>(), std::move(made));
 	SourceWriter& writer = source->writer();
 	Wake& wake = writer.clockWake();
 	CHECK_FALSE(readable(wake.descriptor()));
@@ -294,7 +296,7 @@ TEST_CASE("A source's clock wake rings once until answered and only when its clo
 	CHECK(clock.read == 48);
 
 	// A source with no clock never rings it.
-	auto clockless = sources.make("rx", "from_writer", 1, 64, kRate, nullptr);
+	auto clockless = sources.make("rx", "from_writer", 1, 64, ear::SampleRate::fixed<kRate>(), nullptr);
 	REQUIRE(clockless->writer().write(ramp(0, 32), 32, 0ms) == 32);
 	for (std::uint64_t at = 0; at < 64; at += 16) playAt(*clockless, bank, at, 16);
 	CHECK_FALSE(readable(clockless->writer().clockWake().descriptor()));
@@ -305,7 +307,7 @@ TEST_CASE("A source's play allocates nothing, a writer waiting and its clock's w
 	auto made = std::make_unique<CountingClock>();
 	made->asks = true;
 	CountingClock& clock = *made;
-	auto source = sources.make("rx", "from_writer", 1, 256, kRate, std::move(made));
+	auto source = sources.make("rx", "from_writer", 1, 256, ear::SampleRate::fixed<kRate>(), std::move(made));
 	SourceWriter& writer = source->writer();
 	REQUIRE(writer.write(ramp(0, 256), 256, 0ms) == 256);
 	std::atomic<bool> stop{false};
@@ -587,7 +589,7 @@ public:
 		std::fill_n(outputs[0], frames, 0.0F);
 		if (!armed.load(std::memory_order_acquire)) return;
 		log.add(clock.position);
-		stalls_(cycles_++, clock.duration, kRate);
+		stalls_(cycles_++, clock.duration, ear::SampleRate::fixed<kRate>());
 	}
 	std::atomic<bool> armed{false};
 	std::uint64_t slept() const { return stalls_.made(); }
@@ -754,15 +756,15 @@ TEST_CASE("A bound source plays its ramp into its bank before the code, reaching
 	EventSources sources;
 	auto made = std::make_unique<RecordingClock>(false);
 	const RecordingClock& clock = *made;
-	auto source = sources.make("rx", "from_writer", 1, 8192, kRate, std::move(made));
+	auto source = sources.make("rx", "from_writer", 1, 8192, ear::SampleRate::fixed<kRate>(), std::move(made));
 	SourceCode code(waiter, clock, 4000);
 	code.source = source.get();
 	ListeningCode listening(waiter, code, 4000);
 	// The code's every cycle through the one judge (docs/testing.md#the-cycle-judge), its first its drive. An upstream
 	// probe makes the judge's stalls once the code runs, each cutting its cycle before rx ran it, so the source plays on
 	// over cycles the driver cut, and the excuse is taken, and proven, on every run.
-	ear::test::CycleJudge judge(ear::test::JudgePlan{.judged = 200, .expected = {.drives = 1}}, FrameClock(kRate),
-	                            &engine->cuts());
+	ear::test::CycleJudge judge(ear::test::JudgePlan{.judged = 200, .expected = {.drives = 1}},
+	                            FrameClock(ear::SampleRate::fixed<kRate>()), &engine->cuts());
 	SleepingUpstream upstreamCode(4000, judge.stalls());
 	Probe upstream(*engine, waiter, "upstream", 0, 1, upstreamCode);
 	BlockEvents events(waiter), dstEvents(waiter);
@@ -886,7 +888,7 @@ TEST_CASE("A bound source, its clock and its writer's room allocate nothing on t
 	EventSources sources;
 	auto made = std::make_unique<RecordingClock>(true);
 	const RecordingClock& clock = *made;
-	auto source = sources.make("rx", "from_writer", 1, 2048, kRate, std::move(made));
+	auto source = sources.make("rx", "from_writer", 1, 2048, ear::SampleRate::fixed<kRate>(), std::move(made));
 	SourceCode code(waiter, clock, 0);
 	BlockEvents events(waiter);
 	auto block = blocks.make("rx", rxPorts, kFormat, events);
@@ -945,7 +947,7 @@ TEST_CASE("A source on a real block skips exactly what its clock asks, capped at
 	EventSources sources;
 	auto made = std::make_unique<RecordingClock>(true);
 	const RecordingClock& clock = *made;
-	auto source = sources.make("rx", "from_writer", 1, kRing, kRate, std::move(made));
+	auto source = sources.make("rx", "from_writer", 1, kRing, ear::SampleRate::fixed<kRate>(), std::move(made));
 	const std::uint32_t capacity = source->writer().capacityFrames();
 	SourceCode code(waiter, clock, kCapacity);
 	code.source = source.get();
@@ -955,7 +957,7 @@ TEST_CASE("A source on a real block skips exactly what its clock asks, capped at
 	ear::test::CycleJudge judge(ear::test::JudgePlan{.judged = kJudged,
 	                                                 .induce = StallPlan::every(50, 49, 30, StallLength::of(12ms)),
 	                                                 .expected = {.drives = 1}},
-	                            FrameClock(kRate), &engine->cuts());
+	                            FrameClock(ear::SampleRate::fixed<kRate>()), &engine->cuts());
 	SleepingUpstream upstreamCode(kCapacity * 2, judge.stalls());
 	BlockEvents events(waiter);
 	Probe upstream(*engine, waiter, "upstream", 0, 1, upstreamCode);

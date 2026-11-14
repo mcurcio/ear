@@ -65,7 +65,7 @@ ChunkStamp stampAt(std::uint64_t position, bool driven) {
 TEST_CASE("cutChunk: one call when the chunk lies before the ring's end, else two, the second advanced by the "
           "first's frames and no discontinuity",
           "[block_rules]") {
-	const FrameClock clock(1000); // a frame lasts 1 ms
+	const FrameClock clock(ear::SampleRate::fixed<1000>()); // a frame lasts 1 ms
 	const ChunkStamp stamp = stampAt(500, true);
 	struct Row {
 		const char* what;
@@ -101,7 +101,7 @@ TEST_CASE("cutChunk: one call when the chunk lies before the ring's end, else tw
 TEST_CASE(
 	"A SinkRing hands each stamped chunk in order, in two calls where it wraps, each dated by its own first frame",
 	"[block_rules]") {
-	SinkRing ring(1, 256, 1000);
+	SinkRing ring(1, 256, ear::SampleRate::fixed<1000>());
 	Counting signal(100);
 	std::vector<Call> calls;
 	for (std::uint64_t at = 0; at < 300; at += 100) {
@@ -128,14 +128,14 @@ TEST_CASE(
 	"A SinkRing's two rings drop together: a full stamp ring drops the whole chunk, a full frame ring the rest of "
 	"one, and a discard skips what no consumer can take",
 	"[block_rules]") {
-	SinkRing stamps(1, 256, 1000); // 64 stamps: 1-frame chunks run them out first
+	SinkRing stamps(1, 256, ear::SampleRate::fixed<1000>()); // 64 stamps: 1-frame chunks run them out first
 	Counting one(1);
 	for (std::uint64_t at = 0; at < 64; ++at) REQUIRE(stamps.write(one.from(at), 1, stampAt(at, false)));
 	CHECK_FALSE(stamps.write(one.from(64), 1, stampAt(64, false)));
 	CHECK(stamps.droppedFrames() == 1);
 	CHECK(drained(stamps).size() == 64);
 
-	SinkRing frames(1, 256, 1000);
+	SinkRing frames(1, 256, ear::SampleRate::fixed<1000>());
 	Counting hundred(100);
 	REQUIRE(frames.write(hundred.from(0), 100, stampAt(0, false)));
 	REQUIRE(frames.write(hundred.from(100), 100, stampAt(100, false)));
@@ -154,7 +154,7 @@ TEST_CASE(
 
 TEST_CASE("FadeRamp: in from zero over its frames after a drive, out from the gain it has, ending at zero",
           "[block_rules]") {
-	FadeRamp ramp(1000); // 5 ms: 5 frames
+	FadeRamp ramp(ear::SampleRate::fixed<1000>()); // 5 ms: 5 frames
 	REQUIRE(ramp.frames() == 5);
 	std::vector<float> faded(8, 1.0F);
 	std::vector<float> kept(8, 1.0F);
@@ -213,7 +213,7 @@ TEST_CASE("FadeRamp: in from zero over its frames after a drive, out from the ga
 TEST_CASE("BlockFade: fade-outs wait until a cycle ends at zero, a cycle too large to run or a block not processing "
           "acknowledges them, and a drive applied while they wait cancels them",
           "[block_rules]") {
-	BlockFade fade(1000); // 5 frames
+	BlockFade fade(ear::SampleRate::fixed<1000>()); // 5 frames
 	std::vector<float> samples(8, 1.0F);
 	const std::array<std::span<float>, 1> outputs{samples};
 	const std::array<std::uint8_t, 1> mask{1};
@@ -262,11 +262,11 @@ TEST_CASE("The stamps carry the cycle's facts and the most of the latency told o
 	                                                       .lostFrames = 128,
 	                                                       .upstreamFrames = 40});
 	// A source's tick: the cycle whole (its facts the clock's to read), the frames, the rate and the told playback.
-	const SourceTick tick = sourceTick(cycle, 64, 48000, Latency{7, 9});
+	const SourceTick tick = sourceTick(cycle, 64, ear::SampleRate::fixed<48000>(), Latency{7, 9});
 	CHECK(&tick.cycle == &cycle);
 	CHECK(tick.cycle.facts == caughtUp);
 	CHECK(tick.frames == 64);
-	CHECK(tick.rate == 48000);
+	CHECK(tick.rate.hz() == 48000);
 	CHECK(tick.playback == Latency{7, 9});
 	// Lost frames are a catch-up's alone: any other jump the graph made is no loss a sink can write.
 	for (const CycleCauses other : {CycleCauses(CycleCause::absent), CycleCauses(CycleCause::reposition),

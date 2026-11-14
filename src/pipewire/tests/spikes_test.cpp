@@ -406,7 +406,7 @@ std::unique_ptr<Engine> engineAt(std::uint32_t block) {
 	                         "DBUS_SYSTEM_BUS_ADDRESS"}) {
 		unsetenv(name);
 	}
-	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, kRate, block});
+	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, ear::SampleRate::fixed<kRate>(), block});
 	if (!engine) FAIL("Engine::create: " << engine.error().detail);
 	return std::move(*engine);
 }
@@ -456,7 +456,7 @@ public:
 			rawAtEntry[*n] = raw;
 			overran[*n] = overruns_ != nullptr && overruns_->plan().planned(*n) ? 1 : 0;
 			log.commit(*n);
-			if (overruns_ != nullptr) (*overruns_)(*n, clock.duration, kRate);
+			if (overruns_ != nullptr) (*overruns_)(*n, clock.duration, ear::SampleRate::fixed<kRate>());
 		}
 	}
 	std::size_t overrunCount() const { return overruns_ != nullptr ? overruns_->made() : 0; }
@@ -806,8 +806,9 @@ class RingSource final : public ProbeCode {
 public:
 	RingSource(Shared& shared, Waiter& waiter, StallPlan overruns, const Engine& engine)
 		: shared_(shared), waiter_(waiter), overruns_(std::move(overruns)), internalClock_(engine.internalClockId()),
-		  cuts_(engine.cuts()), account_(FrameClock(kRate), &engine.cuts()), ring_(kS5Capacity), log(kS5Log),
-		  totalBefore(kS5Log), stamp(kS5Log), uniform(kS5Log), overran(kS5Log), newClock(kS5Log), facts(kS5Log) {
+		  cuts_(engine.cuts()), account_(FrameClock(ear::SampleRate::fixed<kRate>()), &engine.cuts()),
+		  ring_(kS5Capacity), log(kS5Log), totalBefore(kS5Log), stamp(kS5Log), uniform(kS5Log), overran(kS5Log),
+		  newClock(kS5Log), facts(kS5Log) {
 		for (std::uint32_t k = 0; k < kS5Capacity; ++k) ring_[k] = rampAt(k);
 	}
 	std::uint64_t firstPosition() const { return firstPosition_.load(std::memory_order_acquire); }
@@ -862,7 +863,7 @@ public:
 				newClock[*n] = newClockHere ? 1 : 0;
 				facts[*n] = stated;
 				log.commit(*n);
-				overruns_(*n, clock.duration, kRate);
+				overruns_(*n, clock.duration, ear::SampleRate::fixed<kRate>());
 			}
 		}
 		cycles_.fetch_add(1, std::memory_order_release);
@@ -1168,7 +1169,7 @@ public:
 				                 clock.cycle,
 				                 clock.flags};
 				count_.store(n + 1, std::memory_order_release);
-				stalls_(n, clock.duration, kRate);
+				stalls_(n, clock.duration, ear::SampleRate::fixed<kRate>());
 			} else {
 				full_.store(true, std::memory_order_relaxed);
 			}
@@ -1602,7 +1603,7 @@ TEST_CASE("S5: a source served by its block keeps its played count on the clock 
 		ear::test::JudgePlan{.judged = 1000,
 	                         .induce = overruns(kS5OverrunEvery, kS5OverrunEvery / 4, kS5Overruns),
 	                         .expected = {.starts = 0}},
-		FrameClock(kRate), &engine->cuts());
+		FrameClock(ear::SampleRate::fixed<kRate>()), &engine->cuts());
 	Upstream upCode(shared, kS5Log, &judge.stalls());
 	RingSource sourceCode(shared, waiter, overruns(kS5OverrunEvery, kS5OverrunEvery * 3 / 4, kS5Overruns), *engine);
 	RampListener downCode(shared, sourceCode);
@@ -1817,7 +1818,8 @@ TEST_CASE("S3: the engine has one data loop, context.num-data-loops = 1, and blo
 		SoundCardShape{*CardId::parse("Test")}, cardEvents);
 	auto receiver = receivers.make(
 		CompanionTarget{"fpp.rtp", "fpp", Direction::input, {"from_rtp.1", "from_rtp.2"}, kFormat, fppBlock->blockId()},
-		RtpReceiverShape{*RtpAddress::parse("0.0.0.0"), ear::test::freeUdpPort(), RtpEncoding::l24, kRate, 100},
+		RtpReceiverShape{*RtpAddress::parse("0.0.0.0"), ear::test::freeUdpPort(), RtpEncoding::l24,
+	                     ear::SampleRate::fixed<kRate>(), 100},
 		receiverEvents);
 	const std::vector<NodeName> nodes{"Dummy-Driver", "card", "fpp", "probe", "card.playback", "fpp.rtp"};
 	REQUIRE(waiter.until([&] {
@@ -2084,7 +2086,7 @@ TEST_CASE("S6: with node-driver.c's default resync.ms a stall past 10 ms moves t
 	for (const char* name : {"XDG_RUNTIME_DIR", "PIPEWIRE_RUNTIME_DIR", "PIPEWIRE_REMOTE", "DBUS_SESSION_BUS_ADDRESS",
 	                         "DBUS_SYSTEM_BUS_ADDRESS"})
 		unsetenv(name);
-	auto made = Engine::create(EngineSettings{path.string(), kRate, kBlock});
+	auto made = Engine::create(EngineSettings{path.string(), ear::SampleRate::fixed<kRate>(), kBlock});
 	if (!made) FAIL("Engine::create: " << made.error().detail);
 	auto engine = std::move(*made);
 	Waiter waiter(*engine);
@@ -2254,7 +2256,7 @@ std::unique_ptr<Engine> profiledEngine(const ear::test::TempFolder& folder) {
 	for (const char* name : {"XDG_RUNTIME_DIR", "PIPEWIRE_RUNTIME_DIR", "PIPEWIRE_REMOTE", "DBUS_SESSION_BUS_ADDRESS",
 	                         "DBUS_SYSTEM_BUS_ADDRESS"})
 		unsetenv(name);
-	auto made = Engine::create(EngineSettings{path.string(), kRate, kBlock});
+	auto made = Engine::create(EngineSettings{path.string(), ear::SampleRate::fixed<kRate>(), kBlock});
 	if (!made) FAIL("Engine::create: " << made.error().detail);
 	return std::move(*made);
 }
@@ -2414,11 +2416,12 @@ TEST_CASE("S7: a module-run converter's node finishes before its block wakes, in
 	// PipeWire's own profiler on the real receiver, resampling a 44.1 kHz sender's tone, over 2,000 cycles.
 	ear::test::TempFolder folder("s7-order");
 	S7Graph graph(profiledEngine(folder));
-	const RtpReceiverShape shape{*RtpAddress::parse("0.0.0.0"), ear::test::freeUdpPort(), RtpEncoding::l16, 44100, 100};
+	const RtpReceiverShape shape{*RtpAddress::parse("0.0.0.0"), ear::test::freeUdpPort(), RtpEncoding::l16,
+	                             SampleRate::fixed<44100>(), 100};
 	graph.receive(shape);
-	ear::test::RtpSender sender(shape.port, ear::test::RtpPcm::l16, shape.rate,
+	ear::test::RtpSender sender(shape.port, ear::test::RtpPcm::l16, shape.rate.hz(),
 	                            ear::test::RtpTone{{750.0, 1500.0}, 0.5});
-	sender.send(60 * shape.rate);
+	sender.send(60 * shape.rate.hz());
 	REQUIRE(graph.waiter.until([&] { return graph.heard.sound() > 0; }));
 
 	constexpr std::size_t kCycles = 2000;
@@ -2480,8 +2483,8 @@ TEST_CASE("S7: a module-run converter's ports tell no latency of their own, resa
 		INFO("the sender at " << senderRate << " Hz");
 		S7Graph graph(makeEngine());
 		const RtpReceiverShape shape{*RtpAddress::parse("0.0.0.0"), ear::test::freeUdpPort(), RtpEncoding::l16,
-		                             senderRate, 100};
-		const Delay delay = moduleRunDelay(shape, FrameClock(kRate));
+		                             *SampleRate::of(senderRate), 100};
+		const Delay delay = moduleRunDelay(shape, FrameClock(ear::SampleRate::fixed<kRate>()));
 		graph.block->carryLatency(LatencyPlan{.pairs = {{"from_rtp", "stream"}}, .beyond = {{"from_rtp", delay}}});
 		PortLatency stream(*graph.engine, graph.waiter, graph.block->blockId(), "stream.1");
 		REQUIRE(graph.waiter.until([&] { return stream.told() == delay.latency; }));

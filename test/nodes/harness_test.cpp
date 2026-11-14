@@ -41,7 +41,7 @@ void readyEvery(ear::testing::NodeHarness& harness) {
 
 TEST_CASE("Every type runs through the harness: configures, runs, writes every output sample, and walks its lifecycle",
           "[harness]") {
-	constexpr ear::AudioFormat format{.rate = 48000, .maxBlock = 128};
+	constexpr ear::AudioFormat format{.rate = ear::SampleRate::fixed<48000>(), .maxBlock = 128};
 	const auto types = ear::test::allTypes();
 	for (const auto& name : ear::test::notYetInHarness()) {
 		INFO(name << " is in notYetInHarness (test/nodes/all_types.hpp)");

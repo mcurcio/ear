@@ -17,7 +17,7 @@ namespace ear::pipewire {
 class Faults;
 struct EngineSettings {
 	std::filesystem::path configFile; // engine.conf; must not set default.clock.*
-	std::uint32_t graphFrequency;     // -> default.clock.rate and the only allowed rate
+	SampleRate graphFrequency;        // -> default.clock.rate and the only allowed rate
 	std::uint32_t blockSize;          // -> default.clock.quantum = min-quantum = max-quantum
 	/// Where an exception caught at the callback boundary is reported while the engine lives (faults.hpp); it must
 	/// outlive the engine. None: a line naming the callback on standard error, then std::terminate.

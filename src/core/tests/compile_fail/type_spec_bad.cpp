@@ -106,7 +106,7 @@ Configured configure(CreateOf<spec>& cx, const Checked&) {
 		cx.rtpReceiver(insideOut, RtpReceiverShape{.address = *RtpAddress::parse("0.0.0.0"),
 		                                           .port = 5004,
 		                                           .encoding = RtpEncoding::l24,
-		                                           .rate = 48000,
+		                                           .rate = ear::SampleRate::fixed<48000>(),
 		                                           .latencyMs = 100});
 #endif
 #ifdef EAR_CASE_sink_on_input_bank

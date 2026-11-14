@@ -20,15 +20,14 @@ namespace {
 constexpr std::uint64_t oneClear = std::uint64_t{1} << 32U;
 
 /// 5 ms at `rate`, at least one frame: every fade's length.
-std::uint32_t fadeFramesAt(std::uint32_t rate) {
-	return std::max(static_cast<std::uint32_t>(FrameClock(std::max(rate, 1U)).frames(std::chrono::milliseconds{5})),
-	                1U);
+std::uint32_t fadeFramesAt(SampleRate rate) {
+	return std::max(static_cast<std::uint32_t>(FrameClock(rate).frames(std::chrono::milliseconds{5})), 1U);
 }
 
 } // namespace
 
 struct SourceRing::State {
-	State(std::uint32_t channelCount, std::uint32_t capacity, std::uint32_t frequency, Signals& told)
+	State(std::uint32_t channelCount, std::uint32_t capacity, SampleRate frequency, Signals& told)
 		: ring(channelCount, capacity), channels(channelCount), fadeFrames(fadeFramesAt(frequency)), signals(told),
 		  last(channelCount, 0.0F), tail(static_cast<std::size_t>(fadeFrames) * channelCount, 0.0F) {}
 
@@ -113,7 +112,7 @@ struct SourceRing::State {
 	}
 };
 
-SourceRing::SourceRing(std::uint32_t channels, std::uint32_t capacityFrames, std::uint32_t rate, Signals& signals)
+SourceRing::SourceRing(std::uint32_t channels, std::uint32_t capacityFrames, SampleRate rate, Signals& signals)
 	: state_(std::make_unique<State>(std::max(channels, 1U), capacityFrames, rate, signals)) {}
 
 SourceRing::~SourceRing() = default;

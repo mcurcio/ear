@@ -135,7 +135,7 @@ bool flushDenormalsOnDataThread(pw_data_loop* dataLoop) {
 /// why each). pw_context_new reads them from its own properties; engine.conf's context.properties would overwrite them,
 /// so it sets none.
 pw_properties* contextProperties(const EngineSettings& settings) {
-	const auto rate = std::to_string(settings.graphFrequency);
+	const auto rate = std::to_string(settings.graphFrequency.hz());
 	const auto block = std::to_string(settings.blockSize);
 	return PropertySet<Home::context>({{property<Home::context>("config.name"), settings.configFile.string()},
 	                                   {property<Home::context>("default.clock.rate"), rate},

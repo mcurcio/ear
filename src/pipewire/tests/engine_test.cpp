@@ -56,7 +56,7 @@ using namespace std::chrono_literals;
 
 constexpr std::uint32_t kRate = 44100;
 constexpr std::uint32_t kBlock = 256;
-constexpr AudioFormat kFormat{kRate, kBlock};
+constexpr AudioFormat kFormat{ear::SampleRate::fixed<kRate>(), kBlock};
 
 /// The engine with nothing from a desktop session around it: no daemon to reach, no runtime
 /// directory, no D-Bus.
@@ -65,7 +65,7 @@ std::unique_ptr<Engine> makeEngine() {
 	                         "DBUS_SYSTEM_BUS_ADDRESS"}) {
 		unsetenv(name);
 	}
-	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, kRate, kBlock});
+	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, ear::SampleRate::fixed<kRate>(), kBlock});
 	if (!engine) FAIL("Engine::create: " << engine.error().detail);
 	return std::move(*engine);
 }
@@ -176,7 +176,7 @@ public:
 		for (std::uint32_t i = 0; i < frames; ++i) outputs[0][i] = static_cast<float>(++next_);
 		calls_.fetch_add(1, std::memory_order_release);
 		if (ear::test::Stalls* stalls = stalls_.load(std::memory_order_acquire))
-			(*stalls)(armedCycles_++, frames, kRate);
+			(*stalls)(armedCycles_++, frames, ear::SampleRate::fixed<kRate>());
 		waiter_.wake();
 	}
 	void release() noexcept override {}
@@ -366,7 +366,8 @@ TEST_CASE("A link carries a source block's ramp to a sink block sample for sampl
 	// cycle that follows lost ones is excused only as cycles the driver cut, by the one judge
 	// (docs/testing.md#the-cycle-judge). The ramp makes the judge's stalls itself once it is heard, so the excuse is
 	// taken, and proven, on every run.
-	ear::test::CycleJudge judge(ear::test::JudgePlan{.judged = 32}, FrameClock(kRate), &engine->cuts());
+	ear::test::CycleJudge judge(ear::test::JudgePlan{.judged = 32}, FrameClock(ear::SampleRate::fixed<kRate>()),
+	                            &engine->cuts());
 	const ear::test::CycleLedger& ledger = pair.recorder.ledger();
 	std::size_t fed = 0, breaks = 0, wrongSkips = 0;
 	const auto feed = [&] {
@@ -466,7 +467,7 @@ TEST_CASE("A block size that is not a power of two runs as itself", "[engine]") 
 	                         "DBUS_SYSTEM_BUS_ADDRESS"}) {
 		unsetenv(name);
 	}
-	auto made = Engine::create(EngineSettings{EAR_ENGINE_CONF, kRate, block});
+	auto made = Engine::create(EngineSettings{EAR_ENGINE_CONF, ear::SampleRate::fixed<kRate>(), block});
 	if (!made) FAIL("Engine::create: " << made.error().detail);
 	auto engine = std::move(*made);
 	Waiter waiter(*engine);
@@ -940,7 +941,7 @@ std::unique_ptr<Engine> makeEngine(Faults& faults) {
 	                         "DBUS_SYSTEM_BUS_ADDRESS"}) {
 		unsetenv(name);
 	}
-	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, kRate, kBlock, &faults});
+	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, ear::SampleRate::fixed<kRate>(), kBlock, &faults});
 	if (!engine) FAIL("Engine::create: " << engine.error().detail);
 	return std::move(*engine);
 }
@@ -1219,7 +1220,7 @@ TEST_CASE("Engine::create fails naming the internal clock when engine.conf makes
 	const ear::test::TempFolder folder("engine-conf");
 	const std::filesystem::path path = folder.path() / "engine.conf";
 	std::ofstream(path) << conf;
-	const auto engine = Engine::create(EngineSettings{path, kRate, kBlock});
+	const auto engine = Engine::create(EngineSettings{path, ear::SampleRate::fixed<kRate>(), kBlock});
 	REQUIRE_FALSE(engine);
 	CHECK(engine.error().detail ==
 	      "the engine holds no internal clock (Dummy-Driver): engine.conf's context.objects must make it");

@@ -16,7 +16,7 @@
 namespace ear::sendspin {
 /// The lead a player reports (spec "required_lead_time_ms": at least what still plays after a stream/clear): all a feed
 /// of `feedFrames` holds, and the block being played. The library reports its own pipeline's lead if that is larger.
-std::uint16_t requiredLeadMs(std::uint32_t feedFrames, std::uint32_t maxBlock, std::uint32_t rate) noexcept;
+std::uint16_t requiredLeadMs(std::uint32_t feedFrames, std::uint32_t maxBlock, SampleRate rate) noexcept;
 class SendspinWorker {
 public:
 	/// Starts the threads; `feed` and `events` outlive `stopped`. Throws std::system_error when it cannot. The node's

@@ -52,7 +52,9 @@ private:
 
 class NoReader final : public GraphReader {
 public:
-	GraphView read() const override { return {}; }
+	GraphView read() const override {
+		return GraphView{{{ear::SampleRate::fixed<48000>(), 256}, false, ""}, {}, {}, {}};
+	}
 };
 
 } // namespace
@@ -75,10 +77,11 @@ TEST_CASE("The graph file keeper on its thread: start announces, an edit replies
 
 	auto first = GraphFileKeeper::load(*folder, catalogue);
 	REQUIRE(first.format().has_value());
-	CHECK(first.format()->rate == 48000);
+	CHECK(first.format()->rate.hz() == 48000);
 	FakeOperations operations{log};
 	ActionLog actions{log};
-	GraphFileKeeper keeper(std::move(first), *folder, {48000, 256}, graph, reader, operations, mainLoop);
+	GraphFileKeeper keeper(std::move(first), *folder, {ear::SampleRate::fixed<48000>(), 256}, graph, reader, operations,
+	                       mainLoop);
 	keeper.subscribe(fileLog);
 	keeper.subscribeActions(actions);
 	REQUIRE(keeper.start().has_value());
@@ -129,8 +132,8 @@ TEST_CASE("A stopped keeper closes its folder watch while it still answers, befo
 	Log log;
 	FileLog fileLog{log};
 	FakeOperations operations{log};
-	GraphFileKeeper keeper(GraphFileKeeper::load(*folder, catalogue), *folder, {48000, 256}, graph, reader, operations,
-	                       mainLoop);
+	GraphFileKeeper keeper(GraphFileKeeper::load(*folder, catalogue), *folder, {ear::SampleRate::fixed<48000>(), 256},
+	                       graph, reader, operations, mainLoop);
 	keeper.subscribe(fileLog);
 	REQUIRE(keeper.start().has_value());
 	REQUIRE(mainLoop.runUntil([&] { return !fileLog.changes.empty(); }));

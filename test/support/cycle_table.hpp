@@ -19,7 +19,7 @@
 namespace ear::test {
 
 /// Every row runs at this format, with cycles of cycleTableFrames: 5 ms exactly, so each row's lostRawNs is exact.
-inline constexpr AudioFormat cycleTableFormat{.rate = 48000, .maxBlock = 256};
+inline constexpr AudioFormat cycleTableFormat{.rate = SampleRate::fixed<48000>(), .maxBlock = 256};
 inline constexpr std::uint32_t cycleTableFrames = 240;
 /// The driver the rows start on, the harness's own clock (numbered cycles).
 inline constexpr std::uint32_t cycleTableClock = 0;

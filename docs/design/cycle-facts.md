@@ -899,7 +899,7 @@ R5d).
 | **D2** | **Done** (9.13). Counters reported (8.3): `CounterWatch`, `CounterListener` in `ear_control`; the `counters` feature, `counters.changed`, the fixtures, `web/src/protocol.ts` and `docs/control-port.md` in one commit; `ear.graph-lost-cycles` and `ear.node-missed-cycles` in `docs/output-records.md` and its JSON; the system tests judging from them | `isSkipStep`, the 200 µs step rule | the `counters` feature and two records |
 | **D3** | **Done** (9.16). The editor (8.5): panel totals, recent marks (Q-CF4); `docs/editor.md` | the companions' own copy of the mark's rule (into `web/src/marks.ts`) | the marks and badge |
 | **C6a** | **Done** (9.17). `SampleRate`, `FrameClock(SampleRate)` beside the old constructor, `framesCeil`, `framesNearest`; compile-fail cases | nothing | none |
-| **C6b** | `AudioFormat::rate` and every rate to `SampleRate`; the `.hz()` check | `frame_guard.cmake`, `test/frame_guard/`, the `uint32_t` constructor | none |
+| **C6b** | **Done** (9.17). `AudioFormat::rate` and every rate to `SampleRate`; the `.hz()` check | `frame_guard.cmake`, `test/frame_guard/`, the `uint32_t` constructor | none |
 | **C7** | The callback poison | `test/pipewire/callback_guard.cmake` and its snippets | none |
 | **C8** | Sleep roles as calls (optional, 7.4) | `test/sleeps.txt`, `sleep_guard.cmake`, `test/sleep_guard/` | none |
 
@@ -1788,7 +1788,7 @@ at the end. Every rate the code holds, and what each becomes:
 | The level window | `levels.cpp`'s `levelWindowFrames(rate)` | takes `SampleRate`; `framesCeil` of a thirtieth of a second (the other exception ends) |
 | `sendspin`'s rates | `SendspinCode`, `ToServer`, `requiredLeadMs`, `sendspin_type.cpp` | `SampleRate`; `worker.cpp` is the library's edge: `.hz()` into sendspin-cpp's formats, its source's `sample_rate` and the `says` notes. The server's `stream.sample_rate` is the library's number, compared with the graph's `.hz()` and printed as sent |
 | `file`'s WAV rate | `file.cpp` | `.hz()` into libsndfile's `samplerate` |
-| The wire's `graphFrequency` | `events.cpp` | `.hz()`; the record is unchanged. Its `rate == 0` case (a test's empty view) goes: a view always carries an engine's format, and the three tests that made an empty one give it |
+| The wire's `graphFrequency` | `events.cpp` | `.hz()`; the record is unchanged. Its `rate == 0` case (a test's empty view) goes: a view always carries an engine's format, and the tests that made an empty one (five sites) give it |
 | `lostMs(FrameClock, quantum)`, `cycleOverran`, `cutChunk`, `CycleAccount`, `moduleRunDelay` | core | unchanged: they already take a `FrameClock` |
 
 Not rates, and left as they are: `GraphCycle::rateDiff` (a ratio), PipeWire's `min_rate`/`max_rate` (frames, "rate
@@ -1819,7 +1819,8 @@ process and hand it a number in `ear.conf`.
 - **Compile-fail cases by step.** C6a's (`sample_rate_bad.cpp`): a raw integer made, converted or passed as a rate;
   a rate read as an integer or cast; a rate as an operand with frames (`*`, `/`, `%`, `+`) or a duration; a rate
   compared with a number; a rate passed as frames; `fixed<0>`. C6b adds what its changes make unwritable:
-  `FrameClock(48000)`, an `AudioFormat` from a number, and a sink or source ring made at a number.
+  `FrameClock(48000)` and `FrameClock{48000U}`, an `AudioFormat` from a number, a `SinkRing` at a number and a level
+  window at a number.
 
 ## 10. Decided here (technical)
 

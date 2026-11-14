@@ -102,7 +102,7 @@ public:
 	};
 	std::deque<Step> script;
 	std::vector<std::string> calls;
-	ear::GraphView view{};
+	ear::GraphView view{{{ear::SampleRate::fixed<48000>(), 256}, false, ""}, {}, {}, {}};
 	GraphFile file{};
 	const QueueExecutor* const* running = nullptr;
 	const SnapshotStamp* stamp = nullptr; // the gateway: each read's since, filled at the read
@@ -243,7 +243,8 @@ using ear::NodeState;
 using Code = ear::FailureReason::Code;
 
 ear::GraphView baseView() {
-	ear::GraphView view{{{48000, 256}, false, "SCHED_OTHER"}, {"card", "file", "white"}, {}, {}};
+	ear::GraphView view{
+		{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {"card", "file", "white"}, {}, {}};
 	view.nodes.push_back({{"noise", "white", json::object()},
 	                      ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}},
 	                      health("noise", NodeState::running)});
@@ -293,7 +294,8 @@ TEST_CASE("counters-changed.json: the snapshot's counters, counters.changed repl
 	const json document = fixture("counters-changed");
 	const auto requests = requestsOf(document);
 	World w;
-	w.graph.view = ear::GraphView{{{48000, 256}, true, "SCHED_FIFO 88"}, {"card", "file", "white"}, {}, {}};
+	w.graph.view = ear::GraphView{
+		{{ear::SampleRate::fixed<48000>(), 256}, true, "SCHED_FIFO 88"}, {"card", "file", "white"}, {}, {}};
 	const auto cardPorts = [](std::uint32_t playback) {
 		return ear::Ports{{{ear::Direction::input, "play", ear::numbered(playback)}}};
 	};
@@ -341,7 +343,8 @@ TEST_CASE("counters-changed.json: the snapshot's counters, counters.changed repl
 TEST_CASE("A replace that is not port-caused, and a node added, carry zero counters whatever the name counted",
           "[session][counters]") {
 	World w;
-	w.graph.view = ear::GraphView{{{48000, 256}, false, "SCHED_OTHER"}, {"card", "white"}, {}, {}};
+	w.graph.view =
+		ear::GraphView{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {"card", "white"}, {}, {}};
 	HandCounts counts;
 	counts.nodes["x"] = ear::NodeCounts{.overruns = 9};
 	w.gateway.readCounts(counts);
@@ -539,7 +542,8 @@ TEST_CASE("lifecycle.json: a node's whole life, each health change one node.stat
 	const json deskSettings = {{"card", "MOTU"}, {"playback", 2}};
 	const json porchSettings = {{"card", "USB2"}, {"playback", 2}};
 	const ear::FailureReason cannotOpen{Code::startFailed, "cannot open nope/t.wav: No such file or directory"};
-	w.graph.view = ear::GraphView{{{48000, 256}, false, "SCHED_OTHER"}, {"card", "file", "rtp", "white"}, {}, {}};
+	w.graph.view = ear::GraphView{
+		{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {"card", "file", "rtp", "white"}, {}, {}};
 	w.graph.view.nodes.push_back({{"desk", "card", deskSettings}, card2, at("desk", NodePhase::running)});
 	w.graph.view.nodes.push_back({{"porch", "card", porchSettings}, card2, at("porch", NodePhase::running)});
 	w.onMain([&] { // both running before the client subscribes: the snapshot carries their since
@@ -1141,7 +1145,8 @@ TEST_CASE("companions.json: each node's list in the snapshot, node.added's [], e
 	const auto list = [&](const std::string& node, std::vector<CompanionView> companions) {
 		w.gateway.companionsChanged(node, companions);
 	};
-	w.graph.view = ear::GraphView{{{48000, 256}, false, "SCHED_OTHER"}, {"card", "file", "rtp", "white"}, {}, {}};
+	w.graph.view = ear::GraphView{
+		{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {"card", "file", "rtp", "white"}, {}, {}};
 	w.graph.view.nodes.push_back(
 		{{"desk", "card", {{"card", "MOTU"}, {"playback", 2}, {"capture", 2}}},
 	     deskPorts,
@@ -1268,7 +1273,7 @@ TEST_CASE("A node added again under a name starts from node.added's []: its firs
           "the older node's last",
           "[session][companions]") {
 	World w;
-	w.graph.view = ear::GraphView{{{48000, 256}, false, "SCHED_OTHER"}, {"file"}, {}, {}};
+	w.graph.view = ear::GraphView{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {"file"}, {}, {}};
 	RecordingOutbox out;
 	ControlSession session(*w.hub, out);
 	w.receive(session, R"({"jsonrpc":"2.0","id":1,"method":"graph.subscribe"})");

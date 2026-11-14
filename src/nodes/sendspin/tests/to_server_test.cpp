@@ -27,7 +27,7 @@ public:
 };
 
 struct Rig {
-	Rig() : toServer(rate, sink, anchor), samples(std::size_t{rate} * 2, 0.0F) {}
+	Rig() : toServer(ear::SampleRate::fixed<rate>(), sink, anchor), samples(std::size_t{rate} * 2, 0.0F) {}
 	void consume(std::uint32_t frames) {
 		toServer.consume(std::span<const float>(samples).first(std::size_t{frames} * 2), frames);
 	}

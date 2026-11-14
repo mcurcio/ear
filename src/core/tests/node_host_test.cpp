@@ -42,7 +42,7 @@ struct TestAudioCode final : AudioCode {
 	Log& log;
 	explicit TestAudioCode(Log& l) : log(l) {}
 	void prepare(const AudioFormat& format) override {
-		log.push_back("prepare " + std::to_string(format.rate) + "/" + std::to_string(format.maxBlock));
+		log.push_back("prepare " + std::to_string(format.rate.hz()) + "/" + std::to_string(format.maxBlock));
 	}
 	void process(std::span<const std::span<const float>>, std::span<const std::span<float>>, std::uint32_t,
 	             const ear::GraphCycle&) noexcept override {}
@@ -121,7 +121,7 @@ struct TestConfig final : NodeConfig {
 	StartResult start(StartContext& c) const override {
 		context = &c;
 		const AudioFormat format = c.format();
-		log.push_back("start " + std::to_string(format.rate) + (tag.empty() ? "" : " " + tag));
+		log.push_back("start " + std::to_string(format.rate.hz()) + (tag.empty() ? "" : " " + tag));
 		for (int i = 0; i < handoffs; ++i) c.acquire(HandoffRequest{"record", 1024, &consumer});
 		if (fail) return std::unexpected(FailureReason{FailureReason::Code::startFailed, "cannot open /nope"});
 		if (!recipe.value_or(cards.empty() && receivers.empty())) return std::make_unique<TestAudioCode>(log);
@@ -159,7 +159,8 @@ std::shared_ptr<TestConfig> withCards(Log& log, std::string tag = {}) {
 	return config;
 }
 
-const RtpReceiverShape fppStream{*RtpAddress::parse("239.69.0.1"), 5004, RtpEncoding::l24, 44100, 100};
+const RtpReceiverShape fppStream{*RtpAddress::parse("239.69.0.1"), 5004, RtpEncoding::l24, SampleRate::fixed<44100>(),
+                                 100};
 
 std::shared_ptr<TestConfig> withReceiver(Log& log, std::string tag = {}) {
 	auto config = std::make_shared<TestConfig>(log, std::move(tag));
@@ -440,7 +441,7 @@ struct TestSinks final : SinkAdapter {
 	std::vector<TestSink*> made;  // every sink made, in order (a destroyed one dangles: unused)
 	TestSinks(Log& l, Executor& m) : log(l), mainLoop(m) {}
 	std::unique_ptr<Sink> make(const NodeName& node, std::string_view bank, std::uint32_t channels,
-	                           std::uint32_t capacityFrames, std::uint32_t /*rate*/) override {
+	                           std::uint32_t capacityFrames, SampleRate /*rate*/) override {
 		if (throwInMake) throw std::system_error(EAGAIN, std::generic_category(), "no thread for " + node);
 		if (breakRuleInMake) throw std::logic_error("the sink adapter broke its own rule for " + node);
 		const std::string name = node + "." + std::string(bank);
@@ -458,7 +459,7 @@ struct TestSource final : Source, SourceWriter, SourceTap, SourceRing::Signals {
 	Log& log;
 	std::string name;
 	SourceRing ring;
-	TestSource(Log& l, std::string n, std::uint32_t channels, std::uint32_t frames, std::uint32_t rate,
+	TestSource(Log& l, std::string n, std::uint32_t channels, std::uint32_t frames, SampleRate rate,
 	           std::unique_ptr<SourceClock> own)
 		: log(l), name(std::move(n)), ring(channels, frames, rate, *this), clock(std::move(own)) {}
 	~TestSource() override { log.push_back("source " + name + " destroyed"); }
@@ -500,12 +501,12 @@ struct TestSources final : SourceAdapter {
 	std::vector<TestSource*> made; // every source made, in order (a destroyed one dangles: unused)
 	explicit TestSources(Log& l) : log(l) {}
 	std::unique_ptr<Source> make(const NodeName& node, std::string_view bank, std::uint32_t channels,
-	                             std::uint32_t capacityFrames, std::uint32_t rate,
+	                             std::uint32_t capacityFrames, ear::SampleRate rate,
 	                             std::unique_ptr<SourceClock> clock) override {
 		if (throwInMake) throw std::system_error(EMFILE, std::generic_category(), "no eventfd for " + node);
 		const std::string name = node + "." + std::string(bank);
 		log.push_back("source " + name + " " + std::to_string(channels) + " channels " +
-		              std::to_string(capacityFrames) + " frames at " + std::to_string(rate));
+		              std::to_string(capacityFrames) + " frames at " + std::to_string(rate.hz()));
 		auto source = std::make_unique<TestSource>(log, name, channels, capacityFrames, rate, std::move(clock));
 		made.push_back(source.get());
 		return source;
@@ -540,7 +541,7 @@ struct TestCards final : SoundCardCompanions {
 		activities.push_back(MainLoopActivity::current());
 		targets.push_back(target);
 		log.push_back("card " + target.engineNode + " of " + target.blockNode + " " + shape.card.text() + " " +
-		              joined(target.blockPorts) + " at " + std::to_string(target.format.rate));
+		              joined(target.blockPorts) + " at " + std::to_string(target.format.rate.hz()));
 		events.push_back(&e);
 		if (readyInMake) {
 			e.ready(); // heard once make() returned
@@ -695,7 +696,8 @@ struct Fixture {
 	TestNotes notes{log};
 	TestDiagnostics diagnostics{log};
 	TestInternalErrors internalErrors;
-	NodeHost host{AudioFormat{44100, 256}, blocks, resources, mainLoop, timers, closeDeadline};
+	NodeHost host{
+		AudioFormat{ear::SampleRate::fixed<44100>(), 256}, blocks, resources, mainLoop, timers, closeDeadline};
 	int allGone = 0; // how often stopAll's callback has run
 	Fixture() {
 		host.subscribe(listener);
@@ -1231,7 +1233,7 @@ TEST_CASE("A node's RTP receiver is made once its port block is ready, named <no
 	CHECK(made.latencyMs == fppStream.latencyMs);
 	CHECK(f.receivers.targets[0].bank == Direction::input);
 	CHECK(f.receivers.targets[0].blockPorts == std::vector<PortName>{"cap.1"});
-	CHECK(f.receivers.targets[0].format.rate == 44100);
+	CHECK(f.receivers.targets[0].format.rate.hz() == 44100);
 	CHECK(f.host.health().at(0).state == NodeState::starting);
 	f.log.clear();
 
@@ -1475,7 +1477,7 @@ TEST_CASE("The framework's pass-through copies each bank to its pair and silence
 	for (auto& channel : out) channel.fill(-1.0F);
 	const std::array<std::span<const float>, 3> inputs{in[0], in[1], in[2]};
 	const std::array<std::span<float>, 4> outputs{out[0], out[1], out[2], out[3]};
-	code->prepare({44100, 256});
+	code->prepare({ear::SampleRate::fixed<44100>(), 256});
 	code->process(inputs, outputs, frames, GraphCycle{0, 0});
 
 	CHECK(out[0] == in[2]);                                 // in.1 -> capture.1
@@ -2051,7 +2053,7 @@ struct RecipeConfig final : NodeConfig {
 		log.push_back("start acquires");
 		return StartResult{std::make_unique<TestAudioCode>(log),
 		                   [this](Ready& ready) -> std::expected<std::unique_ptr<RunObject>, FailureReason> {
-							   log.push_back("recipe at " + std::to_string(ready.format().rate));
+							   log.push_back("recipe at " + std::to_string(ready.format().rate.hz()));
 							   ready.events().say("built");
 							   if (fail)
 								   return std::unexpected(
@@ -2187,7 +2189,8 @@ struct ThreadedFixture {
 	FakeTimers timers;
 	TestDiagnostics diagnostics{log};
 	TestInternalErrors internalErrors;
-	NodeHost host{AudioFormat{44100, 256}, blocks, resources, mainLoop, timers, closeDeadline};
+	NodeHost host{
+		AudioFormat{ear::SampleRate::fixed<44100>(), 256}, blocks, resources, mainLoop, timers, closeDeadline};
 	ThreadedFixture() {
 		host.subscribe(listener);
 		host.subscribeDiagnostics(diagnostics);
@@ -2530,7 +2533,8 @@ struct RecordingFixture {
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph{catalogue};
 	FakeTimers timers;
-	NodeHost host{AudioFormat{44100, 256}, blocks, resources, mainLoop, timers, closeDeadline};
+	NodeHost host{
+		AudioFormat{ear::SampleRate::fixed<44100>(), 256}, blocks, resources, mainLoop, timers, closeDeadline};
 };
 
 } // namespace
@@ -2646,8 +2650,8 @@ TEST_CASE("A host destroyed with a recording node still running frees its run ob
 	for (const bool driven : {true, false}) {
 		INFO((driven ? "driven" : "never driven"));
 		RecordingFixture f;
-		auto host = std::make_unique<NodeHost>(AudioFormat{44100, 256}, f.blocks, f.resources, f.mainLoop, f.timers,
-		                                       closeDeadline);
+		auto host = std::make_unique<NodeHost>(AudioFormat{ear::SampleRate::fixed<44100>(), 256}, f.blocks, f.resources,
+		                                       f.mainLoop, f.timers, closeDeadline);
 		host->nodeAdded(NodeSpec{"rec", "test", {}}, std::make_shared<RecordingConfig>(f.log, "take.wav"));
 		if (driven) {
 			f.mainLoop.runPosted();
@@ -2909,7 +2913,8 @@ TEST_CASE("An engine companion is made with its block's id, read once the block 
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph{catalogue};
 	FakeTimers timers;
-	NodeHost host{AudioFormat{44100, 256}, blocks, resources, mainLoop, timers, closeDeadline};
+	NodeHost host{
+		AudioFormat{ear::SampleRate::fixed<44100>(), 256}, blocks, resources, mainLoop, timers, closeDeadline};
 	host.nodeAdded(NodeSpec{"motu", "test", {}}, withCards(log));
 	host.nodeAdded(NodeSpec{"fpp", "test", {}}, withReceiver(log));
 	mainLoop.runPosted();

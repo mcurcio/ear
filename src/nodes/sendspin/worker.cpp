@@ -139,7 +139,7 @@ public:
 		const ::sendspin::ServerPlayerStreamObject& stream = player_->get_current_stream_params();
 		if (!stream.is_complete()) return;
 		const std::uint32_t bits = *stream.bit_depth;
-		streamAsked_.store(*stream.sample_rate == format_.rate && *stream.channels == nodeChannels &&
+		streamAsked_.store(*stream.sample_rate == format_.rate.hz() && *stream.channels == nodeChannels &&
 		                       bits == playerBytesPerSample * 8,
 		                   std::memory_order_release);
 		streaming_ = true;
@@ -173,7 +173,7 @@ public:
 	// SourceRoleListener. The worker.
 	void on_streaming_started() override {
 		toServer_.streaming(true);
-		events_.say(notes::sending(format_.rate, nodeChannels, sourceBits));
+		events_.say(notes::sending(format_.rate.hz(), nodeChannels, sourceBits));
 	}
 	void on_streaming_stopped() override {
 		toServer_.streaming(false);
@@ -234,7 +234,7 @@ private:
 		// The graph frequency only: the server resamples (spec "player@v1").
 		::sendspin::PlayerRoleConfig playerConfig;
 		using Codec = ::sendspin::SendspinCodecFormat;
-		playerConfig.audio_formats = {{Codec::FLAC, nodeChannels, format_.rate, playerBytesPerSample * 8}};
+		playerConfig.audio_formats = {{Codec::FLAC, nodeChannels, format_.rate.hz(), playerBytesPerSample * 8}};
 		playerConfig.required_lead_time_ms = requiredLeadMs(feed_.capacityFrames(), format_.maxBlock, format_.rate);
 		player_ = &client->add_player(std::move(playerConfig));
 		player_->set_listener(this);
@@ -243,7 +243,7 @@ private:
 
 		// The graph frequency, PCM 24 stereo, 20 ms chunks, the library's own defaults for the rest.
 		::sendspin::SourceRoleConfig sourceConfig;
-		sourceConfig.sample_rate = format_.rate;
+		sourceConfig.sample_rate = format_.rate.hz();
 		sourceConfig.channels = nodeChannels;
 		sourceConfig.bit_depth = sourceBits;
 		sourceConfig.codec = Codec::PCM;
@@ -373,7 +373,7 @@ private:
 	std::thread worker_;
 };
 
-std::uint16_t requiredLeadMs(std::uint32_t feedFrames, std::uint32_t maxBlock, std::uint32_t rate) noexcept {
+std::uint16_t requiredLeadMs(std::uint32_t feedFrames, std::uint32_t maxBlock, SampleRate rate) noexcept {
 	// Whole milliseconds rounded up, so the lead is never short of what the frames last (docs/engine.md#dating).
 	constexpr std::int64_t nsPerMs = 1'000'000;
 	const std::int64_t ns = FrameClock(rate).ns(std::int64_t{feedFrames} + maxBlock);

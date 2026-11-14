@@ -14,7 +14,7 @@ constexpr std::uint32_t bytesPerFrame = nodeChannels * sourceBits / 8;
 
 } // namespace
 
-ToServer::ToServer(std::uint32_t rate, SourceSink& sink, const Mailbox<CaptureAnchor>& anchor)
+ToServer::ToServer(SampleRate rate, SourceSink& sink, const Mailbox<CaptureAnchor>& anchor)
 	: clock_(rate), sink_(sink), anchor_(anchor),
 	  pieceFrames_(static_cast<std::uint32_t>(clock_.frames(std::chrono::milliseconds{100}))),
 	  scratch_(std::size_t{pieceFrames_} * bytesPerFrame) {}

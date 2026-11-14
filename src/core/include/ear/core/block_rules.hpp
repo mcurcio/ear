@@ -25,8 +25,8 @@ inline constexpr std::chrono::milliseconds fadeLength{5};
 /// fade-out ramps from the gain it has down to zero and ends when a cycle ended there.
 class FadeRamp {
 public:
-	/// `rate` > 0: the graph's.
-	explicit FadeRamp(std::uint32_t rate) noexcept
+	/// `rate`: the graph's.
+	explicit FadeRamp(SampleRate rate) noexcept
 		: frames_(std::max(static_cast<std::uint32_t>(FrameClock(rate).frames(fadeLength)), 1U)) {}
 
 	/// The ramp's length in frames.
@@ -82,8 +82,8 @@ private:
 /// request ring, the harness in its pending list.
 class BlockFade {
 public:
-	/// `rate` > 0: the graph's.
-	explicit BlockFade(std::uint32_t rate) noexcept : ramp_(rate) {}
+	/// `rate`: the graph's.
+	explicit BlockFade(SampleRate rate) noexcept : ramp_(rate) {}
 
 	/// A fade-out applied: it ramps from the next sample, and waits.
 	void fadeOut() noexcept {
@@ -147,7 +147,7 @@ constexpr ChunkStamp chunkStamp(const GraphCycle& cycle, Latency toldOnBank) noe
 
 /// The tick a source's tap plays for `cycle` of `frames` at the graph's `rate` (docs/engine.md#sources): the cycle
 /// whole, and the playback latency the block last told on the source's bank. `cycle` outlives the tick.
-constexpr SourceTick sourceTick(const GraphCycle& cycle, std::uint32_t frames, std::uint32_t rate,
+constexpr SourceTick sourceTick(const GraphCycle& cycle, std::uint32_t frames, SampleRate rate,
                                 Latency toldOnBank) noexcept {
 	return SourceTick{.cycle = cycle, .frames = frames, .rate = rate, .playback = toldOnBank};
 }

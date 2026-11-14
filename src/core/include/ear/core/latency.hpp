@@ -86,20 +86,20 @@ private:
 /// toward zero, and never overflows on the way (whole seconds and the rest are converted apart).
 class FrameClock {
 public:
-	/// `rate` > 0: the graph's, fixed at boot.
-	explicit constexpr FrameClock(std::uint32_t rate) noexcept : rate_(rate) {}
 	/// The graph's rate, fixed at boot.
-	explicit constexpr FrameClock(SampleRate rate) noexcept : rate_(rate.hz()) {}
-	constexpr std::uint32_t rate() const noexcept { return rate_; }
+	explicit constexpr FrameClock(SampleRate rate) noexcept : rate_(rate) {}
+	/// A number is not a rate: make one with SampleRate::of or SampleRate::fixed (docs/engine.md#dating).
+	explicit FrameClock(std::integral auto) = delete;
+	constexpr SampleRate rate() const noexcept { return rate_; }
 	/// How long `frames` frames last (negative: how long before).
 	constexpr std::int64_t ns(std::int64_t frames) const noexcept {
-		const std::int64_t rate = rate_;
+		const std::int64_t rate = rate_.hz();
 		return frames / rate * nsPerSecond + frames % rate * nsPerSecond / rate;
 	}
 	/// How many whole frames `duration` holds: a buffer's, a fade's or a piece's length.
 	constexpr std::int64_t frames(std::chrono::nanoseconds duration) const noexcept {
 		const std::int64_t ns = duration.count();
-		const std::int64_t rate = rate_;
+		const std::int64_t rate = rate_.hz();
 		return ns / nsPerSecond * rate + ns % nsPerSecond * rate / nsPerSecond;
 	}
 	/// How many frames `duration` holds, rounded up: exact for any period, so a thirtieth of a second
@@ -107,7 +107,7 @@ public:
 	template <std::integral Rep, class Period>
 	constexpr std::int64_t framesCeil(std::chrono::duration<Rep, Period> duration) const noexcept {
 		const std::int64_t count = duration.count();
-		const std::int64_t rate = rate_;
+		const std::int64_t rate = rate_.hz();
 		const std::int64_t rest = count % Period::den * Period::num * rate;
 		const std::int64_t up = rest % Period::den > 0 ? 1 : 0;
 		return count / Period::den * Period::num * rate + rest / Period::den + up;
@@ -116,7 +116,7 @@ public:
 	/// reported in ns (ear_pipewire's latency_spa.hpp).
 	constexpr std::int64_t framesNearest(std::chrono::nanoseconds duration) const noexcept {
 		const std::int64_t ns = duration.count();
-		const std::int64_t rate = rate_;
+		const std::int64_t rate = rate_.hz();
 		const std::int64_t rest = ns % nsPerSecond * rate;
 		const std::int64_t left = rest % nsPerSecond;
 		const std::int64_t away = 2 * left >= nsPerSecond ? 1 : (2 * left <= -nsPerSecond ? -1 : 0);
@@ -136,7 +136,7 @@ public:
 
 private:
 	static constexpr std::int64_t nsPerSecond = 1'000'000'000;
-	std::uint32_t rate_;
+	SampleRate rate_;
 };
 
 /// How one configuration's latency crosses its block, by role (docs/engine.md#latency-per-bank-pair): NodeHost makes it

@@ -59,7 +59,7 @@ public:
 		  worker_(std::move(folder), node, std::move(settings), context.format(), feed_, context.events()) {}
 	void close(std::move_only_function<void()> closed) override { worker_.stop(std::move(closed)); }
 	/// The run's code, reading this run's feed and writing `toServer`; it must not outlive the run.
-	std::unique_ptr<SendspinCode> code(std::uint32_t rate, RtWriter& toServer) {
+	std::unique_ptr<SendspinCode> code(SampleRate rate, RtWriter& toServer) {
 		return std::make_unique<SendspinCode>(feed_, worker_.progress(), worker_.bell(), rate, toServer,
 		                                      worker_.capture());
 	}
@@ -98,7 +98,7 @@ public:
 		} catch (const std::system_error& error) {
 			return std::unexpected(FailureReason{FailureReason::Code::startFailed, error.what()});
 		}
-		const std::uint32_t rate = context.format().rate;
+		const SampleRate rate = context.format().rate;
 		// The handoff to the server holds half a second.
 		const auto half = static_cast<std::uint32_t>(FrameClock(rate).frames(std::chrono::milliseconds{500}));
 		RtWriter& toServer = context.acquire(HandoffRequest{"to", half, &run->toServer()});
