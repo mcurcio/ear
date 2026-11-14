@@ -378,13 +378,141 @@ body,
   margin: 8px 0 4px;
 }
 
-.node-text textarea[readonly] {
-  background: #f1f3f5;
-  color: #495057;
+.node-text .knobly-text-readonly {
+  --knobly-surface: var(--knobly-surface-readonly);
+}
+
+.node-text .knobly-text-readonly .knobly-text-shown {
+  opacity: 0.75;
 }
 
 .node-text-note {
   font-size: 12px;
   color: #495057;
   margin-bottom: 4px;
+}
+
+/* knobly's highlighting (docs/editor.md#highlighting), display only: the textarea on top holds the text, caret and
+   selection with its glyphs transparent; the highlighted copy behind it draws them. Both boxes share every metric
+   (font, size, line height, padding, border, tabs, no wrapping), so each glyph lies under its caret position. The
+   colours are tokens, each class's taken from the editor's palette (the selection blue, the warnings' amber and
+   brown, the meters' green, the errors' red, the type's grey), with a dark set for a dark system theme. */
+.knobly-text {
+  --knobly-surface: #fff;
+  --knobly-surface-readonly: #f1f3f5;
+  --knobly-border: #adb5bd;
+  --knobly-text: #212529;
+  --knobly-directive: #1c7ed6;
+  --knobly-keyword: #a35200;
+  --knobly-variable: #8a6100;
+  --knobly-number: #2b8a3e;
+  --knobly-string: #a61e1e;
+  --knobly-comment: #777;
+  --knobly-punctuation: #495057;
+  --knobly-error: #e03131;
+  --knobly-error-surface: #ffe3e3;
+  position: relative;
+  background: var(--knobly-surface);
+  border-radius: 2px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .knobly-text {
+    --knobly-surface: #1f2328;
+    --knobly-surface-readonly: #2c3036;
+    --knobly-border: #495057;
+    --knobly-text: #dee2e6;
+    --knobly-directive: #74c0fc;
+    --knobly-keyword: #ffa94d;
+    --knobly-variable: #ffd43b;
+    --knobly-number: #8ce99a;
+    --knobly-string: #ffa8a8;
+    --knobly-comment: #909296;
+    --knobly-punctuation: #adb5bd;
+    --knobly-error: #ff8787;
+    --knobly-error-surface: #5c1f1f;
+    color-scheme: dark;
+  }
+}
+
+.knobly-text-shown,
+.panel .knobly-text-input {
+  margin: 0;
+  padding: 4px;
+  border: 1px solid var(--knobly-border);
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  letter-spacing: normal;
+  tab-size: 8;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.knobly-text-shown {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  color: var(--knobly-text);
+  border-color: transparent;
+}
+
+/* Room past the text's end, so the copy can always scroll as far as the textarea (its scrollbars take room). */
+.knobly-text-shown code {
+  display: inline-block;
+  vertical-align: top;
+  padding: 0 32px 32px 0;
+  font: inherit;
+}
+
+.panel .knobly-text-input {
+  position: relative;
+  display: block;
+  resize: vertical;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--knobly-text);
+}
+
+.knobly-text-input::selection {
+  color: transparent;
+  background: color-mix(in srgb, var(--knobly-directive) 30%, transparent);
+}
+
+.hl-directive {
+  color: var(--knobly-directive);
+}
+
+.hl-keyword {
+  color: var(--knobly-keyword);
+}
+
+.hl-word {
+  color: var(--knobly-text);
+}
+
+.hl-variable {
+  color: var(--knobly-variable);
+}
+
+.hl-number {
+  color: var(--knobly-number);
+}
+
+.hl-string {
+  color: var(--knobly-string);
+}
+
+.hl-comment {
+  color: var(--knobly-comment);
+}
+
+.hl-punctuation {
+  color: var(--knobly-punctuation);
+}
+
+.hl-error {
+  color: var(--knobly-error);
+  background: var(--knobly-error-surface);
 }

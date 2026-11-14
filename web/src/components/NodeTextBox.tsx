@@ -7,6 +7,7 @@ import { offsetOf } from "../pane";
 import type { GraphFile, RpcErrorCode } from "../protocol";
 import { RpcError } from "../rpc";
 import { useEditor } from "./hooks";
+import { KnoblyText } from "./KnoblyText";
 
 export function NodeTextBox({
   node,
@@ -64,15 +65,13 @@ export function NodeTextBox({
         </div>
       )}
       {note !== "" && <div className="node-text-note">{note}</div>}
-      <textarea
+      <KnoblyText
         id={`node-text-${node}`}
         ref={text}
-        className="text-pane-text"
         rows={lines}
-        spellCheck={false}
         readOnly={box.base.text.kind !== "own"}
         value={box.draft}
-        onChange={(event) => dispatch({ kind: "edit", text: event.target.value })}
+        onEdit={(draft) => dispatch({ kind: "edit", text: draft })}
       />
       {box.errors.length > 0 && (
         <ul className="diagnostics">

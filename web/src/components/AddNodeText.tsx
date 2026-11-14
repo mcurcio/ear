@@ -7,6 +7,7 @@ import { offsetOf } from "../pane";
 import type { GraphFile, RpcErrorCode } from "../protocol";
 import { RpcError } from "../rpc";
 import { useEditor } from "./hooks";
+import { KnoblyText } from "./KnoblyText";
 
 export function AddNodeText({
   types,
@@ -75,14 +76,12 @@ export function AddNodeText({
           ear.conf changed while adding; press Add again
         </div>
       )}
-      <textarea
+      <KnoblyText
         id="add-node-text"
         ref={text}
-        className="text-pane-text"
         rows={lines}
-        spellCheck={false}
         value={form.text}
-        onChange={(event) => dispatch({ kind: "edit", text: event.target.value })}
+        onEdit={(typed) => dispatch({ kind: "edit", text: typed })}
       />
       {form.errors.length > 0 && (
         <ul className="diagnostics">

@@ -110,7 +110,10 @@ Toolchain notes:
   checkout's `.cache/ccache`, shared by every worktree.
 - The graph editor (`web/`) builds with the image's Node.js 24 (`web/.nvmrc`);
   `web/package-lock.json` pins its packages and `npm ci` installs exactly those. npm's cache is the
-  main checkout's `.cache/npm`. Developing it with hot reload: [`docs/editor.md`](docs/editor.md#developing-it).
+  main checkout's `.cache/npm`. Every package comes from the npm registry but one: knobly (its
+  highlighter), which `web/package.json` names by its GitHub Release tarball's URL and the lock by
+  its SHA-512, since GitHub Packages wants a token even to read; it is a pin apart from the C++
+  side's `KNOBLY_COMMIT` ([`docs/editor.md`](docs/editor.md#highlighting) says how they relate). Developing it with hot reload: [`docs/editor.md`](docs/editor.md#developing-it).
 
 ## Repository layout
 

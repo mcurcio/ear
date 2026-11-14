@@ -23,8 +23,8 @@ Vitest); it shares no code with the C++, only the wire format and the fixtures i
   and block size ("48 kHz, 256 frames", from `graphFrequency` in hertz). A "not realtime" badge shows when the
   audio thread is not realtime, and a dropouts badge while the host cut cycles in the last minute;
   the panel holds the graph's counters and the selected node's ([below](#counters)).
-- **The text pane** shows `ear.conf` with its diagnostics (a click puts the caret there) and
-  saves it with Save (`graphFile.set`, based on the version the draft started from). Banners say
+- **The text pane** shows `ear.conf`, highlighted ([below](#highlighting)), with its diagnostics
+  (a click puts the caret there) and saves it with Save (`graphFile.set`, based on the version the draft started from). Banners say
   when the graph refused the file, a write failed, editor edits were dropped by a hand edit, or a
   setting applies only at restart (the graph rate or block size, as `pendingRestart` names them).
 
@@ -32,7 +32,8 @@ Vitest); it shares no code with the C++, only the wire format and the fixtures i
 
 - **ear is the one source of truth.** The editor draws only what ear announced: a node or wire
   appears on its notification, never on the request that asked for it, and an event naming a node
-  or route it does not know changes nothing. It never parses knobly; ear judges every text.
+  or route it does not know changes nothing. It never parses knobly; ear judges every text. Its
+  highlighting only colours the text ([below](#highlighting)).
 - **Every enum is open.** A value or member this editor does not know is drawn by its word,
   neutrally, or ignored, never a failure ([control-port.md](control-port.md#protocol-and-features)).
   A newer protocol than the editor knows shows a banner.
@@ -94,8 +95,8 @@ language, the owner chose the node's own knobly statement, checked by ear's read
 only that statement. The rules:
 
 - **Cut from the file the editor holds.** The text is the GraphFile's `text` between the node's
-  `nodeTexts` places; nothing is fetched and the browser parses no knobly. There is no highlighter,
-  as the pane has none. Its `\r\n` become `\n`, as a textarea holds them, so an unchanged box on a
+  `nodeTexts` places; nothing is fetched and the browser parses no knobly. It is highlighted as the
+  pane is ([below](#highlighting)). Its `\r\n` become `\n`, as a textarea holds them, so an unchanged box on a
   CRLF file is not dirty; ear writes the file's own ending into what Save sends.
 - **Save is `node.setText`** with the draft and the version it was cut from. ear answers once the
   graph runs it; the box then shows ear's text from the new GraphFile. `invalid-text`'s diagnostics
@@ -109,6 +110,50 @@ only that statement. The rules:
 - **Read-only when it cannot be replaced.** A node written in a snippet (`shared`) shows that
   statement greyed, with where it is and that the pane edits it; while `ear.conf` has errors there
   are no `nodeTexts` and the box says to fix them in the pane. Neither offers Save.
+
+## Highlighting
+
+The pane, the node panel's box and the add-node form draw their knobly highlighted, in one component,
+`components/KnoblyText.tsx`, over the pure `web/src/highlight.ts`. *Why display only:* the owner
+decided that ear's C++ reader stays the one judge of an edit and the source of every diagnostic, so
+the browser's knobly never accepts, refuses or diagnoses a text. The rules:
+
+- **The textarea holds everything.** Each box is still a plain textarea: the text, the caret, the
+  selection, every edit, and so the diagnostics' caret placement, the CRLF handling, the drafts'
+  stale and dirty logic and what Save and Add send are as above. Its glyphs are transparent; a
+  highlighted copy of what it shows is drawn behind it (a `pre`, hidden from screen readers) with
+  the same font, size, line height, padding, border and tabs and no wrapping, and follows its
+  scroll. No editor library is added.
+- **The copy is what the textarea shows.** A textarea holds `\n` only, so the copy is the value
+  with each `\r\n` and lone `\r` as `\n`; the value itself is never changed. `highlight.test.tsx`
+  checks that the runs drawn join to exactly that text and that the textarea, the pane's Save, the
+  box's Save and Add get the caller's text unchanged, CRLF and non-ASCII text included.
+- **knobly's classes, the editor's palette.** Each token is drawn by knobly's highlight class
+  (`directive`, `keyword`, `word`, `variable`, `number`, `string`, `comment`, `punctuation`,
+  `space`, `error`), each a CSS token (`--knobly-directive`, ...) on `.knobly-text` taken from the
+  editor's colours, with a dark set under `prefers-color-scheme: dark`. The rest of the editor has
+  no dark theme yet, so in a dark system theme the boxes are dark in the light panel. A class this
+  editor does not know is drawn plainly. An `error` span is a token that does not lex (a stray
+  character, an unterminated string), never a diagnostic: those are ear's, listed under the box.
+
+**The package.** `knobly/highlight` from knobly's first release, v1.0.0 (MIT): a scanner generated
+from knobly's grammar, with no parser runtime; with `KnoblyText` it adds about 3.4 KB to the
+editor's script (1.5 KB gzipped) and 2 KB to its styles.
+`web/package.json` names the release's npm tarball by URL,
+`https://github.com/mcurcio/knobly/releases/download/v1.0.0/knobly-1.0.0.tgz`, and
+`web/package-lock.json` records its SHA-512, so `npm ci` installs exactly that file, from npm's
+cache offline. *Why a URL:* knobly is published only on its GitHub releases and on GitHub Packages,
+and GitHub Packages asks for a token even to read a public package, which `npm ci` in CI and in the
+dev image has none of. The tarball's `package.json` depends on the ANTLR runtime (`antlr4`
+4.13.2, from npm), so `npm ci` installs it, but `knobly/highlight` never imports it and the bundle
+holds none of it. Bump it with `npm install --save-exact <the new release's tarball URL>` in
+`web/`, and check the tarball against the release's `SHA256SUMS` before committing the lock.
+
+The C++ side reads knobly from its own pin, `KNOBLY_COMMIT` in `docker/Dockerfile`
+([AGENTS.md](../AGENTS.md#build-run-and-test)): two pins, one per toolchain, since npm and the
+image take knobly in different forms. The highlighter tokenises by knobly's grammar, so it matches
+ear's reader while both pins have the same `grammar/Knobly.g4`; bump them together when knobly's
+grammar changes.
 
 ## A node's health
 
@@ -242,7 +287,7 @@ port. Node.js comes from `web/.nvmrc` and the packages from `web/package-lock.js
 
 The tests cover the reducer against every `test/protocol` fixture, the graph file's state and the
 pane's logic (drafts, stale files, Save, refusals), the node panel's knobly box (`nodeText.ts`), the add-node
-form (`addText.ts`), the reconnecting client with a fake socket,
+form (`addText.ts`), the highlighting (`highlight.ts`, and that it never changes the text sent), the reconnecting client with a fake socket,
 the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`. There is no browser test runner:
 rendering is checked by eye. *Why:* a Playwright leg costs about 150 MB of browsers and a minute
 or two a CI run, while the logic sits in the reducer, client and rules, which Vitest covers
