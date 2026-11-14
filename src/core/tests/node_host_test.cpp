@@ -6479,6 +6479,77 @@ TEST_CASE(
 	CHECK(f.allGone == 1);
 }
 
+namespace {
+
+/// A class whose one loop's state reads its instance: the instance's destructor sets a flag the test owns, and the
+/// state's destructor says whether the instance was still there. Its configure fails after giving the state when told.
+/// It declares one store, so its loop is made only once the store opened (the loops' step comes after the opens').
+struct StateReadingConfig final : NodeConfig {
+	struct State {
+		Log& log;
+		const bool& instanceGone;
+		~State() {
+			log.push_back(instanceGone ? "state destroyed after its instance" : "state destroyed, instance alive");
+		}
+	};
+	struct Instance final : ErasedInstance {
+		const StateReadingConfig& config;
+		explicit Instance(const StateReadingConfig& c) : config(c) {}
+		~Instance() override { config.instanceGone = true; }
+		std::span<const LoopDeclaration> loops() const noexcept override { return {&statefulWorker, 1}; }
+		std::span<const StoreDeclaration> stores() const noexcept override { return {&config.store, 1}; }
+		Configured configure(InstanceContexts& cx) override {
+			config.instanceGone = false;
+			cx.create.loopState(
+				0, std::unique_ptr<void, void (*)(void*)>(new State{config.log, config.instanceGone},
+			                                              [](void* state) { delete static_cast<State*>(state); }));
+			if (config.failAfterState) return Configured::failed("the device is gone");
+			cx.create.use(std::make_unique<TestAudioCode>(config.log));
+			return Configured::applied();
+		}
+	};
+	Log& log;
+	Ports ports_ = testPorts();
+	bool failAfterState = false;
+	mutable bool instanceGone = false;
+	StoreDeclaration store{
+		"key",
+		StoreRule{.mode = 0600, .maxBytes = 64, .initial = [] { return std::string("key 1"); }, .distrust = nullptr}};
+	explicit StateReadingConfig(Log& l) : log(l) {}
+	const Ports& ports() const override { return ports_; }
+	std::unique_ptr<ErasedInstance> make(NodeContext&) const override { return std::make_unique<Instance>(*this); }
+};
+
+} // namespace
+
+TEST_CASE("A loop state whose loop never started is destroyed at step 5 before the instance it may read",
+          "[node_host][loops][teardown]") {
+	Fixture f;
+	auto config = std::make_shared<StateReadingConfig>(f.log);
+	SECTION("configure failed after it gave the state") {
+		config->failAfterState = true;
+		f.add("porch", config);
+		f.settle();
+		CHECK(failureOf(f, "porch") == "start-failed: the device is gone");
+	}
+	SECTION("removed while readying, its store still opening, so its loop never made") {
+		f.stores.hold = true;
+		f.add("porch", config);
+		f.host.nodeRemoved("porch");
+		f.settle();
+		CHECK(countOf(f.log, "loop porch.worker made") == 0);
+		f.stores.hold = false;
+		f.stores.runIo(); // the open lands on a configuration that ended: dropped
+		f.settle();
+	}
+	CHECK(countOf(f.log, "loop porch.worker finish") == 0);
+	CHECK(countOf(f.log, "state destroyed, instance alive") == 1);
+	CHECK(countOf(f.log, "state destroyed after its instance") == 0);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
 TEST_CASE(
 	"A loop that cannot start fails its node start-failed naming it, nothing is finished or closed, and its state "
 	"is destroyed on the main loop",
@@ -6500,7 +6571,7 @@ TEST_CASE(
 	CHECK(countOf(f.log, "loop porch.worker finish") == 0);
 	CHECK(countOf(f.log, "loop porch.worker close") == 0);
 	CHECK(countOf(f.log, "state destroyed") == 1);
-	CHECK(indexOf(f.log, "instance destroyed") < indexOf(f.log, "state destroyed"));
+	CHECK(indexOf(f.log, "state destroyed") < indexOf(f.log, "instance destroyed")); // it may read the instance
 	f.stopAll();
 	f.settle();
 	CHECK(f.allGone == 1);

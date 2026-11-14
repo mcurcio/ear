@@ -456,8 +456,8 @@ keeps it as a member), or on the main loop while the node is not yet configured.
   node's own posts go on. At step 4, once the sinks drained, each loop runs what was posted (the
   goodbye `stop()` posted), then destroys its state on its own thread (where its destructor may join
   the threads its library owns); once every loop has, each closes. A state whose loop never started
-  is destroyed on the main loop. The close deadline (10 s) covers it: a loop that never drains
-  leaks the configuration, `ear.close-overdue` counting it open
+  is destroyed on the main loop, before the instance it may read. The close deadline (10 s) covers
+  it: a loop that never drains leaks the configuration, `ear.close-overdue` counting it open
   ([architecture.md](architecture.md#teardown-by-dependency)).
 - **Sources left armed.** A state destroys the timers and watches it armed, before or in its
   destructor; one armed on another loop it destroys by a post to that loop. The framework counts

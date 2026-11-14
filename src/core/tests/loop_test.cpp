@@ -211,7 +211,7 @@ TEST_CASE("Staged work never runs after a configuration that failed first, and a
 	CHECK(count("staged post") == 0);
 	CHECK(count("staged helper post") == 0);
 	CHECK(count("worker destroyed on the main loop") == 1);
-	CHECK(at("instance destroyed") < at("worker destroyed on the main loop"));
+	CHECK(at("worker destroyed on the main loop") < at("instance destroyed")); // a state may read the instance
 }
 
 TEST_CASE("start() and stop() post to the state on its loop, a stop and a start keep it, a restart runs the goodbye, "

@@ -623,9 +623,9 @@ the main loop never joins a thread:
    (`ear.loop-source-left`). Then a legacy run object closed, off the main loop (a `sendspin`
    node's worker says goodbye on its own thread).
 5. On the main loop: the code, then its sinks (each closed in step 3, so its consumer, which may
-   hold a reference into the instance, is idle), then the instance (or run object), then its loops
-   (a state whose loop never started is destroyed here; a dedicated loop's thread has already
-   returned), then its sources (whose writers the instance's threads may hold), then its stores (which a
+   hold a reference into the instance, is idle), then the state of each loop that never started
+   (which may read the instance too), then the instance (or run object), then its loops (a
+   dedicated loop's thread has already returned), then its sources (whose writers the instance's threads may hold), then its stores (which a
    state, a consumer or the instance may hold; an open or write still queued holds only the store's
    state) and its config freed, and recordings closed after them.
 

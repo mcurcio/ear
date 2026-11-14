@@ -1700,16 +1700,16 @@ struct NodeHost::Impl {
 				});
 			}
 			/// Teardown step 5's order (freeConfiguration): every thread of it has reported closed, so nothing reaches
-			/// what goes here. The code, the sinks, the instance, the loops (a dedicated one's thread has returned),
-			/// the sources, the stores, the recordings, then the rest with the config; its Channel may outlive it, held
-			/// by a type's thread, detached.
+			/// what goes here. The code, the sinks, the loops' states, the instance, the loops (a dedicated one's
+			/// thread has returned), the sources, the stores, the recordings, then the rest with the config; its
+			/// Channel may outlive it, held by a type's thread, detached.
 			void free() {
 				const MainLoopActivity::Scope activity("free configuration", name_);
 				Configuration& c = *config_;
 				c.code.reset();
 				c.sinks.clear();
-				c.instance.reset();
 				for (const auto& slot : c.loops) slot->state.reset();
+				c.instance.reset();
 				c.loops.clear();
 				c.sources.clear();
 				c.stores.clear();
@@ -3001,8 +3001,9 @@ struct NodeHost::Impl {
 
 		/// teardown step 5, on the main loop: the code (released and unreachable since the barrier; it may hold
 		/// references into the instance, never the reverse), then the sinks (each closed, so its consumer, which may
-		/// hold a reference into the instance, is idle), then the instance (a legacy run object and recipe in it), the
-		/// loops, the sources, the stores, the recordings, and last its context, channel and config.
+		/// hold a reference into the instance, is idle), then the states of loops that never started (which may read
+		/// the instance too), then the instance (a legacy run object and recipe in it), the loops, the sources, the
+		/// stores, the recordings, and last its context, channel and config.
 		void freeConfiguration() {
 			const MainLoopActivity::Scope activity("free configuration", name_);
 			Configuration& c = *config_;
@@ -3011,10 +3012,10 @@ struct NodeHost::Impl {
 			companionsEnded(); // closed (no tap or play since the barrier), so their counts are final
 			c.code.reset();
 			c.sinks.clear(); // each closed (its thread idle) or never begun; a consumer may read the instance
-			c.instance.reset();
-			// Each loop closed (a dedicated thread already returned), or never started: its state goes here, every state
-			// before any loop, since one may hold another's executor.
+			// Each loop closed (a dedicated thread already returned), or never started: a state left goes here, before
+			// the instance it may read, and every state before any loop, since one may hold another's executor.
 			for (const auto& slot : c.loops) slot->state.reset();
+			c.instance.reset();
 			c.loops.clear();
 			c.sources.clear(); // after the instance, whose threads may hold a writer
 			c.stores.clear();  // after every state and consumer that may hold one; a job still queued holds its state
