@@ -500,17 +500,11 @@ state goes).
 - **A stopped node's live stream (review follow-up).** With the server streaming to a stopped node, no cycle drains
   the feed, its writer (the library's sync thread) waited out its patience on every call, the player's held items
   pinned the library's inbound ring, and the library closed the connection: Q-3c1 broken whenever a stop met a
-  stream. The rule is the feed's, so a long host stall gets it too: undrained past its bound (derived from the
-  ring's room behind a server that fills the player's buffer, about 1.06 s at 48 kHz; the clock tests' judge counts
-  a drop as an explained cause), the writer plays what it is given into nothing at the graph's rate, up to now and
-  never ahead (so the finish told never steps back), and marks what the feed holds stale; the code's first cycle back skips that whole (counted played, as any
-  skip). The dropped frames are told by the notifier, dated by when the next would play on that rate (the code's
-  finish when the code played since the last report). Leaving them untold, as asked first, does not work: the
-  library's priming waits for its first report (`handle_initial_sync`), so a stream begun while stopped never leaves
-  its silence, and it puts its next frame at the finish told plus what it wrote and was not told, so every later
-  finish would be late by what was dropped. A drop of a stream since ended is forgotten (`Feed::Dropped::forgotten`),
-  since the library zeroes its count at the end. No framework API for stop and start was needed. Proved by "A node
-  stopped while the server streams stays connected" (noise, so the 1 MB buffer fills in seconds).
+  stream. The fix is the feed's undrained rule, so a long host stall gets it too; how it works, its bound and why the
+  drops must be told are built and described in `docs/node-types.md#clock`. Leaving the drops untold, as asked first,
+  does not work: the library's priming waits for its first report, and it dates its next frame from the finish told
+  plus what it wrote and was not told. No framework API for stop and start was needed. Proved by "A node stopped
+  while the server streams stays connected" (noise, so the 1 MB buffer fills in seconds).
 - **What moved and what stayed in the tests.** `code_test.cpp`'s rig lost the handoff and the anchor, and its three
   rows on them went (the copy to `type_test.cpp`, the dating to `to_server_test.cpp`); its clock rows are unedited.
   `clock_test.cpp`'s rig runs the worker's and notifier's states on `ear_runtime`'s real loops over an in-memory store;

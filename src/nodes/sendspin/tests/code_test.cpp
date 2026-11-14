@@ -660,7 +660,7 @@ TEST_CASE("The finish told never steps back: across a stop and a start, and acro
 		const auto dropped = feed.dropped();
 		if (const auto report = teller.next(read, dropped)) {
 			finishes.push_back(report->finishRawNs);
-			teller.told(read, dropped);
+			teller.told(read, dropped, *report);
 		}
 	};
 	const std::vector<float> samples(std::size_t{block} * 2, 0.5F);
@@ -721,4 +721,180 @@ TEST_CASE("The feed's undrained bound is the ring's room behind a full advertise
 	// A feed so long that two of it outlast the room: the floor.
 	CHECK(undrainedBoundFor(ear::SampleRate::fixed<192000>(), 65536) ==
 	      nanoseconds{ear::FrameClock(ear::SampleRate::fixed<192000>()).ns(2 * 65536)});
+}
+
+// docs/node-types.md#clock: the code's finishes add what lies downstream (a following card's buffer), so the drops the
+// feed's writer tells are dated with it too, and the frames the code skips as late on its return are counted on that
+// one timeline: the first report back is the drop's last finish plus the frames it tells, with nothing to correct.
+TEST_CASE("Behind a following card, the first report after a drop is the drop's finish plus the frames it tells",
+          "[sendspin][code]") {
+	constexpr std::int64_t msNs = 1'000'000;
+	constexpr std::uint32_t held = 512 + 32; // the card's buffer, as the framework carries it back
+	const ear::FrameClock clock(ear::SampleRate::fixed<rate>());
+	fakeRaw = 120'000 * msNs;
+	Feed feed(2, capacity, FeedDrain{.rate = ear::SampleRate::fixed<rate>(), .bound = 1500ms, .nowRawNs = &fakeRawNow});
+	Mailbox<PlayProgress> progress;
+	EventFd bell;
+	SendspinCode code(feed, progress, bell, ear::SampleRate::fixed<rate>());
+	PlayedTeller teller;
+	std::vector<float> left(block);
+	std::vector<float> right(block);
+	const std::array<std::span<float>, 2> outputs{left, right};
+	const std::array<ear::Latency, 2> downstream{ear::Latency{held, held}, ear::Latency{held, held}};
+	const auto cycle = [&](ear::CycleFacts facts) {
+		code.process(outputs, block,
+		             ear::GraphCycle{
+						 .startNs = 0, .position = 0, .startRawNs = fakeRaw, .facts = facts, .downstream = downstream});
+	};
+	std::vector<PlayedTeller::Report> told;
+	const auto notify = [&] {
+		const auto read = progress.read();
+		const auto dropped = feed.dropped();
+		if (const auto report = teller.next(read, dropped)) {
+			told.push_back(*report);
+			teller.told(read, dropped, *report);
+		}
+	};
+	const std::vector<float> samples(std::size_t{block} * 2, 0.5F);
+	const auto write = [&] {
+		while (feed.write(samples, block, 0ms) > 0) {
+		}
+	};
+
+	for (int i = 0; i < 20; ++i) {
+		write();
+		cycle({});
+		notify();
+		fakeRaw += clock.ns(block);
+	}
+	for (int at = 0; at < 2000; at += 5) { // stopped for 2 s: dropped from 1.5 s on, each drop told
+		fakeRaw += 5 * msNs;
+		write();
+		notify();
+	}
+	REQUIRE(feed.dropped().total > 0);
+	const PlayedTeller::Report lastDrop = told.back();
+	fakeRaw += 5 * msNs; // the start comes 5 ms after the last drop
+	ear::CycleFacts drive;
+	drive.causes = ear::CycleCause::drive;
+	cycle(drive); // takes the feed back: the stale skipped, nothing fresh yet
+	notify();
+	write();
+	fakeRaw += clock.ns(block);
+	cycle({});
+	CHECK(code.lastResumeSkipped() > 0);
+	const std::size_t before = told.size();
+	notify();
+	REQUIRE(told.size() == before + 1);
+	const PlayedTeller::Report back = told.back();
+	INFO("the drop's last finish " << lastDrop.finishRawNs << ", the report back " << back.finishRawNs << " for "
+	                               << back.frames << " frames");
+	// Within the rounding of frames to ns, once for the late skip and once for the block.
+	CHECK(std::abs(back.finishRawNs - (lastDrop.finishRawNs + clock.ns(back.frames))) <= 2);
+	CHECK(teller.clamped() == 0);
+}
+
+TEST_CASE("A stop that spans a stream's end keeps the drop's timeline for the next stream's frames",
+          "[sendspin][code]") {
+	constexpr std::int64_t msNs = 1'000'000;
+	const ear::FrameClock clock(ear::SampleRate::fixed<rate>());
+	fakeRaw = 140'000 * msNs;
+	Feed feed(2, capacity, FeedDrain{.rate = ear::SampleRate::fixed<rate>(), .bound = 1500ms, .nowRawNs = &fakeRawNow});
+	Mailbox<PlayProgress> progress;
+	EventFd bell;
+	SendspinCode code(feed, progress, bell, ear::SampleRate::fixed<rate>());
+	std::vector<float> left(block);
+	std::vector<float> right(block);
+	const std::array<std::span<float>, 2> outputs{left, right};
+	const auto cycle = [&](ear::CycleFacts facts) {
+		code.process(outputs, block,
+		             ear::GraphCycle{.startNs = 0, .position = 0, .startRawNs = fakeRaw, .facts = facts});
+	};
+	const std::vector<float> samples(std::size_t{block} * 2, 0.5F);
+	const auto write = [&] {
+		while (feed.write(samples, block, 0ms) > 0) {
+		}
+	};
+
+	write();
+	cycle({});
+	for (int at = 0; at < 2000; at += 5) { // stopped: dropped from 1.5 s on
+		fakeRaw += 5 * msNs;
+		write();
+	}
+	feed.clear(); // the stream ends while stopped, and the next begins: the writer drops its frames too
+	for (int at = 0; at < 100; at += 5) {
+		fakeRaw += 5 * msNs;
+		write();
+	}
+	const auto dropped = feed.dropped();
+	REQUIRE(dropped.total > dropped.forgotten); // the library counts the next stream's drops
+	fakeRaw += 5 * msNs;
+	ear::CycleFacts drive;
+	drive.causes = ear::CycleCause::drive;
+	cycle(drive); // the start: the clear applied, the feed taken back
+	write();
+	fakeRaw += clock.ns(block);
+	cycle({});
+	// What the library wrote since the drop's last finish is late by this cycle's run, on the next stream's timeline.
+	CHECK(code.lastResumeSkipped() == clock.framesNearest(std::chrono::nanoseconds{fakeRaw - dropped.finishRawNs}));
+}
+
+TEST_CASE("A frame read twice in the instant the writer began dropping is repaid in its own stream, never the next",
+          "[sendspin][code]") {
+	constexpr std::int64_t msNs = 1'000'000;
+	fakeRaw = 160'000 * msNs;
+	Feed feed(2, capacity, FeedDrain{.rate = ear::SampleRate::fixed<rate>(), .bound = 1500ms, .nowRawNs = &fakeRawNow});
+	Mailbox<PlayProgress> progress;
+	EventFd bell;
+	SendspinCode code(feed, progress, bell, ear::SampleRate::fixed<rate>());
+	std::vector<float> left(block);
+	std::vector<float> right(block);
+	const std::array<std::span<float>, 2> outputs{left, right};
+	const auto cycle = [&] {
+		code.process(outputs, block, ear::GraphCycle{.startNs = 0, .position = 0, .startRawNs = fakeRaw});
+	};
+	const std::vector<float> samples(std::size_t{block} * 2, 0.5F);
+
+	REQUIRE(feed.write(samples, block, 0ms) == block);
+	cycle();
+	REQUIRE(progress.read()->totalFrames == block);
+	std::vector<float> chunk(std::size_t{capacity} * 2, 0.5F);
+	REQUIRE(feed.write(chunk, capacity, 0ms) == capacity);
+	fakeRaw += 1600 * msNs;
+	REQUIRE(feed.write(samples, block, 0ms) == 0); // the writer begins: the 2048 held counted dropped
+	// The reader's cycle in flight that instant read a block of them: the test reads it as that cycle did.
+	REQUIRE(feed.read(outputs, block) == block);
+	cycle(); // takes the feed back: one block read twice, owed; nothing of the code's to tell
+	CHECK(code.lastStaleSkipped() == capacity - block);
+	feed.clear(); // the stream ends before anything repaid it: the library forgot that stream's count
+	cycle();
+	REQUIRE(feed.write(samples, block, 0ms) == block); // the next stream's first frames
+	cycle();
+	CHECK(progress.read()->totalFrames == block + block); // counted whole: nothing of the old stream is repaid from it
+}
+
+TEST_CASE("Where the two tellers meet a finish that would step back is held at the last told, and counted",
+          "[sendspin][code]") {
+	PlayedTeller teller;
+	const std::optional<PlayProgress> code = PlayProgress{.totalFrames = 256, .finishRawNs = 1'000'000};
+	const Feed::Dropped none{.total = 0, .forgotten = 0, .finishRawNs = 0};
+	const auto first = teller.next(code, none);
+	REQUIRE(first.has_value());
+	CHECK_FALSE(first->clamped);
+	teller.told(code, none, *first);
+	// A drop dated before the code's last finish (a hand-over gone wrong): told at the last finish, never before it.
+	const Feed::Dropped earlier{.total = 100, .forgotten = 0, .finishRawNs = 900'000};
+	const auto second = teller.next(code, earlier);
+	REQUIRE(second.has_value());
+	CHECK(second->frames == 100);
+	CHECK(second->finishRawNs == 1'000'000);
+	CHECK(second->clamped);
+	teller.told(code, earlier, *second);
+	CHECK(teller.clamped() == 1);
+	const Feed::Dropped later{.total = 200, .forgotten = 0, .finishRawNs = 1'100'000};
+	const auto third = teller.next(code, later);
+	REQUIRE(third.has_value());
+	CHECK(third->finishRawNs == 1'100'000);
+	CHECK_FALSE(third->clamped);
 }

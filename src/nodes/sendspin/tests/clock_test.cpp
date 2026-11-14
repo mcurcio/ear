@@ -84,6 +84,16 @@ constexpr std::uint32_t kSettleChunks = 2;
 constexpr std::uint32_t kSoftSyncChunks = (500 - 100) * kRate / 1000000 + 1;
 /// The cycles between the judge's planned stalls, once the timing is judged: four of them land inside the planned span.
 constexpr std::size_t kStallEvery = 150;
+/// The feed's undrained bound at the tests' rate (docs/node-types.md#clock): about 1.06 s.
+constexpr std::chrono::nanoseconds kUndrainedBound = undrainedBoundFor(ear::SampleRate::fixed<kRate>(), kFeedFrames);
+/// The stalls the tests make: 200 ms, past the feed's 2048 frames (43 ms) and past a decoded chunk (96 ms); 700 ms,
+/// whose burst (a stall's catch-up adds 120 ms on a quiet host) leaves it well under the feed's undrained bound, so the
+/// catch-up path runs with its full checks on every run; and twice the bound, past it on every host.
+constexpr std::chrono::milliseconds kShortStall{200};
+constexpr std::chrono::milliseconds kLongStall{700};
+constexpr std::chrono::milliseconds kPastBoundStall = std::chrono::ceil<std::chrono::milliseconds>(2 * kUndrainedBound);
+static_assert(kLongStall + std::chrono::milliseconds{300} <= kUndrainedBound,
+              "the long stall and its burst must stay under the feed's undrained bound by a clear margin");
 
 /// One cycle as the real code left it.
 struct Cycle {
@@ -233,8 +243,7 @@ public:
 		watched_ = &stalledIn;
 		mode_.store(kProbe, std::memory_order_release);
 	}
-	/// Main thread, once: the block's next cycle stalls the data thread itself, for StallProbe::kShortStall or
-	/// kLongStall.
+	/// Main thread, once: the block's next cycle stalls the data thread itself, for kShortStall or kLongStall.
 	void stallOwn(bool longStall) { mode_.store(longStall ? kOwnLong : kOwnShort, std::memory_order_release); }
 	/// The last cycle the block ran before the stall, once the next has run.
 	std::optional<std::size_t> stalledAt() const {
@@ -264,10 +273,8 @@ private:
 	static constexpr int kOwnLong = 3;
 	std::atomic<int> mode_{kUnarmed};
 	const std::atomic<std::uint64_t>* watched_ = nullptr; // a StallProbe's stalled graph cycle; published by mode_
-	ear::test::Stalls ownShort_{
-		ear::test::StallPlan::at({{0, ear::test::StallLength::of(std::chrono::milliseconds(200))}})};
-	ear::test::Stalls ownLong_{
-		ear::test::StallPlan::at({{0, ear::test::StallLength::of(std::chrono::milliseconds(1000))}})};
+	ear::test::Stalls ownShort_{ear::test::StallPlan::at({{0, ear::test::StallLength::of(kShortStall)}})};
+	ear::test::Stalls ownLong_{ear::test::StallPlan::at({{0, ear::test::StallLength::of(kLongStall)}})};
 	std::atomic<std::size_t> stalledAt_{kNone};
 };
 
@@ -698,9 +705,10 @@ struct TestCard {
 	std::vector<pw_proxy*> links;
 };
 
-/// The stalls a test makes: 200 ms and 1 s, past the feed (43 ms) and past a decoded chunk (96 ms), and a hiccup of
-/// 1.5 cycles, which the feed holds whole.
-enum class StallKind { shortStall, longStall, hiccup };
+/// The stalls a test makes: kShortStall and kLongStall, past the feed (43 ms) and past a decoded chunk (96 ms) and
+/// under the feed's undrained bound; a hiccup of 1.5 cycles, which the feed holds whole; and kPastBoundStall, past the
+/// bound.
+enum class StallKind { shortStall, longStall, hiccup, pastBound };
 
 /// A stall of the data thread whose lost cycles the node's block certainly misses, on any host. A block of its own,
 /// linked into the node's `to` inputs so it runs first in every cycle, stalls once inside its process when armed: the
@@ -716,9 +724,6 @@ enum class StallKind { shortStall, longStall, hiccup };
 /// the node's block states one catch-up of the whole stall and burst. The probe writes silence, as an unlinked input
 /// reads.
 struct StallProbe {
-	/// The planned stalls: 200 ms, past the feed's 2048 frames (43 ms) and past a decoded chunk (96 ms), and 1 s.
-	static constexpr std::chrono::milliseconds kShortStall{200};
-	static constexpr std::chrono::milliseconds kLongStall{1000};
 	static constexpr std::chrono::milliseconds kBurstHold{1};
 
 	class Code final : public AudioCode {
@@ -733,7 +738,8 @@ struct StallProbe {
 			if (!stalled_) {
 				(armed == 1   ? shortStall_
 				 : armed == 2 ? longStall_
-				              : hiccup_)(0, frames, ear::SampleRate::fixed<kRate>());
+				 : armed == 3 ? hiccup_
+				              : pastBound_)(0, frames, ear::SampleRate::fixed<kRate>());
 				stalled_ = true;
 				stalledIn.store(cycle.facts.graphCycle, std::memory_order_release);
 				return;
@@ -747,7 +753,8 @@ struct StallProbe {
 			}
 			caughtUp_ = true;
 		}
-		/// Main thread, once: the next cycle stalls, for kShortStall, kLongStall or a hiccup of 1.5 cycles.
+		/// Main thread, once: the next cycle stalls, for kShortStall, kLongStall, a hiccup of 1.5 cycles or
+		/// kPastBoundStall.
 		void arm(StallKind kind) { armed_.store(static_cast<int>(kind) + 1, std::memory_order_release); }
 		/// The graph cycle it stalled in, once it has; 0 before.
 		std::atomic<std::uint64_t> stalledIn{0};
@@ -755,10 +762,11 @@ struct StallProbe {
 		std::size_t burstHolds() const { return burstHolds_.made(); }
 
 	private:
-		std::atomic<int> armed_{0}; // 0, or 1 for the short stall, 2 for the long and 3 for the hiccup
+		std::atomic<int> armed_{0}; // 0, or 1 for the short stall, 2 for the long, 3 for the hiccup, 4 past the bound
 		ear::test::Stalls shortStall_{ear::test::StallPlan::at({{0, ear::test::StallLength::of(kShortStall)}})};
 		ear::test::Stalls longStall_{ear::test::StallPlan::at({{0, ear::test::StallLength::of(kLongStall)}})};
 		ear::test::Stalls hiccup_{ear::test::StallPlan::at({{0, ear::test::StallLength::cycles(1.5)}})};
+		ear::test::Stalls pastBound_{ear::test::StallPlan::at({{0, ear::test::StallLength::of(kPastBoundStall)}})};
 		ear::test::Stalls burstHolds_{
 			ear::test::StallPlan::every(1, 0, ear::test::Stalls::kKept, ear::test::StallLength::of(kBurstHold))};
 		bool stalled_ = false;  // the data thread's
@@ -1729,11 +1737,13 @@ static void judgeStall(StallKind kind, StallMade made) {
 	REQUIRE(end < rig.tap.count());
 	const bool cut = lostFrames > 0;
 	const std::uint64_t unskipped = lostFrames - std::min(lostFrames, skipped);
-	const char* const what = kind == StallKind::hiccup      ? "a 1.5-cycle hiccup"
-	                         : kind == StallKind::longStall ? "a 1 s stall"
-	                                                        : "a 200 ms stall";
+	const std::string what = kind == StallKind::hiccup      ? "a 1.5-cycle hiccup"
+	                         : kind == StallKind::longStall ? "a " + std::to_string(kLongStall.count()) + " ms stall"
+	                         : kind == StallKind::pastBound
+	                             ? "a " + std::to_string(kPastBoundStall.count()) + " ms stall, past the bound,"
+	                             : "a " + std::to_string(kShortStall.count()) + " ms stall";
 	const std::string shape =
-		std::string(what) + (probe ? " upstream" : " in the block") + ": the burst's shape " +
+		what + (probe ? " upstream" : " in the block") + ": the burst's shape " +
 		(cut ? "cut (the block missed some of its cycles)"
 	         : "uncut (the block ran every cycle, overdue, nothing lost)") +
 		", " + std::to_string(lostFrames) + " frames lost, " + std::to_string(skipped) + " skipped, " +
@@ -1865,12 +1875,78 @@ static void judgeStall(StallKind kind, StallMade made) {
 		   << " blocks after it\n";
 	INFO(judged.str());
 	std::ofstream(EAR_STALL_SHAPES_FILE, std::ios::app) << judged.str();
-	if (crossed) {
-		// Past the feed's bound the library was told the time it ran on while the graph did not (what the feed dropped),
-		// so it realigned itself then, as soon as it was told, mostly by dropping whole chunks too late to write: what
-		// reaches the outputs after the stall is the drop's step (counted skipped above) and at most what was left of
-		// the stall, never more, and the general judge has held every step and report to its rule.
+	// A second step after the correction is a settle step only with its evidence: a cycle between the correction and it
+	// that the feed left short, or began with nothing in it, so the library's write landed late. Each such cycle is
+	// listed to explain a recurrence.
+	const auto checkSettleStep = [&] {
+		if (corrections != 2) return;
+		CHECK(sizes[1] <= 2 * kBlock + kCorrectionTolerance);
+		bool evidence = false;
+		std::string between;
+		for (std::size_t i = correctedAt[0]; i <= correctedAt[1]; ++i) {
+			const Cycle& c = rig.tap.at(i);
+			const bool starved = c.fed < c.frames || c.heldAtStart == 0;
+			evidence = evidence || (i > correctedAt[0] && starved);
+			between += "\n    " + std::to_string(i) + " causes " + std::to_string(c.facts.causes.bits()) + " jump " +
+			           std::to_string(c.facts.jumpFrames) + " overdue " + std::to_string(c.overdueNs / 1000) +
+			           " us held " + std::to_string(c.heldAtStart) + " skipped " + std::to_string(c.codeSkipped) +
+			           " read " + std::to_string(c.fed) + (starved ? " starved" : "");
+		}
+		INFO("a second step of " << sizes[1] << " frames at cycle " << correctedAt[1] << ", after the correction at "
+		                         << correctedAt[0]
+		                         << "; the cycles between (index, causes, jump, overdue, held at start, skipped, read):"
+		                         << between);
+		CHECK(evidence);
+	};
+	// Every finish the library was told, by both tellers, followed the last: the notifier never had to hold one.
+	CHECK(rig.notifier->clamped() == 0);
+	if (kind == StallKind::pastBound) {
+		// Past the bound on every host: the feed's writer stopped waiting, counted what the feed held stale, and dropped
+		// what the library wrote in its time until the code took the feed back once (docs/node-types.md#clock).
+		REQUIRE(crossed);
+		std::size_t handOvers = 0;
+		std::uint64_t staleSkipped = 0;
+		std::uint64_t dropped = 0;
+		std::uint64_t lateSkipped = 0;
+		for (std::size_t i = stalled + 1; i < back->index; ++i) {
+			const Cycle& c = rig.tap.at(i);
+			handOvers += c.stale ? 1 : 0;
+			staleSkipped += c.staleSkipped;
+			dropped += c.dropped;
+			lateSkipped += c.resumeSkipped;
+		}
+		const std::uint64_t stale = rig.feed.lastStaleFrames();
+		const std::uint64_t paced = dropped - std::min(dropped, stale);
+		const auto boundFrames = static_cast<std::uint64_t>(
+			FrameClock(ear::SampleRate::fixed<kRate>()).frames(std::chrono::nanoseconds{kUndrainedBound}));
+		const std::uint64_t expected = lostFrames - std::min(lostFrames, boundFrames);
+		INFO("the hand-over: " << handOvers << " times; stale " << staleSkipped << " skipped of " << stale
+		                       << " counted; " << paced << " dropped in their time and " << lateSkipped
+		                       << " skipped late after, for " << expected << " lost past the bound");
+		CHECK(handOvers == 1);
+		// The stale skip is what the feed held as the writer began, none of it read meanwhile (the reader was stalled).
+		CHECK(staleSkipped == stale);
+		// The drop and the late skip after it cover the time lost past the bound: the writer begins at its first look
+		// past the bound (within the library's 20 ms write timeout, sync_task.cpp's AUDIO_WRITE_TIMEOUT_MS, and the
+		// host's wake), and the late skip runs to the cycle back, which follows the burst's last cut by up to a block.
+		constexpr std::uint64_t kDropStartSlack = 40 * kRate / 1000;
+		CHECK(paced + lateSkipped <= expected + 2 * kBlock);
+		CHECK(paced + lateSkipped + kDropStartSlack >= expected);
+		// The library corrects once, as soon as it is told the drop's first finish: the time it was held back. At most
+		// one settle step follows, with its evidence.
+		REQUIRE(corrections >= 1);
+		CHECK(corrections <= 2);
+		CHECK(sizes.front() <= unskipped + zeros + kCorrectionTolerance);
+		checkSettleStep();
+	} else if (crossed) {
+		// Past the feed's bound on a loaded host, the shorter stalls too: the library was told the time it ran on while
+		// the graph did not (what the feed dropped), so it realigned itself then, as soon as it was told: what reaches
+		// the outputs after the stall is the drop's step (counted skipped above) and at most what was left of the stall,
+		// never more, in one correction and at most one settle step with its evidence, and the general judge has held
+		// every step and report to its rule.
 		CHECK(corrected <= unskipped + zeros + kCorrectionTolerance);
+		CHECK(corrections <= 2);
+		checkSettleStep();
 		CHECK(judge.errors.bad.empty());
 	} else if (unskipped > 0) {
 		// What the clock could not skip, the library corrects once, with the zeros ear played meanwhile: the stream fell
@@ -1882,30 +1958,7 @@ static void judgeStall(StallKind kind, StallMade made) {
 		const std::uint64_t first = sizes.front();
 		CHECK(first + kCorrectionTolerance >= unskipped + dryInBurst);
 		CHECK(first <= unskipped + zeros + kCorrectionTolerance);
-		if (corrections == 2) {
-			// A settle step needs its evidence: a cycle between the correction and it that the feed left short, or
-			// began with nothing in it, so the library's write landed late. Each such cycle is listed to explain a
-			// recurrence.
-			CHECK(sizes[1] <= 2 * kBlock + kCorrectionTolerance);
-			bool evidence = false;
-			std::string between;
-			for (std::size_t i = correctedAt[0]; i <= correctedAt[1]; ++i) {
-				const Cycle& c = rig.tap.at(i);
-				const bool starved = c.fed < c.frames || c.heldAtStart == 0;
-				evidence = evidence || (i > correctedAt[0] && starved);
-				between += "\n    " + std::to_string(i) + " causes " + std::to_string(c.facts.causes.bits()) +
-				           " jump " + std::to_string(c.facts.jumpFrames) + " overdue " +
-				           std::to_string(c.overdueNs / 1000) + " us held " + std::to_string(c.heldAtStart) +
-				           " skipped " + std::to_string(c.codeSkipped) + " read " + std::to_string(c.fed) +
-				           (starved ? " starved" : "");
-			}
-			INFO("a second step of " << sizes[1] << " frames at cycle " << correctedAt[1]
-			                         << ", after the correction at " << correctedAt[0]
-			                         << "; the cycles between (index, causes, jump, overdue, held at start, skipped, "
-			                            "read):"
-			                         << between);
-			CHECK(evidence);
-		}
+		checkSettleStep();
 	} else CHECK(corrections == 0);
 	// Ear's own silence after the burst: at most the block the library takes to refill the feed a skip emptied.
 	if (cut) CHECK(silenceFrames <= kBlock);
@@ -1928,9 +1981,19 @@ TEST_CASE("A 200 ms stall upstream: the clock skips what the feed held, and the 
 	judgeStall(StallKind::shortStall, StallMade::byProbe);
 }
 
-TEST_CASE("A 1 s stall upstream: the clock skips what the feed held, and the library corrects the rest once",
+TEST_CASE("A 700 ms stall upstream: the clock skips what the feed held, and the library corrects the rest once",
           "[sendspin][clock]") {
 	judgeStall(StallKind::longStall, StallMade::byProbe);
+}
+
+// docs/node-types.md#clock: a stall past the feed's undrained bound (twice it), on every host. The feed's writer stops
+// waiting for the reader at the bound, counts what the feed held stale, and drops what the library writes in its time,
+// told by the notifier; the code takes the feed back once, skips the stale frames and what is late on the drop's
+// timeline, and the library corrects once, for the time it was held back.
+TEST_CASE("A stall past the feed's bound upstream: the writer drops in its time, the code takes the feed back once, "
+          "and the library corrects once",
+          "[sendspin][clock]") {
+	judgeStall(StallKind::pastBound, StallMade::byProbe);
 }
 
 // The same stalls made inside the block, so the burst takes the host's shape: on the dev host the block misses every
@@ -1941,7 +2004,7 @@ TEST_CASE("A 200 ms stall in the block, whatever the burst's shape: told only on
 	judgeStall(StallKind::shortStall, StallMade::inBlock);
 }
 
-TEST_CASE("A 1 s stall in the block, whatever the burst's shape: told only once the graph runs on time, one "
+TEST_CASE("A 700 ms stall in the block, whatever the burst's shape: told only once the graph runs on time, one "
           "correction of what was lost and not skipped, none when nothing was lost",
           "[sendspin][clock]") {
 	judgeStall(StallKind::longStall, StallMade::inBlock);

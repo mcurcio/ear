@@ -307,7 +307,7 @@ client lives as long as the node's configuration, not its run: a node restarted 
 connects again and rests stopped.
 
 - **What Music Assistant sends while stopped** is not played. For the feed's undrained bound
-  (about 1.06 s at 48 kHz, [clock](#clock)) the library waits on the full feed as through a stall;
+  ([clock](#clock)) the library waits on the full feed as through a stall;
   after that the feed plays what it writes into nothing at the graph's rate and tells the library
   so, so a stream goes on for as long as the stop lasts and the connection holds. At the start,
   what the feed held from before the stop is skipped, and the stream plays from where it has got
@@ -395,25 +395,36 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   writes into nothing at the graph's rate, up to now and never ahead, so the library runs on its
   own time and its inbound ring never pins behind audio no cycle will read (which closes the
   connection). What the feed held as the writer began is consumed then (stale: the first cycle back
-  skips it), and both are told played by the notifier, each report dated by when the next frame
-  would play at that rate, which is never later than now, so the first finish the code tells after
-  it is no earlier: the finish told never steps back. They must be told, and in that order: the
-  library needs a report to leave a stream's priming silence, and puts its next frame at the finish
-  told plus what it wrote and was not told. Back, the code skips as late what the library wrote
-  since that is due by the cycle's run on the drop's timeline (the graph's cycle comes later by up
-  to a block), counted played, so the stream plays on from the drop's time with nothing for the
-  library to correct; it skips nothing for the cycle's jump, which the drop covered. What the
-  library must correct is only the time it was held back first, the bound, which it does once.
-- **The bound is derived from what it protects** (`undrainedBoundFor`, `worker.cpp`): a server that
+  skips it; a clear asked and not yet applied discards its part first), and both are told played by
+  the notifier, each report dated by when the next frame would be heard at that rate: never later
+  than now plus what lies downstream of the outputs, the same downstream the code adds to its own
+  finishes (each cycle tells the feed it), so both tellers are on one timeline. They must be told,
+  and in that order: the library needs a report to leave a stream's priming silence, and puts its
+  next frame at the finish told plus what it wrote and was not told.
+- **The hand-over back is one step.** The first cycle back stamps the feed, then takes it back
+  (`Feed::skipStale`): from that instant the writer's drops are refused (one under way when it came
+  is not counted, and its frames go to the ring), so the drop's last finish is final, and the
+  writer publishes each total with its finish under a sequence count, so neither the notifier nor
+  the code reads a total with another drop's finish. The cycle skips the stale frames, nothing for
+  its jump (the drop covered it), and then, as late, what the library wrote since that is heard by
+  the cycle's run on the drop's timeline (the graph's cycle comes later by up to a block), counted
+  played, so the stream plays on from the drop's time with nothing for the library to correct. What
+  it read in the instant the writer began is counted twice, so as many of its next frames go
+  uncounted, counted from what the reader read of its own, never from a read position a clear moved;
+  a clear forgets that debt, and keeps the drop's timeline only if the writer has dropped some of the
+  next stream since. Where the two tellers meet, the notifier never tells a finish earlier than the
+  last it told (`PlayedTeller` holds it at the last and counts it, which no test sees happen). What
+  the library must correct is only the time it was held back first, the bound, which it does once.
+- **The bound is derived from what it protects** (`undrainedBoundFor`, `worker.hpp`): a server that
   fills the player's advertised buffer (two thirds of its 1 MB quota in the library's inbound ring)
   leaves a third for what arrives while nothing is taken; at the stream's worst-case byte rate
   (FLAC's verbatim frames, as large as 24-bit stereo PCM at the graph's rate) that lasts
   `room / rate`, less the library's 100 ms wait for ring room before it closes the connection; and
   never less than two feeds' worth (about 85 ms), so a scheduling hiccup never drops. About 1.06 s
-  at 48 kHz, 0.48 s at 96 kHz and 0.19 s at 192 kHz. A stall shorter than the bound (the clock
-  tests' 200 ms) keeps the rules below exactly; the clock tests' 1 s stall is under it at 48 kHz
-  by little, so on a loaded host it may cross it, and their judge then counts the drop as an
-  explained cause (a `dropped` library settle) rather than a failure.
+  at 48 kHz, 0.48 s at 96 kHz and 0.19 s at 192 kHz. The clock tests' 200 ms and 700 ms stalls stay
+  under it at 48 kHz by a clear margin with their catch-up burst (a `static_assert` holds the 700 ms
+  one to it), so they keep the rules below exactly, and one more stalls for twice it, so its
+  hand-over is judged on every run ([testing.md](testing.md#the-cycle-judge)).
 - **It skips only the graph's lost time.** On the cycle that states a catch-up or a pause
   (`GraphCycle::facts`: cycles missed, the position moved by exactly their frames, cut or not;
   [writing-a-node-type.md](writing-a-node-type.md#lost-cycles)) with a jump above 0, overdue or not,

@@ -18,11 +18,6 @@ namespace ear::nodes::sendspin {
 namespace {
 
 constexpr std::chrono::milliseconds tickPeriod{10};
-/// The player's one format: the graph frequency (spec "player@v1", the server resamples) and one depth, so nothing the
-/// sync thread writes can change depth under it: on_audio_write carries no format, and a stream/start reaches the
-/// worker while chunks of the last format are still being written.
-constexpr std::uint32_t playerBytesPerSample = 3;
-constexpr std::uint32_t playerBytesPerFrame = playerBytesPerSample * nodeChannels;
 
 std::string_view codecName(::sendspin::SendspinCodecFormat codec) noexcept {
 	switch (codec) {
@@ -302,13 +297,19 @@ std::optional<PlayedTeller::Report> PlayedTeller::next(const std::optional<PlayP
 	const std::uint64_t droppedFrom = std::max(reportedDropped_, dropped.forgotten);
 	const std::uint64_t droppedNow = dropped.total > droppedFrom ? dropped.total - droppedFrom : 0;
 	if (played == reported_ && droppedNow == 0) return std::nullopt;
+	const std::int64_t finish = played != reported_ ? code->finishRawNs : dropped.finishRawNs;
+	const bool clamped = lastFinish_ && finish < *lastFinish_;
 	return Report{.frames = static_cast<std::uint32_t>(played - reported_ + droppedNow),
-	              .finishRawNs = played != reported_ ? code->finishRawNs : dropped.finishRawNs};
+	              .finishRawNs = clamped ? *lastFinish_ : finish,
+	              .clamped = clamped};
 }
 
-void PlayedTeller::told(const std::optional<PlayProgress>& code, const Feed::Dropped& dropped) noexcept {
+void PlayedTeller::told(const std::optional<PlayProgress>& code, const Feed::Dropped& dropped,
+                        const Report& report) noexcept {
 	if (code) reported_ = code->totalFrames;
 	reportedDropped_ = std::max(reportedDropped_, dropped.total);
+	lastFinish_ = report.finishRawNs;
+	if (report.clamped) ++clamped_;
 }
 
 void Notifier::notify() {
@@ -317,22 +318,10 @@ void Notifier::notify() {
 	const Feed::Dropped dropped = feed_.dropped();
 	const auto report = teller_.next(progress, dropped);
 	// Before the client started nothing is told and nothing counted told: the library learns it all at its first report.
-	if (report && player_.notify(report->frames, report->finishRawNs / 1000)) teller_.told(progress, dropped);
-}
-
-std::chrono::nanoseconds undrainedBoundFor(SampleRate rate, std::uint32_t feedFrames) noexcept {
-	// The library advertises (N-1)/N of the player's quota to the server as buffer_capacity, N being 3
-	// (player_role.cpp, AUDIO_BUFFER_ADVERTISE_DENOMINATOR at the pinned commit), so a server that fills it leaves a
-	// third of the quota for what arrives while nothing is taken. A ring that cannot take a message within 100 ms
-	// (inbound_ring.h, INBOUND_ACQUIRE_TIMEOUT_MS) closes the connection. FLAC's worst case is its verbatim frames, as
-	// large as the PCM they carry: 24-bit stereo at the graph's rate, the one format the player lists.
-	constexpr std::int64_t advertiseDenominator = 3;
-	constexpr std::chrono::milliseconds acquireTimeout{100};
-	constexpr std::int64_t room = static_cast<std::int64_t>(playerBufferBytes) / advertiseDenominator;
-	const std::int64_t bytesPerSecond = std::int64_t{rate.hz()} * playerBytesPerFrame;
-	const std::chrono::nanoseconds lasts{room * 1'000'000'000 / bytesPerSecond};
-	const std::chrono::nanoseconds floor{FrameClock(rate).ns(std::int64_t{feedFrames} * 2)};
-	return std::max(lasts - acquireTimeout, floor);
+	if (report && player_.notify(report->frames, report->finishRawNs / 1000)) {
+		teller_.told(progress, dropped, *report);
+		clamped_.store(teller_.clamped(), std::memory_order_release);
+	}
 }
 
 std::uint16_t requiredLeadMs(std::uint32_t feedFrames, std::uint32_t maxBlock, SampleRate rate) noexcept {

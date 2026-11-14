@@ -20,46 +20,66 @@ void SendspinCode::process(std::span<const std::span<float>> outputs, std::uint3
 	// the stream, so nothing of the next is skipped for the old one's lost time.
 	const CycleFacts& facts = cycle.facts;
 	const bool movedOn = facts.causes.has(CycleCause::catchUp) || facts.causes.has(CycleCause::absent);
+	// A clear ends the stream: what this side read twice of it (below) was of a stream the library forgot, and a drop's
+	// timeline it follows is kept only if the writer has dropped some of the next stream since (docs/node-types.md#clock).
+	const bool cleared = feed_.takeCleared();
+	if (cleared) {
+		countedTwice_ = 0;
+		if (resume_ != Resume::none) {
+			const auto dropped = feed_.tryDropped();
+			if (dropped && dropped->total == dropped->forgotten) resume_ = Resume::none;
+		}
+	}
+	// Both tellers date by when a frame is heard, so the feed's writer dates its drops with what lies downstream too.
+	const Latency downstream = cycle.downstreamOf(0);
+	feed_.downstream(clock_.ns(downstream.maxFrames));
+	feed_.drained(cycle.ranRawNs());
 	// Undrained past its bound (a stop, a stall the graph does not come back from in time), the feed's writer played
 	// what the library wrote into nothing at the graph's rate rather than wait (docs/node-types.md#clock), counting
-	// what the feed held then with it, and the notifier told both: that is skipped here, stale, and not counted again.
-	// Taken first (before a clear is applied, and before the stamp, so the writer drops until this cycle has skipped what
-	// it left). What this side read of it in the instant the writer began is counted twice; as many of its next frames
-	// go uncounted. The drop covered the graph's lost time, so this cycle skips nothing for its jump.
+	// what the feed held then with it, and the notifier told both: this cycle takes the feed back (after the stamp, so
+	// a writer it refuses waits on the ring again), skips that as stale, and does not count it again. What this side read
+	// of it in the instant the writer began is counted twice; as many of its next frames go uncounted. The drop covered
+	// the graph's lost time, so this cycle skips nothing for its jump.
 	lastStaleSkipped_ = 0;
 	lastStale_ = false;
 	if (const auto stale = feed_.skipStale()) {
 		lastStale_ = true;
 		lastStaleSkipped_ = stale->skipped;
 		countedTwice_ += stale->readSince;
-		// The library's next frame was due when the frame after the last one dropped would have played; the graph
-		// takes the frames it writes from now from a cycle of its own, later by up to a block and its wait.
-		resumeFromRawNs_ = feed_.dropped().finishRawNs;
+		resume_ = Resume::pending;
 		consumedSinceResume_ = 0;
 	}
-	// After the stale skip, so a clear the reader had not yet applied cannot pass for frames it read.
-	const bool cleared = feed_.takeCleared();
-	if (cleared) resumeFromRawNs_.reset(); // a new stream keeps no time of the old one
-	feed_.drained(cycle.ranRawNs());
+	// The library's next frame is heard when the frame after the last one dropped would have been; the graph takes the
+	// frames it writes from now from a cycle of its own, later by up to a block and its wait. Taken back, the drop's last
+	// finish is final; read once the writer is not mid-publish, and kept only while the library still counts drops of
+	// this stream (a clear since they began makes it forget them).
+	if (resume_ == Resume::pending) {
+		if (const auto dropped = feed_.tryDropped()) {
+			resume_ = dropped->total > dropped->forgotten ? Resume::anchored : Resume::none;
+			resumeFromRawNs_ = dropped->finishRawNs;
+		}
+	}
 	lastHeldAtStart_ = feed_.held();
 	lastSkipped_ = !cleared && !lastStale_ && movedOn && facts.jumpFrames > 0
 	                   ? feed_.skip(static_cast<std::uint64_t>(facts.jumpFrames))
 	                   : 0;
-	// Back after a drop, each frame keeps the time the drop gave it: what is due by this cycle's run and not consumed
+	// Back after a drop, each frame keeps the time the drop gave it: what is heard by this cycle's run and not consumed
 	// is late and skipped, so the stream the library is told plays on from the drop's timeline with no error for it
 	// to correct (it would take its slow sync seconds for the part of a block the graph's cycle came later). Done once
 	// a cycle reads with nothing late left.
 	lastResumeSkipped_ = 0;
 	std::int64_t late = 0;
-	if (resumeFromRawNs_) {
-		late = clock_.framesNearest(std::chrono::nanoseconds{cycle.ranRawNs() - *resumeFromRawNs_}) -
+	if (resume_ == Resume::anchored) {
+		const std::int64_t heard = clock_.heardRawNs(cycle.ranRawNs(), 0, downstream);
+		late = clock_.framesNearest(std::chrono::nanoseconds{heard - resumeFromRawNs_}) -
 		       static_cast<std::int64_t>(consumedSinceResume_);
 		if (late > 0) lastResumeSkipped_ = feed_.skip(static_cast<std::uint64_t>(late));
 	}
 	const std::uint32_t got = feed_.read(outputs, frames);
-	if (resumeFromRawNs_) {
+	if (resume_ != Resume::none) {
 		consumedSinceResume_ += std::uint64_t{lastResumeSkipped_} + got;
-		if (got > 0 && late <= static_cast<std::int64_t>(lastResumeSkipped_)) resumeFromRawNs_.reset();
+		if (resume_ == Resume::anchored && got > 0 && late <= static_cast<std::int64_t>(lastResumeSkipped_))
+			resume_ = Resume::none;
 	}
 	// Counted played: what was skipped and read, never the zeros a short cycle played (the library wrote none of
 	// them).

@@ -6,8 +6,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <span>
 #include <optional>
+#include <span>
 #include "ear/core/frame_ring.hpp"
 #include "ear/core/sample_rate.hpp"
 #include "event_fd.hpp"
@@ -42,8 +42,10 @@ public:
 	bool takeCleared() noexcept;
 	/// One writing thread. With no room waits up to `patience`. Returns frames accepted. With a FeedDrain, once the
 	/// reader has not stamped drained() for its bound, it counts what the feed holds as dropped then (stale: the reader
-	/// skips it when it is back), and accepts frames at the graph's rate up to now (waiting up to `patience` for a
-	/// frame's time to come) and drops them, each played into nothing in its time (dropped()).
+	/// skips it when it is back; a clear asked and not yet applied discards its part first), and accepts frames at the
+	/// graph's rate up to now (waiting up to `patience` for a frame's time to come) and drops them, each played into
+	/// nothing in its time (dropped()), until the reader takes the feed back (skipStale()): a drop under way then is
+	/// refused, and its frames go to the ring.
 	std::uint32_t write(std::span<const float> interleaved, std::uint32_t frames, std::chrono::milliseconds patience);
 	/// Any ordinary thread. What was written so far is gone at the next read, not counted played, and what was dropped
 	/// so far is forgotten (Dropped::forgotten).
@@ -52,28 +54,36 @@ public:
 	/// feed counts as drained when it is made, so a configuration that starts during a stream waits for its first
 	/// cycle as a reader's stall, rather than dropping the stream's first chunks.
 	void drained(std::int64_t ranRawNs) noexcept { drainedRawNs_.store(ranRawNs, std::memory_order_release); }
+	/// Realtime, each cycle: what lies downstream of the reader's outputs, in ns (a following card's buffer), as its
+	/// finishes add it. The writer dates what it drops by it too, so both tellers' finishes are on one timeline: when a
+	/// frame is heard, not when it leaves the feed (docs/node-types.md#clock).
+	void downstream(std::int64_t ns) noexcept { downstreamNs_.store(ns, std::memory_order_relaxed); }
 	/// What skipStale() did: the frames it skipped, and those the reader read after the writer counted them dropped (a
 	/// reader back in the instant the writer began: counted twice, so the reader counts as many fewer of its own).
 	struct StaleSkip {
 		std::uint32_t skipped;
 		std::uint32_t readSince;
 	};
-	/// Realtime: when the writer began dropping since the last call, skips what the feed held then (stale: from before
-	/// the reader stopped, and counted dropped by the writer as it began), nothing written since.
+	/// Realtime: when the writer began dropping since the last call, takes the feed back from it (no drop is counted
+	/// after this call: one the writer had under way when it came is refused, and the writer waits on the ring again)
+	/// and skips what the feed held then (stale: from before the reader stopped, and counted dropped by the writer as it
+	/// began), nothing written since. Call it after drained(), so a refused writer sees the reader back.
 	std::optional<StaleSkip> skipStale() noexcept;
 	/// What the writer has played into nothing: every frame it dropped, those of them a clear made the library forget
-	/// (dropped before the last clear), and when the frame after the last one dropped would play (CLOCK_MONOTONIC_RAW).
+	/// (dropped before the last clear), and when the frame after the last one dropped would be heard
+	/// (CLOCK_MONOTONIC_RAW, with the reader's downstream()).
 	struct Dropped {
 		std::uint64_t total;
 		std::uint64_t forgotten;
 		std::int64_t finishRawNs;
 	};
-	/// Any thread; read after the bell, finishRawNs belongs to at least `total`.
-	Dropped dropped() const noexcept {
-		// The total first: the writer stores the finish before it adds to the total.
-		const std::uint64_t total = dropped_.load(std::memory_order_acquire);
-		return {total, forgotten_.load(std::memory_order_acquire), finishRawNs_.load(std::memory_order_acquire)};
-	}
+	/// Any ordinary thread: the total and its finish, always of one drop (the writer publishes them under a sequence
+	/// count, and this reads again while it is under way).
+	Dropped dropped() const noexcept;
+	/// Realtime: the same in one attempt, or nothing while the writer is publishing a drop.
+	std::optional<Dropped> tryDropped() const noexcept;
+	/// Test seam: what the writer counted stale as it last began dropping (what the feed held then).
+	std::uint32_t lastStaleFrames() const noexcept { return lastStaleFrames_.load(std::memory_order_acquire); }
 	/// Whether a writer has said it waits and no read has woken it yet: the tests' window on the wake.
 	bool writerWaiting() const noexcept { return writerWaits_.load(std::memory_order_relaxed); }
 	/// Test seams, the writer's own events (docs/testing.md#a-writers-own-event): the waits on the room it began, each
@@ -92,7 +102,21 @@ public:
 	std::uint64_t dryFrames() const noexcept { return dryFrames_.load(std::memory_order_relaxed); }
 
 private:
+	/// The reader's mark as the writer begins dropping: where it had read to (past a clear asked and not yet applied,
+	/// which discards what lies before it), the frames it had read and skipped of its own (never a clear's or a stale
+	/// skip's), and the clears it had applied.
+	struct ReaderMark {
+		std::uint32_t from;
+		std::uint32_t consumed;
+		std::uint32_t clears;
+	};
 	bool applyClear() noexcept;
+	void beginMove() noexcept;
+	void endMove() noexcept;
+	ReaderMark readerMark() const noexcept;
+	bool publishDrop(std::uint64_t frames, std::int64_t finishRawNs, bool begins) noexcept;
+	std::uint32_t writeRing(std::span<const float> interleaved, std::uint32_t frames,
+	                        std::chrono::milliseconds patience);
 	std::uint32_t discard(std::uint32_t frames, std::chrono::milliseconds patience);
 	void waitForRoom(std::chrono::milliseconds patience);
 	void countDry(std::uint32_t asked, std::uint32_t got) noexcept;
@@ -107,12 +131,26 @@ private:
 	std::atomic<std::uint64_t> dryFrames_{0};
 	std::uint32_t heldAtSkip_ = 0; // reader only
 	bool clearedSince_ = false;    // reader only: a clear was applied since the last takeCleared()
+	// The reader's moves, under a sequence count the reader alone writes (odd while it moves), so the writer's mark is of
+	// one instant: the read position, what the reader counted of its own and the clears it applied.
+	std::atomic<std::uint32_t> readSeq_{0};
+	std::atomic<std::uint32_t> consumed_{0};
+	std::atomic<std::uint32_t> clears_{0};
+	std::uint32_t consumedAtClear_ = 0; // reader only: consumed_ when it last applied a clear
 	std::optional<FeedDrain> drain_;
 	std::atomic<std::int64_t> drainedRawNs_; // the reader's last stamp; the feed's making before its first
+	std::atomic<std::int64_t> downstreamNs_{0};
 	std::atomic<bool> stale_{false};
-	std::atomic<std::uint32_t> staleFrom_{0}; // the read and write positions when the writer began dropping
+	std::atomic<std::uint32_t> staleFrom_{0}; // the reader's mark and the write position when the writer began dropping
 	std::atomic<std::uint32_t> staleTo_{0};
+	std::atomic<std::uint32_t> staleConsumed_{0};
+	std::atomic<std::uint32_t> staleClears_{0};
+	std::atomic<std::uint32_t> lastStaleFrames_{0}; // test seam: lastStaleFrames()
+	// What was dropped, its top bit set once the reader took the feed back (skipStale), which refuses any later drop
+	// until the writer begins again; the total and its finish under the writer's own sequence count (odd while it
+	// publishes).
 	std::atomic<std::uint64_t> dropped_{0};
+	std::atomic<std::uint64_t> dropSeq_{0};
 	std::atomic<std::uint64_t> forgotten_{0};
 	std::atomic<std::int64_t> finishRawNs_{0};
 	bool discarding_ = false;    // writer only

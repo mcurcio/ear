@@ -277,7 +277,7 @@ set(ear_rate_snippets "${CMAKE_CURRENT_SOURCE_DIR}/sample_rate_exits")
 add_test(NAME ear_sample_rate_exits
 	COMMAND "${CMAKE_COMMAND}" "-DROOT=${PROJECT_SOURCE_DIR}/src" -P "${ear_rate_exits}")
 set_tests_properties(ear_sample_rate_exits PROPERTIES
-	PASS_REGULAR_EXPRESSION "sample_rate_exits: [0-9]+ files under .*, 10 listed, none takes a rate's number elsewhere")
+	PASS_REGULAR_EXPRESSION "sample_rate_exits: [0-9]+ files under .*, 11 listed, none takes a rate's number elsewhere")
 foreach(way call member_pointer own_name)
 	add_test(NAME ear_sample_rate_exits_refuses_${way}
 		COMMAND "${CMAKE_COMMAND}" "-DROOT=${ear_rate_snippets}" "-DGLOB=${way}.snippet" "-DALLOWED="

@@ -3,6 +3,7 @@
 // nothing else touches the client but the sink's thread, through ToServer, and the notifier, through the PlayerSlot,
 // so the library never meets a realtime thread or the main loop.
 #pragma once
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -34,11 +35,30 @@ std::uint16_t requiredLeadMs(std::uint32_t feedFrames, std::uint32_t maxBlock, S
 /// The player's buffer in the library's inbound ring (PlayerRoleConfig::audio_buffer_capacity), which the worker sets:
 /// the library's default, named here because the feed's undrained bound is derived from it.
 inline constexpr std::size_t playerBufferBytes = ::sendspin::PlayerRoleConfig::DEFAULT_AUDIO_BUFFER_CAPACITY;
+/// The player's one format: the graph frequency (spec "player@v1", the server resamples) and one depth, so nothing the
+/// sync thread writes can change depth under it: on_audio_write carries no format, and a stream/start reaches the
+/// worker while chunks of the last format are still being written.
+inline constexpr std::uint32_t playerBytesPerSample = 3;
+inline constexpr std::uint32_t playerBytesPerFrame = playerBytesPerSample * nodeChannels;
 /// How long the code may leave the feed undrained before its writer stops waiting (docs/node-types.md#clock), derived
 /// from what it protects: the room a server that fills the player's advertised buffer leaves in the library's inbound
 /// ring, at the stream's worst-case byte rate, less the library's wait for room before it closes the connection; and
-/// no less than two feeds' worth (`feedFrames` at `rate`), so a scheduling hiccup never drops.
-std::chrono::nanoseconds undrainedBoundFor(SampleRate rate, std::uint32_t feedFrames) noexcept;
+/// no less than two feeds' worth (`feedFrames` at `rate`), so a scheduling hiccup never drops. Constant, so a test can
+/// hold its stalls against it at compile time.
+constexpr std::chrono::nanoseconds undrainedBoundFor(SampleRate rate, std::uint32_t feedFrames) noexcept {
+	// The library advertises (N-1)/N of the player's quota to the server as buffer_capacity, N being 3
+	// (player_role.cpp, AUDIO_BUFFER_ADVERTISE_DENOMINATOR at the pinned commit), so a server that fills it leaves a
+	// third of the quota for what arrives while nothing is taken. A ring that cannot take a message within 100 ms
+	// (inbound_ring.h, INBOUND_ACQUIRE_TIMEOUT_MS) closes the connection. FLAC's worst case is its verbatim frames, as
+	// large as the PCM they carry: 24-bit stereo at the graph's rate, the one format the player lists.
+	constexpr std::int64_t advertiseDenominator = 3;
+	constexpr std::chrono::milliseconds acquireTimeout{100};
+	constexpr std::int64_t room = static_cast<std::int64_t>(playerBufferBytes) / advertiseDenominator;
+	const std::int64_t bytesPerSecond = std::int64_t{rate.hz()} * playerBytesPerFrame;
+	const std::chrono::nanoseconds lasts{room * 1'000'000'000 / bytesPerSecond};
+	const std::chrono::nanoseconds floor{FrameClock(rate).ns(std::int64_t{feedFrames} * 2)};
+	return std::max<std::chrono::nanoseconds>(lasts - acquireTimeout, floor);
+}
 
 /// The library's player as the worker lends it to the notifier: set once the client started, cleared before the
 /// client stops, so the notifier never calls a player that is going. Every call under one lock; any thread.
@@ -137,23 +157,29 @@ private:
 
 /// What the notifier tells the library, from two tellers (docs/node-types.md#clock): the code's frames (its mailbox),
 /// and those the feed's writer played into nothing while no cycle drained it. One report: the frames of both since the
-/// last, dated by the code's finish when the code played anything since (the graph is live), else by the feed's.
-/// Dropped frames of a stream since ended are not told: the library forgot them. Pure: the notifier's state, and the
-/// tests'.
+/// last, dated by the code's finish when the code played anything since (the graph is live), else by the feed's, and
+/// never earlier than the last finish told: where the two tellers meet, a finish that would step back is held at the
+/// last (counted, clamped()). Dropped frames of a stream since ended are not told: the library forgot them. Pure: the
+/// notifier's state, and the tests'.
 class PlayedTeller {
 public:
 	struct Report {
 		std::uint32_t frames;
 		std::int64_t finishRawNs;
+		bool clamped; // the finish was held at the last one told
 	};
 	/// What to tell now, if anything.
 	std::optional<Report> next(const std::optional<PlayProgress>& code, const Feed::Dropped& dropped) const noexcept;
-	/// That report was told (the player took it): what it counted is told.
-	void told(const std::optional<PlayProgress>& code, const Feed::Dropped& dropped) noexcept;
+	/// That report was told (the player took it): what it counted is told, and its finish is the last.
+	void told(const std::optional<PlayProgress>& code, const Feed::Dropped& dropped, const Report& report) noexcept;
+	/// Test seam: the reports told whose finish was held at the last, which no teller should ever cause.
+	std::uint64_t clamped() const noexcept { return clamped_; }
 
 private:
 	std::uint64_t reported_ = 0;        // of the code's frames
 	std::uint64_t reportedDropped_ = 0; // of the feed's dropped frames
+	std::optional<std::int64_t> lastFinish_;
+	std::uint64_t clamped_ = 0;
 };
 
 /// The notifier loop's state: tells the library what played, one call per ring of the code's bell. Apart from the
@@ -166,6 +192,8 @@ public:
 	         PlayerSlot& player) noexcept;
 	/// The notifier loop, once.
 	void begin();
+	/// Test seam, any thread: the reports told whose finish was held at the last (PlayedTeller::clamped).
+	std::uint64_t clamped() const noexcept { return clamped_.load(std::memory_order_acquire); }
 
 private:
 	void notify();
@@ -175,6 +203,7 @@ private:
 	const Feed& feed_;
 	PlayerSlot& player_;
 	PlayedTeller teller_;
+	std::atomic<std::uint64_t> clamped_{0};
 	std::unique_ptr<Timer> watch_;
 };
 } // namespace ear::nodes::sendspin

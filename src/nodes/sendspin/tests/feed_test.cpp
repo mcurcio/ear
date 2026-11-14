@@ -400,3 +400,148 @@ TEST_CASE("A clear forgets the frames dropped so far, and a feed with no rule ne
 	CHECK(plain.write(samples, 1, 0ms) == 0);
 	CHECK(plain.dropped().total == 0);
 }
+
+TEST_CASE("A clear the reader applies after the writer began dropping is not counted as frames it read", "[feed]") {
+	fakeNow = 40'000 * msNs;
+	Feed feed(2, capacity, fakeDrain());
+	std::vector<float> samples;
+	fill(samples, 0, capacity);
+	REQUIRE(feed.write(samples, capacity, 0ms) == capacity);
+	fakeNow += 1600 * msNs;
+	CHECK(feed.write(samples, 1, 0ms) == 0); // the writer begins: the 2048 held counted dropped
+	feed.clear();                            // the stream ends: the library forgets them
+	std::vector<float> left(256);
+	std::vector<float> right(256);
+	const std::array<std::span<float>, 2> out{left, right};
+	CHECK(feed.read(out, 256) == 0); // the reader's cycle in flight applies the clear: it reads nothing
+	const auto stale = feed.skipStale();
+	REQUIRE(stale.has_value());
+	CHECK(stale->readSince == 0); // the clear moved the read position, but nothing was read
+	CHECK(stale->skipped == 0);
+	CHECK(feed.dropped().forgotten == capacity);
+}
+
+TEST_CASE("A clear asked and not yet applied as the writer begins dropping discards its part, not counted stale",
+          "[feed]") {
+	fakeNow = 45'000 * msNs;
+	Feed feed(2, capacity, fakeDrain());
+	std::vector<float> samples;
+	fill(samples, 0, 1000);
+	REQUIRE(feed.write(samples, 1000, 0ms) == 1000);
+	feed.clear(); // the old stream's 1000 frames: never to play, and forgotten
+	fill(samples, 1000, capacity - 1000);
+	REQUIRE(feed.write(samples, capacity - 1000, 0ms) == capacity - 1000); // the next stream's first frames
+	fakeNow += 1600 * msNs;
+	CHECK(feed.write(samples, 1, 0ms) == 0);
+	CHECK(feed.lastStaleFrames() == capacity - 1000); // only the next stream's frames are stale
+	CHECK(feed.dropped().total == capacity - 1000);
+	std::vector<float> left(256);
+	std::vector<float> right(256);
+	const std::array<std::span<float>, 2> out{left, right};
+	CHECK(feed.read(out, 256) == 256); // the reader, back that instant, applies the clear and reads the next stream's
+	CHECK(left[0] == 1000.0F);
+	const auto stale = feed.skipStale();
+	REQUIRE(stale.has_value());
+	CHECK(stale->readSince == 256);
+	CHECK(stale->skipped == capacity - 1000 - 256);
+}
+
+// The hand-over, at its one race: the writer past its check of the reader's stamp, the reader back and taking the feed
+// back, then the writer's drop. A clock that holds the writer on its second look (the drop's own `now`) makes it
+// certain.
+namespace {
+
+std::atomic<int> heldClockCalls{0};
+std::atomic<bool> writerHeld{false};
+std::atomic<bool> releaseWriter{false};
+std::atomic<std::int64_t> heldNow{0};
+std::int64_t holdingRawNow() noexcept {
+	if (heldClockCalls.fetch_add(1) == 1) {
+		writerHeld = true;
+		while (!releaseWriter) std::this_thread::yield();
+	}
+	return heldNow.load();
+}
+
+} // namespace
+
+TEST_CASE("A drop under way when the reader takes the feed back is refused, and its frames go to the ring", "[feed]") {
+	heldNow = 60'000 * msNs;
+	Feed feed(2, capacity,
+	          ear::nodes::sendspin::FeedDrain{
+				  .rate = ear::SampleRate::fixed<kRate>(), .bound = 1500ms, .nowRawNs = &holdingRawNow});
+	std::vector<float> samples;
+	fill(samples, 0, capacity);
+	heldClockCalls = -100; // no hold yet
+	REQUIRE(feed.write(samples, capacity, 0ms) == capacity);
+	heldNow += 1600 * msNs;
+	CHECK(feed.write(samples, 1, 0ms) == 0); // the writer begins: the 2048 held counted dropped
+	heldNow += 10 * msNs;
+	CHECK(feed.write(samples, 100, 0ms) == 100); // dropping, in its time
+	const auto before = feed.dropped();
+	REQUIRE(before.total == capacity + 100);
+
+	heldNow += 10 * msNs; // 480 frames' room for the writer's next drop
+	heldClockCalls = 0;   // its next write is held between its check and its drop
+	std::uint32_t accepted = 0;
+	std::thread writer([&] { accepted = feed.write(samples, 256, 0ms); });
+	const auto until = std::chrono::steady_clock::now() + 10s;
+	while (!writerHeld && std::chrono::steady_clock::now() < until) std::this_thread::yield();
+	REQUIRE(writerHeld);
+	feed.drained(heldNow); // the reader's cycle: stamped, then the feed taken back
+	const auto stale = feed.skipStale();
+	REQUIRE(stale.has_value());
+	CHECK(stale->skipped == capacity);
+	releaseWriter = true;
+	writer.join();
+
+	CHECK(accepted == 256);                                  // the reader is back: its frames are the ring's
+	CHECK(feed.held() == 256);                               // to be read in their time
+	CHECK(feed.dropped().total == before.total);             // no drop counted after the hand-over
+	CHECK(feed.dropped().finishRawNs == before.finishRawNs); // so the drop's last finish stands
+}
+
+// The total and its finish are published together: a reader never pairs a total with a later drop's finish. At 50 kHz
+// a frame lasts exactly 20 us, so every finish is the drop's start plus its total's time.
+namespace {
+
+std::atomic<std::int64_t> racingNow{0};
+std::int64_t racingRawNow() noexcept { return racingNow.load(std::memory_order_relaxed); }
+
+} // namespace
+
+TEST_CASE("The dropped total and its finish, read as the writer drops, always belong to one drop", "[feed]") {
+	constexpr std::int64_t frameNs = 20'000;
+	constexpr std::int64_t start = 70'000 * msNs;
+	racingNow = start;
+	Feed feed(2, capacity,
+	          ear::nodes::sendspin::FeedDrain{
+				  .rate = ear::SampleRate::fixed<50000>(), .bound = 1ms, .nowRawNs = &racingRawNow});
+	racingNow = start + 2 * msNs; // past the bound: the next write begins the drop, with nothing held, at this time
+	const std::int64_t began = racingNow.load();
+	std::atomic<bool> done{false};
+	std::uint64_t mismatches = 0;
+	std::uint64_t looks = 0;
+	std::thread reader([&] {
+		while (!done.load(std::memory_order_acquire)) {
+			const auto dropped = feed.dropped();
+			++looks;
+			if (dropped.total > 0 && dropped.finishRawNs != began + static_cast<std::int64_t>(dropped.total) * frameNs)
+				++mismatches;
+		}
+	});
+	std::vector<float> samples;
+	fill(samples, 0, 1);
+	REQUIRE(feed.write(samples, 1, 0ms) == 0); // begins: 0 held
+	for (int i = 0; i < 2'000'000; ++i) {
+		racingNow.fetch_add(frameNs, std::memory_order_relaxed);
+		if (feed.write(samples, 1, 0ms) != 1) {
+			FAIL("the drop took no frame at " << i);
+		}
+	}
+	done = true;
+	reader.join();
+	INFO(looks << " looks");
+	CHECK(looks > 0);
+	CHECK(mismatches == 0);
+}
