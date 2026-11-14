@@ -942,6 +942,64 @@ export function companionBadges(node: GraphNode): CompanionBadge[];
 `EarNode.tsx` draws the strip from `companionBadges` along the box's bottom edge, outside every handle and drag area;
 `Panels.tsx` lists `companionDetail` per companion in the node's panel.
 
+**3b.7 as built against today's code** (written before building it, 2026-11-14). 3.7's look and the signatures above
+were written before the owner answered Q-CF4 for counters (`cycle-facts.md` 8.5: "panel plus recent": the side panel
+always holds the totals, a canvas mark shows only while something happened in the last minute). Against that answer,
+the wire as 3b.6 left it (`docs/control-port.md#companions`) and the editor as it is:
+
+- **What each kind shows.** One badge per entry, in list order, along the box's bottom edge under the ports: its kind
+  as a short word (`card-playback` "card out", `card-capture` "card in", `rtp-receiver` "rtp", `sink` "sink",
+  `source` "source") followed by the readiness dot. The tooltip (Q28's hover) and the node panel's "Companions" list
+  give `companionDetail`: the name, the word and the bank, the readiness, and the counter the entry carries, as a
+  total ("rec.writer (sink on writer): ready; 4096 frames dropped since it was made"; a source "... frames played
+  short since it was made"). An engine kind carries no counter and its detail names none. No list, or an empty one,
+  draws no strip (`white`, `sendspin`, a node from an ear without the feature).
+- **Ready versus not ready.** A filled dot (●) when `ready`, a hollow one (○) and the badge's text dimmed when not:
+  shape, not only colour. Under the order rules a running node never shows a hollow dot; it is seen while
+  `configuring`, or for good before a readiness deadline fails the node.
+- **Failed and disabled draw no strip** whatever list is held (their configuration was torn down; ear sends `[]`
+  after the `node.state`, and the editor does not draw a list in the gap between the two). A stopped node keeps its
+  strip (a stop keeps the configuration). An unknown phase draws the list it holds.
+- **Dropped and shortfall: recent movement marks, the total is in words** (Q-CF4's rule, applied to the companions'
+  counters too, replacing 3.7's "a counter above zero puts a warning mark"). The badge carries the warning mark (a
+  small "!" in a circle) only while its `dropped` or `shortfall` rose in the last minute, on the browser's clock, from
+  what the editor last held for that companion; the tooltip and the panel always give the total. Why: the counters
+  count per configuration, so 3.7's lifetime mark would stay on a recording that dropped once until its next restart,
+  the "always shown" Q-CF4 turned down; and D3's node mark (`cycle-facts.md` 8.5) uses the same glyph, the same
+  minute and the same browser clock, so the two read alike. What is a rise: a value above the one held for the same
+  node and companion name. Not a rise: the first value seen (a snapshot or a new list's first entry: when it moved is
+  unknown, its total is still in words), a value below the held one (a new configuration seen without its `[]`, as
+  after a reconnect's snapshot), and an entry seen again after its list dropped it (a restart's companion counts from
+  zero, and what was held is forgotten with the entry). The mark leaves on its own once the minute passes (the box
+  redraws then). The movement is kept by `CompanionMoves`, beside the graph store and fed by it, outside React: the
+  reducer keeps only what ear sent, so the browser's times stay out of it.
+- **Unknown kinds** are drawn by their own text, neutrally (the same badge style as a known kind, never a fault
+  style), with the same dot; a counter member the editor knows (`dropped`, `shortfall`) is shown and marked whatever
+  the kind, and a member it does not know (`unknown-values.json`'s `lagFrames`) is ignored.
+- **Accessibility.** Every state is in text: the dot is `aria-hidden` beside visually hidden "ready" or "not ready",
+  the mark beside visually hidden "dropped frames in the last minute" ("played short in the last minute"); the
+  badge's `title` is its detail; the strip is a list labelled "companions". The panel's lines are plain text.
+- **Not part of editing.** The strip is no handle and no node; clicking it selects its node as any part of the box
+  does, and dragging it moves the box. Nothing in it sends a request.
+
+Signatures, as built (`web/src/companions.ts`; 8.7's `companionBadges(node)` gains the moves and the time, and the
+badge its mark's text):
+
+```ts
+export const recentMarkMs = 60_000;
+export interface CompanionBadge {
+  key: string; label: string; ready: boolean; readyText: "ready" | "not ready";
+  warning: boolean; warningText: string; title: string;
+}
+export function companionLabel(kind: CompanionKind): string;
+export function companionDetail(companion: Companion): string;
+/** Each companion's last counter value and when it last rose, per node; told by the graph store first. */
+export class CompanionMoves { note(graph: GraphState, now: number): void; movedAt(node: string, companion: string): number | undefined; nextExpiry(node: GraphNode, now: number): number | undefined; attach(store: GraphStore): () => void; }
+export function companionBadges(node: GraphNode, moves: CompanionMoves, now: number): CompanionBadge[];
+```
+
+No owner question: the words and the dot are Q28's, the recent mark is Q-CF4's rule, and the rest is how.
+
 ### 8.8 The types
 
 - **`file`** (sink): no code change. Its sink is listed as `rec.writer` (kind `sink`, bank `writer`); its chunks carry
