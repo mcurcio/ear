@@ -2403,7 +2403,8 @@ struct BlockingSinks final : SinkAdapter {
 	}
 };
 
-/// A consumer whose finish() blocks until the test lets it go, telling `entered` first.
+/// A consumer whose finish() blocks until the test lets it go, telling `entered` first; past 10 s it returns all the
+/// same, so a test whose release never comes fails rather than hangs.
 struct BlockedConsumer final : SinkConsumer {
 	std::promise<void>& entered;
 	std::shared_future<void> release;
@@ -2411,7 +2412,7 @@ struct BlockedConsumer final : SinkConsumer {
 	void consume(const Chunk&) override {}
 	void finish() override {
 		entered.set_value();
-		release.wait();
+		static_cast<void>(release.wait_for(std::chrono::seconds(10)));
 	}
 };
 
@@ -2484,7 +2485,7 @@ TEST_CASE("A sink consumer blocked at teardown blocks no main-loop turn, and the
 
 	f.host.nodeRemoved("rec");
 	f.mainLoop.settle(); // returns although the consumer is stuck
-	config->entered.get_future().wait();
+	REQUIRE(config->entered.get_future().wait_for(std::chrono::seconds(10)) == std::future_status::ready);
 	CHECK(f.log == Log{"node rec stopping", "fade", "drive nothing", "release", "block destroyed"});
 	f.log.clear();
 
@@ -2518,7 +2519,7 @@ TEST_CASE("A sink consumer blocked past the close deadline leaks the configurati
 	int allGone = 0;
 	f.host.stopAll(f.graph.close(), [&] { ++allGone; });
 	f.mainLoop.settle();
-	config->entered.get_future().wait();
+	REQUIRE(config->entered.get_future().wait_for(std::chrono::seconds(10)) == std::future_status::ready);
 	f.timers.advance(closeDeadline - std::chrono::milliseconds(1));
 	CHECK(allGone == 0);
 
@@ -2601,12 +2602,13 @@ TEST_CASE("A loop mid-handler at teardown finishes off the main loop: finish ret
 	std::promise<void> finishHandler;
 	std::thread loop([&] {
 		inHandler.set_value();
-		finishHandler.get_future().wait(); // the handler is still running when close() is called
+		// the handler is still running when close() is called; past 10 s it goes on, and the test fails
+		static_cast<void>(finishHandler.get_future().wait_for(std::chrono::seconds(10)));
 		events->say("handler done");
 		events->lost("the handler failed on the way out");
 		f.finishLoop(0);
 	});
-	inHandler.get_future().wait();
+	REQUIRE(inHandler.get_future().wait_for(std::chrono::seconds(10)) == std::future_status::ready);
 
 	f.host.nodeRemoved("net");
 	f.settle();
