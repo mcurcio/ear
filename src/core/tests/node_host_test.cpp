@@ -1101,7 +1101,7 @@ TEST_CASE("stopAll takes a node down in order: the barrier, release, sinks, bloc
 	CHECK(f.host.health()[0].state == NodeState::stopping);
 
 	f.finishSink(4);
-	CHECK(f.log == Log{"instance destroyed", "sink rec.tap1 destroyed", "sink rec.tap2 destroyed",
+	CHECK(f.log == Log{"sink rec.tap1 destroyed", "sink rec.tap2 destroyed", "instance destroyed",
 	                   "node rec gone dropped=7", "all gone"});
 	CHECK(f.allGone == 1);
 	CHECK(f.host.health().empty());
@@ -1163,7 +1163,7 @@ TEST_CASE("An update restarts the configuration behind the same port block, lett
 
 	SECTION("the old configuration goes, then its config, then the new config starts") {
 		f.finishSink(0);
-		CHECK(f.log == Log{"instance destroyed", "sink rec.tap1 destroyed", "config A destroyed", "configure 44100 B",
+		CHECK(f.log == Log{"sink rec.tap1 destroyed", "instance destroyed", "config A destroyed", "configure 44100 B",
 		                   "sink rec.tap1 2 channels 1024 frames", "sink rec.tap1 begin", "node rec starting"});
 		f.log.clear();
 		f.settle(); // its sink's consumer began: T3, then the drive
@@ -1176,7 +1176,7 @@ TEST_CASE("An update restarts the configuration behind the same port block, lett
 		f.log.clear();
 		f.finishSink(0);
 		f.settle();
-		CHECK(f.log == Log{"instance destroyed", "sink rec.tap1 destroyed", "config A destroyed", "configure 44100 C",
+		CHECK(f.log == Log{"sink rec.tap1 destroyed", "instance destroyed", "config A destroyed", "configure 44100 C",
 		                   "node rec starting", "prepare 44100/256", "drive code", "node rec running"});
 	}
 	SECTION("a removal during a restart stops the node and starts nothing") {
@@ -1188,7 +1188,7 @@ TEST_CASE("An update restarts the configuration behind the same port block, lett
 		f.log.clear();
 		f.finishSink(2);
 		CHECK(f.log ==
-		      Log{"instance destroyed", "sink rec.tap1 destroyed", "config A destroyed", "node rec gone dropped=2"});
+		      Log{"sink rec.tap1 destroyed", "instance destroyed", "config A destroyed", "node rec gone dropped=2"});
 		CHECK(f.host.health().empty());
 		f.log.clear();
 		f.stopAll();
@@ -2048,8 +2048,8 @@ TEST_CASE("A loop finishes after every sink has closed, and the configuration go
 	CHECK(f.log.empty());
 	CHECK(f.allGone == 0);
 	f.settle(); // finished, then the loop's close and its closed
-	CHECK(f.log == Log{"loop net.worker close", "instance destroyed", "loop net.worker freed",
-	                   "sink net.tap1 destroyed", "node net gone dropped=7", "all gone"});
+	CHECK(f.log == Log{"loop net.worker close", "sink net.tap1 destroyed", "instance destroyed",
+	                   "loop net.worker freed", "node net gone dropped=7", "all gone"});
 }
 
 TEST_CASE("A restart waits for the old configuration to close before it configures the new one", "[node_host]") {
@@ -2919,6 +2919,7 @@ TEST_CASE("A recording is opened at configure and closed with the configuration,
 	const auto instanceGone = indexOf(f.log, "instance destroyed");
 	const auto closed = indexOf(f.log, "recording closed");
 	REQUIRE(closed < static_cast<std::ptrdiff_t>(f.log.size()));
+	CHECK(sinkGone < instanceGone); // its consumer may read the instance
 	CHECK(sinkGone < closed);
 	CHECK(instanceGone < closed);
 }
@@ -3135,7 +3136,7 @@ TEST_CASE("A name added back gets its block only once the older block is destroy
 	f.log.clear();
 
 	f.finishSink(0); // the old node is gone: the new one configures
-	CHECK(f.log == Log{"instance destroyed", "sink rec.tap1 destroyed", "config old destroyed",
+	CHECK(f.log == Log{"sink rec.tap1 destroyed", "instance destroyed", "config old destroyed",
 	                   "node rec gone dropped=0", "configure 44100 next", "prepare 44100/256"});
 	f.log.clear();
 	f.blocks.events.at(1)->ready();
@@ -3174,7 +3175,7 @@ TEST_CASE("A name added back three times in one turn has one block at a time, an
 	CHECK(f.blocks.events.size() == 2);
 	f.log.clear();
 	f.finishSink(0);
-	CHECK(f.log == Log{"instance destroyed", "sink rec.tap1 destroyed", "config one destroyed",
+	CHECK(f.log == Log{"sink rec.tap1 destroyed", "instance destroyed", "config one destroyed",
 	                   "node rec gone dropped=0", "configure 44100 four", "prepare 44100/256"});
 	f.blocks.events.at(1)->ready();
 	f.settle();
@@ -5009,15 +5010,15 @@ TEST_CASE("A sink's consumer begins before the node is configured, its bank is n
 	CHECK(f.blocks.modes.sinks.back()[0].tap == bound.tap);
 	CHECK(f.sinks.made.size() == 1);
 
-	// The teardown closes it (the consumer finished), then frees the code, the instance and the sink, in that order;
-	// its drops are the node's.
+	// The teardown closes it (the consumer finished), then frees the code, the sink (its consumer with it) and the
+	// instance, in that order; its drops are the node's.
 	f.log.clear();
 	f.stopAll();
 	f.settle();
 	CHECK(indexOf(f.log, "sink rec.pb close") < indexOf(f.log, "consumer finish"));
-	CHECK(indexOf(f.log, "consumer finish") < indexOf(f.log, "instance destroyed"));
-	CHECK(indexOf(f.log, "instance destroyed") < indexOf(f.log, "sink rec.pb destroyed"));
+	CHECK(indexOf(f.log, "consumer finish") < indexOf(f.log, "sink rec.pb destroyed"));
 	CHECK(indexOf(f.log, "sink rec.pb destroyed") < indexOf(f.log, "consumer destroyed"));
+	CHECK(indexOf(f.log, "consumer destroyed") < indexOf(f.log, "instance destroyed"));
 	CHECK(countOf(f.log, "node rec gone dropped=7") == 1);
 	CHECK(f.allGone == 1);
 }
@@ -5200,6 +5201,57 @@ TEST_CASE("A sink's engine name is one of its configuration's: a sink on bank pl
 	CHECK(f.sinks.made.empty());
 	f.stopAll();
 	f.settle();
+}
+
+namespace {
+
+/// A class whose sink's consumer reads its instance as it goes: the instance's destructor sets a flag the test owns,
+/// and the consumer's destructor says whether the instance was still there (docs/writing-a-node-type.md#sinks).
+struct InstanceReadingConfig final : NodeConfig {
+	struct Consumer final : SinkConsumer {
+		Log& log;
+		const bool& instanceGone;
+		Consumer(Log& l, const bool& gone) : log(l), instanceGone(gone) {}
+		~Consumer() override {
+			log.push_back(instanceGone ? "consumer destroyed after its instance"
+			                           : "consumer destroyed, instance alive");
+		}
+		void consume(const Chunk&) override {}
+		void finish() override {}
+	};
+	struct Instance final : ErasedInstance {
+		const InstanceReadingConfig& config;
+		explicit Instance(const InstanceReadingConfig& c) : config(c) {}
+		~Instance() override { config.instanceGone = true; }
+		Configured configure(InstanceContexts& cx) override {
+			config.instanceGone = false;
+			cx.create.sink("pb", SinkShape{.frames = 1024})
+				.consumedBy(std::make_unique<Consumer>(config.log, config.instanceGone));
+			cx.create.use(std::make_unique<TestAudioCode>(config.log));
+			return Configured::applied();
+		}
+	};
+	Log& log;
+	Ports ports_ = testPorts();
+	mutable bool instanceGone = false;
+	explicit InstanceReadingConfig(Log& l) : log(l) {}
+	const Ports& ports() const override { return ports_; }
+	std::unique_ptr<ErasedInstance> make(NodeContext&) const override { return std::make_unique<Instance>(*this); }
+};
+
+} // namespace
+
+TEST_CASE("Step 5 frees a sink's consumer before the instance it may read", "[node_host][sink][teardown]") {
+	Fixture f;
+	auto config = std::make_shared<InstanceReadingConfig>(f.log);
+	addRunning(f, "rec", config);
+	f.host.nodeRemoved("rec");
+	f.settle();
+	CHECK(countOf(f.log, "consumer destroyed, instance alive") == 1);
+	CHECK(countOf(f.log, "consumer destroyed after its instance") == 0);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
 }
 
 TEST_CASE("A restart waits for its sink's close before it frees the configuration, then makes a new sink",
@@ -6570,8 +6622,8 @@ TEST_CASE(
 	f.sinks.made.at(0)->runClose(); // the old sink drains at last; its consumer's finish throws
 	f.settle();
 	CHECK(f.log == Log{"consumer finish", "loop porch.worker finish", "loop porch.worker close",
-	                   "diagnostic porch ear.close-late ms=10000", "instance destroyed", "loop porch.worker freed",
-	                   "sink porch.pb destroyed", "consumer destroyed"});
+	                   "diagnostic porch ear.close-late ms=10000", "sink porch.pb destroyed", "consumer destroyed",
+	                   "instance destroyed", "loop porch.worker freed"});
 	REQUIRE(logs.entries.size() == 1);
 	CHECK(logs.entries[0].level == LogLevel::error);
 	CHECK(logs.entries[0].source == "ear");

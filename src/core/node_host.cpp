@@ -1560,7 +1560,8 @@ struct NodeHost::Impl {
 			// Outlives the handoffs that write it and the instance (a legacy run object and recipe) that may hold it
 			// open (file's WavWriter closes its SNDFILE on the descriptor when freed).
 			std::vector<std::unique_ptr<RecordingFile>> recordings;
-			// Each sink's consumer may write a recording above; freed after the code and instance (teardown step 5).
+			// Each sink's consumer may write a recording above, and may hold a reference into the instance: freed after
+			// the code and before the instance (teardown step 5).
 			std::vector<std::unique_ptr<SinkSlot>> sinks;
 			std::vector<SinkBinding> bindings; // every sink's, built at the return checks; every drive points at it
 			// Each source's writer may be held by the instance's threads; freed after the instance (teardown step 5).
@@ -1699,17 +1700,17 @@ struct NodeHost::Impl {
 				});
 			}
 			/// Teardown step 5's order (freeConfiguration): every thread of it has reported closed, so nothing reaches
-			/// what goes here. The code, the instance, the loops (a dedicated one's thread has returned), the sinks
-			/// and sources, the stores, the recordings, then the rest with the config; its Channel may outlive it, held
+			/// what goes here. The code, the sinks, the instance, the loops (a dedicated one's thread has returned),
+			/// the sources, the stores, the recordings, then the rest with the config; its Channel may outlive it, held
 			/// by a type's thread, detached.
 			void free() {
 				const MainLoopActivity::Scope activity("free configuration", name_);
 				Configuration& c = *config_;
 				c.code.reset();
+				c.sinks.clear();
 				c.instance.reset();
 				for (const auto& slot : c.loops) slot->state.reset();
 				c.loops.clear();
-				c.sinks.clear();
 				c.sources.clear();
 				c.stores.clear();
 				c.recordings.clear();
@@ -2995,8 +2996,9 @@ struct NodeHost::Impl {
 		}
 
 		/// teardown step 5, on the main loop: the code (released and unreachable since the barrier; it may hold
-		/// references into the instance, never the reverse), then the instance (a legacy run object and recipe in it),
-		/// the recordings, and last its context, channel and config.
+		/// references into the instance, never the reverse), then the sinks (each closed, so its consumer, which may
+		/// hold a reference into the instance, is idle), then the instance (a legacy run object and recipe in it), the
+		/// loops, the sources, the stores, the recordings, and last its context, channel and config.
 		void freeConfiguration() {
 			const MainLoopActivity::Scope activity("free configuration", name_);
 			Configuration& c = *config_;
@@ -3004,12 +3006,12 @@ struct NodeHost::Impl {
 			c.channel->detach();
 			companionsEnded(); // closed (no tap or play since the barrier), so their counts are final
 			c.code.reset();
+			c.sinks.clear(); // each closed (its thread idle) or never begun; a consumer may read the instance
 			c.instance.reset();
 			// Each loop closed (a dedicated thread already returned), or never started: its state goes here, every state
 			// before any loop, since one may hold another's executor.
 			for (const auto& slot : c.loops) slot->state.reset();
 			c.loops.clear();
-			c.sinks.clear();   // each closed (its thread idle) or never begun
 			c.sources.clear(); // after the instance, whose threads may hold a writer
 			c.stores.clear();  // after every state and consumer that may hold one; a job still queued holds its state
 			c.recordings.clear();
