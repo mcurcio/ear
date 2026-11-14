@@ -809,7 +809,12 @@ A node never waits for good on something that will never be ready. Each engine c
 sink's consumer has a deadline from its request (configure's applied return), on the main loop's
 timers (`companions.hpp`: `cardReadinessBound` and friends, `readinessBound(kind)`); a source is
 ready when made and has none. The wait counts from the request, so time the block took to be ready
-counts too.
+counts too. `NodeHost` keeps them as the items of one readiness list per configuration
+(`src/core/readiness.hpp`): the engine companions first, then the sinks' consumers, each in request
+order. The list arms every bound through one timer rule (below), judges it, and is what
+`waitingFor` reads; the configuration's resources are ready once every item is. Its items are asked
+in steps, a later step only once every earlier one is ready; today every item is in the last step,
+so all are asked at configure's applied return.
 
 | Kind | Deadline | Past it, the node fails |
 |---|---|---|

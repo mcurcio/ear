@@ -79,21 +79,37 @@ wrapper would be a small utility package's job, not this slice's.
 
 Each is `ear_core`'s unless it says otherwise. Sections 5 to 6.11 keep every rule not restated here.
 
-**The readiness list** (private to NodeHost, `src/core/readiness.hpp`; S3c.0):
+**The readiness list** (private to NodeHost, `src/core/readiness.hpp`; S3c.0, built:
+`docs/engine.md#readiness-deadlines`). *Found building S3c.0:* an item fails with the lifecycle's `Fact` (NodeHost
+feeds facts; the machine derives the code), not a `FailureReason::Code`; its `name` is its subject as `waitingFor`
+names it, empty for a consumer (the wire names none, and two consumers are one wait); the list arms each bound through
+an `Arm` its owner gives, so every kind keeps NodeHost's one rule for a timer that fires late; and `ReadyEvents` lands
+with its first user (S3c.3's loops, S3c.4's stores), since today's two kinds tell ready through their own events.
 
 ```cpp
-/// What a configuration still waits for before it is configured (docs/architecture.md#the-node-lifecycle). Main
-/// thread. An item is asked only once every item of an earlier step is ready; its bound runs from when it is asked.
+enum class ReadinessStep : unsigned { claims, opens, loops, companions }; // asked in this order
 struct ReadinessItem {
-	WaitingFor::Kind kind;                          // the wire's waitingFor kind
-	std::string name;                               // its subject: an engine name, a file, a claim's key, a loop
-	unsigned step;                                  // 0 claims; 1 stores, recordings; 2 loops; 3 companions, consumers
-	std::optional<std::chrono::milliseconds> bound; // none: ready when made (a source), or bounded elsewhere
-	FailureReason::Code code;                       // start-failed or engine-refused, as each kind fails today
-	std::move_only_function<std::string()> overdue; // the failure detail its bound gives (its kind's text, today's)
+	WaitingFor::Kind kind;
+	std::string name;                               // empty where waitingFor names none (a consumer)
+	ReadinessStep step;
+	std::optional<std::chrono::milliseconds> bound; // from when it is asked; none: bounded elsewhere
+	Fact fact;                                      // engine, consumerNeverBegan, as each kind fails today
+	std::move_only_function<std::string()> overdue; // the failure detail, read when its bound passes
 };
-/// How a later-ready primitive tells it (an adapter's open, a loop's start, a claim's grant). Main thread, through the
-/// configuration's Channel; at most one of the two, never inside the call that asked.
+class ReadinessList { // one per configuration; main thread
+public:
+	using Arm = std::move_only_function<std::unique_ptr<Timer>(std::size_t index, std::chrono::milliseconds bound)>;
+	std::size_t add(ReadinessItem item);                       // before begin()
+	void begin(Arm arm);                                       // asks the earliest step not all ready
+	void ready(std::size_t index);                             // cancels its bound; a step all ready asks the next
+	std::optional<ReadinessOverdue> passed(std::size_t index); // its fact and detail unless ready; ends the list
+	void disarm() noexcept;                                    // teardown: every bound cancelled
+	bool isReady(std::size_t index) const noexcept;
+	bool done() const noexcept;                                // every item ready: resourcesReady may follow
+	std::vector<WaitingFor> waiting() const;                   // each item not ready, in item order, a repeat once
+};
+/// How a later-ready primitive tells it (an adapter's open, a loop's start, a claim's grant), with its first user.
+/// Main thread, through the configuration's Channel; at most one of the two, never inside the call that asked.
 class ReadyEvents {
 public:
 	virtual void ready() = 0;
@@ -104,9 +120,13 @@ protected:
 };
 ```
 
-`EngineCompanionEvents` stays as built (its `lost` after ready and its `faulted` are its own); NodeHost's
-implementation of it feeds the item's `ready` and `failed`. Companions also wait for the block, as built. Consumers
-are at step 3 because a `file` consumer's `begin` writes a header into a recording opened at step 1; that is 6.1's
+NodeHost adds the engine companions' items first, then the sinks' consumers', each in request order, and maps a
+companion's wait to `block` while its block is not ready (it is made only once the block is).
+
+`EngineCompanionEvents` stays as built (its `lost`, before ready or after, and its `faulted` are its own facts);
+NodeHost's implementation of it feeds the item's `ready`. The list's `failed(index, detail)`, which ends it as a passed
+bound does, comes with `ReadyEvents`. Companions also wait for the block, as built. Consumers are at the `companions`
+step because a `file` consumer's `begin` writes a header into a recording opened at step 1; that is 6.1's
 "4'".
 
 **The node handle** (S3c.1): section 5's `NodeHandle`, implemented by the configuration's `Channel`.

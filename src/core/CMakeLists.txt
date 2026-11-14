@@ -21,6 +21,7 @@ add_library(ear_core STATIC
 	pass_through.cpp
 	rate_text.cpp
 	ports.cpp
+	readiness.cpp
 	reconciler.cpp
 	rtp_receiver.cpp
 	settings_table.cpp
@@ -103,6 +104,7 @@ if(BUILD_TESTS)
 		tests/node_lifecycle_test.cpp
 		tests/ports_test.cpp
 		tests/rate_text_test.cpp
+		tests/readiness_test.cpp
 		tests/reconciler_test.cpp
 		tests/rtp_receiver_test.cpp
 		tests/settings_table_test.cpp
@@ -111,6 +113,8 @@ if(BUILD_TESTS)
 		tests/type_spec_test.cpp)
 	target_link_libraries(ear_core_tests PRIVATE ear_core ear_type_harness ear_latency_table ear_cycle_table ear_inducers
 		ear_catch_main)
+	# The readiness list is private to ear_core (readiness.hpp), and its rows test it directly.
+	target_include_directories(ear_core_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 	add_dependencies(ear_core_tests ear_core_verify_interface_header_sets ear_type_harness_verify_interface_header_sets)
 	ear_catch_tests(ear_core_tests)
 
