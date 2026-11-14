@@ -25,6 +25,7 @@ built in slice 3b ([architecture.md](../architecture.md#companions)), remove pri
 | [`recovery.md`](recovery.md) | 8 | Failed nodes trying again by themselves with a backoff; `recovering` on the wire; status a companion writes | designed |
 | [`programs.md`](programs.md) | 9 | Outside programs joined through a pipe into a paced source, runtime files, the program resource; then the `airplay` type | sketched: the program supervisor and `airplay` need their own design |
 | [`cards-and-clock.md`](cards-and-clock.md) | later | The follower watchdog and a wedged card, sound cards opened off the main loop, a clock anchored to one card, latency reported while running, the hardware checks owed | partly designed |
+| [`node-text.md`](node-text.md) | any | The node panel's box edits the node's own statement in knobly: `nodeTexts` on the GraphFile, `node.setText`, diagnostics in the box's text, the feature `node-text` | designed; being built |
 
 Not built and not designed anywhere yet: routes naming a whole bank, a login on the control port, automatic card
 retry beyond slice 8 and hotplug, arm64 images, `@include` and undo in the graph file, and changing the graph frequency
