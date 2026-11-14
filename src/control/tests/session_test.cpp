@@ -1165,7 +1165,9 @@ TEST_CASE("companions.json: each node's list in the snapshot, node.added's [], e
 	                              std::nullopt,
 	                              {},
 	                              {sink("rec", true)}});
-	w.onMain([&] { // running before the client subscribes, their lists told as NodeHost told them
+	w.onMain([&] { // added at boot and running before the client subscribes, their lists told as NodeHost told them
+		for (const ear::NodeView& node : w.graph.view.nodes) w.nodeAdded(node.spec, node.ports);
+		w.clockReadings = 0; // the boot's readings are no client's: the snapshot's since count from here
 		for (const char* name : {"desk", "fpp", "noise", "rec"}) w.told(at(name, NodePhase::running));
 		list("desk", w.graph.view.nodes[0].companions);
 		list("fpp", {rtp(true)});
@@ -1247,10 +1249,12 @@ TEST_CASE("companions.json: each node's list in the snapshot, node.added's [], e
 		list("fpp", {});
 	});
 
-	// A removal: the teardown's empty list names a node the client dropped at node.removed: not sent.
+	// A removal: the client dropped the node at node.removed, so no list naming it is sent after, whatever it says (a
+	// list told late for a node closing, or its teardown's empty one).
 	w.graph.script.push_back({"removeNode take", [&]() -> CommandResult {
 								  w.gateway.nodeRemoved("take");
 								  w.told(because(at("take", NodePhase::stopping), Kind::removing));
+								  list("take", {sink("take", true, 512)});
 								  list("take", {});
 								  return Lifecycle{};
 							  }});

@@ -1021,10 +1021,13 @@ settled in the building:
   (3b.5), and the gateway posts both, list and health, in the order it hears them on the main loop. What the gateway
   adds is only the comparison with the last list sent; the order proofs are the session replay of `companions.json`
   and the system test, not `gateway_test.cpp`.
-- **The comparison is whole-entry, counters included,** and keyed by name: `node.removed` forgets the name (it then
-  holds `[]`; a replace is told as a removal first, so `node.added` needs no forgetting of its own), so a removed
-  node's teardown `[]` is dropped and a node added again under the name sends its first list even when it equals the
-  older node's last (`session_test.cpp`).
+- **The gateway sends lists only for names a client holds**: `node.added` holds the name with `[]`, `node.removed`
+  lets it go, and a list for a name not held is dropped whatever it says, so nothing about a removed node's companions
+  follows its `node.removed` by construction, not by teardown's order. The comparison with the last list sent is
+  whole-entry, counters included; a node added again under the name starts from `[]`, so its first list is sent even
+  when it equals the older node's last (`session_test.cpp`).
+- **A counter reaching the wire is not proved end to end** (`docs/testing.md`, `ear_system_tests`): no system test can
+  hold a file node's consumer back, as libsndfile refuses to write a WAV into a FIFO.
 - **`NodeAdded` gained no member**, its encoder writes `[]` (8.3's row dropped): a member always empty would be
   dead weight on every `node.added` the gateway builds.
 - **Every fixture's snapshot and `node.added` carry `companions`**, and `features` the third name; `snapshot.json`'s

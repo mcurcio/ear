@@ -84,9 +84,9 @@ public:
 	/// CounterListener: posted as counters.changed (docs/control-port.md#counters).
 	void countersChanged(const GraphCounts& graph, std::uint64_t lostMs, std::span<const NamedCounts> nodes) override;
 	/// NodeCompanionsListener, told by NodeHost (an entry added or removed, or its `ready`) and by CounterWatch (a
-	/// counter's move): posted as node.companionsChanged, in order with the node's health, only when the list differs
-	/// from the last one sent for the node (none, the [] of its node.added, until then; forgotten at node.removed), so the two tellers never send
-	/// one list twice (docs/control-port.md#companions).
+	/// counter's move): posted as node.companionsChanged, in order with the node's health, only for a node a client
+	/// holds (added, not removed since) and only when the list differs from the last one sent for it (the [] of its
+	/// node.added until then), so the two tellers never send one list twice (docs/control-port.md#companions).
 	void companionsChanged(const NodeName& node, std::span<const CompanionView> companions) override;
 	/// SnapshotStamp (main loop): each node's `since` as its last node.state carried it, for a node told of.
 	void stamp(GraphView& view) const override;

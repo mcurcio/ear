@@ -30,7 +30,8 @@ struct Sent {
 	bool told = true;
 };
 using SentMap = std::map<NodeName, Sent, std::less<>>;
-/// Each node's companion list as last sent (main loop only); a node absent holds [], as its node.added said.
+/// The companion list last sent for each node a client holds (main loop only): [] from its node.added, gone at its
+/// node.removed. A name absent is not held.
 using CompanionsMap = std::map<NodeName, std::vector<CompanionView>, std::less<>>;
 
 /// The health as the wire compares it: `superseded` is never on the wire.
@@ -50,8 +51,8 @@ struct MainLoopGateway::Impl {
 	const NodeCounterSource* counts = nullptr; // main loop only
 	/// Each node's health as last sent (main loop only), forgotten when the node leaves the graph.
 	std::unique_ptr<SentMap> sent = std::make_unique<SentMap>();
-	/// Each node's companion list as last sent (main loop only), forgotten at node.removed (a replace's included: the
-	/// next node.added of the name says [], which an absent name holds).
+	/// The companion list last sent for each node a client holds (main loop only): [] at its node.added, erased at its
+	/// node.removed (a replace's too).
 	std::unique_ptr<CompanionsMap> companions = std::make_unique<CompanionsMap>();
 
 	/// Main loop: `call(*sink)` on the control executor; dropped before watch().
@@ -95,6 +96,7 @@ void MainLoopGateway::nodeAdded(const NodeSpec& node, std::shared_ptr<const Node
 	const NodeHealth health = healthFromSpec(node);
 	const auto since = impl_->clock();
 	impl_->sent->insert_or_assign(node.name, Sent{health, since, !node.disabled});
+	impl_->companions->insert_or_assign(node.name, std::vector<CompanionView>{}); // what node.added says
 	impl_->post(NodeAdded{node, config->ports().publicOnly(), health, since});
 }
 
@@ -108,6 +110,7 @@ void MainLoopGateway::nodeReplaced(const NodeSpec& node, std::shared_ptr<const N
 	const NodeHealth health = healthFromSpec(node);
 	const auto since = impl_->clock();
 	impl_->sent->insert_or_assign(node.name, Sent{health, since, !node.disabled});
+	impl_->companions->insert_or_assign(node.name, std::vector<CompanionView>{}); // what node.added says
 	impl_->post(NodeAdded{node, config->ports().publicOnly(), health, since, carried});
 }
 
@@ -121,7 +124,7 @@ void MainLoopGateway::nodeChanged(const NodeSpec& node, std::shared_ptr<const No
 
 void MainLoopGateway::nodeRemoved(const NodeName& node) {
 	impl_->sent->erase(node);
-	impl_->companions->erase(node); // a client drops the node here: its teardown's empty list then says nothing new
+	impl_->companions->erase(node); // a client drops the node here: nothing about its companions is sent after
 	impl_->post(NodeRemoved{node});
 }
 
@@ -159,12 +162,11 @@ void MainLoopGateway::countersChanged(const GraphCounts& graph, std::uint64_t lo
 void MainLoopGateway::companionsChanged(const NodeName& node, std::span<const CompanionView> companions) {
 	// NodeHost compares lists without their counters and CounterWatch only with the lists it told itself, so either may
 	// tell one the other already did (a structural change carrying a counter that moved, then CounterWatch's beat).
-	auto& sent = *impl_->companions;
-	const auto known = sent.find(node);
-	const bool same = known == sent.end() ? companions.empty() : std::ranges::equal(known->second, companions);
-	if (same) return;
-	if (companions.empty()) sent.erase(node);
-	else sent.insert_or_assign(node, std::vector<CompanionView>(companions.begin(), companions.end()));
+	// A name no client holds (removed, and not added again since) is dropped whatever its list says.
+	const auto known = impl_->companions->find(node);
+	if (known == impl_->companions->end()) return;
+	if (std::ranges::equal(known->second, companions)) return;
+	known->second.assign(companions.begin(), companions.end());
 	impl_->post(NodeCompanionsChanged{node, {companions.begin(), companions.end()}});
 }
 

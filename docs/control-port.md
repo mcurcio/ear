@@ -401,8 +401,8 @@ which no node's has), never metered. `test/protocol/companions.json` shows a lis
   Standard output says each drop too, as `ear.sink-dropped` and `ear.source-shortfall`
   ([output-records.md](output-records.md#diagnostic)).
 - **A name the client does not hold** is ignored, like every event naming a node it does not
-  know. Nothing is sent for a removed node's companions after its `node.removed`; a node of that
-  name added again starts from its `node.added`'s `[]`. A newer node replacing an older one of
+  know. Nothing is sent for a removed node's companions after its `node.removed`, whatever its
+  list says; a node of that name added again starts from its `node.added`'s `[]`. A newer node replacing an older one of
   its name speaks for the name: the older one's list is never sent.
 - **Open set.** A kind the client does not know is drawn by its own text; a member it does not
   know is ignored. A node held without `companions` (from an ear without the feature) has none

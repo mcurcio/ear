@@ -90,8 +90,8 @@ use`).
   readiness allows, `[]` after the `node.state` that began a teardown; none for a stop or start),
   at most once a second for a counter. Two tellers feed it (NodeHost for structure and readiness,
   CounterWatch at the heartbeat for counters), and the gateway (`companionsChanged` in
-  `src/control/gateway.cpp`) drops a list equal to the last it sent for the node, and forgets the
-  name at `node.removed` (a replace's too), so the next `node.added`'s `[]` is what it holds. A companion's counters run per configuration, so they
+  `src/control/gateway.cpp`) drops a list for a name no client holds (removed, not added again) and
+  one equal to the last it sent for the node; `node.added` sets that to `[]`. A companion's counters run per configuration, so they
   never ride `counters`/`counters.changed`. To see a list:
   `node scripts/rpc-call.mjs ws://127.0.0.1:7777/rpc graph.get` and read each node's `companions`.
 
