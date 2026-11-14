@@ -3,10 +3,10 @@
 Status: designed to module level (2026-11-13), part of slice 3c (`node-primitives.md`); Q-TM1 answered (RTP is the
 converter's first user), Q-TM2 narrowed and its default decided unless the owner objects; T1, T2 and T3 built (T3: the
 source keeps no time and a source's clock decides its skip, now `docs/writing-a-node-type.md#a-sources-clock`; 4.6),
-T4 built (the converter's base in module-run mode, RTP on it: 5.6), and section 6 built by S3c.6c (`sendspin`'s
-`SendspinClock` on its source, the one owner of the played timeline: `docs/node-types.md#clock`, and why it departs
-from 6.1 in `node-primitives.md` 0.3, found building S3c.6c); nothing else of it built beyond what section 2 says is
-already true. It states how audio time works in ear (the owner's model, section 1), takes the
+T4 built (the converter's base in module-run mode, RTP on it: 5.6), and section 6 built by T2 and S3c.6c and retired
+to a pointer (`sendspin`'s `SendspinClock` on its source, the one owner of the played timeline:
+`docs/node-types.md#clock`), all but 6.5's evidence-gated drop of the floor patch; nothing else of it built beyond
+what section 2 says is already true. It states how audio time works in ear (the owner's model, section 1), takes the
 framework's timekeeping out of the source (`SourceRing`'s `Played` and its keep-in-step), moves `sendspin`'s sync onto
 the spike's "honest sink plus local skip" (section 6), and adds the converter companion (section 5). The model itself
 is `docs/architecture.md#the-timing-model`, which says where the code still departs from it; this page designs the
@@ -41,12 +41,12 @@ Decided by the owner on 2026-11-13 and given to the designer as decided; the wor
 
 *Amended by the design review (2026-11-13, M1):* TM7's "defers nothing" is narrowed. `sendspin` keeps C4's rule
 that an overdue tick tells the library nothing, under a bound, because in a burst that loses nothing every other
-dating makes the library correct twice (6.1); what goes is the debt, `LibraryView`, `skipThenRead` and the bound's
+dating makes the library correct twice (`docs/node-types.md#clock`); what goes is the debt, `LibraryView`, `skipThenRead` and the bound's
 owing role. The owner can overturn it.
 
 *Amended by the re-check (2026-11-13):* TM7's "only `cmake/sendspin-late-chunk.patch` remains" is narrowed too.
 `cmake/sendspin-starved-floor.patch` is **kept**, with the deferral, as C4's proven pair: while ear defers, the
-library's playtime runs open-loop and trails now, and upstream's floor would fire on it mid-burst (6.1, 6.5). Dropping
+library's playtime runs open-loop and trails now, and upstream's floor would fire on it mid-burst (`docs/node-types.md#clock`, 6.5). Dropping
 it later is a separate step, gated on evidence [U: 6.5].
 
 
@@ -486,173 +486,22 @@ test passed unedited, "L16 sent at 44100 into the 48000 graph is resampled" amon
 
 ## 6. `sendspin` under the model
 
-### 6.1 The wrapper's contract: the honest sink plus local skip, told only on time
+Built by T2 and S3c.6c, and retired here: the clock as built (the honest sink plus local skip, told only on time
+under `untoldBound`, the clamp for the report the bound forces, the one owner of the played timeline and its
+hand-overs, and why each) is `docs/node-types.md#clock`; the forced report's dating is `GraphCycle::ranRawNs()`
+(`docs/engine.md#graphcycle`); the carried patches, their reasons and tests are
+`docs/node-types.md#library-facts-and-carried-patches`; the tests that replaced C4's and what each proves are
+`docs/testing.md#the-cycle-judge` and the `sendspin` skill. Section 7's rows for the steps that built it cite 6.1 to
+6.4 as they were designed; the page's history holds them. What is left of it unbuilt:
 
-`sendspin`'s audio from the server is a source on `from_server` (S3c.6, `node-primitives.md` 4.1) with a clock,
-`SendspinClock : SourceClock` (`sendspin_clock.hpp`, replacing `sendspin_code.*`'s playback half):
+### 6.5 Dropping the floor patch, gated on evidence
 
-- **It plays every frame in order.** It never skips but as below, and never pads: a tick the feed leaves short plays
-  zeros, which are not counted.
-- **`skipBefore`**: on a tick whose facts state `catchUp` or `absent` with `jumpFrames > 0`, it answers `jumpFrames`;
-  the ring skips min(jump, what it holds now). On any other tick, 0. A clearing tick skips nothing (the ring's rule).
-  The skip happens on the tick that states the jump, overdue or not.
-- **`played`**: `played_ += skipped + read` every tick (never `ended` nor `zeros`: the library wrote neither for its
-  current stream). Then it **tells the library only from a tick that began on time** (`overdueNs == 0`): it publishes
-  `PlayProgress{played_, finish}` (6.2) to its mailbox and returns true. An overdue tick, one of a catch-up's burst,
-  tells nothing; its frames are told with the next on-time tick's report, which counts them. The worker's notifier,
-  watching the clock wake, hands the library the difference with `notify_audio_played`.
-- **One bound.** If the library has gone untold for `untoldBound` (2 s of the graph's nominal time: the ticks'
-  `startRawNs`, so a burst of short ticks does not stretch it), the clock tells from the next tick even if it is
-  overdue, so a host that never runs a tick on time does not leave the library untold for good (6.2 says how that
-  report is dated). The bound has no other role: there is no debt for it to forget.
-- **It keeps no debt and has no `LibraryView`.** What the ring did not hold of a jump is the library's to correct: it
-  sees it in the next honest finish (its next chunk late by that much) and corrects once.
-- **One played timeline** (amended after S3c.6b, which built Q-3c1's drop path on the feed: `docs/node-types.md#clock`).
-  The clock owns one played count and one heard finish (dated with what lies downstream). The tick advances them;
-  while no tick drains the source past its bound (a stopped node the server streams to, a stall past the bound), the
-  undrained pacer advances the same two at the graph's rate, up to now and never ahead, and takes what the source
-  held then as played, so the library's thread runs and its inbound ring never pins (which would close the
-  connection, breaking Q-3c1). The tick taking it back is a change of who advances that timeline, not a second
-  timeline merged after the fact: its first cycle back plays on from the pacer's finish, skipping as late what is
-  heard by its run since, as S3c.6b's code does, and the finish told never steps back. What S3c.6b keeps apart and
-  reconciles folds into the clock: `PlayedTeller`'s merge of two tellers and its clamp at the last told, the stale
-  skip and `countedTwice` (a frame read in the instant the pacer began), the resume states (pending while the
-  writer is mid-publish, anchored) and their expiry after a feed's worth of ticks. The drop's finish is the clock's
-  own state rather than another thread's sequence-counted publish, so a tick never finds it unreadable and the
-  pending state goes. `SourceRing`'s stop drop (untold, playing nothing into the library's time) is not this and
-  does not replace it.
-
-*Why the deferral stays* (the design review, M1, amending TM7's "defers nothing"; the owner can overturn it): every
-report is true when it is given. An overdue tick's start is the driver's nominal time, behind now by the graph's lag
-`L` until the burst ends, and its run time is now; neither is where the library's next frame plays while the burst
-runs. Told the nominal time, the library sees its playtime behind now and, without the floor patch, floors it at now
-mid-burst (found building C4: b8e359689e, `cmake/sendspin-starved-floor.patch`). Told the run time, it puts its playtime at now plus what it holds; in the
-runner's burst, where every tick runs whole and nothing is lost, its next chunk then looks late by `L` and it drops
-`L` mid-burst, the output runs about `L` ahead once the burst ends, and it adds `L` of silence back: two corrections and
-silence where nothing was lost. Waiting for the first on-time tick tells it a finish that is true then. This is the
-node's own clock logic (TM3), not the framework's.
-
-*Why the floor patch stays with it* (the re-check): while ear defers, the library hears nothing and keeps its
-playtime open-loop, the last finish plus what it has written since. Through a burst that trails now by about the lag
-`L`, in either shape. Upstream's `starved_playtime_floor` floors whenever the playtime is more than 5 ms behind now,
-whatever is buffered, so without the patch it would floor mid-burst and bring the double correction back. The patch
-floors only when nothing is buffered, the spec's underrun rule, the library's own: it fits TM3. C4 only ever ran the
-deferral with the patch; the spike's `honest-local` told every tick and never ran the deferral at all.
-
-**The evidence, and what T2 must prove.**
-
-- **The cut shape, measured** (the spike, `honest-local`, 5 runs each, the dev host, whose bursts cut ticks: every
-  stall run lost frames) [V]. The spike's wrapper told every tick, overdue ones dated by run time; T2 measures it again
-  with the deferral.
-
-  | Case | C4 as built (`real-all`) | Honest plus local skip (`honest-local`) |
-  |---|---|---|
-  | A 200 ms or 1 s stall, made upstream or in the block | no correction by the library; 27 to 160 ms of ear's own silence after the burst; back on the stamps 27 to 160 ms after it | exactly one correction by the library per run; ear's silence one block (5.3 ms); back on the stamps 11 to 101 ms after the burst (median 101: about one 96 ms chunk); until then audio plays late by the stall's remainder (160 to 1093 ms) |
-  | A 1.5-cycle hiccup made upstream (one block lost, the feed holding it) | no correction | no correction (without the local skip: one per run) |
-  | A starving network gap | two corrections | one correction (the late-chunk patch's) |
-  | Steady on the dummy beside `yes` x 4 | no drop | no library drop and no lost sync (without the local skip: 13 to 50 drops and 22 to 46 lost syncs a run) |
-
-  4,250 of 4,250 judged cycles were within 1 ms after recovery in every variant. The trade the owner accepted (TM7):
-  after a stall past the feed, about one library chunk of audio plays late by what the feed did not hold, then the
-  library corrects once; C4 played ear's silence instead and needed no correction.
-- **The uncut shape, not measured.** No spike run made it: the dev host's bursts always cut. It is the shape the
-  deferral exists for, and the one a GitHub runner makes (seen on CI after C4 and after the counters reached the wire: 01b54dd731, 67433123d2). **T2 must prove it on CI**:
-  the in-block stall tests (200 ms and 1 s) run there with zero lost frames, and for a run with zero lost frames they
-  require zero library corrections, no silence and every report's finish at or after now, as for a run with cuts they
-  require 6.4's one correction. A run of either shape passes only its own shape's rule, and the test names which shape
-  it judged, so CI's log shows the uncut shape was met.
-
-### 6.2 The dating rule, and the one case the clamp covers
-
-The finish told is where the library's next frame plays: the end of the telling tick, once what lies downstream has
-played, `FrameClock(rate).heardRawNs(start, tick.frames, tick.playback)`. With the deferral the telling tick is on time
-in every case but one, so `start` is its `startRawNs`, the driver's date and the true one.
-
-The one case is a report the bound forces from an overdue tick. Its nominal start trails now by the lag, which the
-report would be untrue when given (the library would take its next chunk for late by the lag); so it is dated from
-when the tick really ran, a fact of the tick whose home
-is `GraphCycle`, stated once for every node:
-
-```cpp
-// GraphCycle (ear/core/node_type.hpp), a member function: no new field, no state.
-/// When the block really began this tick, on CLOCK_MONOTONIC_RAW: startRawNs when it began on time; when it began
-/// overdue, startRawNs + (nextNs - startNs) + overdueNs. 0 nextNs (a test's own tick) is taken as on time.
-constexpr std::int64_t ranRawNs() const noexcept;
-```
-
-(CLOCK_MONOTONIC and the raw clock differ by parts per million over the few milliseconds between, nanoseconds [V: the
-spike's `realStartRawNs`].) For an on-time tick `ranRawNs()` is `startRawNs`, so the clock always dates by it.
-
-**The clamp is kept for that case alone.** A report forced from an overdue tick is dated by its run time; the next
-on-time tick is dated by its nominal start, earlier by that tick's `overdueNs`, so without a clamp the finish would
-step back (the spike saw such steps when it told every overdue tick: `honest-local`, one in-block 200 ms run of five,
-three steps [V]). So `finish = max(heard, lastFinish_)`. Ticks told on time only follow one another by their nominal
-starts and never step back, so with the bound not reached the clamp never acts; a test proves it holds still (6.4).
-A forced report means the host ran no tick on time for 2 s, and the library may correct after it; that is the bound's
-price, the same as C4's.
-
-`lastFinish_` lives for the configuration: a stop and a start come later in time anyway, and a clear does not reset it
-(the library re-anchors from the next finish, which is later still).
-
-### 6.3 What is deleted, and what stays
-
-| Deleted | Where |
-|---|---|
-| `LibraryView` | `library_view.hpp` |
-| The debt: `owed_`, `catchingUp_`, `owingSuspended_`, the payment of a catch-up's remainder, and the owing role of `untoldBound` (forgetting a debt when due) | `sendspin_code.*` |
-| The rule that a lossy tick (a `catchUp` or `absent`) tells nothing: with no debt, a lossy tick on time tells | `sendspin_code.*` |
-| `Feed::skipThenRead`, `Feed::Taken`, `onPaymentStep`, the payment's two passes | `feed.*` (S3c.6 then deletes the feed itself) |
-| Their tests: `code_test.cpp`'s debt, starved-library and payment rows; `feed_test.cpp`'s `skipThenRead` and payment-race rows; `clock_test.cpp`'s payment requirements (a remainder above 0 to pay, back within 2 + ceil(remainder / (feed - block)) blocks, `corrections == 0` after a stall with cuts, no debt forgotten while owed) and `Feed::holdWriter`'s use for them; `CycleJudge::librarySettle`'s causes `starvedCatchUp` and `forgottenDebt` | `src/nodes/sendspin/tests/`, `test/support/cycle_judge.hpp` |
-
-**Stays**: `GraphCycle::overdueNs` and its use for telling (an overdue tick tells nothing); `untoldBound` and
-`untoldSince_`, as the deferral's bound only; `code_test.cpp`'s rows for the deferral and its bound;
-`cmake/sendspin-starved-floor.patch` with its library test and upstream report (6.5);
-`cmake/sendspin-late-chunk.patch` and its gap test; `StallProbe` and the in-block stalls (6.4 uses them);
-`Feed::dryReads`, `dryFrames` until S3c.6c (then `SendspinClock`'s seams, `node-primitives.md` 0.3, not the companion's shortfall); the settle causes `dry` and `logged`.
-
-### 6.4 The tests that replace C4's
-
-Each through the real server and the real engine (`clock_test.cpp`), judged by the cycle judge, except the unit rows:
-
-- **One library correction after a stall.** The 200 ms and 1 s stalls, made upstream (`StallProbe`) and in the block:
-  every run, exactly one correction by the library (a logged hard sync or a late chunk's front dropped) of what the
-  clock could not skip (the stall's lost frames less what the feed held), within a tolerance T2 fixes from the spike's
-  runs and states with its reason; ear's own silence after the
-  burst at most one block; back on the server's stamps within one chunk and two blocks of the burst's end; no
-  `Buffered frames underflow`; every report's frames exactly `skipped + read` since the last report (6.1), every
-  report from an on-time tick, and every finish by 6.2.
-- **No correction after a stall that loses nothing** (the uncut shape, 6.1). The same in-block stall tests, on a run
-  whose burst lost no frames (a GitHub runner's): zero library corrections, no silence, nothing told from an overdue
-  tick, and the first report after the burst dated by its on-time tick. T2 is not done until CI has run this shape.
-- **An exact skip on a host-missed cycle.** The 1.5-cycle hiccup upstream of the node (one block cut, the feed holding
-  it): the clock skips exactly `jumpFrames`, the ramp steps by exactly that, the report moves by `jumpFrames` plus the
-  tick's read, and the library makes no correction, every run. A unit row on the harness with scripted facts: a
-  `catchUp` larger than what is held skips what is held and no more; `absent` skips; `reposition`, `driverChange`,
-  `start` and `oversized` skip nothing; a clearing tick skips nothing.
-- **The deferral, its bound and the clamp.** Unit rows on scripted ticks: a burst of overdue ticks tells nothing and
-  the first on-time tick tells every frame of it, dated nominally; one overdue whole tick under load tells nothing; a
-  lossy tick on time tells; overdue ticks for 2 s of nominal time force one report, dated by `ranRawNs()`, and the
-  on-time tick after it is clamped to it, then nominal again; with the bound never reached the clamp never acts. In
-  the clock tests every report's finish is checked against the last under the in-block stalls and the loaded steady
-  runs (a step back fails the test, naming both ticks' facts).
-- **Steady and gap**, kept: the steady tests on the dummy and a following card (750 cycles within 1 ms; the judge's four
-  induced stalls each a local skip with no library correction), and the gap test (one correction, the late chunk's).
-
-### 6.5 The upstream reports
-
-- **The floor patch and its report stay** (the re-check, amending TM7). Upstream's floor is right for reports dated
-  truly when they are given, which is every report the honest wrapper gives. It is not right for the playtime the
-  library keeps open-loop between reports while ear defers: that trails now by the graph's lag through a burst, with
-  frames still buffered, and upstream floors it. So the report's first half (floor only when nothing is buffered, the
-  spec's underrun recovery) stands, its reason restated for the deferral rather than for reports dated behind now.
-- **Dropping the patch is a later step, gated on evidence** [U]. T2 may also measure both burst shapes without the
-  patch (the dev host's cut bursts, and CI's uncut ones), beside its required runs with it. Only if both shapes show no
-  floor mid-burst and no correction beyond 6.4's does a separate step drop it, with its own review; until then it is
-  carried as built.
-- **The late chunk's report stays**, as today: a sink that reports honestly still starves the library in a
-  network gap, and `decode_chunk` then skips a chunk whose front is late but whose end is not (the gap test fails 5 of
-  5 with the patch's change reverted [V: the C4 review, 1a6bad80b2]). The `sendspin` skill's draft keeps both halves and
-  their three tests; T2 replaces its measurement with the honest wrapper's.
+`cmake/sendspin-starved-floor.patch` is carried with the deferral: while ear defers, the library's playtime runs open
+loop and trails now through a burst of either shape, with frames still buffered, and upstream's floor would fire on it
+mid-burst. Dropping it is a separate step with its own review, taken only if both burst shapes, run without the patch
+(the dev host's cut bursts, which T2 measured: 20 of 20 passed; and CI's uncut ones, not yet read in a runner's log:
+`out/Testing/sendspin-stall-shapes.txt`), show no floor mid-burst and no correction beyond the stall tests' one [U].
+Until then it is carried as built, and its upstream report stands as drafted in the `sendspin` skill.
 
 ## 7. Order of build steps
 
@@ -694,7 +543,7 @@ Each the designer's; the owner can overturn any.
 | D-TM2 | The clock's report rides the source's own wake (`clockWake`), the report itself in a mailbox the type owns | One wake per source as built; G23 stands |
 | D-TM3 | `SourcePlayed` splits a cleared stream's faded 5 ms (`ended`) and the zeros from what was read | A clock counting the old stream's tail as played would put the library's new stream 5 ms off |
 | D-TM4 | `ranRawNs()` is a member of `GraphCycle`; the deferral, its bound and the clamp are `sendspin`'s | When a tick ran is a tick fact for every node (TM1); when to tell a library is that node's clock logic (TM3) |
-| D-TM5 | Tell only from an on-time tick, under a 2 s bound; the clamp kept only for a report the bound forces from an overdue tick (6.1, 6.2) | Every report is true when given, in a burst of either shape; the clamp has one case left, and is proven idle otherwise |
+| D-TM5 | Tell only from an on-time tick, under a 2 s bound; the clamp kept only for a report the bound forces from an overdue tick (`docs/node-types.md#clock`) | Every report is true when given, in a burst of either shape; the clamp has one case left, and is proven idle otherwise |
 | D-TM6 | Sinks unchanged; their consumers reconcile | A chunk is already the tick's facts and the model's latency |
 | D-TM7 | The converter's base is the RTP receiver's body generalised (`ModuleConverterBody`, `ModuleConverters<Shape>`), on the shared `joinEngineCompanion`; set and tracked add an ear-made `pw_stream` body on the same lifecycle | TM8; the module-run mode is what RTP already is, and the stream body is the only way to PipeWire's resampler for a ring (TM5); binding by the drive keeps the exactness of ring companions served by their block (`docs/architecture.md#companions`) |
 | D-TM10 | The card stays on its own body, sharing only `joinEngineCompanion` | It is made by ear's proxy, not a module: the base's registry search, `moduleRunDelay` and auto-port-config are all things a card does not use (5.4) |
