@@ -203,8 +203,8 @@ TEST_CASE("FrameClock: a duration as whole frames at the graph's rate", "[latenc
 	}
 }
 
-// R3 moved every site onto FrameClock and changed no date: where the one division each site made did not overflow,
-// FrameClock gives the same number, at every rate a graph may run.
+// 6b560dba74 moved every site onto FrameClock and changed no date: where the one division each site made did not
+// overflow, FrameClock gives the same number, at every rate a graph may run.
 TEST_CASE("FrameClock gives what each site's one division gave", "[latency]") {
 	for (const std::uint32_t rate : {1U, 8000U, 22050U, 44100U, 48000U, 96000U, 192000U, 384000U, 768000U}) {
 		INFO("at " << rate << " Hz");

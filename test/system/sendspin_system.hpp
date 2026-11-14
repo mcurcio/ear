@@ -294,7 +294,8 @@ inline std::vector<std::int64_t> lostSyncUs(const ChildProcess& ear) {
 /// `late_frames`, of which it drops what the chunk holds); for an early one (`n` above zero, silence added), no more than the silence it added. The library
 /// logs only a loss's first hard sync, so a drop inside a loss that began with silence says nothing of its own (seen
 /// once under load: `Lost sync (90691us off)`, then a step of a chunk and 99 frames); ear prints no `Regained sync`, so
-/// the loss's end is not known either. An interim bound, owed with ear's own records (root-classes.md 5.7).
+/// the loss's end is not known either. An interim bound, until the library's log reaches ear stamped with its frames
+/// (docs/testing.md#the-librarys-own-word).
 inline std::int64_t lossDropFrames(std::int64_t offUs) {
 	return (offUs < 0 ? -offUs : offUs) * graphFrequency / 1000000;
 }
@@ -474,7 +475,7 @@ inline RampCheck checkRamp(const Wav& wav, std::vector<std::int64_t> lostSyncsUs
 			} else if (step > 1 && skippedBlocks(step) == 0 && !(afterBlend && step == 3) && !lostSyncsUs.empty()) {
 				// A forward step past what any line says, inside a loss the library logged: its later hard syncs in the
 				// same loss say nothing at warn, so the line is the only evidence, and it accounts for one such step,
-				// counted apart: an interim limit (root-classes.md 5.7).
+				// counted apart: an interim limit (docs/testing.md#the-librarys-own-word).
 				++result.stepsInLoss;
 				if (result.stepsInLossSeen.size() < 8)
 					result.stepsInLossSeen.push_back(std::to_string(step) + " at " + std::to_string(frame));

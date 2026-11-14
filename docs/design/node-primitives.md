@@ -465,7 +465,7 @@ and `consumedBy(loop)`, so a consumer may be a member of a loop's state (sendspi
 library's source role on the worker's state) or the state itself (the RTP sender). As a sink's consumer `ToServer`
 takes its upstream: it dates each piece by its chunk, `FrameClock::enteredRawNs(chunk.startRawNs, offset,
 {0, chunk.upstreamFrames})` (`docs/engine.md#dating`), so a card's capture reaches the server dated by when it entered
-the graph, not by its cycle's start (`docs/node-types.md#clock`, `root-classes.md` 3.1), and the capture anchor goes.
+the graph, not by its cycle's start (`docs/node-types.md#clock`), and the capture anchor goes.
 The consumer's `begin` still runs on
 the sink's thread before the node is configured, and a stop's silence still unbinds it without telling it
 (it sees the gap in positions). `SinkControl` (`pause`, `resume`) is 3d's (`reconfigure.md` 6.4).

@@ -30,6 +30,12 @@ with them every node, the control port's graph requests and the keeper's main-lo
 whether a wedged MOTU blocks either]. The main-loop watchdog (built, `ear.main-loop-stalled`) reports such a stall while
 it lasts; it cannot end it.
 
+One symptom of the frozen follower is already seen on the test card, unexplained: `sound_card_test.cpp`'s "to_card's
+last 5 ms before a silence decay to zero" failed about 1 run in 50 beside 5 busy processes on 4 cores (found 2026-11-10,
+at a317bcc305 too), its card's file not growing by 16 blocks within 5 s of the drive. Why the card stops writing is not
+known [U: whether it still fails since the card tests moved onto the cycle judge, 0b055fd638; if so, the follower's
+state and the PCM's pointer at the deadline, which 3.1's watchdog would read].
+
 ## 3. The design
 
 ### 3.1 The follower watchdog

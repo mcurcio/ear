@@ -35,6 +35,19 @@ and what a node's life looks like. The details live on their own pages:
   brings in a clock of its own decides how that clock meets the graph's tick
   ([the timing model](#the-timing-model)). There is no PipeWire daemon, no socket and no session
   manager.
+- **Every rule has one home, and a type holds it where it can.** A rule the engine and the tests
+  both need is one pure function in `ear_core` that each calls, never a copy: the latency model
+  ([engine.md](engine.md#latency-per-bank-pair)), dating by `FrameClock`
+  ([engine.md](engine.md#dating)), the sink's, the source's and the block's rules the type
+  harness shares ([writing-a-node-type.md](writing-a-node-type.md#testing-a-type)). Where a rule
+  can be a type, it is one rather than a guard reading source text: a rate is a `SampleRate`, a
+  PipeWire property key a `PropertyKey` of its home ([engine.md](engine.md#properties-ear-sets)),
+  a C callback a `Guarded` value ([below](#the-callback-boundary)), a test's sleep a role call
+  ([testing.md](testing.md#sleeps-by-role)). *Why:* the owner's rule (2026-11-09), "always patch
+  the root class of a bug, not the bug itself. Clusters of issues are a smell that signals an
+  architecture problem": slice 3's reviews found the same bug fixed in two places (the block and
+  the harness), one callback at a time, one sleep at a time, and each class was closed by giving
+  its rule one home.
 
 ## Packages
 
@@ -215,7 +228,9 @@ boundary is ear's own bug, never a type's.
 
 ### Faults by owner
 
-ear's own bugs are split by who owns the state the bug may have left half-changed. *Why:* an
+ear's own bugs are split by who owns the state the bug may have left half-changed (the owner's
+answer, 2026-11-09: "split by owner", over ending the process for every bug or failing only a
+node for every bug). *Why:* an
 adapter's state dies with its node, so failing only that node is clean and the rest of the graph
 plays on; NodeHost's state is every node's, and its invariants cannot be trusted after an exception
 in the middle of an update, so ending the process (the container restarts it) stays the safe

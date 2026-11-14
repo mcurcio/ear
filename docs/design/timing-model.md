@@ -368,7 +368,7 @@ ConvertedSink<M> convertedSink(Bank, SinkShape ring, ConverterShape conv);
 - **No mode skips.** Lost ticks are the node's clock's (`SourceClock::skipBefore`); in tracked mode a backlog above
   `targetFrames` drains through the loop unless the clock skips it, which by Q-TM2's default it does.
 
-### 5.3 Latency (R1's one model)
+### 5.3 Latency (the one latency model)
 
 A converter's delay is latency beyond its bank, entered once as `LatencyPlan::beyond` (`docs/engine.md#latency-per-bank-pair`), and
 only what no engine node reports, so nothing counts twice:

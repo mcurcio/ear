@@ -336,7 +336,9 @@ later than `heldByLag` (300 ms; measured at most 188 ms: the receiver's 100 ms b
 node's write and the 50 ms between looks), an interim bound until ear reports its own lost cycles. They judge a planned ten tenths, the sender
 sending on until then. `holdOnce` holds the sender on purpose, and a hold inside the headroom must
 leave the tone clean: the tenths it reaches are judged, the stream played again until the host
-leaves them judgeable.
+leaves them judgeable. Only a 20 ms hold is made (`rtp_receiver_test.cpp`); that a send late by
+more, up to the receiver's whole headroom (100 ms), still reaches nothing is taken from the
+buffer's size, not shown by a hold.
 
 ### An ordinary user's folder
 
@@ -394,8 +396,8 @@ empty (an empty one, or a value made elsewhere, does not compile):
   moment (an RTP sender's packets, a heartbeat, an invoke storm's rate).
 
 A sleep that stands in for an event, or a test that passes only on a quick host, has no role and
-no call: the audit that emptied the last of them (`docs/design/root-classes.md`, steps R5b to R5d)
-left none, and the test waits for the event instead. Nor does a test tell and go on where it should
+no call: the audit that emptied the last of them (d1fef6d230 to 9e49307663, by executable) left
+none, and the test waits for the event instead. Nor does a test tell and go on where it should
 fail naming what it waited for: Catch's `WARN` and `CHECK_NOFAIL` do not compile.
 
 *Why calls, not a list.* Each guard that read source text for a rule a type or the compiler could
