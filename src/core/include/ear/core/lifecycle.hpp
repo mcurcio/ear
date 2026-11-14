@@ -182,6 +182,10 @@ public:
 	/// Declared store `store` (its index in the spec's Stores; docs/writing-a-node-type.md#stores): opened at readiness
 	/// step `opens` whether or not this is called, valid until the configuration is freed (teardown step 5).
 	virtual Store& store(std::size_t store) = 0;
+	/// A port the type's own thread will bind (docs/writing-a-node-type.md#claims): judged with the configuration's other
+	/// claims at the first readiness step, before anything is opened, held until teardown step 5. A claim of another
+	/// kind (a store's or a recording's, which the framework claims itself) is a std::logic_error.
+	virtual void claim(Claim claim) = 0;
 	/// A rule CreateOf finds broken before it reaches a call above (a code written against another type's spec): records
 	/// it on the configuration, so the node fails with it whatever configure does next, and throws std::logic_error(rule).
 	[[noreturn]] virtual void refuse(std::string rule) = 0;
@@ -339,6 +343,12 @@ public:
 		static_assert(ownStore<Handle>, "a context takes only its spec's stores");
 		return context_->store(StoresOf<Spec>::template indexOf<Handle>);
 	}
+
+	/// A listening TCP port or a UDP port the type's own thread binds (docs/writing-a-node-type.md#claims): one holder
+	/// ear-wide, judged at the first readiness step and probed against the kernel, so a port another node or program
+	/// holds fails the node start-failed before anything of it is opened or started.
+	void claim(claim::TcpListen port) { context_->claim(claim::of(port)); }
+	void claim(claim::Udp port) { context_->claim(claim::of(port)); }
 
 private:
 	template <const auto&, class> friend class spec_detail::SpecInstance;

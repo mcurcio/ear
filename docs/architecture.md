@@ -57,8 +57,8 @@ Each C++ package lives in `src/<package>/` with its own `CMakeLists.txt`, public
 
 | Target | Owns | Never |
 |---|---|---|
-| `ear_core` (`src/core`) | The desired graph (`DesiredGraph`: the one judge of every change, `plan` then `commit`); the node type contract (`NodeType`, settings tables, `TypeSpec`, the type's class and its contexts); the node framework (`NodeHost`, the node lifecycle machines, health, `NodeOperations`, the pass-through, companions, latency plans); the reconciler (route links and route status); levels; the graph read (`GraphStatus`); `FrameRing`. Beside it, for tests only, `ear_type_harness` (`ear/testing/`) | Any PipeWire call, socket, thread or file access. nlohmann/json is its only dependency |
-| `ear_runtime` (`src/runtime`) | The threads the node framework runs work on, behind `ear_core`'s interfaces: the I/O thread (`IoThread`, core's `IoExecutor`), the one thread for blocking work; the nodes' loops (`Loops`, core's `LoopAdapter`: the strand pool and each dedicated loop's thread) ([threads](#threads)); and the nodes' stores on disk (`ConfinedStores`, core's `StoreAdapter`, over the graph file folder) with the boot sweep of every declared store ([writing-a-node-type.md](writing-a-node-type.md#stores)) | Policy (what a job means is its caller's; staging, a loop's state and the sources it left, and when a store is narrowed, trusted or written, are `NodeHost`'s); PipeWire. No node type links it |
+| `ear_core` (`src/core`) | The desired graph (`DesiredGraph`: the one judge of every change, `plan` then `commit`); the node type contract (`NodeType`, settings tables, `TypeSpec`, the type's class and its contexts); the node framework (`NodeHost`, the node lifecycle machines, health, `NodeOperations`, the pass-through, companions, latency plans, the claim registry); the reconciler (route links and route status); levels; the graph read (`GraphStatus`); `FrameRing`. Beside it, for tests only, `ear_type_harness` (`ear/testing/`) | Any PipeWire call, socket, thread or file access. nlohmann/json is its only dependency |
+| `ear_runtime` (`src/runtime`) | The threads the node framework runs work on, behind `ear_core`'s interfaces: the I/O thread (`IoThread`, core's `IoExecutor`), the one thread for blocking work; the nodes' loops (`Loops`, core's `LoopAdapter`: the strand pool and each dedicated loop's thread) ([threads](#threads)); and the nodes' stores on disk (`ConfinedStores`, core's `StoreAdapter`, over the graph file folder) with the boot sweep of every declared store ([writing-a-node-type.md](writing-a-node-type.md#stores)); and the kernel's word on a port a claim names (`KernelPortProbe`, core's `PortProbe`, [writing-a-node-type.md](writing-a-node-type.md#claims)) | Policy (what a job means is its caller's; staging, a loop's state and the sources it left, when a store is narrowed, trusted or written, and who holds a claim, are `NodeHost`'s); PipeWire. No node type links it |
 | `ear_folder` (`src/folder`) | `ConfinedFolder`: a folder held open from boot, every path resolved beneath it by the kernel (`openat2` with `RESOLVE_BENEATH`); files replaced only if unchanged (`renameat2(RENAME_EXCHANGE)`); `requireApart`, the boot check that no two folders overlap | Following `..`, absolute paths or (for the graph file) any symlink |
 | `ear_node_white`, `ear_node_file`, `ear_node_card`, `ear_node_rtp`, `ear_node_sendspin` (`src/nodes/<type>`) | One built-in node type each ([node-types.md](node-types.md)) | Another node type; PipeWire or the framework's threads (only `ear_core`'s interfaces: no type links `ear_pipewire`, `ear_runtime`, `ear_control`, `ear_config` or `ear_server`) |
 | `ear_all_node_types` (`src/all_node_types`) | `allNodeTypes()`, the one list of node types, generated at configure from the folders in `src/nodes/` | Naming a type by hand |
@@ -612,7 +612,8 @@ Tearing a configuration down (a restart, a failure, a disable, a removal) goes b
 the main loop never joins a thread:
 
 1. Every source's writer closed (a write waiting returns at once); every loop closed to work from
-   outside the node; the type's `stop()` if its `start()` ran (it posts its goodbye to its loops);
+   outside the node; its [claims](writing-a-node-type.md#claims) going (a claimant waits for step 5
+   rather than being refused) and its own claim waits dropped; the type's `stop()` if its `start()` ran (it posts its goodbye to its loops);
    the fade; the barrier, a drive of no code (after it completes, no `process` of the code runs,
    so nothing the realtime thread can reach is freed while it can reach it); the code's `release`.
    What was sent to a loop before the node was configured is destroyed unrun.
@@ -627,7 +628,8 @@ the main loop never joins a thread:
    (which may read the instance too), then the instance (or run object), then its loops (a
    dedicated loop's thread has already returned), then its sources (whose writers the instance's threads may hold), then its stores (which a
    state, a consumer or the instance may hold; an open or write still queued holds only the store's
-   state) and its config freed, and recordings closed after them.
+   state) and its config freed, and recordings closed after them; last, its claims released, each
+   claimant that waited for one judged again in arrival order.
 
 Steps 3 and 4 have the close deadline ([bounds](#bounds-the-wedged-data-loop-and-the-watchdog)).
 A restart or retry completes the teardown before the
@@ -658,8 +660,15 @@ record ear keeps for it, so nothing it tells reaches the node or a newer configu
   configuration), and every write of its stores not yet begun, so a thread of it never replaces
   what a newer configuration of the node keeps in the file (a `replace` it waits on is refused
   `not written: its configuration was leaked`).
-- **The late close.** Once everything it held has reported, the record says `ear.close-late`
-  ([output-records.md](output-records.md#diagnostic)), the channel is detached, and the
+- **Its claims** ([writing-a-node-type.md](writing-a-node-type.md#claims)): its ports are
+  abandoned, so the next claimant probes the kernel afresh; its stores and recordings are kept,
+  since its threads may still write them, refusing a claimant `<file>: held by node <n>'s earlier
+  configuration, which did not close; it starts when that closes`. The record lists each node its
+  claims refuse that way, and each refused by a fresh probe of a port it abandoned.
+- **The late close.** Once everything it held has reported, its claims are released, the record
+  says `ear.close-late` ([output-records.md](output-records.md#diagnostic); `; its claims are
+  released` when it still held one), each node its claims refused is started again, once, as
+  `node.restart` would (if that refusal is still what it rests failed on), the channel is detached, and the
   configuration no longer counts as leaked (`NodeHost::leaked()`), so a stop afterwards ends
   normally rather than through `std::_Exit` ([stop](#stop-sigint-or-sigterm)). Then, in a main-loop
   turn of its own, the configuration is freed in step 5's order: every thread of it has reported
@@ -668,7 +677,8 @@ record ear keeps for it, so nothing it tells reaches the node or a newer configu
 
 A configuration leaked on an overdue barrier ([bounds](#bounds-the-wedged-data-loop-and-the-watchdog))
 is detached instead: the data loop may still run its code, so it never closes and counts as leaked
-for good.
+for good; its ports are abandoned and its stores kept for good, as no node is configured again
+once the data loop is wedged.
 
 ## Boot and stop
 

@@ -347,6 +347,15 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 		                       "the configuration leaked at the close deadline closed 14250 ms after its close began",
 		                       fields);
 		},
+		[](StatusLog& log, Lines&) {
+			// Still configuring, 10 s on: now it waits for one of its claims, whose holder is closing, by its key.
+			paceNow += std::chrono::seconds(10);
+			log.nodeChanged(
+				health("fpp", NodePhase::configuring, {}, {}, {{ear::WaitingFor::Kind::claim, "udp:5004"}}));
+		},
+		[](StatusLog& log, Lines&) {
+			log.nodeDiagnostic("fpp2", "ear.claim-wait", "udp:5004 held by node fpp, which is closing", {});
+		},
 		[](StatusLog& log, Lines&) { log.stopped(); },
 	};
 }

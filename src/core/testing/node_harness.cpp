@@ -750,6 +750,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			create.postToLoop(loop, std::move(work));
 		}
 		Store& store(std::size_t store) override { return create.store(store); }
+		void claim(Claim claim) override { create.claim(std::move(claim)); }
 		NodeHandle& events() override { return legacy.events(); }
 		void declareLatency(const std::string& bank, Latency internal) override {
 			legacy.declareLatency(bank, internal);

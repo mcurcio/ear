@@ -8,10 +8,12 @@
 // made by its config: the type's class (lifecycle.hpp's SpecInstance), or the legacy adapter over the old SPI's start
 // (legacy_instance.hpp). Its configure acquires only, through CreateContext (the class) or StartContext (the
 // legacy start), both implemented here on one set of internals, and gives the code; a rule it breaks at a call or at
-// the return, and a configure that throws, fail the node start-failed. Its stores (docs/writing-a-node-type.md#stores)
-// are opened first, each one job on the stores' I/O executor completing through the configuration's Completions; its
+// the return, and a configure that throws, fail the node start-failed. Its claims (docs/writing-a-node-type.md#claims)
+// are judged first against every other configuration's in the claim registry (claims.hpp), a granted port then probed
+// behind the turn's flush, and released last at teardown step 5. Its stores (docs/writing-a-node-type.md#stores)
+// are opened next, each one job on the stores' I/O executor completing through the configuration's Completions; its
 // loops (docs/writing-a-node-type.md#loops) are started next, each with its state; the engine companions it asked for are made once those are running and the
-// block is ready; each store, each loop, each engine companion and each sink's consumer is an item of the configuration's
+// block is ready; each claim, each store, each loop, each engine companion and each sink's consumer is an item of the configuration's
 // readiness list (readiness.hpp), a companion's and a consumer's with its kind's deadline from its asking, past which
 // the node fails
 // (docs/engine.md#readiness-deadlines), and every companion is in the node's list a client
@@ -73,6 +75,7 @@
 #include <atomic>
 #include <cassert>
 #include <deque>
+#include <map>
 #include <exception>
 #include <expected>
 #include <mutex>
@@ -91,6 +94,7 @@
 #include "ear/core/node_lifecycle.hpp"
 #include "ear/core/pass_through.hpp"
 #include "caught.hpp"
+#include "claims.hpp"
 #include "completions.hpp"
 #include "note_gate.hpp"
 #include "readiness.hpp"
@@ -262,6 +266,8 @@ std::string_view waitingKindName(WaitingFor::Kind kind) noexcept {
 		return "loop";
 	case WaitingFor::Kind::store:
 		return "store";
+	case WaitingFor::Kind::claim:
+		return "claim";
 	}
 	return "unknown";
 }
@@ -694,6 +700,51 @@ struct NodeHost::Impl {
 				given(host_.resources.stores(), "stores");
 				return *config_->stores.at(store);
 			});
+		}
+
+		/// A port the type's own thread binds (docs/writing-a-node-type.md#claims), judged with the configuration's other
+		/// claims at readiness step `claims`; a store's or a recording's is the framework's own.
+		void claim(Claim claim) override {
+			guarded([&] {
+				requireConfiguring("claim");
+				if (claim.kind != Claim::Kind::tcp && claim.kind != Claim::Kind::udp)
+					throw std::logic_error("claim takes a port: " + claimKey(claim) + " is the framework's to claim");
+				addClaim(std::move(claim));
+			});
+		}
+
+		/// A claim of the configuration of `generation` judged (an input of its own): granted, to probe, refused, or
+		/// waiting for its holder, which is closing.
+		void claimJudged(std::uint64_t generation, const Claim& claim, detail::ClaimJudged judged) {
+			if (!stillReadying(generation)) return;
+			const auto found = std::ranges::find(config_->claims, claim, &ClaimSlot::claim);
+			if (found == config_->claims.end()) return;
+			const auto index = static_cast<std::size_t>(found - config_->claims.begin());
+			switch (judged.outcome) {
+			case detail::ClaimJudged::Outcome::granted:
+				itemReady(generation, found->item);
+				break;
+			case detail::ClaimJudged::Outcome::probe:
+				probeClaim(generation, index, judged.leaked);
+				break;
+			case detail::ClaimJudged::Outcome::refused:
+				refuseClaim(generation, index, judged.why, judged.leaked);
+				break;
+			case detail::ClaimJudged::Outcome::waits:
+				found->waitingOn = judged.why;
+				host_.diagnosed(name_, "ear.claim-wait",
+				                claimKey(found->claim) + " held by node " + judged.why + ", which is closing", {});
+				break;
+			}
+		}
+
+		/// A leaked configuration that refused this node's configuration of `generation` closed late (R15): the node is
+		/// started again, once, as node.restart would, if that refusal is still what it rests failed on.
+		void restartRefused(std::uint64_t generation) {
+			if (refusedGeneration_ != generation || aggregate_.health().state != NodeState::failed) return;
+			refusedGeneration_ = 0;
+			NodeOperations::OperationJudged none;
+			static_cast<void>(operate(&lc::NodeAggregate::restart, none));
 		}
 
 	protected:
@@ -1520,6 +1571,14 @@ struct NodeHost::Impl {
 			StoreLink link_;
 		};
 
+		/// One claim of a configuration (docs/writing-a-node-type.md#claims): its own (cx.claim), a store's file, or an
+		/// engine companion's (claimsOf), once each.
+		struct ClaimSlot {
+			Claim claim;
+			std::size_t item = detail::noReadiness; // its readiness item: ready once granted (and probed, for a port)
+			std::string waitingOn{};                // the node whose closing configuration it waits for
+		};
+
 		/// One engine companion a configuration asked for, until its block is ready: its shape, and where it goes, the
 		/// inside bank it joins named in it (one companion per bank).
 		struct EngineAsk {
@@ -1577,12 +1636,13 @@ struct NodeHost::Impl {
 			std::vector<std::unique_ptr<Handoff>> handoffs;
 			std::vector<EngineAsk> engineAsks; // in request order
 			std::vector<std::unique_ptr<Companion>> engineCompanions;
+			std::vector<ClaimSlot> claims;   // every claim, judged at readiness step `claims`; released at step 5
 			detail::ReadinessList readiness; // every engine ask's item, then every sink's, from configure's return
 			std::vector<Asked> requestOrder; // every companion, as asked: the companions' list's order
-			/// Whose each readiness item is, by item: a store's, a loop's, an engine companion's or a sink consumer's, and
-			/// its index.
+			/// Whose each readiness item is, by item: a claim's, a store's, a loop's, an engine companion's or a sink
+			/// consumer's, and its index.
 			struct ItemOwner {
-				enum class Family { store, loop, engine, consumer } family;
+				enum class Family { claim, store, loop, engine, consumer } family;
 				std::size_t index;
 			};
 			std::vector<ItemOwner> itemOwners;
@@ -1622,7 +1682,8 @@ struct NodeHost::Impl {
 		class LeakedRecord {
 		public:
 			LeakedRecord(Impl& host, NodeName name, std::unique_ptr<Configuration> config, bool runClosing)
-				: host_(host), name_(std::move(name)), config_(std::move(config)), runClosing_(runClosing) {}
+				: host_(host), name_(std::move(name)), generation_(config->generation), config_(std::move(config)),
+				  runClosing_(runClosing) {}
 			/// Main thread, once, as it is leaked: its closes land here from now on.
 			void repoint() noexcept { config_->channel->repoint(*this); }
 			void sinkClosed(std::size_t index) {
@@ -1680,19 +1741,26 @@ struct NodeHost::Impl {
 					closedLate();
 				}
 			}
-			/// Everything it held reported: said, and no longer counted; then freed in a turn of its own (never inside
-			/// the close that called this), as teardown step 5 frees a configuration that closed in time.
+			/// Everything it held reported: its claims released and said, no longer counted, and each node its claims
+			/// refused started again, once (R15); then freed in a turn of its own (never inside the close that called
+			/// this), as teardown step 5 frees a configuration that closed in time.
 			void closedLate() {
 				if (closed_) return;
 				closed_ = true;
 				config_->channel->detach();
 				--host_.leaked;
+				const bool held = host_.claims.holds(generation_);
+				host_.claimsDecided(host_.claims.release(generation_));
+				const auto refused = host_.refusedByLeaked.extract(generation_);
 				const std::int64_t ms = millisecondsBetween(config_->closeBegan, host_.timers.now());
 				const std::array fields{DiagnosticField{"ms", ms}};
 				host_.diagnosed(name_, "ear.close-late",
 				                "the configuration leaked at the close deadline closed " + std::to_string(ms) +
-				                    " ms after its close began",
+				                    " ms after its close began" + (held ? "; its claims are released" : ""),
 				                fields);
+				if (refused)
+					for (const auto& [serial, generation] : refused.mapped())
+						host_.inputFor(serial, [generation](Node& node) { node.restartRefused(generation); });
 				host_.mainLoop.post([record = this, alive = std::weak_ptr<char>(host_.alive)] {
 					if (!alive.lock()) return; // the host is gone: so is what the record would free into
 					record->free();
@@ -1718,7 +1786,8 @@ struct NodeHost::Impl {
 			}
 
 			Impl& host_;
-			const NodeName name_; // a copy: the node may be gone
+			const NodeName name_;            // a copy: the node may be gone
+			const std::uint64_t generation_; // its claims' holder
 			std::unique_ptr<Configuration> config_;
 			bool runClosing_; // the run object was told to close and has not said it closed
 			bool closed_ = false;
@@ -2118,6 +2187,7 @@ struct NodeHost::Impl {
 			config_ = std::make_unique<Configuration>();
 			Configuration& c = *config_;
 			c.generation = ++host_.generations;
+			refusedGeneration_ = 0;
 			c.config = queued_;
 			c.channel = std::make_shared<Channel>(*this, host_.mainLoop, host_.timers, name_, type_, host_.logSinks);
 			c.context = std::make_unique<Context>(host_.format, name_, *c.channel, c.loops);
@@ -2204,6 +2274,12 @@ struct NodeHost::Impl {
 				                     std::string("configure gave a latency plan that does not fit: ") + error.what());
 			}
 			c.startFailed = false;
+			// Every claim it holds while it lives (docs/writing-a-node-type.md#claims): its own (cx.claim, already listed),
+			// each store's file, and each engine companion's by its shape, so no shape's field is named here.
+			for (const auto& slot : c.stores) addClaim(Claim{Claim::Kind::store, slot->fileName()});
+			for (const EngineAsk& asked : c.engineAsks)
+				for (Claim& claim : std::visit([](const auto& shape) { return claimsOf(shape); }, asked.shape))
+					addClaim(std::move(claim));
 			// A drive fades exactly the outputs flagged (a sink's bank never is), so a teardown fades first only when
 			// one is: a node whose only outputs are sinks' banks is silenced at once.
 			aggregate_.outputsFaded(std::any_of(c.faded.get(), c.faded.get() + c.fadedCount, [](bool f) { return f; }));
@@ -2231,6 +2307,28 @@ struct NodeHost::Impl {
 		void addReadiness() {
 			Configuration& c = *config_;
 			using Family = Configuration::ItemOwner::Family;
+			// Each claim at step `claims`, before anything is opened or started, bounded by the wait for a closing holder.
+			const auto waitSeconds = std::chrono::duration_cast<std::chrono::seconds>(claimWaitBound).count();
+			for (std::size_t i = 0; i < c.claims.size(); ++i) {
+				ClaimSlot& slot = c.claims[i];
+				slot.item = c.readiness.add(detail::ReadinessItem{
+					.kind = WaitingFor::Kind::claim,
+					.name = claimKey(slot.claim),
+					.step = detail::ReadinessStep::claims,
+					.bound = claimWaitBound,
+					.fact = lc::Fact::configureFailed,
+					.overdue =
+						[this, i, waitSeconds] {
+							const ClaimSlot& late = config_->claims[i];
+							const std::string within = std::to_string(waitSeconds) + " s";
+							return claimText(late.claim, late.waitingOn.empty()
+					                                         ? "not granted within " + within
+					                                         : "held by node " + late.waitingOn +
+					                                               ", which did not let go within " + within);
+						},
+				});
+				c.itemOwners.push_back({Family::claim, i});
+			}
 			// Each store at step `opens`, before any loop starts, bounded: its open is one job on the I/O thread.
 			const auto storeSeconds = std::chrono::duration_cast<std::chrono::seconds>(storeBound).count();
 			for (std::size_t i = 0; i < c.stores.size(); ++i) {
@@ -2297,6 +2395,13 @@ struct NodeHost::Impl {
 			using Family = Configuration::ItemOwner::Family;
 			const Configuration::ItemOwner owner = c.itemOwners.at(item);
 			switch (owner.family) {
+			case Family::claim: {
+				// Judged now, so a claimant judged after it in this turn finds it held; the node hears it as an input.
+				const Claim& claim = c.claims[owner.index].claim;
+				host_.claimsDecided({detail::ClaimDecided{detail::ClaimHolder{c.generation, serial_, name_}, claim,
+				                                          host_.claims.claim({c.generation, serial_, name_}, claim)}});
+				break;
+			}
 			case Family::store:
 				c.stores[owner.index]->open();
 				break;
@@ -2322,6 +2427,68 @@ struct NodeHost::Impl {
 				host_.inputFor(serial_, [](Node& node) { node.askResources(); });
 				break;
 			}
+		}
+
+		/// One claim, once each in a configuration.
+		void addClaim(Claim claim) {
+			if (std::ranges::find(config_->claims, claim, &ClaimSlot::claim) == config_->claims.end())
+				config_->claims.push_back(ClaimSlot{std::move(claim)});
+		}
+
+		/// Claim `index` is a port the registry granted: probed against the kernel (a host with no probe grants it). The
+		/// probe runs behind the turn's flush, so an engine companion a teardown just queued for destruction (a restarted
+		/// rtp node's own receiver) has let go of its port first (docs/writing-a-node-type.md#claims). `leaked`: the
+		/// leaked configuration whose abandoned port it is, to which a refusal is owed (R15).
+		void probeClaim(std::uint64_t generation, std::size_t index, std::uint64_t leaked) {
+			PortProbe* probe = host_.resources.ports();
+			if (probe == nullptr) return itemReady(generation, config_->claims[index].item);
+			host_.mainLoop.post([&host = host_, alive = std::weak_ptr<char>(host_.alive), probe, serial = serial_,
+			                     generation, index, leaked, claim = config_->claims[index].claim] {
+				if (!alive.lock()) return;
+				const MainLoopActivity::Scope activity("probe port", claimKey(claim));
+				const auto port = static_cast<std::uint16_t>(std::stoul(claim.value));
+				std::expected<void, std::string> outcome;
+				std::optional<std::string> fault;
+				try {
+					outcome = claim.kind == Claim::Kind::tcp ? probe->tcpListen(port) : probe->udp(port);
+				} catch (...) {
+					fault = detail::whatOf(std::current_exception());
+				}
+				host.inputFor(serial, [generation, index, leaked, outcome = std::move(outcome),
+				                       fault = std::move(fault)](Node& node) mutable {
+					node.probed(generation, index, std::move(outcome), std::move(fault), leaked);
+				});
+			});
+		}
+
+		/// Claim `index`'s probe came back: ready, or refused with the kernel's reason; a probe that threw is ear's own
+		/// bug, told as ear.internal-error, and the node fails lost (docs/architecture.md#faults-by-owner).
+		void probed(std::uint64_t generation, std::size_t index, std::expected<void, std::string> outcome,
+		            std::optional<std::string> fault, std::uint64_t leaked) {
+			if (!stillReadying(generation) || index >= config_->claims.size()) return;
+			if (fault) {
+				const std::string callback = "PortProbe";
+				host_.internalError(InternalError{.callback = callback,
+				                                  .node = name_,
+				                                  .where = "the probe of " + claimKey(config_->claims[index].claim),
+				                                  .what = *fault});
+				return feed(aggregate_.fault(lc::Fact::adapterFaulted, internalErrorDetail(callback, *fault)));
+			}
+			if (outcome) return itemReady(generation, config_->claims[index].item);
+			refuseClaim(generation, index, outcome.error(), leaked);
+		}
+
+		/// Claim `index` refused (`why` after its words): the node fails start-failed. A refusal on a leaked
+		/// configuration's account is listed on it, so its late close starts this node again (R15).
+		void refuseClaim(std::uint64_t generation, std::size_t index, const std::string& why, std::uint64_t leaked) {
+			if (leaked != 0)
+				if (const auto record = host_.refusedByLeaked.find(leaked); record != host_.refusedByLeaked.end()) {
+					record->second[serial_] = generation;
+					refusedGeneration_ = generation;
+				}
+			const ClaimSlot& slot = config_->claims[index];
+			if (auto failure = config_->readiness.failed(slot.item, claimText(slot.claim, why)))
+				feed(aggregate_.fault(failure->fact, std::move(failure->detail)));
 		}
 
 		/// Store `index`'s open landed (attached, so this configuration's): a fault of the adapter's fails the node lost;
@@ -2618,6 +2785,8 @@ struct NodeHost::Impl {
 		void closeSources() noexcept {
 			if (!config_) return;
 			config_->ending = true;
+			// Its claims are going: a claimant waits for step 5 rather than being refused; its own waits leave.
+			host_.claims.going(config_->generation);
 			for (SourceSlot& slot : config_->sources) slot.source->close();
 			// Its loops refuse outside work from here (slice 5's actions), keeping the node's own.
 			for (const auto& slot : config_->loops)
@@ -3020,7 +3189,10 @@ struct NodeHost::Impl {
 			c.sources.clear(); // after the instance, whose threads may hold a writer
 			c.stores.clear();  // after every state and consumer that may hold one; a job still queued holds its state
 			c.recordings.clear();
+			const std::uint64_t generation = c.generation;
 			config_.reset();
+			// Last: its claims released, each waiter judged again in arrival order.
+			host_.claimsDecided(host_.claims.release(generation));
 		}
 
 		/// The close deadline passed with step 3 or 4 unfinished: said, then leaked.
@@ -3052,6 +3224,10 @@ struct NodeHost::Impl {
 			const bool listening = c.tearing;
 			c.storesWritable->store(false, std::memory_order_release); // a write not begun is dropped
 			if (!listening) c.channel->detach();
+			// Its ports abandoned, its stores and recordings kept: what waited for them is judged now. One that listens
+			// lists the nodes its claims refuse, which its late close starts again (R15).
+			if (listening) host_.refusedByLeaked.try_emplace(c.generation);
+			host_.claimsDecided(host_.claims.leaked(c.generation));
 			// Not deleted here: the configuration's threads may still touch any of it. A listening record deletes
 			// itself once they all reported closed (LeakedRecord::closedLate); any other is never deleted.
 			auto* record = new LeakedRecord(host_, name_, std::move(config_), runClosing_);
@@ -3100,6 +3276,8 @@ struct NodeHost::Impl {
 		std::uint64_t completionsRun_ = 0; // `done`s its block ran, by event or settle(): a bound sees one it settled
 		std::int64_t judgedMs_ = 0;        // how long the judged request waited, for its diagnostics
 		std::uint64_t dropped_ = 0;
+		std::uint64_t refusedGeneration_ =
+			0;                    // its configuration a leaked configuration's claim refused (R15), until the next
 		std::uint64_t span_;      // its span of counts: its serial, or its port-caused older node's
 		NodeCounts blockCounted_; // what its block counted, once the block went
 		NodeCounts carried_;      // what the older node of its port-caused replace counted, once that one is gone
@@ -3130,6 +3308,10 @@ struct NodeHost::Impl {
 	std::uint64_t generations = 0;            // every configuration's generation, across nodes, so none is ever reused
 	std::uint64_t serials = 0;                // every node's serial, so a completion never finds a newer node
 	std::size_t leaked = 0;                   // configurations, blocks and engine companions never freed
+	detail::ClaimRegistry claims;             // every claim ear-wide (docs/writing-a-node-type.md#claims)
+	/// By the generation of each configuration leaked at the close deadline and still open: the nodes its claims refused,
+	/// each with its configuration refused, started again when it closes late (R15).
+	std::map<std::uint64_t, std::map<std::uint64_t, std::uint64_t>> refusedByLeaked;
 	bool stopRequested = false;
 	std::move_only_function<void()> allGone;
 	std::deque<std::move_only_function<void()>> inputs; // what waits for the input being handled
@@ -3167,6 +3349,14 @@ struct NodeHost::Impl {
 		}
 		handling = false;
 		return thrown;
+	}
+
+	/// Each claim judged, told to its claimant's configuration as an input of its own (Node::claimJudged).
+	void claimsDecided(std::vector<detail::ClaimDecided> decided) {
+		for (detail::ClaimDecided& one : decided)
+			inputFor(one.waiter.serial, [one = std::move(one)](Node& node) mutable {
+				node.claimJudged(one.waiter.generation, one.claim, std::move(one.judged));
+			});
 	}
 
 	/// The node of this serial, or none once it is gone (nodes are looked up by serial, never by pointer).

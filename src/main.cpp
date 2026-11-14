@@ -59,6 +59,7 @@
 #include "ear/pipewire/sources.hpp"
 #include "ear/runtime/io_thread.hpp"
 #include "ear/runtime/loops.hpp"
+#include "ear/runtime/port_probe.hpp"
 #include "ear/runtime/stores.hpp"
 #include "ear/server/control_port.hpp"
 #include "ear/server/control_thread.hpp"
@@ -322,6 +323,8 @@ int main(int argc, char** argv) {
 	// The nodes' stores (docs/writing-a-node-type.md#stores): files in the graph file folder, opened and written on the
 	// I/O thread.
 	ear::runtime::ConfinedStores stores(config, io);
+	// The kernel's word on each port a claim names (docs/writing-a-node-type.md#claims).
+	ear::runtime::KernelPortProbe ports;
 
 	ear::pipewire::MainLoopExecutor mainLoop(*engine);
 	// The main-loop watchdog: its thread reads the heartbeat, asks MainLoopActivity where the loop is (ear_output sees
@@ -355,7 +358,8 @@ int main(int argc, char** argv) {
 	                                                      .sources = &sources,
 	                                                      .recordings = &recordingFiles,
 	                                                      .loops = &loops,
-	                                                      .stores = &stores});
+	                                                      .stores = &stores,
+	                                                      .ports = &ports});
 	ear::NodeHost nodes(format, blocks, resources, mainLoop, mainLoop);
 	const ear::GraphStatus status({format, scheduling.realtime, scheduling.detail}, catalogue, graph, nodes, reconciler,
 	                              engine.get());
@@ -376,9 +380,9 @@ int main(int argc, char** argv) {
 	nodes.subscribe(log);
 	nodes.subscribe(gateway);
 	nodes.subscribeNotes(log);
-	nodes.subscribeDiagnostics(log); // ear.close-overdue, ear.close-late, ear.fade-unacknowledged, ear.barrier-overdue,
-									 // ear.hook-slow
-	nodes.subscribeLog(log);         // a stop() that threw during a teardown; each node handle's log
+	// ear.close-overdue, ear.close-late, ear.claim-wait, ear.fade-unacknowledged, ear.barrier-overdue, ear.hook-slow
+	nodes.subscribeDiagnostics(log);
+	nodes.subscribeLog(log);               // a stop() that threw during a teardown; each node handle's log
 	nodes.subscribeInternalErrors(log);    // an adapter's bug NodeHost caught: ear.internal-error, then its node lost
 	nodes.subscribeEngineDiagnostics(log); // ear.data-loop-wedged, as a record with no node
 	WedgeMarker wedgeMarker(*engine);

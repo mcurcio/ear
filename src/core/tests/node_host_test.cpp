@@ -24,6 +24,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <ranges>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -888,6 +889,30 @@ struct TestStores final : StoreAdapter, IoExecutor {
 	}
 };
 
+/// The kernel's word on a port, as the test sets it: each probe logged ("probe udp:5004"), and refused with the reason
+/// `refused` gives its key, else passed.
+struct TestProbe final : PortProbe {
+	Log& log;
+	std::map<std::string, std::string, std::less<>> refused;
+	explicit TestProbe(Log& l) : log(l) {}
+	std::expected<void, std::string> answer(const std::string& key) {
+		log.push_back("probe " + key);
+		if (const auto found = refused.find(key); found != refused.end()) return std::unexpected(found->second);
+		return {};
+	}
+	std::expected<void, std::string> tcpListen(std::uint16_t port) override {
+		return answer("tcp:" + std::to_string(port));
+	}
+	std::expected<void, std::string> udp(std::uint16_t port) override { return answer("udp:" + std::to_string(port)); }
+};
+
+/// How a Fixture's host is made: whether it probes ports (a host without a probe judges them between its nodes only),
+/// and its close deadline.
+struct HostShape {
+	bool probing = false;
+	std::chrono::milliseconds closeDeadline = ::closeDeadline;
+};
+
 struct Fixture {
 	Log log;
 	QueueExecutor mainLoop;
@@ -899,13 +924,8 @@ struct Fixture {
 	TestSources sources{log};
 	TestLoops loops{log, mainLoop};
 	TestStores stores{log};
-	ResourceRegistry resources{ResourceAdapters{.cards = &cards,
-	                                            .receivers = &receivers,
-	                                            .handoffs = &handoffs,
-	                                            .sinks = &sinks,
-	                                            .sources = &sources,
-	                                            .loops = &loops,
-	                                            .stores = &stores}};
+	TestProbe probe{log};
+	ResourceRegistry resources;
 	TestListener listener{log};
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph{catalogue}; // only for close(), the proof stopAll takes
@@ -913,10 +933,19 @@ struct Fixture {
 	TestNotes notes{log};
 	TestDiagnostics diagnostics{log};
 	TestInternalErrors internalErrors;
-	NodeHost host{
-		AudioFormat{ear::SampleRate::fixed<44100>(), 256}, blocks, resources, mainLoop, timers, closeDeadline};
+	NodeHost host;
 	int allGone = 0; // how often stopAll's callback has run
-	Fixture() {
+	explicit Fixture(HostShape shape = {})
+		: resources(ResourceAdapters{.cards = &cards,
+	                                 .receivers = &receivers,
+	                                 .handoffs = &handoffs,
+	                                 .sinks = &sinks,
+	                                 .sources = &sources,
+	                                 .loops = &loops,
+	                                 .stores = &stores,
+	                                 .ports = shape.probing ? &probe : nullptr}),
+		  host(AudioFormat{ear::SampleRate::fixed<44100>(), 256}, blocks, resources, mainLoop, timers,
+	           shape.closeDeadline) {
 		host.subscribe(listener);
 		host.subscribeNotes(notes);
 		host.subscribeDiagnostics(diagnostics);
@@ -6735,10 +6764,11 @@ TEST_CASE(
 	f.settle();
 	CHECK(f.allGone == 1);
 }
-TEST_CASE("A leaked configuration's handle and store writes reach nothing: its notes, losses and log entries dropped, "
-          "a store write it asked for dropped unwritten with its completion, while the newer configuration opens its "
-          "store and runs, keeping its text",
-          "[node_host][loops][stores][leak]") {
+TEST_CASE(
+	"A leaked configuration's handle and store writes reach nothing: its notes, losses and log entries dropped, "
+	"a store write it asked for dropped unwritten with its completion, the newer configuration, refused while the "
+	"leaked one keeps the store, opens it once that closes, keeping its text",
+	"[node_host][loops][stores][leak]") {
 	Fixture f;
 	TestLog logs;
 	f.host.subscribeLog(logs);
@@ -6770,23 +6800,23 @@ TEST_CASE("A leaked configuration's handle and store writes reach nothing: its n
 	f.timers.advance(closeDeadline);
 	f.settle();
 	REQUIRE(f.host.leaked() == 1);
-	REQUIRE(made.size() == 2); // the newer configuration, waiting on its store's open
-	REQUIRE(f.stores.jobs.size() == 2);
+	REQUIRE(made.size() == 2); // the newer configuration, refused at its claims: the leaked one keeps the store
+	REQUIRE(f.stores.jobs.size() == 1); // so it opened nothing
+	REQUIRE(failureOf(f, "porch") == "start-failed: test-porch.key: held by node porch's earlier configuration, "
+	                                 "which did not close; it starts when that closes");
 	REQUIRE(oldHandle != nullptr);
 	f.log.clear();
 
 	oldHandle->say("from the leaked configuration");
 	oldHandle->warn("logged by the leaked configuration");
 	oldHandle->lost("lost by the leaked configuration");
-	f.stores.runIo(); // the old write is dropped unwritten, so is its completion. The newer open completes
+	f.stores.runIo(); // the old write is dropped unwritten, so is its completion
 	f.settle();
-	CHECK(f.stores.files.at("test-porch.key") == "key 1"); // what the newer configuration opened, kept
+	CHECK(f.stores.files.at("test-porch.key") == "key 1");
 	CHECK(countOf(f.log, "io write store test-porch.key") == 1);
 	CHECK(countOf(f.log, "late write done") == 0);
 	CHECK(countOf(f.log, "note porch from the leaked configuration") == 0);
 	CHECK(logs.entries.empty());
-	CHECK(f.host.health().at(0).state == NodeState::running); // the newer configuration, its store open
-	CHECK_FALSE(f.host.health().at(0).reason);
 	CHECK(f.host.leaked() == 1);
 
 	f.loops.holdFinish = false;
@@ -6795,6 +6825,12 @@ TEST_CASE("A leaked configuration's handle and store writes reach nothing: its n
 	CHECK(countOf(f.log, "diagnostic porch ear.close-late ms=10000") == 1);
 	CHECK(f.host.leaked() == 0);
 	CHECK(countOf(f.log, "late write done") == 0); // the old loop ran what it held; the write's `done` never reached it
+	REQUIRE(made.size() == 3); // the late close started the node again: its store's open waits on the I/O executor
+	f.stores.runIo();
+	f.settle();
+	CHECK(f.stores.files.at("test-porch.key") == "key 1"); // what the newer configuration opened, kept
+	CHECK(f.host.health().at(0).state == NodeState::running);
+	CHECK_FALSE(f.host.health().at(0).reason);
 	f.stores.hold = false;
 	f.stopAll();
 	f.settle();
@@ -6863,6 +6899,299 @@ TEST_CASE("A timer a state left armed never runs its handler once the state is g
 	f.settle();
 	CHECK(countOf(f.log, "diagnostic porch ear.loop-source-left sources=1") == 1);
 	left.reset();
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+// Claims (docs/writing-a-node-type.md#claims): judged at readiness step `claims`, before anything of a configuration is
+// opened, made or started; held until teardown step 5; a closing holder waited for; a leaked holder's ports abandoned
+// and its stores kept, its late close starting the nodes they refused (R15).
+
+namespace {
+
+/// The node `name` added with an RTP receiver on `cap` (its block ready, its claims judged, its receiver ready), running.
+void addReceiving(Fixture& f, const NodeName& name, std::shared_ptr<const NodeConfig> config) {
+	const std::size_t block = f.blocks.events.size();
+	const std::size_t receivers = f.receivers.events.size();
+	f.add(name, std::move(config));
+	f.blocks.events.at(block)->ready();
+	f.settle();
+	REQUIRE(f.receivers.events.size() == receivers + 1);
+	f.receivers.events.back()->ready();
+	f.settle();
+	REQUIRE(f.host.health().back().state == NodeState::running);
+}
+
+/// The health of the newest node of `name`.
+NodeHealth healthOf(const Fixture& f, const NodeName& name) {
+	const std::vector<NodeHealth> all = f.host.health();
+	const auto found = std::ranges::find(all | std::views::reverse, name, &NodeHealth::name);
+	REQUIRE(found != (all | std::views::reverse).end());
+	return *found;
+}
+
+/// A receiver config on `port`, with one sink whose close the test holds, so its teardown waits for the test.
+std::shared_ptr<TestConfig> heldReceiver(Log& log, std::uint16_t port) {
+	auto config = std::make_shared<TestConfig>(log);
+	RtpReceiverShape shape = fppStream;
+	shape.port = port;
+	config->receivers = {{"cap", shape}};
+	config->withSinks(1);
+	return config;
+}
+
+/// A class of its own that claims a port and gives a code.
+std::shared_ptr<LoopProbeConfig> claiming(Log& log, Claim port) {
+	auto config = std::make_shared<LoopProbeConfig>(log, std::vector<LoopDeclaration>{});
+	config->onConfigure = [&log, port](CreateContext& cx) {
+		cx.claim(port);
+		cx.use(std::make_unique<TestAudioCode>(log));
+		return Configured::applied();
+	};
+	return config;
+}
+
+} // namespace
+
+TEST_CASE("Two rtp nodes on one UDP port: the second is refused held by node <first> before anything of it is made, "
+          "whatever its type, once the first is gone a retry runs",
+          "[node_host][claims]") {
+	Fixture f;
+	addReceiving(f, "a", withReceiver(f.log));
+	SECTION("another rtp node") { f.add("b", withReceiver(f.log)); }
+	SECTION("a type of its own that claims the port") { f.add("b", claiming(f.log, claim::of(claim::Udp(5004)))); }
+	f.blocks.events.at(1)->ready();
+	f.settle();
+	CHECK(failureOf(f, "b") == "start-failed: cannot bind UDP port 5004: held by node a");
+	CHECK(f.receivers.events.size() == 1); // nothing of b was made
+	CHECK(healthOf(f, "a").state == NodeState::running);
+	f.host.nodeRemoved("a");
+	f.settle();
+	REQUIRE(f.host.start("b").has_value()); // a retry: the port is free now
+	f.settle();
+	for (std::size_t i = 1; i < f.receivers.events.size(); ++i) f.receivers.events[i]->ready();
+	f.settle();
+	CHECK(healthOf(f, "b").state == NodeState::running);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A port the kernel refuses fails the node at once with the kernel's reason, nothing of it opened or made (an "
+          "rtp node's UDP port, a TCP port a type listens on)",
+          "[node_host][claims]") {
+	Fixture f(HostShape{.probing = true});
+	f.probe.refused = {{"udp:5004", "Address already in use"}, {"tcp:8928", "Address already in use"}};
+	SECTION("an rtp node's receiver") {
+		f.add("fpp", withReceiver(f.log));
+		f.blocks.events.at(0)->ready();
+		f.settle();
+		CHECK(failureOf(f, "fpp") == "start-failed: cannot bind UDP port 5004: Address already in use");
+		CHECK(f.receivers.events.empty());
+		CHECK(countOf(f.log, "probe udp:5004") == 1);
+	}
+	SECTION("a listening port, judged before the type's store is opened or its loop started") {
+		const StoreRule rule{
+			.mode = 0600, .maxBytes = 64, .initial = [] { return std::string("key 1"); }, .distrust = nullptr};
+		auto config = std::make_shared<LoopProbeConfig>(f.log, std::vector{plainWorker},
+		                                                std::vector{StoreDeclaration{"key", rule}});
+		config->onConfigure = [&f](CreateContext& cx) {
+			cx.claim(claim::of(claim::TcpListen(8928)));
+			cx.use(std::make_unique<TestAudioCode>(f.log));
+			return Configured::applied();
+		};
+		f.add("ma", config);
+		f.blocks.events.at(0)->ready();
+		f.settle();
+		CHECK(failureOf(f, "ma") == "start-failed: cannot listen on port 8928: Address already in use");
+		CHECK(countOf(f.log, "io open store test-ma.key") == 0);
+		CHECK(f.loops.made.empty());
+	}
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A removed rtp node and an added one on its port in one plan: the new one waits, said by ear.claim-wait and "
+          "waitingFor, and runs once the old one let go at its teardown's last step, its port probed then",
+          "[node_host][claims]") {
+	Fixture f(HostShape{.probing = true});
+	addReceiving(f, "a", heldReceiver(f.log, 5004));
+	f.log.clear();
+	f.host.nodeRemoved("a");
+	f.addInTurn("b", withReceiver(f.log));
+	f.endTurn();
+	f.blocks.events.at(1)->ready();
+	f.settle();
+	CHECK(countOf(f.log, "diagnostic b ear.claim-wait") == 1);
+	CHECK(f.diagnostics.details.back() == "udp:5004 held by node a, which is closing");
+	CHECK(countOf(f.log, "probe udp:5004") == 0);
+	CHECK(f.receivers.events.size() == 1);
+	f.timers.advance(waitingForDelay);
+	f.settle();
+	CHECK(healthOf(f, "b").waitingFor ==
+	      std::vector<WaitingFor>{{WaitingFor::Kind::claim, "udp:5004"}, {WaitingFor::Kind::companion, "b.rtp"}});
+	f.finishSink(0); // a's teardown finishes: its step 5 releases the port
+	f.settle();
+	REQUIRE(f.receivers.events.size() == 2);
+	CHECK(indexOf(f.log, "node a gone dropped=0") < indexOf(f.log, "probe udp:5004"));
+	CHECK(indexOf(f.log, "probe udp:5004") < indexOf(f.log, "receiver b.rtp of b"));
+	f.receivers.events[1]->ready();
+	f.settle();
+	CHECK(healthOf(f, "b").state == NodeState::running);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A claim still waiting after 15 s fails its node held by node <n>, which did not let go within 15 s, the "
+          "holder's later release grants nothing",
+          "[node_host][claims][deadline]") {
+	Fixture f(HostShape{.closeDeadline = std::chrono::milliseconds{20'000}}); // the holder's close outlasts the wait
+	addReceiving(f, "a", heldReceiver(f.log, 5004));
+	f.host.nodeRemoved("a");
+	f.add("b", withReceiver(f.log));
+	f.blocks.events.at(1)->ready();
+	f.settle();
+	REQUIRE(countOf(f.log, "diagnostic b ear.claim-wait") == 1);
+	f.timers.advance(claimWaitBound - std::chrono::milliseconds{1});
+	f.settle();
+	CHECK(failureOf(f, "b").empty());
+	f.timers.advance(std::chrono::milliseconds{1});
+	f.settle();
+	CHECK(failureOf(f, "b") ==
+	      "start-failed: cannot bind UDP port 5004: held by node a, which did not let go within 15 s");
+	f.finishSink(0);
+	f.settle();
+	CHECK(f.receivers.events.size() == 1); // b's wait left the queue at its teardown
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("Two rtp nodes whose restarts swap their ports both run, whichever teardown finishes first",
+          "[node_host][claims]") {
+	Fixture f;
+	addReceiving(f, "a", heldReceiver(f.log, 5004));
+	addReceiving(f, "b", heldReceiver(f.log, 5006));
+	f.update("a", heldReceiver(f.log, 5006));
+	f.update("b", heldReceiver(f.log, 5004));
+	f.settle();
+	REQUIRE(f.sinks.made.size() == 2);
+	SECTION("a's first") {
+		f.sinks.made[0]->runClose();
+		f.settle();
+		f.sinks.made[1]->runClose();
+	}
+	SECTION("b's first") {
+		f.sinks.made[1]->runClose();
+		f.settle();
+		f.sinks.made[0]->runClose();
+	}
+	f.settle();
+	REQUIRE(f.receivers.events.size() == 4);
+	f.receivers.events[2]->ready();
+	f.receivers.events[3]->ready();
+	f.settle();
+	CHECK(healthOf(f, "a").state == NodeState::running);
+	CHECK(healthOf(f, "b").state == NodeState::running);
+	CHECK(f.receivers.shapes[2].port + f.receivers.shapes[3].port == 5004 + 5006);
+	f.stopAll();
+	f.settle();
+	f.finishSink(0); // each new configuration's sink drains
+	f.finishSink(0);
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A port a configuration leaked at the close deadline held is abandoned, so the node waiting for it probes it "
+          "afresh and runs if it passes, refused, it is started again by the leaked configuration's late close",
+          "[node_host][claims][leak]") {
+	Fixture f(HostShape{.probing = true});
+	addReceiving(f, "a", heldReceiver(f.log, 5004));
+	f.host.nodeRemoved("a");
+	f.add("b", withReceiver(f.log));
+	f.blocks.events.at(1)->ready();
+	f.settle();
+	REQUIRE(countOf(f.log, "diagnostic b ear.claim-wait") == 1);
+	SECTION("the probe passes") {
+		f.timers.advance(closeDeadline);
+		f.settle();
+		REQUIRE(countOf(f.log, "diagnostic a ear.close-overdue") == 1);
+		REQUIRE(f.receivers.events.size() == 2);
+		f.receivers.events[1]->ready();
+		f.settle();
+		CHECK(healthOf(f, "b").state == NodeState::running);
+		f.finishSink(0); // a closes late, holding nothing now: its port went to b
+		f.settle();
+		CHECK(f.diagnostics.details.back() ==
+		      "the configuration leaked at the close deadline closed 10000 ms after its close began");
+		CHECK(healthOf(f, "b").state == NodeState::running);
+	}
+	SECTION("the probe refuses (G27): the late close starts it") {
+		f.probe.refused["udp:5004"] = "Address already in use"; // the leaked receiver still bound, say
+		f.timers.advance(closeDeadline);
+		f.settle();
+		CHECK(failureOf(f, "b") == "start-failed: cannot bind UDP port 5004: Address already in use");
+		CHECK(f.receivers.events.size() == 1);
+		f.probe.refused.clear();
+		f.log.clear();
+		f.finishSink(0);
+		f.settle();
+		CHECK(countOf(f.log, "diagnostic a ear.close-late ms=10000") == 1);
+		REQUIRE(f.receivers.events.size() == 2);
+		f.receivers.events[1]->ready();
+		f.settle();
+		CHECK(healthOf(f, "b").state == NodeState::running);
+		CHECK(f.listener.phases("b").back() == "running");
+		CHECK(std::ranges::count(f.listener.phases("b"), std::string("configuring (retry)")) == 1);
+	}
+	CHECK(f.host.leaked() == 0);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A store a configuration leaked at the close deadline keeps refuses the node's next configuration, naming "
+          "it, and the late close starts the refused node",
+          "[node_host][claims][stores][leak]") {
+	Fixture f;
+	f.loops.holdFinish = true;
+	const StoreRule rule{
+		.mode = 0600, .maxBytes = 64, .initial = [] { return std::string("key 1"); }, .distrust = nullptr};
+	auto config =
+		std::make_shared<LoopProbeConfig>(f.log, std::vector{plainWorker}, std::vector{StoreDeclaration{"key", rule}});
+	config->onConfigure = [&f](CreateContext& cx) {
+		cx.use(std::make_unique<TestAudioCode>(f.log));
+		return Configured::applied();
+	};
+	addRunning(f, "porch", config);
+	REQUIRE(f.host.restart("porch"));
+	f.settle();
+	REQUIRE(countOf(f.log, "loop porch.worker finish") == 1);
+	f.timers.advance(closeDeadline);
+	f.settle();
+	REQUIRE(f.host.leaked() == 1);
+	CHECK(failureOf(f, "porch") == "start-failed: test-porch.key: held by node porch's earlier configuration, which "
+	                               "did not close; it starts when that closes");
+	CHECK(countOf(f.log, "io open store test-porch.key") ==
+	      1);                        // the first configuration's: the refused one opened none
+	CHECK(f.loops.made.size() == 1); // and started no loop
+	f.log.clear();
+
+	f.loops.holdFinish = false;
+	f.finishLoop(0); // what held the leaked configuration's loop lets go
+	f.settle();
+	CHECK(countOf(f.log, "diagnostic porch ear.close-late ms=10000") == 1);
+	CHECK(std::ranges::count(f.diagnostics.details, std::string("the configuration leaked at the close deadline closed "
+	                                                            "10000 ms after its close began; its claims are "
+	                                                            "released")) == 1);
+	CHECK(indexOf(f.log, "diagnostic porch ear.close-late ms=10000") < indexOf(f.log, "io open store test-porch.key"));
+	CHECK(f.loops.made.size() == 2);
+	CHECK(healthOf(f, "porch").state == NodeState::running);
+	CHECK(std::ranges::count(f.listener.phases("porch"), std::string("configuring (retry)")) == 1);
+	CHECK(f.host.leaked() == 0);
 	f.stopAll();
 	f.settle();
 	CHECK(f.allGone == 1);

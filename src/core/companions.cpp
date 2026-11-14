@@ -1,5 +1,6 @@
 // Companions' kinds, their readiness deadlines (ear/core/companions.hpp; docs/engine.md#readiness-deadlines) and the
-// module-run converters' latency rule (docs/engine.md#module-run-converters).
+// module-run converters' latency rule (docs/engine.md#module-run-converters), and what each engine companion claims
+// (docs/writing-a-node-type.md#claims).
 #include "ear/core/companions.hpp"
 
 namespace ear {
@@ -8,6 +9,12 @@ Delay moduleRunDelay(const RtpReceiverShape& shape, FrameClock graph) noexcept {
 	const auto buffered = static_cast<std::uint32_t>(graph.frames(std::chrono::milliseconds{shape.latencyMs}));
 	return Delay{Latency{buffered, buffered}};
 }
+
+std::vector<Claim> claimsOf(const RtpReceiverShape& shape) {
+	return {Claim{Claim::Kind::udp, std::to_string(shape.port)}};
+}
+
+std::vector<Claim> claimsOf(const SoundCardShape&) { return {}; }
 
 std::string_view companionKindName(CompanionKind kind) noexcept {
 	switch (kind) {

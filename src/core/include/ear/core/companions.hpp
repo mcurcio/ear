@@ -20,6 +20,7 @@
 #include <utility>
 #include <variant>
 #include <vector>
+#include "ear/core/claims.hpp"
 #include "ear/core/graph_spec.hpp"
 #include "ear/core/latency.hpp"
 #include "ear/core/node_type.hpp"
@@ -63,6 +64,16 @@ concept ModuleRunShape = requires(const Shape& shape, FrameClock graph) {
 	{ moduleRunDelay(shape, graph) } -> std::same_as<Delay>;
 };
 static_assert(ModuleRunShape<RtpReceiverShape> && !ModuleRunShape<SoundCardShape>);
+
+// ---- Claims (docs/writing-a-node-type.md#claims) ----
+
+/// What an engine companion holds ear-wide while it lives, by its shape: a rule beside moduleRunDelay, so NodeHost names
+/// no shape's field to claim it. Each is judged with the configuration's other claims, before anything is opened. An
+/// RTP receiver holds its UDP port, whatever its address: two on one port are refused even for two multicast groups,
+/// until a multicast test exists (docs/node-types.md#rtp).
+std::vector<Claim> claimsOf(const RtpReceiverShape& shape);
+/// None: whether a card's device needs one waits on a check on the hardware (docs/design/node-primitives.md 0.2 C).
+std::vector<Claim> claimsOf(const SoundCardShape& shape);
 
 // ---- The kinds ----
 

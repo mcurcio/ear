@@ -317,9 +317,13 @@ What PipeWire 1.4.2 does that ear cannot see or change:
   (state `starting`) with silent outputs, waiting for its companion: after 2 s ear says `node <n> still
   configuring after 2s: waiting for <n>.rtp`, and at the receiver's 5 s readiness deadline the node
   fails `engine-refused: the RTP receiver never ran (UDP port <port> held?)`
-  (`docs/engine.md#readiness-deadlines`; `lifecycle_test.cpp` holds the port to check both). The module
-  sets `SO_REUSEADDR`, so two receivers on one port both bind (unicast then reaches only one); a port
-  held by a program without it fails.
+  (`docs/engine.md#readiness-deadlines`). The module sets `SO_REUSEADDR`, so two receivers on one
+  port would both bind (unicast then reaches only one). So ear never gets there for a port it can
+  see held: the port is the node's claim (`docs/writing-a-node-type.md#claims`), refused `held by
+  node <n>` for a second `rtp` node and probed without `SO_REUSEADDR` before the module loads, so a
+  program's socket fails the node at once (`start-failed: cannot bind UDP port <port>: Address
+  already in use`; `lifecycle_test.cpp` holds the port). Only a bind between the probe and the
+  module's reaches the deadline.
 - **No packets is not a failure.** The module never destroys itself. After `cleanup.sec` without
   packets it sets the node property `rtp.receiving = false` (true again on the next packet); a
   bound node proxy sees it, the registry does not. ear does not read it: the node stays

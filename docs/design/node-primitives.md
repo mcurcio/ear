@@ -334,8 +334,8 @@ record, the configuration's `Channel` re-pointed at it. *Found building S3c.5c:*
   `sendspin`: 138 before, 79 after; in core 112 before, 53 after, `node_host_test.cpp`'s 45 (54 to 32 of the five
   names 0.1 counted) being the cases above and their fixtures.
 
-**Claims** (S3c.5a): 6.8's `claim::TcpListen`, `claim::Udp`, `PortProbe` and registry, plus where implicit claims
-come from:
+**Claims** (S3c.5a, built: `docs/writing-a-node-type.md#claims`): 6.8's `claim::TcpListen`, `claim::Udp`, `PortProbe`
+and registry, plus where implicit claims come from:
 
 ```cpp
 /// A claim's key: its kind and value ("tcp:8928", "udp:5004", "store:sendspin-ma.key", "recording:take1.wav").
@@ -348,6 +348,37 @@ struct Claim {
 std::vector<Claim> claimsOf(const RtpReceiverShape& shape); // {udp, shape.port}
 std::vector<Claim> claimsOf(const SoundCardShape& shape);   // none until 0.2 C's check shows the race; then the device
 ```
+
+*Found building S3c.5a:*
+
+- **The registry probes nothing; NodeHost probes behind the turn's flush.** 6.8 has the registry grant, then probe. A
+  restart of an `rtp` node cannot work that way: a node with no sink, loop or handoff closes inside the input that
+  began its teardown, so its step 5 releases the port, and its next configure judges it, in the same drain that queued
+  its receiver's destruction into the turn's flush. A probe there finds ear's own old socket still bound. So the
+  registry (`src/core/claims.hpp`, private, pure) decides holders only, granting a port as `probe`, and NodeHost posts
+  the probe to the main loop, behind the flush, which has destroyed the old receiver by then. The registry holds the
+  claimant from the grant, so a claimant judged meanwhile is refused `held by node <n>` even if the kernel then
+  refuses the first; that refusal releases it at step 5 as any other.
+- **`PortProbe` reaches NodeHost through `ResourceAdapters::ports`** (null: ports judged between the host's nodes only,
+  as every test host but those that set one). `KernelPortProbe` is `ear_runtime`'s, as G1 says; a probe that throws
+  is ear's bug: `ear.internal-error` (`callback` `PortProbe`), the node `lost`.
+- **`Claim::Kind` has no `device`** until 0.2 C's check shows the race; `recording` is in it (key, text) with no claimant
+  until S3c.5b.
+- **`cx.claim` takes a port only** (`claim::TcpListen`, `claim::Udp`, each a `std::logic_error` outside 1 to 65535,
+  and `claim::of` makes the `Claim`); `CreateContext::claim(Claim)` refuses another kind (a `std::logic_error`): stores
+  and recordings are the framework's. A configuration claiming one key twice (a type's port and its receiver's, say)
+  holds it once.
+- **`waitingFor` `claim` names the key only** (`udp:5004`). 6.1's `holder` and `leaked: true` are not needed: a wait
+  shows only while a holder is closing, and `ear.claim-wait` names the holder once; a leaked holder never makes a
+  wait (it is judged at the leak, and at once afterwards).
+- **Going is teardown step 1** (NodeHost's `closeSources`, the moment a configuration's `ending` is set): a stop keeps
+  every claim live; a restart's, failure's, disable's or removal's old configuration is going from its step 1.
+- **The R15 restart is narrowed to the refusal.** The record lists each node with the configuration its claims refused;
+  at the late close a node is restarted (as `node.restart`, so a retry) only while it still rests failed and has not
+  configured since, so an operator's own retry, removal or disable meanwhile is never overturned.
+- **A store claim only ever meets another configuration of its own node** (a store's file is
+  `<type>-<node>.<suffix>`, and a node configures only once its older configuration and any older node of its name
+  are gone), so its one refusal is the leaked one's.
 
 **Recordings** (S3c.5b): `CreateOf::recording(RecordingRequest) -> Recording&` replaces `openRecording`.
 
@@ -400,6 +431,9 @@ empty list, under the `requires` clause. U1 held (found building S3c.4, above): 
 | 6.7 | `StoreAdapter::open(node, type, store, ReadyEvents&)` and `sweep`; `NodeStore`; the adapter reading, narrowing and judging | 0.3's stores, found building S3c.4: the adapter is the disk's part, NodeHost runs the policy as jobs; `runtime::sweepStores`; the slot is the `Store` |
 | 6.1 | `cx.store(handle)` → `StoreHandle&` | `Store&`; `StoreHandle<Suffix>` is the compile-time handle |
 | 6.8 | `udp:<p>` claimed "by every RTP receiver companion" as a rule of NodeHost's | `claimsOf(shape)` |
+| 6.1, 6.8 | Ports probed by the registry once granted, in the turn that judged them; `PortProbe` the registry's | 0.3's claims, found building S3c.5a: the registry decides holders only; NodeHost probes behind the turn's flush, through `ResourceAdapters::ports` |
+| 6.1 | `waitingFor` `claim` with `subject`, `holder` and `leaked: true` | 0.3's claims, found building S3c.5a: `name` is the key; the holder is in `ear.claim-wait`; a leaked holder makes no wait |
+| 0.3, 6.8 | `Claim::Kind::device` | Not a kind until 0.2 C's check shows the race |
 | 6.10 | `int fd = cx.recording(...)` | `Recording&` |
 | 8, visible change 5 | A stopped `sendspin` node closing its connection | Q-3c1 (0.6): kept open unless the owner says otherwise |
 | 12 | `sendspin_code.*`'s playback half still to be written | Written (T2); moved whole |
@@ -453,6 +487,9 @@ and it avoids the gap before the server dials back. Restart, disable and removal
 visible change 5 is the other answer.)
 
 **Q-3c2. Should two `rtp` nodes be allowed on the same UDP port when they listen to different multicast groups?**
+**Answered (the owner, 2026-11-14, binding): refuse.** The second fails at once, "cannot bind UDP port <p>: held by
+node <name>", even when the two listen to different multicast groups; allowing that is deferred until a multicast test
+exists. It also fixes today's silent failure (both nodes `running`, one playing nothing). Built in S3c.5a.
 
 *Scenario.* Your FPP sends two shows as multicast, one to 239.0.0.1 and one to 239.0.0.2, both on port 5004, and you
 add `rtp showA` and `rtp showB`. *Refuse*: the second fails "cannot bind UDP port 5004: held by node showA", and you

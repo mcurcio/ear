@@ -376,11 +376,11 @@ owner, 2026-10-30: "If 100ms is the best rep can do, then so be it").
   of section 4 must allow it too, and port 7777 and the RTP port are then the node's own ports.
   Not tested anywhere yet, not even in CI.
 - **A busy port.** If another program on the same network (the node's, with `hostNetwork`)
-  already holds the UDP port, the node stays `configuring` (state `starting`) with silent outputs:
-  PipeWire's log says why (`bind() failed: Address already in use`), after 2 s ear says
-  `node fpp still configuring after 2s: waiting for fpp.rtp` (`graph.get`'s `waitingFor`), and after
-  5 s the node fails `engine-refused: the RTP receiver never ran (UDP port <port> held?)`. Pick
-  another port, or free it and `node.restart` the node.
+  already holds the UDP port, the node fails at once, `start-failed: cannot bind UDP port <port>:
+  Address already in use`; a second `rtp` node on it fails `... held by node <n>`. Pick another
+  port, or free it and `node.restart` the node. A program that takes the port in the moment
+  between ear's check and PipeWire's bind leaves the node `configuring` waiting for `fpp.rtp`,
+  then failing after 5 s `engine-refused: the RTP receiver never ran (UDP port <port> held?)`.
 - **The sender: FPP's own PipeWire, `libpipewire-module-rtp-sink`** (if FPP's audio runs through
   PipeWire **[check]**). Its arguments must match the node: `destination.ip` = the Service's
   address (its default, `224.0.0.56`, is multicast), `destination.port` = the node's `port` (its

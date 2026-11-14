@@ -4,6 +4,7 @@
 # only dependency, and the engine and the control port reach it through the interfaces its
 # headers declare.
 add_library(ear_core STATIC
+	claims.cpp
 	command_error.cpp
 	companions.cpp
 	completions.cpp
@@ -37,6 +38,7 @@ add_library(ear_core STATIC
 # test executable depends on that target, so "make test" builds it.
 target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/block_rules.hpp
+	include/ear/core/claims.hpp
 	include/ear/core/command_error.hpp
 	include/ear/core/companions.hpp
 	include/ear/core/counter_watch.hpp
@@ -99,6 +101,7 @@ if(BUILD_TESTS)
 
 	add_executable(ear_core_tests
 		tests/block_rules_test.cpp
+		tests/claims_test.cpp
 		tests/completions_test.cpp
 		tests/counter_watch_test.cpp
 		tests/cycle_counters_test.cpp
@@ -128,8 +131,8 @@ if(BUILD_TESTS)
 		tests/type_spec_test.cpp)
 	target_link_libraries(ear_core_tests PRIVATE ear_core ear_type_harness ear_latency_table ear_cycle_table ear_inducers
 		ear_catch_main)
-	# The readiness list, the note gate and a configuration's completions are private to ear_core (readiness.hpp,
-	# note_gate.hpp, completions.hpp), and their rows test them directly.
+	# The readiness list, the note gate, a configuration's completions and the claim registry are private to ear_core
+	# (readiness.hpp, note_gate.hpp, completions.hpp, claims.hpp), and their rows test them directly.
 	target_include_directories(ear_core_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 	add_dependencies(ear_core_tests ear_core_verify_interface_header_sets ear_type_harness_verify_interface_header_sets)
 	ear_catch_tests(ear_core_tests)

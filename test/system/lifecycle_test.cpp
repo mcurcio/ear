@@ -1,5 +1,5 @@
 // The node lifecycle end to end (docs/architecture.md#the-node-lifecycle): the lifecycle through the real out/ear,
-// across restarts of ear, on a shared `disabled` value, on the test sound card and on a held UDP port. The stop and
+// across restarts of ear, on a shared `disabled` value, on the test sound card and on a held UDP port (its claim). The stop and
 // start and the disable and enable within one run of ear are in control_port_test.cpp. Every wait is for an event (a
 // line ear prints, a message, ear's exit); a deadline only fails a test.
 #include <cerrno>
@@ -249,36 +249,32 @@ TEST_CASE("node.restart of a card node on the test card brings it back without a
 	CHECK(out.find("node out running\n", stoppingLine) != std::string::npos);
 }
 
-TEST_CASE("An rtp node on a UDP port another socket holds writes a still record, then fails engine-refused at its "
-          "receiver's readiness deadline",
-          "[system][lifecycle][rtp]") {
+TEST_CASE("An rtp node on a UDP port another socket holds fails start-failed at once with the kernel's reason, never "
+          "waiting for its receiver",
+          "[system][lifecycle][rtp][claims]") {
 	TempDirectory directory;
 	const HeldUdpPort held;
 	const std::string port = std::to_string(held.port());
 	writeGraphFile(directory, graphFileText("node rtp fpp { address \"0.0.0.0\"; port " + port +
 	                                        "; format \"L24\"; channels 2; }\n"));
-	// PipeWire only logs the failed bind, and the receiver never runs: the node waits for it, says so after 2 s, and
-	// fails once the receiver's 5 s deadline passed (docs/engine.md#readiness-deadlines).
-	Ear ear(directory, {"node fpp still configuring after ", true});
-	const auto still = ear.process().lineStartingWith("node fpp still configuring after ");
-	REQUIRE(still);
-	CHECK(still->ends_with("s: waiting for fpp.rtp"));
-	CHECK(std::stoi(still->substr(std::string("node fpp still configuring after ").size())) >= 2);
-	const auto failed = ear.process().waitForLineStartingWith("node fpp failed ", deadline);
+	// The port is the node's claim, probed before its receiver is made (docs/writing-a-node-type.md#claims), so it fails
+	// at once rather than at the receiver's 5 s deadline, which only a socket bound after the probe still reaches.
+	Ear ear(directory, {"node fpp failed ", true});
+	const auto failed = ear.process().lineStartingWith("node fpp failed ");
 	const std::string& out = ear.process().output();
 	INFO("ear printed:\n" << out);
 	REQUIRE(failed);
-	const std::string reason = "the RTP receiver never ran (UDP port " + port + " held?)";
-	CHECK(*failed == "node fpp failed engine-refused: " + reason);
+	const std::string reason = "cannot bind UDP port " + port + ": Address already in use";
+	CHECK(*failed == "node fpp failed start-failed: " + reason);
 	CHECK(out.find("node fpp running") == std::string::npos);
-	CHECK(out.find("node fpp still configuring after ") < out.find("node fpp failed "));
+	CHECK(out.find("node fpp still configuring after ") == std::string::npos);
 
 	Rpc rpc(ear.port());
 	const json graph = rpc.call("graph.get")["result"];
 	INFO(graph.dump());
 	const json fpp = nodeNamed(graph, "fpp");
 	CHECK(fpp["state"] == "failed");
-	CHECK(fpp["reason"] == json{{"code", "engine-refused"}, {"detail", reason}});
+	CHECK(fpp["reason"] == json{{"code", "start-failed"}, {"detail", reason}});
 	CHECK_FALSE(fpp.contains("waitingFor"));
 	CHECK(ear.stop(rpc) == 0);
 }

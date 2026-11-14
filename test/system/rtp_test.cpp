@@ -241,3 +241,81 @@ TEST_CASE("With no sender the rtp node runs and its meters show silence", "[syst
 	INFO("ear printed:\n" << ear.output());
 	CHECK(exitStatus == 0);
 }
+
+// Claims (docs/node-types.md#rtp; docs/writing-a-node-type.md#claims): an rtp node's UDP port has one holder, judged
+// before its receiver is made (a port another program holds: lifecycle_test.cpp).
+
+TEST_CASE("A second rtp node on one UDP port is refused held by node <first>, and the first hears what is sent to it",
+          "[system][rtp][claims]") {
+	TempDirectory directory;
+	const std::uint16_t port = freeUdpPort();
+	const std::string settings =
+		" { address \"0.0.0.0\"; port " + std::to_string(port) + "; format \"L24\"; channels 2; }\n";
+	writeGraphFile(directory,
+	               graphFileText("node rtp a" + settings + "node rtp b" + settings, graphFrequency, blockSize));
+	auto ear = runEar(directory);
+	const bool running = ear.waitForLine("node a running", deadline);
+	const std::string refusedLine =
+		"node b failed start-failed: cannot bind UDP port " + std::to_string(port) + ": held by node a";
+	const bool refused = ear.waitForLine(refusedLine, deadline);
+	const auto listening = ear.lineStartingWith(listeningPrefix);
+	INFO("ear printed:\n" << ear.output());
+	REQUIRE(listening);
+	const auto controlPort = static_cast<std::uint16_t>(std::stoul(listening->substr(listeningPrefix.size())));
+
+	// What each node plays of a tone sent to the port, by its meters: a unicast datagram reaches one socket only, so two
+	// receivers on one port leave one of them silent with nothing said (docs/engine.md#rtp-receivers).
+	RtpSender sender(port, RtpPcm::l24, graphFrequency, RtpTone{{750.0, 1500.0}, amplitude});
+	sender.send(graphFrequency * 5);
+	double peakA = 0.0;
+	double peakB = 0.0;
+	{
+		WsClient ws(controlPort);
+		ws.send(R"({"jsonrpc":"2.0","id":1,"method":"levels.subscribe"})");
+		// Levels arrive about 30 times a second: a second and a half of them once a's meter has moved.
+		int afterSound = 0;
+		for (int message = 0; message < 300 && afterSound < 45; ++message) {
+			const json levels = json::parse(ws.read());
+			if (levels.value("method", "") != "levels") continue;
+			const json& nodes = levels["params"]["nodes"];
+			if (nodes.contains("a")) peakA = std::max(peakA, nodes["a"]["stream.1"][0].get<double>());
+			if (nodes.contains("b")) peakB = std::max(peakB, nodes["b"]["stream.1"][0].get<double>());
+			if (peakA > 0.0 || peakB > 0.0) ++afterSound;
+		}
+	}
+	INFO("peaks: a " << peakA << ", b " << peakB << (ear.hasLine("node b running") ? "; node b running" : ""));
+	CHECK(running);
+	CHECK(refused);
+	CHECK(peakA > amplitude / 2);
+	CHECK(peakB == 0.0);
+	ear.signal(SIGTERM);
+	CHECK(waitForStop(ear) == 0);
+}
+
+TEST_CASE("node.restart of an rtp node binds its port again: its claim's probe runs once its old receiver let go",
+          "[system][rtp][claims]") {
+	TempDirectory directory;
+	writeGraph(directory, freeUdpPort());
+	auto ear = runEar(directory);
+	const bool ready = waitForLines(ear, runningAndLinked);
+	const auto listening = ear.lineStartingWith(listeningPrefix);
+	INFO("ear printed:\n" << ear.output());
+	REQUIRE(ready);
+	REQUIRE(listening);
+	Rpc rpc(static_cast<std::uint16_t>(std::stoul(listening->substr(listeningPrefix.size()))));
+	REQUIRE(rpc.call("graph.subscribe").contains("result"));
+	const json restart = rpc.call("node.restart", {{"name", "fpp"}});
+	INFO(restart.dump());
+	CHECK(restart["result"] == json{{"applied", "restart"}});
+	// The old receiver goes in the turn's flush, and the new configuration's claim is probed behind it: a probe made
+	// before would find the node's own old socket still bound and fail it "Address already in use".
+	const json settled = rpc.waitFor([](const json& m) {
+		return Rpc::matches(m, "node.state", {{"name", "fpp"}, {"state", "running"}}) ||
+		       Rpc::matches(m, "node.state", {{"name", "fpp"}, {"state", "failed"}});
+	});
+	INFO("notifications: " << json(rpc.notifications).dump());
+	CHECK(settled["params"]["state"] == "running");
+	ear.signal(SIGTERM);
+	CHECK(rpc.readUntilClosed() == 1001);
+	CHECK(waitForStop(ear) == 0);
+}

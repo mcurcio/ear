@@ -143,6 +143,7 @@ optional row read as a plain value does not compile.
 | `Loop& l = cx.executor(handle)` | A loop as an executor, for a state to keep: `post`, timers and watches | Valid until the configuration is freed; what it is sent before the node is configured is staged |
 | `cx.post(handle, [](State& s) { ... })` | Work on the loop with its state (`[] { ... }` for a loop with none), staged | A function of another loop's state does not compile |
 | `Store& s = cx.store(handle)` | A [store](#stores), for a loop's state or a consumer to keep | Valid until the configuration is freed; readable once the node is configured; a store the spec lacks does not compile |
+| `cx.claim(claim::TcpListen(p))`, `cx.claim(claim::Udp(p))` | A port the type's own thread binds, a [claim](#claims): judged at the first readiness step and probed, so a port another node or program holds fails the node before anything is opened | 1 to 65535; held until teardown step 5 |
 
 Then answer `Configured::applied()`, or `Configured::failed(detail)` for what only the type can see
 (the node fails `start-failed: <detail>`). A `CreateOf` is valid only inside the `configure` it is
@@ -152,7 +153,7 @@ Each call is served by the host's adapter of its kind (`ResourceAdapters`, one m
 `node_host.hpp`). ear's host has every kind; a host without one (a test's) refuses the call as an
 adapter's refusal is: the node fails `start-failed: configure threw: no <kind> in this host`
 (`sinks`, `sources`, `sound cards`, `RTP receivers`, `loops`, `stores`), and `openRecording` answers
-`no recordings folder`.
+`no recordings folder`. A host with no port probe judges a port [claim](#claims) between its nodes only.
 
 ### The node handle
 
@@ -549,6 +550,62 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>&) {
   `ear.internal-error` record ([architecture.md](architecture.md#faults-by-owner)).
 
 No shipped type has a store yet: `sendspin`'s key file is its own until it moves onto one.
+
+## Claims
+
+A claim is something ear-wide that one configuration at a time may hold: a listening TCP port, a
+UDP port, a store's file, and (once `file` moves onto it) a recording's path
+(`ear/core/claims.hpp`). Each is keyed by its kind and value (`tcp:8928`, `udp:5004`,
+`store:sendspin-kitchen.key`), and a key has one holder across every type.
+
+```cpp
+Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
+	cx.claim(claim::TcpListen(s.get<portRow>())); // a port the type's own thread will listen on
+	...
+}
+```
+
+- **Where claims come from.** A type claims only the ports its own threads bind: `cx.claim(claim::TcpListen(p))` or
+  `cx.claim(claim::Udp(p))`, each taking a row's checked number (outside 1 to 65535 is the type's bug, a
+  `std::logic_error`). The framework claims the rest: every store the spec declares (its file), and what each engine
+  companion holds by its shape (`claimsOf`, beside `moduleRunDelay` in `companions.hpp`): an RTP receiver its UDP
+  port, a sound card nothing yet. So no shape's field is named outside its shape's rule.
+- **Judged first.** Every claim of a configuration is an item of its readiness list at step `claims`, before any
+  store is opened, loop started or companion made ([engine.md](engine.md#readiness-deadlines)). Against the key's
+  holder:
+
+  | Holder | Outcome | The node fails `start-failed:` |
+  |---|---|---|
+  | none | granted; a port then probed (below) | the kernel's reason: `cannot bind UDP port 5004: Address already in use` |
+  | a configuration that is not going (a node configuring, running or stopped) | refused at once | `cannot bind UDP port 5004: held by node fpp` |
+  | a configuration that is going (its teardown began: a restart's, a failure's, a removal's or a rename's old one) | waits, said once by `ear.claim-wait` and `waitingFor` `claim`; granted at that configuration's step 5 | after 15 s: `... held by node fpp, which did not let go within 15 s` |
+  | a configuration leaked at the close deadline: a port | abandoned to the claimant, probed afresh | the kernel's reason, owed to the leaked configuration (below) |
+  | a configuration leaked at the close deadline: a store or recording | refused, owed to the leaked configuration | `<file>: held by node porch's earlier configuration, which did not close; it starts when that closes` |
+
+  A disabled node holds nothing (it has no configuration). A node never waits on its own old configuration, whose
+  step 5 comes before its next configure; two nodes whose restarts swap ports both run. A configuration claiming one
+  key twice holds it once.
+- **The probe.** Once the registry grants a port, it is bound once by a non-blocking socket on the main loop and
+  closed: a UDP port with neither `SO_REUSEADDR` nor `SO_REUSEPORT`, so a holder that set it (PipeWire's RTP
+  receiver, [engine.md](engine.md#rtp-receivers)) still refuses; a TCP port with `SO_REUSEADDR`, as a listener binds,
+  so a `TIME_WAIT` passes. The probe runs behind the turn's flush, so an engine companion a teardown has just queued
+  for destruction (a restarted `rtp` node's own receiver) has let go of the port first. A program taking the port just
+  after the probe is not caught. A host with no probe (a test's) judges ports between its nodes only.
+- **Held, then released.** A stop and a start keep every claim. Teardown step 1 marks them going; step 5 releases them
+  last, and whoever waited is judged again in arrival order (the first granted, the next refused by it); a waiter
+  torn down before its grant leaves the queue at once.
+- **A leaked configuration** ([architecture.md](architecture.md#teardown-by-dependency)) abandons its ports, whose
+  holder it can no longer vouch for, and keeps its stores and recordings, whose files its threads may still write. It
+  lists every node its claims refuse (a store kept, or a fresh probe of an abandoned port that failed). When it closes
+  late its claims are released, `ear.close-late` adds `; its claims are released`, and each node it refused is
+  started again, once, as `node.restart` would, if that refusal is still what the node rests failed on.
+- **Not claimed:** an mDNS name (`sendspin`'s carries its key file's client id, so two nodes cannot share one), a
+  multicast group apart from its port (two `rtp` nodes on one port are refused even for two groups, until a multicast
+  test exists), and a sound card's device (until a card renamed in one plan is shown on the hardware to open its device
+  before the old node closed it).
+
+`sendspin`'s listening port is still its own claim, judged among its own nodes only, until it moves onto
+`cx.claim`.
 
 ## Latency
 

@@ -10,6 +10,7 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+#include "ear/core/claims.hpp"
 #include "ear/core/companions.hpp"
 #include "ear/core/counter_watch.hpp"
 #include "ear/core/cycle_counters.hpp"
@@ -28,15 +29,16 @@ namespace ear {
 /// What a node still waits for, once its phase has lasted 2 s (docs/control-port.md#node-health): an older node of its
 /// name still closing (`name` its name), the engine's block (`block`), a companion (`name`: an engine companion's
 /// engine name, `<node>.<suffix>`), a sink's consumer (`consumer`), one of its loops to start (`loop`, `name` the
-/// loop's), one of its stores to open (`store`, `name` its file's).
+/// loop's), one of its stores to open (`store`, `name` its file's), one of its claims to be granted (`claim`, `name` its
+/// key: "udp:5004"; docs/writing-a-node-type.md#claims).
 struct WaitingFor {
-	enum class Kind { olderNode, block, companion, consumer, loop, store };
+	enum class Kind { olderNode, block, companion, consumer, loop, store, claim };
 	Kind kind;
-	std::string name{}; // olderNode, companion, loop and store only
+	std::string name{}; // olderNode, companion, loop, store and claim only
 	friend bool operator==(const WaitingFor&, const WaitingFor&) = default;
 };
-std::string_view
-waitingKindName(WaitingFor::Kind kind) noexcept; // "older-node" | "block" | "companion" | "consumer" | "loop" | "store"
+/// "older-node" | "block" | "companion" | "consumer" | "loop" | "store" | "claim"
+std::string_view waitingKindName(WaitingFor::Kind kind) noexcept;
 /// A node's health, the framework's judgement alone (docs/architecture.md#the-node-lifecycle; on the wire:
 /// docs/control-port.md#node-health): its state (the phase's
 /// colour), why it failed (while failed), its exact phase, what the graph wants of it, why it is stopping or
@@ -109,7 +111,8 @@ struct DiagnosticField {
 };
 /// What the framework itself observes about a node (docs/output-records.md#diagnostic), by code: "ear.close-overdue" (a
 /// configuration that did not close within the close deadline, leaked past the close deadline; no field),
-/// "ear.close-late" (that configuration closed after all; `ms` since its close began), "ear.fade-unacknowledged" (a planned silence's fade not acknowledged within 100 ms, so the barrier was taken
+/// "ear.close-late" (that configuration closed after all; `ms` since its close began), "ear.claim-wait" (a claim waits
+/// for its holder, which is closing: "<key> held by node <n>, which is closing"; no field), "ear.fade-unacknowledged" (a planned silence's fade not acknowledged within 100 ms, so the barrier was taken
 /// unfaded; `ms`), "ear.barrier-overdue" (a barrier not completed within 5 s: the node's configuration and block are
 /// leaked; `ms`) and "ear.hook-slow" (a hook, named in the detail, "configure ran 31 ms", ran past hookSlowBound on the
 /// main loop; `ms`; once per node and hook for the node's life:
@@ -259,6 +262,9 @@ struct ResourceAdapters {
 	RecordingAdapter* recordings = nullptr;
 	LoopAdapter* loops = nullptr;
 	StoreAdapter* stores = nullptr;
+	/// The ports' probe (docs/writing-a-node-type.md#claims); null: a port claim is judged between the host's nodes
+	/// only, never against the kernel (a test's host).
+	PortProbe* ports = nullptr;
 };
 /// The resource registry (docs/writing-a-node-type.md#configure-and-createof): one adapter per kind of companion and
 /// of ResourceRequest, so a new kind is one adapter here and nothing more in NodeHost's constructor. A kind the host
@@ -290,6 +296,8 @@ public:
 	LoopAdapter* loops() const noexcept { return adapters_.loops; }
 	/// The stores' adapter (a spec's stores; docs/writing-a-node-type.md#stores); null: the host has none.
 	StoreAdapter* stores() const noexcept { return adapters_.stores; }
+	/// The ports' probe (claims); null: the host probes no port.
+	PortProbe* ports() const noexcept { return adapters_.ports; }
 
 private:
 	ResourceAdapters adapters_;

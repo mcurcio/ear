@@ -135,13 +135,20 @@ node rtp fpp { address "0.0.0.0"; port 5004; format "L24"; channels 2; rate 48kh
   A host name is refused because looking it up blocks the main loop (15 s for `fpp.local` once).
 - **No packets is not a failure.** With no sender the node is `running` and silent (its meters show
   it). A sender that restarts (a new SSRC) is heard again.
-- **A port another program holds fails the node after 5 s.** PipeWire only logs the failed bind, so
-  the receiver never runs: the node stays `configuring` (state `starting`) with silent outputs, says
-  after 2 s `node fpp still configuring after 2s: waiting for fpp.rtp` (`graph.get` shows
-  `waitingFor` `companion` `fpp.rtp`), and once the receiver's 5 s readiness deadline passed it
-  fails `node fpp failed engine-refused: the RTP receiver never ran (UDP port 5004 held?)`
-  ([engine.md](engine.md#readiness-deadlines)). Free the port, then `node.start` or `node.restart`
-  retries it. Two `rtp` nodes on one port both bind, and unicast packets reach only one.
+- **One node per UDP port.** The port is the node's [claim](writing-a-node-type.md#claims), judged
+  before its receiver is made. A second `rtp` node on it fails at once,
+  `node fpp2 failed start-failed: cannot bind UDP port 5004: held by node fpp`, even when the two
+  listen to different multicast groups (allowing that waits for a multicast test). A port another
+  program holds fails the node at once with the kernel's reason,
+  `node fpp failed start-failed: cannot bind UDP port 5004: Address already in use`. Free the port,
+  then `node.start` or `node.restart` retries it. A node removed and another added on its port in one
+  edit, or two nodes swapping ports, wait for the old one to let go (`ear.claim-wait`, `waitingFor`
+  `claim`), then run.
+- **A program that takes the port after ear checked it** (between the claim's probe and the
+  receiver's bind) is not caught there: PipeWire only logs the failed bind, so the node stays
+  `configuring` waiting for `fpp.rtp`, and fails at the receiver's 5 s readiness deadline,
+  `node fpp failed engine-refused: the RTP receiver never ran (UDP port 5004 held?)`
+  ([engine.md](engine.md#readiness-deadlines)).
 - **A packet lost or out of order** resets the receiver, so about `latencyMs` of silence follows.
   Even one sending thread over loopback reorders packets under load.
 - **Channel limits:** a datagram longer than 1280 bytes is cut short and garbled, so 1 ms packets
@@ -167,13 +174,13 @@ it can play audio into the graph. Keep it reachable only from the sender's netwo
 - Each receiver costs a fixed 4 MiB ring, a connection and a socket, and the graph has no limit on
   its nodes: anyone who reaches port 7777 can add receivers until the pod runs out of memory.
 
-**Not built:** a failure for a port that cannot be bound (ear binding the port itself first, or a
-PipeWire that reports it); a "receiving" status from the module's `rtp.receiving`; multicast
+**Not built:** a failure for a port taken between ear's probe and the receiver's bind (ear binding
+the port itself and handing it over, or a PipeWire that reports it); a "receiving" status from the module's `rtp.receiving`; multicast
 tested, and a multicast-capable pod network; a larger datagram (`net.mtu`) for many channels, and
 a `latencyMs` bound tied to the ring (`latencyMs * rate / 1000 * channels * bytesPerSample` under
 4 MiB); packet handling on a data loop of its own (`context.data-loops` and the module's
-`node.loop.class`); refusing `224.0.0.0/24` and other well-known groups; refusing a second `rtp`
-node on one port; a limit on engine companions; SAP discovery; IPv6 and a sender-address filter; an
+`node.loop.class`); refusing `224.0.0.0/24` and other well-known groups; two `rtp` nodes on one
+port for two multicast groups (a claim keyed by group and port); a limit on engine companions; SAP discovery; IPv6 and a sender-address filter; an
 RTP sender.
 
 ## `sendspin`

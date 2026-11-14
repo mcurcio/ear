@@ -93,6 +93,8 @@ function waitingWords(waits: WaitingFor[]): string {
         return `its loop ${wait.name ?? ""}`.trimEnd();
       case "store":
         return `its store ${wait.name ?? ""}`.trimEnd();
+      case "claim":
+        return `its claim ${wait.name ?? ""}`.trimEnd();
       default:
         return wait.name !== undefined ? `${wait.kind} ${wait.name}` : wait.kind;
     }

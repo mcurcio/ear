@@ -133,6 +133,9 @@ std::string waitingText(const std::vector<WaitingFor>& waits) {
 		case WaitingFor::Kind::store:
 			one = "its store " + wait.name;
 			break;
+		case WaitingFor::Kind::claim:
+			one = "its claim " + wait.name;
+			break;
 		}
 		text += (text.empty() ? "" : ", ") + one;
 	}
