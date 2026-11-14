@@ -1184,6 +1184,7 @@ the base image by digest, not the packages).
    ([above](#the-one-data-loop-and-invokes)): if a version loses one unreported, that is a question
    for the owner (carry a patch to PipeWire; excuse such a cycle only by a mark PipeWire leaves on
    it, of which 1.4.2 leaves none; or report it upstream and let the timing tests fail until it is
-   fixed), never a judge loosened.
+   fixed), never a judge loosened. The recommendation, since PipeWire leaves no reliable mark to
+   excuse by: carry a patch, and report it upstream either way.
 5. Update the version named in `engine.conf`'s header, the `pipewire-engine` skill, `AGENTS.md` and
    this page.

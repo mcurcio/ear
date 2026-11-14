@@ -427,8 +427,10 @@ function named for a role (`sendspin_server.py`'s `induce`, `poll` and `pace`, w
 why when called), and its own tests (`ear_python_sleeps_*`, on `test/python_sleeps/`) refuse each way
 of naming it.
 
-What neither holds: a sleep in product code (ear's own waits are its design, not a test's); a poll on
-a descriptor array of length 0, or a select whose sets are a variable that happens to be null; a sleep
+What neither holds: a sleep in product code (ear's own waits are its design, not a test's); a poll or
+select on nothing written with `NULL` or `0` rather than `nullptr` (`poll(NULL, 0, ms)`,
+`select(0, 0, 0, 0, &tv)`), which the deleted overload lets through because Asio's own headers call
+`select` that way; a poll on a descriptor array of length 0, or a select whose sets are a variable that happens to be null; a sleep
 reached by a string (`getattr(asyncio, "sleep")`) or a `-D` on a target's command line; and Python
 outside `test/` (there is none in a test folder under `src/`).
 

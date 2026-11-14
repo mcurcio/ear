@@ -44,6 +44,8 @@
 // poll, ppoll, select and pselect are a test's to wait on descriptors; on none (nullptr for the set) they are a sleep,
 // refused by a deleted overload that matches nullptr exactly and is a better match than the real one. It takes nullptr
 // alone, not 0 or NULL, so a library's own call with 0 (Asio's select in null_event) still finds the real function.
+// The known gap that leaves: poll(NULL, 0, ms) and select(0, 0, 0, 0, &tv) still compile, a sleep in a test's own
+// code as much as in Asio's.
 template <class None>
 	requires std::same_as<None, std::nullptr_t>
 int poll(None, nfds_t, int) = delete;
