@@ -12,7 +12,8 @@
         "protocol": 1,
         "features": [
           "lifecycle",
-          "counters"
+          "counters",
+          "companions"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -45,7 +46,8 @@
               "overruns": 0,
               "repositions": 0,
               "driverChanges": 0
-            }
+            },
+            "companions": []
           },
           {
             "name": "rec",
@@ -67,7 +69,8 @@
               "overruns": 2,
               "repositions": 0,
               "driverChanges": 0
-            }
+            },
+            "companions": []
           }
         ],
         "routes": [],
@@ -159,7 +162,8 @@
           "overruns": 0,
           "repositions": 0,
           "driverChanges": 0
-        }
+        },
+        "companions": []
       }
     },
     {
@@ -192,7 +196,8 @@
     "protocol": 1,
     "features": [
       "lifecycle",
-      "counters"
+      "counters",
+      "companions"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -228,7 +233,8 @@
           "overruns": 1,
           "repositions": 0,
           "driverChanges": 0
-        }
+        },
+        "companions": []
       },
       {
         "name": "rec",
@@ -250,7 +256,8 @@
           "overruns": 3,
           "repositions": 0,
           "driverChanges": 0
-        }
+        },
+        "companions": []
       }
     ],
     "routes": [],

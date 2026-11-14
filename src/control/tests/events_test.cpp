@@ -123,3 +123,26 @@ TEST_CASE("A levels notification holds every node given, linear to 4 decimals", 
 	CHECK(json::parse(encodeLevels({})) ==
 	      json::parse(R"({"jsonrpc": "2.0", "method": "levels", "params": {"nodes": {}}})"));
 }
+
+TEST_CASE("node.companionsChanged and node.added's companions encode as companions.json has them",
+          "[events][protocol][companions]") {
+	using ear::CompanionKind;
+	const json m = fixture("companions")["messages"];
+	const auto sink = [](const std::string& node, bool ready, std::uint64_t dropped) {
+		return ear::CompanionView{.name = node + ".writer",
+		                          .kind = CompanionKind::sink,
+		                          .bank = "writer",
+		                          .ready = ready,
+		                          .dropped = dropped};
+	};
+	CHECK(encoded(NodeAdded{{"take", "file", {{"path", "take.wav"}}},
+	                        ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
+	                        ear::NodeHealth{"take"},
+	                        ear::control::testing::reading(4)}) == m[1]);
+	CHECK(encoded(NodeCompanionsChanged{"take", {sink("take", false, 0)}}) == m[3]);
+	CHECK(encoded(NodeCompanionsChanged{"rec", {sink("rec", true, 4096)}}) == m[9]);
+	CHECK(encoded(NodeCompanionsChanged{"rec", {}}) == m[17]);
+	CHECK(encoded(NodeCompanionsChanged{
+			  "fpp", {{.name = "fpp.rtp", .kind = CompanionKind::rtpReceiver, .bank = "from_rtp", .ready = false}}}) ==
+	      m[29]);
+}

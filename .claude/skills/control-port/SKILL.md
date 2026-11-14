@@ -1,6 +1,6 @@
 ---
 name: control-port
-description: How to talk to EAR's control port (7777, HTTP for the graph editor plus JSON-RPC 2.0 over WebSocket at /rpc), its flags, the Host and Origin rules, protocol 1 and its features, the lifecycle requests (node.start, node.stop, node.restart, node.disable, node.enable), node health and node.gone, the graphFile.* calls that read and replace ear.conf, rpc-call.mjs --until, write-behind and hand edits, how it runs on its own thread and reaches the graph through the graph file keeper and the gateway, per-client queues, levels, stopping, and the traps found while building it. Use when calling ear from a script, test or browser, when a request gets 403, file-changed, file-invalid or shared-definition, a socket closes with 1008 or a reset, levels never arrive, an edit is lost or not written, stop hangs, or when changing src/server/, src/control/ (rpc, commands, events, gateway, session), src/config/ or web/src/rpc.ts.
+description: How to talk to EAR's control port (7777, HTTP for the graph editor plus JSON-RPC 2.0 over WebSocket at /rpc), its flags, the Host and Origin rules, protocol 1 and its features (lifecycle, counters, companions and node.companionsChanged), the lifecycle requests (node.start, node.stop, node.restart, node.disable, node.enable), node health and node.gone, the graphFile.* calls that read and replace ear.conf, rpc-call.mjs --until, write-behind and hand edits, how it runs on its own thread and reaches the graph through the graph file keeper and the gateway, per-client queues, levels, stopping, and the traps found while building it. Use when calling ear from a script, test or browser, when a request gets 403, file-changed, file-invalid or shared-definition, a socket closes with 1008 or a reset, levels never arrive, an edit is lost or not written, stop hangs, or when changing src/server/, src/control/ (rpc, commands, events, gateway, session), src/config/ or web/src/rpc.ts.
 ---
 
 # EAR's control port
@@ -48,7 +48,7 @@ use`).
 
 ## The frame and the lifecycle (protocol 1)
 
-- **The frame.** `graph.get` says `"protocol": 1` and `"features": ["lifecycle"]`; an absent
+- **The frame.** `graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions"]`; an absent
   `protocol` is 0. Gate every method and request member on its feature, never on a -32601
   probe. Every enum is open: draw a value you do not know neutrally, never fail on it.
 - **Health.** Each node of a snapshot, `node.added` and every `node.state` carries `state` (the
@@ -82,6 +82,18 @@ use`).
   (`docs/engine.md#reporting-the-counters`). To see a stall end to end: `kill -STOP` ear for half a
   second, then `kill -CONT`: one `ear.graph-lost-cycles` record carries every cycle it cut, if the host cut any (a GitHub
   runner runs the catch-up whole, and a stop while the data thread waits holds no cycle).
+- **Companions** (feature `companions`, `docs/control-port.md#companions`): each node of a snapshot
+  carries `companions`, its hidden helpers (`rec.writer` kind `sink` with `dropped`, `fpp.rtp`
+  `rtp-receiver`, `desk.playback`/`desk.capture`, a source with `shortfall`), each with its inside
+  `bank` and `ready`; `node.added` always `[]`. `node.companionsChanged {name, companions}` replaces
+  the whole list: at once for an entry or a `ready` (after `configuring`, before the health a
+  readiness allows, `[]` after the `node.state` that began a teardown; none for a stop or start),
+  at most once a second for a counter. Two tellers feed it (NodeHost for structure and readiness,
+  CounterWatch at the heartbeat for counters), and the gateway (`companionsChanged` in
+  `src/control/gateway.cpp`) drops a list equal to the last it sent for the node, and forgets the
+  name at `node.removed` (a replace's too), so the next `node.added`'s `[]` is what it holds. A companion's counters run per configuration, so they
+  never ride `counters`/`counters.changed`. To see a list:
+  `node scripts/rpc-call.mjs ws://127.0.0.1:7777/rpc graph.get` and read each node's `companions`.
 
 ## The graph file over the port
 

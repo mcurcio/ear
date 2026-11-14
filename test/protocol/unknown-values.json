@@ -1,5 +1,5 @@
 {
-  "description": "Every enum is open from protocol 1 (docs/control-port.md#protocol-and-features): values, members and notifications a client does not know, from a later slice or a newer ear, are taken as they come or ignored, never a failure. After a protocol 1 snapshot: an unknown state and phase (recovering, with an unknown member and an unknown failure code), an unknown cause.kind (fell-back), an unknown waitingFor kind (claim) and phase (reconfiguring, with its keys, not a health member this client keeps), an unknown route status (held), an unknown applied value on node.updated (reshape, with an unknown member ports) and in a reply (retune), an unknown notification, and counters a client does not know on the graph (lateWakes) and a node (underruns), each kept by its name and number as the counters are an open set. The graph is what the reducer keeps: health members it knows, replaced whole by each node.state; the route's status as sent.",
+  "description": "Every enum is open from protocol 1 (docs/control-port.md#protocol-and-features): values, members and notifications a client does not know, from a later slice or a newer ear, are taken as they come or ignored, never a failure. After a protocol 1 snapshot: an unknown state and phase (recovering, with an unknown member and an unknown failure code), an unknown cause.kind (fell-back), an unknown waitingFor kind (claim) and phase (reconfiguring, with its keys, not a health member this client keeps), an unknown route status (held), an unknown applied value on node.updated (reshape, with an unknown member ports) and in a reply (retune), an unknown notification, and counters a client does not know on the graph (lateWakes) and a node (underruns), each kept by its name and number as the counters are an open set; and a companion list (feature companions) naming a companion of a kind a client does not know (paced-source) with a member it does not know (lagFrames), kept as sent and drawn by its kind's own text. The graph is what the reducer keeps: health members it knows, replaced whole by each node.state; the route's status as sent.",
   "requests": [
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"node.update\",\"params\":{\"name\":\"noise\",\"settings\":{\"seed\":2}}}"
@@ -12,7 +12,8 @@
         "protocol": 1,
         "features": [
           "lifecycle",
-          "counters"
+          "counters",
+          "companions"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -41,7 +42,8 @@
               "overruns": 0,
               "repositions": 0,
               "driverChanges": 0
-            }
+            },
+            "companions": []
           },
           {
             "name": "rec",
@@ -63,7 +65,8 @@
               "overruns": 0,
               "repositions": 0,
               "driverChanges": 0
-            }
+            },
+            "companions": []
           }
         ],
         "routes": [
@@ -211,6 +214,23 @@
     },
     {
       "jsonrpc": "2.0",
+      "method": "node.companionsChanged",
+      "params": {
+        "name": "noise",
+        "companions": [
+          {
+            "name": "noise.from_feed",
+            "kind": "paced-source",
+            "bank": "from_feed",
+            "ready": true,
+            "shortfall": 0,
+            "lagFrames": 120
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
       "method": "counters.changed",
       "params": {
         "graph": {
@@ -236,7 +256,8 @@
     "protocol": 1,
     "features": [
       "lifecycle",
-      "counters"
+      "counters",
+      "companions"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -268,7 +289,17 @@
           "repositions": 0,
           "driverChanges": 0,
           "underruns": 1
-        }
+        },
+        "companions": [
+          {
+            "name": "noise.from_feed",
+            "kind": "paced-source",
+            "bank": "from_feed",
+            "ready": true,
+            "shortfall": 0,
+            "lagFrames": 120
+          }
+        ]
       },
       {
         "name": "rec",
@@ -295,7 +326,8 @@
           "overruns": 0,
           "repositions": 0,
           "driverChanges": 0
-        }
+        },
+        "companions": []
       }
     ],
     "routes": [

@@ -97,7 +97,7 @@ inline constexpr std::chrono::milliseconds companionDropDiagnosticPace{10'000};
 // ---- A companion as the wire and the editor see it ----
 
 /// One entry of a node's companion list (docs/engine.md#companions-in-a-nodes-list; on the wire, the feature
-/// `companions` the slice's next step builds).
+/// `companions`: docs/control-port.md#companions).
 struct CompanionView {
 	/// An engine kind's engine node ("<node>.playback", "<node>.capture", "<node>.rtp"); a ring kind's "<node>.<bank>".
 	NodeName name;

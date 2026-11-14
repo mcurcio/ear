@@ -6,6 +6,7 @@
 #include <string_view>
 #include <variant>
 #include <vector>
+#include "ear/control/companions_wire.hpp"
 #include "ear/control/graph_file_state.hpp"
 #include "ear/core/counter_watch.hpp"
 #include "ear/core/levels.hpp"
@@ -13,6 +14,8 @@
 #include "ear/core/reconciler.hpp"
 // The graph notifications (docs/control-port.md) as typed events.
 namespace ear::control {
+/// node.added. Its `companions` (feature companions) is always []: a node is told added before NodeHost configures it,
+/// a port-caused replace's newer node too (docs/control-port.md#companions).
 struct NodeAdded {
 	NodeSpec node;
 	Ports ports;       // public ports only
@@ -60,7 +63,7 @@ struct CountersChanged {
 	std::vector<NamedCounts> nodes;
 };
 using GraphEvent = std::variant<NodeAdded, NodeUpdated, NodeRemoved, NodeChanged, NodeStopped, NodeGone, RouteAdded,
-                                RouteRemoved, RouteChanged, CountersChanged>;
+                                RouteRemoved, RouteChanged, CountersChanged, NodeCompanionsChanged>;
 class EventSink { // control thread
 public:
 	virtual void graphChanged(GraphEvent event) = 0;

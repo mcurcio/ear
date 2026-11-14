@@ -2,7 +2,7 @@
 
 ear serves one TCP port (7777 by default): the graph editor's files over HTTP at `/`, and
 JSON-RPC 2.0 over WebSocket at `/rpc`. Through `/rpc` a client reads and edits the graph and its
-file, streams every change, per-port audio levels and the diagnostics counters, and stops, starts,
+file, streams every change, per-port audio levels, the diagnostics counters and each node's hidden helpers, and stops, starts,
 restarts, disables and enables nodes. This page is the wire's one reference, **protocol 1**. Its examples are the fixtures
 in `test/protocol/*.json`, which ear's C++ tests and the editor's tests both check: when this page
 and a fixture disagree, the fixture is right.
@@ -72,7 +72,7 @@ snapshots include every edit the batch made.
 
 ## Protocol and features
 
-`graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters"]`. An absent `protocol` is 0 (the
+`graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions"]`. An absent `protocol` is 0 (the
 wire before the lifecycle). The number moves only on a breaking change: removing or renaming a
 method, notification, member or code, changing a member's type, or changing an order guarantee.
 Additive growth is a new **feature** name.
@@ -82,10 +82,11 @@ Additive growth is a new **feature** name.
   on a node; `node.start`, `node.stop`, `node.restart`, `node.disable`, `node.enable`, `node.add`'s
   `disabled`; the codes `node-disabled` and `not-restartable`; and `node.gone`. `counters` adds
   `counters` on the Graph and on each node of a snapshot and `node.added`, and `counters.changed`
-  ([below](#counters)).
+  ([below](#counters)). `companions` adds `companions` on each node of a snapshot and `node.added`, and
+  `node.companionsChanged` ([below](#companions)).
 - **Every enum is open.** `state`, `phase`, `cause.kind`, `waitingFor`'s `kind`, a route's `status`,
-  `reason.code`, `applied`, `severity` and every code may gain values, and the counters' names are
-  an open set. Draw a value you do not know
+  `reason.code`, `applied`, `severity`, a companion's `kind` and every code may gain values, and the counters' names
+  are an open set. Draw a value you do not know
   neutrally (a state as `starting`'s style, a code as its text, a counter by its name and number),
   and ignore a notification you do not know; never fail on either (`test/protocol/unknown-values.json`).
 - **A client that sees a higher `protocol`** shows a banner and keeps working with what it
@@ -99,14 +100,15 @@ Additive growth is a new **feature** name.
 `graph.get` and `graph.subscribe` answer with the Graph (`test/protocol/snapshot.json`):
 
 ```json
-{"protocol": 1, "features": ["lifecycle", "counters"],
+{"protocol": 1, "features": ["lifecycle", "counters", "companions"],
  "graphFrequency": 48000, "blockSize": 256, "realtime": true, "scheduling": "SCHED_FIFO 88",
  "types": ["card", "file", "white"],
  "counters": {"cycles": 18750, "cutCycles": 39, "stalls": 1, "lostMs": 208},
  "nodes": [
    {"name": "noise", "type": "white", "settings": {}, "inputs": [], "outputs": ["noise.mono"],
     "state": "running", "phase": "running", "since": "2026-11-09T10:00:00.000000Z", "wanted": "running",
-    "blockLost": false, "counters": {"missedCycles": 0, "overruns": 0, "repositions": 0, "driverChanges": 0}},
+    "blockLost": false, "counters": {"missedCycles": 0, "overruns": 0, "repositions": 0, "driverChanges": 0},
+    "companions": []},
    {"name": "quiet", "type": "white", "settings": {}, "inputs": [], "outputs": ["noise.mono"],
     "state": "disabled", "phase": "disabled", "wanted": "disabled", "blockLost": false, "disabled": true},
    {"name": "tape", "type": "file", "settings": {"path": "nope/t.wav"},
@@ -124,12 +126,12 @@ Additive growth is a new **feature** name.
 | `graphFrequency`, `blockSize` | The engine's, fixed at boot |
 | `realtime`, `scheduling` | Whether the audio thread is realtime, and its policy (`SCHED_FIFO 88`, `SCHED_OTHER`) |
 | `types` | The node types ear knows |
-| `nodes[]` | Each node: `name`, `type`, `settings` (as in `ear.conf`), `inputs` and `outputs` (public ports only; inside banks are never on the wire), its [health](#node-health), `disabled: true` when `ear.conf` disables it, and its `counters` ([below](#counters)) |
+| `nodes[]` | Each node: `name`, `type`, `settings` (as in `ear.conf`), `inputs` and `outputs` (public ports only; inside banks are never routed: only a companion names one), its [health](#node-health), `disabled: true` when `ear.conf` disables it, its `counters` ([below](#counters)) and its `companions` ([below](#companions)) |
 | `counters` | The graph's counters ([below](#counters)) |
 | `routes[]` | Each route: `from` and `to` (`{node, port}`), `status` (`pending`: an end is not live yet; `linked`; `refused`), `detail` when refused |
 
-One main-loop turn makes the whole snapshot, so its parts agree, the counters among them. The
-example abbreviates: every node carries `counters`.
+One main-loop turn makes the whole snapshot, so its parts agree, the counters and companion lists among them. The
+example abbreviates: every node carries `counters` and `companions`.
 
 ### Node health
 
@@ -195,7 +197,7 @@ edit. Their effect shows as `node.updated` (`applied` and `disabled`) and the he
 
 | Notification | Params | When |
 |---|---|---|
-| `node.added` | the node as in the Graph, with its health (`phase` `added`, or `disabled` for a node added disabled) and its `counters` (zero, or what a port-caused replace carries on: [below](#counters)) | A node was added |
+| `node.added` | the node as in the Graph, with its health (`phase` `added`, or `disabled` for a node added disabled), its `counters` (zero, or what a port-caused replace carries on: [below](#counters)) and `"companions": []` | A node was added |
 | `node.updated` | `{"name", "settings", "applied", "disabled"?}`; `applied`: `restart`, `disable`, `enable` or `stored` (a change to a node that stays disabled) | A node's settings or `disabled` changed |
 | `node.removed` | `{"name"}` | A node was removed (after `route.removed` for its routes). The client drops the node now |
 | `node.state` | `{"name"}` and every health member | Any health member changed |
@@ -206,6 +208,7 @@ edit. Their effect shows as `node.updated` (`applied` and `disabled`) and the he
 | `graphFile.changed` | GraphFile, `"cause"`, `"droppedEdits"?` | `ear.conf`'s state changed |
 | `levels` | `{"nodes": {"<node>": {"<port>": [peak, rms]}}}` | 30 times a second, to `levels.subscribe` clients |
 | `counters.changed` | `{"graph": {...}, "nodes": {"<node>": {...}}}` | A counter was lost; at most once a second ([below](#counters)) |
+| `node.companionsChanged` | `{"name", "companions"}`: the node's whole list | Its list changed: an entry added or removed, a `ready`, or a counter (at most once a second) ([below](#companions)) |
 
 A client ignores an event naming a node it does not know. After `node.removed` the removed node's
 `node.state` (`stopping`, cause `removing`), `node.stopped` and `node.gone` name a node the client
@@ -222,7 +225,8 @@ sends none of the old node's health.
   `node.removed`, `node.state` `stopping` (cause `removing`), the reply; later `node.stopped` and
   `node.gone`.
 - A restart: `node.state` `stopping` (cause `restarting`), the reply, then `configuring`,
-  `configured`, `starting`, `running` as they happen. A stop: `stopping`, the reply, `stopped`. A
+  `configured`, `starting`, `running` as they happen. With companions, a node's lists ride the same
+  stream: [below](#companions). A stop: `stopping`, the reply, `stopped`. A
   start: `starting`, the reply, `running`. A disable: `graphFile.changed`, `node.updated`,
   `node.state` `stopping` (cause `disabling`), the reply, then `disabled`. An enable:
   `graphFile.changed`, `node.updated`, `node.state` `configuring` (cause `enabling`), the reply, then
@@ -352,6 +356,58 @@ state, the graph's and each node's, which never step back and are never reset
 - **The names are an open set:** a counter a client does not know is shown by its name and number.
 - A client that wants "since I looked" keeps what it last saw and subtracts; there is no reset.
 
+## Companions
+
+With the feature `companions`, each node lists its **companions**: the hidden helpers that carry its
+audio to and from non-realtime code, a sound card's playback and capture, an RTP receiver, a
+sink, a source ([engine.md](engine.md#companions-in-a-nodes-list) says what each is and when
+it is ready). A companion is never a node: never in `nodes`, never routed (its name has a `.`,
+which no node's has), never metered. `test/protocol/companions.json` shows a list's whole life.
+
+```json
+{"jsonrpc": "2.0", "method": "node.companionsChanged", "params": {"name": "desk", "companions": [
+  {"name": "desk.playback", "kind": "card-playback", "bank": "to_card", "ready": true},
+  {"name": "desk.capture", "kind": "card-capture", "bank": "from_card", "ready": false}]}}
+{"jsonrpc": "2.0", "method": "node.companionsChanged", "params": {"name": "rec", "companions": [
+  {"name": "rec.writer", "kind": "sink", "bank": "writer", "ready": true, "dropped": 4096}]}}
+```
+
+| Member | What |
+|---|---|
+| `name` | `<node>.playback`, `<node>.capture`, `<node>.rtp` (the engine node's name, as `waitingFor` names it); a sink's or source's `<node>.<bank>` |
+| `kind` | `card-playback`, `card-capture`, `rtp-receiver`, `sink`, `source`; an open set |
+| `bank` | The node's inside bank it joins |
+| `ready` | A card or receiver once linked and running, a sink once its consumer began, a source always |
+| `dropped` | A sink only: frames its ring had no room for since this configuration made it |
+| `shortfall` | A source only: frames played as zeros while its writer was not idle, since this configuration made it |
+
+- **Where.** Every node of a snapshot carries `companions`, its list in the order its type asked
+  for them, read with the rest; `[]` for a node with none (`white`, `sendspin`), not yet
+  configured, failed or disabled. `node.added` always carries `[]`: a node is added before it is
+  configured, a port-caused replace's node too (its companions are new and count from zero).
+- **`node.companionsChanged`** carries the node's whole list and replaces the one the client holds.
+  It is sent when an entry is added or removed or its `ready` changes, at once and in order with
+  the node's health: after the `configuring` that asked for the list; before the `node.state` a
+  companion's readiness allows (a client never sees a node `running` with a companion it believes
+  not ready); and the empty list after the `node.state` that began a teardown (a restart's,
+  failure's, disable's), so a failure is never held back for it. A stop keeps the configuration,
+  so its list: a stop and a start send none. It is also sent when a `dropped` or `shortfall`
+  moved, at most once a second per node and at most 1.1 s behind. The same list is never sent
+  twice for a node.
+- **Counters per configuration.** `dropped` and `shortfall` count from the configuration that made
+  the companion: a restart's next list starts from zero. They are never in `counters` or
+  `counters.changed`, whose counters run from the node's add and never step back
+  ([above](#counters)); `node.gone`'s `droppedFrames` is the node's sum over its whole life.
+  Standard output says each drop too, as `ear.sink-dropped` and `ear.source-shortfall`
+  ([output-records.md](output-records.md#diagnostic)).
+- **A name the client does not hold** is ignored, like every event naming a node it does not
+  know. Nothing is sent for a removed node's companions after its `node.removed`; a node of that
+  name added again starts from its `node.added`'s `[]`. A newer node replacing an older one of
+  its name speaks for the name: the older one's list is never sent.
+- **Open set.** A kind the client does not know is drawn by its own text; a member it does not
+  know is ignored. A node held without `companions` (from an ear without the feature) has none
+  to show.
+
 ## Per-client limits and stopping
 
 - One message in flight per connection: the next is read only after every reply to this one is
@@ -397,6 +453,7 @@ breaking change moves `protocol`; anything else is a new feature name
 | `errors.json` | Every refusal code and envelope error |
 | `levels.json` | `levels.subscribe` and `levels` |
 | `counters-changed.json` | The counters in a snapshot, `counters.changed`, one naming a node not held, and a port-caused replace's `node.added` carrying its counters |
+| `companions.json` | The companion lists in a snapshot (every engine and ring kind but a source), a file node's list from `node.added` to running, a counter moving, a stop and a start (no list), a restart, a failure past a readiness deadline, a removal (no list after `node.removed`) |
 | `unknown-values.json` | Values, members and notifications a client does not know, taken or ignored |
 | `output-records.json` | Standard output's records ([output-records.md](output-records.md)) |
 

@@ -267,7 +267,7 @@ TEST_CASE("node.stop and node.start through the control port edit nothing, and w
 	const json snapshot = rpc.call("graph.subscribe");
 	REQUIRE(snapshot.contains("result"));
 	CHECK(snapshot["result"]["protocol"] == 1);
-	CHECK(snapshot["result"]["features"] == json::array({"lifecycle", "counters"}));
+	CHECK(snapshot["result"]["features"] == json::array({"lifecycle", "counters", "companions"}));
 	CHECK(snapshot["result"]["nodes"][0]["phase"] == "running");
 	CHECK(snapshot["result"]["nodes"][0]["wanted"] == "running");
 
@@ -350,6 +350,79 @@ TEST_CASE("node.disable and node.enable edit the node's own line in ear.conf, an
 	CHECK(out.find("node noise disabled\n") != std::string::npos);
 	CHECK(out.find("node noise starting: enabling\n") != std::string::npos);
 	CHECK(out.find(" invoked\n") == std::string::npos); // edits write no action record
+}
+
+TEST_CASE("A file node's sink is in its companion list: ready while it records, kept across a stop and a start, "
+          "emptied and listed again by a restart",
+          "[system][control][companions]") {
+	Running started;
+	Ear& ear = started.ear;
+	Rpc rpc(ear.port());
+	const json snapshot = rpc.call("graph.subscribe");
+	INFO("snapshot: " << snapshot.dump());
+	REQUIRE(snapshot.contains("result"));
+	CHECK(snapshot["result"]["features"] == json::array({"lifecycle", "counters", "companions"}));
+	const json& nodes = snapshot["result"]["nodes"];
+	REQUIRE(nodes.size() == 2);
+	CHECK(nodes[0]["name"] == "noise");
+	CHECK(nodes[0]["companions"] == json::array()); // white has none
+	REQUIRE(nodes[1]["name"] == "rec");
+	// rec's list as the client holds it: the snapshot's, replaced by each node.companionsChanged naming rec after it.
+	const auto recList = [&] {
+		json list = nodes[1]["companions"];
+		for (const json& m : rpc.notifications)
+			if (Rpc::matches(m, "node.companionsChanged", {{"name", "rec"}})) list = m["params"]["companions"];
+		return list;
+	};
+	if (nodes[1]["phase"] != "running")
+		rpc.waitFor(
+			[](const json& m) { return Rpc::matches(m, "node.state", {{"name", "rec"}, {"phase", "running"}}); });
+	INFO("notifications: " << json(rpc.notifications).dump());
+	const json running = recList();
+	REQUIRE(running.size() == 1);
+	CHECK(running[0]["name"] == "rec.writer");
+	CHECK(running[0]["kind"] == "sink");
+	CHECK(running[0]["bank"] == "writer");
+	CHECK(running[0]["ready"] == true); // told before the running its readiness allowed
+	CHECK(running[0]["dropped"].is_number_unsigned());
+
+	// A stop and a start keep the configuration, so its list: nothing names rec's companions between them.
+	const std::size_t beforeStop = rpc.notifications.size();
+	CHECK(rpc.call("node.stop", {{"name", "rec"}})["result"] == json{{"applied", "stop"}});
+	rpc.waitFor([](const json& m) { return Rpc::matches(m, "node.state", {{"name", "rec"}, {"phase", "stopped"}}); },
+	            beforeStop);
+	CHECK(rpc.call("node.start", {{"name", "rec"}})["result"] == json{{"applied", "start"}});
+	const json restarted = rpc.waitFor(
+		[](const json& m) { return Rpc::matches(m, "node.state", {{"name", "rec"}, {"phase", "running"}}); },
+		beforeStop);
+	const std::size_t afterStart = rpc.indexOf("node.state", restarted["params"], beforeStop);
+	for (std::size_t i = beforeStop; i < afterStart; ++i) {
+		INFO("notification " << i);
+		CHECK_FALSE(Rpc::matches(rpc.notifications[i], "node.companionsChanged", {{"name", "rec"}}));
+	}
+
+	// A restart: the empty list after the node.state that began the teardown, then the next configuration's, ready
+	// before its configured.
+	const std::size_t beforeRestart = rpc.notifications.size();
+	CHECK(rpc.call("node.restart", {{"name", "rec"}})["result"] == json{{"applied", "restart"}});
+	rpc.waitFor([](const json& m) { return Rpc::matches(m, "node.state", {{"name", "rec"}, {"phase", "running"}}); },
+	            beforeRestart);
+	const std::size_t stopping = rpc.indexOf("node.state", {{"name", "rec"}, {"phase", "stopping"}}, beforeRestart);
+	const std::size_t emptied =
+		rpc.indexOf("node.companionsChanged", {{"name", "rec"}, {"companions", json::array()}}, beforeRestart);
+	const std::size_t configuring = rpc.indexOf("node.state", {{"name", "rec"}, {"phase", "configuring"}}, emptied);
+	const json readyAgain =
+		json::array({{{"name", "rec.writer"}, {"kind", "sink"}, {"bank", "writer"}, {"ready", true}, {"dropped", 0}}});
+	const std::size_t ready =
+		rpc.indexOf("node.companionsChanged", {{"name", "rec"}, {"companions", readyAgain}}, emptied);
+	const std::size_t configured = rpc.indexOf("node.state", {{"name", "rec"}, {"phase", "configured"}}, emptied);
+	CHECK(stopping < emptied);
+	CHECK(emptied < configuring);
+	CHECK(configuring < ready);
+	CHECK(ready < configured);
+	CHECK(configured < rpc.notifications.size());
+	CHECK(recList() == readyAgain);
+	CHECK(ear.stop(rpc) == 0);
 }
 
 TEST_CASE("A file path outside the recordings folder is refused as invalid-settings and nothing is "

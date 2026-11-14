@@ -1,5 +1,5 @@
 {
-  "description": "graph.get and graph.subscribe answer with the whole graph (docs/control-port.md): engine facts, node types, every wanted node with its state (a failed one with its reason) and every wanted route with its status (a refused one with its detail); with the feature counters, the graph's counters and each node's (docs/control-port.md#counters), read with the rest. Names in name order, routes in route order.",
+  "description": "graph.get and graph.subscribe answer with the whole graph (docs/control-port.md): engine facts, node types, every wanted node with its state (a failed one with its reason) and every wanted route with its status (a refused one with its detail); with the feature counters, the graph's counters and each node's (docs/control-port.md#counters), read with the rest; with the feature companions, each node's companion list (docs/control-port.md#companions): rec's sink, the rest none. Names in name order, routes in route order.",
   "requests": [
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.get\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"graph.subscribe\"}"
@@ -12,7 +12,8 @@
         "protocol": 1,
         "features": [
           "lifecycle",
-          "counters"
+          "counters",
+          "companions"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -49,7 +50,8 @@
               "overruns": 0,
               "repositions": 0,
               "driverChanges": 0
-            }
+            },
+            "companions": []
           },
           {
             "name": "noise",
@@ -69,7 +71,8 @@
               "overruns": 0,
               "repositions": 0,
               "driverChanges": 0
-            }
+            },
+            "companions": []
           },
           {
             "name": "quiet",
@@ -89,7 +92,8 @@
               "overruns": 0,
               "repositions": 0,
               "driverChanges": 0
-            }
+            },
+            "companions": []
           },
           {
             "name": "rec",
@@ -111,7 +115,16 @@
               "overruns": 2,
               "repositions": 0,
               "driverChanges": 0
-            }
+            },
+            "companions": [
+              {
+                "name": "rec.writer",
+                "kind": "sink",
+                "bank": "writer",
+                "ready": true,
+                "dropped": 0
+              }
+            ]
           },
           {
             "name": "tape",
@@ -137,7 +150,8 @@
               "overruns": 0,
               "repositions": 0,
               "driverChanges": 0
-            }
+            },
+            "companions": []
           }
         ],
         "routes": [
@@ -191,7 +205,8 @@
         "protocol": 1,
         "features": [
           "lifecycle",
-          "counters"
+          "counters",
+          "companions"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -228,7 +243,8 @@
               "overruns": 0,
               "repositions": 0,
               "driverChanges": 0
-            }
+            },
+            "companions": []
           },
           {
             "name": "noise",
@@ -248,7 +264,8 @@
               "overruns": 0,
               "repositions": 0,
               "driverChanges": 0
-            }
+            },
+            "companions": []
           },
           {
             "name": "quiet",
@@ -268,7 +285,8 @@
               "overruns": 0,
               "repositions": 0,
               "driverChanges": 0
-            }
+            },
+            "companions": []
           },
           {
             "name": "rec",
@@ -290,7 +308,16 @@
               "overruns": 2,
               "repositions": 0,
               "driverChanges": 0
-            }
+            },
+            "companions": [
+              {
+                "name": "rec.writer",
+                "kind": "sink",
+                "bank": "writer",
+                "ready": true,
+                "dropped": 0
+              }
+            ]
           },
           {
             "name": "tape",
@@ -316,7 +343,8 @@
               "overruns": 0,
               "repositions": 0,
               "driverChanges": 0
-            }
+            },
+            "companions": []
           }
         ],
         "routes": [
@@ -368,7 +396,8 @@
     "protocol": 1,
     "features": [
       "lifecycle",
-      "counters"
+      "counters",
+      "companions"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -405,7 +434,8 @@
           "overruns": 0,
           "repositions": 0,
           "driverChanges": 0
-        }
+        },
+        "companions": []
       },
       {
         "name": "noise",
@@ -425,7 +455,8 @@
           "overruns": 0,
           "repositions": 0,
           "driverChanges": 0
-        }
+        },
+        "companions": []
       },
       {
         "name": "quiet",
@@ -445,7 +476,8 @@
           "overruns": 0,
           "repositions": 0,
           "driverChanges": 0
-        }
+        },
+        "companions": []
       },
       {
         "name": "rec",
@@ -467,7 +499,16 @@
           "overruns": 2,
           "repositions": 0,
           "driverChanges": 0
-        }
+        },
+        "companions": [
+          {
+            "name": "rec.writer",
+            "kind": "sink",
+            "bank": "writer",
+            "ready": true,
+            "dropped": 0
+          }
+        ]
       },
       {
         "name": "tape",
@@ -493,7 +534,8 @@
           "overruns": 0,
           "repositions": 0,
           "driverChanges": 0
-        }
+        },
+        "companions": []
       }
     ],
     "routes": [

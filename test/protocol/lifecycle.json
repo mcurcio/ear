@@ -36,7 +36,8 @@
         "protocol": 1,
         "features": [
           "lifecycle",
-          "counters"
+          "counters",
+          "companions"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -71,7 +72,8 @@
               "overruns": 0,
               "repositions": 0,
               "driverChanges": 0
-            }
+            },
+            "companions": []
           },
           {
             "name": "porch",
@@ -95,7 +97,8 @@
               "overruns": 0,
               "repositions": 0,
               "driverChanges": 0
-            }
+            },
+            "companions": []
           }
         ],
         "routes": [],
@@ -128,7 +131,8 @@
           "overruns": 0,
           "repositions": 0,
           "driverChanges": 0
-        }
+        },
+        "companions": []
       }
     },
     {
@@ -620,7 +624,8 @@
           "overruns": 0,
           "repositions": 0,
           "driverChanges": 0
-        }
+        },
+        "companions": []
       }
     },
     {
@@ -664,7 +669,8 @@
           "overruns": 0,
           "repositions": 0,
           "driverChanges": 0
-        }
+        },
+        "companions": []
       }
     },
     {
@@ -924,7 +930,8 @@
           "overruns": 0,
           "repositions": 0,
           "driverChanges": 0
-        }
+        },
+        "companions": []
       }
     },
     {
@@ -1091,7 +1098,8 @@
           "overruns": 0,
           "repositions": 0,
           "driverChanges": 0
-        }
+        },
+        "companions": []
       }
     },
     {
@@ -1183,7 +1191,8 @@
     "protocol": 1,
     "features": [
       "lifecycle",
-      "counters"
+      "counters",
+      "companions"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -1222,7 +1231,8 @@
           "overruns": 0,
           "repositions": 0,
           "driverChanges": 0
-        }
+        },
+        "companions": []
       },
       {
         "name": "fpp",
@@ -1248,7 +1258,8 @@
           "overruns": 0,
           "repositions": 0,
           "driverChanges": 0
-        }
+        },
+        "companions": []
       },
       {
         "name": "porch",
@@ -1272,7 +1283,8 @@
           "overruns": 0,
           "repositions": 0,
           "driverChanges": 0
-        }
+        },
+        "companions": []
       },
       {
         "name": "quiet",
@@ -1293,7 +1305,8 @@
           "overruns": 0,
           "repositions": 0,
           "driverChanges": 0
-        }
+        },
+        "companions": []
       },
       {
         "name": "tape",
@@ -1316,7 +1329,8 @@
           "overruns": 0,
           "repositions": 0,
           "driverChanges": 0
-        }
+        },
+        "companions": []
       }
     ],
     "routes": [],

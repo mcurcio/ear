@@ -835,7 +835,10 @@ older node of a port-caused replace, as the wire keys a node by its name
 
 A counter's move alone is `CounterWatch`'s to tell, at the heartbeat
 ([reporting the counters](#reporting-the-counters)), since the data thread moves a sink's drops and a source's
-shortfall and nothing tells the main loop of either. As a configuration ends (teardown step 5, or
+shortfall and nothing tells the main loop of either. Either may tell a list the other already did (NodeHost
+compares lists without their counters, `CounterWatch` only with what it told itself); the control port's gateway,
+which hears both, sends a node's list only when it differs from the last it sent
+([control-port.md](control-port.md#companions)). As a configuration ends (teardown step 5, or
 when it is leaked) `NodeHost` tells its sinks' and sources' final counts
 (`NodeCountsListener::companionsEnded`), for the records.
 

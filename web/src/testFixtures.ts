@@ -2,6 +2,7 @@
 // from protocol 1), read as the wire type, for the UI's tests only. The server's tests (ear_control)
 // run on the same files.
 import edits from "../../test/protocol/edits.json";
+import companions from "../../test/protocol/companions.json";
 import countersChanged from "../../test/protocol/counters-changed.json";
 import errors from "../../test/protocol/errors.json";
 import graphFile from "../../test/protocol/graph-file.json";
@@ -21,6 +22,7 @@ export const fixtures = {
   lifecycle,
   unknownValues,
   countersChanged,
+  companions,
 } as unknown as {
   snapshot: ProtocolFixture;
   edits: ProtocolFixture;
@@ -30,6 +32,7 @@ export const fixtures = {
   lifecycle: ProtocolFixture;
   unknownValues: ProtocolFixture;
   countersChanged: ProtocolFixture;
+  companions: ProtocolFixture;
 };
 
 /** A fixture's server texts as the messages the client hands on, a batch's in its order. */

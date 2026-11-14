@@ -37,6 +37,7 @@ GraphView GraphStatus::read() const {
 		else node.health = healthFromSpec(node.spec);
 		node.health.superseded = false;
 		node.counts = nodes_.counts(node.spec.name).value_or(NodeCounts{});
+		node.companions = nodes_.companionsOf(node.spec.name);
 		view.nodes.push_back(std::move(node));
 	}
 

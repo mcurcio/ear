@@ -15,13 +15,15 @@ struct EngineView {
 };
 /// A wanted node as a snapshot shows it (docs/control-port.md#node-health): its spec (`disabled`
 /// among it), its public ports, its health, when its phase began, which the gateway fills in and the read
-/// leaves empty, and its counters (docs/engine.md#counters; zero before NodeHost knows it).
+/// leaves empty, its counters (docs/engine.md#counters; zero before NodeHost knows it) and its companion list
+/// (docs/engine.md#companions-in-a-nodes-list; empty before it is configured).
 struct NodeView {
 	NodeSpec spec;
 	Ports ports; // public only (inside lists empty)
 	NodeHealth health;
 	std::optional<std::chrono::system_clock::time_point> since{};
 	NodeCounts counts{};
+	std::vector<CompanionView> companions{};
 };
 /// A wanted node's health before NodeHost told any: added and wanted running, or disabled from the spec.
 NodeHealth healthFromSpec(const NodeSpec& spec);
@@ -40,7 +42,7 @@ protected:
 };
 /// The join of the desired graph, the node framework and the reconciler. A wanted node's health
 /// is NodeHost's last entry of its name, or healthFromSpec when NodeHost has none yet; its counters NodeHost's for the
-/// name, or zero; the graph's counters `graphCounts`' (zero without one), all read in the one call.
+/// name, or zero; its companions NodeHost::companionsOf's; the graph's counters `graphCounts`' (zero without one), all read in the one call.
 class GraphStatus final : public GraphReader {
 public:
 	GraphStatus(EngineView engine, const NodeCatalogue& catalogue, const DesiredGraph& desired, const NodeHost& nodes,

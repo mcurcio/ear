@@ -4,7 +4,8 @@
 // not announced: the server is the one source of truth. node.state replaces every health member (one absent is absent
 // now, docs/control-port.md#notifications); members and values this editor does not know are taken as they come or
 // ignored, never a failure. The counters (docs/control-port.md#counters) are kept as sent, whole, an unknown counter
-// among them, and counters.changed replaces those it names.
+// among them, and counters.changed replaces those it names. A node's companion list (docs/control-port.md#companions) is
+// kept as sent, and node.companionsChanged replaces it whole.
 import type {
   Graph,
   GraphNode,
@@ -34,7 +35,7 @@ const protocol0Health: NodeHealth = { state: "starting", phase: "added", wanted:
  * knows (a protocol 0 ear sends no health: such a node is starting), so a member it does not know never goes stale.
  */
 function nodeOf(from: GraphNode): GraphNode {
-  const { name, type, settings, inputs, outputs, disabled, counters } = from;
+  const { name, type, settings, inputs, outputs, disabled, counters, companions } = from;
   return {
     name,
     type,
@@ -44,6 +45,7 @@ function nodeOf(from: GraphNode): GraphNode {
     ...healthOf({ ...protocol0Health, ...from }),
     ...(disabled === true ? { disabled } : {}),
     ...(counters !== undefined ? { counters } : {}),
+    ...(companions !== undefined ? { companions } : {}),
   };
 }
 
@@ -151,6 +153,8 @@ const handlers: { [N in keyof Notifications]: (graph: Graph, params: Event<N>) =
       return named === undefined ? node : { ...node, counters: named };
     }),
   }),
+  // The whole list, replacing the one held; a node not held is ignored.
+  "node.companionsChanged": (graph, { name, companions }) => updateNode(graph, name, (node) => ({ ...node, companions })),
 };
 
 /** The graph after one server text. Responses other than a graph, and errors, change nothing. */

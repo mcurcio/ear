@@ -8,6 +8,7 @@
 # its own: ear_server carries its messages.
 add_library(ear_control STATIC
 	commands.cpp
+	companions_wire.cpp
 	events.cpp
 	gateway.cpp
 	graph_file_state.cpp

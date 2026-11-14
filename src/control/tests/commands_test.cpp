@@ -102,10 +102,35 @@ TEST_CASE("The lifecycle's five methods take a name and nothing else, and node.a
 	CHECK(invalid("node.add", R"({"name": "q", "type": "white", "colour": "red"})") == "/colour: unknown key");
 }
 
-TEST_CASE("The frame: graph.get says protocol 1 and the lifecycle and counters features", "[commands][lifecycle]") {
+TEST_CASE("The frame: graph.get says protocol 1 and the lifecycle, counters and companions features",
+          "[commands][lifecycle]") {
 	const json graph = encodeGraph(ear::GraphView{{{48000, 256}, false, "SCHED_OTHER"}, {}, {}, {}});
 	CHECK(graph["protocol"] == 1);
-	CHECK(graph["features"] == json::array({"lifecycle", "counters"}));
+	CHECK(graph["features"] == json::array({"lifecycle", "counters", "companions"}));
+}
+
+TEST_CASE("A snapshot's node carries its companion list in request order, each counter only on its kind, and [] for "
+          "none",
+          "[commands][companions]") {
+	ear::GraphView view{{{48000, 256}, false, "SCHED_OTHER"}, {}, {}, {}};
+	view.nodes.push_back({{"n", "white", json::object()}, ear::Ports{}, ear::NodeHealth{"n"}});
+	view.nodes.push_back(
+		{{"x", "test", json::object()},
+	     ear::Ports{},
+	     ear::NodeHealth{"x"},
+	     std::nullopt,
+	     {},
+	     {{.name = "x.playback", .kind = ear::CompanionKind::cardPlayback, .bank = "to_card", .ready = true},
+	      {.name = "x.rtp", .kind = ear::CompanionKind::rtpReceiver, .bank = "from_rtp"},
+	      {.name = "x.out", .kind = ear::CompanionKind::sink, .bank = "out", .ready = true, .dropped = 4096},
+	      {.name = "x.in", .kind = ear::CompanionKind::source, .bank = "in", .ready = true, .shortfall = 7}}});
+	const json graph = encodeGraph(view);
+	CHECK(graph["nodes"][0].value("companions", json()) == json::array());
+	CHECK(graph["nodes"][1].value("companions", json()) == json::parse(R"([
+		{"name": "x.playback", "kind": "card-playback", "bank": "to_card", "ready": true},
+		{"name": "x.rtp", "kind": "rtp-receiver", "bank": "from_rtp", "ready": false},
+		{"name": "x.out", "kind": "sink", "bank": "out", "ready": true, "dropped": 4096},
+		{"name": "x.in", "kind": "source", "bank": "in", "ready": true, "shortfall": 7}])"));
 }
 
 TEST_CASE("A snapshot's counters: the graph's with lostMs at its own rate and block size, and every node's",
@@ -146,11 +171,11 @@ TEST_CASE("Each health member is encoded once for snapshots: state, phase, wante
 	CHECK(nodes[0] == json::parse(R"({"name":"desk","type":"card","settings":{},"inputs":[],"outputs":[],
 		"state":"stopping","phase":"stopping","since":"2026-11-09T10:00:00.010000Z","wanted":"running","blockLost":true,
 		"cause":{"kind":"restarting","restart":{"kind":"settings","keys":["card","playback"]}},"disabled":true,
-		"counters":{"missedCycles":0,"overruns":0,"repositions":0,"driverChanges":0}})"));
+		"counters":{"missedCycles":0,"overruns":0,"repositions":0,"driverChanges":0},"companions":[]})"));
 	CHECK(nodes[1] == json::parse(R"({"name":"fpp","type":"rtp","settings":{},"inputs":[],"outputs":[],
 		"state":"starting","phase":"configuring","wanted":"running","blockLost":false,
 		"cause":{"kind":"settings","keys":["port"]},"waitingFor":[{"kind":"companion","name":"fpp.rtp"},{"kind":"block"}],
-		"counters":{"missedCycles":0,"overruns":0,"repositions":0,"driverChanges":0}})"));
+		"counters":{"missedCycles":0,"overruns":0,"repositions":0,"driverChanges":0},"companions":[]})"));
 }
 
 TEST_CASE("Every missing, extra and mistyped key is invalid params naming its pointer", "[commands]") {

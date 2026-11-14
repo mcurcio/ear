@@ -1,8 +1,5 @@
-// Companions on the wire, feature `companions` (docs/design/companions.md#8-module-design): each node's `companions`
-// list in snapshots and node.added, and node.companionsChanged. Declarations only until slice 3b's step 3b.6 builds
-// them with docs/control-port.md, test/protocol/companions.json and web/src/protocol.ts in one commit
-// (docs/control-port.md#changing-the-wire); then NodeCompanionsChanged joins events.hpp's GraphEvent and "companions"
-// joins commands.hpp's wireFeatures.
+// Companions on the wire, feature `companions` (docs/control-port.md#companions): each node's `companions` list in
+// snapshots and node.added, and node.companionsChanged, the whole list whenever it changes.
 #pragma once
 #include <span>
 #include <string_view>

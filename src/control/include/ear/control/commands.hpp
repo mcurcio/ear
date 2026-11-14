@@ -5,6 +5,7 @@
 #include <string_view>
 #include <variant>
 #include <nlohmann/json.hpp>
+#include "ear/control/companions_wire.hpp"
 #include "ear/control/graph_file_state.hpp"
 #include "ear/control/lifecycle_wire.hpp"
 #include "ear/control/rpc.hpp"
@@ -54,7 +55,7 @@ using CommandResult =
 	std::variant<GraphView, std::expected<void, CommandError>, GraphFile, FileRefusal, Applied, ControlRefusal>;
 /// The wire's frame (docs/control-port.md#protocol-and-features): graph.get's "protocol" and "features".
 inline constexpr int wireProtocol = 1;
-inline constexpr std::array<std::string_view, 2> wireFeatures{"lifecycle", "counters"};
+inline constexpr std::array<std::string_view, 3> wireFeatures{"lifecycle", "counters", companionsFeature};
 /// Control thread. Named params only, decoded with graph_json. Unknown method: methodNotFound;
 /// a missing, extra or mistyped key: invalidParams whose message is the JsonError
 /// ("/from/port: missing") and whose data is {"pointer"} (the JSON pointer it names). graphFile.get and

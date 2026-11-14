@@ -75,14 +75,16 @@ json encodeGraphCounts(const GraphCounts& counts, std::uint64_t lostMs) {
 	return {{"cycles", counts.cycles}, {"cutCycles", counts.cutCycles}, {"stalls", counts.stalls}, {"lostMs", lostMs}};
 }
 
-/// A node as snapshots and node.added carry it: its spec, its ports, its health, its counters and `disabled` when
-/// true.
+/// A node as snapshots and node.added carry it: its spec, its ports, its health, its counters, its companions and
+/// `disabled` when true.
 json encodeNodeWithHealth(const NodeSpec& node, const Ports& ports, const NodeHealth& health,
-                          std::optional<std::chrono::system_clock::time_point> since, const NodeCounts& counts) {
+                          std::optional<std::chrono::system_clock::time_point> since, const NodeCounts& counts,
+                          std::span<const CompanionView> companions) {
 	json entry = encodeNode(node, ports);
 	addHealth(entry, health, since);
 	if (node.disabled) entry["disabled"] = true;
 	entry["counters"] = encodeNodeCounts(counts);
+	entry["companions"] = encodeCompanions(companions);
 	return entry;
 }
 
@@ -105,7 +107,8 @@ json encodeGraph(const GraphView& view) {
 	const std::uint64_t lostMs = format.rate == 0 ? 0 : view.counts.lostMs(FrameClock(format.rate), format.maxBlock);
 	json nodes = json::array();
 	for (const NodeView& node : view.nodes)
-		nodes.push_back(encodeNodeWithHealth(node.spec, node.ports, node.health, node.since, node.counts));
+		nodes.push_back(
+			encodeNodeWithHealth(node.spec, node.ports, node.health, node.since, node.counts, node.companions));
 	json routes = json::array();
 	for (const RouteStatus& route : view.routes) routes.push_back(encodeRouteStatus(route));
 	json features = json::array();
@@ -128,7 +131,7 @@ std::string encodeEvent(const GraphEvent& event) {
 			using E = std::decay_t<decltype(e)>;
 			if constexpr (std::is_same_v<E, NodeAdded>) {
 				return encodeNotification("node.added",
-			                              encodeNodeWithHealth(e.node, e.ports, e.health, e.since, e.counts));
+			                              encodeNodeWithHealth(e.node, e.ports, e.health, e.since, e.counts, {}));
 			} else if constexpr (std::is_same_v<E, NodeUpdated>) {
 				json params = {{"name", e.node}, {"settings", e.settings}, {"applied", outcomeName(e.applied)}};
 				if (e.disabled) params["disabled"] = true;
@@ -149,6 +152,9 @@ std::string encodeEvent(const GraphEvent& event) {
 				return encodeNotification("route.removed", encodeRoute(e.route));
 			} else if constexpr (std::is_same_v<E, RouteChanged>) {
 				return encodeNotification("route.status", encodeRouteStatus(e.status));
+			} else if constexpr (std::is_same_v<E, NodeCompanionsChanged>) {
+				return encodeNotification("node.companionsChanged",
+			                              {{"name", e.node}, {"companions", encodeCompanions(e.companions)}});
 			} else {
 				static_assert(std::is_same_v<E, CountersChanged>);
 				json nodes = json::object();

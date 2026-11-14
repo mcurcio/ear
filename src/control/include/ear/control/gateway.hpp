@@ -8,6 +8,7 @@
 #include "ear/control/commands.hpp"
 #include "ear/control/events.hpp"
 #include "ear/control/requests.hpp"
+#include "ear/core/companions.hpp"
 #include "ear/core/counter_watch.hpp"
 #include "ear/core/desired_graph.hpp"
 #include "ear/core/executor.hpp"
@@ -32,8 +33,8 @@ protected:
 /// The one object that crosses between the main loop and the control thread, both ways, so
 /// replies, file changes and events share one ordered stream. Control side: every request goes
 /// whole to `requests` (the graph file keeper). Main-loop side: a listener of the keeper, an
-/// observer of DesiredGraph and a listener of NodeHost, the Reconciler and CounterWatch (each call copies what
-/// it is told and posts it; never calls the sink inline); the keeper's reply posts `done` the same
+/// observer of DesiredGraph and a listener of NodeHost, the Reconciler and CounterWatch, and of both tellers of a
+/// node's companion list (each call copies what it is told and posts it; never calls the sink inline); the keeper's reply posts `done` the same
 /// way, so it follows every event the batch caused.
 class MainLoopGateway final : public GraphGateway,
 							  public GraphFileListener,
@@ -42,6 +43,7 @@ class MainLoopGateway final : public GraphGateway,
 							  public NodeHealthListener,
 							  public RouteStatusListener,
 							  public CounterListener,
+							  public NodeCompanionsListener,
 							  public SnapshotStamp {
 public:
 	/// `clock` stamps each node's `since` when its phase changes.
@@ -81,6 +83,11 @@ public:
 	void routeChanged(const RouteStatus& status) override;
 	/// CounterListener: posted as counters.changed (docs/control-port.md#counters).
 	void countersChanged(const GraphCounts& graph, std::uint64_t lostMs, std::span<const NamedCounts> nodes) override;
+	/// NodeCompanionsListener, told by NodeHost (an entry added or removed, or its `ready`) and by CounterWatch (a
+	/// counter's move): posted as node.companionsChanged, in order with the node's health, only when the list differs
+	/// from the last one sent for the node (none, the [] of its node.added, until then; forgotten at node.removed), so the two tellers never send
+	/// one list twice (docs/control-port.md#companions).
+	void companionsChanged(const NodeName& node, std::span<const CompanionView> companions) override;
 	/// SnapshotStamp (main loop): each node's `since` as its last node.state carried it, for a node told of.
 	void stamp(GraphView& view) const override;
 

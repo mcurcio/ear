@@ -140,11 +140,13 @@ inline ear::GraphView snapshotView() {
 	quiet.disabled = true;
 	view.nodes.push_back(
 		{quiet, ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}}, health("quiet", NodeState::disabled)});
-	view.nodes.push_back({{"rec", "file", {{"path", "x.wav"}}},
-	                      ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
-	                      health("rec", NodeState::running),
-	                      std::nullopt,
-	                      ear::NodeCounts{.missedCycles = 33, .overruns = 2}});
+	view.nodes.push_back(
+		{{"rec", "file", {{"path", "x.wav"}}},
+	     ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
+	     health("rec", NodeState::running),
+	     std::nullopt,
+	     ear::NodeCounts{.missedCycles = 33, .overruns = 2},
+	     {{.name = "rec.writer", .kind = ear::CompanionKind::sink, .bank = "writer", .ready = true, .dropped = 0}}});
 	view.nodes.push_back(
 		{{"tape", "file", {{"path", "nope/t.wav"}}},
 	     ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},

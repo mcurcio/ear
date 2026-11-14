@@ -1110,3 +1110,179 @@ TEST_CASE("A session closed while its command is on the main loop drops the repl
 	CHECK(out.all.empty());
 	CHECK(done == 0);
 }
+
+TEST_CASE("companions.json: each node's list in the snapshot, node.added's [], each list told in order with the health "
+          "and sent once, and nothing after node.removed",
+          "[session][protocol][companions]") {
+	using ear::CompanionKind;
+	using ear::CompanionView;
+	using ear::NodePhase;
+	using ear::Wanted;
+	using Kind = ear::NodeCause::Kind;
+	using Lifecycle = std::expected<void, ear::CommandError>;
+	const json document = fixture("companions");
+	const auto requests = requestsOf(document);
+	REQUIRE(requests.size() == 7);
+	World w;
+	const ear::Ports deskPorts{
+		{{ear::Direction::input, "play", {"1", "2"}}, {ear::Direction::output, "capture", {"1", "2"}}}};
+	const ear::Ports recPorts{{{ear::Direction::input, "record", {"left", "right"}}}};
+	const json fppSettings = {{"address", "0.0.0.0"}, {"port", 5004}, {"format", "L24"}, {"channels", 2}};
+	const auto sink = [](const std::string& node, bool ready, std::uint64_t dropped = 0) {
+		return CompanionView{.name = node + ".writer",
+		                     .kind = CompanionKind::sink,
+		                     .bank = "writer",
+		                     .ready = ready,
+		                     .dropped = dropped};
+	};
+	const auto rtp = [](bool ready) {
+		return CompanionView{.name = "fpp.rtp", .kind = CompanionKind::rtpReceiver, .bank = "from_rtp", .ready = ready};
+	};
+	const auto list = [&](const std::string& node, std::vector<CompanionView> companions) {
+		w.gateway.companionsChanged(node, companions);
+	};
+	w.graph.view = ear::GraphView{{{48000, 256}, false, "SCHED_OTHER"}, {"card", "file", "rtp", "white"}, {}, {}};
+	w.graph.view.nodes.push_back(
+		{{"desk", "card", {{"card", "MOTU"}, {"playback", 2}, {"capture", 2}}},
+	     deskPorts,
+	     at("desk", NodePhase::running),
+	     std::nullopt,
+	     {},
+	     {{.name = "desk.playback", .kind = CompanionKind::cardPlayback, .bank = "to_card", .ready = true},
+	      {.name = "desk.capture", .kind = CompanionKind::cardCapture, .bank = "from_card", .ready = true}}});
+	w.graph.view.nodes.push_back({{"fpp", "rtp", fppSettings},
+	                              ear::Ports{{{ear::Direction::output, "stream", {"1", "2"}}}},
+	                              at("fpp", NodePhase::running),
+	                              std::nullopt,
+	                              {},
+	                              {rtp(true)}});
+	w.graph.view.nodes.push_back({{"noise", "white", json::object()},
+	                              ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}},
+	                              at("noise", NodePhase::running)});
+	w.graph.view.nodes.push_back({{"rec", "file", {{"path", "x.wav"}}},
+	                              recPorts,
+	                              at("rec", NodePhase::running),
+	                              std::nullopt,
+	                              {},
+	                              {sink("rec", true)}});
+	w.onMain([&] { // running before the client subscribes, their lists told as NodeHost told them
+		for (const char* name : {"desk", "fpp", "noise", "rec"}) w.told(at(name, NodePhase::running));
+		list("desk", w.graph.view.nodes[0].companions);
+		list("fpp", {rtp(true)});
+		list("rec", {sink("rec", true)});
+	});
+	RecordingOutbox out;
+	ControlSession session(*w.hub, out);
+	w.receive(session, requests[0]); // graph.subscribe
+
+	// A file node's life: its list after configuring; ready before the health its readiness allows.
+	w.graph.script.push_back({R"(addNode take file {"path":"take.wav"})", [&]() -> CommandResult {
+								  w.nodeAdded({"take", "file", {{"path", "take.wav"}}}, recPorts);
+								  w.told(at("take", NodePhase::added));
+								  w.told(at("take", NodePhase::configuring));
+								  list("take", {sink("take", false)});
+								  return Lifecycle{};
+							  }});
+	w.receive(session, requests[1]);
+	w.onMain([&] {
+		list("take", {sink("take", true)});
+		w.told(at("take", NodePhase::configured));
+		w.told(at("take", NodePhase::starting));
+		w.told(at("take", NodePhase::running));
+		list("take", {sink("take", true)}); // CounterWatch's beat, nothing moved since: the same list, not sent
+	});
+
+	// A counter moving, told by CounterWatch; then NodeHost tells the same list (a ready it re-checked): sent once.
+	w.onMain([&] {
+		list("rec", {sink("rec", true, 4096)});
+		list("rec", {sink("rec", true, 4096)});
+	});
+
+	// A stop and a start: NodeHost tells no list, a stop keeping the configuration.
+	w.graph.script.push_back({"stopNode rec", [&]() -> CommandResult {
+								  w.told(because(at("rec", NodePhase::stopping, Wanted::stopped), Kind::stop));
+								  return Applied{AppliedKind::stop};
+							  }});
+	w.receive(session, requests[2]);
+	w.onMain([&] { w.told(at("rec", NodePhase::stopped, Wanted::stopped)); });
+	w.graph.script.push_back({"startNode rec", [&]() -> CommandResult {
+								  w.told(at("rec", NodePhase::starting));
+								  return Applied{AppliedKind::start};
+							  }});
+	w.receive(session, requests[3]);
+	w.onMain([&] { w.told(at("rec", NodePhase::running)); });
+
+	// A restart: the empty list after the node.state that began the teardown; the next configuration's from zero.
+	w.graph.script.push_back({"restartNode rec", [&]() -> CommandResult {
+								  w.told(because(at("rec", NodePhase::stopping), Kind::restarting, Kind::action));
+								  list("rec", {});
+								  return Applied{AppliedKind::restart};
+							  }});
+	w.receive(session, requests[4]);
+	w.onMain([&] {
+		w.told(because(at("rec", NodePhase::configuring), Kind::action));
+		list("rec", {sink("rec", false)});
+	});
+	w.onMain([&] {
+		list("rec", {sink("rec", true)});
+		w.told(at("rec", NodePhase::configured));
+		w.told(at("rec", NodePhase::starting));
+		w.told(at("rec", NodePhase::running));
+	});
+
+	// A failure past the receiver's deadline: failed, then the empty list.
+	w.graph.script.push_back({"restartNode fpp", [&]() -> CommandResult {
+								  w.told(because(at("fpp", NodePhase::stopping), Kind::restarting, Kind::action));
+								  list("fpp", {});
+								  return Applied{AppliedKind::restart};
+							  }});
+	w.receive(session, requests[5]);
+	w.onMain([&] {
+		w.told(because(at("fpp", NodePhase::configuring), Kind::action));
+		list("fpp", {rtp(false)});
+	});
+	w.onMain([&] {
+		w.told(failedWith(at("fpp", NodePhase::failed),
+		                  {Code::engineRefused, "the RTP receiver never ran (UDP port 5004 held?)"}));
+		list("fpp", {});
+	});
+
+	// A removal: the teardown's empty list names a node the client dropped at node.removed: not sent.
+	w.graph.script.push_back({"removeNode take", [&]() -> CommandResult {
+								  w.gateway.nodeRemoved("take");
+								  w.told(because(at("take", NodePhase::stopping), Kind::removing));
+								  list("take", {});
+								  return Lifecycle{};
+							  }});
+	w.receive(session, requests[6]);
+
+	checkMessages(out, document["messages"]);
+	CHECK(w.graph.script.empty());
+}
+
+TEST_CASE("A node added again under a name starts from node.added's []: its first list is sent even when it equals "
+          "the older node's last",
+          "[session][companions]") {
+	World w;
+	w.graph.view = ear::GraphView{{{48000, 256}, false, "SCHED_OTHER"}, {"file"}, {}, {}};
+	RecordingOutbox out;
+	ControlSession session(*w.hub, out);
+	w.receive(session, R"({"jsonrpc":"2.0","id":1,"method":"graph.subscribe"})");
+	const ear::Ports recPorts{{{ear::Direction::input, "record", {"left", "right"}}}};
+	const std::vector<ear::CompanionView> ready{
+		{.name = "x.writer", .kind = ear::CompanionKind::sink, .bank = "writer", .ready = true, .dropped = 0}};
+	w.onMain([&] {
+		w.nodeAdded({"x", "file", {{"path", "a.wav"}}}, recPorts);
+		w.gateway.companionsChanged("x", ready);
+		// Replaced by a node of another type of the same name, as a change of type is: the older one is superseded
+		// (NodeHost tells it nothing more) and the newer one's list is new to the client.
+		const ear::NodeChange type{ear::NodeOutcome::restart, {}, false};
+		w.gateway.nodeReplacing("x", type);
+		w.gateway.nodeReplaced({"x", "file", {{"path", "b.wav"}}}, std::make_shared<Config>(recPorts), type);
+		w.gateway.companionsChanged("x", ready);
+	});
+	std::vector<std::string> methods;
+	for (const json& message : parsed(out.all)) methods.push_back(message.value("method", "reply"));
+	CHECK(methods == std::vector<std::string>{"reply", "node.added", "node.companionsChanged", "node.removed",
+	                                          "node.added", "node.companionsChanged"});
+}

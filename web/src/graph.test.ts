@@ -45,8 +45,28 @@ describe("the graph reducer", () => {
         method: "route.removed",
         params: { from: { node: "noise", port: "noise.mono" }, to: { node: "rec", port: "record.right" } },
       },
+      {
+        jsonrpc: "2.0",
+        method: "node.companionsChanged",
+        params: { name: "ghost", companions: [{ name: "ghost.rtp", kind: "rtp-receiver", bank: "from_rtp", ready: true }] },
+      },
     ];
     expect(replay(ghostly, start)).toBe(start);
+  });
+
+  it("replaces a node's whole companion list, one held without a list (an ear without the feature) included", () => {
+    const start = replay([snapshotMessage]);
+    const { companions: _none, ...withoutList } = start!.nodes.find((node) => node.name === "rec")!;
+    const older = { ...start!, nodes: start!.nodes.map((node) => (node.name === "rec" ? withoutList : node)) };
+    const sink = { name: "rec.writer", kind: "sink", bank: "writer", ready: true, dropped: 4096 };
+    const told: ServerMessage = {
+      jsonrpc: "2.0",
+      method: "node.companionsChanged",
+      params: { name: "rec", companions: [sink] },
+    };
+    expect(replay([told], older)!.nodes.find((node) => node.name === "rec")!.companions).toStrictEqual([sink]);
+    const emptied: ServerMessage = { jsonrpc: "2.0", method: "node.companionsChanged", params: { name: "rec", companions: [] } };
+    expect(replay([told, emptied], start)!.nodes.find((node) => node.name === "rec")!.companions).toStrictEqual([]);
   });
 
   it("replaces everything with a snapshot", () => {

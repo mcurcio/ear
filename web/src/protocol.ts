@@ -135,7 +135,27 @@ export interface NodeCounters extends Counters {
   driverChanges: number;
 }
 
-/** A node as snapshots and node.added carry it: its spec, its public ports, its health and its counters. */
+/** A companion's kind (feature companions): an open set, so one this editor does not know is drawn by its own text. */
+export type CompanionKind = "card-playback" | "card-capture" | "rtp-receiver" | "sink" | "source" | (string & {});
+
+/**
+ * One of a node's hidden helpers (feature companions, docs/control-port.md#companions): never a node, never routed,
+ * never metered. Members ear adds later are kept as sent.
+ */
+export interface Companion {
+  /** `<node>.playback`, `<node>.capture`, `<node>.rtp`; a sink's or source's `<node>.<bank>`. */
+  name: string;
+  kind: CompanionKind;
+  /** The inside bank it joins: inside banks appear nowhere else on the wire. */
+  bank: string;
+  ready: boolean;
+  /** A sink: frames its ring had no room for, this configuration. */
+  dropped?: number;
+  /** A source: frames played as zeros while its writer was not idle, this configuration. */
+  shortfall?: number;
+}
+
+/** A node as snapshots and node.added carry it: its spec, its public ports, its health, its counters and companions. */
 export interface GraphNode extends NodeHealth {
   name: string;
   type: string;
@@ -146,6 +166,8 @@ export interface GraphNode extends NodeHealth {
   disabled?: true;
   /** Feature counters: its counters (a port-caused replace's node.added carries those it carries on). */
   counters?: NodeCounters;
+  /** Feature companions: its companion list, in request order ([] in node.added, and for a node with none). */
+  companions?: Companion[];
 }
 
 export interface GraphRoute extends RouteEnds {
@@ -273,6 +295,11 @@ export interface Notifications {
    * counters of each node whose counters changed. Replaces the counters it names; a node not held is ignored.
    */
   "counters.changed": { graph: GraphCounters; nodes: { [node: string]: NodeCounters } };
+  /**
+   * Feature companions: the node's whole companion list, whenever an entry is added or removed, its readiness changes
+   * or (at most once a second) a counter moved. Replaces the list; a node not held is ignored.
+   */
+  "node.companionsChanged": { name: string; companions: Companion[] };
 }
 export type NotificationName = keyof Notifications;
 
@@ -404,6 +431,7 @@ const notificationSet: { [N in NotificationName]: true } = {
   levels: true,
   "graphFile.changed": true,
   "counters.changed": true,
+  "node.companionsChanged": true,
 };
 export const notificationNames = Object.keys(notificationSet) as NotificationName[];
 
@@ -437,6 +465,7 @@ export const controlErrorCodes = Object.keys(controlErrorCodeSet) as ControlErro
 /** The features this editor uses when ear says it has them (docs/control-port.md#protocol-and-features). */
 export const lifecycleFeature = "lifecycle";
 export const countersFeature = "counters";
+export const companionsFeature = "companions";
 
 // ----- The conformance fixtures (test/protocol/*.json) -----
 
