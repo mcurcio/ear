@@ -2033,8 +2033,8 @@ TEST_CASE("A loop finishes after every sink has closed, and the configuration go
 
 	f.stopAll();
 	f.settle();
-	CHECK(f.log == Log{"node net stopping", "loop net.worker closed to others", "fade", "drive nothing", "release",
-	                   "sink net.tap1 close", "block destroyed"});
+	CHECK(f.log == Log{"node net stopping", "loop net.worker closed to others", "drive nothing", "release",
+	                   "sink net.tap1 close", "block destroyed"}); // its one output is the sink's: nothing to fade
 	f.log.clear();
 
 	f.finishSink(7);
@@ -2486,7 +2486,7 @@ TEST_CASE("A sink consumer blocked at teardown blocks no main-loop turn, and the
 	f.host.nodeRemoved("rec");
 	f.mainLoop.settle(); // returns although the consumer is stuck
 	REQUIRE(config->entered.get_future().wait_for(std::chrono::seconds(10)) == std::future_status::ready);
-	CHECK(f.log == Log{"node rec stopping", "fade", "drive nothing", "release", "block destroyed"});
+	CHECK(f.log == Log{"node rec stopping", "drive nothing", "release", "block destroyed"}); // nothing to fade
 	f.log.clear();
 
 	// The main loop keeps serving other nodes meanwhile.
@@ -2528,7 +2528,7 @@ TEST_CASE("A sink consumer blocked past the close deadline leaks the configurati
 	// Stop proceeds past the bound: the node is gone, its configuration (the instance) never freed.
 	CHECK(allGone == 1);
 	CHECK(f.host.leaked() == 1); // main.cpp then ends without destroying the main loop under the leaked one
-	CHECK(f.log == Log{"node rec stopping", "fade", "drive nothing", "release", "block destroyed",
+	CHECK(f.log == Log{"node rec stopping", "drive nothing", "release", "block destroyed",
 	                   "diagnostic rec ear.close-overdue", "node rec gone dropped=0"});
 	REQUIRE(f.diagnostics.details.size() == 1);
 	CHECK(f.diagnostics.details[0].find("1 sinks open") != std::string::npos);
@@ -5240,6 +5240,31 @@ struct InstanceReadingConfig final : NodeConfig {
 };
 
 } // namespace
+
+TEST_CASE("A node whose only output is a sink's bank is silenced at once, with no fade, at a stop and a teardown",
+          "[node_host][sink][fade]") {
+	Fixture f;
+	auto config = std::make_shared<ProbeConfig>(f.log); // testPorts: its one output bank, pb, is the sink's
+	config->onConfigure = withSink(f.log);
+	addRunning(f, "rec", config);
+	REQUIRE_FALSE(f.blocks.modes.faded.empty());
+	CHECK(f.blocks.modes.faded.back() == std::vector<bool>{false, false});
+	f.log.clear();
+
+	REQUIRE(f.host.stop("rec"));
+	CHECK(f.log == Log{"stop()", "drive nothing", "node rec stopping"}); // the silence at once: no fade round trip
+	f.settle();
+	REQUIRE(f.host.start("rec"));
+	f.settle();
+	f.log.clear();
+	f.host.nodeRemoved("rec");
+	f.settle();
+	CHECK(countOf(f.log, "fade") == 0);
+	CHECK(f.diagnostics.details.empty()); // no ear.fade-unacknowledged either
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
 
 TEST_CASE("Step 5 frees a sink's consumer before the instance it may read", "[node_host][sink][teardown]") {
 	Fixture f;

@@ -45,8 +45,8 @@
 // block of the name was destroyed, in the flush that destroyed it, and its configuration once the older node is gone;
 // an engine companion joins its block by the block's global id (PortBlock::blockId).
 //
-// Fades and bounds: every output the code writes (public outputs and inside outputs, which feed a card) fades in with
-// each drive and out before each planned silence; a fade unacknowledged within 100 ms is said (ear.fade-unacknowledged)
+// Fades and bounds: every output the code writes (public outputs and inside outputs, which feed a card; never a sink's
+// bank) fades in with each drive and out before each planned silence, a node with none silenced at once; a fade unacknowledged within 100 ms is said (ear.fade-unacknowledged)
 // and the silence posted unfaded, and a drive or silence not completed within 5 s is a data loop that runs no invoke
 // (ear.barrier-overdue, then ear.data-loop-wedged once, through EngineDiagnosticListener). Every bound first settles
 // the block, as an input of its own, and judges in the input behind what that settle ran, so a completion a stalled
@@ -1724,7 +1724,8 @@ struct NodeHost::Impl {
 			bool closed_ = false;
 		};
 
-		/// The newest committed settings, and whether a drive of them fades: some output the code writes exists.
+		/// The newest committed settings, and whether a drive of them may fade: some output the code writes exists
+		/// (narrowed at configure's return, once its sinks' banks are known: outputsFaded).
 		lc::Queued queued() const noexcept {
 			return {version_, !ports_.outputs().empty() || !ports_.insideOutputs().empty()};
 		}
@@ -2203,6 +2204,9 @@ struct NodeHost::Impl {
 				                     std::string("configure gave a latency plan that does not fit: ") + error.what());
 			}
 			c.startFailed = false;
+			// A drive fades exactly the outputs flagged (a sink's bank never is), so a teardown fades first only when
+			// one is: a node whose only outputs are sinks' banks is silenced at once.
+			aggregate_.outputsFaded(std::any_of(c.faded.get(), c.faded.get() + c.fadedCount, [](bool f) { return f; }));
 			// Every drive of this configuration binds these taps; then each consumer begins on its sink's thread.
 			c.bindings.reserve(c.sinks.size());
 			for (const auto& slot : c.sinks) c.bindings.push_back(slot->binding);

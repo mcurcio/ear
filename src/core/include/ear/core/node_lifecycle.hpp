@@ -141,6 +141,11 @@ public:
 	bool stopAsked() const noexcept { return stopAsked_; }
 	bool fades() const noexcept { return fades_; }
 	std::uint64_t barrier() const noexcept { return barrier_; } // the newest request's number
+	/// configure's return, while readying: whether some output the code writes is faded, now that the companions
+	/// whose banks are never faded (a sink's) are known. Narrows what `configure` said from the ports alone.
+	void outputsFaded(bool fades) noexcept {
+		if (state_ == ConfigState::readying) fades_ = fades;
+	}
 	/// An event that does not apply (or a stale completion) changes nothing and returns no action.
 	std::vector<ConfigAction> on(const ConfigInput& input);
 
@@ -294,6 +299,8 @@ public:
 	Actions closeBound();
 	/// Another node's barrier marked the data loop wedged: this node is never configured again.
 	Actions dataLoopWedged();
+	/// configure's return: whether some output the code writes is faded (ConfigurationMachine::outputsFaded).
+	void outputsFaded(bool fades) noexcept { config_.outputsFaded(fades); }
 
 	Health health() const;
 	bool removed() const noexcept;

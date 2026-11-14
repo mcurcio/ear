@@ -561,7 +561,8 @@ reason `block-lost`) until it is removed and added again or ear restarts.
 Every node with an output fades its outputs in over 5 ms at every start, and out over 5 ms before
 every planned silence: a stop, a restart, a disable, a removal and a failure. A card's playback
 bank fades too, so its speakers never click; a sink's bank (a `file` node's) is never faded, so a
-recording keeps the exact samples of every cycle its code ran. A lost block cannot be faded.
+recording keeps the exact samples of every cycle its code ran, and a node whose only outputs are
+sinks' banks is silenced at once, with no fade before. A lost block cannot be faded.
 
 ### Bounds, the wedged data loop and the watchdog
 

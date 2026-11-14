@@ -287,7 +287,8 @@ cx.use(passThrough({bankPair(record, writer)}));
 - These rules are core's `SinkRing` (`ear/core/sink_ring.hpp`, each chunk cut by `cutChunk` in
   `ear/core/sink.hpp`), which the engine's sink and the harness's both run, so a type's tests get the
   calls the engine makes, split chunks included.
-- A sink's bank is never faded, so a recording keeps exact samples.
+- A sink's bank is never faded, so a recording keeps exact samples; a node whose only outputs are
+  sinks' banks is silenced at once, with no fade before.
 - The consumer is owned by its sink and freed at teardown step 5 after the code and before the
   instance, so it may keep a reference into the instance (or what the instance owns) and use it in
   `finish()` and its destructor ([architecture.md](architecture.md#teardown-by-dependency)).
