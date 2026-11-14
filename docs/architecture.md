@@ -698,7 +698,8 @@ Running it on Talos with the MOTU 24Ao is the `ear-on-talos` skill's.
    up and the editor's pane shows why until the file is fixed.
 7. Open the control port (`control` record).
 
-Exit 1 comes only from bad flags, a folder it cannot make or open, folders that overlap, an
+Exit 1 comes only from bad flags, a folder it cannot make or open, folders that overlap, node types
+the catalogue refuses (two of one name, or a name not 1 or more of `[a-z0-9]`), an
 engine that does not start, a folder watch it cannot arm, or a control port it cannot bind.
 
 ### Stop (SIGINT or SIGTERM)

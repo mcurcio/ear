@@ -31,7 +31,7 @@ public:
 	bool opened() const;
 
 	// The I/O thread's, one job at a time.
-	/// The open: read (no symlink, at most maxBytes); a file there narrowed to the rule's mode before its text is
+	/// The open: read (no symlink, at most maxBytes) and narrowed to the rule's mode on one descriptor, before its text is
 	/// judged (a file refused for its text may still hold a secret), then judged by the rule's distrust; a missing
 	/// file created with the rule's initial text, or left missing without one. Never a new file over a distrusted one.
 	/// The error is "<file>: <why>" (an adapter's errors name the file already). What the adapter throws passes on (its

@@ -31,16 +31,14 @@ bool StoreState::opened() const {
 }
 
 std::expected<void, std::string> StoreState::open() {
-	calling = "StoreAdapter::read";
-	auto read = adapter.read(file, rule.maxBytes);
+	// Narrowed every open, and before the text is judged: a file refused for its text may still hold a secret, and a
+	// mount (an fsGroup) may widen it each time (docs/writing-a-node-type.md#stores). On one descriptor, so the file
+	// judged is the file narrowed.
+	calling = "StoreAdapter::readNarrowed";
+	auto read = adapter.readNarrowed(file, rule.maxBytes, rule.mode);
 	if (!read) return std::unexpected(std::move(read.error()));
 	std::optional<std::string> found = std::move(*read);
 	if (found) {
-		// Every open, and before the text is judged: a file refused for its text may still hold a secret, and a mount
-		// (an fsGroup) may widen it each time (docs/writing-a-node-type.md#stores).
-		calling = "StoreAdapter::narrow";
-		if (auto narrowed = adapter.narrow(file, rule.mode); !narrowed)
-			return std::unexpected(std::move(narrowed.error()));
 		if (rule.distrust != nullptr) {
 			auto why = caughtFrom([&] { return rule.distrust(*found); });
 			if (!why) return std::unexpected(file + ": distrust threw: " + why.error());

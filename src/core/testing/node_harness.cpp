@@ -490,6 +490,8 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			{
 				std::optional<StrandScope> strand;
 				if (loopKind == LoopKind::strand) strand.emplace();
+				const MainLoopMark offMainLoop(false); // the loop's thread, though the test's
+
 				try {
 					std::forward<Call>(call)();
 				} catch (const std::exception& error) {
@@ -630,9 +632,33 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		JobWait await(std::string job, std::move_only_function<void()> work, std::chrono::milliseconds) override {
 			while (fakeIo.runOne()) {
 			}
+			if (overdueNext) {
+				// The wait gives up first: the job ran before it (under way when the bound passed), or runs later.
+				const bool ran = *overdueNext;
+				overdueNext.reset();
+				if (!ran) {
+					fakeIo.post(std::move(job), std::move(work));
+					return JobWait::overdue;
+				}
+				fakeIo.ran.push_back(std::move(job));
+				work();
+				return JobWait::overdue;
+			}
 			fakeIo.ran.push_back(std::move(job));
 			work();
 			return JobWait::ran;
+		}
+		std::expected<std::optional<std::string>, std::string>
+		readNarrowed(const std::string& file, std::uint32_t maxBytes, std::uint32_t mode) override {
+			called("readNarrowed " + file);
+			if (auto failed = failOpen.find(file); failed != failOpen.end())
+				return std::unexpected(file + ": " + failed->second);
+			const auto found = files.find(file);
+			if (found == files.end()) return std::optional<std::string>();
+			found->second.mode &= mode;
+			if (found->second.text.size() > maxBytes)
+				return std::unexpected(file + ": larger than " + std::to_string(maxBytes) + " bytes");
+			return std::optional<std::string>(found->second.text);
 		}
 		std::expected<std::optional<std::string>, std::string> read(const std::string& file,
 		                                                            std::uint32_t maxBytes) override {
@@ -681,6 +707,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		std::map<std::string, std::string, std::less<>> failOpen;  // each open's read refused, by file
 		std::map<std::string, std::string, std::less<>> failWrite; // the next write refused, by file
 		std::optional<std::string> broken;                         // every call throws std::logic_error(this)
+		std::optional<bool> overdueNext; // the next wait gives up: after its job ran (true), or before (false)
 		std::vector<std::string> calls;
 	};
 
@@ -1446,6 +1473,8 @@ void NodeHarness::failNextWrite(std::string_view suffix, std::string why) {
 }
 
 void NodeHarness::breakStores(std::string what) { impl_->stores.broken = std::move(what); }
+
+void NodeHarness::overdueNextWrite(bool ran) { impl_->stores.overdueNext = ran; }
 
 const std::vector<std::string>& NodeHarness::storeCalls() const noexcept { return impl_->stores.calls; }
 

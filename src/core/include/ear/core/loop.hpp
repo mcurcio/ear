@@ -193,6 +193,24 @@ inline constexpr std::chrono::milliseconds loopSlowBound{100};
 /// The name of a dedicated loop's thread: "ear-<name> <node>", cut to 15 bytes (what a thread's name holds).
 std::string loopThreadName(std::string_view name, const NodeName& node);
 
+/// Whether the calling thread is the main loop's, where nothing may block: a store's replace refuses it
+/// (docs/writing-a-node-type.md#stores). NodeHost marks the thread it is made on; the harness, whose loops run on that
+/// same thread, unmarks it while a loop's handler runs (MainLoopMark).
+bool onMainLoop() noexcept;
+/// Main thread, once: NodeHost marks the thread it is made on, the main loop's.
+void markMainLoopThread() noexcept;
+/// Marks the calling thread as the main loop's, or not, for the scope's life, then gives back what it was.
+class MainLoopMark {
+public:
+	explicit MainLoopMark(bool here) noexcept;
+	~MainLoopMark();
+	MainLoopMark(const MainLoopMark&) = delete;
+	MainLoopMark& operator=(const MainLoopMark&) = delete;
+
+private:
+	bool was_;
+};
+
 /// Whether the calling thread is running a strand's handler, where nothing may block: SourceWriter's write and idle
 /// assert it is not (docs/writing-a-node-type.md#loops). A strand's runner marks its handlers with StrandScope.
 bool onStrand() noexcept;

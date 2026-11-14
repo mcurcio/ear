@@ -27,6 +27,10 @@ src/nodes/<type>/
 
 - The folder's name is a lower-case letter, then lower-case letters and digits; it is the type's
   name, its library `ear_node_<type>` and its factory `make<Type>NodeType()` (first letter upper).
+  **A type's name is 1 or more of `[a-z0-9]`**, never a `-`, so a [store](#stores)'s file,
+  `<type>-<node>.<suffix>`, is one type's and one node's alone (`send-spin` with node `x` and `send`
+  with node `spin-x` would share one). The catalogue checks it at startup, with two types of one
+  name: either ends ear with exit 1, naming the type.
 - `ear_node_type()` (`cmake/NodeType.cmake`) makes the library (with a header set checked on its
   own, linking `ear_core`) and, under `BUILD_TESTS`, the test program `ear_node_<type>_tests`
   linking the type harness. A folder without the call, without `SOURCES` and `TESTS`, without its
@@ -498,17 +502,18 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>&) {
 |---|---|
 | `fileName()` | `<type>-<node>.<suffix>` |
 | `text()` | Any thread: what the file held when it was opened (or was created with), then the text of the last write that committed |
-| `replace(text)` | Blocking, at most 5 s, so from a dedicated loop or a library's thread, never a strand (asserted in debug builds), the main loop or `process` |
-| `replaceLater(text, loop, done)` | The same without waiting; `done(outcome)` runs on `loop`, one of the node's own, or never once that loop closed |
+| `replace(text)` | Blocking, at most 5 s, so from a dedicated loop or a library's thread, never a strand (asserted in debug builds), the main loop (a `std::logic_error`, so the node fails: **a hook uses `replaceLater`**) or `process`. Its outcome is a `StoreWritten`: done, or a `StoreWriteError` of kind `refused` or `unconfirmed` (below) |
+| `replaceLater(text, loop, done)` | The same without waiting, from any thread, a hook's included; `done(outcome)` runs on `loop`, one of the node's own, with the exact outcome (never `unconfirmed`), or never once that loop closed |
 
 - **Name and place.** A store's file is `<type>-<node>.<suffix>` in the graph file folder
   (`--config-dir`): its suffix is 1 to 16 of `[a-z0-9-]`, unique in the spec. A spec gives its
   members in order, `.stores` before `.loops`, and may leave out either.
 - **Open.** Every declared store, taken by `configure` or not, is an item of the configuration's
   readiness list at step `opens`, before its loops ([engine.md](engine.md#readiness-deadlines)): one
-  job on the I/O thread reads the file (no symlink anywhere on the path, at most `maxBytes`); a file
-  there is narrowed to the mode **before** its text is judged (a file refused for its text may still
-  hold a secret), then judged by `distrust`; a missing file is created with `initial()` at exactly
+  job on the I/O thread reads the file (no symlink anywhere on the path, at most `maxBytes`) and
+  narrows it to the mode on the same descriptor, **before** its text is judged (a file refused for
+  its text may still hold a secret, and a file renamed over the name meanwhile is never the one
+  judged while another is narrowed), then judges it by `distrust`; a missing file is created with `initial()` at exactly
   the mode. So a store that fails starts no loop. It fails the node `start-failed: <file>: <why>`
   (`distrust`'s reason, or the disk's: `rtpsend-porch.ssrc: malformed: not eight hex digits`), the file left as it
   was: a distrusted or unreadable file is never replaced by a new one. An open past 5 s fails it
@@ -519,11 +524,14 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>&) {
   written before its open completed (in `configure`) is a `std::logic_error`: the node fails.
 - **Writing.** Every write is one job on the I/O thread, in order, each against the text the one
   before committed: the file narrowed first (a mode widened since is never kept), then the new
-  text swapped in (a staging file renamed over it) only if the file still holds `text()`. Its error
-  names the file: `<file>: changed by something else` (someone else's text stands),
-  `<file>: larger than <n> bytes`, `<file>: not written within 5 s`, or the disk's; the file is
-  left as it was, but for a write already under way when the 5 s passed, which may still land
-  (`text()` then shows it). A failed write fails nothing: telling it (a note) is the type's.
+  text swapped in (a staging file renamed over it) only if the file still holds `text()`. A
+  `refused` write did not commit and the file is as it was; its detail names the file:
+  `<file>: changed by something else` (someone else's text stands), `<file>: larger than <n>
+  bytes`, `<file>: not written: not begun within 5 s` (it never runs), or the disk's. An
+  `unconfirmed` one was under way on the I/O thread when `replace`'s 5 s passed: it may still land,
+  so it is **never** "not written"; compare `text()`, which shows it once it landed, or write with
+  `replaceLater`, whose outcome is exact. A failed write fails nothing: telling it (a note) is the
+  type's.
 - **Its life.** A stop and a start keep it; a restart, a change of settings or a failure opens it
   again in the next configuration. It is usable until teardown step 4 and freed at step 5. An open
   or a write still on the I/O thread when its configuration ended tells nothing, and what it held
@@ -593,6 +601,7 @@ when the type catches the throw; none takes ear down:
 | A loop's handler throws | `loop <name>'s handler threw: <what>` (`start-failed`, or `lost` once rested; once the teardown began, a `log` record) |
 | Stores declared on a host with no stores adapter | `no stores in this host` (`configure threw: no stores in this host` at `cx.store`) |
 | A store read or written before its open completed (in `configure`) | `configure threw: store <file> was read before it was opened` (`... was written ...`) |
+| A store's blocking `replace` on the main loop (a hook) | `<hook> threw: store <file>: replace waits, so never on the main loop: a hook uses replaceLater` |
 | A store that cannot be opened, or whose text its `distrust` refuses | `<file>: <why>` ([stores](#stores)) |
 | A `CreateOf` call after `configure` returned | `<call> outside configure` |
 | `Configured::failed("")` | `configure answered failed with no detail` |
@@ -651,7 +660,7 @@ fakes allow. Banks are named by the spec's handles.
 | `h.companion(bank)` | What was made on a bank (an engine companion's bank as `NodeHost` named it): its `kind` (`CompanionKind`: a card's by its bank's direction), `name`, `shape`, `made`, `ready`, `destroyed`, and a sink's `chunks` as its consumer got them, one per call (a chunk split at the ring's end is two) |
 | `h.recordingRequests()` | Every recording asked for |
 | `h.runLoops()`, `h->advance(ms)`, `h.armed(loop)`, `h.readable(fd)`, `h.loopsReady()`, `h->loops()` | The loops ([loops](#loops)), on the test's thread with their kind kept: `runLoops()` runs what was posted and each watch rung (a source's clock wake rung by `process()`, a descriptor marked `readable(fd)`) until all are idle, never a timer; `advance` fires their timers in time order with the framework's (an `every` once per period passed: a handler takes no time); `armed(loop)` counts the sources armed on it whose handles live. Loops start when the framework asks (with `holdLoops`, at `loopsReady()`; with `refuseLoops = "<why>"`, never); a teardown turns each loop until it finished and closed; a source a state left armed fails the call that tore it down unless `allowSourcesLeft` (then only `ear.loop-source-left` in `diagnostics()`). `loops()` lists each loop made: its name, kind, and whether it closed to others, finished and closed |
-| `h.presetStore(store, text, mode)`, `h.storeText(store)`, `h.storeMode(store)`, `h.failStoreOpen(store, why)`, `h.failNextWrite(store, why)`, `h.runIo()`, `h->ioJobs()`, `h->storeCalls()`, `h->breakStores(what)` | The [stores](#stores), by the spec's handle, on an in-memory disk under the framework's own store rules: a file put there before the node opens it, what it holds and its mode now, every open's read refused or the next write refused with `<file>: <why>`. Each open and write is a job on the harness's I/O executor, run as each call settles (with the option `holdIo`, only at `runIo()`); a blocking `replace` runs its job inside the call. `ioJobs()` names every job run (`open store <file>`, `write store <file>`, and `release store <file>` for a dropped open's handle), `storeCalls()` every disk call in order (`read`, `narrow`, `replace`), and `breakStores(what)` makes every disk call throw, an adapter's bug |
+| `h.presetStore(store, text, mode)`, `h.storeText(store)`, `h.storeMode(store)`, `h.failStoreOpen(store, why)`, `h.failNextWrite(store, why)`, `h.runIo()`, `h->ioJobs()`, `h->storeCalls()`, `h->breakStores(what)` | The [stores](#stores), by the spec's handle, on an in-memory disk under the framework's own store rules: a file put there before the node opens it, what it holds and its mode now, every open's read refused or the next write refused with `<file>: <why>`. Each open and write is a job on the harness's I/O executor, run as each call settles (with the option `holdIo`, only at `runIo()`); a blocking `replace` runs its job inside the call. `ioJobs()` names every job run (`open store <file>`, `write store <file>`, and `release store <file>` for a dropped open's handle), `storeCalls()` every disk call in order (`readNarrowed`, `read`, `narrow`, `replace`), `breakStores(what)` makes every disk call throw, an adapter's bug, and `overdueNextWrite(ran)` makes the next `replace`'s wait give up, after its job ran (`unconfirmed`, and it landed) or before it began (`refused`) |
 | `h->internalErrors()` | Every adapter bug told about the node (the `ear.internal-error` record's callback, node, where and what), in order |
 
 The harness does not see a class's `start()` and `stop()`; their pairing is tested in

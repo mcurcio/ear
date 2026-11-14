@@ -31,6 +31,8 @@ public:
 	JobWait await(std::string job, std::move_only_function<void()> work, std::chrono::milliseconds bound) override;
 	std::expected<std::optional<std::string>, std::string> read(const std::string& file,
 	                                                            std::uint32_t maxBytes) override;
+	std::expected<std::optional<std::string>, std::string> readNarrowed(const std::string& file, std::uint32_t maxBytes,
+	                                                                    std::uint32_t mode) override;
 	std::expected<void, std::string> narrow(const std::string& file, std::uint32_t mode) override;
 	std::expected<StoreWrite, std::string> replaceIf(const std::string& file,
 	                                                 const std::optional<std::string>& expected, std::string_view text,

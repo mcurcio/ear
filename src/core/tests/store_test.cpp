@@ -35,6 +35,7 @@ struct Behaviour {
 	bool readInConfigure = false;         // configure reads the store before it was opened
 	std::vector<std::string> writes;      // start() posts a replace of each, in order
 	std::vector<std::string> laterWrites; // and a replaceLater of each
+	bool replaceInStart = false;          // start() itself calls replace, on the main loop
 };
 Behaviour behaviour;
 
@@ -64,11 +65,15 @@ public:
 	void begin() { handle_.say("read " + store_.text()); }
 	void write(std::string text) {
 		auto written = store_.replace(std::move(text));
-		handle_.say(written ? "written" : "write failed: " + written.error());
+		if (written) handle_.say("written");
+		else if (written.error().kind == StoreWriteError::Kind::unconfirmed) {
+			handle_.say("write unconfirmed: " + written.error().detail);
+			handle_.say("text now " + store_.text());
+		} else handle_.say("write failed: " + written.error().detail);
 	}
 	void writeLater(std::string text) {
-		store_.replaceLater(std::move(text), self_, [this, text](std::expected<void, std::string> written) {
-			handle_.say(written ? "written later " + text : "later write failed: " + written.error());
+		store_.replaceLater(std::move(text), self_, [this, text](StoreWritten written) {
+			handle_.say(written ? "written later " + text : "later write failed: " + written.error().detail);
 		});
 	}
 
@@ -90,6 +95,7 @@ public:
 	static Members<spec> ports(const Checked&) { return {out(members(1))}; }
 	Configured configure(CreateOf<spec>& cx, const Checked&) {
 		Store& store = cx.store(key);
+		store_ = &store;
 		if (behaviour.readInConfigure) said(store.text());
 		cx.loop(worker, std::make_unique<Worker>(node_.handle(), store, cx.executor(worker)));
 		cx.post(worker, [](Worker& w) { w.begin(); }); // staged: runs once configured, so the store is trusted
@@ -97,6 +103,7 @@ public:
 		return Configured::applied();
 	}
 	void start() {
+		if (behaviour.replaceInStart) static_cast<void>(store_->replace("key 2"));
 		for (const std::string& text : behaviour.writes) node_.post(worker, [text](Worker& w) { w.write(text); });
 		for (const std::string& text : behaviour.laterWrites)
 			node_.post(worker, [text](Worker& w) { w.writeLater(text); });
@@ -104,6 +111,7 @@ public:
 
 private:
 	NodeOf<spec>& node_;
+	Store* store_ = nullptr; // valid for the configuration, which outlives the instance
 };
 
 using Harness = testing::TypeHarness<spec, Kept>;
@@ -156,8 +164,7 @@ TEST_CASE("A missing store is created with its rule's initial text and exactly i
 	h->add();
 	CHECK(h->storeText(key) == "key 1");
 	CHECK(h->storeMode(key) == 0600);
-	CHECK(h->node().storeCalls() ==
-	      std::vector<std::string>{"read kept-porch.key", "replace kept-porch.key"}); // nothing there to narrow
+	CHECK(h->node().storeCalls() == std::vector<std::string>{"readNarrowed kept-porch.key", "replace kept-porch.key"});
 }
 
 TEST_CASE("A store there is read and narrowed to its mode, every open", "[stores]") {
@@ -227,10 +234,10 @@ TEST_CASE("A store adapter's throw in an open fails the node lost, told as an in
 	auto h = fresh();
 	h->node().breakStores("the disk is on fire");
 	h->add();
-	CHECK(failure(*h) == "lost: internal error in StoreAdapter::read: the disk is on fire");
+	CHECK(failure(*h) == "lost: internal error in StoreAdapter::readNarrowed: the disk is on fire");
 	REQUIRE(h->node().internalErrors().size() == 1);
 	const auto& told = h->node().internalErrors().front();
-	CHECK(told.callback == "StoreAdapter::read");
+	CHECK(told.callback == "StoreAdapter::readNarrowed");
 	CHECK(told.node == "porch");
 	CHECK(told.where == "the I/O job open store kept-porch.key");
 	CHECK(told.what == "the disk is on fire");
@@ -330,4 +337,40 @@ TEST_CASE("A store adapter's throw in a write fails the node lost, told as an in
 	CHECK(failure(*h) == "lost: internal error in StoreAdapter::narrow: the disk is on fire");
 	REQUIRE(h->node().internalErrors().size() == 1);
 	CHECK(h->node().internalErrors().front().where == "the I/O job write store kept-porch.key");
+}
+
+TEST_CASE("A blocking replace on the main loop is the type's bug: a hook uses replaceLater", "[stores]") {
+	auto h = fresh({}, {.replaceInStart = true});
+	h->add();
+	h->blockReady();
+	CHECK(failure(*h) ==
+	      "start-failed: start threw: store kept-porch.key: replace waits, so never on the main loop: a hook "
+	      "uses replaceLater");
+	CHECK(h->storeText(key) == "key 1");
+}
+
+TEST_CASE("A replace whose 5 s pass is told apart: refused when its write never began, unconfirmed when it was under "
+          "way",
+          "[stores]") {
+	SECTION("never began: refused, and it never writes") {
+		auto h = fresh({}, {.writes = {"key 2"}});
+		h->add();
+		h->node().overdueNextWrite(false);
+		h->blockReady();
+		h->runLoops();
+		CHECK(said(*h, "write failed: kept-porch.key: not written: not begun within 5 s"));
+		h->runIo(); // the job left queued runs: given up, it writes nothing
+		CHECK(h->storeText(key) == "key 1");
+	}
+	SECTION("under way: unconfirmed, never read as not written, and text() shows it landed") {
+		auto h = fresh({}, {.writes = {"key 2"}});
+		h->add();
+		h->node().overdueNextWrite(true);
+		h->blockReady();
+		h->runLoops();
+		CHECK(said(*h, "write unconfirmed: kept-porch.key: not confirmed within 5 s: the write was under way and may "
+		               "still land (compare text())"));
+		CHECK(said(*h, "text now key 2"));
+		CHECK(h->storeText(key) == "key 2");
+	}
 }

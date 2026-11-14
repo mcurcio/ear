@@ -9,6 +9,13 @@
 namespace ear {
 namespace {
 
+/// 1 or more of [a-z0-9]: a store's file, "<type>-<node>.<suffix>", is then one type's and one node's alone
+/// (docs/writing-a-node-type.md#layout-and-registration).
+bool validTypeName(std::string_view name) {
+	return !name.empty() &&
+	       std::ranges::all_of(name, [](char c) { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'); });
+}
+
 auto named(std::string_view name) {
 	return [name](const std::unique_ptr<const NodeType>& type) { return type->name() == name; };
 }
@@ -18,6 +25,9 @@ auto named(std::string_view name) {
 NodeCatalogue::NodeCatalogue(std::vector<std::unique_ptr<const NodeType>> types) : types_(std::move(types)) {
 	for (auto it = types_.begin(); it != types_.end(); ++it) {
 		if (!*it) throw std::invalid_argument("node catalogue: a node type is null");
+		if (!validTypeName((*it)->name()))
+			throw std::invalid_argument("node catalogue: a node type's name is 1 or more of [a-z0-9], not \"" +
+			                            std::string((*it)->name()) + "\"");
 		if (std::any_of(types_.begin(), it, named((*it)->name())))
 			throw std::invalid_argument("node catalogue: two node types are named " + std::string((*it)->name()));
 	}

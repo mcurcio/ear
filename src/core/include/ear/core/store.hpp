@@ -102,6 +102,17 @@ struct Stores {
 template <class T> inline constexpr bool isStores = false;
 template <auto... Handles> inline constexpr bool isStores<Stores<Handles...>> = true;
 
+/// Why a write did not commit, or might not have. `refused`: it did not, and the file is as it was. `unconfirmed`: its
+/// wait gave up (5 s) while the write was under way on the I/O thread, so it may still land: never read it as "not
+/// written"; compare text(), which shows it once it landed, or write with replaceLater, whose outcome is exact.
+struct StoreWriteError {
+	enum class Kind { refused, unconfirmed };
+	Kind kind;
+	std::string detail; // a sentence naming the file
+};
+/// A write's outcome.
+using StoreWritten = std::expected<void, StoreWriteError>;
+
 /// "<type>-<node>.<suffix>", a store's file in the graph file folder.
 std::string storeFileName(std::string_view type, std::string_view node, std::string_view suffix);
 
@@ -115,17 +126,16 @@ public:
 	/// Any thread: what the file held when it was opened and trusted (or was created with; empty when it is missing
 	/// and the rule has no initial text), then the text of the last write that committed.
 	virtual std::string text() const = 0;
-	/// Blocking, so never from a strand (asserted in debug builds), the main loop or the realtime thread: a dedicated
-	/// loop's handler or a library's thread. Queued on the I/O thread behind the store's earlier writes: narrows the
-	/// file's mode, then swaps `text` in only if the file still holds text(). Waits at most 5 s. The error is a
-	/// sentence naming the file ("<file>: changed by something else", "<file>: larger than <n> bytes", "<file>: not
-	/// written within 5 s", or the disk's own), the file left as it was; only a write already under way when the 5 s
-	/// passed may still land, and text() then shows it.
-	virtual std::expected<void, std::string> replace(std::string text) = 0;
-	/// The same without waiting, from any thread: `done` runs on `loop` (one of the node's own) with the outcome, or
-	/// never once the loop closed or the configuration ended.
-	virtual void replaceLater(std::string text, Loop& loop,
-	                          std::move_only_function<void(std::expected<void, std::string>)> done) = 0;
+	/// Blocking, so never from a strand (asserted in debug builds), the main loop (std::logic_error: a hook uses
+	/// replaceLater) or the realtime thread: a dedicated loop's handler or a library's thread. Queued on the I/O thread
+	/// behind the store's earlier writes: narrows the file's mode, then swaps `text` in only if the file still holds
+	/// text(). Waits at most 5 s. Refused ("<file>: changed by something else", "<file>: larger than <n> bytes",
+	/// "<file>: not written: not begun within 5 s", or the disk's own): the file is as it was. Unconfirmed: the write
+	/// was under way when the 5 s passed and may still land (StoreWriteError).
+	virtual StoreWritten replace(std::string text) = 0;
+	/// The same without waiting, from any thread: `done` runs on `loop` (one of the node's own) with the exact outcome
+	/// (never unconfirmed), or never once the loop closed or the configuration ended.
+	virtual void replaceLater(std::string text, Loop& loop, std::move_only_function<void(StoreWritten)> done) = 0;
 
 protected:
 	~Store() = default;
@@ -153,6 +163,11 @@ public:
 	/// The regular file's text; nothing when it is missing. A symlink, a directory or more than maxBytes is an error.
 	virtual std::expected<std::optional<std::string>, std::string> read(const std::string& file,
 	                                                                    std::uint32_t maxBytes) = 0;
+	/// read(), with every mode bit outside `mode` cleared first on the same descriptor, so the file narrowed is the file
+	/// read (a rename between two opens cannot make one file judged and another narrowed); a file too large to read
+	/// is still narrowed.
+	virtual std::expected<std::optional<std::string>, std::string>
+	readNarrowed(const std::string& file, std::uint32_t maxBytes, std::uint32_t mode) = 0;
 	/// Clears every mode bit outside `mode`. A missing file is an error.
 	virtual std::expected<void, std::string> narrow(const std::string& file, std::uint32_t mode) = 0;
 	/// Puts `text` in place only if the file holds `expected` (nothing: no file), atomically (a staging file renamed

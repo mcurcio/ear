@@ -313,7 +313,8 @@ inline constexpr std::chrono::milliseconds hookSlowBound{20};
 class NodeHost final : public DesiredNodeListener, public NodeOperations, public NodeCounterSource {
 public:
 	/// All outlive it. `mainLoop` runs on the thread that calls everything below; a run reaches it through there (its
-	/// events, its handoffs' and run object's `closed`). `timers` run there too.
+	/// events, its handoffs' and run object's `closed`). `timers` run there too. Made on that thread, which it marks as
+	/// the main loop's (onMainLoop, loop.hpp).
 	NodeHost(AudioFormat format, PortBlockFactory& blocks, ResourceRegistry& resources, Executor& mainLoop,
 	         Timers& timers, std::chrono::milliseconds closeDeadline = defaultCloseDeadline);
 	~NodeHost(); // precondition: stopAll completed (or no node was ever added)

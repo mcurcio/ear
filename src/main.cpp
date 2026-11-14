@@ -19,6 +19,7 @@
 #include <optional>
 #include <iostream>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -283,7 +284,16 @@ int main(int argc, char** argv) {
 	// be is a log record from the store's type.
 	for (const ear::runtime::StoreSweepFinding& finding : ear::runtime::sweepStores(*config, types))
 		log.log({.level = ear::LogLevel::warn, .source = finding.type, .text = finding.detail, .cut = false});
-	const ear::NodeCatalogue catalogue(std::move(types));
+	// The types' registration check (two of one name, a name not 1 or more of [a-z0-9]) is a build's bug: exit 1, saying
+	// which.
+	std::optional<ear::NodeCatalogue> registered;
+	try {
+		registered.emplace(std::move(types));
+	} catch (const std::invalid_argument& refused) {
+		log.exiting(1, refused.what());
+		return 1;
+	}
+	const ear::NodeCatalogue& catalogue = *registered;
 	auto first = ear::config::GraphFileKeeper::load(*config, catalogue);
 	const ear::AudioFormat format = first.format().value_or(ear::AudioFormat{*flagRate, *flagBlock});
 

@@ -1359,13 +1359,17 @@ struct NodeHost::Impl {
 				: node_(node), state_(std::move(state)), link_(std::move(link)) {}
 			const std::string& fileName() const noexcept override { return state_->file; }
 			std::string text() const override { return state_->text(); }
-			std::expected<void, std::string> replace(std::string text) override {
+			StoreWritten replace(std::string text) override {
 				assert(!onStrand() &&
 				       "a store's replace waits: never from a strand (docs/writing-a-node-type.md#stores)");
+				// The main loop never waits on the I/O thread: a hook writes with replaceLater.
+				if (onMainLoop())
+					throw std::logic_error("store " + state_->file +
+					                       ": replace waits, so never on the main loop: a hook uses replaceLater");
 				requireOpened("written");
 				// 0 pending, 1 running, 2 given up: a job its waiter gave up on before it began never writes.
 				auto ticket = std::make_shared<std::atomic<int>>(0);
-				auto outcome = std::make_shared<std::expected<void, std::string>>();
+				auto outcome = std::make_shared<StoreWritten>();
 				const JobWait waited = state_->adapter.await(
 					"write store " + state_->file,
 					[state = state_, link = link_, ticket, outcome, text = std::move(text)]() mutable {
@@ -1378,18 +1382,23 @@ struct NodeHost::Impl {
 				case JobWait::ran:
 					return std::move(*outcome);
 				case JobWait::overdue: {
+					const auto seconds =
+						std::to_string(std::chrono::duration_cast<std::chrono::seconds>(storeBound).count());
 					int pending = 0;
-					ticket->compare_exchange_strong(pending, 2);
-					const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(storeBound).count();
-					return std::unexpected(state_->file + ": not written within " + std::to_string(seconds) + " s");
+					// Given up before it began: it never runs, so the file is as it was.
+					if (ticket->compare_exchange_strong(pending, 2))
+						return refused(state_->file + ": not written: not begun within " + seconds + " s");
+					return std::unexpected(
+						StoreWriteError{StoreWriteError::Kind::unconfirmed,
+					                    state_->file + ": not confirmed within " + seconds +
+					                        " s: the write was under way and may still land (compare text())"});
 				}
 				case JobWait::dropped:
 					break;
 				}
-				return std::unexpected(state_->file + ": not written: the I/O thread has stopped");
+				return refused(state_->file + ": not written: the I/O thread has stopped");
 			}
-			void replaceLater(std::string text, Loop& loop,
-			                  std::move_only_function<void(std::expected<void, std::string>)> done) override {
+			void replaceLater(std::string text, Loop& loop, std::move_only_function<void(StoreWritten)> done) override {
 				requireOpened("written");
 				// The loop is reached from the main loop, through the configuration's Completions, never from the I/O
 				// thread: a job may outlive the loop, and the Completions drop what lands once the configuration ended.
@@ -1444,16 +1453,20 @@ struct NodeHost::Impl {
 		private:
 			/// A write on the I/O thread: the adapter's throw is its bug, reported (the node fails lost) and answered as
 			/// the failure it gives the node.
-			static std::expected<void, std::string> written(detail::StoreState& state, const StoreLink& link,
-			                                                std::string text) {
+			static StoreWritten written(detail::StoreState& state, const StoreLink& link, std::string text) {
 				try {
-					return state.write(std::move(text));
+					auto wrote = state.write(std::move(text));
+					if (!wrote) return refused(std::move(wrote.error()));
+					return {};
 				} catch (...) {
 					const std::string what = detail::whatOf(std::current_exception());
 					const std::string callback(state.calling);
 					link.faulted("write store " + state.file, callback, what);
-					return std::unexpected(internalErrorDetail(callback, what));
+					return refused(internalErrorDetail(callback, what));
 				}
+			}
+			static StoreWritten refused(std::string detail) {
+				return std::unexpected(StoreWriteError{StoreWriteError::Kind::refused, std::move(detail)});
 			}
 			void requireOpened(std::string_view done) const {
 				if (!state_->opened())
@@ -3242,7 +3255,9 @@ struct NodeHost::Impl {
 
 NodeHost::NodeHost(AudioFormat format, PortBlockFactory& blocks, ResourceRegistry& resources, Executor& mainLoop,
                    Timers& timers, std::chrono::milliseconds closeDeadline)
-	: impl_(std::make_unique<Impl>(format, blocks, resources, mainLoop, timers, closeDeadline)) {}
+	: impl_(std::make_unique<Impl>(format, blocks, resources, mainLoop, timers, closeDeadline)) {
+	markMainLoopThread(); // made on the main loop's thread, where nothing may wait (a store's replace refuses it)
+}
 
 NodeHost::~NodeHost() {
 	// On a wedged loop, leaked blocks, engine companions and configurations still point into the host: it is never

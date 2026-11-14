@@ -32,6 +32,8 @@ private:
 constexpr auto levelRow = setting::optional("level", setting::number(0, 100));
 constexpr SettingsTable<levelRow> sourceTable{"source"};
 constexpr SettingsTable<levelRow> sinkTable{"sink"};
+constexpr SettingsTable<> dashedTable{"send-spin"};
+constexpr SettingsTable<> upperTable{"Sink"};
 
 /// A node type whose nodes have fixed ports; settings {"bad": ...} are invalid: its table declares no such key.
 template <const auto& Table> class TestType final : public NodeTypeOf<Table> {
@@ -228,6 +230,19 @@ TEST_CASE("The catalogue finds types by name and refuses two types with one name
 	auto types = testTypes();
 	types.push_back(std::make_unique<TestType<sinkTable>>(Ports{{{Direction::input, "in", {"a"}}}}));
 	CHECK_THROWS_AS(NodeCatalogue{std::move(types)}, std::invalid_argument);
+}
+
+TEST_CASE("The catalogue refuses a type whose name is not 1 or more of [a-z0-9]", "[catalogue]") {
+	// "send-spin" with node "x" and "send" with node "spin-x" would name one store file, send-spin-x.<suffix>.
+	const auto refused = [](std::unique_ptr<const NodeType> made) {
+		auto types = testTypes();
+		const std::string name(made->name());
+		types.push_back(std::move(made));
+		CHECK_THROWS_WITH(NodeCatalogue{std::move(types)},
+		                  "node catalogue: a node type's name is 1 or more of [a-z0-9], not \"" + name + "\"");
+	};
+	refused(std::make_unique<TestType<dashedTable>>(Ports{}));
+	refused(std::make_unique<TestType<upperTable>>(Ports{}));
 }
 
 TEST_CASE("Command errors have one code each and describe what they name", "[command_error]") {

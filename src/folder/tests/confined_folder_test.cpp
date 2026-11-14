@@ -352,6 +352,26 @@ TEST_CASE("restrictMode() clears the bits outside what it is given and adds none
 	CHECK(contents(file) == "text");
 }
 
+TEST_CASE("readNarrowed() narrows the file it reads, on one descriptor, even one too large to read", "[folder]") {
+	TempFolder dir{"narrowed"};
+	const auto folder = openFolder(dir.path() / "folder");
+	const auto file = dir.path() / "folder" / "secret.key";
+	write(file, "text");
+	std::filesystem::permissions(file, std::filesystem::perms(0666));
+	const auto narrowed = folder.readNarrowed("secret.key", 64, 0600);
+	REQUIRE(narrowed);
+	CHECK(*narrowed == std::optional<std::string>("text"));
+	CHECK(permissionsOf(file) == std::filesystem::perms(0600));
+	std::filesystem::permissions(file, std::filesystem::perms(0666));
+	CHECK_FALSE(folder.readNarrowed("secret.key", 2, 0600)); // too large: refused, but narrowed
+	CHECK(permissionsOf(file) == std::filesystem::perms(0600));
+	const auto missing = folder.readNarrowed("missing.key", 64, 0600);
+	REQUIRE(missing);
+	CHECK_FALSE(missing->has_value());
+	std::filesystem::create_symlink(file, dir.path() / "folder" / "link.key");
+	CHECK_FALSE(folder.readNarrowed("link.key", 64, 0600));
+}
+
 TEST_CASE("restrictMode() refuses a symlink, a path out, a directory, a FIFO and a missing file", "[folder]") {
 	TempFolder dir{"restrictrefuses"};
 	const auto folder = openFolder(dir.path() / "folder");

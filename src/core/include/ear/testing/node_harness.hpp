@@ -204,7 +204,11 @@ public:
 	void failNextWrite(std::string_view suffix, std::string why);
 	/// From now on every call of the stores' adapter throws std::logic_error(what): an adapter's bug.
 	void breakStores(std::string what);
-	/// Every call the adapter was asked, in order: "read <file>", "narrow <file>", "replace <file>".
+	/// The next blocking replace's wait gives up (its 5 s passed): `ran` true, after its job ran (it was under way, and
+	/// landed); false, before it began (the job is left queued for the I/O executor, where it then writes nothing).
+	void overdueNextWrite(bool ran);
+	/// Every call the adapter was asked, in order: "readNarrowed <file>", "read <file>", "narrow <file>", "replace
+	/// <file>".
 	const std::vector<std::string>& storeCalls() const noexcept;
 	/// One cycle of `frames` (0: maxBlock) through the code the fake block was driven with, outputs NaN-filled first,
 	/// with a GraphCycle the harness advances on its driver, its facts (GraphCycle::facts, and facts()) stated by the

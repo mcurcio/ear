@@ -75,6 +75,13 @@ std::expected<std::optional<std::string>, std::string> ConfinedStores::read(cons
 	return std::move(*read);
 }
 
+std::expected<std::optional<std::string>, std::string>
+ConfinedStores::readNarrowed(const std::string& file, std::uint32_t maxBytes, std::uint32_t mode) {
+	auto read = folder_->readNarrowed(file, maxBytes, static_cast<mode_t>(mode));
+	if (!read) return std::unexpected(std::move(read.error().detail));
+	return std::move(*read);
+}
+
 std::expected<void, std::string> ConfinedStores::narrow(const std::string& file, std::uint32_t mode) {
 	auto narrowed = folder_->restrictMode(file, static_cast<mode_t>(mode));
 	if (!narrowed) return std::unexpected(std::move(narrowed.error().detail));
