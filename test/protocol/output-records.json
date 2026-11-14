@@ -870,10 +870,24 @@
       }
     },
     {
-      "case": "a stop has done all ear does: every node removed, the control port closed, ear.conf's last write made; ear's last record before it exits 0",
+      "case": "the framework's diagnostic about a node: a configuration leaked at the close deadline closed late, so it no longer keeps ear's stop from ending normally",
       "record": {
         "v": 1,
         "seq": 91,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "node": "kitchen",
+        "code": "ear.close-late",
+        "ms": 14250,
+        "detail": "the configuration leaked at the close deadline closed 14250 ms after its close began",
+        "msg": "node kitchen ear.close-late: the configuration leaked at the close deadline closed 14250 ms after its close began"
+      }
+    },
+    {
+      "case": "a stop has done all ear does: every node removed, the control port closed, ear.conf's last write made; ear's last record before it exits 0",
+      "record": {
+        "v": 1,
+        "seq": 92,
         "t": "2026-11-07T17:42:03.512094Z",
         "kind": "exit",
         "status": 0,

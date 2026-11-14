@@ -61,7 +61,8 @@ using PaceClock = std::function<std::chrono::steady_clock::time_point()>;
 ///                       answered; fields "node", "action", "result" (ok or the refusal's code), "detail" when set; told before the
 ///                       node records the request causes)
 ///   diagnostic          node <n> <code>: <detail>   (the framework's own observation about a node: ear.close-overdue,
-///                       ear.fade-unacknowledged, ear.barrier-overdue; its fields, such as "ms", between code and detail)
+///                       ear.close-late, ear.fade-unacknowledged, ear.barrier-overdue; its fields, such as "ms", between
+///                       code and detail)
 ///                       | <code>: <detail>   (one that names no node: ear.data-loop-wedged, with no "node" field;
 ///                       ear.main-loop-stalled with "ms" and "in" (the call the main loop is in, when known) and
 ///                       ear.main-loop-resumed with "ms", the stall's length, both from the watchdog's thread)

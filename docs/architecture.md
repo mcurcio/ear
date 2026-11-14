@@ -571,7 +571,7 @@ Every wait the framework makes on another thread has a bound, so no node can hol
 |---|---|---|
 | A fade-out's acknowledgement | 100 ms | `ear.fade-unacknowledged`; the silence is taken unfaded |
 | A drive or silence on the data loop | 5 s (judged after a grace when the whole process stalled) | `ear.barrier-overdue`, then, once, `ear.data-loop-wedged` |
-| A configuration's teardown (sinks drained, loops finished and closed, threads stopped) | 10 s | `ear.close-overdue` (counting what is still open); the configuration is leaked, never freed, and the node moves on |
+| A configuration's teardown (sinks drained, loops finished and closed, threads stopped) | 10 s | `ear.close-overdue` (counting what is still open); the configuration is leaked, never freed, and the node moves on; if it closes later, `ear.close-late` ([teardown](#teardown-by-dependency)) |
 | A hook (`configure`, `start()`, `stop()`) on the main loop | 20 ms | `ear.hook-slow`, once per node and hook (a report only) |
 | A phase that lasts | 2 s | The node says what it waits for (`waitingFor`: `older-node`, `block`, `companion`, `consumer`, `loop`) |
 | An engine companion's or a sink's consumer's readiness, from its asking (once the node's loops run) | a card 10 s, an RTP receiver 5 s, a sink's consumer 5 s | The node fails: `engine-refused` for a card or receiver, `start-failed` for a consumer ([engine.md](engine.md#readiness-deadlines)) |
@@ -581,7 +581,8 @@ Every wait the framework makes on another thread has a bound, so no node can hol
 wait on it: no block, engine companion or link is made or destroyed, and no latency is told. A new
 node fails `engine-refused: the data loop is wedged`, a new route is `refused` with that detail,
 and what ear would destroy is leaked. ear's stop still writes `ear.conf` and every record, then
-leaves through `std::_Exit(0)` (as it does whenever anything was leaked).
+leaves through `std::_Exit(0)` (as it does whenever anything leaked is still open:
+[stop](#stop-sigint-or-sigterm)).
 
 **The main-loop watchdog.** A 100 ms main-loop timer beats a heartbeat (and, at each beat, reads
 the diagnostics counters: [engine.md](engine.md#reporting-the-counters)); the watchdog thread looks
@@ -632,13 +633,36 @@ next `configure`, so a node has one configuration at a time and never waits on i
 Anything a configuration's threads tell lands only on that configuration, never on the next: each
 configuration has one channel to the main loop, which every report from another thread rides (its
 node handle's notes, losses and log entries, [writing-a-node-type.md](writing-a-node-type.md#the-node-handle);
-a sink's or handoff's begun and closed; a consumer's throw; a run object's closed; an I/O job's
-completion), and which is
-detached on every path that ends the configuration (it closed, it failed to start, or it was
-leaked), before the next can begin. That detach is the configuration's generation: nothing
+a sink's or handoff's begun and closed; a loop's finished and closed; a consumer's or loop
+handler's throw; a run object's closed; an I/O job's completion), and which is
+detached on every path that ends the configuration (it closed, or it failed to start), before the
+next can begin. That detach is the configuration's generation: nothing
 queued, or said later through a kept handle, reaches the node after it. Facts (a loss, a throw)
 are dropped once its teardown began; notes are heard until the detach. A stop does only step 1's
 fade and silence, keeping everything else, the channel and its note rate included.
+
+**A configuration leaked at the close deadline keeps listening.** Past the deadline it is
+`ear.close-overdue` and leaked: never freed, since its threads may still touch any of it, and the
+node moves on (its next configuration may begin). Its channel is not detached but re-pointed at a
+record ear keeps for it, so nothing it tells reaches the node or a newer configuration:
+
+- **Still heard, on the record, in order:** each close the teardown was waiting for (a sink's or
+  handoff's, a loop's finished and closed, a run object's closed), and the teardown carries on
+  from where it stopped (a configuration leaked while a sink drained has its loops finished and
+  closed once that sink reports, then its run object closed). A consumer's or loop handler's throw
+  is a `log` record (`source` `ear`, `error`, naming the node), never a fact.
+- **Dropped:** its node handle's notes, losses and log entries, and its I/O jobs' completions (the
+  handle a dropped completion carries is released on the I/O thread, as for any ended
+  configuration).
+- **The late close.** Once everything it held has reported, the record says `ear.close-late`
+  ([output-records.md](output-records.md#diagnostic)), the channel is detached, and the
+  configuration no longer counts as leaked (`NodeHost::leaked()`), so a stop afterwards ends
+  normally rather than through `std::_Exit` ([stop](#stop-sigint-or-sigterm)). Its memory stays
+  leaked.
+
+A configuration leaked on an overdue barrier ([bounds](#bounds-the-wedged-data-loop-and-the-watchdog))
+is detached instead: the data loop may still run its code, so it never closes and counts as leaked
+for good.
 
 ## Boot and stop
 
@@ -720,8 +744,9 @@ engine that does not start, a folder watch it cannot arm, or a control port it c
    `the I/O thread was still busy at exit: <job>`), and its thread is never waited for.
 7. ear writes its last record, `exit` with status 0 (`ear: stopped`,
    [output-records.md](output-records.md#exit)).
-8. Every queued record is written; ear exits 0 (through `std::_Exit(0)` if anything was leaked or
-   the I/O thread was still busy).
+8. Every queued record is written; ear exits 0 (through `std::_Exit(0)` if anything leaked is still open,
+   or the I/O thread was still busy; a configuration leaked at the close deadline that closed late,
+   `ear.close-late`, no longer counts: [teardown](#teardown-by-dependency)).
 
 *Why stop in this order:* recordings are finished before anything waits on the disk, and the
 last `ear.conf` write happens before Kubernetes' grace period ends whatever the data loop or a

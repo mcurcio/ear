@@ -109,7 +109,7 @@ struct DiagnosticField {
 };
 /// What the framework itself observes about a node (docs/output-records.md#diagnostic), by code: "ear.close-overdue" (a
 /// configuration that did not close within the close deadline, leaked past the close deadline; no field),
-/// "ear.fade-unacknowledged" (a planned silence's fade not acknowledged within 100 ms, so the barrier was taken
+/// "ear.close-late" (that configuration closed after all; `ms` since its close began), "ear.fade-unacknowledged" (a planned silence's fade not acknowledged within 100 ms, so the barrier was taken
 /// unfaded; `ms`), "ear.barrier-overdue" (a barrier not completed within 5 s: the node's configuration and block are
 /// leaked; `ms`) and "ear.hook-slow" (a hook, named in the detail, "configure ran 31 ms", ran past hookSlowBound on the
 /// main loop; `ms`; once per node and hook for the node's life:
@@ -420,10 +420,12 @@ public:
 	std::vector<CompanionView> companionsOf(const NodeName& node) const;
 	/// The same for the newest node of this span of counts not yet gone.
 	std::vector<CompanionView> spanCompanions(std::uint64_t span) const override;
-	/// What was leaked, never freed: configurations left running past the close deadline or on a wedged data
-	/// loop, and the blocks and engine companions a wedged loop kept. Their threads may still post to `mainLoop` or
-	/// touch engine objects at any time, so once any was leaked the process must end without destroying those (main.cpp
-	/// ends with std::_Exit).
+	/// What was leaked and may still be reached, never freed: configurations left running past the close deadline or on
+	/// a wedged data loop, and the blocks and engine companions a wedged loop kept. Their threads may still post to
+	/// `mainLoop` or touch engine objects at any time, so while any counts the process must end without destroying
+	/// those (main.cpp ends with std::_Exit). A configuration leaked at the close deadline that closed late
+	/// (ear.close-late, docs/architecture.md#teardown-by-dependency) no longer counts: its memory stays leaked, but
+	/// nothing of it runs.
 	std::size_t leaked() const noexcept;
 
 private:

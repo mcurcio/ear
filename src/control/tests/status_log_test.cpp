@@ -341,6 +341,12 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 			log.nodeChanged(
 				health("fpp", NodePhase::configuring, {}, {}, {{ear::WaitingFor::Kind::store, "sendspin-fpp.key"}}));
 		},
+		[](StatusLog& log, Lines&) {
+			const std::array fields{ear::DiagnosticField{"ms", 14250}};
+			log.nodeDiagnostic("kitchen", "ear.close-late",
+		                       "the configuration leaked at the close deadline closed 14250 ms after its close began",
+		                       fields);
+		},
 		[](StatusLog& log, Lines&) { log.stopped(); },
 	};
 }

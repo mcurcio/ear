@@ -819,21 +819,28 @@ struct NodeHost::Impl {
 			std::size_t index_;
 		};
 
+		class LeakedRecord;
+
 		/// One configuration as its own threads reach the node, and its handle's implementation
 		/// (docs/writing-a-node-type.md#the-node-handle): everything they tell crosses to the main loop, in order, and
 		/// lands only while the configuration is attached. Each configuration has its own Channel, detached on every path
 		/// that ends it (it closed, it failed to start, or it was leaked), before the next one can start: that is the
-		/// configuration's generation, so no write of an old configuration lands on a new one. Whatever is still queued
-		/// holds this object, not the node, so it may outlive the node. Its note rate is its own, so it is per node and
-		/// lasts as long as the configuration: a stop and a start keep it, a restart begins a fresh one.
+		/// configuration's generation, so no write of an old configuration lands on a new one. A configuration leaked at
+		/// the close deadline is re-pointed instead (docs/architecture.md#teardown-by-dependency): its handle's notes,
+		/// losses and log entries and its I/O completions are dropped as after a detach, while its closes (each sink's,
+		/// handoff's and loop's, and the run object's) and its consumers' throws land on its LeakedRecord, never on the
+		/// node. Whatever is still queued holds this object, not the node, so it may outlive the node. Its note rate is
+		/// its own, so it is per node and lasts as long as the configuration: a stop and a start keep it, a restart
+		/// begins a fresh one.
 		class Channel final : public NodeHandle, public std::enable_shared_from_this<Channel> {
 		public:
 			/// `sinks` are NodeHost's log sinks, all subscribed before the first node (subscribeLog); `timers` is the
 			/// clock the note rate counts on.
 			Channel(Node& node, Executor& mainLoop, Timers& timers, NodeName name, std::string type,
 			        std::vector<LogSink*> sinks)
-				: node_(&node), completions_(std::make_shared<detail::Completions>(mainLoop)), name_(std::move(name)),
-				  type_(std::move(type)), sinks_(std::move(sinks)), gate_([&timers] { return timers.now(); }) {}
+				: node_(&node), mainLoop_(mainLoop), completions_(std::make_shared<detail::Completions>(mainLoop)),
+				  name_(std::move(name)), type_(std::move(type)), sinks_(std::move(sinks)),
+				  gate_([&timers] { return timers.now(); }) {}
 			const NodeName& node() const noexcept override { return name_; }
 			/// Judged on the saying thread, so a note held back is never queued; posted under the gate's lock, so the
 			/// order notes pass the gate is the order they land in, `notes-dropped` just before the note it precedes.
@@ -864,31 +871,40 @@ struct NodeHost::Impl {
 				if (entry.source.empty()) entry.source = type_;
 				for (LogSink* sink : sinks_) sink->log(entry);
 			}
-			/// Any thread: a consumer of this configuration threw (ConsumerCalls). A fact, as a hook's throw is, while
-			/// facts reach the node; once its teardown began a log record, as a stop() that throws then is.
+			/// Any thread: a consumer (or a loop's handler) of this configuration threw (ConsumerCalls). A fact, as a
+			/// hook's throw is, while facts reach the node; once its teardown began a log record, as a stop() that throws
+			/// then is, a leaked configuration's included (never a fact: it reaches no node).
 			void threw(std::string detail) {
-				completions_->post([self = shared_from_this(), detail = std::move(detail)]() mutable {
-					Node* node = self->attachedNode();
-					if (node == nullptr) return;
-					if (self->closing_)
-						node->host_.logged(LogEntry{LogLevel::error, "ear", std::move(detail), {}, node->name_});
-					else node->consumerThrew(std::move(detail));
+				mainLoop_.post([self = shared_from_this(), detail = std::move(detail)]() mutable {
+					if (Node* node = self->attachedNode()) {
+						if (self->closing_)
+							node->host_.logged(LogEntry{LogLevel::error, "ear", std::move(detail), {}, node->name_});
+						else node->consumerThrew(std::move(detail));
+					} else if (LeakedRecord* record = self->record_) record->threw(std::move(detail));
 				});
 			}
 			/// Main thread. The configuration is going (its teardown began): a fact no longer reaches the node.
 			void closing() noexcept { closing_ = true; }
 			/// The configuration's way back to the main loop, for its I/O jobs' completions (its stores').
 			const std::shared_ptr<detail::Completions>& completions() const noexcept { return completions_; }
-			/// Main thread. Nothing more of this configuration reaches the node.
+			/// Main thread. Nothing more of this configuration reaches the node, or its leaked record.
 			void detach() noexcept {
 				node_ = nullptr;
+				record_ = nullptr;
 				completions_->detach();
+			}
+			/// Main thread, as the configuration is leaked at the close deadline: nothing more reaches the node, and its
+			/// closes and consumers' throws reach `record` from now on.
+			void repoint(LeakedRecord& record) noexcept {
+				detach();
+				record_ = &record;
 			}
 			/// The `closed` a handoff of this configuration gets: on the main thread, later.
 			std::move_only_function<void(std::uint64_t)> handoffClosedCall() {
 				return [self = shared_from_this()](std::uint64_t droppedFrames) {
 					if (Node* node = self->attachedNode())
 						node->handoffClosed(node->config_->generation, droppedFrames);
+					else if (LeakedRecord* record = self->record_) record->handoffClosed();
 				};
 			}
 			/// The `begun` sink `index` of this configuration gets: on the main thread, later, behind any lost() its
@@ -903,6 +919,21 @@ struct NodeHost::Impl {
 				return [self = shared_from_this(), index](std::uint64_t droppedFrames) {
 					if (Node* node = self->attachedNode())
 						node->sinkClosed(node->config_->generation, index, droppedFrames);
+					else if (LeakedRecord* record = self->record_) record->sinkClosed(index);
+				};
+			}
+			/// The `finished` loop `index` of this configuration gets at teardown step 4: on the main thread, later.
+			std::move_only_function<void()> loopFinishedCall(std::size_t index) {
+				return [self = shared_from_this(), index] {
+					if (Node* node = self->attachedNode()) node->loopFinishedHeard(node->config_->generation, index);
+					else if (LeakedRecord* record = self->record_) record->loopFinished(index);
+				};
+			}
+			/// The `closed` loop `index` of this configuration gets at teardown step 4: on the main thread, later.
+			std::move_only_function<void()> loopClosedCall(std::size_t index) {
+				return [self = shared_from_this(), index] {
+					if (Node* node = self->attachedNode()) node->loopClosedHeard(node->config_->generation, index);
+					else if (LeakedRecord* record = self->record_) record->loopClosed(index);
 				};
 			}
 			/// The `closed` the run object gets: from any thread, later or inside close().
@@ -914,8 +945,9 @@ struct NodeHost::Impl {
 						self->closedInside_ = true;
 						return;
 					}
-					self->completions_->post([self] {
+					self->mainLoop_.post([self] {
 						if (Node* node = self->attachedNode()) node->runClosed();
+						else if (LeakedRecord* record = self->record_) record->runClosed();
 					});
 				};
 			}
@@ -936,9 +968,14 @@ struct NodeHost::Impl {
 		private:
 			/// Main thread: the node, while this configuration is attached.
 			Node* attachedNode() const noexcept { return node_; }
-			Node* node_; // main thread only
-			/// The way back to the main loop for everything this configuration's threads tell, detached with node_; its
-			/// attached() is node_ for the threads that cannot read it. Slice 3c's I/O jobs report through it too.
+			Node* node_;                     // main thread only
+			LeakedRecord* record_ = nullptr; // main thread only: set once leaked at the close deadline
+			/// Where the reports a leaked configuration may still make are posted (its closes, its consumers' throws),
+			/// each judged where it lands: the node's while attached, else the record's if re-pointed, else dropped.
+			Executor& mainLoop_;
+			/// The way back to the main loop for everything else this configuration's threads tell (its handle's notes
+			/// and losses, its I/O jobs' completions), detached with node_ and never re-pointed; its attached() is node_
+			/// for the threads that cannot read it.
 			const std::shared_ptr<detail::Completions> completions_;
 			const NodeName name_;    // a copy: a leaked configuration may outlive its node
 			const std::string type_; // a log entry's source when the type gave none
@@ -1087,8 +1124,9 @@ struct NodeHost::Impl {
 		class LoopSlot final : public Loop, public LoopEvents {
 		public:
 			LoopSlot(Impl& host, std::uint64_t serial, std::uint64_t generation, std::size_t index,
-			         LoopDeclaration declared)
-				: declared(declared), host_(host), serial_(serial), generation_(generation), index_(index) {}
+			         LoopDeclaration declared, std::shared_ptr<Channel> channel)
+				: declared(declared), host_(host), serial_(serial), generation_(generation), index_(index),
+				  channel_(std::move(channel)) {}
 			/// Main thread, at teardown step 5 (or a configure that failed): a state never handed to a loop goes here,
 			/// while the slot is whole (its destructor may ask the loop, inLoop()), after the adapter's loop.
 			~LoopSlot() {
@@ -1175,12 +1213,9 @@ struct NodeHost::Impl {
 					                     "loop " + name + " ran one handler for " + std::to_string(ms) + " ms", fields);
 				});
 			}
+			/// Through the configuration's Channel, so a leaked configuration's is logged on its record.
 			void threw(std::string what) override {
-				host_.inputFor(serial_, [generation = generation_, name = std::string(declared.name),
-				                         what = std::move(what)](Node& node) mutable {
-					if (node.current(generation))
-						node.config_->channel->threw("loop " + name + "'s handler threw: " + std::move(what));
-				});
+				channel_->threw("loop " + std::string(declared.name) + "'s handler threw: " + std::move(what));
 			}
 
 			/// Main thread, at readiness step `loops`: the adapter makes the loop; it tells ready or failed later.
@@ -1307,6 +1342,7 @@ struct NodeHost::Impl {
 			std::uint64_t serial_;
 			std::uint64_t generation_;
 			std::size_t index_;
+			std::shared_ptr<Channel> channel_; // the configuration's: what its adapter says lands where it says
 			mutable std::mutex mutex_;
 			bool released_ = false;     // mutex_: staging ended (released, or dropped by a teardown)
 			std::deque<Staged> staged_; // mutex_
@@ -1542,7 +1578,8 @@ struct NodeHost::Impl {
 			std::vector<ItemOwner> itemOwners;
 			std::unique_ptr<Timer> deadline;
 			std::unique_ptr<Timer> bound; // the request in flight's bound: the fade's or the barrier's
-			std::chrono::steady_clock::time_point postedAt; // when that request was posted
+			std::chrono::steady_clock::time_point postedAt;   // when that request was posted
+			std::chrono::steady_clock::time_point closeBegan; // when teardown step 3 began, for ear.close-late
 			// One flag per output in process()'s order (outputs, then inside outputs): every one the code writes is
 			// faded but a sink's bank. Read by the block until the drive's invoke ran.
 			std::unique_ptr<bool[]> faded;
@@ -1564,24 +1601,94 @@ struct NodeHost::Impl {
 			std::size_t sinksClosed = 0;
 		};
 
-		/// Everything of a configuration that did not close in time and that its threads can still reach: never freed.
-		struct Leaked {
-			std::shared_ptr<const NodeConfig> config;
-			std::shared_ptr<Channel> channel;
-			std::unique_ptr<Context> context;
-			std::vector<std::unique_ptr<StoreSlot>> stores; // its loops' states may still use them
-			std::unique_ptr<ErasedInstance> instance;
-			std::unique_ptr<AudioCode> code;
-			std::vector<std::unique_ptr<RecordingFile>> recordings;
-			std::vector<std::unique_ptr<SinkSlot>> sinks;
-			std::vector<SinkBinding> bindings;
-			std::vector<SourceSlot> sources; // the block may still play them
-			std::vector<SourceBinding> sourceBindings;
-			std::vector<std::unique_ptr<LoopSlot>> loops; // their threads may still run
-			std::vector<std::unique_ptr<GuardedHandoffConsumer>> handoffConsumers;
-			std::vector<std::unique_ptr<Handoff>> handoffs;
-			std::vector<std::unique_ptr<Companion>> engineCompanions; // a wedged loop's, never destroyed
-			std::unique_ptr<bool[]> faded;
+		/// A configuration leaked at the close deadline (docs/architecture.md#teardown-by-dependency): never freed, since
+		/// its threads may still touch any of it, and still listening. Its Channel is re-pointed here, so every close it
+		/// still reports (a sink's, a handoff's, a loop's finish and close, the run object's) lands here in order on the
+		/// main loop, and the teardown carries on from where it stopped: once the sinks and handoffs closed, the loops
+		/// finish and close, then a legacy run object closes. Once everything reported, ear.close-late is said, the
+		/// Channel is detached and the configuration no longer counts in leaked(). A consumer's throw is an `ear` log
+		/// record naming the node, never a fact: nothing here reaches the node or a newer configuration. NodeHost keeps
+		/// it by the configuration's Channel alone (the Impl outlives every record but on an exit through _Exit).
+		class LeakedRecord {
+		public:
+			LeakedRecord(Impl& host, NodeName name, std::unique_ptr<Configuration> config, bool runClosing)
+				: host_(host), name_(std::move(name)), config_(std::move(config)), runClosing_(runClosing) {}
+			/// Main thread, once, as it is leaked: its closes land here from now on.
+			void repoint() noexcept { config_->channel->repoint(*this); }
+			void sinkClosed(std::size_t index) {
+				host_.input([this, index] {
+					Configuration& c = *config_;
+					if (index >= c.sinks.size() || c.sinks[index]->closed) return;
+					c.sinks[index]->closed = true;
+					++c.sinksClosed;
+					carryOn();
+				});
+			}
+			void handoffClosed() {
+				host_.input([this] {
+					++config_->handoffsClosed;
+					carryOn();
+				});
+			}
+			void loopFinished(std::size_t index) {
+				host_.input([this, index] { loopFinishedIn(*config_, index); });
+			}
+			void loopClosed(std::size_t index) {
+				host_.input([this, index] {
+					if (loopClosedIn(host_, name_, *config_, index)) carryOn();
+				});
+			}
+			void runClosed() {
+				host_.input([this] {
+					if (!runClosing_) return;
+					runClosing_ = false;
+					closedLate();
+				});
+			}
+			void threw(std::string detail) {
+				host_.logged(LogEntry{LogLevel::error, "ear", std::move(detail), {}, name_});
+			}
+
+		private:
+			/// As closeRunObject: once every sink and handoff closed, the loops; once they closed, the run object.
+			void carryOn() {
+				Configuration& c = *config_;
+				if (closed_ || runClosing_ || c.handoffsClosed != c.handoffs.size() || c.sinksClosed != c.sinks.size())
+					return;
+				if (c.loopsStep == Configuration::LoopsStep::open) finishLoopsOf(c);
+				if (c.loopsStep != Configuration::LoopsStep::closed) return;
+				runClosing_ = true;
+				bool closedInside = true;
+				if (c.instance) {
+					const MainLoopActivity::Scope activity(hooks::close.activity, name_);
+					auto closed = detail::caughtFrom([&] { return c.channel->close(*c.instance); });
+					if (closed) closedInside = *closed;
+					else host_.logged(LogEntry{LogLevel::error, "ear", "close threw: " + closed.error(), {}, name_});
+				}
+				if (closedInside) {
+					runClosing_ = false;
+					closedLate();
+				}
+			}
+			/// Everything it held reported: said, and no longer counted; its memory stays leaked.
+			void closedLate() {
+				if (closed_) return;
+				closed_ = true;
+				config_->channel->detach();
+				--host_.leaked;
+				const std::int64_t ms = millisecondsBetween(config_->closeBegan, host_.timers.now());
+				const std::array fields{DiagnosticField{"ms", ms}};
+				host_.diagnosed(name_, "ear.close-late",
+				                "the configuration leaked at the close deadline closed " + std::to_string(ms) +
+				                    " ms after its close began",
+				                fields);
+			}
+
+			Impl& host_;
+			const NodeName name_; // a copy: the node may be gone
+			std::unique_ptr<Configuration> config_;
+			bool runClosing_; // the run object was told to close and has not said it closed
+			bool closed_ = false;
 		};
 
 		/// The newest committed settings, and whether a drive of them fades: some output the code writes exists.
@@ -1990,7 +2097,8 @@ struct NodeHost::Impl {
 				c.instance = c.config->make(*c.context);
 				const std::span<const LoopDeclaration> declared = c.instance->loops();
 				for (std::size_t i = 0; i < declared.size(); ++i)
-					c.loops.push_back(std::make_unique<LoopSlot>(host_, serial_, c.generation, i, declared[i]));
+					c.loops.push_back(
+						std::make_unique<LoopSlot>(host_, serial_, c.generation, i, declared[i], c.channel));
 				// Each declared store, on a host that has stores (else refused below, and at a store call).
 				if (StoreAdapter* stores = host_.resources.stores()) {
 					const std::span<const StoreDeclaration> kept = c.instance->stores();
@@ -2716,6 +2824,7 @@ struct NodeHost::Impl {
 					});
 				});
 			c.tearing = true;
+			c.closeBegan = host_.timers.now();
 			c.handoffsClosed = 0;
 			c.sinksClosed = 0;
 			closingHandoffs_ = true;
@@ -2761,8 +2870,11 @@ struct NodeHost::Impl {
 		/// start) runs what was posted and destroys its state on its own thread; once all have, each closes, cancelling
 		/// the sources left armed; once all have, what each left is said (ear.loop-source-left) and the run object
 		/// closes. A loop never made has nothing to close: its state goes with the configuration (step 5).
-		void finishLoops() {
-			Configuration& c = *config_;
+		void finishLoops() { finishLoopsOf(*config_); }
+
+		/// The steps of finishLoops, on a configuration the node holds or its leaked record does: each loop's finished
+		/// and closed land through the configuration's Channel, so on whichever holds it then.
+		static void finishLoopsOf(Configuration& c) {
 			c.loopsStep = Configuration::LoopsStep::finishing;
 			std::vector<std::size_t> open;
 			for (std::size_t i = 0; i < c.loops.size(); ++i)
@@ -2774,42 +2886,47 @@ struct NodeHost::Impl {
 			for (std::size_t i = 0; i < c.loops.size(); ++i)
 				if (std::ranges::find(open, i) == open.end()) c.loops[i]->finished = c.loops[i]->closed = true;
 			for (const std::size_t i : open)
-				c.loops[i]->made->finish(
-					c.loops[i]->lastCall(), [&host = host_, serial = serial_, generation = c.generation, i] {
-						host.inputFor(serial, [generation, i](Node& node) { node.loopFinished(generation, i); });
-					});
+				c.loops[i]->made->finish(c.loops[i]->lastCall(), c.channel->loopFinishedCall(i));
 		}
-
-		void loopFinished(std::uint64_t generation, std::size_t index) {
-			if (!current(generation) || config_->loopsStep != Configuration::LoopsStep::finishing) return;
-			Configuration& c = *config_;
-			c.loops.at(index)->finished = true;
+		/// Loop `index` finished; once every loop has, each closes.
+		static void loopFinishedIn(Configuration& c, std::size_t index) {
+			if (c.loopsStep != Configuration::LoopsStep::finishing || index >= c.loops.size()) return;
+			c.loops[index]->finished = true;
 			if (!std::ranges::all_of(c.loops, [](const auto& slot) { return slot->finished; })) return;
 			c.loopsStep = Configuration::LoopsStep::closing;
 			for (std::size_t i = 0; i < c.loops.size(); ++i)
-				if (!c.loops[i]->closed)
-					c.loops[i]->made->close([&host = host_, serial = serial_, generation, i] {
-						host.inputFor(serial, [generation, i](Node& node) { node.loopClosed(generation, i); });
-					});
+				if (!c.loops[i]->closed) c.loops[i]->made->close(c.channel->loopClosedCall(i));
 		}
-
-		void loopClosed(std::uint64_t generation, std::size_t index) {
-			if (!current(generation) || config_->loopsStep != Configuration::LoopsStep::closing) return;
-			Configuration& c = *config_;
-			c.loops.at(index)->closed = true;
-			if (!std::ranges::all_of(c.loops, [](const auto& slot) { return slot->closed; })) return;
+		/// Loop `index` closed; true once every loop has (the step is then closed), with what each left armed said.
+		static bool loopClosedIn(Impl& host, const NodeName& name, Configuration& c, std::size_t index) {
+			if (c.loopsStep != Configuration::LoopsStep::closing || index >= c.loops.size()) return false;
+			c.loops[index]->closed = true;
+			if (!std::ranges::all_of(c.loops, [](const auto& slot) { return slot->closed; })) return false;
 			c.loopsStep = Configuration::LoopsStep::closed;
 			// A state destroys the sources it armed: one left is a type bug, cancelled by its loop's close and said.
 			for (const auto& slot : c.loops)
 				if (const std::size_t left = slot->armedLeft(); left > 0) {
 					const std::array fields{DiagnosticField{"sources", static_cast<std::int64_t>(left)}};
-					host_.diagnosed(name_, "ear.loop-source-left",
-					                std::to_string(left) + (left == 1 ? " source was" : " sources were") +
-					                    " still armed on loop " + std::string(slot->declared.name) +
-					                    " when the node's configuration closed",
-					                fields);
+					host.diagnosed(name, "ear.loop-source-left",
+					               std::to_string(left) + (left == 1 ? " source was" : " sources were") +
+					                   " still armed on loop " + std::string(slot->declared.name) +
+					                   " when the node's configuration closed",
+					               fields);
 				}
-			closeRunObject();
+			return true;
+		}
+
+		/// A loop of the configuration of `generation` finished, or closed: an input of its own.
+		void loopFinishedHeard(std::uint64_t generation, std::size_t index) {
+			host_.inputFor(serial_, [generation, index](Node& node) {
+				if (node.current(generation)) loopFinishedIn(*node.config_, index);
+			});
+		}
+		void loopClosedHeard(std::uint64_t generation, std::size_t index) {
+			host_.inputFor(serial_, [generation, index](Node& node) {
+				if (node.current(generation) && loopClosedIn(node.host_, node.name_, *node.config_, index))
+					node.closeRunObject();
+			});
 		}
 
 		/// The run object's threads are gone: every sink and handoff closed, then the run object (the machine's closed).
@@ -2883,21 +3000,22 @@ struct NodeHost::Impl {
 			                {});
 		}
 
-		/// The configuration is detached, so nothing it tells lands; what its threads can reach is leaked, never freed;
-		/// and the node moves on.
+		/// What its threads can reach is leaked, never freed, and the node moves on: nothing the configuration tells
+		/// reaches the node again. One leaked at the close deadline (its teardown began, so no code runs) keeps
+		/// listening: its Channel is re-pointed at its LeakedRecord, which hears its late close. One leaked on a barrier
+		/// (the data loop may still run its code) is detached: it never closes, and counts in leaked() for good.
 		void leak() {
 			Configuration& c = *config_;
-			c.channel->detach();
-			companionsEnded(); // their counts as they stand: the configuration is never read again
+			c.deadline.reset();
+			c.bound.reset();
+			c.readiness.disarm();
+			companionsEnded(); // their counts as they stand: the configuration reaches no node again
+			const bool listening = c.tearing;
+			if (!listening) c.channel->detach();
 			// Deliberately never deleted: the configuration's threads may still touch any of it.
-			static_cast<void>(new Leaked{std::move(c.config), std::move(c.channel), std::move(c.context),
-			                             std::move(c.stores), std::move(c.instance), std::move(c.code),
-			                             std::move(c.recordings), std::move(c.sinks), std::move(c.bindings),
-			                             std::move(c.sources), std::move(c.sourceBindings), std::move(c.loops),
-			                             std::move(c.handoffConsumers), std::move(c.handoffs),
-			                             std::move(c.engineCompanions), std::move(c.faded)});
+			auto* record = new LeakedRecord(host_, name_, std::move(config_), runClosing_);
+			if (listening) record->repoint();
 			++host_.leaked;
-			config_.reset();
 			runClosing_ = false;
 		}
 

@@ -15,6 +15,7 @@
 #include <condition_variable>
 #include <deque>
 #include <format>
+#include <expected>
 #include <functional>
 #include <future>
 #include <map>
@@ -727,7 +728,17 @@ struct TestLoops final : LoopAdapter {
 		void closeToOthers() override { owner.log.push_back("loop " + name + " closed to others"); }
 		void finish(std::move_only_function<void()> last, std::move_only_function<void()> finished) override {
 			owner.log.push_back("loop " + name + " finish");
+			if (owner.holdFinish) {
+				heldLast = std::move(last);
+				heldFinished = std::move(finished);
+				return;
+			}
 			if (!owner.autoClose) return;
+			runFinish(last, finished);
+		}
+		/// With holdFinish: the finish held runs now, as the loop's thread would once what held it let go.
+		void finishNow() { runFinish(heldLast, heldFinished); }
+		void runFinish(std::move_only_function<void()>& last, std::move_only_function<void()>& finished) {
 			while (!queue.empty()) {
 				auto work = std::move(queue.front());
 				queue.pop_front();
@@ -736,6 +747,8 @@ struct TestLoops final : LoopAdapter {
 			last();
 			owner.mainLoop.post(std::move(finished));
 		}
+		std::move_only_function<void()> heldLast;
+		std::move_only_function<void()> heldFinished;
 		void close(std::move_only_function<void()> closed) override {
 			owner.log.push_back("loop " + name + " close");
 			if (owner.holdClose) {
@@ -770,8 +783,59 @@ struct TestLoops final : LoopAdapter {
 	bool autoReady = true;
 	bool autoClose = true;
 	bool holdClose = false;        // a finished loop's close waits for One::closeNow()
+	bool holdFinish = false;       // a loop's finish waits for One::finishNow() (its close then runs as autoClose says)
 	std::vector<One*> made;        // each loop made, in order; valid while its configuration lives
 	std::vector<LoopEvents*> told; // each loop's, in making order; valid while its configuration lives
+};
+
+/// The stores' disk and I/O executor as a test drives them (docs/writing-a-node-type.md#stores): one text per file in
+/// memory, no mode kept; each job run as it is posted, or, held, at runIo() (each logged "io <job>").
+struct TestStores final : StoreAdapter, IoExecutor {
+	Log& log;
+	bool hold = false;
+	std::map<std::string, std::string, std::less<>> files;
+	std::deque<std::pair<std::string, std::move_only_function<void()>>> jobs;
+	explicit TestStores(Log& l) : log(l) {}
+	IoExecutor& io() noexcept override { return *this; }
+	void post(std::move_only_function<void()> work) override { post("a job", std::move(work)); }
+	void post(std::string job, std::move_only_function<void()> work) override {
+		jobs.emplace_back(std::move(job), std::move(work));
+		if (!hold) runIo();
+	}
+	/// Every job queued runs, and what each posts, in order.
+	void runIo() {
+		while (!jobs.empty()) {
+			auto [job, work] = std::move(jobs.front());
+			jobs.pop_front();
+			log.push_back("io " + job);
+			work();
+		}
+	}
+	JobWait await(std::string job, std::move_only_function<void()> work, std::chrono::milliseconds) override {
+		log.push_back("io " + job);
+		work();
+		return JobWait::ran;
+	}
+	std::expected<std::optional<std::string>, std::string> read(const std::string& file, std::uint32_t) override {
+		const auto found = files.find(file);
+		if (found == files.end()) return std::optional<std::string>{};
+		return std::optional<std::string>{found->second};
+	}
+	std::expected<std::optional<std::string>, std::string> readNarrowed(const std::string& file, std::uint32_t maxBytes,
+	                                                                    std::uint32_t) override {
+		return read(file, maxBytes);
+	}
+	std::expected<void, std::string> narrow(const std::string&, std::uint32_t) override { return {}; }
+	std::expected<StoreWrite, std::string> replaceIf(const std::string& file,
+	                                                 const std::optional<std::string>& expected, std::string_view text,
+	                                                 std::uint32_t, std::uint32_t) override {
+		const auto found = files.find(file);
+		const std::optional<std::string> now =
+			found == files.end() ? std::nullopt : std::optional<std::string>{found->second};
+		if (now != expected) return StoreWrite::changed;
+		files[file] = std::string(text);
+		return StoreWrite::replaced;
+	}
 };
 
 struct Fixture {
@@ -784,12 +848,14 @@ struct Fixture {
 	TestSinks sinks{log, mainLoop};
 	TestSources sources{log};
 	TestLoops loops{log, mainLoop};
+	TestStores stores{log};
 	ResourceRegistry resources{ResourceAdapters{.cards = &cards,
 	                                            .receivers = &receivers,
 	                                            .handoffs = &handoffs,
 	                                            .sinks = &sinks,
 	                                            .sources = &sources,
-	                                            .loops = &loops}};
+	                                            .loops = &loops,
+	                                            .stores = &stores}};
 	TestListener listener{log};
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph{catalogue}; // only for close(), the proof stopAll takes
@@ -2367,12 +2433,13 @@ TEST_CASE("A handoff consumer blocked past the close deadline leaks the run and 
 	REQUIRE(f.diagnostics.details.size() == 1);
 	CHECK(f.diagnostics.details[0].find("1 handoffs open") != std::string::npos);
 	f.log.clear();
-
-	// The handoff thread finally finishes: its `closed` reaches nothing, and the consumer it used is still alive.
+	// The handoff thread finally finishes: its `closed` reaches the leaked record, never the node, which carries the
+	// teardown on (the run object closed) and says the late close; the consumer it used is still alive.
 	letGo.set_value();
 	REQUIRE(f.mainLoop.waitFor(1));
 	f.mainLoop.runPosted();
-	CHECK(f.log.empty());
+	CHECK(f.log == Log{"run close", "diagnostic rec ear.close-late ms=10000"});
+	CHECK(f.host.leaked() == 0);
 }
 
 TEST_CASE("A run never closing past the deadline is leaked, and a restart then configures the next one",
@@ -2402,13 +2469,14 @@ TEST_CASE("A run never closing past the deadline is leaked, and a restart then c
 	CHECK(f.log.back() == "node net running");
 	f.log.clear();
 
-	// What the leaked run tells late lands nowhere: not on the new configuration, and without touching freed
-	// memory.
+	// What the leaked run tells late reaches nothing of the node: not the new configuration, and without touching
+	// freed memory. Only its late close is heard, on its leaked record (docs/architecture.md#teardown-by-dependency).
 	oldEvents->say("still here");
 	oldEvents->lost("the client died");
 	oldRun->closed();
 	f.mainLoop.runPosted();
-	CHECK(f.log.empty());
+	CHECK(f.log == Log{"diagnostic net ear.close-late ms=10000"});
+	CHECK(f.host.leaked() == 0);
 	CHECK(f.host.health().at(0).state == NodeState::running);
 	f.stopAll();
 	f.settle();
@@ -5050,7 +5118,7 @@ TEST_CASE("A sink whose close never reports is said by ear.close-overdue, counte
 	CHECK(f.diagnostics.details.back().find("0 handoffs open, 1 sinks open") != std::string::npos);
 	CHECK(countOf(f.log, "sink rec.pb destroyed") == 0); // leaked, never freed: its thread may still run
 	CHECK(countOf(f.log, "instance destroyed") == 0);
-	// The close reports at last: it lands nowhere.
+	// The close reports at last: on the leaked configuration's record, never on the node, which is gone.
 	f.sinks.made.at(0)->runClose();
 	f.settle();
 	CHECK(countOf(f.log, "node rec gone dropped=0") == 1);
@@ -6105,22 +6173,28 @@ struct LoopProbeInstance final : ErasedInstance {
 		: log(l), node(n), declared(std::move(d)), onConfigure(std::move(c)), onStop(std::move(s)) {}
 	~LoopProbeInstance() override { log.push_back("instance destroyed"); }
 	std::span<const LoopDeclaration> loops() const noexcept override { return declared; }
+	std::span<const StoreDeclaration> stores() const noexcept override { return kept; }
 	Configured configure(InstanceContexts& cx) override { return onConfigure(cx.create); }
 	void stop() override {
 		log.push_back("stop()");
 		if (onStop) onStop(node);
 	}
+	std::vector<StoreDeclaration> kept; // its declared stores
 };
 struct LoopProbeConfig final : NodeConfig {
 	Log& log;
 	Ports ports_ = testPorts();
 	std::vector<LoopDeclaration> declared;
+	std::vector<StoreDeclaration> kept;
 	std::function<Configured(CreateContext&)> onConfigure;
 	std::function<void(NodeContext&)> onStop;
-	LoopProbeConfig(Log& l, std::vector<LoopDeclaration> d) : log(l), declared(std::move(d)) {}
+	LoopProbeConfig(Log& l, std::vector<LoopDeclaration> d, std::vector<StoreDeclaration> s = {})
+		: log(l), declared(std::move(d)), kept(std::move(s)) {}
 	const Ports& ports() const override { return ports_; }
 	std::unique_ptr<ErasedInstance> make(NodeContext& node) const override {
-		return std::make_unique<LoopProbeInstance>(log, node, declared, onConfigure, onStop);
+		auto instance = std::make_unique<LoopProbeInstance>(log, node, declared, onConfigure, onStop);
+		instance->kept = kept;
+		return instance;
 	}
 };
 
@@ -6254,6 +6328,160 @@ TEST_CASE("A loop that never finishes is leaked at the close deadline, the diagn
 		"the run did not close within 10000 ms and is left running (0 handoffs open, 1 loops open, run not yet told to "
 		"close)");
 	CHECK(f.host.leaked() == 1);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+// The leaked configuration (docs/architecture.md#teardown-by-dependency): its Channel re-pointed at its record, which
+// hears its late close and carries its teardown on; nothing it says reaches the node or a newer configuration.
+
+TEST_CASE("A configuration leaked at the close deadline is said ear.close-late once its loop finally finishes, and "
+          "leaked() drops to 0",
+          "[node_host][loops][leak]") {
+	Fixture f;
+	f.loops.holdFinish = true;
+	auto config = std::make_shared<LoopProbeConfig>(f.log, std::vector{plainWorker});
+	config->onConfigure = [&f](CreateContext& cx) {
+		cx.use(std::make_unique<TestAudioCode>(f.log));
+		return Configured::applied();
+	};
+	addRunning(f, "porch", config);
+	f.host.nodeRemoved("porch");
+	f.settle();
+	REQUIRE(countOf(f.log, "loop porch.worker finish") == 1);
+	f.timers.advance(closeDeadline);
+	f.settle();
+	REQUIRE(countOf(f.log, "diagnostic porch ear.close-overdue") == 1);
+	REQUIRE(f.host.leaked() == 1);
+	CHECK(countOf(f.log, "node porch gone dropped=0") == 1);
+	f.timers.advance(std::chrono::milliseconds{2'500});
+	f.log.clear();
+
+	f.loops.made.at(0)->finishNow(); // what held the loop's thread lets go
+	f.settle();
+	CHECK(f.log == Log{"loop porch.worker close", "diagnostic porch ear.close-late ms=12500"});
+	CHECK(f.diagnostics.details.back() == "the configuration leaked at the close deadline closed 12500 ms after its "
+	                                      "close began");
+	CHECK(f.host.leaked() == 0);                      // so a stop now ends normally, not through std::_Exit
+	CHECK(countOf(f.log, "instance destroyed") == 0); // its memory stays leaked
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE(
+	"A leaked configuration's late reports land on its record in order: its sink's close, its consumer's throw "
+	"as a log record, then its loop's finish and close, then ear.close-late, and the newer configuration hears none",
+	"[node_host][loops][sink][leak]") {
+	Fixture f;
+	TestLog logs;
+	f.host.subscribeLog(logs);
+	f.sinks.holdClose = true; // every sink drains on its thread until the test says
+	auto config = std::make_shared<LoopProbeConfig>(f.log, std::vector{plainWorker});
+	config->onConfigure = [&f](CreateContext& cx) {
+		cx.sink("pb", SinkShape{.frames = 1024})
+			.consumedBy(std::make_unique<TestSinkConsumer>(f.log, nullptr, "finish"));
+		cx.use(std::make_unique<TestAudioCode>(f.log));
+		return Configured::applied();
+	};
+	addRunning(f, "porch", config);
+	REQUIRE(f.host.restart("porch"));
+	f.settle();
+	REQUIRE(countOf(f.log, "sink porch.pb close") == 1);
+	CHECK(countOf(f.log, "loop porch.worker finish") == 0); // its loops wait for its sink (teardown step 3)
+	f.timers.advance(closeDeadline);
+	f.settle();
+	REQUIRE(f.host.leaked() == 1);
+	CHECK(f.diagnostics.details.back() ==
+	      "the run did not close within 10000 ms and is left running (0 handoffs open, 1 sinks open, 1 loops open, "
+	      "run not yet told to close)");
+	// The newer configuration runs, with its own sink and loop.
+	REQUIRE(f.host.health().at(0).state == NodeState::running);
+	REQUIRE(f.sinks.made.size() == 2);
+	REQUIRE(f.loops.made.size() == 2);
+	f.log.clear();
+	REQUIRE(logs.entries.empty());
+
+	f.sinks.made.at(0)->runClose(); // the old sink drains at last; its consumer's finish throws
+	f.settle();
+	CHECK(f.log == Log{"consumer finish", "loop porch.worker finish", "loop porch.worker close",
+	                   "diagnostic porch ear.close-late ms=10000"});
+	REQUIRE(logs.entries.size() == 1);
+	CHECK(logs.entries[0].level == LogLevel::error);
+	CHECK(logs.entries[0].source == "ear");
+	CHECK(logs.entries[0].text == "the sink pb's consumer threw in finish: cannot write the header");
+	CHECK(logs.entries[0].node == NodeName("porch"));
+	CHECK(f.host.leaked() == 0);
+	// Nothing reached the node or its newer configuration: no fault, its loop and sink untouched.
+	CHECK(f.host.health().at(0).state == NodeState::running);
+	CHECK_FALSE(f.host.health().at(0).reason);
+	f.sinks.holdClose = false;
+	f.sinks.made.at(1)->holdClose = false;
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A leaked configuration's handle and I/O completions reach nothing: its notes, losses and log entries "
+          "dropped, a store write's completion dropped, while the newer configuration opens its store and runs",
+          "[node_host][loops][stores][leak]") {
+	Fixture f;
+	TestLog logs;
+	f.host.subscribeLog(logs);
+	const StoreRule rule{
+		.mode = 0600, .maxBytes = 64, .initial = [] { return std::string("key 1"); }, .distrust = nullptr};
+	auto config =
+		std::make_shared<LoopProbeConfig>(f.log, std::vector{plainWorker}, std::vector{StoreDeclaration{"key", rule}});
+	// Each configuration's store and loop, as its configure finds them; its stop() writes the store later.
+	std::vector<std::pair<Store*, Loop*>> made;
+	config->onConfigure = [&f, &made](CreateContext& cx) {
+		made.emplace_back(&cx.store(0), &cx.loopExecutor(0));
+		cx.use(std::make_unique<TestAudioCode>(f.log));
+		return Configured::applied();
+	};
+	NodeHandle* oldHandle = nullptr;
+	config->onStop = [&f, &made, &oldHandle](NodeContext& node) {
+		if (oldHandle == nullptr) oldHandle = &node.handle();
+		auto [store, loop] = made.at(made.size() - 1);
+		store->replaceLater("key 2", *loop, [&f](StoreWritten) { f.log.push_back("late write done"); });
+	};
+	addRunning(f, "porch", config);
+	REQUIRE(f.stores.files.at("test-porch.key") == "key 1");
+	f.stores.hold = true;
+	f.loops.holdFinish = true;
+	REQUIRE(f.host.restart("porch"));
+	f.settle();
+	REQUIRE(f.stores.jobs.size() == 1); // stop()'s write, held
+	REQUIRE(countOf(f.log, "loop porch.worker finish") == 1);
+	f.timers.advance(closeDeadline);
+	f.settle();
+	REQUIRE(f.host.leaked() == 1);
+	REQUIRE(made.size() == 2); // the newer configuration, waiting on its store's open
+	REQUIRE(f.stores.jobs.size() == 2);
+	REQUIRE(oldHandle != nullptr);
+	f.log.clear();
+
+	oldHandle->say("from the leaked configuration");
+	oldHandle->warn("logged by the leaked configuration");
+	oldHandle->lost("lost by the leaked configuration");
+	f.stores.runIo(); // the old write lands on disk; its completion is dropped. The newer open completes
+	f.settle();
+	CHECK(f.stores.files.at("test-porch.key") == "key 2");
+	CHECK(countOf(f.log, "late write done") == 0);
+	CHECK(countOf(f.log, "note porch from the leaked configuration") == 0);
+	CHECK(logs.entries.empty());
+	CHECK(f.host.health().at(0).state == NodeState::running); // the newer configuration, its store open
+	CHECK_FALSE(f.host.health().at(0).reason);
+	CHECK(f.host.leaked() == 1);
+
+	f.loops.holdFinish = false;
+	f.loops.made.at(0)->finishNow();
+	f.settle();
+	CHECK(countOf(f.log, "diagnostic porch ear.close-late ms=10000") == 1);
+	CHECK(f.host.leaked() == 0);
+	CHECK(countOf(f.log, "late write done") == 0); // the old loop ran what it held; the write's `done` never reached it
+	f.stores.hold = false;
 	f.stopAll();
 	f.settle();
 	CHECK(f.allGone == 1);
