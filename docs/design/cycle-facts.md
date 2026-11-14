@@ -14,7 +14,8 @@ and `docs/writing-a-node-type.md#sources` and `#sinks`); step C3c built (section
 tests on the judge, library settles, the feed's dry count, described in `docs/testing.md#the-cycle-judge`); step D1 built
 (section 9.12: the diagnostics counters kept, per graph and per node, described in `docs/engine.md#counters`); step D2
 built (section 9.13: the counters reported on the control port and standard output, described in
-`docs/engine.md#reporting-the-counters`, `docs/control-port.md#counters` and `docs/output-records.md#diagnostic`), the
+`docs/engine.md#reporting-the-counters`, `docs/control-port.md#counters` and `docs/output-records.md#diagnostic`); step D3
+built (section 9.16: the editor's counters panel and recent marks, described in `docs/editor.md#counters`), the
 rest not. Its steps
 (section 9) follow `root-classes.md`'s and come before slice 3c, whose `sendspin` on a source takes the source rule this page changes (section 4.4). The built system
 it changes is described in `docs/engine.md` (`#graphcycle`, `#the-internal-clock`, `#sinks`, `#sources`, `#dating`,
@@ -855,6 +856,28 @@ Proposed, not over-built (`docs/editor.md` changes with it):
 Decided by the owner (Q-CF4, section 11): the side panel always holds the totals, and the canvas marks and badge
 show only while something happened in the last minute.
 
+**D3 as built** (`docs/editor.md#counters` and `#recent-marks` hold it; 9.16 says where it departs from the above):
+
+- **The panel.** Under the engine facts, "Since ear started": `cycles`, "dropouts" (`cutCycles`), `stalls`, "time
+  lost" (`lostMs`, ms). In the node panel, "Counters since it was added": "missed cycles", "overruns", "repositions",
+  "driver changes". Always every total, zeros included, each label's tooltip saying what it counts; a row that rose in
+  the last minute carries the mark and "N more in the last minute".
+- **What marks: loss counters only.** A node's four (any node counter moving is a loss to D2's wire, and 8.1 calls a
+  non-zero `repositions` or `driverChanges` a finding), the graph's `cutCycles` and `stalls`. Never `cycles` (it moves
+  every cycle) nor `lostMs` (it follows `cutCycles`).
+- **The node's mark** sits after the state word in the box's header, apart from the companion strip at its bottom
+  edge: a mark in the header is the node's own counters, one on a strip badge a helper's (a sink's drops). The
+  graph's cuts never mark a node. Its tooltip gives the last minute's and the totals in words.
+- **The dropouts badge** sits beside "not realtime" while `cutCycles` rose in the last minute, with that minute's count
+  ("5 dropouts"), its tooltip the totals ("44 dropouts (234 ms) in 2 stalls since ear started").
+- **Unknown counters** are listed after the known, in the order sent, by their own name (monospace) and number, and
+  never marked: the editor cannot know an unknown counter counts a loss.
+- **The same mark, minute and clock as the companions'**, from one module both use (`web/src/marks.ts`): a rise is a
+  value above the one held; a first sighting, a fall and a counter seen again after the graph dropped it are none; a
+  closed connection forgets everything; the minute is on `performance.now()`.
+- **Accessibility.** Every mark's glyph is hidden from screen readers beside its words ("in the last minute: overran 1
+  time", "3 more in the last minute"); the badge's count is text; labels are words, never colour alone.
+
 ## 9. Migration
 
 Each step is one mergeable change, green on every test and `make format-check`, with its own review, changing the
@@ -874,7 +897,7 @@ R5d).
 | **C3c** | **Done** (9.11, which keeps `kLogReach`, `kLogLag` and `inLoss`'s lag for 3c's patch). `clock_test.cpp`, the RTP tests onto the judge (5.4); the feed's dry count | `kSettleNs`, `kSettleCycles`, `lossSteps`, `dryCycles` from `lastGot()` (and `lastGot()`), the 600 ms and 0.5 s windows (5.5) | none |
 | **D1** | **Done** (9.12). Counters kept (8.4): `cycle_counters.hpp`, `CycleCounters` in the block and the harness (`NodeHarness::counts`), `PortBlock::counts`, `NodeHost::counts` carrying a destroyed block's, `DriverCuts`' stalls, `Engine::graphCounts`; tests: each counter moved by its induced cause (an induced cut moves the graph's and no node's; a `PAUSED` block moves its `missedCycles`; a code that stalls past a cycle moves its `overruns`), in the harness and the engine | nothing | none visible |
 | **D2** | **Done** (9.13). Counters reported (8.3): `CounterWatch`, `CounterListener` in `ear_control`; the `counters` feature, `counters.changed`, the fixtures, `web/src/protocol.ts` and `docs/control-port.md` in one commit; `ear.graph-lost-cycles` and `ear.node-missed-cycles` in `docs/output-records.md` and its JSON; the system tests judging from them | `isSkipStep`, the 200 µs step rule | the `counters` feature and two records |
-| **D3** | The editor (8.5): panel totals, recent marks (Q-CF4); `docs/editor.md` | nothing | the marks and badge |
+| **D3** | **Done** (9.16). The editor (8.5): panel totals, recent marks (Q-CF4); `docs/editor.md` | the companions' own copy of the mark's rule (into `web/src/marks.ts`) | the marks and badge |
 | **C6a** | `SampleRate`, `FrameClock(SampleRate)` beside the old constructor, `framesCeil`, `framesNearest`; compile-fail cases | nothing | none |
 | **C6b** | `AudioFormat::rate` and every rate to `SampleRate`; the `.hz()` check | `frame_guard.cmake`, `test/frame_guard/`, the `uint32_t` constructor | none |
 | **C7** | The callback poison | `test/pipewire/callback_guard.cmake` and its snippets | none |
@@ -1697,6 +1720,43 @@ keep time for a node goes. Moot, each with what replaces it:
 
 Not moot: D3, C6a, C6b, C7, C8; `kLogReach`, `kLogLag` and `inLoss`'s lag (until slice 3c's log patch, 9.11);
 `StallProbe` and the in-block stalls; the cycle judge.
+
+### 9.16 Found building D3
+
+What D3 built is described in `docs/editor.md#counters` and `#recent-marks`; this section keeps only where it departs
+from 8.5 as first written, and why.
+
+- **One rule, moved out of the companions.** 3b.7 wrote the mark's rule inside `CompanionMoves`. D3 moved it whole into
+  `web/src/marks.ts` (`GraphMoves`: held values, rises, the minute, `forget`, `attach`), and companions and counters
+  each give it only their reading of the graph, so the two marks cannot drift. The companions' tests pass unchanged on
+  it, and every rule's revert below fails a companions test as well as a counters one where both read it.
+- **The minute's count, not only "it rose".** The badge says how many cycles were cut in the last minute, so the rule
+  keeps each rise of the minute (at most one a second, since `counters.changed` is paced), not just the last one's
+  time; the count falls as each rise leaves its minute, and the box and panel redraw then.
+- **All four node counters mark, not only `missedCycles` and `overruns`.** D2 made any node counter a change on the
+  wire, and 8.1 says a non-zero `repositions` or `driverChanges` is a finding; a mark that hid them would leave them to
+  a panel no one opens. The tooltip names which rose.
+- **The graph's badge is in the side panel**, beside "not realtime" as 8.5 says, which is where that badge already is
+  (the engine facts at the panel's top), not on the canvas.
+- **Rows mark too.** The panel's rows carry the mark and "N more in the last minute", as the companion list's lines
+  carry theirs: the panel is where the person looks after seeing a mark.
+- **A port-caused replace's counts are a first sighting.** D2 made `node.added` carry them so the replace would not
+  look like a sudden loss; the editor gets `node.removed` and `node.added` as two messages and cannot tell the replace
+  from a remove and an add, so the shared rule forgets the removed node's values and the carried counts are no rise. A
+  mark the older node showed ends at the replace (`counters-changed.json`'s desk); its totals stay in the panel.
+  Keeping a removed node's values would carry the mark, but would also keep every removed node's values until a
+  reconnect, and companions' entries must be forgotten when their list drops them.
+- **Gated by the counters' presence**, not by reading `features`: ear sends `counters` only with the feature, so an
+  older ear draws nothing.
+- **Proven to fail a broken rule**, each injected, run and reverted: `cycles` marking (3 counters tests fail: the badge
+  shows for cycles, the fixture's badge counts, the unknown-values replay); an unknown counter held and marked (2);
+  `repositions` not watched (1); unknown counters left out of the panel (6); a first sighting taken as a rise (12,
+  companions' and counters' and marks'); a fall taken as a rise (3, one of each); the minute end-inclusive (9, both
+  marks); the minute's sum counting older rises (6); no `forget` on close (the counters' reconnect test); the session
+  not noting counters (its ordering test); the wall clock as the default (both monotonic-clock tests); the node
+  redrawing at the last rise's minute instead of the oldest's (1); the badge never redrawing (1); the badge counting
+  `stalls` (4); a group the graph dropped kept (3, one of each: the port-caused replace, the companion dropped, the
+  rule's own).
 
 ## 10. Decided here (technical)
 

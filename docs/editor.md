@@ -9,15 +9,17 @@ Vitest); it shares no code with the C++, only the wire format and the fixtures i
 
 - **Nodes** are boxes with one row per port, inputs on the left and outputs on the right, each
   with its handle and a live level meter. Under the node's name and type is its state word and a
-  line that says why it is silent or what it waits for ([below](#a-nodes-health)). Along its
-  bottom edge, a badge per companion ([below](#companions)).
+  line that says why it is silent or what it waits for ([below](#a-nodes-health)), and beside
+  the word a warning mark while the node lost cycles in the last minute ([below](#counters)).
+  Along its bottom edge, a badge per companion ([below](#companions)).
 - **Routes** are wires coloured by status (`linked`, `pending`, `refused`) and drawn by their
   from port's level: louder is thicker and brighter.
 - **Editing:** a drag from an output to an input adds a route (any other drag is refused before
   it reaches ear); the delete key removes the selected wire or node; a side panel adds nodes (a
   type and JSON settings), edits the selected node's settings, and offers Start, Stop, Restart,
   Disable and Enable when ear has the `lifecycle` feature. A "not realtime" badge shows when the
-  audio thread is not realtime.
+  audio thread is not realtime, and a dropouts badge while the host cut cycles in the last minute;
+  the panel holds the graph's counters and the selected node's ([below](#counters)).
 - **The text pane** shows `ear.conf` with its diagnostics (a click puts the caret there) and
   saves it with Save (`graphFile.set`, based on the version the draft started from). Banners say
   when the graph refused the file, a write failed, editor edits were dropped by a hand edit, or a
@@ -37,10 +39,10 @@ Vitest); it shares no code with the C++, only the wire format and the fixtures i
 - **Node positions live in the browser.** Unplaced nodes are laid out with dagre (sources left,
   sinks right, following the routes); a place the user dragged a node to is kept in the browser
   only, never sent to ear.
-- **The counters are kept, not yet drawn.** With the `counters` feature the graph store keeps the
+- **The counters are kept as sent.** With the `counters` feature the graph store keeps the
   graph's counters and each node's whole, from the snapshot and `node.added`, and replaces those a
   `counters.changed` names ([control-port.md](control-port.md#counters)); an unknown counter is
-  kept with them. Nothing on the canvas or panel shows them yet.
+  kept with them. How they are drawn: [below](#counters).
 - **Companion lists are kept as sent.** With the `companions` feature the graph store keeps
   each node's `companions` as sent, from the snapshot and `node.added`, and a
   `node.companionsChanged` replaces the named node's whole list
@@ -94,25 +96,17 @@ for ready, its drop count on hover; never boxes or handles of their own. The rul
   ("rec.writer (sink on writer): ready; 4096 frames dropped since it was made"; a source's
   shortfall "... frames played short since it was made"). An engine kind has no counter. A counter
   member the editor knows is shown whatever the kind; one it does not know is ignored.
-- **A mark only while it moves.** A badge carries the warning mark (an "!" in a circle) only while
-  its `dropped` or `shortfall` rose in the last minute, timed on the browser's monotonic clock
-  (`performance.now()`, so a step of the wall clock never stretches or cuts the minute; the
-  counters' marks, not built yet, are to use the same clock and minute); the box redraws when the
-  minute ends. A rise is a value above the one last held for that node and companion: the first
-  value seen (a snapshot's, a new configuration's), a value that fell (a new configuration seen
-  without its `[]`) and an entry seen again after its list dropped it are not. A closed connection
-  forgets every value held, so the reconnect's snapshot is a first sighting: what dropped while the
-  editor was away is in the totals, never marked as the last minute's. *Why:* the canvas stays quiet when all is well and points at trouble while it happens;
-  the totals are always in the tooltip and panel. A mark while a total is above zero would stay on
-  a recording that dropped once until its next restart, since the counters count per
+- **A mark only while it moves.** A badge carries the warning mark only while its `dropped` or
+  `shortfall` rose in the last minute, by the rule of [recent marks](#recent-marks), held per node
+  and companion: a value that fell is a new configuration seen without its `[]`, and an entry seen
+  again after its list dropped it is a first sighting. A mark while a total is above zero would
+  stay on a recording that dropped once until its next restart, since the counters count per
   configuration. **This mark is a reading of the owner's rules, not an answer of theirs:** for the
   badges the owner asked for the drop count on hover and no mark; for the diagnostics counters the
   owner answered "panel plus recent" (the totals always in the panel, a mark on the canvas only
   while something happened in the last minute), and that rule is applied here to the companions'
   counters. The owner may overturn it (back to no mark), a change to `companionBadges`' `warning`
-  and this section. `CompanionMoves` keeps what was held and when it
-  rose, outside the reducer (which holds only what ear sent), and is the graph store's first
-  listener, so a box drawn for a new graph reads that graph's moves.
+  and this section. `CompanionMoves` keeps what was held and when it rose.
 - **Failed and disabled draw no strip** whatever list is held (their configuration was torn down,
   and ear's `[]` follows their `node.state`); a stopped node keeps its strip, as it keeps its
   companions.
@@ -121,6 +115,64 @@ for ready, its drop count on hover; never boxes or handles of their own. The rul
   "played short in the last minute"); the strip is a list labelled "companions".
 - **Not part of editing.** A badge is no handle and no node: clicking it selects its node and
   dragging it moves the box, as any part of the box does; nothing in it sends a request.
+
+## Counters
+
+`web/src/counters.ts` is the one place that turns the diagnostics counters
+([control-port.md](control-port.md#counters)) into the panel's totals, a node box's mark and the
+graph's dropouts badge; `counters.test.ts` covers its rules and replays the `counters-changed` and
+`unknown-values` fixtures through the reducer into what is drawn. *Why this way:* asked whether the
+editor shows dropouts and a node's missed cycles unasked, the owner answered "panel plus recent":
+the totals always in the side panel, and the canvas's marks and badge only while something
+happened in the last minute. The rules:
+
+- **The panel always holds the totals.** Under the engine facts, "Since ear started": `cycles`,
+  "dropouts" (`cutCycles`), `stalls` and "time lost" (`lostMs`, in ms). In the node panel,
+  "Counters since it was added": "missed cycles", "overruns", "repositions", "driver changes".
+  Every counter is shown, zeros included, each label's tooltip saying what it counts. A counter
+  this editor does not know follows, in the order sent, by its own name (in monospace) and number,
+  its tooltip "a counter this editor does not know". A row whose counter rose in the last minute
+  carries the mark, with how much in words ("3 more in the last minute").
+- **Only losses mark.** The loss counters are a node's four and the graph's `cutCycles` and
+  `stalls`. `cycles` moves every cycle and `lostMs` follows `cutCycles`, so neither marks; an
+  unknown counter may count anything (a total like `cycles`), so it is shown and never marked.
+- **A node's mark sits after its state word** in the box's header, while one of its own loss
+  counters rose in the last minute: what happened to that node beyond the graph's losses. It is
+  apart from the companion strip at the box's bottom edge, whose badges mark their own counters
+  (a sink's drops), so a mark in the header is the node's and one in the strip a helper's. Its
+  tooltip gives the last minute's and the totals in words ("In the last minute: overran 1 time.
+  Since it was added: missed 33 cycles, overran 3 times."). The graph's cuts never mark a node:
+  they are the host's, on every output at once.
+- **The dropouts badge** sits beside "not realtime" in the engine facts while `cutCycles` rose in
+  the last minute, with the last minute's count ("5 dropouts"), which falls as each rise leaves its
+  minute; its tooltip says the host held up the audio thread and gives the totals ("44 dropouts
+  (234 ms) in 2 stalls since ear started").
+- **A port-caused replace's counts are a first sighting.** Its `node.removed` and `node.added`
+  arrive as two messages, and the editor cannot tell it from a remove and an add, so the carried
+  counts are no rise and a mark the older node showed ends with it; the next rise marks again.
+- **In text, not colour alone.** Each mark's glyph is hidden from screen readers beside its words
+  ("in the last minute: overran 1 time", "3 more in the last minute"); the badge's count is its
+  text. Nothing shows without the feature: an ear without it sends no counters.
+
+## Recent marks
+
+`web/src/marks.ts` is the one rule both marks follow, companions' badges and the counters'
+(`marks.test.ts`): each reads its counters from the graph, and `GraphMoves` keeps their last values
+and rises. The mark is an "!" in a circle (`WarnMark`).
+
+- **A rise is a value above the one last held** for the same counter. The first value seen (a
+  snapshot's, a `node.added`'s), a value that fell and a counter seen again after the graph dropped
+  it are not. A closed connection forgets every value held, so the reconnect's snapshot is a first
+  sighting: what was lost while the editor was away is in the totals, never marked as the last
+  minute's.
+- **The minute** is timed on the browser's monotonic clock (`performance.now()`, so a step of the
+  wall clock never stretches or cuts it), from the message that brought the rise; a count of the
+  last minute is the sum of the rises still in it. A box or panel redraws when a shown mark's
+  minute ends or a count falls.
+- **Noted before anything draws:** the moves are the graph store's first listeners, outside the
+  reducer (which holds only what ear sent), so a box drawn for a new graph reads that graph's
+  moves. *Why:* the canvas stays quiet when all is well and points at trouble while it happens; the
+  totals are always in the tooltip and panel.
 
 ## Developing it
 
@@ -131,7 +183,7 @@ port. Node.js comes from `web/.nvmrc` and the packages from `web/package-lock.js
 
 The tests cover the reducer against every `test/protocol` fixture, the graph file's state and the
 pane's logic (drafts, stale files, Save, refusals), the reconnecting client with a fake socket,
-the connection rules, levels and layout, `health.ts` and `companions.ts`. There is no browser test runner:
+the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`. There is no browser test runner:
 rendering is checked by eye. *Why:* a Playwright leg costs about 150 MB of browsers and a minute
 or two a CI run, while the logic sits in the reducer, client and rules, which Vitest covers
 against the same fixtures the server is tested with.

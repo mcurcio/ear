@@ -319,3 +319,51 @@ body,
   clip-path: inset(50%);
   white-space: nowrap;
 }
+
+/* The diagnostics counters (docs/editor.md#counters): the box's mark sits after the state word; the dropouts badge
+   beside "not realtime" carries the same mark and its count in words; the panel's totals are a plain table, an unknown
+   counter's name in monospace as sent. */
+.counter-mark {
+  margin-left: 4px;
+}
+
+.badge-dropouts {
+  display: inline-block;
+  padding: 0 6px 0 3px;
+  border: 1px solid #f08c00;
+  border-radius: 8px;
+  background: #fff4e6;
+  color: #a35200;
+  font-weight: 600;
+}
+
+.badge-dropouts .warn-mark {
+  margin-left: 0;
+}
+
+.counter-table h3 {
+  font-size: 12px;
+  margin: 6px 0 2px;
+}
+
+.counter-table table {
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.counter-table th {
+  padding: 0 12px 0 0;
+  font-weight: normal;
+  text-align: left;
+  color: #555;
+}
+
+.counter-table td {
+  padding: 0 4px 0 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.counter-unknown th {
+  font-family: ui-monospace, monospace;
+}

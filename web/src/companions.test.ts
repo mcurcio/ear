@@ -8,9 +8,9 @@ import {
   companionBadges,
   companionDetail,
   companionLabel,
-  recentMarkMs,
   type CompanionBadge,
 } from "./companions";
+import { recentMarkMs } from "./marks";
 import { Editor } from "./editor";
 import { GraphStore, reduce, type GraphState } from "./graph";
 import type { Companion, Graph, GraphNode, ServerMessage } from "./protocol";

@@ -1,12 +1,14 @@
-// The side panel: the engine facts (with the "not realtime" badge), the add-node form (type
-// list, JSON settings) and the selected node's health, its companions in words, its Start, Stop, Restart, Disable and Enable
+// The side panel: the engine facts (with the "not realtime" and dropouts badges, and the graph's counters), the
+// add-node form (type
+// list, JSON settings) and the selected node's health, its counters, its companions in words, its Start, Stop, Restart, Disable and Enable
 // (when ear has the lifecycle feature; each enabled by health.ts, docs/editor.md#a-nodes-health), its settings
 // and delete button. Every change is a request to ear; the canvas changes only when ear announces it.
 import { useEffect, useState } from "react";
 import { describeHealth, type ActionAvailability, type HealthView } from "../health";
 import { lifecycleFeature, type Graph, type GraphNode, type JsonObject } from "../protocol";
 import { CompanionList } from "./CompanionStrip";
-import { useCompanionBadges, useEditor } from "./hooks";
+import { CounterTable, DropoutsBadge } from "./Counters";
+import { useCompanionBadges, useEditor, useGraphCounters, useNodeCounters } from "./hooks";
 
 /** The newest protocol this editor knows (docs/control-port.md#protocol-and-features): a higher one shows a banner. */
 const knownProtocol = 1;
@@ -24,6 +26,7 @@ function parseSettings(text: string): JsonObject | string {
 }
 
 export function EngineFacts({ graph }: { graph: Graph }) {
+  const counters = useGraphCounters(graph);
   return (
     <section className="panel-section">
       <div>
@@ -31,8 +34,10 @@ export function EngineFacts({ graph }: { graph: Graph }) {
       </div>
       <div title="how ear's audio thread is scheduled">
         {graph.scheduling}{" "}
-        {!graph.realtime && <span className="badge-not-realtime">not realtime</span>}
+        {!graph.realtime && <span className="badge-not-realtime">not realtime</span>}{" "}
+        <DropoutsBadge badge={counters.badge} />
       </div>
+      <CounterTable heading="Since ear started" rows={counters.rows} />
       {(graph.protocol ?? 0) > knownProtocol && (
         <div className="banner banner-protocol">
           ear speaks protocol {graph.protocol}, newer than this editor's {knownProtocol}: some of it is not shown.
@@ -132,6 +137,7 @@ export function NodePanel({
   const { client } = useEditor();
   const health = describeHealth(node);
   const companions = useCompanionBadges(node);
+  const counters = useNodeCounters(node);
   const lifecycle = features.includes(lifecycleFeature);
   const shown = JSON.stringify(node.settings, null, 2);
   const [settings, setSettings] = useState(shown);
@@ -168,6 +174,7 @@ export function NodePanel({
           ))}
         </div>
       )}
+      <CounterTable heading="Counters since it was added" rows={counters.rows} />
       <CompanionList badges={companions} />
       <label>
         Settings (JSON)

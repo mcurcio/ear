@@ -2,6 +2,7 @@
 // ready and hollow when not, and a warning mark while its counter rose in the last minute; and the node panel's list
 // of each one's detail. What each shows is companions.ts's; every state is in text, never in colour alone.
 import type { CompanionBadge } from "../companions";
+import { WarnMark } from "./WarnMark";
 
 function Dot({ badge }: { badge: CompanionBadge }) {
   return (
@@ -15,15 +16,7 @@ function Dot({ badge }: { badge: CompanionBadge }) {
 }
 
 function Mark({ badge }: { badge: CompanionBadge }) {
-  if (!badge.warning) return null;
-  return (
-    <>
-      <span className="warn-mark" aria-hidden="true">
-        !
-      </span>
-      <span className="visually-hidden">{badge.warningText}</span>
-    </>
-  );
+  return badge.warning ? <WarnMark text={badge.warningText} /> : null;
 }
 
 /** The strip along the box's bottom edge; nothing when the node has no companions to draw. */
