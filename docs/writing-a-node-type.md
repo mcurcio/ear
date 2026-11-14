@@ -135,7 +135,7 @@ optional row read as a plain value does not compile.
 | `cx.use(code)` | The code: a struct with `process`, or `passThrough({bankPair(in, out), ...})` | Exactly once |
 | `cx.soundCard(bank, SoundCardShape{.card})` | A sound card, an [engine companion](#engine-companions) on an inside bank: playback on an inside output, capture on an inside input (the bank's direction is the card's). Named `<node>.playback` or `<node>.capture`; made once the block is ready | Inside banks only (compile time); one companion per bank |
 | `cx.rtpReceiver(bank, RtpReceiverShape{...})` | An RTP receiver, an [engine companion](#engine-companions) on an inside input bank, `<node>.rtp`; its `latencyMs` is latency beyond the bank | Inside input banks only (compile time); one companion per bank |
-| `cx.openRecording(RecordingRequest{path})` | A file created or truncated beneath the recordings folder; its descriptor, or why not. The framework closes it after the instance | Answer `Configured::failed("cannot open " + path + ": " + error)` on a refusal |
+| `const Recording& r = cx.recording(RecordingRequest{path})` | A [recording](#recordings): a file beneath the recordings folder, claimed, then created or truncated off the main loop; give it to the sink's consumer, which reads `r.descriptor()` from `begin()` on | Nothing to answer: a refusal fails the node at its readiness step; one path asked for twice (however spelled) fails it `start-failed` |
 | `cx.sink(bank, SinkShape{.frames = n}).consumedBy(std::make_unique<Consumer>(...))` | A sink on an inside output bank ([sinks](#sinks)) | Inside output banks only; exactly one consumer; one companion per bank |
 | `SourceWriter& w = cx.source(bank, SourceShape{.frames = n}, clock)` | A source on an inside input bank ([sources](#sources)): what the type's own thread writes, played into the bank before the code; `clock`, a `std::unique_ptr<SourceClock>`, its own clock ([a source's clock](#a-sources-clock)), left out for a source with none | Inside input banks only (compile time); `0 < n <= maxSourceFrames` (2^24); one companion per bank |
 | `cx.declareLatency(from, to, Latency{min, max})` | The code's own latency on the path from an input bank to an output bank, in frames: carried as a path through the block, so it counts in both banks' told latency ([latency](#latency)) | Once per path (a mixer declares each of its inputs' paths into one output); with a pass-through, one of its pairs; a plan that does not fit the ports fails the node `start-failed` |
@@ -152,8 +152,9 @@ handed to. What a type needs from outside it acquires here; a type's factory tak
 Each call is served by the host's adapter of its kind (`ResourceAdapters`, one member per kind,
 `node_host.hpp`). ear's host has every kind; a host without one (a test's) refuses the call as an
 adapter's refusal is: the node fails `start-failed: configure threw: no <kind> in this host`
-(`sinks`, `sources`, `sound cards`, `RTP receivers`, `loops`, `stores`), and `openRecording` answers
-`no recordings folder`. A host with no port probe judges a port [claim](#claims) between its nodes only.
+(`sinks`, `sources`, `sound cards`, `RTP receivers`, `loops`, `stores`); a recording fails it
+`start-failed: cannot open <path>: no recordings folder`. A host with no port probe judges a port
+[claim](#claims) between its nodes only.
 
 ### The node handle
 
@@ -551,12 +552,57 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>&) {
 
 No shipped type has a store yet: `sendspin`'s key file is its own until it moves onto one.
 
+## Recordings
+
+A recording is a file beneath the recordings folder (`--recordings-dir`) that one configuration
+writes, through its sink's consumer (`ear/core/recording.hpp`). `file` is its user.
+
+```cpp
+Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
+	const Recording& recording = cx.recording(RecordingRequest{s.get<pathRow>()});
+	cx.sink(writer, SinkShape{.frames = ...}).consumedBy(std::make_unique<WavWriter>(recording, ...));
+	...
+}
+```
+
+| On a `Recording&` | What |
+|---|---|
+| `path()` | The path as asked, relative to the recordings folder |
+| `descriptor()` | Any thread, once opened: the file's descriptor, the framework's (never close it: libsndfile takes it with `sf_open_fd(fd, mode, &info, SF_FALSE)`). Read before its open completed (in `configure`) is a `std::logic_error`: the node fails |
+
+- **Claimed first.** Its path is a [claim](#claims), `recording:<path>` with the path's `.` and empty components
+  removed (`./take//1.wav` is `recording:take/1.wav`; a symlink is not followed, so two paths that reach one file
+  through one are two claims). A path another node's configuration holds is refused before anything is opened, so
+  the other node's file is never truncated: `start-failed: cannot open take1.wav: held by node a`; one held by a
+  configuration that is closing (a removal and an addition on one path in one edit) waits for its last step. One path
+  asked for twice in one configuration, however spelled, is the type's bug: `start-failed: configure threw:
+  recording:take1.wav claimed twice`.
+- **Opened off the main loop.** Once granted, it is an item of the readiness list at step `opens`, after the stores
+  ([engine.md](engine.md#readiness-deadlines)): one job on the I/O thread creates or truncates it, beneath the folder
+  only (`openat2` with `RESOLVE_BENEATH`: no `..`, no symlink out, no subfolder made). A refusal fails the node
+  `start-failed: cannot open <path>: <why>` (the folder's reason); an open past 5 s, `start-failed: cannot open <path>:
+  not opened within 5 s`; one not yet open is `waitingFor` `recording`, by its path. A sink's consumer begins only at
+  step `companions`, after it, so `begin()` reads an open descriptor and writes its header before the node is
+  configured. A host with no recordings folder fails the node at configure's return, `start-failed: cannot open
+  <path>: no recordings folder`.
+- **Its life.** A stop and a start keep it open; a restart, a change of settings or a failure opens it again (and so
+  truncates it) in the next configuration. It is freed at teardown step 5, after the sinks that write it, the instance
+  and the stores, and closed there on the I/O thread, before its claim is released; one path's close and its next
+  open are jobs on that one thread in order, so the next configuration's truncation comes after the close. An open
+  still on the I/O thread when its configuration ended tells nothing, and its file is closed on the I/O thread. A
+  leaked configuration keeps its recordings and their claims until it closes late (its sink may still write the
+  file).
+- **Faults.** A bug of the recordings' adapter (its `std::logic_error`, or no file made) fails the node `lost`,
+  `internal error in RecordingAdapter::open: <what>`, said first in an `ear.internal-error` record whose `where` is
+  `the I/O job open recording <path>` ([architecture.md](architecture.md#faults-by-owner)); any other throw (no
+  descriptor, no memory) is a refusal, as the folder's reason is.
+
 ## Claims
 
 A claim is something ear-wide that one configuration at a time may hold: a listening TCP port, a
-UDP port, a store's file, and (once `file` moves onto it) a recording's path
-(`ear/core/claims.hpp`). Each is keyed by its kind and value (`tcp:8928`, `udp:5004`,
-`store:sendspin-kitchen.key`), and a key has one holder across every type.
+UDP port, a store's file, and a [recording](#recordings)'s path (`ear/core/claims.hpp`). Each is
+keyed by its kind and value (`tcp:8928`, `udp:5004`, `store:sendspin-kitchen.key`,
+`recording:take1.wav`), and a key has one holder across every type.
 
 ```cpp
 Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
@@ -567,8 +613,8 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
 
 - **Where claims come from.** A type claims only the ports its own threads bind: `cx.claim(claim::TcpListen(p))` or
   `cx.claim(claim::Udp(p))`, each taking a row's checked number (outside 1 to 65535 is the type's bug, a
-  `std::logic_error`). The framework claims the rest: every store the spec declares (its file), and what each engine
-  companion holds by its shape (`claimsOf`, beside `moduleRunDelay` in `companions.hpp`): an RTP receiver its UDP
+  `std::logic_error`). The framework claims the rest: every store the spec declares (its file), every recording
+  (its path), and what each engine companion holds by its shape (`claimsOf`, beside `moduleRunDelay` in `companions.hpp`): an RTP receiver its UDP
   port, a sound card nothing yet. So no shape's field is named outside its shape's rule.
 - **Judged first.** Every claim of a configuration is an item of its readiness list at step `claims`, before any
   store is opened, loop started or companion made ([engine.md](engine.md#readiness-deadlines)). Against the key's
@@ -577,7 +623,7 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
   | Holder | Outcome | The node fails `start-failed:` |
   |---|---|---|
   | none | granted; a port then probed (below) | the kernel's reason: `cannot bind UDP port 5004: Address already in use` |
-  | a configuration that is not going (a node configuring, running or stopped) | refused at once | `cannot bind UDP port 5004: held by node fpp` |
+  | a configuration that is not going (a node configuring, running or stopped) | refused at once | `cannot bind UDP port 5004: held by node fpp`; `cannot open take1.wav: held by node rec` |
   | a configuration that is going (its teardown began: a restart's, a failure's, a removal's or a rename's old one) | waits, said once by `ear.claim-wait` and `waitingFor` `claim`; granted at that configuration's step 5 | after 15 s: `... held by node fpp, which did not let go within 15 s` |
   | a configuration leaked at the close deadline: a port | abandoned to the claimant, probed afresh | the kernel's reason, owed to the leaked configuration (below) |
   | a configuration leaked at the close deadline: a store or recording | refused, owed to the leaked configuration | `<file>: held by node porch's earlier configuration, which did not close; it starts when that closes` |
@@ -588,7 +634,8 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
   step 5 comes before its next configure; two nodes whose restarts swap ports both run. A port claimed twice in one
   configuration (by `cx.claim` twice, or by `cx.claim` and an engine companion's shape) is the type's bug: the call
   throws `std::logic_error`, and the node fails `start-failed: configure threw: udp:5004 claimed twice` even when the
-  type catches it. The framework's own store claims are held once each.
+  type catches it. The framework's own store claims are held once each; a recording's path asked for twice is
+  refused likewise ([recordings](#recordings)).
 - **The probe.** Once the registry grants a port, it is bound once by a non-blocking socket on the main loop and
   closed, as its holder will bind it. A UDP port on every address with neither `SO_REUSEADDR` nor `SO_REUSEPORT`, so
   a holder that set it (PipeWire's RTP receiver, [engine.md](engine.md#rtp-receivers)) still refuses; a UDP port on a
@@ -711,7 +758,7 @@ fakes allow. Banks are named by the spec's handles.
 
 | Call | What |
 |---|---|
-| `TypeHarness h({.format = {48000, 256}, .node = "x", .recordings = &adapter})` | Options: format, node name, a recordings adapter (none: every recording refused), `autoComplete` (off: each fade-out and barrier waits for the test, or a fade-out for a cycle that ends it at zero, and a drive cancels a fade-out still waiting, as the real block does), `holdSinks` (each sink's consumer begins only at `h.ready(bank)`, not at configure's return), and `sinkRingFrames` (each sink's ring in frames instead of the size the type asked for, rounded up to a power of two as the engine's is: cycles that do not divide it make the sink split chunks at its end); for loops `holdLoops`, `refuseLoops` and `allowSourcesLeft`, and for stores `holdIo` (below) |
+| `TypeHarness h({.format = {48000, 256}, .node = "x"})` | Options: format, node name, `noRecordingsFolder` (a host with none: every recording refused), `autoComplete` (off: each fade-out and barrier waits for the test, or a fade-out for a cycle that ends it at zero, and a drive cancels a fade-out still waiting, as the real block does), `holdSinks` (each sink's consumer begins only at `h.ready(bank)`, not at configure's return), and `sinkRingFrames` (each sink's ring in frames instead of the size the type asked for, rounded up to a power of two as the engine's is: cycles that do not divide it make the sink split chunks at its end); for loops `holdLoops`, `refuseLoops` and `allowSourcesLeft`, and for stores and recordings `holdIo` (below) |
 | `h.parse(settings)` | The type's parse: nothing, or the refusal's text |
 | `h.add()`, `h.add({.disabled = true})` | Adds the node and configures it |
 | `h.blockReady()` | The block becomes ready: the code drives, the node runs |
@@ -726,7 +773,7 @@ fakes allow. Banks are named by the spec's handles.
 | `h.phase()`, `h.health()`, `h.gone()`, `h.droppedFrames()`, `h.companionList()` | What the node shows; its companion list as a client will see it ([engine.md](engine.md#companions-in-a-nodes-list)), read now |
 | `h->unwritten()`, `h->notes()`, `h->logs()`, `h->diagnostics()`, `h->latencyPlan()`, `h->ports()` | Through `->`, the underlying `NodeHarness`; `notes()` as the main loop heard them (after the [note rate](#the-node-handle)), `logs()` every log entry attributed to the node |
 | `h.companion(bank)` | What was made on a bank (an engine companion's bank as `NodeHost` named it): its `kind` (`CompanionKind`: a card's by its bank's direction), `name`, `shape`, `made`, `ready`, `destroyed`, and a sink's `chunks` as its consumer got them, one per call (a chunk split at the ring's end is two) |
-| `h.recordingRequests()` | Every recording asked for |
+| `h.recordingRequests()`, `h.recordingBytes(path)`, `h.presetRecording(path, bytes)`, `h.failRecordingOpen(path, why)`, `h.pipeRecording(path)`, `h.openRecordings()`, `h->breakRecordings(what)` | The [recordings](#recordings): every one asked for; each an in-memory file by path (`./a.wav` is `a.wav`) with a real, seekable descriptor (a `memfd`), so libsndfile writes it as a file; what it holds now (nothing: never made), or before the node opens (and truncates) it; every open refused with `why` (`cannot open <path>: <why>`), or given a pipe's write end (made, but no WAV can be written to it); how many descriptors are open now; every open throwing, an adapter's bug. Each open and close is a job on the harness's I/O executor (`open recording <path>`, `close recording <path>`, `release recording <path>` for a dropped open's file, in `ioJobs()`), held by `holdIo` as a store's are |
 | `h.runLoops()`, `h->advance(ms)`, `h.armed(loop)`, `h.readable(fd)`, `h.loopsReady()`, `h->loops()` | The loops ([loops](#loops)), on the test's thread with their kind kept: `runLoops()` runs what was posted and each watch rung (a source's clock wake rung by `process()`, a descriptor marked `readable(fd)`) until all are idle, never a timer; `advance` fires their timers in time order with the framework's (an `every` once per period passed: a handler takes no time); `armed(loop)` counts the sources armed on it whose handles live. Loops start when the framework asks (with `holdLoops`, at `loopsReady()`; with `refuseLoops = "<why>"`, never); a teardown turns each loop until it finished and closed; a source a state left armed fails the call that tore it down unless `allowSourcesLeft` (then only `ear.loop-source-left` in `diagnostics()`). `loops()` lists each loop made: its name, kind, and whether it closed to others, finished and closed |
 | `h.presetStore(store, text, mode)`, `h.storeText(store)`, `h.storeMode(store)`, `h.failStoreOpen(store, why)`, `h.failNextWrite(store, why)`, `h.runIo()`, `h->ioJobs()`, `h->storeCalls()`, `h->breakStores(what)` | The [stores](#stores), by the spec's handle, on an in-memory disk under the framework's own store rules: a file put there before the node opens it, what it holds and its mode now, every open's read refused or the next write refused with `<file>: <why>`. Each open and write is a job on the harness's I/O executor, run as each call settles (with the option `holdIo`, only at `runIo()`); a blocking `replace` runs its job inside the call. `ioJobs()` names every job run (`open store <file>`, `write store <file>`, and `release store <file>` for a dropped open's handle), `storeCalls()` every disk call in order (`readNarrowed`, `read`, `narrow`, `replace`), `breakStores(what)` makes every disk call throw, an adapter's bug, and `overdueNextWrite(ran)` makes the next `replace`'s wait give up, after its job ran (`unconfirmed`, and it landed) or before it began (`refused`) |
 | `h->internalErrors()` | Every adapter bug told about the node (the `ear.internal-error` record's callback, node, where and what), in order |

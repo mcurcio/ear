@@ -8,6 +8,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 #include "ear/core/lifecycle.hpp"
@@ -47,6 +48,12 @@ public:
 	const std::vector<CompanionFake>& companions() const noexcept { return node_->companions(); }
 	const std::vector<SeenHandoff>& handoffs() const noexcept { return node_->handoffs(); }
 	const std::vector<RecordingRequest>& recordingRequests() const noexcept { return node_->recordingRequests(); }
+	/// The recordings on the harness's in-memory disk, by path (NodeHarness's recording calls).
+	std::optional<std::string> recordingBytes(std::string_view path) const { return node_->recordingBytes(path); }
+	void presetRecording(std::string_view path, std::string bytes) { node_->presetRecording(path, std::move(bytes)); }
+	void failRecordingOpen(std::string_view path, std::string why) { node_->failRecordingOpen(path, std::move(why)); }
+	void pipeRecording(std::string_view path) { node_->pipeRecording(path); }
+	std::size_t openRecordings() const { return node_->openRecordings(); }
 
 	void runLoops() { node_->runLoops(); }
 	void loopsReady() { node_->loopsReady(); }

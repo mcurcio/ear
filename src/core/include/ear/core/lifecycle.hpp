@@ -49,6 +49,7 @@
 #include "ear/core/companions.hpp"
 #include "ear/core/loop.hpp"
 #include "ear/core/node_type.hpp"
+#include "ear/core/recording.hpp"
 #include "ear/core/sink.hpp"
 #include "ear/core/source.hpp"
 #include "ear/core/store.hpp"
@@ -150,9 +151,12 @@ public:
 	/// An RTP receiver on an inside input bank, `<node>.rtp`, likewise; never faded. Its `latencyMs` is latency beyond
 	/// the bank (LatencyPlan::beyond).
 	virtual void rtpReceiver(std::string_view bank, RtpReceiverShape shape) = 0;
-	/// Slice 3a's interim recording: opened at once, beneath the recordings folder; its descriptor is closed after the
-	/// configuration's code and instance (teardown step 5). The error is why not (it names no path).
-	virtual std::expected<int, std::string> openRecording(const RecordingRequest& request) = 0;
+	/// A recording file beneath the recordings folder (docs/writing-a-node-type.md#recordings): claimed
+	/// ("recording:<path>") at the first readiness step, created or truncated on the I/O thread at step `opens`, its
+	/// descriptor valid from the sink consumer's begin() until the configuration is freed (teardown step 5), when it is
+	/// closed on the I/O thread. A refusal fails the node start-failed "cannot open <path>: <why>" at its step; one path
+	/// asked for twice in one configuration is a std::logic_error.
+	virtual Recording& recording(const RecordingRequest& request) = 0;
 	/// A sink on an inside output bank (docs/engine.md#sinks): made at once (its thread starts); its
 	/// consumer begins once configure answered applied (readiness 4').
 	virtual SinkRequest& sink(std::string_view bank, SinkShape shape) = 0;
@@ -284,10 +288,10 @@ public:
 		              "an RTP receiver joins an inside input bank of the spec");
 		context_->rtpReceiver(Bank::name, std::move(shape));
 	}
-	/// 3a interim (3c: recording()). A refusal is the caller's to answer: Configured::failed("cannot open ...").
-	std::expected<int, std::string> openRecording(const RecordingRequest& request) {
-		return context_->openRecording(request);
-	}
+	/// A recording file beneath the recordings folder (docs/writing-a-node-type.md#recordings): give it to the sink's
+	/// consumer, which reads its descriptor from begin() on. Its refusal is the framework's: the node fails, and
+	/// configure answers nothing for it.
+	Recording& recording(RecordingRequest request) { return context_->recording(request); }
 	/// A sink on an inside output bank, the same call (docs/writing-a-node-type.md#sinks).
 	template <class Bank> SinkRequest& sink(Bank, SinkShape shape) {
 		static_assert(ownBank<Bank>, "a context takes only its spec's banks");

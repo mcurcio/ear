@@ -1,16 +1,15 @@
 // The "file" node type through TypeHarness (a real NodeHost over fakes), by the banks its spec declares
 // (file_spec.hpp): the harness's sink hands each chunk to the type's WavWriter at once, on the test's thread, and its
-// recordings are made beneath a real recordings folder, as main.cpp's adapter makes them (docs/node-types.md#file). The
-// WAV files are read back with libsndfile. Paths are relative to a recordings folder and never lead out of it.
+// recordings are the harness's in-memory files, claimed, opened and closed by the framework on the harness's I/O
+// executor (docs/node-types.md#file, docs/writing-a-node-type.md#recordings). The WAV files are read back with
+// libsndfile. That a path never leads out of the recordings folder is the folder's (ear_folder's and ear_runtime's tests).
 #include <sndfile.h>
-#include <unistd.h>
 
-#include <array>
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
-#include <iterator>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -19,8 +18,6 @@
 #include <vector>
 
 #include "catch2/catch.hpp"
-#include "confined_recordings.hpp"
-#include "ear/folder/confined_folder.hpp"
 #include "ear/nodes/file.hpp"
 #include "ear/testing/type_harness.hpp"
 #include "file_spec.hpp"
@@ -38,36 +35,18 @@ const ear::NodeType& fileType() {
 	return *type;
 }
 
-/// The recordings folder at `path`, made if missing, behind the recording kind's adapter.
-struct Recordings {
-	explicit Recordings(const std::filesystem::path& path) {
-		auto folder = ear::folder::ConfinedFolder::open(path);
-		REQUIRE(folder.has_value());
-		adapter = std::make_unique<ear::test::ConfinedRecordings>(
-			std::make_shared<const ear::folder::ConfinedFolder>(std::move(*folder)));
-	}
-	std::unique_ptr<ear::test::ConfinedRecordings> adapter;
-};
-
-/// A harness on a node named "rec" recording to `path` beneath `recordings`, its settings parsed.
-std::unique_ptr<Harness> parsed(ear::RecordingAdapter& recordings, const std::string& path,
-                                ear::AudioFormat format = {.rate = ear::SampleRate::fixed<48000>(), .maxBlock = 256}) {
-	auto harness =
-		std::make_unique<Harness>(Harness::Options{.format = format, .node = "rec", .recordings = &recordings});
+/// A harness on a node named "rec" recording to `path`, its settings parsed.
+std::unique_ptr<Harness> parsed(const std::string& path, Harness::Options options = {}) {
+	options.node = "rec";
+	auto harness = std::make_unique<Harness>(std::move(options));
 	REQUIRE_FALSE(harness->parse({{"path", path}}));
 	return harness;
 }
 
-std::string contents(const std::filesystem::path& path) {
-	std::ifstream file(path, std::ios::binary);
-	return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
-}
-
 /// Whether the node asked for a sink.
 bool madeSink(const Harness& harness) {
-	for (const auto& companion : harness.companions())
-		if (companion.kind == ear::CompanionKind::sink) return true;
-	return false;
+	return std::ranges::any_of(harness.companions(),
+	                           [](const auto& companion) { return companion.kind == ear::CompanionKind::sink; });
 }
 
 /// One cycle of `frames` into record.left and record.right, frame n of the graph clock being left n / 1024 and right
@@ -91,13 +70,19 @@ struct Wav {
 	SF_INFO info{};
 	std::vector<float> samples;
 };
-Wav readWav(const std::filesystem::path& path) {
+/// The recording at `path` on the harness's disk, read through a temporary file.
+Wav readWav(const Harness& harness, const std::string& path) {
+	const auto bytes = harness.recordingBytes(path);
+	REQUIRE(bytes);
+	const TempFolder dir{"wav"};
+	const auto copy = dir.path() / "read.wav";
+	std::ofstream(copy, std::ios::binary) << *bytes;
 	Wav wav;
-	SNDFILE* file = sf_open(path.c_str(), SFM_READ, &wav.info);
-	REQUIRE(file != nullptr);
+	SNDFILE* opened = sf_open(copy.c_str(), SFM_READ, &wav.info);
+	REQUIRE(opened != nullptr);
 	wav.samples.resize(static_cast<std::size_t>(wav.info.frames) * static_cast<std::size_t>(wav.info.channels));
-	CHECK(sf_readf_float(file, wav.samples.data(), wav.info.frames) == wav.info.frames);
-	sf_close(file);
+	CHECK(sf_readf_float(opened, wav.samples.data(), wav.info.frames) == wav.info.frames);
+	sf_close(opened);
 	return wav;
 }
 
@@ -112,39 +97,18 @@ void checkFrames(const Wav& wav, const std::vector<float>& left, const std::vect
 	}
 }
 
-/// A recording adapter whose every file is the write end of a pipe: the folder opens it, libsndfile cannot write a WAV
-/// header to it (a WAV needs a seekable file).
-class PipeRecordings final : public ear::RecordingAdapter {
-public:
-	struct PipeEnd final : ear::RecordingFile {
-		explicit PipeEnd(int fd) : fd_(fd) {}
-		~PipeEnd() override { ::close(fd_); }
-		int descriptor() const noexcept override { return fd_; }
-		int fd_;
-	};
-	~PipeRecordings() {
-		for (const int fd : readEnds_) ::close(fd);
-	}
-	std::expected<std::unique_ptr<ear::RecordingFile>, std::string> open(const ear::NodeName&,
-	                                                                     const std::string&) override {
-		std::array<int, 2> ends{};
-		REQUIRE(::pipe(ends.data()) == 0);
-		readEnds_.push_back(ends[0]);
-		return std::make_unique<PipeEnd>(ends[1]);
-	}
-
-private:
-	std::vector<int> readEnds_;
-};
+/// The index of `job` in what the harness's I/O executor ran (its size when absent).
+std::size_t ranAt(Harness& harness, const std::string& job) {
+	const auto& jobs = harness->ioJobs();
+	return static_cast<std::size_t>(std::ranges::find(jobs, job) - jobs.begin());
+}
 
 } // namespace
 
 TEST_CASE("File declares inputs record.left and record.right, no outputs, and its sink's inside bank writer",
           "[file]") {
-	TempFolder dir{"ports"};
-	Recordings recordings(dir.path());
 	CHECK(fileType().name() == "file");
-	auto harness = parsed(*recordings.adapter, "rec.wav");
+	auto harness = parsed("rec.wav");
 	const ear::Ports& ports = harness->node().ports();
 	CHECK(ports.inputs() == std::vector<ear::PortName>{"record.left", "record.right"});
 	CHECK(ports.outputs().empty());
@@ -181,44 +145,13 @@ TEST_CASE("File refuses an absolute path or a .. component as invalid settings",
 	}
 }
 
-TEST_CASE("File fails its configure on a symlink in the folder that leads outside it, and asks for no sink", "[file]") {
-	TempFolder dir{"symlink"};
-	const auto outside = dir.path() / "outside.wav";
-	std::ofstream(outside, std::ios::binary) << "keep";
-	Recordings recordings(dir.path() / "recordings");
-	std::filesystem::create_symlink(outside, dir.path() / "recordings" / "rec.wav");
-	std::filesystem::create_directory_symlink(dir.path(), dir.path() / "recordings" / "up");
-
-	for (const std::string path : {"rec.wav", "up/outside.wav", "up/new.wav"}) {
-		INFO(path);
-		auto harness = parsed(*recordings.adapter, path);
-
-		harness->add();
-
-		CHECK(harness->phase() == "failed");
-		REQUIRE(harness->health().reason);
-		CHECK(harness->health().reason->code == ear::FailureReason::Code::startFailed);
-		CHECK(harness->health().reason->detail == "cannot open " + path + ": it leads outside the folder");
-		CHECK_FALSE(madeSink(*harness));
-	}
-	CHECK(contents(outside) == "keep");
-	CHECK_FALSE(std::filesystem::exists(dir.path() / "new.wav"));
-}
-
 TEST_CASE("File records record.left and record.right through its sink as a 32-bit float stereo WAV at the format's "
           "rate",
           "[file]") {
-	TempFolder dir{"records"};
-	const auto wav = dir.path() / "rec.wav";
-	{
-		// Longer than what the node writes: the node must truncate it.
-		std::ofstream old{wav, std::ios::binary};
-		old << std::string(1 << 20, 'x');
-	}
 	constexpr ear::AudioFormat format{.rate = ear::SampleRate::fixed<32000>(), .maxBlock = 256};
 	constexpr std::uint32_t blocks = 3;
-	Recordings recordings(dir.path());
-	auto harness = parsed(*recordings.adapter, "rec.wav", format);
+	auto harness = parsed("rec.wav", {.format = format});
+	harness->presetRecording("rec.wav", std::string(1 << 20, 'x')); // longer than what the node writes: truncated
 
 	harness->add();
 	harness->blockReady();
@@ -249,18 +182,102 @@ TEST_CASE("File records record.left and record.right through its sink as a 32-bi
 	CHECK(harness->gone());
 	CHECK(harness->droppedFrames() == 0);
 
-	const Wav read = readWav(wav);
+	const Wav read = readWav(*harness, "rec.wav");
 	CHECK(read.info.samplerate == static_cast<int>(format.rate.hz()));
 	CHECK(read.info.format == (SF_FORMAT_WAV | SF_FORMAT_FLOAT));
 	checkFrames(read, left, right);
 }
 
+TEST_CASE("File: its recording is opened on the I/O thread before its sink's consumer begins, and closed there after "
+          "its sink finished",
+          "[file][recording]") {
+	auto harness = parsed("rec.wav", {.holdIo = true});
+	harness->add();
+	harness->blockReady();
+	CHECK(harness->phase() == "configuring");
+	CHECK_FALSE(harness->companion(file::writer).ready); // nothing begins on a file not opened yet
+	CHECK_FALSE(harness->recordingBytes("rec.wav"));
+	harness->node().advance(ear::waitingForDelay);
+	CHECK(harness->health().waitingFor == std::vector<ear::WaitingFor>{{ear::WaitingFor::Kind::recording, "rec.wav"},
+	                                                                   {ear::WaitingFor::Kind::consumer, ""}});
+	harness->runIo();
+	CHECK(harness->phase() == "running");
+	CHECK(harness->companion(file::writer).ready);
+	CHECK(harness->openRecordings() == 1);
+	CHECK(ranAt(*harness, "open recording rec.wav") == 0);
+
+	harness->remove();
+	CHECK(harness->companion(file::writer).destroyed); // the sink finished the WAV
+	CHECK(harness->openRecordings() == 1);             // its close waits for the I/O thread
+	harness->runIo();
+	CHECK(harness->openRecordings() == 0);
+	CHECK(ranAt(*harness, "close recording rec.wav") == 1);
+	CHECK(readWav(*harness, "rec.wav").info.frames == 0);
+}
+
+TEST_CASE("File: an open past its 5 s bound fails the node start-failed, and the late open is closed on the I/O thread",
+          "[file][recording][deadline]") {
+	auto harness = parsed("rec.wav", {.holdIo = true});
+	harness->add();
+	harness->blockReady();
+	harness->node().advance(ear::recordingBound - std::chrono::milliseconds{1});
+	CHECK(harness->phase() == "configuring");
+	harness->node().advance(std::chrono::milliseconds{1});
+	CHECK(harness->phase() == "failed");
+	REQUIRE(harness->health().reason);
+	CHECK(harness->health().reason->code == ear::FailureReason::Code::startFailed);
+	CHECK(harness->health().reason->detail == "cannot open rec.wav: not opened within 5 s");
+	CHECK_FALSE(harness->companion(file::writer).ready); // its consumer never began
+	harness->runIo(); // the open runs at last: its completion lands on no configuration, its file released
+	CHECK(harness->openRecordings() == 0);
+	CHECK(ranAt(*harness, "release recording rec.wav") < (*harness)->ioJobs().size());
+}
+
+TEST_CASE("File: a path the folder refuses fails the node start-failed at its open, and its consumer never begins",
+          "[file]") {
+	auto harness = parsed("missing-dir/rec.wav");
+	harness->failRecordingOpen("missing-dir/rec.wav", "No such file or directory");
+
+	harness->add();
+
+	CHECK(harness->phase() == "failed");
+	REQUIRE(harness->health().reason);
+	CHECK(harness->health().reason->code == ear::FailureReason::Code::startFailed);
+	CHECK(harness->health().reason->detail == "cannot open missing-dir/rec.wav: No such file or directory");
+	REQUIRE(madeSink(*harness));
+	CHECK_FALSE(harness->companion(file::writer).ready);
+	CHECK(harness->companion(file::writer).destroyed); // closed with nothing begun
+	CHECK(harness->openRecordings() == 0);
+}
+
+TEST_CASE("File fails its configure when the host has no recordings folder", "[file]") {
+	auto harness = parsed("rec.wav", {.noRecordingsFolder = true});
+	harness->add();
+	REQUIRE(harness->health().reason);
+	CHECK(harness->health().reason->code == ear::FailureReason::Code::startFailed);
+	CHECK(harness->health().reason->detail == "cannot open rec.wav: no recordings folder");
+	CHECK((*harness)->ioJobs().empty());
+}
+
+TEST_CASE("File: a WAV libsndfile cannot open fails the node start-failed from its sink's begin", "[file]") {
+	auto harness = parsed("rec.wav");
+	harness->pipeRecording("rec.wav");
+
+	harness->add();
+
+	// The sink was made and its consumer's begin said lost before `begun`: the node never reached configured.
+	CHECK(madeSink(*harness));
+	CHECK(harness->phase() == "failed");
+	REQUIRE(harness->health().reason);
+	CHECK(harness->health().reason->code == ear::FailureReason::Code::startFailed);
+	CHECK(harness->health().reason->detail.starts_with("cannot open rec.wav: "));
+	CHECK(harness->companion(file::writer).destroyed); // closed, with nothing to finish but a file never opened
+}
+
 TEST_CASE("File: every cycle the code drove reaches the sink, none after the stop's position and none before the "
           "start's",
           "[file]") {
-	TempFolder dir{"stop"};
-	Recordings recordings(dir.path());
-	auto harness = parsed(*recordings.adapter, "rec.wav");
+	auto harness = parsed("rec.wav");
 	constexpr std::uint32_t kBlock = 256;
 	harness->add();
 	harness->blockReady();
@@ -281,22 +298,19 @@ TEST_CASE("File: every cycle the code drove reaches the sink, none after the sto
 
 	const ear::testing::CompanionFake& sink = harness->companion(file::writer);
 	CHECK_FALSE(sink.destroyed); // a stop closes nothing
+	CHECK(harness->openRecordings() == 1);
 	std::vector<std::uint64_t> positions;
 	for (const auto& chunk : sink.chunks) positions.push_back(chunk.stamp.position);
 	CHECK(positions == std::vector<std::uint64_t>{0, kBlock, 4 * kBlock, 5 * kBlock});
 	CHECK(harness->companions().size() == 1); // one sink, bound again by the start
 	harness->remove();
-	checkFrames(readWav(dir.path() / "rec.wav"), left, right);
+	checkFrames(readWav(*harness, "rec.wav"), left, right);
 }
 
 TEST_CASE("File writes every frame in order when its sink hands chunks split at the ring's end", "[file]") {
-	TempFolder dir{"split"};
-	Recordings recordings(dir.path());
 	// A 256-frame ring and 100-frame cycles: the sink hands most cycles in two calls, as the engine's does
 	// (docs/engine.md#sinks).
-	auto harness = std::make_unique<Harness>(
-		Harness::Options{.node = "rec", .recordings = recordings.adapter.get(), .sinkRingFrames = 256});
-	REQUIRE_FALSE(harness->parse({{"path", "rec.wav"}}));
+	auto harness = parsed("rec.wav", {.sinkRingFrames = 256});
 	constexpr std::uint32_t kBlock = 100;
 	constexpr std::uint32_t kBlocks = 10;
 	harness->add();
@@ -314,51 +328,11 @@ TEST_CASE("File writes every frame in order when its sink hands chunks split at 
 	}
 	harness->remove();
 	CHECK(harness->droppedFrames() == 0);
-	checkFrames(readWav(dir.path() / "rec.wav"), left, right);
-}
-
-TEST_CASE("File: a path it cannot open is Configured::failed and asks for no sink", "[file]") {
-	TempFolder dir{"unopenable"};
-	Recordings recordings(dir.path());
-	auto harness = parsed(*recordings.adapter, "missing-dir/rec.wav");
-
-	harness->add();
-
-	CHECK(harness->phase() == "failed");
-	REQUIRE(harness->health().reason);
-	CHECK(harness->health().reason->code == ear::FailureReason::Code::startFailed);
-	CHECK(harness->health().reason->detail.starts_with("cannot open missing-dir/rec.wav: "));
-	CHECK_FALSE(madeSink(*harness));
-}
-
-TEST_CASE("File fails its configure when the host has no recordings folder", "[file]") {
-	Harness harness;
-	REQUIRE_FALSE(harness.parse({{"path", "rec.wav"}}));
-	harness.add();
-	REQUIRE(harness->health().reason);
-	CHECK(harness->health().reason->detail == "cannot open rec.wav: no recordings folder");
-	CHECK_FALSE(madeSink(harness));
-}
-
-TEST_CASE("File: a WAV libsndfile cannot open fails the node start-failed from its sink's begin", "[file]") {
-	PipeRecordings pipes;
-	auto harness = parsed(pipes, "rec.wav");
-
-	harness->add();
-
-	// The sink was made and its consumer's begin said lost before `begun`: the node never reached configured.
-	CHECK(madeSink(*harness));
-	CHECK(harness->phase() == "failed");
-	REQUIRE(harness->health().reason);
-	CHECK(harness->health().reason->code == ear::FailureReason::Code::startFailed);
-	CHECK(harness->health().reason->detail.starts_with("cannot open rec.wav: "));
-	CHECK(harness->companion(file::writer).destroyed); // closed, with nothing to finish but a file never opened
+	checkFrames(readWav(*harness, "rec.wav"), left, right);
 }
 
 TEST_CASE("File: a restart finishes the old WAV and opens the new one", "[file]") {
-	TempFolder dir{"restart"};
-	Recordings recordings(dir.path());
-	auto harness = parsed(*recordings.adapter, "a.wav");
+	auto harness = parsed("a.wav");
 	constexpr std::uint32_t kBlock = 256;
 	harness->add();
 	harness->blockReady();
@@ -372,30 +346,43 @@ TEST_CASE("File: a restart finishes the old WAV and opens the new one", "[file]"
 	// The old configuration's sink closed: a.wav is complete before b.wav takes a frame.
 	REQUIRE(harness->companions().size() == 2);
 	CHECK(harness->companions()[0].destroyed);
-	checkFrames(readWav(dir.path() / "a.wav"), leftA, rightA);
+	checkFrames(readWav(*harness, "a.wav"), leftA, rightA);
 	REQUIRE(harness->recordingRequests().size() == 2);
 	CHECK(harness->recordingRequests()[1].path == "b.wav");
+	CHECK(ranAt(*harness, "close recording a.wav") < ranAt(*harness, "open recording b.wav"));
 
 	std::vector<float> leftB;
 	std::vector<float> rightB;
 	feed(*harness, 2 * kBlock, kBlock, leftB, rightB);
 	harness->remove();
-	checkFrames(readWav(dir.path() / "b.wav"), leftB, rightB);
+	checkFrames(readWav(*harness, "b.wav"), leftB, rightB);
 	CHECK(harness->droppedFrames() == 0);
+}
+
+TEST_CASE("File: a restart on the same path truncates it and records afresh, its old file closed first", "[file]") {
+	auto harness = parsed("rec.wav");
+	constexpr std::uint32_t kBlock = 256;
+	harness->add();
+	harness->blockReady();
+	std::vector<float> leftA;
+	std::vector<float> rightA;
+	feed(*harness, 0, kBlock, leftA, rightA);
+	feed(*harness, kBlock, kBlock, leftA, rightA);
+	REQUIRE(harness->restart());
+	CHECK(harness->phase() == "running"); // its own claim was released at its teardown's last step
+	CHECK(ranAt(*harness, "close recording rec.wav") < (*harness)->ioJobs().size());
+	std::vector<float> leftB;
+	std::vector<float> rightB;
+	feed(*harness, 2 * kBlock, kBlock, leftB, rightB);
+	harness->remove();
+	checkFrames(readWav(*harness, "rec.wav"), leftB, rightB);
 }
 
 // docs/engine.md#readiness-deadlines, on the harness's clock: with holdSinks the consumer begins only at ready(bank).
 TEST_CASE("File: a sink whose consumer has not begun within 5 s fails the node start-failed, and one that begins in "
           "time runs",
           "[file][deadline]") {
-	TempFolder dir{"deadline"};
-	Recordings recordings(dir.path());
-	auto harness =
-		std::make_unique<Harness>(Harness::Options{.format = {.rate = ear::SampleRate::fixed<48000>(), .maxBlock = 256},
-	                                               .node = "rec",
-	                                               .recordings = recordings.adapter.get(),
-	                                               .holdSinks = true});
-	REQUIRE_FALSE(harness->parse({{"path", "rec.wav"}}));
+	auto harness = parsed("rec.wav", {.holdSinks = true});
 	harness->add();
 	harness->blockReady();
 	CHECK(harness->phase() == "configuring");

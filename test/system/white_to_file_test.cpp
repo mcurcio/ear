@@ -104,3 +104,40 @@ TEST_CASE("A recordings folder ear cannot make stops ear with exit status 1", "[
 	CHECK(last["reason"].get<std::string>().starts_with("recordings folder " + recordings.string()));
 	CHECK_FALSE(std::filesystem::exists(directory.path() / "missing"));
 }
+
+// Recordings (docs/node-types.md#file; docs/writing-a-node-type.md#recordings): a path has one writer, judged before its
+// file is opened, so a second file node never truncates the first one's recording.
+TEST_CASE("A second file node on one path is refused held by node <first>, and a removal and an addition on that path "
+          "in one edit runs",
+          "[system][file][claims]") {
+	TempDirectory directory;
+	const auto take = directory.recordings() / "take1.wav";
+	writeGraphFile(directory, graphFileText("node white noise;\n"
+	                                        "node file a { path \"take1.wav\"; }\n"
+	                                        "node file b { path \"take1.wav\"; }\n"
+	                                        "route noise:noise.mono a:record.left;\n"
+	                                        "route noise:noise.mono b:record.right;\n"));
+	ChildProcess ear(EAR_BINARY, earArguments(directory));
+	const bool running = ear.waitForLine("node a running", deadline);
+	const bool refused = ear.waitForLine("node b failed start-failed: cannot open take1.wav: held by node a", deadline);
+	INFO("ear printed:\n" << ear.output());
+	CHECK(running);
+	CHECK(refused);
+	CHECK_FALSE(ear.hasLine("node b running"));
+	// a's recording is a's alone: noise on its left, and nothing of b's right.
+	CHECK(waitForNoiseSecond(take, 0, 48000));
+
+	// One edit: a and b removed, c added on the path. c is judged once a's configuration let go of it, and runs.
+	writeGraphFile(directory, graphFileText("node white noise;\n"
+	                                        "node file c { path \"take1.wav\"; }\n"
+	                                        "route noise:noise.mono c:record.right;\n"));
+	const bool replaced = ear.waitForLine("node c running", deadline);
+	INFO("ear printed:\n" << ear.output());
+	CHECK(replaced);
+	CHECK(ear.hasLine("node a removed dropped=0"));
+	CHECK(waitForNoiseSecond(take, 1, 48000));
+	ear.signal(SIGTERM);
+	CHECK(waitForStop(ear) == 0);
+	checkAllRecords(ear);
+	checkNoiseOnOneChannel(take, 1, 48000); // c's: it truncated the path when it opened it
+}

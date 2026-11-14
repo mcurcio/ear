@@ -916,10 +916,29 @@
       }
     },
     {
-      "case": "a stop has done all ear does: every node removed, the control port closed, ear.conf's last write made; ear's last record before it exits 0",
+      "case": "a node still configuring while one of its recordings is opened on the I/O thread says so, by its path",
       "record": {
         "v": 1,
         "seq": 94,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "fpp",
+        "state": "starting",
+        "phase": "configuring",
+        "waitingFor": [
+          {
+            "kind": "recording",
+            "name": "take1.wav"
+          }
+        ],
+        "msg": "node fpp still configuring after 52s: waiting for its recording take1.wav"
+      }
+    },
+    {
+      "case": "a stop has done all ear does: every node removed, the control port closed, ear.conf's last write made; ear's last record before it exits 0",
+      "record": {
+        "v": 1,
+        "seq": 95,
         "t": "2026-11-07T17:42:03.512094Z",
         "kind": "exit",
         "status": 0,

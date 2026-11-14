@@ -163,16 +163,10 @@ struct HandoffRequest {
 	std::uint32_t capacityFrames;
 	HandoffConsumer* consumer;
 };
-/// A recording file (docs/writing-a-node-type.md#configure-and-createof): `path`, relative to the recordings folder,
-/// created or truncated beneath it only (no "..", no symlink out, no subfolder made). The run gets its descriptor,
-/// valid until the run is freed (teardown step 5), after its handoffs closed; the framework closes it.
-struct RecordingRequest {
-	std::string path;
-};
 /// Every kind of resource a legacy run can acquire: a closed list, on purpose, since a kind changes what the framework
 /// promises (docs/writing-a-node-type.md#configure-and-createof). Each kind has one adapter (node_host.hpp). Sound
 /// cards and RTP receivers are engine companions a class asks for (CreateOf::soundCard, CreateOf::rtpReceiver).
-using ResourceRequest = std::variant<HandoffRequest, RecordingRequest>;
+using ResourceRequest = std::variant<HandoffRequest>;
 /// What `start` sees (docs/writing-a-node-type.md#the-class): the format, the node's name, and the acquire calls. Main
 /// thread, inside start() only: any call outside it throws std::logic_error. Everything acquired belongs to the run and
 /// is torn down by the framework by dependency: handoffs, then the run object.
@@ -182,10 +176,6 @@ public:
 	virtual const NodeName& node() const = 0;
 	/// A handoff (HandoffRequest); its writer for the run's code. Ready at once.
 	RtWriter& acquire(const HandoffRequest& request) { return *std::get<RtWriter*>(acquireResource(request)); }
-	/// A recording file (RecordingRequest): its descriptor, or why it cannot be opened (the type fails its start).
-	std::expected<int, std::string> acquire(const RecordingRequest& request) {
-		return std::get<std::expected<int, std::string>>(acquireResource(request));
-	}
 	/// The run's handle (node_handle.hpp), the configuration's; may be kept by the run's threads. (Kept on the start
 	/// context until sendspin builds its run in the recipe, slice 3.)
 	virtual NodeHandle& events() = 0;
@@ -202,8 +192,8 @@ public:
 
 protected:
 	~StartContext() = default;
-	/// What an acquire hands back: nothing, a handoff's writer, or a recording's descriptor or why it has none.
-	using Acquired = std::variant<std::monostate, RtWriter*, std::expected<int, std::string>>;
+	/// What an acquire hands back: nothing, or a handoff's writer.
+	using Acquired = std::variant<std::monostate, RtWriter*>;
 	/// Every engine object one run makes is named "<node>.<suffix>"; a second request with a suffix already taken in
 	/// this run, a bank the node does not have or one of the wrong reach or direction throws std::logic_error (a type
 	/// bug): one configuration names each engine object once.

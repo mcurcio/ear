@@ -67,8 +67,8 @@ export interface NodeCause {
 
 /** What a node still waits for, once its phase has lasted 2 s. */
 export interface WaitingFor {
-  kind: "older-node" | "block" | "companion" | "consumer" | "loop" | "store" | "claim" | (string & {});
-  /** older-node, companion, loop, store and claim (its key: "udp:5004"). */
+  kind: "older-node" | "block" | "companion" | "consumer" | "loop" | "store" | "recording" | "claim" | (string & {});
+  /** older-node, companion, loop, store, recording (its path) and claim (its key: "udp:5004"). */
   name?: string;
 }
 

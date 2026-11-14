@@ -30,6 +30,7 @@ add_library(ear_core STATIC
 	rtp_receiver.cpp
 	settings_table.cpp
 	sound_card.cpp
+	recording.cpp
 	source_ring.cpp
 	store.cpp)
 # The public headers as a header set: its base directory is the include path of ear_core and
@@ -68,6 +69,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/rate_text.hpp
 	include/ear/core/ready_events.hpp
 	include/ear/core/reconciler.hpp
+	include/ear/core/recording.hpp
 	include/ear/core/rtp_receiver.hpp
 	include/ear/core/sample_rate.hpp
 	include/ear/core/settings_table.hpp

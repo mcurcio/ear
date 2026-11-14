@@ -910,10 +910,37 @@ struct TestProbe final : PortProbe {
 	std::vector<std::string> groups; // each UDP probe's group, in order ("" for every address)
 };
 
+/// The recordings' disk as a test drives it (docs/writing-a-node-type.md#recordings), on the stores' I/O executor: each
+/// open logged ("recording <node> <path>") and each file's close ("recording closed <path>"); "missing/..." refused as
+/// a folder would refuse it, and other prefixes make the adapter refuse or break.
+struct TestRecordings final : RecordingAdapter {
+	Log& log;
+	IoExecutor& executor;
+	TestRecordings(Log& l, IoExecutor& io) : log(l), executor(io) {}
+	struct File final : RecordingFile {
+		Log& log;
+		std::string path;
+		File(Log& l, std::string p) : log(l), path(std::move(p)) {}
+		~File() override { log.push_back("recording closed " + path); }
+		int descriptor() const noexcept override { return 42; }
+	};
+	IoExecutor& io() noexcept override { return executor; }
+	std::expected<std::unique_ptr<RecordingFile>, std::string> open(const NodeName& node,
+	                                                                const std::string& path) override {
+		log.push_back("recording " + node + " " + path);
+		if (path.starts_with("missing/")) return std::unexpected(std::string("no such folder"));
+		if (path.starts_with("emfile/")) throw std::system_error(EMFILE, std::generic_category(), "no descriptor");
+		if (path.starts_with("bug/")) throw std::logic_error("the folder adapter broke its own rule");
+		if (path.starts_with("null/")) return nullptr;
+		return std::make_unique<File>(log, path);
+	}
+};
+
 /// How a Fixture's host is made: whether it probes ports (a host without a probe judges them between its nodes only),
-/// and its close deadline.
+/// whether it has a recordings folder, and its close deadline.
 struct HostShape {
 	bool probing = false;
+	bool recordings = true;
 	std::chrono::milliseconds closeDeadline = ::closeDeadline;
 };
 
@@ -928,6 +955,7 @@ struct Fixture {
 	TestSources sources{log};
 	TestLoops loops{log, mainLoop};
 	TestStores stores{log};
+	TestRecordings recordings{log, stores};
 	TestProbe probe{log};
 	ResourceRegistry resources;
 	TestListener listener{log};
@@ -945,6 +973,7 @@ struct Fixture {
 	                                 .handoffs = &handoffs,
 	                                 .sinks = &sinks,
 	                                 .sources = &sources,
+	                                 .recordings = shape.recordings ? &recordings : nullptr,
 	                                 .loops = &loops,
 	                                 .stores = &stores,
 	                                 .ports = shape.probing ? &probe : nullptr}),
@@ -2866,43 +2895,35 @@ TEST_CASE("Step 5 frees the code before the instance it reads, and the config la
 	f.stopAll();
 }
 
+// Recordings (docs/writing-a-node-type.md#recordings): asked for in configure, their path claimed at readiness step
+// `claims`, opened on the I/O executor at step `opens` before the sink's consumer begins, and closed there at teardown
+// step 5, after the sinks and the instance; a leaked configuration keeps its recording's claim.
+
 namespace {
 
-/// Recordings that log their open and close; "missing/..." is refused as a folder would refuse it.
-struct TestRecordings final : RecordingAdapter {
+/// A sink consumer that reads its recording's descriptor in begin, as file's WavWriter does.
+struct DescriptorConsumer final : SinkConsumer {
 	Log& log;
-	explicit TestRecordings(Log& l) : log(l) {}
-	struct File final : RecordingFile {
-		Log& log;
-		int fd;
-		File(Log& l, int d) : log(l), fd(d) {}
-		~File() override { log.push_back("recording closed"); }
-		int descriptor() const noexcept override { return fd; }
-	};
-	std::expected<std::unique_ptr<RecordingFile>, std::string> open(const NodeName& node,
-	                                                                const std::string& path) override {
-		log.push_back("recording " + node + " " + path);
-		if (path.starts_with("missing/")) return std::unexpected(std::string("no such folder"));
-		if (path.starts_with("emfile/")) throw std::system_error(EMFILE, std::generic_category(), "no descriptor");
-		if (path.starts_with("bad_alloc/")) throw std::bad_alloc();
-		if (path.starts_with("bug/")) throw std::logic_error("the folder adapter broke its own rule");
-		if (path.starts_with("null/")) return nullptr;
-		return std::make_unique<File>(log, 42);
+	const Recording& recording;
+	DescriptorConsumer(Log& l, const Recording& r) : log(l), recording(r) {}
+	void begin() override {
+		log.push_back("descriptor " + std::to_string(recording.descriptor()) + " " + recording.path());
 	}
+	void consume(const Chunk&) override {}
+	void finish() override {}
 };
 
-/// A class that opens the recording at `path`, then asks for a sink on tap1 (its close held, as a TestConfig's), as
-/// "file" does; its configure fails when the recording is refused. Its instance logs its destruction.
+/// A class that asks for the recording at `path`, then for a sink on tap1 (its close held, as a TestConfig's) whose
+/// consumer reads it, as "file" does. Its instance logs its destruction.
 struct RecordingConfig final : NodeConfig {
 	struct Instance final : ErasedInstance {
 		const RecordingConfig& config;
 		explicit Instance(const RecordingConfig& c) : config(c) {}
 		~Instance() override { config.log.push_back("instance destroyed"); }
 		Configured configure(InstanceContexts& cx) override {
-			const auto fd = cx.create.openRecording(RecordingRequest{config.path});
-			if (!fd) return Configured::failed("cannot open: " + fd.error());
-			config.log.push_back("descriptor " + std::to_string(*fd));
-			cx.create.sink("tap1", SinkShape{.frames = 1024}).consumedBy(std::make_unique<QuietConsumer>());
+			const Recording& recording = cx.create.recording(RecordingRequest{config.path});
+			cx.create.sink("tap1", SinkShape{.frames = 1024})
+				.consumedBy(std::make_unique<DescriptorConsumer>(config.log, recording));
 			cx.create.use(std::make_unique<TestAudioCode>(config.log));
 			return Configured::applied();
 		}
@@ -2915,154 +2936,269 @@ struct RecordingConfig final : NodeConfig {
 	std::unique_ptr<ErasedInstance> make(NodeContext&) const override { return std::make_unique<Instance>(*this); }
 };
 
-struct RecordingFixture {
-	Log log;
-	QueueExecutor mainLoop;
-	TestBlocks blocks{log, mainLoop};
-	TestCards cards{log};
-	TestReceivers receivers{log};
-	TestRecordings recordings{log};
-	TestSinks sinks{log, mainLoop};
-	TestSources sources{log};
-	ResourceRegistry resources{ResourceAdapters{
-		.cards = &cards, .receivers = &receivers, .sinks = &sinks, .sources = &sources, .recordings = &recordings}};
-	NodeCatalogue catalogue{{}};
-	DesiredGraph graph{catalogue};
-	FakeTimers timers;
-	NodeHost host{
-		AudioFormat{ear::SampleRate::fixed<44100>(), 256}, blocks, resources, mainLoop, timers, closeDeadline};
-};
+std::shared_ptr<RecordingConfig> recordingConfig(Log& log, std::string path) {
+	return std::make_shared<RecordingConfig>(log, std::move(path));
+}
+
+/// Node `name` added recording `path`, its block ready: as far as readiness goes.
+void addRecording(Fixture& f, const NodeName& name, const std::string& path) {
+	const std::size_t block = f.blocks.events.size();
+	f.add(name, recordingConfig(f.log, path));
+	f.blocks.events.at(block)->ready();
+	f.settle();
+}
+
+/// The newest node of `name`'s health.
+NodeHealth newestOf(const Fixture& f, const NodeName& name) {
+	const std::vector<NodeHealth> all = f.host.health();
+	for (auto it = all.rbegin(); it != all.rend(); ++it)
+		if (it->name == name) return *it;
+	FAIL("no node " << name);
+	return {};
+}
+
+/// Every sink whose close is held drains, as its thread would.
+void finishEverySink(Fixture& f) {
+	for (f.settle(); !f.sinks.pendingCloses.empty(); f.settle()) f.finishSink(0);
+}
+
+std::size_t linesOf(const Log& log, const std::string& line) {
+	return static_cast<std::size_t>(std::ranges::count(log, line));
+}
 
 } // namespace
 
-TEST_CASE("A recording is opened at configure and closed with the configuration, after its sink and its instance",
+TEST_CASE("A recording is opened on the I/O executor before its sink's consumer begins, and closed there at teardown "
+          "step 5, after its sink and its instance",
           "[node_host][recording]") {
-	RecordingFixture f;
-	f.host.nodeAdded(NodeSpec{"rec", "test", {}}, std::make_shared<RecordingConfig>(f.log, "take.wav"));
-	CHECK(indexOf(f.log, "recording rec take.wav") < indexOf(f.log, "descriptor 42"));
-	f.mainLoop.runPosted();
-	f.blocks.events.at(0)->ready();
-	f.mainLoop.settle();
+	Fixture f;
+	addRecording(f, "rec", "take.wav");
+	CHECK(newestOf(f, "rec").state == NodeState::running);
+	CHECK(indexOf(f.log, "io open recording take.wav") < indexOf(f.log, "recording rec take.wav"));
+	CHECK(indexOf(f.log, "recording rec take.wav") < indexOf(f.log, "descriptor 42 take.wav"));
 	f.log.clear();
-	f.host.stopAll(f.graph.close(), [] {});
-	f.mainLoop.settle();
-	f.sinks.finishOne(0);
-	f.mainLoop.settle();
+	f.stopAll();
+	f.settle();
+	CHECK(linesOf(f.log, "recording closed take.wav") == 0); // its sink still writes it
+	finishEverySink(f);
 	const auto sinkGone = indexOf(f.log, "sink rec.tap1 destroyed");
 	const auto instanceGone = indexOf(f.log, "instance destroyed");
-	const auto closed = indexOf(f.log, "recording closed");
+	const auto closing = indexOf(f.log, "io close recording take.wav");
+	const auto closed = indexOf(f.log, "recording closed take.wav");
 	REQUIRE(closed < static_cast<std::ptrdiff_t>(f.log.size()));
-	CHECK(sinkGone < instanceGone); // its consumer may read the instance
-	CHECK(sinkGone < closed);
-	CHECK(instanceGone < closed);
+	CHECK(sinkGone < instanceGone);
+	CHECK(instanceGone < closing);
+	CHECK(closing < closed); // closed by the I/O executor's job
+	CHECK(f.allGone == 1);
 }
 
-TEST_CASE("A recording the folder refuses fails the configure, and a registry with no folder refuses every one",
+TEST_CASE("A recording's open held on the I/O executor holds its node configuring, waitingFor naming it, and its "
+          "consumer unbegun",
           "[node_host][recording]") {
-	RecordingFixture f;
-	f.host.nodeAdded(NodeSpec{"rec", "test", {}}, std::make_shared<RecordingConfig>(f.log, "missing/take.wav"));
-	REQUIRE(f.host.health().size() == 1);
-	CHECK(f.host.health()[0].state == NodeState::failed);
-	CHECK(f.host.health()[0].reason->detail == "cannot open: no such folder");
-	CHECK(indexOf(f.log, "sink rec.tap1 2 channels 1024 frames") == static_cast<std::ptrdiff_t>(f.log.size()));
-	f.host.stopAll(f.graph.close(), [] {});
-
-	Fixture plain; // its registry was given no recordings
-	plain.add("rec", std::make_shared<RecordingConfig>(plain.log, "take.wav"));
-	REQUIRE(plain.host.health().size() == 1);
-	CHECK(plain.host.health()[0].reason->detail == "cannot open: no recordings folder");
-	plain.stopAll();
+	Fixture f;
+	f.stores.hold = true;
+	addRecording(f, "rec", "take.wav");
+	CHECK(newestOf(f, "rec").phase == NodePhase::configuring);
+	CHECK(linesOf(f.log, "descriptor 42 take.wav") == 0);
+	f.timers.advance(waitingForDelay);
+	f.settle();
+	CHECK(newestOf(f, "rec").waitingFor ==
+	      std::vector<WaitingFor>{{WaitingFor::Kind::recording, "take.wav"}, {WaitingFor::Kind::consumer, ""}});
+	f.stores.runIo();
+	f.settle();
+	CHECK(linesOf(f.log, "descriptor 42 take.wav") == 1);
+	CHECK(newestOf(f, "rec").state == NodeState::running);
+	f.stores.hold = false;
+	f.stopAll();
+	f.settle();
+	finishEverySink(f);
+	CHECK(f.allGone == 1);
 }
 
-// docs/architecture.md#faults-by-owner: an adapter's refusal is the node's start-failed through every path to it, and
-// never ear's bug.
-TEST_CASE("An adapter's refusal through any context call, a recording's or a sink's, is start-failed with no record",
-          "[node_host][recording][type-throw]") {
-	for (const std::string path : {"emfile/take.wav", "bad_alloc/take.wav"}) {
-		INFO(path);
-		RecordingFixture f;
-		TestInternalErrors errors;
-		f.host.subscribeInternalErrors(errors);
-		f.host.nodeAdded(NodeSpec{"rec", "test", {}}, std::make_shared<RecordingConfig>(f.log, path));
-		CHECK_FALSE(MainLoopActivity::takeThrown()); // nothing thrown out of NodeHost
-		REQUIRE(f.host.health().size() == 1);
-		REQUIRE(f.host.health()[0].reason);
-		CHECK(f.host.health()[0].reason->code == FailureReason::Code::startFailed);
-		CHECK(f.host.health()[0].reason->detail.starts_with("configure threw: "));
-		CHECK(errors.told.empty());
-		f.host.stopAll(f.graph.close(), [] {});
-		f.mainLoop.settle();
+TEST_CASE("A recording not opened within 5 s fails its node start-failed, and the late open's file is released on the "
+          "I/O executor",
+          "[node_host][recording][deadline]") {
+	Fixture f;
+	f.stores.hold = true;
+	addRecording(f, "rec", "take.wav");
+	f.timers.advance(recordingBound - std::chrono::milliseconds{1});
+	f.settle();
+	CHECK(failureOf(f, "rec").empty());
+	f.timers.advance(std::chrono::milliseconds{1});
+	f.settle();
+	CHECK(failureOf(f, "rec") == "start-failed: cannot open take.wav: not opened within 5 s");
+	finishEverySink(f); // its teardown: the sink drains, then step 5 queues the recording's close
+	f.log.clear();
+	f.stores.runIo(); // the open runs at last; its completion lands on no configuration
+	f.settle();
+	f.stores.runIo();
+	CHECK(indexOf(f.log, "recording rec take.wav") < indexOf(f.log, "io release recording take.wav"));
+	CHECK(indexOf(f.log, "io release recording take.wav") < indexOf(f.log, "recording closed take.wav"));
+	CHECK(linesOf(f.log, "descriptor 42 take.wav") == 0);
+	f.stores.hold = false;
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A recording the folder refuses fails its node start-failed cannot open <path>, its consumer never begun, "
+          "and a host with no recordings folder refuses every one",
+          "[node_host][recording]") {
+	SECTION("the folder's reason") {
+		Fixture f;
+		addRecording(f, "rec", "missing/take.wav");
+		CHECK(failureOf(f, "rec") == "start-failed: cannot open missing/take.wav: no such folder");
+		CHECK(linesOf(f.log, "descriptor 42 missing/take.wav") == 0);
+		CHECK(f.internalErrors.told.empty());
+		f.stopAll();
+		finishEverySink(f);
+		CHECK(f.allGone == 1);
 	}
-	SECTION("a sink's refusal") {
-		Fixture g;
-		g.sinks.throwInMake = true;
-		auto config = std::make_shared<TestConfig>(g.log);
-		config->withSinks(1);
-		g.add("rec", config);
-		CHECK(failureOf(g, "rec").starts_with("start-failed: configure threw: no thread for rec"));
-		CHECK(g.internalErrors.told.empty());
-		CHECK_FALSE(MainLoopActivity::takeThrown());
-		g.stopAll();
-		g.settle();
+	SECTION("an adapter that cannot make a descriptor: a refusal, never ear's bug") {
+		Fixture f;
+		addRecording(f, "rec", "emfile/take.wav");
+		CHECK(failureOf(f, "rec").starts_with("start-failed: cannot open emfile/take.wav: no descriptor"));
+		CHECK(f.internalErrors.told.empty());
+		f.stopAll();
+		finishEverySink(f);
+		CHECK(f.allGone == 1);
+	}
+	SECTION("no recordings folder") {
+		Fixture f(HostShape{.recordings = false});
+		addRecording(f, "rec", "take.wav");
+		CHECK(failureOf(f, "rec") == "start-failed: cannot open take.wav: no recordings folder");
+		CHECK(linesOf(f.log, "io open recording take.wav") == 0);
+		f.stopAll();
+		finishEverySink(f);
+		CHECK(f.allGone == 1);
 	}
 }
 
-TEST_CASE("An adapter that makes nothing, or throws its own std::logic_error, through a context call is ear's bug, its "
-          "node lost and a record",
+TEST_CASE("A recording adapter's bug: its std::logic_error, or no file made, loses its node and is a "
+          "record",
           "[node_host][recording][type-throw]") {
 	const std::vector<std::pair<std::string, std::string>> cases{
 		{"null/take.wav", "the recording adapter opened no file"},
 		{"bug/take.wav", "the folder adapter broke its own rule"}};
 	for (const auto& [path, what] : cases) {
 		INFO(path);
-		RecordingFixture f;
-		TestInternalErrors errors;
-		f.host.subscribeInternalErrors(errors);
-		f.host.nodeAdded(NodeSpec{"rec", "test", {}}, std::make_shared<RecordingConfig>(f.log, path));
-		CHECK_FALSE(MainLoopActivity::takeThrown());
-		CHECK(errors.told == std::vector<std::string>{"RecordingAdapter::open|rec|configure rec|" + what});
-		REQUIRE(f.host.health().at(0).reason);
-		CHECK(f.host.health()[0].reason->code == FailureReason::Code::lost);
-		CHECK(f.host.health()[0].reason->detail == "internal error in RecordingAdapter::open: " + what);
-		f.host.stopAll(f.graph.close(), [] {});
-		f.mainLoop.settle();
-	}
-	SECTION("a sink adapter that makes nothing") {
 		Fixture f;
-		f.sinks.nullInMake = true;
-		auto config = std::make_shared<TestConfig>(f.log);
-		config->withSinks(1);
-		f.add("rec", config);
+		addRecording(f, "rec", path);
+		CHECK_FALSE(MainLoopActivity::takeThrown());
 		CHECK(f.internalErrors.told ==
-		      std::vector<std::string>{
-				  "SinkAdapter::make|rec|configure rec|the sink adapter made no sink for bank tap1"});
-		CHECK(failureOf(f, "rec") ==
-		      "lost: internal error in SinkAdapter::make: the sink adapter made no sink for bank tap1");
+		      std::vector<std::string>{"RecordingAdapter::open|rec|the I/O job open recording " + path + "|" + what});
+		CHECK(failureOf(f, "rec") == "lost: internal error in RecordingAdapter::open: " + what);
 		f.stopAll();
-		f.settle();
+		finishEverySink(f);
+		CHECK(f.allGone == 1);
 	}
 }
 
-TEST_CASE("A host destroyed with a recording node still running frees its instance before the recording",
+TEST_CASE("Two nodes recording to one path: the second is refused held by node <first> before its file is opened, "
+          "however the path is spelled, and once the first is gone a retry runs",
+          "[node_host][recording][claims]") {
+	Fixture f;
+	addRecording(f, "a", "take.wav");
+	REQUIRE(newestOf(f, "a").state == NodeState::running);
+	std::string spelling;
+	SECTION("the same spelling") { spelling = "take.wav"; }
+	SECTION("another spelling of it") { spelling = "./take.wav"; }
+	addRecording(f, "b", spelling);
+	CHECK(failureOf(f, "b") == "start-failed: cannot open take.wav: held by node a");
+	CHECK(linesOf(f.log, "recording b " + spelling) == 0); // nothing of b opened, a's file never truncated
+	CHECK(newestOf(f, "a").state == NodeState::running);
+	f.host.nodeRemoved("a");
+	finishEverySink(f);
+	REQUIRE(f.host.start("b").has_value()); // a retry: the path is free now
+	f.settle();
+	CHECK(newestOf(f, "b").state == NodeState::running);
+	CHECK(indexOf(f.log, "recording closed take.wav") < indexOf(f.log, "recording b " + spelling));
+	f.stopAll();
+	finishEverySink(f);
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A removed file node and an added one on its path in one plan: the new one waits, said by ear.claim-wait and "
+          "waitingFor, and opens the path once the old one closed it at its teardown's last step",
+          "[node_host][recording][claims]") {
+	Fixture f;
+	addRecording(f, "a", "take.wav");
+	f.log.clear();
+	f.host.nodeRemoved("a");
+	f.addInTurn("b", recordingConfig(f.log, "take.wav"));
+	f.endTurn();
+	f.blocks.events.at(1)->ready();
+	f.settle();
+	CHECK(linesOf(f.log, "diagnostic b ear.claim-wait") == 1);
+	CHECK(f.diagnostics.details.back() == "recording:take.wav held by node a, which is closing");
+	CHECK(linesOf(f.log, "recording b take.wav") == 0);
+	f.timers.advance(waitingForDelay);
+	f.settle();
+	CHECK(newestOf(f, "b").waitingFor == std::vector<WaitingFor>{{WaitingFor::Kind::claim, "recording:take.wav"},
+	                                                             {WaitingFor::Kind::recording, "take.wav"},
+	                                                             {WaitingFor::Kind::consumer, ""}});
+	finishEverySink(f); // a's teardown finishes: its step 5 closes the file and releases the path
+	CHECK(indexOf(f.log, "node a gone dropped=0") < indexOf(f.log, "recording b take.wav"));
+	CHECK(indexOf(f.log, "io close recording take.wav") < indexOf(f.log, "io open recording take.wav"));
+	CHECK(newestOf(f, "b").state == NodeState::running);
+	f.stopAll();
+	finishEverySink(f);
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A recording a configuration leaked at the close deadline keeps refuses another node its path, naming it, "
+          "and the late close starts the refused node",
+          "[node_host][recording][claims][leak]") {
+	Fixture f;
+	addRecording(f, "a", "take.wav");
+	f.host.nodeRemoved("a");
+	addRecording(f, "b", "take.wav");
+	REQUIRE(linesOf(f.log, "diagnostic b ear.claim-wait") == 1);
+	f.timers.advance(closeDeadline);
+	f.settle();
+	REQUIRE(linesOf(f.log, "diagnostic a ear.close-overdue") == 1);
+	REQUIRE(f.host.leaked() == 1);
+	CHECK(failureOf(f, "b") == "start-failed: cannot open take.wav: held by node a's earlier configuration, which did "
+	                           "not close; it starts when that closes");
+	CHECK(linesOf(f.log, "recording b take.wav") == 0);      // nothing of it opened, the file never truncated
+	CHECK(linesOf(f.log, "recording closed take.wav") == 0); // the leaked configuration's sink may still write it
+	f.log.clear();
+
+	finishEverySink(f); // the leaked configuration's sink (then the refused node's) finally drains
+	CHECK(linesOf(f.log, "diagnostic a ear.close-late ms=10000") == 1);
+	CHECK(std::ranges::count(f.diagnostics.details, std::string("the configuration leaked at the close deadline closed "
+	                                                            "10000 ms after its close began; its claims are "
+	                                                            "released")) == 1);
+	CHECK(linesOf(f.log, "recording closed take.wav") == 1); // freed after its late close, on the I/O executor
+	CHECK(indexOf(f.log, "diagnostic a ear.close-late ms=10000") < indexOf(f.log, "recording b take.wav"));
+	CHECK(newestOf(f, "b").state == NodeState::running);
+	CHECK(std::ranges::count(f.listener.phases("b"), std::string("configuring (retry)")) == 1);
+	CHECK(f.host.leaked() == 0);
+	f.stopAll();
+	finishEverySink(f);
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A host destroyed with a recording node still running frees its instance before the recording, which closes "
+          "on the I/O executor",
           "[node_host][recording]") {
 	for (const bool driven : {true, false}) {
 		INFO((driven ? "driven" : "never driven"));
-		RecordingFixture f;
+		Fixture f;
 		auto host = std::make_unique<NodeHost>(AudioFormat{ear::SampleRate::fixed<44100>(), 256}, f.blocks, f.resources,
 		                                       f.mainLoop, f.timers, closeDeadline);
-		host->nodeAdded(NodeSpec{"rec", "test", {}}, std::make_shared<RecordingConfig>(f.log, "take.wav"));
+		host->nodeAdded(NodeSpec{"rec", "test", {}}, recordingConfig(f.log, "take.wav"));
+		f.mainLoop.settle(); // its block made, its recording opened
 		if (driven) {
-			f.mainLoop.runPosted();
 			f.blocks.events.at(0)->ready();
 			f.mainLoop.settle();
 		}
 		f.log.clear();
 		host.reset(); // no stopAll: the configuration goes by its own destruction, as when a test throws or a boot fails
-		const Log& log = f.log;
-		const auto instanceGone = indexOf(log, "instance destroyed");
-		const auto closed = indexOf(log, "recording closed");
-		REQUIRE(instanceGone < static_cast<std::ptrdiff_t>(log.size()));
-		REQUIRE(closed < static_cast<std::ptrdiff_t>(log.size()));
+		const auto instanceGone = indexOf(f.log, "instance destroyed");
+		const auto closed = indexOf(f.log, "recording closed take.wav");
+		REQUIRE(instanceGone < static_cast<std::ptrdiff_t>(f.log.size()));
+		REQUIRE(closed < static_cast<std::ptrdiff_t>(f.log.size()));
 		CHECK(instanceGone < closed);
 	}
 }
@@ -4702,7 +4838,7 @@ TEST_CASE("A context kept past its configure is refused at the call: from start(
 	config->onStart = [&] { config->kept->use(std::make_unique<TestAudioCode>(f.log)); };
 	f.add("probe", config);
 	REQUIRE(config->kept != nullptr);
-	CHECK_THROWS_WITH(config->kept->openRecording(RecordingRequest{"x.wav"}), "openRecording outside configure");
+	CHECK_THROWS_WITH(config->kept->recording(RecordingRequest{"x.wav"}), "recording outside configure");
 	CHECK_THROWS_WITH(config->kept->soundCard("pb", motuOut.shape), "soundCard outside configure");
 	CHECK_THROWS_WITH(config->kept->rtpReceiver("cap", fppStream), "rtpReceiver outside configure");
 	f.blocks.events.at(0)->ready();
@@ -4774,26 +4910,44 @@ TEST_CASE("One companion per inside bank, whatever the kinds: a card and a sink 
 	}
 }
 
-TEST_CASE("A configure that threw after it opened a recording closes the recording after its instance",
+TEST_CASE("A configure that threw after it asked for a recording opens nothing: its path is never claimed or opened",
           "[node_host][class][recording]") {
-	RecordingFixture f;
-	TestListener listener{f.log};
-	f.host.subscribe(listener);
+	Fixture f;
 	auto config = std::make_shared<ProbeConfig>(f.log);
 	config->onConfigure = [&](InstanceContexts& cx) -> Configured {
-		const auto fd = cx.create.openRecording(RecordingRequest{"take.wav"});
-		REQUIRE(fd);
-		f.log.push_back("descriptor " + std::to_string(*fd));
+		static_cast<void>(cx.create.recording(RecordingRequest{"take.wav"}));
 		throw std::runtime_error("after the recording");
 	};
-	f.host.nodeAdded(NodeSpec{"rec", "test", {}}, config);
-	f.mainLoop.settle();
-	CHECK(indexOf(f.log, "descriptor 42") < indexOf(f.log, "instance destroyed"));
-	CHECK(indexOf(f.log, "instance destroyed") < indexOf(f.log, "recording closed"));
-	CHECK(std::ranges::count(f.log,
-	                         std::string("node rec failed start-failed: configure threw: after the recording")) == 1);
-	f.host.stopAll(f.graph.close(), [] {});
-	f.mainLoop.settle();
+	f.add("rec", config);
+	f.settle();
+	CHECK(failureOf(f, "rec") == "start-failed: configure threw: after the recording");
+	CHECK(countOf(f.log, "io open recording take.wav") == 0);
+	CHECK(countOf(f.log, "recording rec take.wav") == 0);
+	f.add("other", recordingConfig(f.log, "take.wav")); // the path is free
+	f.blocks.events.at(1)->ready();
+	f.settle();
+	CHECK(f.host.health().back().state == NodeState::running);
+	f.stopAll();
+	finishEverySink(f);
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("One path asked for twice in one configuration is the type's bug, however it is spelled",
+          "[node_host][recording]") {
+	Fixture f;
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	config->onConfigure = [&](InstanceContexts& cx) -> Configured {
+		static_cast<void>(cx.create.recording(RecordingRequest{"take/1.wav"}));
+		static_cast<void>(cx.create.recording(RecordingRequest{"./take//1.wav"}));
+		cx.create.use(std::make_unique<TestAudioCode>(f.log));
+		return Configured::applied();
+	};
+	f.add("rec", config);
+	f.settle();
+	CHECK(failureOf(f, "rec") == "start-failed: configure threw: recording:take/1.wav claimed twice");
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
 }
 
 TEST_CASE("A broken rule the type catches still fails its node with the rule's text", "[node_host][class]") {

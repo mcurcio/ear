@@ -7,6 +7,7 @@
 #include "ear/testing/node_harness.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cassert>
 #include <chrono>
@@ -17,10 +18,15 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <stdexcept>
+#include <system_error>
 #include <utility>
 
+#include <fcntl.h>
 #include <poll.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #include "../legacy_instance.hpp"
 #include "ear/core/block_rules.hpp"
@@ -711,6 +717,77 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		std::vector<std::string> calls;
 	};
 
+	/// The recordings' disk in memory: one memfd per path (by its claim path), so a descriptor is a real, seekable
+	/// file; each open truncates it and hands a duplicate the framework closes. Opened and closed on the stores' I/O
+	/// executor, the harness's one I/O thread.
+	struct FakeRecordings final : RecordingAdapter {
+		explicit FakeRecordings(FakeIo& io) : fakeIo(io) {}
+		FakeRecordings(const FakeRecordings&) = delete;
+		FakeRecordings& operator=(const FakeRecordings&) = delete;
+		~FakeRecordings() {
+			for (const auto& [path, fd] : files) ::close(fd);
+		}
+		/// One descriptor made; it may outlive the disk (a completion the main loop drops after the harness).
+		struct File final : RecordingFile {
+			File(std::shared_ptr<std::atomic<std::size_t>> o, int d) : open(std::move(o)), fd(d) { ++*open; }
+			File(const File&) = delete;
+			File& operator=(const File&) = delete;
+			~File() override {
+				::close(fd);
+				--*open;
+			}
+			int descriptor() const noexcept override { return fd; }
+			std::shared_ptr<std::atomic<std::size_t>> open;
+			int fd;
+		};
+		IoExecutor& io() noexcept override { return fakeIo; }
+		std::expected<std::unique_ptr<RecordingFile>, std::string> open(const NodeName&,
+		                                                                const std::string& path) override {
+			if (broken) throw std::logic_error(*broken);
+			const std::string key = recordingClaimPath(path);
+			if (auto failed = failOpen.find(key); failed != failOpen.end()) return std::unexpected(failed->second);
+			if (pipes.contains(key)) {
+				std::array<int, 2> ends{};
+				if (::pipe(ends.data()) != 0) throw std::system_error(errno, std::generic_category(), "pipe");
+				::close(ends[0]); // a write to it fails: nothing reads
+				return std::make_unique<File>(opened, ends[1]);
+			}
+			const int fd = fileOf(key);
+			if (::ftruncate(fd, 0) != 0) throw std::system_error(errno, std::generic_category(), "ftruncate");
+			const int dup = ::fcntl(fd, F_DUPFD_CLOEXEC, 0);
+			if (dup < 0) throw std::system_error(errno, std::generic_category(), "dup");
+			return std::make_unique<File>(opened, dup);
+		}
+		/// The memfd of `key`, made if missing.
+		int fileOf(const std::string& key) {
+			if (auto found = files.find(key); found != files.end()) return found->second;
+			const int fd = ::memfd_create(key.c_str(), MFD_CLOEXEC);
+			if (fd < 0) throw std::system_error(errno, std::generic_category(), "memfd_create");
+			files.emplace(key, fd);
+			return fd;
+		}
+		std::optional<std::string> bytes(const std::string& key) const {
+			const auto found = files.find(key);
+			if (found == files.end()) return std::nullopt;
+			std::string text;
+			std::array<char, 4096> chunk{};
+			for (off_t at = 0;;) {
+				const ssize_t got = ::pread(found->second, chunk.data(), chunk.size(), at);
+				if (got <= 0) break;
+				text.append(chunk.data(), static_cast<std::size_t>(got));
+				at += got;
+			}
+			return text;
+		}
+		FakeIo& fakeIo;
+		std::map<std::string, int, std::less<>> files;            // by claim path
+		std::map<std::string, std::string, std::less<>> failOpen; // each open refused, by claim path
+		std::set<std::string, std::less<>> pipes;                 // each open a pipe's write end, by claim path
+		std::optional<std::string> broken;                        // every open throws std::logic_error(this)
+		std::shared_ptr<std::atomic<std::size_t>> opened =
+			std::make_shared<std::atomic<std::size_t>>(0); // made, not closed
+	};
+
 	/// Every config the type parses, wrapped so the harness sees the instance each configuration makes (a legacy run
 	/// object, for runObject()) and when it goes.
 	/// Both contexts, forwarded to NodeHost's, recording the requests the harness shows (handoffs, recordings). Lives
@@ -727,9 +804,9 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		void rtpReceiver(std::string_view bank, RtpReceiverShape shape) override {
 			create.rtpReceiver(bank, std::move(shape));
 		}
-		std::expected<int, std::string> openRecording(const RecordingRequest& request) override {
+		Recording& recording(const RecordingRequest& request) override {
 			harness.recordingList.push_back(request);
-			return create.openRecording(request);
+			return create.recording(request);
 		}
 		SinkRequest& sink(std::string_view bank, SinkShape shape) override { return create.sink(bank, shape); }
 		SourceWriter& source(std::string_view bank, SourceShape shape, std::unique_ptr<SourceClock> clock) override {
@@ -758,13 +835,9 @@ struct NodeHarness::Impl final : NodeHealthListener,
 
 	protected:
 		Acquired acquireResource(const ResourceRequest& request) override {
-			if (const auto* handoff = std::get_if<HandoffRequest>(&request)) {
-				harness.handoffList.push_back(SeenHandoff{handoff->bank, 0, handoff->capacityFrames});
-				return &legacy.acquire(*handoff);
-			}
-			const auto& recording = std::get<RecordingRequest>(request);
-			harness.recordingList.push_back(recording);
-			return legacy.acquire(recording);
+			const auto& handoff = std::get<HandoffRequest>(request);
+			harness.handoffList.push_back(SeenHandoff{handoff.bank, 0, handoff.capacityFrames});
+			return &legacy.acquire(handoff);
 		}
 
 	public:
@@ -815,7 +888,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	                                .handoffs = &handoffs,
 	                                .sinks = &sinks,
 	                                .sources = &sources,
-	                                .recordings = options.recordings,
+	                                .recordings = options.noRecordingsFolder ? nullptr : &recordings,
 	                                .loops = &loops,
 	                                .stores = &stores}),
 		  graph(catalogue), fade(options.format.rate), account(FrameClock(options.format.rate), &cuts),
@@ -1010,6 +1083,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	FakeSources sources;
 	FakeLoops loops;
 	FakeStores stores;
+	FakeRecordings recordings{stores.fakeIo};
 	ResourceRegistry registry;
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph; // only for close(), the proof stopAll takes
@@ -1082,6 +1156,10 @@ NodeHarness::~NodeHarness() {
 	} catch (...) {
 		// A type bug thrown while tearing down: the test already failed on it, or will on what it checks.
 	}
+	// What the I/O executor still holds (holdIo: a recording's close, say) goes while the recordings' disk it closes
+	// into is still there.
+	impl_->host.reset();
+	impl_->stores.fakeIo.queue.clear();
 }
 
 std::optional<std::string> NodeHarness::parse(const NodeSettings& settings) {
@@ -1474,6 +1552,26 @@ void NodeHarness::failNextWrite(std::string_view suffix, std::string why) {
 }
 
 void NodeHarness::breakStores(std::string what) { impl_->stores.broken = std::move(what); }
+
+std::optional<std::string> NodeHarness::recordingBytes(std::string_view path) const {
+	return impl_->recordings.bytes(recordingClaimPath(path));
+}
+
+void NodeHarness::presetRecording(std::string_view path, std::string bytes) {
+	const int fd = impl_->recordings.fileOf(recordingClaimPath(path));
+	if (::ftruncate(fd, 0) != 0 || ::pwrite(fd, bytes.data(), bytes.size(), 0) != static_cast<ssize_t>(bytes.size()))
+		throw std::system_error(errno, std::generic_category(), "presetRecording");
+}
+
+void NodeHarness::failRecordingOpen(std::string_view path, std::string why) {
+	impl_->recordings.failOpen.insert_or_assign(recordingClaimPath(path), std::move(why));
+}
+
+void NodeHarness::pipeRecording(std::string_view path) { impl_->recordings.pipes.insert(recordingClaimPath(path)); }
+
+void NodeHarness::breakRecordings(std::string what) { impl_->recordings.broken = std::move(what); }
+
+std::size_t NodeHarness::openRecordings() const { return *impl_->recordings.opened; }
 
 void NodeHarness::overdueNextWrite(bool ran) { impl_->stores.overdueNext = ran; }
 

@@ -60,6 +60,7 @@
 #include "ear/runtime/io_thread.hpp"
 #include "ear/runtime/loops.hpp"
 #include "ear/runtime/port_probe.hpp"
+#include "ear/runtime/recordings.hpp"
 #include "ear/runtime/stores.hpp"
 #include "ear/server/control_port.hpp"
 #include "ear/server/control_thread.hpp"
@@ -85,33 +86,6 @@ public:
 
 private:
 	ear::output::OutputWriter& writer_;
-};
-
-/// The recording kind's adapter (docs/writing-a-node-type.md#configure-and-createof): files made beneath the recordings
-/// folder, which no node type holds. Glue only, as WriterLines is: ear_folder and ear_core do not see each other.
-class ConfinedRecordings final : public ear::RecordingAdapter {
-public:
-	explicit ConfinedRecordings(ear::folder::ConfinedFolder folder) : folder_(std::move(folder)) {}
-	std::expected<std::unique_ptr<ear::RecordingFile>, std::string> open(const ear::NodeName&,
-	                                                                     const std::string& path) override {
-		auto made = folder_.create(path);
-		if (!made) return std::unexpected(std::move(made.error().detail));
-		return std::make_unique<Recording>(*made);
-	}
-
-private:
-	class Recording final : public ear::RecordingFile {
-	public:
-		explicit Recording(int fd) noexcept : fd_(fd) {}
-		Recording(const Recording&) = delete;
-		Recording& operator=(const Recording&) = delete;
-		~Recording() override { ::close(fd_); }
-		int descriptor() const noexcept override { return fd_; }
-
-	private:
-		int fd_;
-	};
-	ear::folder::ConfinedFolder folder_;
 };
 
 /// Stops the capture before the encoder it feeds is destroyed: what the pipes and the engine's log still hold is
@@ -350,7 +324,10 @@ int main(int argc, char** argv) {
 
 	ear::DesiredGraph graph(catalogue);
 	ear::Reconciler reconciler(links);
-	ConfinedRecordings recordingFiles(std::move(*recordings));
+	// The nodes' recordings (docs/writing-a-node-type.md#recordings): files beneath the recordings folder, opened and
+	// closed on the I/O thread.
+	ear::runtime::ConfinedRecordings recordingFiles(
+		std::make_shared<const ear::folder::ConfinedFolder>(std::move(*recordings)), io);
 	ear::ResourceRegistry resources(ear::ResourceAdapters{.cards = &cards,
 	                                                      .receivers = &receivers,
 	                                                      .handoffs = &handoffs,

@@ -1,6 +1,5 @@
-// Every node type, as the all-type tests get them: from the generated list, given real and empty folders beneath one
-// temporary folder that lasts the test program (sendspin's config folder, and the recordings folder behind the harness's
-// recordings, where the harness test writes "file"'s).
+// Every node type, as the all-type tests get them: from the generated list, given a real and empty folder beneath one
+// temporary folder that lasts the test program (sendspin's config folder). The harness keeps a recording in memory.
 #pragma once
 
 #include <functional>
@@ -16,7 +15,6 @@
 
 #include "ear/all_node_types/all_node_types.hpp"
 #include "ear/core/log.hpp"
-#include "confined_recordings.hpp"
 #include "ear/folder/confined_folder.hpp"
 #include "temp_folder.hpp"
 
@@ -28,11 +26,6 @@ inline std::shared_ptr<const folder::ConfinedFolder> openedForAllTypes(std::stri
 	auto opened = folder::ConfinedFolder::open(root.path() / name);
 	if (!opened) throw std::runtime_error("cannot open " + std::string(name) + ": " + opened.error().detail);
 	return std::make_shared<const folder::ConfinedFolder>(std::move(*opened));
-}
-
-inline const std::shared_ptr<const folder::ConfinedFolder>& recordingsFolder() {
-	static const auto folder = openedForAllTypes("recordings");
-	return folder;
 }
 
 inline const std::shared_ptr<const folder::ConfinedFolder>& configFolder() {
@@ -57,12 +50,6 @@ inline BootLog& bootLog() {
 
 inline std::vector<std::unique_ptr<const NodeType>> allTypes() {
 	return nodes::allNodeTypes({.config = configFolder(), .log = &bootLog()});
-}
-
-/// Recordings beneath the recordings folder, for the harness, as main.cpp's adapter makes them.
-inline ConfinedRecordings& recordings() {
-	static ConfinedRecordings adapter(recordingsFolder());
-	return adapter;
 }
 
 /// The types the all-type harness test does not run yet (docs/writing-a-node-type.md#testing-a-type): every other type

@@ -356,6 +356,12 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 		[](StatusLog& log, Lines&) {
 			log.nodeDiagnostic("fpp2", "ear.claim-wait", "udp:5004 held by node fpp, which is closing", {});
 		},
+		[](StatusLog& log, Lines&) {
+			// Still configuring, 10 s on: now it waits for one of its recordings to open, by its path.
+			paceNow += std::chrono::seconds(10);
+			log.nodeChanged(
+				health("fpp", NodePhase::configuring, {}, {}, {{ear::WaitingFor::Kind::recording, "take1.wav"}}));
+		},
 		[](StatusLog& log, Lines&) { log.stopped(); },
 	};
 }

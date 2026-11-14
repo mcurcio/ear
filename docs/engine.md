@@ -810,20 +810,22 @@ sink's consumer has a deadline from its asking, on the main loop's timers (`comp
 `cardReadinessBound` and friends, `readinessBound(kind)`); a source is ready when made and has none.
 `NodeHost` keeps them as the items of one readiness list per configuration
 (`src/core/readiness.hpp`): the node's claims first ([writing-a-node-type.md](writing-a-node-type.md#claims)),
-then its stores ([writing-a-node-type.md](writing-a-node-type.md#stores)),
+then its stores ([writing-a-node-type.md](writing-a-node-type.md#stores)) and recordings
+([writing-a-node-type.md](writing-a-node-type.md#recordings)),
 then its loops ([writing-a-node-type.md](writing-a-node-type.md#loops)), then the engine companions, then the sinks'
 consumers, each in declaration or request order. The list arms every
 bound through one timer rule (below), judges it, and is what `waitingFor` reads; the
 configuration's resources are ready once every item is. Its items are asked in steps, a later step
 only once every earlier one is ready, and each is started when it is asked: a claim judged (step
 `claims`: granted, a port then probed, refused, or waiting for a holder that is closing), a store
-opened (step `opens`, one job on the I/O thread), then a loop made (step `loops`, no bound: its adapter says at
+or recording opened (step `opens`, one job on the I/O thread), then a loop made (step `loops`, no bound: its adapter says at
 once whether its thread started), then an engine companion
 made once the block is ready too, and a sink's consumer begun (step `companions`). A node with no
-claims, stores or loops asks its companions at configure's applied return, so the wait counts from
+claims, stores, recordings or loops asks its companions at configure's applied return, so the wait counts from
 the request and time the block took to be ready counts too; a node with them asks its companions, and
-starts their bounds, once its claims are granted, its stores open and its loops run. An `rtp` node
-always has a claim, its UDP port, so its receiver is made once that port is granted and probed.
+starts their bounds, once its claims are granted, its stores and recordings open and its loops run. An `rtp` node
+always has a claim, its UDP port, so its receiver is made once that port is granted and probed; a `file` node
+always has a recording, so its sink's consumer begins once the file is open.
 
 | Kind | Deadline | Past it, the node fails |
 |---|---|---|
@@ -832,6 +834,7 @@ always has a claim, its UDP port, so its receiver is made once that port is gran
 | A sink's consumer | 5 s | `start-failed: the sink <bank>'s consumer did not begin within 5 s` (its `begin` is the type's code) |
 | A claim waiting for a holder that is closing | 15 s | `start-failed: <claim's words>: held by node <n>, which did not let go within 15 s` (a refusal, at once: `start-failed: cannot bind UDP port 5004: held by node <n>`) |
 | A store's open | 5 s | `start-failed: <file>: not opened within 5 s` (a refusal before it, at once: `start-failed: <file>: <why>`) |
+| A recording's open | 5 s | `start-failed: cannot open <path>: not opened within 5 s` (a refusal before it, at once: `start-failed: cannot open <path>: <why>`) |
 
 Each deadline is an input of its own when its timer fires, and judges then: if its configuration is
 still the current one, still readying (not torn down, not failed) and the companion not ready, the
@@ -843,7 +846,7 @@ deadline, fails the node `engine-refused: <node>.<suffix> was never made: the no
 ready within <n> s` rather than blaming the card or the port. The failure tears the configuration
 down as any other: the flush destroys an engine companion made or not (destroying one tells nothing,
 so its `lost` never comes), and a sink is closed (a `begin` still running finishes first; the close deadline covers one that
-never returns). Meanwhile `waitingFor` shows `claim`, `store`, `loop`, `companion` or `consumer` after 2 s. A failed node is
+never returns). Meanwhile `waitingFor` shows `claim`, `store`, `recording`, `loop`, `companion` or `consumer` after 2 s. A failed node is
 retried only by `node.start`, `node.restart` or a change until recovery is built; a USB card that
 takes longer than 10 s to start fails.
 

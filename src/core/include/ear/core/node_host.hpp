@@ -21,6 +21,7 @@
 #include "ear/core/log.hpp"
 #include "ear/core/loop.hpp"
 #include "ear/core/node_lifecycle.hpp"
+#include "ear/core/recording.hpp"
 #include "ear/core/sink.hpp"
 #include "ear/core/source.hpp"
 #include "ear/core/store.hpp"
@@ -29,15 +30,16 @@ namespace ear {
 /// What a node still waits for, once its phase has lasted 2 s (docs/control-port.md#node-health): an older node of its
 /// name still closing (`name` its name), the engine's block (`block`), a companion (`name`: an engine companion's
 /// engine name, `<node>.<suffix>`), a sink's consumer (`consumer`), one of its loops to start (`loop`, `name` the
-/// loop's), one of its stores to open (`store`, `name` its file's), one of its claims to be granted (`claim`, `name` its
-/// key: "udp:5004"; docs/writing-a-node-type.md#claims).
+/// loop's), one of its stores to open (`store`, `name` its file's), one of its recordings to open (`recording`, `name`
+/// its path, as asked), one of its claims to be granted (`claim`, `name` its key: "udp:5004";
+/// docs/writing-a-node-type.md#claims).
 struct WaitingFor {
-	enum class Kind { olderNode, block, companion, consumer, loop, store, claim };
+	enum class Kind { olderNode, block, companion, consumer, loop, store, recording, claim };
 	Kind kind;
-	std::string name{}; // olderNode, companion, loop, store and claim only
+	std::string name{}; // olderNode, companion, loop, store, recording and claim only
 	friend bool operator==(const WaitingFor&, const WaitingFor&) = default;
 };
-/// "older-node" | "block" | "companion" | "consumer" | "loop" | "store" | "claim"
+/// "older-node" | "block" | "companion" | "consumer" | "loop" | "store" | "recording" | "claim"
 std::string_view waitingKindName(WaitingFor::Kind kind) noexcept;
 /// A node's health, the framework's judgement alone (docs/architecture.md#the-node-lifecycle; on the wire:
 /// docs/control-port.md#node-health): its state (the phase's
@@ -233,22 +235,6 @@ public:
 protected:
 	~HandoffAdapter() = default;
 };
-/// One open recording file (RecordingRequest). Destroying it (main thread) closes it.
-class RecordingFile {
-public:
-	virtual ~RecordingFile() = default;
-	virtual int descriptor() const noexcept = 0;
-};
-/// The recording kind's adapter: the recordings folder, held open from boot.
-class RecordingAdapter {
-public:
-	/// Main thread. `path` created or truncated beneath the folder only; the error is why not (it names no path).
-	virtual std::expected<std::unique_ptr<RecordingFile>, std::string> open(const NodeName& node,
-	                                                                        const std::string& path) = 0;
-
-protected:
-	~RecordingAdapter() = default;
-};
 /// The adapter of each kind of companion and of ResourceRequest a host has
 /// (docs/writing-a-node-type.md#configure-and-createof): one member per kind, each null where the host has none, so a
 /// new kind is one member here and a host that does not need it (a test's) leaves it out. All given outlive the
@@ -269,7 +255,7 @@ struct ResourceAdapters {
 /// The resource registry (docs/writing-a-node-type.md#configure-and-createof): one adapter per kind of companion and
 /// of ResourceRequest, so a new kind is one adapter here and nothing more in NodeHost's constructor. A kind the host
 /// has no adapter for is refused at the context call that asks for it, as an adapter's refusal is: the node fails
-/// start-failed "no <kind> in this host" (a recording: the type is told "no recordings folder", as a recordings
+/// start-failed "no <kind> in this host" (a recording: "cannot open <path>: no recordings folder", as a recordings
 /// adapter tells why a path cannot be opened).
 class ResourceRegistry {
 public:
@@ -286,8 +272,9 @@ public:
 	SoundCardCompanions* adapterFor(const SoundCardShape&) const noexcept { return adapters_.cards; }
 	RtpReceiverCompanions* adapterFor(const RtpReceiverShape&) const noexcept { return adapters_.receivers; }
 	HandoffAdapter* adapterFor(const HandoffRequest&) const noexcept { return adapters_.handoffs; }
-	/// Never null: a host with no recordings folder answers every open "no recordings folder".
-	RecordingAdapter& adapterFor(const RecordingRequest&) const noexcept;
+	/// The recordings' adapter (CreateOf::recording; docs/writing-a-node-type.md#recordings); null: the host has none,
+	/// and every recording is refused "no recordings folder".
+	RecordingAdapter* recordings() const noexcept { return adapters_.recordings; }
 	/// The sinks' adapter (CreateOf::sink; docs/writing-a-node-type.md#sinks); null: the host has none.
 	SinkAdapter* sinks() const noexcept { return adapters_.sinks; }
 	/// The sources' adapter (CreateOf::source; docs/writing-a-node-type.md#sources); null: the host has none.
@@ -349,9 +336,10 @@ public:
 	/// with.
 	void subscribeLog(LogSink& sink);
 	/// Where a bug of an adapter's that NodeHost caught is told, before its node fails lost
-	/// (docs/architecture.md#faults-by-owner): a sink, source, handoff or recording adapter's std::logic_error inside a
-	/// context call, a port block factory's or engine companion adapter's throw in the flush, and a store adapter's throw
-	/// in one of a store's I/O jobs, told once its completion lands. Main thread.
+	/// (docs/architecture.md#faults-by-owner): a sink, source or handoff adapter's std::logic_error inside a context
+	/// call, a port block factory's or engine companion adapter's throw in the flush, a store adapter's throw in one of a
+	/// store's I/O jobs and a recording adapter's std::logic_error (or no file) in a recording's open, each told once
+	/// its completion lands. Main thread.
 	void subscribeInternalErrors(InternalErrorListener& listener);
 	/// starting; port block made (in the turn's flush, once no older block of the name exists); then a configuration
 	/// (docs/architecture.md#the-node-lifecycle; docs/writing-a-node-type.md#configure-and-createof):

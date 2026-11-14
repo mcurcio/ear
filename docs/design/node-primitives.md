@@ -362,8 +362,8 @@ std::vector<Claim> claimsOf(const SoundCardShape& shape);   // none until 0.2 C'
 - **`PortProbe` reaches NodeHost through `ResourceAdapters::ports`** (null: ports judged between the host's nodes only,
   as every test host but those that set one). `KernelPortProbe` is `ear_runtime`'s, as G1 says; a probe that throws
   is ear's bug: `ear.internal-error` (`callback` `PortProbe`), the node `lost`.
-- **`Claim::Kind` has no `device`** until 0.2 C's check shows the race; `recording` is in it (key, text) with no claimant
-  until S3c.5b.
+- **`Claim::Kind` has no `device`** until 0.2 C's check shows the race; `recording` is in it (key, text), claimed from
+  S3c.5b.
 - **`cx.claim` takes a port only** (`claim::TcpListen`, `claim::Udp`, each a `std::logic_error` outside 1 to 65535,
   and `claim::of` makes the `Claim`); `CreateContext::claim(Claim)` refuses another kind (a `std::logic_error`): stores
   and recordings are the framework's. A port claimed twice in one
@@ -387,14 +387,15 @@ std::vector<Claim> claimsOf(const SoundCardShape& shape);   // none until 0.2 C'
   `<type>-<node>.<suffix>`, and a node configures only once its older configuration and any older node of its name
   are gone), so its one refusal is the leaked one's.
 
-**Recordings** (S3c.5b): `CreateOf::recording(RecordingRequest) -> Recording&` replaces `openRecording`.
+**Recordings** (S3c.5b, built: `docs/writing-a-node-type.md#recordings`): `CreateOf::recording(RecordingRequest) ->
+Recording&` replaces `openRecording`, as designed:
 
 ```cpp
 /// A recording file this configuration writes, claimed at step 0 and opened at step 1 on the I/O executor. Valid from
-/// configure until teardown step 5; descriptor() only from the sink consumer's begin() on (asserted in debug builds).
+/// configure until teardown step 5; descriptor() only once opened.
 class Recording {
 public:
-	virtual int descriptor() const noexcept = 0;
+	virtual int descriptor() const = 0; // std::logic_error before its open landed
 	virtual const std::string& path() const noexcept = 0;
 
 protected:
@@ -402,8 +403,43 @@ protected:
 };
 ```
 
-`RecordingAdapter::open(node, path, ReadyEvents&)` replaces today's synchronous `open`. A failure is the readiness
-item's (`start-failed: cannot open <path>: <why>`, today's text), not `Configured::failed`.
+*Found building S3c.5b:*
+
+- **The open is NodeHost's, the disk the adapter's**, as S3c.4 found for stores. `RecordingAdapter::open(node, path,
+  ReadyEvents&)` cannot complete as 0.3 asks: `Completions` (and `postHolding`) are private to `ear_core`. So
+  `RecordingAdapter` (`ear/core/recording.hpp`, with `RecordingRequest`, `RecordingFile`, `recordingBound`) is the
+  disk's part: `io()` and a blocking `open(node, path)` that returns the `RecordingFile` (the descriptor it closes when
+  destroyed), called on `io()`'s thread. NodeHost's recording slot posts the open as a job holding only a shared state
+  (the adapter, the path, the file once made), completing through the configuration's `Completions` with
+  `postHolding`; a dropped completion's state is released on the I/O thread. `ear_runtime::ConfinedRecordings` (over
+  `ear_folder`, as main.cpp's glue was) implements it; main.cpp's and the tests' copies of the glue went.
+- **Closed on the I/O thread, too.** The slot, freed at step 5 (after the sinks, the instance and the stores, as built),
+  posts its state's last reference to the I/O executor as the job `close recording <path>`, before its claim is
+  released, so one path's close and its next configuration's open (truncate) are jobs on one thread in that order. A
+  slot freed with no I/O thread left (after `IoThread::stop`) closes inline, as a job posted then is destroyed unrun.
+- **`descriptor()` throws rather than asserts**, as a store's `text()` does: a debug assert would end the test program
+  that proves the rule (S3c.3's reason). It is not `noexcept`.
+- **The claim's value** is the path with its `.` and empty components removed (`recordingClaimPath`), as 6.8 says;
+  symlinks are not followed. A claim's text names that value (`cannot open take1.wav: held by node a` for a node that
+  asked for `./take1.wav`); every other text names the path as asked. One path asked for twice in one configuration
+  (however spelled) is the type's bug, `recording:<path> claimed twice`, as a port's is.
+- **No recordings folder** fails the node at configure's return, `start-failed: cannot open <path>: no recordings
+  folder` (today's text), as `no stores in this host` does; `ResourceRegistry::adapterFor(RecordingRequest)` and its
+  stateless `NoRecordings` went for `recordings()`, null when absent.
+- **A refusal and a bug.** The open's `std::logic_error`, or no file made, is the adapter's bug (`ear.internal-error`,
+  `where` `the I/O job open recording <path>`, the node `lost`); any other throw is a refusal, as an error is
+  (`start-failed: cannot open <path>: <what>`), as the synchronous open told them apart.
+- **The legacy acquire of a recording went** with `openRecording`: `ResourceRequest` is `HandoffRequest` alone until
+  S3c.6e. Nothing used it.
+- **`file`'s visible change beyond 8's 2:** its sink is made at configure as before, but its consumer now begins only
+  after the open, so a refused path fails the node with its sink made and closed unbegun (it was never made). A
+  folder's refusal now comes at step `opens`, after the claim, not inside `configure`.
+- **`waitingFor` gains `recording`** (its path), on the wire with `docs/control-port.md`, `protocol.ts`, the
+  editor's words and the status line's (`its recording <path>`), and an `output-records.json` case.
+- **The harness** keeps recordings in memory (one `memfd` per path, so libsndfile seeks and writes it), on the stores'
+  I/O executor: `recordingBytes`, `presetRecording`, `failRecordingOpen`, `pipeRecording`, `breakRecordings`,
+  `openRecordings`; `HarnessOptions::recordings` (an adapter) became `noRecordingsFolder`. `file_test.cpp` runs on it;
+  that a path never leads out is `ear_folder`'s and `ear_runtime`'s to prove.
 
 **A sink's consumer as a loop state's member** (S3c.6b): 6.5's `consumedBy(loop, &State::member)` and
 `consumedBy(loop)`. The consumer still runs on the sink's own thread: naming the loop only ties the consumer's life
@@ -442,6 +478,7 @@ empty list, under the `requires` clause. U1 held (found building S3c.4, above): 
 | 6.1 | `waitingFor` `claim` with `subject`, `holder` and `leaked: true` | 0.3's claims, found building S3c.5a: `name` is the key; the holder is in `ear.claim-wait`; a leaked holder makes no wait |
 | 0.3, 6.8 | `Claim::Kind::device` | Not a kind until 0.2 C's check shows the race |
 | 6.10 | `int fd = cx.recording(...)` | `Recording&` |
+| 6.10, 0.3 | `RecordingAdapter::open(node, path, ReadyEvents&)` returning a `NodeRecording`; `descriptor()` asserted in debug builds | 0.3's recordings, found building S3c.5b: the adapter's `open(node, path)` blocks on its `io()` thread and NodeHost completes it through `Completions`; `descriptor()` throws |
 | 8, visible change 5 | A stopped `sendspin` node closing its connection | Q-3c1 (0.6): kept open unless the owner says otherwise |
 | 12 | `sendspin_code.*`'s playback half still to be written | Written (T2); moved whole |
 | 13 | The cut | 0.5 |
@@ -463,7 +500,7 @@ companion's deadline does not start until the earlier step is ready (S3c.0's row
 | **S3c.3 Loops** (done: f3d10c0639) | 6.3 with 0.3's changes; `Loops`, `TypeSpec::loops`; `StrandPool`, `DedicatedLoops`; staging; `closeToOthers`; teardown step 4 closes loops (beside the run object's `close`, which stays until S3c.6e); the harness's loops and fake clock | None for shipped types | Section 13's S3c.3 list, through a test type in `ear_core_tests` and on real threads in `ear_runtime`'s tests; `ear.loop-slow` and `ear.loop-source-left` in `output-records.json`. Revert proofs: with staging off, "staged work runs only once configured" fails; with the source count off, "a source left armed" fails; with the loops at the companions step, the S3c.0 debt row ("a companion's readiness deadline starts only once the earlier step, the loops, is ready") fails; without the state-lives wrap on a loop's timers and watches, "a timer a state left armed never runs its handler once the state is gone" fails; without the replacement spawn, "a stuck strand gets a replacement thread" fails; without the reaping, "workers that left ... are joined" fails (follow-up commit) |
 | **S3c.4 Stores** (done: 935070c4b4) | 6.7; `ConfinedStores` and the boot sweep over declared stores, in `ear_runtime`; store items at step 1 | None for shipped types (`sendspin` keeps its key store until S3c.6b) | Section 13's S3c.4 list; U1's compile test of every `TypeSpec` subset. Revert proof: with narrowing before judging off, "a refused file is narrowed before it is read" fails |
 | **S3c.5a Claims** (done: 7b5a1ff633; found building it, 0.3) | `Claim`, `ClaimRegistry` at step 0, `KernelPortProbe`; `cx.claim`; `claimsOf(RtpReceiverShape)`; `ear.claim-wait`; `waitingFor` `claim` (wire, fixtures and `protocol.ts` together). From S3c.5c (found building it): the leaked record's claims, on the built record (0.3's leaked record): a leaked configuration's port claims abandoned (probed afresh, a refusal recorded against the record, G27), its store claims kept and refusing `held by node <n>'s earlier configuration, which did not close; it starts when that closes`; the record's list of the nodes it refused; at its late close its claims released, `ear.close-late` gaining `; its claims are released`, and each refused node started again once, as `node.restart` would (R15) | Visible change 3: an `rtp` node on a port another program holds fails at once (`Address already in use`, not the 5 s deadline); two `rtp` nodes on one port, where today both run and one is silently starved, refuse the second `held by node <n>`. After a leak only: a node refused by the leaked configuration's claims starts by itself at its late close | Section 13's claim cases; a system test for visible change 3; a removed `rtp` and an added one on its port in one plan (the new one waits, then runs); section 13's leaked-record claim cases, with a test type whose loop never drains (a store refused while the leaked configuration holds it, then started by its late close; an abandoned port re-probed). Revert proofs: without `claimsOf`, the two-`rtp` system test finds both nodes `running` and one of them silent (today's behaviour), instead of the second refused `held by node`; with the record's restart of the nodes it refused off, "the late close starts the refused node" fails. Run (7b5a1ff633 and its review follow-ups): without `claimsOf`, both nodes `running`, `a` silent (peak 0) and `b` playing (0.5); with the restart off, the store row and the abandoned port's refused section fail; with `detach()` for the re-point, both leaked rows fail; with the probe made at judging instead of behind the flush, "node.restart of an rtp node binds its port again" fails, the restarted node `start-failed: cannot bind UDP port <p>: Address already in use` on its own old receiver's socket |
-| **S3c.5b Recordings** | `Recording`, `RecordingAdapter::open` on the I/O executor, the implicit `recording:` claim; `file` on it; `openRecording` goes. A leaked configuration's recording claim kept, as its store claims (S3c.5a) | Visible change 2: a second `file` on one path is refused; a remove and an add on one path works | `file_test.cpp` on the harness's recording fake; a system test for visible change 2; an open past its 5 s bound; a path refused while a leaked configuration holds it, then started by its late close. Revert proof: without the claim, the two-`file` system test finds both running |
+| **S3c.5b Recordings** (done; found building it, 0.3) | `Recording`, `RecordingAdapter::open` on the I/O executor, the implicit `recording:` claim; `file` on it; `openRecording` goes. A leaked configuration's recording claim kept, as its store claims (S3c.5a) | Visible change 2: a second `file` on one path is refused; a remove and an add on one path works. Also: a refused path fails `file` with its sink made and closed unbegun, and `waitingFor` gains `recording` | `file_test.cpp` on the harness's recording fake; a system test for visible change 2; an open past its 5 s bound; a path refused while a leaked configuration holds it, then started by its late close. Revert proof: without the claim, the two-`file` system test finds both running. Run: without the claim, both `a` and `b` `running` and the `node_host_test.cpp` rows for two nodes on one path, a remove and an add in one plan, and the leaked configuration's path fail; with the recording's item at step `companions`, the consumer begins before the open (`file_test.cpp`'s WAV rows and the ordering rows fail); with the close made inline on the main loop, the rows that see `close recording <path>` on the I/O executor before the next open fail |
 | **S3c.5c The leaked record** (done: e309f28d00; the claim parts moved to S3c.5a and S3c.5b, found building it, 0.3) | The `Channel` re-pointed at the leaked record at a close-deadline leak; the record hears each close (sinks, handoffs, loops, the run object) and carries the teardown on; a throw from it an `ear` log record; `ear.close-late` and `leaked()` counting it down | Only after a leak, which no shipped type makes in tests: `ear.close-late`, and a stop after it ends normally rather than through `std::_Exit` | `node_host_test.cpp`'s leaked-record rows: what a leaked configuration may still report, in order (its sink's close, its consumer's throw as a log record, its loop's finish and close, then `ear.close-late`), and what it may not (its handle's notes, losses and log entries, a store write's completion; nothing reaching the node or a newer configuration); S3c.1's leaked cross-generation row unedited. Revert proof: with `detach()` in place of the re-point, "a configuration leaked at the close deadline is said `ear.close-late` once its loop finally finishes, and `leaked()` drops to 0" fails |
 | **S3c.6a Core's tests off the legacy SPI** (done: 62ad973d0a; found building it, 0.3) | `node_host_test.cpp`, `graph_status_test.cpp`, `desired_graph_test.cpp` (and `settings_table_test.cpp`): their legacy test types rewritten as classes (on `makeNodeType` where a test goes through the catalogue, at the erased layer in `node_host_test.cpp`), a handoff case as a sink, a run object with threads as a dedicated loop | None (tests only) | Each ported case asserts what it asserted. Only the legacy-only cases (a recipe, a run object's close, the two-phase start, a `StartContext`, a latency on one bank, a handoff consumer's throw) stay on the legacy SPI, tagged `[legacy]`, until S3c.6e deletes them with it. Spot revert checks: loops finished before the sinks closed, a sink's drops not counted, the instance freed before the code, the `Channel` not detached at step 5: each fails a moved case |
 | **S3c.6b `sendspin` on the class** | `sendspin_spec.hpp` and `Sendspin`; the worker a dedicated loop's state, the notifier a loop; the key file a store; the listening port a claim; `to` passed to `to_server`, a sink consumed by `ToServer` (still dated by the cycle's start); the feed and today's code kept as the type's own spec code (`from` played from the feed); `NodeFolders` and `allNodeTypes`' argument go; `notYetInHarness` goes; the thread guard | Visible change 1 (a corrupt key file fails before `running`); otherwise as today, subject to Q-3c1. The key store's `save_blob` (`replace`, on a library thread) treats an `unconfirmed` outcome as neither success nor failure: it compares `text()` with what it wrote, or writes with `replaceLater`, whose outcome is exact | `type_test.cpp` (section 12); `sendspin` in the all-type harness test; every `sendspin` system test with its lines unchanged (U4); `clock_test.cpp` and `code_test.cpp` unedited; the guard per spelling. Revert proof: the corrupt-key system test sees `running` first |

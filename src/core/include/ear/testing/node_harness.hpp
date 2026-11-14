@@ -99,9 +99,10 @@ enum class Lost : std::uint8_t {
 struct HarnessOptions {
 	AudioFormat format = {.rate = SampleRate::fixed<48000>(), .maxBlock = 256};
 	NodeName node = "node";
-	RecordingAdapter* recordings = nullptr; // null: every recording is refused ("no recordings folder"); until 3c
-	bool autoComplete = true;               // fades acknowledged and barriers completed as soon as posted
-	bool holdSinks = false; // each sink's consumer begins only at ready(bank), not at configure's return
+	/// A host with no recordings folder: every recording is refused ("cannot open <path>: no recordings folder").
+	bool noRecordingsFolder = false;
+	bool autoComplete = true; // fades acknowledged and barriers completed as soon as posted
+	bool holdSinks = false;   // each sink's consumer begins only at ready(bank), not at configure's return
 	/// Each sink's ring in frames, in place of the size the type asked for (rounded up to a power of two, as the
 	/// engine's is): a ring that a test's cycles do not divide makes the sink hand chunks split at its end, as the
 	/// engine's does (docs/engine.md#sinks).
@@ -112,7 +113,8 @@ struct HarnessOptions {
 	std::optional<std::string> refuseLoops{};
 	/// A source a loop's state left armed is only said (ear.loop-source-left), not a std::logic_error.
 	bool allowSourcesLeft = false;
-	/// The I/O executor's jobs (a store's open and writes) run only at runIo(), not as each call settles.
+	/// The I/O executor's jobs (a store's open and writes, a recording's open and close) run only at runIo(), not as
+	/// each call settles.
 	bool holdIo = false;
 };
 /// How add() adds the node.
@@ -124,7 +126,7 @@ struct AddOptions {
 class NodeHarness {
 public:
 	using Options = HarnessOptions;
-	/// `type` and `options.recordings` outlive the harness.
+	/// `type` outlives the harness.
 	explicit NodeHarness(const NodeType& type, Options options = {});
 	/// Removes a node left in the graph and runs its teardown to the end (completing what autoComplete left), so no
 	/// thread of a sink or a legacy run outlives the harness.
@@ -190,7 +192,8 @@ public:
 	/// With holdIo: every job queued runs, and what each posts, in order.
 	void runIo();
 	/// Every I/O job run so far, by the name it was posted with ("open store <file>", "write store <file>", "release
-	/// store <file>": a dropped open's handle released on the I/O executor), in order.
+	/// store <file>": a dropped open's handle released on the I/O executor; "open recording <path>", "close recording
+	/// <path>", "release recording <path>"), in order.
 	const std::vector<std::string>& ioJobs() const noexcept;
 	/// The file of store `suffix` of the harness's node.
 	std::string storeFile(std::string_view suffix) const;
@@ -210,6 +213,20 @@ public:
 	/// Every call the adapter was asked, in order: "readNarrowed <file>", "read <file>", "narrow <file>", "replace
 	/// <file>".
 	const std::vector<std::string>& storeCalls() const noexcept;
+	// The recordings (docs/writing-a-node-type.md#recordings), in memory by path ("./a.wav" is "a.wav"), each a real
+	// descriptor (a memfd, so libsndfile seeks and writes it), opened and closed by jobs on the harness's I/O executor.
+	/// What the file at `path` holds now (nothing: never made).
+	std::optional<std::string> recordingBytes(std::string_view path) const;
+	/// The file at `path` holds `bytes` before the node opens it (which truncates it).
+	void presetRecording(std::string_view path, std::string bytes);
+	/// Every open of `path` is refused with `why` (the folder's reason: "cannot open <path>: <why>").
+	void failRecordingOpen(std::string_view path, std::string why);
+	/// Every open of `path` gives the write end of a pipe: made, but not a file libsndfile can write a WAV to.
+	void pipeRecording(std::string_view path);
+	/// From now on every open throws std::logic_error(what): an adapter's bug.
+	void breakRecordings(std::string what);
+	/// How many recordings' descriptors are open now (made by an open, not yet closed).
+	std::size_t openRecordings() const;
 	/// One cycle of `frames` (0: maxBlock) through the code the fake block was driven with, outputs NaN-filled first,
 	/// with a GraphCycle the harness advances on its driver, its facts (GraphCycle::facts, and facts()) stated by the
 	/// real block's rule,
@@ -298,7 +315,7 @@ public:
 	std::uint64_t handoffFrames(std::size_t index) const;
 	RunObject* runObject() const noexcept;
 	/// Every legacy handoff made, in order, over every configuration; and every recording asked for (CreateOf's
-	/// openRecording or a legacy acquire), in order, whether or not the folder opened it.
+	/// recording), in order, whether or not the folder opened it.
 	const std::vector<SeenHandoff>& handoffs() const noexcept;
 	const std::vector<RecordingRequest>& recordingRequests() const noexcept;
 

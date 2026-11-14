@@ -48,10 +48,16 @@ node file rec { path "take1.wav"; }
 |---|---|---|---|
 | `path` | text, required | Relative to the recordings folder (`--recordings-dir`): non-empty, not absolute, no `..` component | `path: missing`, `path: must be a non-empty string`, `path: must be relative to the recordings folder, without ".."` |
 
+- **One writer per path.** Its path is a [recording](writing-a-node-type.md#recordings) and so a claim, judged
+  before the file is touched: a second `file` node on a path another one records to fails `start-failed: cannot open
+  take1.wav: held by node <first>`, and the first one's file is left as it is (`take1.wav` and `./take1.wav` are one
+  path). Removing one node and adding another on its path in one edit works: the new one waits until the old one's
+  file is finished and closed, then opens it.
 - **Where it writes.** The file is opened beneath the recordings folder only (`openat2` with
   `RESOLVE_BENEATH` on the folder's descriptor, held from boot), so a symlink that leads out fails
-  the node's configure, and so does a missing subfolder (none is made). The file is created or
-  truncated at configure.
+  the node `start-failed: cannot open <path>: it leads outside the folder`, and so does a missing subfolder (none is
+  made). It is created or truncated on ear's I/O thread before the node is configured, never on the main loop; an
+  open past 5 s fails it `start-failed: cannot open <path>: not opened within 5 s`.
 - **How it writes.** It writes no audio code: the framework's pass-through copies `record` to its
   inside bank `writer`, whose sink holds 2 s of ring. The WAV is opened on the sink's own thread,
   never the main loop or the realtime thread; if libsndfile refuses it, the node fails
