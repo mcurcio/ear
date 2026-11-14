@@ -1,11 +1,12 @@
 // The side panel: the engine facts (with the "not realtime" badge), the add-node form (type
-// list, JSON settings) and the selected node's health, its Start, Stop, Restart, Disable and Enable
+// list, JSON settings) and the selected node's health, its companions in words, its Start, Stop, Restart, Disable and Enable
 // (when ear has the lifecycle feature; each enabled by health.ts, docs/editor.md#a-nodes-health), its settings
 // and delete button. Every change is a request to ear; the canvas changes only when ear announces it.
 import { useEffect, useState } from "react";
 import { describeHealth, type ActionAvailability, type HealthView } from "../health";
 import { lifecycleFeature, type Graph, type GraphNode, type JsonObject } from "../protocol";
-import { useEditor } from "./hooks";
+import { CompanionList } from "./CompanionStrip";
+import { useCompanionBadges, useEditor } from "./hooks";
 
 /** The newest protocol this editor knows (docs/control-port.md#protocol-and-features): a higher one shows a banner. */
 const knownProtocol = 1;
@@ -130,6 +131,7 @@ export function NodePanel({
 }) {
   const { client } = useEditor();
   const health = describeHealth(node);
+  const companions = useCompanionBadges(node);
   const lifecycle = features.includes(lifecycleFeature);
   const shown = JSON.stringify(node.settings, null, 2);
   const [settings, setSettings] = useState(shown);
@@ -166,6 +168,7 @@ export function NodePanel({
           ))}
         </div>
       )}
+      <CompanionList badges={companions} />
       <label>
         Settings (JSON)
         <textarea rows={5} value={settings} onChange={(event) => setSettings(event.target.value)} />

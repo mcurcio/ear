@@ -244,3 +244,78 @@ body,
 .diagnostic-warning button {
   color: #8a6100;
 }
+
+/* A node's companions (docs/editor.md#companions): small badges along the box's bottom edge, a known kind and an
+   unknown one alike; not ready is a hollow dot and dimmed text, never colour alone. */
+.companion-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 4px 8px 6px;
+  list-style: none;
+  border-top: 1px solid #eee;
+}
+
+.companion-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 6px;
+  border: 1px solid #ced4da;
+  border-radius: 8px;
+  background: #f8f9fa;
+  font-size: 10px;
+  line-height: 16px;
+  color: #343a40;
+}
+
+.companion-dot {
+  color: #2f9e44;
+}
+
+.companion-not-ready {
+  color: #868e96;
+  border-style: dashed;
+}
+
+.companion-not-ready .companion-dot {
+  color: #868e96;
+}
+
+/* The warning mark: something moved in the last minute (a companion's counter). */
+.warn-mark {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-left: 2px;
+  border-radius: 50%;
+  background: #f08c00;
+  color: white;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 12px;
+  text-align: center;
+}
+
+.companion-list h3 {
+  font-size: 12px;
+  margin: 6px 0 2px;
+}
+
+.companion-list ul {
+  margin: 0 0 6px;
+  padding-left: 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+/* Text for screen readers only: what a dot or a mark shows. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}

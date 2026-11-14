@@ -9,7 +9,8 @@ Vitest); it shares no code with the C++, only the wire format and the fixtures i
 
 - **Nodes** are boxes with one row per port, inputs on the left and outputs on the right, each
   with its handle and a live level meter. Under the node's name and type is its state word and a
-  line that says why it is silent or what it waits for ([below](#a-nodes-health)).
+  line that says why it is silent or what it waits for ([below](#a-nodes-health)). Along its
+  bottom edge, a badge per companion ([below](#companions)).
 - **Routes** are wires coloured by status (`linked`, `pending`, `refused`) and drawn by their
   from port's level: louder is thicker and brighter.
 - **Editing:** a drag from an output to an input adds a route (any other drag is refused before
@@ -40,11 +41,11 @@ Vitest); it shares no code with the C++, only the wire format and the fixtures i
   graph's counters and each node's whole, from the snapshot and `node.added`, and replaces those a
   `counters.changed` names ([control-port.md](control-port.md#counters)); an unknown counter is
   kept with them. Nothing on the canvas or panel shows them yet.
-- **Companion lists are kept, not yet drawn.** With the `companions` feature the graph store keeps
+- **Companion lists are kept as sent.** With the `companions` feature the graph store keeps
   each node's `companions` as sent, from the snapshot and `node.added`, and a
   `node.companionsChanged` replaces the named node's whole list
-  ([control-port.md](control-port.md#companions)); an unknown kind or member is kept as sent. The
-  badges that will show them are not built yet.
+  ([control-port.md](control-port.md#companions)); an unknown kind or member is kept as sent.
+  How they are drawn: [below](#companions).
 - **Levels stay outside React state.** Each `levels` notification replaces a store with
   listeners per port, so at 30 messages a second only the meters and wires whose port changed
   re-render. A closed connection makes every meter read silent until new levels arrive.
@@ -74,6 +75,41 @@ buttons; its tests cover every phase. The rules it follows:
   ("enable it first"); a failed node offers Start ("try again"). A phase this editor does not know
   is drawn by its word and offers only what cannot harm.
 
+## Companions
+
+`web/src/companions.ts` is the one place that turns a node's companion list
+([control-port.md](control-port.md#companions)) into the box's strip and the node panel's lines;
+`companions.test.ts` covers its rules and replays the `companions` and `unknown-values` fixtures
+through the reducer into the badges drawn. The rules:
+
+- **A badge per companion,** in list order, along the box's bottom edge under the ports: its kind
+  as a short word (`card-playback` "card out", `card-capture` "card in", `rtp-receiver` "rtp",
+  `sink`, `source`) and a dot, filled (●) when `ready`, hollow (○) with dimmed text when not. A
+  kind this editor does not know is drawn by its own text, in the same neutral style. No list, or
+  an empty one, draws no strip (`white`, `sendspin`, a node from an ear without the feature).
+- **Totals in words.** The badge's tooltip and the node panel's "Companions" list give each one's
+  name, word, bank, readiness and the total its counter carries since its configuration made it
+  ("rec.writer (sink on writer): ready; 4096 frames dropped since it was made"; a source's
+  shortfall "... frames played short since it was made"). An engine kind has no counter. A counter
+  member the editor knows is shown whatever the kind; one it does not know is ignored.
+- **A mark only while it moves.** A badge carries the warning mark (an "!" in a circle) only while
+  its `dropped` or `shortfall` rose in the last minute, on the browser's clock; the box redraws
+  when the minute ends. A rise is a value above the one last held for that node and companion: the
+  first value seen (a snapshot's, a new configuration's), a value that fell (a new configuration
+  seen without its `[]`, as after a reconnect) and an entry seen again after its list dropped it
+  are not. *Why:* the canvas stays quiet when all is well and points at trouble while it happens;
+  the totals are always in the tooltip and panel. `CompanionMoves` keeps what was held and when it
+  rose, outside the reducer (which holds only what ear sent), and is the graph store's first
+  listener, so a box drawn for a new graph reads that graph's moves.
+- **Failed and disabled draw no strip** whatever list is held (their configuration was torn down,
+  and ear's `[]` follows their `node.state`); a stopped node keeps its strip, as it keeps its
+  companions.
+- **In text, not colour alone.** The dot and the mark are hidden from screen readers beside
+  visually hidden "ready", "not ready" and the mark's words ("dropped frames in the last minute",
+  "played short in the last minute"); the strip is a list labelled "companions".
+- **Not part of editing.** A badge is no handle and no node: clicking it selects its node and
+  dragging it moves the box, as any part of the box does; nothing in it sends a request.
+
 ## Developing it
 
 `scripts/dev.sh make web` builds it into `web/dist` (`--web-root web/dist` serves that build);
@@ -83,7 +119,7 @@ port. Node.js comes from `web/.nvmrc` and the packages from `web/package-lock.js
 
 The tests cover the reducer against every `test/protocol` fixture, the graph file's state and the
 pane's logic (drafts, stale files, Save, refusals), the reconnecting client with a fake socket,
-the connection rules, levels and layout, and `health.ts`. There is no browser test runner:
+the connection rules, levels and layout, `health.ts` and `companions.ts`. There is no browser test runner:
 rendering is checked by eye. *Why:* a Playwright leg costs about 150 MB of browsers and a minute
 or two a CI run, while the logic sits in the reducer, client and rules, which Vitest covers
 against the same fixtures the server is tested with.

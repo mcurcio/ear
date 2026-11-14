@@ -1,11 +1,14 @@
 // A node box: its name, type and state word with the line that says why it is silent or what it
 // waits for (health.ts, docs/editor.md#a-nodes-health), then one row per port, inputs on the left and outputs
-// on the right, each with its handle and its level meter, in every phase.
+// on the right, each with its handle and its level meter, in every phase; and along its bottom edge the strip of its
+// companions' badges (companions.ts, docs/editor.md#companions), outside every handle.
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useEffect, useState } from "react";
 import { handleId } from "../connect";
 import { describeHealth, startingLineDelayMs } from "../health";
 import type { GraphNode } from "../protocol";
+import { CompanionStrip } from "./CompanionStrip";
+import { useCompanionBadges } from "./hooks";
 import { Meter } from "./Meter";
 
 /**
@@ -46,6 +49,7 @@ function Port({ node, port, direction }: { node: string; port: string; direction
 
 export function EarNode({ data: { node }, selected }: NodeProps<EarFlowNode>) {
   const health = describeHealth(node, usePhaseSeen(node.phase, node.since));
+  const companions = useCompanionBadges(node);
   return (
     <div className={`ear-node ${health.styleClass} phase-${node.phase}${selected ? " selected" : ""}`}>
       <div className="ear-node-header">
@@ -72,6 +76,7 @@ export function EarNode({ data: { node }, selected }: NodeProps<EarFlowNode>) {
           ))}
         </div>
       </div>
+      <CompanionStrip badges={companions} />
     </div>
   );
 }
