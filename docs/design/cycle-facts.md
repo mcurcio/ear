@@ -1761,6 +1761,66 @@ from 8.5 as first written, and why.
   node's values not kept (2: the fixture's replace, the removed node's return); a fall keeping the old values (4,
   the new node's zeros among them).
 
+### 9.17 C6 as built against today's code
+
+Written before building C6a and C6b (2026-11-14), against the code T1 to T4 and D1 to D3 left: `GraphCycle::ranRawNs`,
+the module-run converters and `moduleRunDelay(shape, FrameClock)`, `SourceTick` (which carries a rate), the RTP
+receiver's shape (the sender's rate) and the counters' `lostMs(FrameClock, quantum)`. 7.1 holds, with the departures
+at the end. Every rate the code holds, and what each becomes:
+
+| Rate | Where | Becomes |
+|---|---|---|
+| `AudioFormat::rate` | `node_type.hpp`; copied by `NodeHost`, `EngineView`, `CounterWatch`, `CreateContext::format()`, the harness's `Options`, `file`'s and `sendspin`'s workers | `SampleRate` |
+| The graph frequency as `ear.conf` writes it | `graph_file_model.cpp`'s `FormatLine` | stays the number as written (refused outside 1 to 4,294,967,295, as today); validated into `SampleRate` where `format()` makes the `AudioFormat` |
+| `GraphSpec::graphFrequency` | `graph_spec.hpp`, made from the read format | `SampleRate` |
+| The pending-restart comparison | `keeper.cpp` (`read.format->rate != engine_.rate`) | a comparison of two `SampleRate`s |
+| `--graph-frequency` | `main.cpp`'s `positive()` | `SampleRate::of` after it, the message unchanged |
+| `EngineSettings::graphFrequency` | `engine.hpp` | `SampleRate`; `.hz()` into `default.clock.rate` and `allowed-rates` (`engine.cpp`) |
+| `FrameClock`'s rate and `rate()` | `latency.hpp` | `SampleRate`; `FrameClock(SampleRate)`, the `uint32_t` constructor deleted |
+| `FadeRamp`, `BlockFade` | `block_rules.hpp` | take `SampleRate` |
+| `SinkRing`, `SinkAdapter::make`, `ThreadSinks`, the harness's sink | `sink_ring.hpp`, `sink.hpp`, `handoffs`, `node_harness.cpp` | take `SampleRate`; `SinkRing`'s `max(rate, 1)` goes (a `SampleRate` is never 0) |
+| `SourceRing`, `SourceAdapter::make`, `EventSources`, the harness's source, `fadeFramesAt` | `source_ring`, `source.hpp`, `sources`, `node_harness.cpp` | take `SampleRate`; `max(rate, 1)` goes |
+| `SourceTick::rate`, `sourceTick(..., rate, ...)` | `source.hpp`, `block_rules.hpp` | `SampleRate` (read by no product code today; kept for a converter's node rate) |
+| **The RTP sender's rate** (`RtpReceiverShape::rate`) | `companions.hpp`, `rtp_spec.hpp` | `SampleRate`, and **not the graph's**: the shape's own rate, never made into a `FrameClock` (the receiver's latency is the graph's frames, `moduleRunDelay(shape, graph)`); `.hz()` only into the receiver's `audio.rate` (`rtp_receivers.cpp`). The `rate` row stays a number (8000 to 192000, the settings table's), validated into `SampleRate` in `configure`, the graph's when absent |
+| The sound card's rate | `sound_cards.cpp` | `SampleRate`; `.hz()` into `audio.rate` and the SPA format's `rate` |
+| The port block's rate | `port_blocks.cpp` | `SampleRate`; to `fromSpa` and `sourceTick` |
+| A peer's latency ns at the rate | `latency_spa.hpp`'s `fromSpa(info, quantum, rate)` | takes the graph's `FrameClock`; its ns through `framesNearest` (the frame guard's exception ends) |
+| The level window | `levels.cpp`'s `levelWindowFrames(rate)` | takes `SampleRate`; `framesCeil` of a thirtieth of a second (the other exception ends) |
+| `sendspin`'s rates | `SendspinCode`, `ToServer`, `requiredLeadMs`, `sendspin_type.cpp` | `SampleRate`; `worker.cpp` is the library's edge: `.hz()` into sendspin-cpp's formats, its source's `sample_rate` and the `says` notes. The server's `stream.sample_rate` is the library's number, compared with the graph's `.hz()` and printed as sent |
+| `file`'s WAV rate | `file.cpp` | `.hz()` into libsndfile's `samplerate` |
+| The wire's `graphFrequency` | `events.cpp` | `.hz()`; the record is unchanged. Its `rate == 0` case (a test's empty view) goes: a view always carries an engine's format, and the three tests that made an empty one give it |
+| `lostMs(FrameClock, quantum)`, `cycleOverran`, `cutChunk`, `CycleAccount`, `moduleRunDelay` | core | unchanged: they already take a `FrameClock` |
+
+Not rates, and left as they are: `GraphCycle::rateDiff` (a ratio), PipeWire's `min_rate`/`max_rate` (frames, "rate
+units") and `clock.rate` (a fraction), the `rate` row's number in a settings table.
+
+**Tests.** Every ear interface a test calls takes a `SampleRate` (`SampleRate::fixed<kRate>()`, `kFormat.rate`);
+`StallLength::at` and the stalls take the graph's `FrameClock`/`SampleRate`. A test's own constant (`kRate`) stays a
+number for the test's own arithmetic, as the frame guard never read tests, and so do the test's models of what lies
+outside ear: `RtpSender` and `fitSine` (`rtp_tone.hpp`, a peer's numbers) and the system tests, which run ear as a
+process and hand it a number in `ear.conf`.
+
+**Out of scope.** `web/` is TypeScript; it reads `graphFrequency` as the wire's number.
+
+**Departures from 7.1, each to keep behaviour unchanged:**
+
+- **No upper bound in `SampleRate::of`.** 7.1 caps a rate at 768 kHz; `ear.conf` and `--graph-frequency` take 1 to
+  4,294,967,295 today, and `FrameClock` is exact over that range (`latency_test.cpp`'s oracle). A cap would refuse
+  files ear accepts now, so `of` refuses only 0. Capping is a behaviour change of its own, left for the owner.
+- **`framesNearest` rounds the ns part alone.** `fromSpa` summed quanta, rate units and ns in `double` and rounded
+  once; the ns part now rounds exactly in integers first. The result is the same whenever the quantum part is whole
+  (every peer ear has seen reports whole quanta); a fractional quantum with a ns part can round one frame apart.
+- **The check is the word `hz`.** `ear_sample_rate_exits` (`test/sample_rate_exits.cmake`) refuses the identifier `hz`
+  (`.hz()`, `->hz()`, `&SampleRate::hz`, `hz (`) anywhere under `src/` outside tests and its list, with no parsing:
+  the definition (`sample_rate.hpp`), `FrameClock` (`latency.hpp`), and the edges named above (`engine.cpp`,
+  `sound_cards.cpp`, `rtp_receivers.cpp`, `file.cpp`, `sendspin`'s `worker.cpp`, `ear_control`'s `events.cpp`). It
+  has its own snippet tests: refusing a call outside the list, allowing a listed file, skipping tests and refusing
+  to check nothing.
+- **Compile-fail cases by step.** C6a's (`sample_rate_bad.cpp`): a raw integer made, converted or passed as a rate;
+  a rate read as an integer or cast; a rate as an operand with frames (`*`, `/`, `%`, `+`) or a duration; a rate
+  compared with a number; a rate passed as frames; `fixed<0>`. C6b adds what its changes make unwritable:
+  `FrameClock(48000)`, an `AudioFormat` from a number, and a sink or source ring made at a number.
+
 ## 10. Decided here (technical)
 
 - One carrier (`GraphCycle::facts`), not a second view.
