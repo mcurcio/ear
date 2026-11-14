@@ -333,6 +333,9 @@ as JSON, for scripts; the editor's node panel shows and edits the node's stateme
   for `graphFile.set`. The node's own text again is `{}` and changes nothing.
 - **Accepted,** it is an edit like the others: `graphFile.changed` (cause `edit`, with the new
   `nodeTexts`), the node events it causes, then `{}`; written behind.
+- **The editor keeps a draft** across changes elsewhere in the file: while the node's own text in
+  each new GraphFile is the one its draft started from, the draft moves onto that version
+  ([editor.md](editor.md#the-node-panels-text)).
 
 ## Error codes
 

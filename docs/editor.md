@@ -16,7 +16,8 @@ Vitest); it shares no code with the C++, only the wire format and the fixtures i
   from port's level: louder is thicker and brighter.
 - **Editing:** a drag from an output to an input adds a route (any other drag is refused before
   it reaches ear); the delete key removes the selected wire or node; a side panel adds nodes (a
-  type and JSON settings), edits the selected node's settings, and offers Start, Stop, Restart,
+  type and JSON settings), edits the selected node's own text in knobly ([below](#the-node-panels-text);
+  its settings as JSON from an ear without `node-text`), and offers Start, Stop, Restart,
   Disable and Enable when ear has the `lifecycle` feature. The engine facts give the graph's rate
   and block size ("48 kHz, 256 frames", from `graphFrequency` in hertz). A "not realtime" badge shows when the
   audio thread is not realtime, and a dropouts badge while the host cut cycles in the last minute;
@@ -34,9 +35,14 @@ Vitest); it shares no code with the C++, only the wire format and the fixtures i
 - **Every enum is open.** A value or member this editor does not know is drawn by its word,
   neutrally, or ignored, never a failure ([control-port.md](control-port.md#protocol-and-features)).
   A newer protocol than the editor knows shows a banner.
+- **A person edits knobly; JSON is the machine API.** What a person types about a node is its
+  statement as `ear.conf` has it, in the node panel's box or the pane; JSON settings are for
+  scripts (`node.add`, `node.update`), and the panel shows them only to an ear without the
+  `node-text` feature. The add-node form still takes JSON settings.
 - **A draft is never overwritten.** A new `ear.conf` arriving while the pane has unsaved changes
   makes the pane stale ("ear.conf changed; reload") until the person reloads; ear refuses a Save
-  over a file that changed meanwhile (`file-changed`).
+  over a file that changed meanwhile (`file-changed`). The node panel's box does the same for its
+  node's text.
 - **Node positions live in the browser.** Unplaced nodes are laid out with dagre (sources left,
   sinks right, following the routes); a place the user dragged a node to is kept in the browser
   only, never sent to ear.
@@ -55,6 +61,33 @@ Vitest); it shares no code with the C++, only the wire format and the fixtures i
 - **A lost socket reconnects** after a growing wait (1 s doubling to 30 s), failing the calls in
   flight, and the new socket subscribes again (graph, graph file, levels), so the editor starts
   over from a fresh snapshot.
+
+## The node panel's text
+
+`web/src/nodeText.ts` is the box's logic (`nodeText.test.ts` replays `test/protocol/node-text.json`
+through it); `components/NodeTextBox.tsx` draws it. With the `node-text` feature
+([control-port.md](control-port.md#a-nodes-own-text)) the selected node's panel holds its
+statement as `ear.conf` has it, units, `@use` lines, `$variables` and the comments it owns included
+(`# the take` above `node file rec { path "take1.wav"; }`), in the pane's textarea style, with Save
+and its diagnostics under it. *Why:* asked why the box was raw JSON when knobly is the canonical raw
+language, the owner chose the node's own knobly statement, checked by ear's reader and replacing
+only that statement. The rules:
+
+- **Cut from the file the editor holds.** The text is the GraphFile's `text` between the node's
+  `nodeTexts` places; nothing is fetched and the browser parses no knobly. There is no highlighter,
+  as the pane has none.
+- **Save is `node.setText`** with the draft and the version it was cut from. ear answers once the
+  graph runs it; the box then shows ear's text from the new GraphFile. `invalid-text`'s diagnostics
+  are placed in the draft, listed under it like the pane's, and a click puts the caret there.
+- **A draft lasts across changes elsewhere.** When a new GraphFile holds the node's text exactly as
+  the draft started from (a route drawn, another node's edit, a hand edit elsewhere), the draft
+  moves onto the new version untouched, so Save does not meet `file-changed` for a change that is
+  not its node's. When the node's own text changed under a dirty draft, or ear answers
+  `file-changed`, the box goes stale ("rec changed in ear.conf; reload") and keeps the draft until
+  the person reloads.
+- **Read-only when it cannot be replaced.** A node written in a snippet (`shared`) shows that
+  statement greyed, with where it is and that the pane edits it; while `ear.conf` has errors there
+  are no `nodeTexts` and the box says to fix them in the pane. Neither offers Save.
 
 ## A node's health
 
@@ -187,7 +220,7 @@ forwards `/rpc` to an ear on `localhost:7777`; `scripts/dev.sh`'s header shows h
 port. Node.js comes from `web/.nvmrc` and the packages from `web/package-lock.json`.
 
 The tests cover the reducer against every `test/protocol` fixture, the graph file's state and the
-pane's logic (drafts, stale files, Save, refusals), the reconnecting client with a fake socket,
+pane's logic (drafts, stale files, Save, refusals), the node panel's knobly box (`nodeText.ts`), the reconnecting client with a fake socket,
 the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`. There is no browser test runner:
 rendering is checked by eye. *Why:* a Playwright leg costs about 150 MB of browsers and a minute
 or two a CI run, while the logic sits in the reducer, client and rules, which Vitest covers

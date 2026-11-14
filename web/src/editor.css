@@ -371,3 +371,20 @@ body,
 .counter-unknown th {
   font-family: ui-monospace, monospace;
 }
+
+/* The node panel's knobly box (docs/editor.md#the-node-panels-text): the pane's text style; a read-only one (a
+   snippet's node, a file with errors) is greyed, with the note saying why. */
+.node-text {
+  margin: 8px 0 4px;
+}
+
+.node-text textarea[readonly] {
+  background: #f1f3f5;
+  color: #495057;
+}
+
+.node-text-note {
+  font-size: 12px;
+  color: #495057;
+  margin-bottom: 4px;
+}

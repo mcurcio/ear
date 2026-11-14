@@ -1,15 +1,16 @@
 // The side panel: the engine facts (with the "not realtime" and dropouts badges, and the graph's counters), the
-// add-node form (type
-// list, JSON settings) and the selected node's health, its counters, its companions in words, its Start, Stop, Restart, Disable and Enable
-// (when ear has the lifecycle feature; each enabled by health.ts, docs/editor.md#a-nodes-health), its settings
-// and delete button. Every change is a request to ear; the canvas changes only when ear announces it.
+// add-node form (type list, JSON settings) and the selected node's health, its counters, its companions in words, its
+// Start, Stop, Restart, Disable and Enable (when ear has the lifecycle feature; each enabled by health.ts,
+// docs/editor.md#a-nodes-health), its text in knobly (with the node-text feature, docs/editor.md#the-node-panels-text;
+// else its settings as JSON) and delete button. Every change is a request to ear; the canvas changes only when ear announces it.
 import { useEffect, useState } from "react";
 import { rateLabel } from "../graph";
 import { describeHealth, type ActionAvailability, type HealthView } from "../health";
-import { lifecycleFeature, type Graph, type GraphNode, type JsonObject } from "../protocol";
+import { lifecycleFeature, nodeTextFeature, type Graph, type GraphNode, type JsonObject } from "../protocol";
 import { CompanionList } from "./CompanionStrip";
 import { CounterTable, DropoutsBadge } from "./Counters";
-import { useCompanionBadges, useEditor, useGraphCounters, useNodeCounters } from "./hooks";
+import { useCompanionBadges, useEditor, useGraphCounters, useGraphFile, useNodeCounters } from "./hooks";
+import { NodeTextBox } from "./NodeTextBox";
 
 /** The newest protocol this editor knows (docs/control-port.md#protocol-and-features): a higher one shows a banner. */
 const knownProtocol = 1;
@@ -140,6 +141,9 @@ export function NodePanel({
   const companions = useCompanionBadges(node);
   const counters = useNodeCounters(node);
   const lifecycle = features.includes(lifecycleFeature);
+  const file = useGraphFile();
+  // A person edits knobly; JSON is the machine API: the JSON box is only for an ear without node-text.
+  const knobly = features.includes(nodeTextFeature) && file !== null;
   const shown = JSON.stringify(node.settings, null, 2);
   const [settings, setSettings] = useState(shown);
   // A new node selected, or its settings changed on the server: show what the server has.
@@ -177,13 +181,19 @@ export function NodePanel({
       )}
       <CounterTable heading="Counters since it was added" rows={counters.rows} />
       <CompanionList badges={companions} />
-      <label>
-        Settings (JSON)
-        <textarea rows={5} value={settings} onChange={(event) => setSettings(event.target.value)} />
-      </label>
-      <button type="button" disabled={settings === shown} onClick={save}>
-        Save settings
-      </button>{" "}
+      {knobly ? (
+        <NodeTextBox key={node.name} node={node.name} file={file.file} onError={onError} />
+      ) : (
+        <>
+          <label>
+            Settings (JSON)
+            <textarea rows={5} value={settings} onChange={(event) => setSettings(event.target.value)} />
+          </label>
+          <button type="button" disabled={settings === shown} onClick={save}>
+            Save settings
+          </button>
+        </>
+      )}{" "}
       <button type="button" onClick={() => client.call("node.remove", { name: node.name }).catch(onError)}>
         Delete node
       </button>
