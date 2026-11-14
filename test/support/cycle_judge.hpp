@@ -46,6 +46,7 @@ enum class LibrarySettle : std::uint8_t {
 	dry,       // a dry cycle: the feed's own count moved
 	unskipped, // a catch-up's jump the feed did not hold whole: the node skipped what it held, the library the rest
 	logged,    // a correction or loss of sync the library logged itself
+	dropped, // the feed, left undrained past its bound, played the library's audio into nothing and skipped what it held
 };
 
 enum class Verdict : std::uint8_t {
@@ -64,7 +65,7 @@ struct JudgeReport {
 	std::size_t stallsMade = 0, stallsPlanned = 0;
 	std::size_t stallsExcused = 0; // planned stalls whose cycle lies in an excused verdict's missed cycles
 	/// Library settles declared, by cause (LibrarySettle's order), and the chunks they spanned in all.
-	std::array<std::size_t, 3> librarySettles{};
+	std::array<std::size_t, 4> librarySettles{};
 	std::uint64_t librarySettleChunks = 0;
 	/// The most any catch-up's jump outran the raw time lost (ns(jumpFrames) - lostRawNs), excused or not; none before
 	/// the first catch-up. The evidence of the raw-clock rule's margin.
@@ -84,9 +85,9 @@ struct JudgeReport {
 		if (report.mostOverLostNs) out << *report.mostOverLostNs << " ns at most";
 		else out << "nothing (none came)";
 		const auto& settles = report.librarySettles;
-		if (settles[0] + settles[1] + settles[2] > 0)
+		if (settles[0] + settles[1] + settles[2] + settles[3] > 0)
 			out << "; library settles: dry " << settles[0] << ", unskipped " << settles[1] << ", logged " << settles[2]
-				<< ", " << report.librarySettleChunks << " chunks in all";
+				<< ", dropped " << settles[3] << ", " << report.librarySettleChunks << " chunks in all";
 		if (!report.firstFailure.empty()) out << " (the first failure: " << report.firstFailure << ")";
 		return out;
 	}
@@ -241,7 +242,7 @@ private:
 	Expected used_{0, 0, 0, 0, 0};
 	std::vector<std::pair<std::uint64_t, std::uint64_t>> spans_; // the missed cycles of each excused verdict
 	std::optional<std::int64_t> mostOverLostNs_;
-	std::array<std::size_t, 3> settles_{};
+	std::array<std::size_t, 4> settles_{};
 	std::uint64_t settleChunks_ = 0;
 	std::size_t seen_ = 0, judged_ = 0, excusedCycles_ = 0, excusedEvents_ = 0, expected_ = 0, failed_ = 0;
 	std::string firstFailure_;

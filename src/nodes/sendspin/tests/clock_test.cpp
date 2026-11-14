@@ -102,13 +102,17 @@ struct Cycle {
 	CycleFacts facts;       // what the cycle stated, as the code was handed it
 	std::int64_t overdueNs; // how long the next cycle had been due as it began (GraphCycle::overdueNs)
 	std::uint32_t zeros;    // frames of exact silence in it
-	std::uint32_t heldAtStart; // frames the feed held as the process began (SendspinCode::lastHeldAtStart)
-	std::uint32_t codeSkipped; // what the code skipped of them for the graph's lost time (SendspinCode::lastSkipped)
-	std::int64_t ranRawNs;     // when the block really began it (GraphCycle::ranRawNs)
-	bool dry;                  // the feed's own count of short reads moved in it (Feed::dryReads)
-	std::uint32_t fed;         // frames the code read from the feed: its frames less those the feed counted lacking
-	double rateDiff;           // the driver's rate correction, as the code was handed it
-	PlayProgress progress;     // the newest the code told the library, after it ran
+	std::uint32_t heldAtStart;   // frames the feed held as the process began (SendspinCode::lastHeldAtStart)
+	std::uint32_t codeSkipped;   // what the code skipped of them for the graph's lost time (SendspinCode::lastSkipped)
+	std::uint32_t staleSkipped;  // what it skipped as stale first, the feed undrained past its bound (lastStaleSkipped)
+	std::uint64_t dropped;       // what the feed's writer played into nothing since the cycle before (Feed::dropped)
+	bool stale;                  // the code came back after a drop in it (lastStale)
+	std::uint32_t resumeSkipped; // what it skipped as late for the drop's timeline (lastResumeSkipped)
+	std::int64_t ranRawNs;       // when the block really began it (GraphCycle::ranRawNs)
+	bool dry;                    // the feed's own count of short reads moved in it (Feed::dryReads)
+	std::uint32_t fed;           // frames the code read from the feed: its frames less those the feed counted lacking
+	double rateDiff;             // the driver's rate correction, as the code was handed it
+	PlayProgress progress;       // the newest the code told the library, after it ran
 	// Worked out by the Judge from the facts and what the feed held, by the code's rule (docs/node-types.md#clock): the
 	// frames it skips in it for the graph's lost time, whether it tells the library of this cycle, and whether that
 	// report is one the bound forced from an overdue cycle.
@@ -170,6 +174,12 @@ public:
 		out.overdueNs = cycle.overdueNs;
 		out.heldAtStart = code_.lastHeldAtStart();
 		out.codeSkipped = code_.lastSkipped();
+		out.staleSkipped = code_.lastStaleSkipped();
+		out.stale = code_.lastStale();
+		out.resumeSkipped = code_.lastResumeSkipped();
+		const std::uint64_t dropped = feed_.dropped().total;
+		out.dropped = dropped - dropped_;
+		dropped_ = dropped;
 		out.ranRawNs = cycle.ranRawNs();
 		// The feed's own word on its read this cycle: the code reads it once a cycle, on this thread.
 		const std::uint64_t dryReads = feed_.dryReads();
@@ -243,7 +253,8 @@ private:
 	Waiter& waiter_;
 	std::uint64_t dryReads_ = 0; // the data thread's: the feed's counts at the last cycle
 	std::uint64_t dryFrames_ = 0;
-	CycleLedger ledger_; // the data thread's alone; each Cycle carries its word
+	std::uint64_t dropped_ = 0; // the feed's dropped total at the cycle before
+	CycleLedger ledger_;        // the data thread's alone; each Cycle carries its word
 	std::vector<Cycle> cycles_;
 	std::atomic<std::size_t> count_{0};
 	static constexpr std::size_t kNone = ~std::size_t{0};
@@ -474,9 +485,13 @@ private:
 struct Rig {
 	Rig()
 		: engine(makeEngine()), waiter(*engine), blocks(*engine, bell),
-		  feed(2, kFeedFrames, FeedDrain{.rate = ear::SampleRate::fixed<kRate>(), .bell = &played}), notes(waiter),
-		  code(feed, progress, played, ear::SampleRate::fixed<kRate>()), tap(code, feed, progress, waiter),
-		  pulse(ear::SampleRate::fixed<kRate>()), blockEvents(waiter), pulseEvents(waiter), registry(*engine, waiter) {
+		  feed(2, kFeedFrames,
+	           FeedDrain{.rate = ear::SampleRate::fixed<kRate>(),
+	                     .bound = undrainedBoundFor(ear::SampleRate::fixed<kRate>(), kFeedFrames),
+	                     .bell = &played}),
+		  notes(waiter), code(feed, progress, played, ear::SampleRate::fixed<kRate>()),
+		  tap(code, feed, progress, waiter), pulse(ear::SampleRate::fixed<kRate>()), blockEvents(waiter),
+		  pulseEvents(waiter), registry(*engine, waiter) {
 		loops.make();
 		worker = std::make_unique<Worker>(
 			WorkerParts{.handle = notes,
@@ -982,13 +997,31 @@ private:
 		const bool caughtUp = cycle.facts.causes.has(CycleCause::catchUp) || cycle.facts.causes.has(CycleCause::absent);
 		const std::uint64_t lostNow =
 			caughtUp && cycle.facts.jumpFrames > 0 ? static_cast<std::uint64_t>(cycle.facts.jumpFrames) : 0;
-		cycle.skipped = static_cast<std::uint32_t>(std::min<std::uint64_t>(lostNow, cycle.heldAtStart));
+		// Back after a drop, the drop covered the lost time: nothing is skipped for it.
+		cycle.skipped =
+			cycle.stale ? 0 : static_cast<std::uint32_t>(std::min<std::uint64_t>(lostNow, cycle.heldAtStart));
 		if (cycle.codeSkipped != cycle.skipped)
 			errors.bad.push_back("skipped " + std::to_string(cycle.codeSkipped) + " of a jump of " +
 			                     std::to_string(lostNow) + " with " + std::to_string(cycle.heldAtStart) +
 			                     " held, for " + std::to_string(cycle.skipped) + " at " + std::to_string(index));
-		if (lostNow > cycle.skipped) settle(ear::test::LibrarySettle::unskipped, index, lostNow - cycle.skipped);
-		pendingTold_ += cycle.skipped + cycle.fed;
+		if (lostNow > cycle.skipped && !cycle.stale)
+			settle(ear::test::LibrarySettle::unskipped, index, lostNow - cycle.skipped);
+		// Past the feed's undrained bound (a stall that long on a loaded host), its writer played the library's audio
+		// into nothing in its time, told by the notifier, and the code skipped what the feed held as stale, told in its
+		// own report (docs/node-types.md#clock): the library realigns after that, by what was dropped and skipped.
+		// What the library realigns by is the lost time the drop did not cover (it was held back that long first), less
+		// what the code skips as late once it is back, which the cycles after say.
+		// The two are counted apart, the drop in whole frames of the writer's own pace, so they meet within a few frames:
+		// the declared loss is that much less, the realignment rule's floor taking the rest.
+		constexpr std::uint64_t kDropSlack = 16;
+		if (cycle.stale || cycle.dropped > 0)
+			settle(ear::test::LibrarySettle::dropped, index,
+			       lostNow > cycle.dropped + kDropSlack ? lostNow - cycle.dropped - kDropSlack : 0);
+		if (cycle.resumeSkipped > 0) settleLost_ -= std::min<std::uint64_t>(settleLost_, cycle.resumeSkipped);
+		pendingTold_ += cycle.skipped + cycle.resumeSkipped + cycle.fed;
+		// The ramp's index moves past what was dropped (what the feed held as the writer began included) and what was
+		// skipped as late after it, as past what the code skipped.
+		cycle.skipped += static_cast<std::uint32_t>(cycle.dropped) + cycle.resumeSkipped;
 		if (pendingTold_ > 0 && !untoldSince_) untoldSince_ = cycle.startRawNs;
 		cycle.forced = cycle.overdueNs > 0 && untoldSince_ && cycle.startRawNs - *untoldSince_ >= untoldBound.count();
 		cycle.published = pendingTold_ > 0 && (cycle.overdueNs == 0 || cycle.forced);
@@ -1107,7 +1140,7 @@ private:
 		settleLost_ += lost;
 		errors.mostSettleLost = std::max(errors.mostSettleLost, lost);
 		if (errors.settles.size() < 64) {
-			static constexpr const char* names[] = {"dry", "unskipped", "logged"};
+			static constexpr const char* names[] = {"dry", "unskipped", "logged", "dropped"};
 			errors.settles.push_back(std::string(names[static_cast<std::size_t>(cause)]) + " at " +
 			                         std::to_string(index) + ": " + std::to_string(lost));
 		}
@@ -1677,6 +1710,7 @@ static void judgeStall(StallKind kind, StallMade made) {
 	std::size_t overdue = 0;
 	std::size_t toldInBurst = 0;
 	std::uint64_t dryInBurst = 0;
+	bool crossed = false; // the stall outlasted the feed's undrained bound on this host (docs/node-types.md#clock)
 	std::string burst;
 	for (; end < rig.tap.count() && (!rig.tap.at(end).facts.whole() || rig.tap.at(end).overdueNs > 0); ++end) {
 		const Cycle& c = rig.tap.at(end);
@@ -1684,7 +1718,10 @@ static void judgeStall(StallKind kind, StallMade made) {
 		         std::to_string(c.overdueNs / 1000);
 		if (c.facts.causes.has(CycleCause::catchUp) || c.facts.causes.has(CycleCause::absent))
 			lostFrames += static_cast<std::uint64_t>(std::max<std::int64_t>(c.facts.jumpFrames, 0));
-		skipped += c.codeSkipped;
+		// What the feed skipped stale or dropped, left undrained past its bound on a loaded host, the library does not
+		// correct: it was consumed in its time (docs/node-types.md#clock).
+		skipped += c.codeSkipped + c.dropped + c.resumeSkipped;
+		crossed = crossed || c.staleSkipped > 0 || c.dropped > 0;
 		dryInBurst += c.frames - c.fed;
 		if (c.overdueNs > 0) ++overdue;
 		if (c.progress.totalFrames != rig.tap.at(end - 1).progress.totalFrames) ++toldInBurst;
@@ -1695,13 +1732,14 @@ static void judgeStall(StallKind kind, StallMade made) {
 	const char* const what = kind == StallKind::hiccup      ? "a 1.5-cycle hiccup"
 	                         : kind == StallKind::longStall ? "a 1 s stall"
 	                                                        : "a 200 ms stall";
-	const std::string shape = std::string(what) + (probe ? " upstream" : " in the block") + ": the burst's shape " +
-	                          (cut ? "cut (the block missed some of its cycles)"
-	                               : "uncut (the block ran every cycle, overdue, nothing lost)") +
-	                          ", " + std::to_string(lostFrames) + " frames lost, " + std::to_string(skipped) +
-	                          " skipped, " + std::to_string(unskipped) + " left to the library, " +
-	                          std::to_string(end - stalled - 1) + " cycles in the burst, " + std::to_string(overdue) +
-	                          " overdue";
+	const std::string shape =
+		std::string(what) + (probe ? " upstream" : " in the block") + ": the burst's shape " +
+		(cut ? "cut (the block missed some of its cycles)"
+	         : "uncut (the block ran every cycle, overdue, nothing lost)") +
+		", " + std::to_string(lostFrames) + " frames lost, " + std::to_string(skipped) + " skipped, " +
+		std::to_string(unskipped) + " left to the library, " + std::to_string(end - stalled - 1) +
+		" cycles in the burst, " + std::to_string(overdue) + " overdue" +
+		(crossed ? ", past the feed's undrained bound (the library ran on, told what was dropped)" : "");
 	INFO(shape);
 	INFO("stalled in cycle " << stalled << "; the burst after it (causes:jump:overdue us):" << burst
 	                         << (probe ? "; the probe held " + std::to_string(probe->code.burstHolds()) +
@@ -1827,7 +1865,14 @@ static void judgeStall(StallKind kind, StallMade made) {
 		   << " blocks after it\n";
 	INFO(judged.str());
 	std::ofstream(EAR_STALL_SHAPES_FILE, std::ios::app) << judged.str();
-	if (unskipped > 0) {
+	if (crossed) {
+		// Past the feed's bound the library was told the time it ran on while the graph did not (what the feed dropped),
+		// so it realigned itself then, as soon as it was told, mostly by dropping whole chunks too late to write: what
+		// reaches the outputs after the stall is the drop's step (counted skipped above) and at most what was left of
+		// the stall, never more, and the general judge has held every step and report to its rule.
+		CHECK(corrected <= unskipped + zeros + kCorrectionTolerance);
+		CHECK(judge.errors.bad.empty());
+	} else if (unskipped > 0) {
 		// What the clock could not skip, the library corrects once, with the zeros ear played meanwhile: the stream fell
 		// behind by both. After that hard sync its next write can land up to two blocks late, which the next chunk's
 		// sync drops: one settle step, as after a network gap (docs/testing.md#the-cycle-judge), never more, and only

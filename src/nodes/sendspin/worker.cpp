@@ -167,6 +167,7 @@ std::unique_ptr<::sendspin::SendspinClient> Worker::makeClient(NodeKeyStore& key
 	using Codec = ::sendspin::SendspinCodecFormat;
 	playerConfig.audio_formats = {{Codec::FLAC, nodeChannels, format_.rate.hz(), playerBytesPerSample * 8}};
 	playerConfig.required_lead_time_ms = requiredLeadMs(feed_.capacityFrames(), format_.maxBlock, format_.rate);
+	playerConfig.audio_buffer_capacity = playerBufferBytes; // what the feed's undrained bound is derived from
 	playerRole_ = &client->add_player(std::move(playerConfig));
 	playerRole_->set_listener(this);
 	playerRole_->set_volume_adjustable(false); // deferred
@@ -295,23 +296,43 @@ void Notifier::begin() {
 	watch_ = self_.onReadable(bell_.fd(), [this] { notify(); });
 }
 
-/// Two tellers, one report: the code's frames, and those the feed's writer played into nothing while the graph did not
-/// drain it (docs/node-types.md#clock). The finish is the code's when it played anything since the last report (the
-/// graph is live), else the feed's. Dropped frames of a stream since ended are not told: the library forgot them.
+std::optional<PlayedTeller::Report> PlayedTeller::next(const std::optional<PlayProgress>& code,
+                                                       const Feed::Dropped& dropped) const noexcept {
+	const std::uint64_t played = code ? code->totalFrames : reported_;
+	const std::uint64_t droppedFrom = std::max(reportedDropped_, dropped.forgotten);
+	const std::uint64_t droppedNow = dropped.total > droppedFrom ? dropped.total - droppedFrom : 0;
+	if (played == reported_ && droppedNow == 0) return std::nullopt;
+	return Report{.frames = static_cast<std::uint32_t>(played - reported_ + droppedNow),
+	              .finishRawNs = played != reported_ ? code->finishRawNs : dropped.finishRawNs};
+}
+
+void PlayedTeller::told(const std::optional<PlayProgress>& code, const Feed::Dropped& dropped) noexcept {
+	if (code) reported_ = code->totalFrames;
+	reportedDropped_ = std::max(reportedDropped_, dropped.total);
+}
+
 void Notifier::notify() {
 	bell_.drain();
 	const std::optional<PlayProgress> progress = progress_.read();
-	const std::uint64_t played = progress ? progress->totalFrames : reported_;
 	const Feed::Dropped dropped = feed_.dropped();
-	const std::uint64_t droppedFrom = std::max(reportedDropped_, dropped.forgotten);
-	const std::uint64_t droppedNow = dropped.total > droppedFrom ? dropped.total - droppedFrom : 0;
-	if (played == reported_ && droppedNow == 0) return;
-	const std::int64_t finishRawNs = played != reported_ ? progress->finishRawNs : dropped.finishRawNs;
+	const auto report = teller_.next(progress, dropped);
 	// Before the client started nothing is told and nothing counted told: the library learns it all at its first report.
-	if (player_.notify(static_cast<std::uint32_t>(played - reported_ + droppedNow), finishRawNs / 1000)) {
-		reported_ = played;
-		reportedDropped_ = std::max(reportedDropped_, dropped.total);
-	}
+	if (report && player_.notify(report->frames, report->finishRawNs / 1000)) teller_.told(progress, dropped);
+}
+
+std::chrono::nanoseconds undrainedBoundFor(SampleRate rate, std::uint32_t feedFrames) noexcept {
+	// The library advertises (N-1)/N of the player's quota to the server as buffer_capacity, N being 3
+	// (player_role.cpp, AUDIO_BUFFER_ADVERTISE_DENOMINATOR at the pinned commit), so a server that fills it leaves a
+	// third of the quota for what arrives while nothing is taken. A ring that cannot take a message within 100 ms
+	// (inbound_ring.h, INBOUND_ACQUIRE_TIMEOUT_MS) closes the connection. FLAC's worst case is its verbatim frames, as
+	// large as the PCM they carry: 24-bit stereo at the graph's rate, the one format the player lists.
+	constexpr std::int64_t advertiseDenominator = 3;
+	constexpr std::chrono::milliseconds acquireTimeout{100};
+	constexpr std::int64_t room = static_cast<std::int64_t>(playerBufferBytes) / advertiseDenominator;
+	const std::int64_t bytesPerSecond = std::int64_t{rate.hz()} * playerBytesPerFrame;
+	const std::chrono::nanoseconds lasts{room * 1'000'000'000 / bytesPerSecond};
+	const std::chrono::nanoseconds floor{FrameClock(rate).ns(std::int64_t{feedFrames} * 2)};
+	return std::max(lasts - acquireTimeout, floor);
 }
 
 std::uint16_t requiredLeadMs(std::uint32_t feedFrames, std::uint32_t maxBlock, SampleRate rate) noexcept {

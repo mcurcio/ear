@@ -159,8 +159,12 @@ realigns itself only where it lost time ear did not skip ([node-types.md](node-t
 the clock tests declare a **library settle** there, with the evidence that makes it
 (`CycleJudge::librarySettle(LibrarySettle, chunks)`, counted per cause in the report): a dry cycle
 (the feed's own count, `Feed::dryReads()`, moved), a catch-up's jump the feed did not hold whole
-(`unskipped`: the frames the code could not skip), or a hard sync or loss of sync the library
-logged. A settle lasts two of the library's chunks, by the server's own chunks, not by time: the
+(`unskipped`: the frames the code could not skip), a hard sync or loss of sync the library
+logged, or the feed left undrained past its bound (`dropped`: its writer's dropped count moved, or
+the code came back after a drop, `SendspinCode::lastStale()`; its evidence the lost time the drop
+did not cover, less what the code then skipped as late, `lastResumeSkipped()`), which the clock
+tests' 1 s stall crosses on a loaded host; their stall tests then judge that shape (steps
+accounted, at most what was left corrected) rather than the one correction. A settle lasts two of the library's chunks, by the server's own chunks, not by time: the
 library corrects at the next chunk it syncs (a floor puts that chunk at now, which the block plays
 late by up to two blocks, and the chunk after drops that once more), so from the second chunk
 boundary past the first frame played after the loss the stream is on the stamps. Inside it the timing is not judged, and two forward steps of the

@@ -1,7 +1,6 @@
 #include "sendspin_code.hpp"
 
 #include <algorithm>
-#include <limits>
 
 namespace ear::nodes::sendspin {
 
@@ -21,20 +20,53 @@ void SendspinCode::process(std::span<const std::span<float>> outputs, std::uint3
 	// the stream, so nothing of the next is skipped for the old one's lost time.
 	const CycleFacts& facts = cycle.facts;
 	const bool movedOn = facts.causes.has(CycleCause::catchUp) || facts.causes.has(CycleCause::absent);
-	const bool cleared = feed_.takeCleared();
 	// Undrained past its bound (a stop, a stall the graph does not come back from in time), the feed's writer played
-	// what the library wrote into nothing at the graph's rate rather than wait (docs/node-types.md#clock), and the
-	// notifier told it: what the feed still holds is from before, stale, and is skipped whole. Taken before the stamp,
-	// so the writer drops until this cycle has skipped what it left.
-	lastStaleSkipped_ = feed_.takeStale() ? feed_.skip(std::numeric_limits<std::uint64_t>::max()) : 0;
+	// what the library wrote into nothing at the graph's rate rather than wait (docs/node-types.md#clock), counting
+	// what the feed held then with it, and the notifier told both: that is skipped here, stale, and not counted again.
+	// Taken first (before a clear is applied, and before the stamp, so the writer drops until this cycle has skipped what
+	// it left). What this side read of it in the instant the writer began is counted twice; as many of its next frames
+	// go uncounted. The drop covered the graph's lost time, so this cycle skips nothing for its jump.
+	lastStaleSkipped_ = 0;
+	lastStale_ = false;
+	if (const auto stale = feed_.skipStale()) {
+		lastStale_ = true;
+		lastStaleSkipped_ = stale->skipped;
+		countedTwice_ += stale->readSince;
+		// The library's next frame was due when the frame after the last one dropped would have played; the graph
+		// takes the frames it writes from now from a cycle of its own, later by up to a block and its wait.
+		resumeFromRawNs_ = feed_.dropped().finishRawNs;
+		consumedSinceResume_ = 0;
+	}
+	// After the stale skip, so a clear the reader had not yet applied cannot pass for frames it read.
+	const bool cleared = feed_.takeCleared();
+	if (cleared) resumeFromRawNs_.reset(); // a new stream keeps no time of the old one
 	feed_.drained(cycle.ranRawNs());
 	lastHeldAtStart_ = feed_.held();
-	lastSkipped_ =
-		!cleared && movedOn && facts.jumpFrames > 0 ? feed_.skip(static_cast<std::uint64_t>(facts.jumpFrames)) : 0;
+	lastSkipped_ = !cleared && !lastStale_ && movedOn && facts.jumpFrames > 0
+	                   ? feed_.skip(static_cast<std::uint64_t>(facts.jumpFrames))
+	                   : 0;
+	// Back after a drop, each frame keeps the time the drop gave it: what is due by this cycle's run and not consumed
+	// is late and skipped, so the stream the library is told plays on from the drop's timeline with no error for it
+	// to correct (it would take its slow sync seconds for the part of a block the graph's cycle came later). Done once
+	// a cycle reads with nothing late left.
+	lastResumeSkipped_ = 0;
+	std::int64_t late = 0;
+	if (resumeFromRawNs_) {
+		late = clock_.framesNearest(std::chrono::nanoseconds{cycle.ranRawNs() - *resumeFromRawNs_}) -
+		       static_cast<std::int64_t>(consumedSinceResume_);
+		if (late > 0) lastResumeSkipped_ = feed_.skip(static_cast<std::uint64_t>(late));
+	}
 	const std::uint32_t got = feed_.read(outputs, frames);
+	if (resumeFromRawNs_) {
+		consumedSinceResume_ += std::uint64_t{lastResumeSkipped_} + got;
+		if (got > 0 && late <= static_cast<std::int64_t>(lastResumeSkipped_)) resumeFromRawNs_.reset();
+	}
 	// Counted played: what was skipped and read, never the zeros a short cycle played (the library wrote none of
 	// them).
-	played_ += std::uint64_t{lastStaleSkipped_} + lastSkipped_ + got;
+	const std::uint64_t counted = std::uint64_t{lastSkipped_} + lastResumeSkipped_ + got;
+	const std::uint64_t repaid = std::min(countedTwice_, counted);
+	countedTwice_ -= repaid;
+	played_ += counted - repaid;
 	if (played_ == told_) return;
 	if (!untoldSince_) untoldSince_ = startRawNs;
 

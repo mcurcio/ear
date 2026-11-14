@@ -31,6 +31,14 @@ namespace ear::nodes::sendspin {
 /// The lead a player reports (spec "required_lead_time_ms": at least what still plays after a stream/clear): all a feed
 /// of `feedFrames` holds, and the block being played. The library reports its own pipeline's lead if that is larger.
 std::uint16_t requiredLeadMs(std::uint32_t feedFrames, std::uint32_t maxBlock, SampleRate rate) noexcept;
+/// The player's buffer in the library's inbound ring (PlayerRoleConfig::audio_buffer_capacity), which the worker sets:
+/// the library's default, named here because the feed's undrained bound is derived from it.
+inline constexpr std::size_t playerBufferBytes = ::sendspin::PlayerRoleConfig::DEFAULT_AUDIO_BUFFER_CAPACITY;
+/// How long the code may leave the feed undrained before its writer stops waiting (docs/node-types.md#clock), derived
+/// from what it protects: the room a server that fills the player's advertised buffer leaves in the library's inbound
+/// ring, at the stream's worst-case byte rate, less the library's wait for room before it closes the connection; and
+/// no less than two feeds' worth (`feedFrames` at `rate`), so a scheduling hiccup never drops.
+std::chrono::nanoseconds undrainedBoundFor(SampleRate rate, std::uint32_t feedFrames) noexcept;
 
 /// The library's player as the worker lends it to the notifier: set once the client started, cleared before the
 /// client stops, so the notifier never calls a player that is going. Every call under one lock; any thread.
@@ -127,6 +135,27 @@ private:
 	std::unique_ptr<::sendspin::SendspinClient> client_;
 };
 
+/// What the notifier tells the library, from two tellers (docs/node-types.md#clock): the code's frames (its mailbox),
+/// and those the feed's writer played into nothing while no cycle drained it. One report: the frames of both since the
+/// last, dated by the code's finish when the code played anything since (the graph is live), else by the feed's.
+/// Dropped frames of a stream since ended are not told: the library forgot them. Pure: the notifier's state, and the
+/// tests'.
+class PlayedTeller {
+public:
+	struct Report {
+		std::uint32_t frames;
+		std::int64_t finishRawNs;
+	};
+	/// What to tell now, if anything.
+	std::optional<Report> next(const std::optional<PlayProgress>& code, const Feed::Dropped& dropped) const noexcept;
+	/// That report was told (the player took it): what it counted is told.
+	void told(const std::optional<PlayProgress>& code, const Feed::Dropped& dropped) noexcept;
+
+private:
+	std::uint64_t reported_ = 0;        // of the code's frames
+	std::uint64_t reportedDropped_ = 0; // of the feed's dropped frames
+};
+
 /// The notifier loop's state: tells the library what played, one call per ring of the code's bell. Apart from the
 /// worker, whose writes sync to disk: a late notify can cost a hard sync. Made in configure; begin() watches the bell
 /// once the node is configured; destroyed on its loop at teardown step 4, the watch with it.
@@ -145,8 +174,7 @@ private:
 	const Mailbox<PlayProgress>& progress_;
 	const Feed& feed_;
 	PlayerSlot& player_;
-	std::uint64_t reported_ = 0;        // of the code's frames
-	std::uint64_t reportedDropped_ = 0; // of the feed's dropped frames
+	PlayedTeller teller_;
 	std::unique_ptr<Timer> watch_;
 };
 } // namespace ear::nodes::sendspin

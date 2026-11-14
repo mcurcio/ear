@@ -457,7 +457,10 @@ count that kept it is deleted, and a source with a clock of its own keeps its ti
    it in PipeWire ([engine.md](engine.md#sound-cards), [engine.md](engine.md#rtp-receivers));
    `sendspin` does it in its code ([node-types.md](node-types.md#clock)); a type's source does it
    in the `SourceClock` it gives the source, which alone decides what the ring skips
-   ([writing-a-node-type.md](writing-a-node-type.md#a-sources-clock)).
+   ([writing-a-node-type.md](writing-a-node-type.md#a-sources-clock)). A node's own-clock side may
+   keep time without the tick through a stop or a host stall: past its feed's bound, `sendspin`
+   plays what its library writes into nothing at the graph rate and tells it so, so the library is
+   never held back by a graph that does not tick (the rule's home: [node-types.md](node-types.md#clock)).
 4. **One rate inside the graph.** Every port in the graph runs at the graph rate, and conversion
    happens only in edge nodes. The rate is configurable (`graph { rate 48khz; }` in `ear.conf`, the
    `--rate` flag as fallback: [boot](#boot)) but fixed for the engine's life, and it is

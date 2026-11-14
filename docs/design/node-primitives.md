@@ -500,10 +500,10 @@ state goes).
 - **A stopped node's live stream (review follow-up).** With the server streaming to a stopped node, no cycle drains
   the feed, its writer (the library's sync thread) waited out its patience on every call, the player's held items
   pinned the library's inbound ring, and the library closed the connection: Q-3c1 broken whenever a stop met a
-  stream. The rule is the feed's, so a long host stall gets it too: undrained past `undrainedBound` (1.5 s, longer
-  than the stalls the clock tests recover from exactly, shorter than the ring's room behind a server that fills the
-  player's buffer), the writer plays what it is given into nothing at the graph's rate, a feed's worth ahead of now at
-  most, and marks what the feed holds stale; the code's first cycle back skips that whole (counted played, as any
+  stream. The rule is the feed's, so a long host stall gets it too: undrained past its bound (derived from the
+  ring's room behind a server that fills the player's buffer, about 1.06 s at 48 kHz; the clock tests' judge counts
+  a drop as an explained cause), the writer plays what it is given into nothing at the graph's rate, up to now and
+  never ahead (so the finish told never steps back), and marks what the feed holds stale; the code's first cycle back skips that whole (counted played, as any
   skip). The dropped frames are told by the notifier, dated by when the next would play on that rate (the code's
   finish when the code played since the last report). Leaving them untold, as asked first, does not work: the
   library's priming waits for its first report (`handle_initial_sync`), so a stream begun while stopped never leaves

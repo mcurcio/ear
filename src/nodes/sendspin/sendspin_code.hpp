@@ -34,8 +34,12 @@ public:
 	std::uint32_t lastHeldAtStart() const noexcept { return lastHeldAtStart_; }
 	std::uint32_t lastSkipped() const noexcept { return lastSkipped_; }
 	/// Test seam, the data thread's own: what the last process() skipped as stale, the feed having been left undrained
-	/// past its bound.
+	/// past its bound (counted by the feed's writer, never here).
 	std::uint32_t lastStaleSkipped() const noexcept { return lastStaleSkipped_; }
+	/// Test seams, the data thread's own: whether the last process() came back after a drop, and what it skipped as
+	/// late for the drop's timeline.
+	bool lastStale() const noexcept { return lastStale_; }
+	std::uint32_t lastResumeSkipped() const noexcept { return lastResumeSkipped_; }
 	/// Test seam, read on the data thread: the reports whose finish the clamp moved. It acts only on the report after one
 	/// the bound forced from an overdue cycle (docs/node-types.md#clock); a test holds it idle otherwise.
 	std::uint64_t clamped() const noexcept { return clamped_; }
@@ -44,15 +48,20 @@ private:
 	Feed& feed_;
 	Mailbox<PlayProgress>& progress_;
 	const EventFd& bell_;
-	FrameClock clock_;                        // the graph's rate: what plays is dated by it (docs/engine.md#dating)
-	std::uint64_t played_ = 0;                // every frame of the library's skipped or read, in order
-	std::uint64_t told_ = 0;                  // of them, those the library was told played
-	std::int64_t lastFinish_ = 0;             // the last finish told
-	bool afterForced_ = false;                // the last report was one the bound forced from an overdue cycle
-	std::optional<std::int64_t> untoldSince_; // the start, on the raw clock, of the first cycle not yet told
-	std::uint32_t lastHeldAtStart_ = 0;       // test seam: lastHeldAtStart()
-	std::uint32_t lastSkipped_ = 0;           // test seam: lastSkipped()
-	std::uint32_t lastStaleSkipped_ = 0;      // test seam: lastStaleSkipped()
-	std::uint64_t clamped_ = 0;               // test seam: clamped()
+	FrameClock clock_;                            // the graph's rate: what plays is dated by it (docs/engine.md#dating)
+	std::uint64_t played_ = 0;                    // every frame of the library's skipped or read, in order
+	std::uint64_t told_ = 0;                      // of them, those the library was told played
+	std::int64_t lastFinish_ = 0;                 // the last finish told
+	bool afterForced_ = false;                    // the last report was one the bound forced from an overdue cycle
+	std::optional<std::int64_t> untoldSince_;     // the start, on the raw clock, of the first cycle not yet told
+	std::uint32_t lastHeldAtStart_ = 0;           // test seam: lastHeldAtStart()
+	std::uint32_t lastSkipped_ = 0;               // test seam: lastSkipped()
+	std::uint32_t lastStaleSkipped_ = 0;          // test seam: lastStaleSkipped()
+	std::uint64_t countedTwice_ = 0;              // frames read that the feed's writer also counted dropped
+	bool lastStale_ = false;                      // test seam: lastStale()
+	std::uint32_t lastResumeSkipped_ = 0;         // test seam: lastResumeSkipped()
+	std::optional<std::int64_t> resumeFromRawNs_; // back after a drop: when the first frame written since was due
+	std::uint64_t consumedSinceResume_ = 0;       // frames skipped and read since
+	std::uint64_t clamped_ = 0;                   // test seam: clamped()
 };
 } // namespace ear::nodes::sendspin

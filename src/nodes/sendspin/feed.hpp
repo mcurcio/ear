@@ -12,19 +12,14 @@
 #include "ear/core/sample_rate.hpp"
 #include "event_fd.hpp"
 namespace ear::nodes::sendspin {
-/// How long the reader may leave the feed undrained before the writer stops waiting for it. Longer than the host
-/// stalls the graph recovers from exactly (the clock tests' longest is 1 s), so such a stall keeps the clock's skip
-/// and the library's one correction; shorter than the room a server that fills the player's advertised buffer leaves
-/// in the library's inbound ring (a third of its 1 MB quota: about 2 s of FLAC 24 stereo at 48 kHz), whose pinning
-/// closes the connection (docs/node-types.md#clock).
-inline constexpr std::chrono::milliseconds undrainedBound{1500};
 /// CLOCK_MONOTONIC_RAW in ns, the clock the reader's stamps are on (GraphCycle::ranRawNs).
 std::int64_t rawNowNs() noexcept;
-/// The writer's side of a reader that stopped draining: what a frame lasts, the bound, the clock it is judged on, and
-/// the bell (the code's) rung after each drop, so the notifier tells it.
+/// The writer's side of a reader that stopped draining: what a frame lasts, how long the reader may leave the feed
+/// undrained before the writer stops waiting for it (undrainedBoundFor, worker.hpp), the clock it is judged on, and the
+/// bell (the code's) rung after each drop, so the notifier tells it.
 struct FeedDrain {
 	SampleRate rate;
-	std::chrono::nanoseconds bound = undrainedBound;
+	std::chrono::nanoseconds bound;
 	std::int64_t (*nowRawNs)() noexcept = &rawNowNs;
 	const EventFd* bell = nullptr;
 };
@@ -46,18 +41,26 @@ public:
 	/// call (here, or by a read or a skip): the stream it ended is over, and nothing of the next is skipped for it.
 	bool takeCleared() noexcept;
 	/// One writing thread. With no room waits up to `patience`. Returns frames accepted. With a FeedDrain, once the
-	/// reader has not stamped drained() for its bound, it accepts frames at the graph's rate (a feed's worth ahead of
-	/// now at most, waiting up to `patience` past that) and drops them, played into nothing in their time (dropped()),
-	/// and marks what the feed still holds stale.
+	/// reader has not stamped drained() for its bound, it counts what the feed holds as dropped then (stale: the reader
+	/// skips it when it is back), and accepts frames at the graph's rate up to now (waiting up to `patience` for a
+	/// frame's time to come) and drops them, each played into nothing in its time (dropped()).
 	std::uint32_t write(std::span<const float> interleaved, std::uint32_t frames, std::chrono::milliseconds patience);
 	/// Any ordinary thread. What was written so far is gone at the next read, not counted played, and what was dropped
 	/// so far is forgotten (Dropped::forgotten).
 	void clear() noexcept;
-	/// Realtime, each cycle: the reader drained the feed in a cycle that ran at `ranRawNs` (CLOCK_MONOTONIC_RAW).
+	/// Realtime, each cycle: the reader drained the feed in a cycle that ran at `ranRawNs` (CLOCK_MONOTONIC_RAW). The
+	/// feed counts as drained when it is made, so a configuration that starts during a stream waits for its first
+	/// cycle as a reader's stall, rather than dropping the stream's first chunks.
 	void drained(std::int64_t ranRawNs) noexcept { drainedRawNs_.store(ranRawNs, std::memory_order_release); }
-	/// Realtime: whether the writer began dropping since the last call, so what the feed holds is from before the reader
-	/// stopped and is stale.
-	bool takeStale() noexcept { return stale_.exchange(false, std::memory_order_acq_rel); }
+	/// What skipStale() did: the frames it skipped, and those the reader read after the writer counted them dropped (a
+	/// reader back in the instant the writer began: counted twice, so the reader counts as many fewer of its own).
+	struct StaleSkip {
+		std::uint32_t skipped;
+		std::uint32_t readSince;
+	};
+	/// Realtime: when the writer began dropping since the last call, skips what the feed held then (stale: from before
+	/// the reader stopped, and counted dropped by the writer as it began), nothing written since.
+	std::optional<StaleSkip> skipStale() noexcept;
 	/// What the writer has played into nothing: every frame it dropped, those of them a clear made the library forget
 	/// (dropped before the last clear), and when the frame after the last one dropped would play (CLOCK_MONOTONIC_RAW).
 	struct Dropped {
@@ -105,8 +108,10 @@ private:
 	std::uint32_t heldAtSkip_ = 0; // reader only
 	bool clearedSince_ = false;    // reader only: a clear was applied since the last takeCleared()
 	std::optional<FeedDrain> drain_;
-	std::atomic<std::int64_t> drainedRawNs_{0}; // the reader's last stamp; 0 before its first
+	std::atomic<std::int64_t> drainedRawNs_; // the reader's last stamp; the feed's making before its first
 	std::atomic<bool> stale_{false};
+	std::atomic<std::uint32_t> staleFrom_{0}; // the read and write positions when the writer began dropping
+	std::atomic<std::uint32_t> staleTo_{0};
 	std::atomic<std::uint64_t> dropped_{0};
 	std::atomic<std::uint64_t> forgotten_{0};
 	std::atomic<std::int64_t> finishRawNs_{0};

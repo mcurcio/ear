@@ -22,7 +22,7 @@ std::int64_t rawNowNs() noexcept {
 }
 
 Feed::Feed(std::uint32_t channels, std::uint32_t capacityFrames, std::optional<FeedDrain> drain)
-	: ring_(channels, capacityFrames), drain_(drain) {}
+	: ring_(channels, capacityFrames), drain_(drain), drainedRawNs_(drain ? drain->nowRawNs() : 0) {}
 
 bool Feed::applyClear() noexcept {
 	const std::uint64_t asked = clearTo_.exchange(0, std::memory_order_acq_rel);
@@ -62,6 +62,17 @@ std::uint32_t Feed::skip(std::uint64_t frames) noexcept {
 	const std::uint32_t got = ring_.skip(static_cast<std::uint32_t>(std::min<std::uint64_t>(frames, heldAtSkip_)));
 	if (cleared || got > 0) wakeWriter();
 	return got;
+}
+
+std::optional<Feed::StaleSkip> Feed::skipStale() noexcept {
+	if (!stale_.exchange(false, std::memory_order_acq_rel)) return std::nullopt;
+	const std::uint32_t from = staleFrom_.load(std::memory_order_relaxed);
+	const std::uint32_t to = staleTo_.load(std::memory_order_relaxed);
+	const std::uint32_t read = ring_.readPosition();
+	const std::uint32_t readSince = std::min(read - from, to - from); // read after the writer counted it
+	ring_.skipTo(to);
+	wakeWriter();
+	return StaleSkip{.skipped = (to - from) - readSince, .readSince = readSince};
 }
 
 bool Feed::takeCleared() noexcept {
@@ -106,27 +117,39 @@ void Feed::clear() noexcept {
 	                 std::memory_order_release); // the library zeroes its count
 }
 
-/// The reader is gone (a stop, a stall past the bound): this side plays the frames into nothing at the graph's rate, a
-/// feed's worth ahead of now at most, as a reader would have taken them, so the library's own thread runs at its own
-/// pace and never pins its inbound ring behind audio no cycle will read. The library needs telling what played to run
+/// The reader is gone (a stop, a stall past the bound): this side plays the frames into nothing at the graph's rate, up
+/// to now and never ahead of it, as a reader would have taken them, so the library's own thread runs at its own pace
+/// and never pins its inbound ring behind audio no cycle will read. Never ahead, so every finish said is in the past
+/// when a cycle comes back, and the code's next finish, dated by that cycle, is no earlier: what the library is told
+/// never steps back. The library needs telling what played to run
 /// at all (its stream's priming waits for the first report) and puts its next frame at the finish told plus what it
 /// wrote and was not told, so each frame dropped is said, with when the next would play, for the notifier to tell.
 std::uint32_t Feed::discard(std::uint32_t frames, std::chrono::milliseconds patience) {
 	const std::int64_t now = drain_->nowRawNs();
+	const FrameClock clock(drain_->rate);
 	if (!discarding_) {
+		// What the feed holds will not be read in its time: consumed now, counted with the drops so the library is
+		// told it in order with them (told later, by the reader, the library would correct twice: once for the drops
+		// it was told without it, once for it).
 		discarding_ = true;
 		paceRawNs_ = now;
-		stale_.store(true, std::memory_order_release); // what the feed holds will not be read in its time
+		const std::uint32_t to = ring_.writePosition();
+		const std::uint32_t from = ring_.readPosition();
+		staleFrom_.store(from, std::memory_order_relaxed);
+		staleTo_.store(to, std::memory_order_relaxed);
+		stale_.store(true, std::memory_order_release);
+		finishRawNs_.store(now, std::memory_order_release);
+		dropped_.fetch_add(to - from, std::memory_order_acq_rel);
+		if (drain_->bell != nullptr) drain_->bell->ring();
 	}
-	paceRawNs_ = std::max(paceRawNs_, now);
-	const FrameClock clock(drain_->rate);
-	const std::int64_t roomNs = clock.ns(ring_.capacityFrames()) - (paceRawNs_ - now);
-	const std::int64_t room =
-		std::int64_t{ring_.capacityFrames()} - clock.framesNearest(std::chrono::nanoseconds{paceRawNs_ - now});
+	// A writer that was away is credited with a feed's worth of the time it missed at most, as a reader that kept
+	// reading would have drained no more than the feed held.
+	paceRawNs_ = std::max(paceRawNs_, now - clock.ns(ring_.capacityFrames()));
+	const std::int64_t room = clock.frames(std::chrono::nanoseconds{now - paceRawNs_}); // whole frames, up to now
 	if (room <= 0) {
-		// Until a frame's room comes, at most its patience.
+		// Until a frame's time has come, at most its patience.
 		const auto untilRoom =
-			std::chrono::ceil<std::chrono::milliseconds>(std::chrono::nanoseconds{clock.ns(1) - roomNs});
+			std::chrono::ceil<std::chrono::milliseconds>(std::chrono::nanoseconds{clock.ns(1) - (now - paceRawNs_)});
 		waitForRoom(std::min(patience, untilRoom));
 		return 0;
 	}

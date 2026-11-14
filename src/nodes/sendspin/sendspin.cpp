@@ -18,9 +18,11 @@ Configured Sendspin::configure(CreateOf<spec>& cx, const Checked& s) {
 	const AudioFormat format = cx.format();
 	const std::uint32_t feedFrames = feedFramesFor(format);
 	// The library's own thread is never held back long by a graph that does not drain the feed (a stop, a long stall):
-	// past undrainedBound the feed drops what it is given at the graph's rate (docs/node-types.md#clock).
+	// past its bound the feed drops what it is given at the graph's rate (docs/node-types.md#clock).
 	bell_ = std::make_unique<EventFd>();
-	feed_ = std::make_unique<Feed>(nodeChannels, feedFrames, FeedDrain{.rate = format.rate, .bell = bell_.get()});
+	feed_ = std::make_unique<Feed>(
+		nodeChannels, feedFrames,
+		FeedDrain{.rate = format.rate, .bound = undrainedBoundFor(format.rate, feedFrames), .bell = bell_.get()});
 
 	cx.loop(worker, std::make_unique<Worker>(WorkerParts{.handle = node_.handle(),
 	                                                     .keys = cx.store(keyFile),

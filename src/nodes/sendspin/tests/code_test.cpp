@@ -585,8 +585,8 @@ std::int64_t fakeRawNow() noexcept { return fakeRaw; }
 } // namespace
 
 TEST_CASE(
-	"After the feed was left undrained past its bound, what it held is skipped stale and counted played, and what "
-	"it dropped is the feed's to say",
+	"After the feed was left undrained past its bound, what it held is skipped stale, and that and what it dropped "
+	"are the feed's to say, not the code's",
 	"[sendspin][code]") {
 	constexpr std::int64_t msNs = 1'000'000;
 	fakeRaw = 50'000 * msNs;
@@ -604,11 +604,13 @@ TEST_CASE(
 	std::uint32_t written = 0;
 	const auto write = [&](std::uint32_t frames) {
 		std::vector<float> samples;
-		for (std::uint32_t i = 0; i < frames; ++i) {
-			samples.push_back(static_cast<float>(++written));
+		for (std::uint32_t i = 1; i <= frames; ++i) {
+			samples.push_back(static_cast<float>(written + i));
 			samples.push_back(0.0F);
 		}
-		return feed.write(samples, frames, 0ms);
+		const std::uint32_t accepted = feed.write(samples, frames, 0ms);
+		written += accepted;
+		return accepted;
 	};
 
 	cycle(fakeRaw, {}); // drained now
@@ -617,19 +619,106 @@ TEST_CASE(
 	CHECK(progress.read()->totalFrames == block);
 	REQUIRE(write(block) == block); // full again: 2048 held
 
-	fakeRaw += 2000 * msNs; // stopped for 2 s: the writer drops what it is given rather than wait
+	fakeRaw += 2000 * msNs; // stopped for 2 s: the writer drops what it is given rather than wait, up to now
+	REQUIRE(write(1000) == 0);
+	fakeRaw += 21 * msNs;
 	REQUIRE(write(1000) == 1000);
-	CHECK(feed.dropped().total == 1000); // the notifier's to tell, dated by the feed's own clock
+	CHECK(feed.dropped().total == capacity + 1000); // what the feed held, and what was dropped: the notifier's to tell
 
 	ear::CycleFacts drive;
 	drive.causes = ear::CycleCause::drive;
 	cycle(fakeRaw, drive); // the start: what the feed held is stale
 	CHECK(code.lastStaleSkipped() == capacity);
-	CHECK(left[0] == 0.0F); // nothing fresh to read yet
-	CHECK(progress.read()->totalFrames == block + capacity);
-	REQUIRE(write(block) == block); // the reader is back: the feed takes it to be read
+	CHECK(left[0] == 0.0F);                       // nothing fresh to read yet
+	CHECK(progress.read()->totalFrames == block); // nothing new of the code's: the stale frames are the feed's to tell
+	REQUIRE(write(block) == block);               // the reader is back: the feed takes it to be read
 	cycle(fakeRaw + 5 * msNs, {});
 	CHECK(code.lastStaleSkipped() == 0);
-	CHECK(left[0] == static_cast<float>(capacity + block + 1000 + 1));
-	CHECK(progress.read()->totalFrames == block + capacity + block);
+	// The frames written since were due from the last drop on: 5 ms of them late by this cycle, skipped.
+	CHECK(code.lastResumeSkipped() == 248);
+	CHECK(left[0] == static_cast<float>(capacity + block + 1000 + 248 + 1));
+	CHECK(progress.read()->totalFrames == block + block);
+}
+
+TEST_CASE("The finish told never steps back: across a stop and a start, and across a stall past the feed's bound",
+          "[sendspin][code]") {
+	constexpr std::int64_t msNs = 1'000'000;
+	const std::int64_t blockNs = ear::FrameClock(ear::SampleRate::fixed<rate>()).ns(block);
+	fakeRaw = 90'000 * msNs;
+	Feed feed(2, capacity, FeedDrain{.rate = ear::SampleRate::fixed<rate>(), .bound = 1500ms, .nowRawNs = &fakeRawNow});
+	Mailbox<PlayProgress> progress;
+	EventFd bell;
+	SendspinCode code(feed, progress, bell, ear::SampleRate::fixed<rate>());
+	PlayedTeller teller;
+	std::vector<float> left(block);
+	std::vector<float> right(block);
+	const std::array<std::span<float>, 2> outputs{left, right};
+	std::vector<std::int64_t> finishes;
+	// The notifier's turn: what the library is told now, if anything.
+	const auto notify = [&] {
+		const auto read = progress.read();
+		const auto dropped = feed.dropped();
+		if (const auto report = teller.next(read, dropped)) {
+			finishes.push_back(report->finishRawNs);
+			teller.told(read, dropped);
+		}
+	};
+	const std::vector<float> samples(std::size_t{block} * 2, 0.5F);
+	// The library's sync thread: as much as the feed takes now.
+	const auto write = [&] {
+		while (feed.write(samples, block, 0ms) > 0) {
+		}
+	};
+	// `cycles` on-time cycles from now, the clock moving a block each, the library writing and the notifier telling
+	// between them; the first stating `facts`.
+	const auto run = [&](int cycles, ear::CycleFacts facts) {
+		for (int i = 0; i < cycles; ++i) {
+			write();
+			code.process(
+				outputs, block,
+				ear::GraphCycle{
+					.startNs = 0, .position = 0, .startRawNs = fakeRaw, .facts = i == 0 ? facts : ear::CycleFacts{}});
+			notify();
+			fakeRaw += blockNs;
+		}
+	};
+	// The node not running for `ms`: the library writing every 5 ms, the notifier telling what was dropped.
+	const auto away = [&](std::int64_t ms) {
+		for (std::int64_t at = 0; at < ms; at += 5) {
+			fakeRaw += 5 * msNs;
+			write();
+			notify();
+		}
+	};
+
+	run(50, {});
+	away(3000); // a stop: dropped from 1.5 s on
+	ear::CycleFacts drive;
+	drive.causes = ear::CycleCause::drive;
+	run(50, drive); // the start
+	away(2500);     // a stall past the bound
+	ear::CycleFacts caughtUp;
+	caughtUp.causes = ear::CycleCause::catchUp;
+	caughtUp.jumpFrames = static_cast<std::int64_t>(ear::FrameClock(ear::SampleRate::fixed<rate>()).frames(2500ms));
+	run(50, caughtUp);
+
+	REQUIRE(feed.dropped().total > 0);
+	REQUIRE(finishes.size() > 100);
+	for (std::size_t i = 1; i < finishes.size(); ++i) {
+		INFO("report " << i << " of " << finishes.size());
+		CHECK(finishes[i] >= finishes[i - 1]);
+	}
+}
+
+TEST_CASE("The feed's undrained bound is the ring's room behind a full advertised buffer at the PCM byte rate, less "
+          "the library's wait, and never under two feeds",
+          "[sendspin][code]") {
+	using std::chrono::nanoseconds;
+	// A third of 1 MB at 24-bit stereo: 333333 B / 288000 B/s = 1.1574 s, less 100 ms.
+	CHECK(undrainedBoundFor(ear::SampleRate::fixed<48000>(), 2048) == nanoseconds{1'157'406'250 - 100'000'000});
+	CHECK(undrainedBoundFor(ear::SampleRate::fixed<96000>(), 4096) == nanoseconds{578'703'125 - 100'000'000});
+	CHECK(undrainedBoundFor(ear::SampleRate::fixed<192000>(), 8192) == nanoseconds{289'351'562 - 100'000'000});
+	// A feed so long that two of it outlast the room: the floor.
+	CHECK(undrainedBoundFor(ear::SampleRate::fixed<192000>(), 65536) ==
+	      nanoseconds{ear::FrameClock(ear::SampleRate::fixed<192000>()).ns(2 * 65536)});
 }
