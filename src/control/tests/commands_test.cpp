@@ -76,6 +76,9 @@ TEST_CASE("Every method decodes into its command", "[commands]") {
 	CHECK(std::get<SetNodeText>(setText.value()).node == "rec");
 	CHECK(std::get<SetNodeText>(setText.value()).text == "node file rec { path x; }");
 	CHECK(std::get<SetNodeText>(setText.value()).version == "a.3");
+	const auto addText = decodeCommand("node.addText", json::parse(R"({"text": "node white n2;", "version": "a.4"})"));
+	CHECK(std::get<AddNodeText>(addText.value()).text == "node white n2;");
+	CHECK(std::get<AddNodeText>(addText.value()).version == "a.4");
 
 	CHECK(std::get<StartNode>(decodeCommand("node.start", json::parse(R"({"name": "porch"})")).value()).node ==
 	      "porch");
@@ -216,6 +219,9 @@ TEST_CASE("Every missing, extra and mistyped key is invalid params naming its po
 	CHECK(invalid("node.setText", R"({"text": "", "version": "a.1"})") == "/name: missing");
 	CHECK(invalid("node.setText", R"({"name": "rec", "version": "a.1"})") == "/text: missing");
 	CHECK(invalid("node.setText", R"({"name": "rec", "text": ""})") == "/version: missing");
+	CHECK(invalid("node.addText", R"({"version": "a.1"})") == "/text: missing");
+	CHECK(invalid("node.addText", R"({"text": ""})") == "/version: missing");
+	CHECK(invalid("node.addText", R"({"text": "", "version": "a.1", "name": "n"})") == "/name: unknown key");
 	CHECK(invalid("node.setText", R"({"name": "rec", "text": [], "version": "a.1"})") == "/text: must be a string");
 	CHECK(invalid("node.setText", R"({"name": "rec", "text": "", "version": "a.1", "type": "file"})") ==
 	      "/type: unknown key");

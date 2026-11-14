@@ -39,6 +39,10 @@ struct SetNodeText {
 	std::string text;
 	std::string version;
 }; // node.setText {"name", "text", "version"} (feature node-text)
+struct AddNodeText {
+	std::string text;
+	std::string version;
+}; // node.addText {"text", "version"} (feature node-text)
 struct StartNode {
 	NodeName node;
 }; // node.start {"name"}
@@ -54,8 +58,9 @@ struct DisableNode {
 struct EnableNode {
 	NodeName node;
 }; // node.enable {"name"}
-using Command = std::variant<GetGraph, AddNode, UpdateNode, RemoveNode, AddRoute, RemoveRoute, GetGraphFile,
-                             SetGraphFile, StartNode, StopNode, RestartNode, DisableNode, EnableNode, SetNodeText>;
+using Command =
+	std::variant<GetGraph, AddNode, UpdateNode, RemoveNode, AddRoute, RemoveRoute, GetGraphFile, SetGraphFile,
+                 StartNode, StopNode, RestartNode, DisableNode, EnableNode, SetNodeText, AddNodeText>;
 using CommandResult =
 	std::variant<GraphView, std::expected<void, CommandError>, GraphFile, FileRefusal, Applied, ControlRefusal>;
 /// The wire's frame (docs/control-port.md#protocol-and-features): graph.get's "protocol" and "features".
@@ -68,7 +73,8 @@ inline constexpr std::array<std::string_view, 4> wireFeatures{"lifecycle", "coun
 /// a missing, extra or mistyped key: invalidParams whose message is the JsonError
 /// ("/from/port: missing") and whose data is {"pointer"} (the JSON pointer it names). graphFile.get and
 /// graphFile.subscribe (params absent or {}) are GetGraphFile; graphFile.set is SetGraphFile (text and version, each a
-/// required string); node.setText is SetNodeText (name, text and version); node.start, node.stop, node.restart, node.disable and node.enable take {"name"}. The
+/// required string); node.setText is SetNodeText (name, text and version); node.addText is AddNodeText (text and
+/// version); node.start, node.stop, node.restart, node.disable and node.enable take {"name"}. The
 /// graph file keeper runs every command (requests.hpp).
 std::expected<Command, RpcError> decodeCommand(std::string_view method, const nlohmann::json& params);
 /// Control thread. GraphView -> encodeGraph; success -> {}; CommandError ->

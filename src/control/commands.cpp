@@ -94,6 +94,15 @@ std::expected<Command, RpcError> decodeSetNodeText(const json& params, const Jso
 	return SetNodeText{std::move(*name), std::move(*text), std::move(*version)};
 }
 
+std::expected<Command, RpcError> decodeAddNodeText(const json& params, const JsonPointer& at) {
+	if (auto checked = requireObject(params, at, {"text", "version"}); !checked) return refuse(checked.error());
+	auto text = requireText(params, at, "text");
+	if (!text) return refuse(text.error());
+	auto version = requireText(params, at, "version");
+	if (!version) return refuse(version.error());
+	return AddNodeText{std::move(*text), std::move(*version)};
+}
+
 /// node.start, node.stop, node.restart, node.disable and node.enable: {"name"}.
 template <class Verb> std::expected<Command, RpcError> decodeNamed(const json& params, const JsonPointer& at) {
 	if (auto checked = requireObject(params, at, {"name"}); !checked) return refuse(checked.error());
@@ -151,6 +160,7 @@ constexpr Method methods[] = {
 	{"node.disable", decodeNamed<DisableNode>},
 	{"node.enable", decodeNamed<EnableNode>},
 	{"node.setText", decodeSetNodeText},
+	{"node.addText", decodeAddNodeText},
 };
 
 RpcError encodeControlRefusal(const ControlRefusal& refusal) {

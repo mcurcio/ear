@@ -113,6 +113,13 @@ public:
 	/// is placed at the text's start, or its end when after it, its message prefixed with its place in this model's
 	/// text). Nothing when the text is the statement's own.
 	EditOutcome setNodeText(const NodeName& node, const std::string& text) const;
+	/// node.addText (docs/control-port.md#a-nodes-own-text): `text`, with the whitespace around it dropped, appended after
+	/// the last top-level statement as addNode appends (knobly writes it in the file's own line ending). knobly parses it
+	/// alone first (its syntax errors are InvalidText placed in `text`), so it can never run into the file; then the
+	/// candidate is read whole, so @set and @snippet apply, and its errors are InvalidText placed in `text`. It must be
+	/// exactly one `node` statement (notOneNodeCode). A taken name, an unknown type or refused settings are the
+	/// graph's to judge.
+	EditOutcome addNodeText(const std::string& text) const;
 
 private:
 	struct Impl;

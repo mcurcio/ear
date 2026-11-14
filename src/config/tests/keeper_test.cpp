@@ -429,6 +429,34 @@ TEST_CASE("node.setText: a stale version first, file-invalid, then the text's ow
 	      "file-invalid");
 }
 
+TEST_CASE("node.addText: a stale version first, file-invalid, then the text's own checks, and accepted it is an edit",
+          "[keeper][node-text]") {
+	Fixture f("add_text");
+	f.start();
+	const auto boot = f.graphFile();
+	const auto addText = [&](std::string text, std::string version) {
+		auto results = f.run({control::AddNodeText{std::move(text), std::move(version)}});
+		REQUIRE(results.size() == 1);
+		return results[0];
+	};
+	f.log.clear();
+
+	CHECK(code(addText("oops", boot.version + "0")) == "file-changed");
+	CHECK(code(addText("node white a; node white b;", boot.version)) == "invalid-text");
+	CHECK(code(addText("node white noise;", boot.version)) == "duplicate-node"); // the graph's to judge
+	CHECK(f.log.lines == Lines{"reply", "reply", "reply"});                      // nothing announced, nothing run
+	f.log.clear();
+
+	CHECK(ok(addText("node white n2;", boot.version)));
+	CHECK(f.log.lines == Lines{"file edit", "node.added n2", "reply"});
+	CHECK(f.lastChange().file.text == recordExample + "node white n2;\n");
+	CHECK(f.lastChange().file.nodeTexts->back() == control::NodeText{"n2", {16, 1}, {16, 15}, false});
+
+	handEdit(f.file, replaced(recordExample, "node white noise;", "nod white noise;"));
+	f.diskEvent();
+	CHECK(code(addText("node white n3;", f.lastChange().file.version)) == "file-invalid");
+}
+
 TEST_CASE("The watch event for the keeper's own write announces nothing", "[keeper]") {
 	Fixture f("own_write");
 	f.start();

@@ -186,6 +186,11 @@ std::optional<CommandResult> Keeper::take(const control::Command& command) {
 		if (replace->version != version()) return CommandResult{control::FileRefusal{control::FileChanged{}}};
 		if (working_.read().hasErrors()) return CommandResult{control::FileRefusal{control::FileInvalid{}}};
 		edit = working_.setNodeText(replace->node, replace->text);
+	} else if (const auto* add = std::get_if<control::AddNodeText>(&command)) {
+		// Written against the file's @set and @snippet lines at `version` (docs/control-port.md#a-nodes-own-text).
+		if (add->version != version()) return CommandResult{control::FileRefusal{control::FileChanged{}}};
+		if (working_.read().hasErrors()) return CommandResult{control::FileRefusal{control::FileInvalid{}}};
+		edit = working_.addNodeText(add->text);
 	} else {
 		if (working_.read().hasErrors()) return CommandResult{control::FileRefusal{control::FileInvalid{}}};
 		edit = std::visit(Overloaded{

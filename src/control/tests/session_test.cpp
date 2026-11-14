@@ -84,6 +84,7 @@ std::string describe(const Command& command) {
 			else if constexpr (std::is_same_v<C, DisableNode>) return "disableNode " + c.node;
 			else if constexpr (std::is_same_v<C, EnableNode>) return "enableNode " + c.node;
 			else if constexpr (std::is_same_v<C, SetNodeText>) return "setNodeText " + c.node + " " + c.version;
+			else if constexpr (std::is_same_v<C, AddNodeText>) return "addNodeText " + c.version;
 			else {
 				static_assert(std::is_same_v<C, SetGraphFile>);
 				return "setGraphFile " + c.version;
@@ -930,11 +931,11 @@ TEST_CASE("graph-file.json: file changes come before the events they cause, and 
 	      std::vector<std::string>{R"(updateNode rec {"path":"take4.wav"})", "read", "read", "readFile", "readFile"});
 }
 
-TEST_CASE("node-text.json: where each node is written, and node.setText's success and refusals",
+TEST_CASE("node-text.json: where each node is written, and node.setText's and node.addText's success and refusals",
           "[session][protocol][node-text]") {
 	const json document = fixture("node-text");
 	const auto requests = requestsOf(document);
-	REQUIRE(requests.size() == 8);
+	REQUIRE(requests.size() == 13);
 	const std::string t1 = "graph {\n    rate 48khz;\n    block_size 256;\n}\n"
 						   "@snippet tap $n {                # one line, a node for each use\n"
 						   "    node white $n;\n}\n"
@@ -999,6 +1000,28 @@ TEST_CASE("node-text.json: where each node is written, and node.setText's succes
 	             "the text must be one node statement: node <type> <name> { <setting> <value>; ... }",
 	             TextPlace{1, 1})});
 	w.receive(session, requests[7]);
+
+	// node.addText: appended after the last statement, then the node is added.
+	const std::string t3 = t2 + "# a second take\nnode file rec2 {\n    path \"take5.wav\";\n}\n";
+	w.graph.script.push_back({"addNodeText v2", [&]() -> CommandResult {
+								  GraphFile f = fileAt("v3", t3, {13, 2});
+								  f.nodeTexts->push_back({"rec2", {15, 1}, {18, 2}});
+								  w.fileChanged(f, FileChangeCause::edit);
+								  w.nodeAdded({"rec2", "file", {{"path", "take5.wav"}}}, recPorts);
+								  return Result{};
+							  }});
+	w.receive(session, requests[8]);
+	w.graph.script.push_back({"addNodeText v2", refused(FileRefusal{FileChanged{}})});
+	w.receive(session, requests[9]);
+	w.graph.script.push_back({"addNodeText v3", invalid("E2001", "unexpected token: \"}\"", TextPlace{2, 18})});
+	w.receive(session, requests[10]);
+	w.graph.script.push_back(
+		{"addNodeText v3", invalid("ear/not-one-node",
+	                               "the text must be one node statement: node <type> <name> { <setting> <value>; ... }",
+	                               TextPlace{1, 1})});
+	w.receive(session, requests[11]);
+	w.graph.script.push_back({"addNodeText v3", refused(Result(std::unexpected(ear::DuplicateNode{"noise"})))});
+	w.receive(session, requests[12]);
 
 	checkMessages(out, document["messages"]);
 	CHECK(w.graph.script.empty());

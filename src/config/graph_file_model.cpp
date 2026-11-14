@@ -585,7 +585,11 @@ public:
 	}
 
 	/// Appends statements after the last top-level statement.
-	void append(const std::string& statements) const { graph_.root().block().add_statements(vl::text(statements)); }
+	void append(const std::string& statements) const { appended(statements); }
+	/// Appends statements after the last top-level statement and returns them (bad_text_error: they do not parse).
+	vl::sequence<vw::statement> appended(const std::string& statements) const {
+		return graph_.root().block().add_statements(vl::text(statements));
+	}
 
 	std::string text() const { return graph_.root().text(); }
 	const std::string& original() const { return text_; }
@@ -1173,6 +1177,57 @@ EditOutcome GraphFileModel::setNodeText(const NodeName& name, const std::string&
 				std::format("this text edits node {}: rename it in {}, where its routes are renamed with it", name,
 			                rootDocument),
 				box.inText(placeOf(after, written->values().at(1).place()))}});
+		}
+		return std::optional<GraphFileModel>(std::move(candidate));
+	});
+}
+
+EditOutcome GraphFileModel::addNodeText(const std::string& text) const {
+	return guarded([&]() -> EditOutcome {
+		wantedOf(impl_->read); // a file with errors takes no edit
+		const std::size_t lead = std::min(text.size(), text.find_first_not_of(textWhitespace));
+		const std::size_t last = text.find_last_not_of(textWhitespace);
+		if (last == std::string::npos)
+			return invalidText({control::Diagnostic{control::Severity::error, std::string(notOneNodeCode),
+			                                        std::string(notOneNodeMessage), control::TextPlace{1, 1}}});
+		// knobly's append writes the file's own line ending (a CRLF file stays CRLF), as it does for node.add.
+		const std::string trimmed = text.substr(lead, last + 1 - lead);
+		const Editing editing(impl_->text);
+		std::vector<vw::statement> added;
+		try {
+			// knobly parses the text alone, so it can never run into the rest of the file.
+			for (const vw::statement& statement : editing.appended(trimmed)) added.push_back(statement);
+		} catch (const vl::bad_text_error& error) {
+			const BoxMap alone(text, lead, trimmed.size(), trimmed, 0, 0, trimmed); // places in the text alone
+			std::vector<control::Diagnostic> found;
+			for (const vl::diagnostic& diagnostic : error.diagnostics()) {
+				const auto start = diagnostic.span().start();
+				found.push_back(control::Diagnostic{
+					control::Severity::error, vl::to_string(diagnostic.code()), diagnostic.message(),
+					alone.inText(placeIn(trimmed, static_cast<std::uint32_t>(start.line()),
+				                         static_cast<std::uint32_t>(start.column())))});
+			}
+			return invalidText(std::move(found));
+		}
+		const std::string after = editing.text();
+		const auto from =
+			added.empty() ? after.size() : static_cast<std::size_t>(added.front().place().span().start().offset());
+		const auto end =
+			added.empty() ? after.size() : static_cast<std::size_t>(added.back().place().span().end().offset());
+		// What follows the text in the candidate is the end of the file as it was.
+		const std::size_t rest = after.size() - std::min(after.size(), end);
+		const std::size_t to = impl_->text.size() - std::min(impl_->text.size(), rest);
+		const BoxMap box(text, lead, end - from, impl_->text, from, to, after);
+		const auto written = added.size() == 1 ? added.front().as<vw::written_directive>() : std::nullopt;
+		if (!written || written->name() != nodeName)
+			return invalidText({control::Diagnostic{control::Severity::error, std::string(notOneNodeCode),
+			                                        std::string(notOneNodeMessage), box.textStart()}});
+		GraphFileModel candidate = load(DiskText{after}, *impl_->catalogue);
+		const GraphFileRead& read = candidate.read();
+		if (read.hasErrors()) {
+			std::vector<control::Diagnostic> mapped;
+			for (const auto& diagnostic : read.diagnostics) mapped.push_back(box.map(diagnostic));
+			return invalidText(std::move(mapped));
 		}
 		return std::optional<GraphFileModel>(std::move(candidate));
 	});

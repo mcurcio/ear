@@ -310,6 +310,70 @@ TEST_CASE("node.setText writes the file's own line ending", "[graph_file_node_te
 	CHECK(lf.text().find('\r') == std::string::npos);
 }
 
+TEST_CASE("node.addText appends a node as node.add does, and keeps every other byte", "[graph_file_node_text]") {
+	const Fixture f;
+	const GraphFileModel model = f.load(example);
+	const GraphFileModel byJson = candidate(model.addNode(NodeSpec{"n2", "white", json::object()}));
+	const GraphFileModel byText = candidate(model.addNodeText("node white n2;\n"));
+	CHECK(byText.text() == byJson.text()); // the same place, the same layout
+
+	// A comment it owns, a block on lines of its own and a value from the file's @set, read in context.
+	const std::string added = "# a third card\nnode card attic {\n    card USB3;\n    playback $ch;\n}";
+	const GraphFileModel after = candidate(model.addNodeText("\n" + added + "\n\n"));
+	CHECK(after.text() == example + added + "\n");
+	CHECK(nodeIn(after, "attic").settings == json{{"card", "USB3"}, {"playback", 2}});
+	CHECK(model.text() == example); // the model it is called on never changes
+
+	// A CRLF file gets CRLF.
+	std::string windows = example;
+	for (std::size_t at = windows.find('\n'); at != std::string::npos; at = windows.find('\n', at + 2))
+		windows.replace(at, 1, "\r\n");
+	const GraphFileModel crlf = candidate(f.load(windows).addNodeText("node card attic {\n    card USB3;\n}"));
+	CHECK(crlf.text() == windows + "node card attic {\r\n    card USB3;\r\n}\r\n");
+	// A text sent with CRLF into an LF file is written with LF.
+	const GraphFileModel lf = candidate(model.addNodeText("node card attic {\r\n    card USB3;\r\n}"));
+	CHECK(lf.text().find('\r') == std::string::npos);
+	// On a CRLF file a diagnostic is still placed in the text as sent (with "\n").
+	const auto d = invalid(f.load(windows).addNodeText("node file take {\n    path a.wav;\n    path b.wav;\n}"));
+	REQUIRE(d.size() == 1);
+	CHECK(d[0].place == control::TextPlace{3, 5});
+	CHECK(d[0].message == "setting path is given twice");
+}
+
+TEST_CASE("node.addText's text is parsed alone, must be one node statement, and is read in context, its diagnostics "
+          "placed in it",
+          "[graph_file_node_text]") {
+	const Fixture f;
+	const GraphFileModel model = f.load(example);
+	SECTION("a { left open is knobly's error in the text, never a read of what follows") {
+		const auto d = invalid(model.addNodeText("node file take {\n    path \"t.wav\";\n"));
+		REQUIRE_FALSE(d.empty());
+		CHECK(d[0].code.starts_with("E"));
+		CHECK(d[0].place.line <= 3);
+	}
+	SECTION("knobly's syntax error after whitespace dropped before the text") {
+		const auto d = invalid(model.addNodeText("\n  node file take { path \"t.wav\" }"));
+		REQUIRE_FALSE(d.empty());
+		CHECK(d[0].code.starts_with("E"));
+		CHECK(d[0].place.line == 2); // in the text as sent
+	}
+	SECTION("the reader's, on the text's third line") {
+		const auto d = invalid(model.addNodeText("node file take {\n    path a.wav;\n    path b.wav;\n}"));
+		REQUIRE(d.size() == 1);
+		CHECK(d[0].code == "ear/bad-directive");
+		CHECK(d[0].place == control::TextPlace{3, 5});
+	}
+	SECTION("not one node statement") {
+		for (const std::string text :
+		     {"  ", "node white a; node white b;", "@set $x 1;", "route noise:noise.mono rec:record.right;"}) {
+			INFO(text);
+			const auto d = invalid(model.addNodeText(text));
+			REQUIRE(d.size() == 1);
+			CHECK(d[0].code == notOneNodeCode);
+		}
+	}
+}
+
 TEST_CASE("node.setText on a file with errors is a programming error", "[graph_file_node_text]") {
 	const Fixture f;
 	CHECK_THROWS_AS(f.load(example + "oops;\n").setNodeText("noise", "node white noise;"), std::logic_error);

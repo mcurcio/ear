@@ -160,7 +160,7 @@ codes look like `E2001`; ear's are:
 | `ear/bad-rate` | A rate not written as a number and `hz` or `khz`, not whole hertz, or (the graph's) outside 8 kHz to 768 kHz ([rates](#rates)) |
 | `ear/too-large` | An edit's or a `graphFile.set`'s text over 1 MiB (answered `invalid-text`) |
 | `ear/unwritable-edit` | An edit knobly could not write (answered `invalid-text`) |
-| `ear/not-one-node` | A `node.setText` text that is not exactly one whole `node` statement, or whose statement runs on past it ([below](#a-nodes-own-text)) |
+| `ear/not-one-node` | A `node.setText` or `node.addText` text that is not exactly one whole `node` statement, or (`node.setText`) whose statement runs on past it ([below](#a-nodes-own-text)) |
 | `ear/node-renamed` | A `node.setText` text naming another node, at the name |
 
 **A file with any error does not apply.** The graph keeps running what it ran, the editor shows
@@ -212,6 +212,10 @@ file, by the same reader, so a `$ch` or an `@use card_out USB2;` in it reads as 
 A node whose statement is written in a snippet (`@snippet two $n { node white $n; }` used at the
 top level) has no text of its own: replacing it would change every node it makes, so it is
 `shared-definition`, and the pane edits it.
+
+`node.addText` is the same for a new node: its statement is appended where `node.add` appends one,
+and read with the whole file, so `node card attic { card USB3; playback $ch; }` takes `$ch` from
+the `@set` above.
 
 ## Hand edits win
 

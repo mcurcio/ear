@@ -1,5 +1,5 @@
 {
-  "description": "A node's own knobly text (docs/control-port.md#a-nodes-own-text), the feature node-text, over a file with a snippet that makes a node (t1) and a comment owned by rec's statement. graphFile.subscribe's GraphFile carries nodeTexts: where each node's statement is in its text, owned comments included, t1's in its snippet and shared. In order: node.setText replacing rec's statement (graphFile.changed cause edit with the new text and nodeTexts, node.updated, then the reply); the same version again (file-changed); a text whose setting is given twice (invalid-text, the diagnostic placed in the text sent); a text naming another node (ear/node-renamed at the name); t1, whose statement is a snippet's (shared-definition at it); two statements (ear/not-one-node). file is the graph file the client holds at the end, graph the graph.",
+  "description": "A node's own knobly text (docs/control-port.md#a-nodes-own-text), the feature node-text, over a file with a snippet that makes a node (t1) and a comment owned by rec's statement. graphFile.subscribe's GraphFile carries nodeTexts: where each node's statement is in its text, owned comments included, t1's in its snippet and shared. In order: node.setText replacing rec's statement (graphFile.changed cause edit with the new text and nodeTexts, node.updated, then the reply); the same version again (file-changed); a text whose setting is given twice (invalid-text, the diagnostic placed in the text sent); a text naming another node (ear/node-renamed at the name); t1, whose statement is a snippet's (shared-definition at it); two statements (ear/not-one-node). Then node.addText appending rec2 with its comment (graphFile.changed with rec2's nodeTexts, node.added, the reply); a stale version (file-changed); a { closed on the wrong line (knobly's E2001, placed in the text); two statements (ear/not-one-node); a name already taken (the graph's duplicate-node). file is the graph file the client holds at the end, graph the graph.",
   "requests": [
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graphFile.subscribe\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"graph.subscribe\"}",
@@ -8,7 +8,12 @@
     "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"node.setText\",\"params\":{\"name\":\"rec\",\"text\":\"node file rec {\\n    path \\\"take3.wav\\\";\\n    path \\\"take4.wav\\\";\\n}\",\"version\":\"v2\"}}",
     "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"node.setText\",\"params\":{\"name\":\"noise\",\"text\":\"node white hiss;\",\"version\":\"v2\"}}",
     "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"node.setText\",\"params\":{\"name\":\"t1\",\"text\":\"node white t1;\",\"version\":\"v2\"}}",
-    "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"node.setText\",\"params\":{\"name\":\"noise\",\"text\":\"node white noise;\\nnode white more;\",\"version\":\"v2\"}}"
+    "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"node.setText\",\"params\":{\"name\":\"noise\",\"text\":\"node white noise;\\nnode white more;\",\"version\":\"v2\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"node.addText\",\"params\":{\"text\":\"\\n# a second take\\nnode file rec2 {\\n    path \\\"take5.wav\\\";\\n}\\n\",\"version\":\"v2\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"node.addText\",\"params\":{\"text\":\"node white n3;\",\"version\":\"v2\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"node.addText\",\"params\":{\"text\":\"node file take {\\n    path \\\"t.wav\\\" }\",\"version\":\"v3\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"node.addText\",\"params\":{\"text\":\"node white a;\\nnode white b;\",\"version\":\"v3\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"node.addText\",\"params\":{\"text\":\"node white noise;\",\"version\":\"v3\"}}"
   ],
   "messages": [
     {
@@ -85,12 +90,6 @@
         },
         "nodes": [
           {
-            "counters": {
-              "missedCycles": 0,
-              "overruns": 0,
-              "repositions": 0,
-              "driverChanges": 0
-            },
             "name": "noise",
             "type": "white",
             "settings": {},
@@ -102,15 +101,15 @@
             "phase": "running",
             "wanted": "running",
             "blockLost": false,
-            "companions": []
-          },
-          {
             "counters": {
               "missedCycles": 0,
               "overruns": 0,
               "repositions": 0,
               "driverChanges": 0
             },
+            "companions": []
+          },
+          {
             "name": "rec",
             "type": "file",
             "settings": {
@@ -125,15 +124,15 @@
             "phase": "running",
             "wanted": "running",
             "blockLost": false,
-            "companions": []
-          },
-          {
             "counters": {
               "missedCycles": 0,
               "overruns": 0,
               "repositions": 0,
               "driverChanges": 0
             },
+            "companions": []
+          },
+          {
             "name": "t1",
             "type": "white",
             "settings": {},
@@ -145,6 +144,12 @@
             "phase": "running",
             "wanted": "running",
             "blockLost": false,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
             "companions": []
           }
         ],
@@ -310,6 +315,160 @@
           ]
         }
       }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "graphFile.changed",
+      "params": {
+        "version": "v3",
+        "text": "graph {\n    rate 48khz;\n    block_size 256;\n}\n@snippet tap $n {                # one line, a node for each use\n    node white $n;\n}\n@use tap t1;\nnode white noise;\n# the take, now its own block\nnode file rec {\n    path \"take2.wav\";\n}\nroute noise:noise.mono rec:record.left;\n# a second take\nnode file rec2 {\n    path \"take5.wav\";\n}\n",
+        "diagnostics": [],
+        "running": "v3",
+        "pendingRestart": [],
+        "nodeTexts": [
+          {
+            "name": "t1",
+            "start": {
+              "line": 6,
+              "column": 5
+            },
+            "end": {
+              "line": 6,
+              "column": 19
+            },
+            "shared": true
+          },
+          {
+            "name": "noise",
+            "start": {
+              "line": 9,
+              "column": 1
+            },
+            "end": {
+              "line": 9,
+              "column": 18
+            }
+          },
+          {
+            "name": "rec",
+            "start": {
+              "line": 10,
+              "column": 1
+            },
+            "end": {
+              "line": 13,
+              "column": 2
+            }
+          },
+          {
+            "name": "rec2",
+            "start": {
+              "line": 15,
+              "column": 1
+            },
+            "end": {
+              "line": 18,
+              "column": 2
+            }
+          }
+        ],
+        "cause": "edit"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.added",
+      "params": {
+        "name": "rec2",
+        "type": "file",
+        "settings": {
+          "path": "take5.wav"
+        },
+        "inputs": [
+          "record.left",
+          "record.right"
+        ],
+        "outputs": [],
+        "state": "starting",
+        "phase": "added",
+        "since": "2026-11-09T10:00:00.000000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": []
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 9,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 10,
+      "error": {
+        "code": -32000,
+        "message": "file-changed",
+        "data": {
+          "code": "file-changed"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 11,
+      "error": {
+        "code": -32000,
+        "message": "invalid-text",
+        "data": {
+          "code": "invalid-text",
+          "diagnostics": [
+            {
+              "severity": "error",
+              "code": "E2001",
+              "message": "unexpected token: \"}\"",
+              "line": 2,
+              "column": 18
+            }
+          ]
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 12,
+      "error": {
+        "code": -32000,
+        "message": "invalid-text",
+        "data": {
+          "code": "invalid-text",
+          "diagnostics": [
+            {
+              "severity": "error",
+              "code": "ear/not-one-node",
+              "message": "the text must be one node statement: node <type> <name> { <setting> <value>; ... }",
+              "line": 1,
+              "column": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 13,
+      "error": {
+        "code": -32000,
+        "message": "duplicate-node noise",
+        "data": {
+          "code": "duplicate-node"
+        }
+      }
     }
   ],
   "graph": {
@@ -336,12 +495,6 @@
     },
     "nodes": [
       {
-        "counters": {
-          "missedCycles": 0,
-          "overruns": 0,
-          "repositions": 0,
-          "driverChanges": 0
-        },
         "name": "noise",
         "type": "white",
         "settings": {},
@@ -353,15 +506,15 @@
         "phase": "running",
         "wanted": "running",
         "blockLost": false,
-        "companions": []
-      },
-      {
         "counters": {
           "missedCycles": 0,
           "overruns": 0,
           "repositions": 0,
           "driverChanges": 0
         },
+        "companions": []
+      },
+      {
         "name": "rec",
         "type": "file",
         "settings": {
@@ -376,15 +529,39 @@
         "phase": "running",
         "wanted": "running",
         "blockLost": false,
-        "companions": []
-      },
-      {
         "counters": {
           "missedCycles": 0,
           "overruns": 0,
           "repositions": 0,
           "driverChanges": 0
         },
+        "companions": []
+      },
+      {
+        "name": "rec2",
+        "type": "file",
+        "settings": {
+          "path": "take5.wav"
+        },
+        "inputs": [
+          "record.left",
+          "record.right"
+        ],
+        "outputs": [],
+        "state": "starting",
+        "phase": "added",
+        "since": "2026-11-09T10:00:00.000000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": []
+      },
+      {
         "name": "t1",
         "type": "white",
         "settings": {},
@@ -396,6 +573,12 @@
         "phase": "running",
         "wanted": "running",
         "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
         "companions": []
       }
     ],
@@ -414,10 +597,10 @@
     ]
   },
   "file": {
-    "version": "v2",
-    "text": "graph {\n    rate 48khz;\n    block_size 256;\n}\n@snippet tap $n {                # one line, a node for each use\n    node white $n;\n}\n@use tap t1;\nnode white noise;\n# the take, now its own block\nnode file rec {\n    path \"take2.wav\";\n}\nroute noise:noise.mono rec:record.left;\n",
+    "version": "v3",
+    "text": "graph {\n    rate 48khz;\n    block_size 256;\n}\n@snippet tap $n {                # one line, a node for each use\n    node white $n;\n}\n@use tap t1;\nnode white noise;\n# the take, now its own block\nnode file rec {\n    path \"take2.wav\";\n}\nroute noise:noise.mono rec:record.left;\n# a second take\nnode file rec2 {\n    path \"take5.wav\";\n}\n",
     "diagnostics": [],
-    "running": "v2",
+    "running": "v3",
     "pendingRestart": [],
     "nodeTexts": [
       {
@@ -451,6 +634,17 @@
         },
         "end": {
           "line": 13,
+          "column": 2
+        }
+      },
+      {
+        "name": "rec2",
+        "start": {
+          "line": 15,
+          "column": 1
+        },
+        "end": {
+          "line": 18,
           "column": 2
         }
       }

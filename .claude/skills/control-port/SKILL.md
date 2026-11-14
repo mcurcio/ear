@@ -132,7 +132,10 @@ Every edit is an edit of `ear.conf` (knobly), the one source of the wanted graph
   places its diagnostics in `text` (`ear/not-one-node`, `ear/node-renamed`: a rename is made in the
   pane, with its routes). Checks: `stopping`, `file-changed` (strict, as `graphFile.set`),
   `file-invalid`, `unknown-node`, `shared-definition` (a node whose statement is a snippet's), then
-  the text's. `node.add` and `node.update` stay for scripts (`docs/control-port.md#a-nodes-own-text`).
+  the text's. `node.addText {"text", "version"}` appends a new node's statement as `node.add`
+  appends (knobly parses it alone first, then the file reads it in context; `ear/not-one-node`, the
+  graph's `duplicate-node`). `node.add` and `node.update` stay for scripts
+  (`docs/control-port.md#a-nodes-own-text`).
 - Order: `graphFile.changed` first, then the node and route events it causes, then the reply. A
   refused edit announces nothing; only its reply carries the code.
 - **Handling `file-changed`:** another client, or a hand edit, changed the file since your

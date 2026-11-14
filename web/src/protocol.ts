@@ -282,6 +282,11 @@ export interface Methods {
    * `text`.
    */
   "node.setText": { params: { name: string; text: string; version: string }; result: Record<string, never> };
+  /**
+   * Feature node-text: a whole `node` statement in knobly, appended as node.add appends, against the version it was
+   * written for; {} once the graph runs it. invalid-text's diagnostics are placed in `text`.
+   */
+  "node.addText": { params: { text: string; version: string }; result: Record<string, never> };
   /** The lifecycle (feature lifecycle). Start, stop and restart edit nothing; disable and enable edit ear.conf. */
   "node.start": { params: { name: string }; result: { applied: Applied } };
   "node.stop": { params: { name: string }; result: { applied: Applied } };
@@ -442,6 +447,7 @@ const methodSet: { [M in MethodName]: true } = {
   "node.disable": true,
   "node.enable": true,
   "node.setText": true,
+  "node.addText": true,
 };
 export const methodNames = Object.keys(methodSet) as MethodName[];
 
