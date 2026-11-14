@@ -197,13 +197,13 @@ cursors) or anything the old code's `process` reads (D-R13).
    diagnostic (`ear.retiring-lost`), never a failure of the node (a kept resource's loss still fails it). A replacement
    engine companion is linked to the same inside bank as the one it replaces; two capture cards into one inside input
    mix for a moment, which a hold covers [U: the port mixer loads, 13]. A replacement ring companion (a sink or a
-   source) is served by the block itself and swapped in the commit point's invoke (`companions.md` 3.4), so two never
+   source) is served by the block itself and swapped in the commit point's invoke (`docs/architecture.md#companions`), so two never
    play into one bank.
 4. **The commit point** (T10), when the hook's work is done (`applied`, or the continuation's `done`) and every new
    resource is ready: the staged posts are released to their loops; in one data-loop invoke (if the node is driving)
    the new code, its layout and its ring companions' bindings are handed to the block, which applies them together
    between two cycles, so a replaced sink takes the cycles before it and its replacement the cycles from it, and a
-   replaced source likewise (`companions.md` 3.4): no chunk lost or doubled at the swap; the latency plan is carried; the old code released.
+   replaced source likewise (`docs/architecture.md#companions`): no chunk lost or doubled at the swap; the latency plan is carried; the old code released.
    Then the retiring resources are released by the teardown's order for those resources only (a replaced source's
    writer closed; replaced companions destroyed; replaced sinks drained to their own consumers and finished; replaced
    recordings closed; `unclaim`ed claims released, last); then holds fade back in over 5 ms; the node is back in
@@ -476,7 +476,7 @@ slice adds the features `node.set`, `reshape` and `dryRun`.
   `restart-requested`; `detail`). A retune (slice 6) changes no health.
 - **`node.updated`** carries `ports` on a reshape (handles redrawn in place); a change of ports with the same type is no
   longer `node.removed` and `node.added`.
-- **Companions** (`companions.md` 3.7) gain `retiring: true` on the old entry during a make-before-break, listed before
+- **Companions** (`docs/control-port.md#companions`) gain `retiring: true` on the old entry during a make-before-break, listed before
   its replacement, which shares its name for a moment.
 - **Order**: an in-place change sends `node.updated` (`applied: "reconfigure"`), then `node.state` `reconfiguring`, then
   the reply, in the commit's turn; then `node.state` `running` (or `stopped`). A reshape sends the dropped routes'

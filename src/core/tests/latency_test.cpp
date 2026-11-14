@@ -329,7 +329,7 @@ TEST_CASE("Each dating site's case, by FrameClock", "[latency]") {
 	}
 }
 
-// Regression (3b.1, e4b72cf661): a sink chunk that wraps its ring's end is two calls, and the second's start is its own
+// Regression (e4b72cf661): a sink chunk that wraps its ring's end is two calls, and the second's start is its own
 // first frame's: the cycle's start advanced by the first call's frames, never the cycle's start again.
 TEST_CASE("A wrapped chunk's second call is dated by its own first frame", "[latency]") {
 	const FrameClock clock(48000);

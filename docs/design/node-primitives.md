@@ -1,9 +1,9 @@
 # Node primitives: slice 3c of the node framework
 
-Status: design, not built. Slice 3c follows slice 3b (`companions.md`) and comes before slice 3d (`reconfigure.md`) and
-slice 5 (`control-plane.md`). It gives every node type what `sendspin` had to build for itself (the node handle, loops
-with their states, the I/O executor, stores, claims, recordings opened off the main loop, the carried sendspin-cpp log
-patch), and moves `sendspin` onto the type's class, its companions and loops in one step, retiring the legacy adapter.
+Status: design, not built. Slice 3c follows slice 3b (companions, built: `docs/architecture.md#companions`) and comes
+before slice 3d (`reconfigure.md`) and slice 5 (`control-plane.md`). It gives every node type what `sendspin` had to
+build for itself (the node handle, loops with their states, the I/O executor, stores, claims, recordings opened off the
+main loop, the carried sendspin-cpp log patch), and moves `sendspin` onto the type's class, its companions and loops in one step, retiring the legacy adapter.
 The primitives' part of slice 3d (claims swapped in place, `whenReady`, a sink paused while a library is swapped,
 `sendspin` changing in place) is `reconfigure.md`'s. The timing model's part of slice 3c (a source that keeps no time,
 `sendspin`'s source clock, the converter companion) is `timing-model.md`'s: its steps T1 to T3 come before S3c.1, and
@@ -24,7 +24,7 @@ The R and G numbers are the register the node framework's design used.
 | R9 | "Nodes should not have direct access to stdout or stderr. The core framework should expose the necessary primitives for events, diagnostics, and logging. These should be real-time safe for any audio loops that need them, and there can be non real-time bases for the rest of the system." | 2026-11-07 | A node's threads log through its handle; the library's own lines are attributed to the node (section 9) |
 | Q5 | "Strands, dedicated on request" | 2026-11-07 | Loops (6.3) |
 | R13 | "mailboxes could be supportable in either mode. But why must mailboxes be built before the run object exists? Is this a side effect of the naive node state machine model I described?" | 2026-11-08 | The instance or a loop's state owns what it shares with the code; no kept values |
-| R14 | "G4 is asking the wrong question. The node audio threads should be concerned with reading inputs and writing outputs. The framework should provide the necessary primitives to connect inputs/outputs across nodes AND anytime a node needs to cross inputs/outputs to non-realtime code (eg pipe outputs through a mailbox?)" | 2026-11-08 | A type's threads meet audio only as a source's writer or a sink's consumer (`companions.md`) |
+| R14 | "G4 is asking the wrong question. The node audio threads should be concerned with reading inputs and writing outputs. The framework should provide the necessary primitives to connect inputs/outputs across nodes AND anytime a node needs to cross inputs/outputs to non-realtime code (eg pipe outputs through a mailbox?)" | 2026-11-08 | A type's threads meet audio only as a source's writer or a sink's consumer (built: `docs/architecture.md#companions`) |
 | R15 (G3) | "(a)": a store, recording path or port held by a leaked configuration is refused with a detail saying the node starts when that configuration closes; the late close starts it | 2026-11-08 | 6.8, 6.9 |
 | R16 | "I like the basic shape of the state machine proposal. And most importantly: it should be per-node. Some node stopping/reconfiguring/failing does not effect the graph globally" | 2026-11-08 | Every primitive is per node except the I/O executor and the strand pool, which are shared and bounded |
 | R19 | "Shouldn't that all be part of the build stage? How is build different from [re]configure?" | 2026-11-08 | One `configure` acquires and constructs; each primitive is asked for, or reached by handle, inside it, and readied by the framework |
@@ -50,7 +50,7 @@ The R and G numbers are the register the node framework's design used.
 | `file`'s recording opened synchronously on the main loop by `cx.openRecording` | `lifecycle.hpp`, `file.cpp` | recordings, deferred (6.10) |
 | `notYetInHarness = {"sendspin"}` | `test/nodes/all_types.hpp` | section 10 |
 | sendspin's threads: the worker (a 10 ms `poll()`), the notifier, their stop `EventFd` | `worker.cpp` | loops (6.3) |
-| sendspin's feed, mailboxes, bell, capture anchor, `SendspinCode` and handoff | `feed.cpp`, `mailbox.hpp`, `sendspin_code.cpp` | a source and a sink companion (`companions.md`), when S3c.6 moves it |
+| sendspin's feed, mailboxes, bell, capture anchor, `SendspinCode` and handoff | `feed.cpp`, `mailbox.hpp`, `sendspin_code.cpp` | a source and a sink companion (`docs/writing-a-node-type.md#sources`, `#sinks`), when S3c.6 moves it |
 | Its key file: named, 0600, read, trusted, created, swept at boot | `key_store.cpp` | stores (6.7) |
 | Note pacing (32, then one a second) | `note_gate.cpp` | the node handle (5) |
 | The library's log lines are unattributed `stderr` records | sendspin-cpp `src/platform/logging.h` | the log patch (9) |
@@ -285,7 +285,7 @@ them all (R26).
 | Recording (6.10) | `cx.recording({path})`: a descriptor, usable once configured | claimed (1), opened (2), 5 s | its consumer's `begin` writes the header | written by its consumer while driven | closed (5) |
 | Loop (6.3) | declared in the spec; `cx.loop(h, state)`, `cx.executor(h)`; posts and arming staged | started (3) with its state, nothing run | staged items released, in order | `start()` and `stop()` post to it | closed to others (1); runs what was posted, then destroys its state on its thread (4); freed (5) |
 | Node handle (5) | `node.handle()` | — | `lost`, `log`, `say` | the same | detached at 1 for facts; re-pointed at a leak |
-| Source writer (`companions.md`) | `cx.source(bank, ...)` | the companion's | written by one thread | written while the type plays | closed (1); ring freed (5) |
+| Source writer (`docs/writing-a-node-type.md#sources`) | `cx.source(bank, ...)` | the companion's | written by one thread | written while the type plays | closed (1); ring freed (5) |
 | Sink consumer (built, `sink.hpp`) | `cx.sink(bank, ...)`, `consumedBy(...)` | `begin` (4') | — | `consume` on the sink's thread for exactly the cycles the code drives | drained, `finish` (3) |
 | I/O executor (6.6) | — | runs the opens (2) | runs store writes | the same | completions after teardown dropped |
 
@@ -328,7 +328,7 @@ wrong mode does not compile, R33; the `ChangeOf<spec>` members are 3d's, `reconf
 | 1 | **Claims**, in the same main-loop turn as `configure` returned (6.8). A refusal fails the node now, and nothing below is touched. A wait holds every later step. Once all are granted, ports are probed (main thread, a non-blocking bind) | `start-failed: <claim's text>` |
 | 2 | **Stores and recordings**, opened on the I/O executor, one job each, in request order (5 s each) | `start-failed: <file>: <why>`; `start-failed: cannot open <path>: <why>` |
 | 3 | **Loops**, once step 2 is ready: dedicated threads started, strands registered, each with its state. Threads last, so a refused store starts none | `start-failed: cannot start loop <name>: <errno text>` |
-| 3' | Companions, once the block is ready and step 1 granted, in parallel with 2 and 3 (built for cards and receivers; `companions.md` for the rest) | `engine-refused: <detail>` |
+| 3' | Companions, once the block is ready and step 1 granted, in parallel with 2 and 3 (built: `docs/engine.md#engine-companions`, `#readiness-deadlines`; a sink once its consumer began, a source at once) | `engine-refused: <detail>` |
 | 4' | Every sink consumer has begun (built) | `start-failed: <detail>` |
 
 Then the node is `configured`: the code is prepared and the work staged on its loops is released; wanted running, the
@@ -344,8 +344,8 @@ A thread (the realtime one included) tells a loop "look now", at most once until
 wakes are the framework's: a source's clock wake (`timing-model.md` 4.2), and later the status bell (slice 5). Types do not ask for
 wakes in 3c (G23).
 
-- **`Wake`** is declared in core by 3b (`companions.md` 3.3): `ring() noexcept` does
-  `if (!pending_.exchange(true, acq_rel)) write(efd_, 1);`.
+- **`Wake`** is declared in core (built, `ear/core/source.hpp`; its eventfd is `EventSources`' in `ear_pipewire`):
+  `ring() noexcept` does `if (!pending_.exchange(true, acq_rel)) write(efd_, 1);`.
 - **Answered** by the loop that watches it (`Loop::onWake`, 6.3), in this order: `read(efd)` (draining it), then
   `pending.store(false, release)`, then the handler. A ring after the drain and before the clear finds `pending` still
   true and writes nothing, but the handler that follows sees its data; a ring after the clear writes the eventfd again.
@@ -446,7 +446,7 @@ protected:
 
 ### 6.4 A source's writer: one at a time
 
-The writer's interface and closing contract are `companions.md` 3.3's. This slice adds the rule its users must keep:
+The writer's interface and closing contract are built (`docs/writing-a-node-type.md#sources`). This slice adds the rule its users must keep:
 
 - **One writer at a time, handed over by a join or a post.** The ring is single-producer (`FrameRing`). A type may
   change which thread writes (3d: sendspin's new client brings a new sync thread), but only after the old writer's last

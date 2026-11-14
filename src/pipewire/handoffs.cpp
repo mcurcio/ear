@@ -1,6 +1,6 @@
 // The realtime to ordinary-thread handoff (the legacy handoff `sendspin` still uses). JACK's disk-writer pattern: the
 // realtime writer interleaves into a FrameRing and wakes the handoff's own pw_thread_loop with pw_loop_signal_event;
-// that thread hands what is in the ring to the consumer. A full ring drops frames and counts them. The interim sinks
+// that thread hands what is in the ring to the consumer. A full ring drops frames and counts them. The sinks
 // (ThreadSinks; docs/engine.md#sinks) are the same wake and thread around core's SinkRing (every rule of a sink's two
 // rings, which the type harness's sink wraps too), a consumer that begins on the sink's thread, and the tap the port
 // block writes.
@@ -120,7 +120,7 @@ private:
 	std::move_only_function<void(std::uint64_t)> closed_; // main thread only
 };
 
-/// One interim sink: ThreadHandoff's wake and thread around a SinkRing, so the sink's thread hands its consumer one
+/// One sink: ThreadHandoff's wake and thread around a SinkRing, so the sink's thread hands its consumer one
 /// stamped chunk per cycle the tap wrote, in two calls where it wraps the ring's end (docs/engine.md#sinks). Every
 /// `begun` and `closed` is posted through the main-loop Executor, after the consumer's begin or finish returned, so a
 /// lost() its consumer said inside begin() (the node's InsidesEvents, the same FIFO) always lands first.

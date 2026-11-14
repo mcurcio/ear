@@ -80,7 +80,9 @@ buttons; its tests cover every phase. The rules it follows:
 `web/src/companions.ts` is the one place that turns a node's companion list
 ([control-port.md](control-port.md#companions)) into the box's strip and the node panel's lines;
 `companions.test.ts` covers its rules and replays the `companions` and `unknown-values` fixtures
-through the reducer into the badges drawn. The rules:
+through the reducer into the badges drawn. *Why badges:* asked what the editor shows of a node's
+hidden helpers, the owner chose small badges in the node's box, one per helper, its kind and a dot
+for ready, its drop count on hover; never boxes or handles of their own. The rules:
 
 - **A badge per companion,** in list order, along the box's bottom edge under the ports: its kind
   as a short word (`card-playback` "card out", `card-capture` "card in", `rtp-receiver` "rtp",
@@ -101,7 +103,14 @@ through the reducer into the badges drawn. The rules:
   without its `[]`) and an entry seen again after its list dropped it are not. A closed connection
   forgets every value held, so the reconnect's snapshot is a first sighting: what dropped while the
   editor was away is in the totals, never marked as the last minute's. *Why:* the canvas stays quiet when all is well and points at trouble while it happens;
-  the totals are always in the tooltip and panel. `CompanionMoves` keeps what was held and when it
+  the totals are always in the tooltip and panel. A mark while a total is above zero would stay on
+  a recording that dropped once until its next restart, since the counters count per
+  configuration. **This mark is a reading of the owner's rules, not an answer of theirs:** for the
+  badges the owner asked for the drop count on hover and no mark; for the diagnostics counters the
+  owner answered "panel plus recent" (the totals always in the panel, a mark on the canvas only
+  while something happened in the last minute), and that rule is applied here to the companions'
+  counters. The owner may overturn it (back to no mark), a change to `companionBadges`' `warning`
+  and this section. `CompanionMoves` keeps what was held and when it
   rose, outside the reducer (which holds only what ear sent), and is the graph store's first
   listener, so a box drawn for a new graph reads that graph's moves.
 - **Failed and disabled draw no strip** whatever list is held (their configuration was torn down,

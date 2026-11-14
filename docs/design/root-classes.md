@@ -10,8 +10,7 @@ type's throw is its node's fact, `docs/writing-a-node-type.md#rules-the-framewor
 `ear_folder_tests` and the RTP receiver tests audited, section 5.7), R6 built (the property table:
 `docs/engine.md#properties-ear-sets`, section 6.5 says what changed from 6.3) and R7 built (the harness runs the engine's
 own rules: `docs/writing-a-node-type.md#testing-a-type`, `docs/engine.md#sinks`; section 7.3); the rest designed, not
-built. Its steps are taken between slice 3b.4 and
-slice 3c
+built. Its steps are taken before slice 3c
 ([README](README.md)). The built system it changes is described in `docs/engine.md`, `docs/writing-a-node-type.md`,
 `docs/testing.md` and `docs/output-records.md`; this page cites them and says only what changes.
 
@@ -44,10 +43,10 @@ are in series or in parallel, and the dating that uses them is a formula repeate
 
 | Bug | Fixed in | What went wrong |
 |---|---|---|
-| A wrapped sink chunk's second call dated early by the first's frames | e4b72cf661 (3b.1) | `handoffs.cpp:225-250` advances position but the start times were not; frames-to-ns conversion is a private helper there |
-| A source's `Played` dated early: the code's declared latency missing from its input bank's told latency | 6c1299b556 (3b.2) | `port_blocks.cpp:397-408` and `node_harness.cpp:521-548` each fixed separately |
-| rtp told `{0,B}` instead of `{B,B}`: a companion's buffer combined as a parallel peer, not in series | 40be60af04 (3b.3) | `port_blocks.cpp:337-355` and `node_harness.cpp:495-519` each fixed separately |
-| `quantum-limit` at the block size capped the ALSA card's buffer at four blocks | 3b.4 (in review) | A property's effect on latency, found by its test (class 4) |
+| A wrapped sink chunk's second call dated early by the first's frames | e4b72cf661 | `handoffs.cpp:225-250` advances position but the start times were not; frames-to-ns conversion is a private helper there |
+| A source's `Played` dated early: the code's declared latency missing from its input bank's told latency | 6c1299b556 | `port_blocks.cpp:397-408` and `node_harness.cpp:521-548` each fixed separately |
+| rtp told `{0,B}` instead of `{B,B}`: a companion's buffer combined as a parallel peer, not in series | 40be60af04 | `port_blocks.cpp:337-355` and `node_harness.cpp:495-519` each fixed separately |
+| `quantum-limit` at the block size capped the ALSA card's buffer at four blocks | f7a4295c3d | A property's effect on latency, found by its test (class 4) |
 | A latency test read a probe before the retell reached it | 40be60af04 | Waited for one hop's sighting (class 3) |
 
 Every latency fix edited both `port_blocks.cpp` and `node_harness.cpp` (e4b72cf661, 6c1299b556, 40be60af04): the rule
@@ -57,7 +56,7 @@ list NodeHost builds (`node_host.cpp:1303-1319`), and four dating formulas: `Thr
 (`handoffs.cpp:228-250`), `SourceRing`'s `heardRawNs` (`source_ring.cpp:235-236`), `SendspinCode::process`
 (`sendspin_code.cpp:39-42`) and `ToServer::capturedAtUs` (`to_server.cpp:34-37`). The plan's storage is asymmetric: a
 pair's latency is stored under its output bank (`node_host.cpp:498-506`) and read back as "through" on the input side,
-the shape of the 3b.2 bug.
+the shape of 6c1299b556's bug.
 
 Found writing this page, the same class, not yet fixed: `sendspin` dates the audio it sends upstream at the cycle's
 start (`sendspin_code.cpp:25`, `capture_.publish({framesWritten_, startRawNs})`), ignoring the capture latency upstream
@@ -155,7 +154,7 @@ spa_latency_info toSpa(Latency latency, spa_direction direction) noexcept; // ra
 
 - **R1** (pure addition): `latency.hpp`, `latency.cpp`, `latency_test.cpp`; `Latency` moves there from
   `node_type.hpp`, which includes it (no caller changes).
-- **R2** (after 3b.4 lands): `port_blocks.cpp`'s `combined()`, `frames()` and `retell()` become a call to `workOut`
+- **R2** (after the quantum guard, 55601e2748, landed): `port_blocks.cpp`'s `combined()`, `frames()` and `retell()` become a call to `workOut`
   plus `latency_spa.hpp` at the port; the peers are kept as `std::optional<Latency>` per port (the `*Heard_` flags go).
   `node_harness.cpp`'s `toldUpstream`/`toldDownstream` become `workOut` with no peers. NodeHost fills `onPair`/`onBank`
   (`node_host.cpp:498-511`, `1303-1319`); `LatencyPlan` moves from `node_host.hpp` to `latency.hpp`. The conformance
@@ -207,7 +206,7 @@ What R2 built differs from 3.3 and 3.4 here; `docs/engine.md#latency-per-bank-pa
 - **A typed declaration is a path (review).** A typed `declareLatency(from, to)` names its path, and the plan carries
   that pair with the delay as its `onPair`. 3.5's mapping by bank alone dropped `from` for a code of the type's own
   (no pass-through, so no pair): its delay reached `to` only, never `from`'s told playback latency, so a source on
-  `from` would date `Played` early, the class of the 3b.2 regression. For a code of the type's own the pair is added
+  `from` would date `Played` early, the class of 6c1299b556's regression. For a code of the type's own the pair is added
   to `pairs`; with a pass-through it must be one of its pairs, or the node fails `configureFailed` at configure's
   return naming the pair (a declared path must exist: a delay on a path no audio takes would be told on banks it
   never touches). Typed declarations are keyed by path, not by output bank, so a mixer (two inputs into one output)
@@ -305,7 +304,7 @@ proxies, the registry, the core and modules). An exception that reaches one unwi
 - 07929a184d (L-4a review): a type's recipe, a legacy close and a configure could throw out of NodeHost ("nothing a type
   does thrown out of NodeHost").
 - 0c8a0aecd3 (L-4b review): `FilterPortBlock::drive` threw on the main loop.
-- e4b72cf661 (3b.1 review): `carryLatency` threw for a `beyond` entry naming no bank.
+- e4b72cf661 (in review): `carryLatency` threw for a `beyond` entry naming no bank.
 
 Today `node_host.cpp` has 20 `catch` sites, and `src/pipewire/` none. NodeHost catches during a drain and rethrows the
 first exception to its caller (`node_host.cpp:1700-1716`, `1774-1781`), and its caller is a C callback.
@@ -410,7 +409,7 @@ template <class Fn> auto callType(std::string_view hook, Fn&& fn) -> std::expect
   `docs/writing-a-node-type.md#rules-the-framework-enforces` describes, with the changes in 4.6): NodeHost's type
   calls go through `callType`; `ThreadSink` calls the consumer through it and reports a fault as the sink's loss.
 
-R4a follows 3b.4, since it edits `port_blocks.cpp`, `sound_cards.cpp` and `engine.cpp`; it must land before 3c, whose
+R4a follows the quantum guard (55601e2748), since it edits `port_blocks.cpp`, `sound_cards.cpp` and `engine.cpp`; it must land before 3c, whose
 loops and I/O executor would otherwise add callbacks outside it.
 
 ### 4.5 Found building R4a
@@ -721,7 +720,7 @@ each program proves keeps its rows.
   it is not clean.
 - **`quiesce` has no `EngineHarness` to live on and no counter in `ear_pipewire`.** No class of that name exists (the
   engine tests share free functions and a `Waiter`, and `port_block_test.cpp` has its own), and
-  `FilterPortBlocks::latencyRetells()` would edit `port_blocks.*`, which 3b.4 is changing. It is
+  `FilterPortBlocks::latencyRetells()` would edit `port_blocks.*`, which the quantum guard was changing. It is
   `ear::pipewire::testing::Quiescence<Waiter>` (`src/pipewire/tests/quiescence.hpp`), which counts every port info
   with changed params heard through the registry: a block's retell reaches PipeWire as exactly that, and so do the
   latency PipeWire sets on the peers and a probe's or a companion's change, which a block counter would miss. It waits
@@ -985,8 +984,8 @@ ear sets PipeWire properties in six places: `engine.conf`, `contextProperties` (
 (`port_blocks.cpp:127-129`, `256-257`), the card adapter (`sound_cards.cpp:53-58`, plus the test seam's `extra`), the RTP
 module's arguments (`rtp_receivers.cpp:35-47`) and links (`engine_companions.cpp:83-85`, `links.cpp:99-100`). Each
 key's effect lives in PipeWire's source, and its couplings were learned when a test failed: `resync.ms` and the clock's
-reset and step back (c1bb9d246b); `quantum-limit` and the ALSA buffer (3b.4); force and lock properties and
-`clock.duration` (D-3b12); `context.properties` overwriting `default.clock.*`; `clock.power-of-two-quantum` rounding 480
+reset and step back (c1bb9d246b); `quantum-limit` and the ALSA buffer (f7a4295c3d); force and lock properties and
+`clock.duration` (`docs/engine.md#the-quantum-guard`); `context.properties` overwriting `default.clock.*`; `clock.power-of-two-quantum` rounding 480
 to 256; `node.group` on a card stopping it from starting alone; `node.driver = false` reasserted by the ALSA node;
 `context.num-data-loops` and the one data loop; `sess.latency.msec` and the `beyond` entry (rtp-source reports zero).
 The reasons are kept, but in comments and prose in four places, with no single list of keys and nothing that notices a
@@ -1033,7 +1032,7 @@ consteval const char* property(Home home, std::string_view key); // built: prope
 
 ### 6.4 Migration
 
-**R6**, after 3b.4 (which settles `quantum-limit` and the seam's refusal): the table, the six builders onto
+**R6**, after the quantum guard (which settles `quantum-limit` and the seam's refusal): the table, the six builders onto
 `property()`, the live and doc checks, `docs/engine.md`'s section rewritten as the table, the `pipewire-engine` skill
 pointing at it, and the comments in `engine.conf` cut to a pointer per key.
 
@@ -1110,10 +1109,10 @@ The table is `src/pipewire/engine_properties.hpp`; how it is checked and why eac
 ### 7.1 The root class
 
 `TypeHarness` runs a real NodeHost over fakes, and where a fake must act as the engine does it re-implements the rule:
-latency (`node_harness.cpp:495-548`), sink delivery (the harness's sink never splits a chunk, so 3b.1 could not show in
-a type's tests), and an engine companion's bank (found by its ports, 3b.3). Each engine fix had to be repeated in the
-harness, and a rule fixed in one alone leaves a type's tests passing on behaviour the engine does not have. D-3b4 (every
-source rule in core's pure `SourceRing`, which the engine and the harness both wrap) is the pattern that works.
+latency (`node_harness.cpp:495-548`), sink delivery (the harness's sink never splits a chunk, so e4b72cf661's bug could not show
+in a type's tests), and an engine companion's bank (found by its ports). Each engine fix had to be repeated in the
+harness, and a rule fixed in one alone leaves a type's tests passing on behaviour the engine does not have. Every
+source rule in core's pure `SourceRing`, which the engine and the harness both wrap, is the pattern that works.
 
 ### 7.2 The fix
 
@@ -1148,7 +1147,7 @@ What R7 built differs from 7.2 here; `docs/writing-a-node-type.md#testing-a-type
 - **`cutChunk` as designed, inside a pure `SinkRing`.** `cutChunk` is 7.2's signature, `constexpr` in `sink.hpp`
   (`ChunkStamp` gained `operator==`). Calling it from two places would still have left the rest of the sink's rules
   copied: the two rings dropping together, each stamp paired with its frames, frames skipped with no begun consumer.
-  So every one of them is core's `SinkRing` (`ear/core/sink_ring.hpp`, the D-3b4 pattern `SourceRing` set), which
+  So every one of them is core's `SinkRing` (`ear/core/sink_ring.hpp`, the pattern `SourceRing` set), which
   cuts with `cutChunk`; `ThreadSink` keeps only its thread and wake around one, and the harness's `FakeSink` wraps one
   drained at once on the test's thread. So the harness's sink now also drops by the engine's rule and reports what it
   dropped at the close (it reported 0 always).
@@ -1213,20 +1212,21 @@ makes stale.
 |---|---|---|---|
 | **R1** | `latency.hpp` (the model, `FrameClock`), its table tests; `Latency` moves there | Now | None |
 | **R5a** | `inducers.hpp`, `quiesce`, `statistics.hpp`, the sleep guard with today's sleeps listed | Now | None |
-| **R2** | The block and the harness on `workOut`; `latency_spa.hpp`; `LatencyPlan` by role | After 3b.4 | Peers told in rate units (nobody reads them) |
+| **R2** | The block and the harness on `workOut`; `latency_spa.hpp`; `LatencyPlan` by role | After the quantum guard | Peers told in rate units (nobody reads them) |
 | **R3** | Dating through `FrameClock` | After R2 | None |
-| **R6** | The property table and its four checks; `docs/engine.md`'s table | After 3b.4 | None, unless the live check finds a drift |
-| **R4a** | The callback boundary, behaviour-free; its guard (built, 4.5) | After 3b.4 | None |
+| **R6** | The property table and its four checks; `docs/engine.md`'s table | After the quantum guard | None, unless the live check finds a drift |
+| **R4a** | The callback boundary, behaviour-free; its guard (built, 4.5) | After the quantum guard | None |
 | **R4b** | The owner's answer on faults (built, 4.7) | After R4a and the answer | Section 9 |
 | **R4c** | NodeHost's type calls through `callType`; a sink consumer's throw as a fact (built, 4.6) | After R4a | Section 9 |
 | **R5b-d** | The audit, by executable (5.3) | After R5a | None |
 | **R7** | `cutChunk`; the harness's ring size and companion bank; conformance tests | After R3 | None |
 
 All before 3c, whose sink-based `sendspin` takes `enteredRawNs` for its upstream dating (3.1) and whose loops are born
-behind the boundary. 3b.5 to 3b.8 touch none of these files' rules and may interleave.
+behind the boundary. Slice 3b's last steps (the companion list, the wire, the badges, the words) touched none of these
+files' rules and could interleave.
 
 Each header lands with its step: R1 landed `latency.hpp` and `latency_spa.hpp`; the boundary's registrations touch
-`node_host.hpp` and the files 3b.4's review is editing.
+`node_host.hpp` and the files the quantum guard's review was editing.
 
 ## 9. What an operator or a type author sees
 

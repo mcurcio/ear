@@ -1,4 +1,4 @@
-// The interim sinks (docs/engine.md#sinks): the real ThreadSinks, first on its own thread with a test's main loop
+// The sinks (docs/engine.md#sinks): the real ThreadSinks, first on its own thread with a test's main loop
 // (order, stamps, a chunk wrapping the ring's end, the two rings dropping together, close draining then finishing,
 // begin before the first consume and `begun` behind a lost said inside begin, no allocation on the tap, and the same
 // cycles through the type harness's sink handed alike, call by call), then through a

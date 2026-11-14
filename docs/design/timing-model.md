@@ -8,9 +8,10 @@ says is already true. It states how audio time works in ear (the owner's model, 
 framework's timekeeping out of the source (`SourceRing`'s `Played` and its keep-in-step), moves `sendspin`'s sync onto
 the spike's "honest sink plus local skip" (section 6), and adds the converter companion (section 5). The model itself
 is `docs/architecture.md#the-timing-model`, which says where the code still departs from it; this page designs the
-change that removes each departure. It reverses `cycle-facts.md`'s Q-CF2 and `companions.md`'s D-C4 and D-3b3
-(section 8). When it is built it is deleted, and what lasts moves into `docs/architecture.md`, `docs/engine.md`,
-`docs/writing-a-node-type.md`, `docs/node-types.md#clock` and the `sendspin` skill.
+change that removes each departure. It reverses `cycle-facts.md`'s Q-CF2 and slice 3b's design that a source keeps
+time by default and says what played (section 8). When it is built it is deleted, and what lasts moves into
+`docs/architecture.md`, `docs/engine.md`, `docs/writing-a-node-type.md`, `docs/node-types.md#clock` and the `sendspin`
+skill.
 
 [V] = verified in the code, PipeWire 1.4.2's installed headers (`pipewire-1.4.2/src/pipewire/stream.h`,
 `spa/node/io.h`) or the spike's results (`scripts/spike/` on branch `worktree-agent-a573a8b29870d1f49`: `summary.md`,
@@ -159,8 +160,9 @@ already allow one, `docs/writing-a-node-type.md#the-code`); `sendspin` keeps its
 
 *Why a hook on the source and not the type's code reading the ring:* the fades, a clear's 5 ms, the shortfall and the
 stop's drop would otherwise be written again by each type, and the harness's play and the block's could disagree, the
-class `companions.md` D-3b4 removed. The hook leaves the ring's rules in core and gives the node only the two decisions
-that are its clock's: what to skip, and what to say.
+class that keeping every source rule in core's one `SourceRing` removed (`docs/writing-a-node-type.md#sources`). The
+hook leaves the ring's rules in core and gives the node only the two decisions that are its clock's: what to skip, and
+what to say.
 
 *Why a wake on the source and not a type-owned wake:* the source already owns an eventfd-backed wake for the realtime
 side (`EventSources`), the clock's report is its only use, and `node-primitives.md` G23 (types get no wakes of their
@@ -169,7 +171,7 @@ own) can stand.
 ### 4.3 One tick, in order
 
 One pure function plays a source for a tick, `SourceRing::play(bank, tick, clock)`, so the block, a converter and the
-harness all run the same code (D-3b4):
+harness all run the same code (as every source rule already is, `docs/writing-a-node-type.md#sources`):
 
 1. Apply a clear asked for: the ended stream's next 5 ms are queued to play faded, the rest dropped (counted).
 2. `held` = the current stream's frames in the ring, and whether this tick cleared.
@@ -355,16 +357,16 @@ ConvertedSink<M> convertedSink(Bank, SinkShape ring, ConverterShape conv);
 - A ring behind a converter is in node frames: `SourceTick::rate` is `nodeRate`, `SourceTick::frames` what the
   resampler asked, and a clock converts a graph-frame fact (a `jumpFrames`) through `FrameClock`. A converted sink's
   chunk keeps its tick's facts and carries node frames [U: `cutChunk` and `SinkRing` gain the ring's rate, in T5].
-- *Why an engine node, when ring companions are served by their block* (`companions.md` D-3b1, the owner's Q-3b1): the
-  resampler is PipeWire's only inside an adapter (TM5). What Q-3b1 was for holds: the stream plays only ticks the code
-  is driven for, bound and unbound by the same drive invoke on the same data loop (for a source it runs before the
-  block, for a sink after it). An unconverted source or sink stays served by its block.
+- *Why an engine node, when ring companions are served by their block* (`docs/architecture.md#companions`, the
+  owner's answer "Served by the node"): the resampler is PipeWire's only inside an adapter (TM5). What that answer was
+  for holds: the stream plays only ticks the code is driven for, bound and unbound by the same drive invoke on the same
+  data loop (for a source it runs before the block, for a sink after it). An unconverted source or sink stays served by its block.
 - **No mode skips.** Lost ticks are the node's clock's (`SourceClock::skipBefore`); in tracked mode a backlog above
   `targetFrames` drains through the loop unless the clock skips it, which by Q-TM2's default it does.
 
 ### 5.3 Latency (R1's one model)
 
-A converter's delay is latency beyond its bank, entered once as `LatencyPlan::beyond` (`companions.md` D-3b6), and
+A converter's delay is latency beyond its bank, entered once as `LatencyPlan::beyond` (`docs/engine.md#latency-per-bank-pair`), and
 only what no engine node reports, so nothing counts twice:
 
 - **module-run**: the module's buffer, by the shape's `moduleRunDelay` (RTP: `latencyMs`, exactly as today; T4 moves
@@ -660,7 +662,7 @@ its first user.
 | Page | Change |
 |---|---|
 | `cycle-facts.md` | Q-CF2 reversed (TM7); 4.4's `SourceRing`, `Played` and `SendspinCode` rows superseded; C4a and C4b's machinery deleted by T2 and T3; the follow-ups section 9.15 lists are moot |
-| `companions.md` | D-C4 (a source keeps time by default) and D-3b3 (`Played`'s meaning) reversed; 3.3's "keeping time" and "says what played" are this page's 4.1 and 4.2 |
+| Slice 3b's design (built; its page deleted) | A source keeping time by default and `Played`'s meaning reversed; its "keeping time" and "says what played" are this page's 4.1 and 4.2 |
 | `node-primitives.md` | 4.1's worker watches the source's clock wake, not a played wake; 6.2's list of the framework's wakes; 12's `sendspin_code.*` and `mailbox.hpp`; 13's S3c.6 |
 | `programs.md` | 2.2's paced source is a source with a converter companion in tracked mode (5.1, 5.2) |
 
@@ -670,13 +672,13 @@ Each the designer's; the owner can overturn any.
 
 | # | Decision | Why |
 |---|---|---|
-| D-TM1 | A source's clock is a hook the ring calls around its play (`SourceClock`), not the type's code reading the ring | The ring's rules stay written once (D-3b4); the node decides only what its clock must |
+| D-TM1 | A source's clock is a hook the ring calls around its play (`SourceClock`), not the type's code reading the ring | The ring's rules stay written once (core's `SourceRing`); the node decides only what its clock must |
 | D-TM2 | The clock's report rides the source's own wake (`clockWake`), the report itself in a mailbox the type owns | One wake per source as built; G23 stands |
 | D-TM3 | `SourcePlayed` splits a cleared stream's faded 5 ms (`ended`) and the zeros from what was read | A clock counting the old stream's tail as played would put the library's new stream 5 ms off |
 | D-TM4 | `ranRawNs()` is a member of `GraphCycle`; the deferral, its bound and the clamp are `sendspin`'s | When a tick ran is a tick fact for every node (TM1); when to tell a library is that node's clock logic (TM3) |
 | D-TM5 | Tell only from an on-time tick, under a 2 s bound; the clamp kept only for a report the bound forces from an overdue tick (6.1, 6.2) | Every report is true when given, in a burst of either shape; the clamp has one case left, and is proven idle otherwise |
 | D-TM6 | Sinks unchanged; their consumers reconcile | A chunk is already the tick's facts and the model's latency |
-| D-TM7 | The converter's base is the RTP receiver's body generalised (`ModuleConverterBody`, `ModuleConverters<Shape>`), on the shared `joinEngineCompanion`; set and tracked add an ear-made `pw_stream` body on the same lifecycle | TM8; the module-run mode is what RTP already is, and the stream body is the only way to PipeWire's resampler for a ring (TM5); binding by the drive keeps Q-3b1's exactness |
+| D-TM7 | The converter's base is the RTP receiver's body generalised (`ModuleConverterBody`, `ModuleConverters<Shape>`), on the shared `joinEngineCompanion`; set and tracked add an ear-made `pw_stream` body on the same lifecycle | TM8; the module-run mode is what RTP already is, and the stream body is the only way to PipeWire's resampler for a ring (TM5); binding by the drive keeps the exactness of ring companions served by their block (`docs/architecture.md#companions`) |
 | D-TM10 | The card stays on its own body, sharing only `joinEngineCompanion` | It is made by ear's proxy, not a module: the base's registry search, `moduleRunDelay` and auto-port-config are all things a card does not use (5.4) |
 | D-TM11 | RTP's type API, companion kind and wire name stay `rtpReceiver` | A change of where the code lives is no change an operator or a type author sees |
 | D-TM8 | The converter never skips; skipping is the node's clock's | TM1: the framework keeps no audio time, the converter included |

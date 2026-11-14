@@ -1,15 +1,12 @@
-// Companions, slice 3b (docs/design/companions.md#8-module-design; this header is their home until the slice is built,
-// then the library docs: so far docs/writing-a-node-type.md#engine-companions and docs/engine.md#engine-companions):
-// what a type asks for on an inside bank (the engine companions' shapes; the ring companions' shapes are sink.hpp's and
-// source.hpp's), the closed list of kinds and their readiness deadlines, a companion as the wire sees it, and the
-// engine companions' adapter interface.
+// Companions (docs/architecture.md#companions): what a type asks for on an inside bank (the engine companions' shapes;
+// the ring companions' shapes are sink.hpp's and source.hpp's), the closed list of kinds and their readiness deadlines,
+// a companion as the wire sees it, and the engine companions' adapter interface.
 //
-// Built so far: the shapes and the engine companions' interfaces (docs/engine.md#engine-companions), which NodeHost
-// and ear_pipewire's adapters use, the kinds' readiness bounds, which NodeHost's deadlines use
-// (docs/engine.md#readiness-deadlines), the module-run converters' latency rule, which NodeHost's latency plan uses,
-// and a node's companion list (CompanionView, NodeCompanionsListener), which NodeHost tells and CounterWatch re-tells
-// and paces the counters of (docs/engine.md#companions-in-a-nodes-list); the wire's encoding of it is the slice's next
-// step.
+// Who uses what: NodeHost and ear_pipewire's adapters the shapes and the engine companions' interfaces
+// (docs/engine.md#engine-companions; a type's side, docs/writing-a-node-type.md#engine-companions); NodeHost's
+// deadlines the kinds' readiness bounds (docs/engine.md#readiness-deadlines); NodeHost's latency plan the module-run
+// converters' latency rule; and NodeHost, CounterWatch and the control port a node's companion list (CompanionView,
+// NodeCompanionsListener: docs/engine.md#companions-in-a-nodes-list, docs/control-port.md#companions).
 // Pure: nothing but the standard library and ear_core.
 #pragma once
 #include <chrono>
@@ -68,8 +65,8 @@ static_assert(ModuleRunShape<RtpReceiverShape> && !ModuleRunShape<SoundCardShape
 
 // ---- The kinds ----
 
-/// The closed list (docs/design/companions.md#32-the-kinds-a-closed-list). Engine kinds are PipeWire nodes joined to
-/// the block by links; ring kinds are played or tapped by the block itself, in its own cycle.
+/// The closed list (docs/architecture.md#companions: a kind changes what the framework promises). Engine kinds are
+/// PipeWire nodes joined to the block by links; ring kinds are played or tapped by the block itself, in its own cycle.
 enum class CompanionKind { cardPlayback, cardCapture, rtpReceiver, sink, source };
 /// "card-playback" | "card-capture" | "rtp-receiver" | "sink" | "source": the wire's `kind`, the one home of these.
 std::string_view companionKindName(CompanionKind kind) noexcept;
@@ -79,18 +76,18 @@ constexpr bool isEngineKind(CompanionKind kind) noexcept {
 	       kind == CompanionKind::rtpReceiver;
 }
 
-/// How long a companion may take to become ready, from its request (D-R12): a card's PCM running and linked, an RTP
-/// receiver's node running and linked, a sink's consumer begun. Past it the companion is lost with its kind's reason and
-/// the node fails. A source is ready when made and has none.
+/// How long a companion may take to become ready, from its request, so a node never waits for good on something that
+/// will never be ready (docs/engine.md#readiness-deadlines): a card's PCM running and linked, an RTP receiver's node
+/// running and linked, a sink's consumer begun. Past it the companion is lost with its kind's reason and the node
+/// fails. A source is ready when made and has none.
 inline constexpr std::chrono::milliseconds cardReadinessBound{10'000};
 inline constexpr std::chrono::milliseconds rtpReceiverReadinessBound{5'000};
 inline constexpr std::chrono::milliseconds sinkReadinessBound{5'000};
 /// The bound for `kind`; std::nullopt for a source.
 std::optional<std::chrono::milliseconds> readinessBound(CompanionKind kind) noexcept;
 
-/// The least time between two lists CounterWatch re-tells for a node whose companions' counters moved (K1), and
-/// between two ear.sink-dropped or ear.source-shortfall records of one companion (K2)
-/// (docs/engine.md#reporting-the-counters).
+/// The least time between two lists CounterWatch re-tells for a node whose companions' counters moved, and between two
+/// ear.sink-dropped or ear.source-shortfall records of one companion (docs/engine.md#reporting-the-counters).
 inline constexpr std::chrono::milliseconds companionCounterPace{1'000};
 inline constexpr std::chrono::milliseconds companionDropDiagnosticPace{10'000};
 
@@ -167,8 +164,8 @@ struct CompanionTarget {
 };
 
 /// One engine kind's adapter. Each strips nothing it did not set: it never sets node.force-quantum, node.force-rate,
-/// node.lock-quantum or node.lock-rate, and a test seam that would is refused
-/// (docs/design/companions.md#36-the-quantum-guard).
+/// node.lock-quantum or node.lock-rate, and a test seam that would is refused, so no node can change every block's
+/// cycle (docs/engine.md#the-quantum-guard).
 ///  - SoundCardShape: one ALSA adapter for shape.card with blockPorts.size() channels at format.rate, playback when
 ///    target.bank is output, capture when input. It joins the graph's clock only through its links to the block, made
 ///    once its PCM runs.

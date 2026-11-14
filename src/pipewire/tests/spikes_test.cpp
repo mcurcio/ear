@@ -11,11 +11,11 @@
 //    but cycles are still told apart by the order they ran in, never by position.
 //  - S3: one data loop: context.num-data-loops = 1 in engine.conf, and every engine node on that loop. A
 //    pw_filter's node info names no loop (node.loop.name is only what its maker set), so its loop is read in-process.
-//  - S5: a source served by its block, as slice 3b designs it (docs/design/companions.md), on S2's harness beside a
-//    busy thread per core, its upstream and itself overrunning chosen cycles so that both shapes of a cut-short cycle
-//    occur on any host: its played count keeps to the clock across cycles an xrun cuts short, and the node after it
-//    hears its frame of each position. And what a node reads after its upstream ran a cycle it did not: the upstream's
-//    frames of the cycle it runs, never the cut one's (docs/engine.md#the-one-data-loop-and-invokes).
+//  - S5: a source served by its block, as ring companions are (docs/architecture.md#companions), on S2's harness
+//    beside a busy thread per core, its upstream and itself overrunning chosen cycles so that both shapes of a
+//    cut-short cycle occur on any host: its played count keeps to the clock across cycles an xrun cuts short, and the
+//    node after it hears its frame of each position. And what a node reads after its upstream ran a cycle it did not:
+//    the upstream's frames of the cycle it runs, never the cut one's (docs/engine.md#the-one-data-loop-and-invokes).
 //  - S6: what the internal clock reports of every cycle (docs/engine.md#the-one-data-loop-and-invokes and
 //    #the-internal-clock): every cycle a node misses is one it reported cut short, clock.cycle moves with its starts, a
 //    running node's position jumps by whole missed cycles only, and what makes the other jumps (a restart, the default

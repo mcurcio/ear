@@ -1,8 +1,8 @@
 # Programs: slice 9 of the node framework
 
 Status: design sketch, not built. Slice 9 lets a node run an outside program (first shairport-sync, for the `airplay`
-type) whose audio joins the graph. It needs slice 3b's ring companions (`companions.md`) and slice 3c's loops, runtime
-files and I/O executor (`node-primitives.md`). Only the shape is designed here; the program supervisor, the `airplay`
+type) whose audio joins the graph. It builds on ring companions (built: `docs/architecture.md#companions`) and needs
+slice 3c's loops, runtime files and I/O executor (`node-primitives.md`). Only the shape is designed here; the program supervisor, the `airplay`
 type's settings and shairport-sync's flags need their own design before code.
 
 ## 1. The owner's words that bind this slice
@@ -28,7 +28,7 @@ to the node's loop, so a type can turn "session started" into status (slice 5).
 ### 2.2 The paced source
 
 A pipe has no clock: the program paces itself on its own host clock, and nothing tells it what played. So the pipe goes
-into a **paced source**, a ring companion (`companions.md` 3.2's list, kind `paced-source`). *Since the owner's timing
+into a **paced source**, a ring companion (a new kind on the closed list, `docs/architecture.md#companions`; kind `paced-source`). *Since the owner's timing
 model (2026-11-13) this is a source with a converter companion in tracked mode (`timing-model.md` 5.1 and 5.2), not a kind of
 its own; what it does after a stall is Q-TM2's.*
 
@@ -68,7 +68,7 @@ program's own Avahi [U: whether shairport-sync can advertise without a D-Bus Ava
 For programs that can only be PipeWire clients, ear could serve its engine's socket. Then the mark of a program's node
 comes from the socket's peer credentials (`pipewire.sec.pid`), and ear writes the program's configuration to give its
 nodes `<node>.<suffix>` names and to turn its autoconnect off. Such a program's nodes would be engine companions
-(`companions.md` 3.2). Not designed.
+(`docs/architecture.md#companions`). Not designed.
 
 ## 5. Open questions
 

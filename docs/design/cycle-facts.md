@@ -646,7 +646,7 @@ Every counter is a monotonic total read from a fact that already exists; none is
 | `overruns` | node | cycles in which its block's own work (sources, code, fade, taps) took longer than the cycle | the block: one monotonic clock read at the end of `onProcess`, against the entry read it already takes (`cycleOverran`) |
 | `repositions` | node | cycles with `reposition` (the position moved by what no missed cycle explains) | `CycleFacts::causes` |
 | `driverChanges` | node | cycles with `driverChange` | `CycleFacts::causes` |
-| a sink's `dropped`, a source's `shortfall` | the node's companion | as `companions.md` 3.7 designs them | `Sink::droppedFrames()`, `Source::shortfallFrames()`; they stay on the companion's entry |
+| a sink's `dropped`, a source's `shortfall` | the node's companion | as built (`docs/control-port.md#companions`) | `Sink::droppedFrames()`, `Source::shortfallFrames()`; they stay on the companion's entry |
 | an RTP receiver's late or underrun packets | the node's companion | only if module-rtp-source ever gives a count (it gives none ear can read today) | the companion's entry |
 | `sendspin`'s library re-locks, a type's own counts | the node | once slice 3c routes the library's log, and any count a type observes | a status field (`control-plane.md` 3.1: what a type observes is status, not a framework counter) |
 
@@ -671,7 +671,7 @@ to put on the wire as a diagnostic.
   added again under the same name starts from zero. If the node's block is made again within its life, `NodeHost`
   carries what the old block counted when it is destroyed and adds the new block's counts to it: the totals never step
   back.
-- **Companion counters run per configuration**, as `companions.md` 3.7 already decides (a companion dies with its
+- **Companion counters run per configuration**, as built (`docs/control-port.md#companions`: a companion dies with its
   configuration). That is the one place two scopes meet, and the wire keeps them apart: node `counters`, companion
   entries' counts.
 - **Nothing resets a counter** but its owner's end. A client that wants "since I looked" keeps the last value it saw
@@ -713,7 +713,7 @@ hold still for a beat, so a long stall is one record; and every record held back
 - **`ear.node-missed-cycles`**, with the node: fields `missed`, `overruns` (since its last such record) and their
   totals, `totalMissed` and `totalOverruns`. At most once per 10 s per node, only when either moved, and at once as the
   node goes: a node that misses cycles is a fault worth a line, but
-  one that keeps missing must not flood the log (`companions.md`'s K2 paces its companions' drops the same way). It goes
+  one that keeps missing must not flood the log (a companion's drops are paced the same way, `docs/engine.md#reporting-the-counters`). It goes
   on the wire as a `node.diagnostic` once slice 5 builds that, as `ear.sink-dropped` does.
 - The pace is the records', not the counters': the counters are exact whatever the records leave out.
 
@@ -842,8 +842,9 @@ Proposed, not over-built (`docs/editor.md` changes with it):
 
 - **Nothing when nothing was lost.** A box with every counter at zero looks as today.
 - **A node's mark.** When a node's `missedCycles` or `overruns` moved in the last minute (on the browser's clock, from
-  `counters.changed`), a small warning mark sits beside its state word, the same mark companions' badges use for a
-  counter above zero (`companions.md` 3.7); the tooltip and the side panel give the totals in words ("missed 12 cycles
+  `counters.changed`), a small warning mark sits beside its state word, the same mark companions' badges carry while
+  a counter rose in the last minute (built: `docs/editor.md#companions`, on `performance.now()`, which this mark is
+  to use too); the tooltip and the side panel give the totals in words ("missed 12 cycles
   it was not scheduled for; its work overran 3 times; since it was added"). Not per port: these are the node's, and the
   per-port meters (the owner's R30) stay what they are, the audio itself.
 - **The graph's badge.** Beside the "not realtime" badge, "dropouts" with the count of the last minute, shown while

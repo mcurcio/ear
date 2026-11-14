@@ -44,7 +44,7 @@ Each C++ package lives in `src/<package>/` with its own `CMakeLists.txt`, public
 
 | Target | Owns | Never |
 |---|---|---|
-| `ear_core` (`src/core`) | The desired graph (`DesiredGraph`: the one judge of every change, `plan` then `commit`); the node type contract (`NodeType`, settings tables, `TypeSpec`, the type's class and its contexts); the node framework (`NodeHost`, the node lifecycle machines, health, `NodeOperations`, the pass-through, interim sinks, latency plans); the reconciler (route links and route status); levels; the graph read (`GraphStatus`); `FrameRing`. Beside it, for tests only, `ear_type_harness` (`ear/testing/`) | Any PipeWire call, socket, thread or file access. nlohmann/json is its only dependency |
+| `ear_core` (`src/core`) | The desired graph (`DesiredGraph`: the one judge of every change, `plan` then `commit`); the node type contract (`NodeType`, settings tables, `TypeSpec`, the type's class and its contexts); the node framework (`NodeHost`, the node lifecycle machines, health, `NodeOperations`, the pass-through, companions, latency plans); the reconciler (route links and route status); levels; the graph read (`GraphStatus`); `FrameRing`. Beside it, for tests only, `ear_type_harness` (`ear/testing/`) | Any PipeWire call, socket, thread or file access. nlohmann/json is its only dependency |
 | `ear_folder` (`src/folder`) | `ConfinedFolder`: a folder held open from boot, every path resolved beneath it by the kernel (`openat2` with `RESOLVE_BENEATH`); files replaced only if unchanged (`renameat2(RENAME_EXCHANGE)`); `requireApart`, the boot check that no two folders overlap | Following `..`, absolute paths or (for the graph file) any symlink |
 | `ear_node_white`, `ear_node_file`, `ear_node_card`, `ear_node_rtp`, `ear_node_sendspin` (`src/nodes/<type>`) | One built-in node type each ([node-types.md](node-types.md)) | Another node type; PipeWire (only `ear_core`'s interfaces) |
 | `ear_all_node_types` (`src/all_node_types`) | `allNodeTypes()`, the one list of node types, generated at configure from the folders in `src/nodes/` | Naming a type by hand |
@@ -80,7 +80,7 @@ the main loop by posting.
 
 | Thread | Runs |
 |---|---|
-| PipeWire's data loop (realtime, one for the whole engine) | Every port block's `process`, level metering, the sinks' taps and the legacy handoffs' writers; every engine companion's processing |
+| PipeWire's data loop (realtime, one for the whole engine) | Every port block's `process`, level metering, the sources' plays, the sinks' taps and the legacy handoffs' writers; every engine companion's processing |
 | PipeWire's main loop (the main thread) | Every piece of graph state: the engine, desired graph, node framework, reconciler, adapters, the gateway's graph side, the keeper's main-loop side; `ear.conf`'s first read at boot |
 | The control thread | Port 7777: sockets, JSON-RPC, sessions, queues. It holds only the gateway, which sends every request whole to the keeper and gets replies and events back in order from the main loop |
 | The keeper thread | The graph file keeper: every request, disk check and write, one step at a time; the working copy (knobly's object, which never leaves this thread); the inotify watch. It waits in `poll()` with no timeout |
@@ -308,7 +308,7 @@ engine refused the link. A wire never depends on a node's state.
    node's name, with one 32-bit float mono port per declared port, public and inside alike. Every
    block is in the graph group and always processes.
 3. **A configuration.** The node's type makes an instance whose `configure` acquires resources
-   (sound cards, RTP receivers, recordings, sinks) and gives the code that will run. Once every
+   (sound cards, RTP receivers, recordings, sinks, sources) and gives the code that will run. Once every
    resource is ready and the block is ready, the framework drives the block with that code
    ([the node lifecycle](#the-node-lifecycle)).
 4. **Each cycle**, on the realtime thread, the block calls the code with one span per port and a
@@ -321,10 +321,75 @@ engine refused the link. A wire never depends on a node's state.
    framework joins an ALSA adapter node or an RTP receiver to them, and its pass-through copies
    between inside and public banks ([engine.md](engine.md#engine-companions)).
 7. **Off the realtime thread.** A `file` node's block writes each cycle into a sink's lock-free
-   ring, read by the sink's own thread ([engine.md](engine.md#sinks)).
+   ring, read by the sink's own thread ([engine.md](engine.md#sinks)); a source's ring, written by
+   an ordinary thread, is played by its block before the code ([engine.md](engine.md#sources)).
+   Both are [companions](#companions), as cards and RTP receivers are.
 8. **Levels.** Each block meters its public ports and publishes a window every 1/30 s of graph
    time; the control thread sends the newest to subscribers
    ([control-port.md](control-port.md#levels)).
+
+## Companions
+
+A type's realtime code reads its input banks and writes its output banks, and nothing else. *Why:*
+the owner's rule, "The node audio threads should be concerned with reading inputs and writing
+outputs. The framework should provide the necessary primitives to connect inputs/outputs across
+nodes AND anytime a node needs to cross inputs/outputs to non-realtime code". So when audio must
+leave the realtime thread (to a file, a network library, a device) or come onto it from an
+ordinary thread (a decoder, a library's thread), the type declares an inside bank and asks in
+`configure` for a **companion** on it, and its code passes audio between its public and inside
+banks: it never touches a ring, a wake or a device. The shape is the owner's too: "crossing to a
+non-rat [non-realtime] thread could be managed by allowing a node to internally pipe its
+inputs/outputs to a hidden node, to maintain the integrity and consistency of the processing
+graph".
+
+There are two families, and the kinds are a closed list (`CompanionKind`,
+`ear/core/companions.hpp`), each with one adapter in `ear_pipewire`. *Why closed:* a kind changes
+what the framework promises (when it is ready, what it adds to latency, what fails its node), so a
+new one is a change of the framework, never a type's own.
+
+| Family | Kinds | What it is | How it works |
+|---|---|---|---|
+| Engine companion | a sound card's playback, its capture; an RTP receiver | A PipeWire node of its own, joined channel for channel to the bank's ports by links | [engine.md](engine.md#engine-companions) |
+| Ring companion | a sink, a source | A lock-free ring between the block and an ordinary thread, served by the block itself in its own cycle: it plays a source into its bank before the code and taps a sink's bank after it | [engine.md](engine.md#sinks), [engine.md](engine.md#sources) |
+
+- **Hidden, not secret.** A companion is never in the desired graph, never named by a route and
+  never metered (only public ports are); the control port lists it under its node
+  ([control-port.md](control-port.md#companions)) and the editor draws it as a badge in the node's
+  box ([editor.md](editor.md#companions)). An engine companion is named by its kind
+  (`<node>.playback`, `<node>.capture`, `<node>.rtp`), a ring companion by its bank
+  (`<node>.<bank>`); a node's name has no `.`, so a companion's never equals a node's.
+- **One per inside bank,** of any kind. *Why:* the block sizes its storage for bindings when it is
+  made (one source per inside input bank, one sink per inside output bank), so nothing allocates on
+  the data loop, and a companion replaced later is handed over in one invoke, never two held at
+  once on a bank.
+- **Its failure is its node's alone** (the owner's per-node rule: "Some node
+  stopping/reconfiguring/failing does not effect the graph globally"). An engine companion lost or
+  not ready by its deadline fails its node `engine-refused`; a sink whose consumer does not begin
+  in time fails it `start-failed`, since `begin` is the type's code
+  ([engine.md](engine.md#readiness-deadlines)). The node's block and wires stay.
+
+**Why a sink or a source is served by its block, not an engine node of its own.** Asked whether a
+sink or a source should be its own hidden PipeWire node or a helper its node's block serves in its
+own cycle, the owner answered "Served by the node". Cards and RTP receivers stay engine nodes: the
+device and the module's socket are PipeWire's. The reasons:
+
+- **It is exact by construction.** A ring companion is bound and unbound by the drive's own invoke
+  with the code ([engine.md](engine.md#drive-and-fade)), so the source, the code and the sinks run
+  in one `process`, at one position, and change together between two cycles; a cycle the block
+  does not run, none of them runs. As nodes of their own they could disagree: an invoke can land
+  between a block and another node within one cycle (inside one `process` nothing can), and a
+  cycle an xrun cuts short is run by an upstream prefix of the graph only
+  ([engine.md](engine.md#the-one-data-loop-and-invokes)), so a source upstream of its block could
+  play a cycle the block never ran. Nothing is armed by position or deferred to a cycle, so the
+  wedge is still judged in one stage: a barrier still pending means the loop ran no invoke
+  ([bounds](#bounds-the-wedged-data-loop-and-the-watchdog)).
+- **It is cheap.** Serving one costs a copy a cycle (about 1 µs for stereo at 48 kHz and 256
+  frames): no engine node, eventfd wake or graph recalculation per crossing, so a `file` node is
+  one engine node.
+- **Nobody outside ear's code sees the difference.** ear runs PipeWire in-process with no outside
+  tools; the type's calls (`cx.sink`, `cx.source`), the wire's entries and the editor's badges
+  are the same either way, and the owner's aim holds: the type's code reads and writes only its
+  banks, and the crossing is the framework's.
 
 ## The timing model
 
@@ -611,7 +676,7 @@ of the process: the record, not the process's end, says when ear's stop is done.
 
 These are designed or wanted but not in the code: routes naming a whole bank; changing a node's
 settings in place without a restart (a type's change version of `configure` compiles but is
-never called); a sink's realtime side as its own engine node, and companions on the wire; `sendspin` on the type's class (it still runs through
+never called); `sendspin` on the type's class (and so on a source and a sink) (it still runs through
 the legacy adapter); recovery of failed nodes; sound cards opened off the main loop; an internal
 clock anchored to one card; serving PipeWire's socket, a program supervisor and the `airplay`
 type; a login on port 7777; automatic card retry and hotplug; `@include`; undo; changing the graph

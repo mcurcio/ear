@@ -19,7 +19,7 @@ void control() {
 
 #ifdef EAR_CASE_beyond_as_peer
 // A companion's buffer beyond a bank lies in series with the bank's peers; combined as one more peer, peers reporting
-// zero would make its least zero (the 3b.3 regression).
+// zero would make its least zero (the regression 40be60af04 fixed).
 void bad() {
 	LatencyPlan plan{.beyond = {{"from_rtp", Delay{Latency{480, 480}}}}};
 	Paths peers;

@@ -688,7 +688,8 @@ private:
 
 	// The asynchronous drive and fade (see pump()).
 	enum class Kind : std::uint8_t { drive, fade };
-	static constexpr std::size_t kRing = 8; // docs/design/companions.md: a first choice
+	// A first choice: one invoke in flight per block, the rest queued here (docs/engine.md#drive-and-fade).
+	static constexpr std::size_t kRing = 8;
 	/// One request in the ring: what the main thread hands, then what the data loop writes back.
 	struct Request {
 		Kind kind = Kind::drive;

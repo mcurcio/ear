@@ -28,7 +28,8 @@ changing this code.
 | Sound cards | `sound_cards.cpp` | One ALSA adapter node per card and direction |
 | Module-run converters | `module_converter_body.hpp`, `converter_modules.hpp`, `module_converters.hpp` | The engine companion a PipeWire module runs: loaded, found by name, linked, its latency carried, its life judged ([below](#module-run-converters)) |
 | RTP receivers | `rtp_receivers.cpp` | The first module-run converter: `libpipewire-module-rtp-source`, one per `rtp` node |
-| Sinks and handoffs | `handoffs.cpp` | `ThreadSinks` (interim sinks) and `ThreadHandoffs` (the legacy handoff `sendspin` uses) |
+| Sinks and handoffs | `handoffs.cpp` | `ThreadSinks` (the sinks: a ring the block taps and a thread that drains it, [below](#sinks)) and `ThreadHandoffs` (the legacy handoff `sendspin` uses) |
+| Sources | `sources.cpp` | `EventSources`: core's `SourceRing` with the writer's wait and the clock wake's eventfd ([below](#sources)) |
 | The engine's log | `engine_log.cpp` | ear's own `pw_log` and alsa-lib's error handler ([output-records.md](output-records.md#how-output-is-written)), both `noexcept` and registered through the callback boundary as realtime functions |
 | The wedge mark | `data_loop_wedge.hpp` | Once the data loop is judged wedged, the adapters stop calling into it |
 | Main-loop executor | `main_loop_executor.cpp` | Work posted from any thread runs on the main loop |
@@ -476,7 +477,8 @@ above; and a paced counter's report is the pacer's, as a node's misses are.
 - **The records.** `ear.sink-dropped` and `ear.source-shortfall` are paced as
   `ear.node-missed-cycles` is, per companion: once its count held still for a beat, at most once
   per 10 s per companion (`companionDropDiagnosticPace`), and at once, pace and hold waived, as its
-  configuration ends. A count that never holds still (a full disk) is not said at once: its first
+  configuration ends. *Why:* an operator learns of drops while they happen, at a bounded rate.
+  A count that never holds still (a full disk) is not said at once: its first
   record comes once it has kept moving 10 s, then one about every 10 s while it moves, each with
   what moved since; the companion list shows the count within a second meanwhile (`companionsEnded`, with the final counts),
   so each configuration's records sum to its totals. A superseded node's records are written too.
@@ -832,6 +834,9 @@ an entry is added or removed or its `ready` changes, in this order against the n
 Only the node a client holds tells: neither a node superseded by a newer node of its name nor the
 older node of a port-caused replace, as the wire keys a node by its name
 ([architecture.md](architecture.md#phases-states-and-what-is-wanted)).
+
+*Why a counter rides in its companion's entry:* a count belongs to the crossing that drops, so it is
+told with that companion and never as a status member of the node.
 
 A counter's move alone is `CounterWatch`'s to tell, at the heartbeat
 ([reporting the counters](#reporting-the-counters)), since the data thread moves a sink's drops and a source's

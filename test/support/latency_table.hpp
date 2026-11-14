@@ -90,7 +90,7 @@ inline std::vector<LatencyRow> latencyRows() {
 	     {none},
 	     {{0, 0}, {0, 0}, {0, 200}},
 	     {{0, 0}}},
-		// Regression (3b.2, 6c1299b556): a code's delay declared on its pair reaches the input bank's told playback
+		// Regression (6c1299b556): a code's delay declared on its pair reaches the input bank's told playback
 		// latency, so a source on it tells its clock enough playback latency; and the output's capture likewise.
 		{"a pair's delay counts both ways on its path",
 	     {{Direction::output, "out", numbered(1)}, {Direction::input, "src", numbered(1), R::inside}},
@@ -101,7 +101,7 @@ inline std::vector<LatencyRow> latencyRows() {
 	     {Latency{256, 256}},
 	     {{256, 320}, {0, 1088}},
 	     {{256, 256}}},
-		// Regression (the class of 3b.2): a type's own code declares its delay from `in` to `out` and names no
+		// Regression (the class of 6c1299b556): a type's own code declares its delay from `in` to `out` and names no
 		// pass-through; NodeHost carries the declared path as a pair, so the delay reaches `in`'s told playback
 		// latency.
 		{"a type's own code's declared path carries its delay both ways",
@@ -147,7 +147,7 @@ inline std::vector<LatencyRow> latencyRows() {
 	     {Latency{100, 100}},
 	     {{107, 107}, {10, 10}},
 	     {{100, 100}}},
-		// Regression (3b.3, 40be60af04): rtp-source's ports report zero once linked; the receiver's buffer lies behind
+		// Regression (40be60af04): rtp-source's ports report zero once linked; the receiver's buffer lies behind
 		// them, in series, so `stream` tells {B, B}, never {0, B}.
 		{"a companion's beyond in series with peers reporting zero",
 	     {{Direction::output, "stream", numbered(2)}, {Direction::input, "from_rtp", numbered(2), R::inside}},

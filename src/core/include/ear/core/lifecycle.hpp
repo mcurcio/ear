@@ -146,7 +146,7 @@ public:
 	/// Slice 3a's interim recording: opened at once, beneath the recordings folder; its descriptor is closed after the
 	/// configuration's code and instance (teardown step 5). The error is why not (it names no path).
 	virtual std::expected<int, std::string> openRecording(const RecordingRequest& request) = 0;
-	/// Slice 3a's interim sink on an inside output bank (docs/engine.md#sinks): made at once (its thread starts); its
+	/// A sink on an inside output bank (docs/engine.md#sinks): made at once (its thread starts); its
 	/// consumer begins once configure answered applied (readiness 4').
 	virtual SinkRequest& sink(std::string_view bank, SinkShape shape) = 0;
 	/// A source on an inside input bank (docs/writing-a-node-type.md#sources): made at once and ready at once; the block
@@ -239,7 +239,7 @@ public:
 	std::expected<int, std::string> openRecording(const RecordingRequest& request) {
 		return context_->openRecording(request);
 	}
-	/// 3a interim realtime side (3b: a ring companion), the same call.
+	/// A sink on an inside output bank, the same call (docs/writing-a-node-type.md#sinks).
 	template <class Bank> SinkRequest& sink(Bank, SinkShape shape) {
 		static_assert(ownBank<Bank>, "a context takes only its spec's banks");
 		static_assert(Bank::reach == PortBank::Reach::inside && Bank::direction == Direction::output,

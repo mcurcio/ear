@@ -130,10 +130,10 @@ protected:
 ///   its end at once, pace and hold waived, for what moved since its last record;
 /// - its NodeCompanionsListeners the node's whole companion list (spanCompanions) when a sink's `dropped` or a source's
 ///   `shortfall` in it differs from what the last list it told named (0 for a companion it never named), at most once
-///   per companionCounterPace per node, only for each name's newest span (K1: what moves a list otherwise, an entry
-///   added or removed or made ready, is NodeHost's to tell);
+///   per companionCounterPace per node, only for each name's newest span (what moves a list otherwise, an entry added
+///   or removed or made ready, is NodeHost's to tell: docs/engine.md#companions-in-a-nodes-list);
 /// - companionFramesLost likewise for each sink's and source's count, at most once per companionDropDiagnosticPace per
-///   companion (K2), and at its configuration's end (companionsEnded) at once, pace and hold waived.
+///   companion, and at its configuration's end (companionsEnded) at once, pace and hold waived.
 /// flush() writes every record still held back (at a stop, before ear's last record), so the records' sums are the
 /// totals.
 class CounterWatch final : public NodeCountsListener {

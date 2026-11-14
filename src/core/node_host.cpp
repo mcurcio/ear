@@ -569,7 +569,7 @@ struct NodeHost::Impl {
 				return (*config_->recordings.emplace_back(std::move(*opened))).descriptor();
 			});
 		}
-		/// The interim sink (docs/writing-a-node-type.md#sinks): made at once on the inside output bank, its thread
+		/// A sink (docs/writing-a-node-type.md#sinks): made at once on the inside output bank, its thread
 		/// started; its bank is never faded. An adapter that cannot make it (no thread) fails the node through
 		/// configure, recorded so a type that catches it still fails; an adapter's own bug fails it lost (adapter()).
 		SinkRequest& sink(std::string_view bank, SinkShape shape) override {

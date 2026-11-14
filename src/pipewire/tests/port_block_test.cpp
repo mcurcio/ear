@@ -1837,8 +1837,8 @@ TEST_CASE("drive and fadeOut on a block whose engine node is gone complete by si
 	CHECK(after.calls() == 0);
 }
 
-// Settled for slice 3b's design (docs/design/companions.md): PipeWire runs a loop's invokes while a node on it is not
-// processing, so a request applied in its invoke completes without a cycle.
+// A drive never waits for a cycle that will not come (docs/engine.md#drive-and-fade): PipeWire runs a loop's invokes
+// while a node on it is not processing, so a request applied in its invoke completes without a cycle.
 TEST_CASE("A block that is PAUSED takes a drive in its invoke and completes it", "[blocks][drive][async]") {
 	auto engine = makeEngine();
 	Waiter waiter(*engine);
@@ -2349,9 +2349,9 @@ TEST_CASE("Drives, fades, their completions and a bound sink's tap allocate noth
 	REQUIRE(ear::testing::driveNow(*block, nullptr)); // unbinds the tap before it goes
 }
 
-// Settled for slice 3b's design (docs/design/companions.md): pw_filter_get_node_id gives the block's global id once
-// STREAMING, and an engine companion's link made by it (as joinEngineCompanion writes link.output.node) reaches that
-// block even beside an older block of the same name.
+// Engine companions rely on it (docs/engine.md#engine-companions): pw_filter_get_node_id gives the block's global id
+// once STREAMING, and an engine companion's link made by it (as joinEngineCompanion writes link.output.node) reaches
+// that block even beside an older block of the same name.
 TEST_CASE("A block's id is its engine node's global id once STREAMING, and a link made by it reaches that block, not "
           "another of its name",
           "[blocks][drive][async]") {

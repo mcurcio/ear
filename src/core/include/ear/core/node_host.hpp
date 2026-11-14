@@ -260,7 +260,7 @@ public:
 	RtpReceiverCompanions& adapterFor(const RtpReceiverShape&) const noexcept { return receivers_; }
 	HandoffAdapter& adapterFor(const HandoffRequest&) const noexcept { return handoffs_; }
 	RecordingAdapter& adapterFor(const RecordingRequest&) const noexcept { return *recordings_; }
-	/// The interim sinks' adapter (CreateOf::sink; docs/writing-a-node-type.md#sinks).
+	/// The sinks' adapter (CreateOf::sink; docs/writing-a-node-type.md#sinks).
 	SinkAdapter& sinks() const noexcept { return sinks_; }
 	/// The sources' adapter (CreateOf::source; docs/writing-a-node-type.md#sources).
 	SourceAdapter& sources() const noexcept { return sources_; }

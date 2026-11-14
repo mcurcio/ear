@@ -4186,7 +4186,7 @@ TEST_CASE("Every rule a type breaks at a call or at configure's return fails its
 	}
 }
 
-// Regression (the class of 3b.2, 6c1299b556): a type's own code declares its delay from `record` to `pb`; with no
+// Regression (the class of 6c1299b556): a type's own code declares its delay from `record` to `pb`; with no
 // pass-through to name the pair, the delay must still lie on that path, so it reaches what `record` tells upstream
 // (and a source there tells its clock enough playback latency), not only what `pb` tells.
 TEST_CASE("A typed declareLatency is a latency path: carried as a pair with its delay on it, for a code of the type's "
@@ -4543,7 +4543,7 @@ TEST_CASE("A start() that throws on a start after a stop fails the node start-fa
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// The interim sink (docs/engine.md#sinks, docs/writing-a-node-type.md#sinks): made at configure,
+// The sink (docs/engine.md#sinks, docs/writing-a-node-type.md#sinks): made at configure,
 // its consumer begun before the node is configured, its tap bound by every drive and by no silence, its bank never
 // faded, closed at the teardown (its drops the node's), and every rule about it a failure of the node.
 

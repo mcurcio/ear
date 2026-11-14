@@ -92,7 +92,13 @@ use`).
   CounterWatch at the heartbeat for counters), and the gateway (`companionsChanged` in
   `src/control/gateway.cpp`) drops a list for a name no client holds (removed, not added again) and
   one equal to the last it sent for the node; `node.added` sets that to `[]`. A companion's counters run per configuration, so they
-  never ride `counters`/`counters.changed`. To see a list:
+  never ride `counters`/`counters.changed`. The order rules are NodeHost's: the gateway only posts list and health in
+  the order it hears them on the main loop, so it needs no ordering code of its own (the proofs are the session replay
+  of `test/protocol/companions.json` and `test/system/control_port_test.cpp`). A companion is never a node: a route
+  naming one (`rec.writer`) names no node (no node's name has a `.`) and is refused, and levels never carry one. A counter
+  reaching the wire is not proved end to end (no system test can make a file node's sink drop: `docs/testing.md`).
+  The editor (`web/src/companions.ts`, `docs/editor.md#companions`) marks a rise only against what it held, and
+  forgets everything held when its connection closes. To see a list:
   `node scripts/rpc-call.mjs ws://127.0.0.1:7777/rpc graph.get` and read each node's `companions`.
 
 ## The graph file over the port
