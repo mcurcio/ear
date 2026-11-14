@@ -1,10 +1,11 @@
 // The "sendspin" node type (docs/node-types.md#sendspin): a port block with its own audio code and its own
-// threads, not an outside node. Its ports are fixed; the connection is the worker's, so an absent server is no
+// threads, not an engine companion. Its ports are fixed; the connection is the worker's, so an absent server is no
 // failure: the node runs and its outputs are silent.
 #include "ear/nodes/sendspin.hpp"
 
 #include <algorithm>
 #include <bit>
+#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <functional>
@@ -29,7 +30,8 @@ namespace {
 
 /// Small, so a correction lands within a chunk: the next power of two at or above 40 ms and two blocks.
 std::uint32_t feedFramesFor(const AudioFormat& format) {
-	return std::bit_ceil(std::max(format.rate * 40 / 1000, 2 * format.maxBlock));
+	const auto forty = static_cast<std::uint32_t>(FrameClock(format.rate).frames(std::chrono::milliseconds{40}));
+	return std::bit_ceil(std::max(forty, 2 * format.maxBlock));
 }
 
 /// A listening node's claim on its port, for as long as its insides live, so past the library's own socket.
@@ -57,7 +59,7 @@ public:
 		  worker_(std::move(folder), node, std::move(settings), context.format(), feed_, context.events()) {}
 	void close(std::move_only_function<void()> closed) override { worker_.stop(std::move(closed)); }
 	/// The run's code, reading this run's feed and writing `toServer`; it must not outlive the run.
-	std::unique_ptr<SendspinCode> code(std::uint32_t rate, RtWriter& toServer) {
+	std::unique_ptr<SendspinCode> code(SampleRate rate, RtWriter& toServer) {
 		return std::make_unique<SendspinCode>(feed_, worker_.progress(), worker_.bell(), rate, toServer,
 		                                      worker_.capture());
 	}
@@ -96,8 +98,10 @@ public:
 		} catch (const std::system_error& error) {
 			return std::unexpected(FailureReason{FailureReason::Code::startFailed, error.what()});
 		}
-		const std::uint32_t rate = context.format().rate;
-		RtWriter& toServer = context.acquire(HandoffRequest{"to", rate / 2, &run->toServer()});
+		const SampleRate rate = context.format().rate;
+		// The handoff to the server holds half a second.
+		const auto half = static_cast<std::uint32_t>(FrameClock(rate).frames(std::chrono::milliseconds{500}));
+		RtWriter& toServer = context.acquire(HandoffRequest{"to", half, &run->toServer()});
 		// The feed holds the server's audio up to its size before it leaves (docs/engine.md#latency-per-bank-pair).
 		context.declareLatency("from", Latency{0, feedFramesFor(context.format())});
 		auto code = run->code(rate, toServer);

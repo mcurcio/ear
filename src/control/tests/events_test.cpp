@@ -65,6 +65,23 @@ TEST_CASE("Every graph notification encodes as edits.json has it", "[events][pro
 	CHECK(encoded(NodeGone{"noise", 0}) == m[29]);
 }
 
+TEST_CASE("counters.changed and node.added's counters encode as counters-changed.json has them",
+          "[events][protocol][counters]") {
+	const json m = fixture("counters-changed")["messages"];
+	const std::vector<ear::NamedCounts> rec{{"rec", {.missedCycles = 33, .overruns = 3}}};
+	CHECK(encoded(CountersChanged{{.cycles = 37500, .cutCycles = 41, .stalls = 2}, 218, rec}) == m[1]);
+	const std::vector<ear::NamedCounts> two{{"desk", {.missedCycles = 12}}, {"ghost", {.missedCycles = 5}}};
+	CHECK(encoded(CountersChanged{{.cycles = 56250, .cutCycles = 44, .stalls = 2}, 234, two}) == m[2]);
+	const ear::Ports four{{{ear::Direction::input, "play", ear::numbered(4)}}};
+	CHECK(encoded(NodeAdded{{"desk", "card", {{"card", "MOTU"}, {"playback", 4}}},
+	                        four,
+	                        ear::NodeHealth{"desk"},
+	                        ear::control::testing::reading(0),
+	                        {.missedCycles = 12}}) == m[4]);
+	CHECK(encoded(CountersChanged{{.cycles = 75000, .cutCycles = 44, .stalls = 2}, 234, {}})["params"]["nodes"] ==
+	      json::object()); // no node moved: the graph's alone
+}
+
 TEST_CASE("node.updated says disabled only when true, and each outcome by its name", "[events][lifecycle]") {
 	const json disabled = encoded(NodeUpdated{"porch", json::object(), true, ear::NodeOutcome::disable});
 	CHECK(disabled["params"] == json::parse(R"({"name":"porch","settings":{},"applied":"disable","disabled":true})"));
@@ -105,4 +122,27 @@ TEST_CASE("A levels notification holds every node given, linear to 4 decimals", 
 	CHECK(json::parse(encodeLevels(recOnly)) == m[3]);
 	CHECK(json::parse(encodeLevels({})) ==
 	      json::parse(R"({"jsonrpc": "2.0", "method": "levels", "params": {"nodes": {}}})"));
+}
+
+TEST_CASE("node.companionsChanged and node.added's companions encode as companions.json has them",
+          "[events][protocol][companions]") {
+	using ear::CompanionKind;
+	const json m = fixture("companions")["messages"];
+	const auto sink = [](const std::string& node, bool ready, std::uint64_t dropped) {
+		return ear::CompanionView{.name = node + ".writer",
+		                          .kind = CompanionKind::sink,
+		                          .bank = "writer",
+		                          .ready = ready,
+		                          .dropped = dropped};
+	};
+	CHECK(encoded(NodeAdded{{"take", "file", {{"path", "take.wav"}}},
+	                        ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
+	                        ear::NodeHealth{"take"},
+	                        ear::control::testing::reading(4)}) == m[1]);
+	CHECK(encoded(NodeCompanionsChanged{"take", {sink("take", false, 0)}}) == m[3]);
+	CHECK(encoded(NodeCompanionsChanged{"rec", {sink("rec", true, 4096)}}) == m[9]);
+	CHECK(encoded(NodeCompanionsChanged{"rec", {}}) == m[17]);
+	CHECK(encoded(NodeCompanionsChanged{
+			  "fpp", {{.name = "fpp.rtp", .kind = CompanionKind::rtpReceiver, .bank = "from_rtp", .ready = false}}}) ==
+	      m[29]);
 }

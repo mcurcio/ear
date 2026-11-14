@@ -58,5 +58,4 @@ inline std::string sending(std::uint32_t rate, std::uint32_t channels, std::uint
 inline std::string sendingStopped() { return "sending-stopped"; }
 inline std::string keyWriteFailed(std::string_view detail) { return std::format("key-write-failed {}", detail); }
 inline std::string advertiseFailed(std::string_view detail) { return std::format("advertise-failed {}", detail); }
-inline std::string notesDropped(std::uint64_t count) { return std::format("notes-dropped {}", count); }
 } // namespace ear::sendspin::notes

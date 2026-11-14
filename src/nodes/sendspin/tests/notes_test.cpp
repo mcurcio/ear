@@ -1,14 +1,11 @@
-// What reaches a status line from a peer, and how many notes can (docs/node-types.md#notes).
-#include <chrono>
+// What reaches a status line from a peer (docs/node-types.md#notes). How many notes can is the framework's rate, tested
+// with it (src/core/tests/note_gate_test.cpp, node_handle_test.cpp).
 #include <string>
-#include <vector>
 
 #include "catch2/catch.hpp"
-#include "note_gate.hpp"
 #include "notes.hpp"
 
 using namespace ear::sendspin;
-using namespace std::chrono_literals;
 
 TEST_CASE("printable turns every control character into ?", "[sendspin][notes]") {
 	CHECK(notes::printable("plain name") == "plain name");
@@ -44,48 +41,4 @@ TEST_CASE("A server's name is quoted on the line, so it cannot pass for the word
 	CHECK(notes::connected("say \"no\"", true) == "connected \"say ?no?\" paired");
 	CHECK(notes::connected("line\nnode ma says paired x", false) ==
 	      "connected \"line?node ma says paired x\" unpaired");
-}
-
-namespace {
-
-class Heard final : public ear::InsidesEvents {
-public:
-	void say(std::string text) override { said.push_back(std::move(text)); }
-	void lost(std::string detail) override { said.push_back("LOST " + std::move(detail)); }
-	std::vector<std::string> said;
-};
-
-} // namespace
-
-TEST_CASE("A burst of notes passes, then one a second, and what was held back is counted once it can be",
-          "[sendspin][notes]") {
-	Heard heard;
-	NoteGate::Clock::time_point now{};
-	NoteGate gate(heard, [&] { return now; });
-	for (int i = 0; i < 1000; ++i) gate.say("note " + std::to_string(i));
-	REQUIRE(heard.said.size() == 32);
-	CHECK(heard.said.front() == "note 0");
-	CHECK(heard.said.back() == "note 31");
-
-	gate.say("too soon");
-	CHECK(heard.said.size() == 32);
-
-	now += 1s;
-	gate.say("next");
-	REQUIRE(heard.said.size() == 34);
-	CHECK(heard.said[32] == "notes-dropped 969");
-	CHECK(heard.said[33] == "next");
-
-	now += 1h; // a long quiet: a burst again, no more
-	for (int i = 0; i < 100; ++i) gate.say("again");
-	CHECK(heard.said.size() == 34 + 32);
-}
-
-TEST_CASE("A loss is never held back", "[sendspin][notes]") {
-	Heard heard;
-	NoteGate::Clock::time_point now{};
-	NoteGate gate(heard, [&] { return now; });
-	for (int i = 0; i < 100; ++i) gate.say("note");
-	gate.lost("gone");
-	CHECK(heard.said.back() == "LOST gone");
 }

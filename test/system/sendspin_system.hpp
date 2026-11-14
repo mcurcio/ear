@@ -13,9 +13,15 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <format>
+#include <functional>
+#include <limits>
 #include <optional>
 #include <ostream>
 #include <random>
+#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -45,6 +51,21 @@ inline constexpr std::uint32_t blockSize = 256;
 inline constexpr auto playDeadline = 30s;
 /// S1's bound on a stop and on a restart.
 inline constexpr auto stopBound = 5s;
+
+/// ear's whole stop (stopTook) and, when `node` is given, that node's teardown (removalTook), each within stopBound
+/// by ear's own records, once ear has said `ear: stopped`.
+inline void checkStopWithinBound(const ChildProcess& ear, const std::string& node = "") {
+	INFO("ear printed:\n" << ear.output());
+	const auto stop = stopTook(ear);
+	REQUIRE(stop);
+	REQUIRE(stop->count() >= 0);
+	CHECK(*stop < stopBound);
+	if (node.empty()) return;
+	const auto removal = removalTook(ear, node);
+	REQUIRE(removal);
+	REQUIRE(removal->count() >= 0);
+	CHECK(*removal < stopBound);
+}
 
 /// A sendspin node called "ma" with these settings, routed side for side into file node "rec".
 inline std::string maToRec(const std::string& settings) {
@@ -175,9 +196,14 @@ inline std::string waitForInstance(ChildProcess& ear, const std::string& node, s
 	return instance;
 }
 
-/// One second of the 1.5 s every test plays. On a loaded host the server can join its own ramp late, and it holds back
-/// the tail: 50688 frames were seen, all exact.
+/// The exact ramp frames a test asks the WAV for: one second. On a loaded host the server can join its own ramp late,
+/// by however much the host delayed it, so a test plays a long stream until the WAV holds them (waitForRamp), then ends
+/// it: as many seconds of play as it takes.
 inline constexpr std::uint32_t rampFramesAtLeast = graphFrequency;
+/// The stream a test plays until its WAV holds what it needs: far longer than a quiet host takes.
+inline constexpr const char* playLong = "play 60";
+/// Fails a wait for the WAV to hold a stream's frames, which a loaded host only makes longer.
+inline constexpr auto rampDeadline = 60s;
 
 /// The frames of one decoded chunk: what FFmpeg's FLAC encoder makes at 48000 Hz (aiosendspin's `_chunk_samples` is the
 /// encoder's `frame_size`), whatever the test server's 1200 frames a `prepare_audio`. The library makes at most one
@@ -199,26 +225,94 @@ inline constexpr std::size_t chunkFrames = 4608;
 /// no plain k + 0.5: 0x7FFF to 0x8000 gives left -0.5 (32767 and -32768), and 0xFFFF to 0x10000 gives left -0.5 and right
 /// h + 0.5, the one blend with both channels fractional.
 struct RampCheck {
-	std::size_t rampFrames = 0; // exact ramp frames
-	std::size_t blends = 0;     // blends accepted by their shape; those over the limit also count in badFrames
-	std::size_t badFrames = 0;  // frames neither of those, and each blend past blendLimit()
-	std::size_t badSteps = 0;   // steps between exact frames that are neither +1, a block's multiple nor a drop's 3
+	std::size_t rampFrames = 0;    // exact ramp frames
+	std::size_t blends = 0;        // blends accepted by their shape; those over the limit also count in badFrames
+	std::size_t badFrames = 0;     // frames neither of those, and each blend past blendLimit()
+	std::size_t badSteps = 0;      // steps between exact frames that are neither +1, a block's multiple, a drop's 3 nor
+								   // a logged hard sync's drop
+	std::size_t hardSyncSteps = 0; // steps a hard sync the library logged as late accounts for
+	std::uint64_t skippedBlocks = 0; // what the steps of whole blocks skipped, each paid by a record of ear's
+	std::vector<std::pair<std::size_t, std::uint64_t>> skips; // each skip: the WAV frame it lands on, its blocks
+	std::size_t stepsInSilentLoss = 0; // of them, those inside a loss that began with silence (lossDropFrames)
+	std::size_t stepsInLoss = 0; // forward steps past what a line says, one per logged loss: unbounded by its line
+	std::vector<std::string> stepsInLossSeen;
+	std::vector<std::int64_t> lostSyncUs; // what the library logged, as checkRamp was given it
 	std::size_t zeroFramesInside = 0;
+	/// Each run of zeros inside the ramp: its first WAV frame and its frames (where the feed ran dry, or silence the
+	/// library added), so a red can say whether one lies between a skip and a correction.
+	std::vector<std::pair<std::size_t, std::size_t>> zeroRuns;
 	std::uint32_t firstIndex = 0;
 	std::uint32_t lastIndex = 0;
-	std::size_t lastRunFrames = 0; // exact frames since the last bad step
+	std::size_t lastRunFrames = 0;         // exact frames since the last bad step
+	std::vector<std::string> badStepsSeen; // the first few, "<step> at <frame>", so a red names them
+	/// The stream's drift from the WAV: the frames its index moved past the WAV's own frames since its first exact
+	/// frame, after each exact frame where that changed (a skip, a library's correction, zeros or a blend before it):
+	/// the WAV frame and the drift then. While the library is in sync the drift is the time the WAV lost (the cycles the
+	/// file node did not run), whoever skipped or corrected it.
+	struct Drift {
+		std::size_t frame;
+		std::int64_t drift;
+	};
+	std::vector<Drift> drifts;
 };
 
 /// What a red needs to say about a ramp.
 inline std::ostream& operator<<(std::ostream& out, const RampCheck& ramp) {
-	return out << "ramp frames " << ramp.rampFrames << ", blends " << ramp.blends << ", not ramp " << ramp.badFrames
-	           << ", bad steps " << ramp.badSteps << ", zeros inside " << ramp.zeroFramesInside << ", indices "
-	           << ramp.firstIndex << " to " << ramp.lastIndex << ", frames of the last run " << ramp.lastRunFrames;
+	out << "ramp frames " << ramp.rampFrames << ", blends " << ramp.blends << ", not ramp " << ramp.badFrames
+		<< ", bad steps " << ramp.badSteps << ", blocks skipped " << ramp.skippedBlocks
+		<< ", steps of a logged hard sync " << ramp.hardSyncSteps << " (" << ramp.stepsInSilentLoss
+		<< " in a loss that began with silence)"
+		<< ", zeros inside " << ramp.zeroFramesInside << ", indices " << ramp.firstIndex << " to " << ramp.lastIndex
+		<< ", frames of the last run " << ramp.lastRunFrames << ", bad steps seen:";
+	for (const std::string& step : ramp.badStepsSeen) out << " " << step;
+	out << ", steps in a logged loss past its line " << ramp.stepsInLoss << ":";
+	for (const std::string& step : ramp.stepsInLossSeen) out << " " << step;
+	out << ", lost sync logged (us):";
+	for (const std::int64_t us : ramp.lostSyncUs) out << " " << us;
+	return out;
 }
 
 /// One blend per chunk the WAV's frames could have come from: each whole chunk, and one cut short at either end. Blends beyond
 /// it are corrections the library's rule cannot make, so they fail as frames off the ramp, in every test that asks for none.
 inline std::size_t blendLimit(std::size_t frames) { return frames / chunkFrames + 2; }
+
+/// What the library logged as `Lost sync (<n>us off)` lines, which ear prints as log records from standard error: each
+/// n below zero is a hard sync that dropped up to n us of a late chunk's front, after skipping unlogged every whole
+/// chunk too late to play (sendspin-cpp's sync_task.cpp), the one step the ramp may take besides a skip's, and only as
+/// far as its line says.
+inline std::vector<std::int64_t> lostSyncUs(const ChildProcess& ear) {
+	std::vector<std::int64_t> said;
+	const std::string& out = ear.output();
+	constexpr std::string_view marker = "Lost sync (";
+	for (std::size_t at = out.find(marker); at != std::string::npos; at = out.find(marker, at + 1))
+		said.push_back(std::strtoll(out.c_str() + at + marker.size(), nullptr, 10));
+	return said;
+}
+
+/// The frames a loss logged as `n` us off may take back by a drop before the library says it regained sync: for a late
+/// line its own drop, the late time in whole frames as the library works it out from the same number (sync_task.cpp:
+/// `late_frames`, of which it drops what the chunk holds); for an early one (`n` above zero, silence added), no more than the silence it added. The library
+/// logs only a loss's first hard sync, so a drop inside a loss that began with silence says nothing of its own (seen
+/// once under load: `Lost sync (90691us off)`, then a step of a chunk and 99 frames); ear prints no `Regained sync`, so
+/// the loss's end is not known either. An interim bound, until the library's log reaches ear stamped with its frames
+/// (docs/testing.md#the-librarys-own-word).
+inline std::int64_t lossDropFrames(std::int64_t offUs) {
+	return (offUs < 0 ? -offUs : offUs) * graphFrequency / 1000000;
+}
+
+/// The step between two exact ramp frames, signed: a frame that names an earlier index is a step back, never a long
+/// step forward round the 32-bit index.
+inline std::int64_t rampStep(std::uint32_t from, std::uint32_t to) {
+	return static_cast<std::int64_t>(to) - static_cast<std::int64_t>(from);
+}
+
+/// The blocks a step between exact ramp frames skipped, if it is a skip's (else 0): the node skips the frames the graph
+/// jumped, and with engine.conf's resync.ms a running block's jumps are whole blocks, exactly (spike S6 in
+/// spikes_test.cpp, every missed cycle of 30 loaded runs). The shape only says which steps are skips; what excuses each
+/// is a record of ear's own of the cycles it lost there (unpaidRampSkips).
+inline std::int64_t skippedBlocks(std::int64_t step) {
+	return step > 1 && (step - 1) % blockSize == 0 ? (step - 1) / blockSize : 0;
+}
 
 /// The ramp index a frame names, if it names one: both channels whole samples.
 inline std::optional<std::uint32_t> rampIndexOf(float left, float right) {
@@ -262,8 +356,71 @@ inline bool isBlend(const Wav& wav, std::size_t frame) {
 	return false;
 }
 
-inline RampCheck checkRamp(const Wav& wav) {
+/// How far the ramp has come in what a file node has written, counted as the frames arrive: exact ramp frames, and those
+/// since the last step that is neither +1 nor a block's multiple (a new stream, a drop). Only when to stop waiting;
+/// checkRamp judges the finished file.
+struct RampSoFar {
+	std::size_t rampFrames = 0;
+	std::size_t lastRunFrames = 0;
+	std::optional<std::uint32_t> lastIndex;
+	void take(std::span<const float> fresh, std::size_t channels) {
+		for (std::size_t at = 0; at + 1 < fresh.size(); at += channels) {
+			const std::optional<std::uint32_t> index = rampIndexOf(fresh[at], fresh[at + 1]);
+			if (!index || (fresh[at] == 0.0F && fresh[at + 1] == 0.0F)) continue;
+			const std::int64_t step = lastIndex ? rampStep(*lastIndex, *index) : 1;
+			lastRunFrames = step == 1 || skippedBlocks(step) > 0 || step == 3 ? lastRunFrames + 1 : 1;
+			lastIndex = index;
+			++rampFrames;
+		}
+	}
+};
+
+/// Until what the file node appends to `path`, from its frame `from` on, holds the ramp `enough` asks for
+/// (docs/testing.md#waiting-for-what-ear-wrote: the WAV holding the frames is the event). The stream must be playing, and
+/// long enough (playLong).
+inline bool waitForRamp(const std::filesystem::path& path, const std::function<bool(const RampSoFar&)>& enough,
+                        std::size_t from = 0) {
+	RampSoFar ramp;
+	std::size_t seen = 0;
+	return waitForWav(
+		path,
+		[&](std::span<const float> fresh, std::size_t channels) {
+			const std::size_t frames = fresh.size() / channels;
+			const std::size_t skip = from > seen ? std::min(from - seen, frames) : 0;
+			seen += frames;
+			ramp.take(fresh.subspan(skip * channels), channels);
+			return enough(ramp);
+		},
+		rampDeadline);
+}
+
+/// The frames the file node has written of `path` so far.
+inline std::size_t wavFramesSoFar(const std::filesystem::path& path) {
+	WavFollower wav(path);
+	wav.next();
+	return wav.frames();
+}
+
+/// Until the WAV at `path` holds `frames` exact ramp frames.
+inline bool waitForRampFrames(const std::filesystem::path& path, std::size_t frames = rampFramesAtLeast) {
+	return waitForRamp(path, [frames](const RampSoFar& ramp) { return ramp.rampFrames >= frames; });
+}
+
+/// Ends the stream the server plays to its current client, and waits for node `node` to say so: stream/end clears what
+/// the node holds, so the WAV ends in zeros rather than in the fade a stop would make.
+inline bool endStream(ChildProcess& ear, SendspinTestServer& server, const std::string& node = "ma") {
+	const std::string ended = "node " + node + " says stream-ended";
+	const std::size_t before = countLines(ear, ended);
+	server.send("end");
+	return waitForNthLine(ear, ended, before, playDeadline).has_value();
+}
+
+/// `lostSyncsUs`: what the library logged (lostSyncUs); each line accounts for one forward step of whole chunks and up to
+/// its drop (lossDropFrames).
+inline RampCheck checkRamp(const Wav& wav, std::vector<std::int64_t> lostSyncsUs = {}) {
 	RampCheck result;
+	result.lostSyncUs = lostSyncsUs;
+	std::erase_if(lostSyncsUs, [](std::int64_t us) { return us == 0; });
 	const auto frames = static_cast<std::size_t>(wav.info.frames);
 	std::size_t first = frames;
 	std::size_t last = 0;
@@ -275,12 +432,17 @@ inline RampCheck checkRamp(const Wav& wav) {
 	}
 	if (first == frames) return result;
 	std::optional<std::uint32_t> previous;
+	std::size_t previousFrame = first;
+	std::int64_t drift = 0;
 	bool afterBlend = false;
 	for (std::size_t frame = first; frame <= last; ++frame) {
 		const float left = wav.samples[frame * 2];
 		const float right = wav.samples[frame * 2 + 1];
 		if (left == 0.0F && right == 0.0F) {
 			++result.zeroFramesInside;
+			if (!result.zeroRuns.empty() && result.zeroRuns.back().first + result.zeroRuns.back().second == frame)
+				++result.zeroRuns.back().second;
+			else result.zeroRuns.emplace_back(frame, 1);
 			continue;
 		}
 		const std::optional<std::uint32_t> index = rampIndexOf(left, right);
@@ -290,9 +452,41 @@ inline RampCheck checkRamp(const Wav& wav) {
 			continue;
 		}
 		if (previous) {
-			const std::uint32_t step = *index - *previous;
-			if (step != 1 && (step - 1) % blockSize != 0 && !(afterBlend && step == 3)) {
+			const std::int64_t step = rampStep(*previous, *index);
+			if (const std::int64_t moved = (step - 1) - static_cast<std::int64_t>(frame - previousFrame - 1);
+			    moved != 0) {
+				drift += moved;
+				result.drifts.push_back({frame, drift});
+			}
+			// A late hard sync's drop, the smallest logged that covers it, each line once.
+			// The library first skips, unlogged, every whole chunk too late to play, then drops the late front of the next
+			// and says how late that was: whole chunks and at most that drop.
+			const auto covers = [&](std::int64_t us) {
+				return step > 1 && (step - 1) % static_cast<std::int64_t>(chunkFrames) <= lossDropFrames(us);
+			};
+			const auto logged = std::ranges::min_element(lostSyncsUs, [&](std::int64_t a, std::int64_t b) {
+				return covers(a) != covers(b) ? covers(a) : lossDropFrames(a) < lossDropFrames(b);
+			});
+			const bool hardSync = logged != lostSyncsUs.end() && covers(*logged) && skippedBlocks(step) == 0;
+			if (hardSync) {
+				++result.hardSyncSteps;
+				if (*logged > 0) ++result.stepsInSilentLoss;
+				lostSyncsUs.erase(logged);
+			} else if (step > 1 && skippedBlocks(step) == 0 && !(afterBlend && step == 3) && !lostSyncsUs.empty()) {
+				// A forward step past what any line says, inside a loss the library logged: its later hard syncs in the
+				// same loss say nothing at warn, so the line is the only evidence, and it accounts for one such step,
+				// counted apart: an interim limit (docs/testing.md#the-librarys-own-word).
+				++result.stepsInLoss;
+				if (result.stepsInLossSeen.size() < 8)
+					result.stepsInLossSeen.push_back(std::to_string(step) + " at " + std::to_string(frame));
+				lostSyncsUs.erase(lostSyncsUs.begin());
+			} else if (const std::int64_t skipped = skippedBlocks(step); skipped > 0) {
+				result.skippedBlocks += static_cast<std::uint64_t>(skipped);
+				result.skips.emplace_back(frame, static_cast<std::uint64_t>(skipped));
+			} else if (step != 1 && !(afterBlend && step == 3)) {
 				++result.badSteps;
+				if (result.badStepsSeen.size() < 8)
+					result.badStepsSeen.push_back(std::to_string(step) + " at " + std::to_string(frame));
 				result.lastRunFrames = 0;
 			}
 		} else {
@@ -300,6 +494,7 @@ inline RampCheck checkRamp(const Wav& wav) {
 		}
 		afterBlend = false;
 		previous = index;
+		previousFrame = frame;
 		result.lastIndex = *index;
 		++result.rampFrames;
 		++result.lastRunFrames;
@@ -307,6 +502,152 @@ inline RampCheck checkRamp(const Wav& wav) {
 	const std::size_t limit = blendLimit(result.rampFrames + result.blends);
 	if (result.blends > limit) result.badFrames += result.blends - limit;
 	return result;
+}
+
+/// How far before the time a ramp skip's frame was due its cycles may have been lost: the file node's `running` record
+/// is stamped a main-loop turn after the cycle its WAV's first frame came from.
+inline constexpr std::chrono::milliseconds rampDueBefore{100};
+/// How far after the time its lost frames last: the records' and the WAV's clocks, and a beat of slack.
+inline constexpr std::chrono::milliseconds rampDueAfter{100};
+/// The sendspin node's feed at the tests' rate: 40 ms rounded up to a power of two, about 43 ms
+/// (docs/node-types.md#clock).
+inline constexpr std::size_t rampFeedFrames = 2048;
+/// How long after a skip the library's correction of what it left is taken to belong to the same loss: the sendspin
+/// node skips at most what its feed holds of a stall, and the library corrects the rest once, at the next chunk it
+/// syncs, after the feed and the rest of its chunk, so within the feed, a chunk and two blocks of the skip (the bound
+/// the honest wrapper's stall tests found; the longest seen was 26 blocks: docs/node-types.md#clock), about 150 ms;
+/// and a beat of slack, 100 ms.
+inline constexpr std::size_t rampSettleFrames =
+	rampFeedFrames + chunkFrames + 2 * blockSize + static_cast<std::size_t>(graphFrequency) / 10;
+
+/// What a ramp lost at one skip, as the time the WAV lost there (docs/testing.md#the-counters-own-word).
+struct RampLoss {
+	std::size_t frame;     // the WAV frame the skip lands on
+	std::uint64_t skipped; // the skip's own blocks
+	std::uint64_t frames;  // the frames the WAV lost there, at least the skip's
+	std::uint64_t blocks;  // those in whole blocks, rounded to the nearest and at least the skip's: what records pay
+};
+
+/// Each skip's loss: its own blocks, or, where the stream's drift (RampCheck::drifts) moved further by the time the
+/// library had corrected what the node could not skip (the most the drift reached from the skip until the next skip or
+/// rampSettleFrames on), that whole loss. A stall past the sendspin node's feed is lost whole from the WAV but skipped
+/// only in part (docs/node-types.md#clock): taken from the skips alone, every later due time would come early by the
+/// rest, and the stall's record would keep the rest as cycles to spare for any later skip.
+/// The WAV frame up to which skip `k`'s loss may still be corrected (rampLosses): the next skip's, or rampSettleFrames on.
+inline std::size_t rampLossUntil(const RampCheck& ramp, std::size_t k) {
+	const std::size_t frame = ramp.skips[k].first;
+	const std::size_t next =
+		k + 1 < ramp.skips.size() ? ramp.skips[k + 1].first : std::numeric_limits<std::size_t>::max();
+	return std::min(next, frame + rampSettleFrames + 1);
+}
+
+inline std::vector<RampLoss> rampLosses(const RampCheck& ramp) {
+	std::vector<RampLoss> losses;
+	for (std::size_t k = 0; k < ramp.skips.size(); ++k) {
+		const auto [frame, blocks] = ramp.skips[k];
+		const std::size_t until = rampLossUntil(ramp, k);
+		std::int64_t before = 0;
+		std::optional<std::int64_t> most;
+		for (const RampCheck::Drift& at : ramp.drifts) {
+			if (at.frame < frame) before = at.drift;
+			else if (at.frame < until) most = std::max(most.value_or(at.drift), at.drift);
+		}
+		const auto skippedFrames = static_cast<std::int64_t>(blocks * blockSize);
+		const std::int64_t lost = std::max(skippedFrames, most.value_or(before + skippedFrames) - before);
+		const auto whole = static_cast<std::uint64_t>((lost + blockSize / 2) / blockSize);
+		losses.push_back({frame, blocks, static_cast<std::uint64_t>(lost), std::max(blocks, whole)});
+	}
+	return losses;
+}
+
+/// The ramp's skips as losses for records to pay, each lost from when the WAV frame it lands on was due (from the file
+/// node's start `began`, its frames and the frames the losses before it took out of the WAV) for as long as its loss
+/// lasts, give or take rampDueBefore and rampDueAfter. The losses are the time the WAV lost (rampLosses), not the
+/// skips alone, so each due time is its frame's own and a record pays only the skips whose window it lies in, a
+/// stall's cycles all going to the stall.
+inline std::vector<SeenSkip> rampSkipsSeen(RecordTime began, const RampCheck& ramp) {
+	const auto ofFrames = [](std::uint64_t frames) {
+		return std::chrono::microseconds(static_cast<std::int64_t>(frames) * 1'000'000 / graphFrequency);
+	};
+	std::vector<SeenSkip> skips;
+	std::uint64_t before = 0;
+	for (const RampLoss& loss : rampLosses(ramp)) {
+		const RecordTime due = began + ofFrames(loss.frame + before);
+		std::string what =
+			"a skip of " + std::to_string(loss.skipped) + " blocks at frame " + std::to_string(loss.frame);
+		if (loss.blocks > loss.skipped)
+			what += " and " + std::to_string(loss.blocks - loss.skipped) + " more blocks the library corrected";
+		skips.push_back({loss.blocks, due - rampDueBefore, due + ofFrames(loss.frames) + rampDueAfter, what});
+		before += loss.frames;
+	}
+	return skips;
+}
+
+/// What a red needs to judge one skip's charge (a skip's loss is the most the drift reached in its window: rampLosses):
+/// its own blocks and those charged, its due window, the drift in its window of WAV frames, the runs of zeros there (the
+/// feed running dry after a stall past it, or the library's added silence), and the library's sync lines ear logged in
+/// its due window, as late as its correction may come, with their times.
+inline std::string rampSkipEvidence(const std::vector<json>& records, const RampCheck& ramp, std::size_t k,
+                                    const RampLoss& loss, const SeenSkip& seen) {
+	const std::size_t frame = ramp.skips[k].first;
+	const std::size_t until = rampLossUntil(ramp, k);
+	std::ostringstream out;
+	out << "; evidence: skipped " << loss.skipped << " blocks, charged " << loss.blocks << " blocks (" << loss.frames
+		<< " frames) as the WAV frames " << frame << " to " << until << " drifted, due "
+		<< std::format("{:%T}", seen.from) << " to " << std::format("{:%T}", seen.to) << "; drift:";
+	std::int64_t before = 0;
+	for (const RampCheck::Drift& at : ramp.drifts) {
+		if (at.frame < frame) before = at.drift;
+		else if (at.frame < until) out << " " << at.drift << "@" << at.frame;
+	}
+	out << " (from " << before << " before it); zeros:";
+	bool dry = false;
+	for (const auto& [at, frames] : ramp.zeroRuns)
+		if (at >= frame && at < until) {
+			out << " " << frames << "@" << at;
+			dry = true;
+		}
+	if (!dry) out << " none (the feed never ran dry there)";
+	out << "; sync lines:";
+	const auto correctedBy =
+		seen.to + std::chrono::microseconds(static_cast<std::int64_t>(rampSettleFrames) * 1'000'000 / graphFrequency);
+	bool said = false;
+	for (const json& record : records) {
+		const std::string text = record.value("text", "");
+		const auto t = recordTime(record);
+		if (!t || *t < seen.from || *t > correctedBy) continue;
+		if (text.find("Lost sync") == std::string::npos && text.find("Regained sync") == std::string::npos &&
+		    text.find("hard sync") == std::string::npos)
+			continue;
+		out << " " << std::format("{:%T}", *t) << " \"" << text << "\"";
+		said = true;
+	}
+	if (!said) out << " none";
+	return out.str();
+}
+
+/// The ramp's losses that none of `records` pays (unpaidSkipsOf over rampSkipsSeen, the WAV's first frame due at
+/// `began`), named, each with its evidence (rampSkipEvidence).
+inline std::vector<std::string> unpaidRampSkipsOf(const std::vector<json>& records, RecordTime began,
+                                                  const RampCheck& ramp) {
+	const std::vector<SeenSkip> seen = rampSkipsSeen(began, ramp);
+	const std::vector<RampLoss> losses = rampLosses(ramp);
+	std::vector<std::string> unpaid = unpaidSkipsOf(records, seen);
+	for (std::string& line : unpaid)
+		for (std::size_t k = 0; k < seen.size(); ++k)
+			if (line.starts_with(seen[k].what + ": ")) {
+				line += rampSkipEvidence(records, ramp, k, losses[k], seen[k]);
+				break;
+			}
+	return unpaid;
+}
+
+/// The same over ear's records; the file node `node`'s first `running` record dates its WAV's first frame.
+inline std::vector<std::string> unpaidRampSkips(const ChildProcess& ear, const RampCheck& ramp,
+                                                const std::string& node = "rec") {
+	const auto began = wavBegan(ear, node);
+	if (!began) return {"no running record of node " + node + ": its WAV's frames have no time"};
+	return unpaidRampSkipsOf(ear.records(), *began, ramp);
 }
 
 } // namespace ear::test

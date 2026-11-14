@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <nlohmann/json.hpp>
+#include "ear/core/sample_rate.hpp"
 namespace ear {
 using NodeName = std::string; // unique in the graph; also the engine node.name
 using PortName = std::string; // a public port is declared in a bank of its node type: "record.left" (node_type.hpp)
@@ -31,8 +32,8 @@ struct NodeSpec {
 	friend bool operator==(const NodeSpec&, const NodeSpec&) = default;
 };
 struct GraphSpec {
-	std::uint32_t graphFrequency; // Hz, > 0, read at boot
-	std::uint32_t blockSize;      // samples per cycle, > 0, read at boot
+	SampleRate graphFrequency; // read at boot
+	std::uint32_t blockSize;   // samples per cycle, > 0, read at boot
 	std::vector<NodeSpec> nodes;
 	std::vector<Route> routes;
 };

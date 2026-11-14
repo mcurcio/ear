@@ -59,15 +59,14 @@ void writeRamp(Feed& feed, std::uint32_t total, std::uint32_t chunk) {
 	}
 }
 
-/// Once the writer says it waits, and well past its second look at the ring, so only a wake can end its wait. The sleep only
-/// strengthens this: without it the test could pass on that second look, never on anything else.
+/// Once the writer has begun its wait on the room, past its second look at the ring, so only a wake (or its patience) can
+/// end it: the writer's own event (docs/testing.md#a-writers-own-event), never a guess that it has got there.
 bool writerIsInItsWait(const Feed& feed) {
 	const auto until = std::chrono::steady_clock::now() + 10s;
-	while (!feed.writerWaiting()) {
+	while (feed.waitsBegun() == 0) {
 		if (std::chrono::steady_clock::now() >= until) return false;
 		std::this_thread::yield();
 	}
-	std::this_thread::sleep_for(50ms);
 	return true;
 }
 
@@ -117,6 +116,31 @@ TEST_CASE("Reading past the end fills the rest with zeros", "[feed]") {
 	CHECK(right == std::array<float, 8>{-1.0F, -2.0F, -3.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F});
 }
 
+TEST_CASE(
+	"The feed counts each read it could not fill and the frames it lacked, and a whole read or a skip counts nothing",
+	"[feed]") {
+	Feed feed(2, capacity);
+	std::vector<float> samples;
+	fill(samples, 1, 8);
+	REQUIRE(feed.write(samples, 8, 0ms) == 8);
+	std::array<float, 8> left{};
+	std::array<float, 8> right{};
+	const std::array<std::span<float>, 2> out{left, right};
+	CHECK(feed.read(out, 3) == 3); // whole
+	CHECK(feed.dryReads() == 0);
+	CHECK(feed.dryFrames() == 0);
+	CHECK(feed.skip(2) == 2); // a skip is no read
+	CHECK(feed.dryReads() == 0);
+	CHECK(feed.read(out, 8) == 3); // short by 5
+	CHECK(feed.dryReads() == 1);
+	CHECK(feed.dryFrames() == 5);
+	CHECK(feed.read(out, 4) == 0); // empty: short by all 4
+	CHECK(feed.dryReads() == 2);
+	CHECK(feed.dryFrames() == 9);
+	CHECK(feed.read(out, 0) == 0); // asked nothing, lacked nothing
+	CHECK(feed.dryReads() == 2);
+}
+
 TEST_CASE("A full feed's write returns 0 at its patience", "[feed]") {
 	Feed feed(2, capacity);
 	std::vector<float> samples;
@@ -125,6 +149,7 @@ TEST_CASE("A full feed's write returns 0 at its patience", "[feed]") {
 	const auto before = std::chrono::steady_clock::now();
 	CHECK(feed.write(samples, 16, 20ms) == 0);
 	CHECK(std::chrono::steady_clock::now() - before >= 20ms);
+	CHECK(feed.waitsWoken() == 0); // its patience ended every wait it began
 	CHECK(feed.write(samples, 16, 0ms) == 0);
 }
 
@@ -145,11 +170,11 @@ TEST_CASE("A full feed's write wakes on a read and takes what fits", "[feed]") {
 	std::array<float, 256> left{};
 	std::array<float, 256> right{};
 	const std::array<std::span<float>, 2> out{left, right};
-	const auto before = std::chrono::steady_clock::now();
 	CHECK(feed.read(out, 256) == 256);
 	writer.join();
 	CHECK(accepted == 256);
-	CHECK(std::chrono::steady_clock::now() - before < patience / 2); // the wake ended it, not its patience
+	CHECK(feed.waitsBegun() == 1);
+	CHECK(feed.waitsWoken() == 1); // the wake ended it, not its patience
 }
 
 TEST_CASE("After clear the next read returns nothing, and what is written after it plays", "[feed]") {
@@ -184,7 +209,6 @@ TEST_CASE("A clear frees room for a writer that waits", "[feed]") {
 	const auto patience = 20s;
 	std::thread writer([&] { accepted = feed.write(samples, 16, patience); });
 	REQUIRE(writerIsInItsWait(feed));
-	const auto before = std::chrono::steady_clock::now();
 	feed.clear();
 	std::array<float, 8> left{};
 	std::array<float, 8> right{};
@@ -192,22 +216,50 @@ TEST_CASE("A clear frees room for a writer that waits", "[feed]") {
 	CHECK(feed.read(out, 8) == 0);
 	writer.join();
 	CHECK(accepted == 16);
-	CHECK(std::chrono::steady_clock::now() - before < patience / 2);
+	CHECK(feed.waitsBegun() == 1);
+	CHECK(feed.waitsWoken() == 1); // the read that applied the clear woke it, not its patience
 }
 
-TEST_CASE("skip discards the oldest frames and says how many", "[feed]") {
+TEST_CASE("skip discards the oldest frames and says how many, and what it held", "[feed]") {
 	Feed feed(2, capacity);
 	std::vector<float> samples;
 	fill(samples, 0, 10);
 	REQUIRE(feed.write(samples, 10, 0ms) == 10);
 	CHECK(feed.skip(4) == 4);
+	CHECK(feed.heldAtSkip() == 10);
 	std::array<float, 8> left{};
 	std::array<float, 8> right{};
 	const std::array<std::span<float>, 2> out{left, right};
 	CHECK(feed.read(out, 2) == 2);
 	CHECK(left[0] == 4.0F);
 	CHECK(feed.skip(100) == 4);
+	CHECK(feed.heldAtSkip() == 4);
 	CHECK(feed.skip(100) == 0);
+	CHECK(feed.heldAtSkip() == 0);
+	// A count past 2^32 (a catch-up's jump has no bound) skips what it holds, never a wrapped few.
+	REQUIRE(feed.write(samples, 10, 0ms) == 10);
+	CHECK(feed.skip((std::uint64_t{1} << 32U) + 2) == 10);
+	CHECK(feed.read(out, 2) == 0);
+}
+
+TEST_CASE("takeCleared applies a clear asked for and says whether one was applied since, here or by a read", "[feed]") {
+	Feed feed(2, capacity);
+	std::vector<float> samples;
+	fill(samples, 0, 10);
+	REQUIRE(feed.write(samples, 10, 0ms) == 10);
+	CHECK_FALSE(feed.takeCleared());
+	feed.clear();
+	CHECK(feed.takeCleared()); // applied here
+	CHECK_FALSE(feed.takeCleared());
+	CHECK(feed.skip(10) == 0); // what was written before it is gone
+	REQUIRE(feed.write(samples, 10, 0ms) == 10);
+	feed.clear();
+	std::array<float, 8> left{};
+	std::array<float, 8> right{};
+	const std::array<std::span<float>, 2> out{left, right};
+	CHECK(feed.read(out, 8) == 0); // applied by the read
+	CHECK(feed.takeCleared());
+	CHECK_FALSE(feed.takeCleared());
 }
 
 TEST_CASE("read and skip allocate nothing", "[feed]") {

@@ -1,16 +1,561 @@
 # Node primitives: slice 3c of the node framework
 
-Status: design, not built. Slice 3c follows slice 3b (`companions.md`) and comes before slice 3d (`reconfigure.md`) and
-slice 5 (`control-plane.md`). It gives every node type what `sendspin` had to build for itself (the node handle, loops
-with their states, the I/O executor, stores, claims, recordings opened off the main loop, the carried sendspin-cpp log
-patch), and moves `sendspin` onto the type's class, its companions and loops in one step, retiring the legacy adapter.
-The primitives' part of slice 3d (claims swapped in place, `whenReady`, a sink paused while a library is swapped,
-`sendspin` changing in place) is `reconfigure.md`'s. The built system is described in `docs/architecture.md` and
-`docs/writing-a-node-type.md`; this page cites them for what exists.
+Status: designed, not built; **re-planned against the code at 46b96c788c (2026-11-14) in section 0, which binds
+where it and a later section differ**. Sections 1 to 18 are the design of 2026-11-09: their reasons, invariants,
+failure table and rejected alternatives stand; their interfaces and their cut (13) are amended by section 0. Slice 3c
+follows slice 3b (companions, built: `docs/architecture.md#companions`) and comes before slice 3d (`reconfigure.md`)
+and slice 5 (`control-plane.md`). It gives every node type what `sendspin` had to build for itself (the node handle,
+loops with their states, the I/O executor, stores, claims, recordings opened off the main loop, the carried
+sendspin-cpp log patch), and moves `sendspin` onto the type's class, its companions and loops, retiring the legacy
+adapter. The primitives' part of slice 3d (claims swapped in place, `whenReady`, a sink paused while a library is
+swapped, `sendspin` changing in place) is `reconfigure.md`'s. The timing model's part of slice 3c is
+`timing-model.md`'s: T1 to T4 are built, S3c.6 moves `sendspin`'s honest wrapper onto its source (section 0.5, as
+that page's section 6 says), and T5 (the set and tracked converters) comes after S3c.6 with its first user. The built
+system is described in `docs/architecture.md` and `docs/writing-a-node-type.md`; this page cites them for what exists.
 
 [V] = verified in the file named, as of 2026-11-09 (files of the pinned sendspin-cpp tree, `.cache/deps/sendspin-src`,
 by their path in it; PipeWire 1.4.2's source as `pipewire-1.4.2/<path>`); [U] = unverified, with the step or test that
 checks it (section 18).
+
+## 0. Slice 3c as built against today's code
+
+Written 2026-11-14 against 46b96c788c, after slice 3b (companions, their counters, wire and badges), the timing
+model's T1 to T4, cycle facts, `SampleRate`, the callback and sleep poisons, the `graph { }` format and the editor's
+knobly node text. [V] here means read in that tree. This section is the plan; sections 1 to 18 keep the reasons.
+
+### 0.1 What the code already gives, and what it changes here
+
+| This page assumed (2026-11-09) | Today [V] | So |
+|---|---|---|
+| `Wake` and its eventfd are still to be made, and `EventWake` moved into `ear_runtime` (6.2) | `Wake` is core's (`ear/core/source.hpp`: `ring`, `descriptor`, `answer`, drain then clear), implemented on `EventSources`' eventfd in `ear_pipewire`; a source's `clockWake()` is built (T3) | `Loop::onWake(Wake&)` needs only core's interface, so nothing moves. Types still get no wakes of their own (G23) |
+| `sendspin`'s source clock, the source's skip rule, `SourcePlayed` and `clockWake` are still to be built | Built (T3, `docs/writing-a-node-type.md#a-sources-clock`). `cx.source(bank, shape, std::unique_ptr<SourceClock>)` takes the clock, and `SendspinCode` is already T2's honest wrapper on today's feed | S3c.6 moves a wrapper that is already proven; it does not write one |
+| A source's latency declared by hand (`declareLatency("from", feed)`) | A source declares `Latency{0, frames}` beyond its bank itself (`SourceShape`); the plan is by role and checked at configure (`docs/engine.md#latency-per-bank-pair`) | The legacy declaration goes with the feed. The latency told on `from` stays the same when the source's frames are `feedFramesFor` |
+| Sizes written as `cx.format().rate / 2` (4.1, 4.2) | `AudioFormat::rate` is a `SampleRate`, which has no arithmetic (`docs/engine.md#dating`) | Every size is `FrameClock(cx.format().rate).frames(duration)`; 4.1 and 4.2 are corrected |
+| Readiness has four steps written for this slice (6.1) | NodeHost already keeps two kinds of later readiness by hand: each engine companion and each sink's consumer, each with its own deadline timer, `Deadline` branch, `waitingFor` kind and failure text (`node_host.cpp`: `armDeadline`, `deadlinePassed`) | One abstraction, extracted first (0.2, A) |
+| Jobs on the I/O thread check the configuration's generation themselves (6.6) | Every cross-thread report of a configuration already lands through its `Channel` (`node_host.cpp`: `say`, `lost`, `threw`, `sinkBegunCall`, `sinkClosedCall`, `handoffClosedCall`, `closedCall`), which is detached when the configuration ends | Completions, loop closes and the leaked record ride the `Channel` (0.2, B) |
+| An RTP receiver claims `udp:<port>` as a special case (6.8) | RTP is the first module-run converter, and NodeHost names no RTP field (`ModuleRunShape`, `moduleRunDelay`, `docs/engine.md#module-run-converters`) | A companion's claims come from its shape, as its delay does (0.3) |
+| `CreateOf::recording` returns an open `int` inside `configure` (6.10) | `file` opens synchronously in `configure` (`cx.openRecording`, marked "3a interim") and hands the descriptor to its `WavWriter` | A descriptor cannot exist before the file is opened, so the request returns a handle whose descriptor is valid from the consumer's `begin` (0.3) |
+| `NodeHandle::log` needs a log entry type | `LogEntry` (`source`, `topic`, `node`, `cut`) and `LogSink` exist, marked "the seam for slice 3c's node-facing log" (`ear/core/log.hpp`) | The handle fills `node`; no new record kind |
+| `waitingFor` gains four kinds | The wire's enums are open (`docs/control-port.md#protocol-and-features`), and `web/src/protocol.ts` types `kind` as the four names or any string | Each kind lands with its step, together with `docs/control-port.md`, `test/protocol/lifecycle.json` and `protocol.ts`; no feature name |
+| Core's `NodeHost` tests are on the class SPI | `node_host_test.cpp` builds its test types on the legacy SPI (54 uses of `StartContext`, `StartResult`, `RunObject`, `RunRecipe` and `HandoffRequest`); `graph_status_test.cpp` and `desired_graph_test.cpp` use a few | Retiring the legacy adapter first ports those tests (S3c.6a), as a step of its own |
+| `sendspin` is not in the harness | Still `notYetInHarness` (`test/nodes/all_types.hpp`) | Unchanged: it goes in S3c.6b |
+
+### 0.2 Clusters: where several primitives work around one missing abstraction
+
+**A. Readiness is written once per kind.** Engine companions and sink consumers each carry their own readiness
+code (a deadline timer, a branch in `deadlinePassed`, a `waitingFor` kind, a failure code and text). This page adds
+four more kinds (claims, stores, recordings, loops), an order between them (6.1's steps) and its own `ReadyEvents`.
+Six kinds of "made in `configure`, ready or failed later, within a bound, in an order" are one missing abstraction:
+the configuration's **readiness list**. NodeHost asks each item through one interface, one timer mechanism judges
+every bound, `waitingFor` is read from the list, and the machine's one `resourcesReady` (built) fires when the list
+is done. It is built first, behaviour-free, on the two kinds that exist (S3c.0); after that each primitive adds an
+entry, not a mechanism.
+
+**B. Cross-thread reports re-invent the generation.** 6.6's jobs "checked against the configuration's generation",
+6.9's leaked record "hearing its late close", and section 5's handle that "lands only on the configuration that made
+it" are each the configuration's `Channel` (built): one FIFO to the main loop per configuration, detached when it
+ends. So `NodeHandle` is the `Channel`'s public face, every I/O completion and loop close is posted through it, and
+the leaked record is the `Channel` re-pointed rather than detached. No primitive keeps a generation of its own.
+
+**C. Ear-wide exclusives are found one at a time, or not at all.** `sendspin`'s `PortClaims` (TCP); an RTP
+receiver's port, which is never found between ear's own nodes: rtp-source binds with `SO_REUSEADDR`, so two `rtp`
+nodes on one port both bind and both reach `running`, Linux hands each unicast datagram to one socket only, and the
+other plays silence with nothing said (`docs/engine.md#rtp-receivers`; the 5 s "never ran (UDP port held?)" path is
+only for a holder without `SO_REUSEADDR`, such as another program); a recording path (never found: two `file` nodes
+on one path corrupt one file); and a store file. They are one thing: something one configuration at a time may hold, judged before
+anything is opened. 6.8's `ClaimRegistry` is that abstraction. What changes is where a claim comes from: a type's
+explicit `cx.claim`, a store or recording request, and **each engine companion's shape**, so the framework never
+names a shape's field to claim it (the module-run rule's pattern). A sound card's device may be one more [U: whether a
+card node renamed in one plan opens its device before the old node closed it; the test card's file PCM is not
+exclusive, so this is checked on the MOTU (`cards-and-clock.md` 4)]. It is designed below and built only if that check
+shows the race.
+
+Outside this slice, only noted: six private eventfd wrappers (`level_bell.cpp`, `keeper_thread.cpp`,
+`descriptor_capture.cpp`, `engine_log.cpp`, `sources.cpp`, `sendspin/event_fd.hpp`). 3c deletes `sendspin`'s. The
+others live in packages that may not depend on each other (`ear_output` depends on nothing of ear's), so one shared
+wrapper would be a small utility package's job, not this slice's.
+
+### 0.3 The interfaces as they must now be
+
+Each is `ear_core`'s unless it says otherwise. Sections 5 to 6.11 keep every rule not restated here.
+
+**The readiness list** (private to NodeHost, `src/core/readiness.hpp`; S3c.0, built:
+`docs/engine.md#readiness-deadlines`). *Found building S3c.0:* an item fails with the lifecycle's `Fact` (NodeHost
+feeds facts; the machine derives the code), not a `FailureReason::Code`; its `name` is its subject as `waitingFor`
+names it, empty for a consumer (the wire names none, and two consumers are one wait); the list calls its owner's `Ask`
+once for every item when its step is asked (unless it is already ready), the moment the owner starts it (S3c.3 to 5
+open a recording, start a loop or make a companion there, once claims are granted), and keeps the bound's timer it
+returns (null for none), so every kind keeps NodeHost's one rule for a timer that fires late; and `ReadyEvents` lands
+with its first user (S3c.3's loops, S3c.4's stores), since today's two kinds tell ready through their own events.
+
+```cpp
+enum class ReadinessStep : unsigned { claims, opens, loops, companions }; // asked in this order
+struct ReadinessItem {
+	WaitingFor::Kind kind;
+	std::string name;                               // empty where waitingFor names none (a consumer)
+	ReadinessStep step;
+	std::optional<std::chrono::milliseconds> bound; // from when it is asked; none: bounded elsewhere
+	Fact fact;                                      // engine, consumerNeverBegan, as each kind fails today
+	std::move_only_function<std::string()> overdue; // the failure detail, read when its bound passes
+};
+class ReadinessList { // one per configuration; main thread
+public:
+	using Ask = std::move_only_function<std::unique_ptr<Timer>(std::size_t index)>; // its bound's timer, or null
+	std::size_t add(ReadinessItem item);                       // before begin()
+	void begin(Ask ask);                                       // asks the earliest step not all ready
+	void ready(std::size_t index);                             // cancels its bound; a step all ready asks the next
+	std::optional<ReadinessOverdue> passed(std::size_t index); // its fact and detail unless ready; ends the list
+	void disarm() noexcept;                                    // teardown: every bound cancelled
+	bool isReady(std::size_t index) const noexcept;
+	const ReadinessItem& item(std::size_t index) const;
+	bool done() const noexcept;                                // every item ready: resourcesReady may follow
+	std::vector<WaitingFor> waiting() const;                   // each item not ready, in item order, a repeat once
+};
+/// How a later-ready primitive tells it (an adapter's open, a loop's start, a claim's grant), with its first user.
+/// Main thread, through the configuration's Channel; at most one of the two, never inside the call that asked.
+class ReadyEvents {
+public:
+	virtual void ready() = 0;
+	virtual void failed(std::string detail) = 0;
+
+protected:
+	~ReadyEvents() = default;
+};
+```
+
+NodeHost adds the engine companions' items first, then the sinks' consumers', each in request order, and maps a
+companion's wait to `block` while its block is not ready (it is made only once the block is).
+
+`EngineCompanionEvents` stays as built (its `lost`, before ready or after, and its `faulted` are its own facts);
+NodeHost's implementation of it feeds the item's `ready`. The list's `failed(index, detail)`, which ends it as a passed
+bound does, comes with `ReadyEvents`. Companions also wait for the block, as built. Consumers are at the `companions`
+step because a `file` consumer's `begin` writes a header into a recording opened at step 1; that is 6.1's
+"4'".
+
+**The node handle** (S3c.1, built: `docs/writing-a-node-type.md#the-node-handle`): section 5's `NodeHandle`, implemented by the configuration's `Channel`.
+`NodeContext::handle()` and `NodeOf::handle()` return it, and `InsidesEvents` goes. `log(LogEntry)` sets `node` and
+goes to the `LogSink` that `NodeHost::logTo` names (the one `main.cpp` gives captured output). `say`'s pacing is
+`NoteGate` moved into core, per node, and `sendspin`'s gate is deleted in the same step, so nothing is paced twice.
+*Found building S3c.1:* `NodeHost::subscribeLog` already existed (the framework's own `ear` entries), so the handle's
+`log` goes to its sinks rather than a new `logTo`; each configuration copies them when it begins, and calls them on the
+logging thread. The rate is judged on the saying thread (as `sendspin`'s was, so a held note is never queued), which
+needs a clock any thread may read: `Timers::now()`'s contract widens to any thread, so core still reads no clock of its
+own. The gate is the `Channel`'s (`src/core/note_gate.hpp`, private), so "per node, kept across a stop and a start,
+reset by a restart" is "per configuration". The legacy `StartContext::events()` and `Ready::events()` return
+`NodeHandle&` until S3c.6e. Section 5's "shared-owned, so it outlives every thread" holds as built, not further: the
+configuration owns its `Channel` until teardown step 5 (a leaked one for ever), so a thread may call it until its
+teardown ended, and a call after its detach is dropped. The harness gains `logs()`.
+
+**Loops** (S3c.3, built: `docs/writing-a-node-type.md#loops`): 6.3 as written, with three changes. `Loop::after` and
+`every` return `std::unique_ptr<Timer>` (core's `timers.hpp` already defines a timer cancelled by its destruction), and
+that type replaces `LoopSource`. `onWake(Wake&, ...)` watches `Wake::descriptor()` and calls `Wake::answer()` before the
+handler (the protocol `source.hpp` states). `LoopAdapter::make` takes a `ReadyEvents&` (an item of step 2). Dedicated
+threads are named `ear-<name> <node>`, as today's are. *Found building S3c.3:*
+
+- **Finish, then close.** 6.3's one `NodeLoop::close` cannot carry a goodbye between loops: 4.1's worker posts to the
+  notifier as it goes, and a loop that already took no more work would drop it, or count a watch the other loop was
+  about to destroy as left. So step 4 is two calls on every loop of the configuration: `finish(last, finished)` runs the
+  work queued, then `last` (the state destroyed, on the loop's thread), still taking the node's posts; once every loop
+  finished, `close(closed)` takes no more work, runs what is queued and cancels the sources left. A loop that never
+  started, or failed to, is neither: its state goes on the main loop at step 5.
+- **`LoopEvents`, not a bare `ReadyEvents`.** `make(node, name, kind, LoopEvents&)`: `LoopEvents` is `ReadyEvents` plus
+  `slow(ms)` (a strand's `ear.loop-slow`, which only the pool can time; once per loop and configuration, timed at the
+  handler's end) and `threw(what)`: a handler's throw is caught by its loop and fails the node as a hook's does
+  (`loop <name>'s handler threw: <what>`), so nothing a type's handler throws ends the process (6.3 named no catch).
+  The adapter is made with the main loop's executor and posts every event, `finished` and `closed` there, each dropped
+  once its loop was destroyed.
+- **The count is NodeHost's.** Every timer or watch a type arms goes through the loop NodeHost hands it (which stages
+  until configured), and its handle is counted while it lives; the adapter only cancels what is left at the close.
+  `ear.loop-source-left` carries `sources`. No debug assert: an abort in the Debug test build would end the suite that
+  proves the rule, so the harness throws from the call that tore the node down instead (unless `allowSourcesLeft`).
+- **Readiness.** A loop's item has no bound (an adapter says at once whether a thread started) and fails
+  `start-failed` through the list's `failed(index, detail)`, which `ReadyEvents` brought. Each item is started when its
+  step is asked, as 0.3's list says: a loop made, an engine companion made once the block is ready too, a sink's
+  consumer begun. So a type with loops makes no companion and begins no consumer until its loops run, and their
+  deadlines count from that asking; a type without loops asks them at configure's return, as before. `waitingFor`
+  gains `loop` (its name), on the wire with its fixtures.
+- **Staging.** What was staged is released at configured as one batch on each loop, ahead of anything sent after; a
+  staged timer counts from there. A teardown before configured destroys it on the main loop.
+- **`TypeSpec`.** `loops` is its third member for now (`TypeSpec<Settings, BankList, LoopList = Loops<>>`); S3c.4
+  inserts `stores` before it, so `{.settings, .banks, .loops}` keeps compiling.
+- **The harness.** Its loops run on the test's thread; `advance` fires a loop's timers in time order with the
+  framework's, an `every` once per period passed (a handler takes no time on the fake clock, so the coalescing rule is
+  `ear_runtime`'s to prove); `runLoops`, `loopsReady` (with `holdLoops`), `refuseLoops`, `readable(fd)`, `armed(loop)`
+  and `loops()`. No `loop(worker)` turning one loop: none needed it.
+- **The pool.** Started with the first strand, so a graph with none runs no new thread: its workers `ear-strand`, its
+  reactor `ear-strands` (timers and watches for every strand, and the workers' watch); a replaced worker leaves once
+  its handler returns while the pool is above its size. `consumedBy(loop, &State::member)` stays S3c.6b's.
+
+**The I/O executor** (S3c.2, built: `docs/architecture.md#threads`): `class IoExecutor : public Executor` in core, and
+`IoThread` in `ear_runtime`. A job holds `shared_ptr`s to what it fills, and its completion is a call taken from the
+configuration's `Channel`. So a completion for a configuration that ended is dropped by the `Channel`, and what the
+job opened is released on the I/O thread (below). *Found building S3c.2:* the call taken from the `Channel` is the
+configuration's `detail::Completions` (`src/core/completions.hpp`, private): an `Executor` whose work lands on the main
+loop in order and runs only while the configuration is attached, destroyed unrun after the detach. Every report the
+`Channel` already posted (`say`, `lost`, `threw`, the run object's close) rides it, so there is one drop rule, and the
+`Channel`'s own attached flag is its. **`ReadyEvents` stays main-thread only.** A job on the I/O thread never holds
+a `ReadyEvents`, `NodeStore` or `NodeRecording` reference: it posts its completion through the configuration's
+`Completions`, and that completion, on the main loop, calls `ReadyEvents` (S3c.4's store open is the first). **A
+dropped job's resources are released on the I/O thread**, never on the main loop, since a close after writing can
+block: a completion captures only a small handle to what the job filled
+(`Completions::postHolding(handle, io, release, landed)`, built); landing attached, `landed(handle)` takes what it
+keeps; landing detached, `landed` is destroyed unrun and the handle is posted back to the `IoExecutor` as the job
+`release`, so its last reference (the descriptor it closes) goes there. S3c.4's and S3c.5b's adapters complete through
+`postHolding`; plain `post` stays for reports that hold nothing to close. NodeHost
+takes no executor: the adapters that run jobs (S3c.4's `ConfinedStores`, S3c.5b's recordings adapter) hold the
+`IoExecutor&` main.cpp gives them, so `ResourceAdapters` has no executor member. `IoExecutor` adds
+`post(std::string job, work)`, the name the stop's record gives (`post(work)` is `"a job"`). **A job's throw**
+(`docs/architecture.md#faults-by-owner`): an adapter's job catches its own throws and reports through its
+`Completions`, so the node fails `lost` with `ear.internal-error`, as any adapter bug; `IoThread`'s last-resort catch,
+a throw no adapter owns, tells `InternalErrorListener` a fatal `ear.internal-error` (`callback` `IoThread job`,
+`where` the job's name) and then calls `std::terminate`, never a bare terminate (built; main.cpp passes its
+`StatusLog`). `IoThread::stop(grace)` destroys the queued jobs on the stopping thread and returns the running job's
+name if it outlives `grace` (2 s); main.cpp says the record before `ear: stopped` and leaves through `std::_Exit(0)`
+after it, as for a leak. `ResourceAdapters` is a struct of nullable pointers, and `ResourceRegistry` keeps its two
+reference constructors (every kind; every kind but recordings) over it, so no test's setup changed (15's cost is not
+paid). A missing kind is refused at the context call that asks for it, as an adapter's refusal: `start-failed:
+configure threw: no <kind> in this host` (an engine companion at its ask, since its adapter may not tell `lost` inside
+`make`); a missing recordings adapter still answers `no recordings folder`, today's text. The refused packages are
+fixed inside `ear_refuse_node_type_links` (`ear_runtime`, `ear_pipewire`, and the other packages only main.cpp
+links: `ear_control`, `ear_config`, `ear_server`), so its every caller gets them; a type's test program may still link
+any of them.
+
+**Stores** (S3c.4, built: `docs/writing-a-node-type.md#stores`): 6.7's rules (names, modes, narrowing, trust,
+serialised writes, the sweep) as written; its interfaces as found building. *Found building S3c.4:*
+
+- **The open is NodeHost's, the disk the adapter's.** 6.7's `StoreAdapter::open(..., ReadyEvents&)` cannot complete
+  as 0.3 asks: `Completions` (and its `postHolding`) is private to `ear_core`, and section 11 keeps policy ("when a
+  store is trusted") out of `ear_runtime`. So `StoreAdapter` (`ear/core/store.hpp`) is the disk's part only: `io()`,
+  `read` (no symlink, at most `maxBytes`), `narrow`, `replaceIf`, and `await`. NodeHost's store slot posts the open and
+  each write to `io()` as jobs holding only the store's state (`detail::StoreState`, `src/core/stores.hpp`: the policy,
+  read then narrow then judge then create) and the configuration's `Completions`; the open completes through
+  `postHolding`, its handle the state, and its landing calls the slot's `ReadyEvents` on the main loop. `ConfinedStores`
+  (`ear_runtime`, over `ear_folder`) implements the adapter. No `NodeStore`: the slot implements `Store`.
+- **Names.** The compile-time handle is `StoreHandle<Suffix>` (as `BankHandle` and `LoopHandle`), its rule its value;
+  the type's view is `Store`, so `cx.store(handle)` returns `Store&` (6.1's table said `StoreHandle&`). A suffix is 1
+  to 16 of `[a-z0-9-]`; `store::file`'s refusals are consteval calls to undefined functions named for the rule broken
+  (`a_store_gives_its_maxBytes`), so GCC names it.
+- **Waiting is the adapter's.** Core reads no clock of its own, so a blocking `replace`'s 5 s is `StoreAdapter::await`
+  (a condition variable in `ConfinedStores`, the job inline in the harness). A write its waiter gave up on before it
+  began never runs; one already under way may still land, and `text()` then shows it.
+- **`replaceLater`'s `done`** reaches its loop from the main loop through the configuration's `Completions`, never from
+  the I/O thread, since a queued job may outlive the loop.
+- **The sweep** is `runtime::sweepStores(folder, types)`, called by main.cpp before the catalogue is built (so before
+  the I/O thread exists), its findings `log` records at `warn` from the type; `NodeType` takes its declarations at
+  construction (`stores()`), and `ErasedInstance::stores()` gives NodeHost a configuration's.
+- **Faults.** A `distrust` or `initial` that throws is the type's: `start-failed: <file>: distrust threw: <what>`. An
+  adapter's throw in an open or write is caught by the job and reported through the `Completions` (`ear.internal-error`,
+  `where` `the I/O job open store <file>`), the node `lost`. A host with no stores adapter refuses a spec with stores
+  (`no stores in this host`). `waitingFor` gains `store` (its file), on the wire with its fixture.
+- **No claim yet.** `store:<file>` comes with S3c.5a's registry.
+- **Review follow-ups.** `replace` refuses the main loop (`std::logic_error`; NodeHost marks its thread, `onMainLoop`,
+  and the harness unmarks it while a loop's handler runs): a hook uses `replaceLater`. A write's outcome is
+  `StoreWritten`, its error a `StoreWriteError` of kind `refused` (the file as it was; a write given up before it
+  began never runs) or `unconfirmed` (under way when the 5 s passed: it may still land, compare `text()`). A type's
+  name is 1 or more of `[a-z0-9]`, checked by the catalogue at startup, so `<type>-<node>.<suffix>` names one store.
+  The open reads and narrows on one descriptor (`StoreAdapter::readNarrowed`, `ConfinedFolder::readNarrowed`).
+- **U1 holds** on GCC 14: `{.settings, .banks}`, with `.stores`, with `.loops`, and with both each deduce the rest
+  (`type_spec_test.cpp`); `.stores` after `.loops` is refused (`designator order`).
+- **The harness** gains an in-memory disk under the real policy: `presetStore`, `storeText`, `storeMode`,
+  `failStoreOpen`, `failNextWrite`, `breakStores`, `storeCalls`, and an I/O executor on the test's thread (`holdIo`,
+  `runIo`, `ioJobs`), plus `internalErrors()`.
+
+**The leaked record** (S3c.5c, built without its claims: `docs/architecture.md#teardown-by-dependency`): 6.9's
+record, the configuration's `Channel` re-pointed at it. *Found building S3c.5c:*
+
+- **It depends on claims, in part.** Of 0.5's S3c.5c row, only the re-point, the late close and `ear.close-late` need
+  no claim: abandoning a leaked configuration's port claims, keeping its store and recording claims, the list of
+  nodes they refused and the restart of those nodes (R15, G27) all need S3c.5a's registry, and the row's revert proof
+  ("the late close starts the refused node") needs a node refused by one. Today nothing in NodeHost refuses a node on
+  account of a leaked configuration (only `sendspin`'s own `PortClaims`, out of NodeHost's sight, until S3c.6b). So
+  the step is split: S3c.5c built the half that needs no claim, and the rest moved to S3c.5a and S3c.5b (0.5).
+- **Re-pointed, not "every report through `Completions`".** S3c.2 put every report the `Channel` posted on its
+  `Completions`. A re-point cannot keep that: the `Completions` also carry the handle's notes and losses and the I/O
+  jobs' completions, which a leaked configuration must not deliver (6.9: `lost`, `log` and `say` dropped; 0.3's I/O
+  executor: a dropped completion's handle released on the I/O thread). So the `Completions` are detached at a leak
+  as before, and the reports a leaked configuration may still make are posted to the main loop directly and judged
+  where they land, by the `Channel`'s target: the node while attached, else the record if re-pointed, else dropped.
+  Those are each sink's and handoff's closed, each loop's finished and closed (which until now reached the node by
+  serial and generation, not through the `Channel`), the run object's closed, and a consumer's or loop handler's
+  throw. Order is kept: both paths post to the one main loop.
+- **Only a close-deadline leak listens.** A configuration leaked on an overdue barrier (the data loop may still run its
+  code, and its teardown never began) is detached as before and counts in `leaked()` for good. The record carries the
+  teardown on from where it stopped (sinks and handoffs, then loops finished and closed, then a legacy run object's
+  close), as NodeHost's own teardown would.
+- **A throw from a leaked configuration** (a consumer's, or a loop handler's) is an `ear` `log` record at `error`
+  naming the node, as a throw during any teardown is; never a fact, since it reaches no node.
+- **`ear.close-late`** carries `ms` (from teardown step 3's start to the late close) and reads `the configuration
+  leaked at the close deadline closed <ms> ms after its close began`; S3c.5a appends `; its claims are released` when
+  it releases them there. Then the `Channel` is detached and `leaked()` counts one fewer, so a stop afterwards ends
+  normally. Review follow-up: 6.9's "its memory stays leaked" is overturned. Once every thread has reported
+  closed the record frees the configuration in a main-loop turn of its own, in step 5's order, so a node that leaks
+  and recovers again and again grows nothing. And a write of a leaked configuration's stores not yet begun is
+  dropped (a flag the leak clears, read by the job), as its `done` is, so its thread never replaces what a newer
+  configuration of the node keeps (a newer `sendspin` pairing, say).
+- **`ear.close-overdue`'s counts** were already built by S3c.3 (`<n> handoffs open, <s> sinks open, <k> loops open`):
+  nothing left for this step.
+
+**Core's tests off the legacy SPI** (S3c.6a, done: 62ad973d0a). *Found building S3c.6a:*
+
+- **`node_host_test.cpp`'s types are classes at the erased layer, not `makeNodeType`.** A test type's parameters
+  (its log, the sinks, cards and receivers to ask for, a failure) are not settings, and a class made by
+  `makeNodeType` takes no arguments; `SpecInstance` only forwards to `CreateContext`, and its forwarding is
+  `type_spec_test.cpp`'s and `node_lifecycle_test.cpp`'s. So each test type is an `ErasedInstance` configured through
+  `cx.create`, as the file's class cases already were (`TestConfig`, `WorkerConfig`, `BlockedConfig`, `ReadingConfig`,
+  `RecordingConfig`, `PassConfig`, `OutputConfig`, `ActivityConfig`). `desired_graph_test.cpp`,
+  `graph_status_test.cpp` and `settings_table_test.cpp`, which test types through the catalogue, use `makeNodeType`.
+  No product code and no test seam changed.
+- **What replaced what.** A handoff is a sink on an inside output bank (`tap1`, `tap2`: a ported type gains those
+  banks); a run object with threads is a dedicated loop whose finish the test holds (`TestLoops::holdFinish`); the
+  run object's destruction is the instance's. A sink's consumer begins on its thread, so T3 follows the turn's
+  flush rather than landing in it. Two product faults the port showed, fixed in their own commits (review
+  follow-ups): step 5 freed the instance before the sinks, though a consumer may hold a reference into the instance
+  (now the code, the sinks, then the instance: `docs/architecture.md#teardown-by-dependency`); and whether a
+  teardown or stop fades was decided from the ports alone, so a node whose only outputs were sinks' banks waited a
+  fade round trip with nothing faded (now narrowed at configure's return to the drive's own flags). Every wait in
+  `node_host_test.cpp` has a 10 s deadline (a blocked consumer's included), so a revert fails rather than hangs.
+- **A loop's finish always posts.** The old "closed inside `close()`" (a run whose threads already ended) has no
+  class equivalent, so its case ("nothing from an old run lands on a new one") now asserts a report queued behind the
+  turn that freed the old configuration and began the next. The legacy start's nested context call (`acquire`
+  of a recording, inside which `openRecording` ran) goes with `StartContext`: its refusal cases run on the direct call.
+  A class's `check` takes no node, so `settings_table_test.cpp` no longer asserts which node `make` was called for;
+  the refusal still carries its node.
+- **Kept on the legacy SPI, tagged `[legacy]`, until S3c.6e deletes them with it:** a `StartContext` kept past its
+  start; latency declared on one bank (2 cases: the class declares a path); the two-phase start's recipe; a legacy
+  recipe in `MainLoopActivity`; a legacy start's engine refusal and a recipe or run object's close that throws; a
+  legacy handoff's consumer that throws. And `compile_fail/settings_table_bad.cpp` (`NodeTypeOf`'s own refusals) and
+  `type_spec_bad.cpp`'s `legacy_start_on_spec_type`, which test the old SPI itself.
+- **Outside core** (not this step's): `src/config/tests/test_types.cpp`, `src/control/tests/gateway_test.cpp` and
+  `session_test.cpp` (a `NodeTypeOf` type's `start`), `src/pipewire/tests/engine_test.cpp` and
+  `callback_boundary_test.cpp` (a legacy `start`, `ThreadHandoffs`, a `HandoffAdapter`) and `handoff_test.cpp` still
+  use it; S3c.6e ports or deletes them (`handoff_test.cpp` goes, as its row says). The product side S3c.6e also
+  removes: the type harness's `FakeHandoff` and `FakeHandoffs` (`src/core/testing/node_harness.cpp`, with its
+  `runObject()`), `main.cpp`'s `ThreadHandoffs`, and `src/pipewire/handoffs.cpp` with its header. Legacy names in test code outside
+  `sendspin`: 138 before, 79 after; in core 112 before, 53 after, `node_host_test.cpp`'s 45 (54 to 32 of the five
+  names 0.1 counted) being the cases above and their fixtures.
+
+**Claims** (S3c.5a, built: `docs/writing-a-node-type.md#claims`): 6.8's `claim::TcpListen`, `claim::Udp`, `PortProbe`
+and registry, plus where implicit claims come from:
+
+```cpp
+/// A claim's key: its kind and value ("tcp:8928", "udp:5004", "store:sendspin-ma.key", "recording:take1.wav").
+struct Claim {
+	enum class Kind { tcp, udp, store, recording, device } kind;
+	std::string value;
+};
+/// The ear-wide exclusives an engine companion holds while it lives, by its shape: a rule beside moduleRunDelay
+/// (companions.hpp), so NodeHost names no shape's field.
+std::vector<Claim> claimsOf(const RtpReceiverShape& shape); // {udp, shape.port}
+std::vector<Claim> claimsOf(const SoundCardShape& shape);   // none until 0.2 C's check shows the race; then the device
+```
+
+*Found building S3c.5a:*
+
+- **The registry probes nothing; NodeHost probes behind the turn's flush.** 6.8 has the registry grant, then probe. A
+  restart of an `rtp` node cannot work that way: a node with no sink, loop or handoff closes inside the input that
+  began its teardown, so its step 5 releases the port, and its next configure judges it, in the same drain that queued
+  its receiver's destruction into the turn's flush. A probe there finds ear's own old socket still bound. So the
+  registry (`src/core/claims.hpp`, private, pure) decides holders only, granting a port as `probe`, and NodeHost posts
+  the probe to the main loop, behind the flush, which has destroyed the old receiver by then. The registry holds the
+  claimant from the grant, so a claimant judged meanwhile is refused `held by node <n>` even if the kernel then
+  refuses the first; that refusal releases it at step 5 as any other.
+- **`PortProbe` reaches NodeHost through `ResourceAdapters::ports`** (null: ports judged between the host's nodes only,
+  as every test host but those that set one). `KernelPortProbe` is `ear_runtime`'s, as G1 says; a probe that throws
+  is ear's bug: `ear.internal-error` (`callback` `PortProbe`), the node `lost`.
+- **`Claim::Kind` has no `device`** until 0.2 C's check shows the race; `recording` is in it (key, text), claimed from
+  S3c.5b.
+- **`cx.claim` takes a port only** (`claim::TcpListen`, `claim::Udp`, each a `std::logic_error` outside 1 to 65535,
+  and `claim::of` makes the `Claim`); `CreateContext::claim(Claim)` refuses another kind (a `std::logic_error`): stores
+  and recordings are the framework's. A port claimed twice in one
+  configuration is refused (review follow-up, below).
+- **`waitingFor` `claim` names the key only** (`udp:5004`). 6.1's `holder` and `leaked: true` are not needed: a wait
+  shows only while a holder is closing, and `ear.claim-wait` names the holder once; a leaked holder never makes a
+  wait (it is judged at the leak, and at once afterwards).
+- **Going is teardown step 1** (NodeHost's `closeSources`, the moment a configuration's `ending` is set): a stop keeps
+  every claim live; a restart's, failure's, disable's or removal's old configuration is going from its step 1.
+- **The R15 restart is narrowed to the refusal.** The record lists each node with the configuration its claims refused;
+  at the late close a node is restarted (as `node.restart`, so a retry) only while it still rests failed and has not
+  configured since, so an operator's own retry, removal or disable meanwhile is never overturned.
+- **Review follow-ups.** A UDP claim carries its multicast group beside the port, never in its key: two `rtp` nodes on
+  one port are still refused whatever their groups (Q-3c2), but the probe binds `<group>:<port>` with `SO_REUSEADDR`,
+  as module-rtp-source does, so another program sharing a group's port by `SO_REUSEADDR`, which worked before this
+  step, still does (`PortProbe::udp(port, group)`). A holder leaked on an overdue barrier never closes, so the
+  registry knows whether a leak closes: its store or recording refuses `... which the wedged data loop keeps; it
+  starts once ear restarts`, owed to nobody. A port claimed twice in one configuration is the type's bug, refused at
+  the call (`configure threw: udp:5004 claimed twice`); the framework's store claims are held once each.
+- **A store claim only ever meets another configuration of its own node** (a store's file is
+  `<type>-<node>.<suffix>`, and a node configures only once its older configuration and any older node of its name
+  are gone), so its one refusal is the leaked one's.
+
+**Recordings** (S3c.5b, built: `docs/writing-a-node-type.md#recordings`): `CreateOf::recording(RecordingRequest) ->
+Recording&` replaces `openRecording`, as designed:
+
+```cpp
+/// A recording file this configuration writes, claimed at step 0 and opened at step 1 on the I/O executor. Valid from
+/// configure until teardown step 5; descriptor() only once opened.
+class Recording {
+public:
+	virtual int descriptor() const = 0; // std::logic_error before its open landed
+	virtual const std::string& path() const noexcept = 0;
+
+protected:
+	~Recording() = default;
+};
+```
+
+*Found building S3c.5b:*
+
+- **The open is NodeHost's, the disk the adapter's**, as S3c.4 found for stores. `RecordingAdapter::open(node, path,
+  ReadyEvents&)` cannot complete as 0.3 asks: `Completions` (and `postHolding`) are private to `ear_core`. So
+  `RecordingAdapter` (`ear/core/recording.hpp`, with `RecordingRequest`, `RecordingFile`, `recordingBound`) is the
+  disk's part: `io()` and a blocking `open(node, path)` that returns the `RecordingFile` (the descriptor it closes when
+  destroyed), called on `io()`'s thread. NodeHost's recording slot posts the open as a job holding only a shared state
+  (the adapter, the path, the file once made), completing through the configuration's `Completions` with
+  `postHolding`; a dropped completion's state is released on the I/O thread. `ear_runtime::ConfinedRecordings` (over
+  `ear_folder`, as main.cpp's glue was) implements it; main.cpp's and the tests' copies of the glue went.
+- **Closed on the I/O thread, too.** The slot, freed at step 5 (after the sinks, the instance and the stores, as built),
+  posts its state's last reference to the I/O executor as the job `close recording <path>`, before its claim is
+  released, so one path's close and its next configuration's open (truncate) are jobs on one thread in that order. A
+  slot freed with no I/O thread left (after `IoThread::stop`) closes inline, as a job posted then is destroyed unrun.
+- **`descriptor()` throws rather than asserts**, as a store's `text()` does: a debug assert would end the test program
+  that proves the rule (S3c.3's reason). It is not `noexcept`.
+- **The claim's value** is the path with its `.` and empty components removed (`recordingClaimPath`), as 6.8 says;
+  symlinks are not followed. A claim's text names that value (`cannot open take1.wav: held by node a` for a node that
+  asked for `./take1.wav`); every other text names the path as asked. One path asked for twice in one configuration
+  (however spelled) is the type's bug, `recording:<path> claimed twice`, as a port's is.
+- **No recordings folder** fails the node at configure's return, `start-failed: cannot open <path>: no recordings
+  folder` (today's text), as `no stores in this host` does; `ResourceRegistry::adapterFor(RecordingRequest)` and its
+  stateless `NoRecordings` went for `recordings()`, null when absent.
+- **A refusal and a bug.** The open's `std::logic_error`, or no file made, is the adapter's bug (`ear.internal-error`,
+  `where` `the I/O job open recording <path>`, the node `lost`); any other throw is a refusal, as an error is
+  (`start-failed: cannot open <path>: <what>`), as the synchronous open told them apart.
+- **The legacy acquire of a recording went** with `openRecording`: `ResourceRequest` is `HandoffRequest` alone until
+  S3c.6e. Nothing used it.
+- **`file`'s visible change beyond 8's 2:** its sink is made at configure as before, but its consumer now begins only
+  after the open, so a refused path fails the node with its sink made and closed unbegun (it was never made). A
+  folder's refusal now comes at step `opens`, after the claim, not inside `configure`.
+- **`waitingFor` gains `recording`** (its path), on the wire with `docs/control-port.md`, `protocol.ts`, the
+  editor's words and the status line's (`its recording <path>`), and an `output-records.json` case.
+- **Review follow-ups.** The path rule (relative, no `..`) is core's, `recordingPathRefused`: `cx.recording` refuses
+  such a path, `start-failed: cannot open <path>: must be relative to the recordings folder, without ".."` (the path
+  comes from settings, so not a type bug), and `file`'s `check` calls the same function for its `invalid-settings`
+  words, so `sub/../take.wav` cannot escape the claim on `take.wav`. A leaked configuration's late close posts its
+  recordings' closes before releasing its claims, so the node R15 restarts opens the path after the close. A symlink
+  inside the folder is not judged by `(st_dev, st_ino)`: the identity is known only after an open, so it costs a
+  two-phase adapter open whose refusal could not wait as a claim does nor be owed to a leaked holder
+  (`docs/writing-a-node-type.md#recordings` says so). The I/O open both stores and recordings use is one private
+  helper, `src/core/io_opens.hpp` (`postIoOpen`, `IoOpened`, `IoFault`, which replaces `StoreFault`, and
+  `ioOpenItem`).
+- **The harness** keeps recordings in memory (one `memfd` per path, so libsndfile seeks and writes it), on the stores'
+  I/O executor: `recordingBytes`, `presetRecording`, `failRecordingOpen`, `pipeRecording`, `breakRecordings`,
+  `openRecordings`; `HarnessOptions::recordings` (an adapter) became `noRecordingsFolder`. `file_test.cpp` runs on it;
+  that a path never leads out is `ear_folder`'s and `ear_runtime`'s to prove.
+
+**A sink's consumer as a loop state's member** (S3c.6b): 6.5's `consumedBy(loop, &State::member)` and
+`consumedBy(loop)`. The consumer still runs on the sink's own thread: naming the loop only ties the consumer's life
+to the state's (finished at step 3, before the state is destroyed at step 4). From S3c.6b `ToServer` dates each piece
+from its own chunk's `startRawNs` (the capture anchor and its mailbox go: a chunk carries its cycle's start), still
+with no upstream, as today; S3c.6d adds it, `FrameClock::enteredRawNs(chunk.startRawNs, offset,
+Latency{0, chunk.upstreamFrames})`.
+Whether a capture's chunks in a catch-up's burst also want `overdueNs` is still [U] (`timing-model.md` 4.5) and is
+measured in S3c.6d.
+
+**`sendspin`'s source and clock** (S3c.6c): `timing-model.md` section 6 as designed; the interfaces are built.
+`SendspinClock : SourceClock` holds today's `SendspinCode` playback state and its `Mailbox<PlayProgress>`. Its test
+seams replace the feed's (`dryTicks()`, `dryFrames()`, `lastHeld()`, `lastSkipped()`, `clamped()`), so
+`CycleJudge::librarySettle`'s `dry` cause reads the clock, not a feed. The companion's `shortfall` counter is the
+operator's view; the judge does not read it.
+
+**`TypeSpec`** (S3c.3 and S3c.4, built): 6.11's members `stores` and `loops` after `banks`, each defaulting to an
+empty list, under the `requires` clause. U1 held (found building S3c.4, above): the designated spelling stands.
+
+### 0.4 Obsolete in this page
+
+| Where | What | Why |
+|---|---|---|
+| 2 | `LibraryView`, the debt and `skipThenRead` among the seams to clear | Deleted by T2 |
+| 9 | "The feed's write position" as a log line's stamp | No feed after S3c.6c: the worker counts the frames it has written to the source, and its log sink stamps each line with that count |
+| 6.1 | The readiness table as four steps of their own, and `ReadyEvents` beside the companions' events | 0.2 A, 0.3 |
+| 6.2 | `EventWake` in `ear_runtime`, moved from `ear_pipewire` | 0.1: core's `Wake` is enough |
+| 6.3 | `LoopSource`; one `NodeLoop::close(closed(leftSources))` at step 4; the adapter counting sources; debug builds asserting on a source left | 0.3's loops, found building S3c.3: `Timer`; `finish` then `close`; NodeHost counts, the harness throws |
+| 6.6 | Jobs checking the generation | 0.2 B |
+| 6.6 | "Its completion is posted to the main loop and checked there against the configuration's generation and liveness: a completion for a configuration that is gone, or past its deadline, is dropped, and a descriptor it opened is closed by a second job" | 0.3's I/O executor: the completion rides the configuration's `Completions` (`postHolding`), which drops it once detached and posts its handle back to the I/O executor, where it is released; a deadline is the readiness item's bound, not the job's |
+| 6.6 | "Each has a 5 s deadline" read as the job's own | The 5 s is the store or recording item's readiness bound (0.2 A); the job keeps none |
+| 6.7 | `StoreAdapter::open(node, type, store, ReadyEvents&)` and `sweep`; `NodeStore`; the adapter reading, narrowing and judging | 0.3's stores, found building S3c.4: the adapter is the disk's part, NodeHost runs the policy as jobs; `runtime::sweepStores`; the slot is the `Store` |
+| 6.1 | `cx.store(handle)` → `StoreHandle&` | `Store&`; `StoreHandle<Suffix>` is the compile-time handle |
+| 6.8 | `udp:<p>` claimed "by every RTP receiver companion" as a rule of NodeHost's | `claimsOf(shape)` |
+| 6.1, 6.8 | Ports probed by the registry once granted, in the turn that judged them; `PortProbe` the registry's | 0.3's claims, found building S3c.5a: the registry decides holders only; NodeHost probes behind the turn's flush, through `ResourceAdapters::ports` |
+| 6.1 | `waitingFor` `claim` with `subject`, `holder` and `leaked: true` | 0.3's claims, found building S3c.5a: `name` is the key; the holder is in `ear.claim-wait`; a leaked holder makes no wait |
+| 0.3, 6.8 | `Claim::Kind::device` | Not a kind until 0.2 C's check shows the race |
+| 6.10 | `int fd = cx.recording(...)` | `Recording&` |
+| 6.10, 0.3 | `RecordingAdapter::open(node, path, ReadyEvents&)` returning a `NodeRecording`; `descriptor()` asserted in debug builds | 0.3's recordings, found building S3c.5b: the adapter's `open(node, path)` blocks on its `io()` thread and NodeHost completes it through `Completions`; `descriptor()` throws |
+| 8, visible change 5 | A stopped `sendspin` node closing its connection | Q-3c1 (0.6): kept open unless the owner says otherwise |
+| 12 | `sendspin_code.*`'s playback half still to be written | Written (T2); moved whole |
+| 13 | The cut | 0.5 |
+
+### 0.5 The build steps
+
+Each is one reviewable commit, green on every test and `make format-check`, and changes the library pages it makes
+stale. **Revert proof**: with the step's production change reverted and its tests kept, the named tests fail; each
+step's commit message records the run. A step that changes no behaviour has no revert proof, but it must pass every
+existing test unedited: a test that needs editing means behaviour moved, and the step is wrong.
+
+| Step | What | Behaviour | Proof |
+|---|---|---|---|
+| **S3c.0 Readiness list** (done: dffa92077a) | `readiness.hpp`; NodeHost's engine-companion and sink-consumer readiness, their deadlines and `waitingFor` read from it; the `Deadline` enum and its branches go | None | Every `node_host_test.cpp` readiness and `waitingFor` case passes unedited (each kind's deadline and text, a ready first wins, a restart's own, a consumer's 5 s). New unit rows on the list: steps gate in order, a bound runs from its asking, a failure ends the list, `waitingFor` in item order. Mutation check: asking step 3 before step 1 is ready fails a new row. **Owed by the first step that adds an item
+outside the `companions` step (S3c.3, S3c.4 or S3c.5a):** a `node_host_test.cpp` row, with its revert proof, showing a
+companion's deadline does not start until the earlier step is ready (S3c.0's rows prove that on the list alone) |
+| **S3c.1 Node handle** (done: 26d2bf56cf) | `node_handle.hpp`; the `Channel` implements it; `NodeHost::logTo`; pacing in core; `InsidesEvents` and `sendspin`'s `NoteGate` go (`notes_test.cpp`'s gate cases move to core) | None an operator sees: the same notes; `notes-dropped` said by the framework | Section 5's tests: a log carries its node; after detach, dropped; an old configuration's late `say` dropped; a goodbye heard; 32 then one a second per node, kept across a stop and a start, reset by a restart; `lost` never held. Revert proof: core without the gate fails the pacing rows |
+| **S3c.2 `ear_runtime`, the I/O thread** (done: 87b876ad7e) | The package; `IoThread`; `ResourceAdapters` (one member per kind; a null adapter refuses its kind); `ear_refuse_node_type_links` refuses `ear_runtime` and `ear_pipewire`; `main.cpp` stops the thread after `stopAll` and the keeper | None | A completion after its configuration ended is dropped and its descriptor closed; a job busy at stop (2 s, the log record, `std::_Exit`); a null adapter's refusal; the link refusal per package (configure fails on a test type that links either). Revert proof: the link refusal's test fails without it |
+| **S3c.3 Loops** (done: f3d10c0639) | 6.3 with 0.3's changes; `Loops`, `TypeSpec::loops`; `StrandPool`, `DedicatedLoops`; staging; `closeToOthers`; teardown step 4 closes loops (beside the run object's `close`, which stays until S3c.6e); the harness's loops and fake clock | None for shipped types | Section 13's S3c.3 list, through a test type in `ear_core_tests` and on real threads in `ear_runtime`'s tests; `ear.loop-slow` and `ear.loop-source-left` in `output-records.json`. Revert proofs: with staging off, "staged work runs only once configured" fails; with the source count off, "a source left armed" fails; with the loops at the companions step, the S3c.0 debt row ("a companion's readiness deadline starts only once the earlier step, the loops, is ready") fails; without the state-lives wrap on a loop's timers and watches, "a timer a state left armed never runs its handler once the state is gone" fails; without the replacement spawn, "a stuck strand gets a replacement thread" fails; without the reaping, "workers that left ... are joined" fails (follow-up commit) |
+| **S3c.4 Stores** (done: 935070c4b4) | 6.7; `ConfinedStores` and the boot sweep over declared stores, in `ear_runtime`; store items at step 1 | None for shipped types (`sendspin` keeps its key store until S3c.6b) | Section 13's S3c.4 list; U1's compile test of every `TypeSpec` subset. Revert proof: with narrowing before judging off, "a refused file is narrowed before it is read" fails |
+| **S3c.5a Claims** (done: 7b5a1ff633; found building it, 0.3) | `Claim`, `ClaimRegistry` at step 0, `KernelPortProbe`; `cx.claim`; `claimsOf(RtpReceiverShape)`; `ear.claim-wait`; `waitingFor` `claim` (wire, fixtures and `protocol.ts` together). From S3c.5c (found building it): the leaked record's claims, on the built record (0.3's leaked record): a leaked configuration's port claims abandoned (probed afresh, a refusal recorded against the record, G27), its store claims kept and refusing `held by node <n>'s earlier configuration, which did not close; it starts when that closes`; the record's list of the nodes it refused; at its late close its claims released, `ear.close-late` gaining `; its claims are released`, and each refused node started again once, as `node.restart` would (R15) | Visible change 3: an `rtp` node on a port another program holds fails at once (`Address already in use`, not the 5 s deadline); two `rtp` nodes on one port, where today both run and one is silently starved, refuse the second `held by node <n>`. After a leak only: a node refused by the leaked configuration's claims starts by itself at its late close | Section 13's claim cases; a system test for visible change 3; a removed `rtp` and an added one on its port in one plan (the new one waits, then runs); section 13's leaked-record claim cases, with a test type whose loop never drains (a store refused while the leaked configuration holds it, then started by its late close; an abandoned port re-probed). Revert proofs: without `claimsOf`, the two-`rtp` system test finds both nodes `running` and one of them silent (today's behaviour), instead of the second refused `held by node`; with the record's restart of the nodes it refused off, "the late close starts the refused node" fails. Run (7b5a1ff633 and its review follow-ups): without `claimsOf`, both nodes `running`, `a` silent (peak 0) and `b` playing (0.5); with the restart off, the store row and the abandoned port's refused section fail; with `detach()` for the re-point, both leaked rows fail; with the probe made at judging instead of behind the flush, "node.restart of an rtp node binds its port again" fails, the restarted node `start-failed: cannot bind UDP port <p>: Address already in use` on its own old receiver's socket |
+| **S3c.5b Recordings** (done: 5a3396d67c, review fixes after it; found building it, 0.3) | `Recording`, `RecordingAdapter::open` on the I/O executor, the implicit `recording:` claim; `file` on it; `openRecording` goes. A leaked configuration's recording claim kept, as its store claims (S3c.5a) | Visible change 2: a second `file` on one path is refused; a remove and an add on one path works. Also: a refused path fails `file` with its sink made and closed unbegun, and `waitingFor` gains `recording` | `file_test.cpp` on the harness's recording fake; a system test for visible change 2; an open past its 5 s bound; a path refused while a leaked configuration holds it, then started by its late close. Revert proof: without the claim, the two-`file` system test finds both running. Run: without the claim, both `a` and `b` `running` and the `node_host_test.cpp` rows for two nodes on one path, a remove and an add in one plan, and the leaked configuration's path fail; with the recording's item at step `companions`, the consumer begins before the open (`file_test.cpp`'s WAV rows and the ordering rows fail); with the close made inline on the main loop, the rows that see `close recording <path>` on the I/O executor before the next open fail |
+| **S3c.5c The leaked record** (done: e309f28d00; the claim parts moved to S3c.5a and S3c.5b, found building it, 0.3) | The `Channel` re-pointed at the leaked record at a close-deadline leak; the record hears each close (sinks, handoffs, loops, the run object) and carries the teardown on; a throw from it an `ear` log record; `ear.close-late` and `leaked()` counting it down | Only after a leak, which no shipped type makes in tests: `ear.close-late`, and a stop after it ends normally rather than through `std::_Exit` | `node_host_test.cpp`'s leaked-record rows: what a leaked configuration may still report, in order (its sink's close, its consumer's throw as a log record, its loop's finish and close, then `ear.close-late`), and what it may not (its handle's notes, losses and log entries, a store write's completion; nothing reaching the node or a newer configuration); S3c.1's leaked cross-generation row unedited. Revert proof: with `detach()` in place of the re-point, "a configuration leaked at the close deadline is said `ear.close-late` once its loop finally finishes, and `leaked()` drops to 0" fails |
+| **S3c.6a Core's tests off the legacy SPI** (done: 62ad973d0a; found building it, 0.3) | `node_host_test.cpp`, `graph_status_test.cpp`, `desired_graph_test.cpp` (and `settings_table_test.cpp`): their legacy test types rewritten as classes (on `makeNodeType` where a test goes through the catalogue, at the erased layer in `node_host_test.cpp`), a handoff case as a sink, a run object with threads as a dedicated loop | None (tests only) | Each ported case asserts what it asserted. Only the legacy-only cases (a recipe, a run object's close, the two-phase start, a `StartContext`, a latency on one bank, a handoff consumer's throw) stay on the legacy SPI, tagged `[legacy]`, until S3c.6e deletes them with it. Spot revert checks: loops finished before the sinks closed, a sink's drops not counted, the instance freed before the code, the `Channel` not detached at step 5: each fails a moved case |
+| **S3c.6b `sendspin` on the class** | `sendspin_spec.hpp` and `Sendspin`; the worker a dedicated loop's state, the notifier a loop; the key file a store; the listening port a claim; `to` passed to `to_server`, a sink consumed by `ToServer` (still dated by the cycle's start); the feed and today's code kept as the type's own spec code (`from` played from the feed); `NodeFolders` and `allNodeTypes`' argument go; `notYetInHarness` goes; the thread guard | Visible change 1 (a corrupt key file fails before `running`); otherwise as today, subject to Q-3c1. The key store's `save_blob` (`replace`, on a library thread) treats an `unconfirmed` outcome as neither success nor failure: it compares `text()` with what it wrote, or writes with `replaceLater`, whose outcome is exact | `type_test.cpp` (section 12); `sendspin` in the all-type harness test; every `sendspin` system test with its lines unchanged (U4); `clock_test.cpp` and `code_test.cpp` unedited; the guard per spelling. Revert proof: the corrupt-key system test sees `running` first |
+| **S3c.6c The source and its clock** | `from_server` a source with `SendspinClock` (T2's wrapper, moved), its clock wake watched on the notifier loop; `feed.*` and `sendspin_code.*` go; the node's code is `passThrough` | None in timing: `timing-model.md` 6.4's tests pass unedited on the source | T2's tests on the source (`clock_test.cpp`, through the real engine); the clock's unit rows through `TypeHarness<spec, Sendspin>` with scripted facts; `requiredLeadMs` from the source's frames. No revert proof (a move); T2's clamp-idle row is its mutation check |
+| **S3c.6d Capture dated by its upstream** | `ToServer` dates by `enteredRawNs` with the chunk's `upstreamFrames`; `docs/node-types.md#clock` loses its "not counted yet" | Yes: a card's capture reaches the server dated earlier by the card's capture latency | A unit row: a chunk with `upstreamFrames` 480 dates its first frame 10 ms before its cycle's start at 48 kHz; `sendspin_streams_test.cpp`'s steps unchanged; whether `overdueNs` should date burst chunks measured and recorded [U]. Revert proof: the unit row fails |
+| **S3c.6e The legacy adapter retired** | `LegacyInstance`, `StartContext`, `StartResult`, `RunRecipe`, `Ready`, `RunObject`, `HandoffRequest`, `RtWriter`, `HandoffConsumer`, `HandoffAdapter`, `ThreadHandoffs`, `NodeTypeOf`, `NodeConfig::start`; `src/pipewire/handoffs.cpp` and its header, `main.cpp`'s `ThreadHandoffs`, the type harness's `FakeHandoff`/`FakeHandoffs` and `runObject()` (`node_harness.cpp`); `handoff_test.cpp`; `docs/writing-a-node-type.md#the-old-interface` | None | The tree builds without them and every test passes; no name of them is left under `src/` or `test/` |
+| **S3c.7 The log patch** | Section 9 as written, with 0.4's stamp; `kLogReach`, `kLogLag` and `inLoss`'s lag go; the system tests' `Lost sync` matching by size and their `stepsInLoss` bound become matching by place (`docs/testing.md#the-librarys-own-word`) | The library's lines become `log` records naming their node | Section 13's S3c.7 list; U2's count of unattributed lines. Revert proof: without the patch, the two-node attribution test fails |
+| **S3c.8 Words** | This page and `timing-model.md`'s S3c rows retired; what lasts moved (sections 5 to 10 into `docs/writing-a-node-type.md` and `docs/architecture.md`) | — | The anchor check over every page touched |
+
+S3c.5c came first after S3c.4 (it needs no claim); S3c.5a and S3c.5b may land in either order after it, each
+building its leaked-configuration claims on its record, and S3c.6a at any time before S3c.6e. S3c.6b needs S3c.0 to 5a
+(no recording). S3c.7
+needs only S3c.6b (the worker's state sets the sink). T5 follows S3c.6c with its first user (`timing-model.md` 7).
+
+### 0.6 Questions for the owner
+
+**Q-3c1. When you stop a `sendspin` node, should it stay connected to Music Assistant, silent, or disconnect?**
+
+*Scenario.* The kitchen is a `sendspin` node that Music Assistant reaches by dialling ear. You press Stop on it in the
+editor. *Stay connected* (today's behaviour): Music Assistant still lists the kitchen player and keeps it in its
+group; the kitchen plays nothing, and pressing Start plays again at once. *Disconnect*: Music Assistant shows the
+kitchen as gone and takes it out of the group. Pressing Start makes ear ready again, but in tests a server that
+dialled by hand did not dial back within 30 s (`docs/node-types.md#stop-restart-disable`), so the kitchen may stay
+silent until Music Assistant finds it again.
+
+*Recommendation: stay connected.* It is what a stop does today, it matches "a stopped node keeps everything" (R26),
+and it avoids the gap before the server dials back. Restart, disable and removal still say goodbye. (Section 8's
+visible change 5 is the other answer.)
+
+**Q-3c2. Should two `rtp` nodes be allowed on the same UDP port when they listen to different multicast groups?**
+**Answered (the owner, 2026-11-14, binding): refuse.** The second fails at once, "cannot bind UDP port <p>: held by
+node <name>", even when the two listen to different multicast groups; allowing that is deferred until a multicast test
+exists. It also fixes today's silent failure (both nodes `running`, one playing nothing). Built in S3c.5a.
+
+*Scenario.* Your FPP sends two shows as multicast, one to 239.0.0.1 and one to 239.0.0.2, both on port 5004, and you
+add `rtp showA` and `rtp showB`. *Refuse*: the second fails "cannot bind UDP port 5004: held by node showA", and you
+give the shows different ports in FPP. *Allow*: both play; PipeWire binds each to its group, but ear has no multicast
+test yet, so this would be the first.
+
+*Recommendation: refuse for now*, and allow it (a claim keyed by group and port) once a multicast test exists.
+
+### 0.7 Open items, re-checked
+
+U1 to U8 (section 18) stand (U1 held for stores and loops in S3c.4, still open for slice 5's members); U4 also covers Q-3c1's answer in the `sendspin` system tests. New: the card device race
+(0.2 C) and `overdueNs` for chunks in a burst (S3c.6d).
 
 ## 1. The owner's words that bind this slice
 
@@ -22,7 +567,7 @@ The R and G numbers are the register the node framework's design used.
 | R9 | "Nodes should not have direct access to stdout or stderr. The core framework should expose the necessary primitives for events, diagnostics, and logging. These should be real-time safe for any audio loops that need them, and there can be non real-time bases for the rest of the system." | 2026-11-07 | A node's threads log through its handle; the library's own lines are attributed to the node (section 9) |
 | Q5 | "Strands, dedicated on request" | 2026-11-07 | Loops (6.3) |
 | R13 | "mailboxes could be supportable in either mode. But why must mailboxes be built before the run object exists? Is this a side effect of the naive node state machine model I described?" | 2026-11-08 | The instance or a loop's state owns what it shares with the code; no kept values |
-| R14 | "G4 is asking the wrong question. The node audio threads should be concerned with reading inputs and writing outputs. The framework should provide the necessary primitives to connect inputs/outputs across nodes AND anytime a node needs to cross inputs/outputs to non-realtime code (eg pipe outputs through a mailbox?)" | 2026-11-08 | A type's threads meet audio only as a source's writer or a sink's consumer (`companions.md`) |
+| R14 | "G4 is asking the wrong question. The node audio threads should be concerned with reading inputs and writing outputs. The framework should provide the necessary primitives to connect inputs/outputs across nodes AND anytime a node needs to cross inputs/outputs to non-realtime code (eg pipe outputs through a mailbox?)" | 2026-11-08 | A type's threads meet audio only as a source's writer or a sink's consumer (built: `docs/architecture.md#companions`) |
 | R15 (G3) | "(a)": a store, recording path or port held by a leaked configuration is refused with a detail saying the node starts when that configuration closes; the late close starts it | 2026-11-08 | 6.8, 6.9 |
 | R16 | "I like the basic shape of the state machine proposal. And most importantly: it should be per-node. Some node stopping/reconfiguring/failing does not effect the graph globally" | 2026-11-08 | Every primitive is per node except the I/O executor and the strand pool, which are shared and bounded |
 | R19 | "Shouldn't that all be part of the build stage? How is build different from [re]configure?" | 2026-11-08 | One `configure` acquires and constructs; each primitive is asked for, or reached by handle, inside it, and readied by the framework |
@@ -48,7 +593,7 @@ The R and G numbers are the register the node framework's design used.
 | `file`'s recording opened synchronously on the main loop by `cx.openRecording` | `lifecycle.hpp`, `file.cpp` | recordings, deferred (6.10) |
 | `notYetInHarness = {"sendspin"}` | `test/nodes/all_types.hpp` | section 10 |
 | sendspin's threads: the worker (a 10 ms `poll()`), the notifier, their stop `EventFd` | `worker.cpp` | loops (6.3) |
-| sendspin's feed, mailboxes, bell, capture anchor, `SendspinCode` and handoff | `feed.cpp`, `mailbox.hpp`, `sendspin_code.cpp` | a source and a sink companion (`companions.md`), when S3c.6 moves it |
+| sendspin's feed, mailboxes, bell, capture anchor, `SendspinCode` and handoff | `feed.cpp`, `mailbox.hpp`, `sendspin_code.cpp` | a source and a sink companion (`docs/writing-a-node-type.md#sources`, `#sinks`), when S3c.6 moves it |
 | Its key file: named, 0600, read, trusted, created, swept at boot | `key_store.cpp` | stores (6.7) |
 | Note pacing (32, then one a second) | `note_gate.cpp` | the node handle (5) |
 | The library's log lines are unattributed `stderr` records | sendspin-cpp `src/platform/logging.h` | the log patch (9) |
@@ -127,11 +672,14 @@ private:
 // src/nodes/sendspin/sendspin.cpp
 Configured Sendspin::configure(CreateOf<spec>& cx, const Checked& now) {
 	if (!now.get<rows::server>()) cx.claim(claim::TcpListen{now.get<rows::port>()});   // judged first (6.8)
-	SourceWriter& played = cx.source(fromServer, {.frames = feedFramesFor(cx.format())});   // companions.md
+	auto clock = std::make_unique<SendspinClock>(cx.format().rate);   // timing-model.md 6: honest, local skip
+	SendspinClock& progress = *clock;                                    // freed with the source, after the worker
+	SourceWriter& played = cx.source(fromServer, {.frames = feedFramesFor(cx.format())}, std::move(clock));
 	cx.loop(worker, std::make_unique<Worker>(WorkerParts{
-		.handle = node_.handle(), .keys = cx.store(keyFile), .played = played,
+		.handle = node_.handle(), .keys = cx.store(keyFile), .played = played, .progress = progress,
 		.self = cx.executor(worker), .notifier = cx.executor(notifier), .settings = settingsFrom(cx.node(), now)}));
-	cx.sink(toServer, {.frames = cx.format().rate / 2}).consumedBy(worker, &Worker::toServer);   // begun before running
+	const auto half = static_cast<std::uint32_t>(FrameClock(cx.format().rate).frames(500ms));   // no rate arithmetic
+	cx.sink(toServer, {.frames = half}).consumedBy(worker, &Worker::toServer);   // begun before running
 	cx.use(passThrough({bankPair(to, toServer), bankPair(fromServer, from)}));
 	return Configured::applied();
 }
@@ -148,7 +696,7 @@ void Worker::begin() {   // on the worker loop, after start()
 	KeyRecord record = KeyRecord::parseTrusted(keys_.text());   // the store's rule already trusted the text
 	startClient(std::move(record));                             // make, start, listen or dial
 	tick_ = self_.every(std::chrono::milliseconds{10}, [this] { tick(); });            // client.loop(), watch, mDNS
-	notifier_.post([this] { notified_ = notifier_.onWake(played_.playedWake(), [this] { notify(); }); });
+	notifier_.post([this] { notified_ = notifier_.onWake(played_.clockWake(), [this] { notify(); }); });
 }
 void Worker::end() {     // on the worker loop, after stop(); also queued ahead of the destructor at removal
 	notifier_.post([this] {
@@ -166,7 +714,8 @@ std::size_t Worker::on_audio_write(std::uint8_t* data, std::size_t length, std::
 }
 ```
 
-What the author no longer writes: a thread, a poll loop, an eventfd, a mailbox, a feed, a capture anchor, realtime code,
+What the author no longer writes: a thread, a poll loop, an eventfd, a feed, a capture anchor, realtime code beyond its
+source's clock (`timing-model.md` 6.1: a skip and a report, the report in its own mailbox),
 note pacing, a claims map, a probe, a `HeldPort`, a key file's open, mode or sweep, a `NodeConfig`, a `NodeTypeOf`, a
 latency declaration, a folder parameter, a close hook, or a lambda that carries resources between hooks.
 
@@ -208,7 +757,7 @@ public:
 	explicit RtpSend(NodeOf<spec>& node) : node_(node) {}
 	Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& now) {
 		cx.claim(claim::Udp{now.get<rows::sourcePort>()});
-		SinkRequest& sink = cx.sink(wire, {.frames = cx.format().rate / 10});
+		SinkRequest& sink = cx.sink(wire, {.frames = static_cast<std::uint32_t>(FrameClock(cx.format().rate).frames(100ms))});
 		cx.loop(control, std::make_unique<Sender>(node_.handle(), cx.store(ssrcFile), cx.executor(control), ...));
 		sink.consumedBy(control);                              // the loop's state is itself the consumer
 		cx.use(passThrough({bankPair(send, wire)}));
@@ -220,7 +769,7 @@ private:
 }
 ```
 
-Neither `start()` nor `stop()` is written: the sink's arming by position starts and stops the sending, and the socket
+Neither `start()` nor `stop()` is written: the drives that bind and unbind the sink start and stop the sending, and the socket
 stays open while stopped. The SSRC file is `rtpsend-<node>.ssrc`, created with `newSsrc()` on first configure; a
 corrupt one fails the node `start-failed: rtpsend-<node>.ssrc: malformed: ...` and is not replaced. A second node on the
 same source port fails `start-failed: cannot bind UDP port 5006: held by node <n>`; removing one node and adding
@@ -280,7 +829,7 @@ them all (R26).
 | Recording (6.10) | `cx.recording({path})`: a descriptor, usable once configured | claimed (1), opened (2), 5 s | its consumer's `begin` writes the header | written by its consumer while driven | closed (5) |
 | Loop (6.3) | declared in the spec; `cx.loop(h, state)`, `cx.executor(h)`; posts and arming staged | started (3) with its state, nothing run | staged items released, in order | `start()` and `stop()` post to it | closed to others (1); runs what was posted, then destroys its state on its thread (4); freed (5) |
 | Node handle (5) | `node.handle()` | — | `lost`, `log`, `say` | the same | detached at 1 for facts; re-pointed at a leak |
-| Source writer (`companions.md`) | `cx.source(bank, ...)` | the companion's | written by one thread | written while the type plays | closed (1); ring freed (5) |
+| Source writer (`docs/writing-a-node-type.md#sources`) | `cx.source(bank, ...)` | the companion's | written by one thread | written while the type plays | closed (1); ring freed (5) |
 | Sink consumer (built, `sink.hpp`) | `cx.sink(bank, ...)`, `consumedBy(...)` | `begin` (4') | — | `consume` on the sink's thread for exactly the cycles the code drives | drained, `finish` (3) |
 | I/O executor (6.6) | — | runs the opens (2) | runs store writes | the same | completions after teardown dropped |
 
@@ -323,7 +872,7 @@ wrong mode does not compile, R33; the `ChangeOf<spec>` members are 3d's, `reconf
 | 1 | **Claims**, in the same main-loop turn as `configure` returned (6.8). A refusal fails the node now, and nothing below is touched. A wait holds every later step. Once all are granted, ports are probed (main thread, a non-blocking bind) | `start-failed: <claim's text>` |
 | 2 | **Stores and recordings**, opened on the I/O executor, one job each, in request order (5 s each) | `start-failed: <file>: <why>`; `start-failed: cannot open <path>: <why>` |
 | 3 | **Loops**, once step 2 is ready: dedicated threads started, strands registered, each with its state. Threads last, so a refused store starts none | `start-failed: cannot start loop <name>: <errno text>` |
-| 3' | Companions, once the block is ready and step 1 granted, in parallel with 2 and 3 (built for cards and receivers; `companions.md` for the rest) | `engine-refused: <detail>` |
+| 3' | Companions, once the block is ready and step 1 granted, in parallel with 2 and 3 (built: `docs/engine.md#engine-companions`, `#readiness-deadlines`; a sink once its consumer began, a source at once) | `engine-refused: <detail>` |
 | 4' | Every sink consumer has begun (built) | `start-failed: <detail>` |
 
 Then the node is `configured`: the code is prepared and the work staged on its loops is released; wanted running, the
@@ -336,11 +885,11 @@ that started destroys its state on its own thread. `waitingFor` (built, `docs/co
 ### 6.2 Wakes: the framework's, for now
 
 A thread (the realtime one included) tells a loop "look now", at most once until the loop answers. After 3b the only
-wakes are the framework's: a source companion's played wake, and later the status bell (slice 5). Types do not ask for
+wakes are the framework's: a source's clock wake (`timing-model.md` 4.2), and later the status bell (slice 5). Types do not ask for
 wakes in 3c (G23).
 
-- **`Wake`** is declared in core by 3b (`companions.md` 3.3): `ring() noexcept` does
-  `if (!pending_.exchange(true, acq_rel)) write(efd_, 1);`.
+- **`Wake`** is declared in core (built, `ear/core/source.hpp`; its eventfd is `EventSources`' in `ear_pipewire`):
+  `ring() noexcept` does `if (!pending_.exchange(true, acq_rel)) write(efd_, 1);`.
 - **Answered** by the loop that watches it (`Loop::onWake`, 6.3), in this order: `read(efd)` (draining it), then
   `pending.store(false, release)`, then the handler. A ring after the drain and before the clear finds `pending` still
   true and writes nothing, but the handler that follows sees its data; a ring after the clear writes the eventfd again.
@@ -441,7 +990,7 @@ protected:
 
 ### 6.4 A source's writer: one at a time
 
-The writer's interface and closing contract are `companions.md` 3.3's. This slice adds the rule its users must keep:
+The writer's interface and closing contract are built (`docs/writing-a-node-type.md#sources`). This slice adds the rule its users must keep:
 
 - **One writer at a time, handed over by a join or a post.** The ring is single-producer (`FrameRing`). A type may
   change which thread writes (3d: sendspin's new client brings a new sync thread), but only after the old writer's last
@@ -457,8 +1006,12 @@ The writer's interface and closing contract are `companions.md` 3.3's. This slic
 
 `SinkConsumer` (`begin`, `consume`, `finish`) is built (`sink.hpp`). This slice adds `consumedBy(loop, &State::member)`
 and `consumedBy(loop)`, so a consumer may be a member of a loop's state (sendspin's `ToServer`, which then reaches the
-library's source role on the worker's state) or the state itself (the RTP sender). The consumer's `begin` still runs on
-the sink's thread before the node is configured, and a stop's silence still disarms it by position without telling it
+library's source role on the worker's state) or the state itself (the RTP sender). As a sink's consumer `ToServer`
+takes its upstream: it dates each piece by its chunk, `FrameClock::enteredRawNs(chunk.startRawNs, offset,
+{0, chunk.upstreamFrames})` (`docs/engine.md#dating`), so a card's capture reaches the server dated by when it entered
+the graph, not by its cycle's start (`docs/node-types.md#clock`), and the capture anchor goes.
+The consumer's `begin` still runs on
+the sink's thread before the node is configured, and a stop's silence still unbinds it without telling it
 (it sees the gap in positions). `SinkControl` (`pause`, `resume`) is 3d's (`reconfigure.md` 6.4).
 
 ### 6.6 The I/O executor
@@ -607,7 +1160,7 @@ another thread is asynchronous; the main loop never joins a thread that has not 
 
 | Step | What | Threads it waits on |
 |---|---|---|
-| 1 | `stop()` if `start()` was called and not answered (built); the fade and ear's barrier (built), at whose position every companion disarms; `release`; every source writer closed; every loop closed to others (queued actions answered); if the node is not configured yet: its claim waits leave the queue, its pending opens are orphaned (6.6), and readiness steps it had not reached never start | the data loop, asynchronously, within the built bounds |
+| 1 | `stop()` if `start()` was called and not answered (built); the fade and ear's barrier (built), which unbinds every ring companion; `release`; every source writer closed; every loop closed to others (queued actions answered); if the node is not configured yet: its claim waits leave the queue, its pending opens are orphaned (6.6), and readiness steps it had not reached never start | the data loop, asynchronously, within the built bounds |
 | 2 | Companions destroyed | none |
 | 3 | Sinks drained: each hands what its ring holds to its consumer and calls `finish` on its own thread | sinks' threads |
 | 4 | Each loop closes: it takes no new work, runs the work already posted (`stop()`'s goodbye), destroys its state on its own thread (where a library's threads are joined), cancels and counts any source still armed (`ear.loop-source-left`), and reports | loop threads, and the threads a state joins |
@@ -641,8 +1194,8 @@ written by a sink's consumer.
 
 ```cpp
 struct RecordingRequest { std::string path; };   // unchanged: relative to the recordings folder
-// configure: int fd = cx.recording({path});  claims recording:<normalised path>; the descriptor, open, created or
-//                                             truncated, usable once configured
+// configure: Recording& file = cx.recording({path});  claims recording:<normalised path>; its descriptor, created
+//                                                     or truncated, valid from the consumer's begin (section 0.3)
 class RecordingAdapter {   // amended; main.cpp's adapter over ear_folder
 public:
 	/// Main thread. Creates or truncates `path` beneath the folder on the I/O executor (openat2, RESOLVE_BENEATH, as
@@ -788,6 +1341,14 @@ client is destroyed on the worker before the worker's state is, so no thread of 
 Configure refuses a tree without the patch (`cmake/CarriedPatch.cmake`, built); `sendspin_patched_dep` takes a list of
 patches. Offering it upstream is worth a try (U8).
 
+**What it retires in the tests and the counts** (moved here when the cycle-facts design was retired, its steps all
+built). The `sendspin` clock tests match a library line within an interim reach, `kLogReach` and `kLogLag`, and
+stretch a loss of sync by `kLogLag` (`inLoss`), because a line read from standard error is stamped when it was read,
+not where its audio plays (`docs/testing.md#the-librarys-own-word`); with the patch, ear's sink stamps each line with
+the feed's write position, so a line names the frame it acts on and the three go. A count of the library's re-locks,
+when ear keeps one, is the node's status (`control-plane.md` 3.1), not a framework counter; and a legacy handoff's
+drops, in `node.gone`'s `droppedFrames` today, become the sink companion's `dropped` when S3c.6 retires the handoff.
+
 ## 10. The type harness, for slice 3c
 
 `TypeHarness<spec, Type>` runs a type over a real `NodeHost` with in-memory fakes (built: `parse`, `add`,
@@ -838,7 +1399,8 @@ sendspin's namespace becomes `ear::nodes::sendspin`. S3c.6 makes every change be
 | File | Fate |
 |---|---|
 | `include/ear/nodes/sendspin.hpp` | `makeSendspinNodeType()`, no argument |
-| `feed.*`, `mailbox.hpp`, `sendspin_code.*`, the capture anchor | deleted: a source on `from_server` and a sink on `to_server` |
+| `feed.*`, `sendspin_code.*`, the capture anchor | deleted: a source on `from_server` and a sink on `to_server`; `sendspin_code.*`'s playback half (T2's honest wrapper) becomes `sendspin_clock.*`, the source's clock (`timing-model.md` 6) |
+| `mailbox.hpp` | kept: the clock's report (`PlayProgress`) to the notifier |
 | `sendspin_type.cpp` | renamed `sendspin.cpp`: the class `Sendspin`, `makeSendspinNodeType`. `SendspinConfig`, `SendspinType`, `HeldPort` and the boot sweep go |
 | new `sendspin_spec.hpp` | rows (moved from `settings.hpp`), banks, `keyFile`, `worker`, `notifier`, `spec`, `Sendspin`, `feedFramesFor`, `emptyKeyRecord`, `whyNotKeyRecord` |
 | `settings.*` | `ServerUrl`, `parseName`, `SendspinSettings`, `settingsFrom`; namespace only |
@@ -853,7 +1415,7 @@ fake.
 
 | sendspin test file | Fate |
 |---|---|
-| `code_test.cpp`, `feed_test.cpp`, `to_server_test.cpp` | the skip and dating cases are the source companion's (3b); `to_server`'s adapt to stamped chunks |
+| `code_test.cpp`, `feed_test.cpp`, `to_server_test.cpp` | the skip and dating cases become the clock's unit rows (`timing-model.md` 6.4) through the harness, the ring's are the source's (3b); `to_server`'s adapt to stamped chunks |
 | `port_claims_test.cpp` | the claim case moves to core (`ClaimRegistry`); the probe cases to `ear_runtime`, plus a UDP port held with SO_REUSEADDR refused |
 | `notes_test.cpp` | `NoteGate`'s cases move to core's node handle tests; `printable` and the texts stay |
 | `keys_test.cpp` | open, narrow, create, symlink, size and replace cases move to `ear_runtime` (`ConfinedStores`); the record's own cases stay, over a harness store |
@@ -865,16 +1427,19 @@ fake.
 
 ## 13. The cut: buildable steps
 
+Superseded by section 0.5, which re-cuts these steps against today's code; the test lists below are
+the ones 0.5 cites.
+
 Each step keeps every test green and changes no audio path.
 
 | Step | What | Tests it adds |
 |---|---|---|
-| **S3c.1 Node handle** | `NodeHandle` replaces `InsidesEvents`; `node.handle()`; `NodeHost::logTo`; `say` paced in core per node (sendspin's `NoteGate` stays until S3c.6, so its notes are paced twice, harmlessly) | a node's log carries its node; a log after detach dropped; a late message from an older generation dropped; a goodbye note heard; pacing 32 then 1/s with `notes-dropped`, per node, kept across a stop and a start; `lost` never held back |
+| **S3c.1 Node handle** (done: 26d2bf56cf) | `NodeHandle` replaces `InsidesEvents`; `node.handle()`; `NodeHost::logTo`; `say` paced in core per node (sendspin's `NoteGate` stays until S3c.6, so its notes are paced twice, harmlessly) | a node's log carries its node; a log after detach dropped; a late message from an older generation dropped; a goodbye note heard; pacing 32 then 1/s with `notes-dropped`, per node, kept across a stop and a start; `lost` never held back |
 | **S3c.2 Registry and I/O thread** | `ear_runtime`; `ResourceAdapters`; `IoThread` with shared-state jobs and its stop; `ear_refuse_node_type_links` refuses `ear_runtime` and `ear_pipewire` | a null adapter refuses its kind; a job's completion for a gone configuration dropped and its descriptor closed; the I/O thread busy at stop; the link refusal on each package |
 | **S3c.3 Loops** | `loop.hpp`, `Loops`, `TypeSpec::loops`, `StrandPool`, `DedicatedLoops`; `cx.loop`, `cx.executor`, typed posts; staging until configured; `postFromOutside`, `closeToOthers`; teardown step 4; the source count; `Loop::onWake` on `EventWake`; the harness's loops and clock | post order; `after`, `every` (coalescing), `onWake` (a pending wake fires once on arming), `onReadable`; staged work runs only once configured, never after a configuration that failed first; a state destroyed on its own thread; a post typed for another loop's state does not compile; outside work refused from step 1; a source left armed; a dedicated loop that never drains leaked with "1 loops open"; `ear.loop-slow`; a stuck strand gets a replacement thread; the blocking assert on a strand; the wake's drain-then-clear order |
-| **S3c.4 Stores** | `StoreRule`, `Stores`, `TypeSpec::stores`, `NodeType::stores()`; `ConfinedStores` with sweep, open at step 2, serialised writes, the 5 s deadlines | store open (missing, created, symlink, too big, distrusted with the file untouched, mode narrowed before judging); `replace` refused when changed; two writes in flight both commit in order; sweep over declared stores; an open past its deadline dropped; one compile test of every `TypeSpec` subset spelling (U1); compile-fail cases: two stores of one suffix, a bad suffix, `maxBytes` left out, a mode beyond 0777, a store or loop handle the spec lacks |
+| **S3c.4 Stores** (done: 935070c4b4) | `StoreRule`, `Stores`, `TypeSpec::stores`, `NodeType::stores()`; `ConfinedStores` with sweep, open at step 2, serialised writes, the 5 s deadlines | store open (missing, created, symlink, too big, distrusted with the file untouched, mode narrowed before judging); `replace` refused when changed; two writes in flight both commit in order; sweep over declared stores; an open past its deadline dropped; one compile test of every `TypeSpec` subset spelling (U1); compile-fail cases: two stores of one suffix, a bad suffix, `maxBytes` left out, a mode beyond 0777, a store or loop handle the spec lacks |
 | **S3c.5 Claims, recordings** | `claim::TcpListen`, `claim::Udp`, `ClaimRegistry` at step 1, `KernelPortProbe`; implicit store, recording and RTP receiver claims; recordings deferred onto the I/O executor; the leaked-configuration record, late close, auto-start (R15); `ear.claim-wait`, `ear.close-late` in `output-records.json`; `waitingFor`'s new kinds | granted; refused (running holder, across types) before any open or thread; waited (a removed node on 8928 and an added one in one plan; `rec` removed and `rec2` added on one path); the 15 s deadline; two nodes whose restarts swap ports both run, teardowns finishing in either order; an abandoned port re-probed; a store and a recording path refused while a leaked configuration holds them, then freed by its late close and the node running by itself (a system test: a peer that never answers at stop); probe cases moved; system tests for visible changes 2 and 3 |
-| **S3c.6 sendspin moves** | section 12, from today's SPI in one step: the class, its source and sink companions, its worker a loop state; the legacy adapter and the old SPI go (`LegacyInstance`, `StartContext`, `StartResult`, `RunRecipe`, `Ready`, `RunObject`, `HandoffRequest`, `RtWriter`, `HandoffConsumer`, `HandoffAdapter`, `ThreadHandoffs`, the `RunCode` alias, `NodeConfig::start` and `make`'s default); `node_folders.hpp`, the folder argument and `notYetInHarness` go; the thread guard | `type_test.cpp`; sendspin in the all-type harness test; the guard on each spelling; every system test (U4); `handoff_test.cpp` goes (its cases are `sink_test.cpp`'s) |
+| **S3c.6 sendspin moves** | section 12, from today's SPI in one step: the class, its source (with `SendspinClock`, `timing-model.md` 7) and sink companions, its worker a loop state; the legacy adapter and the old SPI go (`LegacyInstance`, `StartContext`, `StartResult`, `RunRecipe`, `Ready`, `RunObject`, `HandoffRequest`, `RtWriter`, `HandoffConsumer`, `HandoffAdapter`, `ThreadHandoffs`, the `RunCode` alias, `NodeConfig::start` and `make`'s default); `node_folders.hpp`, the folder argument and `notYetInHarness` go; the thread guard | `type_test.cpp`; sendspin in the all-type harness test; the guard on each spelling; every system test (U4); `handoff_test.cpp` goes (its cases are `sink_test.cpp`'s) |
 | **S3c.7 The log patch** | `cmake/sendspin-log.patch`; `sendspin_patched_dep` with a patch list; the worker's state sets the sink and context | `ear_carried_patch_check` for both patches; a library line from the worker and one from the sync thread arrive as `log` records with the node (U2); two nodes' lines told apart; a line outside any scope is unattributed |
 | **S3c.8 Words** | AGENTS.md, `docs/writing-a-node-type.md`, `docs/node-types.md` (sendspin), the `sendspin` skill; this page deleted, its lasting content moved there | — |
 
@@ -956,7 +1521,8 @@ any.
 
 - **U1.** Aggregate deduction for `TypeSpec{.settings, .banks, [.stores], [.loops]}` with defaulted later parameters on
   GCC 14: S3c.4 compiles every subset spelling first; slice 5 extends it. Fallback: a consteval `makeSpec(...)` with the
-  same members in the same order.
+  same members in the same order. *Held for `.stores` and `.loops` (S3c.4, `type_spec_test.cpp`)*; slice 5's members
+  are still to check.
 - **U2.** That every `SS_LOG*` line sendspin's tests provoke runs inside a scope: S3c.7's system test counts
   unattributed `sendspin-cpp` records over the pairing and connection tests; each one found is a missed entry point.
 - **U3.** That the library calls the persistence provider only on threads in the client's scope (`client.cpp:1648-1741`,

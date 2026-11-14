@@ -1,13 +1,17 @@
 // The sendspin node's audio both ways, and what a stream does: a ramp to the file, noise to the server, a depth the server cannot change, the lead after a clear.
 // (Shared helpers: sendspin_system.hpp.)
 
+#include <algorithm>
 #include <chrono>
+#include <climits>
 #include <cmath>
 #include <csignal>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <optional>
+#include <ostream>
 #include <sstream>
 #include <string>
 
@@ -17,8 +21,113 @@ namespace {
 
 using namespace ear::test;
 
-/// How long a source's first chunk may take from capture to the server: a chunk, the library's buffer, the handoff's wake.
-constexpr std::int64_t captureToArrivalBoundUs = 500000;
+/// How far a chunk's stamp may stand from the last one's plus that one's length, or that and whole blocks, and still be
+/// the frames' own time: the stamps are dated by the graph's cycles (docs/node-types.md#clock), so between cycles the
+/// host left alone they step by the frames exactly, but for the microseconds each is rounded to and the internal clock's
+/// loop moves. It only reads a step's shape; a step of whole blocks is excused by ear's records of the cycles it lost.
+constexpr std::int64_t stampSlackUs = 200;
+/// The least a chunk takes from its capture to the server when nothing holds it up: its own length (a piece is at most
+/// 100 ms), the library's send and the socket. Judged on the quickest chunk of the stream, which only a stamp on another
+/// clock or carrying an offset can keep above it; a loaded host only slows the others.
+constexpr std::int64_t quickestArrivalBoundUs = 250000;
+
+/// How much earlier than its measured capture a skip's window opens: the server's clock read onto the test's wall clock
+/// by the quickest chunk's arrival (SourceStamps::wallOffsetUs), which a slower read of every chunk could only have put
+/// later by the time the test took to read it, and a beat of slack.
+constexpr auto captureSlack = std::chrono::milliseconds(100);
+
+/// A block's time in nanoseconds, kept exact: k blocks are k times this, rounded once.
+constexpr std::int64_t blockNs = std::int64_t{blockSize} * 1000000000 / graphFrequency;
+
+/// The source's chunks as they arrive, judged against their stamps: each step from the last stamp is the last chunk's
+/// length (a clean step), or more by whole blocks when cycles were skipped (counted, and in all no more than the cycles
+/// ear's records say it lost, nor the time that passed on the server's clock: the frames skip nothing, the stamps move
+/// on by the graph's lost time, which is whole cycles: spike S6 in spikes_test.cpp), each within the slack, and never
+/// anything else.
+struct SourceStamps {
+	std::size_t chunks = 0;
+	std::size_t cleanFrames = 0;     // frames whose chunk followed the last with a clean step
+	std::size_t skips = 0;           // steps longer by whole blocks: the host skipped cycles while capturing
+	std::int64_t skippedUs = 0;      // what those steps added: the graph's lost time
+	std::uint64_t skippedBlocks = 0; // and in blocks, each skip paid by a record of ear's (unpaidSkips)
+	/// Each skip as seen: its blocks, the stamp of the chunk before it and its excess (server clock, us), when this
+	/// chunk arrived (wall clock), and where it was seen.
+	struct Skip {
+		std::uint64_t blocks;
+		std::int64_t beforeStampUs;
+		std::int64_t excessUs;
+		RecordTime arrived;
+		std::string what;
+	};
+	std::vector<Skip> skipped;
+	/// The least of (when the test read a chunk, on the wall clock) - (when it arrived, on the server's clock), us: the
+	/// server's clock onto the wall clock, late by at most the quickest read.
+	std::optional<std::int64_t> wallOffsetUs;
+	std::optional<RecordTime> lastArrived;
+	std::size_t offSteps = 0; // any other step: not the frames' time
+	std::int64_t worstCleanUs = 0;
+	std::int64_t quickestLagUs = INT64_MAX;
+	std::int64_t leastLagUs = INT64_MAX; // arrival - stamp: below 0 the stamp is in the server's future
+	std::optional<std::int64_t> firstArrivalUs;
+	std::int64_t lastArrivalUs = 0;
+	std::optional<std::int64_t> lastStampUs;
+	std::size_t lastFrames = 0;
+
+	/// `arrived`: when the test read the chunk's event; `lagUs` its arrival on the server's clock less its stamp.
+	void take(std::size_t frames, std::int64_t stampUs, std::int64_t lagUs, RecordTime arrived) {
+		++chunks;
+		leastLagUs = std::min(leastLagUs, lagUs);
+		quickestLagUs = std::min(quickestLagUs, lagUs);
+		if (!firstArrivalUs) firstArrivalUs = stampUs + lagUs;
+		lastArrivalUs = stampUs + lagUs;
+		const std::int64_t offsetUs = arrived.time_since_epoch().count() - (stampUs + lagUs);
+		wallOffsetUs = std::min(wallOffsetUs.value_or(offsetUs), offsetUs);
+		if (lastStampUs) {
+			const std::int64_t lengthUs = static_cast<std::int64_t>(lastFrames) * 1000000 / graphFrequency;
+			const std::int64_t excessUs = stampUs - *lastStampUs - lengthUs;
+			// The whole blocks nearest the excess, and how far it lies from them.
+			const std::int64_t blocks = (excessUs * 1000 + blockNs / 2) / blockNs;
+			const std::int64_t offUs = excessUs - blocks * blockNs / 1000;
+			if (excessUs > 0 && blocks >= 1 && std::abs(offUs) <= stampSlackUs) {
+				++skips;
+				skippedUs += excessUs;
+				skippedBlocks += static_cast<std::uint64_t>(blocks);
+				skipped.push_back(
+					Skip{static_cast<std::uint64_t>(blocks), *lastStampUs, excessUs, arrived,
+				         "a stamp step of " + std::to_string(blocks) + " blocks at chunk " + std::to_string(chunks)});
+			} else if (excessUs > stampSlackUs || excessUs < -stampSlackUs) {
+				++offSteps;
+			} else {
+				cleanFrames += frames;
+				worstCleanUs = std::max(worstCleanUs, std::abs(excessUs));
+			}
+		}
+		lastStampUs = stampUs;
+		lastFrames = frames;
+		lastArrived = arrived;
+	}
+
+	/// Each skip with when its cycles were lost (docs/testing.md#the-counters-own-word): while its chunk or the one
+	/// before was captured, so from the capture of the chunk before (its stamp, earlier still by the skip's own excess
+	/// when the loss fell inside it and moved its stamp on), read onto the wall clock by the measured arrivals, less
+	/// captureSlack, to when this chunk arrived.
+	std::vector<SeenSkip> seen() const {
+		std::vector<SeenSkip> out;
+		for (const Skip& skip : skipped) {
+			const RecordTime captured{
+				std::chrono::microseconds(skip.beforeStampUs - skip.excessUs + wallOffsetUs.value_or(0))};
+			out.push_back({skip.blocks, captured - captureSlack, skip.arrived, skip.what});
+		}
+		return out;
+	}
+};
+
+inline std::ostream& operator<<(std::ostream& out, const SourceStamps& stamps) {
+	return out << stamps.chunks << " chunks, clean frames " << stamps.cleanFrames << ", skips " << stamps.skips
+	           << " adding " << stamps.skippedUs << " us (" << stamps.skippedBlocks << " blocks), steps off "
+	           << stamps.offSteps << ", worst clean step " << stamps.worstCleanUs
+	           << " us off its length, quickest arrival " << stamps.quickestLagUs << " us";
+}
 
 } // namespace
 
@@ -45,7 +154,24 @@ TEST_CASE("Paired, routed noise reaches the server on the routed channel, with e
 	const auto started = server.waitForEvent("source-started ", deadline);
 	REQUIRE(started);
 	CHECK(*started == "source-started 48000 2 24");
-	REQUIRE(server.waitForEvent("source-heard", deadline));
+	// Chunk by chunk until a second of frames has come on clean steps and one chunk came as quickly as nothing holding
+	// it up allows: a host that skips cycles or holds chunks up only makes the source stream longer
+	// (docs/testing.md#making-the-rare-event). The deadline only fails the test.
+	SourceStamps stamps;
+	const auto until = std::chrono::steady_clock::now() + rampDeadline;
+	while (stamps.cleanFrames < graphFrequency || stamps.quickestLagUs > quickestArrivalBoundUs) {
+		const auto left =
+			std::chrono::duration_cast<std::chrono::milliseconds>(until - std::chrono::steady_clock::now());
+		const auto chunk = left.count() > 0 ? server.waitForEvent("source-chunk ", left) : std::nullopt;
+		INFO(stamps);
+		REQUIRE(chunk);
+		std::istringstream fields(chunk->substr(std::string("source-chunk ").size()));
+		std::size_t frames = 0;
+		std::int64_t stampUs = 0;
+		std::int64_t lagUs = 0;
+		fields >> frames >> stampUs >> lagUs;
+		stamps.take(frames, stampUs, lagUs, wallNow());
+	}
 	server.send("source-stop");
 	REQUIRE(ear.waitForLine("node ma says sending-stopped", deadline));
 	const auto ended = server.waitForEvent("source-ended ", deadline);
@@ -55,24 +181,30 @@ TEST_CASE("Paired, routed noise reaches the server on the routed channel, with e
 	std::size_t frames = 0;
 	double rms = 0.0;
 	std::size_t rightNonZero = 0;
-	std::int64_t stampsUs = 0;
-	std::size_t framesBeforeLast = 0;
-	std::int64_t arrivalLagUs = 0;
-	fields >> frames >> rms >> rightNonZero >> stampsUs >> framesBeforeLast >> arrivalLagUs;
+	fields >> frames >> rms >> rightNonZero;
 	CHECK(frames >= graphFrequency);
-	CHECK(rms == Approx(0.577).margin(0.03)); // uniform noise in [-1, 1)
+	// Uniform noise in [-1, 1), within 6 standard deviations for the frames measured
+	// (docs/testing.md#statistics-from-the-count).
+	INFO("left RMS " << rms << " over " << frames << " frames, sigma " << noiseRmsSigma(frames));
+	CHECK(noiseRmsWithin(rms, frames, 6.0));
 	CHECK(rightNonZero == 0);
-	const auto durationUs = static_cast<std::int64_t>(framesBeforeLast) * 1000000 / graphFrequency;
-	CHECK(std::abs(stampsUs - durationUs) <= 50000);
-	// On the server's own clock the first chunk was captured a moment before it arrived: a stamp on another clock, or carrying
-	// an offset, shows here and not in the difference above.
-	INFO("first chunk's arrival - its stamp: " << arrivalLagUs << " us");
-	CHECK(arrivalLagUs >= 0);
-	CHECK(arrivalLagUs <= captureToArrivalBoundUs);
+	INFO(stamps);
+	// No stamp steps off its frames, and on the server's own clock no chunk arrived before its capture: a stamp
+	// on another clock, or carrying an offset, shows in one of these or keeps every chunk slower than the bound above.
+	CHECK(stamps.offSteps == 0);
+	CHECK(stamps.leastLagUs >= 0);
+	// The graph cannot lose more time than passed: the skips' steps together fit between the first chunk's arrival and
+	// the last's, on the server's clock.
+	CHECK(stamps.skippedUs <= stamps.lastArrivalUs - stamps.firstArrivalUs.value_or(stamps.lastArrivalUs));
 
 	ear.signal(SIGTERM);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 	CHECK(ear.hasLine("node ma removed dropped=0"));
+	// Every skip is paid by a record of ear's of the cycles lost while its chunk was captured, its records complete once
+	// it stopped (docs/testing.md#the-counters-own-word).
+	const auto unpaid = unpaidSkips(ear, stamps.seen());
+	INFO(lostCycles(ear) << "; unpaid: " << json(unpaid).dump());
+	CHECK(unpaid.empty());
 }
 
 TEST_CASE("A server lost mid-stream leaves the node running, and restarted with its state it "
@@ -126,13 +258,17 @@ TEST_CASE("A server lost mid-stream leaves the node running, and restarted with 
 	REQUIRE(back);
 	CHECK(*back == connectedPaired);
 	CHECK(countLines(ear, pairingCodePrefix) == 1);
-	const std::size_t endsBefore = countLines(ear, "node ma says stream-ended");
-	server.send("play 1.5");
-	REQUIRE_SEEN(ear, waitForNthLine(ear, "node ma says stream-ended", endsBefore, playDeadline));
+	// The new stream's ramp, in what is written from here on.
+	const std::size_t mark = wavFramesSoFar(directory.recordings() / "rec.wav");
+	server.send(playLong);
+	REQUIRE_SEEN(ear, waitForRamp(
+						  directory.recordings() / "rec.wav",
+						  [](const RampSoFar& ramp) { return ramp.lastRunFrames >= rampFramesAtLeast; }, mark));
+	REQUIRE_SEEN(ear, endStream(ear, server));
 
 	ear.signal(SIGTERM);
-	REQUIRE_SEEN(ear, ear.waitForExit(deadline) == 0);
-	const RampCheck ramp = checkRamp(readWav(directory.recordings() / "rec.wav"));
+	REQUIRE_SEEN(ear, waitForStop(ear) == 0);
+	const RampCheck ramp = checkRamp(readWav(directory.recordings() / "rec.wav"), lostSyncUs(ear));
 	INFO(ramp);
 	CHECK(ramp.lastRunFrames >= rampFramesAtLeast);
 	CHECK(ramp.badFrames == 0);
@@ -150,22 +286,27 @@ TEST_CASE("A server cannot change the depth of a running stream: asked for 16 bi
 	REQUIRE(ready);
 	pairOnce(ear, server);
 
-	server.send("play 3");
+	server.send(playLong);
 	REQUIRE(server.waitForEvent("play-start ", playDeadline));
 	server.send("prefer-16");
 	const auto answer = server.waitForEvent("prefer-16 ", deadline);
 	REQUIRE(answer);
 	CHECK(*answer == "prefer-16 false");
-	REQUIRE_SEEN(ear, ear.waitForLine("node ma says stream-ended", playDeadline));
+	// Two and a half seconds of the ramp in one run, exact, after the ask: the depth stayed. What it is judged on is
+	// the frames, every one exact or a blend; the steps between runs are the library's own re-alignment, which under
+	// load it can make while aligning and so logs nothing ear can read (a drop of 4666 frames after 7229 of silence,
+	// once, under the clock tests' load): until its log reaches ear (slice 3c), a step is no evidence here.
+	REQUIRE_SEEN(ear, waitForRamp(directory.recordings() / "rec.wav",
+	                              [](const RampSoFar& ramp) { return ramp.lastRunFrames >= graphFrequency * 5 / 2; }));
+	REQUIRE_SEEN(ear, endStream(ear, server));
 	ear.signal(SIGTERM);
-	REQUIRE(ear.waitForExit(deadline) == 0);
+	REQUIRE(waitForStop(ear) == 0);
 	CHECK(countLines(ear, "node ma says stream ") == 1);
 	CHECK(ear.hasLine("node ma says stream flac 48000 2 24"));
-	const RampCheck ramp = checkRamp(readWav(directory.recordings() / "rec.wav"));
+	const RampCheck ramp = checkRamp(readWav(directory.recordings() / "rec.wav"), lostSyncUs(ear));
 	INFO(ramp);
-	CHECK(ramp.rampFrames >= graphFrequency * 5 / 2);
+	CHECK(ramp.lastRunFrames >= graphFrequency * 5 / 2);
 	CHECK(ramp.badFrames == 0);
-	CHECK(ramp.badSteps == 0);
 }
 
 TEST_CASE("A large block raises the lead the player reports to what still plays after a clear", "[system][sendspin]") {
@@ -182,5 +323,5 @@ TEST_CASE("A large block raises the lead the player reports to what still plays 
 	REQUIRE(lead);
 	CHECK(*lead == "lead 256"); // the feed's 8192 frames and a block of 4096, at 48 kHz
 	ear.signal(SIGTERM);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 }

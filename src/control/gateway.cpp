@@ -12,9 +12,11 @@
 // gateway), never the gateway itself, except watch(), which runs before any command.
 #include "ear/control/gateway.hpp"
 
+#include <algorithm>
 #include <map>
 #include <optional>
 #include <utility>
+#include <vector>
 
 namespace ear::control {
 namespace {
@@ -28,6 +30,9 @@ struct Sent {
 	bool told = true;
 };
 using SentMap = std::map<NodeName, Sent, std::less<>>;
+/// The companion list last sent for each node a client holds (main loop only): [] from its node.added, gone at its
+/// node.removed. A name absent is not held.
+using CompanionsMap = std::map<NodeName, std::vector<CompanionView>, std::less<>>;
 
 /// The health as the wire compares it: `superseded` is never on the wire.
 NodeHealth onWire(NodeHealth health) {
@@ -42,9 +47,13 @@ struct MainLoopGateway::Impl {
 	Executor& control;
 	GraphRequests& requests;
 	WallClock clock;
-	EventSink* sink = nullptr; // main loop only
+	EventSink* sink = nullptr;                 // main loop only
+	const NodeCounterSource* counts = nullptr; // main loop only
 	/// Each node's health as last sent (main loop only), forgotten when the node leaves the graph.
 	std::unique_ptr<SentMap> sent = std::make_unique<SentMap>();
+	/// The companion list last sent for each node a client holds (main loop only): [] at its node.added, erased at its
+	/// node.removed (a replace's too).
+	std::unique_ptr<CompanionsMap> companions = std::make_unique<CompanionsMap>();
 
 	/// Main loop: `call(*sink)` on the control executor; dropped before watch().
 	template <class Call> void toSink(Call call) {
@@ -81,11 +90,28 @@ void MainLoopGateway::graphFileChanged(const GraphFileChanged& change) {
 
 void MainLoopGateway::graphFileWritten(const std::string&) {}
 
+void MainLoopGateway::readCounts(const NodeCounterSource& nodes) { impl_->counts = &nodes; }
+
 void MainLoopGateway::nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) {
 	const NodeHealth health = healthFromSpec(node);
 	const auto since = impl_->clock();
 	impl_->sent->insert_or_assign(node.name, Sent{health, since, !node.disabled});
+	impl_->companions->insert_or_assign(node.name, std::vector<CompanionView>{}); // what node.added says
 	impl_->post(NodeAdded{node, config->ports().publicOnly(), health, since});
+}
+
+void MainLoopGateway::nodeReplaced(const NodeSpec& node, std::shared_ptr<const NodeConfig> config,
+                                   const NodeChange& change) {
+	// Observers hear the replace before NodeHost does, so the name's counts are still the older node's: what the newer
+	// one carries on from.
+	const NodeCounts carried = change.portCaused && impl_->counts != nullptr
+	                               ? impl_->counts->counts(node.name).value_or(NodeCounts{})
+	                               : NodeCounts{};
+	const NodeHealth health = healthFromSpec(node);
+	const auto since = impl_->clock();
+	impl_->sent->insert_or_assign(node.name, Sent{health, since, !node.disabled});
+	impl_->companions->insert_or_assign(node.name, std::vector<CompanionView>{}); // what node.added says
+	impl_->post(NodeAdded{node, config->ports().publicOnly(), health, since, carried});
 }
 
 void MainLoopGateway::nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig>) {
@@ -98,6 +124,7 @@ void MainLoopGateway::nodeChanged(const NodeSpec& node, std::shared_ptr<const No
 
 void MainLoopGateway::nodeRemoved(const NodeName& node) {
 	impl_->sent->erase(node);
+	impl_->companions->erase(node); // a client drops the node here: nothing about its companions is sent after
 	impl_->post(NodeRemoved{node});
 }
 
@@ -126,6 +153,22 @@ void MainLoopGateway::nodeGone(const NodeName& node, std::uint64_t droppedFrames
 }
 
 void MainLoopGateway::routeChanged(const RouteStatus& status) { impl_->post(RouteChanged{status}); }
+
+void MainLoopGateway::countersChanged(const GraphCounts& graph, std::uint64_t lostMs,
+                                      std::span<const NamedCounts> nodes) {
+	impl_->post(CountersChanged{graph, lostMs, {nodes.begin(), nodes.end()}});
+}
+
+void MainLoopGateway::companionsChanged(const NodeName& node, std::span<const CompanionView> companions) {
+	// NodeHost compares lists without their counters and CounterWatch only with the lists it told itself, so either may
+	// tell one the other already did (a structural change carrying a counter that moved, then CounterWatch's beat).
+	// A name no client holds (removed, and not added again since) is dropped whatever its list says.
+	const auto known = impl_->companions->find(node);
+	if (known == impl_->companions->end()) return;
+	if (std::ranges::equal(known->second, companions)) return;
+	known->second.assign(companions.begin(), companions.end());
+	impl_->post(NodeCompanionsChanged{node, {companions.begin(), companions.end()}});
+}
 
 void MainLoopGateway::stamp(GraphView& view) const {
 	for (NodeView& node : view.nodes)

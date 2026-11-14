@@ -83,6 +83,8 @@ std::string describe(const Command& command) {
 			else if constexpr (std::is_same_v<C, RestartNode>) return "restartNode " + c.node;
 			else if constexpr (std::is_same_v<C, DisableNode>) return "disableNode " + c.node;
 			else if constexpr (std::is_same_v<C, EnableNode>) return "enableNode " + c.node;
+			else if constexpr (std::is_same_v<C, SetNodeText>) return "setNodeText " + c.node + " " + c.version;
+			else if constexpr (std::is_same_v<C, AddNodeText>) return "addNodeText " + c.version;
 			else {
 				static_assert(std::is_same_v<C, SetGraphFile>);
 				return "setGraphFile " + c.version;
@@ -102,7 +104,7 @@ public:
 	};
 	std::deque<Step> script;
 	std::vector<std::string> calls;
-	ear::GraphView view{};
+	ear::GraphView view{{{ear::SampleRate::fixed<48000>(), 256}, false, ""}, {}, {}, {}};
 	GraphFile file{};
 	const QueueExecutor* const* running = nullptr;
 	const SnapshotStamp* stamp = nullptr; // the gateway: each read's since, filled at the read
@@ -243,7 +245,8 @@ using ear::NodeState;
 using Code = ear::FailureReason::Code;
 
 ear::GraphView baseView() {
-	ear::GraphView view{{{48000, 256}, false, "SCHED_OTHER"}, {"card", "file", "white"}, {}, {}};
+	ear::GraphView view{
+		{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {"card", "file", "white"}, {}, {}};
 	view.nodes.push_back({{"noise", "white", json::object()},
 	                      ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}},
 	                      health("noise", NodeState::running)});
@@ -271,6 +274,98 @@ TEST_CASE("snapshot.json: graph.get and graph.subscribe answer with the whole gr
 	for (const auto& request : requestsOf(document)) w.receive(session, request);
 	checkMessages(out, document["messages"]);
 	CHECK(w.graph.offLoop == 0);
+}
+
+/// A node's counters by name, as NodeHost answers them.
+struct HandCounts final : ear::NodeCounterSource {
+	std::map<ear::NodeName, ear::NodeCounts> nodes;
+	std::optional<ear::NodeCounts> counts(const ear::NodeName& node) const override {
+		const auto it = nodes.find(node);
+		if (it == nodes.end()) return std::nullopt;
+		return it->second;
+	}
+	std::optional<ear::NodeCounts> spanCounts(std::uint64_t) const override { return std::nullopt; }
+	std::vector<ear::CompanionView> spanCompanions(std::uint64_t) const override { return {}; }
+};
+
+TEST_CASE("counters-changed.json: the snapshot's counters, counters.changed replacing what it names, and a port-caused "
+          "replace's node.added carrying the counts it carries on",
+          "[session][protocol][counters]") {
+	using ear::NamedCounts;
+	using ear::NodeCounts;
+	const json document = fixture("counters-changed");
+	const auto requests = requestsOf(document);
+	World w;
+	w.graph.view = ear::GraphView{
+		{{ear::SampleRate::fixed<48000>(), 256}, true, "SCHED_FIFO 88"}, {"card", "file", "white"}, {}, {}};
+	const auto cardPorts = [](std::uint32_t playback) {
+		return ear::Ports{{{ear::Direction::input, "play", ear::numbered(playback)}}};
+	};
+	w.graph.view.nodes.push_back(
+		{{"desk", "card", {{"card", "MOTU"}, {"playback", 2}}}, cardPorts(2), health("desk", NodeState::running)});
+	w.graph.view.nodes.push_back({{"rec", "file", {{"path", "x.wav"}}},
+	                              ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
+	                              health("rec", NodeState::running),
+	                              std::nullopt,
+	                              NodeCounts{.missedCycles = 33, .overruns = 2}});
+	w.graph.view.counts = ear::GraphCounts{.cycles = 18750, .cutCycles = 39, .stalls = 1};
+	HandCounts counts;
+	w.gateway.readCounts(counts);
+	RecordingOutbox out;
+	ControlSession session(*w.hub, out);
+
+	w.receive(session, requests[0]);
+	w.onMain([&] {
+		const std::vector<NamedCounts> rec{{"rec", {.missedCycles = 33, .overruns = 3}}};
+		w.gateway.countersChanged({.cycles = 37500, .cutCycles = 41, .stalls = 2}, 218, rec);
+	});
+	w.onMain([&] {
+		const std::vector<NamedCounts> two{{"desk", {.missedCycles = 12}}, {"ghost", {.missedCycles = 5}}};
+		w.gateway.countersChanged({.cycles = 56250, .cutCycles = 44, .stalls = 2}, 234, two);
+	});
+	// The channel count changes: a port-caused replace. The gateway hears it before NodeHost does, so the name's counts
+	// are still the older node's, which the newer carries on.
+	counts.nodes["desk"] = NodeCounts{.missedCycles = 12};
+	w.graph.script.push_back({R"(updateNode desk {"card":"MOTU","playback":4})", [&] {
+								  const ear::NodeChange ports{ear::NodeOutcome::restart, {"playback"}, true};
+								  w.gateway.nodeReplacing("desk", ports);
+								  w.gateway.nodeReplaced({"desk", "card", {{"card", "MOTU"}, {"playback", 4}}},
+		                                                 std::make_shared<Config>(cardPorts(4)), ports);
+								  return Result{};
+							  }});
+	w.receive(session, requests[1]);
+	w.onMain([&] {
+		const std::vector<NamedCounts> desk{{"desk", {.missedCycles = 12, .overruns = 1}}};
+		w.gateway.countersChanged({.cycles = 75000, .cutCycles = 44, .stalls = 2}, 234, desk);
+	});
+	checkMessages(out, document["messages"]);
+	CHECK(w.graph.script.empty());
+}
+
+TEST_CASE("A replace that is not port-caused, and a node added, carry zero counters whatever the name counted",
+          "[session][counters]") {
+	World w;
+	w.graph.view =
+		ear::GraphView{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {"card", "white"}, {}, {}};
+	HandCounts counts;
+	counts.nodes["x"] = ear::NodeCounts{.overruns = 9};
+	w.gateway.readCounts(counts);
+	RecordingOutbox out;
+	ControlSession session(*w.hub, out);
+	w.receive(session, R"({"jsonrpc":"2.0","id":1,"method":"graph.subscribe"})");
+	w.onMain([&] {
+		const ear::NodeChange type{ear::NodeOutcome::restart, {}, false};
+		w.gateway.nodeReplacing("x", type);
+		w.gateway.nodeReplaced({"x", "white", json::object()},
+		                       std::make_shared<Config>(ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}}),
+		                       type);
+		w.nodeAdded({"y", "white", json::object()}, ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}});
+	});
+	const std::vector<json> got = parsed(out.all);
+	REQUIRE(got.size() == 4); // the snapshot, node.removed, node.added x, node.added y
+	const json zero = json::parse(R"({"missedCycles":0,"overruns":0,"repositions":0,"driverChanges":0})");
+	CHECK(got[2]["params"]["counters"] == zero);
+	CHECK(got[3]["params"]["counters"] == zero);
 }
 
 TEST_CASE("edits.json: each change's notification comes before its statuses and the response", "[session][protocol]") {
@@ -449,7 +544,8 @@ TEST_CASE("lifecycle.json: a node's whole life, each health change one node.stat
 	const json deskSettings = {{"card", "MOTU"}, {"playback", 2}};
 	const json porchSettings = {{"card", "USB2"}, {"playback", 2}};
 	const ear::FailureReason cannotOpen{Code::startFailed, "cannot open nope/t.wav: No such file or directory"};
-	w.graph.view = ear::GraphView{{{48000, 256}, false, "SCHED_OTHER"}, {"card", "file", "rtp", "white"}, {}, {}};
+	w.graph.view = ear::GraphView{
+		{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {"card", "file", "rtp", "white"}, {}, {}};
 	w.graph.view.nodes.push_back({{"desk", "card", deskSettings}, card2, at("desk", NodePhase::running)});
 	w.graph.view.nodes.push_back({{"porch", "card", porchSettings}, card2, at("porch", NodePhase::running)});
 	w.onMain([&] { // both running before the client subscribes: the snapshot carries their since
@@ -735,7 +831,7 @@ TEST_CASE("graph-file.json: file changes come before the events they cause, and 
 
 	World w;
 	w.graph.view = fx::graphView(2, "take1.wav");
-	w.graph.file = fx::file("v1", t.t1, "v1");
+	w.graph.file = fx::recordFile("v1", t.t1, "v1");
 	RecordingOutbox out;
 	ControlSession session(*w.hub, out);
 	// An edit the keeper accepts: its file change, then rec's update.
@@ -752,14 +848,14 @@ TEST_CASE("graph-file.json: file changes come before the events they cause, and 
 	w.receive(session, requests[1]); // graph.subscribe
 
 	w.graph.script.push_back(
-		{R"(updateNode rec {"path":"take2.wav"})", recEdit(fx::file("v2", t.t2, "v2"), "take2.wav")});
+		{R"(updateNode rec {"path":"take2.wav"})", recEdit(fx::recordFile("v2", t.t2, "v2"), "take2.wav")});
 	w.receive(session, requests[2]);
 
 	w.graph.script.push_back({"setGraphFile v1", refused(FileRefusal{FileChanged{}})});
 	w.receive(session, requests[3]);
 	w.graph.script.push_back(
 		{"setGraphFile v2", refused(FileRefusal{InvalidText{{Diagnostic{
-								Severity::error, "E2001", "unexpected token: \"}\"", TextPlace{9, 34}}}}})});
+								Severity::error, "E2001", "unexpected token: \"}\"", TextPlace{11, 34}}}}})});
 	w.receive(session, requests[4]);
 	w.graph.script.push_back(
 		{"addRoute noise:noise.mono->rec:FX", refused(Result(std::unexpected(ear::UnknownPort{{"rec", "FX"}})))});
@@ -770,21 +866,21 @@ TEST_CASE("graph-file.json: file changes come before the events they cause, and 
 	w.onMain([&] { w.fileChanged(included, FileChangeCause::disk); }); // a hand edit with @include
 	w.graph.script.push_back({R"(updateNode rec {"path":"take3.wav"})", refused(FileRefusal{FileInvalid{}})});
 	w.receive(session, requests[6]);
-	w.onMain([&] { w.fileChanged(fx::file("v4", t.t2, "v4"), FileChangeCause::disk); }); // the hand fix
+	w.onMain([&] { w.fileChanged(fx::recordFile("v4", t.t2, "v4"), FileChangeCause::disk); }); // the hand fix
 
 	w.graph.script.push_back(
-		{R"(updateNode rec {"path":"take3.wav"})", recEdit(fx::file("v5", t.t5, "v5"), "take3.wav")});
+		{R"(updateNode rec {"path":"take3.wav"})", recEdit(fx::recordFile("v5", t.t5, "v5"), "take3.wav")});
 	w.receive(session, requests[7]);
 	w.onMain([&] { // a hand save over it before it was written: the hand edit wins
-		w.fileChanged(fx::file("v6", t.t2, "v6"), FileChangeCause::disk, 1);
+		w.fileChanged(fx::recordFile("v6", t.t2, "v6"), FileChangeCause::disk, 1);
 		w.gateway.nodeUpdated({"rec", "file", {{"path", "take2.wav"}}}, config(recPorts));
 	});
 
-	w.graph.script.push_back({R"(updateNode desk {"card":"MOTU"})", refused(FileRefusal{SharedDefinition{{6, 5}}})});
+	w.graph.script.push_back({R"(updateNode desk {"card":"MOTU"})", refused(FileRefusal{SharedDefinition{{8, 5}}})});
 	w.receive(session, requests[8]);
 
 	w.graph.script.push_back({R"(updateNode desk {"card":"MOTU","playback":4})", [&]() -> CommandResult {
-								  w.fileChanged(fx::file("v7", t.t7, "v7"), FileChangeCause::edit);
+								  w.fileChanged(fx::recordFile("v7", t.t7, "v7"), FileChangeCause::edit);
 								  w.gateway.routeRemoved(toDesk);
 								  w.gateway.nodeRemoved("desk");
 								  w.gateway.nodeRemoved("porch");
@@ -800,24 +896,24 @@ TEST_CASE("graph-file.json: file changes come before the events they cause, and 
 		w.state("porch", NodeState::failed,
 		        ear::FailureReason{Code::engineRefused, "cannot open hw:CARD=USB2,DEV=0: No such device"});
 	});
-	GraphFile failed = fx::file("v7", t.t7, "v7");
+	GraphFile failed = fx::recordFile("v7", t.t7, "v7");
 	failed.writeFailed = "ear.conf: No space left on device";
 	w.onMain([&] { w.fileChanged(failed, FileChangeCause::write); });
-	w.onMain([&] { w.fileChanged(fx::file("v7", t.t7, "v7"), FileChangeCause::write); });
+	w.onMain([&] { w.fileChanged(fx::recordFile("v7", t.t7, "v7"), FileChangeCause::write); });
 
 	w.graph.script.push_back(
-		{R"(updateNode rec {"path":"take3.wav"})", recEdit(fx::file("v8", t.t8, "v8"), "take3.wav")});
+		{R"(updateNode rec {"path":"take3.wav"})", recEdit(fx::recordFile("v8", t.t8, "v8"), "take3.wav")});
 	w.receive(session, requests[10]);
-	GraphFile refusedByJudge = fx::file("v9", t.t9, "v8");
-	refusedByJudge.refusal = Refusal{ear::UnknownPort{{"rec", "FX"}}, TextPlace{14, 1}};
+	GraphFile refusedByJudge = fx::recordFile("v9", t.t9, "v8");
+	refusedByJudge.refusal = Refusal{ear::UnknownPort{{"rec", "FX"}}, TextPlace{16, 1}};
 	w.onMain([&] { w.fileChanged(refusedByJudge, FileChangeCause::disk, 1); });
 
-	GraphFile pending = fx::file("v10", t.t10, "v10");
+	GraphFile pending = fx::recordFile("v10", t.t10, "v10");
 	pending.pendingRestart = {FormatKey::graphFrequency};
 	w.graph.script.push_back({"setGraphFile v9", recEdit(pending, "take2.wav")});
 	w.receive(session, requests[11]);
 
-	GraphFile last = fx::file("v11", t.t11, "v11");
+	GraphFile last = fx::recordFile("v11", t.t11, "v11");
 	last.pendingRestart = {FormatKey::graphFrequency};
 	w.graph.view = fx::graphView(4, "take4.wav");
 	w.graph.file = last;
@@ -833,6 +929,103 @@ TEST_CASE("graph-file.json: file changes come before the events they cause, and 
 	const std::vector<std::string> tail(w.graph.calls.end() - 5, w.graph.calls.end());
 	CHECK(tail ==
 	      std::vector<std::string>{R"(updateNode rec {"path":"take4.wav"})", "read", "read", "readFile", "readFile"});
+}
+
+TEST_CASE("node-text.json: where each node is written, and node.setText's and node.addText's success and refusals",
+          "[session][protocol][node-text]") {
+	const json document = fixture("node-text");
+	const auto requests = requestsOf(document);
+	REQUIRE(requests.size() == 13);
+	const std::string t1 = "graph {\n    rate 48khz;\n    block_size 256;\n}\n"
+						   "@snippet tap $n {                # one line, a node for each use\n"
+						   "    node white $n;\n}\n"
+						   "@use tap t1;\n"
+						   "node white noise;\n"
+						   "# the take\n"
+						   "node file rec { path \"take1.wav\"; }\n"
+						   "route noise:noise.mono rec:record.left;\n";
+	const std::string t2 =
+		ear::control::testing::replaced(t1, "# the take\nnode file rec { path \"take1.wav\"; }",
+	                                    "# the take, now its own block\nnode file rec {\n    path \"take2.wav\";\n}");
+	const auto fileAt = [](std::string version, std::string text, TextPlace recEnd) {
+		GraphFile f = ear::control::testing::file(version, std::move(text), version);
+		f.nodeTexts = {{"t1", {6, 5}, {6, 19}, true}, {"noise", {9, 1}, {9, 18}}, {"rec", {10, 1}, recEnd}};
+		return f;
+	};
+	const ear::Ports white{{{ear::Direction::output, "noise", {"mono"}}}};
+	const ear::Ports recPorts{{{ear::Direction::input, "record", {"left", "right"}}}};
+
+	World w;
+	w.graph.view =
+		ear::GraphView{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {"file", "white"}, {}, {}};
+	w.graph.view.nodes.push_back({{"noise", "white", json::object()}, white, health("noise", NodeState::running)});
+	w.graph.view.nodes.push_back(
+		{{"rec", "file", {{"path", "take1.wav"}}}, recPorts, health("rec", NodeState::running)});
+	w.graph.view.nodes.push_back({{"t1", "white", json::object()}, white, health("t1", NodeState::running)});
+	w.graph.view.routes.push_back({{{"noise", "noise.mono"}, {"rec", "record.left"}}, ear::RouteMatch::linked, ""});
+	w.graph.file = fileAt("v1", t1, {11, 36});
+	RecordingOutbox out;
+	ControlSession session(*w.hub, out);
+	const auto refused = [](CommandResult result) { return [result] { return result; }; };
+	const auto invalid = [&](std::string code, std::string message, TextPlace at) {
+		return refused(
+			FileRefusal{InvalidText{{Diagnostic{Severity::error, std::move(code), std::move(message), at}}}});
+	};
+
+	w.receive(session, requests[0]); // graphFile.subscribe
+	w.receive(session, requests[1]); // graph.subscribe
+	w.graph.script.push_back({"setNodeText rec v1", [&]() -> CommandResult {
+								  w.fileChanged(fileAt("v2", t2, {13, 2}), FileChangeCause::edit);
+								  w.gateway.nodeUpdated({"rec", "file", {{"path", "take2.wav"}}},
+		                                                std::make_shared<Config>(recPorts));
+								  return Result{};
+							  }});
+	w.receive(session, requests[2]);
+	w.graph.script.push_back({"setNodeText rec v1", refused(FileRefusal{FileChanged{}})});
+	w.receive(session, requests[3]);
+	w.graph.script.push_back(
+		{"setNodeText rec v2", invalid("ear/bad-directive", "setting path is given twice", TextPlace{3, 5})});
+	w.receive(session, requests[4]);
+	w.graph.script.push_back(
+		{"setNodeText noise v2",
+	     invalid("ear/node-renamed",
+	             "this text edits node noise: rename it in ear.conf, where its routes are renamed with it",
+	             TextPlace{1, 12})});
+	w.receive(session, requests[5]);
+	w.graph.script.push_back({"setNodeText t1 v2", refused(FileRefusal{SharedDefinition{{6, 5}}})});
+	w.receive(session, requests[6]);
+	w.graph.script.push_back(
+		{"setNodeText noise v2",
+	     invalid("ear/not-one-node",
+	             "the text must be one node statement: node <type> <name> { <setting> <value>; ... }",
+	             TextPlace{1, 1})});
+	w.receive(session, requests[7]);
+
+	// node.addText: appended after the last statement, then the node is added.
+	const std::string t3 = t2 + "# a second take\nnode file rec2 {\n    path \"take5.wav\";\n}\n";
+	w.graph.script.push_back({"addNodeText v2", [&]() -> CommandResult {
+								  GraphFile f = fileAt("v3", t3, {13, 2});
+								  f.nodeTexts->push_back({"rec2", {15, 1}, {18, 2}});
+								  w.fileChanged(f, FileChangeCause::edit);
+								  w.nodeAdded({"rec2", "file", {{"path", "take5.wav"}}}, recPorts);
+								  return Result{};
+							  }});
+	w.receive(session, requests[8]);
+	w.graph.script.push_back({"addNodeText v2", refused(FileRefusal{FileChanged{}})});
+	w.receive(session, requests[9]);
+	w.graph.script.push_back({"addNodeText v3", invalid("E2001", "unexpected token: \"}\"", TextPlace{2, 18})});
+	w.receive(session, requests[10]);
+	w.graph.script.push_back(
+		{"addNodeText v3", invalid("ear/not-one-node",
+	                               "the text must be one node statement: node <type> <name> { <setting> <value>; ... }",
+	                               TextPlace{1, 1})});
+	w.receive(session, requests[11]);
+	w.graph.script.push_back({"addNodeText v3", refused(Result(std::unexpected(ear::DuplicateNode{"noise"})))});
+	w.receive(session, requests[12]);
+
+	checkMessages(out, document["messages"]);
+	CHECK(w.graph.script.empty());
+	CHECK(w.graph.offLoop == 0);
 }
 
 TEST_CASE("graph.subscribe gets graph events only, graphFile.subscribe file changes only", "[session][graph-file]") {
@@ -1019,4 +1212,185 @@ TEST_CASE("A session closed while its command is on the main loop drops the repl
 	CHECK(w.graph.script.empty()); // the command still ran
 	CHECK(out.all.empty());
 	CHECK(done == 0);
+}
+
+TEST_CASE("companions.json: each node's list in the snapshot, node.added's [], each list told in order with the health "
+          "and sent once, and nothing after node.removed",
+          "[session][protocol][companions]") {
+	using ear::CompanionKind;
+	using ear::CompanionView;
+	using ear::NodePhase;
+	using ear::Wanted;
+	using Kind = ear::NodeCause::Kind;
+	using Lifecycle = std::expected<void, ear::CommandError>;
+	const json document = fixture("companions");
+	const auto requests = requestsOf(document);
+	REQUIRE(requests.size() == 7);
+	World w;
+	const ear::Ports deskPorts{
+		{{ear::Direction::input, "play", {"1", "2"}}, {ear::Direction::output, "capture", {"1", "2"}}}};
+	const ear::Ports recPorts{{{ear::Direction::input, "record", {"left", "right"}}}};
+	const json fppSettings = {{"address", "0.0.0.0"}, {"port", 5004}, {"format", "L24"}, {"channels", 2}};
+	const auto sink = [](const std::string& node, bool ready, std::uint64_t dropped = 0) {
+		return CompanionView{.name = node + ".writer",
+		                     .kind = CompanionKind::sink,
+		                     .bank = "writer",
+		                     .ready = ready,
+		                     .dropped = dropped};
+	};
+	const auto rtp = [](bool ready) {
+		return CompanionView{.name = "fpp.rtp", .kind = CompanionKind::rtpReceiver, .bank = "from_rtp", .ready = ready};
+	};
+	const auto list = [&](const std::string& node, std::vector<CompanionView> companions) {
+		w.gateway.companionsChanged(node, companions);
+	};
+	w.graph.view = ear::GraphView{
+		{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {"card", "file", "rtp", "white"}, {}, {}};
+	w.graph.view.nodes.push_back(
+		{{"desk", "card", {{"card", "MOTU"}, {"playback", 2}, {"capture", 2}}},
+	     deskPorts,
+	     at("desk", NodePhase::running),
+	     std::nullopt,
+	     {},
+	     {{.name = "desk.playback", .kind = CompanionKind::cardPlayback, .bank = "to_card", .ready = true},
+	      {.name = "desk.capture", .kind = CompanionKind::cardCapture, .bank = "from_card", .ready = true}}});
+	w.graph.view.nodes.push_back({{"fpp", "rtp", fppSettings},
+	                              ear::Ports{{{ear::Direction::output, "stream", {"1", "2"}}}},
+	                              at("fpp", NodePhase::running),
+	                              std::nullopt,
+	                              {},
+	                              {rtp(true)}});
+	w.graph.view.nodes.push_back({{"noise", "white", json::object()},
+	                              ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}},
+	                              at("noise", NodePhase::running)});
+	w.graph.view.nodes.push_back({{"rec", "file", {{"path", "x.wav"}}},
+	                              recPorts,
+	                              at("rec", NodePhase::running),
+	                              std::nullopt,
+	                              {},
+	                              {sink("rec", true)}});
+	w.onMain([&] { // added at boot and running before the client subscribes, their lists told as NodeHost told them
+		for (const ear::NodeView& node : w.graph.view.nodes) w.nodeAdded(node.spec, node.ports);
+		w.clockReadings = 0; // the boot's readings are no client's: the snapshot's since count from here
+		for (const char* name : {"desk", "fpp", "noise", "rec"}) w.told(at(name, NodePhase::running));
+		list("desk", w.graph.view.nodes[0].companions);
+		list("fpp", {rtp(true)});
+		list("rec", {sink("rec", true)});
+	});
+	RecordingOutbox out;
+	ControlSession session(*w.hub, out);
+	w.receive(session, requests[0]); // graph.subscribe
+
+	// A file node's life: its list after configuring; ready before the health its readiness allows.
+	w.graph.script.push_back({R"(addNode take file {"path":"take.wav"})", [&]() -> CommandResult {
+								  w.nodeAdded({"take", "file", {{"path", "take.wav"}}}, recPorts);
+								  w.told(at("take", NodePhase::added));
+								  w.told(at("take", NodePhase::configuring));
+								  list("take", {sink("take", false)});
+								  return Lifecycle{};
+							  }});
+	w.receive(session, requests[1]);
+	w.onMain([&] {
+		list("take", {sink("take", true)});
+		w.told(at("take", NodePhase::configured));
+		w.told(at("take", NodePhase::starting));
+		w.told(at("take", NodePhase::running));
+		list("take", {sink("take", true)}); // CounterWatch's beat, nothing moved since: the same list, not sent
+	});
+
+	// A counter moving, told by CounterWatch; then NodeHost tells the same list (a ready it re-checked): sent once.
+	w.onMain([&] {
+		list("rec", {sink("rec", true, 4096)});
+		list("rec", {sink("rec", true, 4096)});
+	});
+
+	// A stop and a start: NodeHost tells no list, a stop keeping the configuration.
+	w.graph.script.push_back({"stopNode rec", [&]() -> CommandResult {
+								  w.told(because(at("rec", NodePhase::stopping, Wanted::stopped), Kind::stop));
+								  return Applied{AppliedKind::stop};
+							  }});
+	w.receive(session, requests[2]);
+	w.onMain([&] { w.told(at("rec", NodePhase::stopped, Wanted::stopped)); });
+	w.graph.script.push_back({"startNode rec", [&]() -> CommandResult {
+								  w.told(at("rec", NodePhase::starting));
+								  return Applied{AppliedKind::start};
+							  }});
+	w.receive(session, requests[3]);
+	w.onMain([&] { w.told(at("rec", NodePhase::running)); });
+
+	// A restart: the empty list after the node.state that began the teardown; the next configuration's from zero.
+	w.graph.script.push_back({"restartNode rec", [&]() -> CommandResult {
+								  w.told(because(at("rec", NodePhase::stopping), Kind::restarting, Kind::action));
+								  list("rec", {});
+								  return Applied{AppliedKind::restart};
+							  }});
+	w.receive(session, requests[4]);
+	w.onMain([&] {
+		w.told(because(at("rec", NodePhase::configuring), Kind::action));
+		list("rec", {sink("rec", false)});
+	});
+	w.onMain([&] {
+		list("rec", {sink("rec", true)});
+		w.told(at("rec", NodePhase::configured));
+		w.told(at("rec", NodePhase::starting));
+		w.told(at("rec", NodePhase::running));
+	});
+
+	// A failure past the receiver's deadline: failed, then the empty list.
+	w.graph.script.push_back({"restartNode fpp", [&]() -> CommandResult {
+								  w.told(because(at("fpp", NodePhase::stopping), Kind::restarting, Kind::action));
+								  list("fpp", {});
+								  return Applied{AppliedKind::restart};
+							  }});
+	w.receive(session, requests[5]);
+	w.onMain([&] {
+		w.told(because(at("fpp", NodePhase::configuring), Kind::action));
+		list("fpp", {rtp(false)});
+	});
+	w.onMain([&] {
+		w.told(failedWith(at("fpp", NodePhase::failed),
+		                  {Code::engineRefused, "the RTP receiver never ran (UDP port 5004 held?)"}));
+		list("fpp", {});
+	});
+
+	// A removal: the client dropped the node at node.removed, so no list naming it is sent after, whatever it says (a
+	// list told late for a node closing, or its teardown's empty one).
+	w.graph.script.push_back({"removeNode take", [&]() -> CommandResult {
+								  w.gateway.nodeRemoved("take");
+								  w.told(because(at("take", NodePhase::stopping), Kind::removing));
+								  list("take", {sink("take", true, 512)});
+								  list("take", {});
+								  return Lifecycle{};
+							  }});
+	w.receive(session, requests[6]);
+
+	checkMessages(out, document["messages"]);
+	CHECK(w.graph.script.empty());
+}
+
+TEST_CASE("A node added again under a name starts from node.added's []: its first list is sent even when it equals "
+          "the older node's last",
+          "[session][companions]") {
+	World w;
+	w.graph.view = ear::GraphView{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {"file"}, {}, {}};
+	RecordingOutbox out;
+	ControlSession session(*w.hub, out);
+	w.receive(session, R"({"jsonrpc":"2.0","id":1,"method":"graph.subscribe"})");
+	const ear::Ports recPorts{{{ear::Direction::input, "record", {"left", "right"}}}};
+	const std::vector<ear::CompanionView> ready{
+		{.name = "x.writer", .kind = ear::CompanionKind::sink, .bank = "writer", .ready = true, .dropped = 0}};
+	w.onMain([&] {
+		w.nodeAdded({"x", "file", {{"path", "a.wav"}}}, recPorts);
+		w.gateway.companionsChanged("x", ready);
+		// Replaced by a node of another type of the same name, as a change of type is: the older one is superseded
+		// (NodeHost tells it nothing more) and the newer one's list is new to the client.
+		const ear::NodeChange type{ear::NodeOutcome::restart, {}, false};
+		w.gateway.nodeReplacing("x", type);
+		w.gateway.nodeReplaced({"x", "file", {{"path", "b.wav"}}}, std::make_shared<Config>(recPorts), type);
+		w.gateway.companionsChanged("x", ready);
+	});
+	std::vector<std::string> methods;
+	for (const json& message : parsed(out.all)) methods.push_back(message.value("method", "reply"));
+	CHECK(methods == std::vector<std::string>{"reply", "node.added", "node.companionsChanged", "node.removed",
+	                                          "node.added", "node.companionsChanged"});
 }

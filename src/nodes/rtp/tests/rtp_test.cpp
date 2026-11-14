@@ -2,6 +2,7 @@
 // receiver it asks for (docs/node-types.md#rtp;
 // docs/writing-a-node-type.md#testing-a-type: its class, over a real NodeHost). The engine side of a receiver
 // (RtpReceivers) is tested in src/pipewire/tests/rtp_receiver_test.cpp.
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -44,7 +45,7 @@ NodeSettings settingsWith(const NodeSettings& change = NodeSettings::object()) {
 
 /// A harness on a node named "fpp" at `graphRate`, whose settings parsed.
 Harness parseOk(const NodeSettings& settings, std::uint32_t graphRate = 48000) {
-	Harness harness({.format = {graphRate, 256}, .node = "fpp"});
+	Harness harness({.format = {*ear::SampleRate::of(graphRate), 256}, .node = "fpp"});
 	const auto refused = harness.parse(settings);
 	INFO(settings.dump());
 	if (refused) FAIL("refused: " << *refused);
@@ -59,11 +60,12 @@ Harness addedOk(const NodeSettings& settings, std::uint32_t graphRate = 48000) {
 	return harness;
 }
 
-ear::RtpReceiverRequest startOk(const NodeSettings& settings, std::uint32_t graphRate = 48000) {
+ear::RtpReceiverShape startOk(const NodeSettings& settings, std::uint32_t graphRate = 48000) {
 	auto harness = addedOk(settings, graphRate);
 	REQUIRE(harness->companions().size() == 1);
-	REQUIRE(harness.companion(rtp::fromRtp).engineName == "fpp.rtp");
-	return std::get<ear::RtpReceiverRequest>(harness.companion(rtp::fromRtp).request);
+	REQUIRE(harness.companion(rtp::fromRtp).name == "fpp.rtp");
+	REQUIRE(harness.companion(rtp::fromRtp).kind == ear::CompanionKind::rtpReceiver);
+	return std::get<ear::RtpReceiverShape>(harness.companion(rtp::fromRtp).shape);
 }
 
 } // namespace
@@ -84,31 +86,33 @@ TEST_CASE("Rtp accepts a full settings object, and its ports are stream.i out an
 }
 
 TEST_CASE("Rtp's configure asks for exactly one receiver with its settings, joined to its inside bank", "[rtp]") {
-	const auto request = startOk(settingsWith({{"port", 6000}, {"rate", 96000}, {"latencyMs", 250}}));
-	CHECK(request.address == *ear::RtpAddress::parse("239.69.0.1"));
-	CHECK(request.port == 6000);
-	CHECK(request.encoding == ear::RtpEncoding::l24);
-	CHECK(request.rate == 96000);
-	CHECK(request.latencyMs == 250);
-	CHECK(request.bank == rtp::fromRtp.name);
+	const auto shape = startOk(settingsWith({{"port", 6000}, {"rate", 96000}, {"latencyMs", 250}}));
+	CHECK(shape.address == *ear::RtpAddress::parse("239.69.0.1"));
+	CHECK(shape.port == 6000);
+	CHECK(shape.encoding == ear::RtpEncoding::l24);
+	CHECK(shape.rate.hz() == 96000);
+	CHECK(shape.latencyMs == 250);
 
 	SECTION("an absent rate is the graph frequency, taken at configure") {
 		const auto defaulted = startOk(settingsWith({{"rate", nullptr}}), 44100);
-		CHECK(defaulted.rate == 44100);
+		CHECK(defaulted.rate.hz() == 44100);
 	}
 	SECTION("an absent latencyMs is 100") { CHECK(startOk(settingsWith({{"latencyMs", nullptr}})).latencyMs == 100); }
 }
 
-TEST_CASE("Rtp declares its receive buffer as the latency of its stream bank, in frames of the graph",
+TEST_CASE("Rtp's receive buffer is latency beyond its from_rtp bank, in frames of the graph, carried to stream by "
+          "the pass-through",
           "[rtp][latency]") {
 	auto harness = addedOk(settingsWith({{"latencyMs", 250}, {"rate", 96000}}), 44100);
-	CHECK(harness->latencyPlan().internal.empty()); // carried with the drive, not before
+	CHECK(harness->latencyPlan().beyond.empty()); // carried with the drive, not before
 	harness.ready(rtp::fromRtp);
 	CHECK(harness.phase() == "running");
-	const auto& latency = harness->latencyPlan().internal;
-	REQUIRE(latency.size() == 1);
-	CHECK(latency[0].first == rtp::stream.name);
-	CHECK(latency[0].second == ear::Latency{11025, 11025}); // 250 ms at the graph's 44100 Hz
+	CHECK(harness->latencyPlan().onPair.empty()); // the type declares nothing
+	CHECK(harness->latencyPlan().onBank.empty());
+	const auto& beyond = harness->latencyPlan().beyond;
+	REQUIRE(beyond.size() == 1);
+	CHECK(beyond[0].first == rtp::fromRtp.name);
+	CHECK(beyond[0].second == ear::Delay{{11025, 11025}}); // 250 ms at the graph's 44100 Hz
 	REQUIRE(harness->latencyPlan().pairs.size() == 1);
 	CHECK(harness->latencyPlan().pairs[0] == ear::BankPair{"from_rtp", "stream"});
 }
@@ -125,7 +129,7 @@ TEST_CASE("Rtp refuses each setting outside its grammar with exactly its detail"
 	const std::string badPort = "port: must be a whole number, 1-65535";
 	const std::string badFormat = R"(format: must be "L16" or "L24")";
 	const std::string badChannels = "channels: must be a whole number, 1-64";
-	const std::string badRate = "rate: must be a whole number of Hz, 8000-192000";
+	const std::string badRate = "rate: must be a rate from 8khz to 192khz (on the control port, a whole number of Hz)";
 	const std::string badLatency = "latencyMs: must be a whole number of milliseconds, 1-1000";
 
 	const std::vector<std::pair<NodeSettings, std::string>> cases{
@@ -153,6 +157,7 @@ TEST_CASE("Rtp refuses each setting outside its grammar with exactly its detail"
 		{settingsWith({{"rate", 7999}}), badRate},
 		{settingsWith({{"rate", 192001}}), badRate},
 		{settingsWith({{"rate", 48000.5}}), badRate},
+		{settingsWith({{"rate", "48khz"}}), badRate}, // ear.conf's form; the wire's is a number of Hz
 		{settingsWith({{"latencyMs", 0}}), badLatency},
 		{settingsWith({{"latencyMs", 1001}}), badLatency},
 		{settingsWith({{"latencyMs", true}}), badLatency},
@@ -212,4 +217,27 @@ TEST_CASE("Rtp writes no audio code: the framework's pass-through carries from_r
 			for (std::uint32_t f = 0; f < frames; ++f) CHECK(out[f] == ramp(c, f));
 		}
 	}
+}
+
+// docs/engine.md#readiness-deadlines, on the harness's clock.
+TEST_CASE("Rtp: a receiver that never runs fails the node engine-refused after 5 s, naming its UDP port",
+          "[rtp][deadline]") {
+	auto harness = addedOk(settingsWith({{"port", 6000}}));
+	harness->advance(std::chrono::milliseconds(4'999));
+	CHECK(harness.phase() == "configuring");
+	harness->advance(std::chrono::milliseconds(1));
+	CHECK(harness.phase() == "failed");
+	REQUIRE(harness.health().reason);
+	CHECK(harness.health().reason->code == ear::FailureReason::Code::engineRefused);
+	CHECK(harness.health().reason->detail == "the RTP receiver never ran (UDP port 6000 held?)");
+	CHECK(harness.companion(rtp::fromRtp).destroyed);
+}
+
+TEST_CASE("Rtp: a receiver ready within 5 s keeps the node running past its deadline", "[rtp][deadline]") {
+	auto harness = addedOk(settingsWith());
+	harness->advance(std::chrono::milliseconds(4'999));
+	harness.ready(rtp::fromRtp);
+	CHECK(harness.phase() == "running");
+	harness->advance(std::chrono::milliseconds(60'000));
+	CHECK(harness.phase() == "running");
 }

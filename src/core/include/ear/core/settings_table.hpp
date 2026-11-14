@@ -23,6 +23,7 @@
 #include <vector>
 #include "ear/core/graph_spec.hpp"
 #include "ear/core/node_type.hpp"
+#include "ear/core/sample_rate.hpp"
 namespace ear {
 /// One whole-number rule. A good value is a JSON integer (a float, a bool and a string are not) in [low, high]; an integer
 /// above INT64_MAX is above every range. Otherwise "<key>: must be a whole number[ of <unit>], <low>-<high>".
@@ -30,6 +31,13 @@ struct WholeNumberRule {
 	std::uint32_t low;
 	std::uint32_t high;
 	std::string_view unit;
+};
+/// One rate rule (docs/graph-file.md#rates). A good value is a JSON whole number of hertz (rateOfSetting) in [low, high];
+/// in ear.conf it is written with its unit (44.1khz). Otherwise "<key>: must be a rate from <low> to <high> (on the
+/// control port, a whole number of Hz)", the ends in rateText's form.
+struct RateRule {
+	SampleRate low;
+	SampleRate high;
 };
 /// One text rule. A good value is a JSON string `read` accepts; `read` returns the parsed value, empty when refused.
 /// Otherwise "<key>: must be <mustBe>".
@@ -42,7 +50,7 @@ struct TextRule {
 struct SettingRow {
 	std::string_view key;
 	bool required; // absent: "<key>: missing"
-	std::variant<WholeNumberRule, TextRule> rule;
+	std::variant<WholeNumberRule, TextRule, RateRule> rule;
 	std::optional<std::uint32_t> byDefault = {}; // what the row reads when absent
 	std::string_view onlyWithout = {};           // Row::onlyWithout's
 };
@@ -62,24 +70,28 @@ template <auto Parse> using ParsedBy = typename std::invoke_result_t<decltype(Pa
 template <class T> class Rule;
 /// The range is not optional; low above high does not compile.
 consteval Rule<std::uint32_t> number(std::uint32_t low, std::uint32_t high, std::string_view unit = {});
+/// A rate, read as SampleRate: written with its unit in ear.conf, a whole number of hertz on the control port. Low above
+/// high does not compile.
+consteval Rule<SampleRate> rate(SampleRate low, SampleRate high);
 /// Parse: std::optional<T>(std::string_view), T not a view. T is what the row reads. An empty mustBe does not compile.
 template <auto Parse>
 	requires TextParser<Parse>
 consteval Rule<ParsedBy<Parse>> text(std::string_view mustBe);
 
-/// A checked rule whose value reads as T. Only number and text make one, so T is always what the rule's reader gives.
+/// A checked rule whose value reads as T. Only number, rate and text make one, so T is always what the rule's reader gives.
 template <class T> class Rule {
 public:
 	using Value = T;
-	constexpr const std::variant<WholeNumberRule, TextRule>& held() const noexcept { return rule_; }
+	constexpr const std::variant<WholeNumberRule, TextRule, RateRule>& held() const noexcept { return rule_; }
 
 private:
-	consteval explicit Rule(std::variant<WholeNumberRule, TextRule> rule) : rule_(rule) {}
+	consteval explicit Rule(std::variant<WholeNumberRule, TextRule, RateRule> rule) : rule_(rule) {}
 	friend consteval Rule<std::uint32_t> number(std::uint32_t low, std::uint32_t high, std::string_view unit);
+	friend consteval Rule<SampleRate> rate(SampleRate low, SampleRate high);
 	template <auto Parse>
 		requires TextParser<Parse>
 	friend consteval Rule<ParsedBy<Parse>> text(std::string_view mustBe);
-	std::variant<WholeNumberRule, TextRule> rule_;
+	std::variant<WholeNumberRule, TextRule, RateRule> rule_;
 };
 
 /// A row a type reads: required and defaulted rows read as T, an optional row as std::optional<T>. Reads are copies, so
@@ -102,7 +114,7 @@ public:
 
 private:
 	// A throw in a consteval function is what stops the compile; the text is what the compiler shows.
-	consteval Row(std::string_view key, bool required, std::variant<WholeNumberRule, TextRule> rule,
+	consteval Row(std::string_view key, bool required, std::variant<WholeNumberRule, TextRule, RateRule> rule,
 	              std::optional<std::uint32_t> byDefault = std::nullopt)
 		: row_{key, required, rule, byDefault} {
 		if (key.empty()) throw "a setting's key is empty";
@@ -130,6 +142,10 @@ consteval Rule<std::uint32_t> number(std::uint32_t low, std::uint32_t high, std:
 	if (low > high) throw "a whole number's low is above its high";
 	return Rule<std::uint32_t>(WholeNumberRule{low, high, unit});
 }
+consteval Rule<SampleRate> rate(SampleRate low, SampleRate high) {
+	if (low > high) throw "a rate's low is above its high";
+	return Rule<SampleRate>(RateRule{low, high});
+}
 template <auto Parse>
 	requires TextParser<Parse>
 consteval Rule<ParsedBy<Parse>> text(std::string_view mustBe) {
@@ -149,7 +165,9 @@ consteval Row<std::uint32_t, true> defaulted(std::string_view key, Rule<std::uin
 	return Row<std::uint32_t, true>(key, false, rule.held(), byDefault);
 }
 constexpr SettingDeclaration declarationOf(const SettingRow& row) {
-	return {row.key, std::holds_alternative<TextRule>(row.rule) ? SettingKind::text : SettingKind::wholeNumber};
+	if (std::holds_alternative<TextRule>(row.rule)) return {row.key, SettingKind::text};
+	if (std::holds_alternative<RateRule>(row.rule)) return {row.key, SettingKind::rate};
+	return {row.key, SettingKind::wholeNumber};
 }
 } // namespace setting
 

@@ -1,0 +1,753 @@
+{
+  "description": "The feature companions (docs/control-port.md#companions): each node of the snapshot carries its companion list (a card's playback and capture, an RTP receiver, a file's sink with its dropped frames; none for white). A file node's life: node.added with [], configuring, its sink listed not ready, then ready before the configured its readiness allowed. A counter moving: the whole list again. A stop and a start keep the list. A restart: the empty list after the node.state that began its teardown, then the next configuration's list from zero. A failure past a readiness deadline: failed, then the empty list. A removal: nothing about the removed node's companions after node.removed. Each list replaces the node's whole list; the same list is never sent twice.",
+  "requests": [
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
+    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"node.add\",\"params\":{\"name\":\"take\",\"type\":\"file\",\"settings\":{\"path\":\"take.wav\"}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"node.stop\",\"params\":{\"name\":\"rec\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"node.start\",\"params\":{\"name\":\"rec\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"node.restart\",\"params\":{\"name\":\"rec\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"node.restart\",\"params\":{\"name\":\"fpp\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"node.remove\",\"params\":{\"name\":\"take\"}}"
+  ],
+  "messages": [
+    {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "protocol": 1,
+        "features": [
+          "lifecycle",
+          "counters",
+          "companions",
+          "node-text"
+        ],
+        "graphFrequency": 48000,
+        "blockSize": 256,
+        "realtime": false,
+        "scheduling": "SCHED_OTHER",
+        "types": [
+          "card",
+          "file",
+          "rtp",
+          "white"
+        ],
+        "nodes": [
+          {
+            "name": "desk",
+            "type": "card",
+            "settings": {
+              "card": "MOTU",
+              "playback": 2,
+              "capture": 2
+            },
+            "inputs": [
+              "play.1",
+              "play.2"
+            ],
+            "outputs": [
+              "capture.1",
+              "capture.2"
+            ],
+            "state": "running",
+            "phase": "running",
+            "since": "2026-11-09T10:00:00.000000Z",
+            "wanted": "running",
+            "blockLost": false,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": [
+              {
+                "name": "desk.playback",
+                "kind": "card-playback",
+                "bank": "to_card",
+                "ready": true
+              },
+              {
+                "name": "desk.capture",
+                "kind": "card-capture",
+                "bank": "from_card",
+                "ready": true
+              }
+            ]
+          },
+          {
+            "name": "fpp",
+            "type": "rtp",
+            "settings": {
+              "address": "0.0.0.0",
+              "port": 5004,
+              "format": "L24",
+              "channels": 2
+            },
+            "inputs": [],
+            "outputs": [
+              "stream.1",
+              "stream.2"
+            ],
+            "state": "running",
+            "phase": "running",
+            "since": "2026-11-09T10:00:00.010000Z",
+            "wanted": "running",
+            "blockLost": false,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": [
+              {
+                "name": "fpp.rtp",
+                "kind": "rtp-receiver",
+                "bank": "from_rtp",
+                "ready": true
+              }
+            ]
+          },
+          {
+            "name": "noise",
+            "type": "white",
+            "settings": {},
+            "inputs": [],
+            "outputs": [
+              "noise.mono"
+            ],
+            "state": "running",
+            "phase": "running",
+            "since": "2026-11-09T10:00:00.020000Z",
+            "wanted": "running",
+            "blockLost": false,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": []
+          },
+          {
+            "name": "rec",
+            "type": "file",
+            "settings": {
+              "path": "x.wav"
+            },
+            "inputs": [
+              "record.left",
+              "record.right"
+            ],
+            "outputs": [],
+            "state": "running",
+            "phase": "running",
+            "since": "2026-11-09T10:00:00.030000Z",
+            "wanted": "running",
+            "blockLost": false,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": [
+              {
+                "name": "rec.writer",
+                "kind": "sink",
+                "bank": "writer",
+                "ready": true,
+                "dropped": 0
+              }
+            ]
+          }
+        ],
+        "routes": [],
+        "counters": {
+          "cycles": 0,
+          "cutCycles": 0,
+          "stalls": 0,
+          "lostMs": 0
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.added",
+      "params": {
+        "name": "take",
+        "type": "file",
+        "settings": {
+          "path": "take.wav"
+        },
+        "inputs": [
+          "record.left",
+          "record.right"
+        ],
+        "outputs": [],
+        "state": "starting",
+        "phase": "added",
+        "since": "2026-11-09T10:00:00.040000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": []
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "take",
+        "state": "starting",
+        "phase": "configuring",
+        "since": "2026-11-09T10:00:00.050000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.companionsChanged",
+      "params": {
+        "name": "take",
+        "companions": [
+          {
+            "name": "take.writer",
+            "kind": "sink",
+            "bank": "writer",
+            "ready": false,
+            "dropped": 0
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.companionsChanged",
+      "params": {
+        "name": "take",
+        "companions": [
+          {
+            "name": "take.writer",
+            "kind": "sink",
+            "bank": "writer",
+            "ready": true,
+            "dropped": 0
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "take",
+        "state": "starting",
+        "phase": "configured",
+        "since": "2026-11-09T10:00:00.060000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "take",
+        "state": "starting",
+        "phase": "starting",
+        "since": "2026-11-09T10:00:00.070000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "take",
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.080000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.companionsChanged",
+      "params": {
+        "name": "rec",
+        "companions": [
+          {
+            "name": "rec.writer",
+            "kind": "sink",
+            "bank": "writer",
+            "ready": true,
+            "dropped": 4096
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "rec",
+        "state": "stopping",
+        "phase": "stopping",
+        "since": "2026-11-09T10:00:00.090000Z",
+        "wanted": "stopped",
+        "blockLost": false,
+        "cause": {
+          "kind": "stop"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "result": {
+        "applied": "stop"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "rec",
+        "state": "stopped",
+        "phase": "stopped",
+        "since": "2026-11-09T10:00:00.100000Z",
+        "wanted": "stopped",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "rec",
+        "state": "starting",
+        "phase": "starting",
+        "since": "2026-11-09T10:00:00.110000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 4,
+      "result": {
+        "applied": "start"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "rec",
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.120000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "rec",
+        "state": "stopping",
+        "phase": "stopping",
+        "since": "2026-11-09T10:00:00.130000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "cause": {
+          "kind": "restarting",
+          "restart": {
+            "kind": "action"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.companionsChanged",
+      "params": {
+        "name": "rec",
+        "companions": []
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 5,
+      "result": {
+        "applied": "restart"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "rec",
+        "state": "starting",
+        "phase": "configuring",
+        "since": "2026-11-09T10:00:00.140000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "cause": {
+          "kind": "action"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.companionsChanged",
+      "params": {
+        "name": "rec",
+        "companions": [
+          {
+            "name": "rec.writer",
+            "kind": "sink",
+            "bank": "writer",
+            "ready": false,
+            "dropped": 0
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.companionsChanged",
+      "params": {
+        "name": "rec",
+        "companions": [
+          {
+            "name": "rec.writer",
+            "kind": "sink",
+            "bank": "writer",
+            "ready": true,
+            "dropped": 0
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "rec",
+        "state": "starting",
+        "phase": "configured",
+        "since": "2026-11-09T10:00:00.150000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "rec",
+        "state": "starting",
+        "phase": "starting",
+        "since": "2026-11-09T10:00:00.160000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "rec",
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.170000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "fpp",
+        "state": "stopping",
+        "phase": "stopping",
+        "since": "2026-11-09T10:00:00.180000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "cause": {
+          "kind": "restarting",
+          "restart": {
+            "kind": "action"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.companionsChanged",
+      "params": {
+        "name": "fpp",
+        "companions": []
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 6,
+      "result": {
+        "applied": "restart"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "fpp",
+        "state": "starting",
+        "phase": "configuring",
+        "since": "2026-11-09T10:00:00.190000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "cause": {
+          "kind": "action"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.companionsChanged",
+      "params": {
+        "name": "fpp",
+        "companions": [
+          {
+            "name": "fpp.rtp",
+            "kind": "rtp-receiver",
+            "bank": "from_rtp",
+            "ready": false
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "fpp",
+        "state": "failed",
+        "phase": "failed",
+        "since": "2026-11-09T10:00:00.200000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "reason": {
+          "code": "engine-refused",
+          "detail": "the RTP receiver never ran (UDP port 5004 held?)"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.companionsChanged",
+      "params": {
+        "name": "fpp",
+        "companions": []
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.removed",
+      "params": {
+        "name": "take"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "take",
+        "state": "stopping",
+        "phase": "stopping",
+        "since": "2026-11-09T10:00:00.210000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "cause": {
+          "kind": "removing"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 7,
+      "result": {}
+    }
+  ],
+  "graph": {
+    "protocol": 1,
+    "features": [
+      "lifecycle",
+      "counters",
+      "companions",
+      "node-text"
+    ],
+    "graphFrequency": 48000,
+    "blockSize": 256,
+    "realtime": false,
+    "scheduling": "SCHED_OTHER",
+    "types": [
+      "card",
+      "file",
+      "rtp",
+      "white"
+    ],
+    "nodes": [
+      {
+        "name": "desk",
+        "type": "card",
+        "settings": {
+          "card": "MOTU",
+          "playback": 2,
+          "capture": 2
+        },
+        "inputs": [
+          "play.1",
+          "play.2"
+        ],
+        "outputs": [
+          "capture.1",
+          "capture.2"
+        ],
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.000000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": [
+          {
+            "name": "desk.playback",
+            "kind": "card-playback",
+            "bank": "to_card",
+            "ready": true
+          },
+          {
+            "name": "desk.capture",
+            "kind": "card-capture",
+            "bank": "from_card",
+            "ready": true
+          }
+        ]
+      },
+      {
+        "name": "fpp",
+        "type": "rtp",
+        "settings": {
+          "address": "0.0.0.0",
+          "port": 5004,
+          "format": "L24",
+          "channels": 2
+        },
+        "inputs": [],
+        "outputs": [
+          "stream.1",
+          "stream.2"
+        ],
+        "state": "failed",
+        "phase": "failed",
+        "since": "2026-11-09T10:00:00.200000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": [],
+        "reason": {
+          "code": "engine-refused",
+          "detail": "the RTP receiver never ran (UDP port 5004 held?)"
+        }
+      },
+      {
+        "name": "noise",
+        "type": "white",
+        "settings": {},
+        "inputs": [],
+        "outputs": [
+          "noise.mono"
+        ],
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.020000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": []
+      },
+      {
+        "name": "rec",
+        "type": "file",
+        "settings": {
+          "path": "x.wav"
+        },
+        "inputs": [
+          "record.left",
+          "record.right"
+        ],
+        "outputs": [],
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.170000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": [
+          {
+            "name": "rec.writer",
+            "kind": "sink",
+            "bank": "writer",
+            "ready": true,
+            "dropped": 0
+          }
+        ]
+      }
+    ],
+    "routes": [],
+    "counters": {
+      "cycles": 0,
+      "cutCycles": 0,
+      "stalls": 0,
+      "lostMs": 0
+    }
+  }
+}

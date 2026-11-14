@@ -14,13 +14,16 @@ struct EngineView {
 	std::string scheduling; // e.g. "SCHED_FIFO 88", "SCHED_OTHER"
 };
 /// A wanted node as a snapshot shows it (docs/control-port.md#node-health): its spec (`disabled`
-/// among it), its public ports, its health, and when its phase began, which the gateway fills in and the read
-/// leaves empty.
+/// among it), its public ports, its health, when its phase began, which the gateway fills in and the read
+/// leaves empty, its counters (docs/engine.md#counters; zero before NodeHost knows it) and its companion list
+/// (docs/engine.md#companions-in-a-nodes-list; empty before it is configured).
 struct NodeView {
 	NodeSpec spec;
 	Ports ports; // public only (inside lists empty)
 	NodeHealth health;
 	std::optional<std::chrono::system_clock::time_point> since{};
+	NodeCounts counts{};
+	std::vector<CompanionView> companions{};
 };
 /// A wanted node's health before NodeHost told any: added and wanted running, or disabled from the spec.
 NodeHealth healthFromSpec(const NodeSpec& spec);
@@ -29,6 +32,7 @@ struct GraphView {
 	std::vector<std::string> types;  // sorted
 	std::vector<NodeView> nodes;     // wanted nodes, name order
 	std::vector<RouteStatus> routes; // wanted routes, Route order
+	GraphCounts counts{};            // the graph's counters (docs/engine.md#counters), read with the rest
 };
 class GraphReader {
 public:
@@ -37,11 +41,12 @@ protected:
 	~GraphReader() = default;
 };
 /// The join of the desired graph, the node framework and the reconciler. A wanted node's health
-/// is NodeHost's last entry of its name, or healthFromSpec when NodeHost has none yet.
+/// is NodeHost's last entry of its name, or healthFromSpec when NodeHost has none yet; its counters NodeHost's for the
+/// name, or zero; its companions NodeHost::companionsOf's; the graph's counters `graphCounts`' (zero without one), all read in the one call.
 class GraphStatus final : public GraphReader {
 public:
 	GraphStatus(EngineView engine, const NodeCatalogue& catalogue, const DesiredGraph& desired, const NodeHost& nodes,
-	            const Reconciler& routes); // all outlive it
+	            const Reconciler& routes, const GraphCounterSource* graphCounts = nullptr); // all outlive it
 	GraphView read() const override;
 
 private:
@@ -50,5 +55,6 @@ private:
 	const DesiredGraph& desired_;
 	const NodeHost& nodes_;
 	const Reconciler& routes_;
+	const GraphCounterSource* graphCounts_;
 };
 } // namespace ear

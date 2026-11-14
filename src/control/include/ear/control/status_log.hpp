@@ -14,6 +14,7 @@
 #include <vector>
 #include "ear/control/lifecycle_wire.hpp"
 #include "ear/control/requests.hpp"
+#include "ear/core/counter_watch.hpp"
 #include "ear/core/log.hpp"
 #include "ear/core/node_host.hpp"
 #include "ear/core/reconciler.hpp"
@@ -60,10 +61,18 @@ using PaceClock = std::function<std::chrono::steady_clock::time_point()>;
 ///                       answered; fields "node", "action", "result" (ok or the refusal's code), "detail" when set; told before the
 ///                       node records the request causes)
 ///   diagnostic          node <n> <code>: <detail>   (the framework's own observation about a node: ear.close-overdue,
-///                       ear.fade-unacknowledged, ear.barrier-overdue; its fields, such as "ms", between code and detail)
+///                       ear.close-late, ear.fade-unacknowledged, ear.barrier-overdue; its fields, such as "ms", between
+///                       code and detail)
 ///                       | <code>: <detail>   (one that names no node: ear.data-loop-wedged, with no "node" field;
 ///                       ear.main-loop-stalled with "ms" and "in" (the call the main loop is in, when known) and
 ///                       ear.main-loop-resumed with "ms", the stall's length, both from the watchdog's thread)
+///                       | ear.internal-error: ear's own bug, caught, with "callback" and, when it fails one, "node"
+///                       (docs/output-records.md#diagnostic; its detail "<callback> threw[ during <where>]: <what>")
+///                       | ear.graph-lost-cycles (no node: "cycles", "stalls", "ms" since the last, "totalCycles") and
+///                       node <n> ear.node-missed-cycles ("missed", "overruns" since the last, "totalMissed",
+///                       "totalOverruns"), and node <n> ear.sink-dropped or ear.source-shortfall ("companion",
+///                       "frames" since the last, "totalFrames"), as CounterWatch paces them
+///                       (docs/engine.md#reporting-the-counters)
 /// Records a full queue dropped are counted: the next record carries "dropped":<n>, and its msg says so.
 /// Log records are paced per node, or per source when unattributed (captured stderr, PipeWire, a library): a burst of
 /// logBurst passes, then one a second, so a library that floods its output cannot push node states, routes and notes
@@ -77,6 +86,8 @@ class StatusLog final : public NodeHealthListener,
 						public NodeDiagnosticListener,
 						public EngineDiagnosticListener,
 						public ActionListener,
+						public InternalErrorListener,
+						public CounterListener,
 						public LogSink {
 public:
 	static constexpr int logBurst = 32;
@@ -98,16 +109,28 @@ public:
 	void graphFileWriteFailed(const std::string& detail);
 	void log(const LogEntry& entry) override;
 	void actionAnswered(const ActionRecord& record) override;
+	/// A bug of ear's own, caught (docs/architecture.md#faults-by-owner), from the thread that caught it.
+	void internalError(const InternalError& error) override;
 	/// The main-loop watchdog (StallWatch, docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog), from its
 	/// own thread: a look found the heartbeat
 	/// `ms` old, the main loop `in` a call (MainLoopActivity::current(); empty when between calls); and the beats back
 	/// after a gap of `ms` between the beats either side.
+	/// CounterWatch's records (docs/output-records.md#diagnostic): what the graph lost, and what a node missed or
+	/// overran, since the last such record.
+	void graphLostCycles(const GraphCounts& total, const GraphCounts& since, std::uint64_t sinceMs) override;
+	void nodeMissedCycles(const NodeName& node, const NodeCounts& total, const NodeCounts& since) override;
+	/// ear.sink-dropped or ear.source-shortfall, by the companion's kind.
+	void companionFramesLost(const NodeName& node, const CompanionView& companion, std::uint64_t frames,
+	                         std::uint64_t totalFrames) override;
 	void mainLoopStalled(std::int64_t ms, std::string_view in);
 	void mainLoopResumed(std::int64_t ms);
 	void engineScheduling(bool realtime, std::string_view detail);
 	void controlListening(std::string_view address, std::uint16_t port);
 	/// Why ear exits with `status` (a folder it cannot open, a port it cannot bind).
 	void exiting(int status, std::string_view reason);
+	/// A stop has done all ear does (every node removed, the control port closed, ear.conf's last write made): status
+	/// 0, reason `stopped`, ear's last record of a clean exit (a library may still log from its teardown after it).
+	void stopped();
 
 private:
 	/// A record's own fields, in order: each a key and its value as JSON text.

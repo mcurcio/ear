@@ -32,7 +32,7 @@ void everySampleWritten(ear::testing::NodeHarness& harness, std::uint32_t maxBlo
 void readyEvery(ear::testing::NodeHarness& harness) {
 	for (const auto& companion : harness.companions())
 		if (!companion.destroyed && !companion.ready) {
-			CHECK(companion.engineName.starts_with("probe."));
+			CHECK(companion.name.starts_with("probe."));
 			harness.ready(companion.bank);
 		}
 }
@@ -41,7 +41,7 @@ void readyEvery(ear::testing::NodeHarness& harness) {
 
 TEST_CASE("Every type runs through the harness: configures, runs, writes every output sample, and walks its lifecycle",
           "[harness]") {
-	constexpr ear::AudioFormat format{.rate = 48000, .maxBlock = 128};
+	constexpr ear::AudioFormat format{.rate = ear::SampleRate::fixed<48000>(), .maxBlock = 128};
 	const auto types = ear::test::allTypes();
 	for (const auto& name : ear::test::notYetInHarness()) {
 		INFO(name << " is in notYetInHarness (test/nodes/all_types.hpp)");
@@ -52,8 +52,7 @@ TEST_CASE("Every type runs through the harness: configures, runs, writes every o
 		if (ear::test::notYetInHarness().contains(type->name())) continue;
 		for (const ear::NodeSettings& settings : ear::test::validSettings(type->name())) {
 			INFO(settings.dump());
-			ear::testing::NodeHarness harness(
-				*type, {.format = format, .node = "probe", .recordings = &ear::test::recordings()});
+			ear::testing::NodeHarness harness(*type, {.format = format, .node = "probe"});
 			const auto refused = harness.parse(settings);
 			INFO(refused.value_or(""));
 			REQUIRE_FALSE(refused);

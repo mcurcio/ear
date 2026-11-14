@@ -8,24 +8,39 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
+#include "ear/core/claims.hpp"
+#include "ear/core/companions.hpp"
+#include "ear/core/counter_watch.hpp"
+#include "ear/core/cycle_counters.hpp"
 #include "ear/core/desired_graph.hpp"
 #include "ear/core/executor.hpp"
+#include "ear/core/internal_error.hpp"
+#include "ear/core/latency.hpp"
 #include "ear/core/log.hpp"
+#include "ear/core/loop.hpp"
 #include "ear/core/node_lifecycle.hpp"
+#include "ear/core/recording.hpp"
 #include "ear/core/sink.hpp"
+#include "ear/core/source.hpp"
+#include "ear/core/store.hpp"
 #include "ear/core/timers.hpp"
 namespace ear {
-/// What a node still waits for, once its phase has lasted 2 s (docs/control-port.md#node-health; 3a's four kinds):
-/// an older node of its name still closing (`name` its name), the engine's block (`block`), a companion (`name`: an
-/// outside node's engine name, `<node>.<suffix>`), a sink's consumer (`consumer`).
+/// What a node still waits for, once its phase has lasted 2 s (docs/control-port.md#node-health): an older node of its
+/// name still closing (`name` its name), the engine's block (`block`), a companion (`name`: an engine companion's
+/// engine name, `<node>.<suffix>`), a sink's consumer (`consumer`), one of its loops to start (`loop`, `name` the
+/// loop's), one of its stores to open (`store`, `name` its file's), one of its recordings to open (`recording`, `name`
+/// its path, as asked), one of its claims to be granted (`claim`, `name` its key: "udp:5004";
+/// docs/writing-a-node-type.md#claims).
 struct WaitingFor {
-	enum class Kind { olderNode, block, companion, consumer };
+	enum class Kind { olderNode, block, companion, consumer, loop, store, recording, claim };
 	Kind kind;
-	std::string name{}; // olderNode and companion only
+	std::string name{}; // olderNode, companion, loop, store, recording and claim only
 	friend bool operator==(const WaitingFor&, const WaitingFor&) = default;
 };
-std::string_view waitingKindName(WaitingFor::Kind kind) noexcept; // "older-node" | "block" | "companion" | "consumer"
+/// "older-node" | "block" | "companion" | "consumer" | "loop" | "store" | "recording" | "claim"
+std::string_view waitingKindName(WaitingFor::Kind kind) noexcept;
 /// A node's health, the framework's judgement alone (docs/architecture.md#the-node-lifecycle; on the wire:
 /// docs/control-port.md#node-health): its state (the phase's
 /// colour), why it failed (while failed), its exact phase, what the graph wants of it, why it is stopping or
@@ -82,7 +97,7 @@ public:
 protected:
 	~NodeOperations() = default;
 };
-/// What a node's run says: a sentence, never a state (InsidesEvents::say).
+/// What a node's run says: a sentence, never a state (NodeHandle::say), paced as it says.
 class NodeNoteListener {
 public:
 	virtual void nodeSays(const NodeName& node, const std::string& text) = 0; // main thread
@@ -98,7 +113,8 @@ struct DiagnosticField {
 };
 /// What the framework itself observes about a node (docs/output-records.md#diagnostic), by code: "ear.close-overdue" (a
 /// configuration that did not close within the close deadline, leaked past the close deadline; no field),
-/// "ear.fade-unacknowledged" (a planned silence's fade not acknowledged within 100 ms, so the barrier was taken
+/// "ear.close-late" (that configuration closed after all; `ms` since its close began), "ear.claim-wait" (a claim waits
+/// for its holder, which is closing: "<key> held by node <n>, which is closing"; no field), "ear.fade-unacknowledged" (a planned silence's fade not acknowledged within 100 ms, so the barrier was taken
 /// unfaded; `ms`), "ear.barrier-overdue" (a barrier not completed within 5 s: the node's configuration and block are
 /// leaked; `ms`) and "ear.hook-slow" (a hook, named in the detail, "configure ran 31 ms", ran past hookSlowBound on the
 /// main loop; `ms`; once per node and hook for the node's life:
@@ -124,25 +140,19 @@ public:
 protected:
 	~EngineDiagnosticListener() = default;
 };
-/// How one run's latency crosses its block (docs/engine.md#latency-per-bank-pair): the pairs of banks it is carried
-/// between (a pass-through's pairs), and what the run declared it adds on a bank (StartContext::declareLatency). An
-/// output bank tells its linked ports its internal latency plus the most upstream of any input bank paired with it; an
-/// input bank tells its internal latency plus the most downstream of any output bank paired with it. A bank in no pair
-/// tells its internal latency alone.
-struct LatencyPlan {
-	std::vector<BankPair> pairs;
-	std::vector<std::pair<std::string, Latency>> internal;
-};
 /// What an asynchronous drive hands a block (docs/engine.md#drive-and-fade): the code (null: silence) and which outputs
 /// its fades touch, one flag per output in process()'s order (outputs, then inside outputs; a shorter span leaves the
-/// rest unfaded), and the interim sinks (docs/writing-a-node-type.md#sinks): the block writes each binding's tap after
-/// the code (and after the fade, which never touches a sink's bank), every cycle it runs that code, and unbinds them
-/// all in the invoke that applies the next request, so a sink takes exactly the cycles its code drove. All of it
+/// rest unfaded), and the ring companions: the sinks (docs/writing-a-node-type.md#sinks), whose taps the block writes
+/// after the code (and after the fade, which never touches a sink's bank), and the sources
+/// (docs/writing-a-node-type.md#sources), which it plays into their inside input banks before the code, every cycle it
+/// runs that code. All are bound in the invoke that applies the request, with the code, and unbound by the next
+/// request's (a silence binds none), so a sink takes and a source plays exactly the cycles its code drove. All of it
 /// outlives the drive's completion or the block.
 struct DriveRequest {
 	AudioCode* code = nullptr;
 	std::span<const bool> faded;
 	std::span<const SinkBinding> sinks{};
+	std::span<const SourceBinding> sources{};
 };
 /// Engine side of a port block. Silent until a drive applies a code. Destroying it removes its ports and their links;
 /// after the destructor returns, no process() of any code is running or will run, and no `done` of its requests runs.
@@ -150,21 +160,25 @@ class PortBlock {
 public:
 	virtual ~PortBlock() = default;
 	/// Main thread. Carries latency through the block by `plan` from now on, replacing the last plan, and tells the
-	/// linked ports what changed. Ignored by a block that carries no latency (a test's fake).
+	/// linked ports what changed, as workOut works it out (docs/engine.md#latency-per-bank-pair). A plan that does not
+	/// fit the block's ports is workOut's std::logic_error, thrown here and never later from a peer's report. Ignored by
+	/// a block that carries no latency (a test's fake).
 	virtual void carryLatency(const LatencyPlan& plan) { static_cast<void>(plan); }
 	/// Main thread; returns at once (docs/engine.md#drive-and-fade). The data loop applies the
 	/// request inside an invoke, between two cycles, whatever the block's state (PAUSED, its driver gone, its engine
-	/// node destroyed): the code and a fade gain reset to the fade-in's start for the faded outputs together, any
+	/// node destroyed): the code, its sinks and sources, and a fade gain reset to the fade-in's start for the faded
+	/// outputs together, any
 	/// pending fade-out cancelled (its `done` is dropped, never run). From the next cycle no process() of the previous
 	/// code runs. `done(P)` then runs on the main loop, never inside this call, with P the position the request takes
 	/// effect from (the next cycle's expected position, as takenAt). A block with no data loop applies it on the main
 	/// thread and still completes by signal. What `request` points to outlives `done` or the block. Requests to one
 	/// block complete in the order they were made, whichever of drive and fadeOut made them.
 	virtual void drive(DriveRequest request, std::move_only_function<void(std::uint64_t taken)> done) = 0;
-	/// Main thread; returns at once. From the next cycle every faded output ramps linearly to zero over 5 ms (rate * 5 /
-	/// 1000 frames) and stays there, the code still running; `done()` runs on the main loop once a cycle ended at zero
-	/// (a cycle too large to run counts as one). A block that is not processing (not STREAMING, or no data loop)
-	/// completes it by signal, never inline, and so does a block that leaves STREAMING before the fade ended.
+	/// Main thread; returns at once. From the next cycle every faded output ramps linearly to zero over 5 ms
+	/// (FrameClock::frames, at least 1 frame) and stays there, the code still running; `done()` runs on the main loop
+	/// once a cycle ended at zero (a cycle too large to run counts as one). A block that is not processing (not
+	/// STREAMING, or no data loop) completes it by signal, never inline, and so does a block that leaves STREAMING
+	/// before the fade ended.
 	virtual void fadeOut(std::move_only_function<void()> done) = 0;
 	/// Main thread: runs every `done` whose request the data loop already completed, as the block's completion event
 	/// would. A caller calls it before judging any bound, so a main loop that stalled never mistakes a
@@ -173,14 +187,21 @@ public:
 	/// Any thread: the position from which the block runs what it was last driven with (0 before any cycle ran).
 	virtual std::uint64_t takenAt() const noexcept = 0;
 	/// Main thread: the block's engine node's global id, read once the block was first STREAMING
-	/// (pw_filter_get_node_id), so an outside node links it by id, not by name; before that, or on a
+	/// (pw_filter_get_node_id), so an engine companion links it by id, not by name; before that, or on a
 	/// block with no engine node, 0xFFFFFFFF (no id).
 	virtual std::uint32_t blockId() const noexcept = 0;
+	/// Any thread: the node counters this block's cycles stated, every cycle its process saw (docs/engine.md#counters);
+	/// zero before its first cycle.
+	virtual NodeCounts counts() const noexcept = 0;
 };
 class PortBlockEvents { // main thread
 public:
 	virtual void ready() = 0;                  // processing in the engine; at most once
 	virtual void lost(std::string detail) = 0; // engine refused or dropped the block
+	/// The block's own callback threw (ear's bug; docs/architecture.md#faults-by-owner): the block is lost for good, and
+	/// its node fails lost with `detail` (internalErrorDetail's). At most once, instead of lost.
+	virtual void faulted(std::string detail) { lost(std::move(detail)); }
+
 protected:
 	~PortBlockEvents() = default;
 };
@@ -214,99 +235,59 @@ public:
 protected:
 	~HandoffAdapter() = default;
 };
-/// An outside node: a PipeWire node a run asked for (a sound card or an RTP receiver), plus the links joining its
-/// channels to the node's inside ports. Destroying it (main thread) removes both, in any state, and tells nothing.
-class OutsideNode {
-public:
-	virtual ~OutsideNode() = default;
+/// The adapter of each kind of companion and of ResourceRequest a host has
+/// (docs/writing-a-node-type.md#configure-and-createof): one member per kind, each null where the host has none, so a
+/// new kind is one member here and a host that does not need it (a test's) leaves it out. All given outlive the
+/// registry.
+struct ResourceAdapters {
+	SoundCardCompanions* cards = nullptr;
+	RtpReceiverCompanions* receivers = nullptr;
+	HandoffAdapter* handoffs = nullptr;
+	SinkAdapter* sinks = nullptr;
+	SourceAdapter* sources = nullptr;
+	RecordingAdapter* recordings = nullptr;
+	LoopAdapter* loops = nullptr;
+	StoreAdapter* stores = nullptr;
+	/// The ports' probe (docs/writing-a-node-type.md#claims); null: a port claim is judged between the host's nodes
+	/// only, never against the kernel (a test's host).
+	PortProbe* ports = nullptr;
 };
-/// One outside node's lifecycle, the same for every kind (main thread).
-class OutsideNodeEvents {
-public:
-	/// The node runs (a card's PCM runs; a receiver's socket is bound) and every channel is
-	/// linked to its block port; at most once.
-	virtual void ready() = 0;
-	/// At most once, before or after ready, never inside make(). When it is told, the outside
-	/// node's engine node and links are already destroyed, so it no longer clocks or holds any
-	/// part of the graph. Destroying the OutsideNode inside lost() is allowed (not inside ready()):
-	/// the adapter touches nothing of it after telling (NodeHost tears a failed configuration
-	/// down in the same call, T14).
-	virtual void lost(std::string detail) = 0;
-
-protected:
-	~OutsideNodeEvents() = default;
-};
-/// Where an outside node goes, worked out by the framework from the request's bank: the one engine name it is made
-/// with ("<node>.<suffix>"), the block it joins (its name, and its engine node's global id, PortBlock::blockId, which
-/// its links name: docs/architecture.md#phases-states-and-what-is-wanted), and the block's ports it joins, channel i to
-/// blockPorts[i].
-struct OutsideTarget {
-	NodeName engineNode;
-	NodeName blockNode;
-	std::vector<PortName> blockPorts;
-	AudioFormat format;
-	std::uint32_t blockId = 0xFFFFFFFFU; // no id: the join cannot link and the outside node is lost
-};
-/// One outside kind's adapter.
-///  - SoundCardRequest: one engine node for request.card with blockPorts.size() channels at format.rate. It joins the
-///    graph's clock only through its links to the block, made once its PCM runs.
-///  - RtpReceiverRequest: one engine node receiving the stream the request names, with blockPorts.size() channels. It
-///    follows the graph's clock and never drives it; its channels are linked once it runs (its socket is bound).
-///    Packets that stop or never come change nothing: it stays ready and its channels are silent.
-template <typename Request> class OutsideAdapter {
-public:
-	/// Main thread; only once port block `target.blockNode` is ready (its ports exist, and target.blockId is its id).
-	/// NodeHost calls it inside its per-turn flush (docs/architecture.md#isolation): a ready() told inside
-	/// it is heard once it returned.
-	virtual std::unique_ptr<OutsideNode> make(const OutsideTarget& target, const Request& request,
-	                                          OutsideNodeEvents& events) = 0;
-
-protected:
-	~OutsideAdapter() = default;
-};
-using SoundCardAdapter = OutsideAdapter<SoundCardRequest>;
-using RtpReceiverAdapter = OutsideAdapter<RtpReceiverRequest>;
-/// One open recording file (RecordingRequest). Destroying it (main thread) closes it.
-class RecordingFile {
-public:
-	virtual ~RecordingFile() = default;
-	virtual int descriptor() const noexcept = 0;
-};
-/// The recording kind's adapter: the recordings folder, held open from boot.
-class RecordingAdapter {
-public:
-	/// Main thread. `path` created or truncated beneath the folder only; the error is why not (it names no path).
-	virtual std::expected<std::unique_ptr<RecordingFile>, std::string> open(const NodeName& node,
-	                                                                        const std::string& path) = 0;
-
-protected:
-	~RecordingAdapter() = default;
-};
-/// The resource registry (docs/writing-a-node-type.md#configure-and-createof): one adapter per kind of ResourceRequest,
-/// so a new kind is one adapter here and nothing more in NodeHost's constructor.
+/// The resource registry (docs/writing-a-node-type.md#configure-and-createof): one adapter per kind of companion and
+/// of ResourceRequest, so a new kind is one adapter here and nothing more in NodeHost's constructor. A kind the host
+/// has no adapter for is refused at the context call that asks for it, as an adapter's refusal is: the node fails
+/// start-failed "no <kind> in this host" (a recording: "cannot open <path>: no recordings folder", as a recordings
+/// adapter tells why a path cannot be opened).
 class ResourceRegistry {
 public:
-	/// All outlive the registry.
-	ResourceRegistry(SoundCardAdapter& cards, RtpReceiverAdapter& receivers, HandoffAdapter& handoffs,
-	                 SinkAdapter& sinks, RecordingAdapter& recordings) noexcept
-		: cards_(cards), receivers_(receivers), handoffs_(handoffs), sinks_(sinks), recordings_(&recordings) {}
-	/// With no recordings folder: every recording is refused ("no recordings folder"). For hosts that run no "file"
-	/// node (tests).
-	ResourceRegistry(SoundCardAdapter& cards, RtpReceiverAdapter& receivers, HandoffAdapter& handoffs,
-	                 SinkAdapter& sinks) noexcept;
-	SoundCardAdapter& adapterFor(const SoundCardRequest&) const noexcept { return cards_; }
-	RtpReceiverAdapter& adapterFor(const RtpReceiverRequest&) const noexcept { return receivers_; }
-	HandoffAdapter& adapterFor(const HandoffRequest&) const noexcept { return handoffs_; }
-	RecordingAdapter& adapterFor(const RecordingRequest&) const noexcept { return *recordings_; }
-	/// The interim sinks' adapter (CreateOf::sink; docs/writing-a-node-type.md#sinks).
-	SinkAdapter& sinks() const noexcept { return sinks_; }
+	explicit ResourceRegistry(const ResourceAdapters& adapters) noexcept : adapters_(adapters) {}
+	/// Every kind given.
+	ResourceRegistry(SoundCardCompanions& cards, RtpReceiverCompanions& receivers, HandoffAdapter& handoffs,
+	                 SinkAdapter& sinks, SourceAdapter& sources, RecordingAdapter& recordings) noexcept
+		: ResourceRegistry(ResourceAdapters{&cards, &receivers, &handoffs, &sinks, &sources, &recordings}) {}
+	/// Every kind but recordings, for hosts that run no "file" node (tests).
+	ResourceRegistry(SoundCardCompanions& cards, RtpReceiverCompanions& receivers, HandoffAdapter& handoffs,
+	                 SinkAdapter& sinks, SourceAdapter& sources) noexcept
+		: ResourceRegistry(ResourceAdapters{&cards, &receivers, &handoffs, &sinks, &sources, nullptr}) {}
+	/// The engine companions' adapters (docs/engine.md#engine-companions); null: the host has none.
+	SoundCardCompanions* adapterFor(const SoundCardShape&) const noexcept { return adapters_.cards; }
+	RtpReceiverCompanions* adapterFor(const RtpReceiverShape&) const noexcept { return adapters_.receivers; }
+	HandoffAdapter* adapterFor(const HandoffRequest&) const noexcept { return adapters_.handoffs; }
+	/// The recordings' adapter (CreateOf::recording; docs/writing-a-node-type.md#recordings); null: the host has none,
+	/// and every recording is refused "no recordings folder".
+	RecordingAdapter* recordings() const noexcept { return adapters_.recordings; }
+	/// The sinks' adapter (CreateOf::sink; docs/writing-a-node-type.md#sinks); null: the host has none.
+	SinkAdapter* sinks() const noexcept { return adapters_.sinks; }
+	/// The sources' adapter (CreateOf::source; docs/writing-a-node-type.md#sources); null: the host has none.
+	SourceAdapter* sources() const noexcept { return adapters_.sources; }
+	/// The loops' adapter (a spec's loops; docs/writing-a-node-type.md#loops); null: the host has none.
+	LoopAdapter* loops() const noexcept { return adapters_.loops; }
+	/// The stores' adapter (a spec's stores; docs/writing-a-node-type.md#stores); null: the host has none.
+	StoreAdapter* stores() const noexcept { return adapters_.stores; }
+	/// The ports' probe (claims); null: the host probes no port.
+	PortProbe* ports() const noexcept { return adapters_.ports; }
 
 private:
-	SoundCardAdapter& cards_;
-	RtpReceiverAdapter& receivers_;
-	HandoffAdapter& handoffs_;
-	SinkAdapter& sinks_;
-	RecordingAdapter* recordings_;
+	ResourceAdapters adapters_;
 };
 /// How long a run's teardown may wait on other threads (teardown steps 3 and 4) before the framework stops waiting.
 inline constexpr std::chrono::milliseconds defaultCloseDeadline{10'000};
@@ -324,10 +305,11 @@ inline constexpr std::chrono::milliseconds waitingForPace{1'000};
 /// A hook that ran longer than this on the main loop is ear.hook-slow (docs/writing-a-node-type.md#the-class;
 /// docs/output-records.md#diagnostic).
 inline constexpr std::chrono::milliseconds hookSlowBound{20};
-class NodeHost final : public DesiredNodeListener, public NodeOperations {
+class NodeHost final : public DesiredNodeListener, public NodeOperations, public NodeCounterSource {
 public:
 	/// All outlive it. `mainLoop` runs on the thread that calls everything below; a run reaches it through there (its
-	/// events, its handoffs' and run object's `closed`). `timers` run there too.
+	/// events, its handoffs' and run object's `closed`). `timers` run there too. Made on that thread, which it marks as
+	/// the main loop's (onMainLoop, loop.hpp).
 	NodeHost(AudioFormat format, PortBlockFactory& blocks, ResourceRegistry& resources, Executor& mainLoop,
 	         Timers& timers, std::chrono::milliseconds closeDeadline = defaultCloseDeadline);
 	~NodeHost(); // precondition: stopAll completed (or no node was ever added)
@@ -335,16 +317,36 @@ public:
 	void subscribeNotes(NodeNoteListener& listener);
 	void subscribeDiagnostics(NodeDiagnosticListener& listener);
 	void subscribeEngineDiagnostics(EngineDiagnosticListener& listener);
-	/// Where the framework's own log entries go (source "ear", attributed to the node): in 3a a stop() that threw
-	/// during a teardown, whose fault is dropped (docs/writing-a-node-type.md#rules-the-framework-enforces edges). Main
-	/// thread, before the first node.
+	/// Where each span of counts begins and ends (docs/engine.md#reporting-the-counters): countsBegan when a node that
+	/// does not carry an older node's counts is added, its serial the span; countsEnded with its final counts as it
+	/// goes, before its nodeGone or supersededGone (not for the older node of a port-caused replace, whose span its newer
+	/// node carries on). Main thread, before the first node. Also companionsEnded, with a configuration's sinks' and
+	/// sources' final counts, as it ends (teardown step 5, or a leak).
+	void subscribeCounts(NodeCountsListener& listener);
+	/// Where a node's companion list goes whenever an entry is added or removed or its `ready` changes
+	/// (docs/engine.md#companions-in-a-nodes-list): told at configure's applied return (a source ready, the rest not),
+	/// before the health a companion's readiness allows, and empty at teardown step 1, after the health that began
+	/// the teardown; a stop keeps it. Only the node a client holds tells: never a superseded node, nor the older node of
+	/// a port-caused replace. A move of a counter alone is CounterWatch's to tell. Main thread, before the first node.
+	void subscribeCompanions(NodeCompanionsListener& listener);
+	/// Where log entries attributed to a node go: the framework's own (source "ear", on the main thread: a stop() that
+	/// threw during a teardown, whose fault is dropped, docs/writing-a-node-type.md#rules-the-framework-enforces), and
+	/// each node handle's log (docs/writing-a-node-type.md#the-node-handle), called on the thread that logs, so `sink`
+	/// takes entries from any thread. Main thread, before the first node: each configuration keeps the sinks it began
+	/// with.
 	void subscribeLog(LogSink& sink);
+	/// Where a bug of an adapter's that NodeHost caught is told, before its node fails lost
+	/// (docs/architecture.md#faults-by-owner): a sink, source or handoff adapter's std::logic_error inside a context
+	/// call, a port block factory's or engine companion adapter's throw in the flush, a store adapter's throw in one of a
+	/// store's I/O jobs and a recording adapter's std::logic_error (or no file) in a recording's open, each told once
+	/// its completion lands. Main thread.
+	void subscribeInternalErrors(InternalErrorListener& listener);
 	/// starting; port block made (in the turn's flush, once no older block of the name exists); then a configuration
 	/// (docs/architecture.md#the-node-lifecycle; docs/writing-a-node-type.md#configure-and-createof):
 	/// config.make(context) makes its instance (the type's class, or the legacy adapter over config.start), whose
 	/// configure acquires only, through CreateContext or StartContext on one set of internals, and gives the code
-	/// (every rule the type breaks, caught by it or not, a legacy recipe beside an outside node, and a configure or
-	/// recipe that throws, fail the node start-failed); the outside nodes it asked for are made once the block is
+	/// (every rule the type breaks, caught by it or not, and a configure or recipe that throws, fail the node
+	/// start-failed); the engine companions it asked for are made once the block is
 	/// ready, in request order, named "<node>.<suffix>" ("playback" / "capture" for cards, "rtp" for the receiver);
 	/// once every resource is ready a legacy recipe builds the run object and the code is prepared; once the block is
 	/// ready the code drives it (PortBlock's asynchronous drive, fading in every output the code writes: public outputs
@@ -355,7 +357,7 @@ public:
 	/// restart, a removal, a failure, stopAll) first fades those outputs out over 5 ms (unacknowledged within 100 ms:
 	/// ear.fade-unacknowledged and the silence unfaded); a drive or silence not completed within 5 s marks the data
 	/// loop wedged (ear.barrier-overdue, then ear.data-loop-wedged once): from then on NodeHost makes no PipeWire call,
-	/// every configuration, block and outside node it would end is leaked (leaked()), and a node added fails
+	/// every configuration, block and engine companion it would end is leaked (leaked()), and a node added fails
 	/// engine-refused "the data loop is wedged" without a block. Every bound first settles the block, so a completion a
 	/// stalled main loop has not yet dispatched is never judged late. A failure fails the node and tears its
 	/// configuration down; its port block stays. A name added back gets its block in the flush that destroys the older
@@ -365,7 +367,7 @@ public:
 	/// phase has lasted 2 s and then at most once a second. A node added disabled keeps its block, silent, and is
 	/// never configured (T19).
 	void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
-	/// Restart: the barrier (a drive with no code, once it completed), release(); outside nodes destroyed; handoffs
+	/// Restart: the barrier (a drive with no code, once it completed), release(); engine companions destroyed; handoffs
 	/// closed; the run object closed; then, on the main loop, the code destroyed, then the run object, the recipe, the
 	/// recordings and the config; then a new configuration from `config` as in nodeAdded. The port block and routes
 	/// stay. An update arriving during a restart replaces the config to start; one on a failed node configures it again
@@ -401,10 +403,25 @@ public:
 	/// Nodes not gone, in arrival order (a removed node still stopping comes before a newer node
 	/// of the same name).
 	std::vector<NodeHealth> health() const;
-	/// What was leaked, never freed: configurations left running past the close deadline or on a wedged data
-	/// loop, and the blocks and outside nodes a wedged loop kept. Their threads may still post to `mainLoop` or
-	/// touch engine objects at any time, so once any was leaked the process must end without destroying those (main.cpp
-	/// ends with std::_Exit).
+	/// The node counters of the newest node of this name not yet gone, from its add (docs/engine.md#counters): what its
+	/// block counts now, or counted before it went, plus, for a port-caused replace, what the older node counted (read
+	/// from it until it is gone, then carried), so they never step back; none when no such node is left.
+	std::optional<NodeCounts> counts(const NodeName& node) const override;
+	/// The counts of this span of counts (NodeCountsListener): its newest node not yet gone's, carried as counts()
+	/// carries them; none once the span ended.
+	std::optional<NodeCounts> spanCounts(std::uint64_t span) const override;
+	/// The companions of the newest node of this name not yet gone (docs/engine.md#companions-in-a-nodes-list): its
+	/// configuration's, in request order, each sink's `dropped` and source's `shortfall` read now; empty when there is
+	/// no such node, it has no configuration, its configure failed, or its teardown began. Main thread.
+	std::vector<CompanionView> companionsOf(const NodeName& node) const;
+	/// The same for the newest node of this span of counts not yet gone.
+	std::vector<CompanionView> spanCompanions(std::uint64_t span) const override;
+	/// What was leaked and may still be reached, never freed: configurations left running past the close deadline or on
+	/// a wedged data loop, and the blocks and engine companions a wedged loop kept. Their threads may still post to
+	/// `mainLoop` or touch engine objects at any time, so while any counts the process must end without destroying
+	/// those (main.cpp ends with std::_Exit). A configuration leaked at the close deadline that closed late
+	/// (ear.close-late, docs/architecture.md#teardown-by-dependency) no longer counts: nothing of it runs, and it
+	/// is freed in a later turn.
 	std::size_t leaked() const noexcept;
 
 private:

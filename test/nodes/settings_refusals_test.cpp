@@ -53,7 +53,8 @@ constexpr std::string_view addressText =
 constexpr std::string_view portText = "port: must be a whole number, 1-65535";
 constexpr std::string_view formatText = R"(format: must be "L16" or "L24")";
 constexpr std::string_view channelsText = "channels: must be a whole number, 1-64";
-constexpr std::string_view rateText = "rate: must be a whole number of Hz, 8000-192000";
+constexpr std::string_view rateText =
+	"rate: must be a rate from 8khz to 192khz (on the control port, a whole number of Hz)";
 constexpr std::string_view latencyText = "latencyMs: must be a whole number of milliseconds, 1-1000";
 constexpr std::string_view serverText = "server: must be ws://<host>[:<port>]/<path>";
 constexpr std::string_view acrossText = R"(port: only without "server")";
@@ -250,6 +251,12 @@ TEST_CASE("Each type's setting kinds are what its parse checks", "[nodes][settin
 			if (kind == ear::SettingKind::wholeNumber) {
 				bad[spelled] = 5.5;
 				CHECK(answer(name, bad).starts_with(spelled + ": must be a whole number"));
+			}
+			if (kind == ear::SettingKind::rate) { // a whole number of Hz on the wire, never ear.conf's unit form
+				bad[spelled] = "48khz";
+				CHECK(answer(name, bad).starts_with(spelled + ": must be a rate from "));
+				bad[spelled] = 48'000.5;
+				CHECK(answer(name, bad).starts_with(spelled + ": must be a rate from "));
 			}
 			// A key left out is missing or optional, never unknown.
 			NodeSettings without = good;

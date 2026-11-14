@@ -56,12 +56,12 @@ TEST_CASE("A wrong code then the right one pairs in band, and a ramp the server 
 	CHECK_FALSE(ear.lineStartingWith("node ma says pairing-failed"));
 	CHECK_FALSE(ear.hasLine("node ma says disconnected"));
 
-	server.send("play 1.5");
-	const bool ended = ear.waitForLine("node ma says stream-ended", playDeadline);
-	REQUIRE(ended);
+	server.send(playLong);
+	REQUIRE_SEEN(ear, waitForRampFrames(directory.recordings() / "rec.wav"));
+	REQUIRE_SEEN(ear, endStream(ear, server));
 
 	ear.signal(SIGTERM);
-	const auto exitStatus = ear.waitForExit(deadline);
+	const auto exitStatus = waitForStop(ear);
 	REQUIRE(exitStatus == 0);
 	CHECK(ear.hasLine("node rec removed dropped=0"));
 	CHECK(ear.hasLine("node ma says stream flac 48000 2 24"));
@@ -69,11 +69,15 @@ TEST_CASE("A wrong code then the right one pairs in band, and a ramp the server 
 	const Wav wav = readWav(directory.recordings() / "rec.wav");
 	CHECK(wav.info.samplerate == static_cast<int>(graphFrequency));
 	REQUIRE(wav.info.channels == 2);
-	const RampCheck ramp = checkRamp(wav);
+	const RampCheck ramp = checkRamp(wav, lostSyncUs(ear));
 	INFO(ramp);
 	CHECK(ramp.rampFrames >= rampFramesAtLeast);
 	CHECK(ramp.badFrames == 0);
 	CHECK(ramp.badSteps == 0);
+	// Every skip is paid by a record of ear's of the cycles lost when it was due (docs/testing.md#the-counters-own-word).
+	const auto unpaid = unpaidRampSkips(ear, ramp);
+	INFO(lostCycles(ear) << "; unpaid: " << json(unpaid).dump());
+	CHECK(unpaid.empty());
 }
 
 TEST_CASE("A restarted ear keeps its identity and its pairing, at 0600, and is asked for no code",
@@ -88,7 +92,7 @@ TEST_CASE("A restarted ear keeps its identity and its pairing, at 0600, and is a
 		id = ear.lineStartingWith("node ma says id ").value_or("");
 		pairOnce(ear, server);
 		ear.signal(SIGTERM);
-		REQUIRE(ear.waitForExit(deadline) == 0);
+		REQUIRE(waitForStop(ear) == 0);
 	}
 	const auto keyFile = directory.config() / "sendspin-ma.key";
 	CHECK(modeOf(keyFile) == std::filesystem::perms(0600));
@@ -103,7 +107,7 @@ TEST_CASE("A restarted ear keeps its identity and its pairing, at 0600, and is a
 	CHECK_FALSE(ear.lineStartingWith(pairingCodePrefix));
 	CHECK(modeOf(keyFile) == std::filesystem::perms(0600));
 	ear.signal(SIGTERM);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 }
 
 TEST_CASE("A server that trusts without pairing gets no stream and no source role", "[system][sendspin]") {
@@ -127,7 +131,7 @@ TEST_CASE("A server that trusts without pairing gets no stream and no source rol
 	CHECK_FALSE(ear.hasLine(std::string(connectedPaired)));
 	CHECK(server.count("disconnected ") == 0);
 	ear.signal(SIGTERM);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 }
 
 TEST_CASE("20 wrong rounds hold pairing back: an update with the same settings leaves it held, a "
@@ -181,7 +185,7 @@ TEST_CASE("20 wrong rounds hold pairing back: an update with the same settings l
 
 	ear.signal(SIGTERM);
 	CHECK(rpc.readUntilClosed() == 1001);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 }
 
 TEST_CASE("A corrupt key file fails the node, unchanged, and the rest of the graph runs", "[system][sendspin]") {
@@ -199,11 +203,14 @@ TEST_CASE("A corrupt key file fails the node, unchanged, and the rest of the gra
 	std::filesystem::permissions(keyFile, std::filesystem::perms(0640));
 
 	auto ear = runEar(directory);
-	const auto failed = ear.waitForLineStartingWith("node ma failed start-failed: ", deadline);
+	const auto failed = ear.waitForLineStartingWith("node ma failed ", deadline);
 	const bool others = waitForLines(ear, {"node rec running", "route noise:noise.mono -> rec:record.left linked"});
 	INFO("ear printed:\n" << ear.output());
 	REQUIRE(failed);
-	CHECK(*failed == "node ma failed start-failed: sendspin-ma.key: malformed: not JSON");
+	// The worker reads the key file on its own thread, so the node may have rested running first: then it is lost
+	// (docs/node-types.md#failures). Which comes first is the host's, not the test's.
+	if (ear.hasLine("node ma running")) CHECK(*failed == "node ma failed lost: sendspin-ma.key: malformed: not JSON");
+	else CHECK(*failed == "node ma failed start-failed: sendspin-ma.key: malformed: not JSON");
 	REQUIRE(others);
 	CHECK(readText(keyFile) == corrupt);
 	CHECK(modeOf(keyFile) == std::filesystem::perms(0600)); // a refused file may still hold a private key
@@ -221,7 +228,7 @@ TEST_CASE("A corrupt key file fails the node, unchanged, and the rest of the gra
 		}
 	}
 	ear.signal(SIGTERM);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 	CHECK(readText(keyFile) == corrupt);
 }
 
@@ -269,19 +276,27 @@ TEST_CASE("One dialling and one listening node have separate identities, on one 
 	CHECK(std::filesystem::exists(directory.config() / "sendspin-out.key"));
 	CHECK(std::filesystem::exists(directory.config() / "sendspin-in.key"));
 
-	server.send("play 1.5"); // the node paired last
+	server.send(playLong); // the node paired last
 	server.send("use " + outId);
-	server.send("play 1.5");
-	REQUIRE_SEEN(ear, ear.waitForLine("node in says stream-ended", playDeadline));
-	REQUIRE_SEEN(ear, ear.waitForLine("node out says stream-ended", playDeadline));
+	server.send(playLong);
+	REQUIRE_SEEN(ear, waitForRampFrames(directory.recordings() / "in.wav"));
+	REQUIRE_SEEN(ear, waitForRampFrames(directory.recordings() / "out.wav"));
+	REQUIRE_SEEN(ear, endStream(ear, server, "out"));
+	server.send("use " + inId);
+	REQUIRE_SEEN(ear, endStream(ear, server, "in"));
 
 	ear.signal(SIGTERM);
-	REQUIRE_SEEN(ear, ear.waitForExit(deadline) == 0);
+	REQUIRE_SEEN(ear, waitForStop(ear) == 0);
 	for (const char* file : {"out.wav", "in.wav"}) {
-		const RampCheck ramp = checkRamp(readWav(directory.recordings() / file));
+		const RampCheck ramp = checkRamp(readWav(directory.recordings() / file), lostSyncUs(ear));
 		INFO(file << ": " << ramp);
 		CHECK(ramp.rampFrames >= rampFramesAtLeast);
 		CHECK(ramp.badFrames == 0);
 		CHECK(ramp.badSteps == 0);
+		// Every skip is paid by a record of ear's of the cycles lost when it was due
+		// (docs/testing.md#the-counters-own-word).
+		const auto unpaid = unpaidRampSkips(ear, ramp, std::string(file) == "out.wav" ? "recOut" : "recIn");
+		INFO(lostCycles(ear) << "; unpaid: " << json(unpaid).dump());
+		CHECK(unpaid.empty());
 	}
 }

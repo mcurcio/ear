@@ -18,17 +18,21 @@
 #include "ear/nodes/sendspin.hpp"
 #include "key_store.hpp"
 #include "temp_folder.hpp"
+#include "without_file_privileges.hpp"
 
 namespace {
 
 using ear::sendspin::NodeKeyStore;
 using nlohmann::json;
 
-class Heard final : public ear::InsidesEvents {
+class Heard final : public ear::NodeHandle {
 public:
+	const ear::NodeName& node() const noexcept override { return name; }
+	void log(ear::LogEntry) override {}
 	void say(std::string text) override { said.push_back(std::move(text)); }
 	void lost(std::string detail) override { said.push_back("LOST " + std::move(detail)); }
 	std::vector<std::string> said;
+	ear::NodeName name = "kitchen";
 };
 
 struct Rig {
@@ -191,10 +195,7 @@ TEST_CASE("A directory, a symlink out and a file over 64 KiB each fail open with
 TEST_CASE("A read-only folder fails open with the folder's detail, and later fails a write without "
           "losing the blob",
           "[sendspin][keys]") {
-	if (::geteuid() == 0) {
-		WARN("root writes a read-only folder; this case needs an ordinary user");
-		return;
-	}
+	const ear::test::WithoutFilePrivileges asAnOrdinaryUser; // first, so the rig is gone before they come back
 	Rig rig;
 	const auto folderPath = rig.root / "config";
 	SECTION("nothing there yet") {

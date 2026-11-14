@@ -13,7 +13,7 @@ What is built and not repeated here (`docs/control-port.md`, `docs/output-record
 `node.start`, `node.stop`, `node.restart`, `node.disable`, `node.enable`; `node-disabled`, `not-restartable`;
 `node.gone` beside `node.stopped`; `applied` on `node.updated`); `data.pointer` on every -32602; the `node`, `action`
 (for the lifecycle verbs), `diagnostic` (code, fields, detail) and `still` records; `rpc-call.mjs --until`. Companions on
-the wire are 3b's (`companions.md`), `node.set`, `dryRun`, `dropRoutes` and the reconfigure outcomes 3d's
+the wire are built (`docs/control-port.md#companions`), `node.set`, `dryRun`, `dropRoutes` and the reconfigure outcomes 3d's
 (`reconfigure.md`), recovery's members slice 8's (`recovery.md`).
 
 [V] = verified in the source named, as of 2026-11-09; [U] = unverified, with the step whose test checks it (section 12).
@@ -48,8 +48,10 @@ leads, the disk wins; judge before keep; one keeper thread, one step at a time.
 Against one `ear.conf`:
 
 ```conf
-graph_frequency 48000;
-block_size 256;
+graph {
+    rate 48khz;
+    block_size 256;
+}
 @set $trim 0;
 node white noise;
 node gain amp { gainDb -6; }
@@ -465,7 +467,7 @@ only (a stalled main loop cannot answer the wire in time).
 | `ear.fade-unacknowledged`, `ear.barrier-overdue` | — | `ms` | built |
 | `ear.hook-slow` | the hook | `ms` | built |
 | `ear.loop-slow`, `ear.loop-source-left`, `ear.claim-wait`, `ear.close-late` | the loop, the claim | `ms`, `sources`, `holder`/`waitedMs`, `detail` | 3c (`node-primitives.md`) |
-| `ear.sink-dropped`, `ear.source-shortfall` | the companion | `frames`, `totalFrames` | 3b (`companions.md`) |
+| `ear.sink-dropped`, `ear.source-shortfall` | the companion | `companion`, `frames`, `totalFrames` | built as records (`docs/output-records.md#diagnostic`); on the wire with `node.diagnostic` |
 | `ear.reconfigure-fell-back`, `ear.reconfigure-superseded`, `ear.retiring-lost` | —, —, the companion | as `reconfigure.md` 8.2 | 3d |
 | `ear.status-flapping` | the field | `transitions`, `windowMs` | here: active once a field changes more than its `flapsAbove` within the window; inactive once a whole window passes at or below it; at most once per window while active |
 | `ear.events-dropped` | — | `heldBack` | here: events held back by the per-node rate (replaces 3c's `notes-dropped` note); at most once a second |

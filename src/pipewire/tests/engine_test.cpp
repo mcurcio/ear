@@ -3,27 +3,36 @@
 // Every wait is event-gated: the main loop runs until the events a test waits for have
 // arrived; the deadline only fails the test.
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <csignal>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <functional>
+#include <future>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
-#include <thread>
 #include <vector>
 
 #include <sched.h>
 #include <unistd.h>
 
 #include <pipewire/filter.h>
+#include <pipewire/impl.h>
 #include <pipewire/pipewire.h>
 
+#include "../callback_boundary.hpp"
 #include "catch2/catch.hpp"
 #include "ear/core/desired_graph.hpp"
+#include "ear/core/lifecycle.hpp"
 #include "ear/core/node_catalogue.hpp"
 #include "ear/core/node_host.hpp"
 #include "ear/pipewire/data_loop_wedge.hpp"
@@ -35,7 +44,13 @@
 #include "ear/pipewire/port_blocks.hpp"
 #include "ear/pipewire/rtp_receivers.hpp"
 #include "ear/pipewire/sound_cards.hpp"
+#include "ear/pipewire/sources.hpp"
+#include "ear/runtime/loops.hpp"
 #include "ear/testing/drive_now.hpp"
+#include "cycle_judge.hpp"
+#include "inducers.hpp"
+#include "sleeps.hpp"
+#include "temp_folder.hpp"
 
 namespace {
 using namespace ear;
@@ -44,7 +59,7 @@ using namespace std::chrono_literals;
 
 constexpr std::uint32_t kRate = 44100;
 constexpr std::uint32_t kBlock = 256;
-constexpr AudioFormat kFormat{kRate, kBlock};
+constexpr AudioFormat kFormat{ear::SampleRate::fixed<kRate>(), kBlock};
 
 /// The engine with nothing from a desktop session around it: no daemon to reach, no runtime
 /// directory, no D-Bus.
@@ -53,7 +68,7 @@ std::unique_ptr<Engine> makeEngine() {
 	                         "DBUS_SYSTEM_BUS_ADDRESS"}) {
 		unsetenv(name);
 	}
-	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, kRate, kBlock});
+	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, ear::SampleRate::fixed<kRate>(), kBlock});
 	if (!engine) FAIL("Engine::create: " << engine.error().detail);
 	return std::move(*engine);
 }
@@ -112,15 +127,22 @@ private:
 	bool timedOut_ = false;
 };
 
-/// Records its first input's samples (up to a fixed capacity) and every block's frame count.
+/// Records its first input's samples (up to a fixed capacity) and every block's frame count, and each cycle whose
+/// samples it recorded whole in its ledger, with the index of its first sample.
 class Recorder final : public AudioCode {
 public:
-	explicit Recorder(Waiter& waiter, std::size_t capacity = 8 * kRate) : waiter_(waiter), samples_(capacity) {}
+	explicit Recorder(Waiter& waiter, std::size_t capacity = 8 * kRate)
+		: waiter_(waiter), samples_(capacity), ledger_(capacity / kBlock), cycleStart_(capacity / kBlock) {}
 	void prepare(const AudioFormat&) override {}
 	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>>,
-	             std::uint32_t frames, const ear::GraphCycle&) noexcept override {
-		std::size_t at = recorded_.load(std::memory_order_relaxed);
+	             std::uint32_t frames, const ear::GraphCycle& cycle) noexcept override {
+		const std::size_t from = recorded_.load(std::memory_order_relaxed);
+		std::size_t at = from;
 		for (std::uint32_t i = 0; i < frames && at < samples_.size(); ++i) samples_[at++] = inputs[0][i];
+		if (at == from + frames && ledger_.count() < ledger_.capacity()) {
+			cycleStart_[ledger_.count()] = from; // before record() publishes the cycle
+			ledger_.record(cycle, frames);
+		}
 		recorded_.store(at, std::memory_order_release);
 		if (frames != kBlock) wrongFrames_.store(frames, std::memory_order_relaxed);
 		calls_.fetch_add(1, std::memory_order_release);
@@ -132,16 +154,22 @@ public:
 	std::uint32_t wrongFrames() const { return wrongFrames_.load(std::memory_order_relaxed); }
 	/// The recorded samples so far.
 	std::span<const float> samples() const { return {samples_.data(), recorded_.load(std::memory_order_acquire)}; }
+	/// The cycles recorded whole, and where cycle `n`'s samples begin in samples().
+	const ear::test::CycleLedger& ledger() const { return ledger_; }
+	std::size_t cycleStart(std::size_t n) const { return cycleStart_[n]; }
 
 private:
 	Waiter& waiter_;
 	std::vector<float> samples_;
+	ear::test::CycleLedger ledger_;
+	std::vector<std::size_t> cycleStart_;
 	std::atomic<std::size_t> recorded_{0};
 	std::atomic<std::uint64_t> calls_{0};
 	std::atomic<std::uint32_t> wrongFrames_{0};
 };
 
-/// Writes 1, 2, 3, ... to its one output, one value per sample, across blocks.
+/// Writes 1, 2, 3, ... to its one output, one value per sample, across blocks. Given stalls (a judge's), once armed it
+/// stalls the data thread as their plan says, counted from the first armed cycle.
 class Ramp final : public AudioCode {
 public:
 	explicit Ramp(Waiter& waiter) : waiter_(waiter) {}
@@ -150,15 +178,21 @@ public:
 	             std::uint32_t frames, const ear::GraphCycle&) noexcept override {
 		for (std::uint32_t i = 0; i < frames; ++i) outputs[0][i] = static_cast<float>(++next_);
 		calls_.fetch_add(1, std::memory_order_release);
+		if (ear::test::Stalls* stalls = stalls_.load(std::memory_order_acquire))
+			(*stalls)(armedCycles_++, frames, ear::SampleRate::fixed<kRate>());
 		waiter_.wake();
 	}
 	void release() noexcept override {}
 	std::uint64_t calls() const { return calls_.load(std::memory_order_acquire); }
+	/// From its next cycle on, it stalls as `stalls`' plan says.
+	void arm(ear::test::Stalls& stalls) { stalls_.store(&stalls, std::memory_order_release); }
 
 private:
 	Waiter& waiter_;
 	std::uint32_t next_ = 0;
 	std::atomic<std::uint64_t> calls_{0};
+	std::atomic<ear::test::Stalls*> stalls_{nullptr};
+	std::size_t armedCycles_ = 0;
 };
 
 class BlockEvents final : public PortBlockEvents {
@@ -329,19 +363,59 @@ TEST_CASE("A link carries a source block's ramp to a sink block sample for sampl
 	REQUIRE(pair.linkLog.failed.empty());
 	CHECK(pair.linkLog.active == std::vector<LinkId>{kLink});
 
-	constexpr std::size_t kWanted = 32 * kBlock;
-	REQUIRE(waiter.until([&] {
+	// The ramp counts its own cycles, so a cycle it ran and the recorder did not (cut short between them, which a host
+	// that stalls the data thread makes) moves the ramp on unheard. Within every cycle the recorder heard, the ramp is
+	// whole; a boundary is judged where the recorder's facts say nothing was lost before it, to a planned count, and a
+	// cycle that follows lost ones is excused only as cycles the driver cut, by the one judge
+	// (docs/testing.md#the-cycle-judge). The ramp makes the judge's stalls itself once it is heard, so the excuse is
+	// taken, and proven, on every run.
+	ear::test::CycleJudge judge(ear::test::JudgePlan{.judged = 32}, FrameClock(ear::SampleRate::fixed<kRate>()),
+	                            &engine->cuts());
+	const ear::test::CycleLedger& ledger = pair.recorder.ledger();
+	std::size_t fed = 0, breaks = 0, wrongSkips = 0;
+	const auto feed = [&] {
 		const auto samples = pair.recorder.samples();
-		return samples.size() - std::min(firstSound(samples), samples.size()) >= kWanted;
-	}));
+		const std::size_t first = firstSound(samples);
+		for (; fed < ledger.count(); ++fed) {
+			const std::size_t start = pair.recorder.cycleStart(fed);
+			const std::size_t end = start + ledger[fed].frames;
+			if (end > samples.size()) break; // recorded after samples() was read
+			if (end <= first + 1) continue;
+			for (std::size_t i = std::max(start + 1, first + 1); i < end; ++i)
+				if (samples[i] != samples[i - 1] + 1.0f) ++breaks;
+			if (start <= first) continue;
+			const ear::CycleFacts facts = ledger[fed].facts;
+			const ear::test::Verdict verdict = judge.at(facts, ledger[fed].frames);
+			if (verdict == ear::test::Verdict::judge && samples[start] != samples[start - 1] + 1.0f) ++breaks;
+			// Across cycles the driver cut, the ramp moved on by whole blocks it wrote unheard, never more than the
+			// cycles the recorder missed (none, where the driver cut a cycle before the ramp ran it too): a repeated,
+			// stale or over-skipped block fails.
+			if (verdict != ear::test::Verdict::fail && facts.causes.has(ear::CycleCause::catchUp)) {
+				const auto skipped = static_cast<std::int64_t>(samples[start] - samples[start - 1]) - 1;
+				if (skipped < 0 || skipped % ledger[fed].frames != 0 || skipped > facts.jumpFrames) ++wrongSkips;
+			}
+		}
+	};
+	REQUIRE(waiter.until([&] { return firstSound(pair.recorder.samples()) < pair.recorder.samples().size(); }));
+	pair.ramp.arm(judge.stalls());
+	REQUIRE(waiter.until(
+		[&] {
+			feed();
+			return judge.done() || judge.report().failed > 0 || ledger.full();
+		},
+		30s));
+	INFO(judge.report());
+	{
+		INFO("the recorder filled its " << ledger.capacity() << " cycles first");
+		REQUIRE_FALSE(ledger.full());
+	}
 	const auto samples = pair.recorder.samples();
 	const std::size_t first = firstSound(samples);
-	std::size_t breaks = 0;
-	for (std::size_t i = first + 1; i < samples.size(); ++i) {
-		if (samples[i] != samples[i - 1] + 1.0f) ++breaks;
-	}
+	REQUIRE(first < samples.size());
 	CHECK(samples[first] >= 1.0f);
 	CHECK(breaks == 0);
+	CHECK(wrongSkips == 0);
+	CHECK(judge.report().ok());
 }
 
 TEST_CASE("Blocks process at the graph frequency and block size", "[engine]") {
@@ -386,6 +460,95 @@ TEST_CASE("Blocks process at the graph frequency and block size", "[engine]") {
 	CHECK(recorder.calls() > 0);
 	CHECK(recorder.wrongFrames() == 0);
 	CHECK(recorder.samples().size() == recorder.calls() * kBlock);
+}
+
+// docs/engine.md#properties-ear-sets: without clock.power-of-two-quantum = false the engine rounds the quantum down to a
+// power of two, so 480 would run as 256.
+TEST_CASE("A block size that is not a power of two runs as itself", "[engine]") {
+	constexpr std::uint32_t block = 480;
+	for (const char* name : {"XDG_RUNTIME_DIR", "PIPEWIRE_RUNTIME_DIR", "PIPEWIRE_REMOTE", "DBUS_SESSION_BUS_ADDRESS",
+	                         "DBUS_SYSTEM_BUS_ADDRESS"}) {
+		unsetenv(name);
+	}
+	auto made = Engine::create(EngineSettings{EAR_ENGINE_CONF, ear::SampleRate::fixed<kRate>(), block});
+	if (!made) FAIL("Engine::create: " << made.error().detail);
+	auto engine = std::move(*made);
+	Waiter waiter(*engine);
+	struct Clock {
+		Waiter* waiter;
+		std::atomic<std::uint64_t> duration{0};
+		std::atomic<std::uint64_t> cycles{0};
+	} clock{&waiter};
+	pw_filter_events probeEvents{};
+	probeEvents.version = PW_VERSION_FILTER_EVENTS;
+	probeEvents.process = [](void* data, spa_io_position* position) {
+		auto* seen = static_cast<Clock*>(data);
+		seen->duration.store(position->clock.duration);
+		seen->cycles.fetch_add(1);
+		seen->waiter->wake();
+	};
+	pw_filter* probe =
+		pw_filter_new(engine->core(), "clock-probe", pw_properties_new(PW_KEY_NODE_ALWAYS_PROCESS, "true", nullptr));
+	REQUIRE(probe != nullptr);
+	spa_hook probeHook{};
+	pw_filter_add_listener(probe, &probeHook, &probeEvents, &clock);
+	REQUIRE(pw_filter_connect(probe, PW_FILTER_FLAG_RT_PROCESS, nullptr, 0) == 0);
+	const bool ran = waiter.until([&] { return clock.cycles.load() >= 8; });
+	pw_filter_destroy(probe);
+	REQUIRE(ran);
+	CHECK(clock.duration.load() == block);
+}
+
+// docs/engine.md#the-quantum-guard: the floor and the limit are the block size, so a node that forces another quantum
+// cannot change every block's cycle (a longer one would play as zeros, a shorter one break clock.duration == block).
+TEST_CASE("The quantum floor and limit are the block size: a node forcing a larger or a smaller quantum leaves every "
+          "cycle at the block size",
+          "[engine][quantum]") {
+	// What a companion must never carry (ear sets none): a forced quantum of four blocks, or of a quarter block.
+	std::uint32_t forcedFrames = 0;
+	SECTION("four blocks") { forcedFrames = 4 * kBlock; }
+	SECTION("a quarter block") { forcedFrames = kBlock / 4; }
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	NoLevelWake wake;
+	FilterPortBlocks blocks(*engine, wake);
+	Recorder recorder(waiter);
+	BlockEvents events(waiter);
+	auto sink = makeDriven(blocks, "rec", Ports{{{Direction::input, "record", {"left"}}}}, recorder, events);
+
+	struct Clock {
+		Waiter* waiter;
+		std::atomic<std::uint64_t> longest{0};
+		std::atomic<std::uint64_t> shortest{~std::uint64_t{0}};
+		std::atomic<std::uint64_t> cycles{0};
+	} clock{&waiter};
+	pw_filter_events probeEvents{};
+	probeEvents.version = PW_VERSION_FILTER_EVENTS;
+	probeEvents.process = [](void* data, spa_io_position* position) {
+		auto* seen = static_cast<Clock*>(data);
+		if (position->clock.duration > seen->longest.load()) seen->longest.store(position->clock.duration);
+		if (position->clock.duration < seen->shortest.load()) seen->shortest.store(position->clock.duration);
+		seen->cycles.fetch_add(1);
+		seen->waiter->wake();
+	};
+	const std::string forced = std::to_string(forcedFrames);
+	pw_filter* probe = pw_filter_new(engine->core(), "forcing-probe",
+	                                 pw_properties_new(PW_KEY_NODE_ALWAYS_PROCESS, "true", "node.force-quantum",
+	                                                   forced.c_str(), PW_KEY_NODE_GROUP, "ear.graph", nullptr));
+	REQUIRE(probe != nullptr);
+	spa_hook probeHook{};
+	pw_filter_add_listener(probe, &probeHook, &probeEvents, &clock);
+	REQUIRE(pw_filter_connect(probe, PW_FILTER_FLAG_RT_PROCESS, nullptr, 0) == 0);
+
+	const auto before = recorder.calls();
+	const bool ran = waiter.until(
+		[&] { return clock.cycles.load() >= 64 && events.readyCount > 0 && recorder.calls() >= before + 64; });
+	pw_filter_destroy(probe);
+	INFO("forced " << forcedFrames);
+	REQUIRE(ran);
+	CHECK(clock.longest.load() == kBlock);
+	CHECK(clock.shortest.load() == kBlock);
+	CHECK(recorder.wrongFrames() == 0);
 }
 
 TEST_CASE("Destroying a sink block removes its ports and link, and it never processes again", "[engine]") {
@@ -523,7 +686,9 @@ TEST_CASE("After the data loop is judged wedged a route's link is leaked, not de
 		dataLoop,
 		[](spa_loop*, bool, std::uint32_t, const void*, std::size_t, void* data) -> int {
 			auto* flag = static_cast<std::atomic<bool>*>(data);
-			while (!flag->load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			while (!flag->load())
+				ear::sleeps::induce(std::chrono::milliseconds(1),
+			                        "the wedge: an invoke that holds the data loop until the test lets it go");
 			return 0;
 		},
 		0, nullptr, 0, false, &release);
@@ -558,6 +723,9 @@ TEST_CASE("After the data loop is judged wedged a route's link is leaked, not de
 	CHECK(std::chrono::steady_clock::now() - before < std::chrono::seconds(4));
 
 	release.store(true); // the blocks' teardown below waits on the data loop
+	// The loop runs again: the mark is lifted for the teardown, which on a loop still wedged would leak what it
+	// destroys (the boundary skips every step that waits on it).
+	boundary::clearDataLoopWedged();
 }
 
 namespace {
@@ -608,7 +776,8 @@ TEST_CASE("Stopping 16 nodes costs about one fade, one cycle and one batch of de
 	RtpReceivers receivers(*engine);
 	MainLoopExecutor mainLoop(*engine);
 	ThreadSinks sinks(mainLoop);
-	ResourceRegistry resources(cards, receivers, handoffs, sinks);
+	EventSources sources;
+	ResourceRegistry resources(cards, receivers, handoffs, sinks, sources);
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph(catalogue);
 	HealthWake health(waiter);
@@ -637,4 +806,674 @@ TEST_CASE("Stopping 16 nodes costs about one fade, one cycle and one batch of de
 		CHECK(took < std::chrono::seconds(2));
 		CHECK(host.leaked() == 0);
 	}
+}
+
+namespace {
+
+/// A sink's consumer that throws on the first chunk after the test arms it, on the real sink's thread, as one with a
+/// bug.
+class ThrowingConsumer final : public SinkConsumer {
+public:
+	explicit ThrowingConsumer(std::shared_ptr<std::atomic<bool>> armed) : armed_(std::move(armed)) {}
+	void consume(const Chunk&) override {
+		if (armed_->load()) throw std::runtime_error("disk full");
+	}
+	void finish() override {}
+
+private:
+	std::shared_ptr<std::atomic<bool>> armed_;
+};
+
+/// A class's instance with a sink on its inside output bank "tap", consumed by a ThrowingConsumer, and a code that
+/// writes every output.
+class ThrowingSinkInstance final : public ErasedInstance {
+public:
+	explicit ThrowingSinkInstance(std::shared_ptr<std::atomic<bool>> armed) : armed_(std::move(armed)) {}
+	Configured configure(InstanceContexts& cx) override {
+		cx.create.sink("tap", SinkShape{.frames = 4096}).consumedBy(std::make_unique<ThrowingConsumer>(armed_));
+		cx.create.use(std::make_unique<LevelCode>());
+		return Configured::applied();
+	}
+
+private:
+	std::shared_ptr<std::atomic<bool>> armed_;
+};
+
+class ThrowingSinkConfig final : public NodeConfig {
+public:
+	std::shared_ptr<std::atomic<bool>> armed = std::make_shared<std::atomic<bool>>(false);
+	const Ports& ports() const override { return ports_; }
+	std::unique_ptr<ErasedInstance> make(NodeContext&) const override {
+		return std::make_unique<ThrowingSinkInstance>(armed);
+	}
+
+private:
+	Ports ports_{{{Direction::output, "tap", {"1"}, PortBank::Reach::inside}}};
+};
+
+/// Every log record NodeHost writes, on the main loop.
+class Logged final : public LogSink {
+public:
+	void log(const LogEntry& entry) override { entries.push_back(entry.text); }
+	std::vector<std::string> entries;
+};
+
+} // namespace
+
+// A type's throw is a fact about its node (docs/writing-a-node-type.md#rules-the-framework-enforces): a sink consumer
+// that throws on the real sink's thread fails only its node, through NodeHost's catch, never the callback boundary
+// (which, with no Faults installed, would end this test program).
+TEST_CASE("A sink consumer that throws on its real sink thread fails only its node, and the graph runs on",
+          "[engine][sink]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	NoLevelWake wake;
+	FilterPortBlocks blocks(*engine, wake);
+	ThreadHandoffs handoffs(engine->mainLoop());
+	AlsaSoundCards cards(*engine);
+	RtpReceivers receivers(*engine);
+	MainLoopExecutor mainLoop(*engine);
+	ThreadSinks sinks(mainLoop);
+	EventSources sources;
+	ResourceRegistry resources(cards, receivers, handoffs, sinks, sources);
+	NodeCatalogue catalogue{{}};
+	DesiredGraph graph(catalogue);
+	HealthWake health(waiter);
+	NodeHost host(kFormat, blocks, resources, mainLoop, mainLoop);
+	host.subscribe(health);
+	Logged logged;
+	host.subscribeLog(logged);
+	auto config = std::make_shared<ThrowingSinkConfig>();
+	host.nodeAdded(NodeSpec{"ok", "level", {}}, std::make_shared<LevelConfig>());
+	host.nodeAdded(NodeSpec{"rec", "test", {}}, config);
+	const auto of = [&](const NodeName& name) -> std::optional<NodeHealth> {
+		for (const NodeHealth& each : host.health())
+			if (each.name == name) return each;
+		return std::nullopt;
+	};
+	const auto running = [&](const NodeName& name) {
+		const auto health = of(name);
+		return health && health->state == NodeState::running;
+	};
+	REQUIRE(waiter.until([&] { return running("rec") && running("ok"); }, 10s));
+	config->armed->store(true); // the next chunk the sink's thread hands over throws
+	REQUIRE(waiter.until(
+		[&] {
+			const auto rec = of("rec");
+			return rec && rec->state == NodeState::failed;
+		},
+		10s));
+	const auto rec = of("rec");
+	REQUIRE(rec->reason);
+	CHECK(rec->reason->code == FailureReason::Code::lost);
+	CHECK(rec->reason->detail == "the sink tap's consumer threw in consume: disk full");
+	CHECK(running("ok"));
+	CHECK(logged.entries.empty()); // a fact, not a record
+	bool gone = false;
+	host.stopAll(graph.close(), [&] {
+		gone = true;
+		waiter.wake();
+	});
+	REQUIRE(waiter.until([&] { return gone; }, 10s));
+	CHECK(host.leaked() == 0);
+}
+
+namespace {
+
+/// A sink's consumer whose finish, on the real sink's thread, waits for the test.
+class LateConsumer final : public SinkConsumer {
+public:
+	explicit LateConsumer(std::shared_future<void> gate) : gate_(std::move(gate)) {}
+	void consume(const Chunk&) override {}
+	void finish() override { gate_.wait(); }
+
+private:
+	std::shared_future<void> gate_;
+};
+
+/// A loop's state whose destruction, on its dedicated loop's real thread at teardown step 4, waits for the test.
+struct LateState {
+	std::shared_future<void> gate;
+	~LateState() { gate.wait(); }
+};
+
+constexpr std::array lateLoops{LoopDeclaration{"worker", LoopKind::dedicated, true}};
+
+/// A class's instance with a sink on "tap" consumed by a LateConsumer and a dedicated loop with a LateState; it says
+/// when it is freed.
+class LateInstance final : public ErasedInstance {
+public:
+	LateInstance(std::shared_future<void> sinkGate, std::shared_future<void> stateGate, std::function<void()> freed)
+		: sinkGate_(std::move(sinkGate)), stateGate_(std::move(stateGate)), freed_(std::move(freed)) {}
+	~LateInstance() override { freed_(); }
+	std::span<const LoopDeclaration> loops() const noexcept override { return lateLoops; }
+	Configured configure(InstanceContexts& cx) override {
+		cx.create.sink("tap", SinkShape{.frames = 4096}).consumedBy(std::make_unique<LateConsumer>(sinkGate_));
+		cx.create.loopState(0, std::unique_ptr<void, void (*)(void*)>(new LateState{stateGate_}, [](void* state) {
+								delete static_cast<LateState*>(state);
+							}));
+		cx.create.use(std::make_unique<LevelCode>());
+		return Configured::applied();
+	}
+
+private:
+	std::shared_future<void> sinkGate_;
+	std::shared_future<void> stateGate_;
+	std::function<void()> freed_;
+};
+
+class LateConfig final : public NodeConfig {
+public:
+	LateConfig(std::shared_future<void> sinkGate, std::shared_future<void> stateGate, std::function<void()> freed)
+		: sinkGate_(std::move(sinkGate)), stateGate_(std::move(stateGate)), freed_(std::move(freed)) {}
+	const Ports& ports() const override { return ports_; }
+	std::unique_ptr<ErasedInstance> make(NodeContext&) const override {
+		return std::make_unique<LateInstance>(sinkGate_, stateGate_, freed_);
+	}
+
+private:
+	Ports ports_{{{Direction::output, "tap", {"1"}, PortBank::Reach::inside}}};
+	std::shared_future<void> sinkGate_;
+	std::shared_future<void> stateGate_;
+	std::function<void()> freed_;
+};
+
+/// The codes of NodeHost's diagnostics, in order; each wakes the waiter.
+class Diagnosed final : public NodeDiagnosticListener {
+public:
+	explicit Diagnosed(Waiter& waiter) : waiter_(waiter) {}
+	void nodeDiagnostic(const NodeName&, std::string_view code, const std::string&,
+	                    std::span<const DiagnosticField>) override {
+		codes.emplace_back(code);
+		waiter_.wake();
+	}
+	std::vector<std::string> codes;
+
+private:
+	Waiter& waiter_;
+};
+
+} // namespace
+
+// The leaked configuration (docs/architecture.md#teardown-by-dependency) on the real engine and real threads: a sink
+// consumer that drains late on its real sink thread and a dedicated loop whose state is destroyed late on its real
+// thread leak the configuration at the close deadline; once both let go, the record carries the teardown on, says
+// ear.close-late, frees the configuration, and the stop that follows ends normally with nothing leaked.
+TEST_CASE("A configuration leaked at the close deadline that closes late is freed, and the stop after it is normal",
+          "[engine][sink][leak]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	NoLevelWake wake;
+	FilterPortBlocks blocks(*engine, wake);
+	ThreadHandoffs handoffs(engine->mainLoop());
+	AlsaSoundCards cards(*engine);
+	RtpReceivers receivers(*engine);
+	MainLoopExecutor mainLoop(*engine);
+	ThreadSinks sinks(mainLoop);
+	EventSources sources;
+	runtime::Loops loops(mainLoop);
+	ResourceRegistry resources(ResourceAdapters{.cards = &cards,
+	                                            .receivers = &receivers,
+	                                            .handoffs = &handoffs,
+	                                            .sinks = &sinks,
+	                                            .sources = &sources,
+	                                            .loops = &loops});
+	NodeCatalogue catalogue{{}};
+	DesiredGraph graph(catalogue);
+	HealthWake health(waiter);
+	Diagnosed diagnosed(waiter);
+	std::promise<void> sinkGate;
+	std::promise<void> stateGate;
+	bool freed = false;
+	{
+		NodeHost host(kFormat, blocks, resources, mainLoop, mainLoop, 300ms);
+		host.subscribe(health);
+		host.subscribeDiagnostics(diagnosed);
+		host.nodeAdded(NodeSpec{"rec", "test", {}},
+		               std::make_shared<LateConfig>(sinkGate.get_future().share(), stateGate.get_future().share(), [&] {
+						   freed = true;
+						   waiter.wake();
+					   }));
+		REQUIRE(waiter.until(
+			[&] {
+				const auto all = host.health();
+				return all.size() == 1 && all[0].state == NodeState::running;
+			},
+			10s));
+		host.nodeRemoved("rec");
+		REQUIRE(waiter.until([&] { return std::ranges::count(diagnosed.codes, "ear.close-overdue") == 1; }, 10s));
+		REQUIRE(waiter.until([&] { return host.health().empty(); }, 10s)); // gone: the node moved on
+		CHECK(host.leaked() == 1);
+		CHECK_FALSE(freed);
+
+		sinkGate.set_value(); // the sink drains; the record finishes the loop, whose state now waits
+		stateGate.set_value();
+		REQUIRE(waiter.until([&] { return std::ranges::count(diagnosed.codes, "ear.close-late") == 1; }, 10s));
+		CHECK(host.leaked() == 0);
+		REQUIRE(waiter.until([&] { return freed; }, 10s)); // freed in a turn of its own, as step 5 frees
+
+		bool gone = false;
+		host.stopAll(graph.close(), [&] {
+			gone = true;
+			waiter.wake();
+		});
+		REQUIRE(waiter.until([&] { return gone; }, 10s));
+		CHECK(host.leaked() == 0); // so main.cpp would return normally, not leave through std::_Exit
+	}
+	CHECK(diagnosed.codes == std::vector<std::string>{"ear.close-overdue", "ear.close-late"});
+}
+
+namespace {
+
+/// What the callback boundary reported, in order, where main.cpp would end the process for a fault no adapter owns
+/// (docs/architecture.md#faults-by-owner); each report wakes the waiter once one is given.
+class Reported final : public Faults {
+public:
+	struct Seen {
+		std::string callback;
+		std::string where;
+		std::string detail;
+		std::string node;
+		bool owned;
+	};
+	void caught(std::string_view callback, std::string_view where, std::string_view detail, std::string_view node,
+	            bool owned) noexcept override {
+		reports.push_back(
+			Seen{std::string(callback), std::string(where), std::string(detail), std::string(node), owned});
+		if (waiter != nullptr) waiter->wake();
+	}
+	std::vector<Seen> reports;
+	Waiter* waiter = nullptr;
+};
+
+std::unique_ptr<Engine> makeEngine(Faults& faults) {
+	for (const char* name : {"XDG_RUNTIME_DIR", "PIPEWIRE_RUNTIME_DIR", "PIPEWIRE_REMOTE", "DBUS_SESSION_BUS_ADDRESS",
+	                         "DBUS_SYSTEM_BUS_ADDRESS"}) {
+		unsetenv(name);
+	}
+	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, ear::SampleRate::fixed<kRate>(), kBlock, &faults});
+	if (!engine) FAIL("Engine::create: " << engine.error().detail);
+	return std::move(*engine);
+}
+
+/// A route link listener with a bug of core's own: it throws when told a link is active.
+class ThrowingLinkListener final : public LinkListener {
+public:
+	void linkActive(LinkId) override { throw std::logic_error("the reconciler's bug"); }
+	void linkFailed(LinkId, std::string) override {}
+	void linkGone(LinkId) override {}
+};
+
+} // namespace
+
+// docs/architecture.md#faults-by-owner: a throw out of a port block's own callback is ear's bug in state that is its
+// node's alone: reported with the node, the block told faulted once, and the block leaves the graph, so the requests
+// its node's teardown makes still complete (applied on the main thread, by signal). The throw is the boundary's
+// injection seam, inside the real callback (docs/testing.md#the-tools).
+TEST_CASE("A port block whose own callback throws is told faulted, leaves the graph, and still completes its requests",
+          "[engine][faults]") {
+	Reported faults;
+	auto engine = makeEngine(faults);
+	Waiter waiter(*engine);
+	faults.waiter = &waiter;
+	NoLevelWake wake;
+	FilterPortBlocks blocks(*engine, wake);
+	BlockEvents events(waiter);
+	boundary::throwInCallback("FilterPortBlock::onStateChanged");
+	auto block = blocks.make("hall", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, events);
+	REQUIRE(waiter.until([&] { return events.lostDetail.has_value(); }));
+	CHECK(*events.lostDetail == "internal error in FilterPortBlock::onStateChanged: injected");
+	CHECK(events.readyCount == 0);
+	REQUIRE(faults.reports.size() == 1);
+	CHECK(faults.reports[0].callback == "FilterPortBlock::onStateChanged");
+	CHECK(faults.reports[0].node == "hall");
+	CHECK(faults.reports[0].detail == "injected");
+	CHECK(faults.reports[0].owned);
+	LevelCode code;
+	for (AudioCode* request : {static_cast<AudioCode*>(&code), static_cast<AudioCode*>(nullptr)}) {
+		bool done = false;
+		block->drive(DriveRequest{request, {}}, [&](std::uint64_t) {
+			done = true;
+			waiter.wake();
+		});
+		REQUIRE(waiter.until([&] { return done; }));
+	}
+	CHECK(faults.reports.size() == 1);
+}
+
+TEST_CASE("A port block whose making throws after any registration leaves nothing registered", "[engine][faults]") {
+	auto engine = makeEngine();
+	NoLevelWake wake;
+	FilterPortBlocks blocks(*engine, wake);
+	Waiter waiter(*engine);
+	BlockEvents events(waiter);
+	const Ports ports{{{Direction::output, "out", {"a"}}}};
+	const std::size_t before = boundary::registrationsHeld();
+	std::size_t made = 0;
+	{
+		const auto block = blocks.make("hall", ports, kFormat, events);
+		made = boundary::registrationsHeld() - before;
+	}
+	CHECK(made == 4); // its levels entry, two event sources and the filter's listener
+	CHECK(boundary::registrationsHeld() == before);
+	for (std::size_t n = 1; n <= made; ++n) {
+		INFO("thrown after registration " << n << " of " << made);
+		boundary::throwAfterRegistration(n);
+		CHECK_THROWS_WITH(blocks.make("hall", ports, kFormat, events), "injected after a registration");
+		boundary::throwAfterRegistration(0);
+		CHECK(boundary::registrationsHeld() == before);
+		CHECK(blocks.latestLevels().empty()); // no entry left pointing at a freed block
+	}
+}
+
+// docs/architecture.md#faults-by-owner: a route link's own callback that throws fails only its route; a throw of core's
+// own that the link's event dispatches to (a route link listener) leaves a place, so it is core's bug, no owner's.
+TEST_CASE(
+	"A route link whose own callback throws fails its route as ear's bug, and a listener's throw it tells is core's",
+	"[engine][faults]") {
+	Reported faults;
+	auto engine = makeEngine(faults);
+	Waiter waiter(*engine);
+	faults.waiter = &waiter;
+	LinkedPair pair(*engine, waiter);
+	REQUIRE(waiter.until([&] { return pair.ports.find("ramp", "out.a") && pair.ports.find("rec", "record.left"); }));
+	const EnginePortId out = pair.ports.find("ramp", "out.a")->id;
+	const EnginePortId left = pair.ports.find("rec", "record.left")->id;
+
+	boundary::throwInCallback("LinkProxy::onInfo");
+	pair.links.createLink(kLink, out, left);
+	REQUIRE(waiter.until([&] { return !pair.linkLog.failed.empty(); }));
+	CHECK(pair.linkLog.failed.at(0) ==
+	      std::pair<LinkId, std::string>{kLink, "internal error in LinkProxy::onInfo: injected"});
+	REQUIRE(faults.reports.size() == 1);
+	CHECK(faults.reports[0].callback == "LinkProxy::onInfo");
+	CHECK(faults.reports[0].node.empty());
+	CHECK(faults.reports[0].owned);
+
+	ThrowingLinkListener buggy;
+	pair.links.subscribe(buggy);
+	pair.links.createLink(kLink + 1, out, left);
+	// The wait also ends on the second link's own end, so a failure names how it ended (refused by the engine, or never
+	// active) rather than only running out the deadline.
+	const bool ended = waiter.until([&] { return faults.reports.size() == 2 || pair.linkLog.failed.size() > 1; });
+	INFO("the second link was " << (pair.linkLog.active.empty() ? "never active" : "active") << ", "
+	                            << pair.linkLog.failed.size() << " link(s) failed, " << faults.reports.size()
+	                            << " fault(s) reported");
+	REQUIRE(ended);
+	if (pair.linkLog.failed.size() > 1) FAIL("the second link failed: " << pair.linkLog.failed.back().second);
+	REQUIRE(faults.reports.size() == 2);
+	CHECK(faults.reports[1].callback == "LinkProxy::onInfo");
+	CHECK(faults.reports[1].where == "tell route links");
+	CHECK(faults.reports[1].detail == "the reconciler's bug");
+	CHECK_FALSE(faults.reports[1].owned);
+	CHECK(pair.linkLog.active == std::vector<LinkId>{kLink + 1}); // told before the listener that threw
+	CHECK(pair.linkLog.failed.size() == 1);                       // the link itself was not failed
+}
+
+namespace {
+
+/// An owner of a filter listened to on the data loop, whose fault takes the same steps through the boundary as a port
+/// block's (FilterPortBlock::faulted and leave): the listener removed (its process callback cleared by a blocking
+/// invoke), a blocking flush invoke, the filter destroyed.
+class FilterOwner final : public FaultOwner {
+public:
+	explicit FilterOwner(Engine& engine) : dataLoop_(pw_context_get_data_loop(engine.context())) {
+		filter_.reset(pw_filter_new(engine.core(), "faulted", pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio", nullptr)));
+		listen<FilterCallbacks<FilterOwner>{.process = realtime<&FilterOwner::onProcess>}>(filter_.get(), listener_,
+		                                                                                   this);
+		pw_filter_connect(filter_.get(), PW_FILTER_FLAG_RT_PROCESS, nullptr, 0);
+	}
+	std::string_view faultNode() const noexcept override { return "faulted"; }
+	void faulted(std::string_view, std::string_view) override {
+		listener_.remove();
+		flushed = invoke(dataLoop_, realtime<&FilterOwner::onNothing>, this, true);
+		filter_.reset();
+		told = true;
+	}
+	void onEvent(std::uint64_t /*count*/) { throw std::runtime_error("bad state"); }
+	void onProcess(spa_io_position* /*position*/) noexcept {}
+	void onNothing() noexcept {}
+	bool told = false;
+	int flushed = 0;
+
+private:
+	DataLoop dataLoop_;
+	OwnedFilter filter_;
+	Listener listener_;
+};
+
+} // namespace
+
+// docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog: once the data loop is marked wedged, every step
+// that would wait on it goes through the boundary, which skips it and leaks: an owner's fault there (a listener bound
+// to the data loop removed, a blocking invoke, a filter destroyed) returns at once, its owner is told, and the main
+// loop runs on. The data loop is really stuck here (a code that waits in process), so a step that waited would hang.
+TEST_CASE("A fault on a wedged data loop makes no blocking step into it: the owner is told and the main loop runs on",
+          "[engine][faults][wedge]") {
+	Reported faults;
+	auto engine = makeEngine(faults);
+	auto* owner = new FilterOwner(*engine); // leaked, with its filter, as a wedged loop's objects are
+	// The data loop runs no invoke from here: one of its invokes waits until the test lets it go.
+	std::atomic<bool> hold{true};
+	pw_loop* dataLoop = pw_data_loop_get_loop(pw_context_get_data_loop(engine->context()));
+	REQUIRE(dataLoop != nullptr);
+	pw_loop_invoke(
+		dataLoop,
+		[](spa_loop*, bool, std::uint32_t, const void*, std::size_t, void* data) -> int {
+			static_cast<std::atomic<bool>*>(data)->wait(true);
+			return 0;
+		},
+		0, nullptr, 0, false, &hold);
+	markDataLoopWedged(*engine); // as main.cpp's glue does on ear.data-loop-wedged
+
+	Guarded<&FilterOwner::onEvent>::call(owner, 0); // returns: nothing waited on the stuck loop
+	CHECK(owner->told);
+	CHECK(owner->flushed == -EDEADLK);
+	REQUIRE(faults.reports.size() == 1);
+	CHECK(faults.reports[0].callback == "FilterOwner::onEvent");
+	CHECK(faults.reports[0].node == "faulted");
+	CHECK(faults.reports[0].owned);
+
+	MainLoopExecutor mainLoop(*engine);
+	Waiter waiter(*engine);
+	bool ran = false;
+	mainLoop.post([&] {
+		ran = true;
+		waiter.wake();
+	});
+	CHECK(waiter.until([&] { return ran; })); // the main loop's next event runs
+
+	hold = false;
+	hold.notify_all();
+	boundary::clearDataLoopWedged(); // the loop runs again: the teardown below destroys what it holds
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The internal clock's realtime events through the callback boundary (docs/architecture.md#the-callback-boundary,
+// docs/engine.md#graphcycle): the engine's own listener, a realtime listener's life and its removal on a wedged loop.
+
+namespace {
+
+/// The target of a realtime listener on the internal clock: counts its cycle starts, on the data thread, into a count
+/// outside it (which outlives the listener), waking `waiter` (if any) at each.
+class Starts {
+public:
+	Starts(std::atomic<std::uint64_t>& count, Waiter* waiter) : count_(count), waiter_(waiter) {}
+	void onStart() noexcept {
+		count_.fetch_add(1, std::memory_order_release);
+		if (waiter_ != nullptr) waiter_->wake();
+	}
+
+private:
+	std::atomic<std::uint64_t>& count_;
+	Waiter* waiter_;
+};
+constexpr NodeRealtimeCallbacks<Starts> startsEvents{.start = realtime<&Starts::onStart>};
+
+/// Counts its own cycles, and keeps the number its first cycle's facts stated and whether each later one stated a
+/// larger one, for a test that needs the graph to run and something to wait on.
+class Ticking final : public AudioCode {
+public:
+	explicit Ticking(Waiter& waiter) : waiter_(waiter) {}
+	void prepare(const AudioFormat&) override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs, std::uint32_t,
+	             const ear::GraphCycle& cycle) noexcept override {
+		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
+		const std::uint64_t number = cycle.facts.graphCycle;
+		if (cycles_.load(std::memory_order_relaxed) == 0) first_.store(number, std::memory_order_relaxed);
+		else if (number <= last_) increasing_.store(false, std::memory_order_relaxed);
+		last_ = number;
+		cycles_.fetch_add(1, std::memory_order_release);
+		waiter_.wake();
+	}
+	void release() noexcept override {}
+	std::uint64_t cycles() const noexcept { return cycles_.load(std::memory_order_acquire); }
+	/// The first cycle's number, and whether every later one's was larger (read after cycles(), acquire).
+	std::uint64_t first() const noexcept { return first_.load(std::memory_order_relaxed); }
+	bool increasing() const noexcept { return increasing_.load(std::memory_order_relaxed); }
+
+private:
+	Waiter& waiter_;
+	std::atomic<std::uint64_t> cycles_{0};
+	std::atomic<std::uint64_t> first_{0};
+	std::atomic<bool> increasing_{true};
+	std::uint64_t last_ = 0; // data thread
+};
+
+} // namespace
+
+TEST_CASE("The engine numbers the internal clock's cycles from its start: a block's first cycle has a number, and "
+          "every later one the record's count as it runs",
+          "[engine][cycle_facts]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	NoLevelWake wake;
+	FilterPortBlocks blocks(*engine, wake);
+	// Made before any block: the listener was added before the first cycle, so nothing has started yet.
+	CHECK(engine->cuts().started() == 0);
+	CHECK(engine->internalClockId() != 0);
+	Ticking code(waiter);
+	BlockEvents events(waiter);
+	auto block = makeDriven(blocks, "numbered", Ports{{{Direction::output, "out", {"a"}}}}, code, events);
+	REQUIRE(waiter.until([&] { return code.cycles() >= 16; }));
+	// The block's facts carry the numbers: its first cycle's is one (the listener heard it start), every later one's
+	// larger, never zero.
+	CHECK(code.first() > 0);
+	CHECK(code.increasing());
+	CHECK(engine->cuts().started() >= code.first() + 15);
+	CHECK(engine->cuts().newestWhole() < engine->cuts().started());
+}
+
+TEST_CASE("Engine::create fails naming the internal clock when engine.conf makes none", "[engine][cycle_facts]") {
+	for (const char* name : {"XDG_RUNTIME_DIR", "PIPEWIRE_RUNTIME_DIR", "PIPEWIRE_REMOTE", "DBUS_SESSION_BUS_ADDRESS",
+	                         "DBUS_SYSTEM_BUS_ADDRESS"}) {
+		unsetenv(name);
+	}
+	std::ifstream in(EAR_ENGINE_CONF);
+	std::string conf((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+	const std::string named = "node.name       = Dummy-Driver";
+	const std::size_t at = conf.find(named);
+	REQUIRE(at != std::string::npos);
+	conf.replace(at, named.size(), "node.name       = Another-Driver");
+	const ear::test::TempFolder folder("engine-conf");
+	const std::filesystem::path path = folder.path() / "engine.conf";
+	std::ofstream(path) << conf;
+	const auto engine = Engine::create(EngineSettings{path, ear::SampleRate::fixed<kRate>(), kBlock});
+	REQUIRE_FALSE(engine);
+	CHECK(engine.error().detail ==
+	      "the engine holds no internal clock (Dummy-Driver): engine.conf's context.objects must make it");
+	// It let the boundary go: the next engine is made.
+	CHECK(makeEngine() != nullptr);
+}
+
+TEST_CASE("An engine whose making throws after its clock's listener was added leaves nothing registered",
+          "[engine][faults][cycle_facts]") {
+	const std::size_t before = boundary::registrationsHeld();
+	boundary::throwAfterRegistration(1); // the first registration Engine::create makes: the clock's listener
+	CHECK_THROWS_WITH(makeEngine(), "injected after a registration");
+	boundary::throwAfterRegistration(0);
+	CHECK(boundary::registrationsHeld() == before);
+	CHECK(makeEngine() != nullptr);
+}
+
+TEST_CASE("A realtime listener on an engine node hears its cycles while held, and none once its handle is removed",
+          "[engine][boundary][cycle_facts]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	NoLevelWake wake;
+	FilterPortBlocks blocks(*engine, wake);
+	Ticking code(waiter);
+	BlockEvents events(waiter);
+	auto block = makeDriven(blocks, "ticking", Ports{{{Direction::output, "out", {"a"}}}}, code, events);
+	pw_impl_node* clock = engineNode(engine->context(), "Dummy-Driver");
+	REQUIRE(clock != nullptr);
+	const std::size_t before = boundary::registrationsHeld();
+	std::atomic<std::uint64_t> starts{0};
+	RealtimeListener<Starts> listener;
+	listenRealtime<startsEvents>(clock, listener, std::make_unique<Starts>(starts, &waiter));
+	CHECK(boundary::registrationsHeld() == before + 1);
+	REQUIRE(waiter.until([&] { return starts.load() >= 8; }));
+	CHECK_FALSE(listener.remove()); // off the clock, a blocking invoke the data loop ran, and its target freed
+	CHECK_FALSE(listener);
+	CHECK(boundary::registrationsHeld() == before);
+	// Removal returned once the data loop let go, so no start reaches it after, however many cycles run.
+	const std::uint64_t heard = starts.load();
+	const std::uint64_t cycles = code.cycles();
+	REQUIRE(waiter.until([&] { return code.cycles() >= cycles + 8; }));
+	CHECK(starts.load() == heard);
+}
+
+// docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog: removing a realtime listener waits on the data
+// loop, so on a wedged one its hook is left on the node, and the boundary keeps the hook and its target for good: the
+// handle and whatever owned it may go, and the data loop, running again, still calls a live target.
+TEST_CASE(
+	"Removing a realtime listener on a wedged loop: it waits on nothing, and the boundary keeps it and its target",
+	"[engine][boundary][wedge][cycle_facts]") {
+	// Outlives the engine: the kept target counts into it for as long as the clock runs.
+	static std::atomic<std::uint64_t> keptStarts{0};
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	pw_impl_node* clock = engineNode(engine->context(), "Dummy-Driver");
+	REQUIRE(clock != nullptr);
+	const std::size_t before = boundary::registrationsHeld();
+	const std::size_t keptBefore = boundary::keptForeverCount();
+	std::atomic<bool> hold{true};
+	{
+		RealtimeListener<Starts> listener;
+		listenRealtime<startsEvents>(clock, listener, std::make_unique<Starts>(keptStarts, nullptr));
+		pw_loop* dataLoop = pw_data_loop_get_loop(pw_context_get_data_loop(engine->context()));
+		REQUIRE(dataLoop != nullptr);
+		pw_loop_invoke(
+			dataLoop,
+			[](spa_loop*, bool, std::uint32_t, const void*, std::size_t, void* data) -> int {
+				static_cast<std::atomic<bool>*>(data)->wait(true);
+				return 0;
+			},
+			0, nullptr, 0, false, &hold);
+		markDataLoopWedged(*engine); // as main.cpp's glue does on ear.data-loop-wedged
+
+		CHECK(listener.remove()); // returns: nothing waited on the stuck loop
+		CHECK_FALSE(listener);
+		CHECK(boundary::registrationsHeld() == before);
+		CHECK(boundary::keptForeverCount() == keptBefore + 1);
+		// A listener that left a hook is never attached again: the boundary keeps that one.
+		CHECK_THROWS_AS(listenRealtime<startsEvents>(clock, listener, std::make_unique<Starts>(keptStarts, nullptr)),
+		                std::logic_error);
+		CHECK(boundary::registrationsHeld() == before);
+	} // the handle goes, with nothing of its own to leak
+
+	hold = false;
+	hold.notify_all();
+	boundary::clearDataLoopWedged();
+	// The loop runs again: the kept hook is still on the clock, its target alive and counting.
+	NoLevelWake wake;
+	FilterPortBlocks blocks(*engine, wake);
+	Ticking code(waiter);
+	BlockEvents events(waiter);
+	auto block = makeDriven(blocks, "after", Ports{{{Direction::output, "out", {"a"}}}}, code, events);
+	const std::uint64_t ticks = code.cycles();
+	const std::uint64_t counted = keptStarts.load();
+	// Each cycle the code runs after the count was read started after it, but for the first.
+	REQUIRE(waiter.until([&] { return code.cycles() >= ticks + 9; }));
+	CHECK(keptStarts.load() >= counted + 8);
 }

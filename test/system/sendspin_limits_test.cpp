@@ -132,7 +132,7 @@ TEST_CASE("An upgrade carrying Origin is closed before any client/init, and the 
 	CHECK(init.value("type", "") == "client/init");
 
 	ear.signal(SIGTERM);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 }
 
 TEST_CASE("A frame that claims more than a message may hold is closed before it costs any memory, "
@@ -193,7 +193,7 @@ TEST_CASE("A frame that claims more than a message may hold is closed before it 
 	CHECK(init.value("type", "") == "client/init");
 	CHECK_FALSE(ear.lineStartingWith("node ma failed"));
 	ear.signal(SIGTERM);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 }
 
 TEST_CASE("Bare connects cannot fill the log", "[system][sendspin]") {
@@ -217,7 +217,7 @@ TEST_CASE("Bare connects cannot fill the log", "[system][sendspin]") {
 	INFO(connects << " connects in " << seconds << " s, " << transportLines << " lines");
 	CHECK(static_cast<double>(transportLines) <= seconds / 10.0 + 2.0); // one every 10 s, whatever the connects
 	ear.signal(SIGTERM);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 }
 
 TEST_CASE("A server's name with control characters and a line break stays on one status line, quoted",
@@ -230,5 +230,5 @@ TEST_CASE("A server's name with control characters and a line break stays on one
 	             ear.waitForLine("node ma says connected \"line?node ma says paired x?? ?q?\" unpaired", deadline));
 	CHECK_FALSE(ear.lineStartingWith("node ma says paired"));
 	ear.signal(SIGTERM);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 }

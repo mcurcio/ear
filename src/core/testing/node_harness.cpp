@@ -1,22 +1,47 @@
 // The node harness (ear/testing/node_harness.hpp): one real NodeHost over in-memory fakes, on the test's one thread
-// (docs/writing-a-node-type.md#testing-a-type). Each fake is private to this file.
+// (docs/writing-a-node-type.md#testing-a-type). Each fake is private to this file. Where a fake must act as the engine
+// does it calls the engine's own rule, never a copy: the block's fade and when its fade-outs complete, its cycle facts
+// (CycleAccount, ear/core/cycle_facts.hpp) and stamps (ear/core/block_rules.hpp), its latency (workOut), a sink's rings
+// (SinkRing), a source's (SourceRing), and an engine companion's bank as NodeHost names it
+// (CompanionTarget::insideBank).
 #include "ear/testing/node_harness.hpp"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <cassert>
+#include <chrono>
 #include <cmath>
 #include <deque>
 #include <functional>
 #include <limits>
 #include <map>
 #include <mutex>
+#include <optional>
+#include <set>
 #include <stdexcept>
+#include <system_error>
 #include <utility>
 
+#include <fcntl.h>
+#include <poll.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
 #include "../legacy_instance.hpp"
+#include "ear/core/block_rules.hpp"
+#include "ear/core/cycle_counters.hpp"
+#include "ear/core/cycle_facts.hpp"
 #include "ear/core/lifecycle.hpp"
+#include "ear/core/sink_ring.hpp"
+#include "ear/core/source_ring.hpp"
+#include "ear/testing/harness_cuts.hpp"
 
 namespace ear::testing {
 namespace {
+
+/// The driver the harness's cycles run on until changeDriver: the internal clock, the one whose cycles are numbered.
+constexpr std::uint32_t internalClock = 0;
 
 /// The main loop: queues posts, from any thread; the harness runs them on the test's thread until none is left.
 class ManualExecutor final : public Executor {
@@ -44,32 +69,50 @@ private:
 	std::deque<std::move_only_function<void()>> queue_;
 };
 
-/// Main-loop timers on a clock the test moves.
+/// Main-loop timers on a clock the test moves. The clock is atomic: Timers::now() may be read from any thread (a node
+/// handle's note rate reads it on the thread that says), while only the test's thread moves it. The loops' timers
+/// (another clock's, `others`) fire on it too, in one time order with its own.
 class FakeClock final : public Timers {
 public:
+	/// Other timers on this clock: when the next is due, and firing it.
+	struct Others {
+		std::move_only_function<std::optional<std::chrono::milliseconds>()> nextDue;
+		std::move_only_function<void(std::chrono::milliseconds now)> fireNext;
+	};
 	explicit FakeClock(ManualExecutor& executor) : executor_(executor) {}
+	void setOthers(Others others) { others_ = std::move(others); }
+	std::chrono::milliseconds at() const noexcept { return now_.load(); }
 	std::unique_ptr<Timer> after(std::chrono::milliseconds delay, std::move_only_function<void()> due) override {
-		auto armed = std::make_shared<Armed>(Armed{now_ + delay, std::move(due)});
+		auto armed = std::make_shared<Armed>(Armed{now_.load() + delay, std::move(due)});
 		armed_.push_back(armed);
 		return std::make_unique<Handle>(armed);
 	}
-	std::chrono::steady_clock::time_point now() const override { return std::chrono::steady_clock::time_point{now_}; }
+	std::chrono::steady_clock::time_point now() const override {
+		return std::chrono::steady_clock::time_point{now_.load()};
+	}
 	/// Moves the clock and runs what came due, in due order, pumping between.
 	void advance(std::chrono::milliseconds by) {
-		const auto until = now_ + by;
+		const auto until = now_.load() + by;
 		for (;;) {
 			std::shared_ptr<Armed> next;
 			for (const auto& armed : armed_)
 				if (!armed->cancelled && armed->due && armed->at <= until && (!next || armed->at < next->at))
 					next = armed;
+			const std::optional<std::chrono::milliseconds> other = others_.nextDue ? others_.nextDue() : std::nullopt;
+			if (other && *other <= until && (!next || *other < next->at)) {
+				now_.store(std::max(now_.load(), *other));
+				others_.fireNext(now_.load());
+				executor_.pump();
+				continue;
+			}
 			if (!next) break;
-			now_ = std::max(now_, next->at);
+			now_.store(std::max(now_.load(), next->at));
 			auto call = std::move(next->due);
 			next->due = nullptr;
 			call();
 			executor_.pump();
 		}
-		now_ = until;
+		now_.store(until);
 		std::erase_if(armed_, [](const auto& armed) { return armed->cancelled || !armed->due; });
 	}
 
@@ -85,7 +128,8 @@ private:
 		std::shared_ptr<Armed> armed;
 	};
 	ManualExecutor& executor_;
-	std::chrono::milliseconds now_{0};
+	Others others_;
+	std::atomic<std::chrono::milliseconds> now_{std::chrono::milliseconds{0}};
 	std::vector<std::shared_ptr<Armed>> armed_;
 };
 
@@ -100,39 +144,53 @@ struct PendingRequest {
 struct NodeHarness::Impl final : NodeHealthListener,
 								 NodeNoteListener,
 								 NodeDiagnosticListener,
-								 EngineDiagnosticListener {
+								 EngineDiagnosticListener,
+								 InternalErrorListener,
+								 LogSink {
 	// ---- The fakes ----
 
-	/// The node's one block: a drive applies its code at once (and resets the fade-in), a fade-out silences the faded
-	/// outputs from the next cycle; each request completes on the main loop, at once (autoComplete) or when the test
-	/// says, in the order asked.
+	/// The node's one block: a drive applies its code at once (its fade-in and its first cycle's discontinuity with
+	/// it), a fade-out ramps the faded outputs down from the next cycle. A drive or silence completes on the main loop at
+	/// once (autoComplete) or when the test says. A fade-out completes by the real block's rule (BlockFade): at once
+	/// with autoComplete (a block not processing), else when a cycle ends it at zero or the test acknowledges it (a
+	/// block not processing then), and a drive applied while it waits cancels it (its `done` never runs).
 	struct FakeBlock final : PortBlock {
 		explicit FakeBlock(Impl& h) : harness(h) {}
 		~FakeBlock() override { harness.block = nullptr; }
 		void drive(DriveRequest request, std::move_only_function<void(std::uint64_t)> done) override {
 			harness.driven = request.code;
 			harness.bound.assign(request.sinks.begin(), request.sinks.end()); // the taps change with the code
-			std::ranges::fill(harness.fadeMask, false);
+			harness.boundSources.assign(request.sources.begin(), request.sources.end());
+			std::ranges::fill(harness.fadeMask, std::uint8_t{0});
 			for (std::size_t i = 0; i < harness.fadeMask.size() && i < request.faded.size(); ++i)
-				harness.fadeMask[i] = request.faded[i];
-			harness.fade = std::ranges::any_of(harness.fadeMask, std::identity{}) ? Fade::in : Fade::none;
-			harness.fadeAt = 0;
-			const std::uint64_t taken = harness.position;
+				harness.fadeMask[i] = request.faded[i] ? 1 : 0;
+			const std::uint64_t cancelled = harness.fade.driven(
+				std::ranges::any_of(harness.fadeMask, [](std::uint8_t faded) { return faded != 0; }));
+			harness.dropFades(cancelled);
+			harness.account.driven();
+			const std::uint64_t taken = harness.account.nextPosition();
 			harness.request(false, [done = std::move(done), taken]() mutable { done(taken); });
 		}
 		void fadeOut(std::move_only_function<void()> done) override {
-			harness.request(true, [&h = harness, done = std::move(done)]() mutable {
-				// Acknowledged: the faded outputs are at zero from here on.
-				h.fade = Fade::out;
-				h.fadeAt = 0;
-				done();
-			});
+			harness.fade.fadeOut();
+			harness.pending.push_back(PendingRequest{true, std::move(done)});
+			if (harness.options.autoComplete) harness.completeFades(harness.fade.notProcessing());
 		}
-		void carryLatency(const LatencyPlan& plan) override { harness.plan = plan; }
+		void carryLatency(const LatencyPlan& plan) override {
+			// As the real block: worked out at once (a plan that does not fit the ports throws here), with no peer on
+			// any port, since nothing is linked to the harness's block.
+			const Ports& ports = harness.config->ports();
+			const std::vector<std::optional<Latency>> inputs(ports.inputs().size() + ports.insideInputs().size());
+			const std::vector<std::optional<Latency>> outputs(ports.outputs().size() + ports.insideOutputs().size());
+			harness.facts = workOut(ports, plan, inputs, outputs);
+			harness.plan = plan;
+		}
 		void settle() override {}
 		std::uint64_t takenAt() const noexcept override { return harness.position; }
 		std::uint32_t blockId() const noexcept override { return 7; }
+		NodeCounts counts() const noexcept override { return counters.read(); }
 		Impl& harness;
+		CycleCounters counters; // its node counters, as the real block counts them (process())
 	};
 	struct FakeBlocks final : PortBlockFactory {
 		explicit FakeBlocks(Impl& h) : harness(h) {}
@@ -146,82 +204,100 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		Impl& harness;
 	};
 
-	/// An outside node: its companion is marked destroyed with it.
-	struct FakeOutsideNode final : OutsideNode {
-		FakeOutsideNode(Impl& h, std::size_t i) : harness(h), index(i) {}
-		~FakeOutsideNode() override {
+	/// An engine companion: its fake is marked destroyed with it.
+	struct FakeEngineCompanion final : EngineCompanion {
+		FakeEngineCompanion(Impl& h, std::size_t i) : harness(h), index(i) {}
+		~FakeEngineCompanion() override {
 			harness.companionList.at(index).destroyed = true;
-			harness.outsideEvents.at(index) = nullptr;
+			harness.engineEvents.at(index) = nullptr;
 		}
 		Impl& harness;
 		std::size_t index;
 	};
-	template <typename Request> struct FakeOutside final : OutsideAdapter<Request> {
-		explicit FakeOutside(Impl& h) : harness(h) {}
-		std::unique_ptr<OutsideNode> make(const OutsideTarget& target, const Request& request,
-		                                  OutsideNodeEvents& events) override {
-			CompanionFake fake{std::is_same_v<Request, SoundCardRequest> ? CompanionFake::Kind::soundCard
-			                                                             : CompanionFake::Kind::rtpReceiver,
-			                   request.bank,
-			                   target.engineNode,
-			                   request,
-			                   false,
-			                   false,
-			                   false,
-			                   {}};
-			fake.made = true;
-			harness.companionList.push_back(std::move(fake));
-			harness.outsideEvents.push_back(&events);
-			return std::make_unique<FakeOutsideNode>(harness, harness.companionList.size() - 1);
+	template <typename Shape> struct FakeEngineCompanions final : EngineCompanionAdapter<Shape> {
+		explicit FakeEngineCompanions(Impl& h) : harness(h) {}
+		std::unique_ptr<EngineCompanion> make(const CompanionTarget& target, const Shape& shape,
+		                                      EngineCompanionEvents& events) override {
+			CompanionKind kind = CompanionKind::rtpReceiver;
+			if constexpr (std::is_same_v<Shape, SoundCardShape>)
+				kind = target.bank == Direction::output ? CompanionKind::cardPlayback : CompanionKind::cardCapture;
+			if (target.insideBank.empty()) throw std::logic_error("an engine companion asked for on no inside bank");
+			harness.companionList.push_back(
+				CompanionFake{kind, target.insideBank, target.engineNode, shape, true, false, false, {}});
+			harness.engineEvents.push_back(&events);
+			return std::make_unique<FakeEngineCompanion>(harness, harness.companionList.size() - 1);
 		}
 		Impl& harness;
 	};
 
-	/// A sink whose consumer runs on the test's thread (docs/writing-a-node-type.md#testing-a-type): begin calls the
-	/// consumer's begin at once, then posts `begun`; the tap copies each chunk into its companion and hands it to the
-	/// consumer at once; close finishes a consumer that began, marks the companion destroyed and posts `closed(0)`.
+	/// A sink over core's own SinkRing (docs/writing-a-node-type.md#testing-a-type), its consumer on the test's thread:
+	/// begin calls the consumer's begin at once (or, with holdSinks, at ready(bank)), then posts `begun`; the tap
+	/// writes the ring by its rules (the two rings dropping together) and drains it at once, so the consumer gets each
+	/// chunk as the engine's sink hands it, in two calls where it wraps the ring's end, each call copied into the
+	/// companion; close finishes a consumer that began, marks the companion destroyed and posts `closed` with the
+	/// frames dropped.
 	struct FakeSink final : Sink, SinkTap {
-		FakeSink(Impl& h, std::size_t i, std::size_t n) : harness(h), index(i), channels(n) {}
+		FakeSink(Impl& h, std::size_t i, std::uint32_t channels, std::uint32_t frames, SampleRate rate)
+			: harness(h), index(i), rules(channels, frames, rate) {
+			harness.sinkFakes[index] = this;
+		}
+		~FakeSink() override { harness.sinkFakes.erase(index); }
 		SinkTap& tap() noexcept override { return *this; }
-		void begin(std::unique_ptr<SinkConsumer> c, std::move_only_function<void()> begun) override {
+		void begin(std::unique_ptr<SinkConsumer> c, std::move_only_function<void()> b) override {
 			consumer = std::move(c);
+			begun = std::move(b);
+			if (!harness.options.holdSinks) runBegin();
+		}
+		/// The sink's thread runs the consumer's begin, then posts `begun`.
+		void runBegin() {
 			consumer->begin();
 			began = true;
 			harness.companionList.at(index).ready = true;
-			harness.executor.post(std::move(begun));
+			harness.executor.post(std::exchange(begun, nullptr));
 		}
 		void close(std::move_only_function<void(std::uint64_t)> closed) override {
+			drain();
 			if (began) consumer->finish();
+			finished = true;
 			harness.companionList.at(index).destroyed = true;
-			harness.executor.post([closed = std::move(closed)]() mutable { closed(0); });
+			harness.executor.post(
+				[closed = std::move(closed), dropped = rules.droppedFrames()]() mutable { closed(dropped); });
 		}
+		std::uint64_t droppedFrames() const noexcept override { return rules.droppedFrames(); }
 		void write(std::span<const std::span<const float>> bank, std::uint32_t frames,
 		           const ChunkStamp& stamp) noexcept override {
-			SeenChunk seen{std::vector<float>(static_cast<std::size_t>(frames) * channels, 0.0F), frames, stamp};
-			for (std::size_t channel = 0; channel < channels && channel < bank.size(); ++channel)
-				for (std::uint32_t frame = 0; frame < frames; ++frame)
-					seen.interleaved[frame * channels + channel] = bank[channel][frame];
-			if (began)
-				consumer->consume(Chunk{.interleaved = seen.interleaved,
-				                        .frames = frames,
-				                        .position = stamp.position,
-				                        .startNs = stamp.startNs,
-				                        .startRawNs = stamp.startRawNs,
-				                        .upstreamFrames = 0,
-				                        .discontinuity = stamp.discontinuity});
-			harness.companionList.at(index).chunks.push_back(std::move(seen));
+			if (rules.write(bank, frames, stamp)) drain();
+		}
+		/// What the sink's thread does when woken: every chunk to a consumer that began and has not finished, else
+		/// skipped.
+		void drain() {
+			if (!began || finished) return rules.discard();
+			rules.drain([&](const Chunk& chunk) {
+				harness.companionList.at(index).chunks.push_back(
+					SeenChunk{{chunk.interleaved.begin(), chunk.interleaved.end()},
+				              chunk.frames,
+				              ChunkStamp{.position = chunk.position,
+				                         .startNs = chunk.startNs,
+				                         .startRawNs = chunk.startRawNs,
+				                         .causes = chunk.causes,
+				                         .lostFrames = chunk.lostFrames,
+				                         .upstreamFrames = chunk.upstreamFrames}});
+				consumer->consume(chunk);
+			});
 		}
 		Impl& harness;
 		std::size_t index;
-		std::size_t channels;
+		SinkRing rules;
 		std::unique_ptr<SinkConsumer> consumer;
+		std::move_only_function<void()> begun; // until its consumer begins
 		bool began = false;
+		bool finished = false;
 	};
 	struct FakeSinks final : SinkAdapter {
 		explicit FakeSinks(Impl& h) : harness(h) {}
 		std::unique_ptr<Sink> make(const NodeName& node, std::string_view bank, std::uint32_t channels,
-		                           std::uint32_t capacityFrames) override {
-			CompanionFake fake{CompanionFake::Kind::sink,
+		                           std::uint32_t capacityFrames, SampleRate rate) override {
+			CompanionFake fake{CompanionKind::sink,
 			                   std::string(bank),
 			                   node + "." + std::string(bank),
 			                   SinkShape{.frames = capacityFrames},
@@ -230,8 +306,76 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			                   false,
 			                   {}};
 			harness.companionList.push_back(std::move(fake));
-			harness.outsideEvents.push_back(nullptr); // a sink has no outside events
-			return std::make_unique<FakeSink>(harness, harness.companionList.size() - 1, channels);
+			harness.engineEvents.push_back(nullptr); // a sink has no engine companion's events
+			return std::make_unique<FakeSink>(harness, harness.companionList.size() - 1, channels,
+			                                  harness.options.sinkRingFrames.value_or(capacityFrames), rate);
+		}
+		Impl& harness;
+	};
+
+	/// A source over core's own SourceRing, so a type's tests play by the engine's rules
+	/// (docs/writing-a-node-type.md#sources), with the type's clock if it gave one, played by the same SourceRing::play as
+	/// the block: its writer offers what fits and never waits, an idle returns at once, nobody watches its clock wake
+	/// (rung, it does nothing), and the last tick's SourcePlayed is kept for lastPlayed.
+	struct FakeSource final : Source, SourceWriter, SourceTap, SourceRing::Signals, Wake {
+		FakeSource(Impl& h, std::size_t i, std::uint32_t channels, std::uint32_t frames, SampleRate rate,
+		           std::unique_ptr<SourceClock> own)
+			: harness(h), index(i), clock(std::move(own)), rules(channels, frames, rate, *this) {}
+		~FakeSource() override { harness.companionList.at(index).destroyed = true; }
+		SourceWriter& writer() noexcept override { return *this; }
+		SourceTap& tap() noexcept override { return *this; }
+		void play(std::span<const std::span<float>> bank, const SourceTick& tick) noexcept override {
+			lastPlayed = rules.play(bank, tick, clock.get());
+		}
+		void stopped() noexcept override { rules.dropForStop(); }
+		void stopping() noexcept override { rules.markIdle(); }
+		void close() noexcept override { rules.close(); }
+		std::uint64_t shortfallFrames() const noexcept override { return rules.shortfallFrames(); }
+		std::uint64_t droppedFrames() const noexcept override { return rules.droppedFrames(); }
+		std::uint32_t write(std::span<const float> interleaved, std::uint32_t frames,
+		                    std::chrono::milliseconds) override {
+			assert(!onStrand() && "a source's write may wait: never from a strand (docs/writing-a-node-type.md#loops)");
+			return rules.offer(interleaved, frames);
+		}
+		void idle(std::chrono::milliseconds) override {
+			assert(!onStrand() && "a source's idle waits: never from a strand (docs/writing-a-node-type.md#loops)");
+			rules.markIdle();
+		}
+		void clear() noexcept override { rules.clear(); }
+		bool closed() const noexcept override { return rules.closed(); }
+		std::uint32_t capacityFrames() const noexcept override { return rules.capacityFrames(); }
+		Wake& clockWake() noexcept override { return *this; }
+		/// Rung until answered: the loop fake runs a watch of it on its next turn.
+		void ring() noexcept override { rung = true; }
+		int descriptor() const noexcept override { return -1; }
+		void answer() noexcept override { rung = false; }
+		void roomFreed() noexcept override {}
+		void clockAsked() noexcept override { ring(); }
+		Impl& harness;
+		std::size_t index;
+		std::unique_ptr<SourceClock> clock; // the type's, or null
+		SourceRing rules;
+		SourcePlayed lastPlayed{}; // the last tick's, as the ring told the clock
+		bool rung = false;         // its clock wake, until answered
+	};
+	struct FakeSources final : SourceAdapter {
+		explicit FakeSources(Impl& h) : harness(h) {}
+		std::unique_ptr<Source> make(const NodeName& node, std::string_view bank, std::uint32_t channels,
+		                             std::uint32_t capacityFrames, SampleRate rate,
+		                             std::unique_ptr<SourceClock> clock) override {
+			harness.companionList.push_back(CompanionFake{CompanionKind::source,
+			                                              std::string(bank),
+			                                              node + "." + std::string(bank),
+			                                              SourceShape{.frames = capacityFrames},
+			                                              true,
+			                                              true,
+			                                              false,
+			                                              {}});
+			harness.engineEvents.push_back(nullptr); // a source has no engine companion's events
+			auto made = std::make_unique<FakeSource>(harness, harness.companionList.size() - 1, channels,
+			                                         capacityFrames, rate, std::move(clock));
+			harness.sourceList.push_back(made.get());
+			return made;
 		}
 		Impl& harness;
 	};
@@ -271,6 +415,379 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		Impl& harness;
 	};
 
+	/// One loop on the test's thread: its work queued until runLoops() turns it (finish and close are queued as the
+	/// adapter's are, and turned by the harness's settle), its timers on the fake clock, its watches run when rung or
+	/// readable. Each source armed is kept until its handle goes, for armed() and the close's cancel.
+	struct FakeLoop final : NodeLoop {
+		struct Source {
+			enum class Kind { once, every, wake, readable } kind;
+			std::chrono::milliseconds due{0};
+			std::chrono::milliseconds period{0};
+			Wake* wake = nullptr;
+			int fd = -1;
+			std::move_only_function<void()> handler{};
+			bool cancelled = false;   // its handle went, or its loop closed
+			bool deliverable = false; // readable(fd) since it last ran
+			bool fired = false;       // a once timer that ran: still armed until its handle goes
+		};
+		struct Item {
+			std::move_only_function<void()> work;
+			bool outside = false;
+			bool marker = false; // a finish or a close: the harness turns the loop for it
+			std::move_only_function<void()> closed{};
+		};
+		struct Handle final : Timer {
+			explicit Handle(std::shared_ptr<Source> s) : source(std::move(s)) {}
+			~Handle() override { source->cancelled = true; }
+			std::shared_ptr<Source> source;
+		};
+		FakeLoop(Impl& h, std::size_t i, LoopKind k, LoopEvents& e) : harness(h), index(i), loopKind(k), events(e) {}
+		~FakeLoop() override { harness.loopFakes.at(index) = nullptr; }
+		void post(std::move_only_function<void()> work) override {
+			if (closing) return; // destroyed unrun
+			queue.push_back(Item{std::move(work)});
+		}
+		std::unique_ptr<Timer> after(std::chrono::milliseconds delay, std::move_only_function<void()> due) override {
+			return arm(
+				Source{.kind = Source::Kind::once, .due = harness.clock.at() + delay, .handler = std::move(due)});
+		}
+		std::unique_ptr<Timer> every(std::chrono::milliseconds period, std::move_only_function<void()> due) override {
+			period = std::max(period, std::chrono::milliseconds{1});
+			return arm(Source{.kind = Source::Kind::every,
+			                  .due = harness.clock.at() + period,
+			                  .period = period,
+			                  .handler = std::move(due)});
+		}
+		std::unique_ptr<Timer> onWake(Wake& wake, std::move_only_function<void()> rung) override {
+			return arm(Source{.kind = Source::Kind::wake, .wake = &wake, .handler = std::move(rung)});
+		}
+		std::unique_ptr<Timer> onReadable(int fd, std::move_only_function<void()> readable) override {
+			return arm(Source{.kind = Source::Kind::readable, .fd = fd, .handler = std::move(readable)});
+		}
+		LoopKind kind() const noexcept override { return loopKind; }
+		bool inLoop() const noexcept override { return running; }
+		void postFromOutside(std::move_only_function<void()> work) override {
+			if (closing || harness.loopList.at(index).closedToOthers) return;
+			queue.push_back(Item{std::move(work), true});
+		}
+		void closeToOthers() override { harness.loopList.at(index).closedToOthers = true; }
+		void finish(std::move_only_function<void()> last, std::move_only_function<void()> finished) override {
+			queue.push_back(Item{[this, last = std::move(last), finished = std::move(finished)]() mutable {
+									 last();
+									 harness.loopList.at(index).finished = true;
+									 harness.executor.post(std::move(finished));
+								 },
+			                     false, true});
+		}
+		void close(std::move_only_function<void()> closed) override {
+			closing = true;
+			queue.push_back(Item{{}, false, true, std::move(closed)});
+		}
+
+		std::unique_ptr<Timer> arm(Source source) {
+			auto armed = std::make_shared<Source>(std::move(source));
+			if (!closed) sources.push_back(armed);
+			else armed->cancelled = true;
+			return std::make_unique<Handle>(std::move(armed));
+		}
+		/// Runs `call` as this loop's handler; a throw is caught and told, as the real loops do.
+		template <typename Call> void handler(Call&& call) {
+			running = true;
+			{
+				std::optional<StrandScope> strand;
+				if (loopKind == LoopKind::strand) strand.emplace();
+				const MainLoopMark offMainLoop(false); // the loop's thread, though the test's
+
+				try {
+					std::forward<Call>(call)();
+				} catch (const std::exception& error) {
+					harness.executor.post([&told = events, what = std::string(error.what())] { told.threw(what); });
+				} catch (...) {
+					harness.executor.post(
+						[&told = events] { told.threw("an exception that is not a std::exception"); });
+				}
+			}
+			running = false;
+		}
+		/// Runs everything queued and each watch rung, until idle. Whether anything ran.
+		bool turn() {
+			bool ran = false;
+			for (;;) {
+				std::erase_if(sources, [](const auto& source) { return source->cancelled; });
+				if (!queue.empty()) {
+					Item item = std::move(queue.front());
+					queue.pop_front();
+					ran = true;
+					if (item.closed) {
+						for (auto& source : sources) source->cancelled = true;
+						sources.clear();
+						closed = true;
+						harness.loopList.at(index).closed = true;
+						harness.executor.post(std::move(item.closed));
+						queue.clear();
+						continue;
+					}
+					if (item.outside && harness.loopList.at(index).closedToOthers) continue;
+					handler(item.work);
+					continue;
+				}
+				std::shared_ptr<Source> due;
+				for (const auto& source : sources) {
+					if (source->cancelled) continue;
+					if (source->kind == Source::Kind::readable && source->deliverable) due = source;
+					if (source->kind == Source::Kind::wake && rung(*source->wake)) due = source;
+					if (due) break;
+				}
+				if (!due) return ran;
+				ran = true;
+				if (due->kind == Source::Kind::wake) due->wake->answer();
+				due->deliverable = false;
+				handler(due->handler);
+			}
+		}
+		/// Whether a wake is rung: the harness's own sources say; any other is looked at by its descriptor.
+		static bool rung(Wake& wake) {
+			if (auto* own = dynamic_cast<FakeSource*>(&wake)) return own->rung;
+			pollfd look{.fd = wake.descriptor(), .events = POLLIN, .revents = 0};
+			return look.fd >= 0 && ::poll(&look, 1, 0) > 0 && (look.revents & POLLIN) != 0;
+		}
+		bool marked() const {
+			return std::ranges::any_of(queue, [](const Item& item) { return item.marker; });
+		}
+		std::optional<std::chrono::milliseconds> nextDue() const {
+			std::optional<std::chrono::milliseconds> next;
+			for (const auto& source : sources)
+				if (!source->cancelled && !source->fired &&
+				    (source->kind == Source::Kind::once || source->kind == Source::Kind::every) &&
+				    (!next || source->due < *next))
+					next = source->due;
+			return next;
+		}
+		/// Fires the timer due at `now` (the earliest).
+		void fireDue(std::chrono::milliseconds now) {
+			for (const auto& source : sources) {
+				if (source->cancelled || source->fired || source->due != now ||
+				    (source->kind != Source::Kind::once && source->kind != Source::Kind::every))
+					continue;
+				auto keep = source; // its handler may cancel it
+				if (keep->kind == Source::Kind::every) {
+					const auto missed = (now - keep->due) / keep->period;
+					keep->due += keep->period * (missed + 1);
+				} else {
+					keep->fired = true;
+				}
+				handler(keep->handler);
+				return;
+			}
+		}
+		Impl& harness;
+		std::size_t index; // in loopList
+		LoopKind loopKind;
+		LoopEvents& events; // the framework's, outliving the loop
+		std::deque<Item> queue;
+		std::vector<std::shared_ptr<Source>> sources;
+		bool running = false;
+		bool closing = false;
+		bool closed = false;
+	};
+	struct FakeLoops final : LoopAdapter {
+		explicit FakeLoops(Impl& h) : harness(h) {}
+		std::unique_ptr<NodeLoop> make(const NodeName&, std::string_view name, LoopKind kind,
+		                               LoopEvents& events) override {
+			harness.loopList.push_back(NodeHarness::SeenLoop{std::string(name), kind});
+			auto made = std::make_unique<FakeLoop>(harness, harness.loopList.size() - 1, kind, events);
+			harness.loopFakes.push_back(made.get());
+			if (harness.options.refuseLoops)
+				harness.executor.post([&events, why = *harness.options.refuseLoops] { events.failed(why); });
+			else if (harness.options.holdLoops) harness.heldLoops.emplace_back(harness.loopList.size() - 1, &events);
+			else harness.executor.post([&events] { events.ready(); });
+			return made;
+		}
+		Impl& harness;
+	};
+
+	/// The I/O thread on the test's thread: jobs queued, run as each call settles (with holdIo, only at runIo()), each
+	/// one's name recorded as it runs.
+	struct FakeIo final : IoExecutor {
+		void post(std::move_only_function<void()> work) override { post("a job", std::move(work)); }
+		void post(std::string job, std::move_only_function<void()> work) override {
+			queue.emplace_back(std::move(job), std::move(work));
+		}
+		/// The oldest job queued, run; false when none is.
+		bool runOne() {
+			if (queue.empty()) return false;
+			auto [job, work] = std::move(queue.front());
+			queue.pop_front();
+			ran.push_back(job);
+			work();
+			return true;
+		}
+		std::deque<std::pair<std::string, std::move_only_function<void()>>> queue;
+		std::vector<std::string> ran;
+	};
+
+	/// The stores' disk in memory, by file name, with each file's mode; every call it is asked recorded, in order.
+	struct FakeStores final : StoreAdapter {
+		struct File {
+			std::string text;
+			std::uint32_t mode;
+		};
+		IoExecutor& io() noexcept override { return fakeIo; }
+		/// The harness's loops run on the test's thread, so a blocking replace runs its job inside the call, behind the
+		/// jobs queued before it, as the one I/O thread would.
+		JobWait await(std::string job, std::move_only_function<void()> work, std::chrono::milliseconds) override {
+			while (fakeIo.runOne()) {
+			}
+			if (overdueNext) {
+				// The wait gives up first: the job ran before it (under way when the bound passed), or runs later.
+				const bool ran = *overdueNext;
+				overdueNext.reset();
+				if (!ran) {
+					fakeIo.post(std::move(job), std::move(work));
+					return JobWait::overdue;
+				}
+				fakeIo.ran.push_back(std::move(job));
+				work();
+				return JobWait::overdue;
+			}
+			fakeIo.ran.push_back(std::move(job));
+			work();
+			return JobWait::ran;
+		}
+		std::expected<std::optional<std::string>, std::string>
+		readNarrowed(const std::string& file, std::uint32_t maxBytes, std::uint32_t mode) override {
+			called("readNarrowed " + file);
+			if (auto failed = failOpen.find(file); failed != failOpen.end())
+				return std::unexpected(file + ": " + failed->second);
+			const auto found = files.find(file);
+			if (found == files.end()) return std::optional<std::string>();
+			found->second.mode &= mode;
+			if (found->second.text.size() > maxBytes)
+				return std::unexpected(file + ": larger than " + std::to_string(maxBytes) + " bytes");
+			return std::optional<std::string>(found->second.text);
+		}
+		std::expected<std::optional<std::string>, std::string> read(const std::string& file,
+		                                                            std::uint32_t maxBytes) override {
+			called("read " + file);
+			if (auto failed = failOpen.find(file); failed != failOpen.end())
+				return std::unexpected(file + ": " + failed->second);
+			const auto found = files.find(file);
+			if (found == files.end()) return std::optional<std::string>();
+			if (found->second.text.size() > maxBytes)
+				return std::unexpected(file + ": larger than " + std::to_string(maxBytes) + " bytes");
+			return std::optional<std::string>(found->second.text);
+		}
+		std::expected<void, std::string> narrow(const std::string& file, std::uint32_t mode) override {
+			called("narrow " + file);
+			const auto found = files.find(file);
+			if (found == files.end()) return std::unexpected(file + ": no such file");
+			found->second.mode &= mode;
+			return {};
+		}
+		std::expected<StoreWrite, std::string> replaceIf(const std::string& file,
+		                                                 const std::optional<std::string>& expected,
+		                                                 std::string_view text, std::uint32_t maxBytes,
+		                                                 std::uint32_t mode) override {
+			called("replace " + file);
+			if (auto failed = failWrite.find(file); failed != failWrite.end()) {
+				std::string why = file + ": " + failed->second;
+				failWrite.erase(failed);
+				return std::unexpected(std::move(why));
+			}
+			if (text.size() > maxBytes)
+				return std::unexpected(file + ": larger than " + std::to_string(maxBytes) + " bytes");
+			const auto found = files.find(file);
+			const std::optional<std::string> there =
+				found == files.end() ? std::nullopt : std::optional<std::string>(found->second.text);
+			if (there != expected) return StoreWrite::changed;
+			if (found == files.end()) files.emplace(file, File{std::string(text), mode});
+			else found->second.text = std::string(text);
+			return StoreWrite::replaced;
+		}
+		void called(std::string call) {
+			calls.push_back(std::move(call));
+			if (broken) throw std::logic_error(*broken);
+		}
+		FakeIo fakeIo;
+		std::map<std::string, File, std::less<>> files;
+		std::map<std::string, std::string, std::less<>> failOpen;  // each open's read refused, by file
+		std::map<std::string, std::string, std::less<>> failWrite; // the next write refused, by file
+		std::optional<std::string> broken;                         // every call throws std::logic_error(this)
+		std::optional<bool> overdueNext; // the next wait gives up: after its job ran (true), or before (false)
+		std::vector<std::string> calls;
+	};
+
+	/// The recordings' disk in memory: one memfd per path (by its claim path), so a descriptor is a real, seekable
+	/// file; each open truncates it and hands a duplicate the framework closes. Opened and closed on the stores' I/O
+	/// executor, the harness's one I/O thread.
+	struct FakeRecordings final : RecordingAdapter {
+		explicit FakeRecordings(FakeIo& io) : fakeIo(io) {}
+		FakeRecordings(const FakeRecordings&) = delete;
+		FakeRecordings& operator=(const FakeRecordings&) = delete;
+		~FakeRecordings() {
+			for (const auto& [path, fd] : files) ::close(fd);
+		}
+		/// One descriptor made; it may outlive the disk (a completion the main loop drops after the harness).
+		struct File final : RecordingFile {
+			File(std::shared_ptr<std::atomic<std::size_t>> o, int d) : open(std::move(o)), fd(d) { ++*open; }
+			File(const File&) = delete;
+			File& operator=(const File&) = delete;
+			~File() override {
+				::close(fd);
+				--*open;
+			}
+			int descriptor() const noexcept override { return fd; }
+			std::shared_ptr<std::atomic<std::size_t>> open;
+			int fd;
+		};
+		IoExecutor& io() noexcept override { return fakeIo; }
+		std::expected<std::unique_ptr<RecordingFile>, std::string> open(const NodeName&,
+		                                                                const std::string& path) override {
+			if (broken) throw std::logic_error(*broken);
+			const std::string key = recordingClaimPath(path);
+			if (auto failed = failOpen.find(key); failed != failOpen.end()) return std::unexpected(failed->second);
+			if (pipes.contains(key)) {
+				std::array<int, 2> ends{};
+				if (::pipe(ends.data()) != 0) throw std::system_error(errno, std::generic_category(), "pipe");
+				::close(ends[0]); // a write to it fails: nothing reads
+				return std::make_unique<File>(opened, ends[1]);
+			}
+			const int fd = fileOf(key);
+			if (::ftruncate(fd, 0) != 0) throw std::system_error(errno, std::generic_category(), "ftruncate");
+			const int dup = ::fcntl(fd, F_DUPFD_CLOEXEC, 0);
+			if (dup < 0) throw std::system_error(errno, std::generic_category(), "dup");
+			return std::make_unique<File>(opened, dup);
+		}
+		/// The memfd of `key`, made if missing.
+		int fileOf(const std::string& key) {
+			if (auto found = files.find(key); found != files.end()) return found->second;
+			const int fd = ::memfd_create(key.c_str(), MFD_CLOEXEC);
+			if (fd < 0) throw std::system_error(errno, std::generic_category(), "memfd_create");
+			files.emplace(key, fd);
+			return fd;
+		}
+		std::optional<std::string> bytes(const std::string& key) const {
+			const auto found = files.find(key);
+			if (found == files.end()) return std::nullopt;
+			std::string text;
+			std::array<char, 4096> chunk{};
+			for (off_t at = 0;;) {
+				const ssize_t got = ::pread(found->second, chunk.data(), chunk.size(), at);
+				if (got <= 0) break;
+				text.append(chunk.data(), static_cast<std::size_t>(got));
+				at += got;
+			}
+			return text;
+		}
+		FakeIo& fakeIo;
+		std::map<std::string, int, std::less<>> files;            // by claim path
+		std::map<std::string, std::string, std::less<>> failOpen; // each open refused, by claim path
+		std::set<std::string, std::less<>> pipes;                 // each open a pipe's write end, by claim path
+		std::optional<std::string> broken;                        // every open throws std::logic_error(this)
+		std::shared_ptr<std::atomic<std::size_t>> opened =
+			std::make_shared<std::atomic<std::size_t>>(0); // made, not closed
+	};
+
 	/// Every config the type parses, wrapped so the harness sees the instance each configuration makes (a legacy run
 	/// object, for runObject()) and when it goes.
 	/// Both contexts, forwarded to NodeHost's, recording the requests the harness shows (handoffs, recordings). Lives
@@ -281,17 +798,20 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		const NodeName& node() const override { return create.node(); }
 		const Ports& ports() const override { return create.ports(); }
 		void use(NodeCode code) override { create.use(std::move(code)); }
-		void soundCard(std::string_view bank, SoundCardRequest request) override {
-			create.soundCard(bank, std::move(request));
+		void soundCard(std::string_view bank, SoundCardShape shape) override {
+			create.soundCard(bank, std::move(shape));
 		}
-		void rtpReceiver(std::string_view bank, RtpReceiverRequest request) override {
-			create.rtpReceiver(bank, std::move(request));
+		void rtpReceiver(std::string_view bank, RtpReceiverShape shape) override {
+			create.rtpReceiver(bank, std::move(shape));
 		}
-		std::expected<int, std::string> openRecording(const RecordingRequest& request) override {
+		Recording& recording(const RecordingRequest& request) override {
 			harness.recordingList.push_back(request);
-			return create.openRecording(request);
+			return create.recording(request);
 		}
 		SinkRequest& sink(std::string_view bank, SinkShape shape) override { return create.sink(bank, shape); }
+		SourceWriter& source(std::string_view bank, SourceShape shape, std::unique_ptr<SourceClock> clock) override {
+			return create.source(bank, shape, std::move(clock));
+		}
 		void declareLatency(std::string_view from, std::string_view to, Latency latency) override {
 			create.declareLatency(from, to, latency);
 		}
@@ -299,28 +819,25 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			create.refuse(rule);
 			throw std::logic_error(rule); // never reached: refuse throws
 		}
-		InsidesEvents& events() override { return legacy.events(); }
+		void loopState(std::size_t loop, std::unique_ptr<void, void (*)(void*)> state) override {
+			create.loopState(loop, std::move(state));
+		}
+		Loop& loopExecutor(std::size_t loop) override { return create.loopExecutor(loop); }
+		void postToLoop(std::size_t loop, std::move_only_function<void(void*)> work) override {
+			create.postToLoop(loop, std::move(work));
+		}
+		Store& store(std::size_t store) override { return create.store(store); }
+		void claim(Claim claim) override { create.claim(std::move(claim)); }
+		NodeHandle& events() override { return legacy.events(); }
 		void declareLatency(const std::string& bank, Latency internal) override {
 			legacy.declareLatency(bank, internal);
 		}
 
 	protected:
 		Acquired acquireResource(const ResourceRequest& request) override {
-			if (const auto* card = std::get_if<SoundCardRequest>(&request)) {
-				legacy.acquire(*card);
-				return std::monostate{};
-			}
-			if (const auto* receiver = std::get_if<RtpReceiverRequest>(&request)) {
-				legacy.acquire(*receiver);
-				return std::monostate{};
-			}
-			if (const auto* handoff = std::get_if<HandoffRequest>(&request)) {
-				harness.handoffList.push_back(SeenHandoff{handoff->bank, 0, handoff->capacityFrames});
-				return &legacy.acquire(*handoff);
-			}
-			const auto& recording = std::get<RecordingRequest>(request);
-			harness.recordingList.push_back(recording);
-			return legacy.acquire(recording);
+			const auto& handoff = std::get<HandoffRequest>(request);
+			harness.handoffList.push_back(SeenHandoff{handoff.bank, 0, handoff.capacityFrames});
+			return &legacy.acquire(handoff);
 		}
 
 	public:
@@ -341,6 +858,8 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			InstanceContexts contexts{seen, seen};
 			return inner->configure(contexts);
 		}
+		std::span<const LoopDeclaration> loops() const noexcept override { return inner->loops(); }
+		std::span<const StoreDeclaration> stores() const noexcept override { return inner->stores(); }
 		bool hasRecipe() const noexcept override { return inner->hasRecipe(); }
 		bool engineRefused() const noexcept override { return inner->engineRefused(); }
 		std::expected<void, FailureReason> ready(Ready& ready) override { return inner->ready(ready); }
@@ -361,19 +880,41 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		std::unique_ptr<const NodeConfig> inner;
 	};
 
-	enum class Fade { none, in, out };
-
 	Impl(const NodeType& t, Options o)
 		: type(t), options(std::move(o)), clock(executor), blocks(*this), cards(*this), receivers(*this),
-		  handoffs(*this), sinks(*this),
-		  registry(options.recordings != nullptr
-	                   ? ResourceRegistry(cards, receivers, handoffs, sinks, *options.recordings)
-	                   : ResourceRegistry(cards, receivers, handoffs, sinks)),
-		  graph(catalogue), host(std::make_unique<NodeHost>(options.format, blocks, registry, executor, clock)) {
+		  handoffs(*this), sinks(*this), sources(*this), loops(*this),
+		  registry(ResourceAdapters{.cards = &cards,
+	                                .receivers = &receivers,
+	                                .handoffs = &handoffs,
+	                                .sinks = &sinks,
+	                                .sources = &sources,
+	                                .recordings = options.noRecordingsFolder ? nullptr : &recordings,
+	                                .loops = &loops,
+	                                .stores = &stores}),
+		  graph(catalogue), fade(options.format.rate), account(FrameClock(options.format.rate), &cuts),
+		  host(std::make_unique<NodeHost>(options.format, blocks, registry, executor, clock)) {
 		host->subscribe(*this);
 		host->subscribeNotes(*this);
+		host->subscribeLog(*this);
 		host->subscribeDiagnostics(*this);
 		host->subscribeEngineDiagnostics(*this);
+		host->subscribeInternalErrors(*this);
+		clock.setOthers(FakeClock::Others{
+			.nextDue = [this]() -> std::optional<std::chrono::milliseconds> {
+				std::optional<std::chrono::milliseconds> next;
+				for (FakeLoop* loop : liveLoops())
+					if (auto due = loop->nextDue(); due && (!next || *due < *next)) next = due;
+				return next;
+			},
+			.fireNext =
+				[this](std::chrono::milliseconds now) {
+					for (FakeLoop* loop : liveLoops())
+						if (loop->nextDue() == now) {
+							loop->fireDue(now);
+							return;
+						}
+				},
+		});
 	}
 
 	// ---- Listeners ----
@@ -383,11 +924,21 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		dropped_ = dropped;
 	}
 	void nodeSays(const NodeName&, const std::string& text) override { noteList.push_back(text); }
+	/// Any thread: a type's own thread may log through its handle.
+	void log(const LogEntry& entry) override {
+		const std::scoped_lock lock(logMutex);
+		logList.push_back(entry);
+	}
 	void nodeDiagnostic(const NodeName&, std::string_view code, const std::string& detail,
 	                    std::span<const DiagnosticField> fields) override {
 		SeenDiagnostic seen{std::string(code), detail, {}};
 		for (const DiagnosticField& field : fields) seen.fields.emplace_back(std::string(field.key), field.value);
 		diagnosticList.push_back(std::move(seen));
+		if (code == "ear.loop-source-left" && !options.allowSourcesLeft) sourcesLeft.push_back(detail);
+	}
+	void internalError(const InternalError& error) override {
+		internalErrorList.push_back(SeenInternalError{std::string(error.callback), std::string(error.node),
+		                                              std::string(error.where), std::string(error.what)});
 	}
 	void engineDiagnostic(const EngineDiagnostic& diagnostic) override {
 		SeenDiagnostic seen{std::string(diagnostic.code), diagnostic.detail, {}};
@@ -397,6 +948,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	}
 
 	// ---- Requests ----
+	/// A drive or a silence: completed at once (autoComplete) or when the test says.
 	void request(bool isFade, std::move_only_function<void()> done) {
 		if (options.autoComplete) executor.post(std::move(done));
 		else pending.push_back(PendingRequest{isFade, std::move(done)});
@@ -408,7 +960,27 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		auto done = std::move(found->done);
 		pending.erase(found);
 		executor.post(std::move(done));
-		executor.pump();
+		settle();
+	}
+	/// The oldest `count` fade-outs pending, which BlockFade completed: each `done` is posted (acknowledged), or none
+	/// is (cancelled by a drive). Never pumped here: a fake's call inside NodeHost's turn only posts, as the real block
+	/// signals.
+	void finishFades(std::uint64_t count, bool acknowledged) {
+		for (auto it = pending.begin(); it != pending.end() && count > 0;) {
+			if (!it->fade) {
+				++it;
+				continue;
+			}
+			if (acknowledged) executor.post(std::move(it->done));
+			it = pending.erase(it);
+			--count;
+		}
+	}
+	void completeFades(std::uint64_t count) {
+		if (count > 0) finishFades(count, true);
+	}
+	void dropFades(std::uint64_t count) {
+		if (count > 0) finishFades(count, false);
 	}
 
 	// ---- The node ----
@@ -430,24 +1002,71 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		inputs.assign(inputNames.size(), std::vector<float>(options.format.maxBlock, 0.0F));
 		outputs.assign(outputNames.size(), std::vector<float>(options.format.maxBlock, 0.0F));
 		lastGain.assign(outputNames.size(), 1.0F);
-		fadeMask.assign(outputNames.size(), false);
+		fadeMask.assign(outputNames.size(), 0);
+	}
+	/// What the real block with no peers tells on output port `output` (outputs then insideOutputs; its capture latency)
+	/// and on input port `input` (its playback latency): workOut's, as the plan was last carried
+	/// (docs/engine.md#latency-per-bank-pair).
+	Latency toldOnOutput(std::size_t output) const {
+		const Ports& ports = config->ports();
+		return facts.told.empty() ? Latency{}
+		                          : facts.told.at(ports.inputs().size() + ports.insideInputs().size() + output);
+	}
+	Latency toldOnInput(std::size_t input) const { return facts.told.empty() ? Latency{} : facts.told.at(input); }
+	/// The newest source made on `bank`.
+	FakeSource& sourceOn(std::string_view bank) const {
+		for (auto it = sourceList.rbegin(); it != sourceList.rend(); ++it)
+			if (companionList.at((*it)->index).bank == bank) return **it;
+		throw std::logic_error("no source was made on bank " + std::string(bank));
 	}
 	static std::size_t indexOf(const std::vector<PortName>& names, std::string_view port) {
 		const auto found = std::ranges::find(names, port);
 		if (found == names.end()) throw std::logic_error("the node has no port " + std::string(port));
 		return static_cast<std::size_t>(found - names.begin());
 	}
+	/// The loops the framework made whose fakes still live.
+	std::vector<FakeLoop*> liveLoops() const {
+		std::vector<FakeLoop*> live;
+		for (FakeLoop* loop : loopFakes)
+			if (loop != nullptr) live.push_back(loop);
+		return live;
+	}
+	/// The main loop pumped, the I/O executor's jobs run (unless holdIo), and each loop with a finish or a close queued
+	/// turned until none is (as the framework's teardown waits on them), then a source a state left armed thrown (unless
+	/// allowSourcesLeft).
+	void settle() {
+		executor.pump();
+		for (bool turned = true; turned;) {
+			turned = false;
+			while (!options.holdIo && stores.fakeIo.runOne()) {
+				turned = true;
+				executor.pump();
+			}
+			for (FakeLoop* loop : liveLoops())
+				if (loop->marked()) {
+					loop->turn();
+					turned = true;
+				}
+			executor.pump();
+		}
+		if (!sourcesLeft.empty()) {
+			const std::string left = sourcesLeft.front();
+			sourcesLeft.clear();
+			throw std::logic_error("a loop's state left a source armed: " + left);
+		}
+	}
 	/// Teardown to the end: remove the node (stopAll), completing every request the test left pending.
 	void finish() {
 		if (!added || stopped) return;
 		stopped = true;
 		host->stopAll(graph.close(), [] {});
-		executor.pump();
+		settle();
+		fade.notProcessing(); // the fade-outs pending complete with the rest
 		for (int rounds = 0; rounds < 1000 && !pending.empty(); ++rounds) {
 			auto done = std::move(pending.front().done);
 			pending.pop_front();
 			executor.post(std::move(done));
-			executor.pump();
+			settle();
 		}
 		clock.advance(defaultCloseDeadline); // a legacy run past its close deadline is leaked, never waited for
 	}
@@ -457,10 +1076,14 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	ManualExecutor executor;
 	FakeClock clock;
 	FakeBlocks blocks;
-	FakeOutside<SoundCardRequest> cards;
-	FakeOutside<RtpReceiverRequest> receivers;
+	FakeEngineCompanions<SoundCardShape> cards;
+	FakeEngineCompanions<RtpReceiverShape> receivers;
 	FakeHandoffs handoffs;
 	FakeSinks sinks;
+	FakeSources sources;
+	FakeLoops loops;
+	FakeStores stores;
+	FakeRecordings recordings{stores.fakeIo};
 	ResourceRegistry registry;
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph; // only for close(), the proof stopAll takes
@@ -475,26 +1098,44 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	FakeBlock* block = nullptr;
 	PortBlockEvents* blockEvents = nullptr;
 	AudioCode* driven = nullptr;
-	std::vector<SinkBinding> bound; // the taps the last drive bound (none for a silence)
+	std::vector<SinkBinding> bound;          // the taps the last drive bound (none for a silence)
+	std::vector<SourceBinding> boundSources; // the sources the last drive bound (none for a silence)
 	LatencyPlan plan;
+	LatencyFacts facts; // workOut's for `plan`, with no peers; empty before the first plan
 	std::deque<PendingRequest> pending;
-	std::vector<bool> fadeMask;
-	Fade fade = Fade::none;
-	std::uint32_t fadeAt = 0;
-	std::uint64_t position = 0;
-	bool firstCycle = true;
+	std::vector<std::uint8_t> fadeMask; // per output, outputs then insideOutputs: the last drive's faded ones
+	BlockFade fade;                     // the real block's fade and its rule for fade-outs
+	// The fake block's cycles (docs/writing-a-node-type.md#lost-cycles): its graph's cut record, the real block's rule
+	// that states each cycle's facts, and the clock the next process() runs on.
+	HarnessCuts cuts;
+	CycleAccount account;
+	std::uint64_t position = 0;   // the driver's frames at the next cycle's start
+	std::uint64_t timeFrames = 0; // the raw clock at the next cycle's start, in frames since the harness began
+	std::uint32_t driverId = internalClock;
+	std::uint32_t lostCut = 0;         // cycles loseCycles lost since the last process(), cut short
+	std::uint32_t lostUnscheduled = 0; // and those the block was not scheduled for
+	CycleFacts lastFacts;
 
 	std::vector<CompanionFake> companionList;
-	std::vector<OutsideNodeEvents*> outsideEvents; // per companion; null once destroyed
+	std::vector<EngineCompanionEvents*> engineEvents; // per companion; null once destroyed (or none)
+	std::vector<FakeSource*> sourceList;              // every source made, in order (a freed one dangles: unused)
+	std::map<std::size_t, FakeSink*> sinkFakes;       // each sink alive, by its companion's index
 	std::vector<std::uint64_t> handoffCounts;
 	std::vector<SeenHandoff> handoffList;
 	std::vector<RecordingRequest> recordingList;
+	std::vector<NodeHarness::SeenLoop> loopList;                // every loop made, in order
+	std::vector<FakeLoop*> loopFakes;                           // by loopList's index; null once freed
+	std::vector<std::pair<std::size_t, LoopEvents*>> heldLoops; // holdLoops: by loopList's index, told at loopsReady()
+	std::vector<std::string> sourcesLeft;                       // ear.loop-source-left said since the last settle
 
 	std::optional<NodeHealth> told;
 	bool wentAway = false;
 	std::uint64_t dropped_ = 0;
 	std::vector<std::string> noteList;
+	mutable std::mutex logMutex;
+	std::vector<LogEntry> logList; // logMutex
 	std::vector<SeenDiagnostic> diagnosticList;
+	std::vector<SeenInternalError> internalErrorList;
 
 	std::vector<PortName> inputNames;
 	std::vector<PortName> outputNames;
@@ -502,7 +1143,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	std::vector<std::vector<float>> outputs;
 	std::vector<float> lastGain;
 	std::uint32_t lastFrames = 0;
-	// Last, so it goes first: its nodes' blocks, outside nodes and instances tell the members above as they go.
+	// Last, so it goes first: its nodes' blocks, engine companions and instances tell the members above as they go.
 	std::unique_ptr<NodeHost> host;
 };
 
@@ -515,6 +1156,10 @@ NodeHarness::~NodeHarness() {
 	} catch (...) {
 		// A type bug thrown while tearing down: the test already failed on it, or will on what it checks.
 	}
+	// What the I/O executor still holds (holdIo: a recording's close, say) goes while the recordings' disk it closes
+	// into is still there.
+	impl_->host.reset();
+	impl_->stores.fakeIo.queue.clear();
 }
 
 std::optional<std::string> NodeHarness::parse(const NodeSettings& settings) {
@@ -537,47 +1182,64 @@ void NodeHarness::add(AddOptions options) {
 	impl_->added = true;
 	impl_->disabled = options.disabled;
 	impl_->host->nodeAdded(impl_->spec(options.disabled), impl_->config);
-	impl_->executor.pump();
+	impl_->settle();
 }
 
 void NodeHarness::blockReady() {
 	if (impl_->blockEvents == nullptr) throw std::logic_error("no block was made");
 	impl_->blockEvents->ready();
-	impl_->executor.pump();
+	impl_->settle();
 }
 
 void NodeHarness::blockLost(std::string detail) {
 	if (impl_->blockEvents == nullptr) throw std::logic_error("no block was made");
 	impl_->blockEvents->lost(std::move(detail));
-	impl_->executor.pump();
+	impl_->settle();
 }
 
 void NodeHarness::ready(std::string_view bank) {
 	CompanionFake& fake = companion(bank);
 	const auto index = static_cast<std::size_t>(&fake - impl_->companionList.data());
-	OutsideNodeEvents* events = impl_->outsideEvents.at(index);
-	if (events == nullptr) throw std::logic_error("the outside node on " + std::string(bank) + " is destroyed");
+	if (fake.kind == CompanionKind::sink) {
+		const auto alive = impl_->sinkFakes.find(index);
+		if (alive == impl_->sinkFakes.end()) throw std::logic_error("no sink on " + std::string(bank) + " is alive");
+		if (!alive->second->began) alive->second->runBegin();
+		impl_->settle();
+		return;
+	}
+	if (fake.kind == CompanionKind::source) return; // ready when made
+	EngineCompanionEvents* events = impl_->engineEvents.at(index);
+	if (events == nullptr) throw std::logic_error("no engine companion on " + std::string(bank) + " is alive");
 	fake.ready = true;
 	events->ready();
-	impl_->executor.pump();
+	impl_->settle();
 }
 
 void NodeHarness::lose(std::string_view bank, std::string detail) {
 	CompanionFake& fake = companion(bank);
+	if (!isEngineKind(fake.kind))
+		throw std::logic_error("the " + std::string(companionKindName(fake.kind)) + " on " + std::string(bank) +
+		                       " is never lost by the framework: its type's code says lost through the node's handle");
 	const auto index = static_cast<std::size_t>(&fake - impl_->companionList.data());
-	OutsideNodeEvents* events = impl_->outsideEvents.at(index);
-	if (events == nullptr) throw std::logic_error("the outside node on " + std::string(bank) + " is destroyed");
+	EngineCompanionEvents* events = impl_->engineEvents.at(index);
+	if (events == nullptr) throw std::logic_error("no engine companion on " + std::string(bank) + " is alive");
 	events->lost(std::move(detail));
-	impl_->executor.pump();
+	impl_->settle();
 }
 
-void NodeHarness::acknowledgeFade() { impl_->completeOldest(true); }
+void NodeHarness::acknowledgeFade() {
+	// As a block not processing: every fade-out waiting ends at zero now.
+	const std::uint64_t acknowledged = impl_->fade.notProcessing();
+	if (acknowledged == 0) throw std::logic_error("no fade-out is pending");
+	impl_->completeFades(acknowledged);
+	impl_->settle();
+}
 
 void NodeHarness::completeBarrier() { impl_->completeOldest(false); }
 
 void NodeHarness::advance(std::chrono::milliseconds by) {
 	impl_->clock.advance(by);
-	impl_->executor.pump();
+	impl_->settle();
 }
 
 void NodeHarness::process(std::uint32_t frames) {
@@ -592,45 +1254,101 @@ void NodeHarness::process(std::uint32_t frames) {
 		std::fill_n(buffer.begin(), frames, std::numeric_limits<float>::quiet_NaN());
 		out.emplace_back(buffer.data(), frames);
 	}
-	const auto rate = static_cast<std::int64_t>(h.options.format.rate);
-	const auto at = static_cast<std::int64_t>(h.position) * 1'000'000'000 / rate;
+	// The harness's clock starts at zero and runs at exactly the graph's rate (docs/engine.md#dating). Each cycle lost
+	// since the last started on it with this cycle's frames (ear forces one quantum), moving the position and the time
+	// on by them, as the tracking dummy's catch-up does (docs/writing-a-node-type.md#lost-cycles).
+	const FrameClock clock(h.options.format.rate);
+	for (std::uint32_t i = 0; i < h.lostCut + h.lostUnscheduled; ++i) {
+		h.cuts.start();
+		if (i < h.lostCut) h.cuts.incomplete();
+		h.position += frames;
+		h.timeFrames += frames;
+	}
+	h.lostCut = 0;
+	h.lostUnscheduled = 0;
+	// The block's own work, timed as the real block times it, for its counters' overruns (docs/engine.md#counters).
+	const auto entered = std::chrono::steady_clock::now();
+	h.cuts.start();
+	const std::int64_t at = clock.ns(static_cast<std::int64_t>(h.timeFrames));
+	const CycleAccount::Step step =
+		h.account.next(DriverTick{.driverId = h.driverId,
+	                              .graphCycle = h.driverId == internalClock ? h.cuts.started() : 0,
+	                              .position = h.position,
+	                              .frames = frames,
+	                              .startRawNs = at},
+	                   h.options.format.maxBlock);
+	h.lastFacts = step.facts;
+	// The harness's cycles start on time (their overdueNs 0): a stall of its record ends at each process() on its own
+	// clock (docs/engine.md#counters).
+	if (h.driverId == internalClock) h.cuts.onTime();
 	const GraphCycle cycle{.startNs = at,
 	                       .position = h.position,
 	                       .startRawNs = at,
-	                       .nextNs = static_cast<std::int64_t>(h.position + frames) * 1'000'000'000 / rate,
-	                       .discontinuity = h.firstCycle};
+	                       .driverId = h.driverId,
+	                       .nextNs = clock.ns(static_cast<std::int64_t>(h.timeFrames + frames)),
+	                       .facts = step.facts};
+	// Each source, before the code, into its bank's buffers, as the real block plays it, while a code runs.
+	if (h.driven != nullptr)
+		for (const SourceBinding& binding : h.boundSources) {
+			std::vector<std::span<float>> bank;
+			for (std::size_t c = 0; c < binding.channels && binding.firstInput + c < h.inputs.size(); ++c)
+				bank.emplace_back(h.inputs[binding.firstInput + c].data(), frames);
+			binding.tap->play(bank,
+			                  sourceTick(cycle, frames, h.options.format.rate, h.toldOnInput(binding.firstInput)));
+		}
 	if (h.driven != nullptr) h.driven->process(in, out, frames, cycle);
 	else
 		for (auto& span : out) std::ranges::fill(span, 0.0F);
-	// The fade, as the real block applies it (port_blocks.cpp): sample by sample, exact at both ends.
-	const std::uint32_t fadeFrames = std::max(h.options.format.rate * 5 / 1000, 1U);
-	for (std::uint32_t i = 0; i < frames; ++i) {
-		if (h.fade == Impl::Fade::none) break;
-		const float gain = static_cast<float>(h.fadeAt) / static_cast<float>(fadeFrames);
-		for (std::size_t o = 0; o < out.size(); ++o)
-			if (h.fadeMask[o]) {
-				out[o][i] = h.fadeAt == 0 ? 0.0F : out[o][i] * gain;
-				if (i + 1 == frames) h.lastGain[o] = gain;
-			}
-		if (h.fade == Impl::Fade::in && ++h.fadeAt >= fadeFrames) {
-			h.fade = Impl::Fade::none;
-			for (std::size_t o = 0; o < out.size(); ++o)
-				if (h.fadeMask[o]) h.lastGain[o] = 1.0F;
-		}
-	}
+	// The fade, by the real block's own rule.
+	const BlockFade::Applied faded = h.fade.apply(out, h.fadeMask, frames);
+	for (std::size_t o = 0; o < out.size(); ++o) h.lastGain[o] = h.fadeMask[o] != 0 ? faded.lastGain : 1.0F;
 	// Each sink's tap after the fade (a sink's bank is never faded), as the real block writes it, while a code runs.
 	if (h.driven != nullptr)
 		for (const SinkBinding& binding : h.bound) {
 			std::vector<std::span<const float>> bank;
 			for (std::size_t c = 0; c < binding.channels && binding.firstOutput + c < out.size(); ++c)
 				bank.emplace_back(out[binding.firstOutput + c]);
-			binding.tap->write(bank, frames,
-			                   ChunkStamp{cycle.position, cycle.startNs, cycle.startRawNs, cycle.discontinuity});
+			binding.tap->write(bank, frames, chunkStamp(cycle, h.toldOnOutput(binding.firstOutput)));
 		}
+	const std::chrono::nanoseconds work = std::chrono::steady_clock::now() - entered;
+	if (h.block != nullptr) h.block->counters.add(step.facts, cycleOverran(work.count(), clock, frames));
 	h.position += frames;
-	h.firstCycle = false;
+	h.timeFrames += frames;
 	h.lastFrames = frames;
+	// A cycle that ended a fade-out at zero acknowledged every fade-out waiting.
+	if (faded.acknowledged > 0) {
+		h.completeFades(faded.acknowledged);
+		h.settle();
+	}
 }
+
+void NodeHarness::loseCycles(std::uint32_t count, Lost how) {
+	Impl& h = *impl_;
+	if (count > std::numeric_limits<std::uint32_t>::max() - h.lostCut - h.lostUnscheduled)
+		throw std::logic_error("loseCycles() past 2^32 - 1 cycles before one process()");
+	(how == Lost::cut ? h.lostCut : h.lostUnscheduled) += count;
+}
+
+void NodeHarness::changeDriver(std::uint32_t id) { impl_->driverId = id; }
+
+void NodeHarness::reposition(std::int64_t frames) {
+	Impl& h = *impl_;
+	if (frames < 0 && static_cast<std::uint64_t>(-frames) > h.position)
+		throw std::logic_error("reposition() before the driver's first frame");
+	h.position += static_cast<std::uint64_t>(frames);
+}
+
+const CutRecord& NodeHarness::cuts() const noexcept { return impl_->cuts; }
+
+const CycleFacts& NodeHarness::facts() const noexcept { return impl_->lastFacts; }
+
+NodeCounts NodeHarness::counts() const {
+	const std::optional<NodeCounts> counts = impl_->host->counts(impl_->options.node);
+	if (!counts) throw std::logic_error("no node " + impl_->options.node + " is in the harness");
+	return *counts;
+}
+
+GraphCounts NodeHarness::graphCounts() const noexcept { return impl_->cuts.counts(); }
 
 NodeOutcome NodeHarness::change(const NodeSettings& settings) {
 	impl_->requireAdded();
@@ -647,28 +1365,28 @@ NodeOutcome NodeHarness::change(const NodeSettings& settings) {
 	impl_->buffers();
 	const NodeOutcome outcome = impl_->disabled ? NodeOutcome::stored : NodeOutcome::restart;
 	impl_->host->nodeChanged(impl_->spec(impl_->disabled), impl_->config, NodeChange{outcome, keys});
-	impl_->executor.pump();
+	impl_->settle();
 	return outcome;
 }
 
 LifecycleReply NodeHarness::stop() {
 	impl_->requireAdded();
 	const LifecycleReply reply = impl_->host->stop(impl_->options.node);
-	impl_->executor.pump();
+	impl_->settle();
 	return reply;
 }
 
 LifecycleReply NodeHarness::start() {
 	impl_->requireAdded();
 	const LifecycleReply reply = impl_->host->start(impl_->options.node);
-	impl_->executor.pump();
+	impl_->settle();
 	return reply;
 }
 
 LifecycleReply NodeHarness::restart() {
 	impl_->requireAdded();
 	const LifecycleReply reply = impl_->host->restart(impl_->options.node);
-	impl_->executor.pump();
+	impl_->settle();
 	return reply;
 }
 
@@ -676,20 +1394,20 @@ void NodeHarness::disable() {
 	impl_->requireAdded();
 	impl_->disabled = true;
 	impl_->host->nodeChanged(impl_->spec(true), impl_->config, NodeChange{NodeOutcome::disable, {}});
-	impl_->executor.pump();
+	impl_->settle();
 }
 
 void NodeHarness::enable() {
 	impl_->requireAdded();
 	impl_->disabled = false;
 	impl_->host->nodeChanged(impl_->spec(false), impl_->config, NodeChange{NodeOutcome::enable, {}});
-	impl_->executor.pump();
+	impl_->settle();
 }
 
 void NodeHarness::remove() {
 	impl_->requireAdded();
 	impl_->host->nodeRemoved(impl_->options.node);
-	impl_->executor.pump();
+	impl_->settle();
 }
 
 NodeHealth NodeHarness::health() const {
@@ -703,9 +1421,18 @@ bool NodeHarness::gone() const noexcept { return impl_->wentAway; }
 
 std::uint64_t NodeHarness::droppedFrames() const { return impl_->dropped_; }
 
+std::vector<CompanionView> NodeHarness::companionList() const { return impl_->host->companionsOf(impl_->options.node); }
+
 const std::vector<std::string>& NodeHarness::notes() const noexcept { return impl_->noteList; }
 
+std::vector<LogEntry> NodeHarness::logs() const {
+	const std::scoped_lock lock(impl_->logMutex);
+	return impl_->logList;
+}
+
 const std::vector<SeenDiagnostic>& NodeHarness::diagnostics() const noexcept { return impl_->diagnosticList; }
+
+const std::vector<SeenInternalError>& NodeHarness::internalErrors() const noexcept { return impl_->internalErrorList; }
 
 std::span<float> NodeHarness::input(std::string_view port) {
 	return impl_->inputs.at(Impl::indexOf(impl_->inputNames, port));
@@ -737,11 +1464,118 @@ CompanionFake& NodeHarness::companion(std::string_view bank) {
 	throw std::logic_error("no companion was made on bank " + std::string(bank));
 }
 
+std::uint32_t NodeHarness::feed(std::string_view bank, std::span<const float> interleaved) {
+	Impl::FakeSource& source = impl_->sourceOn(bank);
+	const std::size_t channels = ports().bank(bank).ports.size();
+	return source.write(interleaved,
+	                    static_cast<std::uint32_t>(interleaved.size() / std::max<std::size_t>(channels, 1)),
+	                    std::chrono::milliseconds(0));
+}
+
+SourcePlayed NodeHarness::lastPlayed(std::string_view bank) const { return impl_->sourceOn(bank).lastPlayed; }
+
+std::uint64_t NodeHarness::shortfall(std::string_view bank) const { return impl_->sourceOn(bank).shortfallFrames(); }
+
 std::uint64_t NodeHarness::handoffFrames(std::size_t index) const { return impl_->handoffCounts.at(index); }
 
 const std::vector<SeenHandoff>& NodeHarness::handoffs() const noexcept { return impl_->handoffList; }
 
 const std::vector<RecordingRequest>& NodeHarness::recordingRequests() const noexcept { return impl_->recordingList; }
+
+void NodeHarness::runLoops() {
+	for (;;) {
+		bool ran = false;
+		for (Impl::FakeLoop* loop : impl_->liveLoops()) ran = loop->turn() || ran;
+		impl_->settle();
+		if (!ran) return;
+	}
+}
+
+void NodeHarness::loopsReady() {
+	for (auto [index, events] : std::exchange(impl_->heldLoops, {}))
+		if (impl_->loopFakes.at(index) != nullptr) events->ready();
+	impl_->settle();
+}
+
+void NodeHarness::readable(int fd) {
+	for (Impl::FakeLoop* loop : impl_->liveLoops())
+		for (const auto& source : loop->sources)
+			if (source->fd == fd && !source->cancelled) source->deliverable = true;
+}
+
+std::size_t NodeHarness::armed(std::string_view loop) const {
+	for (std::size_t i = impl_->loopList.size(); i-- > 0;) {
+		if (impl_->loopList[i].name != loop) continue;
+		const Impl::FakeLoop* fake = impl_->loopFakes.at(i);
+		if (fake == nullptr) return 0;
+		return static_cast<std::size_t>(
+			std::ranges::count_if(fake->sources, [](const auto& source) { return !source->cancelled; }));
+	}
+	return 0;
+}
+
+std::vector<NodeHarness::SeenLoop> NodeHarness::loops() const { return impl_->loopList; }
+
+void NodeHarness::runIo() {
+	while (impl_->stores.fakeIo.runOne()) impl_->executor.pump();
+	impl_->settle();
+}
+
+const std::vector<std::string>& NodeHarness::ioJobs() const noexcept { return impl_->stores.fakeIo.ran; }
+
+std::string NodeHarness::storeFile(std::string_view suffix) const {
+	return storeFileName(impl_->type.name(), impl_->options.node, suffix);
+}
+
+void NodeHarness::presetStore(std::string_view suffix, std::string text, std::uint32_t mode) {
+	impl_->stores.files.insert_or_assign(storeFile(suffix), Impl::FakeStores::File{std::move(text), mode});
+}
+
+std::optional<std::string> NodeHarness::storeText(std::string_view suffix) const {
+	const auto found = impl_->stores.files.find(storeFile(suffix));
+	if (found == impl_->stores.files.end()) return std::nullopt;
+	return found->second.text;
+}
+
+std::uint32_t NodeHarness::storeMode(std::string_view suffix) const {
+	const auto found = impl_->stores.files.find(storeFile(suffix));
+	if (found == impl_->stores.files.end()) throw std::logic_error("no store file " + storeFile(suffix));
+	return found->second.mode;
+}
+
+void NodeHarness::failStoreOpen(std::string_view suffix, std::string why) {
+	impl_->stores.failOpen.insert_or_assign(storeFile(suffix), std::move(why));
+}
+
+void NodeHarness::failNextWrite(std::string_view suffix, std::string why) {
+	impl_->stores.failWrite.insert_or_assign(storeFile(suffix), std::move(why));
+}
+
+void NodeHarness::breakStores(std::string what) { impl_->stores.broken = std::move(what); }
+
+std::optional<std::string> NodeHarness::recordingBytes(std::string_view path) const {
+	return impl_->recordings.bytes(recordingClaimPath(path));
+}
+
+void NodeHarness::presetRecording(std::string_view path, std::string bytes) {
+	const int fd = impl_->recordings.fileOf(recordingClaimPath(path));
+	if (::ftruncate(fd, 0) != 0 || ::pwrite(fd, bytes.data(), bytes.size(), 0) != static_cast<ssize_t>(bytes.size()))
+		throw std::system_error(errno, std::generic_category(), "presetRecording");
+}
+
+void NodeHarness::failRecordingOpen(std::string_view path, std::string why) {
+	impl_->recordings.failOpen.insert_or_assign(recordingClaimPath(path), std::move(why));
+}
+
+void NodeHarness::pipeRecording(std::string_view path) { impl_->recordings.pipes.insert(recordingClaimPath(path)); }
+
+void NodeHarness::breakRecordings(std::string what) { impl_->recordings.broken = std::move(what); }
+
+std::size_t NodeHarness::openRecordings() const { return *impl_->recordings.opened; }
+
+void NodeHarness::overdueNextWrite(bool ran) { impl_->stores.overdueNext = ran; }
+
+const std::vector<std::string>& NodeHarness::storeCalls() const noexcept { return impl_->stores.calls; }
 
 RunObject* NodeHarness::runObject() const noexcept {
 	if (impl_->instance == nullptr) return nullptr;

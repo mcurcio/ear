@@ -214,3 +214,30 @@ TEST_CASE("A fault's earlier output reaches the real descriptors before the proc
 	CHECK(crashed.signal == SIGSEGV);
 	CHECK(crashed.written == "before the fault\n");
 }
+
+TEST_CASE("A dying process's last line reaches the real standard error once, after the queue and the pipes",
+          "[capture][crash]") {
+	// As main.cpp's Faults ends the process (docs/architecture.md#the-callback-boundary): the line, then terminate.
+	const std::string line = "ear: internal error in Thing::onEvent, during configure hall: boom\n";
+	const Crashed crashed = crashInChild([&](DescriptorCapture& capture) {
+		capture.onCrash([&] { (void)::write(capture.realOutput(), "a record still queued\n", 22); });
+		std::fprintf(stderr, "in the pipe before the fault\n");
+		try {
+			throw std::runtime_error("boom");
+		} catch (...) {
+			capture.lastWords(line);
+			std::terminate();
+		}
+	});
+	INFO(crashed.written);
+	CHECK(crashed.signal == SIGABRT);
+	const auto at = [&](const std::string& text) { return crashed.written.find(text); };
+	REQUIRE(at(line) != std::string::npos);
+	CHECK(crashed.written.find(line, at(line) + 1) == std::string::npos); // once
+	REQUIRE(at("a record still queued") != std::string::npos);
+	REQUIRE(at("in the pipe before the fault\n") != std::string::npos);
+	REQUIRE(at("terminate called after throwing an instance of 'std::runtime_error'") != std::string::npos);
+	CHECK(at("a record still queued") < at("in the pipe before the fault"));
+	CHECK(at("in the pipe before the fault") < at(line));
+	CHECK(at(line) < at("terminate called"));
+}

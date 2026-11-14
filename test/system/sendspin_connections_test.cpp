@@ -10,6 +10,7 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -41,9 +42,20 @@ public:
 	std::string url() const { return "ws://127.0.0.1:" + std::to_string(port_) + "/sendspin"; }
 	std::uint16_t port() const noexcept { return port_; }
 
-	/// Connects until the backlog is full: the kernel then drops every new SYN, so the last connect stays in progress.
+	/// Connects until the backlog is full, then once more: the kernel then drops every new SYN, so that connect, and any
+	/// after it, stays in progress. Full is the listening socket's own word (TCP_INFO on a listener: tcpi_unacked is its
+	/// accept queue, tcpi_sacked the queue's bound, and it is full past the bound), never a guess from how long a connect
+	/// took; each connect the queue can take is waited for until it has finished.
 	void fillBacklog() {
+		const auto queue = [this] {
+			tcp_info info{};
+			socklen_t length = sizeof info;
+			REQUIRE(::getsockopt(fd_, IPPROTO_TCP, TCP_INFO, &info, &length) == 0);
+			return info;
+		};
 		for (int tries = 0; tries < 64; ++tries) {
+			const tcp_info before = queue();
+			const bool full = before.tcpi_unacked > before.tcpi_sacked;
 			const int filler = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
 			REQUIRE(filler >= 0);
 			fillers_.push_back(filler);
@@ -52,9 +64,9 @@ public:
 			address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 			address.sin_port = htons(port_);
 			::connect(filler, reinterpret_cast<sockaddr*>(&address), sizeof address);
-			// A connect the backlog took has finished by now on loopback; one it dropped has not.
+			if (full) return; // this one's SYN was dropped
 			pollfd writable{filler, POLLOUT, 0};
-			if (::poll(&writable, 1, 200) == 0) return;
+			REQUIRE(::poll(&writable, 1, static_cast<int>(std::chrono::milliseconds(deadline).count())) == 1);
 		}
 		FAIL("the backlog never filled");
 	}
@@ -88,12 +100,11 @@ void checkHeldDial(const TempDirectory& directory, const std::string& url) {
 		CHECK(std::chrono::steady_clock::now() - before < stopBound);
 
 		ear.signal(SIGTERM);
-		const auto stopping = std::chrono::steady_clock::now();
 		CHECK(rpc.readUntilClosed() == 1001);
-		const auto exitStatus = ear.waitForExit(stopBound);
-		CHECK(std::chrono::steady_clock::now() - stopping < stopBound);
+		const auto exitStatus = waitForStop(ear);
 		INFO("ear printed:\n" << ear.output());
 		CHECK(exitStatus == 0);
+		checkStopWithinBound(ear, "ma");
 	}
 }
 
@@ -124,9 +135,10 @@ TEST_CASE("With no server at all the sendspin node runs, its meters silent, and 
 		}
 	}
 	ear.signal(SIGTERM);
-	const auto exitStatus = ear.waitForExit(stopBound);
+	const auto exitStatus = waitForStop(ear);
 	INFO("ear printed:\n" << ear.output());
 	CHECK(exitStatus == 0);
+	checkStopWithinBound(ear);
 	CHECK_FALSE(ear.lineStartingWith("node ma failed"));
 }
 
@@ -156,7 +168,7 @@ TEST_CASE("A slow upgrade sees one connection and no another_server, then connec
 	CHECK(server.count("upgrade") == 1);
 	CHECK(server.count("disconnected ") == 0);
 	ear.signal(SIGTERM);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 }
 
 TEST_CASE("A listening node says how it is known, and a server that dials it pairs and plays", "[system][sendspin]") {
@@ -173,17 +185,22 @@ TEST_CASE("A listening node says how it is known, and a server that dials it pai
 	SendspinTestServer server({"--dial", "ws://127.0.0.1:" + std::to_string(port) + "/sendspin"});
 	REQUIRE_SEEN(ear, ear.waitForLine(connectedUnpaired, deadline));
 	pairOnce(ear, server);
-	server.send("play 1.5");
-	REQUIRE_SEEN(ear, ear.waitForLine("node ma says stream-ended", playDeadline));
+	server.send(playLong);
+	REQUIRE_SEEN(ear, waitForRampFrames(directory.recordings() / "rec.wav"));
+	REQUIRE_SEEN(ear, endStream(ear, server));
 
 	ear.signal(SIGTERM);
-	REQUIRE_SEEN(ear, ear.waitForExit(deadline) == 0);
+	REQUIRE_SEEN(ear, waitForStop(ear) == 0);
 	CHECK(ear.hasLine("node rec removed dropped=0"));
-	const RampCheck ramp = checkRamp(readWav(directory.recordings() / "rec.wav"));
+	const RampCheck ramp = checkRamp(readWav(directory.recordings() / "rec.wav"), lostSyncUs(ear));
 	INFO(ramp);
 	CHECK(ramp.rampFrames >= rampFramesAtLeast);
 	CHECK(ramp.badFrames == 0);
 	CHECK(ramp.badSteps == 0);
+	// Every skip is paid by a record of ear's of the cycles lost when it was due (docs/testing.md#the-counters-own-word).
+	const auto unpaid = unpaidRampSkips(ear, ramp);
+	INFO(lostCycles(ear) << "; unpaid: " << json(unpaid).dump());
+	CHECK(unpaid.empty());
 }
 
 TEST_CASE("A port another program holds fails the node with the kernel's reason, and a free port "
@@ -216,7 +233,7 @@ TEST_CASE("A port another program holds fails the node with the kernel's reason,
 	CHECK_FALSE(connectRefused(freePort));
 	ear.signal(SIGTERM);
 	CHECK(rpc.readUntilClosed() == 1001);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 }
 
 TEST_CASE("Two sendspin nodes on one port: the second fails naming the first, and a free port "
@@ -258,7 +275,7 @@ TEST_CASE("Two sendspin nodes on one port: the second fails naming the first, an
 	CHECK_FALSE(ear.lineStartingWith("node " + winner + " failed"));
 	ear.signal(SIGTERM);
 	CHECK(rpc.readUntilClosed() == 1001);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 }
 
 TEST_CASE("A new name while a server is connected keeps the port: the node still listens and a "
@@ -290,7 +307,7 @@ TEST_CASE("A new name while a server is connected keeps the port: the node still
 	REQUIRE_SEEN(ear, waitForNthLine(ear, "node ma says connected ", 1, playDeadline));
 	ear.signal(SIGTERM);
 	CHECK(rpc.readUntilClosed() == 1001);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 }
 
 TEST_CASE("A dialling node opens no listening socket", "[system][sendspin]") {
@@ -304,7 +321,7 @@ TEST_CASE("A dialling node opens no listening socket", "[system][sendspin]") {
 	CHECK(connectRefused(8928)); // the library's default, and no test here listens on it
 	CHECK_FALSE(ear.lineStartingWith("node ma says listening"));
 	ear.signal(SIGTERM);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 }
 
 TEST_CASE("A node removed and added back while a server is connected takes its port back, once the "
@@ -336,5 +353,5 @@ TEST_CASE("A node removed and added back while a server is connected takes its p
 	REQUIRE_SEEN(ear, waitForNthLine(ear, "node ma says connected ", 1, playDeadline));
 	ear.signal(SIGTERM);
 	CHECK(rpc.readUntilClosed() == 1001);
-	CHECK(ear.waitForExit(deadline) == 0);
+	CHECK(waitForStop(ear) == 0);
 }

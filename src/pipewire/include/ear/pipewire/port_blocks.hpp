@@ -10,8 +10,9 @@ namespace ear::pipewire {
 /// position crosses a window boundary (position / levelWindowFrames changes) it publishes into
 /// the block's mailbox and rings `wake`. frames > maxBlock: outputs silenced, process() skipped.
 /// First STREAMING -> ready(); ERROR -> lost(). Each cycle's GraphCycle is made here (both clocks
-/// sampled once); the filter carries custom latency, told per bank pair by carryLatency
-/// (docs/engine.md#graphcycle).
+/// sampled once, docs/engine.md#graphcycle), and the node's counters counted after its work
+/// (docs/engine.md#counters); the filter carries custom latency, told per bank pair by
+/// carryLatency.
 class FilterPortBlocks final : public PortBlockFactory, public LevelReader {
 public:
 	FilterPortBlocks(Engine& engine, LevelWake& wake); // both outlive it

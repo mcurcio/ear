@@ -26,20 +26,28 @@
 #include <unistd.h>
 
 #include "sendspin_system.hpp"
+#include "sleeps.hpp"
 
 namespace {
 
 using namespace ear::test;
 
+/// How long a silent peer's read waits for an answer it ignores: it only paces the peer, so a round never waits long on
+/// one socket. Never an honest peer's patience.
+constexpr std::chrono::seconds silentPatience{1};
+
 /// A socket to `port` on 127.0.0.1 from `source`, or -1. Every 127/8 address is this host's, so one test can be peers on
-/// several addresses. It closes with a reset, so a thousand of them leave no TIME_WAIT behind.
-int connectFrom(const std::string& source, std::uint16_t port) {
+/// several addresses. It closes with a reset, so a thousand of them leave no TIME_WAIT behind. Its reads wait at most
+/// `patience`: for an honest peer the shared deadline, which only fails a test. A loaded host was seen to leave every one
+/// of ear's threads runnable and not run for most of a second while an upgrade waited, so a second's patience judged the
+/// host, not the transport, whose refusal closes the socket at once.
+int connectFrom(const std::string& source, std::uint16_t port, std::chrono::seconds patience = deadline) {
 	const int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
 	if (fd < 0) return -1;
 	const linger reset{1, 0};
 	::setsockopt(fd, SOL_SOCKET, SO_LINGER, &reset, sizeof reset);
-	const timeval patience{.tv_sec = 1, .tv_usec = 0};
-	::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &patience, sizeof patience);
+	const timeval wait{.tv_sec = static_cast<time_t>(patience.count()), .tv_usec = 0};
+	::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &wait, sizeof wait);
 	sockaddr_in from{};
 	from.sin_family = AF_INET;
 	::inet_pton(AF_INET, source.c_str(), &from.sin_addr);
@@ -72,7 +80,10 @@ bool answeredUpgrade(int fd) {
 
 /// Peers that never say a word of Sendspin, on their own thread until destroyed: each round opens `perSource` sockets from
 /// each source and holds them for `hold`. One `renewing` closes the last round's before it opens this one's, as a holder
-/// keeping its place does; otherwise after, so they press on the room the whole time, as a flood does.
+/// keeping its place does, and waits for the transport to close each of them too: a socket's thread sees its peer's
+/// close in its own time, and on a loaded host a holder renewing on a period alone outran it and filled the address's
+/// share with sockets still listed (the transport's close of each is the event, never a period). Otherwise it closes
+/// them after, so they press on the room the whole time, as a flood does.
 class SilentPeers {
 public:
 	struct Shape {
@@ -97,14 +108,48 @@ public:
 	SilentPeers(const SilentPeers&) = delete;
 	SilentPeers& operator=(const SilentPeers&) = delete;
 
-	/// Until `rounds` more rounds have opened; false if the deadline came first.
-	bool waitForRounds(std::size_t rounds) {
+	/// Until `rounds` rounds in all have opened since the peers were made, each within the deadline of the one before;
+	/// false if one did not. What a test means by "the peers are there": the first round opens on the peers' own thread
+	/// as they are made, and on a loaded host it may have opened before this is called, so counting from the call would
+	/// wait for a round more, which peers holding for minutes never open. Each round is the event: a loaded host only
+	/// makes many of them take longer (100 rounds of 32 upgrades were seen to take over 10 s, every one answered or
+	/// refused at once), and only a round that never comes fails.
+	bool waitForRoundsOpened(std::size_t rounds) {
 		std::unique_lock lock(mutex_);
-		const std::size_t until = rounds_ + rounds;
-		return changed_.wait_for(lock, deadline, [&] { return rounds_ >= until; });
+		return waitUntil(lock, rounds);
+	}
+
+	/// Until `rounds` more rounds have opened than had when it was called, likewise: a round that opens while the test
+	/// waits for it (an upgrade half sent).
+	bool waitForMoreRounds(std::size_t rounds) {
+		std::unique_lock lock(mutex_);
+		return waitUntil(lock, rounds_ + rounds);
+	}
+
+	/// Until `rounds` more rounds have opened or `within` has passed, whichever is first: how many did.
+	std::size_t roundsWithin(std::size_t rounds, std::chrono::milliseconds within) {
+		std::unique_lock lock(mutex_);
+		const std::size_t from = rounds_;
+		changed_.wait_for(lock, within, [&] { return rounds_ >= from + rounds; });
+		return rounds_ - from;
+	}
+
+	/// Sockets a renewing round closed that the transport never closed in turn.
+	std::size_t unreleased() {
+		const std::scoped_lock lock(mutex_);
+		return unreleased_;
 	}
 
 private:
+	/// With `lock` held: until `total` rounds have opened, each within the deadline of the one before.
+	bool waitUntil(std::unique_lock<std::mutex>& lock, std::size_t total) {
+		while (rounds_ < total) {
+			const std::size_t next = rounds_ + 1;
+			if (!changed_.wait_for(lock, deadline, [&] { return rounds_ >= next; })) return false;
+		}
+		return true;
+	}
+
 	void run() {
 		std::vector<int> held;
 		const auto closeAll = [](std::vector<int>& sockets) {
@@ -113,11 +158,15 @@ private:
 		};
 		const std::string request = upgradeRequest(port_);
 		for (;;) {
-			if (shape_.renewing) closeAll(held);
+			if (shape_.renewing) {
+				const std::size_t left = release(held);
+				const std::scoped_lock lock(mutex_);
+				unreleased_ += left;
+			}
 			std::vector<int> round;
 			for (const std::string& source : shape_.sources) {
 				for (std::size_t i = 0; i < shape_.perSource; ++i) {
-					const int fd = connectFrom(source, port_);
+					const int fd = connectFrom(source, port_, silentPatience);
 					if (fd < 0) continue;
 					round.push_back(fd);
 					if (shape_.upgrades && ::send(fd, request.data(), request.size(), MSG_NOSIGNAL) > 0)
@@ -134,11 +183,35 @@ private:
 		closeAll(held);
 	}
 
+	/// Half-closes each socket, then reads each until the transport closes its end (its thread saw the close and
+	/// forgot it), then closes them: how many it never closed by the deadline.
+	static std::size_t release(std::vector<int>& sockets) {
+		for (const int fd : sockets) ::shutdown(fd, SHUT_WR);
+		const auto until = std::chrono::steady_clock::now() + deadline;
+		std::size_t left = 0;
+		for (const int fd : sockets) {
+			char buffer[4096];
+			for (;;) {
+				// Each read waits at most silentPatience (SO_RCVTIMEO).
+				const ssize_t got = ::recv(fd, buffer, sizeof buffer, 0);
+				if (got > 0 || (got < 0 && (errno == EAGAIN || errno == EINTR))) {
+					if (std::chrono::steady_clock::now() < until) continue;
+					++left;
+				}
+				break; // 0: the transport closed its end; any other error: it reset it
+			}
+			::close(fd);
+		}
+		sockets.clear();
+		return left;
+	}
+
 	std::uint16_t port_;
 	Shape shape_;
 	std::mutex mutex_;
 	std::condition_variable changed_;
 	std::size_t rounds_ = 0;
+	std::size_t unreleased_ = 0;
 	bool stop_ = false;
 	std::thread thread_;
 };
@@ -172,46 +245,94 @@ struct ListeningEar {
 void checkPairsAndPlays(ChildProcess& ear, const TempDirectory& directory, SendspinTestServer& server) {
 	REQUIRE_SEEN(ear, ear.waitForLine(connectedUnpaired, deadline));
 	pairOnce(ear, server);
-	server.send("play 1.5");
-	REQUIRE_SEEN(ear, ear.waitForLine("node ma says stream-ended", playDeadline));
+	server.send(playLong);
+	REQUIRE_SEEN(ear, waitForRampFrames(directory.recordings() / "rec.wav"));
+	REQUIRE_SEEN(ear, endStream(ear, server));
 	CHECK(server.count("disconnected ") == 0);
 	ear.signal(SIGTERM);
-	REQUIRE_SEEN(ear, ear.waitForExit(stopBound) == 0);
+	REQUIRE_SEEN(ear, waitForStop(ear) == 0);
+	checkStopWithinBound(ear);
 	CHECK(ear.hasLine("node rec removed dropped=0"));
-	const RampCheck ramp = checkRamp(readWav(directory.recordings() / "rec.wav"));
+	const RampCheck ramp = checkRamp(readWav(directory.recordings() / "rec.wav"), lostSyncUs(ear));
 	INFO(ramp);
 	CHECK(ramp.rampFrames >= rampFramesAtLeast);
 	CHECK(ramp.badFrames == 0);
 	CHECK(ramp.badSteps == 0);
+	// Every skip is paid by a record of ear's of the cycles lost when it was due (docs/testing.md#the-counters-own-word).
+	const auto unpaid = unpaidRampSkips(ear, ramp);
+	INFO(lostCycles(ear) << "; unpaid: " << json(unpaid).dump());
+	CHECK(unpaid.empty());
 }
 
-/// A socket from `source` that takes `rounds` of these peers to finish its upgrade, and whether it was answered.
+/// How a slow upgrade ended.
+enum class SlowUpgrade {
+	answered,   // 101
+	closed,     // closed with no answer: it gave way, or was refused
+	windowPast, // the transport's own 400: its 3 s for an upgrade ran out before the rest of the request came
+};
+
+/// Reads to the end of a slow upgrade's answer. The transport answers its own handshake's timeout with a 400 before it
+/// closes, where a socket that gave way is shut down first and so says nothing.
+SlowUpgrade slowUpgradeAnswer(int fd) {
+	std::string answer;
+	char byte = 0;
+	while (!answer.ends_with("\r\n\r\n") && ::recv(fd, &byte, 1, 0) == 1) answer += byte;
+	if (answer.starts_with("HTTP/1.1 101")) return SlowUpgrade::answered;
+	return answer.starts_with("HTTP/1.1 400") ? SlowUpgrade::windowPast : SlowUpgrade::closed;
+}
+
+/// The attempts answersSlowUpgrade makes at an upgrade that waits across a round inside the transport's window.
+constexpr int slowUpgradeAttempts = 5;
+
+/// Whether a socket from `source`, half its upgrade sent, is answered once the rest comes after a round of these peers
+/// has opened. The round is the event and is required, under the shared deadline, so the test judges that rounds keep
+/// opening, never how fast. Up to `rounds` in all are waited for while the upgrade has had under 2 s, inside the 3 s
+/// the transport gives one; those past the first are only more evidence. An attempt whose first round came after the
+/// transport's window had passed (its 400) judged nothing, and the next attempt waits for a round of its own.
 bool answersSlowUpgrade(SilentPeers& peers, const std::string& source, std::uint16_t port, std::size_t rounds) {
-	const int fd = connectFrom(source, port);
-	REQUIRE(fd >= 0);
 	const std::string request = upgradeRequest(port);
 	const std::size_t half = request.size() / 2;
-	REQUIRE(::send(fd, request.data(), half, MSG_NOSIGNAL) == static_cast<ssize_t>(half));
-	const auto started = std::chrono::steady_clock::now();
-	REQUIRE(peers.waitForRounds(rounds));
-	const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
-	const bool sent = ::send(fd, request.data() + half, request.size() - half, MSG_NOSIGNAL) ==
-	                  static_cast<ssize_t>(request.size() - half);
-	const bool answered = sent && answeredUpgrade(fd);
-	::close(fd);
-	INFO("the upgrade took " << took.count() << " ms, of the 3 s the transport gives one");
-	CHECK(took < 3s);
-	return answered;
+	for (int attempt = 0; attempt < slowUpgradeAttempts; ++attempt) {
+		const int fd = connectFrom(source, port);
+		REQUIRE(fd >= 0);
+		REQUIRE(::send(fd, request.data(), half, MSG_NOSIGNAL) == static_cast<ssize_t>(half));
+		const auto halfSent = std::chrono::steady_clock::now();
+		INFO("attempt " << attempt << ": a round of the peers opening while the upgrade waits");
+		REQUIRE(peers.waitForMoreRounds(1));
+		const auto waited =
+			std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - halfSent);
+		if (rounds > 1 && waited < 2s) peers.roundsWithin(rounds - 1, 2s - waited);
+		// A send the transport already closed on fails; its answer, if it gave one, is still there to read.
+		::send(fd, request.data() + half, request.size() - half, MSG_NOSIGNAL);
+		const SlowUpgrade answer = slowUpgradeAnswer(fd);
+		::close(fd);
+		if (answer != SlowUpgrade::windowPast) return answer == SlowUpgrade::answered;
+	}
+	FAIL("each of " << slowUpgradeAttempts << " slow upgrades outlasted the transport's 3 s waiting for one round");
+	return false;
 }
 
 } // namespace
+
+// The peers' first round opens on their own thread as they are made, so on a loaded host it may already be open when a
+// test asks for it. Forced here: a round that has opened is waited for again, with nothing listening on the port (each
+// connect refused at once, the round open with no socket) and a hold that never renews. Revert proof: counting from the
+// call, as waitForRounds did, waits for a second round that never comes, and the second wait fails at the deadline.
+TEST_CASE("Peers' rounds are counted from their making, so a round already open is not waited for again",
+          "[system][sendspin]") {
+	SilentPeers peers(1, {{"127.0.0.1"}, 2, false, 10min, false});
+	REQUIRE(peers.waitForRoundsOpened(1));
+	const auto asked = std::chrono::steady_clock::now();
+	CHECK(peers.waitForRoundsOpened(1));
+	CHECK(std::chrono::steady_clock::now() - asked < deadline);
+}
 
 // What an unproved peer can keep a server out of. Peers on 127.0.0.1 share the server's address, as a
 // peer behind the same NAT or proxy does; a peer on another 127/8 address does not.
 TEST_CASE("A server pairs and plays beside two silent sockets renewed from its own address", "[system][sendspin]") {
 	ListeningEar node;
 	SilentPeers peers(node.port, holder("127.0.0.1"));
-	REQUIRE(peers.waitForRounds(1));
+	REQUIRE(peers.waitForRoundsOpened(1));
 	SendspinTestServer server({"--dial", node.url()});
 	checkPairsAndPlays(node.ear, node.directory, server);
 }
@@ -221,9 +342,21 @@ TEST_CASE("Bare sockets filling an address's share and renewed before their upgr
           "[system][sendspin]") {
 	ListeningEar node;
 	SilentPeers peers(node.port, {{"127.0.0.1"}, 10, false, 2s, true});
-	REQUIRE(peers.waitForRounds(1));
+	REQUIRE(peers.waitForRoundsOpened(1));
 	SendspinTestServer server({"--dial", node.url()});
 	REQUIRE_SEEN(node.ear, node.ear.waitForLine(connectedUnpaired, deadline));
+}
+
+// The library's own ConnectionLifecycle.JunkProbeDoesNotBlockRealServer, against ear's patched tree and a real server:
+// a port scan's two connects held open and never renewed. Its own copy hangs with the listener patch only because its
+// fake server's IXWebSocket client sends Origin (docs/node-types.md#library-facts-and-carried-patches).
+TEST_CASE("A server gets in beside two bare sockets held open from its own address", "[system][sendspin]") {
+	ListeningEar node;
+	SilentPeers peers(node.port, {{"127.0.0.1"}, 2, false, 10min, false});
+	REQUIRE(peers.waitForRoundsOpened(1));
+	SendspinTestServer server({"--dial", node.url()});
+	REQUIRE_SEEN(node.ear, node.ear.waitForLine(connectedUnpaired, deadline));
+	CHECK(server.count("disconnected ") == 0);
 }
 
 TEST_CASE("Bare sockets from many addresses filling every socket and renewed keep nobody out", "[system][sendspin]") {
@@ -231,7 +364,7 @@ TEST_CASE("Bare sockets from many addresses filling every socket and renewed kee
 	std::vector<std::string> sources;
 	for (int i = 2; i < 12; ++i) sources.push_back("127.0.0." + std::to_string(i));
 	SilentPeers peers(node.port, {sources, 8, false, 2s, true});
-	REQUIRE(peers.waitForRounds(1));
+	REQUIRE(peers.waitForRoundsOpened(1));
 	SendspinTestServer server({"--dial", node.url()});
 	REQUIRE_SEEN(node.ear, node.ear.waitForLine(connectedUnpaired, deadline));
 }
@@ -239,7 +372,7 @@ TEST_CASE("Bare sockets from many addresses filling every socket and renewed kee
 TEST_CASE("A server gets in beside a flood of silent upgrades from one other address", "[system][sendspin]") {
 	ListeningEar node;
 	SilentPeers peers(node.port, {{"127.0.0.2"}, 8, true, 1ms, false});
-	REQUIRE(peers.waitForRounds(10));
+	REQUIRE(peers.waitForRoundsOpened(10));
 	SendspinTestServer server({"--dial", node.url()});
 	REQUIRE_SEEN(node.ear, node.ear.waitForLine(connectedUnpaired, deadline));
 	CHECK(server.count("disconnected ") == 0);
@@ -256,7 +389,7 @@ TEST_CASE("A peer still proving itself is not displaced by a flood from one othe
 	REQUIRE(::recv(fd, init.data(), init.size(), 0) > 0); // client/init: it is in the room
 	{
 		SilentPeers peers(node.port, {{"127.0.0.2"}, 8, true, 1ms, false});
-		REQUIRE(peers.waitForRounds(50));
+		REQUIRE(peers.waitForRoundsOpened(50));
 		REQUIRE(::fcntl(fd, F_SETFL, O_NONBLOCK) == 0);
 		// The handshake a far or a busy server is still on: it has as long as it had with nobody there.
 		const auto stillOpen = ::recv(fd, init.data(), init.size(), 0);
@@ -278,7 +411,7 @@ TEST_CASE("A server waiting for its code is not displaced by silent sockets and 
 
 	// The human takes their time: the code goes in only once the room has turned over many times.
 	SilentPeers peers(node.port, flood({"127.0.0.1", "127.0.0.2"}));
-	REQUIRE(peers.waitForRounds(20));
+	REQUIRE(peers.waitForRoundsOpened(20));
 	server.send("code " + digitsOf(*code));
 	REQUIRE_SEEN(node.ear, node.ear.waitForLine(connectedPaired, deadline));
 	server.send("play 1.5");
@@ -309,7 +442,7 @@ TEST_CASE("A paired server that has proved itself and not yet activated is never
 	REQUIRE(unproved.waitForEvent("activate-held", deadline));
 	{
 		SilentPeers peers(node.port, flood({"127.0.0.1", "127.0.0.2"}));
-		REQUIRE(peers.waitForRounds(20));
+		REQUIRE(peers.waitForRoundsOpened(20));
 		server.send("activate-release");
 		REQUIRE_SEEN(node.ear, waitForNthLine(node.ear, std::string(connectedPaired), 1,
 		                                      deadline)); // the first was the pairing
@@ -324,7 +457,7 @@ TEST_CASE("An unpaired server that has finished its Noise handshake outlasts soc
 	SendspinTestServer server({"--dial", node.url(), "--hold-activate"});
 	REQUIRE(server.waitForEvent("activate-held", deadline));
 	SilentPeers peers(node.port, flood({"127.0.0.2", "127.0.0.3"}));
-	REQUIRE(peers.waitForRounds(20));
+	REQUIRE(peers.waitForRoundsOpened(20));
 	server.send("activate-release");
 	REQUIRE_SEEN(node.ear, node.ear.waitForLine(connectedUnpaired, deadline));
 	INFO("the server printed:\n" << server.events());
@@ -355,7 +488,7 @@ TEST_CASE("A paired server playing keeps its socket while bare sockets fill its 
 	// More than the 8 an address may hold, so the oldest of its still upgrading gives way each time, and the server, older
 	// than all of them, goes first unless having upgraded takes it out of the running.
 	SilentPeers peers(node.port, {{"127.0.0.1"}, 10, false, 20ms, false});
-	REQUIRE(peers.waitForRounds(10));
+	REQUIRE(peers.waitForRoundsOpened(10));
 	server.send("play 1.5");
 	REQUIRE_SEEN(node.ear, node.ear.waitForLine("node ma says stream-ended", playDeadline));
 	INFO("the server printed:\n" << server.events());
@@ -367,7 +500,7 @@ TEST_CASE("One address holding all it may of upgraded sockets leaves other addre
           "[system][sendspin]") {
 	ListeningEar node;
 	SilentPeers peers(node.port, {{"127.0.0.2"}, 70, true, 400ms, false});
-	REQUIRE(peers.waitForRounds(1));
+	REQUIRE(peers.waitForRoundsOpened(1));
 	const std::string request = upgradeRequest(node.port);
 	for (int i = 0; i < 20; ++i) {
 		const int fd = connectFrom("127.0.0.3", node.port);
@@ -383,7 +516,7 @@ TEST_CASE("One address past its share gives way alone and a slow upgrade from an
           "[system][sendspin]") {
 	ListeningEar node;
 	SilentPeers peers(node.port, {{"127.0.0.2"}, 70, true, 400ms, false});
-	REQUIRE(peers.waitForRounds(1));
+	REQUIRE(peers.waitForRoundsOpened(1));
 	for (int i = 0; i < 5; ++i) {
 		const bool answered = answersSlowUpgrade(peers, "127.0.0.3", node.port, 1);
 		INFO("upgrade " << i);
@@ -404,10 +537,14 @@ TEST_CASE("A flood from every address holds the transport to twice its budget of
 		peers.push_back(std::make_unique<SilentPeers>(
 			node.port, SilentPeers::Shape{{"127.0.0." + std::to_string(i)}, 8, true, 0ms, false}));
 	}
+	// A negative look from outside: sampling can miss a breach, never invent one beyond the threads still ending. The
+	// bound itself is proven where it is enforced, exactly ("A flood past twice the room starts no thread beyond it",
+	// src/nodes/sendspin/tests/transport_test.cpp); this shows the node's server is the one bound.
 	std::size_t peak = 0;
 	for (int sample = 0; sample < 3000; ++sample) {
 		peak = std::max(peak, threads());
-		std::this_thread::sleep_for(1ms);
+		ear::sleeps::negative(1ms,
+		                      "the thread peak sampled while the flood runs: it can miss a breach, never invent one");
 	}
 	INFO("idle " << idle << " threads, peak " << peak);
 	// 64 sockets with a thread each. Each one's thread ends just after it is forgotten, so a few more can be seen at once.
@@ -418,7 +555,7 @@ TEST_CASE("A slow honest upgrade is answered through a flood of bare sockets fro
           "[system][sendspin]") {
 	ListeningEar node;
 	SilentPeers peers(node.port, {{"127.0.0.2"}, 8, false, 5ms, false});
-	REQUIRE(peers.waitForRounds(10));
+	REQUIRE(peers.waitForRoundsOpened(10));
 	const bool answered = answersSlowUpgrade(peers, "127.0.0.3", node.port, 50);
 	CHECK(answered);
 }
@@ -429,7 +566,7 @@ TEST_CASE("A slow honest upgrade is answered while bare sockets from many addres
 	std::vector<std::string> sources;
 	for (int i = 2; i < 12; ++i) sources.push_back("127.0.0." + std::to_string(i));
 	SilentPeers peers(node.port, {sources, 4, false, 100ms, true});
-	REQUIRE(peers.waitForRounds(1));
+	REQUIRE(peers.waitForRoundsOpened(1));
 	const bool answered = answersSlowUpgrade(peers, "127.0.0.20", node.port, 3);
 	CHECK(answered);
 }
@@ -437,28 +574,29 @@ TEST_CASE("A slow honest upgrade is answered while bare sockets from many addres
 TEST_CASE("A slow honest upgrade is answered beside two silent sockets renewed from its own address",
           "[system][sendspin]") {
 	ListeningEar node;
-	// Renewed far faster than a holder must, but slower than sockets still closing can fill the address's share on a
-	// loaded host: past that the upgrade does give way.
+	// Renewed far faster than a holder must, each round once the transport has closed the last (SilentPeers).
 	SilentPeers peers(node.port, holder("127.0.0.1", 500ms));
-	REQUIRE(peers.waitForRounds(1));
+	REQUIRE(peers.waitForRoundsOpened(1));
 	const bool answered = answersSlowUpgrade(peers, "127.0.0.1", node.port, 3);
 	CHECK(answered);
+	CHECK(peers.unreleased() == 0);
 }
 
 TEST_CASE("Peers resetting sockets as they are closed do not end the process", "[system][sendspin]") {
 	ListeningEar node;
 	{
 		SilentPeers peers(node.port, {{"127.0.0.2", "127.0.0.3", "127.0.0.4", "127.0.0.5"}, 8, true, 1ms, false});
-		REQUIRE(peers.waitForRounds(100));
+		REQUIRE(peers.waitForRoundsOpened(100));
 	}
 	node.ear.signal(SIGTERM);
-	REQUIRE_SEEN(node.ear, node.ear.waitForExit(stopBound) == 0);
+	REQUIRE_SEEN(node.ear, waitForStop(node.ear) == 0);
+	checkStopWithinBound(node.ear);
 }
 
 TEST_CASE("A flood of silent sockets holds up neither the graph nor a stop", "[system][sendspin]") {
 	ListeningEar node;
 	SilentPeers peers(node.port, flood({"127.0.0.1", "127.0.0.2"}));
-	REQUIRE(peers.waitForRounds(10));
+	REQUIRE(peers.waitForRoundsOpened(10));
 
 	const std::uint16_t control = controlPort(node.ear);
 	Rpc rpc(control);
@@ -469,10 +607,9 @@ TEST_CASE("A flood of silent sockets holds up neither the graph nor a stop", "[s
 	CHECK(std::chrono::steady_clock::now() - before < stopBound);
 
 	node.ear.signal(SIGTERM);
-	const auto stopping = std::chrono::steady_clock::now();
 	CHECK(rpc.readUntilClosed() == 1001);
-	const auto exitStatus = node.ear.waitForExit(stopBound);
-	CHECK(std::chrono::steady_clock::now() - stopping < stopBound);
+	const auto exitStatus = waitForStop(node.ear);
 	INFO("ear printed:\n" << node.ear.output());
 	CHECK(exitStatus == 0);
+	checkStopWithinBound(node.ear, "ma");
 }

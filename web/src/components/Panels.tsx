@@ -1,11 +1,19 @@
-// The side panel: the engine facts (with the "not realtime" badge), the add-node form (type
-// list, JSON settings) and the selected node's health, its Start, Stop, Restart, Disable and Enable
-// (when ear has the lifecycle feature; each enabled by health.ts, docs/editor.md#a-nodes-health), its settings
-// and delete button. Every change is a request to ear; the canvas changes only when ear announces it.
+// The side panel: the engine facts (with the "not realtime" and dropouts badges, and the graph's counters), the
+// add-node form (a node's statement in knobly with the node-text feature, docs/editor.md#adding-a-node; else a type
+// list and JSON settings) and the selected node's health, its counters, its companions in words, its Start, Stop,
+// Restart, Disable and Enable (when ear has the lifecycle feature; each enabled by health.ts,
+// docs/editor.md#a-nodes-health), its text in knobly (with the node-text feature, docs/editor.md#the-node-panels-text;
+// else its settings as JSON) and delete button. Every change is a request to ear; the canvas changes only when ear
+// announces it.
 import { useEffect, useState } from "react";
+import { rateLabel } from "../graph";
 import { describeHealth, type ActionAvailability, type HealthView } from "../health";
-import { lifecycleFeature, type Graph, type GraphNode, type JsonObject } from "../protocol";
-import { useEditor } from "./hooks";
+import { lifecycleFeature, nodeTextFeature, type Graph, type GraphNode, type JsonObject } from "../protocol";
+import { CompanionList } from "./CompanionStrip";
+import { CounterTable, DropoutsBadge } from "./Counters";
+import { useCompanionBadges, useEditor, useGraphCounters, useGraphFile, useNodeCounters } from "./hooks";
+import { AddNodeText } from "./AddNodeText";
+import { NodeTextBox } from "./NodeTextBox";
 
 /** The newest protocol this editor knows (docs/control-port.md#protocol-and-features): a higher one shows a banner. */
 const knownProtocol = 1;
@@ -23,15 +31,18 @@ function parseSettings(text: string): JsonObject | string {
 }
 
 export function EngineFacts({ graph }: { graph: Graph }) {
+  const counters = useGraphCounters(graph);
   return (
     <section className="panel-section">
       <div>
-        {graph.graphFrequency} Hz, {graph.blockSize} frames
+        {rateLabel(graph.graphFrequency)}, {graph.blockSize} frames
       </div>
       <div title="how ear's audio thread is scheduled">
         {graph.scheduling}{" "}
-        {!graph.realtime && <span className="badge-not-realtime">not realtime</span>}
+        {!graph.realtime && <span className="badge-not-realtime">not realtime</span>}{" "}
+        <DropoutsBadge badge={counters.badge} />
       </div>
+      <CounterTable heading="Since ear started" rows={counters.rows} />
       {(graph.protocol ?? 0) > knownProtocol && (
         <div className="banner banner-protocol">
           ear speaks protocol {graph.protocol}, newer than this editor's {knownProtocol}: some of it is not shown.
@@ -41,7 +52,25 @@ export function EngineFacts({ graph }: { graph: Graph }) {
   );
 }
 
-export function AddNodePanel({ types, onError }: { types: string[]; onError: (error: unknown) => void }) {
+export function AddNodePanel({
+  types,
+  names,
+  features,
+  onError,
+}: {
+  types: string[];
+  names: string[];
+  features: string[];
+  onError: (error: unknown) => void;
+}) {
+  const file = useGraphFile();
+  // A person edits knobly; JSON is the machine API: the JSON form is only for an ear without node-text.
+  if (features.includes(nodeTextFeature) && file !== null)
+    return <AddNodeText types={types} names={names} file={file.file} onError={onError} />;
+  return <AddNodeJson types={types} onError={onError} />;
+}
+
+function AddNodeJson({ types, onError }: { types: string[]; onError: (error: unknown) => void }) {
   const { client } = useEditor();
   const [name, setName] = useState("");
   const [type, setType] = useState("");
@@ -130,7 +159,12 @@ export function NodePanel({
 }) {
   const { client } = useEditor();
   const health = describeHealth(node);
+  const companions = useCompanionBadges(node);
+  const counters = useNodeCounters(node);
   const lifecycle = features.includes(lifecycleFeature);
+  const file = useGraphFile();
+  // A person edits knobly; JSON is the machine API: the JSON box is only for an ear without node-text.
+  const knobly = features.includes(nodeTextFeature) && file !== null;
   const shown = JSON.stringify(node.settings, null, 2);
   const [settings, setSettings] = useState(shown);
   // A new node selected, or its settings changed on the server: show what the server has.
@@ -166,13 +200,21 @@ export function NodePanel({
           ))}
         </div>
       )}
-      <label>
-        Settings (JSON)
-        <textarea rows={5} value={settings} onChange={(event) => setSettings(event.target.value)} />
-      </label>
-      <button type="button" disabled={settings === shown} onClick={save}>
-        Save settings
-      </button>{" "}
+      <CounterTable heading="Counters since it was added" rows={counters.rows} />
+      <CompanionList badges={companions} />
+      {knobly ? (
+        <NodeTextBox key={node.name} node={node.name} file={file.file} onError={onError} />
+      ) : (
+        <>
+          <label>
+            Settings (JSON)
+            <textarea rows={5} value={settings} onChange={(event) => setSettings(event.target.value)} />
+          </label>
+          <button type="button" disabled={settings === shown} onClick={save}>
+            Save settings
+          </button>
+        </>
+      )}{" "}
       <button type="button" onClick={() => client.call("node.remove", { name: node.name }).catch(onError)}>
         Delete node
       </button>

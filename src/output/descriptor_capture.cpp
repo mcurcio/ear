@@ -215,6 +215,15 @@ void DescriptorCapture::beforeCrash() noexcept {
 		}
 }
 
+void DescriptorCapture::lastWords(std::string_view line) noexcept {
+	// The crash path's order, with the line last: what is queued, what the pipes hold, then the line, on the real
+	// standard error. std::terminate's own path after this finds the pipes spilled and the queue written.
+	beforeCrash();
+	spill();
+	const int realError = crashRealError.load() >= 0 ? crashRealError.load() : realError_;
+	writeRaw(realError, line.data(), line.size());
+}
+
 void DescriptorCapture::start(std::function<void(Line)> onLine) {
 	onLine_ = std::move(onLine);
 	thread_ = maskedThread([this] { run(); });

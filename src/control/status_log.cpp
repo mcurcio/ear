@@ -43,6 +43,11 @@ std::string array(const std::vector<std::string>& values) {
 	return text + ']';
 }
 
+/// "<n> <noun>", the noun plural unless n is 1.
+std::string counted(std::uint64_t n, std::string_view one, std::string_view many) {
+	return std::format("{} {}", n, n == 1 ? one : many);
+}
+
 std::string writeFailedText(const std::string& detail) { return std::format("graph-file write-failed {}", detail); }
 
 std::string portText(const PortRef& port) { return std::format("{}:{}", port.node, port.port); }
@@ -121,6 +126,18 @@ std::string waitingText(const std::vector<WaitingFor>& waits) {
 			break;
 		case WaitingFor::Kind::consumer:
 			one = "its consumer";
+			break;
+		case WaitingFor::Kind::loop:
+			one = "its loop " + wait.name;
+			break;
+		case WaitingFor::Kind::store:
+			one = "its store " + wait.name;
+			break;
+		case WaitingFor::Kind::recording:
+			one = "its recording " + wait.name;
+			break;
+		case WaitingFor::Kind::claim:
+			one = "its claim " + wait.name;
 			break;
 		}
 		text += (text.empty() ? "" : ", ") + one;
@@ -297,6 +314,74 @@ void StatusLog::engineDiagnostic(const EngineDiagnostic& diagnostic) {
 	emit("diagnostic", std::move(record), std::format("{}: {}", diagnostic.code, diagnostic.detail));
 }
 
+void StatusLog::internalError(const InternalError& error) {
+	constexpr std::string_view code = "ear.internal-error";
+	Fields record;
+	if (!error.node.empty()) record.emplace_back("node", json(error.node));
+	record.emplace_back("code", json(code));
+	record.emplace_back("callback", json(error.callback));
+	if (error.fatal) record.emplace_back("fatal", json(true));
+	std::string detail = std::format("{} threw", error.callback);
+	if (!error.where.empty()) detail += std::format(" during {}", error.where);
+	detail += std::format(": {}", error.what);
+	record.emplace_back("detail", json(detail));
+	std::string msg = error.node.empty() ? std::format("{}: {}", code, detail)
+	                                     : std::format("node {} {}: {}", error.node, code, detail);
+	emit("diagnostic", std::move(record), std::move(msg));
+}
+
+void StatusLog::graphLostCycles(const GraphCounts& total, const GraphCounts& since, std::uint64_t sinceMs) {
+	constexpr std::string_view code = "ear.graph-lost-cycles";
+	const std::string detail =
+		std::format("the host held up the audio thread: {} cut ({} ms) in {}; {} cut since ear started",
+	                counted(since.cutCycles, "cycle", "cycles"), sinceMs, counted(since.stalls, "stall", "stalls"),
+	                total.cutCycles);
+	emit("diagnostic",
+	     {{"code", json(code)},
+	      {"cycles", json(since.cutCycles)},
+	      {"stalls", json(since.stalls)},
+	      {"ms", json(sinceMs)},
+	      {"totalCycles", json(total.cutCycles)},
+	      {"detail", json(detail)}},
+	     std::format("{}: {}", code, detail));
+}
+
+void StatusLog::nodeMissedCycles(const NodeName& node, const NodeCounts& total, const NodeCounts& since) {
+	constexpr std::string_view code = "ear.node-missed-cycles";
+	const std::string detail =
+		std::format("missed {} it was not scheduled for, overran {}; {} missed and {} overrun since it was added",
+	                counted(since.missedCycles, "cycle", "cycles"), counted(since.overruns, "time", "times"),
+	                total.missedCycles, total.overruns);
+	emit("diagnostic",
+	     {{"node", json(node)},
+	      {"code", json(code)},
+	      {"missed", json(since.missedCycles)},
+	      {"overruns", json(since.overruns)},
+	      {"totalMissed", json(total.missedCycles)},
+	      {"totalOverruns", json(total.overruns)},
+	      {"detail", json(detail)}},
+	     std::format("node {} {}: {}", node, code, detail));
+}
+
+void StatusLog::companionFramesLost(const NodeName& node, const CompanionView& companion, std::uint64_t frames,
+                                    std::uint64_t totalFrames) {
+	const bool sink = companion.kind == CompanionKind::sink;
+	const std::string_view code = sink ? "ear.sink-dropped" : "ear.source-shortfall";
+	const std::string detail =
+		sink ? std::format("{} dropped {} its ring had no room for; {} since it was made", companion.name,
+	                       counted(frames, "frame", "frames"), totalFrames)
+			 : std::format("{} played {} short while its writer was not idle; {} since it was made", companion.name,
+	                       counted(frames, "frame", "frames"), totalFrames);
+	emit("diagnostic",
+	     {{"node", json(node)},
+	      {"code", json(code)},
+	      {"companion", json(companion.name)},
+	      {"frames", json(frames)},
+	      {"totalFrames", json(totalFrames)},
+	      {"detail", json(detail)}},
+	     std::format("node {} {}: {}", node, code, detail));
+}
+
 void StatusLog::mainLoopStalled(std::int64_t ms, std::string_view in) {
 	constexpr std::string_view code = "ear.main-loop-stalled";
 	Fields record{{"code", json(code)}, {"ms", json(ms)}};
@@ -428,5 +513,7 @@ void StatusLog::controlListening(std::string_view address, std::uint16_t port) {
 void StatusLog::exiting(int status, std::string_view reason) {
 	emit("exit", {{"status", json(status)}, {"reason", json(reason)}}, std::format("ear: {}", reason));
 }
+
+void StatusLog::stopped() { exiting(0, "stopped"); }
 
 } // namespace ear::control

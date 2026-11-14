@@ -1,4 +1,4 @@
-// PipeWire's engine inside EAR (docs/engine.md#engineconf-key-by-key; docs/engine.md#realtime-priority: CAP_SYS_NICE
+// PipeWire's engine inside EAR (docs/engine.md#properties-ear-sets; docs/engine.md#realtime-priority: CAP_SYS_NICE
 // and the scheduling report; docs/engine.md#denormals: denormals flushed on the data thread).
 #include "ear/pipewire/engine.hpp"
 
@@ -22,7 +22,10 @@
 #include <pipewire/pipewire.h>
 #include <spa/utils/result.h>
 
+#include "callback_boundary.hpp"
+#include "driver_cuts.hpp"
 #include "ear/pipewire/data_loop_wedge.hpp"
+#include "engine_property_set.hpp"
 
 namespace ear::pipewire {
 namespace {
@@ -52,72 +55,74 @@ void raisePermittedSysNice() {
 	syscall(SYS_capset, &header, data);
 }
 
-/// Runs on the data loop: how the calling thread is scheduled.
-int readScheduling(spa_loop* /*loop*/, bool /*async*/, std::uint32_t /*seq*/, const void* /*data*/,
-                   std::size_t /*size*/, void* userData) {
-	auto* result = static_cast<Scheduling*>(userData);
-	const int policy = sched_getscheduler(0) & ~SCHED_RESET_ON_FORK;
-	sched_param param{};
-	sched_getparam(0, &param);
-	switch (policy) {
-	case SCHED_FIFO:
-		*result = {true, "SCHED_FIFO " + std::to_string(param.sched_priority)};
-		break;
-	case SCHED_RR:
-		*result = {true, "SCHED_RR " + std::to_string(param.sched_priority)};
-		break;
-	case SCHED_OTHER:
-		*result = {false, "SCHED_OTHER"};
-		break;
-	case SCHED_BATCH:
-		*result = {false, "SCHED_BATCH"};
-		break;
-	case SCHED_IDLE:
-		*result = {false, "SCHED_IDLE"};
-		break;
-	default:
-		*result = {false, "policy " + std::to_string(policy)};
-		break;
-	}
-	return 0;
-}
+/// How the data loop's thread is scheduled, read on that thread (read()) and said on the caller's (scheduling()), so
+/// nothing is allocated on the data loop.
+struct SchedulingRead {
+	bool done = false;
+	int policy = 0;
+	int priority = 0;
 
-/// What flushDenormals is asked: the thread that invoked it, and whether the call ran elsewhere (on the data loop).
+	/// Runs on the data loop.
+	void read() noexcept {
+		policy = sched_getscheduler(0) & ~SCHED_RESET_ON_FORK;
+		sched_param param{};
+		sched_getparam(0, &param);
+		priority = param.sched_priority;
+		done = true;
+	}
+
+	Scheduling scheduling() const {
+		if (!done) return {false, "unknown"};
+		switch (policy) {
+		case SCHED_FIFO:
+			return {true, "SCHED_FIFO " + std::to_string(priority)};
+		case SCHED_RR:
+			return {true, "SCHED_RR " + std::to_string(priority)};
+		case SCHED_OTHER:
+			return {false, "SCHED_OTHER"};
+		case SCHED_BATCH:
+			return {false, "SCHED_BATCH"};
+		case SCHED_IDLE:
+			return {false, "SCHED_IDLE"};
+		default:
+			return {false, "policy " + std::to_string(policy)};
+		}
+	}
+};
+
+/// What the denormal flush is asked: the thread that invoked it, and whether the call ran elsewhere (on the data loop).
 struct DenormalsFlush {
 	pthread_t caller;
 	std::atomic<bool> done{false};
-};
 
-/// Runs on the data loop: the calling thread flushes denormal results to zero and reads denormal inputs as zero (FTZ
-/// and DAZ on x86, FZ on arm64), so a decaying signal never slows process() by orders of magnitude. PipeWire 1.4.2's
-/// cpu.zero.denormals sets them on the main thread instead in this engine (the data loop's setup runs inline there),
-/// and every thread made later inherits them, so it stays unset. A blocking invoke runs inline on the caller until the
-/// data loop's thread has entered its loop (loop.c treats a loop with no thread yet as its own), so the call does
-/// nothing when it runs on its caller, and says whether it ran on the data loop's thread.
-int flushDenormals(spa_loop* /*loop*/, bool /*async*/, std::uint32_t /*seq*/, const void* /*data*/,
-                   std::size_t /*size*/, void* userData) {
-	auto* flush = static_cast<DenormalsFlush*>(userData);
-	if (pthread_equal(pthread_self(), flush->caller) != 0) return 0; // inline: the loop has not entered yet
+	/// Runs on the data loop: the calling thread flushes denormal results to zero and reads denormal inputs as zero
+	/// (FTZ and DAZ on x86, FZ on arm64), so a decaying signal never slows process() by orders of magnitude. PipeWire
+	/// 1.4.2's cpu.zero.denormals sets them on the main thread instead in this engine (the data loop's setup runs
+	/// inline there), and every thread made later inherits them, so it stays unset. A blocking invoke runs inline on
+	/// the caller until the data loop's thread has entered its loop (loop.c treats a loop with no thread yet as its
+	/// own), so the call does nothing when it runs on its caller, and says whether it ran on the data loop's thread.
+	void flush() noexcept {
+		if (pthread_equal(pthread_self(), caller) != 0) return; // inline: the loop has not entered yet
 #if defined(__x86_64__) || defined(__i386__)
-	_mm_setcsr(_mm_getcsr() | 0x8040U); // FTZ (bit 15) and DAZ (bit 6)
+		_mm_setcsr(_mm_getcsr() | 0x8040U); // FTZ (bit 15) and DAZ (bit 6)
 #elif defined(__aarch64__)
-	std::uint64_t fpcr = 0;
-	asm volatile("mrs %0, fpcr" : "=r"(fpcr));
-	fpcr |= 1ULL << 24U; // FZ
-	asm volatile("msr fpcr, %0" : : "r"(fpcr));
+		std::uint64_t fpcr = 0;
+		asm volatile("mrs %0, fpcr" : "=r"(fpcr));
+		fpcr |= 1ULL << 24U; // FZ
+		asm volatile("msr fpcr, %0" : : "r"(fpcr));
 #endif
-	flush->done.store(true, std::memory_order_release);
-	return 0;
-}
+		done.store(true, std::memory_order_release);
+	}
+};
 
 /// Flushes denormals on the data loop's thread, waiting for that thread to enter its loop: pw_context_new starts it
 /// and returns at once (data-loop.c, pw_data_loop_start), so the first invokes can run inline on this thread, which
-/// flushDenormals leaves alone. Nothing else waits on the thread, so it enters within microseconds; 5 s without it
-/// is an engine that does not run.
+/// DenormalsFlush::flush leaves alone. Nothing else waits on the thread, so it enters within microseconds; 5 s without
+/// it is an engine that does not run.
 bool flushDenormalsOnDataThread(pw_data_loop* dataLoop) {
 	DenormalsFlush flush{.caller = pthread_self()};
 	for (int attempt = 0; attempt < 5000 && !flush.done.load(std::memory_order_acquire); ++attempt) {
-		if (pw_data_loop_invoke(dataLoop, &flushDenormals, 0, nullptr, 0, true, &flush) < 0) return false;
+		if (invoke(DataLoop(dataLoop), realtime<&DenormalsFlush::flush>, &flush, true) < 0) return false;
 		if (!flush.done.load(std::memory_order_acquire)) {
 			const timespec pause{0, 1'000'000};
 			nanosleep(&pause, nullptr);
@@ -126,40 +131,45 @@ bool flushDenormalsOnDataThread(pw_data_loop* dataLoop) {
 	return flush.done.load(std::memory_order_acquire);
 }
 
-/// The clock settings EngineSettings decides. pw_context_new reads them from its own
-/// properties; engine.conf's context.properties would overwrite them, so it sets none.
+/// The clock settings EngineSettings decides, each key from the property table (docs/engine.md#properties-ear-sets says
+/// why each). pw_context_new reads them from its own properties; engine.conf's context.properties would overwrite them,
+/// so it sets none.
 pw_properties* contextProperties(const EngineSettings& settings) {
-	const auto rate = std::to_string(settings.graphFrequency);
+	const auto rate = std::to_string(settings.graphFrequency.hz());
 	const auto block = std::to_string(settings.blockSize);
-	pw_properties* props = pw_properties_new(
-		PW_KEY_CONFIG_NAME, settings.configFile.c_str(), "default.clock.rate", rate.c_str(), "default.clock.quantum",
-		block.c_str(), "default.clock.min-quantum", block.c_str(), "default.clock.max-quantum", block.c_str(),
-		// The engine rounds the quantum down to a power of two unless told not to, so a block
-		// size such as 480 would otherwise run as 256.
-		"clock.power-of-two-quantum", "false", nullptr);
-	pw_properties_setf(props, "default.clock.allowed-rates", "[ %u ]", settings.graphFrequency);
-	// The quantum is clamped to [floor, limit] (defaults 4 and 8192): widen them to hold it.
-	pw_properties_setf(props, "default.clock.quantum-floor", "%u", std::min(settings.blockSize, 4u));
-	pw_properties_setf(props, "default.clock.quantum-limit", "%u", std::max(settings.blockSize, 8192u));
-	return props;
+	return PropertySet<Home::context>({{property<Home::context>("config.name"), settings.configFile.string()},
+	                                   {property<Home::context>("default.clock.rate"), rate},
+	                                   {property<Home::context>("default.clock.allowed-rates"), "[ " + rate + " ]"},
+	                                   {property<Home::context>("default.clock.quantum"), block},
+	                                   {property<Home::context>("default.clock.min-quantum"), block},
+	                                   {property<Home::context>("default.clock.max-quantum"), block},
+	                                   {property<Home::context>("default.clock.quantum-floor"), block},
+	                                   {property<Home::context>("default.clock.quantum-limit"), block},
+	                                   {property<Home::context>("clock.power-of-two-quantum"), "false"}})
+	    .release();
 }
 
 } // namespace
 
 struct Engine::Impl {
+	bool boundaryInstalled = false;
 	sigset_t previousMask{};
 	bool initialised = false;
 	pw_main_loop* loop = nullptr;
 	pw_context* context = nullptr;
 	pw_core* core = nullptr;
+	std::unique_ptr<DriverCuts> cuts;
 	std::function<void()> stopHandler;
-	spa_source* sigint = nullptr;
-	spa_source* sigterm = nullptr;
+	LoopSource sigint;
+	LoopSource sigterm;
 
 	~Impl() {
+		// First, while the internal clock it listens to exists (on a wedged data loop its listener and ring are kept by
+		// the boundary: docs/engine.md#graphcycle).
+		cuts.reset();
 		if (loop != nullptr) {
-			if (sigint != nullptr) pw_loop_destroy_source(pw_main_loop_get_loop(loop), sigint);
-			if (sigterm != nullptr) pw_loop_destroy_source(pw_main_loop_get_loop(loop), sigterm);
+			sigint.reset();
+			sigterm.reset();
 		}
 		if (core != nullptr) pw_core_disconnect(core);
 		if (context != nullptr) pw_context_destroy(context);
@@ -168,16 +178,23 @@ struct Engine::Impl {
 			pw_deinit();
 			pthread_sigmask(SIG_SETMASK, &previousMask, nullptr);
 		}
+		if (boundaryInstalled) boundary::uninstall(); // last: the teardown above may still call back
 	}
 
-	static void onSignal(void* data, int /*signalNumber*/) {
-		auto* self = static_cast<Impl*>(data);
-		if (self->stopHandler) self->stopHandler();
+	void onSignal(int /*signalNumber*/) {
+		if (stopHandler) stopHandler();
 	}
 };
 
 std::expected<std::unique_ptr<Engine>, EngineError> Engine::create(const EngineSettings& settings) {
+	// First: every callback from here on reports to the engine's Faults, and this is the main loop's thread. One engine
+	// at a time: a trampoline carries only its object, so the Faults it reports to is the process's, and a second
+	// engine would take the first's (docs/architecture.md#the-callback-boundary).
 	auto impl = std::make_unique<Impl>();
+	if (!boundary::install(settings.faults)) {
+		return std::unexpected(EngineError{"another engine is running in this process: ear runs one at a time"});
+	}
+	impl->boundaryInstalled = true;
 	// The engine starts its data-loop thread in pw_context_new, and a stop signal sent to the
 	// process goes to any thread that does not block it, where its default action ends the
 	// process. So the stop signals are blocked here, before any engine thread exists, and every
@@ -204,6 +221,10 @@ std::expected<std::unique_ptr<Engine>, EngineError> Engine::create(const EngineS
 	if (dataLoop == nullptr || !flushDenormalsOnDataThread(dataLoop)) {
 		return std::unexpected(EngineError{"cannot flush denormals on the engine's data thread"});
 	}
+	// The internal clock's cuts, heard before any block is made, so every block's cycles are numbered from its first.
+	auto cuts = DriverCuts::listen(impl->context);
+	if (!cuts) return std::unexpected(cuts.error());
+	impl->cuts = std::move(*cuts);
 	impl->core = pw_context_connect_self(impl->context, nullptr, 0);
 	if (impl->core == nullptr) {
 		return std::unexpected(EngineError{std::string("cannot connect to the engine: ") + spa_strerror(-errno)});
@@ -221,7 +242,10 @@ std::set<const Engine*>& wedgedEngines() {
 }
 } // namespace
 
-void markDataLoopWedged(const Engine& engine) { wedgedEngines().insert(&engine); }
+void markDataLoopWedged(const Engine& engine) {
+	wedgedEngines().insert(&engine);
+	boundary::markDataLoopWedged(); // every blocking step into the data loop goes through the boundary
+}
 
 bool dataLoopWedged(const Engine& engine) noexcept { return wedgedEngines().contains(&engine); }
 
@@ -234,19 +258,26 @@ void Engine::quit() { pw_main_loop_quit(impl_->loop); }
 void Engine::onStopSignal(std::function<void()> handler) {
 	impl_->stopHandler = std::move(handler);
 	pw_loop* loop = pw_main_loop_get_loop(impl_->loop);
-	if (impl_->sigint == nullptr) impl_->sigint = pw_loop_add_signal(loop, SIGINT, &Impl::onSignal, impl_.get());
-	if (impl_->sigterm == nullptr) impl_->sigterm = pw_loop_add_signal(loop, SIGTERM, &Impl::onSignal, impl_.get());
+	if (!impl_->sigint) addSignal(impl_->sigint, loop, SIGINT, guarded<&Impl::onSignal>, impl_.get());
+	if (!impl_->sigterm) addSignal(impl_->sigterm, loop, SIGTERM, guarded<&Impl::onSignal>, impl_.get());
 }
 
 /// The context's one data loop (engine.conf pins context.num-data-loops = 1)
 /// runs every port block's process(); the question is asked on that thread itself.
 Scheduling Engine::dataThreadScheduling() const {
-	Scheduling result{false, "unknown"};
+	SchedulingRead read;
 	pw_data_loop* dataLoop = pw_context_get_data_loop(impl_->context);
-	if (dataLoop == nullptr) return result;
-	pw_data_loop_invoke(dataLoop, &readScheduling, 0, nullptr, 0, true, &result);
-	return result;
+	if (dataLoop != nullptr) invoke(DataLoop(dataLoop), realtime<&SchedulingRead::read>, &read, true);
+	return read.scheduling();
 }
+
+const CutRecord& Engine::cuts() const noexcept { return *impl_->cuts; }
+
+std::uint32_t Engine::internalClockId() const noexcept { return impl_->cuts->clockId(); }
+
+GraphCounts Engine::graphCounts() const noexcept { return impl_->cuts->counts(); }
+
+void Engine::cycleOnTime() noexcept { impl_->cuts->onTime(); }
 
 pw_loop* Engine::mainLoop() const noexcept { return pw_main_loop_get_loop(impl_->loop); }
 

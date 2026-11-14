@@ -71,6 +71,14 @@ TEST_CASE("Every method decodes into its command", "[commands]") {
 	CHECK(std::get<SetGraphFile>(set.value()).version == "a.3");
 	const auto empty = decodeCommand("graphFile.set", json::parse(R"({"text": "", "version": ""})"));
 	CHECK(std::get<SetGraphFile>(empty.value()).text.empty()); // an empty file is a text
+	const auto setText = decodeCommand(
+		"node.setText", json::parse(R"({"name": "rec", "text": "node file rec { path x; }", "version": "a.3"})"));
+	CHECK(std::get<SetNodeText>(setText.value()).node == "rec");
+	CHECK(std::get<SetNodeText>(setText.value()).text == "node file rec { path x; }");
+	CHECK(std::get<SetNodeText>(setText.value()).version == "a.3");
+	const auto addText = decodeCommand("node.addText", json::parse(R"({"text": "node white n2;", "version": "a.4"})"));
+	CHECK(std::get<AddNodeText>(addText.value()).text == "node white n2;");
+	CHECK(std::get<AddNodeText>(addText.value()).version == "a.4");
 
 	CHECK(std::get<StartNode>(decodeCommand("node.start", json::parse(R"({"name": "porch"})")).value()).node ==
 	      "porch");
@@ -102,10 +110,51 @@ TEST_CASE("The lifecycle's five methods take a name and nothing else, and node.a
 	CHECK(invalid("node.add", R"({"name": "q", "type": "white", "colour": "red"})") == "/colour: unknown key");
 }
 
-TEST_CASE("The frame: graph.get says protocol 1 and the lifecycle feature", "[commands][lifecycle]") {
-	const json graph = encodeGraph(ear::GraphView{{{48000, 256}, false, "SCHED_OTHER"}, {}, {}, {}});
+TEST_CASE("The frame: graph.get says protocol 1 and the lifecycle, counters, companions and node-text features",
+          "[commands][lifecycle]") {
+	const json graph =
+		encodeGraph(ear::GraphView{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {}, {}, {}});
 	CHECK(graph["protocol"] == 1);
-	CHECK(graph["features"] == json::array({"lifecycle"}));
+	CHECK(graph["features"] == json::array({"lifecycle", "counters", "companions", "node-text"}));
+}
+
+TEST_CASE("A snapshot's node carries its companion list in request order, each counter only on its kind, and [] for "
+          "none",
+          "[commands][companions]") {
+	ear::GraphView view{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {}, {}, {}};
+	view.nodes.push_back({{"n", "white", json::object()}, ear::Ports{}, ear::NodeHealth{"n"}});
+	view.nodes.push_back(
+		{{"x", "test", json::object()},
+	     ear::Ports{},
+	     ear::NodeHealth{"x"},
+	     std::nullopt,
+	     {},
+	     {{.name = "x.playback", .kind = ear::CompanionKind::cardPlayback, .bank = "to_card", .ready = true},
+	      {.name = "x.rtp", .kind = ear::CompanionKind::rtpReceiver, .bank = "from_rtp"},
+	      {.name = "x.out", .kind = ear::CompanionKind::sink, .bank = "out", .ready = true, .dropped = 4096},
+	      {.name = "x.in", .kind = ear::CompanionKind::source, .bank = "in", .ready = true, .shortfall = 7}}});
+	const json graph = encodeGraph(view);
+	CHECK(graph["nodes"][0].value("companions", json()) == json::array());
+	CHECK(graph["nodes"][1].value("companions", json()) == json::parse(R"([
+		{"name": "x.playback", "kind": "card-playback", "bank": "to_card", "ready": true},
+		{"name": "x.rtp", "kind": "rtp-receiver", "bank": "from_rtp", "ready": false},
+		{"name": "x.out", "kind": "sink", "bank": "out", "ready": true, "dropped": 4096},
+		{"name": "x.in", "kind": "source", "bank": "in", "ready": true, "shortfall": 7}])"));
+}
+
+TEST_CASE("A snapshot's counters: the graph's with lostMs at its own rate and block size, and every node's",
+          "[commands][counters]") {
+	ear::GraphView view{{{ear::SampleRate::fixed<44100>(), 512}, false, "SCHED_OTHER"}, {}, {}, {}};
+	view.counts = ear::GraphCounts{.cycles = 900, .cutCycles = 10, .stalls = 3};
+	view.nodes.push_back({{"n", "white", json::object()},
+	                      ear::Ports{},
+	                      ear::NodeHealth{"n"},
+	                      std::nullopt,
+	                      ear::NodeCounts{.missedCycles = 1, .overruns = 2, .repositions = 3, .driverChanges = 4}});
+	const json graph = encodeGraph(view);
+	CHECK(graph["counters"] == json::parse(R"({"cycles":900,"cutCycles":10,"stalls":3,"lostMs":116})"));
+	CHECK(graph["nodes"][0]["counters"] ==
+	      json::parse(R"({"missedCycles":1,"overruns":2,"repositions":3,"driverChanges":4})"));
 }
 
 TEST_CASE("Each health member is encoded once for snapshots: state, phase, wanted and blockLost always, since, "
@@ -120,7 +169,7 @@ TEST_CASE("Each health member is encoded once for snapshots: state, phase, wante
 	health.blockLost = true;
 	ear::NodeSpec spec{"desk", "card", json::object()};
 	spec.disabled = true;
-	ear::GraphView view{{{48000, 256}, false, "SCHED_OTHER"}, {}, {}, {}};
+	ear::GraphView view{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {}, {}, {}};
 	view.nodes.push_back({spec, ear::Ports{}, health, ear::control::testing::reading(1)});
 	ear::NodeHealth waits{"fpp"};
 	waits.phase = NodePhase::configuring;
@@ -130,10 +179,12 @@ TEST_CASE("Each health member is encoded once for snapshots: state, phase, wante
 	const json nodes = encodeGraph(view)["nodes"];
 	CHECK(nodes[0] == json::parse(R"({"name":"desk","type":"card","settings":{},"inputs":[],"outputs":[],
 		"state":"stopping","phase":"stopping","since":"2026-11-09T10:00:00.010000Z","wanted":"running","blockLost":true,
-		"cause":{"kind":"restarting","restart":{"kind":"settings","keys":["card","playback"]}},"disabled":true})"));
+		"cause":{"kind":"restarting","restart":{"kind":"settings","keys":["card","playback"]}},"disabled":true,
+		"counters":{"missedCycles":0,"overruns":0,"repositions":0,"driverChanges":0},"companions":[]})"));
 	CHECK(nodes[1] == json::parse(R"({"name":"fpp","type":"rtp","settings":{},"inputs":[],"outputs":[],
 		"state":"starting","phase":"configuring","wanted":"running","blockLost":false,
-		"cause":{"kind":"settings","keys":["port"]},"waitingFor":[{"kind":"companion","name":"fpp.rtp"},{"kind":"block"}]})"));
+		"cause":{"kind":"settings","keys":["port"]},"waitingFor":[{"kind":"companion","name":"fpp.rtp"},{"kind":"block"}],
+		"counters":{"missedCycles":0,"overruns":0,"repositions":0,"driverChanges":0},"companions":[]})"));
 }
 
 TEST_CASE("Every missing, extra and mistyped key is invalid params naming its pointer", "[commands]") {
@@ -165,6 +216,15 @@ TEST_CASE("Every missing, extra and mistyped key is invalid params naming its po
 	CHECK(invalid("graphFile.set", R"({"text": 1, "version": "a.1"})") == "/text: must be a string");
 	CHECK(invalid("graphFile.set", R"({"text": "", "version": null})") == "/version: must be a string");
 	CHECK(invalid("graphFile.set", "null") == "/text: missing");
+	CHECK(invalid("node.setText", R"({"text": "", "version": "a.1"})") == "/name: missing");
+	CHECK(invalid("node.setText", R"({"name": "rec", "version": "a.1"})") == "/text: missing");
+	CHECK(invalid("node.setText", R"({"name": "rec", "text": ""})") == "/version: missing");
+	CHECK(invalid("node.addText", R"({"version": "a.1"})") == "/text: missing");
+	CHECK(invalid("node.addText", R"({"text": ""})") == "/version: missing");
+	CHECK(invalid("node.addText", R"({"text": "", "version": "a.1", "name": "n"})") == "/name: unknown key");
+	CHECK(invalid("node.setText", R"({"name": "rec", "text": [], "version": "a.1"})") == "/text: must be a string");
+	CHECK(invalid("node.setText", R"({"name": "rec", "text": "", "version": "a.1", "type": "file"})") ==
+	      "/type: unknown key");
 
 	for (const std::string_view method : {"route.add", "route.remove"}) {
 		INFO(method);
@@ -233,7 +293,7 @@ TEST_CASE("unknown-values.json starts from a snapshot ear makes", "[commands][pr
 	using ear::NodeState;
 	using ear::control::testing::health;
 	const json document = fixture("unknown-values");
-	ear::GraphView view{{{48000, 256}, false, "SCHED_OTHER"}, {"file", "white"}, {}, {}};
+	ear::GraphView view{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {"file", "white"}, {}, {}};
 	view.nodes.push_back({{"noise", "white", json::object()},
 	                      ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}},
 	                      health("noise", NodeState::running),

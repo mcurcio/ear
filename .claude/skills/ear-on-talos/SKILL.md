@@ -1,6 +1,6 @@
 ---
 name: ear-on-talos
-description: Running EAR's run image on a Talos Linux Kubernetes node with a USB sound card (the owner's MOTU 24Ao): the usb-audio-drivers extension and loading snd_usb_audio, Pod Security and SYS_NICE, /dev/snd and containerd's device ownership, CAP_SYS_NICE for realtime priority, the writable graph file volume and seeding ear.conf, setting the MOTU's rate and channel count, its Linux quirks (quirk flags, the playback channels rotated by 8, freezes), finding the card id, the checks to run on the hardware, getting FPP's RTP audio into the pod (a UDP Service for unicast, hostNetwork for multicast, PipeWire's module-rtp-sink as the sender), and a sendspin node in the pod (its key file under fsGroup, dialling, listening and mDNS). Use when deploying EAR to the cluster, when a card node fails on the hardware, when graph.get says "realtime": false in the pod, when an rtp node in the pod is silent or stays starting (configuring), or when a sendspin node in the pod is not found or loses its pairing.
+description: Running EAR's run image on a Talos Linux Kubernetes node with a USB sound card (the owner's MOTU 24Ao): the usb-audio-drivers extension and loading snd_usb_audio, Pod Security and SYS_NICE, /dev/snd and containerd's device ownership, CAP_SYS_NICE for realtime priority, the writable graph file volume and seeding ear.conf, setting the MOTU's rate and channel count, its Linux quirks (quirk flags, the playback channels rotated by 8, freezes), finding the card id, the checks to run on the hardware, getting FPP's RTP audio into the pod (a UDP Service for unicast, hostNetwork for multicast, PipeWire's module-rtp-sink as the sender), and a sendspin node in the pod (its key file under fsGroup, dialling, listening and mDNS). Use when deploying EAR to the cluster, when a card node fails on the hardware, when graph.get says "realtime": false in the pod, when an rtp node in the pod is silent, stays starting (configuring) or fails "never ran", or when a sendspin node in the pod is not found or loses its pairing, or when upgrading the volume's ear.conf past the graph { } and rate-unit change (the pod runs no nodes, or exits on --graph-frequency).
 ---
 
 # EAR on Talos with a MOTU 24Ao
@@ -55,7 +55,7 @@ node card motu { card <card id>; playback 24; }
 
 `playback` and `capture` are channel counts (0 to 64, at least one above 0); the ports are
 `play.1`..`play.N` (inputs) and `capture.1`..`capture.M` (outputs). The card's rate is
-always the graph frequency (`graph_frequency` in `ear.conf`), never a setting.
+always the graph frequency (`graph { rate 48khz; ... }` in `ear.conf`), never a setting.
 
 ## 3. The MOTU's own settings
 
@@ -195,6 +195,74 @@ machine:
 - Recordings: `file` nodes write only beneath `/var/lib/ear/recordings` (their `path` is relative
   to it); mount a volume there writable by uid 10001 (for example `fsGroup: 10001`) to keep them.
 
+### Upgrading past the `graph { }` change
+
+The release that moved the graph's settings into a `graph { }` block and put units on every rate
+(`docs/graph-file.md#directives`, `#rates`) refuses older files and keeps no compatibility. The
+volume's `ear.conf` is seeded only when missing and ear has rewritten it since, so it is still in
+the old form after the image is upgraded: edit it once, by hand.
+
+Before:
+
+```conf
+graph_frequency 48000;
+block_size 256;
+node rtp fpp { address "0.0.0.0"; port 5004; format "L24"; channels 2; rate 48000; }
+```
+
+After:
+
+```conf
+graph {
+    rate 48khz;
+    block_size 256;
+}
+node rtp fpp { address "0.0.0.0"; port 5004; format "L24"; channels 2; rate 48khz; }
+```
+
+`44100` is `44.1khz`, `96000` is `96khz`; `48000hz` also works. Every `rtp` node's `rate` needs
+its unit; an `rtp` node without `rate` needs nothing. In the same rollout, replace
+`--graph-frequency 48000` in the container's args, if it is there, with `--rate 48khz`.
+
+Three ways to make the edit, from simplest:
+
+1. **The editor's text pane.** ear stays up on an old file (below), so open port 7777, fix the
+   text and Save (`graphFile.set` writes the volume's file). If the file's rate or block size
+   differs from the flags the engine took, the pane says it applies at restart: restart the pod
+   (`kubectl rollout restart -n audio deploy/ear`).
+2. **kubectl, through the running container.** The run image has `sh`, `cat` and `mv` but no
+   editor, so edit a copy locally and write it back by renaming inside the folder (ear reads a
+   renamed file once, whole; never truncate `ear.conf` in place):
+
+   ```bash
+   kubectl exec -n audio deploy/ear -- cat /var/lib/ear/config/ear.conf > ear.conf
+   # edit ear.conf as above
+   kubectl exec -i -n audio deploy/ear -- sh -c \
+     'cat > /var/lib/ear/config/ear.conf.new && mv /var/lib/ear/config/ear.conf.new /var/lib/ear/config/ear.conf' < ear.conf
+   kubectl rollout restart -n audio deploy/ear   # only when the rate or block size changed
+   ```
+
+3. **Re-seed.** Put the new-form file in the seed ConfigMap, delete the volume's copy
+   (`kubectl exec -n audio deploy/ear -- rm /var/lib/ear/config/ear.conf`) and restart the pod, so
+   the initContainer copies it again. This throws away every edit made in the editor since the
+   first seed.
+
+**If the step is skipped**, the pod still starts and ear stays up, but runs no nodes: the file has
+errors, so nothing applies. `kubectl logs -n audio deploy/ear` shows the refusals, one record each,
+for example:
+
+```
+graph-file error 1:1 ear/unknown-directive: graph_frequency is no longer a directive: graph settings moved: write graph { rate 48khz; block_size 256; }
+graph-file error 2:1 ear/unknown-directive: block_size is no longer a directive: graph settings moved: write graph { rate 48khz; block_size 256; }
+graph-file error 3:77 ear/bad-rate: rate: 48000 has no unit: write 48000hz or 48khz
+```
+
+The engine falls back to `--rate` and `--block-size` (48khz and 256 unless the args say
+otherwise), `graph.get` lists no nodes, and the editor's pane shows the same diagnostics. Args that
+still carry `--graph-frequency` are worse: ear exits 1 at once with `ear: --graph-frequency is gone:
+write --rate with a unit, such as --rate 48khz`, and the pod goes into CrashLoopBackOff until the
+args change.
+
 ## 5. Checks on the hardware
 
 1. Realtime: `ear`'s boot line says `engine: realtime SCHED_FIFO <n>`, and `graph.get` has
@@ -220,7 +288,7 @@ machine:
    freeze, run a watcher that pings the MOTU and exits after 2 missed pings (EAR does not notice:
    check 2).
 5. Latency (the owner: "under 10ms is obviously ideal"): one cycle is `block_size /
-   graph_frequency` (256 at 48 kHz is 5.3 ms). One way to measure the round trip: a loopback
+   rate` (256 at 48 kHz is 5.3 ms). One way to measure the round trip: a loopback
    cable from a MOTU output to an input it captures (the 24Ao is mostly outputs, so which input
    is **[check]**), a capture card node and a `file` node recording both; EAR has no latency
    tool yet, so the delay is read from the recording **[not designed yet]**.
@@ -247,6 +315,18 @@ machine:
      playback. If they come, raise `api.alsa.headroom` (frames of extra buffer) or the period size
      (`api.alsa.period-size`) on the card's adapter; both are adapter properties, so a change is a
      code change to `AlsaCardBody` (`sound_cards.cpp`), not a graph setting yet.
+   - The quantum limit at the block size (`docs/engine.md#the-quantum-guard`; CI checks only the
+     test card): the MOTU's buffer must be what it was before the guard. Run with
+     `PIPEWIRE_DEBUG="2,spa.alsa:4"` and read the playback and capture lines `buffer frames ...,
+     period frames ..., periods ... batch:1`: a batch card made with `api.alsa.period-num` gets
+     `min(hardware maximum, 32768)` frames at a 256 block in half-block periods, never 1024. Compare
+     them, and the xruns and follower resyncs over an hour, with an image before the guard; the
+     playback node's reported latency (one quantum plus headroom) should not change. If it does not
+     hold, the fallback the design names is the limit back to `max(block, 8192)` with the clock
+     properties still refused. NOT RUN.
+   - The card's readiness deadline: the MOTU must open, run and link within 10 s of its node's
+     configure (`docs/engine.md#readiness-deadlines`), or the node fails `engine-refused: the card
+     never started: <id>`. Time it from ear's records on a cold start. NOT RUN.
    - CPU: 24 resampled channels at 48 kHz on the node's CPU (`top -H` in the pod: the data thread),
      with and without the card linked.
    - Playback and capture of one card follow with two loops: their relative latency jitters by
@@ -262,7 +342,7 @@ machine:
      stops moving while `state: RUNNING`.
    - A wedged MOTU and ear's main loop: record whether a frozen or unplugged MOTU blocks
      `node.stop`, `node.restart` or the pod's stop. If ALSA's drop or close blocks, ear's log shows
-     `ear.main-loop-stalled ... in destroy outside node motu` (or `make outside node motu`) and no
+     `ear.main-loop-stalled ... in destroy engine companion motu` (or `make engine companion motu`) and no
      `ear.main-loop-resumed`; if the data loop stops answering, `ear.barrier-overdue` and then
      `ear.data-loop-wedged`. Either answers the open question of `docs/design/cards-and-clock.md`
      (whether a wedged card blocks those calls), which decides how cards are opened off the main
@@ -294,18 +374,24 @@ owner, 2026-10-30: "If 100ms is the best rep can do, then so be it").
   (`hostNetwork: true`) with FPP on the same network segment (PipeWire's sender uses TTL 1 by
   default, `net.ttl`). Baseline Pod Security forbids `hostNetwork`, so the ValidatingAdmissionPolicy
   of section 4 must allow it too, and port 7777 and the RTP port are then the node's own ports.
-  Not tested anywhere yet, not even in CI.
+  On the node's network another program may listen to the same group and port (a monitor, VLC):
+  one that binds with `SO_REUSEADDR` shares the port and the node still starts; one that holds it
+  alone fails the node `start-failed: cannot bind UDP port <port>: Address already in use`. Two
+  `rtp` nodes on one port are refused whatever their groups. Not tested anywhere yet, not even in
+  CI.
 - **A busy port.** If another program on the same network (the node's, with `hostNetwork`)
-  already holds the UDP port, the node stays `configuring` (state `starting`) with silent outputs:
-  PipeWire's log says why (`bind() failed: Address already in use`), and after 2 s ear says
-  `node fpp still configuring after 2s: waiting for fpp.rtp` (`graph.get`'s `waitingFor`). Pick
-  another port.
+  already holds the UDP port (on `0.0.0.0`, any holder; on a group, one not sharing it by
+  `SO_REUSEADDR`), the node fails at once, `start-failed: cannot bind UDP port <port>:
+  Address already in use`; a second `rtp` node on it fails `... held by node <n>`. Pick another
+  port, or free it and `node.restart` the node. A program that takes the port in the moment
+  between ear's check and PipeWire's bind leaves the node `configuring` waiting for `fpp.rtp`,
+  then failing after 5 s `engine-refused: the RTP receiver never ran (UDP port <port> held?)`.
 - **The sender: FPP's own PipeWire, `libpipewire-module-rtp-sink`** (if FPP's audio runs through
   PipeWire **[check]**). Its arguments must match the node: `destination.ip` = the Service's
   address (its default, `224.0.0.56`, is multicast), `destination.port` = the node's `port` (its
   default is a random port from 46000), `audio.format` = `S16BE` for `L16` (its default) or
   `S24BE` for `L24`, `audio.channels` (default 2) and `audio.rate` (default 48000) as the node's
-  `channels` and `rate`. Leave `net.mtu` at 1280 or below: ear's receiver reads at most 1280
+  `channels` and `rate` (in `ear.conf` the rate takes its unit: `rate 48khz;`). Leave `net.mtu` at 1280 or below: ear's receiver reads at most 1280
   bytes a packet and garbles longer ones; the sender sizes its packets to its own `net.mtu`. Its
   SSRC changes when it restarts; ear hears it again. Prefer an IP literal for `destination.ip`
   (a name is looked up while the sender's loop waits).

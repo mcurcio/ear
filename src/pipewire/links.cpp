@@ -11,7 +11,10 @@
 #include <pipewire/pipewire.h>
 #include <spa/utils/result.h>
 
+#include "callback_boundary.hpp"
+#include "ear/core/main_loop_activity.hpp"
 #include "ear/pipewire/data_loop_wedge.hpp"
+#include "engine_property_set.hpp"
 #include "link_proxy.hpp"
 
 namespace ear::pipewire {
@@ -21,25 +24,33 @@ namespace ear::pipewire {
 /// event and outside any listener's call into destroyLink.
 struct Links::Impl final : LinkEvents {
 	explicit Impl(Engine& engine) : engine(engine) {
-		later = pw_loop_add_event(engine.mainLoop(), &Impl::onLater, this);
+		addEvent(later, engine.mainLoop(), guarded<&Impl::onLater>, this);
 	}
 	~Impl() {
 		if (dataLoopWedged(engine)) leakAll();
 		live.clear();
 		done.clear();
-		if (later != nullptr) pw_loop_destroy_source(engine.mainLoop(), later);
+		later.reset();
 	}
 
 	void active(LinkId link) override {
-		for (LinkListener* listener : listeners) listener->linkActive(link);
+		tell([&](LinkListener& listener) { listener.linkActive(link); });
 	}
 	void failed(LinkId link, std::string detail) override {
 		retire(link);
-		for (LinkListener* listener : listeners) listener->linkFailed(link, detail);
+		tell([&](LinkListener& listener) { listener.linkFailed(link, detail); });
 	}
 	void gone(LinkId link) override {
 		retire(link);
-		for (LinkListener* listener : listeners) listener->linkGone(link);
+		tell([&](LinkListener& listener) { listener.linkGone(link); });
+	}
+
+	/// Tells every listener (the reconciler, and through it the route status listeners: core's state, not this
+	/// link's) inside a scope of the main loop's activity, so a throw of theirs leaves a place and the callback boundary
+	/// takes it as core's bug, never as the link proxy's whose event told it (docs/architecture.md#faults-by-owner).
+	template <class Tell> void tell(Tell each) {
+		const MainLoopActivity::Scope scope("tell route links", {});
+		for (LinkListener* listener : listeners) each(*listener);
 	}
 
 	void retire(LinkId link) {
@@ -48,7 +59,7 @@ struct Links::Impl final : LinkEvents {
 		found->second->silence();
 		done.push_back(std::move(found->second));
 		live.erase(found);
-		pw_loop_signal_event(engine.mainLoop(), later);
+		pw_loop_signal_event(engine.mainLoop(), later.get());
 	}
 
 	/// On a wedged data loop a link proxy is never destroyed (data_loop_wedge.hpp): its destruction would release port
@@ -63,15 +74,14 @@ struct Links::Impl final : LinkEvents {
 		done.clear();
 	}
 
-	static void onLater(void* data, std::uint64_t /*count*/) {
-		auto* self = static_cast<Impl*>(data);
-		if (dataLoopWedged(self->engine)) {
-			for (auto& proxy : self->done) static_cast<void>(proxy.release());
+	void onLater(std::uint64_t /*count*/) {
+		if (dataLoopWedged(engine)) {
+			for (auto& proxy : done) static_cast<void>(proxy.release());
 		}
-		self->done.clear();
-		auto refused = std::exchange(self->refused, {});
-		for (auto& [link, detail] : refused) {
-			for (LinkListener* listener : self->listeners) listener->linkFailed(link, detail);
+		done.clear();
+		auto told = std::exchange(refused, {});
+		for (auto& [link, detail] : told) {
+			tell([&](LinkListener& listener) { listener.linkFailed(link, detail); });
 		}
 	}
 
@@ -80,7 +90,7 @@ struct Links::Impl final : LinkEvents {
 	std::map<LinkId, std::unique_ptr<LinkProxy>> live;
 	std::vector<std::unique_ptr<LinkProxy>> done;
 	std::vector<std::pair<LinkId, std::string>> refused; // told later, never inside createLink
-	spa_source* later = nullptr;
+	LoopSource later;
 };
 
 Links::Links(Engine& engine) : impl_(std::make_unique<Impl>(engine)) {}
@@ -92,21 +102,19 @@ void Links::subscribe(LinkListener& listener) { impl_->listeners.push_back(&list
 void Links::createLink(LinkId link, EnginePortId output, EnginePortId input) {
 	if (dataLoopWedged(impl_->engine)) { // making it would wait on the wedged loop: refused, told later
 		impl_->refused.emplace_back(link, "the data loop is wedged");
-		pw_loop_signal_event(impl_->engine.mainLoop(), impl_->later);
+		pw_loop_signal_event(impl_->engine.mainLoop(), impl_->later.get());
 		return;
 	}
-	pw_properties* props = pw_properties_new(nullptr, nullptr);
-	pw_properties_setf(props, PW_KEY_LINK_OUTPUT_PORT, "%u", output);
-	pw_properties_setf(props, PW_KEY_LINK_INPUT_PORT, "%u", input);
-	auto* proxy = static_cast<pw_proxy*>(pw_core_create_object(
-		impl_->engine.core(), "link-factory", PW_TYPE_INTERFACE_Link, PW_VERSION_LINK, &props->dict, 0));
-	pw_properties_free(props);
+	const PropertySet<Home::link> props({{property<Home::link>("link.output.port"), std::to_string(output)},
+	                                     {property<Home::link>("link.input.port"), std::to_string(input)}});
+	OwnedProxy proxy(
+		createObject(impl_->engine.core(), "link-factory", PW_TYPE_INTERFACE_Link, PW_VERSION_LINK, props));
 	if (proxy == nullptr) {
 		impl_->refused.emplace_back(link, std::string("cannot ask for the link: ") + spa_strerror(-errno));
-		pw_loop_signal_event(impl_->engine.mainLoop(), impl_->later);
+		pw_loop_signal_event(impl_->engine.mainLoop(), impl_->later.get());
 		return;
 	}
-	impl_->live[link] = std::make_unique<LinkProxy>(link, proxy, *impl_);
+	impl_->live[link] = std::make_unique<LinkProxy>(link, std::move(proxy), *impl_);
 }
 
 void Links::destroyLink(LinkId link) {

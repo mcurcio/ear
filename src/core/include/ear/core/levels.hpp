@@ -3,6 +3,7 @@
 #include <span>
 #include <vector>
 #include "ear/core/graph_spec.hpp"
+#include "ear/core/sample_rate.hpp"
 namespace ear {
 /// One port over one window, linear (1.0 = full scale): sample peak and RMS.
 struct Level {
@@ -26,8 +27,8 @@ struct NodeLevels {
 /// (6.25 cycles of 256: a block publishes in the cycle that crosses a boundary). About 20 bytes
 /// per port per window per client.
 inline constexpr std::uint32_t levelWindowsPerSecond = 30;
-/// ceil(rate / levelWindowsPerSecond).
-std::uint32_t levelWindowFrames(std::uint32_t rate) noexcept;
+/// A window at `rate`: ceil(rate / levelWindowsPerSecond) frames, through FrameClock::framesCeil.
+std::uint32_t levelWindowFrames(SampleRate rate) noexcept;
 /// One port's accumulator. Realtime-safe: no locks, allocation or system calls.
 class LevelMeter {
 public:

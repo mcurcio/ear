@@ -3,12 +3,17 @@
 #include "ear/core/levels.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <ratio>
+
+#include "ear/core/latency.hpp"
 
 namespace ear {
 
-std::uint32_t levelWindowFrames(std::uint32_t rate) noexcept {
-	return (rate + levelWindowsPerSecond - 1) / levelWindowsPerSecond;
+std::uint32_t levelWindowFrames(SampleRate rate) noexcept {
+	using Window = std::chrono::duration<std::int64_t, std::ratio<1, levelWindowsPerSecond>>;
+	return static_cast<std::uint32_t>(FrameClock(rate).framesCeil(Window{1}));
 }
 
 void LevelMeter::add(std::span<const float> samples) noexcept {

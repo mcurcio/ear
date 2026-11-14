@@ -1,0 +1,225 @@
+// The one engine-companion lifecycle (docs/engine.md#engine-companions, engine_companions.hpp):
+// the card's state machine (docs/engine.md#sound-cards), moved out of the card so every
+// kind of engine companion is joined, made ready, lost and torn down by this code. A kind's body
+// says only how its engine node is made and heard from; this owns "is this engine companion in the
+// graph": it runs alone until its body says it runs, then links its channels to its port block,
+// and on any failure destroys its links and its body before it reports the loss.
+#include "engine_companions.hpp"
+
+#include <cerrno>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include <pipewire/pipewire.h>
+#include <spa/utils/result.h>
+
+#include "callback_boundary.hpp"
+#include "ear/core/internal_error.hpp"
+#include "ear/pipewire/data_loop_wedge.hpp"
+#include "engine_property_set.hpp"
+#include "link_proxy.hpp"
+
+namespace ear::pipewire {
+namespace {
+
+class JoinedEngineCompanion final : public EngineCompanion,
+									public CompanionBodyEvents,
+									public LinkEvents,
+									public FaultOwner {
+public:
+	JoinedEngineCompanion(Engine& engine, CompanionJoin join, EngineCompanionEvents& events,
+	                      CompanionBodyMaker makeBody)
+		: engine_(engine), join_(std::move(join)), events_(events) {
+		// Each registration is held by a member, so a throw here (the body's making among it) unwinds them all
+		// (docs/architecture.md#faults-by-owner).
+		addEvent(later_, engine_.mainLoop(), guarded<&JoinedEngineCompanion::onLater>, this);
+		listen<CoreCallbacks<JoinedEngineCompanion>{.done = guarded<&JoinedEngineCompanion::onCoreDone>}>(
+			engine_.core(), coreListener_, this);
+		body_ = makeBody(*this);
+	}
+
+	~JoinedEngineCompanion() override {
+		silence();
+		if (dataLoopWedged(engine_)) leakEngineObjects();
+		links_.clear();
+		body_.reset();
+		later_.reset();
+	}
+
+	JoinedEngineCompanion(const JoinedEngineCompanion&) = delete;
+	JoinedEngineCompanion& operator=(const JoinedEngineCompanion&) = delete;
+
+private:
+	enum class State { opening, linking, ready, failing, lost };
+
+	// CompanionBodyEvents. opening --running--> linking; any state --failed--> failing.
+	void running(std::uint32_t nodeId) override {
+		if (state_ == State::opening) link(nodeId);
+	}
+	void failed(std::string detail) override { fail(std::move(detail)); }
+
+	/// One link per channel, the engine companion and the block each by its global id (never the block's node.name: an
+	/// older block of the name may still be going, docs/architecture.md#phases-states-and-what-is-wanted), each port by
+	/// name, owned by EAR's connection.
+	void link(std::uint32_t nodeId) {
+		if (dataLoopWedged(engine_)) return; // linking would wait on the wedged loop: it stays opening
+		state_ = State::linking;
+		if (join_.blockId == SPA_ID_INVALID) {
+			fail("the " + join_.kind + "'s port block has no engine id");
+			return;
+		}
+		const bool toNode = join_.flow == ChannelFlow::blockToNode;
+		const std::string node = std::to_string(nodeId);
+		const std::string block = std::to_string(join_.blockId);
+		for (std::size_t channel = 0; channel < join_.blockPorts.size(); ++channel) {
+			const std::string& nodePort = join_.nodePorts[channel];
+			const std::string& blockPort = join_.blockPorts[channel];
+			const PropertySet<Home::companionLink> props(
+				{{property<Home::companionLink>("link.output.node"), toNode ? block : node},
+			     {property<Home::companionLink>("link.output.port"), toNode ? blockPort : nodePort},
+			     {property<Home::companionLink>("link.input.node"), toNode ? node : block},
+			     {property<Home::companionLink>("link.input.port"), toNode ? nodePort : blockPort}});
+			OwnedProxy proxy(
+				createObject(engine_.core(), "link-factory", PW_TYPE_INTERFACE_Link, PW_VERSION_LINK, props));
+			if (proxy == nullptr) {
+				fail("cannot ask for the " + join_.kind + "'s link: " + spa_strerror(-errno));
+				return;
+			}
+			links_.push_back(std::make_unique<LinkProxy>(channel, std::move(proxy), *this, join_.node));
+		}
+	}
+
+	// LinkEvents. linking --every link ACTIVE--> ready; any link failed or gone --> failing.
+	void active(LinkId /*link*/) override {
+		if (state_ != State::linking || ++activeLinks_ < links_.size()) return;
+		state_ = State::ready;
+		events_.ready();
+	}
+	void failed(LinkId link, std::string detail) override {
+		fail("the " + join_.kind + "'s link for channel " + std::to_string(link + 1) + " failed: " + detail);
+	}
+	void faulted(LinkId /*link*/, std::string detail) override { failFaulted(std::move(detail)); }
+
+	// FaultOwner, and CompanionBodyEvents for the body's own: a callback threw, ear's bug, so the companion's node fails
+	// lost and nothing else (docs/architecture.md#faults-by-owner).
+	std::string_view faultNode() const noexcept override { return join_.node; }
+	void faulted(std::string_view callback, std::string_view detail) override {
+		failFaulted(internalErrorDetail(callback, detail));
+	}
+
+	/// The loss path afresh from any state but lost, since the callback that threw may have left it half-done (a
+	/// teardown begun, a sync asked: its done is dropped by its sequence number); repeating it is harmless (the links
+	/// and body already destroyed stay so). Told as faulted, not lost, with the first fault's detail.
+	void failFaulted(std::string detail) {
+		if (state_ == State::lost) return;
+		if (!faulted_) detail_ = std::move(detail);
+		faulted_ = true;
+		state_ = State::failing;
+		syncing_ = false;
+		for (const auto& link : links_) link->silence();
+		if (later_) pw_loop_signal_event(engine_.mainLoop(), later_.get());
+	}
+	void gone(LinkId link) override {
+		fail("the " + join_.kind + "'s link for channel " + std::to_string(link + 1) + " is gone");
+	}
+
+	/// The loss path, from any state: nothing more is heard from the links, and the teardown runs
+	/// later on the main loop (never inside a proxy's own event, never inside make()). The body's
+	/// own events are ignored from here on.
+	void fail(std::string detail) {
+		if (state_ == State::failing || state_ == State::lost) return;
+		state_ = State::failing;
+		detail_ = std::move(detail);
+		for (const auto& link : links_) link->silence();
+		if (later_) pw_loop_signal_event(engine_.mainLoop(), later_.get());
+	}
+
+	/// Destroys the links and the body (its engine node goes with it), then syncs with the
+	/// engine, so the removal is done before the loss is told.
+	void onLater(std::uint64_t /*count*/) {
+		if (state_ != State::failing || syncing_) return;
+		syncing_ = true;
+		if (dataLoopWedged(engine_)) { // nothing is destroyed on a wedged loop, and nothing to sync with
+			leakEngineObjects();
+			tellLost();
+			return;
+		}
+		links_.clear();
+		body_.reset();
+		syncSeq_ = pw_core_sync(engine_.core(), PW_ID_CORE, 0);
+		if (syncSeq_ < 0) tellLost(); // nothing to wait for
+	}
+
+	void onCoreDone(std::uint32_t id, int seq) {
+		if (id != PW_ID_CORE || !syncing_ || state_ != State::failing || seq != syncSeq_) return;
+		tellLost();
+	}
+
+	void tellLost() {
+		state_ = State::lost;
+		silence();
+		if (faulted_) events_.faulted(detail_);
+		else events_.lost(detail_);
+	}
+
+	/// On a wedged data loop (data_loop_wedge.hpp): the links and the body are kept for good, never destroyed.
+	void leakEngineObjects() {
+		for (auto& link : links_) {
+			link->silence();
+			static_cast<void>(link.release());
+		}
+		links_.clear();
+		static_cast<void>(body_.release());
+	}
+
+	void silence() {
+		for (const auto& link : links_) link->silence();
+		coreListener_.remove();
+	}
+
+	Engine& engine_;
+	CompanionJoin join_;
+	EngineCompanionEvents& events_;
+	State state_ = State::opening;
+	std::string detail_;
+	std::unique_ptr<CompanionBody> body_;
+	Listener coreListener_;
+	std::vector<std::unique_ptr<LinkProxy>> links_; // link id = channel
+	std::size_t activeLinks_ = 0;
+	LoopSource later_;
+	bool syncing_ = false;
+	int syncSeq_ = 0;
+	bool faulted_ = false; // the loss is ear's own bug in a callback: told as faulted
+};
+
+} // namespace
+
+std::string auxPositions(std::size_t channels) {
+	std::string positions = "[";
+	for (std::size_t i = 0; i < channels; ++i) positions += " AUX" + std::to_string(i);
+	return positions + " ]";
+}
+
+void tellNodeState(const pw_node_info& info, const std::string& kind, std::uint32_t nodeId,
+                   CompanionBodyEvents& events) {
+	if ((info.change_mask & PW_NODE_CHANGE_MASK_STATE) == 0) return;
+	if (info.state == PW_NODE_STATE_ERROR) {
+		events.failed("the " + kind + " failed: " + (info.error != nullptr ? info.error : "engine error"));
+	} else if (info.state == PW_NODE_STATE_RUNNING) {
+		if (nodeId == SPA_ID_INVALID) {
+			events.failed("the " + kind + " runs but the engine gave it no id");
+		} else {
+			events.running(nodeId);
+		}
+	}
+}
+
+std::unique_ptr<EngineCompanion> joinEngineCompanion(Engine& engine, CompanionJoin join, EngineCompanionEvents& events,
+                                                     CompanionBodyMaker makeBody) {
+	return std::make_unique<JoinedEngineCompanion>(engine, std::move(join), events, std::move(makeBody));
+}
+
+} // namespace ear::pipewire

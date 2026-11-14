@@ -35,7 +35,10 @@
       "result": {
         "protocol": 1,
         "features": [
-          "lifecycle"
+          "lifecycle",
+          "counters",
+          "companions",
+          "node-text"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -64,7 +67,14 @@
             "phase": "running",
             "since": "2026-11-09T10:00:00.000000Z",
             "wanted": "running",
-            "blockLost": false
+            "blockLost": false,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": []
           },
           {
             "name": "porch",
@@ -82,10 +92,23 @@
             "phase": "running",
             "since": "2026-11-09T10:00:00.010000Z",
             "wanted": "running",
-            "blockLost": false
+            "blockLost": false,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": []
           }
         ],
-        "routes": []
+        "routes": [],
+        "counters": {
+          "cycles": 0,
+          "cutCycles": 0,
+          "stalls": 0,
+          "lostMs": 0
+        }
       }
     },
     {
@@ -103,7 +126,14 @@
         "phase": "added",
         "since": "2026-11-09T10:00:00.020000Z",
         "wanted": "running",
-        "blockLost": false
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": []
       }
     },
     {
@@ -589,7 +619,14 @@
         "since": "2026-11-09T10:00:00.300000Z",
         "wanted": "disabled",
         "blockLost": false,
-        "disabled": true
+        "disabled": true,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": []
       }
     },
     {
@@ -627,7 +664,14 @@
         "phase": "added",
         "since": "2026-11-09T10:00:00.310000Z",
         "wanted": "running",
-        "blockLost": false
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": []
       }
     },
     {
@@ -881,7 +925,14 @@
         "phase": "added",
         "since": "2026-11-09T10:00:00.410000Z",
         "wanted": "running",
-        "blockLost": false
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": []
       }
     },
     {
@@ -1042,7 +1093,14 @@
         "phase": "added",
         "since": "2026-11-09T10:00:00.470000Z",
         "wanted": "running",
-        "blockLost": false
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": []
       }
     },
     {
@@ -1133,7 +1191,10 @@
   "graph": {
     "protocol": 1,
     "features": [
-      "lifecycle"
+      "lifecycle",
+      "counters",
+      "companions",
+      "node-text"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -1166,7 +1227,14 @@
         "reason": {
           "code": "engine-refused",
           "detail": "the engine removed the block"
-        }
+        },
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": []
       },
       {
         "name": "fpp",
@@ -1186,7 +1254,14 @@
         "phase": "stopped",
         "since": "2026-11-09T10:00:00.500000Z",
         "wanted": "stopped",
-        "blockLost": false
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": []
       },
       {
         "name": "porch",
@@ -1204,7 +1279,14 @@
         "phase": "running",
         "since": "2026-11-09T10:00:00.290000Z",
         "wanted": "running",
-        "blockLost": false
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": []
       },
       {
         "name": "quiet",
@@ -1219,7 +1301,14 @@
         "since": "2026-11-09T10:00:00.300000Z",
         "wanted": "disabled",
         "blockLost": false,
-        "disabled": true
+        "disabled": true,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": []
       },
       {
         "name": "tape",
@@ -1236,9 +1325,22 @@
         "phase": "running",
         "since": "2026-11-09T10:00:00.450000Z",
         "wanted": "running",
-        "blockLost": false
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": []
       }
     ],
-    "routes": []
+    "routes": [],
+    "counters": {
+      "cycles": 0,
+      "cutCycles": 0,
+      "stalls": 0,
+      "lostMs": 0
+    }
   }
 }

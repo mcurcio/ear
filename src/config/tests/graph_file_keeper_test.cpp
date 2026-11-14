@@ -52,7 +52,9 @@ private:
 
 class NoReader final : public GraphReader {
 public:
-	GraphView read() const override { return {}; }
+	GraphView read() const override {
+		return GraphView{{{ear::SampleRate::fixed<48000>(), 256}, false, ""}, {}, {}, {}};
+	}
 };
 
 } // namespace
@@ -75,10 +77,11 @@ TEST_CASE("The graph file keeper on its thread: start announces, an edit replies
 
 	auto first = GraphFileKeeper::load(*folder, catalogue);
 	REQUIRE(first.format().has_value());
-	CHECK(first.format()->rate == 48000);
+	CHECK(first.format()->rate.hz() == 48000);
 	FakeOperations operations{log};
 	ActionLog actions{log};
-	GraphFileKeeper keeper(std::move(first), *folder, {48000, 256}, graph, reader, operations, mainLoop);
+	GraphFileKeeper keeper(std::move(first), *folder, {ear::SampleRate::fixed<48000>(), 256}, graph, reader, operations,
+	                       mainLoop);
 	keeper.subscribe(fileLog);
 	keeper.subscribeActions(actions);
 	REQUIRE(keeper.start().has_value());
@@ -114,4 +117,38 @@ TEST_CASE("The graph file keeper on its thread: start announces, an edit replies
 	keeper.stop();
 	CHECK_FALSE(keeper.join().has_value());
 	CHECK(contents(file) == replaced(recordExample, "take1.wav", "take2.wav"));
+}
+
+TEST_CASE("A stopped keeper closes its folder watch while it still answers, before it is joined",
+          "[graph_file_keeper]") {
+	TempFolder dir("facade_unwatch");
+	std::ofstream(dir.path() / "ear.conf", std::ios::binary) << recordExample;
+	auto folder = folder::ConfinedFolder::open(dir.path());
+	REQUIRE(folder.has_value());
+	NodeCatalogue catalogue{testTypes()};
+	DesiredGraph graph{catalogue};
+	NoReader reader;
+	BlockingQueue mainLoop;
+	Log log;
+	FileLog fileLog{log};
+	FakeOperations operations{log};
+	GraphFileKeeper keeper(GraphFileKeeper::load(*folder, catalogue), *folder, {ear::SampleRate::fixed<48000>(), 256},
+	                       graph, reader, operations, mainLoop);
+	keeper.subscribe(fileLog);
+	REQUIRE(keeper.start().has_value());
+	REQUIRE(mainLoop.runUntil([&] { return !fileLog.changes.empty(); }));
+	REQUIRE(inotifyWatches() == 1);
+	REQUIRE(inotifyDescriptors() == 1);
+
+	// The descriptor is closed as the stop begins, on the keeper's thread, so the close's wait on the kernel's reaper
+	// overlaps the nodes' stop (docs/architecture.md#stop-sigint-or-sigterm).
+	graph.close();
+	keeper.stop();
+	std::optional<std::vector<control::CommandResult>> reply;
+	keeper.submit({control::GetGraphFile{}},
+	              [&](std::vector<control::CommandResult> results) { reply = std::move(results); });
+	REQUIRE(mainLoop.runUntil([&] { return reply.has_value(); })); // a read after the stop, on the keeper's thread
+	CHECK(inotifyWatches() == 0);
+	CHECK(inotifyDescriptors() == 0);
+	CHECK_FALSE(keeper.join().has_value());
 }

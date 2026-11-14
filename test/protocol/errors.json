@@ -31,7 +31,10 @@
       "result": {
         "protocol": 1,
         "features": [
-          "lifecycle"
+          "lifecycle",
+          "counters",
+          "companions",
+          "node-text"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -54,7 +57,14 @@
             "state": "running",
             "phase": "running",
             "wanted": "running",
-            "blockLost": false
+            "blockLost": false,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": []
           },
           {
             "name": "rec",
@@ -70,7 +80,14 @@
             "state": "running",
             "phase": "running",
             "wanted": "running",
-            "blockLost": false
+            "blockLost": false,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": []
           }
         ],
         "routes": [
@@ -85,7 +102,13 @@
             },
             "status": "linked"
           }
-        ]
+        ],
+        "counters": {
+          "cycles": 0,
+          "cutCycles": 0,
+          "stalls": 0,
+          "lostMs": 0
+        }
       }
     },
     {
@@ -316,7 +339,10 @@
   "graph": {
     "protocol": 1,
     "features": [
-      "lifecycle"
+      "lifecycle",
+      "counters",
+      "companions",
+      "node-text"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -339,7 +365,14 @@
         "state": "running",
         "phase": "running",
         "wanted": "running",
-        "blockLost": false
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": []
       },
       {
         "name": "rec",
@@ -355,7 +388,14 @@
         "state": "running",
         "phase": "running",
         "wanted": "running",
-        "blockLost": false
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": []
       }
     ],
     "routes": [
@@ -370,6 +410,12 @@
         },
         "status": "linked"
       }
-    ]
+    ],
+    "counters": {
+      "cycles": 0,
+      "cutCycles": 0,
+      "stalls": 0,
+      "lostMs": 0
+    }
   }
 }

@@ -23,7 +23,7 @@ using Harness = ear::testing::TypeHarness<card::spec, card::Card>;
 
 /// A harness on a node named "motu" whose settings parsed.
 Harness parsed(const ear::NodeSettings& settings) {
-	Harness harness({.format = {48000, 256}, .node = "motu"});
+	Harness harness({.format = {ear::SampleRate::fixed<48000>(), 256}, .node = "motu"});
 	const auto refused = harness.parse(settings);
 	INFO(settings.dump() << ": " << refused.value_or(""));
 	REQUIRE_FALSE(refused);
@@ -38,9 +38,16 @@ Harness added(const ear::NodeSettings& settings) {
 	return harness;
 }
 
-std::vector<ear::SoundCardRequest> cardsOf(Harness& harness) {
-	std::vector<ear::SoundCardRequest> cards;
-	for (const auto& made : harness->companions()) cards.push_back(std::get<ear::SoundCardRequest>(made.request));
+/// Each card companion the harness made, in request order: its kind (the bank's direction), bank and shape.
+struct MadeCard {
+	ear::CompanionKind kind;
+	std::string bank;
+	ear::SoundCardShape shape;
+};
+std::vector<MadeCard> cardsOf(Harness& harness) {
+	std::vector<MadeCard> cards;
+	for (const auto& made : harness->companions())
+		cards.push_back(MadeCard{made.kind, made.bank, std::get<ear::SoundCardShape>(made.shape)});
 	return cards;
 }
 
@@ -112,14 +119,14 @@ TEST_CASE("Card's configure asks for one sound card per direction, each joined t
 	const auto cards = cardsOf(harness);
 	REQUIRE(cards.size() == 2);
 	const ear::CardId pro24 = *ear::CardId::parse("Pro24");
-	CHECK(cards[0].card == pro24);
-	CHECK(cards[0].direction == ear::CardDirection::playback);
+	CHECK(cards[0].shape.card == pro24);
+	CHECK(cards[0].kind == ear::CompanionKind::cardPlayback);
 	CHECK(cards[0].bank == card::toCard.name);
-	CHECK(cards[1].card == pro24);
-	CHECK(cards[1].direction == ear::CardDirection::capture);
+	CHECK(cards[1].shape.card == pro24);
+	CHECK(cards[1].kind == ear::CompanionKind::cardCapture);
 	CHECK(cards[1].bank == card::fromCard.name);
-	CHECK(harness.companion(card::toCard).engineName == "motu.playback");
-	CHECK(harness.companion(card::fromCard).engineName == "motu.capture");
+	CHECK(harness.companion(card::toCard).name == "motu.playback");
+	CHECK(harness.companion(card::fromCard).name == "motu.capture");
 
 	// Running once both cards are; a card lost fails the node engine-refused, and its cards go.
 	CHECK(harness.phase() == "configuring");
@@ -137,11 +144,11 @@ TEST_CASE("Card's configure asks for one sound card per direction, each joined t
 
 	auto playback = added({{"card", "Test"}, {"playback", 1}});
 	REQUIRE(cardsOf(playback).size() == 1);
-	CHECK(cardsOf(playback)[0].direction == ear::CardDirection::playback);
+	CHECK(cardsOf(playback)[0].kind == ear::CompanionKind::cardPlayback);
 
 	auto capture = added({{"card", "Test"}, {"capture", 1}});
 	REQUIRE(cardsOf(capture).size() == 1);
-	CHECK(cardsOf(capture)[0].direction == ear::CardDirection::capture);
+	CHECK(cardsOf(capture)[0].kind == ear::CompanionKind::cardCapture);
 }
 
 TEST_CASE("Card's playback bank fades in with the public outputs at its drive, and out before a stop", "[card]") {

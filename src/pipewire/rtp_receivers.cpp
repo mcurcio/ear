@@ -1,243 +1,66 @@
-// RTP receivers through PipeWire's rtp-source module (docs/engine.md#rtp-receivers,
-// rtp_receivers.hpp). A receiver is one kind of outside node: its body here loads the module
-// into the engine's context and finds the module's node through the registry; the one
-// outside-node lifecycle (outside_nodes.hpp) links it once it runs and tears it down.
+// RTP receivers through PipeWire's rtp-source module (docs/engine.md#rtp-receivers, rtp_receivers.hpp): the first
+// module-run converter. What is RTP's own is here, as ModuleRun<RtpReceiverShape>: the module, its arguments, its
+// ports and its words. The body that loads it and finds its node is every module-run converter's
+// (module_converter_body.hpp), and the one engine-companion lifecycle (engine_companions.hpp) links it once it runs
+// and tears it down. The module keeps the jitter buffer, the tracking of the sender's clock and the resampler.
 #include "ear/pipewire/rtp_receivers.hpp"
 
-#include <cerrno>
-#include <cstdint>
-#include <cstring>
-#include <memory>
-#include <set>
+#include <cstddef>
 #include <string>
-#include <string_view>
-#include <utility>
-#include <vector>
 
-#include <pipewire/impl.h>
-#include <pipewire/pipewire.h>
-#include <spa/utils/result.h>
-
-#include "outside_nodes.hpp"
+#include "engine_property_set.hpp"
+#include "module_converter_body.hpp"
 
 namespace ear::pipewire {
 namespace {
-
-constexpr char moduleName[] = "libpipewire-module-rtp-source";
-constexpr char kind[] = "RTP receiver"; // names it in failure details
 
 /// The receiver's port for channel `channel` (from 0): a node.network stream's output ports are
 /// "receive_<position>" (impl-port.c), and its positions are AUX0...
 std::string channelPort(std::size_t channel) { return "receive_AUX" + std::to_string(channel); }
 
-/// The module's arguments (docs/engine.md#rtp-receivers): the one home of this form. Every value
-/// is a number, a closed enum, an RtpAddress or the engine node's name ([A-Za-z0-9_.-]), so no
-/// user text reaches PipeWire's parsers.
-std::string moduleArguments(const NodeName& engineNode, const RtpReceiverRequest& request, std::size_t channels) {
-	const std::string name = "\"" + engineNode + "\"";
-	return "{ remote.name = \"internal\"" + std::string(" source.ip = \"") + request.address.text() + "\"" +
-	       " source.port = " + std::to_string(request.port) + " sess.media = \"audio\"" +
-	       " sess.latency.msec = " + std::to_string(request.latencyMs) + " sess.ignore-ssrc = true" +
-	       " audio.format = \"" + (request.encoding == RtpEncoding::l24 ? "S24BE" : "S16BE") + "\"" +
-	       " audio.rate = " + std::to_string(request.rate) + " audio.channels = " + std::to_string(channels) +
-	       " audio.position = " + auxPositions(channels) + " node.name = " + name + " node.description = " + name +
-	       " media.name = " + name +
-	       " stream.props = { node.always-process = true"
-	       " adapter.auto-port-config = { mode = dsp monitor = false control = false position = "
-	       "preserve } } }";
-}
-
-/// One receiver's engine node: the rtp-source module loaded into the engine's context, its
-/// node found through a registry binding on EAR's connection.
-///   1. A registry and a pw_core_sync: node globals named engineNode announced before the sync's
-///      done are stale (a restart's old receiver, still going); a stale id is forgotten when its
-///      global goes, as the engine may give the id again.
-///   2. On the done: the module is loaded. The first node global named engineNode that is not
-///      stale is this receiver's; it is bound for its info.
-///   3. Its info RUNNING (its socket is bound, docs/engine.md#rtp-receivers, finding g): running.
-class RtpReceiverBody final : public OutsideBody {
-public:
-	RtpReceiverBody(Engine& engine, NodeName engineNode, std::string arguments, OutsideBodyEvents& events)
-		: engine_(engine), engineNode_(std::move(engineNode)), arguments_(std::move(arguments)), events_(events) {
-		registry_ = pw_core_get_registry(engine_.core(), PW_VERSION_REGISTRY, 0);
-		if (registry_ == nullptr) {
-			events_.failed(std::string("cannot watch the engine for the RTP receiver: ") + spa_strerror(-errno));
-			return;
-		}
-		pw_registry_add_listener(registry_, &registryHook_, &registryEvents(), this);
-		pw_core_add_listener(engine_.core(), &coreHook_, &coreEvents(), this);
-		coreListening_ = true;
-		// Without the sync's done there is no telling stale nodes from this receiver's: a failure.
-		syncSeq_ = pw_core_sync(engine_.core(), PW_ID_CORE, 0);
-		if (syncSeq_ < 0) events_.failed(std::string("cannot sync with the engine: ") + spa_strerror(syncSeq_));
-	}
-
-	~RtpReceiverBody() override {
-		if (moduleListening_) spa_hook_remove(&moduleHook_);
-		unbindNode();
-		if (coreListening_) spa_hook_remove(&coreHook_);
-		if (registry_ != nullptr) {
-			spa_hook_remove(&registryHook_);
-			pw_proxy_destroy(reinterpret_cast<pw_proxy*>(registry_));
-		}
-		if (module_ != nullptr) pw_impl_module_destroy(module_);
-	}
-
-	RtpReceiverBody(const RtpReceiverBody&) = delete;
-	RtpReceiverBody& operator=(const RtpReceiverBody&) = delete;
-
-private:
-	static const pw_core_events& coreEvents() {
-		static const pw_core_events table = [] {
-			pw_core_events events{};
-			events.version = PW_VERSION_CORE_EVENTS;
-			events.done = &RtpReceiverBody::onCoreDone;
-			return events;
-		}();
-		return table;
-	}
-	static const pw_registry_events& registryEvents() {
-		static const pw_registry_events table = [] {
-			pw_registry_events events{};
-			events.version = PW_VERSION_REGISTRY_EVENTS;
-			events.global = &RtpReceiverBody::onGlobal;
-			events.global_remove = &RtpReceiverBody::onGlobalRemove;
-			return events;
-		}();
-		return table;
-	}
-	static const pw_node_events& nodeEvents() {
-		static const pw_node_events table = [] {
-			pw_node_events events{};
-			events.version = PW_VERSION_NODE_EVENTS;
-			events.info = &RtpReceiverBody::onInfo;
-			return events;
-		}();
-		return table;
-	}
-	static const pw_impl_module_events& moduleEvents() {
-		static const pw_impl_module_events table = [] {
-			pw_impl_module_events events{};
-			events.version = PW_VERSION_IMPL_MODULE_EVENTS;
-			events.destroy = &RtpReceiverBody::onModuleDestroy;
-			return events;
-		}();
-		return table;
-	}
-
-	// 1 -> 2: every node of this name the engine had before the sync is stale.
-	static void onCoreDone(void* data, std::uint32_t id, int seq) {
-		auto* self = static_cast<RtpReceiverBody*>(data);
-		if (id != PW_ID_CORE || seq != self->syncSeq_ || self->loading_) return;
-		self->coreListening_ = false;
-		spa_hook_remove(&self->coreHook_);
-		self->load();
-	}
-
-	void load() {
-		loading_ = true;
-		module_ = pw_context_load_module(engine_.context(), moduleName, arguments_.c_str(), nullptr);
-		if (module_ == nullptr) {
-			events_.failed(std::string("cannot load PipeWire's rtp-source module: ") + std::strerror(errno));
-			return;
-		}
-		pw_impl_module_add_listener(module_, &moduleHook_, &moduleEvents(), this);
-		moduleListening_ = true;
-	}
-
-	static void onGlobal(void* data, std::uint32_t id, std::uint32_t /*permissions*/, const char* type,
-	                     std::uint32_t /*version*/, const spa_dict* props) {
-		auto* self = static_cast<RtpReceiverBody*>(data);
-		if (props == nullptr || std::string_view(type) != PW_TYPE_INTERFACE_Node) return;
-		const char* name = spa_dict_lookup(props, PW_KEY_NODE_NAME);
-		if (name == nullptr || self->engineNode_ != name) return;
-		if (!self->loading_) {
-			self->stale_.insert(id);
-		} else if (self->node_ == nullptr && !self->stale_.contains(id)) {
-			self->bindNode(id);
-		}
-	}
-
-	static void onGlobalRemove(void* data, std::uint32_t id) {
-		auto* self = static_cast<RtpReceiverBody*>(data);
-		self->stale_.erase(id);
-		if (self->node_ != nullptr && id == self->nodeId_) {
-			self->unbindNode();
-			self->events_.failed("the engine removed the RTP receiver");
-		}
-	}
-
-	void bindNode(std::uint32_t id) {
-		node_ = static_cast<pw_proxy*>(pw_registry_bind(registry_, id, PW_TYPE_INTERFACE_Node, PW_VERSION_NODE, 0));
-		if (node_ == nullptr) {
-			events_.failed(std::string("cannot watch the RTP receiver: ") + spa_strerror(-errno));
-			return;
-		}
-		nodeId_ = id;
-		pw_proxy_add_object_listener(node_, &nodeHook_, &nodeEvents(), this);
-	}
-
-	void unbindNode() {
-		if (node_ == nullptr) return;
-		spa_hook_remove(&nodeHook_);
-		pw_proxy_destroy(node_);
-		node_ = nullptr;
-	}
-
-	// 3: RUNNING lets the channels be linked, by the node's global id; ERROR fails it.
-	static void onInfo(void* data, const pw_node_info* info) {
-		auto* self = static_cast<RtpReceiverBody*>(data);
-		tellNodeState(*info, kind, self->nodeId_, self->events_);
-	}
-
-	static void onModuleDestroy(void* data) {
-		auto* self = static_cast<RtpReceiverBody*>(data);
-		spa_hook_remove(&self->moduleHook_);
-		self->moduleListening_ = false;
-		self->module_ = nullptr;
-		self->events_.failed("the engine removed the RTP receiver's module");
-	}
-
-	Engine& engine_;
-	NodeName engineNode_;
-	std::string arguments_;
-	OutsideBodyEvents& events_;
-	pw_registry* registry_ = nullptr;
-	spa_hook registryHook_{};
-	spa_hook coreHook_{};
-	bool coreListening_ = false;
-	int syncSeq_ = 0;
-	bool loading_ = false;          // the sync is done: a node of this name now is ours
-	std::set<std::uint32_t> stale_; // node ids of this name from before the sync
-	pw_impl_module* module_ = nullptr;
-	spa_hook moduleHook_{};
-	bool moduleListening_ = false;
-	pw_proxy* node_ = nullptr;
-	std::uint32_t nodeId_ = SPA_ID_INVALID;
-	spa_hook nodeHook_{};
-};
-
 } // namespace
 
-RtpReceivers::RtpReceivers(Engine& engine) : engine_(engine) {}
+template <> struct ModuleRun<RtpReceiverShape> {
+	static constexpr ConverterModule module{.kind = "RTP receiver",
+	                                        .word = "rtp-source",
+	                                        .body = "RtpReceiverBody",
+	                                        .flow = ChannelFlow::nodeToBlock,
+	                                        .nodePort = &channelPort};
+	using Arguments = ModuleArguments<Home::rtpReceiver>;
 
-std::unique_ptr<OutsideNode> RtpReceivers::make(const OutsideTarget& target, const RtpReceiverRequest& request,
-                                                OutsideNodeEvents& events) {
-	std::vector<PortName> receiverPorts;
-	for (std::size_t channel = 0; channel < target.blockPorts.size(); ++channel) {
-		receiverPorts.push_back(channelPort(channel));
+	/// The module's arguments, each key from the property table (docs/engine.md#properties-ear-sets says why each): the
+	/// one home of this form. Every value is a number, a closed enum, an RtpAddress or the engine node's name
+	/// ([A-Za-z0-9_.-]), so no user text reaches PipeWire's parsers.
+	static Arguments arguments(const NodeName& engineNode, const RtpReceiverShape& shape, std::size_t channels) {
+		const std::string name = "\"" + engineNode + "\"";
+		ModuleArguments<Home::rtpStream> stream;
+		stream.add(property<Home::rtpStream>("node.always-process"), "true")
+			.add(property<Home::rtpStream>("adapter.auto-port-config"),
+		         "{ mode = dsp monitor = false control = false position = preserve }");
+		Arguments arguments;
+		arguments.add(property<Home::rtpReceiver>("remote.name"), "\"internal\"")
+			.add(property<Home::rtpReceiver>("source.ip"), "\"" + shape.address.text() + "\"")
+			.add(property<Home::rtpReceiver>("source.port"), std::to_string(shape.port))
+			.add(property<Home::rtpReceiver>("sess.media"), "\"audio\"")
+			.add(property<Home::rtpReceiver>("sess.latency.msec"), std::to_string(shape.latencyMs))
+			.add(property<Home::rtpReceiver>("sess.ignore-ssrc"), "true")
+			.add(property<Home::rtpReceiver>("audio.format"),
+		         shape.encoding == RtpEncoding::l24 ? "\"S24BE\"" : "\"S16BE\"")
+			.add(property<Home::rtpReceiver>("audio.rate"), std::to_string(shape.rate.hz()))
+			.add(property<Home::rtpReceiver>("audio.channels"), std::to_string(channels))
+			.add(property<Home::rtpReceiver>("audio.position"), auxPositions(channels))
+			.add(property<Home::rtpReceiver>("node.name"), name)
+			.add(property<Home::rtpReceiver>("node.description"), name)
+			.add(property<Home::rtpReceiver>("media.name"), name)
+			.add(property<Home::rtpReceiver>("stream.props"), stream);
+		return arguments;
 	}
-	return joinOutsideNode(engine_,
-	                       OutsideJoin{.kind = kind,
-	                                   .blockId = target.blockId,
-	                                   .flow = ChannelFlow::nodeToBlock,
-	                                   .nodePorts = std::move(receiverPorts),
-	                                   .blockPorts = target.blockPorts},
-	                       events, [&](OutsideBodyEvents& body) -> std::unique_ptr<OutsideBody> {
-							   return std::make_unique<RtpReceiverBody>(
-								   engine_, target.engineNode,
-								   moduleArguments(target.engineNode, request, target.blockPorts.size()), body);
-						   });
-}
+
+	static pw_impl_module* load(pw_context* context, const Arguments& arguments) {
+		return loadModule(context, "libpipewire-module-rtp-source", arguments);
+	}
+};
+
+template class ModuleConverters<RtpReceiverShape>;
 
 } // namespace ear::pipewire

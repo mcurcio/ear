@@ -195,13 +195,15 @@ cursors) or anything the old code's `process` reads (D-R13).
 3. **New acquisitions are readied beside the old ones**, in readiness order: claims first (a refusal ends the change,
    T11), then files, then companions. Each old resource being replaced is marked **retiring** at once: its loss is a
    diagnostic (`ear.retiring-lost`), never a failure of the node (a kept resource's loss still fails it). A replacement
-   companion is linked to the same inside bank as the one it replaces; two sources into one inside input mix for a
-   moment, which a hold covers [U: the port mixer loads, 13].
+   engine companion is linked to the same inside bank as the one it replaces; two capture cards into one inside input
+   mix for a moment, which a hold covers [U: the port mixer loads, 13]. A replacement ring companion (a sink or a
+   source) is served by the block itself and swapped in the commit point's invoke (`docs/architecture.md#companions`), so two never
+   play into one bank.
 4. **The commit point** (T10), when the hook's work is done (`applied`, or the continuation's `done`) and every new
    resource is ready: the staged posts are released to their loops; in one data-loop invoke (if the node is driving)
-   the new code and its layout are handed to the block, which takes them up at a position it publishes, so a replaced
-   sink takes the cycles before it and its replacement the cycles from it, and a replaced source likewise
-   (`companions.md` 3.4): no chunk lost or doubled at the swap; the latency plan is carried; the old code released.
+   the new code, its layout and its ring companions' bindings are handed to the block, which applies them together
+   between two cycles, so a replaced sink takes the cycles before it and its replacement the cycles from it, and a
+   replaced source likewise (`docs/architecture.md#companions`): no chunk lost or doubled at the swap; the latency plan is carried; the old code released.
    Then the retiring resources are released by the teardown's order for those resources only (a replaced source's
    writer closed; replaced companions destroyed; replaced sinks drained to their own consumers and finished; replaced
    recordings closed; `unclaim`ed claims released, last); then holds fade back in over 5 ms; the node is back in
@@ -392,7 +394,8 @@ route names a port that vanishes. Wanted routes may name ports that appear; they
   the engine first, calls the change version, which must swap the code (its `Io` layout changed; a hook that does not
   fails the node with the rule's text), and removes the vanished ports after the swap's barrier. A type whose channel
   count is `.inPlace()`, going from 2 to 3 channels, keeps channels 1 and 2 playing. Companions on resized inside banks
-  are replaced make-before-break.
+  are replaced make-before-break: the new companion is handed over in one invoke, so a bank never holds two at once
+  (the block's binding storage is one per inside bank, `docs/architecture.md#companions`).
 
 ### 7.3 Two layouts while a reshape is in flight
 
@@ -474,7 +477,7 @@ slice adds the features `node.set`, `reshape` and `dryRun`.
   `restart-requested`; `detail`). A retune (slice 6) changes no health.
 - **`node.updated`** carries `ports` on a reshape (handles redrawn in place); a change of ports with the same type is no
   longer `node.removed` and `node.added`.
-- **Companions** (`companions.md` 3.7) gain `retiring: true` on the old entry during a make-before-break, listed before
+- **Companions** (`docs/control-port.md#companions`) gain `retiring: true` on the old entry during a make-before-break, listed before
   its replacement, which shares its name for a moment.
 - **Order**: an in-place change sends `node.updated` (`applied: "reconfigure"`), then `node.state` `reconfiguring`, then
   the reply, in the commit's turn; then `node.state` `running` (or `stopped`). A reshape sends the dropped routes'

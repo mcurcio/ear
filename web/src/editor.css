@@ -244,3 +244,266 @@ body,
 .diagnostic-warning button {
   color: #8a6100;
 }
+
+/* A node's companions (docs/editor.md#companions): small badges along the box's bottom edge, a known kind and an
+   unknown one alike; not ready is a hollow dot and dimmed text, never colour alone. */
+.companion-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 4px 8px 6px;
+  list-style: none;
+  border-top: 1px solid #eee;
+}
+
+.companion-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 6px;
+  border: 1px solid #ced4da;
+  border-radius: 8px;
+  background: #f8f9fa;
+  font-size: 10px;
+  line-height: 16px;
+  color: #343a40;
+}
+
+.companion-dot {
+  color: #2f9e44;
+}
+
+.companion-not-ready {
+  color: #868e96;
+  border-style: dashed;
+}
+
+.companion-not-ready .companion-dot {
+  color: #868e96;
+}
+
+/* The warning mark: something moved in the last minute (a companion's counter). */
+.warn-mark {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-left: 2px;
+  border-radius: 50%;
+  background: #f08c00;
+  color: white;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 12px;
+  text-align: center;
+}
+
+.companion-list h3 {
+  font-size: 12px;
+  margin: 6px 0 2px;
+}
+
+.companion-list ul {
+  margin: 0 0 6px;
+  padding-left: 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+/* Text for screen readers only: what a dot or a mark shows. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* The diagnostics counters (docs/editor.md#counters): the box's mark sits after the state word; the dropouts badge
+   beside "not realtime" carries the same mark and its count in words; the panel's totals are a plain table, an unknown
+   counter's name in monospace as sent. */
+.counter-mark {
+  margin-left: 4px;
+}
+
+.badge-dropouts {
+  display: inline-block;
+  padding: 0 6px 0 3px;
+  border: 1px solid #f08c00;
+  border-radius: 8px;
+  background: #fff4e6;
+  color: #a35200;
+  font-weight: 600;
+}
+
+.badge-dropouts .warn-mark {
+  margin-left: 0;
+}
+
+.counter-table h3 {
+  font-size: 12px;
+  margin: 6px 0 2px;
+}
+
+.counter-table table {
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.counter-table th {
+  padding: 0 12px 0 0;
+  font-weight: normal;
+  text-align: left;
+  color: #555;
+}
+
+.counter-table td {
+  padding: 0 4px 0 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.counter-recent {
+  color: #a35200;
+}
+
+.counter-unknown th {
+  font-family: ui-monospace, monospace;
+}
+
+/* The node panel's knobly box (docs/editor.md#the-node-panels-text): the pane's text style; a read-only one (a
+   snippet's node, a file with errors) is on a grey surface at full contrast, its label saying "(read-only)" and the
+   note why. */
+.node-text {
+  margin: 8px 0 4px;
+}
+
+.node-text .knobly-text-readonly {
+  --knobly-surface: var(--knobly-surface-readonly);
+}
+
+.node-text-note {
+  font-size: 12px;
+  color: #495057;
+  margin-bottom: 4px;
+}
+
+/* knobly's highlighting (docs/editor.md#highlighting), display only: the textarea on top holds the text, caret and
+   selection with its glyphs transparent; the highlighted copy behind it draws them. Both boxes share every metric
+   (font, size, line height, padding, border, tabs, no wrapping), so each glyph lies under its caret position. The
+   colours are tokens from the editor's palette (its blue, the warnings' amber and brown, the meters' green, the
+   errors' red), each a shade at 4.5:1 or better on both the white and the read-only grey surface. */
+.knobly-text {
+  --knobly-surface: #fff;
+  --knobly-surface-readonly: #f1f3f5;
+  --knobly-border: #adb5bd;
+  --knobly-text: #212529;
+  --knobly-directive: #1864ab;
+  --knobly-keyword: #a35200;
+  --knobly-variable: #8a6100;
+  --knobly-number: #2b7a3a;
+  --knobly-string: #a61e1e;
+  --knobly-comment: #666;
+  --knobly-punctuation: #495057;
+  --knobly-error: #c92a2a;
+  --knobly-error-surface: #ffe3e3;
+  position: relative;
+  background: var(--knobly-surface);
+  border-radius: 2px;
+}
+
+
+.knobly-text-shown,
+.panel .knobly-text-input {
+  margin: 0;
+  padding: 4px;
+  border: 1px solid var(--knobly-border);
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  letter-spacing: normal;
+  tab-size: 8;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.knobly-text-shown {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  color: var(--knobly-text);
+  border-color: transparent;
+}
+
+/* Room past the text's end, so the copy can always scroll as far as the textarea (its scrollbars take room). */
+.knobly-text-shown code {
+  display: inline-block;
+  vertical-align: top;
+  padding: 0 32px 32px 0;
+  font: inherit;
+}
+
+.panel .knobly-text-input {
+  position: relative;
+  display: block;
+  resize: vertical;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--knobly-text);
+}
+
+.knobly-text-input::selection {
+  color: transparent;
+  background: color-mix(in srgb, var(--knobly-directive) 30%, transparent);
+}
+
+.hl-directive {
+  color: var(--knobly-directive);
+}
+
+.hl-keyword {
+  color: var(--knobly-keyword);
+}
+
+.hl-word {
+  color: var(--knobly-text);
+}
+
+.hl-variable {
+  color: var(--knobly-variable);
+}
+
+.hl-number {
+  color: var(--knobly-number);
+}
+
+.hl-string {
+  color: var(--knobly-string);
+}
+
+.hl-comment {
+  color: var(--knobly-comment);
+}
+
+.hl-punctuation {
+  color: var(--knobly-punctuation);
+}
+
+.hl-error {
+  color: var(--knobly-error);
+  background: var(--knobly-error-surface);
+}
+
+/* Forced colours (Windows high contrast): the plain textarea in the system's colours, no copy behind it. */
+@media (forced-colors: active) {
+  .knobly-text-shown {
+    display: none;
+  }
+
+  .panel .knobly-text-input {
+    color: CanvasText;
+    background: Canvas;
+  }
+}

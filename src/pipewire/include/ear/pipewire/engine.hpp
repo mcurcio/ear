@@ -5,14 +5,23 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include "ear/core/counter_watch.hpp"
+#include "ear/core/cycle_counters.hpp"
 struct pw_loop;
 struct pw_context;
 struct pw_core;
+namespace ear {
+class CutRecord;
+}
 namespace ear::pipewire {
+class Faults;
 struct EngineSettings {
 	std::filesystem::path configFile; // engine.conf; must not set default.clock.*
-	std::uint32_t graphFrequency;     // -> default.clock.rate and the only allowed rate
+	SampleRate graphFrequency;        // -> default.clock.rate and the only allowed rate
 	std::uint32_t blockSize;          // -> default.clock.quantum = min-quantum = max-quantum
+	/// Where an exception caught at the callback boundary is reported while the engine lives (faults.hpp); it must
+	/// outlive the engine. None: a line naming the callback on standard error, then std::terminate.
+	Faults* faults = nullptr;
 };
 struct EngineError {
 	std::string detail;
@@ -23,8 +32,9 @@ struct Scheduling {
 	std::string detail;
 }; // detail: "SCHED_FIFO 88" etc.
 /// PipeWire's engine inside EAR: main loop, context, EAR's own internal connection. No socket
-/// in M1 (core.daemon=false). Main thread only.
-class Engine {
+/// in M1 (core.daemon=false). Main thread only, but for what says any thread. The source of the graph's counters for
+/// the snapshot and their reports (GraphCounterSource, docs/engine.md#reporting-the-counters).
+class Engine final : public GraphCounterSource {
 public:
 	/// If CAP_SYS_NICE is in the process's permitted set, it is made effective before the
 	/// context loads its modules (so module-rt can raise the data thread); absent: no error.
@@ -38,6 +48,18 @@ public:
 	void onStopSignal(std::function<void()> handler); // SIGINT/SIGTERM, as main-loop events
 	/// Main thread. How the thread that runs the port blocks' process() is scheduled.
 	Scheduling dataThreadScheduling() const;
+	/// Which graph cycles the internal clock cut short, counted from the engine's start (docs/engine.md#graphcycle):
+	/// written on the data thread, read on any by CutRecord's contract. For this package's adapters and its tests.
+	const CutRecord& cuts() const noexcept;
+	/// The graph's counters from the engine's start (docs/engine.md#counters): the cycles the internal clock started, the
+	/// cuts of them and the stalls those made, as cuts() counts them. Any thread.
+	GraphCounts graphCounts() const noexcept override;
+	/// Data thread, inside a cycle of the internal clock: that cycle started on time (GraphCycle::overdueNs 0), so the
+	/// graph is no longer behind and a stall in progress has ended (docs/engine.md#counters). For this package's port
+	/// blocks, which state each cycle's overdue time.
+	void cycleOnTime() noexcept;
+	/// The internal clock's global id: a cycle whose clock.id is this one is numbered by cuts().
+	std::uint32_t internalClockId() const noexcept;
 	pw_loop* mainLoop() const noexcept; // for this package's adapters only
 	pw_context* context() const noexcept;
 	pw_core* core() const noexcept;

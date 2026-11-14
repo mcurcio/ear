@@ -1,5 +1,8 @@
 #include "ear/core/settings_table.hpp"
 
+#include "caught.hpp"
+#include "ear/core/rate_text.hpp"
+
 #include <algorithm>
 #include <utility>
 #include <vector>
@@ -83,6 +86,14 @@ std::expected<CheckedSettings, std::string> AnySettingsTable::walk(const NodeSet
 				return std::unexpected(notWithinRange(row->key, *number));
 			}
 			slot = value->get<std::uint32_t>();
+		} else if (const auto* rate = std::get_if<RateRule>(&row->rule)) {
+			const auto read = rateOfSetting(*value);
+			if (!read || *read < rate->low || *read > rate->high) {
+				return std::unexpected(std::string(row->key) + ": must be a rate from " +
+				                       rangeText(RateRange{rate->low, rate->high}) +
+				                       " (on the control port, a whole number of Hz)");
+			}
+			slot = *read;
 		} else {
 			const TextRule& text = std::get<TextRule>(row->rule);
 			if (value->is_string()) slot = text.read(value->get_ref<const std::string&>());
@@ -93,7 +104,8 @@ std::expected<CheckedSettings, std::string> AnySettingsTable::walk(const NodeSet
 	return CheckedSettings(std::move(slots));
 }
 
-NodeType::NodeType(const AnySettingsTable& table) noexcept : table_(&table) {}
+NodeType::NodeType(const AnySettingsTable& table, std::span<const StoreDeclaration> stores) noexcept
+	: table_(&table), stores_(stores) {}
 
 std::string_view NodeType::name() const noexcept { return table_->name(); }
 
@@ -101,11 +113,17 @@ std::span<const SettingDeclaration> NodeType::settingKinds() const noexcept { re
 
 std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings> NodeType::parse(const NodeName& node,
                                                                                   const NodeSettings& settings) const {
-	auto walked = table_->walk(settings);
-	if (!walked) return std::unexpected(InvalidSettings{node, std::move(walked.error())});
-	auto made = makeConfig(node, std::move(*walked));
-	if (!made) return std::unexpected(InvalidSettings{node, std::move(made.error())});
-	return std::move(*made);
+	// The type's own code (a text row's parse, its check, its ports, a legacy type's config) runs here, on the main loop
+	// as an edit is planned: what it throws refuses the edit as an invalid setting would, never reaching the callback
+	// boundary (docs/writing-a-node-type.md#rules-the-framework-enforces).
+	auto made = detail::caughtFrom([&]() -> MadeConfig {
+		auto walked = table_->walk(settings);
+		if (!walked) return std::unexpected(std::move(walked.error()));
+		return makeConfig(node, std::move(*walked));
+	});
+	if (!made) return std::unexpected(InvalidSettings{node, std::string(name()) + " threw: " + made.error()});
+	if (!*made) return std::unexpected(InvalidSettings{node, std::move(made->error())});
+	return std::move(**made);
 }
 
 } // namespace ear

@@ -1,6 +1,7 @@
 #include "feed.hpp"
 
 #include <algorithm>
+#include <utility>
 
 #include <poll.h>
 
@@ -17,6 +18,7 @@ bool Feed::applyClear() noexcept {
 	const std::uint64_t asked = clearTo_.exchange(0, std::memory_order_acq_rel);
 	if ((asked & clearPending) == 0) return false;
 	ring_.skipTo(static_cast<std::uint32_t>(asked));
+	clearedSince_ = true;
 	return true;
 }
 
@@ -27,19 +29,34 @@ void Feed::wakeWriter() noexcept {
 	if (writerWaits_.exchange(false, std::memory_order_relaxed)) room_.ring();
 }
 
+/// One writer (the reading thread), so a plain store of the next value: no read-modify-write on the realtime path.
+void Feed::countDry(std::uint32_t asked, std::uint32_t got) noexcept {
+	if (got >= asked) return;
+	dryReads_.store(dryReads_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+	dryFrames_.store(dryFrames_.load(std::memory_order_relaxed) + (asked - got), std::memory_order_relaxed);
+}
+
 std::uint32_t Feed::read(std::span<const std::span<float>> channels, std::uint32_t frames) noexcept {
 	const bool cleared = applyClear();
 	const std::uint32_t got = ring_.readPlanar(channels, frames);
 	for (const std::span<float> channel : channels) std::fill(channel.begin() + got, channel.begin() + frames, 0.0F);
+	countDry(frames, got);
 	if (cleared || got > 0) wakeWriter();
 	return got;
 }
 
-std::uint32_t Feed::skip(std::uint32_t frames) noexcept {
+std::uint32_t Feed::skip(std::uint64_t frames) noexcept {
 	const bool cleared = applyClear();
-	const std::uint32_t got = ring_.skip(frames);
+	// What it holds now, on the reading thread, is exact: the writer only adds, so all of the smaller is skipped.
+	heldAtSkip_ = ring_.writePosition() - ring_.readPosition();
+	const std::uint32_t got = ring_.skip(static_cast<std::uint32_t>(std::min<std::uint64_t>(frames, heldAtSkip_)));
 	if (cleared || got > 0) wakeWriter();
 	return got;
+}
+
+bool Feed::takeCleared() noexcept {
+	if (applyClear()) wakeWriter();
+	return std::exchange(clearedSince_, false);
 }
 
 std::uint32_t Feed::write(std::span<const float> interleaved, std::uint32_t frames,
@@ -61,7 +78,8 @@ std::uint32_t Feed::write(std::span<const float> interleaved, std::uint32_t fram
 			return 0;
 		}
 		pollfd ready{room_.fd(), POLLIN, 0};
-		::poll(&ready, 1, static_cast<int>(left.count()));
+		waitsBegun_.fetch_add(1, std::memory_order_release);
+		if (::poll(&ready, 1, static_cast<int>(left.count())) > 0) waitsWoken_.fetch_add(1, std::memory_order_release);
 		room_.drain();
 		writerWaits_.store(false, std::memory_order_relaxed);
 	}
