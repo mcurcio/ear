@@ -836,6 +836,51 @@ main-loop state.
 
 ### 8.7 The wire, and the editor's signatures
 
+**3b.6 as built against today's code** (written before building it, 2026-11-14). 3.7 and this section were written
+before the feature `counters` (cycle facts D2: `counters` on every node, `counters.changed` once a second) and before
+3b.5 moved the counters' pacing to `CounterWatch`. Against the wire and the code as they left it:
+
+- **The feature is `companions`** (`companionsFeature`, landed), the third: `"features": ["lifecycle", "counters",
+  "companions"]`. Additive; protocol stays 1.
+- **Where the list appears.** A member, `companions`, on every node of a snapshot and of `node.added`, beside
+  `counters`; and one notification, `node.companionsChanged {name, companions}`, the whole list. Not a member of
+  `node.state`: health and the list change for different reasons, and a member there would re-send the list with every
+  health change (and `node.state` replaces every health member, so the list would have to ride every one). The
+  snapshot reads `NodeHost::companionsOf` through `GraphStatus` (`NodeView::companions`), counters read then.
+  `node.added` always carries `[]`: the gateway hears a node added before NodeHost configures it, a port-caused
+  replace's newer node included (its configuration is new, its companions count from zero). So `NodeAdded` needs no
+  member of its own (8.3's row is dropped): the encoder writes the constant `[]`.
+- **Against `counters.changed`: disjoint facts, never the same one twice.** `counters.changed` carries the graph's and
+  each node's cycle counters; a companion's `dropped` and `shortfall` ride only in its entry of the list. They cannot
+  share a carrier anyway: a node's counters run from its add and never step back or reset, a companion's per
+  configuration (D-3b11), restarting from zero with the next configuration's companion of the same name. `node.gone`'s
+  `droppedFrames` stays what it is, the node's lifetime sum at its end. Two tellers feed the one notification
+  (NodeHost for the list's structure and readiness, `CounterWatch` for a counter's move), and each compares only with
+  what it told itself (NodeHost ignores counters, `CounterWatch` compares with its own last list), so a list NodeHost
+  told with a moved counter would be told again by `CounterWatch` at the next beat. **The gateway sends a node's list
+  only when it differs from the last it sent for that node** (`[]` after its `node.added`), the same rule it keeps for
+  `node.state`; that is what makes "never twice" hold on the wire, whoever tells.
+- **Pacing.** A change of structure or readiness goes at once, in order with the node's health (D-3b10, as built in
+  3b.5); a counter's move alone at most once a second per node (`companionCounterPace`, at the 100 ms heartbeat: at most
+  1.1 s behind) and never when nothing moved. Its pace is its own, not `counters.changed`'s: the two are about
+  different objects, and each is at most once a second.
+- **A client holding an older node.** There is no per-client negotiation (as with `counters`): every client gets the
+  member and the notification, so 8.7's "a client without the feature never sees" is moot. A client that does not know
+  the feature ignores both (members ear sends may grow; an unknown notification is ignored). A node held without a
+  `companions` member (from an ear without the feature) has no list to show. `node.companionsChanged` replaces the
+  whole list of the node of that name the client holds, and is ignored for a name it does not hold. The older node of
+  a name never tells (NodeHost tells only the node a client holds: neither a superseded node nor the silent older node
+  of a port-caused replace), so a list never names an older node's companions; a removed node's teardown tells nothing
+  after its `node.removed` (the gateway forgets the name there, and an empty list after it equals the nothing it then
+  holds), and a node added again under the name starts from `node.added`'s `[]`.
+- **Open sets.** `kind` is an open string (`paced-source` in slice 9, a converter's kind in the timing model's T5 may
+  follow); a client draws an unknown kind by its own text. An entry's members may grow (3d's `retiring`); a client
+  ignores a member it does not know. The counter members are by kind: `dropped` on a sink, `shortfall` on a source,
+  absent on the engine kinds. `test/protocol/unknown-values.json` gains an entry of an unknown kind with an unknown
+  member.
+- **No owner question.** What an operator or client sees is 3.7's K1 and the owner's Q28 badges (3b.7); the dedup and
+  the constant `[]` are how, not what.
+
 The shapes (3.7), in `test/protocol/companions.json` (3b.6):
 
 ```json
