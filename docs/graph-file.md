@@ -196,6 +196,11 @@ nodes or routes is refused `shared-definition`, with that line's place. Removing
 `node.disable` whose `disabled` line sits in a shared snippet. Edit the text instead
 (`graphFile.set`, or by hand), which changes every user in one judged commit.
 
+**Judge before keep.** Every edit becomes a candidate text, is judged by the desired graph
+against the whole wanted graph, and becomes the working copy only if accepted
+([architecture.md](architecture.md#how-a-change-moves)). Nothing refused is kept or written, and an
+edit cut short leaves the working copy whole.
+
 ### A node's own text
 
 `node.setText` ([control-port.md](control-port.md#a-nodes-own-text)) is the edit a person makes:
@@ -207,11 +212,6 @@ file, by the same reader, so a `$ch` or an `@use card_out USB2;` in it reads as 
 A node whose statement is written in a snippet (`@snippet two $n { node white $n; }` used at the
 top level) has no text of its own: replacing it would change every node it makes, so it is
 `shared-definition`, and the pane edits it.
-
-**Judge before keep.** Every edit becomes a candidate text, is judged by the desired graph
-against the whole wanted graph, and becomes the working copy only if accepted
-([architecture.md](architecture.md#how-a-change-moves)). Nothing refused is kept or written, and an
-edit cut short leaves the working copy whole.
 
 ## Hand edits win
 
