@@ -17,13 +17,14 @@ Vitest); it shares no code with the C++, only the wire format and the fixtures i
 - **Editing:** a drag from an output to an input adds a route (any other drag is refused before
   it reaches ear); the delete key removes the selected wire or node; a side panel adds nodes (a
   type and JSON settings), edits the selected node's settings, and offers Start, Stop, Restart,
-  Disable and Enable when ear has the `lifecycle` feature. A "not realtime" badge shows when the
+  Disable and Enable when ear has the `lifecycle` feature. The engine facts give the graph's rate
+  and block size ("48 kHz, 256 frames", from `graphFrequency` in hertz). A "not realtime" badge shows when the
   audio thread is not realtime, and a dropouts badge while the host cut cycles in the last minute;
   the panel holds the graph's counters and the selected node's ([below](#counters)).
 - **The text pane** shows `ear.conf` with its diagnostics (a click puts the caret there) and
   saves it with Save (`graphFile.set`, based on the version the draft started from). Banners say
   when the graph refused the file, a write failed, editor edits were dropped by a hand edit, or a
-  setting applies only at restart.
+  setting applies only at restart (the graph rate or block size, as `pendingRestart` names them).
 
 ## Its rules
 

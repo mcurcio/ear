@@ -73,6 +73,11 @@ function samePort(a: PortRef, b: PortRef): boolean {
   return a.node === b.node && a.port === b.port;
 }
 
+/** The engine's rate, given on the wire in hertz (graphFrequency), as people read it: 48 kHz, 44.1 kHz. */
+export function rateLabel(hertz: number): string {
+  return `${hertz / 1000} kHz`;
+}
+
 export function sameRoute(a: RouteEnds, b: RouteEnds): boolean {
   return samePort(a.from, b.from) && samePort(a.to, b.to);
 }

@@ -4,6 +4,7 @@
 // (when ear has the lifecycle feature; each enabled by health.ts, docs/editor.md#a-nodes-health), its settings
 // and delete button. Every change is a request to ear; the canvas changes only when ear announces it.
 import { useEffect, useState } from "react";
+import { rateLabel } from "../graph";
 import { describeHealth, type ActionAvailability, type HealthView } from "../health";
 import { lifecycleFeature, type Graph, type GraphNode, type JsonObject } from "../protocol";
 import { CompanionList } from "./CompanionStrip";
@@ -30,7 +31,7 @@ export function EngineFacts({ graph }: { graph: Graph }) {
   return (
     <section className="panel-section">
       <div>
-        {graph.graphFrequency} Hz, {graph.blockSize} frames
+        {rateLabel(graph.graphFrequency)}, {graph.blockSize} frames
       </div>
       <div title="how ear's audio thread is scheduled">
         {graph.scheduling}{" "}
