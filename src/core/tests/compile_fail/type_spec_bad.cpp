@@ -254,6 +254,68 @@ struct ThrowingRelease : Copy {
 }
 #endif
 
+// Loops (docs/writing-a-node-type.md#loops): the control declares a stateful dedicated loop and a strand without a
+// state, gives the one its state, posts to each and keeps an executor; the cases name a loop wrongly, give a state where
+// none is declared, or post a function of another state.
+struct WorkerState {
+	void work() {}
+};
+struct OtherState {};
+constexpr auto worker = loop::dedicated<"worker", WorkerState>;
+constexpr auto helper = loop::strand<"helper">;
+constexpr auto otherLoop = loop::strand<"other">;
+#ifdef EAR_CASE_loop_name_invalid
+[[maybe_unused]] constexpr auto badLoop = loop::strand<"Bad_Name">;
+#endif
+#ifdef EAR_CASE_loops_named_twice
+[[maybe_unused]] constexpr Loops<helper, loop::dedicated<"helper">> twice{};
+#endif
+constexpr TypeSpec loopSpec{.settings = SettingsTable<>{"t"}, .banks = Banks<out>{}, .loops = Loops<worker, helper>{}};
+struct Zeros {
+	void process(Io<loopSpec> io, const GraphCycle&) noexcept {
+		for (auto member : io[out])
+			for (float& sample : member) sample = 0.0F;
+	}
+};
+class Looped {
+public:
+	explicit Looped(NodeOf<loopSpec>& node) : node_(node) {}
+	static Members<loopSpec> ports(const CheckedOf<loopSpec>&) { return {out(members(1))}; }
+	Configured configure(CreateOf<loopSpec>& cx, const CheckedOf<loopSpec>&) {
+		cx.loop(worker, std::make_unique<WorkerState>());
+		cx.post(worker, [](WorkerState& state) { state.work(); });
+		cx.post(helper, [] {});
+		static_cast<void>(cx.executor(helper));
+#ifdef EAR_CASE_state_to_stateless_loop
+		cx.loop(helper, std::make_unique<NoState>());
+#endif
+#ifdef EAR_CASE_executor_loop_the_spec_lacks
+		static_cast<void>(cx.executor(otherLoop));
+#endif
+		cx.use(Zeros{});
+		return Configured::applied();
+	}
+	void start() {
+		node_.post(worker, [](WorkerState& state) { state.work(); });
+#ifdef EAR_CASE_post_other_loop_state
+		node_.post(worker, [](OtherState&) {});
+#endif
+#ifdef EAR_CASE_post_loop_the_spec_lacks
+		node_.post(otherLoop, [] {});
+#endif
+	}
+
+private:
+	NodeOf<loopSpec>& node_;
+};
+[[maybe_unused]] void loopedType() { static_cast<void>(makeNodeType<loopSpec, Looped>()); }
+#ifdef EAR_CASE_harness_loop_the_spec_lacks
+[[maybe_unused]] void badLoopHarness() {
+	testing::TypeHarness<loopSpec, Looped> harness;
+	static_cast<void>(harness.armed(otherLoop));
+}
+#endif
+
 } // namespace type_spec_bad
 
 // A spec, or a row its table lists, in an unnamed namespace: GCC 14 would give two files' same-named ones one symbol.

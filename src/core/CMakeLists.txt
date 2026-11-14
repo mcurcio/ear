@@ -15,6 +15,7 @@ add_library(ear_core STATIC
 	legacy_instance.cpp
 	levels.cpp
 	log.cpp
+	loop.cpp
 	main_loop_activity.cpp
 	node_catalogue.cpp
 	node_host.cpp
@@ -52,6 +53,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/levels.hpp
 	include/ear/core/lifecycle.hpp
 	include/ear/core/log.hpp
+	include/ear/core/loop.hpp
 	include/ear/core/main_loop_activity.hpp
 	include/ear/core/node_catalogue.hpp
 	include/ear/core/node_folders.hpp
@@ -61,6 +63,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/node_type.hpp
 	include/ear/core/pass_through.hpp
 	include/ear/core/rate_text.hpp
+	include/ear/core/ready_events.hpp
 	include/ear/core/reconciler.hpp
 	include/ear/core/rtp_receiver.hpp
 	include/ear/core/sample_rate.hpp
@@ -103,6 +106,7 @@ if(BUILD_TESTS)
 		tests/graph_status_test.cpp
 		tests/latency_test.cpp
 		tests/levels_test.cpp
+		tests/loop_test.cpp
 		tests/main_loop_activity_test.cpp
 		tests/module_run_test.cpp
 		tests/node_handle_test.cpp
@@ -273,4 +277,13 @@ if(BUILD_TESTS)
 	ear_type_spec_compile_fail(declare-latency-bank-the-spec-lacks "declareLatency takes its spec's banks")
 	ear_type_spec_compile_fail(declare-latency-backwards "declareLatency names a pair: an input bank, then an output bank")
 	ear_type_spec_compile_fail(context-bank-the-spec-lacks "a context takes only its spec's banks")
+	# Loops (docs/writing-a-node-type.md#loops): a loop named wrongly or twice, a state where none is declared, a loop the
+	# spec lacks, and a post of a function of another loop's state.
+	ear_type_spec_compile_fail(loop-name-invalid "a loop's name is 1 to 8 of")
+	ear_type_spec_compile_fail(loops-named-twice "a type's loops have unique names")
+	ear_type_spec_compile_fail(state-to-stateless-loop "a loop declared without a state takes none")
+	ear_type_spec_compile_fail(executor-loop-the-spec-lacks "a context takes only its spec's loops")
+	ear_type_spec_compile_fail(post-loop-the-spec-lacks "a post names one of its spec's loops")
+	ear_type_spec_compile_fail(post-other-loop-state "a post to a loop takes a function of that loop's state")
+	ear_type_spec_compile_fail(harness-loop-the-spec-lacks "the harness takes only its spec's loops")
 endif()

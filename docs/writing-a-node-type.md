@@ -114,10 +114,10 @@ compile.
 |---|---|---|
 | `static Members<spec> ports(const CheckedOf<spec>&)` | yes | Every bank once, with its members: `members(n)` for `1`..`n`, or `members("left", "right")`. Pure: it runs on any thread |
 | `static std::expected<void, std::string> check(const CheckedOf<spec>&)` | no | A rule across settings, run at parse after the table's walk; its error is `invalid-settings` and never reaches `ear.conf` |
-| `explicit Type(NodeOf<spec>&)` or `Type()` | one of them | `NodeOf` is valid for the instance's life: `format()`, `node()`, and `handle()` |
+| `explicit Type(NodeOf<spec>&)` or `Type()` | one of them | `NodeOf` is valid for the instance's life: `format()`, `node()`, `handle()`, and `post(loop, work)` to a [loop](#loops)'s state |
 | `Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s)` | yes | Acquire and construct only, on the main loop, then answer |
-| `void start()` | no | Called once its code is driven (the node is then `running`) |
-| `void stop()` | no | Called once before each silence that follows a `start()` that returned |
+| `void start()` | no | Called once its code is driven (the node is then `running`); work that must wait for that is posted to a loop here |
+| `void stop()` | no | Called once before each silence that follows a `start()` that returned; it posts its goodbye to its loops |
 | `Changed configure(ChangeOf<spec>&, const CheckedOf<spec>& old, const CheckedOf<spec>& now)` | no | The change version: its signature is checked, but it is **never called yet**: every change of settings restarts the node, until in-place changes are built |
 
 Settings are read by row: `s.get<playbackRow>()`. A misspelt row, a row of another table, or an
@@ -135,6 +135,9 @@ optional row read as a plain value does not compile.
 | `cx.sink(bank, SinkShape{.frames = n}).consumedBy(std::make_unique<Consumer>(...))` | A sink on an inside output bank ([sinks](#sinks)) | Inside output banks only; exactly one consumer; one companion per bank |
 | `SourceWriter& w = cx.source(bank, SourceShape{.frames = n}, clock)` | A source on an inside input bank ([sources](#sources)): what the type's own thread writes, played into the bank before the code; `clock`, a `std::unique_ptr<SourceClock>`, its own clock ([a source's clock](#a-sources-clock)), left out for a source with none | Inside input banks only (compile time); `0 < n <= maxSourceFrames` (2^24); one companion per bank |
 | `cx.declareLatency(from, to, Latency{min, max})` | The code's own latency on the path from an input bank to an output bank, in frames: carried as a path through the block, so it counts in both banks' told latency ([latency](#latency)) | Once per path (a mixer declares each of its inputs' paths into one output); with a pass-through, one of its pairs; a plan that does not fit the ports fails the node `start-failed` |
+| `cx.loop(handle, std::make_unique<State>(...))` | A [loop](#loops)'s state, constructed here with no I/O and no threads, owned by the framework from now on | Exactly once for a loop declared with a state type (compile time: never for one declared without) |
+| `Loop& l = cx.executor(handle)` | A loop as an executor, for a state to keep: `post`, timers and watches | Valid until the configuration is freed; what it is sent before the node is configured is staged |
+| `cx.post(handle, [](State& s) { ... })` | Work on the loop with its state (`[] { ... }` for a loop with none), staged | A function of another loop's state does not compile |
 
 Then answer `Configured::applied()`, or `Configured::failed(detail)` for what only the type can see
 (the node fails `start-failed: <detail>`). A `CreateOf` is valid only inside the `configure` it is
@@ -143,7 +146,7 @@ handed to. What a type needs from outside it acquires here; a type's factory tak
 Each call is served by the host's adapter of its kind (`ResourceAdapters`, one member per kind,
 `node_host.hpp`). ear's host has every kind; a host without one (a test's) refuses the call as an
 adapter's refusal is: the node fails `start-failed: configure threw: no <kind> in this host`
-(`sinks`, `sources`, `sound cards`, `RTP receivers`), and `openRecording` answers
+(`sinks`, `sources`, `sound cards`, `RTP receivers`, `loops`), and `openRecording` answers
 `no recordings folder`.
 
 ### The node handle
@@ -389,6 +392,78 @@ read it through the reference the type kept; the source owns the clock and frees
 teardown step 5, after the instance and every thread it owns, so that reference never dangles. A
 source with no clock (`cx.source(bank, shape)`) skips nothing and is never asked.
 
+## Loops
+
+A type's own threads are its loops: serial executors for its work off the realtime thread and the
+main loop, declared in the spec, each with its state, alive for the node's whole configuration
+(`ear/core/loop.hpp`). A loop is a **strand** on the framework's pool (its handlers never block) or
+**dedicated**, on a thread of its own named `ear-<name> <node>` (cut to 15 bytes; its handlers may
+block: a library's poll, a disk write, a source write with patience). A type writes no thread, poll
+loop, eventfd or stop flag.
+
+```cpp
+class Worker;   // the loop's state: the library's client, its timers
+inline constexpr auto worker = loop::dedicated<"worker", Worker>; // 1 to 8 of [a-z0-9-], unique in the spec
+inline constexpr auto helper = loop::strand<"helper">;            // no state: an executor other states use
+inline constexpr TypeSpec spec{.settings = ..., .banks = Banks<...>{}, .loops = Loops<worker, helper>{}};
+
+Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>&) {
+	cx.loop(worker, std::make_unique<Worker>(node_.handle(), cx.executor(worker), cx.executor(helper)));
+	...
+}
+void start() { node_.post(worker, [](Worker& w) { w.begin(); }); } // arms its timers, starts the library
+void stop() { node_.post(worker, [](Worker& w) { w.end(); }); }    // the goodbye
+```
+
+| On a `Loop&` (`cx.executor(handle)`) | What |
+|---|---|
+| `post(work)` | Any thread; runs `work` on the loop, one handler at a time, in post order, never inside the call |
+| `after(delay, due)`, `every(period, due)` | A timer (`CLOCK_MONOTONIC`); `every` keeps a fixed rate, and the ticks a slow handler missed run once |
+| `onWake(wake, rung)` | `rung` each time `wake` rings (a source's clock wake, `SourceWriter::clockWake()`); the loop answers the wake just before the handler, so a ring during it runs it again, and a wake rung before it was watched runs it once |
+| `onReadable(fd, readable)` | `readable` each time the descriptor (the caller's, outliving the watch) is readable |
+| `inLoop()`, `kind()` | Whether the calling thread runs this loop's handler; its kind |
+
+Each arming call returns a `std::unique_ptr<Timer>`: destroying it cancels the timer or watch, and
+its handler never runs after the destructor returns. It is destroyed on its loop's thread (a state
+keeps it as a member), or on the main loop while the node is not yet configured.
+
+- **The state.** Given in `configure`, constructed on the main loop with no I/O and no threads; from
+  then on the instance holds no reference to it, and reaches it only by a post (`NodeOf::post`,
+  `cx.post`), typed by the handle, so a function of another loop's state does not compile. A stop
+  and a start keep it (and its loops); a restart, a change of settings or a failure destroys it.
+- **Staging.** Everything sent to a loop before the node is configured (a post from `configure` or
+  from a state's constructor, a timer or watch armed there) is staged on the main loop. Once the
+  node is configured (its loops running, every companion ready, its code prepared) the staged items
+  run on their loops in the order sent, ahead of anything sent later; a staged timer counts from
+  there. If the configuration is torn down first, they are destroyed unrun. So no handler runs
+  before every resource the node asked for is ready. Work that must wait for the code to drive is
+  posted by `start()`.
+- **When loops start.** Each loop is an item of the configuration's readiness list, at the step
+  before its companions ([engine.md](engine.md#readiness-deadlines)): the framework starts every
+  loop once configure answered applied, and makes the engine companions and begins the sinks'
+  consumers only once they run, so a loop that cannot start costs nothing else. It fails the node
+  `start-failed: cannot start loop <name>: <why>`; one not yet running is `waitingFor` `loop`.
+- **Teardown.** At step 1 each loop refuses work from outside the node (slice 5's actions); the
+  node's own posts go on. At step 4, once the sinks drained, each loop runs what was posted (the
+  goodbye `stop()` posted), then destroys its state on its own thread (where its destructor may join
+  the threads its library owns); once every loop has, each closes. A state whose loop never started
+  is destroyed on the main loop. The close deadline (10 s) covers it: a loop that never drains
+  leaks the configuration, `ear.close-overdue` counting it open
+  ([architecture.md](architecture.md#teardown-by-dependency)).
+- **Sources left armed.** A state destroys the timers and watches it armed, before or in its
+  destructor; one armed on another loop it destroys by a post to that loop. The framework counts
+  every one whose handle lives; one still armed when the loops close is a type bug: its loop
+  cancels it, the node says `ear.loop-source-left`, and the harness fails the call that tore the
+  node down.
+- **Threads.** A handler runs on its loop's thread, one at a time per loop. Nothing here is
+  realtime. A strand must not block: `SourceWriter::write` and `idle` assert in debug builds that
+  their caller is not a strand (`onStrand()`). A strand handler past 100 ms is `ear.loop-slow`
+  (once per loop and configuration); past 1 s the pool starts a replacement thread (at most 16), so
+  one stuck strand delays no other node's. A dedicated loop is never judged.
+- **A throw.** A handler that throws is caught by its loop: the node fails as a hook that throws
+  does, `loop <name>'s handler threw: <what>` (`start-failed`, or `lost` once rested; during a
+  teardown a `log` record), and the loop runs on.
+
 ## Latency
 
 A type declares only **its own** latency: how long its code holds audio between an input bank and
@@ -417,7 +492,9 @@ pass-through, a bad or doubled bank name, a `process` that may throw, a class th
 no `ports` or `configure`, a member of the wrong signature (`configure`, `start`, `stop`, `check`,
 `prepare`, `release`, the change version), a private or overloaded one, a static `start` (the old
 interface), a call `CreateOf` does not offer, a sound card, RTP receiver, sink or source on the wrong
-bank, and the harness given a bank the spec lacks.
+bank, a loop's name that is not 1 to 8 of `[a-z0-9-]` or names two loops, a state given to a loop
+declared without one, a loop the spec lacks (in a context, a post or the harness), a post of a
+function of another loop's state, and the harness given a bank the spec lacks.
 
 **At run time**, a rule the type breaks fails the node `start-failed` with the rule's text, even
 when the type catches the throw; none takes ear down:
@@ -433,6 +510,10 @@ when the type catches the throw; none takes ear down:
 | Latency declared on a path the pass-through does not copy | `configure declared latency on <from> to <to>, a path its pass-through does not copy` |
 | A latency plan that does not fit the ports (only a framework bug makes one: each declaration is checked at its call) | `configure gave a latency plan that does not fit: <why>` |
 | A second companion on an inside bank | `configure threw: a second companion on bank <bank>` |
+| A loop declared with a state given none, or two | `configure gave loop <name> no state`; `configure threw: loop <name> given a state twice` |
+| Loops declared on a host with no loops adapter | `no loops in this host` (`configure threw: no loops in this host` at a loop call) |
+| A loop that cannot start | `cannot start loop <name>: <why>` |
+| A loop's handler throws | `loop <name>'s handler threw: <what>` (`start-failed`, or `lost` once rested; once the teardown began, a `log` record) |
 | A `CreateOf` call after `configure` returned | `<call> outside configure` |
 | `Configured::failed("")` | `configure answered failed with no detail` |
 | `configure` throws | `configure threw: <what>` |
@@ -446,7 +527,7 @@ when the type catches the throw; none takes ear down:
 **One catch.** Every call the framework makes into a type's code goes through one catch: the hooks,
 the code's `prepare` and a legacy recipe and close on the main loop (each named in the main loop's
 activity while it runs, so a stall inside one is placed), a sink's or legacy handoff's consumer on
-that one's own thread, and the type's code run at parse. So nothing a type throws reaches PipeWire's
+that one's own thread, a loop's handlers on its thread, and the type's code run at parse. So nothing a type throws reaches PipeWire's
 callbacks ([architecture.md](architecture.md#the-callback-boundary)); a rule broken while one runs
 fails it first, even when the type caught the throw. A type's own `std::logic_error` is its bug like
 any other throw. A bug of ear's own adapter inside a context call (a sink adapter's
@@ -473,7 +554,7 @@ fakes allow. Banks are named by the spec's handles.
 
 | Call | What |
 |---|---|
-| `TypeHarness h({.format = {48000, 256}, .node = "x", .recordings = &adapter})` | Options: format, node name, a recordings adapter (none: every recording refused), `autoComplete` (off: each fade-out and barrier waits for the test, or a fade-out for a cycle that ends it at zero, and a drive cancels a fade-out still waiting, as the real block does), `holdSinks` (each sink's consumer begins only at `h.ready(bank)`, not at configure's return), and `sinkRingFrames` (each sink's ring in frames instead of the size the type asked for, rounded up to a power of two as the engine's is: cycles that do not divide it make the sink split chunks at its end) |
+| `TypeHarness h({.format = {48000, 256}, .node = "x", .recordings = &adapter})` | Options: format, node name, a recordings adapter (none: every recording refused), `autoComplete` (off: each fade-out and barrier waits for the test, or a fade-out for a cycle that ends it at zero, and a drive cancels a fade-out still waiting, as the real block does), `holdSinks` (each sink's consumer begins only at `h.ready(bank)`, not at configure's return), and `sinkRingFrames` (each sink's ring in frames instead of the size the type asked for, rounded up to a power of two as the engine's is: cycles that do not divide it make the sink split chunks at its end); and for loops `holdLoops`, `refuseLoops` and `allowSourcesLeft` (below) |
 | `h.parse(settings)` | The type's parse: nothing, or the refusal's text |
 | `h.add()`, `h.add({.disabled = true})` | Adds the node and configures it |
 | `h.blockReady()` | The block becomes ready: the code drives, the node runs |
@@ -489,6 +570,7 @@ fakes allow. Banks are named by the spec's handles.
 | `h->unwritten()`, `h->notes()`, `h->logs()`, `h->diagnostics()`, `h->latencyPlan()`, `h->ports()` | Through `->`, the underlying `NodeHarness`; `notes()` as the main loop heard them (after the [note rate](#the-node-handle)), `logs()` every log entry attributed to the node |
 | `h.companion(bank)` | What was made on a bank (an engine companion's bank as `NodeHost` named it): its `kind` (`CompanionKind`: a card's by its bank's direction), `name`, `shape`, `made`, `ready`, `destroyed`, and a sink's `chunks` as its consumer got them, one per call (a chunk split at the ring's end is two) |
 | `h.recordingRequests()` | Every recording asked for |
+| `h.runLoops()`, `h->advance(ms)`, `h.armed(loop)`, `h.readable(fd)`, `h.loopsReady()`, `h->loops()` | The loops ([loops](#loops)), on the test's thread with their kind kept: `runLoops()` runs what was posted and each watch rung (a source's clock wake rung by `process()`, a descriptor marked `readable(fd)`) until all are idle, never a timer; `advance` fires their timers in time order with the framework's (an `every` once per period passed: a handler takes no time); `armed(loop)` counts the sources armed on it whose handles live. Loops start when the framework asks (with `holdLoops`, at `loopsReady()`; with `refuseLoops = "<why>"`, never); a teardown turns each loop until it finished and closed; a source a state left armed fails the call that tore it down unless `allowSourcesLeft` (then only `ear.loop-source-left` in `diagnostics()`). `loops()` lists each loop made: its name, kind, and whether it closed to others, finished and closed |
 
 The harness does not see a class's `start()` and `stop()`; their pairing is tested in
 `node_host_test.cpp`.

@@ -320,6 +320,21 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 		                             .shortfall = 256},
 		                            1, 256);
 		},
+		[](StatusLog& log, Lines&) {
+			const std::array fields{ear::DiagnosticField{"ms", 140}};
+			log.nodeDiagnostic("porch", "ear.loop-slow", "loop control ran one handler for 140 ms", fields);
+		},
+		[](StatusLog& log, Lines&) {
+			const std::array fields{ear::DiagnosticField{"sources", 2}};
+			log.nodeDiagnostic("kitchen", "ear.loop-source-left",
+		                       "2 sources were still armed on loop sendspin when the node's configuration closed",
+		                       fields);
+		},
+		[](StatusLog& log, Lines&) {
+			// fpp is still configuring (above); 10 s after its last still record, a new list is written.
+			paceNow += std::chrono::seconds(10);
+			log.nodeChanged(health("fpp", NodePhase::configuring, {}, {}, {{ear::WaitingFor::Kind::loop, "sendspin"}}));
+		},
 		[](StatusLog& log, Lines&) { log.stopped(); },
 	};
 }

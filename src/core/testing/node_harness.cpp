@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <deque>
@@ -18,6 +19,8 @@
 #include <optional>
 #include <stdexcept>
 #include <utility>
+
+#include <poll.h>
 
 #include "../legacy_instance.hpp"
 #include "ear/core/block_rules.hpp"
@@ -61,10 +64,18 @@ private:
 };
 
 /// Main-loop timers on a clock the test moves. The clock is atomic: Timers::now() may be read from any thread (a node
-/// handle's note rate reads it on the thread that says), while only the test's thread moves it.
+/// handle's note rate reads it on the thread that says), while only the test's thread moves it. The loops' timers
+/// (another clock's, `others`) fire on it too, in one time order with its own.
 class FakeClock final : public Timers {
 public:
+	/// Other timers on this clock: when the next is due, and firing it.
+	struct Others {
+		std::move_only_function<std::optional<std::chrono::milliseconds>()> nextDue;
+		std::move_only_function<void(std::chrono::milliseconds now)> fireNext;
+	};
 	explicit FakeClock(ManualExecutor& executor) : executor_(executor) {}
+	void setOthers(Others others) { others_ = std::move(others); }
+	std::chrono::milliseconds at() const noexcept { return now_.load(); }
 	std::unique_ptr<Timer> after(std::chrono::milliseconds delay, std::move_only_function<void()> due) override {
 		auto armed = std::make_shared<Armed>(Armed{now_.load() + delay, std::move(due)});
 		armed_.push_back(armed);
@@ -81,6 +92,13 @@ public:
 			for (const auto& armed : armed_)
 				if (!armed->cancelled && armed->due && armed->at <= until && (!next || armed->at < next->at))
 					next = armed;
+			const std::optional<std::chrono::milliseconds> other = others_.nextDue ? others_.nextDue() : std::nullopt;
+			if (other && *other <= until && (!next || *other < next->at)) {
+				now_.store(std::max(now_.load(), *other));
+				others_.fireNext(now_.load());
+				executor_.pump();
+				continue;
+			}
 			if (!next) break;
 			now_.store(std::max(now_.load(), next->at));
 			auto call = std::move(next->due);
@@ -104,6 +122,7 @@ private:
 		std::shared_ptr<Armed> armed;
 	};
 	ManualExecutor& executor_;
+	Others others_;
 	std::atomic<std::chrono::milliseconds> now_{std::chrono::milliseconds{0}};
 	std::vector<std::shared_ptr<Armed>> armed_;
 };
@@ -308,16 +327,21 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		std::uint64_t droppedFrames() const noexcept override { return rules.droppedFrames(); }
 		std::uint32_t write(std::span<const float> interleaved, std::uint32_t frames,
 		                    std::chrono::milliseconds) override {
+			assert(!onStrand() && "a source's write may wait: never from a strand (docs/writing-a-node-type.md#loops)");
 			return rules.offer(interleaved, frames);
 		}
-		void idle(std::chrono::milliseconds) override { rules.markIdle(); }
+		void idle(std::chrono::milliseconds) override {
+			assert(!onStrand() && "a source's idle waits: never from a strand (docs/writing-a-node-type.md#loops)");
+			rules.markIdle();
+		}
 		void clear() noexcept override { rules.clear(); }
 		bool closed() const noexcept override { return rules.closed(); }
 		std::uint32_t capacityFrames() const noexcept override { return rules.capacityFrames(); }
 		Wake& clockWake() noexcept override { return *this; }
-		void ring() noexcept override {}
+		/// Rung until answered: the loop fake runs a watch of it on its next turn.
+		void ring() noexcept override { rung = true; }
 		int descriptor() const noexcept override { return -1; }
-		void answer() noexcept override {}
+		void answer() noexcept override { rung = false; }
 		void roomFreed() noexcept override {}
 		void clockAsked() noexcept override { ring(); }
 		Impl& harness;
@@ -325,6 +349,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		std::unique_ptr<SourceClock> clock; // the type's, or null
 		SourceRing rules;
 		SourcePlayed lastPlayed{}; // the last tick's, as the ring told the clock
+		bool rung = false;         // its clock wake, until answered
 	};
 	struct FakeSources final : SourceAdapter {
 		explicit FakeSources(Impl& h) : harness(h) {}
@@ -383,6 +408,195 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		Impl& harness;
 	};
 
+	/// One loop on the test's thread: its work queued until runLoops() turns it (finish and close are queued as the
+	/// adapter's are, and turned by the harness's settle), its timers on the fake clock, its watches run when rung or
+	/// readable. Each source armed is kept until its handle goes, for armed() and the close's cancel.
+	struct FakeLoop final : NodeLoop {
+		struct Source {
+			enum class Kind { once, every, wake, readable } kind;
+			std::chrono::milliseconds due{0};
+			std::chrono::milliseconds period{0};
+			Wake* wake = nullptr;
+			int fd = -1;
+			std::move_only_function<void()> handler{};
+			bool cancelled = false;   // its handle went, or its loop closed
+			bool deliverable = false; // readable(fd) since it last ran
+			bool fired = false;       // a once timer that ran: still armed until its handle goes
+		};
+		struct Item {
+			std::move_only_function<void()> work;
+			bool outside = false;
+			bool marker = false; // a finish or a close: the harness turns the loop for it
+			std::move_only_function<void()> closed{};
+		};
+		struct Handle final : Timer {
+			explicit Handle(std::shared_ptr<Source> s) : source(std::move(s)) {}
+			~Handle() override { source->cancelled = true; }
+			std::shared_ptr<Source> source;
+		};
+		FakeLoop(Impl& h, std::size_t i, LoopKind k, LoopEvents& e) : harness(h), index(i), loopKind(k), events(e) {}
+		~FakeLoop() override { harness.loopFakes.at(index) = nullptr; }
+		void post(std::move_only_function<void()> work) override {
+			if (closing) return; // destroyed unrun
+			queue.push_back(Item{std::move(work)});
+		}
+		std::unique_ptr<Timer> after(std::chrono::milliseconds delay, std::move_only_function<void()> due) override {
+			return arm(
+				Source{.kind = Source::Kind::once, .due = harness.clock.at() + delay, .handler = std::move(due)});
+		}
+		std::unique_ptr<Timer> every(std::chrono::milliseconds period, std::move_only_function<void()> due) override {
+			period = std::max(period, std::chrono::milliseconds{1});
+			return arm(Source{.kind = Source::Kind::every,
+			                  .due = harness.clock.at() + period,
+			                  .period = period,
+			                  .handler = std::move(due)});
+		}
+		std::unique_ptr<Timer> onWake(Wake& wake, std::move_only_function<void()> rung) override {
+			return arm(Source{.kind = Source::Kind::wake, .wake = &wake, .handler = std::move(rung)});
+		}
+		std::unique_ptr<Timer> onReadable(int fd, std::move_only_function<void()> readable) override {
+			return arm(Source{.kind = Source::Kind::readable, .fd = fd, .handler = std::move(readable)});
+		}
+		LoopKind kind() const noexcept override { return loopKind; }
+		bool inLoop() const noexcept override { return running; }
+		void postFromOutside(std::move_only_function<void()> work) override {
+			if (closing || harness.loopList.at(index).closedToOthers) return;
+			queue.push_back(Item{std::move(work), true});
+		}
+		void closeToOthers() override { harness.loopList.at(index).closedToOthers = true; }
+		void finish(std::move_only_function<void()> last, std::move_only_function<void()> finished) override {
+			queue.push_back(Item{[this, last = std::move(last), finished = std::move(finished)]() mutable {
+									 last();
+									 harness.loopList.at(index).finished = true;
+									 harness.executor.post(std::move(finished));
+								 },
+			                     false, true});
+		}
+		void close(std::move_only_function<void()> closed) override {
+			closing = true;
+			queue.push_back(Item{{}, false, true, std::move(closed)});
+		}
+
+		std::unique_ptr<Timer> arm(Source source) {
+			auto armed = std::make_shared<Source>(std::move(source));
+			if (!closed) sources.push_back(armed);
+			else armed->cancelled = true;
+			return std::make_unique<Handle>(std::move(armed));
+		}
+		/// Runs `call` as this loop's handler; a throw is caught and told, as the real loops do.
+		template <typename Call> void handler(Call&& call) {
+			running = true;
+			{
+				std::optional<StrandScope> strand;
+				if (loopKind == LoopKind::strand) strand.emplace();
+				try {
+					std::forward<Call>(call)();
+				} catch (const std::exception& error) {
+					harness.executor.post([&told = events, what = std::string(error.what())] { told.threw(what); });
+				} catch (...) {
+					harness.executor.post(
+						[&told = events] { told.threw("an exception that is not a std::exception"); });
+				}
+			}
+			running = false;
+		}
+		/// Runs everything queued and each watch rung, until idle. Whether anything ran.
+		bool turn() {
+			bool ran = false;
+			for (;;) {
+				std::erase_if(sources, [](const auto& source) { return source->cancelled; });
+				if (!queue.empty()) {
+					Item item = std::move(queue.front());
+					queue.pop_front();
+					ran = true;
+					if (item.closed) {
+						for (auto& source : sources) source->cancelled = true;
+						sources.clear();
+						closed = true;
+						harness.loopList.at(index).closed = true;
+						harness.executor.post(std::move(item.closed));
+						queue.clear();
+						continue;
+					}
+					if (item.outside && harness.loopList.at(index).closedToOthers) continue;
+					handler(item.work);
+					continue;
+				}
+				std::shared_ptr<Source> due;
+				for (const auto& source : sources) {
+					if (source->cancelled) continue;
+					if (source->kind == Source::Kind::readable && source->deliverable) due = source;
+					if (source->kind == Source::Kind::wake && rung(*source->wake)) due = source;
+					if (due) break;
+				}
+				if (!due) return ran;
+				ran = true;
+				if (due->kind == Source::Kind::wake) due->wake->answer();
+				due->deliverable = false;
+				handler(due->handler);
+			}
+		}
+		/// Whether a wake is rung: the harness's own sources say; any other is looked at by its descriptor.
+		static bool rung(Wake& wake) {
+			if (auto* own = dynamic_cast<FakeSource*>(&wake)) return own->rung;
+			pollfd look{.fd = wake.descriptor(), .events = POLLIN, .revents = 0};
+			return look.fd >= 0 && ::poll(&look, 1, 0) > 0 && (look.revents & POLLIN) != 0;
+		}
+		bool marked() const {
+			return std::ranges::any_of(queue, [](const Item& item) { return item.marker; });
+		}
+		std::optional<std::chrono::milliseconds> nextDue() const {
+			std::optional<std::chrono::milliseconds> next;
+			for (const auto& source : sources)
+				if (!source->cancelled && !source->fired &&
+				    (source->kind == Source::Kind::once || source->kind == Source::Kind::every) &&
+				    (!next || source->due < *next))
+					next = source->due;
+			return next;
+		}
+		/// Fires the timer due at `now` (the earliest).
+		void fireDue(std::chrono::milliseconds now) {
+			for (const auto& source : sources) {
+				if (source->cancelled || source->fired || source->due != now ||
+				    (source->kind != Source::Kind::once && source->kind != Source::Kind::every))
+					continue;
+				auto keep = source; // its handler may cancel it
+				if (keep->kind == Source::Kind::every) {
+					const auto missed = (now - keep->due) / keep->period;
+					keep->due += keep->period * (missed + 1);
+				} else {
+					keep->fired = true;
+				}
+				handler(keep->handler);
+				return;
+			}
+		}
+		Impl& harness;
+		std::size_t index; // in loopList
+		LoopKind loopKind;
+		LoopEvents& events; // the framework's, outliving the loop
+		std::deque<Item> queue;
+		std::vector<std::shared_ptr<Source>> sources;
+		bool running = false;
+		bool closing = false;
+		bool closed = false;
+	};
+	struct FakeLoops final : LoopAdapter {
+		explicit FakeLoops(Impl& h) : harness(h) {}
+		std::unique_ptr<NodeLoop> make(const NodeName&, std::string_view name, LoopKind kind,
+		                               LoopEvents& events) override {
+			harness.loopList.push_back(NodeHarness::SeenLoop{std::string(name), kind});
+			auto made = std::make_unique<FakeLoop>(harness, harness.loopList.size() - 1, kind, events);
+			harness.loopFakes.push_back(made.get());
+			if (harness.options.refuseLoops)
+				harness.executor.post([&events, why = *harness.options.refuseLoops] { events.failed(why); });
+			else if (harness.options.holdLoops) harness.heldLoops.emplace_back(harness.loopList.size() - 1, &events);
+			else harness.executor.post([&events] { events.ready(); });
+			return made;
+		}
+		Impl& harness;
+	};
+
 	/// Every config the type parses, wrapped so the harness sees the instance each configuration makes (a legacy run
 	/// object, for runObject()) and when it goes.
 	/// Both contexts, forwarded to NodeHost's, recording the requests the harness shows (handoffs, recordings). Lives
@@ -413,6 +627,13 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		[[noreturn]] void refuse(std::string rule) override {
 			create.refuse(rule);
 			throw std::logic_error(rule); // never reached: refuse throws
+		}
+		void loopState(std::size_t loop, std::unique_ptr<void, void (*)(void*)> state) override {
+			create.loopState(loop, std::move(state));
+		}
+		Loop& loopExecutor(std::size_t loop) override { return create.loopExecutor(loop); }
+		void postToLoop(std::size_t loop, std::move_only_function<void(void*)> work) override {
+			create.postToLoop(loop, std::move(work));
 		}
 		NodeHandle& events() override { return legacy.events(); }
 		void declareLatency(const std::string& bank, Latency internal) override {
@@ -448,6 +669,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			InstanceContexts contexts{seen, seen};
 			return inner->configure(contexts);
 		}
+		std::span<const LoopDeclaration> loops() const noexcept override { return inner->loops(); }
 		bool hasRecipe() const noexcept override { return inner->hasRecipe(); }
 		bool engineRefused() const noexcept override { return inner->engineRefused(); }
 		std::expected<void, FailureReason> ready(Ready& ready) override { return inner->ready(ready); }
@@ -470,10 +692,14 @@ struct NodeHarness::Impl final : NodeHealthListener,
 
 	Impl(const NodeType& t, Options o)
 		: type(t), options(std::move(o)), clock(executor), blocks(*this), cards(*this), receivers(*this),
-		  handoffs(*this), sinks(*this), sources(*this),
-		  registry(options.recordings != nullptr
-	                   ? ResourceRegistry(cards, receivers, handoffs, sinks, sources, *options.recordings)
-	                   : ResourceRegistry(cards, receivers, handoffs, sinks, sources)),
+		  handoffs(*this), sinks(*this), sources(*this), loops(*this),
+		  registry(ResourceAdapters{.cards = &cards,
+	                                .receivers = &receivers,
+	                                .handoffs = &handoffs,
+	                                .sinks = &sinks,
+	                                .sources = &sources,
+	                                .recordings = options.recordings,
+	                                .loops = &loops}),
 		  graph(catalogue), fade(options.format.rate), account(FrameClock(options.format.rate), &cuts),
 		  host(std::make_unique<NodeHost>(options.format, blocks, registry, executor, clock)) {
 		host->subscribe(*this);
@@ -481,6 +707,22 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		host->subscribeLog(*this);
 		host->subscribeDiagnostics(*this);
 		host->subscribeEngineDiagnostics(*this);
+		clock.setOthers(FakeClock::Others{
+			.nextDue = [this]() -> std::optional<std::chrono::milliseconds> {
+				std::optional<std::chrono::milliseconds> next;
+				for (FakeLoop* loop : liveLoops())
+					if (auto due = loop->nextDue(); due && (!next || *due < *next)) next = due;
+				return next;
+			},
+			.fireNext =
+				[this](std::chrono::milliseconds now) {
+					for (FakeLoop* loop : liveLoops())
+						if (loop->nextDue() == now) {
+							loop->fireDue(now);
+							return;
+						}
+				},
+		});
 	}
 
 	// ---- Listeners ----
@@ -500,6 +742,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		SeenDiagnostic seen{std::string(code), detail, {}};
 		for (const DiagnosticField& field : fields) seen.fields.emplace_back(std::string(field.key), field.value);
 		diagnosticList.push_back(std::move(seen));
+		if (code == "ear.loop-source-left" && !options.allowSourcesLeft) sourcesLeft.push_back(detail);
 	}
 	void engineDiagnostic(const EngineDiagnostic& diagnostic) override {
 		SeenDiagnostic seen{std::string(diagnostic.code), diagnostic.detail, {}};
@@ -521,7 +764,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		auto done = std::move(found->done);
 		pending.erase(found);
 		executor.post(std::move(done));
-		executor.pump();
+		settle();
 	}
 	/// The oldest `count` fade-outs pending, which BlockFade completed: each `done` is posted (acknowledged), or none
 	/// is (cancelled by a drive). Never pumped here: a fake's call inside NodeHost's turn only posts, as the real block
@@ -585,18 +828,44 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		if (found == names.end()) throw std::logic_error("the node has no port " + std::string(port));
 		return static_cast<std::size_t>(found - names.begin());
 	}
+	/// The loops the framework made whose fakes still live.
+	std::vector<FakeLoop*> liveLoops() const {
+		std::vector<FakeLoop*> live;
+		for (FakeLoop* loop : loopFakes)
+			if (loop != nullptr) live.push_back(loop);
+		return live;
+	}
+	/// The main loop pumped, and each loop with a finish or a close queued turned until none is (as the framework's
+	/// teardown waits on them), then a source a state left armed thrown (unless allowSourcesLeft).
+	void settle() {
+		executor.pump();
+		for (bool turned = true; turned;) {
+			turned = false;
+			for (FakeLoop* loop : liveLoops())
+				if (loop->marked()) {
+					loop->turn();
+					turned = true;
+				}
+			executor.pump();
+		}
+		if (!sourcesLeft.empty()) {
+			const std::string left = sourcesLeft.front();
+			sourcesLeft.clear();
+			throw std::logic_error("a loop's state left a source armed: " + left);
+		}
+	}
 	/// Teardown to the end: remove the node (stopAll), completing every request the test left pending.
 	void finish() {
 		if (!added || stopped) return;
 		stopped = true;
 		host->stopAll(graph.close(), [] {});
-		executor.pump();
+		settle();
 		fade.notProcessing(); // the fade-outs pending complete with the rest
 		for (int rounds = 0; rounds < 1000 && !pending.empty(); ++rounds) {
 			auto done = std::move(pending.front().done);
 			pending.pop_front();
 			executor.post(std::move(done));
-			executor.pump();
+			settle();
 		}
 		clock.advance(defaultCloseDeadline); // a legacy run past its close deadline is leaked, never waited for
 	}
@@ -611,6 +880,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	FakeHandoffs handoffs;
 	FakeSinks sinks;
 	FakeSources sources;
+	FakeLoops loops;
 	ResourceRegistry registry;
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph; // only for close(), the proof stopAll takes
@@ -650,6 +920,10 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	std::vector<std::uint64_t> handoffCounts;
 	std::vector<SeenHandoff> handoffList;
 	std::vector<RecordingRequest> recordingList;
+	std::vector<NodeHarness::SeenLoop> loopList;                // every loop made, in order
+	std::vector<FakeLoop*> loopFakes;                           // by loopList's index; null once freed
+	std::vector<std::pair<std::size_t, LoopEvents*>> heldLoops; // holdLoops: by loopList's index, told at loopsReady()
+	std::vector<std::string> sourcesLeft;                       // ear.loop-source-left said since the last settle
 
 	std::optional<NodeHealth> told;
 	bool wentAway = false;
@@ -700,19 +974,19 @@ void NodeHarness::add(AddOptions options) {
 	impl_->added = true;
 	impl_->disabled = options.disabled;
 	impl_->host->nodeAdded(impl_->spec(options.disabled), impl_->config);
-	impl_->executor.pump();
+	impl_->settle();
 }
 
 void NodeHarness::blockReady() {
 	if (impl_->blockEvents == nullptr) throw std::logic_error("no block was made");
 	impl_->blockEvents->ready();
-	impl_->executor.pump();
+	impl_->settle();
 }
 
 void NodeHarness::blockLost(std::string detail) {
 	if (impl_->blockEvents == nullptr) throw std::logic_error("no block was made");
 	impl_->blockEvents->lost(std::move(detail));
-	impl_->executor.pump();
+	impl_->settle();
 }
 
 void NodeHarness::ready(std::string_view bank) {
@@ -722,7 +996,7 @@ void NodeHarness::ready(std::string_view bank) {
 		const auto alive = impl_->sinkFakes.find(index);
 		if (alive == impl_->sinkFakes.end()) throw std::logic_error("no sink on " + std::string(bank) + " is alive");
 		if (!alive->second->began) alive->second->runBegin();
-		impl_->executor.pump();
+		impl_->settle();
 		return;
 	}
 	if (fake.kind == CompanionKind::source) return; // ready when made
@@ -730,7 +1004,7 @@ void NodeHarness::ready(std::string_view bank) {
 	if (events == nullptr) throw std::logic_error("no engine companion on " + std::string(bank) + " is alive");
 	fake.ready = true;
 	events->ready();
-	impl_->executor.pump();
+	impl_->settle();
 }
 
 void NodeHarness::lose(std::string_view bank, std::string detail) {
@@ -742,7 +1016,7 @@ void NodeHarness::lose(std::string_view bank, std::string detail) {
 	EngineCompanionEvents* events = impl_->engineEvents.at(index);
 	if (events == nullptr) throw std::logic_error("no engine companion on " + std::string(bank) + " is alive");
 	events->lost(std::move(detail));
-	impl_->executor.pump();
+	impl_->settle();
 }
 
 void NodeHarness::acknowledgeFade() {
@@ -750,14 +1024,14 @@ void NodeHarness::acknowledgeFade() {
 	const std::uint64_t acknowledged = impl_->fade.notProcessing();
 	if (acknowledged == 0) throw std::logic_error("no fade-out is pending");
 	impl_->completeFades(acknowledged);
-	impl_->executor.pump();
+	impl_->settle();
 }
 
 void NodeHarness::completeBarrier() { impl_->completeOldest(false); }
 
 void NodeHarness::advance(std::chrono::milliseconds by) {
 	impl_->clock.advance(by);
-	impl_->executor.pump();
+	impl_->settle();
 }
 
 void NodeHarness::process(std::uint32_t frames) {
@@ -836,7 +1110,7 @@ void NodeHarness::process(std::uint32_t frames) {
 	// A cycle that ended a fade-out at zero acknowledged every fade-out waiting.
 	if (faded.acknowledged > 0) {
 		h.completeFades(faded.acknowledged);
-		h.executor.pump();
+		h.settle();
 	}
 }
 
@@ -883,28 +1157,28 @@ NodeOutcome NodeHarness::change(const NodeSettings& settings) {
 	impl_->buffers();
 	const NodeOutcome outcome = impl_->disabled ? NodeOutcome::stored : NodeOutcome::restart;
 	impl_->host->nodeChanged(impl_->spec(impl_->disabled), impl_->config, NodeChange{outcome, keys});
-	impl_->executor.pump();
+	impl_->settle();
 	return outcome;
 }
 
 LifecycleReply NodeHarness::stop() {
 	impl_->requireAdded();
 	const LifecycleReply reply = impl_->host->stop(impl_->options.node);
-	impl_->executor.pump();
+	impl_->settle();
 	return reply;
 }
 
 LifecycleReply NodeHarness::start() {
 	impl_->requireAdded();
 	const LifecycleReply reply = impl_->host->start(impl_->options.node);
-	impl_->executor.pump();
+	impl_->settle();
 	return reply;
 }
 
 LifecycleReply NodeHarness::restart() {
 	impl_->requireAdded();
 	const LifecycleReply reply = impl_->host->restart(impl_->options.node);
-	impl_->executor.pump();
+	impl_->settle();
 	return reply;
 }
 
@@ -912,20 +1186,20 @@ void NodeHarness::disable() {
 	impl_->requireAdded();
 	impl_->disabled = true;
 	impl_->host->nodeChanged(impl_->spec(true), impl_->config, NodeChange{NodeOutcome::disable, {}});
-	impl_->executor.pump();
+	impl_->settle();
 }
 
 void NodeHarness::enable() {
 	impl_->requireAdded();
 	impl_->disabled = false;
 	impl_->host->nodeChanged(impl_->spec(false), impl_->config, NodeChange{NodeOutcome::enable, {}});
-	impl_->executor.pump();
+	impl_->settle();
 }
 
 void NodeHarness::remove() {
 	impl_->requireAdded();
 	impl_->host->nodeRemoved(impl_->options.node);
-	impl_->executor.pump();
+	impl_->settle();
 }
 
 NodeHealth NodeHarness::health() const {
@@ -997,6 +1271,40 @@ std::uint64_t NodeHarness::handoffFrames(std::size_t index) const { return impl_
 const std::vector<SeenHandoff>& NodeHarness::handoffs() const noexcept { return impl_->handoffList; }
 
 const std::vector<RecordingRequest>& NodeHarness::recordingRequests() const noexcept { return impl_->recordingList; }
+
+void NodeHarness::runLoops() {
+	for (;;) {
+		bool ran = false;
+		for (Impl::FakeLoop* loop : impl_->liveLoops()) ran = loop->turn() || ran;
+		impl_->settle();
+		if (!ran) return;
+	}
+}
+
+void NodeHarness::loopsReady() {
+	for (auto [index, events] : std::exchange(impl_->heldLoops, {}))
+		if (impl_->loopFakes.at(index) != nullptr) events->ready();
+	impl_->settle();
+}
+
+void NodeHarness::readable(int fd) {
+	for (Impl::FakeLoop* loop : impl_->liveLoops())
+		for (const auto& source : loop->sources)
+			if (source->fd == fd && !source->cancelled) source->deliverable = true;
+}
+
+std::size_t NodeHarness::armed(std::string_view loop) const {
+	for (std::size_t i = impl_->loopList.size(); i-- > 0;) {
+		if (impl_->loopList[i].name != loop) continue;
+		const Impl::FakeLoop* fake = impl_->loopFakes.at(i);
+		if (fake == nullptr) return 0;
+		return static_cast<std::size_t>(
+			std::ranges::count_if(fake->sources, [](const auto& source) { return !source->cancelled; }));
+	}
+	return 0;
+}
+
+std::vector<NodeHarness::SeenLoop> NodeHarness::loops() const { return impl_->loopList; }
 
 RunObject* NodeHarness::runObject() const noexcept {
 	if (impl_->instance == nullptr) return nullptr;

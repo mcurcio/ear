@@ -46,6 +46,16 @@ public:
 	const std::vector<SeenHandoff>& handoffs() const noexcept { return node_->handoffs(); }
 	const std::vector<RecordingRequest>& recordingRequests() const noexcept { return node_->recordingRequests(); }
 
+	void runLoops() { node_->runLoops(); }
+	void loopsReady() { node_->loopsReady(); }
+	void readable(int fd) { node_->readable(fd); }
+	/// The sources armed on loop `Handle` whose handles live.
+	template <class Handle> std::size_t armed(Handle) const {
+		static_assert(isLoopHandle<Handle> && LoopsOf<Spec>::template has<Handle>,
+		              "the harness takes only its spec's loops");
+		return node_->armed(Handle::name);
+	}
+
 	template <class Bank> void ready(Bank) {
 		static_assert(ownBank<Bank>, "the harness takes only its spec's banks");
 		node_->ready(Bank::name);

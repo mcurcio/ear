@@ -804,10 +804,57 @@
       }
     },
     {
-      "case": "a stop has done all ear does: every node removed, the control port closed, ear.conf's last write made; ear's last record before it exits 0",
+      "case": "the framework's diagnostic about a node: one of its strand loops ran one handler past 100 ms (docs/writing-a-node-type.md#loops), said once per loop and configuration",
       "record": {
         "v": 1,
         "seq": 87,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "node": "porch",
+        "code": "ear.loop-slow",
+        "ms": 140,
+        "detail": "loop control ran one handler for 140 ms",
+        "msg": "node porch ear.loop-slow: loop control ran one handler for 140 ms"
+      }
+    },
+    {
+      "case": "a loop's state left sources armed when its configuration closed (a type's bug): the loop cancelled them",
+      "record": {
+        "v": 1,
+        "seq": 88,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "node": "kitchen",
+        "code": "ear.loop-source-left",
+        "sources": 2,
+        "detail": "2 sources were still armed on loop sendspin when the node's configuration closed",
+        "msg": "node kitchen ear.loop-source-left: 2 sources were still armed on loop sendspin when the node's configuration closed"
+      }
+    },
+    {
+      "case": "a node still configuring while one of its loops has not started says so, by the loop's name",
+      "record": {
+        "v": 1,
+        "seq": 89,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "fpp",
+        "state": "starting",
+        "phase": "configuring",
+        "waitingFor": [
+          {
+            "kind": "loop",
+            "name": "sendspin"
+          }
+        ],
+        "msg": "node fpp still configuring after 22s: waiting for its loop sendspin"
+      }
+    },
+    {
+      "case": "a stop has done all ear does: every node removed, the control port closed, ear.conf's last write made; ear's last record before it exits 0",
+      "record": {
+        "v": 1,
+        "seq": 90,
         "t": "2026-11-07T17:42:03.512094Z",
         "kind": "exit",
         "status": 0,

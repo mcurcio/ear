@@ -127,6 +127,9 @@ std::string waitingText(const std::vector<WaitingFor>& waits) {
 		case WaitingFor::Kind::consumer:
 			one = "its consumer";
 			break;
+		case WaitingFor::Kind::loop:
+			one = "its loop " + wait.name;
+			break;
 		}
 		text += (text.empty() ? "" : ", ") + one;
 	}

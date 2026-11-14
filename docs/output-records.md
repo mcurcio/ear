@@ -67,7 +67,8 @@ does; it carries the `phase` beside the state.
 
 `<why>` and the configuring cause read `settings changed: <keys>`, `restart invoked` (for
 `node.restart`), `retry` or `enabling`. `<what>` names `the previous <name>` (an older node of its
-name), `the engine` (its block), an engine companion's engine name (`fpp.rtp`), or `its consumer`.
+name), `the engine` (its block), an engine companion's engine name (`fpp.rtp`), `its consumer`, or
+`its loop <name>` (one of the node's loops not yet running).
 `configuring`, `configured` and `starting` after the first add write nothing of their own (they
 share the colour `starting`). The `cause` field is `{"kind"}`, with `restart: {"kind", "keys"?}`
 for a restart, as on the wire ([control-port.md](control-port.md#node-health)).
@@ -125,10 +126,12 @@ The framework's own observations. With a node:
 
 | Code | Fields | When |
 |---|---|---|
-| `ear.close-overdue` | | A configuration's teardown did not finish within 10 s; it is leaked, never freed |
+| `ear.close-overdue` | | A configuration's teardown did not finish within 10 s; it is leaked, never freed. `detail` counts what was still open (handoffs, sinks, loops) |
 | `ear.fade-unacknowledged` | `ms` | A planned silence's fade was not acknowledged within 100 ms; the silence was taken unfaded |
 | `ear.barrier-overdue` | `ms` | A drive or silence posted to the data loop did not complete within 5 s; the configuration and block are leaked |
 | `ear.hook-slow` | `ms` | A hook (`configure`, `start` or `stop`, named in `detail`) ran past 20 ms on the main loop; once per node and hook |
+| `ear.loop-slow` | `ms` | One of the node's strand loops ran one handler past 100 ms (`detail`: `loop <name> ran one handler for <ms> ms`); once per loop and configuration ([writing-a-node-type.md](writing-a-node-type.md#loops)) |
+| `ear.loop-source-left` | `sources` | A loop's state left timers or watches armed when its configuration closed, a type's bug: its loop cancelled them (`detail`: `<k> sources were still armed on loop <name> when the node's configuration closed`) |
 | `ear.internal-error` | `callback` | ear's own bug in one of the node's adapters, caught: `callback` names the callback or adapter call that threw (`FilterPortBlock::onStateChanged`, `SinkAdapter::make`), `detail` reads `<callback> threw[ during <where>]: <what>`. The node's `failed lost` record follows, unless the node is already being stopped, restarted or removed (the fault is then dropped with the rest of its teardown); the rest of the graph runs on. Said once per callback owner (a block, a companion's lifecycle, body or link), however often its callbacks throw |
 | `ear.node-missed-cycles` | `missed`, `overruns`, `totalMissed`, `totalOverruns` | The node's block missed cycles the driver did not cut (it was not scheduled), or its own work overran a cycle: `missed` and `overruns` since its last such record, the totals since it was added ([engine.md](engine.md#counters)). Once its misses held still for a beat, at most once per 10 s per node, and at once as the node goes ([engine.md](engine.md#reporting-the-counters)) |
 | `ear.sink-dropped` | `companion`, `frames`, `totalFrames` | A sink's ring had no room for frames its block tapped (`companion` names the sink, `<node>.<bank>`): `frames` since its last such record, `totalFrames` since its configuration made it. Once the count held still for a beat, at most once per 10 s per sink, and at once as its configuration ends. A sink that drops without a pause (a full disk) is not said at once: its first record comes about 10 s after it began dropping, then one about every 10 s, each with what it dropped since. A configuration's records sum to its drops ([engine.md](engine.md#reporting-the-counters)). The `removed` record's `dropped=` is the node's sum over its configurations |

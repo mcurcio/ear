@@ -18,21 +18,24 @@
 #include "ear/core/internal_error.hpp"
 #include "ear/core/latency.hpp"
 #include "ear/core/log.hpp"
+#include "ear/core/loop.hpp"
 #include "ear/core/node_lifecycle.hpp"
 #include "ear/core/sink.hpp"
 #include "ear/core/source.hpp"
 #include "ear/core/timers.hpp"
 namespace ear {
-/// What a node still waits for, once its phase has lasted 2 s (docs/control-port.md#node-health; 3a's four kinds):
-/// an older node of its name still closing (`name` its name), the engine's block (`block`), a companion (`name`: an
-/// engine companion's engine name, `<node>.<suffix>`), a sink's consumer (`consumer`).
+/// What a node still waits for, once its phase has lasted 2 s (docs/control-port.md#node-health): an older node of its
+/// name still closing (`name` its name), the engine's block (`block`), a companion (`name`: an engine companion's
+/// engine name, `<node>.<suffix>`), a sink's consumer (`consumer`), one of its loops to start (`loop`, `name` the
+/// loop's).
 struct WaitingFor {
-	enum class Kind { olderNode, block, companion, consumer };
+	enum class Kind { olderNode, block, companion, consumer, loop };
 	Kind kind;
-	std::string name{}; // olderNode and companion only
+	std::string name{}; // olderNode, companion and loop only
 	friend bool operator==(const WaitingFor&, const WaitingFor&) = default;
 };
-std::string_view waitingKindName(WaitingFor::Kind kind) noexcept; // "older-node" | "block" | "companion" | "consumer"
+std::string_view
+waitingKindName(WaitingFor::Kind kind) noexcept; // "older-node" | "block" | "companion" | "consumer" | "loop"
 /// A node's health, the framework's judgement alone (docs/architecture.md#the-node-lifecycle; on the wire:
 /// docs/control-port.md#node-health): its state (the phase's
 /// colour), why it failed (while failed), its exact phase, what the graph wants of it, why it is stopping or
@@ -253,6 +256,7 @@ struct ResourceAdapters {
 	SinkAdapter* sinks = nullptr;
 	SourceAdapter* sources = nullptr;
 	RecordingAdapter* recordings = nullptr;
+	LoopAdapter* loops = nullptr;
 };
 /// The resource registry (docs/writing-a-node-type.md#configure-and-createof): one adapter per kind of companion and
 /// of ResourceRequest, so a new kind is one adapter here and nothing more in NodeHost's constructor. A kind the host
@@ -280,6 +284,8 @@ public:
 	SinkAdapter* sinks() const noexcept { return adapters_.sinks; }
 	/// The sources' adapter (CreateOf::source; docs/writing-a-node-type.md#sources); null: the host has none.
 	SourceAdapter* sources() const noexcept { return adapters_.sources; }
+	/// The loops' adapter (a spec's loops; docs/writing-a-node-type.md#loops); null: the host has none.
+	LoopAdapter* loops() const noexcept { return adapters_.loops; }
 
 private:
 	ResourceAdapters adapters_;

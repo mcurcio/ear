@@ -5,8 +5,9 @@
 // slice 3c.
 #include "ear/pipewire/sources.hpp"
 
-#include <atomic>
 #include <algorithm>
+#include <atomic>
+#include <cassert>
 #include <cerrno>
 #include <climits>
 #include <chrono>
@@ -16,6 +17,7 @@
 #include <sys/eventfd.h>
 #include <unistd.h>
 
+#include "ear/core/loop.hpp"
 #include "ear/core/source_ring.hpp"
 
 namespace ear::pipewire {
@@ -103,6 +105,7 @@ public:
 	// SourceWriter.
 	std::uint32_t write(std::span<const float> interleaved, std::uint32_t frames,
 	                    std::chrono::milliseconds patience) override {
+		assert(!onStrand() && "a source's write may wait: never from a strand (docs/writing-a-node-type.md#loops)");
 		const auto until = deadlineAfter(patience);
 		for (;;) {
 			if (ring_.closed()) return sleepClosed(until);
@@ -127,6 +130,7 @@ public:
 		}
 	}
 	void idle(std::chrono::milliseconds patience) override {
+		assert(!onStrand() && "a source's idle waits: never from a strand (docs/writing-a-node-type.md#loops)");
 		const auto until = deadlineAfter(patience);
 		if (ring_.closed()) {
 			sleepClosed(until);

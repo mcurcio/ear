@@ -146,11 +146,45 @@ reset by a restart" is "per configuration". The legacy `StartContext::events()` 
 configuration owns its `Channel` until teardown step 5 (a leaked one for ever), so a thread may call it until its
 teardown ended, and a call after its detach is dropped. The harness gains `logs()`.
 
-**Loops** (S3c.3): 6.3 as written, with three changes. `Loop::after` and `every` return `std::unique_ptr<Timer>` (core's
-`timers.hpp` already defines a timer cancelled by its destruction), and that type replaces `LoopSource`.
-`onWake(Wake&, ...)` watches `Wake::descriptor()` and calls `Wake::answer()` before the handler (the protocol
-`source.hpp` states). `LoopAdapter::make` takes a `ReadyEvents&` (an item of step 2). Dedicated threads are named
-`ear-<name> <node>`, as today's are.
+**Loops** (S3c.3, built: `docs/writing-a-node-type.md#loops`): 6.3 as written, with three changes. `Loop::after` and
+`every` return `std::unique_ptr<Timer>` (core's `timers.hpp` already defines a timer cancelled by its destruction), and
+that type replaces `LoopSource`. `onWake(Wake&, ...)` watches `Wake::descriptor()` and calls `Wake::answer()` before the
+handler (the protocol `source.hpp` states). `LoopAdapter::make` takes a `ReadyEvents&` (an item of step 2). Dedicated
+threads are named `ear-<name> <node>`, as today's are. *Found building S3c.3:*
+
+- **Finish, then close.** 6.3's one `NodeLoop::close` cannot carry a goodbye between loops: 4.1's worker posts to the
+  notifier as it goes, and a loop that already took no more work would drop it, or count a watch the other loop was
+  about to destroy as left. So step 4 is two calls on every loop of the configuration: `finish(last, finished)` runs the
+  work queued, then `last` (the state destroyed, on the loop's thread), still taking the node's posts; once every loop
+  finished, `close(closed)` takes no more work, runs what is queued and cancels the sources left. A loop that never
+  started, or failed to, is neither: its state goes on the main loop at step 5.
+- **`LoopEvents`, not a bare `ReadyEvents`.** `make(node, name, kind, LoopEvents&)`: `LoopEvents` is `ReadyEvents` plus
+  `slow(ms)` (a strand's `ear.loop-slow`, which only the pool can time; once per loop and configuration, timed at the
+  handler's end) and `threw(what)`: a handler's throw is caught by its loop and fails the node as a hook's does
+  (`loop <name>'s handler threw: <what>`), so nothing a type's handler throws ends the process (6.3 named no catch).
+  The adapter is made with the main loop's executor and posts every event, `finished` and `closed` there, each dropped
+  once its loop was destroyed.
+- **The count is NodeHost's.** Every timer or watch a type arms goes through the loop NodeHost hands it (which stages
+  until configured), and its handle is counted while it lives; the adapter only cancels what is left at the close.
+  `ear.loop-source-left` carries `sources`. No debug assert: an abort in the Debug test build would end the suite that
+  proves the rule, so the harness throws from the call that tore the node down instead (unless `allowSourcesLeft`).
+- **Readiness.** A loop's item has no bound (an adapter says at once whether a thread started) and fails
+  `start-failed` through the list's `failed(index, detail)`, which `ReadyEvents` brought. Each item is started when its
+  step is asked, as 0.3's list says: a loop made, an engine companion made once the block is ready too, a sink's
+  consumer begun. So a type with loops makes no companion and begins no consumer until its loops run, and their
+  deadlines count from that asking; a type without loops asks them at configure's return, as before. `waitingFor`
+  gains `loop` (its name), on the wire with its fixtures.
+- **Staging.** What was staged is released at configured as one batch on each loop, ahead of anything sent after; a
+  staged timer counts from there. A teardown before configured destroys it on the main loop.
+- **`TypeSpec`.** `loops` is its third member for now (`TypeSpec<Settings, BankList, LoopList = Loops<>>`); S3c.4
+  inserts `stores` before it, so `{.settings, .banks, .loops}` keeps compiling.
+- **The harness.** Its loops run on the test's thread; `advance` fires a loop's timers in time order with the
+  framework's, an `every` once per period passed (a handler takes no time on the fake clock, so the coalescing rule is
+  `ear_runtime`'s to prove); `runLoops`, `loopsReady` (with `holdLoops`), `refuseLoops`, `readable(fd)`, `armed(loop)`
+  and `loops()`. No `loop(worker)` turning one loop: none needed it.
+- **The pool.** Started with the first strand, so a graph with none runs no new thread: its workers `ear-strand`, its
+  reactor `ear-strands` (timers and watches for every strand, and the workers' watch); a replaced worker leaves once
+  its handler returns while the pool is above its size. `consumedBy(loop, &State::member)` stays S3c.6b's.
 
 **The I/O executor** (S3c.2, built: `docs/architecture.md#threads`): `class IoExecutor : public Executor` in core, and
 `IoThread` in `ear_runtime`. A job holds `shared_ptr`s to what it fills, and its completion is a call taken from the
@@ -247,6 +281,7 @@ Today's `TypeSpec<Settings, BankList>` keeps its `requires` clause. U1 still dec
 | 9 | "The feed's write position" as a log line's stamp | No feed after S3c.6c: the worker counts the frames it has written to the source, and its log sink stamps each line with that count |
 | 6.1 | The readiness table as four steps of their own, and `ReadyEvents` beside the companions' events | 0.2 A, 0.3 |
 | 6.2 | `EventWake` in `ear_runtime`, moved from `ear_pipewire` | 0.1: core's `Wake` is enough |
+| 6.3 | `LoopSource`; one `NodeLoop::close(closed(leftSources))` at step 4; the adapter counting sources; debug builds asserting on a source left | 0.3's loops, found building S3c.3: `Timer`; `finish` then `close`; NodeHost counts, the harness throws |
 | 6.6 | Jobs checking the generation | 0.2 B |
 | 6.6 | "Its completion is posted to the main loop and checked there against the configuration's generation and liveness: a completion for a configuration that is gone, or past its deadline, is dropped, and a descriptor it opened is closed by a second job" | 0.3's I/O executor: the completion rides the configuration's `Completions` (`postHolding`), which drops it once detached and posts its handle back to the I/O executor, where it is released; a deadline is the readiness item's bound, not the job's |
 | 6.6 | "Each has a 5 s deadline" read as the job's own | The 5 s is the store or recording item's readiness bound (0.2 A); the job keeps none |

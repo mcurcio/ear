@@ -42,6 +42,7 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+#include "ear/core/loop.hpp"
 #include "ear/core/node_type.hpp"
 #include "ear/core/settings_table.hpp"
 namespace ear {
@@ -143,9 +144,10 @@ struct Banks {
 template <class T> inline constexpr bool isBanks = false;
 template <auto... Handles> inline constexpr bool isBanks<Banks<Handles...>> = true;
 
-/// A type's one declaration: its settings table and its banks. The later tables (status, events, log codes, actions,
-/// stores, latency: docs/writing-a-node-type.md#the-spec) join as members with empty defaults, so a spec
-/// that gives none stays these two.
+/// A type's one declaration: its settings table, its banks and its loops (docs/writing-a-node-type.md#loops, none by
+/// default). The later tables (stores before the loops, then status, events, log codes, actions:
+/// docs/writing-a-node-type.md#the-spec) join as members with empty defaults, so a spec gives only what it uses, in
+/// this order (designated initialisers follow it).
 ///
 /// A spec and its rows are declared in a named namespace, the type's own (ear::nodes::<type>, in its private header
 /// src/nodes/<type>/<type>_spec.hpp, which the type's tests include too): every template a type instantiates with its
@@ -153,17 +155,19 @@ template <auto... Handles> inline constexpr bool isBanks<Banks<Handles...>> = tr
 /// an instantiation external linkage even in an unnamed namespace, so two files' `(anonymous namespace)::spec` would be
 /// one symbol and the linker would keep one type's code for both. Io, Members, makeNodeType and SettingsTable refuse
 /// one in an unnamed namespace (linkage::named, settings_table.hpp).
-template <class Settings, class BankList>
-	requires(std::derived_from<Settings, AnySettingsTable> && isBanks<BankList>)
+template <class Settings, class BankList, class LoopList = Loops<>>
+	requires(std::derived_from<Settings, AnySettingsTable> && isBanks<BankList> && isLoops<LoopList>)
 struct TypeSpec {
 	Settings settings;
 	BankList banks;
+	LoopList loops{};
 };
 
 template <const auto& Spec> using SettingsOf = std::remove_cvref_t<decltype(Spec.settings)>;
 /// The settings a spec's table passed: what ports(), check() and configure() read, by row (`s.get<row>()`).
 template <const auto& Spec> using CheckedOf = typename SettingsOf<Spec>::Checked;
 template <const auto& Spec> using BanksOf = std::remove_cvref_t<decltype(Spec.banks)>;
+template <const auto& Spec> using LoopsOf = std::remove_cvref_t<decltype(Spec.loops)>;
 
 /// Every bank of a spec with its members: what a type's ports() returns, {stream(members(n)), from(members(n))}.
 /// Each bank of the spec once, in any order; a bank of another spec, or one left out, does not compile.

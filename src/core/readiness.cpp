@@ -54,6 +54,19 @@ std::optional<ReadinessOverdue> ReadinessList::passed(std::size_t index) {
 	return ReadinessOverdue{entry.item.fact, entry.item.overdue ? entry.item.overdue() : std::string()};
 }
 
+std::optional<ReadinessOverdue> ReadinessList::failed(std::size_t index, std::string detail) {
+	if (ended_ || index >= entries_.size()) return std::nullopt;
+	Entry& entry = entries_[index];
+	if (!entry.asked || entry.ready) return std::nullopt;
+	entry.bound.reset();
+	ended_ = true;
+	return ReadinessOverdue{entry.item.fact, std::move(detail)};
+}
+
+bool ReadinessList::isAsked(std::size_t index) const noexcept {
+	return index < entries_.size() && entries_[index].asked;
+}
+
 void ReadinessList::disarm() noexcept {
 	for (Entry& entry : entries_) entry.bound.reset();
 }

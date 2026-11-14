@@ -806,15 +806,19 @@ converter's buffer enters the configuration's latency plan as `beyond` its bank 
 ### Readiness deadlines
 
 A node never waits for good on something that will never be ready. Each engine companion and each
-sink's consumer has a deadline from its request (configure's applied return), on the main loop's
-timers (`companions.hpp`: `cardReadinessBound` and friends, `readinessBound(kind)`); a source is
-ready when made and has none. The wait counts from the request, so time the block took to be ready
-counts too. `NodeHost` keeps them as the items of one readiness list per configuration
-(`src/core/readiness.hpp`): the engine companions first, then the sinks' consumers, each in request
-order. The list arms every bound through one timer rule (below), judges it, and is what
-`waitingFor` reads; the configuration's resources are ready once every item is. Its items are asked
-in steps, a later step only once every earlier one is ready; today every item is in the last step,
-so all are asked at configure's applied return.
+sink's consumer has a deadline from its asking, on the main loop's timers (`companions.hpp`:
+`cardReadinessBound` and friends, `readinessBound(kind)`); a source is ready when made and has none.
+`NodeHost` keeps them as the items of one readiness list per configuration
+(`src/core/readiness.hpp`): the node's loops first ([writing-a-node-type.md](writing-a-node-type.md#loops)),
+then the engine companions, then the sinks' consumers, each in request order. The list arms every
+bound through one timer rule (below), judges it, and is what `waitingFor` reads; the
+configuration's resources are ready once every item is. Its items are asked in steps, a later step
+only once every earlier one is ready, and each is started when it is asked: a loop made (step
+`loops`, no bound: its adapter says at once whether its thread started), then an engine companion
+made once the block is ready too, and a sink's consumer begun (step `companions`). A node with no
+loops asks its companions at configure's applied return, so the wait counts from the request and
+time the block took to be ready counts too; a node with loops asks them, and starts their bounds,
+once its loops run.
 
 | Kind | Deadline | Past it, the node fails |
 |---|---|---|

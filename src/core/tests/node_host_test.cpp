@@ -683,6 +683,66 @@ struct TestInternalErrors final : InternalErrorListener {
 
 constexpr std::chrono::milliseconds closeDeadline{10'000};
 
+/// The loops' adapter as a test drives it (docs/writing-a-node-type.md#loops): each loop made is logged, and told ready
+/// at once (autoReady) or when the test tells its events; its finish and close run at once (autoClose: the work queued,
+/// then the last call, as a loop's thread would) or never.
+struct TestLoops final : LoopAdapter {
+	struct One final : NodeLoop {
+		struct Mark final : Timer {};
+		One(TestLoops& o, std::string n, LoopKind k) : owner(o), name(std::move(n)), loopKind(k) {}
+		~One() override { owner.log.push_back("loop " + name + " freed"); }
+		void post(std::move_only_function<void()> work) override { queue.push_back(std::move(work)); }
+		std::unique_ptr<Timer> after(std::chrono::milliseconds, std::move_only_function<void()>) override {
+			return std::make_unique<Mark>();
+		}
+		std::unique_ptr<Timer> every(std::chrono::milliseconds, std::move_only_function<void()>) override {
+			return std::make_unique<Mark>();
+		}
+		std::unique_ptr<Timer> onWake(Wake&, std::move_only_function<void()>) override {
+			return std::make_unique<Mark>();
+		}
+		std::unique_ptr<Timer> onReadable(int, std::move_only_function<void()>) override {
+			return std::make_unique<Mark>();
+		}
+		LoopKind kind() const noexcept override { return loopKind; }
+		bool inLoop() const noexcept override { return false; }
+		void postFromOutside(std::move_only_function<void()>) override {}
+		void closeToOthers() override { owner.log.push_back("loop " + name + " closed to others"); }
+		void finish(std::move_only_function<void()> last, std::move_only_function<void()> finished) override {
+			owner.log.push_back("loop " + name + " finish");
+			if (!owner.autoClose) return;
+			while (!queue.empty()) {
+				auto work = std::move(queue.front());
+				queue.pop_front();
+				work();
+			}
+			last();
+			owner.mainLoop.post(std::move(finished));
+		}
+		void close(std::move_only_function<void()> closed) override {
+			owner.log.push_back("loop " + name + " close");
+			if (owner.autoClose) owner.mainLoop.post(std::move(closed));
+		}
+		TestLoops& owner;
+		std::string name;
+		LoopKind loopKind;
+		std::deque<std::move_only_function<void()>> queue;
+	};
+	TestLoops(Log& l, QueueExecutor& m) : log(l), mainLoop(m) {}
+	std::unique_ptr<NodeLoop> make(const NodeName& node, std::string_view name, LoopKind kind,
+	                               LoopEvents& events) override {
+		log.push_back("loop " + node + "." + std::string(name) + " made");
+		told.push_back(&events);
+		if (autoReady) mainLoop.post([&events] { events.ready(); });
+		return std::make_unique<One>(*this, node + "." + std::string(name), kind);
+	}
+	Log& log;
+	QueueExecutor& mainLoop;
+	bool autoReady = true;
+	bool autoClose = true;
+	std::vector<LoopEvents*> told; // each loop's, in making order; valid while its configuration lives
+};
+
 struct Fixture {
 	Log log;
 	QueueExecutor mainLoop;
@@ -692,7 +752,13 @@ struct Fixture {
 	TestReceivers receivers{log};
 	TestSinks sinks{log, mainLoop};
 	TestSources sources{log};
-	ResourceRegistry resources{cards, receivers, handoffs, sinks, sources};
+	TestLoops loops{log, mainLoop};
+	ResourceRegistry resources{ResourceAdapters{.cards = &cards,
+	                                            .receivers = &receivers,
+	                                            .handoffs = &handoffs,
+	                                            .sinks = &sinks,
+	                                            .sources = &sources,
+	                                            .loops = &loops}};
 	TestListener listener{log};
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph{catalogue}; // only for close(), the proof stopAll takes
@@ -5979,6 +6045,207 @@ TEST_CASE("Only the node a client holds tells its list: a replaced node's teardo
 	f.settle();
 	// The older node's empty list is never told; the newer node's is, once configured.
 	CHECK(listsOf(f.log) == std::vector<std::string>{"list x [configuring] x.playback? x.cap"});
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+// docs/writing-a-node-type.md#loops: a configuration's loops, an item of the readiness list's step `loops`, made by their
+// adapter, closed by teardown step 4.
+
+namespace {
+
+/// A state that says where it went.
+struct LoggedState {
+	Log& log;
+	explicit LoggedState(Log& l) : log(l) {}
+	~LoggedState() { log.push_back("state destroyed"); }
+};
+
+/// An instance with declared loops: its configure does what the test says; its stop() posts the test's goodbye.
+struct LoopProbeInstance final : ErasedInstance {
+	Log& log;
+	NodeContext& node;
+	std::vector<LoopDeclaration> declared;
+	std::function<Configured(CreateContext&)> onConfigure;
+	std::function<void(NodeContext&)> onStop;
+	LoopProbeInstance(Log& l, NodeContext& n, std::vector<LoopDeclaration> d,
+	                  std::function<Configured(CreateContext&)> c, std::function<void(NodeContext&)> s)
+		: log(l), node(n), declared(std::move(d)), onConfigure(std::move(c)), onStop(std::move(s)) {}
+	~LoopProbeInstance() override { log.push_back("instance destroyed"); }
+	std::span<const LoopDeclaration> loops() const noexcept override { return declared; }
+	Configured configure(InstanceContexts& cx) override { return onConfigure(cx.create); }
+	void stop() override {
+		log.push_back("stop()");
+		if (onStop) onStop(node);
+	}
+};
+struct LoopProbeConfig final : NodeConfig {
+	Log& log;
+	Ports ports_ = testPorts();
+	std::vector<LoopDeclaration> declared;
+	std::function<Configured(CreateContext&)> onConfigure;
+	std::function<void(NodeContext&)> onStop;
+	LoopProbeConfig(Log& l, std::vector<LoopDeclaration> d) : log(l), declared(std::move(d)) {}
+	const Ports& ports() const override { return ports_; }
+	std::unique_ptr<ErasedInstance> make(NodeContext& node) const override {
+		return std::make_unique<LoopProbeInstance>(log, node, declared, onConfigure, onStop);
+	}
+};
+
+const LoopDeclaration plainWorker{"worker", LoopKind::dedicated, false};
+const LoopDeclaration statefulWorker{"worker", LoopKind::dedicated, true};
+
+} // namespace
+
+TEST_CASE(
+	"A companion's readiness deadline starts only once the earlier step, the loops, is ready, and its making waits "
+	"for it too",
+	"[node_host][loops][deadline]") {
+	Fixture f;
+	f.loops.autoReady = false;
+	auto config = std::make_shared<LoopProbeConfig>(f.log, std::vector{plainWorker});
+	config->onConfigure = [&f](CreateContext& cx) {
+		cx.rtpReceiver("cap", fppStream);
+		cx.use(std::make_unique<TestAudioCode>(f.log));
+		return Configured::applied();
+	};
+	f.add("fpp", config);
+	f.blocks.events.at(0)->ready();
+	f.settle();
+	REQUIRE(f.loops.told.size() == 1);
+	CHECK(f.receivers.events.empty()); // its step is not asked while the loop is not running
+	f.timers.advance(rtpReceiverReadinessBound + std::chrono::milliseconds(1'000));
+	f.settle();
+	CHECK(failureOf(f, "fpp").empty());
+	CHECK(f.host.health().at(0).phase == NodePhase::configuring);
+
+	f.loops.told[0]->ready(); // the loops' step is ready: the receiver's is asked now, and its bound runs from here
+	f.settle();
+	REQUIRE(f.receivers.events.size() == 1);
+	f.timers.advance(rtpReceiverReadinessBound - std::chrono::milliseconds(1));
+	f.settle();
+	CHECK(failureOf(f, "fpp").empty());
+	f.timers.advance(std::chrono::milliseconds(1));
+	f.settle();
+	CHECK(failureOf(f, "fpp") == "engine-refused: the RTP receiver never ran (UDP port 5004 held?)");
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE(
+	"A loop that cannot start fails its node start-failed naming it, nothing is finished or closed, and its state "
+	"is destroyed on the main loop",
+	"[node_host][loops]") {
+	Fixture f;
+	f.loops.autoReady = false;
+	auto config = std::make_shared<LoopProbeConfig>(f.log, std::vector{statefulWorker});
+	config->onConfigure = [&f](CreateContext& cx) {
+		cx.loopState(0, std::unique_ptr<void, void (*)(void*)>(
+							new LoggedState(f.log), [](void* state) { delete static_cast<LoggedState*>(state); }));
+		cx.use(std::make_unique<TestAudioCode>(f.log));
+		return Configured::applied();
+	};
+	f.add("porch", config);
+	REQUIRE(f.loops.told.size() == 1);
+	f.loops.told[0]->failed("Resource temporarily unavailable");
+	f.settle();
+	CHECK(failureOf(f, "porch") == "start-failed: cannot start loop worker: Resource temporarily unavailable");
+	CHECK(countOf(f.log, "loop porch.worker finish") == 0);
+	CHECK(countOf(f.log, "loop porch.worker close") == 0);
+	CHECK(countOf(f.log, "state destroyed") == 1);
+	CHECK(indexOf(f.log, "instance destroyed") < indexOf(f.log, "state destroyed"));
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("Teardown: loops closed to others at step 1, at step 4 each finishes (the stop's goodbye, then its state on "
+          "its loop), then each closes, then the instance and the loops are freed",
+          "[node_host][loops]") {
+	Fixture f;
+	auto config = std::make_shared<LoopProbeConfig>(f.log, std::vector{statefulWorker});
+	config->onConfigure = [&f](CreateContext& cx) {
+		cx.loopState(0, std::unique_ptr<void, void (*)(void*)>(
+							new LoggedState(f.log), [](void* state) { delete static_cast<LoggedState*>(state); }));
+		cx.use(std::make_unique<TestAudioCode>(f.log));
+		return Configured::applied();
+	};
+	config->onStop = [&f](NodeContext& node) {
+		node.postToLoop(0, [&f](void* state) {
+			CHECK(state != nullptr);
+			f.log.push_back("goodbye");
+		});
+	};
+	addRunning(f, "probe", config);
+	CHECK(countOf(f.log, "loop probe.worker made") == 1);
+	f.log.clear();
+	REQUIRE(f.host.restart("probe"));
+	f.settle();
+	const std::vector<std::string> order{"loop probe.worker closed to others",
+	                                     "stop()",
+	                                     "loop probe.worker finish",
+	                                     "goodbye",
+	                                     "state destroyed",
+	                                     "loop probe.worker close",
+	                                     "instance destroyed",
+	                                     "loop probe.worker freed"};
+	for (std::size_t i = 0; i + 1 < order.size(); ++i) {
+		INFO(order[i] << " before " << order[i + 1]);
+		CHECK(indexOf(f.log, order[i]) < indexOf(f.log, order[i + 1]));
+	}
+	CHECK(indexOf(f.log, "loop probe.worker freed") < static_cast<std::ptrdiff_t>(f.log.size()));
+	CHECK(countOf(f.log, "loop probe.worker made") == 1); // the restart's own
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A loop that never finishes is leaked at the close deadline, the diagnostic counting it open",
+          "[node_host][loops]") {
+	Fixture f;
+	f.loops.autoClose = false;
+	auto config = std::make_shared<LoopProbeConfig>(f.log, std::vector{plainWorker});
+	config->onConfigure = [&f](CreateContext& cx) {
+		cx.use(std::make_unique<TestAudioCode>(f.log));
+		return Configured::applied();
+	};
+	addRunning(f, "porch", config);
+	f.host.nodeRemoved("porch");
+	f.settle();
+	CHECK(countOf(f.log, "loop porch.worker finish") == 1);
+	f.timers.advance(closeDeadline);
+	f.settle();
+	REQUIRE(countOf(f.log, "diagnostic porch ear.close-overdue") == 1);
+	CHECK(
+		f.diagnostics.details.back() ==
+		"the run did not close within 10000 ms and is left running (0 handoffs open, 1 loops open, run not yet told to "
+		"close)");
+	CHECK(f.host.leaked() == 1);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A loop's events: a slow strand handler is ear.loop-slow, a handler's throw fails the node as a hook's does",
+          "[node_host][loops]") {
+	Fixture f;
+	auto config =
+		std::make_shared<LoopProbeConfig>(f.log, std::vector{LoopDeclaration{"helper", LoopKind::strand, false}});
+	config->onConfigure = [&f](CreateContext& cx) {
+		cx.use(std::make_unique<TestAudioCode>(f.log));
+		return Configured::applied();
+	};
+	addRunning(f, "porch", config);
+	REQUIRE(f.loops.told.size() == 1);
+	f.loops.told[0]->slow(150);
+	f.settle();
+	CHECK(countOf(f.log, "diagnostic porch ear.loop-slow ms=150") == 1);
+	CHECK(f.diagnostics.details.back() == "loop helper ran one handler for 150 ms");
+	f.loops.told[0]->threw("the library's bad day");
+	f.settle();
+	CHECK(failureOf(f, "porch") == "lost: loop helper's handler threw: the library's bad day");
 	f.stopAll();
 	f.settle();
 	CHECK(f.allGone == 1);

@@ -57,6 +57,7 @@
 #include "ear/pipewire/sound_cards.hpp"
 #include "ear/pipewire/sources.hpp"
 #include "ear/runtime/io_thread.hpp"
+#include "ear/runtime/loops.hpp"
 #include "ear/server/control_port.hpp"
 #include "ear/server/control_thread.hpp"
 
@@ -317,6 +318,9 @@ int main(int argc, char** argv) {
 	ear::pipewire::ThreadHandoffs handoffs(engine->mainLoop());
 	ear::pipewire::ThreadSinks sinks(mainLoop); // a sink's begun and closed post where the nodes' events do
 	ear::pipewire::EventSources sources;
+	// The nodes' loops (docs/writing-a-node-type.md#loops): no thread until a node asks for one; its events post where the
+	// nodes' do. Made before NodeHost and freed after it, once every loop closed.
+	ear::runtime::Loops loops(mainLoop);
 	ear::pipewire::AlsaSoundCards cards(*engine);
 	ear::pipewire::RtpReceivers receivers(*engine);
 	ear::pipewire::Links links(*engine);
@@ -330,7 +334,8 @@ int main(int argc, char** argv) {
 	                                                      .handoffs = &handoffs,
 	                                                      .sinks = &sinks,
 	                                                      .sources = &sources,
-	                                                      .recordings = &recordingFiles});
+	                                                      .recordings = &recordingFiles,
+	                                                      .loops = &loops});
 	ear::NodeHost nodes(format, blocks, resources, mainLoop, mainLoop);
 	const ear::GraphStatus status({format, scheduling.realtime, scheduling.detail}, catalogue, graph, nodes, reconciler,
 	                              engine.get());

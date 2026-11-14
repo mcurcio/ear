@@ -58,7 +58,7 @@ Each C++ package lives in `src/<package>/` with its own `CMakeLists.txt`, public
 | Target | Owns | Never |
 |---|---|---|
 | `ear_core` (`src/core`) | The desired graph (`DesiredGraph`: the one judge of every change, `plan` then `commit`); the node type contract (`NodeType`, settings tables, `TypeSpec`, the type's class and its contexts); the node framework (`NodeHost`, the node lifecycle machines, health, `NodeOperations`, the pass-through, companions, latency plans); the reconciler (route links and route status); levels; the graph read (`GraphStatus`); `FrameRing`. Beside it, for tests only, `ear_type_harness` (`ear/testing/`) | Any PipeWire call, socket, thread or file access. nlohmann/json is its only dependency |
-| `ear_runtime` (`src/runtime`) | The threads the node framework runs work on, behind `ear_core`'s interfaces: the I/O thread (`IoThread`, core's `IoExecutor`), the one thread for blocking work ([threads](#threads)) | Policy (what a job means is its caller's); PipeWire. No node type links it |
+| `ear_runtime` (`src/runtime`) | The threads the node framework runs work on, behind `ear_core`'s interfaces: the I/O thread (`IoThread`, core's `IoExecutor`), the one thread for blocking work, and the nodes' loops (`Loops`, core's `LoopAdapter`: the strand pool and each dedicated loop's thread) ([threads](#threads)) | Policy (what a job means is its caller's; staging, a loop's state and the sources it left are `NodeHost`'s); PipeWire. No node type links it |
 | `ear_folder` (`src/folder`) | `ConfinedFolder`: a folder held open from boot, every path resolved beneath it by the kernel (`openat2` with `RESOLVE_BENEATH`); files replaced only if unchanged (`renameat2(RENAME_EXCHANGE)`); `requireApart`, the boot check that no two folders overlap | Following `..`, absolute paths or (for the graph file) any symlink |
 | `ear_node_white`, `ear_node_file`, `ear_node_card`, `ear_node_rtp`, `ear_node_sendspin` (`src/nodes/<type>`) | One built-in node type each ([node-types.md](node-types.md)) | Another node type; PipeWire or the framework's threads (only `ear_core`'s interfaces: no type links `ear_pipewire`, `ear_runtime`, `ear_control`, `ear_config` or `ear_server`) |
 | `ear_all_node_types` (`src/all_node_types`) | `allNodeTypes()`, the one list of node types, generated at configure from the folders in `src/nodes/` | Naming a type by hand |
@@ -100,6 +100,7 @@ the main loop by posting.
 | The control thread | Port 7777: sockets, JSON-RPC, sessions, queues. It holds only the gateway, which sends every request whole to the keeper and gets replies and events back in order from the main loop |
 | The keeper thread | The graph file keeper: every request, disk check and write, one step at a time; the working copy (knobly's object, which never leaves this thread); the inotify watch. It waits in `poll()` with no timeout |
 | The I/O thread (`ear-io`) | The framework's blocking work, off the main loop and every node's threads, one job at a time in post order (`IoThread`, `ear_runtime`). Nothing posts to it yet: slice 3c's stores and recordings will open there ([design](design/node-primitives.md#03-the-interfaces-as-they-must-now-be)). A job holds by `shared_ptr` what it fills and reports through its configuration's channel ([teardown](#teardown-by-dependency)), on the main loop, so one whose configuration ended reports nothing and the handle to what it opened goes back to this thread to be released, never closed on the main loop |
+| A node's loops ([writing-a-node-type.md](writing-a-node-type.md#loops)) | A type's work off the realtime thread and the main loop, each loop with its state, one handler at a time per loop (`Loops`, `ear_runtime`). A dedicated loop has a thread of its own, `ear-<name> <node>` cut to 15 bytes, and may block; strands share a pool started with the first strand: `min(4, hardware threads)` workers (`ear-strand`), one more for a handler stuck past 1 s (at most 16 in all), and one reactor thread (`ear-strands`) that turns the strands' timers and watches into work and watches the workers. Timers on `CLOCK_MONOTONIC`, watches on epoll; each loop's events reach the main loop by posting. No shipped type has one yet |
 | Sink and handoff threads | A `file` node's sink (its WAV writer); a `sendspin` node's legacy handoff |
 | The output thread | Every write to the real standard output, from a bounded queue |
 | The capture thread | Reads the pipes on descriptors 1 and 2 into `log` records, and drains the engine's log ring |
@@ -570,10 +571,11 @@ Every wait the framework makes on another thread has a bound, so no node can hol
 |---|---|---|
 | A fade-out's acknowledgement | 100 ms | `ear.fade-unacknowledged`; the silence is taken unfaded |
 | A drive or silence on the data loop | 5 s (judged after a grace when the whole process stalled) | `ear.barrier-overdue`, then, once, `ear.data-loop-wedged` |
-| A configuration's teardown (sinks drained, threads stopped) | 10 s | `ear.close-overdue`; the configuration is leaked, never freed, and the node moves on |
+| A configuration's teardown (sinks drained, loops finished and closed, threads stopped) | 10 s | `ear.close-overdue` (counting what is still open); the configuration is leaked, never freed, and the node moves on |
 | A hook (`configure`, `start()`, `stop()`) on the main loop | 20 ms | `ear.hook-slow`, once per node and hook (a report only) |
-| A phase that lasts | 2 s | The node says what it waits for (`waitingFor`: `older-node`, `block`, `companion`, `consumer`) |
-| An engine companion's or a sink's consumer's readiness, from its request | a card 10 s, an RTP receiver 5 s, a sink's consumer 5 s | The node fails: `engine-refused` for a card or receiver, `start-failed` for a consumer ([engine.md](engine.md#readiness-deadlines)) |
+| A phase that lasts | 2 s | The node says what it waits for (`waitingFor`: `older-node`, `block`, `companion`, `consumer`, `loop`) |
+| An engine companion's or a sink's consumer's readiness, from its asking (once the node's loops run) | a card 10 s, an RTP receiver 5 s, a sink's consumer 5 s | The node fails: `engine-refused` for a card or receiver, `start-failed` for a consumer ([engine.md](engine.md#readiness-deadlines)) |
+| A strand's handler | 100 ms; 1 s | `ear.loop-slow`, once per loop and configuration (a report only); past 1 s the pool starts a replacement thread, so other strands keep running |
 
 **A wedged data loop.** Once ear judges the data loop wedged it makes no PipeWire call that could
 wait on it: no block, engine companion or link is made or destroyed, and no latency is told. A new
@@ -607,17 +609,21 @@ own engine companions' links. What is shared and how it is kept safe:
 Tearing a configuration down (a restart, a failure, a disable, a removal) goes by dependency, and
 the main loop never joins a thread:
 
-1. Every source's writer closed (a write waiting returns at once); the type's `stop()` if its
-   `start()` ran; the fade; the barrier, a drive of no code (after it completes, no `process` of
-   the code runs, so nothing the realtime thread can reach is freed while it can reach it); the
-   code's `release`.
+1. Every source's writer closed (a write waiting returns at once); every loop closed to work from
+   outside the node; the type's `stop()` if its `start()` ran (it posts its goodbye to its loops);
+   the fade; the barrier, a drive of no code (after it completes, no `process` of the code runs,
+   so nothing the realtime thread can reach is freed while it can reach it); the code's `release`.
+   What was sent to a loop before the node was configured is destroyed unrun.
 2. Engine companions destroyed (and, for a removal, the block, only after the barrier).
 3. Sinks and handoffs drained and finished, each on its own thread.
-4. A legacy run object closed, off the main loop (a `sendspin` node's worker says goodbye on its
-   own thread).
-5. On the main loop: the code, then the instance (or run object), then its sinks and sources
-   (whose writers the instance's threads may hold) and its config freed, and recordings closed
-   after them.
+4. Each loop finishes: it runs the work already posted (the goodbye), then destroys its state on
+   its own thread; once every loop has, each closes, cancelling any source its state left armed
+   (`ear.loop-source-left`). Then a legacy run object closed, off the main loop (a `sendspin`
+   node's worker says goodbye on its own thread).
+5. On the main loop: the code, then the instance (or run object), then its loops (a state whose
+   loop never started is destroyed here; a dedicated loop's thread has already returned), then
+   its sinks and sources (whose writers the instance's threads may hold) and its config freed, and
+   recordings closed after them.
 
 Steps 3 and 4 have the close deadline ([bounds](#bounds-the-wedged-data-loop-and-the-watchdog)).
 A restart or retry completes the teardown before the

@@ -240,3 +240,25 @@ TEST_CASE("A list with no items is done at once and asks nothing", "[readiness]"
 	CHECK(f.list.waiting().empty());
 	CHECK_FALSE(f.list.isReady(noReadiness));
 }
+
+TEST_CASE("An item that fails before it is ready (ReadyEvents::failed) fails with its fact and the detail given, and "
+          "ends the list, one not asked yet fails nothing",
+          "[readiness]") {
+	Fixture f;
+	const auto worker =
+		f.add("worker", ReadinessStep::loops, std::nullopt, WaitingFor::Kind::loop, Fact::configureFailed);
+	const auto rtp = f.add("fpp.rtp", ReadinessStep::companions, 50ms);
+	CHECK_FALSE(f.list.failed(worker, "before the list began").has_value());
+	f.begin();
+	CHECK(f.list.isAsked(worker));
+	CHECK_FALSE(f.list.isAsked(rtp));
+	CHECK_FALSE(f.list.failed(rtp, "not asked yet").has_value());
+	const std::optional<ReadinessOverdue> failure = f.list.failed(worker, "cannot start loop worker: no thread");
+	REQUIRE(failure.has_value());
+	CHECK(failure->fact == Fact::configureFailed);
+	CHECK(failure->detail == "cannot start loop worker: no thread");
+	CHECK_FALSE(f.list.failed(worker, "again").has_value()); // the list ended
+	f.list.ready(worker);
+	CHECK_FALSE(f.list.isAsked(rtp)); // an ended list asks nothing more
+	CHECK(f.log == Log{"asked worker at 0"});
+}

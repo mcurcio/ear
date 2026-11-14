@@ -40,12 +40,14 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
 #include "ear/core/companions.hpp"
+#include "ear/core/loop.hpp"
 #include "ear/core/node_type.hpp"
 #include "ear/core/sink.hpp"
 #include "ear/core/source.hpp"
@@ -103,6 +105,10 @@ public:
 	virtual const NodeName& node() const noexcept = 0;
 	/// The configuration's handle: its Channel's public face.
 	virtual NodeHandle& handle() noexcept = 0;
+	/// Work for declared loop `loop` (its index in the spec's Loops), called with its state (null for a loop with
+	/// none) on the loop's thread; staged until the node is configured (docs/writing-a-node-type.md#loops). Main
+	/// thread.
+	virtual void postToLoop(std::size_t loop, std::move_only_function<void(void*)> work) = 0;
 
 protected:
 	~NodeContext() = default;
@@ -163,6 +169,15 @@ public:
 	/// same path is a std::logic_error. With a pass-through as the code, the path must be one of its pairs, or the
 	/// node fails at configure's return.
 	virtual void declareLatency(std::string_view from, std::string_view to, Latency latency) = 0;
+	/// Declared loop `loop`'s state (docs/writing-a-node-type.md#loops), owned from now on by the framework, which
+	/// destroys it on the loop's thread at teardown step 4 (on the main loop if the loop never started). Exactly once
+	/// for a loop declared with a state type, by an applied configure's return; never for one declared without.
+	virtual void loopState(std::size_t loop, std::unique_ptr<void, void (*)(void*)> state) = 0;
+	/// Declared loop `loop` as an executor, for a state to post to and arm on; valid until the configuration is freed
+	/// (teardown step 5). What is sent to it before the node is configured is staged.
+	virtual Loop& loopExecutor(std::size_t loop) = 0;
+	/// As NodeContext::postToLoop, staged.
+	virtual void postToLoop(std::size_t loop, std::move_only_function<void(void*)> work) = 0;
 	/// A rule CreateOf finds broken before it reaches a call above (a code written against another type's spec): records
 	/// it on the configuration, so the node fails with it whatever configure does next, and throws std::logic_error(rule).
 	[[noreturn]] virtual void refuse(std::string rule) = 0;
@@ -175,7 +190,20 @@ protected:
 
 namespace spec_detail {
 template <const auto& Spec, class Type> class SpecInstance;
+/// A post to a loop as the erased contexts take it: `work` called with the loop's state, or with nothing for a loop with
+/// none. A function of another loop's state does not compile.
+template <class Handle, class Work> std::move_only_function<void(void*)> loopWork(Work&& work) {
+	using State = typename Handle::State;
+	using Stored = std::decay_t<Work>;
+	if constexpr (Handle::stateful) {
+		static_assert(std::is_invocable_v<Stored&, State&>, "a post to a loop takes a function of that loop's state");
+		return [work = Stored(std::forward<Work>(work))](void* state) mutable { work(*static_cast<State*>(state)); };
+	} else {
+		static_assert(std::is_invocable_v<Stored&>, "a post to a loop without a state takes a function of nothing");
+		return [work = Stored(std::forward<Work>(work))](void*) mutable { work(); };
+	}
 }
+} // namespace spec_detail
 
 /// What the instance keeps: the node's own, for the instance's life, main loop only (handle() excepted, as
 /// NodeContext's). Slice 3c adds post(), slice 5 report() (docs/writing-a-node-type.md#the-class).
@@ -190,6 +218,15 @@ public:
 	/// The configuration's handle (node_handle.hpp: say, lost, log); keep it in a sink's consumer or a thread the
 	/// instance owns.
 	NodeHandle& handle() noexcept { return context_->handle(); }
+	/// `work(state)` on loop `Handle`'s thread (`work()` for a loop with no state), in post order; staged until the
+	/// node is configured (docs/writing-a-node-type.md#loops). The instance's only way to its loops' states: start()
+	/// and stop() post. A loop the spec lacks, or a function of another loop's state, does not compile.
+	template <class Handle, class Work> void post(Handle, Work&& work) {
+		static_assert(isLoopHandle<Handle> && LoopsOf<Spec>::template has<Handle>,
+		              "a post names one of its spec's loops");
+		context_->postToLoop(LoopsOf<Spec>::template indexOf<Handle>,
+		                     spec_detail::loopWork<Handle>(std::forward<Work>(work)));
+	}
 
 private:
 	template <const auto&, class> friend class spec_detail::SpecInstance;
@@ -204,6 +241,7 @@ template <const auto& Spec> class CreateOf {
 	static_assert(linkage::named<Spec>, "a spec is declared in a named namespace, never an unnamed one");
 	using List = BanksOf<Spec>;
 	template <class Bank> static constexpr bool ownBank = isBankHandle<Bank> && List::template has<Bank>;
+	template <class Handle> static constexpr bool ownLoop = isLoopHandle<Handle> && LoopsOf<Spec>::template has<Handle>;
 
 public:
 	CreateOf(const CreateOf&) = delete;
@@ -264,6 +302,30 @@ public:
 		context_->declareLatency(From::name, To::name, latency);
 	}
 
+	/// Loop `Handle`'s state (docs/writing-a-node-type.md#loops), constructed here on the main loop with no I/O and no
+	/// threads; from now on the framework owns it, and the instance reaches it only by a post. Exactly once for a loop
+	/// declared with a state type; a loop declared without one takes none (it does not compile).
+	template <class Handle> void loop(Handle, std::unique_ptr<typename Handle::State> state) {
+		static_assert(ownLoop<Handle>, "a context takes only its spec's loops");
+		static_assert(Handle::stateful, "a loop declared without a state takes none");
+		using State = typename Handle::State;
+		context_->loopState(LoopsOf<Spec>::template indexOf<Handle>,
+		                    std::unique_ptr<void, void (*)(void*)>(
+								state.release(), [](void* given) { delete static_cast<State*>(given); }));
+	}
+	/// Loop `Handle` as an executor (post, timers, watches) for a state to keep: valid until the configuration is freed;
+	/// what is sent to it before the node is configured is staged.
+	template <class Handle> Loop& executor(Handle) {
+		static_assert(ownLoop<Handle>, "a context takes only its spec's loops");
+		return context_->loopExecutor(LoopsOf<Spec>::template indexOf<Handle>);
+	}
+	/// As NodeOf::post, staged until the node is configured.
+	template <class Handle, class Work> void post(Handle, Work&& work) {
+		static_assert(ownLoop<Handle>, "a context takes only its spec's loops");
+		context_->postToLoop(LoopsOf<Spec>::template indexOf<Handle>,
+		                     spec_detail::loopWork<Handle>(std::forward<Work>(work)));
+	}
+
 private:
 	template <const auto&, class> friend class spec_detail::SpecInstance;
 	explicit CreateOf(CreateContext& context) noexcept : context_(&context) {}
@@ -290,6 +352,8 @@ struct InstanceContexts {
 class ErasedInstance {
 public:
 	virtual ~ErasedInstance() = default;
+	/// The spec's loops, in declaration order (docs/writing-a-node-type.md#loops); none for a legacy instance.
+	virtual std::span<const LoopDeclaration> loops() const noexcept { return {}; }
 	/// T2: creation's configure (or the legacy start). Called once, timed as the hook `configure`.
 	virtual Configured configure(InstanceContexts& cx) = 0;
 	/// Legacy only: whether its start returned a recipe.
@@ -307,8 +371,8 @@ public:
 	virtual void start() {}
 	/// Once after every start() that returned (docs/writing-a-node-type.md#the-class pairing); timed as `stop`.
 	virtual void stop() {}
-	/// teardown step 4. Legacy only: RunObject::close (off the main loop for a run with threads); the new SPI has
-	/// nothing to close until slice 3c's loops. `closed` from any thread, once.
+	/// teardown step 4, after the loops closed. Legacy only: RunObject::close (off the main loop for a run with
+	/// threads); a class's loops are the framework's to close. `closed` from any thread, once.
 	virtual void close(std::move_only_function<void()> closed) { closed(); }
 };
 
@@ -392,6 +456,7 @@ template <const auto& Spec, class Type> class SpecInstance final : public Erased
 
 public:
 	SpecInstance(NodeContext& node, const Checked& settings) : node_(node), settings_(settings), type_(make(node_)) {}
+	std::span<const LoopDeclaration> loops() const noexcept override { return LoopsOf<Spec>::declared; }
 	Configured configure(InstanceContexts& cx) override {
 		CreateOf<Spec> create(cx.create);
 		return type_.configure(create, settings_);

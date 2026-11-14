@@ -4,18 +4,23 @@
 // TypeHarness (type_harness.hpp) adds the spec's bank handles. The test's thread stands in for the main loop and the
 // realtime thread both: every call pumps the harness's manual executor until nothing is queued, so each returns with
 // the transition it asked for applied as far as the fakes allow. The harness does not observe a class's start() and
-// stop(): their pairing is node_host_test.cpp's. Not yet: feeds, holds and runLoops, which come with the slices that
-// build them (docs/design/). The fake clock (advance) runs every main-loop timer NodeHost arms, each companion's
-// readiness deadline included (docs/engine.md#readiness-deadlines). Where a fake acts as the engine does it runs the
-// engine's own rule: the block's fade and stamps (ear/core/block_rules.hpp), its cycle facts (CycleAccount, over the
-// harness's own cut record: loseCycles), its latency (workOut, with no peers), and an engine companion's bank as
-// NodeHost names it. The sink fake is core's own SinkRing (every rule of a sink's rings) with its consumer on the
-// test's thread: begin at configure's return (or, with holdSinks, at ready(bank)), each chunk drained at once from the
-// tap written after the fade in process(), in two calls where it wraps the ring's end (a ring of sinkRingFrames, or the
-// type's own size), finish at the close. The source fake is core's own SourceRing (every source rule, by the block's own
-// SourceRing::play, with the type's clock if it gave one), its writer never waiting: the test feeds it (feed), process()
-// plays it into its bank before the code, and the test reads what its last tick did (lastPlayed, exactly what a clock
-// was told) and its shortfall.
+// stop(): their pairing is node_host_test.cpp's. Not yet: holds and stores, which come with the slices that build them
+// (docs/design/). The fake clock (advance) runs every main-loop timer NodeHost arms, each companion's readiness
+// deadline included (docs/engine.md#readiness-deadlines), and every loop's timer. The loop fake runs each of the node's
+// loops on the test's thread (docs/writing-a-node-type.md#loops): a queue and the fake clock's timers per loop, its
+// kind kept (a strand's handlers run with StrandScope, so onStrand() judges them); started when the framework asks (at
+// once, or, with holdLoops, at loopsReady()), its work run only by runLoops(), its timers fired only by advance(), its
+// watches by runLoops() once rung (a source's clock wake) or readable(fd); a teardown turns each loop until it finished
+// and closed, and a source a state left armed fails the call that tore it down (std::logic_error naming the loop)
+// unless allowSourcesLeft. Where a fake acts as the engine does it runs the engine's own rule: the block's fade and
+// stamps (ear/core/block_rules.hpp), its cycle facts (CycleAccount, over the harness's own cut record: loseCycles), its
+// latency (workOut, with no peers), and an engine companion's bank as NodeHost names it. The sink fake is core's own
+// SinkRing (every rule of a sink's rings) with its consumer on the test's thread: begin at configure's return (or, with
+// holdSinks, at ready(bank)), each chunk drained at once from the tap written after the fade in process(), in two calls
+// where it wraps the ring's end (a ring of sinkRingFrames, or the type's own size), finish at the close. The source
+// fake is core's own SourceRing (every source rule, by the block's own SourceRing::play, with the type's clock if it
+// gave one), its writer never waiting: the test feeds it (feed), process() plays it into its bank before the code, and
+// the test reads what its last tick did (lastPlayed, exactly what a clock was told) and its shortfall.
 #pragma once
 #include <chrono>
 #include <cstddef>
@@ -33,6 +38,7 @@
 #include "ear/core/cycle_facts.hpp"
 #include "ear/core/desired_graph.hpp"
 #include "ear/core/log.hpp"
+#include "ear/core/loop.hpp"
 #include "ear/core/node_host.hpp"
 #include "ear/core/node_lifecycle.hpp"
 #include "ear/core/sink.hpp"
@@ -91,6 +97,12 @@ struct HarnessOptions {
 	/// engine's is): a ring that a test's cycles do not divide makes the sink hand chunks split at its end, as the
 	/// engine's does (docs/engine.md#sinks).
 	std::optional<std::uint32_t> sinkRingFrames;
+	/// Each loop starts only at loopsReady(), not when the framework asks.
+	bool holdLoops = false;
+	/// Every loop the framework asks for cannot start, with this as the adapter's reason.
+	std::optional<std::string> refuseLoops{};
+	/// A source a loop's state left armed is only said (ear.loop-source-left), not a std::logic_error.
+	bool allowSourcesLeft = false;
 };
 /// How add() adds the node.
 struct AddOptions {
@@ -138,9 +150,29 @@ public:
 	/// it (its `done` never ran), both by the real block's rule (BlockFade).
 	void acknowledgeFade();
 	void completeBarrier();
-	/// The fake clock moves on; timers due fire (the 100 ms, 5 s and 10 s bounds, waitingFor's 2 s, and each
-	/// companion's readiness deadline: a card's 10 s, an RTP receiver's and a sink's consumer's 5 s).
+	/// The fake clock moves on; timers due fire, in time order (the 100 ms, 5 s and 10 s bounds, waitingFor's 2 s, each
+	/// companion's readiness deadline: a card's 10 s, an RTP receiver's and a sink's consumer's 5 s; and each loop's
+	/// timers, on its loop, an `every` once for each tick the move passes: a handler takes no time on the fake clock).
 	void advance(std::chrono::milliseconds by);
+	/// Every loop runs what was posted to it, and each watch rung (a wake rung, a descriptor made readable()), and what
+	/// that posts, until all are idle; never a timer (advance's). Its handlers' notes and losses land on the main loop
+	/// meanwhile.
+	void runLoops();
+	/// With holdLoops: every loop asked for and not yet started starts (its adapter tells it ready).
+	void loopsReady();
+	/// Every watch of `fd` (onReadable) runs on the next runLoops().
+	void readable(int fd);
+	/// The sources armed on the newest loop named `loop` whose handles still live (none: 0).
+	std::size_t armed(std::string_view loop) const;
+	/// Each loop the framework made, oldest first: its name, whether it closed to others, finished and closed.
+	struct SeenLoop {
+		std::string name;
+		LoopKind kind;
+		bool closedToOthers = false;
+		bool finished = false;
+		bool closed = false;
+	};
+	std::vector<SeenLoop> loops() const;
 	/// One cycle of `frames` (0: maxBlock) through the code the fake block was driven with, outputs NaN-filled first,
 	/// with a GraphCycle the harness advances on its driver, its facts (GraphCycle::facts, and facts()) stated by the
 	/// real block's rule,

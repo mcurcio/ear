@@ -18,8 +18,8 @@
 namespace ear::detail {
 
 /// When an item is asked: only once every item of every earlier step is ready, so a later item may rely on what an
-/// earlier one made. The order is the lifecycle's (docs/architecture.md#the-node-lifecycle); today only `companions`
-/// has items (engine companions and sinks' consumers).
+/// earlier one made. The order is the lifecycle's (docs/architecture.md#the-node-lifecycle); today `loops` has a
+/// configuration's loops and `companions` its engine companions and sinks' consumers.
 enum class ReadinessStep : unsigned { claims, opens, loops, companions };
 
 /// The index of an item not added yet: never ready.
@@ -59,6 +59,11 @@ public:
 	void ready(std::size_t index);
 	/// Item `index`'s bound passed: its failure, unless it became ready first or the list already ended.
 	std::optional<ReadinessOverdue> passed(std::size_t index);
+	/// Item `index` will never be ready (its ReadyEvents::failed): as a bound that passed, with `detail` for the
+	/// item's; nothing once it became ready or the list ended, or before it was asked.
+	std::optional<ReadinessOverdue> failed(std::size_t index, std::string detail);
+	/// Item `index`'s step was asked (so its owner started it).
+	bool isAsked(std::size_t index) const noexcept;
 	/// Every bound cancelled (the configuration is going); what is ready stays read.
 	void disarm() noexcept;
 
