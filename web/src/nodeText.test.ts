@@ -38,6 +38,20 @@ describe("a node's text in the file", () => {
     });
   });
 
+  it("is cut from a CRLF file with \\n only, as a textarea holds it, so an unchanged box is not dirty", () => {
+    const crlf: GraphFile = { ...v1, text: v1.text.replaceAll("\n", "\r\n") }; // same places: \r ends each line
+    expect(nodeTextIn(crlf, "rec")).toStrictEqual({
+      kind: "own",
+      text: '# the take\nnode file rec { path "take1.wav"; }',
+    });
+    const box = boxFrom(crlf, "rec");
+    expect(dirty(box)).toBe(false);
+    expect(canSave(box)).toBe(false);
+    // The textarea gives back its own value: still not dirty, and a new version of the file moves it along.
+    expect(dirty(edited(box, box.draft))).toBe(false);
+    expect(boxReduce(box, { kind: "file", file: { ...crlf, version: "v1b" } }).base.version).toBe("v1b");
+  });
+
   it("is shared for a node written in a snippet, with where", () => {
     expect(nodeTextIn(v1, "t1")).toStrictEqual({ kind: "shared", text: "node white $n;", at: { line: 6, column: 5 } });
   });

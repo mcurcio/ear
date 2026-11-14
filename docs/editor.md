@@ -75,7 +75,8 @@ only that statement. The rules:
 
 - **Cut from the file the editor holds.** The text is the GraphFile's `text` between the node's
   `nodeTexts` places; nothing is fetched and the browser parses no knobly. There is no highlighter,
-  as the pane has none.
+  as the pane has none. Its `\r\n` become `\n`, as a textarea holds them, so an unchanged box on a
+  CRLF file is not dirty; ear writes the file's own ending into what Save sends.
 - **Save is `node.setText`** with the draft and the version it was cut from. ear answers once the
   graph runs it; the box then shows ear's text from the new GraphFile. `invalid-text`'s diagnostics
   are placed in the draft, listed under it like the pane's, and a click puts the caret there.

@@ -1039,6 +1039,7 @@ public:
 		                                                    : place.column};
 	}
 	control::TextPlace textStart() const { return inText(start_); }
+	control::TextPlace textEnd() const { return inText(end_); }
 
 	/// A candidate's diagnostic placed in the text; one outside it at the text's start or end, saying where it is in
 	/// the file as it stands (after the text, lines move by what the text changed).
@@ -1073,8 +1074,32 @@ constexpr std::string_view textWhitespace = " \t\r\n";
 constexpr std::string_view notOneNodeMessage =
 	"the text must be one node statement: node <type> <name> { <setting> <value>; ... }";
 
+constexpr std::string_view overrunMessage =
+	"the text's statement runs on past its end into ear.conf: close every { with } so the text is one whole node "
+	"statement";
+
 std::unexpected<EditRefusal> invalidText(std::vector<control::Diagnostic> diagnostics) {
 	return refuse(control::FileRefusal{control::InvalidText{std::move(diagnostics)}});
+}
+
+/// The file's own line ending (docs/control-port.md#a-nodes-own-text): the one ending the statement's first line, else
+/// the file's first line's; "\n" for a file of one line.
+std::string_view lineEndingOf(std::string_view file, std::size_t from) {
+	auto end = file.find('\n', from);
+	if (end == std::string_view::npos) end = file.find('\n');
+	return end != std::string_view::npos && end > 0 && file[end - 1] == '\r' ? "\r\n" : "\n";
+}
+
+/// `text` with every line ending written as `ending`: a browser's textarea gives "\n" whatever the file holds.
+std::string withLineEnding(std::string_view text, std::string_view ending) {
+	std::string out;
+	out.reserve(text.size());
+	for (std::size_t at = 0; at < text.size(); ++at) {
+		if (text[at] == '\r' && at + 1 < text.size() && text[at + 1] == '\n') continue; // its \n writes the ending
+		if (text[at] == '\n') out += ending;
+		else out += text[at];
+	}
+	return out;
 }
 
 } // namespace
@@ -1097,14 +1122,28 @@ EditOutcome GraphFileModel::setNodeText(const NodeName& name, const std::string&
 		}
 		const std::size_t lead = std::min(text.size(), text.find_first_not_of(textWhitespace));
 		const std::size_t last = text.find_last_not_of(textWhitespace);
-		const std::string trimmed = last == std::string::npos ? std::string() : text.substr(lead, last + 1 - lead);
-		if (trimmed.empty())
+		if (last == std::string::npos)
 			return invalidText({control::Diagnostic{control::Severity::error, std::string(notOneNodeCode),
 			                                        std::string(notOneNodeMessage), control::TextPlace{1, 1}}});
+		// Written with the file's own line ending, so a CRLF file stays CRLF and an unchanged text changes nothing.
+		const std::string trimmed =
+			withLineEnding(std::string_view(text).substr(lead, last + 1 - lead), lineEndingOf(impl_->text, from));
 		std::string after = impl_->text.substr(0, from) + trimmed + impl_->text.substr(to);
 		if (after == impl_->text) return std::optional<GraphFileModel>{};
 		GraphFileModel candidate = load(DiskText{after}, *impl_->catalogue);
 		const BoxMap box(text, lead, trimmed.size(), impl_->text, from, to, after);
+		// The statement the text starts must end where the text ends: one that runs on (a { left open) would take what
+		// follows it in the file, whatever a node type's settings would accept of it.
+		if (candidate.impl_->graph)
+			for (const vw::statement& statement : candidate.impl_->graph->root().block()) {
+				const auto span = statement.place().span();
+				const auto at = static_cast<std::size_t>(span.start().offset());
+				if (at < from || at >= from + trimmed.size()) continue;
+				if (static_cast<std::size_t>(span.end().offset()) > from + trimmed.size())
+					return invalidText({control::Diagnostic{control::Severity::error, std::string(notOneNodeCode),
+					                                        std::string(overrunMessage), box.textEnd()}});
+				break;
+			}
 		const GraphFileRead& read = candidate.read();
 		if (read.hasErrors()) {
 			std::vector<control::Diagnostic> mapped;

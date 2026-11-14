@@ -311,13 +311,18 @@ as JSON, for scripts; the editor's node panel shows and edits the node's stateme
   top-level `@use` lines, however many) is `shared`: its entry points into the snippet, and
   several names may share one range.
 - **`node.setText {"name", "text", "version"}`** replaces the node's own statement (its byte range)
-  with `text`, the whitespace around it dropped; every other byte of the file is kept. The
+  with `text`, the whitespace around it dropped; every other byte of the file is kept. Its lines
+  are written with the file's own line ending (the one ending the statement's first line, else the
+  file's first line's), so a CRLF file stays CRLF whatever ending the text came with. The
   candidate is read whole by the file's reader ([graph-file.md](graph-file.md#a-nodes-own-text)),
   so the file's `@set` and `@snippet` lines apply in it and are never changed by it. It may change
   anything in the statement: settings and their spelling, `@use` lines, `$variable` uses,
   comments, `disabled true;`, the type (the graph replaces the node). Where the text went, the
-  candidate must hold exactly one top-level `node` statement of the same name: otherwise
-  `invalid-text` with `ear/not-one-node`, or `ear/node-renamed` at the name. *Why no rename:*
+  candidate must hold exactly one top-level `node` statement of the same name, and the statement
+  the text starts must end where the text ends: otherwise `invalid-text` with `ear/not-one-node`
+  (a statement that runs on past the text, a `{` left open, is told so at the text's end before
+  anything else, so it never takes what follows it in the file, whatever a type's settings would
+  accept), or `ear/node-renamed` at the name. *Why no rename:*
   routes name the node, so renaming its statement alone would leave them naming a node that is
   gone; a rename is made in the pane, where its routes are renamed in the same text. Removing a
   node is `node.remove`.

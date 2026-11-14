@@ -21,7 +21,9 @@ export function nodeTextIn(file: GraphFile, name: string): NodeTextIn {
   if (entry === undefined) return { kind: "none" };
   const from = offsetOf(file.text, entry.start.line, entry.start.column);
   const to = offsetOf(file.text, entry.end.line, entry.end.column);
-  const text = file.text.slice(from, to);
+  // A textarea holds "\n" only, so a CRLF file's text is cut as it would come back: unchanged, it is not dirty. ear
+  // writes the file's own ending into what Save sends.
+  const text = file.text.slice(from, to).replaceAll("\r\n", "\n");
   return entry.shared === true ? { kind: "shared", text, at: entry.start } : { kind: "own", text };
 }
 

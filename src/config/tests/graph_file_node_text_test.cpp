@@ -263,6 +263,53 @@ TEST_CASE("node.setText's text must be one node statement of the same name", "[g
 	CHECK(renamed.place == control::TextPlace{2, 12});
 }
 
+TEST_CASE("node.setText's statement must end where its text ends: a { left open never takes what follows",
+          "[graph_file_node_text]") {
+	const Fixture f;
+	// rec's block left open: what follows in the file (desk, with its own block) would be read into it.
+	const std::string open = R"(node file rec { path "take2.wav";)";
+	const auto d = invalid(f.load(example).setNodeText("rec", open));
+	REQUIRE(d.size() == 1);
+	CHECK(d[0].code == notOneNodeCode);
+	CHECK(d[0].message == "the text's statement runs on past its end into ear.conf: close every { with } so the text "
+	                      "is one whole node statement");
+	CHECK(d[0].place == control::TextPlace{1, static_cast<std::uint32_t>(open.size() + 1)}); // at the text's end
+}
+
+TEST_CASE("node.setText writes the file's own line ending", "[graph_file_node_text]") {
+	const Fixture f;
+	const auto crlf = [](std::string text) {
+		for (std::size_t at = text.find('\n'); at != std::string::npos; at = text.find('\n', at + 2))
+			text.replace(at, 1, "\r\n");
+		return text;
+	};
+	const auto loneNewlines = [](const std::string& text) {
+		std::size_t lone = 0;
+		for (std::size_t at = 0; at < text.size(); ++at) lone += text[at] == '\n' && (at == 0 || text[at - 1] != '\r');
+		return lone;
+	};
+	const std::string windows = crlf(example);
+	const GraphFileModel model = f.load(windows);
+	REQUIRE(model.read().nodeTexts.has_value());
+	CHECK(*model.read().nodeTexts == *f.load(example).read().nodeTexts); // the \r ends each line, after the statement
+
+	// What a textarea gives back for desk's text, unchanged: "\n" between its lines. Nothing changes.
+	const auto same =
+		model.setNodeText("desk", "# the desk's card\nnode card desk { @use card_out MOTU; }   # the big one");
+	REQUIRE(same.has_value());
+	CHECK_FALSE(same->has_value());
+
+	const GraphFileModel after =
+		candidate(model.setNodeText("desk", "# the desk's card\nnode card desk {\n    card MOTU;\n    playback 4;\n}"));
+	CHECK(loneNewlines(after.text()) == 0);
+	CHECK(after.text() == crlf(replaced(example, "node card desk { @use card_out MOTU; }   # the big one",
+	                                    "node card desk {\n    card MOTU;\n    playback 4;\n}")));
+
+	// A text sent with CRLF into an LF file is written with LF.
+	const GraphFileModel lf = candidate(f.load(example).setNodeText("rec", "node file rec {\r\n    path b.wav;\r\n}"));
+	CHECK(lf.text().find('\r') == std::string::npos);
+}
+
 TEST_CASE("node.setText on a file with errors is a programming error", "[graph_file_node_text]") {
 	const Fixture f;
 	CHECK_THROWS_AS(f.load(example + "oops;\n").setNodeText("noise", "node white noise;"), std::logic_error);

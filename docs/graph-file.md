@@ -160,7 +160,7 @@ codes look like `E2001`; ear's are:
 | `ear/bad-rate` | A rate not written as a number and `hz` or `khz`, not whole hertz, or (the graph's) outside 8 kHz to 768 kHz ([rates](#rates)) |
 | `ear/too-large` | An edit's or a `graphFile.set`'s text over 1 MiB (answered `invalid-text`) |
 | `ear/unwritable-edit` | An edit knobly could not write (answered `invalid-text`) |
-| `ear/not-one-node` | A `node.setText` text that is not exactly one `node` statement ([below](#a-nodes-own-text)) |
+| `ear/not-one-node` | A `node.setText` text that is not exactly one whole `node` statement, or whose statement runs on past it ([below](#a-nodes-own-text)) |
 | `ear/node-renamed` | A `node.setText` text naming another node, at the name |
 
 **A file with any error does not apply.** The graph keeps running what it ran, the editor shows

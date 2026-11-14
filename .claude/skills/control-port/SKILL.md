@@ -125,7 +125,9 @@ Every edit is an edit of `ear.conf` (knobly), the one source of the wanted graph
 - **A person edits knobly; JSON is the machine API.** With the feature `node-text` the GraphFile
   carries `nodeTexts` (`{name, start, end, shared?}`: where each node's statement is in `text`,
   owned comments included; absent while the file has errors), and `node.setText {"name", "text",
-  "version"}` replaces that node's own statement with `text`, every other byte of the file kept.
+  "version"}` replaces that node's own statement with `text`, every other byte of the file kept,
+  written with the file's own line ending; the statement must end where `text` ends (a `{` left
+  open is `ear/not-one-node` at its end, never read into what follows).
   The candidate is read whole by the file's reader, so `@set` and `@snippet` apply; `invalid-text`
   places its diagnostics in `text` (`ear/not-one-node`, `ear/node-renamed`: a rename is made in the
   pane, with its routes). Checks: `stopping`, `file-changed` (strict, as `graphFile.set`),
