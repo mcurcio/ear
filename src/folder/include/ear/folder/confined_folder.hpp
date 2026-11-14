@@ -45,6 +45,11 @@ public:
 	/// directory, another kind, or more than maxBytes is a FolderError.
 	std::expected<std::optional<std::string>, FolderError> read(const std::string& relative,
 	                                                            std::size_t maxBytes) const;
+	/// read(), with every mode bit outside `most` cleared first on the same descriptor: the file
+	/// narrowed is the file read, whatever is renamed over the name meanwhile. A file larger than
+	/// maxBytes is still narrowed.
+	std::expected<std::optional<std::string>, FolderError> readNarrowed(const std::string& relative,
+	                                                                    std::size_t maxBytes, mode_t most) const;
 	/// Puts `text` at `relative` only if it held `expected` (nullopt: nothing there), resolved as
 	/// read() resolves. A file it replaces keeps its mode; one it creates has exactly `createMode`,
 	/// whatever the umask. Error: nothing changed, except as the error says.

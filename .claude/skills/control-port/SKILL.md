@@ -1,6 +1,6 @@
 ---
 name: control-port
-description: How to talk to EAR's control port (7777, HTTP for the graph editor plus JSON-RPC 2.0 over WebSocket at /rpc), its flags, the Host and Origin rules, protocol 1 and its features, the lifecycle requests (node.start, node.stop, node.restart, node.disable, node.enable), node health and node.gone, the graphFile.* calls that read and replace ear.conf, rpc-call.mjs --until, write-behind and hand edits, how it runs on its own thread and reaches the graph through the graph file keeper and the gateway, per-client queues, levels, stopping, and the traps found while building it. Use when calling ear from a script, test or browser, when a request gets 403, file-changed, file-invalid or shared-definition, a socket closes with 1008 or a reset, levels never arrive, an edit is lost or not written, stop hangs, or when changing src/server/, src/control/ (rpc, commands, events, gateway, session), src/config/ or web/src/rpc.ts.
+description: How to talk to EAR's control port (7777, HTTP for the graph editor plus JSON-RPC 2.0 over WebSocket at /rpc), its flags, the Host and Origin rules, protocol 1 and its features (lifecycle, counters, companions and node.companionsChanged), the lifecycle requests (node.start, node.stop, node.restart, node.disable, node.enable), node health and node.gone, the graphFile.* calls that read and replace ear.conf, rpc-call.mjs --until, write-behind and hand edits, how it runs on its own thread and reaches the graph through the graph file keeper and the gateway, per-client queues, levels, stopping, and the traps found while building it. Use when calling ear from a script, test or browser, when a request gets 403, file-changed, file-invalid or shared-definition, a socket closes with 1008 or a reset, levels never arrive, an edit is lost or not written, stop hangs, or when changing src/server/, src/control/ (rpc, commands, events, gateway, session), src/config/ or web/src/rpc.ts.
 ---
 
 # EAR's control port
@@ -48,7 +48,7 @@ use`).
 
 ## The frame and the lifecycle (protocol 1)
 
-- **The frame.** `graph.get` says `"protocol": 1` and `"features": ["lifecycle"]`; an absent
+- **The frame.** `graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions", "node-text"]`; an absent
   `protocol` is 0. Gate every method and request member on its feature, never on a -32601
   probe. Every enum is open: draw a value you do not know neutrally, never fail on it.
 - **Health.** Each node of a snapshot, `node.added` and every `node.state` carries `state` (the
@@ -73,6 +73,33 @@ use`).
   disabled, then the health. No `action` record: the `graph-file` record says it.
   `node.add` takes `"disabled": true`.
 - Every -32602 carries `data.pointer`, the JSON pointer its message names.
+- **Counters** (feature `counters`): the Graph carries the graph's `counters` (`cycles`, `cutCycles`,
+  `stalls`, `lostMs`) and each node of a snapshot and `node.added` its own (`missedCycles`,
+  `overruns`, `repositions`, `driverChanges`); `counters.changed` to `graph.subscribe` clients, at
+  most once a second and only when one was lost, replaces those it names. CounterWatch
+  (`src/core/counter_watch.cpp`) reads them at the main loop's 100 ms heartbeat; standard output
+  says the same as `ear.graph-lost-cycles` and `ear.node-missed-cycles`
+  (`docs/engine.md#reporting-the-counters`). To see a stall end to end: `kill -STOP` ear for half a
+  second, then `kill -CONT`: one `ear.graph-lost-cycles` record carries every cycle it cut, if the host cut any (a GitHub
+  runner runs the catch-up whole, and a stop while the data thread waits holds no cycle).
+- **Companions** (feature `companions`, `docs/control-port.md#companions`): each node of a snapshot
+  carries `companions`, its hidden helpers (`rec.writer` kind `sink` with `dropped`, `fpp.rtp`
+  `rtp-receiver`, `desk.playback`/`desk.capture`, a source with `shortfall`), each with its inside
+  `bank` and `ready`; `node.added` always `[]`. `node.companionsChanged {name, companions}` replaces
+  the whole list: at once for an entry or a `ready` (after `configuring`, before the health a
+  readiness allows, `[]` after the `node.state` that began a teardown; none for a stop or start),
+  at most once a second for a counter. Two tellers feed it (NodeHost for structure and readiness,
+  CounterWatch at the heartbeat for counters), and the gateway (`companionsChanged` in
+  `src/control/gateway.cpp`) drops a list for a name no client holds (removed, not added again) and
+  one equal to the last it sent for the node; `node.added` sets that to `[]`. A companion's counters run per configuration, so they
+  never ride `counters`/`counters.changed`. The order rules are NodeHost's: the gateway only posts list and health in
+  the order it hears them on the main loop, so it needs no ordering code of its own (the proofs are the session replay
+  of `test/protocol/companions.json` and `test/system/control_port_test.cpp`). A companion is never a node: a route
+  naming one (`rec.writer`) names no node (no node's name has a `.`) and is refused, and levels never carry one. A counter
+  reaching the wire is not proved end to end (no system test can make a file node's sink drop: `docs/testing.md`).
+  The editor (`web/src/companions.ts`, `docs/editor.md#companions`) marks a rise only against what it held, and
+  forgets everything held when its connection closes. To see a list:
+  `node scripts/rpc-call.mjs ws://127.0.0.1:7777/rpc graph.get` and read each node's `companions`.
 
 ## The graph file over the port
 
@@ -95,6 +122,20 @@ Every edit is an edit of `ear.conf` (knobly), the one source of the wanted graph
   `node.*` and `route.*` edit is `file-invalid`; only `graphFile.set` (or a hand edit) fixes it.
   A port change (a card's channel count) replaces the node: its routes and the node are removed
   and added again; there is no `ports-changed`.
+- **A person edits knobly; JSON is the machine API.** With the feature `node-text` the GraphFile
+  carries `nodeTexts` (`{name, start, end, shared?}`: where each node's statement is in `text`,
+  owned comments included; absent while the file has errors), and `node.setText {"name", "text",
+  "version"}` replaces that node's own statement with `text`, every other byte of the file kept,
+  written with the file's own line ending; the statement must end where `text` ends (a `{` left
+  open is `ear/not-one-node` at its end, never read into what follows).
+  The candidate is read whole by the file's reader, so `@set` and `@snippet` apply; `invalid-text`
+  places its diagnostics in `text` (`ear/not-one-node`, `ear/node-renamed`: a rename is made in the
+  pane, with its routes). Checks: `stopping`, `file-changed` (strict, as `graphFile.set`),
+  `file-invalid`, `unknown-node`, `shared-definition` (a node whose statement is a snippet's), then
+  the text's. `node.addText {"text", "version"}` appends a new node's statement as `node.add`
+  appends (knobly parses it alone first, then the file reads it in context; `ear/not-one-node`, the
+  graph's `duplicate-node`). `node.add` and `node.update` stay for scripts
+  (`docs/control-port.md#a-nodes-own-text`).
 - Order: `graphFile.changed` first, then the node and route events it causes, then the reply. A
   refused edit announces nothing; only its reply carries the code.
 - **Handling `file-changed`:** another client, or a hand edit, changed the file since your
@@ -167,7 +208,9 @@ then on every edit, including one already queued, gets -32000 `stopping`, while 
 node has stopped (files finished), `ControlPort::stop` closes every client with 1001 and returns
 only once every close handshake has ended; then the control thread stops and the engine quits.
 Last, the keeper's thread writes the last accepted version if it was not written; a failure is
-printed (`graph-file write-failed <detail>`) and reaches no client.
+printed (`graph-file write-failed <detail>`) and reaches no client. Then `ear: stopped` (an `exit`
+record, status 0) says the stop is done; a script waiting on ear's exit judges the stop by it
+(`docs/architecture.md#stop-sigint-or-sigterm`).
 
 ## Traps
 
@@ -218,11 +261,12 @@ printed (`graph-file write-failed <detail>`) and reaches no client.
   `127.0.0.1:0`, a thread-backed fake main loop and a fake gateway: files, Host and Origin,
   round trips, two clients, the 1008 bound, a client that resets mid-write, stop with 1001.
 - `ear_control_tests`: the envelope, commands, events, gateway and sessions, all pure, against
-  `test/protocol` (`graph-file.json` for the graph file).
+  `test/protocol` (`graph-file.json` for the graph file, `node-text.json` for `node.setText`).
 - `ear_config_tests`: the keeper stepped by hand on one thread over a real folder, both
   hand-edit collisions included; its thread with inotify.
 - `ear_system_tests` (`test/system/control_port_test.cpp`, `graph_file_test.cpp`): the real
-  `out/ear`, end to end, edits written back and hand edits winning.
+  `out/ear`, end to end, edits written back and hand edits winning; `node-text.json`'s requests
+  are sent to the real ear and its replies must be the fixture's.
 - `scripts/image-smoke.sh`: the run image serves `/` and answers `graph.get` and
   `graphFile.get`.
 - `web/` vitest: the editor's client and reducer against the same fixtures.

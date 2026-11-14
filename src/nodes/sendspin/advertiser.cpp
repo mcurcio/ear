@@ -20,7 +20,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-namespace ear::sendspin {
+namespace ear::nodes::sendspin {
 namespace {
 
 constexpr std::size_t maxNodeBytes = 50;
@@ -300,4 +300,4 @@ void Advertiser::answer() noexcept {
 	}
 }
 
-} // namespace ear::sendspin
+} // namespace ear::nodes::sendspin

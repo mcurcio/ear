@@ -16,8 +16,10 @@ using json = nlohmann::json;
 namespace {
 
 /// The record's file format example (docs/graph-file.md#edits-at-the-source).
-const std::string recordExample = R"(graph_frequency 48000;
-block_size 256;
+const std::string recordExample = R"(graph {
+    rate 48khz;
+    block_size 256;
+}
 @set $ch 2;                      # comments survive every edit
 @snippet card_out $id {          # written once, used by both cards
     card $id;
@@ -32,8 +34,10 @@ route noise:noise.mono desk:play.1;
 )";
 
 /// A snippet that makes a node, used twice: its node line makes two rendered nodes.
-const std::string twiceUsed = R"(graph_frequency 48000;
-block_size 256;
+const std::string twiceUsed = R"(graph {
+    rate 48khz;
+    block_size 256;
+}
 @snippet take $n {
     node file $n { path "a.wav"; }
 }
@@ -151,11 +155,11 @@ TEST_CASE("An added key goes in the node's own block, and a key made by a shared
 		CHECK(text.starts_with(recordExample.substr(0, recordExample.find("node card desk"))));
 	}
 	SECTION("removing playback from desk: the snippet's playback line makes porch's too") {
-		CHECK(sharedAt(model.updateNode("desk", {{"card", "MOTU"}})) == control::TextPlace{6, 5});
+		CHECK(sharedAt(model.updateNode("desk", {{"card", "MOTU"}})) == control::TextPlace{8, 5});
 	}
 	SECTION("adding a key to a node written in a snippet used twice") {
 		const auto twice = f.load(twiceUsed);
-		CHECK(sharedAt(twice.updateNode("t1", {{"path", "a.wav"}, {"gain", 3}})) == control::TextPlace{4, 5});
+		CHECK(sharedAt(twice.updateNode("t1", {{"path", "a.wav"}, {"gain", 3}})) == control::TextPlace{6, 5});
 	}
 	SECTION("a node written without a block is written with one") {
 		const auto edited = candidate(model.updateNode("noise", {{"level", "low"}}));
@@ -185,7 +189,7 @@ TEST_CASE("Removing a node removes its line and every route line naming it", "[g
 	}
 	SECTION("a node made by a snippet used twice, with the text unchanged") {
 		const auto twice = f.load(twiceUsed);
-		CHECK(sharedAt(twice.removeNode("t2")) == control::TextPlace{4, 5});
+		CHECK(sharedAt(twice.removeNode("t2")) == control::TextPlace{6, 5});
 		CHECK(twice.text() == twiceUsed);
 	}
 }
@@ -364,7 +368,53 @@ TEST_CASE("An edit never changes the model it is called on", "[graph_file_edit]"
 
 TEST_CASE("An edit on a file with errors is a programming error", "[graph_file_edit]") {
 	const Fixture f;
-	const auto broken = f.load("graph_frequency 48000;\nblock_size 256;\nvolume 3;\n");
+	const auto broken = f.load("graph {\n    rate 48khz;\n    block_size 256;\n}\nvolume 3;\n");
 	CHECK_THROWS_AS(broken.updateNode("rec", json::object()), std::logic_error);
 	CHECK_THROWS_AS(broken.addRoute({{"noise", "noise.mono"}, {"rec", "record.left"}}), std::logic_error);
+}
+
+TEST_CASE("A rate setting is written back with its unit, and a spelling no edit changes is kept",
+          "[graph_file_model][graph-block]") {
+	const Fixture f;
+	const std::string head = "graph {\n    rate 48khz;\n    block_size 256;\n}\n";
+	const auto model = f.load(head + "node rtp a { rate 44100hz; } # the sender\nnode rtp b;\n");
+	REQUIRE(model.read().wanted.has_value());
+	SECTION("a changed rate is written in ear's form") {
+		const auto edited = candidate(model.updateNode("a", {{"rate", 88200}}));
+		CHECK(edited.text() == head + "node rtp a { rate 88.2khz; } # the sender\nnode rtp b;\n");
+		CHECK(nodeIn(edited, "a").settings == json{{"rate", 88200}});
+		const auto odd = candidate(model.updateNode("a", {{"rate", 11025}}));
+		CHECK(odd.text() == head + "node rtp a { rate 11025hz; } # the sender\nnode rtp b;\n");
+	}
+	SECTION("the same rate is no edit, its spelling kept") {
+		CHECK_FALSE(model.updateNode("a", {{"rate", 44100}}).value().has_value());
+	}
+	SECTION("an added rate, and a node added with one") {
+		const auto edited = candidate(model.updateNode("b", {{"rate", 48000}}));
+		CHECK(edited.text() == head + "node rtp a { rate 44100hz; } # the sender\nnode rtp b { rate 48khz; }\n");
+		const auto added = candidate(model.addNode({"c", "rtp", {{"rate", 44100}}}));
+		CHECK(added.text().ends_with("node rtp c { rate 44.1khz; }\n"));
+		CHECK(nodeIn(added, "c").settings == json{{"rate", 44100}});
+	}
+	SECTION("a value that is no whole number of Hz is refused before any edit; a range is the plan's") {
+		for (const json& bad : {json("44.1khz"), json(44100.5), json(0), json(-1)}) {
+			INFO(bad.dump());
+			CHECK(commandDetail(model.updateNode("a", {{"rate", bad}})) ==
+			      "invalid-settings a: rate: expected a whole number of Hz above 0");
+		}
+		const auto low = candidate(model.updateNode("a", {{"rate", 4000}}));
+		CHECK(low.text() == head + "node rtp a { rate 4khz; } # the sender\nnode rtp b;\n");
+	}
+}
+
+TEST_CASE("No edit touches the graph block", "[graph_file_model][graph-block]") {
+	const Fixture f;
+	const std::string block = "graph {   # the engine\n    rate 44.1khz;   # the MOTU's\n    block_size 128;\n}\n";
+	const auto model = f.load(block + "node white noise;\n");
+	const auto added = candidate(model.addNode({"rec", "file", {{"path", "a.wav"}}}));
+	CHECK(added.text().starts_with(block));
+	const auto routed = candidate(added.addRoute({{"noise", "noise.mono"}, {"rec", "record.left"}}));
+	CHECK(routed.text().starts_with(block));
+	CHECK(candidate(routed.disableNode("noise")).text().starts_with(block));
+	CHECK(candidate(routed.removeNode("noise")).text().starts_with(block));
 }

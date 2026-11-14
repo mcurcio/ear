@@ -1,15 +1,19 @@
 // FilterPortBlocks on the real in-process engine (docs/engine.md#port-blocks): levels on the graph clock, complete
 // snapshots, the drive barrier, a lost block, inside ports and the graph group; each cycle's clock facts, latency
-// carried per bank pair, and denormals flushed on the data thread; docs/engine.md#drive-and-fade: the asynchronous
+// carried per bank pair, the cycle facts' table through a real block, and denormals flushed on the data thread;
+// docs/engine.md#drive-and-fade: the asynchronous
 // drive applied in its invoke, the fade, settle(), one invoke in flight per block, takenAt and blockId. Every wait is
 // event-gated: the main loop runs until the events a test waits for have arrived; the deadline only fails the test. The
 // Waiter and makeEngine follow engine_test.cpp's (the pipewire-engine skill's pattern).
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <ctime>
 #include <functional>
+#include <limits>
 #include <list>
 #include <map>
 #include <memory>
@@ -20,19 +24,32 @@
 #include <thread>
 #include <vector>
 
+#include <pipewire/impl.h>
 #include <pipewire/pipewire.h>
 #include <spa/node/command.h>
+#include <spa/param/latency-utils.h>
+#include <spa/pod/builder.h>
 #if defined(__x86_64__) || defined(__i386__)
 #include <xmmintrin.h>
 #endif
 
+#include "../callback_boundary.hpp"
 #include "catch2/catch.hpp"
+#include "cycle_judge.hpp"
+#include "cycle_table.hpp"
+#include "ear/core/lifecycle.hpp"
 #include "ear/pipewire/engine.hpp"
 #include "ear/pipewire/links.hpp"
 #include "ear/pipewire/live_graph.hpp"
 #include "ear/pipewire/port_blocks.hpp"
+#include "ear/pipewire/sources.hpp"
 #include "ear/testing/drive_now.hpp"
+#include "ear/testing/type_harness.hpp"
+#include "inducers.hpp"
+#include "latency_table.hpp"
 #include "probes.hpp"
+#include "quiescence.hpp"
+#include "sleeps.hpp"
 
 // Allocations are counted on a thread that asks for it (the realtime thread, from a test code's process() on), by the
 // binary's one malloc hook.
@@ -42,18 +59,24 @@ namespace {
 using namespace ear;
 using namespace ear::pipewire;
 using namespace std::chrono_literals;
+using ear::test::CycleJudge;
+using ear::test::CycleLedger;
+using ear::test::JudgePlan;
+using ear::test::StallingCode;
+using ear::test::StallLength;
+using ear::test::StallPlan;
 
 constexpr std::uint32_t kRate = 48000;
 constexpr std::uint32_t kBlock = 256;
-constexpr AudioFormat kFormat{kRate, kBlock};
-constexpr std::uint64_t kWindow = 1600; // levelWindowFrames(48000)
+constexpr AudioFormat kFormat{ear::SampleRate::fixed<kRate>(), kBlock};
+constexpr std::uint64_t kWindow = 1600; // levelWindowFrames at 48 kHz
 
 std::unique_ptr<Engine> makeEngine() {
 	for (const char* name : {"XDG_RUNTIME_DIR", "PIPEWIRE_RUNTIME_DIR", "PIPEWIRE_REMOTE", "DBUS_SESSION_BUS_ADDRESS",
 	                         "DBUS_SYSTEM_BUS_ADDRESS"}) {
 		unsetenv(name);
 	}
-	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, kRate, kBlock});
+	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, ear::SampleRate::fixed<kRate>(), kBlock});
 	if (!engine) FAIL("Engine::create: " << engine.error().detail);
 	return std::move(*engine);
 }
@@ -154,18 +177,26 @@ private:
 	std::atomic<std::uint64_t> calls_{0};
 };
 
-/// Writes 1, 2, 3, ... to its one output, one value per sample, across blocks.
+/// Writes 1, 2, 3, ... to its one output, one value per sample, across blocks. Given stalls (a judge's), once armed it
+/// stalls the data thread as their plan says, counted from the first armed cycle.
 class Ramp final : public AudioCode {
 public:
+	Ramp() = default;
+	explicit Ramp(ear::test::Stalls& stalls) : stalls_(&stalls) {}
 	void prepare(const AudioFormat&) override {}
 	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
 	             std::uint32_t frames, const ear::GraphCycle&) noexcept override {
 		for (std::uint32_t i = 0; i < frames; ++i) outputs[0][i] = static_cast<float>(++next_);
+		if (stalls_ != nullptr && armed.load(std::memory_order_acquire))
+			(*stalls_)(armedCycles_++, frames, ear::SampleRate::fixed<kRate>());
 	}
 	void release() noexcept override {}
+	std::atomic<bool> armed{false};
 
 private:
 	std::uint32_t next_ = 0;
+	ear::test::Stalls* stalls_ = nullptr;
+	std::size_t armedCycles_ = 0;
 };
 
 /// Copies its first input to its first output.
@@ -179,24 +210,36 @@ public:
 	void release() noexcept override {}
 };
 
-/// Records its first input's samples (up to a fixed capacity).
+/// Records its first input's samples (up to a fixed capacity), and each cycle whose samples it recorded whole in its
+/// ledger, with the index of its first sample.
 class Recorder final : public AudioCode {
 public:
-	explicit Recorder(Waiter& waiter) : waiter_(waiter), samples_(8 * kRate) {}
+	explicit Recorder(Waiter& waiter, std::size_t capacity = 8 * kRate)
+		: waiter_(waiter), samples_(capacity), ledger_(capacity / kBlock), cycleStart_(capacity / kBlock) {}
 	void prepare(const AudioFormat&) override {}
 	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>>,
-	             std::uint32_t frames, const ear::GraphCycle&) noexcept override {
-		std::size_t at = recorded_.load(std::memory_order_relaxed);
+	             std::uint32_t frames, const ear::GraphCycle& cycle) noexcept override {
+		const std::size_t from = recorded_.load(std::memory_order_relaxed);
+		std::size_t at = from;
 		for (std::uint32_t i = 0; i < frames && at < samples_.size(); ++i) samples_[at++] = inputs[0][i];
+		if (at == from + frames && ledger_.count() < ledger_.capacity()) {
+			cycleStart_[ledger_.count()] = from; // before record() publishes the cycle
+			ledger_.record(cycle, frames);
+		}
 		recorded_.store(at, std::memory_order_release);
 		waiter_.wake();
 	}
 	void release() noexcept override {}
 	std::span<const float> samples() const { return {samples_.data(), recorded_.load(std::memory_order_acquire)}; }
+	/// The cycles recorded whole, and where cycle `n`'s samples begin in samples().
+	const CycleLedger& ledger() const { return ledger_; }
+	std::size_t cycleStart(std::size_t n) const { return cycleStart_[n]; }
 
 private:
 	Waiter& waiter_;
 	std::vector<float> samples_;
+	CycleLedger ledger_;
+	std::vector<std::size_t> cycleStart_;
 	std::atomic<std::size_t> recorded_{0};
 };
 
@@ -607,7 +650,16 @@ TEST_CASE("A block with inside ports: the inside output is live and routable, le
 	Bell bell(waiter);
 	FilterPortBlocks blocks(*engine, bell);
 	Wiring wiring(*engine, waiter);
-	Ramp ramp;
+	// The ramp, the pass-through and the recorder each count only the cycles they run. A cycle cut short is run by an
+	// upstream prefix of the chain only (docs/engine.md#the-one-data-loop-and-invokes), so one a host's stall cuts after
+	// the ramp moves the ramp on unheard, and the recorder, last in the chain, misses it. The chain is judged where the
+	// recorder's own facts say so, through the one judge (docs/testing.md#the-cycle-judge): within every cycle it heard
+	// the ramp is whole, and a cycle boundary is judged where nothing was lost before it, to a planned count; a cycle
+	// that follows lost ones is excused only as cycles the driver cut, each counted, and anything else fails. The ramp
+	// makes the judge's planned stalls itself once it is heard (one and a half cycles each, so the driver cuts the cycle
+	// before the pass-through and the recorder ran it), so the excuse is taken, and proven, on every run.
+	CycleJudge judge(JudgePlan{.judged = 32}, FrameClock(ear::SampleRate::fixed<kRate>()), &engine->cuts());
+	Ramp ramp(judge.stalls());
 	PassThrough through;
 	Recorder recorder(waiter);
 	BlockEvents srcEvents(waiter), cardEvents(waiter), recEvents(waiter);
@@ -625,19 +677,53 @@ TEST_CASE("A block with inside ports: the inside output is live and routable, le
 	REQUIRE(wiring.link(waiter, {"card", "to_card.1"}, {"rec", "record.left"}));
 	CHECK(wiring.ports.find("card", "to_card.1")->direction == Direction::output);
 
-	constexpr std::size_t kWanted = 32 * kBlock;
-	REQUIRE(waiter.until([&] {
+	const CycleLedger& ledger = recorder.ledger();
+	std::size_t fed = 0, breaks = 0, wrongSkips = 0;
+	// The recorder's cycles so far, in order: each sample within a cycle after the first sound, and each boundary into
+	// one, through the judge.
+	const auto feed = [&] {
 		const auto samples = recorder.samples();
-		return samples.size() - std::min(firstSound(samples), samples.size()) >= kWanted;
-	}));
+		const std::size_t first = firstSound(samples);
+		for (; fed < ledger.count(); ++fed) {
+			const std::size_t start = recorder.cycleStart(fed);
+			const std::size_t end = start + ledger[fed].frames;
+			if (end > samples.size()) break; // recorded after samples() was read
+			if (end <= first + 1) continue;
+			for (std::size_t i = std::max(start + 1, first + 1); i < end; ++i)
+				if (samples[i] != samples[i - 1] + 1.0f) ++breaks;
+			if (start <= first) continue;
+			const ear::CycleFacts facts = ledger[fed].facts;
+			const ear::test::Verdict verdict = judge.at(facts, ledger[fed].frames);
+			if (verdict == ear::test::Verdict::judge && samples[start] != samples[start - 1] + 1.0f) ++breaks;
+			// Across cycles the driver cut, the ramp moved on by whole blocks it wrote unheard, never more than the
+			// cycles the recorder missed (none, where the driver cut a cycle before the ramp ran it too): a repeated,
+			// stale or over-skipped block fails.
+			if (verdict != ear::test::Verdict::fail && facts.causes.has(ear::CycleCause::catchUp)) {
+				const auto skipped = static_cast<std::int64_t>(samples[start] - samples[start - 1]) - 1;
+				if (skipped < 0 || skipped % ledger[fed].frames != 0 || skipped > facts.jumpFrames) ++wrongSkips;
+			}
+		}
+	};
+	REQUIRE(waiter.until([&] { return firstSound(recorder.samples()) < recorder.samples().size(); }));
+	ramp.armed.store(true, std::memory_order_release);
+	REQUIRE(waiter.until(
+		[&] {
+			feed();
+			return judge.done() || judge.report().failed > 0 || ledger.full();
+		},
+		30s));
+	INFO(judge.report());
+	{
+		INFO("the recorder filled its " << ledger.capacity() << " cycles first");
+		REQUIRE_FALSE(ledger.full());
+	}
 	const auto samples = recorder.samples();
 	const std::size_t first = firstSound(samples);
-	std::size_t breaks = 0;
-	for (std::size_t i = first + 1; i < samples.size(); ++i) {
-		if (samples[i] != samples[i - 1] + 1.0f) ++breaks;
-	}
+	REQUIRE(first < samples.size());
 	CHECK(samples[first] >= 1.0f);
 	CHECK(breaks == 0);
+	CHECK(wrongSkips == 0);
+	CHECK(judge.report().ok());
 
 	std::vector<NodeLevels> snapshot;
 	REQUIRE(waiter.until([&] {
@@ -769,9 +855,8 @@ TEST_CASE("Each cycle carries its start on both clocks, the internal clock as it
 	const auto dummy = static_cast<std::uint32_t>(std::stoul(nodes.props("Dummy-Driver")->at(PW_KEY_OBJECT_ID)));
 
 	const std::int64_t cycleNs = std::int64_t{kBlock} * 1000000000 / kRate;
-	CHECK(log.at(0).cycle.discontinuity); // the first cycle the block runs
+	CHECK(log.at(0).cycle.facts.discontinuity()); // the first cycle the block runs
 	std::size_t jumps = 0;
-	std::size_t forward = 0;
 	for (std::size_t i = 0; i < CycleLog::kCapacity; ++i) {
 		const auto& seen = log.at(i);
 		INFO("cycle " << i);
@@ -781,13 +866,14 @@ TEST_CASE("Each cycle carries its start on both clocks, the internal clock as it
 		CHECK(seen.cycle.rateDiff == Approx(1.0).margin(0.01));
 		CHECK(seen.cycle.nextNs - seen.cycle.startNs == Approx(cycleNs).epsilon(0.1));
 		CHECK(seen.downstreamSize == 2); // one per output: out.a, out.b
-		if (i > 0 && seen.cycle.discontinuity) ++jumps;
-		if (i > 0 && seen.cycle.position > log.at(i - 1).cycle.position + log.at(i - 1).frames) ++forward;
-		if (i > 0) CHECK(seen.cycle.xruns >= log.at(i - 1).cycle.xruns);
+		if (i > 0 && seen.cycle.facts.discontinuity()) ++jumps;
+		// Each cycle states its own jump against the last one's end, so no reader works it out from the position.
+		if (i > 0)
+			CHECK(seen.cycle.position == log.at(i - 1).cycle.position + log.at(i - 1).frames +
+			                                 static_cast<std::uint64_t>(seen.cycle.facts.jumpFrames));
 	}
-	// A loaded host's stall makes the internal clock skip blocks to catch up (each a jump forward, and an xrun); a quiet
-	// one makes none. The position never steps back (engine.conf's resync.ms; the stall test below).
-	CHECK(forward <= log.at(CycleLog::kCapacity - 1).cycle.xruns);
+	// A loaded host's stall makes the internal clock skip blocks to catch up (each a jump forward); a quiet one makes
+	// none. The position never steps back (engine.conf's resync.ms; the stall test below).
 	CHECK(jumps <= 2);
 
 	// A new code's first cycle is a discontinuity to it, though the clock ran on.
@@ -795,7 +881,7 @@ TEST_CASE("Each cycle carries its start on both clocks, the internal clock as it
 	REQUIRE(ear::testing::driveNow(*block, &next));
 	REQUIRE(waiter.until([&] { return next.count() >= 4; }));
 	REQUIRE(ear::testing::driveNow(*block, nullptr));
-	CHECK(next.at(0).cycle.discontinuity);
+	CHECK(next.at(0).cycle.facts.causes.has(CycleCause::drive));
 }
 
 namespace {
@@ -812,6 +898,7 @@ public:
 			const Latency latency = cycle.downstreamOf(i);
 			seen_[i].store((std::uint64_t{latency.minFrames} << 32U) | latency.maxFrames, std::memory_order_relaxed);
 		}
+		cycles_.fetch_add(1, std::memory_order_release);
 		waiter_.wake();
 	}
 	void release() noexcept override {}
@@ -819,10 +906,13 @@ public:
 		const std::uint64_t word = seen_[output].load(std::memory_order_relaxed);
 		return Latency{static_cast<std::uint32_t>(word >> 32U), static_cast<std::uint32_t>(word)};
 	}
+	/// Whole cycles run, for Quiescence::quiesce.
+	std::uint64_t cycles() const { return cycles_.load(std::memory_order_acquire); }
 
 private:
 	Waiter& waiter_;
 	std::vector<std::atomic<std::uint64_t>> seen_;
+	std::atomic<std::uint64_t> cycles_{0};
 };
 
 } // namespace
@@ -835,6 +925,7 @@ TEST_CASE("Latency is carried per bank pair: through a pass-through's pair to th
 	Bell bell(waiter);
 	FilterPortBlocks blocks(*engine, bell);
 	Wiring wiring(*engine, waiter);
+	ear::pipewire::testing::Quiescence settled(*engine, waiter);
 	// source:out -> mid:in, mid's pair in -> thru; mid:thru.1 -> sink:in (thru.2 is linked to nothing), and mid's
 	// unpaired bank side -> other:in. sink declares 300 frames on its input (a following card would report its buffer
 	// there), other 900.
@@ -848,13 +939,13 @@ TEST_CASE("Latency is carried per bank pair: through a pass-through's pair to th
 	                              {Direction::output, "thru", {"1", "2"}},
 	                              {Direction::output, "side", {"1"}}}},
 	                       kFormat, midEvents);
-	mid->carryLatency(LatencyPlan{{{"in", "thru"}}, {{"in", Latency{10, 20}}}});
+	mid->carryLatency(LatencyPlan{.pairs = {{"in", "thru"}}, .onBank = {{"in", Delay{{10, 20}}}}});
 	REQUIRE(ear::testing::driveNow(*mid, &midProbe));
 	auto sink = blocks.make("sink", Ports{{{Direction::input, "in", {"1", "2"}}}}, kFormat, sinkEvents);
-	sink->carryLatency(LatencyPlan{{}, {{"in", Latency{300, 300}}}});
+	sink->carryLatency(LatencyPlan{.onBank = {{"in", Delay{{300, 300}}}}});
 	REQUIRE(ear::testing::driveNow(*sink, &sinkProbe));
 	auto other = blocks.make("other", Ports{{{Direction::input, "in", {"1"}}}}, kFormat, otherEvents);
-	other->carryLatency(LatencyPlan{{}, {{"in", Latency{900, 900}}}});
+	other->carryLatency(LatencyPlan{.onBank = {{"in", Delay{{900, 900}}}}});
 	REQUIRE(ear::testing::driveNow(*other, &otherProbe));
 	// side is linked first, so whatever source hears after thru is linked already holds side's 900 if it leaked.
 	REQUIRE(wiring.link(waiter, {"source", "out.1"}, {"mid", "in.1"}));
@@ -868,11 +959,13 @@ TEST_CASE("Latency is carried per bank pair: through a pass-through's pair to th
 	CHECK(waiter.until([&] { return midProbe.downstream(0) == Latency{300, 300}; }));
 	CHECK(waiter.until([&] { return midProbe.downstream(1) == Latency{300, 300}; }));
 	CHECK(waiter.until([&] { return sourceProbe.downstream(0) == Latency{310, 320}; }));
+	// What was not waited for is read once every retell has reached every block.
+	REQUIRE(settled.quiesce({[&] { return midProbe.cycles(); }, [&] { return sourceProbe.cycles(); }}));
 	CHECK(midProbe.downstream(2) == Latency{900, 900});
 	CHECK(sourceProbe.downstream(1) == Latency{});
 
 	// A new plan replaces the last at once: mid unpaired carries nothing through, only its own.
-	mid->carryLatency(LatencyPlan{{}, {{"in", Latency{10, 20}}}});
+	mid->carryLatency(LatencyPlan{.onBank = {{"in", Delay{{10, 20}}}}});
 	CHECK(waiter.until([&] { return sourceProbe.downstream(0) == Latency{10, 20}; }));
 	mid->carryLatency({});
 	CHECK(waiter.until([&] { return sourceProbe.downstream(0) == Latency{}; }));
@@ -881,6 +974,593 @@ TEST_CASE("Latency is carried per bank pair: through a pass-through's pair to th
 	REQUIRE(ear::testing::driveNow(*mid, nullptr));
 	REQUIRE(ear::testing::driveNow(*sink, nullptr));
 	REQUIRE(ear::testing::driveNow(*other, nullptr));
+}
+
+namespace {
+
+/// A sink's realtime end that keeps only the last stamp's upstreamFrames.
+class UpstreamTap final : public SinkTap {
+public:
+	explicit UpstreamTap(Waiter& waiter) : waiter_(waiter) {}
+	void write(std::span<const std::span<const float>>, std::uint32_t, const ChunkStamp& stamp) noexcept override {
+		upstream_.store(stamp.upstreamFrames, std::memory_order_relaxed);
+		written_.store(true, std::memory_order_release);
+		waiter_.wake();
+	}
+	std::optional<std::uint32_t> upstream() const {
+		if (!written_.load(std::memory_order_acquire)) return std::nullopt;
+		return upstream_.load(std::memory_order_relaxed);
+	}
+
+private:
+	Waiter& waiter_;
+	std::atomic<std::uint32_t> upstream_{0};
+	std::atomic<bool> written_{false};
+};
+
+} // namespace
+
+TEST_CASE("A companion's latency beyond an inside bank is added in series to that bank's peers, told on the paired "
+          "output to the next block, and downstream of an inside output to its code and to what feeds the paired input",
+          "[port_blocks][latency]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Wiring wiring(*engine, waiter);
+	ear::pipewire::testing::Quiescence settled(*engine, waiter);
+	// rx: a receiver's 480 to 960 beyond its inside input from_rtp, paired with stream; rx:stream.1 -> rec:in.1, and
+	// rec's sink on writer, paired with in, stamps what rec tells there. Capture runs rx -> rec.
+	LatencyProbe rxProbe(waiter, 1), recProbe(waiter, 1);
+	BlockEvents rxEvents(waiter), recEvents(waiter);
+	auto rx = blocks.make(
+		"rx",
+		Ports{{{Direction::input, "from_rtp", {"1"}, PortBank::Reach::inside}, {Direction::output, "stream", {"1"}}}},
+		kFormat, rxEvents);
+	rx->carryLatency(LatencyPlan{.pairs = {{"from_rtp", "stream"}}, .beyond = {{"from_rtp", Delay{{480, 960}}}}});
+	REQUIRE(ear::testing::driveNow(*rx, &rxProbe));
+	auto rec = blocks.make(
+		"rec", Ports{{{Direction::input, "in", {"1"}}, {Direction::output, "writer", {"1"}, PortBank::Reach::inside}}},
+		kFormat, recEvents);
+	rec->carryLatency(LatencyPlan{.pairs = {{"in", "writer"}}});
+	UpstreamTap tap(waiter);
+	const std::vector<SinkBinding> bindings{SinkBinding{&tap, 0, 1}};
+	bool driven = false;
+	rec->drive(DriveRequest{&recProbe, {}, bindings}, [&](std::uint64_t) {
+		driven = true;
+		waiter.wake();
+	});
+	REQUIRE(waiter.until([&] { return driven; }));
+	CHECK(waiter.until([&] { return tap.upstream() == 0U; })); // nothing linked to rec:in yet
+	REQUIRE(wiring.link(waiter, {"rx", "stream.1"}, {"rec", "in.1"}));
+	CHECK(waiter.until([&] { return tap.upstream() == 960U; }));
+
+	// Playback: card's 256 beyond card's inside output to_card, paired with play; feed:out.1 -> card:play.1. card's
+	// code sees 256 downstream of to_card, and feed sees it downstream of out.
+	LatencyProbe feedProbe(waiter, 1), cardProbe(waiter, 1);
+	BlockEvents feedEvents(waiter), cardEvents(waiter);
+	auto feed = blocks.make("feed", Ports{{{Direction::output, "out", {"1"}}}}, kFormat, feedEvents);
+	REQUIRE(ear::testing::driveNow(*feed, &feedProbe));
+	auto card = blocks.make(
+		"card",
+		Ports{{{Direction::input, "play", {"1"}}, {Direction::output, "to_card", {"1"}, PortBank::Reach::inside}}},
+		kFormat, cardEvents);
+	card->carryLatency(LatencyPlan{.pairs = {{"play", "to_card"}}, .beyond = {{"to_card", Delay{{256, 256}}}}});
+	REQUIRE(ear::testing::driveNow(*card, &cardProbe));
+	CHECK(waiter.until([&] { return cardProbe.downstream(0) == Latency{256, 256}; }));
+	REQUIRE(wiring.link(waiter, {"feed", "out.1"}, {"card", "play.1"}));
+	CHECK(waiter.until([&] { return feedProbe.downstream(0) == Latency{256, 256}; }));
+	// A plan without it carries nothing, to card's code and, once the retell reached it, to feed's: read once the
+	// engine has settled and each has run a whole cycle since.
+	card->carryLatency(LatencyPlan{.pairs = {{"play", "to_card"}}});
+	REQUIRE(settled.quiesce({[&] { return feedProbe.cycles(); }, [&] { return cardProbe.cycles(); }}));
+	CHECK(feedProbe.downstream(0) == Latency{});
+	CHECK(cardProbe.downstream(0) == Latency{});
+
+	REQUIRE(ear::testing::driveNow(*rx, nullptr));
+	REQUIRE(ear::testing::driveNow(*rec, nullptr));
+	REQUIRE(ear::testing::driveNow(*feed, nullptr));
+	REQUIRE(ear::testing::driveNow(*card, nullptr));
+}
+
+namespace {
+
+/// A latency in a peer's mixed units, as PipeWire's own nodes may report one: the least in ns, the most in quanta and
+/// frames (at the test's rate and block size).
+spa_latency_info mixedUnits(Latency latency, spa_direction direction) {
+	spa_latency_info info{};
+	info.direction = direction;
+	info.min_ns = std::llround(static_cast<double>(latency.minFrames) * 1e9 / kRate);
+	info.max_quantum = static_cast<float>(latency.maxFrames / kBlock);
+	info.max_rate = static_cast<std::int32_t>(latency.maxFrames % kBlock);
+	return info;
+}
+
+/// One engine node linked to one port of the block under test: a bare pw_filter under custom latency, in the graph
+/// group, with one port ("p.1") of `direction`. It keeps the newest far-side latency PipeWire sets on its port, which
+/// is what the port it is linked to told. A teller tells `told` on its port, so it is that port's peer; a listener (no
+/// `told`) sets port.ignore-latency, which pw_impl_port_recalc_latency skips, so the block's port hears no peer from it
+/// (no path) while the listener still hears what the port tells.
+class LatencyPeer {
+public:
+	LatencyPeer(Engine& engine, Waiter& waiter, const std::string& name, pw_direction direction,
+	            std::optional<spa_latency_info> told)
+		: waiter_(waiter), direction_(direction) {
+		filter_ = pw_filter_new(engine.core(), name.c_str(),
+		                        pw_properties_new(PW_KEY_NODE_NAME, name.c_str(), PW_KEY_MEDIA_TYPE, "Audio",
+		                                          PW_KEY_NODE_GROUP, "ear.graph", PW_KEY_NODE_ALWAYS_PROCESS, "true",
+		                                          nullptr));
+		REQUIRE(filter_ != nullptr);
+		pw_filter_add_listener(filter_, &listener_, &events(), this);
+		port_ =
+			pw_filter_add_port(filter_, direction, PW_FILTER_PORT_FLAG_MAP_BUFFERS, 0,
+		                       pw_properties_new(PW_KEY_FORMAT_DSP, "32 bit float mono audio", PW_KEY_PORT_NAME, "p.1",
+		                                         PW_KEY_PORT_IGNORE_LATENCY, told ? "false" : "true", nullptr),
+		                       nullptr, 0);
+		REQUIRE(port_ != nullptr);
+		const auto flags = static_cast<pw_filter_flags>(PW_FILTER_FLAG_RT_PROCESS | PW_FILTER_FLAG_CUSTOM_LATENCY);
+		REQUIRE(pw_filter_connect(filter_, flags, nullptr, 0) >= 0);
+		if (!told) return;
+		std::uint8_t buffer[256];
+		spa_pod_builder builder = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
+		const spa_pod* latency = static_cast<const spa_pod*>(spa_latency_build(&builder, SPA_PARAM_Latency, &*told));
+		const spa_pod* params[1] = {latency};
+		pw_filter_update_params(filter_, port_, params, 1);
+	}
+	~LatencyPeer() {
+		spa_hook_remove(&listener_);
+		pw_filter_destroy(filter_);
+	}
+	LatencyPeer(const LatencyPeer&) = delete;
+	LatencyPeer& operator=(const LatencyPeer&) = delete;
+
+	/// The newest latency PipeWire set on the port from the block's; none before the first.
+	const std::optional<spa_latency_info>& heard() const { return heard_; }
+
+private:
+	static const pw_filter_events& events() {
+		static const pw_filter_events table = [] {
+			pw_filter_events events{};
+			events.version = PW_VERSION_FILTER_EVENTS;
+			events.param_changed = &LatencyPeer::onParamChanged;
+			events.process = &LatencyPeer::onProcess;
+			return events;
+		}();
+		return table;
+	}
+	static void onParamChanged(void* data, void* port, std::uint32_t id, const spa_pod* param) {
+		auto* self = static_cast<LatencyPeer*>(data);
+		if (id != SPA_PARAM_Latency || port == nullptr || param == nullptr) return;
+		const spa_direction farSide =
+			self->direction_ == PW_DIRECTION_OUTPUT ? SPA_DIRECTION_INPUT : SPA_DIRECTION_OUTPUT;
+		spa_latency_info info{};
+		if (spa_latency_parse(param, &info) < 0 || info.direction != farSide) return;
+		self->heard_ = info;
+		self->waiter_.wake();
+	}
+	static void onProcess(void* data, spa_io_position* position) {
+		auto* self = static_cast<LatencyPeer*>(data);
+		if (self->direction_ != PW_DIRECTION_OUTPUT) return;
+		const auto frames = static_cast<std::uint32_t>(position->clock.duration);
+		if (auto* out = static_cast<float*>(pw_filter_get_dsp_buffer(self->port_, frames)); out != nullptr)
+			std::fill_n(out, frames, 0.0F);
+	}
+
+	Waiter& waiter_;
+	pw_direction direction_;
+	pw_filter* filter_ = nullptr;
+	void* port_ = nullptr;
+	spa_hook listener_{};
+	std::optional<spa_latency_info> heard_;
+};
+
+/// A source's realtime end that plays silence and keeps the newest playback latency its cycle carried: what the block
+/// published for the bank, which a real source's clock is told (SourceTick::playback).
+class DownstreamTap final : public SourceTap {
+public:
+	void play(std::span<const std::span<float>> bank, const SourceTick& tick) noexcept override {
+		for (const std::span<float> span : bank) std::fill_n(span.begin(), tick.frames, 0.0F);
+		const Latency latency = tick.playback;
+		seen_.store((std::uint64_t{latency.minFrames} << 32U) | latency.maxFrames, std::memory_order_relaxed);
+		played_.store(true, std::memory_order_release);
+	}
+	std::optional<Latency> downstream() const {
+		if (!played_.load(std::memory_order_acquire)) return std::nullopt;
+		const std::uint64_t word = seen_.load(std::memory_order_relaxed);
+		return Latency{static_cast<std::uint32_t>(word >> 32U), static_cast<std::uint32_t>(word)};
+	}
+
+private:
+	std::atomic<std::uint64_t> seen_{0};
+	std::atomic<bool> played_{false};
+};
+
+/// What a real block tells and publishes for one row of the latency model's table: a block with the row's banks and
+/// plan, a peer on every port (a teller where the row gives one, telling in mixed units; a listener elsewhere, so the
+/// port has no path), a sink's tap on each inside output bank and a source on each inside input bank, so every port's
+/// told latency is read on the wire and the inside banks' also as published to the realtime side.
+struct RealBlockLatency {
+	std::vector<Latency> heard;                       // per port, inputs then outputs: what its peer heard it tell
+	std::vector<Latency> downstream;                  // per output: what the code read in GraphCycle
+	std::vector<std::pair<std::size_t, Latency>> fed; // per inside input bank: its first port, its sources' downstream
+	// Per inside output bank: its first port, and its sink's stamps' upstreamFrames.
+	std::vector<std::pair<std::size_t, std::uint32_t>> stamped;
+};
+
+RealBlockLatency throughRealBlock(Engine& engine, Waiter& waiter, FilterPortBlocks& blocks, Wiring& wiring,
+                                  ear::pipewire::testing::Quiescence<Waiter>& settled, const std::string& name,
+                                  const Ports& ports, const LatencyPlan& plan,
+                                  const std::vector<std::optional<spa_latency_info>>& inputPeers,
+                                  const std::vector<std::optional<spa_latency_info>>& outputPeers) {
+	std::vector<PortName> inputs = ports.inputs();
+	inputs.insert(inputs.end(), ports.insideInputs().begin(), ports.insideInputs().end());
+	std::vector<PortName> outputs = ports.outputs();
+	outputs.insert(outputs.end(), ports.insideOutputs().begin(), ports.insideOutputs().end());
+
+	LatencyProbe probe(waiter, outputs.size());
+	BlockEvents events(waiter);
+	auto block = blocks.make(name, ports, kFormat, events);
+	block->carryLatency(plan);
+	std::list<UpstreamTap> taps;
+	std::list<DownstreamTap> sources;
+	std::vector<SinkBinding> sinkBindings;
+	std::vector<SourceBinding> sourceBindings;
+	for (const Ports::Bank& bank : ports.banks()) {
+		if (bank.reach != PortBank::Reach::inside) continue;
+		if (bank.direction == Direction::output)
+			sinkBindings.push_back(SinkBinding{&taps.emplace_back(waiter), bank.first, bank.ports.size()});
+		else sourceBindings.push_back(SourceBinding{&sources.emplace_back(), bank.first, bank.ports.size()});
+	}
+	bool driven = false;
+	block->drive(DriveRequest{&probe, {}, sinkBindings, sourceBindings}, [&](std::uint64_t) {
+		driven = true;
+		waiter.wake();
+	});
+	REQUIRE(waiter.until([&] { return driven; }));
+
+	std::vector<std::unique_ptr<LatencyPeer>> peers;
+	for (std::size_t i = 0; i < inputs.size(); ++i) {
+		const std::string peer = name + "up" + std::to_string(i);
+		peers.push_back(std::make_unique<LatencyPeer>(engine, waiter, peer, PW_DIRECTION_OUTPUT, inputPeers[i]));
+		REQUIRE(wiring.link(waiter, {peer, "p.1"}, {name, inputs[i]}));
+	}
+	for (std::size_t o = 0; o < outputs.size(); ++o) {
+		const std::string peer = name + "down" + std::to_string(o);
+		peers.push_back(std::make_unique<LatencyPeer>(engine, waiter, peer, PW_DIRECTION_INPUT, outputPeers[o]));
+		REQUIRE(wiring.link(waiter, {name, outputs[o]}, {peer, "p.1"}));
+	}
+	// Read once every retell has reached every node and the block's code has run a whole cycle since.
+	REQUIRE(settled.quiesce({[&] { return probe.cycles(); }}));
+
+	RealBlockLatency real;
+	for (const auto& peer : peers) {
+		REQUIRE(peer->heard()); // a link's first latency is always set (pw_impl_port_recalc_latency)
+		const spa_latency_info& heard = *peer->heard();
+		// Frames at the graph's rate only: the peers' quanta and ns were converted at the port.
+		CHECK(heard.min_quantum == 0.0F);
+		CHECK(heard.max_quantum == 0.0F);
+		CHECK(heard.min_ns == 0);
+		CHECK(heard.max_ns == 0);
+		real.heard.push_back(
+			Latency{static_cast<std::uint32_t>(heard.min_rate), static_cast<std::uint32_t>(heard.max_rate)});
+	}
+	for (std::size_t o = 0; o < outputs.size(); ++o) real.downstream.push_back(probe.downstream(o));
+	auto tap = taps.begin();
+	auto source = sources.begin();
+	for (const Ports::Bank& bank : ports.banks()) {
+		if (bank.reach != PortBank::Reach::inside) continue;
+		if (bank.direction == Direction::output) {
+			REQUIRE(tap->upstream());
+			real.stamped.emplace_back(bank.first, *tap->upstream());
+			++tap;
+		} else {
+			REQUIRE(source->downstream());
+			real.fed.emplace_back(bank.first, *source->downstream());
+			++source;
+		}
+	}
+	REQUIRE(ear::testing::driveNow(*block, nullptr));
+	return real;
+}
+
+/// Each row's peers in a peer's mixed units: an input's report is capture (told downstream), an output's playback.
+std::vector<std::optional<spa_latency_info>> inUnits(const std::vector<std::optional<Latency>>& peers,
+                                                     spa_direction direction) {
+	std::vector<std::optional<spa_latency_info>> infos;
+	for (const auto& peer : peers) infos.push_back(peer ? std::optional(mixedUnits(*peer, direction)) : std::nullopt);
+	return infos;
+}
+
+} // namespace
+
+// The conformance test of the latency model (docs/engine.md#latency-per-bank-pair): every row of the model's table
+// (test/support/latency_table.hpp, which ear_core_tests runs through workOut) through a real block, every port linked
+// to a real engine node that hears what it tells, so the block's own telling and publishing cannot drift from the
+// model. Each row expects some latency that is not zero, so no row passes for a block that tells nothing.
+TEST_CASE("The latency model's table through a real block: every port tells workOut's latency, in rate units only, "
+          "each inside bank's sink or source reads it, and each output's code reads workOut's downstream",
+          "[port_blocks][latency]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Wiring wiring(*engine, waiter);
+	ear::pipewire::testing::Quiescence settled(*engine, waiter);
+	const std::vector<ear::test::LatencyRow> rows = ear::test::latencyRows();
+	for (std::size_t r = 0; r < rows.size(); ++r) {
+		const ear::test::LatencyRow& row = rows[r];
+		INFO(row.what);
+		const Ports ports(row.banks);
+		const LatencyFacts model = workOut(ports, row.plan, row.inputPeers, row.outputPeers);
+		const auto zero = [](const std::vector<Latency>& all) {
+			return std::ranges::all_of(all, [](const Latency& latency) { return latency == Latency{}; });
+		};
+		REQUIRE_FALSE((zero(model.told) && zero(model.downstream)));
+		const RealBlockLatency real = throughRealBlock(
+			*engine, waiter, blocks, wiring, settled, "conform" + std::to_string(r), ports, row.plan,
+			inUnits(row.inputPeers, SPA_DIRECTION_OUTPUT), inUnits(row.outputPeers, SPA_DIRECTION_INPUT));
+		CHECK(real.heard == model.told);
+		CHECK(real.downstream == model.downstream);
+		const std::size_t inputCount = row.inputPeers.size();
+		for (const auto& [first, downstream] : real.fed) {
+			INFO("the source on the inside input bank at " << first);
+			CHECK(downstream == model.told[first]);
+		}
+		for (const auto& [first, upstream] : real.stamped) {
+			INFO("the sink on the inside output bank at " << first);
+			CHECK(upstream == model.told[inputCount + first].maxFrames);
+		}
+
+		// The harness's side: its block works a plan out by workOut with no peer on any port (nothing is linked to it),
+		// so the row's plan with no peer through a real block must give what workOut gives with none.
+		INFO("with no peer, as in the type harness");
+		const std::vector<std::optional<Latency>> noInputs(row.inputPeers.size());
+		const std::vector<std::optional<Latency>> noOutputs(row.outputPeers.size());
+		const LatencyFacts alone = workOut(ports, row.plan, noInputs, noOutputs);
+		const RealBlockLatency realAlone =
+			throughRealBlock(*engine, waiter, blocks, wiring, settled, "alone" + std::to_string(r), ports, row.plan,
+		                     inUnits(noInputs, SPA_DIRECTION_OUTPUT), inUnits(noOutputs, SPA_DIRECTION_INPUT));
+		CHECK(realAlone.heard == alone.told);
+		CHECK(realAlone.downstream == alone.downstream);
+		for (const auto& [first, downstream] : realAlone.fed) CHECK(downstream == alone.told[first]);
+		for (const auto& [first, upstream] : realAlone.stamped)
+			CHECK(upstream == alone.told[inputCount + first].maxFrames);
+	}
+}
+
+// Named, never unnamed: a type spec is a template key (type_spec.hpp says why).
+namespace latency_conformance {
+
+using namespace ear;
+
+inline constexpr auto in = bank::input<"in">;
+inline constexpr auto out = bank::output<"out">;
+inline constexpr auto toDevice = bank::insideOutput<"to_device">;
+inline constexpr auto fromDevice = bank::insideInput<"from_device">;
+inline constexpr TypeSpec spec{.settings = SettingsTable<>{"conform"}, .banks = Banks<in, out, toDevice, fromDevice>{}};
+using Checked = CheckedOf<spec>;
+
+/// Takes every chunk and keeps none.
+struct Discard final : SinkConsumer {
+	void consume(const Chunk&) override {}
+	void finish() override {}
+};
+
+/// The playback latency the source's clock was last told (SourceTick::playback), none before its first tick.
+inline std::optional<Latency> toldPlayback;
+
+/// A source's clock that skips nothing and keeps the playback latency each tick tells it.
+struct PlaybackClock final : SourceClock {
+	std::uint64_t skipBefore(const SourceTick& tick, SourceHeld) noexcept override {
+		toldPlayback = tick.playback;
+		return 0;
+	}
+	bool played(const SourceTick&, const SourcePlayed&) noexcept override { return false; }
+};
+
+/// A sink and a source on inside banks, each paired with a public bank by the pass-through, a path declared on each:
+/// so the plan NodeHost builds carries a pair, an onPair delay both ways and a source's beyond.
+struct Conform {
+	static Members<spec> ports(const Checked&) {
+		return {in(members(2)), out(members(2)), toDevice(members(2)), fromDevice(members(2))};
+	}
+	Configured configure(CreateOf<spec>& cx, const Checked&) {
+		cx.sink(toDevice, SinkShape{.frames = 1024}).consumedBy(std::make_unique<Discard>());
+		cx.source(fromDevice, SourceShape{.frames = 1000}, std::make_unique<PlaybackClock>());
+		cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
+		cx.declareLatency(in, toDevice, Latency{30, 40});
+		cx.declareLatency(fromDevice, out, Latency{7, 9});
+		return Configured::applied();
+	}
+};
+
+/// What a scripted clock was asked and told on one tick.
+struct Heard {
+	SourceHeld held;
+	SourcePlayed played;
+	Latency playback;
+	friend bool operator==(const Heard&, const Heard&) = default;
+};
+inline constexpr std::size_t kScriptedTicks = 6;
+inline constexpr std::uint32_t kScriptedFresh = 20; // frames written after the clear: the new stream
+
+/// A source's clock that plays a fixed script by its own tick count, so the harness and a real block, whose ticks
+/// come at their own pace, ask and tell it the same things: tick 1 asks a skip of 10; tick 2's played() clears the
+/// stream and writes kScriptedFresh frames of a new one (clear and a write with no patience are lock-free and wait
+/// for nothing on a ring with room); tick 3, the clearing tick, asks a skip of 50, which the ring must ignore. It
+/// records the first kScriptedTicks ticks in fixed storage; `ticks` counts them for any thread.
+struct ScriptedClock final : SourceClock {
+	SourceWriter* writer = nullptr; // set once the source is made, before any tick
+	std::array<Heard, kScriptedTicks> heard{};
+	std::array<float, std::size_t{kScriptedFresh} * 2> fresh{};
+	std::atomic<std::size_t> ticks{0};
+	ScriptedClock() { fresh.fill(0.25F); }
+	std::uint64_t skipBefore(const SourceTick& tick, SourceHeld held) noexcept override {
+		const std::size_t n = ticks.load(std::memory_order_relaxed);
+		if (n < kScriptedTicks) heard[n] = Heard{held, {}, tick.playback};
+		return n == 1 ? 10 : n == 3 ? 50 : 0;
+	}
+	bool played(const SourceTick&, const SourcePlayed& played) noexcept override {
+		const std::size_t n = ticks.load(std::memory_order_relaxed);
+		if (n < kScriptedTicks) heard[n].played = played;
+		if (n == 2) {
+			writer->clear();
+			static_cast<void>(writer->write(fresh, kScriptedFresh, std::chrono::milliseconds(0)));
+		}
+		ticks.store(n + 1, std::memory_order_release);
+		return false;
+	}
+};
+/// The clock the Scripted type's last configure made.
+inline ScriptedClock* scripted = nullptr;
+
+/// A source on from_device with the scripted clock, paired with `out`.
+struct Scripted {
+	static Members<spec> ports(const Checked&) {
+		return {in(members(2)), out(members(2)), toDevice(members(2)), fromDevice(members(2))};
+	}
+	Configured configure(CreateOf<spec>& cx, const Checked&) {
+		auto clock = std::make_unique<ScriptedClock>();
+		scripted = clock.get();
+		SourceWriter& writer = cx.source(fromDevice, SourceShape{.frames = 1000}, std::move(clock));
+		scripted->writer = &writer;
+		cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
+		return Configured::applied();
+	}
+};
+
+} // namespace latency_conformance
+
+// The harness's side of the latency model's conformance, through its own NodeHost: the plan a type's configuration
+// builds in the type harness, carried on a real block with no peer, stamps a sink's chunks and tells a source's clock its
+// playback latency as the harness's block did (docs/writing-a-node-type.md#testing-a-type,
+// docs/engine.md#latency-per-bank-pair).
+TEST_CASE("The plan a type builds in the harness, carried on a real block with no peer, gives its sink's stamps and "
+          "its source's playback latency what the harness gave them",
+          "[port_blocks][latency][conformance]") {
+	namespace conform = latency_conformance;
+	ear::testing::TypeHarness<conform::spec, conform::Conform> harness({.format = kFormat});
+	REQUIRE_FALSE(harness.parse({}));
+	harness.add();
+	harness.blockReady();
+	REQUIRE(harness.phase() == "running");
+	const std::vector<float> fed(static_cast<std::size_t>(kBlock) * 2, 0.5F);
+	REQUIRE(harness.feed(conform::fromDevice, fed) == kBlock);
+	harness.process(kBlock);
+	const Ports ports = harness->ports();
+	const LatencyPlan plan = harness->latencyPlan();
+	REQUIRE(harness.companion(conform::toDevice).chunks.size() == 1);
+	const std::uint32_t harnessUpstream = harness.companion(conform::toDevice).chunks[0].stamp.upstreamFrames;
+	const SourcePlayed harnessPlayed = harness.lastPlayed(conform::fromDevice);
+	const std::optional<Latency> harnessPlayback = conform::toldPlayback;
+	harness.remove();
+
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Wiring wiring(*engine, waiter);
+	ear::pipewire::testing::Quiescence settled(*engine, waiter);
+	const std::vector<std::optional<spa_latency_info>> noInputs(ports.inputs().size() + ports.insideInputs().size());
+	const std::vector<std::optional<spa_latency_info>> noOutputs(ports.outputs().size() + ports.insideOutputs().size());
+	const RealBlockLatency real =
+		throughRealBlock(*engine, waiter, blocks, wiring, settled, "conform", ports, plan, noInputs, noOutputs);
+	REQUIRE(real.stamped.size() == 1);
+	REQUIRE(real.fed.size() == 1);
+	CHECK(real.stamped[0].second == harnessUpstream);
+	CHECK(harnessUpstream != 0); // the declared path reaches the sink's bank
+	const Latency downstream = real.fed[0].second;
+	CHECK(downstream.maxFrames != 0); // the declared path reaches the source's bank
+	// The harness's source read the kBlock frames fed, and its clock was told the playback latency the real block
+	// publishes for the bank.
+	CHECK(harnessPlayed == SourcePlayed{.read = kBlock});
+	CHECK(harnessPlayback == downstream);
+}
+
+// The one play rule (docs/writing-a-node-type.md#a-sources-clock) is the same code in the harness and on a real block:
+// a clock's skip, a clear and the skip it asks on the clearing tick, an underrun after them, each tick's held and
+// SourcePlayed and the playback latency the clock is told, compared tick for tick.
+TEST_CASE("A source's clock is asked and told the same on a real block as in the harness, across a skip and a clear",
+          "[port_blocks][source][conformance]") {
+	namespace conform = latency_conformance;
+	constexpr std::uint32_t kPrefill = 4 * kBlock;
+	std::vector<float> prefill(static_cast<std::size_t>(kPrefill) * 2);
+	for (std::size_t i = 0; i < prefill.size(); ++i) prefill[i] = static_cast<float>(i % 997 + 1) / 1000.0F;
+
+	ear::testing::TypeHarness<conform::spec, conform::Scripted> harness({.format = kFormat});
+	REQUIRE_FALSE(harness.parse({}));
+	harness.add();
+	harness.blockReady();
+	REQUIRE(harness.phase() == "running");
+	REQUIRE(harness.feed(conform::fromDevice, prefill) == kPrefill);
+	for (std::size_t tick = 0; tick < conform::kScriptedTicks; ++tick) harness.process(kBlock);
+	REQUIRE(conform::scripted->ticks.load() == conform::kScriptedTicks);
+	const std::array<conform::Heard, conform::kScriptedTicks> inHarness = conform::scripted->heard;
+	const Ports ports = harness->ports();
+	const LatencyPlan plan = harness->latencyPlan();
+	harness.remove();
+
+	// The script's own shape, so a script that went wrong cannot pass by both sides agreeing on nothing.
+	CHECK(inHarness[1].played.skipped == 10);
+	CHECK(inHarness[3].held.clearing);
+	CHECK(inHarness[3].played.skipped == 0);
+	CHECK(inHarness[3].played.ended > 0);
+	CHECK(inHarness[3].played.read + inHarness[4].played.read == conform::kScriptedFresh);
+	CHECK(inHarness[5].played == SourcePlayed{.zeros = kBlock});
+
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	EventSources sources;
+	auto made = std::make_unique<conform::ScriptedClock>();
+	conform::ScriptedClock& clock = *made;
+	const Ports::Bank& bank = ports.bank("from_device");
+	auto source = sources.make("scripted", bank.name, 2, 1000, ear::SampleRate::fixed<kRate>(), std::move(made));
+	clock.writer = &source->writer();
+	REQUIRE(source->writer().write(prefill, kPrefill, std::chrono::milliseconds(0)) == kPrefill);
+	BlockEvents events(waiter);
+	auto block = blocks.make("scripted", ports, kFormat, events);
+	block->carryLatency(plan);
+	REQUIRE(waiter.until([&] { return events.readyCount > 0; }));
+	Constant code(waiter, 0.0F);
+	const std::vector<SourceBinding> bound{SourceBinding{&source->tap(), bank.first, bank.ports.size()}};
+	bool driven = false;
+	block->drive(DriveRequest{&code, {}, {}, bound}, [&](std::uint64_t) {
+		driven = true;
+		waiter.wake();
+	});
+	REQUIRE(waiter.until([&] { return driven && clock.ticks.load() >= conform::kScriptedTicks; }));
+	REQUIRE(ear::testing::driveNow(*block, nullptr));
+	source->close();
+	for (std::size_t tick = 0; tick < conform::kScriptedTicks; ++tick) {
+		INFO("tick " << tick);
+		CHECK(clock.heard[tick] == inHarness[tick]);
+	}
+}
+
+// A peer's negative latency is clamped to zero at the port, before what lies in series beyond the bank adds to it: an
+// RTP receiver's 480 frames behind a peer reporting -100 tell 480, where the block before the latency model summed in
+// PipeWire's units first and told 380 (docs/engine.md#latency-per-bank-pair).
+TEST_CASE("A peer's negative latency is no latency: clamped at the port, then a companion's beyond added in series",
+          "[port_blocks][latency]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Wiring wiring(*engine, waiter);
+	ear::pipewire::testing::Quiescence settled(*engine, waiter);
+	const Ports ports({{Direction::output, "stream", numbered(1)},
+	                   {Direction::input, "from_rtp", numbered(1), PortBank::Reach::inside}});
+	const LatencyPlan plan{.pairs = {{"from_rtp", "stream"}}, .beyond = {{"from_rtp", Delay{{480, 480}}}}};
+	spa_latency_info negative{};
+	negative.direction = SPA_DIRECTION_OUTPUT;
+	negative.min_rate = -100;
+	negative.max_rate = -100;
+	const RealBlockLatency real =
+		throughRealBlock(*engine, waiter, blocks, wiring, settled, "negative", ports, plan, {negative}, {std::nullopt});
+	// from_rtp tells what lies beyond stream (no peer: zero); stream tells the clamped peer plus the buffer.
+	CHECK(real.heard == std::vector<Latency>{{0, 0}, {480, 480}});
 }
 
 #if defined(__x86_64__) || defined(__i386__)
@@ -1001,10 +1681,7 @@ public:
 	void prepare(const AudioFormat&) override {}
 	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
 	             std::uint32_t frames, const ear::GraphCycle& cycle) noexcept override {
-		if (calls_.load(std::memory_order_relaxed) == 0) {
-			first_.store(cycle.position, std::memory_order_relaxed);
-			firstXruns_.store(cycle.xruns, std::memory_order_relaxed);
-		}
+		if (calls_.load(std::memory_order_relaxed) == 0) first_.store(cycle.position, std::memory_order_relaxed);
 		for (const std::span<float> out : outputs) {
 			for (std::uint32_t i = 0; i < frames; ++i) out[i] = rampAt(cycle.position + i);
 		}
@@ -1014,13 +1691,11 @@ public:
 	void release() noexcept override {}
 	std::uint64_t calls() const { return calls_.load(std::memory_order_acquire); }
 	std::uint64_t first() const { return first_.load(std::memory_order_relaxed); }
-	std::uint64_t firstXruns() const { return firstXruns_.load(std::memory_order_relaxed); }
 
 private:
 	Waiter& waiter_;
 	std::atomic<std::uint64_t> calls_{0};
 	std::atomic<std::uint64_t> first_{0};
-	std::atomic<std::uint64_t> firstXruns_{0};
 };
 
 /// Writes `value` to every output; once armed, sleeps 150 ms inside one process(), so requests made meanwhile reach the
@@ -1036,8 +1711,9 @@ public:
 		if (armed.exchange(false, std::memory_order_acq_rel)) {
 			stalling.store(true, std::memory_order_release);
 			waiter_.wake();
-			const timespec stall{0, 150'000'000};
-			nanosleep(&stall, nullptr);
+			ear::sleeps::induce(
+				std::chrono::milliseconds(150),
+				"a hold inside one process(), so the requests made meanwhile reach the data loop together");
 		}
 		waiter_.wake();
 	}
@@ -1053,15 +1729,16 @@ private:
 };
 
 /// A probe downstream of a block: records every frame its inputs received, with the frame's clock position.
-class Listener final : public ear::pipewire::testing::ProbeCode {
+class ProbeListener final : public ear::pipewire::testing::ProbeCode {
 public:
-	static constexpr std::size_t kCapacity = 6 * kRate;
-	Listener(Waiter& waiter, std::size_t inputs)
-		: waiter_(waiter), positions_(kCapacity), samples_(inputs, std::vector<float>(kCapacity)) {}
+	/// `capacity` frames: by default 6 s of them; a test that repeats a take-up until it has the clean ones it planned
+	/// gives itself more.
+	ProbeListener(Waiter& waiter, std::size_t inputs, std::size_t capacity = 6 * kRate)
+		: waiter_(waiter), capacity_(capacity), positions_(capacity), samples_(inputs, std::vector<float>(capacity)) {}
 	void cycle(const spa_io_clock& clock, std::span<const float* const> inputs, std::span<float* const>,
 	           std::uint32_t frames) noexcept override {
 		std::size_t n = count_.load(std::memory_order_relaxed);
-		for (std::uint32_t i = 0; i < frames && n < kCapacity; ++i, ++n) {
+		for (std::uint32_t i = 0; i < frames && n < capacity_; ++i, ++n) {
 			positions_[n] = clock.position + i;
 			for (std::size_t c = 0; c < samples_.size(); ++c) samples_[c][n] = inputs[c][i];
 		}
@@ -1072,20 +1749,21 @@ public:
 	std::uint64_t position(std::size_t n) const { return positions_[n]; }
 	float sample(std::size_t input, std::size_t n) const { return samples_[input][n]; }
 
+	/// Whether the frames recorded at [from, to] are at consecutive positions: the listener heard every cycle between
+	/// them, with no jump of the clock and none cut short before it.
+	bool contiguous(std::size_t from, std::size_t to) const {
+		for (std::size_t n = from; n < to; ++n)
+			if (positions_[n + 1] != positions_[n] + 1) return false;
+		return true;
+	}
+
 private:
 	Waiter& waiter_;
+	const std::size_t capacity_;
 	std::vector<std::uint64_t> positions_;
 	std::vector<std::vector<float>> samples_;
 	std::atomic<std::size_t> count_{0};
 };
-
-/// The first recorded frame at or after `from` whose position is `position`, or none.
-std::optional<std::size_t> frameAt(const Listener& listener, std::uint64_t position, std::size_t from = 0) {
-	for (std::size_t n = from; n < listener.count(); ++n) {
-		if (listener.position(n) == position) return n;
-	}
-	return std::nullopt;
-}
 
 const Ports oneOutput{{{Direction::output, "out", {"a"}}}};
 
@@ -1162,8 +1840,8 @@ TEST_CASE("drive and fadeOut on a block whose engine node is gone complete by si
 	CHECK(after.calls() == 0);
 }
 
-// Settled for slice 3b's design (docs/design/companions.md): PipeWire runs a loop's invokes while a node on it is not
-// processing, so a request applied in its invoke completes without a cycle.
+// A drive never waits for a cycle that will not come (docs/engine.md#drive-and-fade): PipeWire runs a loop's invokes
+// while a node on it is not processing, so a request applied in its invoke completes without a cycle.
 TEST_CASE("A block that is PAUSED takes a drive in its invoke and completes it", "[blocks][drive][async]") {
 	auto engine = makeEngine();
 	Waiter waiter(*engine);
@@ -1213,7 +1891,7 @@ TEST_CASE("A fade-out reaches exactly 0 over 5 ms and is acknowledged in the cyc
 	Constant one(waiter, 1.0F);
 	BlockEvents events(waiter);
 	Done done(waiter);
-	Listener listener(waiter, 2);
+	ProbeListener listener(waiter, 2);
 	ear::pipewire::testing::Probe probe(*engine, waiter, "listener", 2, 0, listener);
 	auto block = blocks.make("fader", Ports{{{Direction::output, "out", {"a", "b"}}}}, kFormat, events);
 	const bool faded[] = {true, false}; // out.a fades, out.b never does
@@ -1313,7 +1991,7 @@ TEST_CASE("A cycle too large to run counts as one that ended at zero", "[blocks]
 	BlockEvents events(waiter), witnessEvents(waiter);
 	Done done(waiter);
 	// The engine runs 256-frame cycles; a block whose largest is 128 runs none of them (its outputs zeros).
-	auto block = blocks.make("small", oneOutput, AudioFormat{kRate, kBlock / 2}, events);
+	auto block = blocks.make("small", oneOutput, AudioFormat{ear::SampleRate::fixed<kRate>(), kBlock / 2}, events);
 	auto other = blocks.make("witness", oneOutput, kFormat, witnessEvents);
 	other->drive(DriveRequest{&witness, {}}, done.drive(0));
 	REQUIRE(waiter.until([&] { return events.readyCount == 1 && witness.calls() >= 4; }));
@@ -1334,9 +2012,11 @@ TEST_CASE("A cycle too large to run counts as one that ended at zero", "[blocks]
 	CHECK(done.order == std::vector<int>{0, 1, 2, 3});
 }
 
-/// Writes `value` to every output; once armed, holds the data thread inside one process() until released or for 8 ms at
-/// most (under max_resync's 10 ms, so the driver does not resync and every cycle reaches the probes downstream), so
-/// requests made meanwhile reach the data loop together, in one invoke, before any further cycle.
+/// Writes `value` to every output; once armed, holds the data thread inside one process() until the test releases it
+/// (an event: once it has made its requests), so requests made meanwhile reach the data loop together, in one invoke,
+/// before any further cycle. It blocks on `released` (a futex wait, not a spin): a realtime data thread spinning or
+/// yielding on one core would keep the normal-priority main thread that releases it from running at all. A
+/// `ReleaseHold` frees it however the test ends, so a failing test never leaves the data thread held.
 class Holding final : public AudioCode {
 public:
 	Holding(Waiter& waiter, float value) : waiter_(waiter), value_(value) {}
@@ -1347,10 +2027,7 @@ public:
 		if (armed.exchange(false, std::memory_order_acq_rel)) {
 			holding.store(true, std::memory_order_release);
 			waiter_.wake();
-			const auto until = std::chrono::steady_clock::now() + 8ms;
-			while (!released.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < until) {
-			}
-			overran.store(!released.load(std::memory_order_acquire), std::memory_order_release);
+			released.wait(false, std::memory_order_acquire);
 			holding.store(false, std::memory_order_release);
 		}
 		waiter_.wake();
@@ -1359,11 +2036,29 @@ public:
 	std::atomic<bool> armed{false};
 	std::atomic<bool> holding{false};
 	std::atomic<bool> released{false};
-	std::atomic<bool> overran{false}; // the hold ended before the main thread released it
+	void letGo() noexcept {
+		released.store(true, std::memory_order_release);
+		released.notify_all();
+	}
 
 private:
 	Waiter& waiter_;
 	float value_;
+};
+
+/// Lets a `Holding` go when the test ends, passed or failed, before anything that needs the data thread is torn down.
+class ReleaseHold {
+public:
+	explicit ReleaseHold(Holding& holding) : holding_(holding) {}
+	ReleaseHold(const ReleaseHold&) = delete;
+	ReleaseHold& operator=(const ReleaseHold&) = delete;
+	~ReleaseHold() {
+		holding_.armed.store(false, std::memory_order_release);
+		holding_.letGo();
+	}
+
+private:
+	Holding& holding_;
 };
 
 TEST_CASE("Every drive fades in over 5 ms and cancels a pending fade-out", "[blocks][fade][async]") {
@@ -1376,32 +2071,56 @@ TEST_CASE("Every drive fades in over 5 ms and cancels a pending fade-out", "[blo
 	Constant one(waiter, 1.0F);
 	BlockEvents events(waiter);
 	Done done(waiter);
-	Listener listener(waiter, 1);
+	ProbeListener listener(waiter, 1, 30 * kRate);
 	ear::pipewire::testing::Probe probe(*engine, waiter, "listener", 1, 0, listener);
 	auto block = blocks.make("fader", oneOutput, kFormat, events);
 	const bool faded[] = {true};
 	REQUIRE(wiring.link(waiter, {"fader", "out.a"}, {"listener", "in.1"}));
 	REQUIRE(waiter.until([&] { return listener.count() >= 4 * kBlock; })); // silent so far
+	const ReleaseHold releaseHold(half); // destroyed first: never leaves the data thread held
 
-	// A drive fades in from 0: frame k after its position carries k / kFade of the code's output.
-	block->drive(DriveRequest{&half, faded}, done.drive(1));
-	REQUIRE(waiter.until([&] { return done.has(1); }));
-	const std::uint64_t firstTaken = done.takens[0];
-	REQUIRE(waiter.until([&] { return frameAt(listener, firstTaken + kFade + kBlock).has_value(); }));
-	const std::size_t from = *frameAt(listener, firstTaken);
-	CHECK(listener.sample(0, from - 1) == 0.0F);
-	for (std::uint32_t k = 0; k <= kFade; ++k) {
-		INFO("fade-in frame " << k);
-		CHECK(listener.sample(0, from + k) == 0.5F * fadeGain(k));
+	// A drive fades in from 0: frame k after its position carries k / kFade of the code's output. Judged on a take-up
+	// the listener heard with no jump of the clock around it (see below); after a jump, silence and again.
+	int tag = 1;
+	for (int attempt = 0;; ++attempt) {
+		INFO("first fade-in, attempt " << attempt);
+		REQUIRE(attempt < 20); // only fails the test
+		block->drive(DriveRequest{&half, faded}, done.drive(tag++));
+		REQUIRE(waiter.until([&] { return done.has(tag - 1); }));
+		const std::uint64_t firstTaken = done.takens.back();
+		REQUIRE(waiter.until([&] {
+			return listener.count() > 0 && listener.position(listener.count() - 1) > firstTaken + kFade + kBlock;
+		}));
+		std::size_t from = 0;
+		while (listener.position(from) < firstTaken) ++from;
+		if (from > 0 && listener.contiguous(from - 1, from + kFade + 1)) {
+			CHECK(listener.position(from) == firstTaken);
+			CHECK(listener.sample(0, from - 1) == 0.0F);
+			for (std::uint32_t k = 0; k <= kFade; ++k) {
+				INFO("fade-in frame " << k);
+				CHECK(listener.sample(0, from + k) == 0.5F * fadeGain(k));
+			}
+			CHECK(listener.sample(0, from + kFade + 1) == 0.5F);
+			break;
+		}
+		block->drive(DriveRequest{nullptr, {}}, done.drive(tag++));
+		REQUIRE(waiter.until([&] { return done.has(tag - 1); }));
+		const std::size_t silentFrom = listener.count();
+		REQUIRE(waiter.until([&] { return listener.count() >= silentFrom + 2 * kBlock; }));
 	}
-	CHECK(listener.sample(0, from + kFade + 1) == 0.5F);
 
-	// A fade-out and then a drive reach the data loop in one invoke, while it is held in one process(): the drive
-	// cancels the fade-out (its done never runs) and fades in from 0 again, whatever gain the fade-out had reached. A
-	// hold the main loop was too slow to use (a loaded host) is tried again.
-	int tag = 2;
-	bool held = false;
-	for (int attempt = 0; attempt < 10 && !held; ++attempt) {
+	// A fade-out and then a drive reach the data loop in one invoke, while it is held in one process() until both are
+	// made: the drive cancels the fade-out (its done never runs) and fades in from 0 again, whatever gain the fade-out
+	// had reached. Where the take-up falls and the fade-in's samples are judged when the listener heard the cycles
+	// around the take-up with no jump of the clock between them; a hold or a host that held the data thread past the
+	// next cycle's start makes such a jump, and another attempt, never a pass or a failure. The cancelled done is judged
+	// every time.
+	constexpr int kJudged = 1;
+	constexpr int kMostAttempts = 20; // only fails the test
+	int judged = 0;
+	for (int attempt = 0; judged < kJudged; ++attempt) {
+		INFO("attempt " << attempt);
+		REQUIRE(attempt < kMostAttempts);
 		half.released.store(false);
 		block->drive(DriveRequest{&half, faded}, done.drive(tag++));
 		REQUIRE(waiter.until([&] { return done.has(tag - 1); }));
@@ -1414,24 +2133,25 @@ TEST_CASE("Every drive fades in over 5 ms and cancels a pending fade-out", "[blo
 		const int driveTag = tag++;
 		block->fadeOut(done.fade(fadeTag));
 		block->drive(DriveRequest{&one, faded}, done.drive(driveTag));
-		half.released.store(true);
+		half.letGo();
 		REQUIRE(waiter.until([&] { return done.has(driveTag); }));
-		if (half.overran.load()) {
-			WARN("the hold ended before both requests were made; again");
-			continue;
-		}
-		held = true;
 		const std::uint64_t taken = done.takens.back();
 		std::size_t again = heldAt;
 		REQUIRE(waiter.until([&] {
 			while (again < listener.count() && listener.sample(0, again) == 0.5F) ++again;
 			return again + kFade + kBlock < listener.count();
 		}));
-		CHECK(listener.position(again) == taken);
-		CHECK(listener.sample(0, again - 1) == 0.5F); // the old code at full gain up to the drive
-		for (std::uint32_t k = 0; k <= kFade; ++k) {
-			INFO("second fade-in frame " << k);
-			CHECK(listener.sample(0, again + k) == fadeGain(k));
+		REQUIRE(again > 0);
+		if (listener.contiguous(again - 1, again + kFade + 1)) {
+			++judged;
+			CHECK(listener.position(again) == taken);
+			CHECK(listener.sample(0, again - 1) == 0.5F); // the old code at full gain up to the drive
+			for (std::uint32_t k = 0; k <= kFade; ++k) {
+				INFO("second fade-in frame " << k);
+				CHECK(listener.sample(0, again + k) == fadeGain(k));
+			}
+		} else {
+			CHECK(listener.position(again) >= taken); // a jump only puts the first frame later
 		}
 		// The cancelled fade-out's done is dropped; a later fade-out is acknowledged as usual.
 		block->fadeOut(done.fade(tag++));
@@ -1439,10 +2159,13 @@ TEST_CASE("Every drive fades in over 5 ms and cancels a pending fade-out", "[blo
 		CHECK_FALSE(done.has(fadeTag));
 		CHECK(done.order.back() == tag - 1);
 	}
-	CHECK(held);
 }
 
 TEST_CASE("The published position is where the new code's first sample is", "[blocks][drive][async]") {
+	// Take-ups judged exactly: those the listener heard with no jump of the clock just before the code's first frame.
+	// A jump there (a host's stall) makes another round, never a pass or a failure.
+	constexpr int kJudged = 5;
+	constexpr int kMostRounds = 40; // only fails the test
 	auto engine = makeEngine();
 	Waiter waiter(*engine);
 	Bell bell(waiter);
@@ -1450,32 +2173,36 @@ TEST_CASE("The published position is where the new code's first sample is", "[bl
 	Wiring wiring(*engine, waiter);
 	BlockEvents events(waiter);
 	Done done(waiter);
-	Listener listener(waiter, 1);
+	ProbeListener listener(waiter, 1, 30 * kRate);
 	ear::pipewire::testing::Probe probe(*engine, waiter, "listener", 1, 0, listener);
 	auto block = blocks.make("source", oneOutput, kFormat, events);
 	REQUIRE(wiring.link(waiter, {"source", "out.a"}, {"listener", "in.1"}));
 	REQUIRE(waiter.until([&] { return listener.count() >= 4 * kBlock; }));
 
 	// Several take-ups, each a fresh code (a ramp by position), each between silences.
-	for (int round = 0; round < 5; ++round) {
-		INFO("round " << round);
+	int judged = 0;
+	for (int round = 0; judged < kJudged; ++round) {
+		INFO("round " << round << ", " << judged << " judged so far");
+		REQUIRE(round < kMostRounds);
 		PositionRamp ramp(waiter);
 		block->drive(DriveRequest{&ramp, {}}, done.drive(round * 2 + 1));
 		REQUIRE(waiter.until([&] { return done.has(round * 2 + 1) && ramp.calls() >= 2; }));
 		const std::uint64_t taken = done.takens.back();
 		CHECK(block->takenAt() == taken);
-		// The code's first cycle is at the published position, unless the clock jumped (an xrun) right there.
-		if (ramp.firstXruns() == 0 || ramp.first() == taken) {
+		// Downstream, the first frame heard from the code's first cycle on is the ramp's at its position.
+		REQUIRE(waiter.until(
+			[&] { return listener.count() > 0 && listener.position(listener.count() - 1) >= ramp.first(); }));
+		std::size_t first = 0;
+		while (listener.position(first) < ramp.first()) ++first;
+		CHECK(listener.sample(0, first) == rampAt(listener.position(first)));
+		if (listener.position(first) == ramp.first() && first > 0 && listener.contiguous(first - 1, first)) {
+			// No jump just before it: the code's first cycle is at the published position, and the frame before it
+			// is silent.
+			++judged;
 			CHECK(ramp.first() == taken);
+			CHECK(listener.sample(0, first - 1) == 0.0F);
 		} else {
-			WARN("an xrun at the take-up: first cycle at " << ramp.first() << ", published " << taken);
-		}
-		// Downstream, the first frame of the ramp is at the published position, and the frame before it is silent.
-		std::optional<std::size_t> first;
-		REQUIRE(waiter.until([&] { return (first = frameAt(listener, ramp.first())).has_value(); }));
-		CHECK(listener.sample(0, *first) == rampAt(ramp.first()));
-		if (*first > 0 && listener.position(*first - 1) + 1 == ramp.first()) {
-			CHECK(listener.sample(0, *first - 1) == 0.0F);
+			CHECK(ramp.first() >= taken); // a jump only puts the first cycle later
 		}
 		block->drive(DriveRequest{nullptr, {}}, done.drive(round * 2 + 2));
 		REQUIRE(waiter.until([&] { return done.has(round * 2 + 2); }));
@@ -1564,7 +2291,25 @@ TEST_CASE("A thousand requests to one block keep one invoke in flight", "[blocks
 	CHECK(std::ranges::is_sorted(done.takens));
 }
 
-TEST_CASE("Drives, fades and their completions allocate nothing on the data thread", "[blocks][drive][async]") {
+namespace {
+
+/// A sink's realtime end that only counts its writes: the block's tap path (the binding, the told latency's read, the
+/// stamp) runs in full before it.
+class CountingTap final : public SinkTap {
+public:
+	void write(std::span<const std::span<const float>>, std::uint32_t, const ChunkStamp&) noexcept override {
+		writes_.fetch_add(1, std::memory_order_relaxed);
+	}
+	std::uint64_t writes() const { return writes_.load(std::memory_order_relaxed); }
+
+private:
+	std::atomic<std::uint64_t> writes_{0};
+};
+
+} // namespace
+
+TEST_CASE("Drives, fades, their completions and a bound sink's tap allocate nothing on the data thread",
+          "[blocks][drive][async]") {
 	auto engine = makeEngine();
 	Waiter waiter(*engine);
 	Bell bell(waiter);
@@ -1572,9 +2317,15 @@ TEST_CASE("Drives, fades and their completions allocate nothing on the data thre
 	Constant a(waiter, 0.5F), b(waiter, 0.25F);
 	BlockEvents events(waiter);
 	Done done(waiter);
-	auto block = blocks.make("quiet", Ports{{{Direction::output, "out", {"a", "b"}}}}, kFormat, events);
+	auto block = blocks.make(
+		"quiet",
+		Ports{{{Direction::output, "out", {"a", "b"}}, {Direction::output, "writer", {"1"}, PortBank::Reach::inside}}},
+		kFormat, events);
+	block->carryLatency(LatencyPlan{.onBank = {{"writer", Delay{{3, 5}}}}}); // a told latency for the stamps to read
+	CountingTap tap;
+	const std::vector<SinkBinding> sinks{SinkBinding{&tap, 2, 1}};
 	const bool faded[] = {true, false};
-	block->drive(DriveRequest{&a, faded}, done.drive(0));
+	block->drive(DriveRequest{&a, faded, sinks}, done.drive(0));
 	REQUIRE(waiter.until([&] { return done.has(0) && a.calls() > 0; }));
 
 	// Every process() from here on turns counting on for the data thread, where the invokes run too.
@@ -1585,9 +2336,9 @@ TEST_CASE("Drives, fades and their completions allocate nothing on the data thre
 	const std::uint64_t before = ear::pipewire::testing::countedAllocations();
 	int tag = 1;
 	for (int round = 0; round < 50; ++round) {
-		block->drive(DriveRequest{round % 2 == 0 ? &b : &a, faded}, done.drive(tag++));
+		block->drive(DriveRequest{round % 2 == 0 ? &b : &a, faded, sinks}, done.drive(tag++));
 		block->fadeOut(done.fade(tag++));
-		block->drive(DriveRequest{round % 2 == 0 ? &a : &b, faded}, done.drive(tag++));
+		block->drive(DriveRequest{round % 2 == 0 ? &a : &b, faded, sinks}, done.drive(tag++));
 		const std::size_t want = done.order.size() + 2; // the fade between the two drives is cancelled, or acknowledged
 		REQUIRE(waiter.until([&] { return done.order.size() >= want && done.has(tag - 1); }));
 	}
@@ -1597,11 +2348,13 @@ TEST_CASE("Drives, fades and their completions allocate nothing on the data thre
 	const std::uint64_t calls = a.calls() + b.calls();
 	REQUIRE(waiter.until([&] { return a.calls() + b.calls() > calls + 1; }));
 	CHECK(counted == 0);
+	CHECK(tap.writes() > 0);
+	REQUIRE(ear::testing::driveNow(*block, nullptr)); // unbinds the tap before it goes
 }
 
-// Settled for slice 3b's design (docs/design/companions.md): pw_filter_get_node_id gives the block's global id once
-// STREAMING, and an outside node's link made by it (as joinOutsideNode will write link.output.node) reaches that block
-// even beside an older block of the same name.
+// Engine companions rely on it (docs/engine.md#engine-companions): pw_filter_get_node_id gives the block's global id
+// once STREAMING, and an engine companion's link made by it (as joinEngineCompanion writes link.output.node) reaches
+// that block even beside an older block of the same name.
 TEST_CASE("A block's id is its engine node's global id once STREAMING, and a link made by it reaches that block, not "
           "another of its name",
           "[blocks][drive][async]") {
@@ -1618,7 +2371,7 @@ TEST_CASE("A block's id is its engine node's global id once STREAMING, and a lin
 	first->drive(DriveRequest{&older, {}}, done.drive(1));
 	auto second = blocks.make("twin", oneOutput, kFormat, newerEvents);
 	second->drive(DriveRequest{&newer, {}}, done.drive(2));
-	Listener listener(waiter, 1);
+	ProbeListener listener(waiter, 1);
 	ear::pipewire::testing::Probe probe(*engine, waiter, "listener", 1, 0, listener);
 	REQUIRE(waiter.until([&] {
 		return olderEvents.readyCount == 1 && newerEvents.readyCount == 1 && probe.streaming() &&
@@ -1631,7 +2384,7 @@ TEST_CASE("A block's id is its engine node's global id once STREAMING, and a lin
 	CHECK(std::ranges::find(ids, first->blockId()) != ids.end());
 	CHECK(std::ranges::find(ids, second->blockId()) != ids.end());
 
-	// The link as link-factory makes it for an outside node: each end by node id, each port by name.
+	// The link as link-factory makes it for an engine companion: each end by node id, each port by name.
 	const std::string output = std::to_string(second->blockId());
 	const std::string input = std::to_string(probe.nodeId());
 	pw_properties* props =
@@ -1654,54 +2407,17 @@ TEST_CASE("A block's id is its engine node's global id once STREAMING, and a lin
 
 namespace {
 
-/// Records each cycle's position and raw start, and stalls the data thread once for each of `stalls` (cycle, ms).
-class StallingLog final : public AudioCode {
-public:
-	struct Stall {
-		std::size_t atCycle;
-		std::chrono::milliseconds length;
-	};
-	StallingLog(Waiter& waiter, std::size_t capacity, std::vector<Stall> stalls)
-		: waiter_(waiter), position_(capacity), startRawNs_(capacity), rateDiff_(capacity), stalls_(std::move(stalls)) {
-	}
-	void prepare(const AudioFormat&) override {}
-	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs, std::uint32_t,
-	             const ear::GraphCycle& cycle) noexcept override {
-		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
-		const std::size_t at = count_.load(std::memory_order_relaxed);
-		if (at < position_.size()) {
-			position_[at] = cycle.position;
-			startRawNs_[at] = cycle.startRawNs;
-			rateDiff_[at] = cycle.rateDiff;
-			count_.store(at + 1, std::memory_order_release);
-			for (const Stall& stall : stalls_) {
-				if (stall.atCycle == at) std::this_thread::sleep_for(stall.length); // the data thread stalls
-			}
-		}
-		waiter_.wake();
-	}
-	void release() noexcept override {}
-	std::size_t count() const { return count_.load(std::memory_order_acquire); }
-	std::size_t capacity() const { return position_.size(); }
-	/// Where the graph's position lies against the raw clock, in frames, at cycle `i` (a constant while it tracks it).
-	double phase(std::size_t i) const {
-		return static_cast<double>(position_[i]) - static_cast<double>(startRawNs_[i]) * kRate / 1e9;
-	}
-	/// The phase averaged over cycles [from, to).
-	double phase(std::size_t from, std::size_t to) const {
-		double sum = 0.0;
-		for (std::size_t i = from; i < to; ++i) sum += phase(i) - phase(0);
-		return sum / static_cast<double>(to - from);
-	}
-	std::vector<std::uint64_t> position_;
-	std::vector<std::int64_t> startRawNs_;
-	std::vector<double> rateDiff_;
-
-private:
-	Waiter& waiter_;
-	std::vector<Stall> stalls_;
-	std::atomic<std::size_t> count_{0};
-};
+/// Where the graph's position lies against the raw clock, in frames, at cycle `i` of `ledger` (a constant while it
+/// tracks it).
+double phase(const CycleLedger& ledger, std::size_t i) {
+	return static_cast<double>(ledger[i].position) - static_cast<double>(ledger[i].startRawNs) * kRate / 1e9;
+}
+/// The phase averaged over cycles [from, to).
+double phase(const CycleLedger& ledger, std::size_t from, std::size_t to) {
+	double sum = 0.0;
+	for (std::size_t i = from; i < to; ++i) sum += phase(ledger, i) - phase(ledger, 0);
+	return sum / static_cast<double>(to - from);
+}
 
 } // namespace
 
@@ -1715,22 +2431,29 @@ private:
 TEST_CASE("After data-thread stalls past 10 ms the internal clock catches up in whole blocks, never steps back, and "
           "keeps its phase to the raw clock",
           "[port_blocks][clock]") {
-	using Stall = StallingLog::Stall;
+	struct Stall {
+		std::size_t atCycle;
+		std::chrono::milliseconds length;
+	};
 	const std::vector<Stall> stalls{{200, 30ms}, {600, 60ms}, {1000, 120ms}};
+	std::vector<StallPlan::At> plan;
+	for (const Stall& stall : stalls) plan.push_back({stall.atCycle, StallLength::of(stall.length)});
 	auto engine = makeEngine();
 	Waiter waiter(*engine);
 	Bell bell(waiter);
 	FilterPortBlocks blocks(*engine, bell);
-	StallingLog log(waiter, 1400, stalls);
+	StallingCode code(1400, StallPlan::at(plan), [&] { waiter.wake(); });
+	const CycleLedger& log = code.ledger();
 	BlockEvents events(waiter);
 	auto block = blocks.make("stalling", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, events);
-	REQUIRE(ear::testing::driveNow(*block, &log));
-	REQUIRE(waiter.until([&] { return log.count() == log.capacity(); }, 30s));
+	REQUIRE(ear::testing::driveNow(*block, &code));
+	REQUIRE(waiter.until([&] { return log.full(); }, 30s));
 	REQUIRE(ear::testing::driveNow(*block, nullptr));
+	REQUIRE(code.stalls() == stalls.size());
 
 	std::size_t back = 0, notWhole = 0, jumps = 0;
 	for (std::size_t i = 1; i < log.capacity(); ++i) {
-		const std::uint64_t before = log.position_[i - 1], now = log.position_[i];
+		const std::uint64_t before = log[i - 1].position, now = log[i].position;
 		if (now <= before) ++back;
 		else if ((now - before) % kBlock != 0) ++notWhole;
 		else if (now - before > kBlock) ++jumps;
@@ -1744,12 +2467,50 @@ TEST_CASE("After data-thread stalls past 10 ms the internal clock catches up in 
 	for (const Stall& stall : stalls) {
 		// Before: the cycles just ahead of the stall. After: a second on, when the catching up is long over. The loop's own
 		// wander over that second is a few frames (140 ppm at worst, before it has settled: 7 frames).
-		const double before = log.phase(stall.atCycle - 60, stall.atCycle - 10);
-		const double after = log.phase(stall.atCycle + 190, stall.atCycle + 240);
+		const double before = phase(log, stall.atCycle - 60, stall.atCycle - 10);
+		const double after = phase(log, stall.atCycle + 190, stall.atCycle + 240);
 		INFO("stall of " << stall.length.count() << " ms at cycle " << stall.atCycle << ": phase " << before
 		                 << " frames before, " << after << " after");
 		CHECK(std::abs(after - before) < 48.0); // 1 ms: the driver's own error clamp, well under one block
 	}
+}
+
+// docs/engine.md#graphcycle: after a stall the driver catches up in a burst of timeouts on its own time, behind raw
+// time, and whether the block runs each of them or misses some is the host's; either way each cycle it runs while the
+// next is already due states by how much. The first after a stall of the block's own, k graph cycles after the one it
+// stalled in: the driver moves its time on by a cycle a timeout, so that cycle's next came due k + 1 cycles after the
+// stalled one began, and the block begins it after the stall ended, so it is overdue by at least the stall less k + 1
+// cycles, each as long as the driver's loop makes it (it slews the graph by a few hundred ppm at most after a stall,
+// docs/engine.md#the-internal-clock: 2 us a cycle is 375 ppm). The burst ends: a cycle on time states none.
+TEST_CASE("A cycle the block runs while the next is already due states how long it has been due, after a stall "
+          "whatever the burst's shape, and a cycle on time states none",
+          "[port_blocks][clock]") {
+	constexpr std::size_t stallAt = 200;
+	constexpr auto stall = 120ms;
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	StallingCode code(600, StallPlan::at({{stallAt, StallLength::of(stall)}}), [&] { waiter.wake(); });
+	const CycleLedger& log = code.ledger();
+	BlockEvents events(waiter);
+	auto block = blocks.make("stalling", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, events);
+	REQUIRE(ear::testing::driveNow(*block, &code));
+	REQUIRE(waiter.until([&] { return log.full(); }, 30s));
+	REQUIRE(ear::testing::driveNow(*block, nullptr));
+	REQUIRE(code.stalls() == 1);
+
+	const std::int64_t cycleNs = 1'000'000'000LL * kBlock / kFormat.rate.hz();
+	const std::int64_t first = log[stallAt + 1].overdueNs;
+	const auto k = static_cast<std::int64_t>(log[stallAt + 1].facts.graphCycle - log[stallAt].facts.graphCycle);
+	std::size_t onTime = stallAt + 1;
+	while (onTime < log.capacity() && log[onTime].overdueNs > 0) ++onTime;
+	INFO("the first cycle after the stall, " << k << " graph cycles on, overdue by " << first
+	                                         << " ns; the burst ended at cycle " << onTime << " ("
+	                                         << onTime - stallAt - 1 << " overdue cycles)");
+	REQUIRE(log[stallAt].facts.graphCycle != 0);
+	CHECK(first >= std::chrono::nanoseconds(stall).count() - (k + 1) * (cycleNs + 2000));
+	CHECK(onTime < log.capacity());
 }
 
 // A stall of seconds is caught up the same way, by a burst of about half its timeouts' blocks, but the loop is fed its
@@ -1761,32 +2522,672 @@ TEST_CASE(
 	"After a 3 s data-thread stall the internal clock never steps back, and 5 s on runs within 150 ppm of the raw "
 	"clock",
 	"[port_blocks][clock]") {
-	using Stall = StallingLog::Stall;
 	constexpr std::size_t stallAt = 200;
 	auto engine = makeEngine();
 	Waiter waiter(*engine);
 	Bell bell(waiter);
 	FilterPortBlocks blocks(*engine, bell);
-	StallingLog log(waiter, 2400, {Stall{stallAt, 3000ms}});
+	StallingCode code(2400, StallPlan::at({{stallAt, StallLength::of(3000ms)}}), [&] { waiter.wake(); });
+	const CycleLedger& log = code.ledger();
 	BlockEvents events(waiter);
 	auto block = blocks.make("stalling", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, events);
-	REQUIRE(ear::testing::driveNow(*block, &log));
-	REQUIRE(waiter.until([&] { return log.count() == log.capacity(); }, 60s));
+	REQUIRE(ear::testing::driveNow(*block, &code));
+	REQUIRE(waiter.until([&] { return log.full(); }, 60s));
 	REQUIRE(ear::testing::driveNow(*block, nullptr));
+	REQUIRE(code.stalls() == 1);
 
 	std::size_t back = 0;
-	for (std::size_t i = 1; i < log.capacity(); ++i) back += log.position_[i] <= log.position_[i - 1] ? 1 : 0;
+	for (std::size_t i = 1; i < log.capacity(); ++i) back += log[i].position <= log[i - 1].position ? 1 : 0;
 	CHECK(back == 0);
 	// From 5 s after the stall ended to the log's end.
-	const std::int64_t stallEndNs = log.startRawNs_[stallAt] + 3'000'000'000;
+	const std::int64_t stallEndNs = log[stallAt].startRawNs + 3'000'000'000;
 	double worstPpm = 0.0;
 	std::size_t judged = 0;
 	for (std::size_t i = stallAt + 1; i < log.capacity(); ++i) {
-		if (log.startRawNs_[i] < stallEndNs + 5'000'000'000) continue;
+		if (log[i].startRawNs < stallEndNs + 5'000'000'000) continue;
 		++judged;
-		worstPpm = std::max(worstPpm, std::abs(log.rateDiff_[i] - 1.0) * 1e6);
+		worstPpm = std::max(worstPpm, std::abs(log[i].rateDiff - 1.0) * 1e6);
 	}
 	INFO("judged " << judged << " cycles, worst rate " << worstPpm << " ppm off the raw clock");
 	REQUIRE(judged > 100);
 	CHECK(worstPpm < 150.0);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The cycle facts' conformance (docs/writing-a-node-type.md#lost-cycles, docs/engine.md#graphcycle): every row of the
+// cycle table (test/support/cycle_table.hpp, which ear_core_tests runs through CycleAccount and the type harness) that
+// an engine can make (CycleStep::onEngine), through a real block on the internal clock, its cycles numbered and its
+// cuts read from the engine's own record (Engine::cuts), so the block's account cannot drift from the rule's table.
+
+namespace cycle_conformance {
+
+using namespace ear;
+using namespace ear::pipewire;
+using ear::test::CycleRow;
+using ear::test::CycleStep;
+using ear::test::StallLength;
+using ear::test::StallPlan;
+using ear::test::Stalls;
+
+constexpr std::size_t kBetween = std::numeric_limits<std::size_t>::max(); // a cycle that is no step of the row
+constexpr std::size_t kMostCycles = 8192; // the judged block's cycles one attempt records at most
+constexpr int kAttempts = 8;              // attempts at a row before its host spoiled every one
+
+/// One cycle the judged block's code ran in an attempt: the row's step it is (kBetween while the test waits between
+/// steps: links settling, a drive or a pause on its way), what its GraphCycle stated, and the record's cuts at its entry.
+struct Seen {
+	std::size_t step = kBetween;
+	CycleFacts facts;
+	std::uint64_t position = 0;
+	std::uint64_t cutsSoFar = 0;
+};
+
+/// A stall of one and a half cycles each time it is asked: the one that cuts the cycle it stalls in short straight after
+/// its node (docs/engine.md#the-one-data-loop-and-invokes).
+class CuttingStall {
+public:
+	/// Data thread.
+	void operator()(std::uint32_t frames) noexcept { stalls_(asked_++, frames, test::cycleTableFormat.rate); }
+	std::size_t made() const noexcept { return stalls_.made(); }
+
+private:
+	Stalls stalls_{StallPlan::every(1, 0, std::numeric_limits<std::size_t>::max(), StallLength::cycles(1.5))};
+	std::size_t asked_ = 0;
+};
+
+/// One attempt at a row: which of the judged block's cycles is which step, and what the head and the judged block do on
+/// the data thread around them, keyed by the steps themselves (the head stalls in the cycle after the step before a
+/// cut; the judged block in a step that is cut after it). Written on the data thread; read on the main thread.
+class RowRun {
+public:
+	RowRun(const CycleRow& row, const CutRecord& cuts, Waiter& waiter)
+		: row_(row), cuts_(cuts), waiter_(waiter), seen_(kMostCycles) {}
+
+	/// Data thread, the judged block's code, one cycle: `driveStep` is the step whose drive installed the code, `first`
+	/// its first cycle. Stalls in a step cut after it.
+	void judged(std::size_t driveStep, bool first, const GraphCycle& cycle, std::uint32_t frames) noexcept {
+		const std::size_t at = count_.load(std::memory_order_relaxed);
+		if (at >= seen_.size()) return;
+		std::size_t step = kBetween;
+		if (first) step = driveStep;
+		else if (next_ < row_.steps.size() && armed_.load(std::memory_order_acquire) && !row_.steps[next_].drive &&
+		         (row_.steps[next_].lostUnscheduled == 0 || resumed_.load(std::memory_order_acquire)))
+			step = next_;
+		seen_[at] =
+			Seen{.step = step, .facts = cycle.facts, .position = cycle.position, .cutsSoFar = cuts_.cutsSoFar()};
+		lastGraphCycle_.store(cycle.facts.graphCycle, std::memory_order_release);
+		count_.store(at + 1, std::memory_order_release);
+		if (step != kBetween) {
+			next_ = step + 1;
+			reached_.store(next_, std::memory_order_release);
+			if (next_ < row_.steps.size() && row_.steps[next_].lostCut > 0)
+				headStall_.store(true, std::memory_order_release);
+			if (row_.steps[step].cutAfter) judgedStaller_(frames);
+		}
+		waiter_.wake();
+	}
+	/// Data thread, the head's code, one cycle (it runs first in every cycle the chain runs).
+	void head(std::uint32_t frames) noexcept {
+		headCycle_.store(cuts_.started(), std::memory_order_release);
+		if (headStall_.exchange(false, std::memory_order_acq_rel)) headStaller_(frames);
+		waiter_.wake();
+	}
+
+	/// Main thread: the steps after the first may be taken from now on (the chain is linked and settled).
+	void arm() noexcept { armed_.store(true, std::memory_order_release); }
+	/// Main thread: the judged block, made inactive, has missed the cycles its pause stands for; its next cycle is the
+	/// pause's step.
+	void resume() noexcept { resumed_.store(true, std::memory_order_release); }
+	/// Steps recorded so far.
+	std::size_t reached() const noexcept { return reached_.load(std::memory_order_acquire); }
+	bool done() const noexcept { return reached() == row_.steps.size() || count() == seen_.size(); }
+	std::size_t count() const noexcept { return count_.load(std::memory_order_acquire); }
+	std::span<const Seen> seen() const noexcept { return {seen_.data(), count()}; }
+	std::uint64_t headCycle() const noexcept { return headCycle_.load(std::memory_order_acquire); }
+	std::uint64_t lastGraphCycle() const noexcept { return lastGraphCycle_.load(std::memory_order_acquire); }
+	std::size_t headStalls() const noexcept { return headStaller_.made(); }
+	std::size_t judgedStalls() const noexcept { return judgedStaller_.made(); }
+
+private:
+	const CycleRow& row_;
+	const CutRecord& cuts_;
+	Waiter& waiter_;
+	std::vector<Seen> seen_;
+	std::atomic<std::size_t> count_{0};
+	std::size_t next_ = 0; // data thread: the step the judged block's next cycle may be
+	std::atomic<std::size_t> reached_{0};
+	std::atomic<bool> armed_{false};
+	std::atomic<bool> resumed_{false};
+	std::atomic<bool> headStall_{false};
+	std::atomic<std::uint64_t> headCycle_{0};
+	std::atomic<std::uint64_t> lastGraphCycle_{0};
+	CuttingStall headStaller_;
+	CuttingStall judgedStaller_;
+};
+
+/// The judged block's code for the step its drive is for: silence on its output, every cycle told to the run.
+class RowCode final : public AudioCode {
+public:
+	RowCode(RowRun& run, std::size_t step) : run_(run), step_(step) {}
+	void prepare(const AudioFormat&) override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
+	             std::uint32_t frames, const GraphCycle& cycle) noexcept override {
+		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
+		run_.judged(step_, std::exchange(first_, false), cycle, frames);
+	}
+	void release() noexcept override {}
+
+private:
+	RowRun& run_;
+	std::size_t step_;
+	bool first_ = true;
+};
+
+/// The head's code: silence, each cycle told to the run.
+class HeadCode final : public AudioCode {
+public:
+	explicit HeadCode(RowRun& run) : run_(run) {}
+	void prepare(const AudioFormat&) override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
+	             std::uint32_t frames, const GraphCycle&) noexcept override {
+		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
+		run_.head(frames);
+	}
+	void release() noexcept override {}
+
+private:
+	RowRun& run_;
+};
+
+/// The engine at the table's format: its quantum the table's cycle, so the rows' frames are the engine's.
+std::unique_ptr<Engine> makeTableEngine() {
+	for (const char* name : {"XDG_RUNTIME_DIR", "PIPEWIRE_RUNTIME_DIR", "PIPEWIRE_REMOTE", "DBUS_SESSION_BUS_ADDRESS",
+	                         "DBUS_SYSTEM_BUS_ADDRESS"}) {
+		unsetenv(name);
+	}
+	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, test::cycleTableFormat.rate, test::cycleTableFrames});
+	if (!engine) FAIL("Engine::create: " << engine.error().detail);
+	return std::move(*engine);
+}
+
+/// What one attempt at a row found: why the host spoiled it (empty: it did not), else each step's cycle.
+struct Attempt {
+	std::string spoiled;
+	std::vector<Seen> seen;
+	std::vector<std::size_t> stepAt; // each step's index in `seen`
+};
+
+/// One attempt at `row` through fresh blocks: a head, the judged block and, where the row cuts a cycle, a tail, linked
+/// head to judged to tail; the judged block driven at once, so its first cycle is the first step (start and drive),
+/// then each later step made as onEngine says.
+Attempt attemptRow(Engine& engine, Waiter& waiter, FilterPortBlocks& blocks, Wiring& wiring, const CycleRow& row,
+                   const std::string& tag) {
+	bool cuts = false;
+	bool pauses = false;
+	std::uint64_t plannedCuts = 0;
+	for (const CycleStep& step : row.steps) {
+		cuts = cuts || step.lostCut > 0 || step.cutAfter;
+		pauses = pauses || step.lostUnscheduled > 0;
+		plannedCuts += step.lostCut + (step.cutAfter ? 1 : 0);
+	}
+	RowRun run(row, engine.cuts(), waiter);
+	HeadCode headCode(run);
+	std::vector<std::unique_ptr<RowCode>> codes;
+	for (std::size_t s = 0; s < row.steps.size(); ++s)
+		if (row.steps[s].drive) codes.push_back(std::make_unique<RowCode>(run, s));
+	Done done(waiter);
+	BlockEvents headEvents(waiter), judgedEvents(waiter), tailEvents(waiter);
+	const std::string head = "head" + tag, judged = "judged" + tag, tail = "tail" + tag;
+	// Declared after every code they run, so they go first: no process() runs a freed code.
+	auto headBlock = blocks.make(head, Ports{{{Direction::output, "out", {"a"}}}}, test::cycleTableFormat, headEvents);
+	REQUIRE(ear::testing::driveNow(*headBlock, &headCode));
+	std::unique_ptr<PortBlock> tailBlock;
+	if (cuts)
+		tailBlock = blocks.make(tail, Ports{{{Direction::input, "in", {"a"}}}}, test::cycleTableFormat, tailEvents);
+	// A paused block is linked to nothing: made inactive, a linked one would hold its peers back too.
+	const Ports judgedPorts = pauses ? Ports{{{Direction::output, "out", {"a"}}}}
+	                                 : Ports{{{Direction::input, "in", {"a"}}, {Direction::output, "out", {"a"}}}};
+	auto judgedBlock = blocks.make(judged, judgedPorts, test::cycleTableFormat, judgedEvents);
+	std::size_t nextCode = 0;
+	judgedBlock->drive(DriveRequest{codes.at(nextCode++).get(), {}}, done.drive(0));
+	REQUIRE(waiter.until([&] { return done.has(0) && run.reached() >= 1; }));
+	Attempt attempt;
+	// Taken at 0 is a drive applied before the block's first cycle (a block's first cycle starts where the driver's
+	// raw-clock position is, never at 0): else the block ran a cycle with no code first, and its first step is no start.
+	if (done.takens.at(0) != 0) attempt.spoiled = "the block ran a cycle before its first drive was applied";
+	if (cuts) {
+		REQUIRE(wiring.link(waiter, {head, "out.a"}, {judged, "in.a"}));
+		REQUIRE(wiring.link(waiter, {judged, "out.a"}, {tail, "in.a"}));
+	}
+	// A few cycles after the links, so the steps after the first run on a settled chain.
+	const std::size_t linked = run.count();
+	REQUIRE(waiter.until([&] { return run.count() >= linked + 4; }));
+	run.arm();
+	pw_impl_node* judgedNode = engineNode(engine.context(), judged);
+	REQUIRE(judgedNode != nullptr);
+	for (std::size_t s = 1; s < row.steps.size(); ++s) {
+		const CycleStep& step = row.steps[s];
+		if (!step.drive && step.lostUnscheduled == 0) continue; // made on the data thread
+		REQUIRE(waiter.until([&] { return run.reached() >= s; }));
+		if (step.drive) {
+			judgedBlock->drive(DriveRequest{codes.at(nextCode++).get(), {}}, done.drive(static_cast<int>(s)));
+			continue;
+		}
+		// The pause: made inactive, as a session manager pauses a node (docs/engine.md#the-internal-clock), until the
+		// head has run as many cycles past the judged block's last as the step stands for, then active again.
+		REQUIRE(pw_impl_node_set_active(judgedNode, false) == 0);
+		REQUIRE(waiter.until([&] { return run.headCycle() > run.lastGraphCycle() + step.lostUnscheduled; }));
+		run.resume();
+		REQUIRE(pw_impl_node_set_active(judgedNode, true) == 0);
+	}
+	REQUIRE(waiter.until([&] { return run.done(); }, 10s));
+	REQUIRE(run.reached() == row.steps.size()); // not the ledger filled first
+	attempt.seen.assign(run.seen().begin(), run.seen().end());
+	for (std::size_t s = 0; s < row.steps.size(); ++s) {
+		const auto at = std::ranges::find(attempt.seen, s, &Seen::step);
+		REQUIRE(at != attempt.seen.end());
+		attempt.stepAt.push_back(static_cast<std::size_t>(at - attempt.seen.begin()));
+	}
+	// Each planned cut is recorded on the cycle it was made in, whatever else the host cut: a 1.5-cycle stall cuts the
+	// cycle it stalls in on any host (docs/engine.md#the-one-data-loop-and-invokes), so a planned cut missing is the
+	// record's fault, never the host's. The head stalls in the cycle after the step before a cut; the judged block in a
+	// step cut after it.
+	for (std::size_t s = 0; s < row.steps.size(); ++s) {
+		const CycleStep& step = row.steps[s];
+		std::optional<std::uint64_t> planned;
+		if (step.lostCut > 0 && s > 0) planned = attempt.seen.at(attempt.stepAt[s - 1]).facts.graphCycle + 1;
+		if (step.cutAfter) planned = attempt.seen.at(attempt.stepAt[s]).facts.graphCycle;
+		if (!planned) continue;
+		INFO("the cut planned around step " << s << ", of graph cycle " << *planned);
+		CHECK(engine.cuts().cut(*planned) == std::optional<bool>(true));
+	}
+	// From the cycle before the second step to the last step's entry the record counts the planned cuts, and any more
+	// the host made: fewer is a cut the record lost, which fails; more, a host's cut, spoils the attempt (the facts of
+	// the steps after it are the host's, not the row's).
+	REQUIRE(attempt.stepAt.at(1) > 0);
+	const std::uint64_t cutsMade =
+		attempt.seen.at(attempt.stepAt.back()).cutsSoFar - attempt.seen.at(attempt.stepAt.at(1) - 1).cutsSoFar;
+	INFO("the driver cut " << cutsMade << " cycles where the row plans " << plannedCuts);
+	REQUIRE(cutsMade >= plannedCuts);
+	if (attempt.spoiled.empty() && cutsMade > plannedCuts)
+		attempt.spoiled =
+			"the driver cut " + std::to_string(cutsMade) + " cycles where the row plans " + std::to_string(plannedCuts);
+	std::size_t lostCuts = 0, cutAfters = 0;
+	for (const CycleStep& step : row.steps) {
+		lostCuts += step.lostCut;
+		cutAfters += step.cutAfter ? 1 : 0;
+	}
+	CHECK(run.headStalls() == lostCuts);
+	CHECK(run.judgedStalls() == cutAfters);
+	return attempt;
+}
+
+} // namespace cycle_conformance
+
+TEST_CASE("The cycle table through a real block: every row an engine can make states the row's facts, its cycles "
+          "numbered and its cuts read from the internal clock's own record",
+          "[port_blocks][cycle_facts]") {
+	namespace cc = cycle_conformance;
+	auto engine = cc::makeTableEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Wiring wiring(*engine, waiter);
+	const std::vector<ear::test::CycleRow> rows = ear::test::cycleRows();
+	std::size_t made = 0;
+	for (std::size_t r = 0; r < rows.size(); ++r) {
+		const ear::test::CycleRow& row = rows[r];
+		if (!row.onEngine()) continue;
+		INFO(row.what);
+		++made;
+		cc::Attempt attempt;
+		std::vector<std::string> spoiled;
+		for (int a = 0; a < cc::kAttempts; ++a) {
+			attempt = cc::attemptRow(*engine, waiter, blocks, wiring, row, std::to_string(r) + "-" + std::to_string(a));
+			if (attempt.spoiled.empty()) break;
+			spoiled.push_back(attempt.spoiled);
+		}
+		INFO("attempts the host spoiled: " << spoiled.size()
+		                                   << (spoiled.empty() ? "" : ", the last: " + spoiled.back()));
+		REQUIRE(attempt.spoiled.empty());
+		for (std::size_t s = 0; s < row.steps.size(); ++s) {
+			const ear::test::CycleStep& step = row.steps[s];
+			const cc::Seen& seen = attempt.seen.at(attempt.stepAt[s]);
+			CycleFacts expected = step.facts;
+			INFO("step " << s << ", the row's " << ear::test::describe(expected) << "; stated "
+			             << ear::test::describe(seen.facts));
+			// Numbered by the engine's record (checked against the position below), never 0 on the internal clock.
+			CHECK(seen.facts.graphCycle > 0);
+			expected.graphCycle = seen.facts.graphCycle;
+			// A pause stands for as many cycles as the engine took to make the block active again.
+			if (step.lostUnscheduled > 0) {
+				const std::int64_t missed = seen.facts.missed;
+				CHECK(missed >= step.lostUnscheduled);
+				expected.missed = seen.facts.missed;
+				expected.jumpFrames = step.facts.jumpFrames / step.lostUnscheduled * missed;
+				expected.lostRawNs = step.facts.lostRawNs / step.lostUnscheduled * missed;
+			}
+			// The raw time lost is the driver's planned starts apart, steered by its loop, which moves a cycle's start by
+			// at most its 1 ms clamp (docs/engine.md#the-internal-clock).
+			CHECK(std::abs(seen.facts.lostRawNs - expected.lostRawNs) <= 1'000'000);
+			expected.lostRawNs = seen.facts.lostRawNs;
+			CHECK(seen.facts == expected);
+		}
+		// Each cycle's number against the driver's own position: the tracking dummy moves it on by one quantum each cycle
+		// it starts (docs/engine.md#the-internal-clock), so the position less the number's quanta never changes.
+		const std::uint64_t base =
+			attempt.seen.front().position - attempt.seen.front().facts.graphCycle * ear::test::cycleTableFrames;
+		std::size_t offBase = 0;
+		for (const cc::Seen& seen : attempt.seen)
+			offBase += seen.position - seen.facts.graphCycle * ear::test::cycleTableFrames != base ? 1 : 0;
+		CHECK(offBase == 0);
+	}
+	CHECK(made == 4); // start and drive, one cut, a pause, a cut after the block ran
+}
+
+namespace {
+
+/// One cycle of a chain's tail: the engine's record's count read in its process, and the facts its GraphCycle stated.
+struct Numbered {
+	std::uint64_t recordStarted = 0;
+	std::uint64_t position = 0;
+	CycleFacts facts;
+};
+
+/// The tail's code: silence, each cycle numbered by the record, into storage made beforehand.
+class Numbering final : public AudioCode {
+public:
+	Numbering(Waiter& waiter, const CutRecord& record, std::size_t capacity)
+		: waiter_(waiter), record_(record), seen_(capacity) {}
+	void prepare(const AudioFormat&) override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs, std::uint32_t,
+	             const ear::GraphCycle& cycle) noexcept override {
+		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
+		const std::size_t at = count_.load(std::memory_order_relaxed);
+		if (at < seen_.size()) {
+			seen_[at] = Numbered{record_.started(), cycle.position, cycle.facts};
+			count_.store(at + 1, std::memory_order_release);
+		}
+		waiter_.wake();
+	}
+	void release() noexcept override {}
+	std::size_t count() const noexcept { return count_.load(std::memory_order_acquire); }
+	const Numbered& operator[](std::size_t i) const noexcept { return seen_[i]; }
+
+private:
+	Waiter& waiter_;
+	const CutRecord& record_;
+	std::vector<Numbered> seen_;
+	std::atomic<std::size_t> count_{0};
+};
+
+} // namespace
+
+// The engine's record of the internal clock's cuts (docs/engine.md#graphcycle) against what the driver and the chain
+// show of each cycle: every cycle a block runs is numbered by the record's count as the driver started it, and the
+// number agrees with the driver's own position. The chain's head stalls four times for one and a half cycles, so the
+// driver cuts each of those cycles before the tail ran it, every run; the tail states each cut as catchUp
+// (docs/writing-a-node-type.md#lost-cycles). Cycle for cycle over the tail's span, the record holds a cycle cut exactly
+// when the tail missed it: a cycle the tail, last in the graph, ran was finished by every node, so the driver cannot
+// have cut it, and every cycle it missed must be recorded cut.
+TEST_CASE("The engine's record of the internal clock's cuts agrees with the driver's position and the chain's tail, "
+          "cycle for cycle, and a chain's tail states each cut as a catchUp",
+          "[port_blocks][cycle_facts]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Wiring wiring(*engine, waiter);
+	StallingCode head(1024, StallPlan::every(40, 20, 4, StallLength::cycles(1.5)), [&] { waiter.wake(); });
+	Numbering tail(waiter, engine->cuts(), 1024);
+	BlockEvents headEvents(waiter), tailEvents(waiter);
+	auto headBlock = blocks.make("head", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, headEvents);
+	auto tailBlock = blocks.make("tail", Ports{{{Direction::input, "in", {"a"}}}}, kFormat, tailEvents);
+	REQUIRE(wiring.link(waiter, {"head", "out.a"}, {"tail", "in.a"}));
+	REQUIRE(ear::testing::driveNow(*tailBlock, &tail));
+	head.prepare(kFormat); // its stalls are sized in cycles of the format's rate
+	REQUIRE(ear::testing::driveNow(*headBlock, &head));
+	REQUIRE(waiter.until([&] { return head.stalls() == 4 && head.ledger().count() >= 200; }));
+	REQUIRE(ear::testing::driveNow(*headBlock, nullptr));
+	REQUIRE(ear::testing::driveNow(*tailBlock, nullptr));
+	REQUIRE(tail.count() > 1);
+
+	// The number is the count as the driver started the cycle, and against the driver's own position: the tracking
+	// dummy moves it on by one block each cycle it starts (docs/engine.md#the-internal-clock), so the position less the
+	// number's blocks never changes.
+	const std::uint64_t base = tail[0].position - tail[0].facts.graphCycle * kBlock;
+	std::size_t catchUps = 0;
+	for (std::size_t i = 0; i < tail.count(); ++i) {
+		INFO("the tail's cycle " << i << ": " << ear::test::describe(tail[i].facts));
+		CHECK(tail[i].facts.graphCycle == tail[i].recordStarted);
+		CHECK(tail[i].position - tail[i].facts.graphCycle * kBlock == base);
+		// Every cycle the tail missed the driver cut: a host's stall is reported as surely as the head's.
+		if (i > 0) CHECK(tail[i].facts.causes.only(CycleCause::catchUp));
+		if (tail[i].facts.causes.has(CycleCause::catchUp)) ++catchUps;
+	}
+	CHECK(catchUps >= 4);
+	// Each cycle the head stalled in is recorded cut.
+	const CycleLedger& headLog = head.ledger();
+	for (std::size_t n = 20; n < 4 * 40; n += 40) {
+		INFO("the head's stalled cycle " << n << ": " << ear::test::describe(headLog[n].facts));
+		CHECK(engine->cuts().cut(headLog[n].facts.graphCycle) == std::optional<bool>(true));
+	}
+	// Over the tail's span, a cycle is recorded cut exactly when the tail missed it (its last cycle's cut, if any, is told
+	// only as the next starts).
+	const std::uint64_t from = tail[0].facts.graphCycle, to = tail[tail.count() - 1].facts.graphCycle;
+	REQUIRE(to > from + 2);
+	std::vector<bool> ran(to - from + 1, false);
+	for (std::size_t i = 0; i < tail.count(); ++i) ran[tail[i].facts.graphCycle - from] = true;
+	std::uint64_t cuts = 0, mismatches = 0;
+	std::string firstMismatch;
+	for (std::uint64_t g = from; g < to; ++g) {
+		const std::optional<bool> recorded = engine->cuts().cut(g);
+		REQUIRE(recorded.has_value());
+		cuts += *recorded ? 1 : 0;
+		if (*recorded == ran[g - from] && mismatches++ == 0)
+			firstMismatch = "graph cycle " + std::to_string(g) + (*recorded ? " recorded cut" : " recorded whole") +
+			                (ran[g - from] ? ", the tail ran it" : ", the tail missed it");
+	}
+	INFO(firstMismatch);
+	CHECK(mismatches == 0);
+	CHECK(cuts >= 4);
+}
+
+// The diagnostics counters on a real engine (docs/engine.md#counters), each moved by the cause it counts. The head of a
+// chain stalls four times for one and a half cycles, each stall cutting the cycle it is made in on any host
+// (docs/engine.md#the-one-data-loop-and-invokes): the graph's cut cycles and stalls move by at least those, and the
+// tail, which misses each cut cycle, counts none of it as its own.
+TEST_CASE("An induced cut moves the graph's counters and no node's missed cycles", "[port_blocks][counters]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Wiring wiring(*engine, waiter);
+	StallingCode head(1024, StallPlan::every(40, 20, 4, StallLength::cycles(1.5)), [&] { waiter.wake(); });
+	StallingCode tail(1024, StallPlan{}, [&] { waiter.wake(); });
+	BlockEvents headEvents(waiter), tailEvents(waiter);
+	auto headBlock = blocks.make("head", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, headEvents);
+	auto tailBlock = blocks.make("tail", Ports{{{Direction::input, "in", {"a"}}}}, kFormat, tailEvents);
+	REQUIRE(wiring.link(waiter, {"head", "out.a"}, {"tail", "in.a"}));
+	REQUIRE(ear::testing::driveNow(*tailBlock, &tail));
+	const GraphCounts before = engine->graphCounts();
+	head.prepare(kFormat); // its stalls are sized in cycles of the format's rate
+	REQUIRE(ear::testing::driveNow(*headBlock, &head));
+	REQUIRE(waiter.until([&] { return head.stalls() == 4 && head.ledger().count() >= 200; }));
+	REQUIRE(ear::testing::driveNow(*headBlock, nullptr));
+	REQUIRE(ear::testing::driveNow(*tailBlock, nullptr));
+	// The graph's counters are the record's own counts, read between two readings of the record while it runs on.
+	const std::uint64_t cutsBefore = engine->cuts().cutsSoFar(), startedBefore = engine->cuts().started();
+	const GraphCounts after = engine->graphCounts();
+	CHECK(after.cutCycles >= cutsBefore);
+	CHECK(after.cutCycles <= engine->cuts().cutsSoFar());
+	CHECK(after.cycles >= startedBefore);
+	CHECK(after.cycles <= engine->cuts().started());
+
+	INFO("the graph's counters moved from " << before.cycles << " cycles, " << before.cutCycles << " cut, "
+	                                        << before.stalls << " stalls to " << after.cycles << ", " << after.cutCycles
+	                                        << ", " << after.stalls);
+	CHECK(after.cycles >= before.cycles + 200);
+	CHECK(after.cutCycles >= before.cutCycles + 4);
+	CHECK(after.stalls >= before.stalls + 4); // forty cycles apart: four stalls, and any of the host's
+	CHECK(after.stalls <= after.cutCycles);
+	// The tail missed the cut cycles (the excuse path ran), and counted none of them: the driver cut each.
+	std::uint64_t tailMissed = 0;
+	for (const ear::test::LedgerCycle& cycle : tail.ledger().cycles()) tailMissed += cycle.facts.missed;
+	CHECK(tailMissed >= 4);
+	const NodeCounts tailCounts = tailBlock->counts();
+	CHECK(tailCounts.missedCycles == 0);
+	CHECK(tailCounts.repositions == 0);
+	CHECK(tailCounts.driverChanges == 0);
+	CHECK(headBlock->counts().missedCycles == 0);
+}
+
+/// A chain's head that, once armed, stalls the data thread 200 ms in one cycle, then holds every other cycle of the
+/// catch-up's burst 1 ms while its next timeout is already due (GraphCycle::nextNs at or before now), so that cycle is
+/// cut short straight after it on any host and the ones between run as the host lets them: cut and whole cycles
+/// alternate inside one stall of the host, the dev host's natural shape (docs/engine.md#the-internal-clock), made
+/// certain. Its first cycle whose next timeout is not yet due ends the burst.
+class BurstStall final : public AudioCode {
+public:
+	void prepare(const AudioFormat&) override {}
+	void release() noexcept override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
+	             std::uint32_t frames, const GraphCycle& cycle) noexcept override {
+		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
+		if (!armed_.load(std::memory_order_acquire) || caughtUp_.load(std::memory_order_relaxed)) return;
+		if (!stalled_) {
+			stall_(0, frames, ear::SampleRate::fixed<kRate>());
+			stalled_ = true;
+			return;
+		}
+		const std::int64_t now =
+			std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+				.count(); // CLOCK_MONOTONIC on Linux, as nextNs
+		if (cycle.nextNs <= now) {
+			if (overdue_++ % 2 == 0) holds_(held_++, frames, ear::SampleRate::fixed<kRate>());
+			return;
+		}
+		caughtUp_.store(true, std::memory_order_release);
+	}
+	/// Main thread: the next cycle stalls.
+	void arm() noexcept { armed_.store(true, std::memory_order_release); }
+	/// Any thread: the burst is over.
+	bool caughtUp() const noexcept { return caughtUp_.load(std::memory_order_acquire); }
+	/// Burst cycles held, once caught up.
+	std::size_t holds() const noexcept { return holds_.made(); }
+
+private:
+	std::atomic<bool> armed_{false};
+	std::atomic<bool> caughtUp_{false};
+	StallPlan holdEach = StallPlan::every(1, 0, ear::test::Stalls::kKept, StallLength::of(1ms));
+	ear::test::Stalls stall_{StallPlan::at({{0, StallLength::of(200ms)}})};
+	ear::test::Stalls holds_{holdEach};
+	bool stalled_ = false;    // the data thread's
+	std::size_t overdue_ = 0; // the data thread's: the burst's cycles so far
+	std::size_t held_ = 0;    // the data thread's: the holds so far, the plan's index
+};
+
+// docs/engine.md#counters: a stall is counted once however its catch-up's burst comes out. One 200 ms stall, its burst
+// cut every other cycle and the cycles between left to the host, is one stall of many cut cycles.
+TEST_CASE("One long stall of the host is one stall, however many of its burst's cycles are cut",
+          "[port_blocks][counters]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Wiring wiring(*engine, waiter);
+	BurstStall head;
+	StallingCode tail(4096, StallPlan{}, [&] { waiter.wake(); });
+	BlockEvents headEvents(waiter), tailEvents(waiter);
+	auto headBlock = blocks.make("head", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, headEvents);
+	auto tailBlock = blocks.make("tail", Ports{{{Direction::input, "in", {"a"}}}}, kFormat, tailEvents);
+	REQUIRE(wiring.link(waiter, {"head", "out.a"}, {"tail", "in.a"}));
+	REQUIRE(ear::testing::driveNow(*tailBlock, &tail));
+	REQUIRE(ear::testing::driveNow(*headBlock, &head));
+	REQUIRE(waiter.until([&] { return tail.ledger().count() >= 20; }));
+	const GraphCounts before = engine->graphCounts();
+	head.arm();
+	REQUIRE(waiter.until([&] { return head.caughtUp(); }));
+	const std::size_t caughtAt = tail.ledger().count();
+	REQUIRE(waiter.until([&] { return tail.ledger().count() >= caughtAt + 4; }));
+	const GraphCounts after = engine->graphCounts();
+	REQUIRE(ear::testing::driveNow(*headBlock, nullptr));
+	REQUIRE(ear::testing::driveNow(*tailBlock, nullptr));
+
+	INFO("the graph's counters moved from " << before.cycles << " cycles, " << before.cutCycles << " cut, "
+	                                        << before.stalls << " stalls to " << after.cycles << ", " << after.cutCycles
+	                                        << ", " << after.stalls << ", the burst held " << head.holds() << " times");
+	CHECK(head.holds() >= 2);
+	CHECK(after.cutCycles > before.cutCycles + 1);
+	CHECK(after.stalls == before.stalls + 1);
+	CHECK(tailBlock->counts().missedCycles == 0);
+}
+
+// A block made inactive, as a session manager pauses a node (docs/engine.md#the-internal-clock), misses cycles the
+// driver runs whole without it: its missed cycles move by exactly what its cycles state.
+TEST_CASE("A paused block moves its missed cycles by the cycles it was not scheduled for", "[port_blocks][counters]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	StallingCode code(4096, StallPlan{}, [&] { waiter.wake(); });
+	// Another block runs on while the judged one is paused, so the driver has a node to drive and the waiter is woken.
+	StallingCode running(4096, StallPlan{}, [&] { waiter.wake(); });
+	BlockEvents events(waiter), runningEvents(waiter);
+	auto other = blocks.make("running", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, runningEvents);
+	REQUIRE(ear::testing::driveNow(*other, &running));
+	// Linked to nothing: made inactive, a linked block would hold its peers back too.
+	auto block = blocks.make("paused", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, events);
+	REQUIRE(ear::testing::driveNow(*block, &code));
+	REQUIRE(waiter.until([&] { return code.ledger().count() >= 10; }));
+	pw_impl_node* node = engineNode(engine->context(), "paused");
+	REQUIRE(node != nullptr);
+	const std::size_t ranBefore = code.ledger().count();
+	const std::uint64_t lastRun = code.ledger()[ranBefore - 1].facts.graphCycle;
+	REQUIRE(pw_impl_node_set_active(node, false) == 0);
+	REQUIRE(waiter.until([&] { return engine->cuts().started() > lastRun + 32; }));
+	REQUIRE(pw_impl_node_set_active(node, true) == 0);
+	REQUIRE(waiter.until([&] {
+		const std::size_t count = code.ledger().count();
+		return code.ledger()[count - 1].facts.graphCycle > lastRun + 32;
+	}));
+	// The code's last cycle is counted once its process returned: a drive of nothing is applied between cycles.
+	REQUIRE(ear::testing::driveNow(*block, nullptr));
+	REQUIRE(ear::testing::driveNow(*other, nullptr));
+	CHECK(other->counts().missedCycles == 0); // the pause was the paused block's alone
+
+	std::uint64_t notCut = 0;
+	std::size_t absences = 0;
+	for (const ear::test::LedgerCycle& cycle : code.ledger().cycles()) {
+		notCut += cycle.facts.missed - cycle.facts.missedCut;
+		if (cycle.facts.causes.has(CycleCause::absent)) ++absences;
+	}
+	INFO("the block's cycles stated " << notCut << " missed cycles not cut, in " << absences << " absences");
+	CHECK(absences >= 1);
+	CHECK(notCut >= 32);
+	const NodeCounts counts = block->counts();
+	CHECK(counts.missedCycles == notCut);
+	CHECK(counts.repositions == 0);
+	CHECK(counts.driverChanges == 0);
+}
+
+// An overrun is the block's own work past its cycle (docs/engine.md#counters): a code that stalls one and a half
+// cycles moves its node's overruns once a stall.
+TEST_CASE("A code that stalls past its cycle moves its node's overruns", "[port_blocks][counters]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	StallingCode code(1024, StallPlan::every(30, 10, 3, StallLength::cycles(1.5)), [&] { waiter.wake(); });
+	code.prepare(kFormat); // its stalls are sized in cycles of the format's rate
+	BlockEvents events(waiter);
+	auto block = blocks.make("staller", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, events);
+	REQUIRE(ear::testing::driveNow(*block, &code));
+	REQUIRE(waiter.until([&] { return code.stalls() == 3 && block->counts().overruns >= 3; }));
+	REQUIRE(ear::testing::driveNow(*block, nullptr));
+	const NodeCounts counts = block->counts();
+	INFO("overruns " << counts.overruns << " in " << code.ledger().count() << " cycles of the code");
+	CHECK(counts.overruns >= 3);
+	CHECK(counts.overruns < code.ledger().count()); // the stalls' and any the host held, never every cycle
+	CHECK(counts.missedCycles == 0);
 }

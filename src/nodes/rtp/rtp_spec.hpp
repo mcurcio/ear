@@ -31,7 +31,8 @@ inline constexpr auto addressRow = setting::required(
 inline constexpr auto portRow = setting::required("port", setting::number(1, 65535));
 inline constexpr auto formatRow = setting::required("format", setting::text<encodingOf>(R"("L16" or "L24")"));
 inline constexpr auto channelsRow = setting::required("channels", setting::number(1, 64));
-inline constexpr auto rateRow = setting::optional("rate", setting::number(8000, 192000, "Hz"));
+inline constexpr auto rateRow =
+	setting::optional("rate", setting::rate(SampleRate::fixed<8'000>(), SampleRate::fixed<192'000>()));
 inline constexpr auto latencyRow =
 	setting::defaulted("latencyMs", setting::number(1, 1000, "milliseconds"), defaultLatencyMs);
 inline constexpr auto stream = bank::output<"stream">;
@@ -47,14 +48,15 @@ struct Rtp {
 	}
 
 	Configured configure(CreateOf<spec>& cx, const Checked& s) {
-		cx.rtpReceiver(fromRtp, RtpReceiverRequest{.address = s.get<addressRow>(),
-		                                           .port = static_cast<std::uint16_t>(s.get<portRow>()),
-		                                           .encoding = s.get<formatRow>(),
-		                                           .rate = s.get<rateRow>().value_or(cx.format().rate),
-		                                           .latencyMs = s.get<latencyRow>()});
-		// The receive buffer holds the stream that long before it leaves; PipeWire's receiver reports none of it.
-		const std::uint32_t buffered = s.get<latencyRow>() * cx.format().rate / 1000;
-		cx.declareLatency(fromRtp, stream, Latency{buffered, buffered}); // on stream, as before
+		// The receive buffer's latency reaches `stream` through the pass-through: the framework puts the receiver's
+		// latencyMs beyond from_rtp (docs/writing-a-node-type.md#engine-companions). The sender's rate is its own (the
+		// row reads a rate), the graph's when the file gives none.
+		const std::optional<SampleRate> sender = s.get<rateRow>();
+		cx.rtpReceiver(fromRtp, RtpReceiverShape{.address = s.get<addressRow>(),
+		                                         .port = static_cast<std::uint16_t>(s.get<portRow>()),
+		                                         .encoding = s.get<formatRow>(),
+		                                         .rate = sender.value_or(cx.format().rate),
+		                                         .latencyMs = s.get<latencyRow>()});
 		cx.use(passThrough({bankPair(fromRtp, stream)}));
 		return Configured::applied();
 	}

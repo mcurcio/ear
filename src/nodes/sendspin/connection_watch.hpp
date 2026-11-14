@@ -4,7 +4,7 @@
 #pragma once
 #include <chrono>
 #include <optional>
-namespace ear::sendspin {
+namespace ear::nodes::sendspin {
 class ConnectionWatch {
 public:
 	struct Reading {
@@ -27,4 +27,4 @@ private:
 	std::optional<std::chrono::steady_clock::time_point> falseSince_;
 	std::optional<std::chrono::steady_clock::time_point> lastDial_;
 };
-} // namespace ear::sendspin
+} // namespace ear::nodes::sendspin

@@ -9,44 +9,60 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string_view>
+#include "ear/core/cycle_facts.hpp"
 #include "ear/core/graph_spec.hpp"
+#include "ear/core/latency.hpp"
 namespace ear {
 
 // ---- What a type writes against ----
 
 /// One cycle's frames of a sink's inside output bank, or what the ring held of it (docs/engine.md#sinks),
 /// stamped with that cycle's facts. `interleaved.size() == frames * channels`, channels the bank's size. A chunk that
-/// wraps the ring's end is consumed in two calls, the second with `position` advanced by the first's frames and
-/// `discontinuity` false. Valid only during the consume() it is handed to.
+/// wraps the ring's end is consumed in two calls, the second with `position`, `startNs` and `startRawNs` advanced by the
+/// first's frames (so each call's start is its own first frame's), no causes and no frames lost. Valid only during the
+/// consume() it is handed to.
 struct Chunk {
 	std::span<const float> interleaved;
 	std::uint32_t frames;
-	std::uint64_t position;       // the driver's position of the chunk's first frame
-	std::int64_t startNs;         // its cycle's start, CLOCK_MONOTONIC
-	std::int64_t startRawNs;      // the same on CLOCK_MONOTONIC_RAW
-	std::uint32_t upstreamFrames; // the latency upstream of the bank's paired input: always 0 until slice 3b
-	/// The cycle's GraphCycle::discontinuity: true on the first cycle after any drive (a start, a restart, and a re-drive
-	/// of the same code too), on a new driver, after a position jump and after a cycle too large to run. A gap shows
-	/// only in `position`: compare it with the last chunk's end to tell a gap (a stop) from a re-drive.
-	bool discontinuity;
+	std::uint64_t position;  // the driver's position of the chunk's first frame
+	std::int64_t startNs;    // its cycle's start, CLOCK_MONOTONIC
+	std::int64_t startRawNs; // the same on CLOCK_MONOTONIC_RAW
+	/// The most upstream (capture) latency the block told on the sink's bank in the cycle the chunk was taken: what
+	/// reaches the input banks paired with it plus what the configuration declared on it (docs/engine.md#sinks): the
+	/// most of each part, so an upper bound when the bank mixes paths. The chunk's first frame entered the graph at
+	/// FrameClock(rate).enteredRawNs(startRawNs, 0, {0, upstreamFrames}) (docs/engine.md#dating).
+	std::uint32_t upstreamFrames;
+	/// Why the cycle is a discontinuity (its GraphCycle::facts.causes, docs/writing-a-node-type.md#lost-cycles): `drive`
+	/// on the first cycle after any drive (a start, a restart, and a re-drive of the same code too), `start` on the
+	/// block's first, `driverChange`, `catchUp` (the graph lost cycles and caught them up), `absent`, `reposition` and
+	/// `oversized`; none on a cycle that followed its last with nothing lost. A stop's gap is a drive with no loss
+	/// stated: compare `position` with the last chunk's end to tell it from a re-drive.
+	CycleCauses causes;
+	/// The frames the graph lost before this chunk on a `catchUp` (its jumpFrames), 0 otherwise: a consumer may write
+	/// them as silence or say them.
+	std::uint64_t lostFrames;
+	constexpr bool discontinuity() const noexcept { return !causes.empty(); }
 };
 
 /// A sink's consumer (slice 3c's design: docs/design/node-primitives.md#65-a-sinks-consumer). It has a public virtual
 /// destructor, since a consumer given whole is owned and deleted by the sink). Every call is on the sink's own thread,
 /// never the main loop or the realtime thread, one at a time, in this order: begin once, consume in chunk order, finish
-/// once after the last consume. finish runs only if begin ran (a sink closed before it began calls neither).
+/// once after the last consume. finish runs only if begin returned (a sink closed before it began calls neither). A
+/// call that throws is a type bug the framework catches on the sink's thread: it fails the node, and after it no more
+/// consume is called (docs/writing-a-node-type.md#sinks).
 class SinkConsumer {
 public:
 	virtual ~SinkConsumer() = default;
 	/// Once, before any consume and before the node is `configured` (readiness 4'). Opens what it writes to; a failure
-	/// is the node handle's lost(detail) (in 3a NodeOf::handle(), an InsidesEvents&), which fails the node
-	/// start-failed. May block on I/O. Must not throw (a throw is std::terminate on the sink's thread).
+	/// is the node handle's lost(detail) (NodeOf::handle(), a NodeHandle&), which fails the node
+	/// start-failed. May block on I/O.
 	virtual void begin() {}
-	/// In order; may block on I/O. Must not throw.
+	/// In order; may block on I/O.
 	virtual void consume(const Chunk& chunk) = 0;
-	/// Once, after the last consume (teardown step 3). Must not throw.
+	/// Once, after the last consume (teardown step 3).
 	virtual void finish() = 0;
 };
 
@@ -58,13 +74,45 @@ struct SinkShape {
 
 // ---- What the framework runs a sink with (no type sees these) ----
 
-/// The stamp the block's tap writes beside a cycle's frames: GraphCycle's facts for that cycle.
+/// The stamp the block's tap writes beside a cycle's frames: GraphCycle's facts for that cycle (Chunk::causes and
+/// lostFrames), and the most upstream latency the block last told on the sink's bank (Chunk::upstreamFrames).
 struct ChunkStamp {
 	std::uint64_t position;
 	std::int64_t startNs;
 	std::int64_t startRawNs;
-	bool discontinuity;
+	CycleCauses causes;
+	std::uint64_t lostFrames;
+	std::uint32_t upstreamFrames;
+	constexpr bool discontinuity() const noexcept { return !causes.empty(); }
+	friend bool operator==(const ChunkStamp&, const ChunkStamp&) = default;
 };
+
+/// The calls one stamped cycle becomes when `contiguous` of its `frames` lie before the ring's end
+/// (docs/engine.md#sinks): one, or two, the second's position and start times advanced by the first's frames at the
+/// graph's rate, with no causes and no frames lost (the loss came before the first), so each call's start is its own
+/// first frame's.
+struct ChunkCut {
+	ChunkStamp first;
+	std::uint32_t firstFrames;
+	std::optional<ChunkStamp> second;
+	std::uint32_t secondFrames;
+};
+/// The one home of that rule: SinkRing (ear/core/sink_ring.hpp) cuts every chunk with it, and so the engine's sinks and
+/// the type harness's both. `contiguous` 0 is taken as no wrap: a ring that holds the chunk's frames always has some
+/// before its end.
+constexpr ChunkCut cutChunk(const ChunkStamp& stamp, std::uint32_t frames, std::uint32_t contiguous,
+                            FrameClock clock) noexcept {
+	if (contiguous == 0 || contiguous >= frames) return ChunkCut{stamp, frames, std::nullopt, 0};
+	const std::int64_t advanced = clock.ns(contiguous);
+	return ChunkCut{stamp, contiguous,
+	                ChunkStamp{.position = stamp.position + contiguous,
+	                           .startNs = stamp.startNs + advanced,
+	                           .startRawNs = stamp.startRawNs + advanced,
+	                           .causes = {},
+	                           .lostFrames = 0,
+	                           .upstreamFrames = stamp.upstreamFrames},
+	                frames - contiguous};
+}
 
 /// The realtime end of one sink. The port block calls write() once per cycle the code it was driven with ran, after
 /// that code, with the sink's inside output bank's spans (an unlinked one's scratch included).
@@ -93,7 +141,7 @@ struct SinkBinding {
 
 /// One interim sink: a ring, its stamp ring and its own thread (docs/engine.md#sinks). Made inside configure by
 /// CreateOf::sink, for the configuration's life. Main thread for every call; `begun` and `closed` run on the main loop
-/// through the adapter's Executor, the FIFO the node's InsidesEvents post through, so a lost() said inside begin()
+/// through the adapter's Executor, the FIFO the node's handle posts through, so a lost() said inside begin()
 /// always lands before `begun`.
 class Sink {
 public:
@@ -110,16 +158,20 @@ public:
 	/// then `closed(dropped)` runs on the main loop with the frames the tap refused over the sink's life. A stop closes
 	/// nothing: the next drive binds the same tap again.
 	virtual void close(std::move_only_function<void(std::uint64_t droppedFrames)> closed) = 0;
+	/// Any thread: the frames the tap refused since the sink was made (the count `closed` reports once closed).
+	virtual std::uint64_t droppedFrames() const noexcept = 0;
 };
 
 /// The sink kind's adapter (ResourceRegistry's slot). ear_pipewire's ThreadSinks implements it.
 class SinkAdapter {
 public:
 	/// Main thread. A sink of `channels` channels and `capacityFrames` frames of ring for `node`'s inside output bank
-	/// `bank`, its thread started (named for "<node>.<bank>"). Never fails but by std::bad_alloc or std::system_error
-	/// (a thread it cannot start), which NodeHost treats as a type bug's throw would be: the node fails start-failed.
+	/// `bank`, its thread started (named for "<node>.<bank>"), at the graph's `rate` (a chunk handed in two calls dates
+	/// the second call's first frame by it). Refuses only by std::bad_alloc or std::system_error (a thread it cannot
+	/// start): the node fails start-failed. A std::logic_error is its own bug: the node fails lost, told as
+	/// ear.internal-error (docs/architecture.md#faults-by-owner).
 	virtual std::unique_ptr<Sink> make(const NodeName& node, std::string_view bank, std::uint32_t channels,
-	                                   std::uint32_t capacityFrames) = 0;
+	                                   std::uint32_t capacityFrames, SampleRate rate) = 0;
 
 protected:
 	~SinkAdapter() = default;

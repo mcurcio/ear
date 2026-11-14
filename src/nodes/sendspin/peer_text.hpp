@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <optional>
 #include <string_view>
-namespace ear::sendspin {
+namespace ear::nodes::sendspin {
 struct Character {
 	char32_t code;
 	std::size_t bytes;
@@ -48,4 +48,4 @@ inline std::optional<Character> characterAt(std::string_view text, std::size_t a
 inline bool isControl(char32_t code) noexcept {
 	return code < 0x20 || (code >= 0x7F && code <= 0x9F) || code == 0x2028 || code == 0x2029;
 }
-} // namespace ear::sendspin
+} // namespace ear::nodes::sendspin

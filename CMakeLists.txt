@@ -44,18 +44,74 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 add_subdirectory(vendor/json SYSTEM)
 unset(CMAKE_POLICY_VERSION_MINIMUM)
 
-# knobly, the graph file's language (docs/graph-file.md): its C++ release source tree, which the image
-# builds from a pinned commit (docker/Dockerfile, stage knobly) and puts at /opt/knobly, so configure needs no
-# Python and no network. A Linux build outside the image points EAR_KNOBLY_DIR at such a tree. Compiled mode:
-# knobly's definitions are compiled once, in src/config/knobly_implementation.cpp. As a subproject it builds no
-# tests; SYSTEM keeps its headers' warnings out of EAR's.
-set(EAR_KNOBLY_DIR "/opt/knobly" CACHE PATH "knobly's C++ release source tree (docker/Dockerfile, stage knobly)")
-if(NOT EXISTS "${EAR_KNOBLY_DIR}/include/knobly/knobly.hpp")
-	message(FATAL_ERROR "knobly is not at ${EAR_KNOBLY_DIR} (EAR_KNOBLY_DIR): build in the image "
-		"(scripts/dev.sh make test), whose docker/Dockerfile puts it there")
-endif()
+# knobly, the graph file's language (docs/graph-file.md): its C++ release asset, knobly-cpp-<version>.tar.gz
+# (CMakeLists.txt and include/ with the generated headers, so configure needs no Python), fetched by URL and SHA-256
+# and kept in .cache/deps as Boost is. Its one pin, cmake/knobly.json, is the graph editor's too: the version, the
+# URL templates (knobly's release naming, {version} replaced by the version), this asset's SHA-256 and the npm
+# tarball's integrity; scripts/knobly-pin.mjs moves it (AGENTS.md#build-run-and-test). Compiled mode:
+# knobly's definitions are compiled once, in src/config/knobly_implementation.cpp. As a subproject it builds no tests;
+# SYSTEM keeps its headers' warnings out of EAR's. FETCHCONTENT_SOURCE_DIR_KNOBLY names another tree of the same
+# version (an extracted asset, or a knobly checkout's cpp/ with its headers generated).
+set(knobly_pin_file "${CMAKE_CURRENT_SOURCE_DIR}/cmake/knobly.json")
+file(READ "${knobly_pin_file}" knobly_pin)
+string(JSON knobly_version GET "${knobly_pin}" version)
+string(JSON knobly_sha256 GET "${knobly_pin}" cppSha256)
+string(JSON knobly_integrity GET "${knobly_pin}" jsIntegrity)
+string(JSON knobly_url GET "${knobly_pin}" cppUrl)
+string(JSON knobly_js_url GET "${knobly_pin}" jsUrl)
+string(REPLACE "{version}" "${knobly_version}" knobly_url "${knobly_url}")
+string(REPLACE "{version}" "${knobly_version}" knobly_js_url "${knobly_js_url}")
 set(KNOBLY_COMPILED ON)   # knobly's option (CMP0077 NEW): KNOBLY_HEADER_ONLY=0 for every user
-add_subdirectory("${EAR_KNOBLY_DIR}" "${CMAKE_BINARY_DIR}/_deps/knobly-build" SYSTEM)
+kept_fetchcontent(knobly "${knobly_url}\n${knobly_sha256}"
+	URL ${knobly_url}
+	URL_HASH SHA256=${knobly_sha256}
+	DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+	EXCLUDE_FROM_ALL
+	SYSTEM
+)
+# The tree's own version stamp, so an explicit FETCHCONTENT_SOURCE_DIR_KNOBLY of another version stops here.
+file(STRINGS "${knobly_SOURCE_DIR}/include/knobly/support/config.hpp" knobly_stamp
+	REGEX "^#define KNOBLY_VERSION_(MAJOR|MINOR|PATCH) [0-9]+$")
+string(REGEX REPLACE "#define KNOBLY_VERSION_[A-Z]+ " "" knobly_stamp "${knobly_stamp}")
+list(JOIN knobly_stamp "." knobly_stamp)
+if(NOT knobly_stamp STREQUAL knobly_version)
+	message(FATAL_ERROR "knobly: ${knobly_SOURCE_DIR} is version ${knobly_stamp}, but cmake/knobly.json pins "
+		"${knobly_version}")
+endif()
+configure_file("${knobly_SOURCE_DIR}/LICENSE" "${CMAKE_BINARY_DIR}/licenses/knobly-LICENSE" COPYONLY)
+# The graph editor's copy (web/package.json's URL; web/package-lock.json's URL, version and integrity) must be the
+# pin's, so no build runs ear's reader against one knobly and its highlighter against another. The same check as
+# scripts/knobly-pin.mjs --check (make web-test), here so every C++ build makes it too; a change to any of the three
+# files configures again.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${knobly_pin_file}"
+	"${CMAKE_CURRENT_SOURCE_DIR}/web/package.json" "${CMAKE_CURRENT_SOURCE_DIR}/web/package-lock.json")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/web/package.json" knobly_web_package)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/web/package-lock.json" knobly_web_lock)
+string(JSON knobly_found_package ERROR_VARIABLE error GET "${knobly_web_package}" dependencies knobly)
+string(JSON knobly_found_root ERROR_VARIABLE error GET "${knobly_web_lock}" packages "" dependencies knobly)
+string(JSON knobly_found_resolved ERROR_VARIABLE error GET "${knobly_web_lock}" packages node_modules/knobly resolved)
+string(JSON knobly_found_version ERROR_VARIABLE error GET "${knobly_web_lock}" packages node_modules/knobly version)
+string(JSON knobly_found_integrity ERROR_VARIABLE error GET "${knobly_web_lock}" packages node_modules/knobly integrity)
+set(knobly_mismatches "")
+foreach(check IN ITEMS
+		"package.json dependencies.knobly|package|js_url"
+		"package-lock.json packages.\"\".dependencies.knobly|root|js_url"
+		"package-lock.json packages.\"node_modules/knobly\".resolved|resolved|js_url"
+		"package-lock.json packages.\"node_modules/knobly\".version|version|version"
+		"package-lock.json packages.\"node_modules/knobly\".integrity|integrity|integrity")
+	string(REPLACE "|" ";" check "${check}")
+	list(GET check 0 where)
+	list(GET check 1 found)
+	list(GET check 2 wanted)
+	if(NOT "${knobly_found_${found}}" STREQUAL "${knobly_${wanted}}")
+		list(APPEND knobly_mismatches "web/${where} is \"${knobly_found_${found}}\", not \"${knobly_${wanted}}\"")
+	endif()
+endforeach()
+if(knobly_mismatches)
+	list(JOIN knobly_mismatches "; " knobly_mismatches)
+	message(FATAL_ERROR "knobly: the graph editor is not on cmake/knobly.json's ${knobly_version}: "
+		"${knobly_mismatches}. Move both with: node scripts/knobly-pin.mjs ${knobly_version}")
+endif()
 
 # Boost is built by this project from the official Boost CMake release: nothing is installed.
 # kept_fetchcontent keeps the download and the extracted 800 MB tree across "make clean"

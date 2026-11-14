@@ -1,5 +1,5 @@
 {
-  "description": "graph.get and graph.subscribe answer with the whole graph (docs/control-port.md): engine facts, node types, every wanted node with its state (a failed one with its reason) and every wanted route with its status (a refused one with its detail). Names in name order, routes in route order.",
+  "description": "graph.get and graph.subscribe answer with the whole graph (docs/control-port.md): engine facts, node types, every wanted node with its state (a failed one with its reason) and every wanted route with its status (a refused one with its detail); with the feature counters, the graph's counters and each node's (docs/control-port.md#counters), read with the rest; with the feature companions, each node's companion list (docs/control-port.md#companions): rec's sink, the rest none. Names in name order, routes in route order.",
   "requests": [
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.get\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"graph.subscribe\"}"
@@ -11,7 +11,10 @@
       "result": {
         "protocol": 1,
         "features": [
-          "lifecycle"
+          "lifecycle",
+          "counters",
+          "companions",
+          "node-text"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -42,7 +45,14 @@
             "reason": {
               "code": "engine-refused",
               "detail": "cannot open hw:CARD=Pro24,DEV=0: No such device"
-            }
+            },
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": []
           },
           {
             "name": "noise",
@@ -56,7 +66,14 @@
             "phase": "running",
             "since": "2026-11-09T10:00:00.000000Z",
             "wanted": "running",
-            "blockLost": false
+            "blockLost": false,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": []
           },
           {
             "name": "quiet",
@@ -70,7 +87,14 @@
             "phase": "disabled",
             "wanted": "disabled",
             "blockLost": false,
-            "disabled": true
+            "disabled": true,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": []
           },
           {
             "name": "rec",
@@ -86,7 +110,22 @@
             "state": "running",
             "phase": "running",
             "wanted": "running",
-            "blockLost": false
+            "blockLost": false,
+            "counters": {
+              "missedCycles": 33,
+              "overruns": 2,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": [
+              {
+                "name": "rec.writer",
+                "kind": "sink",
+                "bank": "writer",
+                "ready": true,
+                "dropped": 0
+              }
+            ]
           },
           {
             "name": "tape",
@@ -106,7 +145,14 @@
             "reason": {
               "code": "start-failed",
               "detail": "cannot open nope/t.wav: No such file or directory"
-            }
+            },
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": []
           }
         ],
         "routes": [
@@ -144,7 +190,13 @@
             "status": "refused",
             "detail": "the engine removed the link before it was active"
           }
-        ]
+        ],
+        "counters": {
+          "cycles": 18750,
+          "cutCycles": 39,
+          "stalls": 1,
+          "lostMs": 208
+        }
       }
     },
     {
@@ -153,7 +205,10 @@
       "result": {
         "protocol": 1,
         "features": [
-          "lifecycle"
+          "lifecycle",
+          "counters",
+          "companions",
+          "node-text"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -184,7 +239,14 @@
             "reason": {
               "code": "engine-refused",
               "detail": "cannot open hw:CARD=Pro24,DEV=0: No such device"
-            }
+            },
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": []
           },
           {
             "name": "noise",
@@ -198,7 +260,14 @@
             "phase": "running",
             "since": "2026-11-09T10:00:00.000000Z",
             "wanted": "running",
-            "blockLost": false
+            "blockLost": false,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": []
           },
           {
             "name": "quiet",
@@ -212,7 +281,14 @@
             "phase": "disabled",
             "wanted": "disabled",
             "blockLost": false,
-            "disabled": true
+            "disabled": true,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": []
           },
           {
             "name": "rec",
@@ -228,7 +304,22 @@
             "state": "running",
             "phase": "running",
             "wanted": "running",
-            "blockLost": false
+            "blockLost": false,
+            "counters": {
+              "missedCycles": 33,
+              "overruns": 2,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": [
+              {
+                "name": "rec.writer",
+                "kind": "sink",
+                "bank": "writer",
+                "ready": true,
+                "dropped": 0
+              }
+            ]
           },
           {
             "name": "tape",
@@ -248,7 +339,14 @@
             "reason": {
               "code": "start-failed",
               "detail": "cannot open nope/t.wav: No such file or directory"
-            }
+            },
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": []
           }
         ],
         "routes": [
@@ -286,14 +384,23 @@
             "status": "refused",
             "detail": "the engine removed the link before it was active"
           }
-        ]
+        ],
+        "counters": {
+          "cycles": 18750,
+          "cutCycles": 39,
+          "stalls": 1,
+          "lostMs": 208
+        }
       }
     }
   ],
   "graph": {
     "protocol": 1,
     "features": [
-      "lifecycle"
+      "lifecycle",
+      "counters",
+      "companions",
+      "node-text"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -324,7 +431,14 @@
         "reason": {
           "code": "engine-refused",
           "detail": "cannot open hw:CARD=Pro24,DEV=0: No such device"
-        }
+        },
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": []
       },
       {
         "name": "noise",
@@ -338,7 +452,14 @@
         "phase": "running",
         "since": "2026-11-09T10:00:00.000000Z",
         "wanted": "running",
-        "blockLost": false
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": []
       },
       {
         "name": "quiet",
@@ -352,7 +473,14 @@
         "phase": "disabled",
         "wanted": "disabled",
         "blockLost": false,
-        "disabled": true
+        "disabled": true,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": []
       },
       {
         "name": "rec",
@@ -368,7 +496,22 @@
         "state": "running",
         "phase": "running",
         "wanted": "running",
-        "blockLost": false
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 33,
+          "overruns": 2,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": [
+          {
+            "name": "rec.writer",
+            "kind": "sink",
+            "bank": "writer",
+            "ready": true,
+            "dropped": 0
+          }
+        ]
       },
       {
         "name": "tape",
@@ -388,7 +531,14 @@
         "reason": {
           "code": "start-failed",
           "detail": "cannot open nope/t.wav: No such file or directory"
-        }
+        },
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": []
       }
     ],
     "routes": [
@@ -426,6 +576,12 @@
         "status": "refused",
         "detail": "the engine removed the link before it was active"
       }
-    ]
+    ],
+    "counters": {
+      "cycles": 18750,
+      "cutCycles": 39,
+      "stalls": 1,
+      "lostMs": 208
+    }
   }
 }

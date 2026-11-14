@@ -14,6 +14,8 @@
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
 
+#include "callback_boundary.hpp"
+
 namespace ear::pipewire {
 namespace {
 
@@ -38,37 +40,27 @@ class Feed {
 public:
 	Feed(pw_core* core, LivePortListener& listener) : listener_(listener) {
 		registry_ = pw_core_get_registry(core, PW_VERSION_REGISTRY, 0);
-		pw_registry_add_listener(registry_, &hook_, &registryEvents(), this);
+		listen<RegistryCallbacks<Feed>{.global = guarded<&Feed::onGlobal>,
+		                               .globalRemove = guarded<&Feed::onGlobalRemove>}>(registry_, registryListener_,
+		                                                                                this);
 	}
 	~Feed() {
-		spa_hook_remove(&hook_);
+		registryListener_.remove();
 		pw_proxy_destroy(reinterpret_cast<pw_proxy*>(registry_));
 	}
 	Feed(const Feed&) = delete;
 	Feed& operator=(const Feed&) = delete;
 
 private:
-	static const pw_registry_events& registryEvents() {
-		static const pw_registry_events table = [] {
-			pw_registry_events events{};
-			events.version = PW_VERSION_REGISTRY_EVENTS;
-			events.global = &Feed::onGlobal;
-			events.global_remove = &Feed::onGlobalRemove;
-			return events;
-		}();
-		return table;
-	}
-
-	static void onGlobal(void* data, std::uint32_t id, std::uint32_t /*permissions*/, const char* type,
-	                     std::uint32_t /*version*/, const spa_dict* props) {
-		auto* self = static_cast<Feed*>(data);
+	void onGlobal(std::uint32_t id, std::uint32_t /*permissions*/, const char* type, std::uint32_t /*version*/,
+	              const spa_dict* props) {
 		if (props == nullptr) return;
 		if (spa_streq(type, PW_TYPE_INTERFACE_Node)) {
 			const char* name = spa_dict_lookup(props, PW_KEY_NODE_NAME);
 			if (name == nullptr) return;
-			self->nodes_[id] = name;
-			for (const auto& [portId, port] : self->ports_) {
-				if (port.node == id) self->announce(portId, port);
+			nodes_[id] = name;
+			for (const auto& [portId, port] : ports_) {
+				if (port.node == id) announce(portId, port);
 			}
 		} else if (spa_streq(type, PW_TYPE_INTERFACE_Port)) {
 			const char* node = spa_dict_lookup(props, PW_KEY_NODE_ID);
@@ -79,16 +71,15 @@ private:
 				return;
 			}
 			const PortGlobal port{nodeId, name, *direction};
-			self->ports_[id] = port;
-			if (self->nodes_.contains(nodeId)) self->announce(id, port);
+			ports_[id] = port;
+			if (nodes_.contains(nodeId)) announce(id, port);
 		}
 	}
 
-	static void onGlobalRemove(void* data, std::uint32_t id) {
-		auto* self = static_cast<Feed*>(data);
-		self->nodes_.erase(id);
-		self->ports_.erase(id);
-		if (self->announced_.erase(id) > 0) self->listener_.portGone(id);
+	void onGlobalRemove(std::uint32_t id) {
+		nodes_.erase(id);
+		ports_.erase(id);
+		if (announced_.erase(id) > 0) listener_.portGone(id);
 	}
 
 	void announce(std::uint32_t id, const PortGlobal& port) {
@@ -98,7 +89,7 @@ private:
 
 	LivePortListener& listener_;
 	pw_registry* registry_ = nullptr;
-	spa_hook hook_{};
+	Listener registryListener_;
 	std::map<std::uint32_t, NodeName> nodes_;
 	std::map<std::uint32_t, PortGlobal> ports_;
 	std::set<std::uint32_t> announced_;

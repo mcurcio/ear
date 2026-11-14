@@ -8,7 +8,7 @@
 #include <string>
 #include <string_view>
 #include "peer_text.hpp"
-namespace ear::sendspin::notes {
+namespace ear::nodes::sendspin::notes {
 /// What a peer sent, safe on one status line: every control character (peer_text.hpp) and every byte that is no UTF-8
 /// becomes '?', and at most 64 bytes of it are read, cut at a character's start.
 inline std::string printable(std::string_view text) {
@@ -58,5 +58,4 @@ inline std::string sending(std::uint32_t rate, std::uint32_t channels, std::uint
 inline std::string sendingStopped() { return "sending-stopped"; }
 inline std::string keyWriteFailed(std::string_view detail) { return std::format("key-write-failed {}", detail); }
 inline std::string advertiseFailed(std::string_view detail) { return std::format("advertise-failed {}", detail); }
-inline std::string notesDropped(std::uint64_t count) { return std::format("notes-dropped {}", count); }
-} // namespace ear::sendspin::notes
+} // namespace ear::nodes::sendspin::notes

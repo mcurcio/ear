@@ -1,9 +1,8 @@
 // RtpReceivers on the real in-process engine (docs/engine.md#rtp-receivers): PipeWire's rtp-source module loaded into
-// EAR's own engine, no daemon, joined to a port block by the one outside-node lifecycle. The sender is the tests' own
-// thread writing RTP to
-// 127.0.0.1 (test/support/rtp_tone.hpp). Every wait is event-gated: the main loop runs until the
-// events a test waits for have arrived (a receiver event, a registry change, the block's cycles);
-// the deadline only fails the test.
+// EAR's own engine, no daemon, joined to a port block by the one engine-companion lifecycle. The sender is the tests'
+// own thread writing RTP to 127.0.0.1 (test/support/rtp_tone.hpp). Every wait is event-gated: the main loop runs until
+// the events a test waits for have arrived (a receiver event, a registry change, the block's cycles); the deadline only
+// fails the test.
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -20,13 +19,17 @@
 
 #include <pipewire/impl.h>
 #include <pipewire/pipewire.h>
+#include <spa/param/latency-utils.h>
 
+#include "../callback_boundary.hpp"
 #include "catch2/catch.hpp"
 #include "ear/pipewire/engine.hpp"
 #include "ear/pipewire/port_blocks.hpp"
 #include "ear/pipewire/rtp_receivers.hpp"
 #include "ear/testing/drive_now.hpp"
+#include "cycle_judge.hpp"
 #include "engine_harness.hpp"
+#include "inducers.hpp"
 #include "rtp_tone.hpp"
 
 namespace {
@@ -39,24 +42,44 @@ using ear::test::RtpSender;
 using ear::test::RtpTone;
 
 constexpr double kAmplitude = 0.5;
+/// The receivers' latency (their shape's latencyMs): a packet late by less than this is still in time for the buffer,
+/// which is what it is for, so only lateness beyond it excuses a tenth.
+constexpr std::chrono::milliseconds kReceiverHeadroom{100};
+/// How long the receivers' buffer lasts, through the graph's FrameClock: the reach of a late send, and of a lost cycle
+/// that starved or flooded the buffer (docs/testing.md#the-senders-own-counter).
+const std::chrono::nanoseconds kReceiverReach =
+	ear::test::receiverReach(FrameClock(ear::SampleRate::fixed<kRate>()), kReceiverHeadroom);
+/// How long after its first sound a receiver's output is left unjudged, once per start: its resampler's rate control
+/// steering to the packets' arrival, which this test has always given half a second. What follows is judged unless a
+/// late send or a lost cycle reaches it (docs/testing.md#the-senders-own-counter).
+constexpr std::chrono::milliseconds kReceiverStartSettle{500};
 
 /// Records the block's inside inputs (from_rtp.1, from_rtp.2) into buffers made before it runs,
 /// up to kCapacity frames, and notes the first frame that is not silent and every onset: a frame
 /// that is not silent after at least kSilentRun silent frames (every channel exactly zero). Writes
-/// zeros to every output.
+/// zeros to every output. Each cycle goes in a ledger with its first frame and its start on the steady clock, so a
+/// test can feed the facts each cycle stated to the cycle judge (docs/testing.md#the-cycle-judge).
 class Recorder final : public AudioCode {
 public:
-	static constexpr std::size_t kCapacity = 20 * kRate;
+	static constexpr std::size_t kCapacity = 30 * kRate;
 	static constexpr std::size_t kSilentRun = kRate / 20; // 50 ms
+	static constexpr std::size_t kCycles = kCapacity / kBlock + 1;
 
 	Recorder(Waiter& waiter, std::size_t channels)
-		: waiter_(waiter), channels_(channels, std::vector<float>(kCapacity, 0.0F)) {}
+		: waiter_(waiter), channels_(channels, std::vector<float>(kCapacity, 0.0F)), ledger_(kCycles),
+		  cycleFirst_(kCycles), cycleStartNs_(kCycles) {}
 	void prepare(const AudioFormat&) override {}
 	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
-	             std::uint32_t frames, const ear::GraphCycle&) noexcept override {
+	             std::uint32_t frames, const ear::GraphCycle& cycle) noexcept override {
 		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
 		const std::size_t at = count_.load(std::memory_order_relaxed);
 		const std::size_t take = std::min<std::size_t>(frames, kCapacity - at);
+		if (const std::size_t n = ledger_.count(); take > 0 && n < kCycles) {
+			// Before the ledger publishes the cycle, so a reader that sees it sees these too.
+			cycleFirst_[n] = at;
+			cycleStartNs_[n] = cycle.startNs;
+			ledger_.record(cycle, frames);
+		}
 		for (std::size_t channel = 0; channel < channels_.size() && channel < inputs.size(); ++channel) {
 			for (std::size_t i = 0; i < take; ++i) {
 				const float sample = inputs[channel][i];
@@ -105,10 +128,26 @@ public:
 	std::span<const float> frames(std::size_t channel, std::size_t from, std::size_t frames) const {
 		return std::span<const float>(channels_[channel]).subspan(from, frames);
 	}
+	/// Each cycle recorded, as its block stated it; the first frame of cycle `n` (below ledger().count()).
+	const ear::test::CycleLedger& ledger() const { return ledger_; }
+	std::size_t cycleFirst(std::size_t n) const {
+		(void)ledger_.count(); // acquire: cycleFirst_ was stored before the ledger published the cycle
+		return cycleFirst_[n];
+	}
+	/// When the cycle holding frame `frame` (already counted) started, on the steady clock.
+	std::chrono::steady_clock::time_point startOf(std::size_t frame) const {
+		const std::size_t cycles = ledger_.count();
+		std::size_t n = 0;
+		while (n + 1 < cycles && cycleFirst_[n + 1] <= frame) ++n;
+		return std::chrono::steady_clock::time_point(std::chrono::nanoseconds(cycleStartNs_[n]));
+	}
 
 private:
 	Waiter& waiter_;
 	std::vector<std::vector<float>> channels_;
+	ear::test::CycleLedger ledger_; // the data thread writes; cycleFirst_ and cycleStartNs_ beside it
+	std::vector<std::size_t> cycleFirst_;
+	std::vector<std::int64_t> cycleStartNs_;
 	std::atomic<std::size_t> count_{0};
 	std::atomic<std::size_t> first_{kNone};
 	std::size_t silentRun_ = kSilentRun; // the data thread's only; the very first sound is an onset
@@ -117,7 +156,7 @@ private:
 };
 
 /// What a receiver tells, with what the registry showed at the moment it was told.
-class ReceiverEvents final : public OutsideNodeEvents {
+class ReceiverEvents final : public EngineCompanionEvents {
 public:
 	ReceiverEvents(Waiter& waiter, Registry& registry) : waiter_(waiter), registry_(registry) {}
 	void ready() override {
@@ -149,28 +188,56 @@ private:
 };
 
 /// One port block "fpp" (outputs stream.1, stream.2; the inside input bank from_rtp)
-/// driven by a Recorder, running on the dummy driver, and the receivers' factory.
+/// driven by a Recorder, running on the dummy driver, and the receivers' factory. With Pulse::stalls, a block "pulse"
+/// running an ArmedStall is linked into fpp's inside input pulse.1, so it runs first in each cycle and a stall it makes
+/// cuts a cycle the recorder misses (docs/testing.md#the-cycle-judge).
 struct Graph {
-	Graph()
-		: engine(makeEngine()), waiter(*engine), registry(*engine, waiter), blocks(*engine, bell), receivers(*engine),
-		  recorder(waiter, 2), blockEvents(waiter) {
-		block = blocks.make("fpp",
-		                    Ports{{{Direction::output, "stream", {"1", "2"}},
-		                           {Direction::input, "from_rtp", {"1", "2"}, PortBank::Reach::inside}}},
-		                    kFormat, blockEvents);
+	enum class Pulse { none, stalls };
+	explicit Graph(Faults* faults = nullptr, Pulse pulse = Pulse::none)
+		: engine(makeEngine(faults)), waiter(*engine), registry(*engine, waiter), blocks(*engine, bell),
+		  receivers(*engine), recorder(waiter, 2), stall(ear::SampleRate::fixed<kRate>()), blockEvents(waiter),
+		  pulseEvents(waiter) {
+		// Inside inputs come after the public ones in a code's inputs, each bank in declaration order, so the recorder's
+		// inputs 0 and 1 are from_rtp's whether or not pulse is there.
+		std::vector<PortBank> banks{{Direction::output, "stream", {"1", "2"}},
+		                            {Direction::input, "from_rtp", {"1", "2"}, PortBank::Reach::inside}};
+		if (pulse == Pulse::stalls) banks.push_back({Direction::input, "pulse", {"1"}, PortBank::Reach::inside});
+		block = blocks.make("fpp", Ports{std::move(banks)}, kFormat, blockEvents);
 		REQUIRE(ear::testing::driveNow(*block, &recorder));
 		REQUIRE(
 			waiter.until([&] { return blockEvents.isReady && registry.id("Dummy-Driver") && registry.props("fpp"); }));
 		dummy = *registry.id("Dummy-Driver");
+		if (pulse == Pulse::none) return;
+		pulseBlock = blocks.make("pulse", Ports{{{Direction::output, "out", {"1"}}}}, kFormat, pulseEvents);
+		REQUIRE(ear::testing::driveNow(*pulseBlock, &stall));
+		REQUIRE(waiter.until([&] { return pulseEvents.isReady; }));
+		pw_properties* props =
+			pw_properties_new(PW_KEY_LINK_OUTPUT_NODE, "pulse", PW_KEY_LINK_OUTPUT_PORT, "out.1",
+		                      PW_KEY_LINK_INPUT_NODE, "fpp", PW_KEY_LINK_INPUT_PORT, "pulse.1", nullptr);
+		pulseLink = static_cast<pw_proxy*>(pw_core_create_object(engine->core(), "link-factory", PW_TYPE_INTERFACE_Link,
+		                                                         PW_VERSION_LINK, &props->dict, 0));
+		pw_properties_free(props);
+		REQUIRE(pulseLink != nullptr);
+		REQUIRE(waiter.until([&] {
+			const auto node = registry.id("pulse");
+			return node && registry.activeLinksOf(*node) == 1;
+		}));
 	}
-	~Graph() { ear::testing::silenceOrAbort(*block); }
+	~Graph() {
+		if (pulseLink != nullptr) pw_proxy_destroy(pulseLink);
+		if (pulseBlock) ear::testing::silenceOrAbort(*pulseBlock);
+		ear::testing::silenceOrAbort(*block);
+	}
 
-	std::unique_ptr<OutsideNode> makeReceiver(std::uint16_t port, RtpEncoding encoding, std::uint32_t rate,
-	                                          ReceiverEvents& events) {
+	std::unique_ptr<EngineCompanion> makeReceiver(std::uint16_t port, RtpEncoding encoding, std::uint32_t rate,
+	                                              ReceiverEvents& events) {
 		events.insideMake = true;
 		auto receiver = receivers.make(
-			OutsideTarget{"fpp.rtp", "fpp", {"from_rtp.1", "from_rtp.2"}, kFormat, block->blockId()},
-			RtpReceiverRequest{*RtpAddress::parse("0.0.0.0"), port, encoding, rate, 100, "from_rtp"}, events);
+			CompanionTarget{
+				"fpp.rtp", "fpp", Direction::input, {"from_rtp.1", "from_rtp.2"}, kFormat, block->blockId()},
+			RtpReceiverShape{*RtpAddress::parse("0.0.0.0"), port, encoding, *SampleRate::of(rate),
+		                     static_cast<std::uint32_t>(kReceiverHeadroom.count())},
+			events);
 		events.insideMake = false;
 		return receiver;
 	}
@@ -193,59 +260,149 @@ struct Graph {
 	FilterPortBlocks blocks;
 	RtpReceivers receivers;
 	Recorder recorder;
+	ear::test::ArmedStall stall;
 	BlockEvents blockEvents;
+	BlockEvents pulseEvents;
 	std::unique_ptr<PortBlock> block;
+	std::unique_ptr<PortBlock> pulseBlock;
+	pw_proxy* pulseLink = nullptr;
 	std::uint32_t dummy = 0;
 };
 
-/// Channel `channel` carries `wanted` Hz at kAmplitude and not `other` Hz, over `frames` frames
-/// from `from`, checked in tenths of a second: the receiver steers its resampler by the packets'
-/// arrival, so its rate wobbles by parts in ten thousand, which over a whole second moves a
-/// sine's phase too far for one fit (a different frequency, such as an unresampled 816 Hz for
-/// 750 Hz, still fails every tenth).
-void checkTone(const Recorder& recorder, std::size_t channel, std::size_t from, std::size_t frames, double wanted,
-               double other) {
-	INFO("from_rtp." << channel + 1 << ": " << wanted << " Hz, frames " << from << "+" << frames);
-	const auto samples = recorder.frames(channel, from, frames);
+/// What one channel must carry: `wanted` Hz at kAmplitude, and not `other` Hz.
+struct Tone {
+	double wanted;
+	double other;
+};
+
+/// The tenths a tone test judges: one second of what the receiver played while the host left the block and the sender
+/// alone. However often it did not, the sender sends on until they are judged.
+constexpr std::size_t kPlannedTenths = 10;
+
+/// How the tenths went: judged, and passed over for what the sender's host or the graph did.
+struct TonesJudged {
+	std::size_t judged = 0;
+	std::size_t excusedBySender = 0;
+	std::size_t excusedByJudge = 0;
+	std::vector<std::size_t> judgedAt; // each judged tenth's first frame
+};
+
+/// Each channel carries its tone, judged in tenths of a second from frame `from` until `planned` are judged: the
+/// receiver steers its resampler by the packets' arrival, so its rate wobbles by parts in ten thousand, which over a
+/// whole second moves a sine's phase too far for one fit (a different frequency, such as an unresampled 816 Hz for
+/// 750 Hz, still fails every tenth). Every cycle the recorder ran goes to the cycle judge
+/// (docs/testing.md#the-cycle-judge), and a tenth is judged only when every cycle of it, and of one receiver buffer
+/// before it, is one the judge judged whole (a lost cycle starves or floods the receiver's buffer, which plays it out
+/// within that buffer), and no late send reaches it (lateSendReaches: the sender's own counter, its reach the same
+/// buffer). Anything else in a tenth is the receiver's, and judged. The graph's pulse block (Graph::Pulse::stalls) makes
+/// the judge's four 1.5-cycle stalls, one every three tenths from frame `stallsFrom`, so every run proves the excuse
+/// path while the tone plays; the test reads on until the judge is done too.
+TonesJudged judgeTones(Graph& graph, const RtpSender& sender, std::size_t from, const std::array<Tone, 2>& tones,
+                       std::size_t stallsFrom, std::size_t planned = kPlannedTenths) {
 	constexpr std::size_t tenth = kRate / 10;
+	const auto reachFrames =
+		static_cast<std::size_t>(FrameClock(ear::SampleRate::fixed<kRate>()).frames(kReceiverReach));
+	REQUIRE(graph.pulseBlock != nullptr);
+	ear::test::CycleJudge judge(
+		ear::test::JudgePlan{.judged = planned * tenth / kBlock,
+	                         .induce = ear::test::StallPlan::every(1, 0, 4, ear::test::StallLength::cycles(1.5)),
+	                         .expected = {.drives = 1}},
+		FrameClock(ear::SampleRate::fixed<kRate>()), &graph.engine->cuts());
+	std::vector<ear::test::Verdict> verdicts;
+	const auto feed = [&] {
+		const ear::test::CycleLedger& ledger = graph.recorder.ledger();
+		for (std::size_t n = verdicts.size(); n < ledger.count(); ++n)
+			verdicts.push_back(judge.at(ledger[n].facts, ledger[n].frames));
+	};
+	// Every cycle overlapping frames [begin, end) was judged whole.
+	const auto whole = [&](std::size_t begin, std::size_t end) {
+		for (std::size_t n = 0; n < verdicts.size(); ++n) {
+			const std::size_t first = graph.recorder.cycleFirst(n);
+			if (first + graph.recorder.ledger()[n].frames <= begin || first >= end) continue;
+			if (verdicts[n] != ear::test::Verdict::judge) return false;
+		}
+		return true;
+	};
 	std::string profile;
-	double worstAmplitude = kAmplitude;
-	double worstResidual = 0.0;
-	double worstOther = 0.0;
-	for (std::size_t at = 0; at + tenth <= samples.size(); at += tenth) {
-		const auto window = samples.subspan(at, tenth);
-		const auto fit = ear::test::fitSine(window, wanted, kRate);
-		profile += std::to_string(fit.amplitude) + "/" + std::to_string(fit.residual) + " ";
-		if (std::abs(fit.amplitude - kAmplitude) > std::abs(worstAmplitude - kAmplitude))
-			worstAmplitude = fit.amplitude;
-		worstResidual = std::max(worstResidual, fit.residual);
-		worstOther = std::max(worstOther, ear::test::fitSine(window, other, kRate).amplitude);
+	std::array<double, 2> worstAmplitude{kAmplitude, kAmplitude};
+	std::array<double, 2> worstResidual{};
+	std::array<double, 2> worstOther{};
+	TonesJudged seen;
+	for (std::size_t at = from; seen.judged < planned || !judge.done(); at += tenth) {
+		INFO("judged " << seen.judged << " tenths, excused for the sender " << seen.excusedBySender
+		               << ", for the graph " << seen.excusedByJudge << ", from frame " << from
+		               << "; the judge: " << judge.report());
+		REQUIRE(at + tenth <= Recorder::kCapacity);
+		const std::size_t stalls = judge.stalls().made();
+		if (at >= stallsFrom && stalls < judge.stalls().plan().size() && !graph.stall.armed() &&
+		    (at - stallsFrom) / tenth >= 3 * stalls)
+			graph.stall.arm(judge.stalls());
+		REQUIRE(graph.recorded(at + tenth, 30s));
+		feed();
+		const auto startsAt = graph.recorder.startOf(at);
+		const auto endsAt = graph.recorder.startOf(at + tenth - 1);
+		// A send still held could reach back to this tenth: judged once the sender has sent what was due by its end.
+		REQUIRE(graph.waiter.until([&] { return sender.sentDue() >= endsAt; }, 30s));
+		const auto late = sender.lateSends();
+		const bool senderLate = std::ranges::any_of(late, [&](const RtpSender::LateSend& send) {
+			return ear::test::lateSendReaches(send, kReceiverReach, startsAt, endsAt);
+		});
+		if (senderLate) {
+			++seen.excusedBySender;
+			continue;
+		}
+		if (!whole(at > reachFrames ? at - reachFrames : 0, at + tenth)) {
+			++seen.excusedByJudge;
+			continue;
+		}
+		if (seen.judged >= planned) continue; // only the judge's stalls are still to come
+		++seen.judged;
+		seen.judgedAt.push_back(at);
+		for (std::size_t channel = 0; channel < 2; ++channel) {
+			const auto window = graph.recorder.frames(channel, at, tenth);
+			const auto fit = ear::test::fitSine(window, tones[channel].wanted, kRate);
+			profile += std::to_string(fit.amplitude) + "/" + std::to_string(fit.residual) + (channel == 0 ? "," : " ");
+			if (std::abs(fit.amplitude - kAmplitude) > std::abs(worstAmplitude[channel] - kAmplitude))
+				worstAmplitude[channel] = fit.amplitude;
+			worstResidual[channel] = std::max(worstResidual[channel], fit.residual);
+			worstOther[channel] =
+				std::max(worstOther[channel], ear::test::fitSine(window, tones[channel].other, kRate).amplitude);
+		}
 	}
-	INFO("amplitude/residual per tenth: " << profile);
-	CHECK(worstAmplitude == Approx(kAmplitude).margin(0.01));
-	CHECK(worstResidual < 0.1);
-	CHECK(worstOther < 0.01);
+	INFO("amplitude/residual per judged tenth, channel 1,2: " << profile << "(excused for the sender "
+	                                                          << seen.excusedBySender << ", for the graph "
+	                                                          << seen.excusedByJudge << ")");
+	INFO("the judge: " << judge.report());
+	CHECK(judge.report().ok());
+	for (std::size_t channel = 0; channel < 2; ++channel) {
+		INFO("from_rtp." << channel + 1 << ": " << tones[channel].wanted << " Hz, not " << tones[channel].other
+		                 << " Hz");
+		CHECK(worstAmplitude[channel] == Approx(kAmplitude).margin(0.01));
+		CHECK(worstResidual[channel] < 0.1);
+		CHECK(worstOther[channel] < 0.01);
+	}
+	return seen;
 }
 
 /// Sends `seconds` of 750 Hz on channel 1 and 1500 Hz on channel 2 at `rate` in `pcm` to a
-/// ready receiver, then checks one second of what the block heard, half a second after the
-/// first sound (the receiver's rate control settles in that time).
+/// ready receiver, then checks one second of what the block heard, once the receiver's start has settled after the
+/// first sound (kReceiverStartSettle).
 void checkTwoTones(RtpPcm pcm, RtpEncoding encoding, std::uint32_t senderRate) {
-	Graph graph;
+	Graph graph(nullptr, Graph::Pulse::stalls);
 	ReceiverEvents events(graph.waiter, graph.registry);
 	const std::uint16_t port = ear::test::freeUdpPort();
 	const auto receiver = graph.makeReceiver(port, encoding, senderRate, events);
 	REQUIRE(graph.waiter.until([&] { return events.settled(); }));
 	REQUIRE(events.lostDetail.value_or("") == "");
 
+	// Long enough for a loaded host to leave a second of it alone; the sender goes once it has been judged.
 	RtpSender sender(port, pcm, senderRate, RtpTone{{750.0, 1500.0}, kAmplitude});
-	sender.send(2 * senderRate);
+	sender.send(25 * senderRate);
 	REQUIRE(graph.waiter.until([&] { return graph.recorder.first() != Recorder::kNone; }));
-	const std::size_t from = graph.recorder.first() + kRate / 2;
-	REQUIRE(graph.recorded(from + kRate));
-	checkTone(graph.recorder, 0, from, kRate, 750.0, 1500.0);
-	checkTone(graph.recorder, 1, from, kRate, 1500.0, 750.0);
-	CHECK(sender.waitSent(10s));
+	const std::size_t from =
+		graph.recorder.first() +
+		static_cast<std::size_t>(FrameClock(ear::SampleRate::fixed<kRate>()).frames(kReceiverStartSettle));
+	judgeTones(graph, sender, from, {Tone{750.0, 1500.0}, Tone{1500.0, 750.0}}, from);
 	CHECK_FALSE(events.lostDetail.has_value());
 }
 
@@ -297,11 +454,11 @@ TEST_CASE("A receiver joins its block by the block's id: beside an older block o
 	const std::uint32_t newerId = newer->blockId();
 	REQUIRE(olderId != newerId);
 	ReceiverEvents events(graph.waiter, graph.registry);
-	const auto receiver =
-		graph.receivers.make(OutsideTarget{"fpp.rtp", "fpp", {"from_rtp.1", "from_rtp.2"}, kFormat, newerId},
-	                         RtpReceiverRequest{*RtpAddress::parse("0.0.0.0"), ear::test::freeUdpPort(),
-	                                            RtpEncoding::l24, kRate, 100, "from_rtp"},
-	                         events);
+	const auto receiver = graph.receivers.make(
+		CompanionTarget{"fpp.rtp", "fpp", Direction::input, {"from_rtp.1", "from_rtp.2"}, kFormat, newerId},
+		RtpReceiverShape{*RtpAddress::parse("0.0.0.0"), ear::test::freeUdpPort(), RtpEncoding::l24,
+	                     ear::SampleRate::fixed<kRate>(), static_cast<std::uint32_t>(kReceiverHeadroom.count())},
+		events);
 	REQUIRE(graph.waiter.until([&] { return events.settled(); }));
 	REQUIRE(events.lostDetail.value_or("") == "");
 	CHECK(graph.registry.activeLinksOf(newerId) == 2);
@@ -317,8 +474,74 @@ TEST_CASE("L16 sent at 44100 into the 48000 graph is resampled", "[rtp][channels
 	checkTwoTones(RtpPcm::l16, RtpEncoding::l16, 44100);
 }
 
-TEST_CASE("A sender that restarts with a new SSRC is heard again", "[rtp][ssrc]") {
+// docs/engine.md#the-quantum-guard: the quantum limit is the block size, so a receiver whose sender runs faster than
+// the graph must still fit a whole cycle's input in its buffers.
+TEST_CASE("L24 sent at 96000 into the 48000 graph is resampled with the quantum limit at the block size",
+          "[rtp][channels][quantum]") {
+	checkTwoTones(RtpPcm::l24, RtpEncoding::l24, 96000);
+}
+
+TEST_CASE("A receiver's engine node carries no property that forces or locks the graph's quantum or rate",
+          "[rtp][quantum]") {
 	Graph graph;
+	ReceiverEvents events(graph.waiter, graph.registry);
+	const auto receiver = graph.makeReceiver(ear::test::freeUdpPort(), RtpEncoding::l24, 44100, events);
+	REQUIRE(graph.waiter.until([&] { return events.settled(); }));
+	REQUIRE(events.lostDetail.value_or("") == "");
+	REQUIRE(graph.registry.reread({"fpp.rtp"}));
+	const auto* props = graph.registry.props("fpp.rtp");
+	REQUIRE(props != nullptr);
+	for (const char* key : {"node.force-quantum", "node.force-rate", "node.lock-quantum", "node.lock-rate"}) {
+		INFO(key);
+		CHECK_FALSE(props->contains(key));
+	}
+}
+
+TEST_CASE("A sender held 20 ms and then catching up is heard as a clean tone: its lateness is inside the buffer",
+          "[rtp][channels]") {
+	// The excuse the tone tests give a late send starts past the receiver's headroom; a hold inside it, made here on
+	// purpose, must leave the tone clean. What proves it is the tenths from the hold to the hold and the buffer after it
+	// judged clean: when the host made them unjudgeable (its own late send past the headroom, or a cycle the judge did
+	// not judge whole), the stream is played again, until they are. The judge's stalls come after those tenths, so they
+	// never make them unjudgeable. The deadline only fails the test.
+	constexpr auto hold = 20ms;
+	constexpr std::size_t tenth = kRate / 10;
+	const auto until = std::chrono::steady_clock::now() + 120s;
+	std::size_t tries = 0;
+	for (bool covered = false; !covered;) {
+		INFO("try " << tries + 1);
+		REQUIRE(std::chrono::steady_clock::now() < until);
+		++tries;
+		Graph graph(nullptr, Graph::Pulse::stalls);
+		ReceiverEvents events(graph.waiter, graph.registry);
+		const std::uint16_t port = ear::test::freeUdpPort();
+		const auto receiver = graph.makeReceiver(port, RtpEncoding::l24, kRate, events);
+		REQUIRE(graph.waiter.until([&] { return events.settled(); }));
+		REQUIRE(events.lostDetail.value_or("") == "");
+		RtpSender sender(port, RtpPcm::l24, kRate, RtpTone{{750.0, 1500.0}, kAmplitude});
+		sender.holdOnce(kRate, hold); // a second in: five tenths into the judged span below
+		sender.send(25 * kRate);
+		REQUIRE(graph.waiter.until([&] { return graph.recorder.first() != Recorder::kNone; }));
+		const std::size_t from =
+			graph.recorder.first() +
+			static_cast<std::size_t>(FrameClock(ear::SampleRate::fixed<kRate>()).frames(kReceiverStartSettle));
+		// The tenths the hold reaches: from its frame to as far again as the hold and the buffer last.
+		const std::size_t heldAt = graph.recorder.first() + kRate;
+		const std::size_t reach = heldAt + static_cast<std::size_t>((hold + kReceiverHeadroom).count()) * kRate / 1000;
+		const TonesJudged seen =
+			judgeTones(graph, sender, from, {Tone{750.0, 1500.0}, Tone{1500.0, 750.0}}, reach + tenth, 20);
+		const auto late = sender.lateSends();
+		INFO(late.size() << " late sends, " << seen.excusedBySender << " tenths excused for the sender");
+		CHECK_FALSE(late.empty()); // the hold was made
+		CHECK_FALSE(events.lostDetail.has_value());
+		covered = true;
+		for (std::size_t at = heldAt; at < reach; at += tenth)
+			covered = covered && std::ranges::find(seen.judgedAt, at) != seen.judgedAt.end();
+	}
+}
+
+TEST_CASE("A sender that restarts with a new SSRC is heard again", "[rtp][ssrc]") {
+	Graph graph(nullptr, Graph::Pulse::stalls);
 	ReceiverEvents events(graph.waiter, graph.registry);
 	const std::uint16_t port = ear::test::freeUdpPort();
 	const auto receiver = graph.makeReceiver(port, RtpEncoding::l24, kRate, events);
@@ -336,16 +559,15 @@ TEST_CASE("A sender that restarts with a new SSRC is heard again", "[rtp][ssrc]"
 	// the block's clock (a data-loop freeze and the driver's catch-up move block frames against
 	// the sender): the first stream's last 100 ms play out, and the receiver's resync on the new
 	// stream zeroes its ring, so the second stream is the first onset after `mark` (at least 50 ms
-	// of exact zeros, then sound). The check starts half a second into it.
+	// of exact zeros, then sound). The check starts once the receiver's start on it has settled.
 	const std::size_t mark = graph.recorder.count();
 	RtpSender second(port, RtpPcm::l24, kRate, RtpTone{{500.0, 1000.0}, kAmplitude}, 0xBEEF);
-	second.send(3 * kRate);
+	second.send(25 * kRate);
 	REQUIRE(graph.waiter.until([&] { return graph.recorder.onsetFrom(mark) != Recorder::kNone; }));
-	const std::size_t from = graph.recorder.onsetFrom(mark) + kRate / 2;
-	REQUIRE(graph.recorded(from + kRate));
-	checkTone(graph.recorder, 0, from, kRate, 500.0, 750.0);
-	checkTone(graph.recorder, 1, from, kRate, 1000.0, 1500.0);
-	CHECK(second.waitSent(10s));
+	const std::size_t from =
+		graph.recorder.onsetFrom(mark) +
+		static_cast<std::size_t>(FrameClock(ear::SampleRate::fixed<kRate>()).frames(kReceiverStartSettle));
+	judgeTones(graph, second, from, {Tone{500.0, 750.0}, Tone{1000.0, 1500.0}}, from);
 	CHECK_FALSE(events.lostDetail.has_value());
 }
 
@@ -393,7 +615,7 @@ pw_impl_module* rtpSourceModule(Engine& engine) {
 }
 
 /// A ready receiver whose two links are up; its node id is in `events`.
-std::unique_ptr<OutsideNode> readyReceiver(Graph& graph, ReceiverEvents& events) {
+std::unique_ptr<EngineCompanion> readyReceiver(Graph& graph, ReceiverEvents& events) {
 	auto receiver = graph.makeReceiver(ear::test::freeUdpPort(), RtpEncoding::l24, kRate, events);
 	REQUIRE(graph.waiter.until([&] { return events.settled(); }));
 	REQUIRE(events.lostDetail.value_or("") == "");
@@ -497,4 +719,196 @@ TEST_CASE("A receiver made again at once for the same names is ready, never lost
 	CHECK(graph.registry.linksOf(*graph.registry.id("fpp")).size() == 2);
 	CHECK(graph.runs(16));
 	CHECK_FALSE(events.lostDetail.has_value());
+}
+
+namespace {
+
+/// The capture (upstream) latency the engine holds on one port, as any client reads it: a registry binding finds the
+/// port by its node's global id and its name, binds it, and keeps its newest Latency param of direction output.
+class CaptureLatencyWatch {
+public:
+	CaptureLatencyWatch(Engine& engine, Waiter& waiter, std::uint32_t nodeId, std::string portName)
+		: waiter_(waiter), nodeId_(nodeId), portName_(std::move(portName)) {
+		registry_ = pw_core_get_registry(engine.core(), PW_VERSION_REGISTRY, 0);
+		pw_registry_add_listener(registry_, &registryHook_, &registryEvents(), this);
+	}
+	~CaptureLatencyWatch() {
+		if (port_ != nullptr) {
+			spa_hook_remove(&portHook_);
+			pw_proxy_destroy(port_);
+		}
+		spa_hook_remove(&registryHook_);
+		pw_proxy_destroy(reinterpret_cast<pw_proxy*>(registry_));
+	}
+	CaptureLatencyWatch(const CaptureLatencyWatch&) = delete;
+	CaptureLatencyWatch& operator=(const CaptureLatencyWatch&) = delete;
+
+	/// The newest capture latency told on the port, in frames; nothing before the first.
+	std::optional<Latency> told() const { return told_; }
+
+private:
+	static const pw_registry_events& registryEvents() {
+		static const pw_registry_events table = [] {
+			pw_registry_events events{};
+			events.version = PW_VERSION_REGISTRY_EVENTS;
+			events.global = &CaptureLatencyWatch::onGlobal;
+			return events;
+		}();
+		return table;
+	}
+	static const pw_port_events& portEvents() {
+		static const pw_port_events table = [] {
+			pw_port_events events{};
+			events.version = PW_VERSION_PORT_EVENTS;
+			events.param = &CaptureLatencyWatch::onParam;
+			return events;
+		}();
+		return table;
+	}
+	static void onGlobal(void* data, std::uint32_t id, std::uint32_t /*permissions*/, const char* type,
+	                     std::uint32_t /*version*/, const spa_dict* props) {
+		auto* self = static_cast<CaptureLatencyWatch*>(data);
+		if (self->port_ != nullptr || std::string_view(type) != PW_TYPE_INTERFACE_Port || props == nullptr) return;
+		const char* node = spa_dict_lookup(props, PW_KEY_NODE_ID);
+		const char* name = spa_dict_lookup(props, PW_KEY_PORT_NAME);
+		if (node == nullptr || name == nullptr || std::to_string(self->nodeId_) != node || self->portName_ != name)
+			return;
+		self->port_ =
+			static_cast<pw_proxy*>(pw_registry_bind(self->registry_, id, PW_TYPE_INTERFACE_Port, PW_VERSION_PORT, 0));
+		pw_proxy_add_object_listener(self->port_, &self->portHook_, &portEvents(), self);
+		std::uint32_t wanted = SPA_PARAM_Latency;
+		pw_port_subscribe_params(reinterpret_cast<pw_port*>(self->port_), &wanted, 1);
+	}
+	static void onParam(void* data, int /*seq*/, std::uint32_t id, std::uint32_t /*index*/, std::uint32_t /*next*/,
+	                    const spa_pod* param) {
+		auto* self = static_cast<CaptureLatencyWatch*>(data);
+		spa_latency_info info{};
+		if (id != SPA_PARAM_Latency || param == nullptr || spa_latency_parse(param, &info) < 0 ||
+		    info.direction != SPA_DIRECTION_OUTPUT)
+			return;
+		self->told_ = Latency{static_cast<std::uint32_t>(info.min_rate), static_cast<std::uint32_t>(info.max_rate)};
+		self->waiter_.wake();
+	}
+
+	Waiter& waiter_;
+	std::uint32_t nodeId_;
+	std::string portName_;
+	pw_registry* registry_ = nullptr;
+	spa_hook registryHook_{};
+	pw_proxy* port_ = nullptr;
+	spa_hook portHook_{};
+	std::optional<Latency> told_;
+};
+
+} // namespace
+
+// A receiver's buffer lies behind its own ports, which report a latency of zero once linked, so the plan's `beyond`
+// entry for its bank is added in series to what its peers report, never combined with them as a path of its own: told
+// on `stream`, the capture latency's least and most are both the buffer (docs/engine.md#latency-per-bank-pair).
+TEST_CASE("A real receiver's buffer beyond from_rtp reaches stream whole: the told capture latency's least and most "
+          "are both the buffer once the receiver is linked and reports its own",
+          "[rtp][latency]") {
+	Graph graph;
+	constexpr std::uint32_t buffered = 100 * kRate / 1000; // latencyMs 100
+	graph.block->carryLatency(
+		LatencyPlan{.pairs = {{"from_rtp", "stream"}}, .beyond = {{"from_rtp", Delay{{buffered, buffered}}}}});
+	CaptureLatencyWatch stream(*graph.engine, graph.waiter, graph.block->blockId(), "stream.1");
+	REQUIRE(graph.waiter.until([&] { return stream.told() == Latency{buffered, buffered}; }));
+
+	ReceiverEvents events(graph.waiter, graph.registry);
+	const auto receiver = graph.makeReceiver(ear::test::freeUdpPort(), RtpEncoding::l24, kRate, events);
+	REQUIRE(graph.waiter.until([&] { return events.settled(); }));
+	REQUIRE(events.lostDetail.value_or("") == "");
+	// The receiver's own output port reports its capture latency once linked; the block hears it and tells again.
+	REQUIRE(graph.registry.id("fpp.rtp"));
+	CaptureLatencyWatch receiverPort(*graph.engine, graph.waiter, *graph.registry.id("fpp.rtp"), "receive_AUX0");
+	REQUIRE(graph.waiter.until([&] { return receiverPort.told().has_value(); }));
+	INFO("the receiver's port reports " << receiverPort.told()->minFrames << "-" << receiverPort.told()->maxFrames);
+	REQUIRE(graph.runs(32)); // the main loop turned meanwhile, with the block's retell among it
+	REQUIRE(stream.told().has_value());
+	CHECK(stream.told()->minFrames == buffered);
+	CHECK(stream.told()->maxFrames == buffered);
+}
+
+// docs/architecture.md#faults-by-owner: a throw out of an engine companion's own callback (its body's, its lifecycle's,
+// a link's) is ear's bug in state that is its node's alone: the boundary reports it with the node, and the companion
+// is torn down as on a loss and told faulted, once, so its node fails lost; a retry makes one afresh. Each throw is the
+// boundary's injection seam, inside the real callback (docs/testing.md#the-tools).
+TEST_CASE("A receiver whose body's callback throws is torn down and told faulted, once, with a sync in flight too, "
+          "and a new receiver is ready afresh",
+          "[rtp][faults]") {
+	FaultLog faults;
+	Graph graph(&faults);
+	ReceiverEvents events(graph.waiter, graph.registry);
+	// The body's first done throws; as it is reported, the lifecycle's first done (of the sync its teardown asks) is
+	// armed to throw too, so the teardown runs again from a sync in flight.
+	faults.onCaught = [&] {
+		if (faults.reports.size() == 1) boundary::throwInCallback("JoinedEngineCompanion::onCoreDone");
+		graph.waiter.wake();
+	};
+	boundary::throwInCallback("RtpReceiverBody::onCoreDone");
+	auto receiver = graph.makeReceiver(ear::test::freeUdpPort(), RtpEncoding::l24, kRate, events);
+	REQUIRE(graph.waiter.until([&] { return events.lostDetail.has_value(); }));
+	CHECK(*events.lostDetail == "internal error in RtpReceiverBody::onCoreDone: injected");
+	CHECK_FALSE(events.nodePresentAtLost);
+	REQUIRE(faults.reports.size() == 2);
+	CHECK(faults.reports[0].callback == "RtpReceiverBody::onCoreDone");
+	CHECK(faults.reports[0].node == "fpp");
+	CHECK(faults.reports[0].owned);
+	CHECK(faults.reports[1].callback == "JoinedEngineCompanion::onCoreDone");
+	CHECK(faults.reports[1].node == "fpp");
+	CHECK(faults.reports[1].owned);
+	CHECK(events.readyCount == 0);
+	receiver.reset();
+	CHECK(graph.runs(16)); // the block runs on
+
+	boundary::throwInCallback({});
+	ReceiverEvents again(graph.waiter, graph.registry);
+	const auto retried = graph.makeReceiver(ear::test::freeUdpPort(), RtpEncoding::l24, kRate, again);
+	REQUIRE(graph.waiter.until([&] { return again.settled(); }));
+	CHECK(again.lostDetail.value_or("") == "");
+	CHECK(again.readyCount == 1);
+	CHECK(faults.reports.size() == 2);
+}
+
+TEST_CASE("A receiver whose link's callback throws is torn down and told faulted, the link's report naming its node",
+          "[rtp][faults]") {
+	FaultLog faults;
+	Graph graph(&faults);
+	faults.onCaught = [&] { graph.waiter.wake(); };
+	ReceiverEvents events(graph.waiter, graph.registry);
+	boundary::throwInCallback("LinkProxy::onInfo");
+	const auto receiver = graph.makeReceiver(ear::test::freeUdpPort(), RtpEncoding::l24, kRate, events);
+	REQUIRE(graph.waiter.until([&] { return events.lostDetail.has_value(); }));
+	CHECK(*events.lostDetail == "internal error in LinkProxy::onInfo: injected");
+	REQUIRE(faults.reports.size() == 1);
+	CHECK(faults.reports[0].callback == "LinkProxy::onInfo");
+	CHECK(faults.reports[0].node == "fpp");
+	CHECK(faults.reports[0].owned);
+	CHECK(graph.runs(16));
+}
+
+// docs/architecture.md#faults-by-owner: every registration a receiver's constructor makes is held by a member, so a
+// throw after any one of them leaves none behind (nothing for the engine to call into a freed object).
+TEST_CASE("A receiver whose making throws after any registration leaves nothing registered", "[rtp][faults]") {
+	Graph graph;
+	const std::size_t before = boundary::registrationsHeld();
+	ReceiverEvents events(graph.waiter, graph.registry);
+	std::size_t made = 0;
+	{
+		const auto receiver = graph.makeReceiver(ear::test::freeUdpPort(), RtpEncoding::l24, kRate, events);
+		made = boundary::registrationsHeld() - before;
+	}
+	REQUIRE(made > 0);
+	CHECK(boundary::registrationsHeld() == before);
+	for (std::size_t n = 1; n <= made; ++n) {
+		INFO("thrown after registration " << n << " of " << made);
+		ReceiverEvents unmade(graph.waiter, graph.registry);
+		boundary::throwAfterRegistration(n);
+		CHECK_THROWS_WITH(graph.makeReceiver(ear::test::freeUdpPort(), RtpEncoding::l24, kRate, unmade),
+		                  "injected after a registration");
+		boundary::throwAfterRegistration(0);
+		CHECK(boundary::registrationsHeld() == before);
+	}
+	CHECK(graph.runs(16));
 }

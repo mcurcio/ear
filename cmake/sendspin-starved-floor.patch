@@ -1,0 +1,72 @@
+diff --git a/src/sync_task.cpp b/src/sync_task.cpp
+index d47f75d..ab4f26b 100644
+--- a/src/sync_task.cpp
++++ b/src/sync_task.cpp
+@@ -275,8 +275,12 @@ SyncTaskState SyncTask::handle_load_chunk(SyncContext& sync_context) {
+ SyncTaskState SyncTask::handle_synchronize_audio(SyncContext& sync_context) {
+     // roles/player/v1.md "Large errors and startup": recovery from an underrun snaps to the chunk's
+     // timestamp, so measure from now rather than from where the last audio ended.
++    // ear: sendspin-starved-floor.patch. Only an underrun is floored: with frames still buffered the
++    // sink has not starved, and a playtime trailing now is a report dated behind it (a sink catching
++    // up after a stall), not silence it played on its own.
+     sync_context.new_audio_client_playtime =
+-        starved_playtime_floor(sync_context.new_audio_client_playtime, platform_time_us());
++        starved_playtime_floor(sync_context.new_audio_client_playtime, platform_time_us(),
++                               sync_context.buffered_frames);
+ 
+     // Predicted error: positive means chunk should play later than our current buffer endpoint
+     int64_t raw_error = sync_context.decoded_timestamp - sync_context.new_audio_client_playtime;
+@@ -390,8 +394,9 @@ void SyncTask::track_sent_audio(SyncContext& sync_context, size_t bytes_sent) {
+         sync_context.current_stream_info.frames_to_microseconds(frames_sent);
+ }
+ 
+-int64_t SyncTask::starved_playtime_floor(int64_t playtime_us, int64_t now_us) {
+-    if (playtime_us < now_us - HARD_SYNC_THRESHOLD_US) {
++int64_t SyncTask::starved_playtime_floor(int64_t playtime_us, int64_t now_us,
++                                        uint32_t buffered_frames) {
++    if (buffered_frames == 0 && playtime_us < now_us - HARD_SYNC_THRESHOLD_US) {
+         return now_us;
+     }
+     return playtime_us;
+diff --git a/src/sync_task.h b/src/sync_task.h
+index 2ff9f3c..fbde8af 100644
+--- a/src/sync_task.h
++++ b/src/sync_task.h
+@@ -234,9 +234,10 @@ protected:
+     void track_sent_audio(SyncContext& sync_context, size_t bytes_sent);
+ 
+     /// @brief The playtime estimate floored at `now_us` once it trails it by more than
+-    /// HARD_SYNC_THRESHOLD_US: every frame sent has played, so the sink starved, and the silence
+-    /// it played on its own went unreported. New audio starts no earlier than now.
+-    static int64_t starved_playtime_floor(int64_t playtime_us, int64_t now_us);
++    /// HARD_SYNC_THRESHOLD_US and `buffered_frames` is 0: every frame sent has played, so the sink
++    /// starved, and the silence it played on its own went unreported. New audio starts no earlier
++    /// than now. ear: sendspin-starved-floor.patch adds the `buffered_frames` condition.
++    static int64_t starved_playtime_floor(int64_t playtime_us, int64_t now_us, uint32_t buffered_frames);
+ 
+     /// @brief Sends one chunk of pending silence (initial-sync priming or hard-sync gap fill) to
+     /// the sink and updates the playtime estimate. No-op when no silence is pending.
+diff --git a/tests/test_player_role.cpp b/tests/test_player_role.cpp
+index 4b0fa20..102f071 100644
+--- a/tests/test_player_role.cpp
++++ b/tests/test_player_role.cpp
+@@ -1078,10 +1078,18 @@ TEST(PlayerHardSync, AStarvedEstimateIsFlooredAtNow) {
+ 
+     for (const Row& row : rows) {
+         SCOPED_TRACE(row.name);
+-        EXPECT_EQ(SyncTask::starved_playtime_floor(row.playtime, NOW), row.expected);
++        EXPECT_EQ(SyncTask::starved_playtime_floor(row.playtime, NOW, 0), row.expected);
+     }
+ }
+ 
++// ear: sendspin-starved-floor.patch. With frames still buffered the sink has not starved: a playtime
++// trailing now is a report dated behind it (a sink catching up after a stall), so it is kept.
++TEST(PlayerHardSync, AnEstimateWithFramesBufferedIsNotFloored) {
++    constexpr int64_t NOW = 1'000'000'000;
++    EXPECT_EQ(SyncTask::starved_playtime_floor(NOW - 5'001, NOW, 1), NOW - 5'001);
++    EXPECT_EQ(SyncTask::starved_playtime_floor(NOW - 20'000'000, NOW, 4608), NOW - 20'000'000);
++}
++
+ namespace {
+ 
+ // A sink that accepts every write and records the bytes in order.

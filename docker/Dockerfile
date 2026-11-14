@@ -1,11 +1,10 @@
-# EAR's images, one file, three targets (AGENTS.md#commits-ci-and-releases), and a throwaway stage, knobly, that
-# dev copies knobly's C++ sources from:
+# EAR's images, one file, three targets (AGENTS.md#commits-ci-and-releases):
 #
 # - dev: the build and test image, for development (scripts/dev.sh) and CI
 #   (.github/workflows/test.yml). Debian 13 (trixie): PipeWire 1.4, GCC 14 (C++23), Node.js 24.
 # - build: dev plus this checkout, built: "make release" and the graph editor's "npm run build".
 # - run: what ships (test.yml's publish job): the ear binary, its engine.conf, the built editor
-#   and the sendspin node's dependencies' licences on debian:trixie-slim with the libraries they load at run time, no compiler.
+#   and the fetched dependencies' licences on debian:trixie-slim with the libraries they load at run time, no compiler.
 #
 # Every base is pinned by the digest of its multi-platform index, so the same base serves
 # linux/amd64 (CI, the published image) and linux/arm64 (Docker on Apple Silicon). Bump one by
@@ -17,38 +16,12 @@
 # glibc). Only node and npm are copied out of it (dev, below).
 FROM node:24-trixie-slim@sha256:54f84b4cf8432b21aaffd5d3ce8d41e12cea0d10d33c09d2f3c9879d49d6b446 AS node
 
-# knobly, ear's graph file language (mcurcio/knobly), as its C++ release source tree: CMakeLists.txt and include/
-# with the generated headers, so ear's configure needs no Python and no network. knobly's releases stay dry-run
-# until its owner turns them on, so this stage builds that same archive from the pinned commit with knobly's own
-# script (.github/release-cpp.sh). python3, uv and the clang-format uv downloads from PyPI run here only, at image
-# build (cached in layers, and in CI's gha cache); dev copies out only the tree. KNOBLY_COMMIT is the one home of
-# the pin: bump knobly by changing it. The version stamp is 0.0.0, so knobly's symbols sit in knobly::v0_0_0. To
-# take a real release later, replace this stage with FetchContent (URL and URL_HASH of knobly-cpp-<v>.tar.gz).
-# The generators write some headers as private temporary files (mode 0600), so the tree is made world-readable:
-# scripts/dev.sh runs builds as the calling user, not root.
-FROM debian:trixie@sha256:2dc419c6d7fe3dad0a2f9fd469c34cc90b0f9ba642d8fde837fe3d7d34a0e7f1 AS knobly
-ARG KNOBLY_COMMIT=74ad445f39623032631f57bec5a6b2b756e9e3a6
-# - ca-certificates, git: fetch the pinned commit over HTTPS.
-# - python3: knobly's generators (tools/gen.sh cpp) and the script's version stamp.
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git python3 \
-	&& rm -rf /var/lib/apt/lists/*
-# uv's documented Docker route, pinned by its multi-platform index digest
-# (docker buildx imagetools inspect ghcr.io/astral-sh/uv:<version>). knobly runs its pinned clang-format through it.
-COPY --from=ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0 /uv /usr/local/bin/uv
-RUN git init -q /knobly \
-	&& git -C /knobly fetch -q --depth 1 https://github.com/mcurcio/knobly.git "$KNOBLY_COMMIT" \
-	&& git -C /knobly checkout -q FETCH_HEAD \
-	&& cd /knobly && UV_CACHE_DIR=/tmp/uv bash .github/release-cpp.sh 0.0.0 /tmp/release \
-	&& mkdir /opt/knobly \
-	&& tar -xzf /tmp/release/knobly-cpp-0.0.0.tar.gz -C /opt/knobly --strip-components=1 \
-	&& chmod -R a+rX /opt/knobly
-
 FROM debian:trixie@sha256:2dc419c6d7fe3dad0a2f9fd469c34cc90b0f9ba642d8fde837fe3d7d34a0e7f1 AS dev
 
 # - g++ and make: the compiler and the build tool; cmake (trixie: 3.31) runs the build.
 # - ccache: compiler cache; scripts/dev.sh points CCACHE_DIR at the checkout's .cache/ccache.
 # - pkg-config: how CMakeLists.txt finds PipeWire and libsndfile.
-# - ca-certificates, xz-utils: FetchContent downloads Boost over HTTPS as a .tar.xz.
+# - ca-certificates, xz-utils: FetchContent downloads Boost (a .tar.xz), knobly and mDNS over HTTPS.
 # - libpipewire-0.3-dev, libspa-0.2-dev: PipeWire's headers and pkg-config files.
 # - libpipewire-0.3-modules, libspa-0.2-modules: the modules and SPA plugins EAR's in-process
 #   engine loads at run time (protocol, client-node, link-factory, the dummy driver).
@@ -90,10 +63,6 @@ COPY --from=node /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 	&& ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
-# knobly's C++ release tree (CMakeLists.txt and include/, stage knobly above), which ear's CMakeLists.txt adds as a
-# subproject (EAR_KNOBLY_DIR). The run image gets none of it.
-COPY --from=knobly /opt/knobly /opt/knobly
-
 # CMake (3.17+) takes these as its compiler launcher defaults, so every build here uses ccache.
 ENV CMAKE_C_COMPILER_LAUNCHER=ccache \
 	CMAKE_CXX_COMPILER_LAUNCHER=ccache
@@ -131,7 +100,8 @@ RUN apt-get update \
 
 # engine.conf sits beside the binary, where main.cpp looks for it.
 COPY --from=build /src/out/ear /src/out/engine.conf /opt/ear/
-# The licences of what the sendspin node compiles in (cmake/SendspinDeps.cmake).
+# The licences of the fetched code ear compiles in: knobly (CMakeLists.txt) and the sendspin node's
+# (cmake/SendspinDeps.cmake).
 COPY --from=build /src/out/licenses /opt/ear/licenses
 COPY --from=build /src/web/dist /opt/ear/web
 

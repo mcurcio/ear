@@ -158,7 +158,14 @@ export function App() {
           </div>
         )}
         {graph !== null && <EngineFacts graph={graph} />}
-        {graph !== null && <AddNodePanel types={graph.types} onError={showError} />}
+        {graph !== null && (
+          <AddNodePanel
+            types={graph.types}
+            names={graph.nodes.map((node) => node.name)}
+            features={graph.features ?? []}
+            onError={showError}
+          />
+        )}
         {selectedNode !== undefined && (
           <NodePanel node={selectedNode} features={graph?.features ?? []} onError={showError} />
         )}

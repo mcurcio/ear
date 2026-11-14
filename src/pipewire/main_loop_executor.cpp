@@ -13,13 +13,15 @@
 
 #include <pipewire/pipewire.h>
 
+#include "callback_boundary.hpp"
+
 namespace ear::pipewire {
 
 struct MainLoopExecutor::Impl {
-	explicit Impl(pw_loop* mainLoop) : loop(mainLoop) { event = pw_loop_add_event(loop, &Impl::onEvent, this); }
+	explicit Impl(pw_loop* mainLoop) : loop(mainLoop) { addEvent(event, loop, guarded<&Impl::onEvent>, this); }
 
 	~Impl() {
-		if (event != nullptr) pw_loop_destroy_source(loop, event);
+		event.reset();
 		// Destroyed outside the lock: a function's destructor may post again (it is dropped).
 		std::deque<std::move_only_function<void()>> left;
 		{
@@ -34,19 +36,19 @@ struct MainLoopExecutor::Impl {
 
 	/// Main loop: runs what was queued when the event fired, in post order. Work posted while it
 	/// runs (from here or another thread) waits for the next event, so post() never runs work
-	/// inside itself.
-	static void onEvent(void* data, std::uint64_t /*count*/) {
-		auto* self = static_cast<Impl*>(data);
+	/// inside itself. Each item runs through the callback boundary on its own, so one that throws is reported as
+	/// itself and never drops the items behind it (docs/architecture.md#the-callback-boundary).
+	void onEvent(std::uint64_t /*count*/) {
 		std::deque<std::move_only_function<void()>> batch;
 		{
-			const std::scoped_lock lock(self->mutex);
-			batch.swap(self->queue);
+			const std::scoped_lock lock(mutex);
+			batch.swap(queue);
 		}
-		for (auto& work : batch) work();
+		for (auto& work : batch) shield("MainLoopExecutor's posted work", work);
 	}
 
 	pw_loop* loop;
-	spa_source* event = nullptr;
+	LoopSource event;
 	std::mutex mutex;
 	std::deque<std::move_only_function<void()>> queue; // guarded by mutex
 	bool stopped = false;                              // guarded by mutex
@@ -60,26 +62,24 @@ class LoopTimer final : public Timer {
 public:
 	LoopTimer(pw_loop* loop, std::chrono::milliseconds delay, std::move_only_function<void()> due)
 		: loop_(loop), due_(std::move(due)) {
-		source_ = pw_loop_add_timer(loop_, &LoopTimer::onTimeout, this);
+		addTimer(source_, loop_, guarded<&LoopTimer::onTimeout>, this);
 		// A zero value would disarm the timer: at least a nanosecond.
 		const auto ns = std::max<std::int64_t>(std::chrono::nanoseconds(delay).count(), 1);
 		timespec value{static_cast<time_t>(ns / 1'000'000'000), static_cast<long>(ns % 1'000'000'000)};
-		pw_loop_update_timer(loop_, source_, &value, nullptr, false);
+		pw_loop_update_timer(loop_, source_.get(), &value, nullptr, false);
 	}
 	LoopTimer(const LoopTimer&) = delete;
 	LoopTimer& operator=(const LoopTimer&) = delete;
-	~LoopTimer() override {
-		if (source_ != nullptr) pw_loop_destroy_source(loop_, source_);
-	}
+	~LoopTimer() override = default;
 
 private:
-	static void onTimeout(void* data, std::uint64_t /*expirations*/) {
-		auto due = std::move(static_cast<LoopTimer*>(data)->due_);
+	void onTimeout(std::uint64_t /*expirations*/) {
+		auto due = std::move(due_);
 		if (due) due();
 	}
 	pw_loop* loop_;
-	spa_source* source_ = nullptr;
 	std::move_only_function<void()> due_;
+	LoopSource source_; // last: destroyed first, before what it calls
 };
 
 } // namespace
@@ -104,7 +104,7 @@ void MainLoopExecutor::post(std::move_only_function<void()> work) {
 	}
 	// An eventfd write: safe from any thread, and several posts before the loop wakes coalesce
 	// into one event that runs them all.
-	pw_loop_signal_event(impl_->loop, impl_->event);
+	pw_loop_signal_event(impl_->loop, impl_->event.get());
 }
 
 } // namespace ear::pipewire

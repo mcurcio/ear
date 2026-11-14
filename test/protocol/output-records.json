@@ -696,6 +696,255 @@
         "result": "node-disabled",
         "msg": "node porch start refused: node-disabled"
       }
+    },
+    {
+      "case": "ear's own bug in an adapter whose state is one node's (here a block's callback): the node fails lost after this, and the rest of the graph runs on (docs/architecture.md#faults-by-owner)",
+      "record": {
+        "v": 1,
+        "seq": 80,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "node": "hall",
+        "code": "ear.internal-error",
+        "callback": "FilterPortBlock::onStateChanged",
+        "detail": "FilterPortBlock::onStateChanged threw: bad state",
+        "msg": "node hall ear.internal-error: FilterPortBlock::onStateChanged threw: bad state"
+      }
+    },
+    {
+      "case": "ear's own bug with no owner but ear's core: no node, where the main loop was in its detail, fatal, and the process ends after it, with the boundary's line on standard error",
+      "record": {
+        "v": 1,
+        "seq": 81,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "code": "ear.internal-error",
+        "callback": "MainLoopExecutor's posted work",
+        "fatal": true,
+        "detail": "MainLoopExecutor's posted work threw during make block hall: a block made twice",
+        "msg": "ear.internal-error: MainLoopExecutor's posted work threw during make block hall: a block made twice"
+      }
+    },
+    {
+      "case": "ear's own bug in a route's link callback: no node and not fatal, the route refused, ear running on",
+      "record": {
+        "v": 1,
+        "seq": 82,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "code": "ear.internal-error",
+        "callback": "LinkProxy::onInfo",
+        "detail": "LinkProxy::onInfo threw: bad info",
+        "msg": "ear.internal-error: LinkProxy::onInfo threw: bad info"
+      }
+    },
+    {
+      "case": "the graph lost cycles: what the driver cut since the last such record, in how many stalls of the host and the time they lost, and its total cut since ear started; once a catch-up's burst held still, at most one a second (docs/engine.md#reporting-the-counters)",
+      "record": {
+        "v": 1,
+        "seq": 83,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "code": "ear.graph-lost-cycles",
+        "cycles": 39,
+        "stalls": 1,
+        "ms": 208,
+        "totalCycles": 39,
+        "detail": "the host held up the audio thread: 39 cycles cut (208 ms) in 1 stall; 39 cut since ear started",
+        "msg": "ear.graph-lost-cycles: the host held up the audio thread: 39 cycles cut (208 ms) in 1 stall; 39 cut since ear started"
+      }
+    },
+    {
+      "case": "a node missed cycles the driver did not cut, or its own work overran: each since its last such record, and their totals since it was added; at most once per 10 s per node, and at once as it goes",
+      "record": {
+        "v": 1,
+        "seq": 84,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "node": "rec",
+        "code": "ear.node-missed-cycles",
+        "missed": 33,
+        "overruns": 1,
+        "totalMissed": 33,
+        "totalOverruns": 2,
+        "detail": "missed 33 cycles it was not scheduled for, overran 1 time; 33 missed and 2 overrun since it was added",
+        "msg": "node rec ear.node-missed-cycles: missed 33 cycles it was not scheduled for, overran 1 time; 33 missed and 2 overrun since it was added"
+      }
+    },
+    {
+      "case": "a sink's ring had no room for frames its block tapped: what it dropped since its last such record, and its total since its configuration made it; once the count held still for a beat, at most once per 10 s per companion, and at once as its configuration ends",
+      "record": {
+        "v": 1,
+        "seq": 85,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "node": "rec",
+        "code": "ear.sink-dropped",
+        "companion": "rec.writer",
+        "frames": 4096,
+        "totalFrames": 8192,
+        "detail": "rec.writer dropped 4096 frames its ring had no room for; 8192 since it was made",
+        "msg": "node rec ear.sink-dropped: rec.writer dropped 4096 frames its ring had no room for; 8192 since it was made"
+      }
+    },
+    {
+      "case": "a source played zeros while its writer was not idle: the frames since its last such record, and its total since its configuration made it; paced as a sink's drops",
+      "record": {
+        "v": 1,
+        "seq": 86,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "node": "kitchen",
+        "code": "ear.source-shortfall",
+        "companion": "kitchen.from_server",
+        "frames": 1,
+        "totalFrames": 256,
+        "detail": "kitchen.from_server played 1 frame short while its writer was not idle; 256 since it was made",
+        "msg": "node kitchen ear.source-shortfall: kitchen.from_server played 1 frame short while its writer was not idle; 256 since it was made"
+      }
+    },
+    {
+      "case": "the framework's diagnostic about a node: one of its strand loops ran one handler past 100 ms (docs/writing-a-node-type.md#loops), said once per loop and configuration",
+      "record": {
+        "v": 1,
+        "seq": 87,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "node": "porch",
+        "code": "ear.loop-slow",
+        "ms": 140,
+        "detail": "loop control ran one handler for 140 ms",
+        "msg": "node porch ear.loop-slow: loop control ran one handler for 140 ms"
+      }
+    },
+    {
+      "case": "a loop's state left sources armed when its configuration closed (a type's bug): the loop cancelled them",
+      "record": {
+        "v": 1,
+        "seq": 88,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "node": "kitchen",
+        "code": "ear.loop-source-left",
+        "sources": 2,
+        "detail": "2 sources were still armed on loop sendspin when the node's configuration closed",
+        "msg": "node kitchen ear.loop-source-left: 2 sources were still armed on loop sendspin when the node's configuration closed"
+      }
+    },
+    {
+      "case": "a node still configuring while one of its loops has not started says so, by the loop's name",
+      "record": {
+        "v": 1,
+        "seq": 89,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "fpp",
+        "state": "starting",
+        "phase": "configuring",
+        "waitingFor": [
+          {
+            "kind": "loop",
+            "name": "sendspin"
+          }
+        ],
+        "msg": "node fpp still configuring after 22s: waiting for its loop sendspin"
+      }
+    },
+    {
+      "case": "a node still configuring while one of its stores has not opened says so, by the store's file",
+      "record": {
+        "v": 1,
+        "seq": 90,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "fpp",
+        "state": "starting",
+        "phase": "configuring",
+        "waitingFor": [
+          {
+            "kind": "store",
+            "name": "sendspin-fpp.key"
+          }
+        ],
+        "msg": "node fpp still configuring after 32s: waiting for its store sendspin-fpp.key"
+      }
+    },
+    {
+      "case": "the framework's diagnostic about a node: a configuration leaked at the close deadline closed late, so it no longer keeps ear's stop from ending normally",
+      "record": {
+        "v": 1,
+        "seq": 91,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "node": "kitchen",
+        "code": "ear.close-late",
+        "ms": 14250,
+        "detail": "the configuration leaked at the close deadline closed 14250 ms after its close began",
+        "msg": "node kitchen ear.close-late: the configuration leaked at the close deadline closed 14250 ms after its close began"
+      }
+    },
+    {
+      "case": "a node still configuring while one of its claims waits for a holder that is closing says so, by the claim's key",
+      "record": {
+        "v": 1,
+        "seq": 92,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "fpp",
+        "state": "starting",
+        "phase": "configuring",
+        "waitingFor": [
+          {
+            "kind": "claim",
+            "name": "udp:5004"
+          }
+        ],
+        "msg": "node fpp still configuring after 42s: waiting for its claim udp:5004"
+      }
+    },
+    {
+      "case": "the framework's diagnostic about a node: one of its claims waits for its holder, a configuration that is closing",
+      "record": {
+        "v": 1,
+        "seq": 93,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "node": "fpp2",
+        "code": "ear.claim-wait",
+        "detail": "udp:5004 held by node fpp, which is closing",
+        "msg": "node fpp2 ear.claim-wait: udp:5004 held by node fpp, which is closing"
+      }
+    },
+    {
+      "case": "a node still configuring while one of its recordings is opened on the I/O thread says so, by its path",
+      "record": {
+        "v": 1,
+        "seq": 94,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "fpp",
+        "state": "starting",
+        "phase": "configuring",
+        "waitingFor": [
+          {
+            "kind": "recording",
+            "name": "take1.wav"
+          }
+        ],
+        "msg": "node fpp still configuring after 52s: waiting for its recording take1.wav"
+      }
+    },
+    {
+      "case": "a stop has done all ear does: every node removed, the control port closed, ear.conf's last write made; ear's last record before it exits 0",
+      "record": {
+        "v": 1,
+        "seq": 95,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "exit",
+        "status": 0,
+        "reason": "stopped",
+        "msg": "ear: stopped"
+      }
     }
   ]
 }

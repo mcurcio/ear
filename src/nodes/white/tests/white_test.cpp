@@ -55,7 +55,7 @@ TEST_CASE("White runs once its block is ready, with nothing to acquire", "[white
 }
 
 TEST_CASE("White fills its output with uniform noise from -1 up to but not including 1", "[white]") {
-	constexpr ear::AudioFormat format{.rate = 48000, .maxBlock = 480};
+	constexpr ear::AudioFormat format{.rate = ear::SampleRate::fixed<48000>(), .maxBlock = 480};
 	Harness harness({.format = format});
 	REQUIRE_FALSE(harness.parse({}));
 	harness.add();
@@ -67,7 +67,7 @@ TEST_CASE("White fills its output with uniform noise from -1 up to but not inclu
 	// One second at the format's rate, block by block; the harness primes every output with NaN, so an unwritten
 	// sample shows up.
 	std::vector<float> samples;
-	for (std::uint32_t done = 0; done < format.rate; done += format.maxBlock) {
+	for (std::uint32_t done = 0; done < format.rate.hz(); done += format.maxBlock) {
 		harness.process();
 		REQUIRE(harness->unwritten() == 0);
 		const std::span<const float> block = harness.output(white::noise, 0);

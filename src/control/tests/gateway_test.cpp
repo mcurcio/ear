@@ -129,8 +129,9 @@ std::string method(const std::string& text) { return json::parse(text)["method"]
 
 TEST_CASE("run() sends the batch whole to the keeper and answers on the control executor", "[gateway]") {
 	Fixture f;
-	f.requests.results = {ear::GraphView{{{48000, 256}, false, "SCHED_OTHER"}, {"white"}, {}, {}},
-	                      std::expected<void, ear::CommandError>{}, file("b.1")};
+	f.requests.results = {
+		ear::GraphView{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {"white"}, {}, {}},
+		std::expected<void, ear::CommandError>{}, file("b.1")};
 	std::vector<CommandResult> results;
 	int answered = 0;
 	int answeredOffControl = 0;
@@ -331,7 +332,7 @@ TEST_CASE("A snapshot's since is stamped when the graph is read: the one its pha
 	Fixture f;
 	f.gateway.watch(f.sink);
 	f.loops.main.runAll();
-	ear::GraphView view{{{48000, 256}, false, "SCHED_OTHER"}, {"white"}, {}, {}};
+	ear::GraphView view{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {"white"}, {}, {}};
 	view.nodes.push_back({{"n", "white", json::object()}, ear::Ports{}, {"n"}, std::nullopt});
 	view.nodes.push_back({{"m", "white", json::object()}, ear::Ports{}, {"m"}, std::nullopt});
 	f.requests.step = [&](MainLoopGateway& gateway) {

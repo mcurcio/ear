@@ -1,6 +1,7 @@
 // MainLoopActivity (docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog): what the main loop is in, read
 // from another thread without a lock, never torn.
 #include <atomic>
+#include <stdexcept>
 #include <string>
 #include <thread>
 
@@ -29,17 +30,17 @@ TEST_CASE("MainLoopActivity names the call and its node while it runs, and nothi
 TEST_CASE("MainLoopActivity scopes nest: the inner one ends naming the outer call again", "[main_loop_activity]") {
 	MainLoopActivity::clear();
 	{
-		const MainLoopActivity::Scope outer("make outside node", "desk");
+		const MainLoopActivity::Scope outer("make engine companion", "desk");
 		{
 			const MainLoopActivity::Scope inner("prepare", "porch");
 			CHECK(MainLoopActivity::current() == "prepare porch");
 		}
-		CHECK(MainLoopActivity::current() == "make outside node desk");
+		CHECK(MainLoopActivity::current() == "make engine companion desk");
 		{
 			const MainLoopActivity::Scope inner("release", "");
 			CHECK(MainLoopActivity::current() == "release");
 		}
-		CHECK(MainLoopActivity::current() == "make outside node desk");
+		CHECK(MainLoopActivity::current() == "make engine companion desk");
 	}
 	CHECK(MainLoopActivity::current().empty());
 }
@@ -62,4 +63,78 @@ TEST_CASE("MainLoopActivity read from another thread is always one whole write",
 	done.store(true);
 	reader.join();
 	CHECK(torn.load() == 0);
+}
+
+TEST_CASE("A throw that ends scopes keeps the innermost one's place until it is taken", "[main_loop_activity]") {
+	MainLoopActivity::clear();
+	MainLoopActivity::forgetThrown();
+	CHECK_FALSE(MainLoopActivity::takeThrown());
+	try {
+		const MainLoopActivity::Scope outer("make engine companion", "desk");
+		const MainLoopActivity::Scope inner("prepare", "porch");
+		throw std::runtime_error("prepare threw");
+	} catch (const std::runtime_error&) {
+		CHECK(MainLoopActivity::current().empty());
+		const auto at = MainLoopActivity::takeThrown();
+		REQUIRE(at);
+		CHECK(MainLoopActivity::describe(*at) == "prepare porch");
+	}
+	CHECK_FALSE(MainLoopActivity::takeThrown()); // taken
+}
+
+TEST_CASE("A scope that begins forgets the place a handled throw left, and one that returns leaves none",
+          "[main_loop_activity]") {
+	MainLoopActivity::clear();
+	try {
+		const MainLoopActivity::Scope scope("start", "attic");
+		throw std::runtime_error("start threw");
+	} catch (const std::runtime_error&) {
+	}
+	{
+		const MainLoopActivity::Scope later("stop", "attic");
+	}
+	CHECK_FALSE(MainLoopActivity::takeThrown());
+	MainLoopActivity::Saved put = MainLoopActivity::save();
+	{
+		const MainLoopActivity::Scope scope("recipe", "attic");
+		put = MainLoopActivity::save();
+	}
+	MainLoopActivity::putThrown(put);
+	const auto at = MainLoopActivity::takeThrown();
+	REQUIRE(at);
+	CHECK(MainLoopActivity::describe(*at) == "recipe attic");
+	CHECK(MainLoopActivity::describe(MainLoopActivity::Saved{}).empty());
+}
+
+TEST_CASE("A scope that returns forgets the place a throw handled inside it left", "[main_loop_activity]") {
+	MainLoopActivity::clear();
+	{
+		const MainLoopActivity::Scope outer("release", "attic");
+		try {
+			const MainLoopActivity::Scope inner("close run", "attic");
+			throw std::runtime_error("close threw");
+		} catch (const std::runtime_error&) {
+		}
+	}
+	CHECK_FALSE(MainLoopActivity::takeThrown());
+}
+
+namespace {
+/// A destructor that opens and closes a scope of its own, run by an exception's unwinding.
+struct ScopeInDestructor {
+	~ScopeInDestructor() { const MainLoopActivity::Scope scope("destroy block", "attic"); }
+};
+} // namespace
+
+TEST_CASE("A scope opened while an exception unwinds leaves the place that exception carries", "[main_loop_activity]") {
+	MainLoopActivity::clear();
+	try {
+		const ScopeInDestructor destroyed;
+		const MainLoopActivity::Scope scope("configure", "attic");
+		throw std::runtime_error("configure threw");
+	} catch (const std::runtime_error&) {
+		const auto at = MainLoopActivity::takeThrown();
+		REQUIRE(at);
+		CHECK(MainLoopActivity::describe(*at) == "configure attic");
+	}
 }

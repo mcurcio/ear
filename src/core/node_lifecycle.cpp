@@ -500,12 +500,14 @@ FailureCode failureCodeFor(Fact fact, bool rested) noexcept {
 	case Fact::engine:
 		return FailureCode::engineRefused;
 	case Fact::configureFailed:
-	case Fact::consumerLost:
+	case Fact::consumerNeverBegan:
 	case Fact::recipeFailed:
 		return FailureCode::startFailed;
 	case Fact::nodeLost:
 	case Fact::hookThrew:
 		return rested ? FailureCode::lost : FailureCode::startFailed;
+	case Fact::adapterFaulted:
+		return FailureCode::lost;
 	}
 	return FailureCode::startFailed;
 }
@@ -565,7 +567,7 @@ Health derive(const DeriveFacts& f) {
 		h.cause = restarting(f.why);
 	} else if (f.failure || (h.blockLost && !f.disabled)) {
 		h.phase = NodePhase::failed;
-		h.reason = f.failure ? *f.failure : Failure{FailureCode::engineRefused, f.blockLossDetail};
+		h.reason = f.failure ? *f.failure : Failure{f.blockLossCode, f.blockLossDetail};
 	} else if (f.config == ConfigState::none && f.disabled) {
 		h.phase = NodePhase::disabled;
 	} else if (stoppingConfig(f.config) || (f.config == ConfigState::arming && f.stopAsked) ||
@@ -604,7 +606,8 @@ DeriveFacts NodeAggregate::facts() const {
 	        why_,
 	        failure_,
 	        predecessor_,
-	        configuredTold_};
+	        configuredTold_,
+	        blockLossCode_};
 }
 
 Health NodeAggregate::health() const { return derive(facts()); }
@@ -809,11 +812,12 @@ Actions NodeAggregate::blockReady() {
 	return out;
 }
 
-Actions NodeAggregate::blockLost(std::string detail) {
+Actions NodeAggregate::blockLost(std::string detail, FailureCode code) {
 	Actions out;
 	if (goneTold_) return out;
 	const BlockState before = block_.state();
 	if (before != BlockState::made && before != BlockState::ready) return out;
+	blockLossCode_ = code;
 	// The block's loss replaces any failure's reason, and nothing is configured again.
 	failure_.reset();
 	heldFault_.reset();
@@ -949,38 +953,48 @@ Operated NodeAggregate::restart() {
 
 Actions NodeAggregate::fault(Fact fact, std::string detail) {
 	Actions out;
-	if (goneTold_) return out;
+	// Every path that neither applies nor holds the failure says so, with what it dropped, so NodeHost can record a
+	// dropped type fault (docs/writing-a-node-type.md#rules-the-framework-enforces) rather than lose it.
+	const auto dropped = [&] {
+		out.push_back(Dropped{fact, std::move(detail)});
+		return out;
+	};
+	if (goneTold_) return dropped();
 	const ConfigState state = config_.state();
-	Failure failure{failureCodeFor(fact, config_.rested()), std::move(detail)};
 	switch (state) {
 	case ConfigState::none:
-		return out;
+		return dropped();
 	case ConfigState::arming:
 		// A drive in flight whose completion will fade and silence it (a stop or teardown asked) is a
 		// stop or teardown already begun: as in fading, held during a stop and dropped during a teardown, so a
 		// fault cannot turn a restart, disable or removal into a failure.
-		if (config_.stopAsked()) {
-			if (intent_ == Intent::stop && !heldFault_) heldFault_ = std::move(failure);
-			return out;
-		}
+		if (config_.stopAsked()) return holdOrDrop(fact, std::move(detail));
 		[[fallthrough]];
 	case ConfigState::readying:
 	case ConfigState::prepared:
 	case ConfigState::driving:
-		if (!raise(Intent::fail)) return out; // a disable or removal in flight drops it
-		failure_ = std::move(failure);
+		if (!raise(Intent::fail)) return dropped(); // a disable or removal in flight drops it
+		failure_ = Failure{failureCodeFor(fact, config_.rested()), std::move(detail)};
 		askConfig(ConfigEvent::teardownAsked, out);
 		break;
 	case ConfigState::fading:
 	case ConfigState::silencing:
 		// Held during a stop and applied once rested; dropped during a teardown.
-		if (intent_ == Intent::stop && !heldFault_) heldFault_ = std::move(failure);
-		return out;
+		return holdOrDrop(fact, std::move(detail));
 	case ConfigState::tearing:
-		return out;
+		return dropped();
 	}
 	converge(out);
 	return out;
+}
+
+Actions NodeAggregate::holdOrDrop(Fact fact, std::string detail) {
+	// Only the first fault of a stop is held: a later one, or one during any other teardown, is dropped.
+	if (intent_ == Intent::stop && !heldFault_) {
+		heldFault_ = Failure{failureCodeFor(fact, config_.rested()), std::move(detail)};
+		return {};
+	}
+	return {Dropped{fact, std::move(detail)}};
 }
 
 Actions NodeAggregate::startThrew(std::string detail) {

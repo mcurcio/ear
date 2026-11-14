@@ -8,10 +8,12 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
 
 #include "catch2/catch.hpp"
 #include "ear/output/output_writer.hpp"
+#include "sleeps.hpp"
 
 using ear::output::OutputWriter;
 
@@ -137,9 +139,19 @@ TEST_CASE("The queue is bounded in bytes too, and a line larger than the bound s
 TEST_CASE("The crash path's spill gives up in bounded time on a writer stuck in its write", "[output_writer]") {
 	Pipe pipe;
 	const std::size_t filled = pipe.fill();
+	// A page of room, and a line of two: the writer's write fills the page and then waits for a reader. The page filling
+	// again is the writer's own event, that it has taken the line and is stuck in its write; nothing guesses it.
+	char page[4096];
+	REQUIRE(::read(pipe.read, page, sizeof page) == static_cast<ssize_t>(sizeof page));
 	OutputWriter writer(pipe.write);
-	REQUIRE(writer.offer("taken into the blocked write"));
-	std::this_thread::sleep_for(std::chrono::milliseconds(50)); // lets the writer take it; either way spill is bounded
+	const std::string taken(2 * sizeof page, 'T');
+	REQUIRE(writer.offer(taken));
+	const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	int held = 0;
+	while (::ioctl(pipe.read, FIONREAD, &held) == 0 && static_cast<std::size_t>(held) < filled &&
+	       std::chrono::steady_clock::now() < until)
+		ear::sleeps::poll(std::chrono::milliseconds(1), "between looks at the pipe, which decide");
+	REQUIRE(static_cast<std::size_t>(held) == filled);
 	REQUIRE(writer.offer("still queued"));
 	const auto before = std::chrono::steady_clock::now();
 	writer.spill();
@@ -151,8 +163,6 @@ TEST_CASE("The crash path's spill gives up in bounded time on a writer stuck in 
 	::close(pipe.write);
 	pipe.write = -1;
 	reader.join();
-	// Stuck in its write, the writer keeps the queue's line; had it not taken the first yet, spill took both and gave up
-	// on the full pipe, and only what the writer had is there.
-	const std::string all = "taken into the blocked write\nstill queued\n";
-	CHECK(got.substr(filled) == all.substr(0, got.size() - filled));
+	// Stuck in its write, the writer kept the queue's line from spill, and wrote it after the line it was stuck on.
+	CHECK(got.substr(filled - sizeof page) == taken + "\nstill queued\n");
 }

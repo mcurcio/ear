@@ -29,6 +29,13 @@ struct Shared {
 
 Shared shared;
 
+/// The place a throw left (takeThrown): the main thread's alone, so plain fields.
+struct Thrown {
+	MainLoopActivity::Saved at;
+	bool kept = false;
+};
+Thrown thrown;
+
 void write(const char* call, std::size_t callSize, std::string_view node) noexcept {
 	std::array<std::uint64_t, wordCount> plain{};
 	const std::size_t size = std::min(node.size(), MainLoopActivity::nameBytes);
@@ -65,6 +72,31 @@ MainLoopActivity::Saved MainLoopActivity::save() noexcept {
 
 void MainLoopActivity::restore(const Saved& saved) noexcept {
 	write(saved.call, saved.callSize, std::string_view(saved.name.data(), saved.nameSize));
+}
+
+std::string MainLoopActivity::describe(const Saved& saved) {
+	if (saved.call == nullptr) return {};
+	std::string where(saved.call, saved.callSize);
+	if (saved.nameSize > 0) {
+		where += ' ';
+		where.append(saved.name.data(), saved.nameSize);
+	}
+	return where;
+}
+
+std::optional<MainLoopActivity::Saved> MainLoopActivity::takeThrown() noexcept {
+	if (!thrown.kept) return std::nullopt;
+	thrown.kept = false;
+	return thrown.at;
+}
+
+void MainLoopActivity::putThrown(const Saved& at) noexcept { thrown = Thrown{at, true}; }
+
+void MainLoopActivity::forgetThrown() noexcept { thrown.kept = false; }
+
+void MainLoopActivity::Scope::endedByThrow() noexcept {
+	// Unwinding ends the innermost scope first: it alone keeps its place.
+	if (!thrown.kept) thrown = Thrown{save(), true};
 }
 
 std::string MainLoopActivity::current() {

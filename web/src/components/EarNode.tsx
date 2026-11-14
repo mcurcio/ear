@@ -1,11 +1,16 @@
-// A node box: its name, type and state word with the line that says why it is silent or what it
+// A node box: its name, type and state word (with the counters' mark while a loss counter of its own rose in the last
+// minute, counters.ts, docs/editor.md#counters) and the line that says why it is silent or what it
 // waits for (health.ts, docs/editor.md#a-nodes-health), then one row per port, inputs on the left and outputs
-// on the right, each with its handle and its level meter, in every phase.
+// on the right, each with its handle and its level meter, in every phase; and along its bottom edge the strip of its
+// companions' badges (companions.ts, docs/editor.md#companions), outside every handle.
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useEffect, useState } from "react";
 import { handleId } from "../connect";
 import { describeHealth, startingLineDelayMs } from "../health";
 import type { GraphNode } from "../protocol";
+import { CompanionStrip } from "./CompanionStrip";
+import { NodeCounterMark } from "./Counters";
+import { useCompanionBadges, useNodeCounters } from "./hooks";
 import { Meter } from "./Meter";
 
 /**
@@ -46,6 +51,8 @@ function Port({ node, port, direction }: { node: string; port: string; direction
 
 export function EarNode({ data: { node }, selected }: NodeProps<EarFlowNode>) {
   const health = describeHealth(node, usePhaseSeen(node.phase, node.since));
+  const companions = useCompanionBadges(node);
+  const { mark } = useNodeCounters(node);
   return (
     <div className={`ear-node ${health.styleClass} phase-${node.phase}${selected ? " selected" : ""}`}>
       <div className="ear-node-header">
@@ -53,6 +60,7 @@ export function EarNode({ data: { node }, selected }: NodeProps<EarFlowNode>) {
         <div className="ear-node-state" title={node.reason?.detail}>
           {health.word}
           {node.reason !== undefined && `: ${node.reason.code}`}
+          <NodeCounterMark mark={mark} />
         </div>
         {health.line !== "" && (
           <div className="ear-node-line" title={health.line}>
@@ -72,6 +80,7 @@ export function EarNode({ data: { node }, selected }: NodeProps<EarFlowNode>) {
           ))}
         </div>
       </div>
+      <CompanionStrip badges={companions} />
     </div>
   );
 }

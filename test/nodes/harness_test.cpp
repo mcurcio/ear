@@ -2,8 +2,7 @@
 // docs/writing-a-node-type.md#testing-a-type: a real NodeHost over fakes), as pluginval and clap-validator run every
 // plugin: each type's valid settings parse, the node is added and configured, every companion it asked for made ready
 // runs it, every output sample of every cycle is written whatever the inputs hold, and it stops, starts, restarts, is
-// disabled, enabled and removed. The types come from the generated list; this file names none (all_types.hpp says which
-// do not run here yet).
+// disabled, enabled and removed. The types come from the generated list; this file names none.
 #include <algorithm>
 #include <cstdint>
 #include <span>
@@ -32,7 +31,7 @@ void everySampleWritten(ear::testing::NodeHarness& harness, std::uint32_t maxBlo
 void readyEvery(ear::testing::NodeHarness& harness) {
 	for (const auto& companion : harness.companions())
 		if (!companion.destroyed && !companion.ready) {
-			CHECK(companion.engineName.starts_with("probe."));
+			CHECK(companion.name.starts_with("probe."));
 			harness.ready(companion.bank);
 		}
 }
@@ -41,19 +40,12 @@ void readyEvery(ear::testing::NodeHarness& harness) {
 
 TEST_CASE("Every type runs through the harness: configures, runs, writes every output sample, and walks its lifecycle",
           "[harness]") {
-	constexpr ear::AudioFormat format{.rate = 48000, .maxBlock = 128};
-	const auto types = ear::test::allTypes();
-	for (const auto& name : ear::test::notYetInHarness()) {
-		INFO(name << " is in notYetInHarness (test/nodes/all_types.hpp)");
-		CHECK(std::ranges::any_of(types, [&](const auto& type) { return type->name() == name; }));
-	}
-	for (const auto& type : types) {
+	constexpr ear::AudioFormat format{.rate = ear::SampleRate::fixed<48000>(), .maxBlock = 128};
+	for (const auto& type : ear::test::allTypes()) {
 		INFO(type->name());
-		if (ear::test::notYetInHarness().contains(type->name())) continue;
 		for (const ear::NodeSettings& settings : ear::test::validSettings(type->name())) {
 			INFO(settings.dump());
-			ear::testing::NodeHarness harness(
-				*type, {.format = format, .node = "probe", .recordings = &ear::test::recordings()});
+			ear::testing::NodeHarness harness(*type, {.format = format, .node = "probe"});
 			const auto refused = harness.parse(settings);
 			INFO(refused.value_or(""));
 			REQUIRE_FALSE(refused);

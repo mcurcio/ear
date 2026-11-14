@@ -7,7 +7,7 @@
 
 #include "peer_text.hpp"
 
-namespace ear::sendspin {
+namespace ear::nodes::sendspin {
 namespace {
 
 constexpr std::size_t maxHostBytes = 253;
@@ -64,4 +64,4 @@ SendspinSettings settingsFrom(const NodeName& node, const decltype(settingsTable
 	                        .name = checked.get<rows::name>().value_or(node)};
 }
 
-} // namespace ear::sendspin
+} // namespace ear::nodes::sendspin

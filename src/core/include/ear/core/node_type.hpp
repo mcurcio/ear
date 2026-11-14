@@ -10,13 +10,16 @@
 #include <variant>
 #include <vector>
 #include "ear/core/command_error.hpp"
-#include "ear/core/rtp_receiver.hpp"
-#include "ear/core/sound_card.hpp"
+#include "ear/core/cycle_facts.hpp"
+#include "ear/core/latency.hpp" // Latency, BankPair
+#include "ear/core/node_handle.hpp"
+#include "ear/core/sample_rate.hpp"
+#include "ear/core/store_rule.hpp"
 namespace ear {
 /// One named group of a node's ports, all one way. Each is "<name>.<member>" (portName). A routable bank's ports are
 /// public: routes name them. An inside bank's ports belong to the port block only: nothing reaches them but the node's
-/// own outside nodes (its sound cards and RTP receivers), which name the bank they join, and the node's code. Both are
-/// named alike, so no type spells a port's name or indexes a list of ports by hand.
+/// own companions (its sound cards, RTP receivers, sinks and sources), each on the bank it joins, and the node's code.
+/// Both are named alike, so no type spells a port's name or indexes a list of ports by hand.
 struct PortBank {
 	enum class Reach { routable, inside };
 	Direction direction;
@@ -76,17 +79,9 @@ struct FailureReason {
 };
 std::string_view failureCode(FailureReason::Code code) noexcept; // "engine-refused" | "start-failed" | "lost"
 struct AudioFormat {
-	std::uint32_t rate;
+	SampleRate rate;
 	std::uint32_t maxBlock;
 }; // fixed at boot in M1
-
-/// A latency in frames at the graph frequency: the least and the most it can be over the paths it combines
-/// (docs/engine.md#latency-per-bank-pair).
-struct Latency {
-	std::uint32_t minFrames = 0;
-	std::uint32_t maxFrames = 0;
-	friend bool operator==(const Latency&, const Latency&) = default;
-};
 
 /// This cycle of the graph, on the driver's clock: ear's internal clock, the dummy driver, which always drives
 /// (docs/engine.md#graphcycle). Made once a cycle by the framework, so no type reads a clock.
@@ -97,16 +92,28 @@ struct GraphCycle {
 	double rateDiff = 1.0;       // the driver's rate against the clock it tracks (its loop's correction)
 	std::uint32_t driverId = 0;  // the driving node's engine id: another driver is another clock
 	std::int64_t nextNs = 0;     // when the next cycle is due to start, CLOCK_MONOTONIC
-	/// Cycles this block saw start ahead of where the last one ended, on the same driver: the graph lost time (a
-	/// stall). PipeWire gives a block no xrun count of its own, so the framework counts these.
-	std::uint64_t xruns = 0;
-	/// The first cycle the block runs, the first after the driver changed, or one whose position jumped (a stall the
-	/// driver caught up by whole blocks): the clock did not move on by the last cycle's frames.
-	bool discontinuity = false;
+	/// How long the next cycle had already been due when the block began this one (CLOCK_MONOTONIC, sampled by the
+	/// framework with the clocks it reads for startRawNs); 0 when it was not yet due. Above 0 only while the driver
+	/// catches up after a stall, in a burst of timeouts whose cycles start on its own time, behind raw time
+	/// (docs/engine.md#the-internal-clock), whether the block runs each of them or misses some.
+	std::int64_t overdueNs = 0;
+	/// What this cycle states (docs/writing-a-node-type.md#lost-cycles): the cycle it ran in, what was missed and cut
+	/// since the block's last, how far the position jumped, and why it is a discontinuity (facts.discontinuity()). The
+	/// one home of every fact about lost cycles: a code reads them here, never works them out from `position`. Empty in
+	/// a test's own cycle.
+	CycleFacts facts{};
 	/// One per output port (outputs then insideOutputs, as AudioCode::process's spans): the latency downstream of the
 	/// port's bank, what the ports linked to the bank report (a following card: its buffer), combined over them. Empty
 	/// when nothing tells it (a test's own cycle).
 	std::span<const Latency> downstream{};
+	/// When the block really began this cycle, on CLOCK_MONOTONIC_RAW (docs/engine.md#graphcycle): `startRawNs` when it
+	/// began on time; when it began overdue, `startRawNs + (nextNs - startNs) + overdueNs`, the next cycle's due time
+	/// plus how long that was already overdue, moved onto the raw clock. A `nextNs` of 0 (a test's own cycle) is on time.
+	/// CLOCK_MONOTONIC and the raw clock differ by parts per million over the few milliseconds between: nanoseconds.
+	constexpr std::int64_t ranRawNs() const noexcept {
+		if (overdueNs <= 0 || nextNs == 0) return startRawNs;
+		return startRawNs + (nextNs - startNs) + overdueNs;
+	}
 	/// The latency downstream of output `output`; none when it is not told.
 	Latency downstreamOf(std::size_t output) const noexcept {
 		return output < downstream.size() ? downstream[output] : Latency{};
@@ -138,7 +145,8 @@ public:
 protected:
 	~RtWriter() = default;
 };
-/// Ordinary-thread end of a handoff, implemented by the node type.
+/// Ordinary-thread end of a handoff, implemented by the node type. A call that throws is caught on the handoff's
+/// thread: it fails the node, and no more consume follows (docs/writing-a-node-type.md#sinks says the same of a sink).
 class HandoffConsumer {
 public:
 	virtual ~HandoffConsumer() = default;
@@ -155,48 +163,22 @@ struct HandoffRequest {
 	std::uint32_t capacityFrames;
 	HandoffConsumer* consumer;
 };
-/// A recording file (docs/writing-a-node-type.md#configure-and-createof): `path`, relative to the recordings folder,
-/// created or truncated beneath it only (no "..", no symlink out, no subfolder made). The run gets its descriptor,
-/// valid until the run is freed (teardown step 5), after its handoffs closed; the framework closes it.
-struct RecordingRequest {
-	std::string path;
-};
-/// Every kind of resource a run can acquire: a closed list, on purpose, since a kind changes what the framework
-/// promises (docs/writing-a-node-type.md#configure-and-createof). Each kind has one adapter (node_host.hpp).
-using ResourceRequest = std::variant<SoundCardRequest, RtpReceiverRequest, HandoffRequest, RecordingRequest>;
-/// What a run tells, from any of its threads; never blocks. Told on the main loop in order, and only to the run that
-/// wrote it: nothing after its close's `closed`, and nothing of an older run lands on a newer one
-/// (docs/architecture.md#the-node-lifecycle).
-class InsidesEvents {
-public:
-	virtual void say(std::string text) = 0;    // a note: `node <n> says <text>`; never a state
-	virtual void lost(std::string detail) = 0; // `failed start-failed: <detail>`; ignored once the run's close began
-protected:
-	~InsidesEvents() = default;
-};
+/// Every kind of resource a legacy run can acquire: a closed list, on purpose, since a kind changes what the framework
+/// promises (docs/writing-a-node-type.md#configure-and-createof). Each kind has one adapter (node_host.hpp). Sound
+/// cards and RTP receivers are engine companions a class asks for (CreateOf::soundCard, CreateOf::rtpReceiver).
+using ResourceRequest = std::variant<HandoffRequest>;
 /// What `start` sees (docs/writing-a-node-type.md#the-class): the format, the node's name, and the acquire calls. Main
 /// thread, inside start() only: any call outside it throws std::logic_error. Everything acquired belongs to the run and
-/// is torn down by the framework by dependency: outside nodes, then handoffs, then the run object.
+/// is torn down by the framework by dependency: handoffs, then the run object.
 class StartContext {
 public:
 	virtual AudioFormat format() const = 0; // the value prepare() will get
 	virtual const NodeName& node() const = 0;
-	/// A sound card joined to `request.bank`, an inside output bank (playback) or inside input bank (capture): opened at
-	/// format().rate with one channel per port of the bank, ready once its PCM runs and every channel is linked, and
-	/// lost (the node fails engine-refused) when it fails, before or after it was ready.
-	void acquire(const SoundCardRequest& request) { acquireResource(request); }
-	/// An RTP receiver joined to `request.bank`, an inside input bank, with one channel per port of it; readiness, loss
-	/// and teardown as a sound card's.
-	void acquire(const RtpReceiverRequest& request) { acquireResource(request); }
 	/// A handoff (HandoffRequest); its writer for the run's code. Ready at once.
 	RtWriter& acquire(const HandoffRequest& request) { return *std::get<RtWriter*>(acquireResource(request)); }
-	/// A recording file (RecordingRequest): its descriptor, or why it cannot be opened (the type fails its start).
-	std::expected<int, std::string> acquire(const RecordingRequest& request) {
-		return std::get<std::expected<int, std::string>>(acquireResource(request));
-	}
-	/// The run's events, until its close's `closed`; may be kept by the run's threads. (Kept on the start context
-	/// until sendspin builds its run in the recipe, slice 3.)
-	virtual InsidesEvents& events() = 0;
+	/// The run's handle (node_handle.hpp), the configuration's; may be kept by the run's threads. (Kept on the start
+	/// context until sendspin builds its run in the recipe, slice 3.)
+	virtual NodeHandle& events() = 0;
 	/// The run's own latency on `bank`, for the whole run (docs/engine.md#latency-per-bank-pair): on an output bank,
 	/// how long its audio was held inside the node before it leaves (rtp's receive buffer, sendspin's feed); on an
 	/// input bank, how long what it takes is held inside before it leaves the node. The framework adds it to the
@@ -210,8 +192,8 @@ public:
 
 protected:
 	~StartContext() = default;
-	/// What an acquire hands back: nothing, a handoff's writer, or a recording's descriptor or why it has none.
-	using Acquired = std::variant<std::monostate, RtWriter*, std::expected<int, std::string>>;
+	/// What an acquire hands back: nothing, or a handoff's writer.
+	using Acquired = std::variant<std::monostate, RtWriter*>;
 	/// Every engine object one run makes is named "<node>.<suffix>"; a second request with a suffix already taken in
 	/// this run, a bank the node does not have or one of the wrong reach or direction throws std::logic_error (a type
 	/// bug): one configuration names each engine object once.
@@ -222,7 +204,7 @@ protected:
 class Ready {
 public:
 	virtual AudioFormat format() const = 0;
-	virtual InsidesEvents& events() = 0; // as StartContext::events
+	virtual NodeHandle& events() = 0; // as StartContext::events
 protected:
 	~Ready() = default;
 };
@@ -231,18 +213,11 @@ protected:
 class RunObject {
 public:
 	virtual ~RunObject() = default;
-	/// Main thread, once, after every outside node of the run is gone and every handoff closed. A run object with
+	/// Main thread, once, after every engine companion of the run is gone and every handoff closed. A run object with
 	/// threads stops them (off the main loop: the main loop never joins a thread) and calls `closed`, last, from any
 	/// thread; one without calls it at once. A run that has not called it within the close deadline is leaked, never
 	/// destroyed.
 	virtual void close(std::move_only_function<void()> closed) { closed(); }
-};
-/// One pair of a pass-through: each port of `from` (an input bank, routable or inside) copied to the port of `to` (an
-/// output bank) at the same member index. The banks have as many ports as each other.
-struct BankPair {
-	std::string from;
-	std::string to;
-	friend bool operator==(const BankPair&, const BankPair&) = default;
 };
 /// A type's code written against its spec (type_spec.hpp: `void process(Io<spec>, const GraphCycle&) noexcept`), not
 /// an AudioCode: erased once, by eraseSpecCode, which type_spec.hpp defines (a type that names its code includes it).
@@ -324,6 +299,8 @@ public:
 enum class SettingKind {
 	text,        // JSON string; written quoted (knobly's quote), read with knobly's string reader
 	wholeNumber, // JSON integer; written as a bare word, read with knobly's integer reader
+	rate,        // JSON integer of hertz; written with its unit (rateText: 44.1khz), read with knobly's word reader
+				 // and readRate (docs/graph-file.md#rates)
 };
 struct SettingDeclaration {
 	std::string_view key;
@@ -350,13 +327,17 @@ public:
 	                                                                        const NodeSettings& settings) const;
 	/// Every key parse() accepts, each once, with its kind, in row order; the same span every call; pure.
 	std::span<const SettingDeclaration> settingKinds() const noexcept;
+	/// The stores every node of the type has (docs/writing-a-node-type.md#stores), from its spec, in declaration
+	/// order: the boot sweep reads them before any node exists. None for a type on the old interface.
+	std::span<const StoreDeclaration> stores() const noexcept { return stores_; }
 
 private:
 	template <const auto& Table> friend class NodeTypeOf; // nothing else can derive, but makeNodeType's type
 	template <const auto& Spec, class Type> friend class spec_detail::SpecNodeType;
-	explicit NodeType(const AnySettingsTable& table) noexcept;
+	explicit NodeType(const AnySettingsTable& table, std::span<const StoreDeclaration> stores = {}) noexcept;
 	/// The one customisation point. Called only with what the table's walk made.
 	virtual MadeConfig makeConfig(const NodeName& node, CheckedSettings settings) const = 0;
-	const AnySettingsTable* table_; // static storage, because NodeTypeOf takes it as a template argument
+	const AnySettingsTable* table_;            // static storage, because NodeTypeOf takes it as a template argument
+	std::span<const StoreDeclaration> stores_; // static storage: the spec's Stores::declared
 };
 } // namespace ear

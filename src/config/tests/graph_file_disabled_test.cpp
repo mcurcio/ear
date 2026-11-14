@@ -15,7 +15,7 @@ using json = nlohmann::json;
 
 namespace {
 
-const std::string formatLines = "graph_frequency 48000;\nblock_size 256;\n";
+const std::string formatLines = "graph {\n    rate 48khz;\n    block_size 256;\n}\n";
 
 struct Fixture {
 	NodeCatalogue catalogue{test::testTypes()};
@@ -158,42 +158,42 @@ TEST_CASE("Every refusal of disabled has its code and place, and leaves no wante
 
 	SECTION("a bare disabled") {
 		const auto model = f.load(formatLines + "node white noise { disabled; }\n");
-		CHECK(placed(model.read()) == std::vector<Placed>{{"ear/bad-directive", 3, 20}});
+		CHECK(placed(model.read()) == std::vector<Placed>{{"ear/bad-directive", 5, 20}});
 		CHECK(messageOf(model) == "disabled takes true or false: write disabled true;");
 		CHECK_FALSE(model.read().wanted.has_value());
 	}
 	SECTION("two values") {
 		const auto model = f.load(formatLines + "node white noise { disabled true false; }\n");
-		CHECK(placed(model.read()) == std::vector<Placed>{{"ear/bad-directive", 3, 20}});
+		CHECK(placed(model.read()) == std::vector<Placed>{{"ear/bad-directive", 5, 20}});
 		CHECK(messageOf(model) == "disabled takes true or false: write disabled true;");
 	}
 	SECTION("a block") {
 		const auto model = f.load(formatLines + "node white noise { disabled true { x; } }\n");
-		CHECK(placed(model.read()) == std::vector<Placed>{{"ear/bad-directive", 3, 20}});
+		CHECK(placed(model.read()) == std::vector<Placed>{{"ear/bad-directive", 5, 20}});
 		CHECK(messageOf(model) == "disabled takes true or false: write disabled true;");
 	}
 	SECTION("given twice") {
 		const auto model = f.load(formatLines + "node white noise { disabled false; disabled true; }\n");
-		CHECK(placed(model.read()) == std::vector<Placed>{{"ear/bad-directive", 3, 36}});
+		CHECK(placed(model.read()) == std::vector<Placed>{{"ear/bad-directive", 5, 36}});
 		CHECK(messageOf(model) == "setting disabled is given twice");
 		CHECK_FALSE(model.read().wanted.has_value());
 	}
 	SECTION("a word other than true or false: knobly's E4006 on the value") {
 		const auto model = f.load(formatLines + "node white noise { disabled yes; }\n");
-		CHECK(placed(model.read()) == std::vector<Placed>{{"E4006", 3, 29}});
+		CHECK(placed(model.read()) == std::vector<Placed>{{"E4006", 5, 29}});
 		CHECK_FALSE(model.read().wanted.has_value());
 	}
 	SECTION("a quoted value or a list: knobly's E4002 on the value") {
 		const auto quoted = f.load(formatLines + "node white noise { disabled \"true\"; }\n");
-		CHECK(placed(quoted.read()) == std::vector<Placed>{{"E4002", 3, 29}});
+		CHECK(placed(quoted.read()) == std::vector<Placed>{{"E4002", 5, 29}});
 		const auto list = f.load(formatLines + "node white noise { disabled [true]; }\n");
-		CHECK(placed(list.read()) == std::vector<Placed>{{"E4002", 3, 29}});
+		CHECK(placed(list.read()) == std::vector<Placed>{{"E4002", 5, 29}});
 	}
 	SECTION("the old spellings on the node's line, with the hint") {
 		for (const std::string line : {"node card porch disabled { card USB2; playback 2; }\n",
 		                               "node disabled card porch { card USB2; playback 2; }\n"}) {
 			const auto model = f.load(formatLines + line);
-			CHECK(placed(model.read()) == std::vector<Placed>{{"ear/bad-directive", 3, 1}});
+			CHECK(placed(model.read()) == std::vector<Placed>{{"ear/bad-directive", 5, 1}});
 			CHECK(messageOf(model) == "node takes a type and a name: node <type> <name> [{ <setting> <value>; ... }]; "
 			                          "to disable a node, write disabled true; inside its braces");
 		}
@@ -238,11 +238,11 @@ TEST_CASE("node.disable edits only the node's own line, or puts disabled true fi
 	SECTION("refused shared-definition when the line sits in a snippet another node uses") {
 		const std::string text =
 			formatLines + "@snippet on { disabled false; }\nnode white a { @use on; }\nnode white b { @use on; }\n";
-		CHECK(sharedAt(f.load(text).disableNode("a")) == control::TextPlace{3, 15});
+		CHECK(sharedAt(f.load(text).disableNode("a")) == control::TextPlace{5, 15});
 	}
 	SECTION("refused shared-definition when the node's own line makes two nodes") {
 		const std::string text = formatLines + "@snippet take $n { node white $n; }\n@use take t1;\n@use take t2;\n";
-		CHECK(sharedAt(f.load(text).disableNode("t1")) == control::TextPlace{3, 20});
+		CHECK(sharedAt(f.load(text).disableNode("t1")) == control::TextPlace{5, 20});
 	}
 	SECTION("already disabled: unchanged, from any source") {
 		CHECK(unchanged(f.load(formatLines + "node white a { disabled true; }\n").disableNode("a")));
@@ -299,7 +299,7 @@ TEST_CASE("node.enable removes the node's own line, and drops a block it empties
 	SECTION("refused shared-definition when the line sits in a snippet another node uses") {
 		const std::string text =
 			formatLines + "@snippet off { disabled true; }\nnode white a { @use off; }\nnode white b { @use off; }\n";
-		CHECK(sharedAt(f.load(text).enableNode("b")) == control::TextPlace{3, 16});
+		CHECK(sharedAt(f.load(text).enableNode("b")) == control::TextPlace{5, 16});
 	}
 	SECTION("not disabled, or disabled false;: unchanged") {
 		CHECK(unchanged(f.load(formatLines + "node white a;\n").enableNode("a")));

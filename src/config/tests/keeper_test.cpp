@@ -49,7 +49,7 @@ public:
 	Reader(const DesiredGraph& graph, Log& log) : graph_(graph), log_(log) {}
 	GraphView read() const override {
 		log_.push("read graph");
-		GraphView view{{{48000, 256}, false, "SCHED_OTHER"}, {}, {}, {}};
+		GraphView view{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {}, {}, {}};
 		for (auto& node : graph_.nodes()) view.nodes.push_back({node.spec, node.ports, healthFromSpec(node.spec)});
 		return view;
 	}
@@ -87,7 +87,7 @@ folder::ConfinedFolder openFolder(const std::filesystem::path& path) {
 struct Fixture {
 	/// ear.conf holds `boot` (nothing: missing). `fake`: the disk to use instead of the folder.
 	explicit Fixture(const std::string& name, std::optional<std::string> boot = recordExample, FakeDisk* fake = nullptr,
-	                 AudioFormat engine = {48000, 256})
+	                 AudioFormat engine = {ear::SampleRate::fixed<48000>(), 256})
 		: dir(name), file(dir.path() / "ear.conf"), folder(openFolder(dir.path())) {
 		if (boot) std::ofstream(file, std::ios::binary) << *boot;
 		graph.subscribe(static_cast<DesiredNodeListener&>(graphLog));
@@ -254,7 +254,7 @@ TEST_CASE("A boot file the graph refuses shows the refusal at its place, and not
 	CHECK_FALSE(change.file.running.has_value());
 	REQUIRE(change.file.refusal.has_value());
 	CHECK(errorCode(change.file.refusal->error) == "unknown-port");
-	CHECK(change.file.refusal->place == control::TextPlace{12, 1});
+	CHECK(change.file.refusal->place == control::TextPlace{14, 1});
 	CHECK(f.graph.nodes().empty());
 }
 
@@ -344,7 +344,7 @@ TEST_CASE("A refused hand edit after a dropped edit shows the refusal, and the g
 	CHECK(change.droppedEdits == 1);
 	REQUIRE(change.file.refusal.has_value());
 	CHECK(errorCode(change.file.refusal->error) == "unknown-port");
-	CHECK(change.file.refusal->place == control::TextPlace{12, 1});
+	CHECK(change.file.refusal->place == control::TextPlace{14, 1});
 	CHECK(change.file.running == edited);
 	CHECK(f.graphFile().text == hand);
 	f.free();
@@ -393,6 +393,68 @@ TEST_CASE("graphFile.set: a stale version, a text with errors, the same text and
 	CHECK(ok(f.set(handText, version)));
 	CHECK(f.log.lines == Lines{"file edit", "node.updated rec", "reply"});
 	CHECK(f.graphFile().text == handText);
+}
+
+TEST_CASE("node.setText: a stale version first, file-invalid, then the text's own checks, and accepted it is an edit",
+          "[keeper][node-text]") {
+	Fixture f("set_text");
+	f.start();
+	const auto boot = f.graphFile();
+	REQUIRE(boot.nodeTexts.has_value()); // the file's state carries where each node is written
+	CHECK(boot.nodeTexts->front() == control::NodeText{"noise", {10, 1}, {10, 18}, false});
+	const auto setText = [&](std::string node, std::string text, std::string version) {
+		auto results = f.run({control::SetNodeText{std::move(node), std::move(text), std::move(version)}});
+		REQUIRE(results.size() == 1);
+		return results[0];
+	};
+	f.log.clear();
+
+	// A stale version is file-changed even with a text that would be refused for itself.
+	CHECK(code(setText("rec", "oops", boot.version + "0")) == "file-changed");
+	CHECK(code(setText("nope", "node white nope;", boot.version)) == "unknown-node");
+	CHECK(code(setText("rec", "node file rec { path take2.wav }", boot.version)) == "invalid-text");
+	CHECK(f.log.lines == Lines{"reply", "reply", "reply"}); // nothing announced, nothing run
+	f.log.clear();
+
+	CHECK(ok(setText("rec", R"(node file rec { path "take2.wav"; })", boot.version)));
+	CHECK(f.log.lines == Lines{"file edit", "node.updated rec", "reply"});
+	CHECK(f.lastChange().cause == FileChangeCause::edit);
+	CHECK(f.lastChange().file.text == replaced(recordExample, "take1.wav", "take2.wav"));
+	CHECK(f.lastChange().file.nodeTexts == boot.nodeTexts); // the same length: every node where it was
+
+	handEdit(f.file, replaced(recordExample, "node white noise;", "nod white noise;"));
+	f.diskEvent();
+	CHECK_FALSE(f.lastChange().file.nodeTexts.has_value()); // a file with errors says where no node is
+	CHECK(code(setText("rec", R"(node file rec { path "take3.wav"; })", f.lastChange().file.version)) ==
+	      "file-invalid");
+}
+
+TEST_CASE("node.addText: a stale version first, file-invalid, then the text's own checks, and accepted it is an edit",
+          "[keeper][node-text]") {
+	Fixture f("add_text");
+	f.start();
+	const auto boot = f.graphFile();
+	const auto addText = [&](std::string text, std::string version) {
+		auto results = f.run({control::AddNodeText{std::move(text), std::move(version)}});
+		REQUIRE(results.size() == 1);
+		return results[0];
+	};
+	f.log.clear();
+
+	CHECK(code(addText("oops", boot.version + "0")) == "file-changed");
+	CHECK(code(addText("node white a; node white b;", boot.version)) == "invalid-text");
+	CHECK(code(addText("node white noise;", boot.version)) == "duplicate-node"); // the graph's to judge
+	CHECK(f.log.lines == Lines{"reply", "reply", "reply"});                      // nothing announced, nothing run
+	f.log.clear();
+
+	CHECK(ok(addText("node white n2;", boot.version)));
+	CHECK(f.log.lines == Lines{"file edit", "node.added n2", "reply"});
+	CHECK(f.lastChange().file.text == recordExample + "node white n2;\n");
+	CHECK(f.lastChange().file.nodeTexts->back() == control::NodeText{"n2", {16, 1}, {16, 15}, false});
+
+	handEdit(f.file, replaced(recordExample, "node white noise;", "nod white noise;"));
+	f.diskEvent();
+	CHECK(code(addText("node white n3;", f.lastChange().file.version)) == "file-invalid");
 }
 
 TEST_CASE("The watch event for the keeper's own write announces nothing", "[keeper]") {
@@ -636,9 +698,9 @@ TEST_CASE("A file at another rate is accepted with a pending restart, and a miss
           "created by a set",
           "[keeper]") {
 	SECTION("pending restart") {
-		Fixture f("pending", recordExample, nullptr, {48000, 256});
+		Fixture f("pending", recordExample, nullptr, {ear::SampleRate::fixed<48000>(), 256});
 		f.start();
-		const auto other = replaced(recordExample, "graph_frequency 48000;", "graph_frequency 44100;");
+		const auto other = replaced(recordExample, "rate 48khz;", "rate 44.1khz;");
 		CHECK(ok(f.set(other, f.graphFile().version)));
 		CHECK(f.lastChange().file.pendingRestart ==
 		      std::vector<control::FormatKey>{control::FormatKey::graphFrequency});

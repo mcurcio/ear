@@ -25,7 +25,7 @@ std::unique_ptr<Engine> makeEngine() {
 	                         "DBUS_SYSTEM_BUS_ADDRESS"}) {
 		unsetenv(name);
 	}
-	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, 48000, 256});
+	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, ear::SampleRate::fixed<48000>(), 256});
 	if (!engine) FAIL("Engine::create: " << engine.error().detail);
 	return std::move(*engine);
 }

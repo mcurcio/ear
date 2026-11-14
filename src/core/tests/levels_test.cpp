@@ -49,9 +49,9 @@ TEST_CASE("take() starts a new window, and a window with no samples is silent", 
 }
 
 TEST_CASE("A window is 1/30 s of the graph clock, rounded up", "[levels]") {
-	CHECK(levelWindowFrames(48000) == 1600);
-	CHECK(levelWindowFrames(44100) == 1470);
-	CHECK(levelWindowFrames(96000) == 3200);
-	CHECK(levelWindowFrames(22050) == 735);
-	CHECK(levelWindowFrames(1) == 1);
+	CHECK(levelWindowFrames(ear::SampleRate::fixed<48000>()) == 1600);
+	CHECK(levelWindowFrames(ear::SampleRate::fixed<44100>()) == 1470);
+	CHECK(levelWindowFrames(ear::SampleRate::fixed<96000>()) == 3200);
+	CHECK(levelWindowFrames(ear::SampleRate::fixed<22050>()) == 735);
+	CHECK(levelWindowFrames(ear::SampleRate::fixed<1>()) == 1);
 }

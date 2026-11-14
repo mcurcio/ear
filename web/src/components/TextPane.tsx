@@ -8,8 +8,10 @@ import { dirty, offsetOf, paneFrom, paneReduce, saveRequest, shownDiagnostics } 
 import type { FormatKey, RpcErrorCode } from "../protocol";
 import { RpcError } from "../rpc";
 import { useEditor } from "./hooks";
+import { KnoblyText } from "./KnoblyText";
 
-const formatNames: { [K in FormatKey]: string } = { graphFrequency: "graph frequency", blockSize: "block size" };
+// The wire's keys named as ear.conf's graph block writes them (graph { rate ...; block_size ...; }).
+const formatNames: { [K in FormatKey]: string } = { graphFrequency: "graph rate", blockSize: "block size" };
 
 function place(line: number, column: number): string {
   return `${line}:${column}`;
@@ -94,13 +96,11 @@ export function TextPane({ state, onError }: { state: GraphFileState; onError: (
           {pending.join(" and ")} change applies at restart
         </div>
       )}
-      <textarea
+      <KnoblyText
         ref={text}
-        className="text-pane-text"
         rows={20}
-        spellCheck={false}
         value={pane.draft}
-        onChange={(event) => dispatch({ kind: "edit", text: event.target.value })}
+        onEdit={(draft) => dispatch({ kind: "edit", text: draft })}
       />
       {diagnostics.length > 0 && (
         <ul className="diagnostics">

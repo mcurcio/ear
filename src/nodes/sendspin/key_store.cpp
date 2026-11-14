@@ -2,22 +2,16 @@
 
 #include <chrono>
 #include <format>
-#include <string_view>
 #include <utility>
-#include <variant>
-
-#include <sys/stat.h>
 
 #include "notes.hpp"
 #include "sendspin/persistence_codec.h"
 
-namespace ear::sendspin {
+namespace ear::nodes::sendspin {
 namespace {
 
 using nlohmann::json;
 
-constexpr std::size_t maxFileBytes = 64 * 1024;
-constexpr mode_t fileMode = 0600;
 constexpr std::string_view writer = "ear";
 
 std::string now() {
@@ -26,8 +20,7 @@ std::string now() {
 
 std::string render(const json& record) { return record.dump(2) + '\n'; }
 
-/// Why `text` is no key file, or nothing when it is one. A keypair of the wrong size counts: the library would treat it
-/// as absent and mint a new identity over trusted state.
+/// Why `record` is no key record, or nothing when it is one.
 std::optional<std::string> whyMalformed(const json& record) {
 	if (!record.is_object()) return "not a JSON object";
 	for (const char* field : {"createdAt", "createdBy", "changedAt", "changedBy"}) {
@@ -48,58 +41,30 @@ std::optional<std::string> whyMalformed(const json& record) {
 
 } // namespace
 
-std::vector<std::string> narrowKeyFiles(const folder::ConfinedFolder& folder) {
-	std::vector<std::string> failures;
-	auto names = folder.fileNames();
-	if (!names) return {names.error().detail};
-	for (const std::string& name : *names) {
-		const bool keyFile = name.starts_with("sendspin-") && name.ends_with(".key");
-		const bool staged = name.starts_with(".sendspin-") && name.ends_with(".key.ear-staging");
-		if (!keyFile && !staged) continue;
-		if (auto narrowed = folder.restrictMode(name, fileMode); !narrowed) failures.push_back(narrowed.error().detail);
-	}
-	return failures;
+std::string emptyKeyRecord() {
+	const std::string at = now();
+	return render({{"createdAt", at},
+	               {"createdBy", writer},
+	               {"changedAt", at},
+	               {"changedBy", writer},
+	               {"blobs", json::object()}});
 }
 
-std::expected<std::unique_ptr<NodeKeyStore>, std::string>
-NodeKeyStore::open(std::shared_ptr<const folder::ConfinedFolder> folder, const NodeName& node, InsidesEvents& events) {
-	const std::string file = "sendspin-" + node + ".key";
-	auto read = folder->read(file, maxFileBytes);
-	if (!read) return std::unexpected(read.error().detail);
-
-	json record;
-	std::string text;
-	if (*read) {
-		// Every open, because an fsGroup widens the file on every mount, and before its text is judged, because a file
-		// refused for its text may still hold a private key (docs/node-types.md#the-identity-file).
-		if (auto narrowed = folder->restrictMode(file, fileMode); !narrowed)
-			return std::unexpected(narrowed.error().detail);
-		text = std::move(**read);
-		record = json::parse(text, nullptr, false);
-		if (record.is_discarded()) return std::unexpected(file + ": malformed: not JSON");
-		if (const auto why = whyMalformed(record)) return std::unexpected(file + ": malformed: " + *why);
-	} else {
-		// Now, because the library only warns when it cannot save a new key, and would run a fresh identity each boot.
-		const std::string at = now();
-		record = {{"createdAt", at},
-		          {"createdBy", writer},
-		          {"changedAt", at},
-		          {"changedBy", writer},
-		          {"blobs", json::object()}};
-		text = render(record);
-		auto created = folder->replaceIf(file, std::nullopt, text, maxFileBytes, fileMode);
-		if (!created) return std::unexpected(created.error().detail);
-		if (!std::holds_alternative<folder::Replaced>(*created))
-			return std::unexpected(file + ": appeared while being created");
-	}
-	return std::unique_ptr<NodeKeyStore>(
-		new NodeKeyStore(std::move(folder), file, events, std::move(record), std::move(text)));
+std::optional<std::string> whyNotKeyRecord(std::string_view text) {
+	const json record = json::parse(text, nullptr, false);
+	if (record.is_discarded()) return "malformed: not JSON";
+	if (const auto why = whyMalformed(record)) return "malformed: " + *why;
+	return std::nullopt;
 }
 
-NodeKeyStore::NodeKeyStore(std::shared_ptr<const folder::ConfinedFolder> folder, std::string file,
-                           InsidesEvents& events, nlohmann::json record, std::string text) noexcept
-	: folder_(std::move(folder)), file_(std::move(file)), events_(events), record_(std::move(record)),
-	  text_(std::move(text)) {}
+std::expected<std::unique_ptr<NodeKeyStore>, std::string> NodeKeyStore::open(Store& store, NodeHandle& events) {
+	const std::string text = store.text();
+	if (const auto why = whyNotKeyRecord(text)) return std::unexpected(store.fileName() + ": " + *why);
+	return std::unique_ptr<NodeKeyStore>(new NodeKeyStore(store, events, json::parse(text)));
+}
+
+NodeKeyStore::NodeKeyStore(Store& store, NodeHandle& events, nlohmann::json record) noexcept
+	: store_(store), events_(events), record_(std::move(record)) {}
 
 std::optional<std::vector<std::uint8_t>> NodeKeyStore::load_blob(const std::string& key) {
 	const json& blobs = record_["blobs"];
@@ -113,30 +78,16 @@ bool NodeKeyStore::save_blob(const std::string& key, const std::uint8_t* data, s
 	record_["changedAt"] = now();
 	record_["changedBy"] = writer;
 	std::string text = render(record_);
-	if (text.size() > maxFileBytes) {
-		events_.say(notes::keyWriteFailed(std::format("{}: larger than {} bytes", file_, maxFileBytes)));
-		return false;
-	}
-	// Staged with the mode of what it replaces, so narrowed first: a mode widened mid-run must not outlive this write.
-	if (const auto narrowed = folder_->restrictMode(file_, fileMode); !narrowed) {
-		const auto there = folder_->read(file_, maxFileBytes);
-		const bool missing = there && !*there;
-		events_.say(notes::keyWriteFailed(missing ? file_ + ": changed by something else" : narrowed.error().detail));
-		return false;
-	}
-	const auto replaced = folder_->replaceIf(file_, text_, text, maxFileBytes, fileMode);
-	if (!replaced) {
-		events_.say(notes::keyWriteFailed(replaced.error().detail));
-		return false;
-	}
-	if (!std::holds_alternative<folder::Replaced>(*replaced)) {
-		// Someone changed or removed it: theirs stands (deleting it and restarting wipes the identity:
-		// docs/node-types.md#the-identity-file).
-		events_.say(notes::keyWriteFailed(file_ + ": changed by something else"));
-		return false;
-	}
-	text_ = std::move(text);
-	return true;
+	const StoreWritten written = store_.replace(text);
+	if (written) return true;
+	// Unconfirmed is neither success nor failure (docs/writing-a-node-type.md#stores): the write was under way and may
+	// still land, and the store's text shows it once it has. Not shown yet, it is told as failed, the pairing holding
+	// for this run as for any failed write; if it lands later, the file holds this run's state all the same.
+	if (written.error().kind == StoreWriteError::Kind::unconfirmed && store_.text() == text) return true;
+	// Refused: someone changed or removed it, and theirs stands (deleting it and restarting wipes the identity:
+	// docs/node-types.md#the-identity-file); or the disk refused.
+	events_.say(notes::keyWriteFailed(written.error().detail));
+	return false;
 }
 
-} // namespace ear::sendspin
+} // namespace ear::nodes::sendspin

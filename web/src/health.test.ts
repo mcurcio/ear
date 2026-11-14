@@ -53,6 +53,14 @@ describe("describeHealth", () => {
     expect(enabled(describeHealth(configuring, long))).toEqual(["stop", "restart", "disable"]);
     const waits = node({ phase: "configuring", waitingFor: [{ kind: "companion", name: "desk.playback" }] });
     expect(describeHealth(waits, at).line).toBe("waiting for desk.playback");
+    const loop = node({ phase: "configuring", waitingFor: [{ kind: "loop", name: "sendspin" }, { kind: "consumer" }] });
+    expect(describeHealth(loop, at).line).toBe("waiting for its loop sendspin, its consumer");
+    const store = node({ phase: "configuring", waitingFor: [{ kind: "store", name: "sendspin-fpp.key" }] });
+    expect(describeHealth(store, at).line).toBe("waiting for its store sendspin-fpp.key");
+    const recording = node({ phase: "configuring", waitingFor: [{ kind: "recording", name: "take1.wav" }] });
+    expect(describeHealth(recording, at).line).toBe("waiting for its recording take1.wav");
+    const claim = node({ phase: "configuring", waitingFor: [{ kind: "claim", name: "udp:5004" }] });
+    expect(describeHealth(claim, at).line).toBe("waiting for its claim udp:5004");
     expect(describeHealth(node({ phase: "configuring" }), long).line).toBe("configuring");
     expect(describeHealth(node({ phase: "configuring", cause: { kind: "enabling" } }), long).line).toBe(
       "configuring: enabled",

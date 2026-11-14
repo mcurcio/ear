@@ -89,6 +89,14 @@ function waitingWords(waits: WaitingFor[]): string {
         return wait.name ?? "a companion";
       case "consumer":
         return "its consumer";
+      case "loop":
+        return `its loop ${wait.name ?? ""}`.trimEnd();
+      case "store":
+        return `its store ${wait.name ?? ""}`.trimEnd();
+      case "recording":
+        return `its recording ${wait.name ?? ""}`.trimEnd();
+      case "claim":
+        return `its claim ${wait.name ?? ""}`.trimEnd();
       default:
         return wait.name !== undefined ? `${wait.kind} ${wait.name}` : wait.kind;
     }

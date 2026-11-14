@@ -93,8 +93,10 @@ std::expected<std::string, std::string> readAll(int fd, std::size_t maxBytes) {
 }
 
 /// The regular file `name` beneath `dirfd` with no symlinks: its text, nullopt when it is missing,
-/// or why it cannot be read.
-std::expected<std::optional<std::string>, std::string> readFile(int dirfd, const char* name, std::size_t maxBytes) {
+/// or why it cannot be read. With `narrowTo`, its mode bits outside it are cleared on the same
+/// descriptor first, so the file narrowed is the file read.
+std::expected<std::optional<std::string>, std::string> readFile(int dirfd, const char* name, std::size_t maxBytes,
+                                                                std::optional<mode_t> narrowTo = std::nullopt) {
 	// O_NONBLOCK: opening a FIFO must not wait for a writer; it is refused below as another kind.
 	const Descriptor fd(openBeneath(dirfd, name, O_RDONLY | O_NONBLOCK | O_NOCTTY | O_CLOEXEC, 0, noSymlinks));
 	if (!fd) {
@@ -104,6 +106,11 @@ std::expected<std::optional<std::string>, std::string> readFile(int dirfd, const
 	struct stat status{};
 	if (::fstat(fd.get(), &status) != 0) return std::unexpected(std::string(std::strerror(errno)));
 	if (!S_ISREG(status.st_mode)) return std::unexpected(std::string("not a regular file"));
+	if (narrowTo) {
+		const mode_t mode = status.st_mode & 07777;
+		if ((mode & ~*narrowTo) != 0 && ::fchmod(fd.get(), mode & *narrowTo) != 0)
+			return std::unexpected(std::string(std::strerror(errno)));
+	}
 	if (static_cast<std::uint64_t>(status.st_size) > maxBytes) {
 		return std::unexpected("larger than " + std::to_string(maxBytes) + " bytes");
 	}
@@ -210,6 +217,13 @@ std::expected<int, FolderError> ConfinedFolder::create(const std::string& relati
 std::expected<std::optional<std::string>, FolderError> ConfinedFolder::read(const std::string& relative,
                                                                             std::size_t maxBytes) const {
 	auto text = readFile(fd_, relative.c_str(), maxBytes);
+	if (!text) return std::unexpected(failure(relative, text.error()));
+	return std::move(*text);
+}
+
+std::expected<std::optional<std::string>, FolderError>
+ConfinedFolder::readNarrowed(const std::string& relative, std::size_t maxBytes, mode_t most) const {
+	auto text = readFile(fd_, relative.c_str(), maxBytes, most);
 	if (!text) return std::unexpected(failure(relative, text.error()));
 	return std::move(*text);
 }

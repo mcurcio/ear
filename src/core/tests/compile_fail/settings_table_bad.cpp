@@ -66,6 +66,10 @@ constexpr SettingsTable<numberRow> bad{""};
 constexpr auto bad = setting::number(2, 1);
 #endif
 
+#ifdef EAR_CASE_rate_low_above_high
+constexpr auto bad = setting::rate(SampleRate::fixed<192'000>(), SampleRate::fixed<8'000>());
+#endif
+
 // A number row with no range is what refused almost everything before the rules were two.
 #ifdef EAR_CASE_number_without_range
 constexpr auto bad = setting::number(1);

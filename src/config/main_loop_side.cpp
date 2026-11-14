@@ -181,9 +181,14 @@ void MainLoopSide::announce(FileState file, control::FileChangeCause cause, std:
 }
 
 control::GraphFile MainLoopSide::graphFile(FileState file) const {
-	control::GraphFile out{
-		std::move(file.version),        std::move(file.text),       std::move(file.diagnostics), running_, std::nullopt,
-		std::move(file.pendingRestart), std::move(file.writeFailed)};
+	control::GraphFile out{std::move(file.version),
+	                       std::move(file.text),
+	                       std::move(file.diagnostics),
+	                       running_,
+	                       std::nullopt,
+	                       std::move(file.pendingRestart),
+	                       std::move(file.writeFailed),
+	                       std::move(file.nodeTexts)};
 	if (refusal_ && refusal_->version == out.version) out.refusal = refusal_->refusal;
 	return out;
 }

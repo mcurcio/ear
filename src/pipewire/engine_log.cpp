@@ -16,12 +16,13 @@
 #include <mutex>
 #include <string>
 
-#include <dlfcn.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
 
 #include <pipewire/log.h>
 #include <spa/support/log.h>
+
+#include "callback_boundary.hpp"
 
 namespace ear::pipewire {
 
@@ -113,8 +114,11 @@ LogLevel levelOf(spa_log_level level) {
 	}
 }
 
+// Every function below is called by PipeWire or alsa-lib on any thread, the data loop included: each is noexcept and
+// registered through the callback boundary as a realtime function (docs/architecture.md#the-callback-boundary).
+
 void logtv(void* /*object*/, spa_log_level level, const spa_log_topic* topic, const char* /*file*/, int /*line*/,
-           const char* /*func*/, const char* format, va_list args) {
+           const char* /*func*/, const char* format, va_list args) noexcept {
 	const char* name = topic != nullptr && topic->topic != nullptr ? topic->topic : "";
 	ring().push("pipewire", level, name,
 	            [&](char* text, std::size_t size) { return std::vsnprintf(text, size, format, args); });
@@ -122,7 +126,7 @@ void logtv(void* /*object*/, spa_log_level level, const spa_log_topic* topic, co
 
 /// alsa-lib's error handler (snd_lib_error_handler_t), as alsa-lib's own default words it: "<file>:<line>:(<function>)
 /// <message>[: <error>]". alsa-lib calls it on whatever thread failed, the data loop included.
-void alsaError(const char* file, int line, const char* function, int error, const char* format, ...) {
+void alsaError(const char* file, int line, const char* function, int error, const char* format, ...) noexcept {
 	va_list args;
 	va_start(args, format);
 	ring().push("alsa-lib", SPA_LOG_LEVEL_ERROR, "", [&](char* text, std::size_t size) {
@@ -140,18 +144,8 @@ void alsaError(const char* file, int line, const char* function, int error, cons
 	va_end(args);
 }
 
-/// Points alsa-lib's process-wide error handler at alsaError. The image carries alsa-lib's run-time library only
-/// (the ALSA plugin links it), so it is reached by name, not linked; where it is missing there is no ALSA to log.
-void installAlsaHandler() {
-	using Handler = void (*)(const char*, int, const char*, int, const char*, ...);
-	using SetHandler = int (*)(Handler);
-	static void* const library = ::dlopen("libasound.so.2", RTLD_NOW | RTLD_GLOBAL);
-	if (library == nullptr) return;
-	if (auto* set = reinterpret_cast<SetHandler>(::dlsym(library, "snd_lib_error_set_handler"))) set(&alsaError);
-}
-
 void logt(void* object, spa_log_level level, const spa_log_topic* topic, const char* file, int line, const char* func,
-          const char* format, ...) {
+          const char* format, ...) noexcept {
 	va_list args;
 	va_start(args, format);
 	logtv(object, level, topic, file, line, func, format, args);
@@ -159,12 +153,12 @@ void logt(void* object, spa_log_level level, const spa_log_topic* topic, const c
 }
 
 void logv(void* object, spa_log_level level, const char* file, int line, const char* func, const char* format,
-          va_list args) {
+          va_list args) noexcept {
 	logtv(object, level, nullptr, file, line, func, format, args);
 }
 
 void logPlain(void* object, spa_log_level level, const char* file, int line, const char* func, const char* format,
-              ...) {
+              ...) noexcept {
 	va_list args;
 	va_start(args, format);
 	logtv(object, level, nullptr, file, line, func, format, args);
@@ -172,24 +166,7 @@ void logPlain(void* object, spa_log_level level, const char* file, int line, con
 }
 
 /// Topics follow the log's one level (has_custom_level stays false).
-void topicInit(void* /*object*/, spa_log_topic* /*topic*/) {}
-
-const spa_log_methods methods{
-	.version = SPA_VERSION_LOG_METHODS,
-	.log = logPlain,
-	.logv = logv,
-	.logt = logt,
-	.logtv = logtv,
-	.topic_init = topicInit,
-};
-
-spa_log& spaLog() {
-	static spa_log instance{
-		.iface = SPA_INTERFACE_INIT(SPA_TYPE_INTERFACE_Log, SPA_VERSION_LOG, &methods, nullptr),
-		.level = SPA_LOG_LEVEL_WARN,
-	};
-	return instance;
-}
+void topicInit(void* /*object*/, spa_log_topic* /*topic*/) noexcept {}
 
 } // namespace
 
@@ -197,8 +174,12 @@ EngineLog::EngineLog() { ring(); }
 
 EngineLog& EngineLog::install() {
 	static EngineLog instance;
-	pw_log_set(&spaLog());
-	installAlsaHandler();
+	installLog<LogCallbacks{.log = realtimeFunction<&logPlain>,
+	                        .logv = realtimeFunction<&logv>,
+	                        .logt = realtimeFunction<&logt>,
+	                        .logtv = realtimeFunction<&logtv>,
+	                        .topicInit = realtimeFunction<&topicInit>}>(SPA_LOG_LEVEL_WARN);
+	setAlsaErrorHandler(realtimeFunction<&alsaError>);
 	return instance;
 }
 

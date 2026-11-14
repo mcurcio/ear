@@ -117,7 +117,7 @@ struct ConfigAction {
 		silence,            // post a silence (5 s timer)
 		fadeUnacknowledged, // ear.fade-unacknowledged
 		release,            // clear the latency plan; release the code
-		teardown,           // queue the outside nodes' destruction; close sinks and legacy handoffs; 10 s timer
+		teardown,           // queue the engine companions' destruction; close sinks and legacy handoffs; 10 s timer
 		free,               // on the main loop: the code, the instance, the recordings, in that order
 		barrierOverdue,     // ear.barrier-overdue
 		markWedged,         // the data loop is wedged
@@ -141,6 +141,11 @@ public:
 	bool stopAsked() const noexcept { return stopAsked_; }
 	bool fades() const noexcept { return fades_; }
 	std::uint64_t barrier() const noexcept { return barrier_; } // the newest request's number
+	/// configure's return, while readying: whether some output the code writes is faded, now that the companions
+	/// whose banks are never faded (a sink's) are known. Narrows what `configure` said from the ports alone.
+	void outputsFaded(bool fades) noexcept {
+		if (state_ == ConfigState::readying) fades_ = fades;
+	}
 	/// An event that does not apply (or a stale completion) changes nothing and returns no action.
 	std::vector<ConfigAction> on(const ConfigInput& input);
 
@@ -162,12 +167,14 @@ private:
 // ---- The failure's code, by fact ----
 
 enum class Fact {
-	engine,          // a sound card or RTP receiver refused or lost; the block refused or lost; the loop wedged
-	configureFailed, // configure answered failed(d)
-	consumerLost,    // a sink consumer's begin said lost
-	recipeFailed,    // a legacy recipe failed
-	nodeLost,        // lost(detail) from the node's handle
-	hookThrew,       // configure, start() or stop() threw
+	engine,             // a sound card or RTP receiver refused or lost; the block refused or lost; the loop wedged
+	configureFailed,    // configure answered failed(d)
+	consumerNeverBegan, // a sink's consumer did not begin within its readiness deadline
+	recipeFailed,       // a legacy recipe failed
+	nodeLost,           // lost(detail) from the node's handle
+	hookThrew,          // a type's code threw: a hook, its code's prepare, or a consumer
+	adapterFaulted,     // ear's own bug in one of the node's adapters: lost whatever the phase
+						// (docs/architecture.md#faults-by-owner)
 };
 FailureCode failureCodeFor(Fact fact, bool rested) noexcept;
 
@@ -201,6 +208,7 @@ struct DeriveFacts {
 	std::optional<Failure> failure{};
 	bool predecessor = false;
 	bool configuredTold = false;
+	FailureCode blockLossCode = FailureCode::engineRefused; // a block lost by its own bug: lost
 };
 Health derive(const DeriveFacts& facts);
 /// The derivation's first row: block gone, configuration none, intent remove.
@@ -225,7 +233,13 @@ struct Tell {
 	Health health;
 };
 struct Gone {};
-using NodeAction = std::variant<BlockAction, ConfigAction, Tell, Gone>;
+/// A fault the aggregate neither applied nor held (a teardown or a failure already outranks it, a second fault during a
+/// stop, or no configuration to fail): what was dropped, so NodeHost can record it.
+struct Dropped {
+	Fact fact;
+	std::string detail;
+};
+using NodeAction = std::variant<BlockAction, ConfigAction, Tell, Gone, Dropped>;
 using Actions = std::vector<NodeAction>;
 
 /// core's own replies to start, stop and restart, NodeOperations' (node_host.hpp); MainLoopSide maps them
@@ -257,7 +271,9 @@ public:
 	/// Every older node of the name is gone (its block destroyed and its configuration none): rule 1 may configure.
 	Actions olderNodeGone();
 	Actions blockReady();
-	Actions blockLost(std::string detail);
+	/// The block refused or dropped (engine-refused), or, by `code` lost, failed by its own bug
+	/// (docs/architecture.md#faults-by-owner); either way final.
+	Actions blockLost(std::string detail, FailureCode code = FailureCode::engineRefused);
 	// The plan's outcomes: a restart-only change, a change on a disabled node, a disable, an enable, a removal.
 	Actions change(Queued queued, std::vector<std::string> keys);
 	Actions disable();
@@ -268,6 +284,8 @@ public:
 	Operated start();
 	Operated restart();
 	// A fact against the configuration, with the fact's detail.
+	/// A fault: applied (a failure and its teardown), held during a stop, or, on every other path, dropped and said
+	/// (Dropped in the actions).
 	Actions fault(Fact fact, std::string detail);
 	Actions startThrew(std::string detail);
 	// The configuration's completions and bounds; a stale barrier number changes nothing.
@@ -281,6 +299,8 @@ public:
 	Actions closeBound();
 	/// Another node's barrier marked the data loop wedged: this node is never configured again.
 	Actions dataLoopWedged();
+	/// configure's return: whether some output the code writes is faded (ConfigurationMachine::outputsFaded).
+	void outputsFaded(bool fades) noexcept { config_.outputsFaded(fades); }
 
 	Health health() const;
 	bool removed() const noexcept;
@@ -300,6 +320,7 @@ public:
 private:
 	DeriveFacts facts() const;
 	bool raise(Intent next, std::optional<NodeCause> why = std::nullopt);
+	Actions holdOrDrop(Fact fact, std::string detail);
 	void onBlock(BlockEvent event, std::string detail, Actions& out);
 	void onConfig(ConfigInput input, Actions& out);
 	void tell(Actions& out);
@@ -321,6 +342,7 @@ private:
 	std::optional<Failure> failure_;
 	bool retryAsked_ = false;
 	std::optional<Failure> heldFault_;
+	FailureCode blockLossCode_ = FailureCode::engineRefused;
 	bool predecessor_ = false;
 	bool predecessorClosed_ = false;
 	bool olderNode_ = false;

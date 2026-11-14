@@ -13,6 +13,7 @@
 
 #include "catch2/catch.hpp"
 #include "ear/output/stall_watch.hpp"
+#include "sleeps.hpp"
 
 using ear::output::StallJudge;
 using ear::output::StallWatch;
@@ -63,7 +64,7 @@ void beatFor(StallWatch& watch, std::chrono::milliseconds span) {
 	const auto end = std::chrono::steady_clock::now() + span;
 	while (std::chrono::steady_clock::now() < end) {
 		watch.beat();
-		std::this_thread::sleep_for(10ms);
+		ear::sleeps::pace(10ms, "the heartbeat beatFor() stands in for, at its 10 ms period");
 	}
 }
 
@@ -140,7 +141,7 @@ TEST_CASE("StallWatch reports a heartbeat older than its bound once, then its re
 	const auto beforeBack = Clock::now();
 	watch.beat(); // the first beat after the stall measures it
 	const auto afterBack = Clock::now();
-	std::this_thread::sleep_for(50ms);
+	ear::sleeps::induce(50ms, "the gap between two beats whose length the report must give");
 	watch.beat(); // a later beat before the next look changes nothing
 	REQUIRE(reports.waitFor(2));
 	seen = reports.taken();
@@ -164,7 +165,7 @@ TEST_CASE("StallWatch says nothing while the heartbeat keeps moving", "[stall_wa
 TEST_CASE("StallWatch says nothing before the first beat", "[stall_watch]") {
 	Reports reports;
 	StallWatch watch = reports.make({.bound = 50ms, .period = 10ms});
-	std::this_thread::sleep_for(300ms); // boot: the main loop has not run yet
+	ear::sleeps::negative(300ms, "boot: six periods before the main loop runs, and no report may come");
 	watch.stop();
 	CHECK(reports.taken().empty());
 	watch.stop(); // idempotent
@@ -177,7 +178,7 @@ TEST_CASE("A stall still open when StallWatch stops is never resumed", "[stall_w
 	REQUIRE(reports.waitFor(1)); // ear's stop, past the main loop: no beat comes again
 	watch.stop();
 	watch.beat(); // a beat after stop is harmless and judged by no one
-	std::this_thread::sleep_for(100ms);
+	ear::sleeps::negative(100ms, "a beat after stop: no second report may come");
 	const auto seen = reports.taken();
 	REQUIRE(seen.size() == 1);
 	CHECK(seen[0].stalled);

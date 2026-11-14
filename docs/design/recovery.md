@@ -88,7 +88,7 @@ recovery::attempts(5)}`), so `TypeSpec`'s member order (`node-primitives.md` 6.1
   one value under two names, as built.)
 - **Diagnostics** (on the wire through slice 5's `node.diagnostic`, and as `diagnostic` records):
   `ear.recovery-attempt` (observation, `attempt`, `waitMs`), `ear.readiness-missed` (observation, subject the companion:
-  a readiness deadline passed, `companions.md` 3.5), and `ear.health-flapping` (a condition: active when the node goes
+  a readiness deadline passed, `docs/engine.md#readiness-deadlines`), and `ear.health-flapping` (a condition: active when the node goes
   `running` → `failed` more than a threshold within a window, which catches a node that fails just after the backoff
   resets; inactive once a whole window passes at or below it).
 - **The editor**: `recovering` has its own style; the box line counts down from `retryInMs` ("retry in 4 s (attempt 3):

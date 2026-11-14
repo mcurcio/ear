@@ -5,7 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-namespace ear::sendspin::pcm {
+namespace ear::nodes::sendspin::pcm {
 inline constexpr float scale16 = 32768.0F;
 inline constexpr float scale24 = 8388608.0F;
 /// `samples` samples of `bytes` (2 or 3) each from `in`, to `out`.
@@ -34,4 +34,4 @@ inline void fromFloat(const float* in, std::size_t samples, std::uint32_t bytes,
 			*out++ = static_cast<std::uint8_t>(static_cast<std::uint32_t>(value) >> (8U * b));
 	}
 }
-} // namespace ear::sendspin::pcm
+} // namespace ear::nodes::sendspin::pcm

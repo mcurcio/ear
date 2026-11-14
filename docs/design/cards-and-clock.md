@@ -5,8 +5,8 @@ Status: partly designed, not built, no slice number yet. The internal clock (the
 (slice 7; `docs/engine.md`). This page holds the clock and card work the framework design left for later: a follower
 watchdog for a frozen card (designed, 3.1), what ear does with a wedged card (designed, 3.2), sound cards opened off the
 main loop (constrained, not designed, 3.3), an internal clock anchored to one card (sketched, 3.4), latency a node
-reports while it runs (3.5), and the checks still owed on real hardware (4). It needs slice 3b (cards as companion
-kinds, `companions.md`) and slice 3c (the I/O executor, `node-primitives.md`).
+reports while it runs (3.5), and the checks still owed on real hardware (4). It builds on cards as engine companions
+(built, `docs/engine.md#engine-companions`) and needs slice 3c (the I/O executor, `node-primitives.md`).
 
 [V] = verified, [U] = unverified, each with what settles it.
 
@@ -29,6 +29,12 @@ engine, synchronously, so **a USB card that wedges inside the kernel can block `
 with them every node, the control port's graph requests and the keeper's main-loop side, until ear restarts** [U:
 whether a wedged MOTU blocks either]. The main-loop watchdog (built, `ear.main-loop-stalled`) reports such a stall while
 it lasts; it cannot end it.
+
+One symptom of the frozen follower is already seen on the test card, unexplained: `sound_card_test.cpp`'s "to_card's
+last 5 ms before a silence decay to zero" failed about 1 run in 50 beside 5 busy processes on 4 cores (found 2026-11-10,
+at a317bcc305 too), its card's file not growing by 16 blocks within 5 s of the drive. Why the card stops writing is not
+known [U: whether it still fails since the card tests moved onto the cycle judge, 0b055fd638; if so, the follower's
+state and the PCM's pointer at the deadline, which 3.1's watchdog would read].
 
 ## 3. The design
 
@@ -65,7 +71,7 @@ blocks those calls at all:
    thread that is not ear's main loop. Constraint: every block and companion shares one data loop (built,
    `context.num-data-loops = 1`), and the adapters must still follow the dummy driver.
 2. **ear's own ALSA I/O feeding a ring companion**: a thread per card that owns the PCM, writing into a source and
-   reading from a sink (`companions.md`), with its own rate matching against the graph clock. More code, but every ALSA
+   reading from a sink (`docs/engine.md#sources`, `#sinks`), with its own rate matching against the graph clock. More code, but every ALSA
    call is then on a thread ear can abandon.
 
 Either way a wedged card's thread is leaked, never joined, and the node fails; the rest of the graph is untouched.
@@ -86,6 +92,10 @@ on the node handle, carried by the framework on the next cycle, as an in-place c
 
 ## 4. Checks owed on real hardware (the MOTU 24Ao, the `ear-on-talos` skill)
 
+- [U] A real USB card at `quantum-limit` = the block size (`docs/engine.md#the-quantum-guard`; moved here from slice
+  3b's page when it was built). Proven on the test card and on RTP receivers at 44.1 and 96 kHz; if the MOTU will not
+  run at that limit, the limit goes back to `max(block, 8192)` and the refusal of force and lock properties stays the
+  guard.
 - [U] Drift tracking of a following card, and follower resyncs at a 256-frame quantum: USB cards report their pointer
   at URB granularity, so the follower's "delay too big" resync can fire and click; `api.alsa.headroom` and the period
   size are the knobs.

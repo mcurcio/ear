@@ -1,0 +1,9 @@
+{
+	"//": "knobly's one pin, for C++ and JS. CMakeLists.txt reads it; scripts/knobly-pin.mjs moves it and checks web/ against it. Each URL is knobly's release naming, {version} replaced by version.",
+	"version": "1.0.0",
+	"cppUrl": "https://github.com/mcurcio/knobly/releases/download/v{version}/knobly-cpp-{version}.tar.gz",
+	"cppSha256": "d30753c6beb9cb77e03478703cc6c95c5f23c9e72ffc2917429a82e5ec0db9cb",
+	"jsUrl": "https://github.com/mcurcio/knobly/releases/download/v{version}/knobly-{version}.tgz",
+	"jsIntegrity": "sha512-UUfCU0/x+2Riou/3cUIJSXXq/GbU8i4Xt5mlBuUXBxSHvYRB+NP81TBpVyhh67AXThqjiJqH7K0sWdVvnA2CQw==",
+	"sumsUrl": "https://github.com/mcurcio/knobly/releases/download/v{version}/SHA256SUMS"
+}

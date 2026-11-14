@@ -1,0 +1,9 @@
+import asyncio
+
+
+async def serve():
+    async def pace(seconds, why):
+        """A role nested in another function is not a module-level role."""
+        await asyncio.sleep(seconds)
+
+    await pace(1, "x")

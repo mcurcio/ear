@@ -19,6 +19,7 @@
 #include "catch2/catch.hpp"
 #include "ear/folder/confined_folder.hpp"
 #include "temp_folder.hpp"
+#include "without_file_privileges.hpp"
 
 namespace {
 
@@ -292,10 +293,7 @@ TEST_CASE("replaceIf() refuses a path that leads out or through a symlinked dire
 }
 
 TEST_CASE("replaceIf() in a folder it cannot write is an error and the file is unchanged", "[folder]") {
-	if (::geteuid() == 0) {
-		WARN("root writes a read-only folder; this case needs an ordinary user");
-		return;
-	}
+	const ear::test::WithoutFilePrivileges asAnOrdinaryUser; // first, so the folder is gone before they come back
 	TempFolder dir{"readonly"};
 	const auto folder = openFolder(dir.path() / "folder");
 	const auto file = dir.path() / "folder" / "ear.conf";
@@ -352,6 +350,26 @@ TEST_CASE("restrictMode() clears the bits outside what it is given and adds none
 	REQUIRE(folder.restrictMode("secret.key", 0600).has_value());
 	CHECK(permissionsOf(file) == std::filesystem::perms(0400));
 	CHECK(contents(file) == "text");
+}
+
+TEST_CASE("readNarrowed() narrows the file it reads, on one descriptor, even one too large to read", "[folder]") {
+	TempFolder dir{"narrowed"};
+	const auto folder = openFolder(dir.path() / "folder");
+	const auto file = dir.path() / "folder" / "secret.key";
+	write(file, "text");
+	std::filesystem::permissions(file, std::filesystem::perms(0666));
+	const auto narrowed = folder.readNarrowed("secret.key", 64, 0600);
+	REQUIRE(narrowed);
+	CHECK(*narrowed == std::optional<std::string>("text"));
+	CHECK(permissionsOf(file) == std::filesystem::perms(0600));
+	std::filesystem::permissions(file, std::filesystem::perms(0666));
+	CHECK_FALSE(folder.readNarrowed("secret.key", 2, 0600)); // too large: refused, but narrowed
+	CHECK(permissionsOf(file) == std::filesystem::perms(0600));
+	const auto missing = folder.readNarrowed("missing.key", 64, 0600);
+	REQUIRE(missing);
+	CHECK_FALSE(missing->has_value());
+	std::filesystem::create_symlink(file, dir.path() / "folder" / "link.key");
+	CHECK_FALSE(folder.readNarrowed("link.key", 64, 0600));
 }
 
 TEST_CASE("restrictMode() refuses a symlink, a path out, a directory, a FIFO and a missing file", "[folder]") {

@@ -19,7 +19,8 @@ ships as a container image published from GitHub Actions.
 | What | Where |
 |---|---|
 | How ear works, as built: architecture, the graph file, node types, writing a node type, the control port, standard output's records, the engine, the editor, testing | `docs/` ([`docs/README.md`](docs/README.md) is the index and reading order) |
-| Designs for work not built yet (slices 3b, 3c, 3d, 5, 6, 8, 9, cards and the clock) | [`docs/design/`](docs/design/README.md) |
+| The timing model: one tick at one graph rate, clocks and rate conversion only in edge nodes | [`docs/architecture.md#the-timing-model`](docs/architecture.md#the-timing-model) (as built, and where the code still departs); its unbuilt part is [`docs/design/timing-model.md`](docs/design/timing-model.md) |
+| Designs for work not built yet (slices 3c, 3d, 5, 6, 8, 9, cards and the clock, the root classes behind slice 3's fix clusters) | [`docs/design/`](docs/design/README.md) |
 | Working guides for specific jobs | The skills in `.claude/skills/`: `pipewire-engine` (changing `src/pipewire/` or `engine.conf`, engine traps), `control-port` (talking to port 7777), `sendspin` (pairing and operating a `sendspin` node, the protocol library), `ear-on-talos` (the image on Talos with the MOTU 24Ao, FPP's RTP stream, `sendspin` in a pod) |
 | Research notes | `docs/research/` (`motu-24ao-drivers/`: MOTU's macOS driver against `snd-usb-motu`, and the 24Ao's USB descriptors) |
 
@@ -88,17 +89,26 @@ Toolchain notes:
   copy, so point `CMAKE_ARGS` at a tree another checkout already keeps (as above); the main
   checkout may have none. Bump Boost by changing `boost_url` and `boost_sha256` in
   `CMakeLists.txt` together.
-- knobly comes from the dev image's `/opt/knobly`: its C++ release tree, which the Dockerfile's
-  throwaway `knobly` stage builds from a pinned commit with knobly's own release script (python3,
-  uv and a clang-format download, at image build only). ear adds it as a subproject in compiled
-  mode (`src/config/knobly_implementation.cpp`), and only `ear_config` links it. A Linux build
-  outside the image points the CMake cache variable `EAR_KNOBLY_DIR` at such a tree
-  (`CMAKE_ARGS=-DEAR_KNOBLY_DIR=<path>`); configure fails naming it when
-  `include/knobly/knobly.hpp` is not there. Bump knobly by changing `KNOBLY_COMMIT` in
-  `docker/Dockerfile` (the pin's one home); `scripts/dev.sh` rebuilds the image.
+- knobly has one pin for C++ and JS, `cmake/knobly.json`: its `version` (the one constant), the
+  URL templates of the C++ release asset, the npm tarball and the release's `SHA256SUMS`
+  (`cppUrl`, `jsUrl`, `sumsUrl`: knobly's release naming, `{version}` replaced by the version),
+  the SHA-256 of the C++ asset (`cppSha256`) and the SHA-512 integrity of the npm tarball
+  (`jsIntegrity`). Configure reads it
+  and fetches `knobly-cpp-<version>.tar.gz` (`CMakeLists.txt` and `include/` with the generated
+  headers) by URL and SHA-256, kept in `.cache/deps/knobly-src/` as Boost's is, and copies its
+  licence to `out/licenses/`; ear adds it as a subproject in compiled mode
+  (`src/config/knobly_implementation.cpp`), and only `ear_config` links it.
+  `CMAKE_ARGS=-DFETCHCONTENT_SOURCE_DIR_KNOBLY=<path>` names another tree, which must stamp the
+  same version. npm cannot read the pin, so `web/package.json` and `web/package-lock.json` repeat
+  the URL and integrity, and two checks hold them to it: configure stops naming each mismatch, and
+  `node scripts/knobly-pin.mjs --check` (first in `make web-test`) does the same. Bump knobly with
+  `scripts/dev.sh node scripts/knobly-pin.mjs <version>`, which downloads both assets, checks them
+  against the release's `SHA256SUMS`, runs `npm install` of the tarball in `web/` and only then
+  rewrites the pin, putting all three files back on any failure; the script's header says the rest.
 - The `sendspin` node's fetched dependencies are in `cmake/SendspinDeps.cmake`, each at a full
-  commit or by SHA-256: sendspin-cpp (with `cmake/sendspin-listener.patch`; a failed apply, or a
-  tree without it, stops configure), ArduinoJson, IXWebSocket (likewise,
+  commit or by SHA-256: sendspin-cpp (with `cmake/sendspin-listener.patch`,
+  `sendspin-starved-floor.patch` and `sendspin-late-chunk.patch`; a failed apply, or a tree without
+  one, stops configure), ArduinoJson, IXWebSocket (likewise,
   `cmake/ixwebsocket-limits.patch`), micro-flac, noise-c and mjansson/mdns (one header). Each is
   kept in `.cache/deps/` as Boost's is, and `ear_node_sendspin` is the only library that sees
   them. Configure copies their licences to `out/licenses/`. With `BUILD_TESTS=ON` configure stops
@@ -108,13 +118,16 @@ Toolchain notes:
   checkout's `.cache/ccache`, shared by every worktree.
 - The graph editor (`web/`) builds with the image's Node.js 24 (`web/.nvmrc`);
   `web/package-lock.json` pins its packages and `npm ci` installs exactly those. npm's cache is the
-  main checkout's `.cache/npm`. Developing it with hot reload: [`docs/editor.md`](docs/editor.md#developing-it).
+  main checkout's `.cache/npm`. Every package comes from the npm registry but one: knobly (its
+  highlighter), which `web/package.json` names by its GitHub Release tarball's URL and the lock by
+  its SHA-512, since GitHub Packages wants a token even to read; both follow `cmake/knobly.json`,
+  the C++ side's pin too ([`docs/editor.md`](docs/editor.md#highlighting)). Developing it with hot reload: [`docs/editor.md`](docs/editor.md#developing-it).
 
 ## Repository layout
 
 | Path | Holds |
 |---|---|
-| `src/<package>/` | One C++ package each (`core`, `folder`, `pipewire`, `output`, `control`, `config`, `server`, `all_node_types`), with its own `CMakeLists.txt`, public headers in `include/ear/<package>/` and tests in `tests/` |
+| `src/<package>/` | One C++ package each (`core`, `runtime`, `folder`, `pipewire`, `output`, `control`, `config`, `server`, `all_node_types`), with its own `CMakeLists.txt`, public headers in `include/ear/<package>/` and tests in `tests/` |
 | `src/nodes/<type>/` | One node type each, its own library; a folder here registers its type and nothing else names it ([`docs/writing-a-node-type.md`](docs/writing-a-node-type.md) is how to add or remove one) |
 | `src/main.cpp` | The composition root: wiring, boot and stop order, glue |
 | `web/` | The graph editor; shares no code with the C++, only the wire format and `test/protocol/` |
@@ -124,8 +137,9 @@ Toolchain notes:
 
 The packages, what each owns and must never do, and the dependency rules are in
 [`docs/architecture.md#packages`](docs/architecture.md#packages); keep them: dependencies point
-one way, an interface lives with the package that consumes it, no node type links another
-(configure refuses it), and no Boost, knobly or sendspin-cpp type appears in a public header.
+one way, an interface lives with the package that consumes it, no node type links another, nor
+a package only `main.cpp` links (configure refuses each), and no Boost, knobly or sendspin-cpp type
+appears in a public header.
 
 ## Conventions
 
@@ -187,7 +201,8 @@ unless you are updating a dependency. Update one with `git subtree pull --prefix
 never enter ear's history, so the release notes get only the merge commit's message (one
 Dependencies line and a patch release); the squash commit's own message is not a Conventional
 Commit, so it is ignored. Bumps of the fetched dependencies (Boost's `boost_url` and
-`boost_sha256`, `KNOBLY_COMMIT`, those in `cmake/SendspinDeps.cmake`) use the same message. The
+`boost_sha256`, knobly's `cmake/knobly.json` through `scripts/knobly-pin.mjs`, those in
+`cmake/SendspinDeps.cmake`) use the same message: `build(deps): upgrade knobly to <x>`. The
 subtrees were first added without `--squash`, so their upstream histories are in ear's history;
 the baseline tag `v0.0.0` on cb6d71f64c (the last `git subtree add`, 2020-05-27) ends them, since
 semantic-release reads only the commits after the last `v*` tag. PipeWire, alsa-lib and libsndfile

@@ -99,7 +99,9 @@ void GraphFileKeeper::submit(std::vector<control::Command> commands, control::Ba
 }
 
 void GraphFileKeeper::stop() {
-	if (impl_->thread) impl_->thread->post([&keeper = impl_->keeper] { keeper.stop(); });
+	if (!impl_->thread) return;
+	impl_->thread->post([&keeper = impl_->keeper] { keeper.stop(); });
+	impl_->thread->unwatch(); // a stopped keeper takes no disk event; its descriptor's close overlaps the nodes' stop
 }
 
 std::optional<std::string> GraphFileKeeper::join() {

@@ -2,11 +2,13 @@
 // file, a hand edit made the way editors save (a temporary file renamed over ear.conf), and
 // listeners that write what they are told into one ordered log.
 #pragma once
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include "ear/control/lifecycle_wire.hpp"
@@ -17,9 +19,34 @@
 
 namespace ear::config::test {
 
+/// The inotify watches this process holds, read from the kernel's own account of each inotify descriptor
+/// (/proc/self/fdinfo, one `inotify wd:` line a watch).
+inline std::size_t inotifyWatches() {
+	std::size_t watches = 0;
+	for (const auto& entry : std::filesystem::directory_iterator("/proc/self/fd")) {
+		std::error_code ignored;
+		if (std::filesystem::read_symlink(entry.path(), ignored) != "anon_inode:inotify") continue;
+		std::ifstream info("/proc/self/fdinfo/" + entry.path().filename().string());
+		for (std::string line; std::getline(info, line);) watches += line.starts_with("inotify wd:") ? 1U : 0U;
+	}
+	return watches;
+}
+
+/// The inotify descriptors this process holds open.
+inline std::size_t inotifyDescriptors() {
+	std::size_t open = 0;
+	for (const auto& entry : std::filesystem::directory_iterator("/proc/self/fd")) {
+		std::error_code ignored;
+		open += std::filesystem::read_symlink(entry.path(), ignored) == "anon_inode:inotify" ? 1U : 0U;
+	}
+	return open;
+}
+
 /// The record's file format example (docs/graph-file.md#edits-at-the-source).
-inline const std::string recordExample = R"(graph_frequency 48000;
-block_size 256;
+inline const std::string recordExample = R"(graph {
+    rate 48khz;
+    block_size 256;
+}
 @set $ch 2;                      # comments survive every edit
 @snippet card_out $id {          # written once, used by both cards
     card $id;

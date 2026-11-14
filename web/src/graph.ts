@@ -3,7 +3,9 @@
 // naming a node or route the client does not know changes nothing. The UI never draws a node or a wire the server has
 // not announced: the server is the one source of truth. node.state replaces every health member (one absent is absent
 // now, docs/control-port.md#notifications); members and values this editor does not know are taken as they come or
-// ignored, never a failure.
+// ignored, never a failure. The counters (docs/control-port.md#counters) are kept as sent, whole, an unknown counter
+// among them, and counters.changed replaces those it names. A node's companion list (docs/control-port.md#companions) is
+// kept as sent, and node.companionsChanged replaces it whole.
 import type {
   Graph,
   GraphNode,
@@ -33,7 +35,7 @@ const protocol0Health: NodeHealth = { state: "starting", phase: "added", wanted:
  * knows (a protocol 0 ear sends no health: such a node is starting), so a member it does not know never goes stale.
  */
 function nodeOf(from: GraphNode): GraphNode {
-  const { name, type, settings, inputs, outputs, disabled } = from;
+  const { name, type, settings, inputs, outputs, disabled, counters, companions } = from;
   return {
     name,
     type,
@@ -42,6 +44,8 @@ function nodeOf(from: GraphNode): GraphNode {
     outputs,
     ...healthOf({ ...protocol0Health, ...from }),
     ...(disabled === true ? { disabled } : {}),
+    ...(counters !== undefined ? { counters } : {}),
+    ...(companions !== undefined ? { companions } : {}),
   };
 }
 
@@ -67,6 +71,11 @@ function isGraph(value: unknown): value is Graph {
 
 function samePort(a: PortRef, b: PortRef): boolean {
   return a.node === b.node && a.port === b.port;
+}
+
+/** The engine's rate, given on the wire in hertz (graphFrequency), as people read it: 48 kHz, 44.1 kHz. */
+export function rateLabel(hertz: number): string {
+  return `${hertz / 1000} kHz`;
 }
 
 export function sameRoute(a: RouteEnds, b: RouteEnds): boolean {
@@ -140,6 +149,17 @@ const handlers: { [N in keyof Notifications]: (graph: Graph, params: Event<N>) =
   levels: (graph) => graph,
   // The file lives in its own store (graphFile.ts); the graph events it causes follow it.
   "graphFile.changed": (graph) => graph,
+  // A sample: the graph's counters whole, and those of each node named that this client holds.
+  "counters.changed": (graph, { graph: counters, nodes }) => ({
+    ...graph,
+    counters,
+    nodes: graph.nodes.map((node) => {
+      const named = nodes[node.name];
+      return named === undefined ? node : { ...node, counters: named };
+    }),
+  }),
+  // The whole list, replacing the one held; a node not held is ignored.
+  "node.companionsChanged": (graph, { name, companions }) => updateNode(graph, name, (node) => ({ ...node, companions })),
 };
 
 /** The graph after one server text. Responses other than a graph, and errors, change nothing. */

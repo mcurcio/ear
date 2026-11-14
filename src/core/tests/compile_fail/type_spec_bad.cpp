@@ -100,17 +100,23 @@ Configured configure(CreateOf<spec>& cx, const Checked&) {
 		return Configured::restart("x");
 #endif
 #ifdef EAR_CASE_sound_card_on_public_bank
-		cx.soundCard(out, SoundCardRequest{.card = *CardId::parse("C"), .direction = CardDirection::playback});
+		cx.soundCard(out, SoundCardShape{.card = *CardId::parse("C")});
 #endif
 #ifdef EAR_CASE_rtp_receiver_on_output_bank
-		cx.rtpReceiver(insideOut, RtpReceiverRequest{.address = *RtpAddress::parse("0.0.0.0"),
-		                                             .port = 5004,
-		                                             .encoding = RtpEncoding::l24,
-		                                             .rate = 48000,
-		                                             .latencyMs = 100});
+		cx.rtpReceiver(insideOut, RtpReceiverShape{.address = *RtpAddress::parse("0.0.0.0"),
+		                                           .port = 5004,
+		                                           .encoding = RtpEncoding::l24,
+		                                           .rate = ear::SampleRate::fixed<48000>(),
+		                                           .latencyMs = 100});
 #endif
 #ifdef EAR_CASE_sink_on_input_bank
 		static_cast<void>(cx.sink(in, SinkShape{.frames = 64}));
+#endif
+#ifdef EAR_CASE_source_on_output_bank
+		static_cast<void>(cx.source(insideOut, SourceShape{.frames = 64}));
+#endif
+#ifdef EAR_CASE_source_on_routable_bank
+		static_cast<void>(cx.source(in, SourceShape{.frames = 64}));
 #endif
 #ifdef EAR_CASE_declare_latency_bank_the_spec_lacks
 		cx.declareLatency(in, otherOut, Latency{});
@@ -245,6 +251,119 @@ struct ThrowingRelease : Copy {
 [[maybe_unused]] void bad() {
 	testing::TypeHarness<spec, Good> harness;
 	static_cast<void>(harness.input(out, 0));
+}
+#endif
+
+// Loops (docs/writing-a-node-type.md#loops): the control declares a stateful dedicated loop and a strand without a
+// state, gives the one its state, posts to each and keeps an executor; the cases name a loop wrongly, give a state where
+// none is declared, or post a function of another state.
+struct WorkerState {
+	void work() {}
+};
+struct OtherState {};
+constexpr auto worker = loop::dedicated<"worker", WorkerState>;
+constexpr auto helper = loop::strand<"helper">;
+constexpr auto otherLoop = loop::strand<"other">;
+#ifdef EAR_CASE_loop_name_invalid
+[[maybe_unused]] constexpr auto badLoop = loop::strand<"Bad_Name">;
+#endif
+#ifdef EAR_CASE_loops_named_twice
+[[maybe_unused]] constexpr Loops<helper, loop::dedicated<"helper">> twice{};
+#endif
+constexpr TypeSpec loopSpec{.settings = SettingsTable<>{"t"}, .banks = Banks<out>{}, .loops = Loops<worker, helper>{}};
+struct Zeros {
+	void process(Io<loopSpec> io, const GraphCycle&) noexcept {
+		for (auto member : io[out])
+			for (float& sample : member) sample = 0.0F;
+	}
+};
+class Looped {
+public:
+	explicit Looped(NodeOf<loopSpec>& node) : node_(node) {}
+	static Members<loopSpec> ports(const CheckedOf<loopSpec>&) { return {out(members(1))}; }
+	Configured configure(CreateOf<loopSpec>& cx, const CheckedOf<loopSpec>&) {
+		cx.loop(worker, std::make_unique<WorkerState>());
+		cx.post(worker, [](WorkerState& state) { state.work(); });
+		cx.post(helper, [] {});
+		static_cast<void>(cx.executor(helper));
+#ifdef EAR_CASE_state_to_stateless_loop
+		cx.loop(helper, std::make_unique<NoState>());
+#endif
+#ifdef EAR_CASE_executor_loop_the_spec_lacks
+		static_cast<void>(cx.executor(otherLoop));
+#endif
+		cx.use(Zeros{});
+		return Configured::applied();
+	}
+	void start() {
+		node_.post(worker, [](WorkerState& state) { state.work(); });
+#ifdef EAR_CASE_post_other_loop_state
+		node_.post(worker, [](OtherState&) {});
+#endif
+#ifdef EAR_CASE_post_loop_the_spec_lacks
+		node_.post(otherLoop, [] {});
+#endif
+	}
+
+private:
+	NodeOf<loopSpec>& node_;
+};
+[[maybe_unused]] void loopedType() { static_cast<void>(makeNodeType<loopSpec, Looped>()); }
+#ifdef EAR_CASE_harness_loop_the_spec_lacks
+[[maybe_unused]] void badLoopHarness() {
+	testing::TypeHarness<loopSpec, Looped> harness;
+	static_cast<void>(harness.armed(otherLoop));
+}
+#endif
+
+// Stores (docs/writing-a-node-type.md#stores): the control declares a store and a loop and takes the store in
+// configure; the cases break a store's rule, name one twice or wrongly, take one the spec lacks, or give the spec's
+// members out of order. Every subset spelling compiles (type_spec_test.cpp, U1).
+constexpr auto keyFile = store::file<"key">({.mode = 0600, .maxBytes = 64});
+constexpr auto otherFile = store::file<"other">({.maxBytes = 8});
+#ifdef EAR_CASE_store_suffix_invalid
+[[maybe_unused]] constexpr auto badFile = store::file<"Bad_Key">({.maxBytes = 8});
+#endif
+#ifdef EAR_CASE_stores_named_twice
+[[maybe_unused]] constexpr Stores<keyFile, store::file<"key">({.maxBytes = 9})> twiceStored{};
+#endif
+#ifdef EAR_CASE_store_max_bytes_left_out
+[[maybe_unused]] constexpr auto unbounded = store::file<"open">({.mode = 0600});
+#endif
+#ifdef EAR_CASE_store_above_1_mib
+[[maybe_unused]] constexpr auto huge = store::file<"huge">({.maxBytes = 2 * 1024 * 1024});
+#endif
+#ifdef EAR_CASE_store_mode_beyond_0777
+[[maybe_unused]] constexpr auto sticky = store::file<"sticky">({.mode = 01777, .maxBytes = 8});
+#endif
+#ifdef EAR_CASE_stores_after_loops
+[[maybe_unused]] constexpr TypeSpec backwards{
+	.settings = SettingsTable<>{"t"}, .banks = Banks<out>{}, .loops = Loops<helper>{}, .stores = Stores<keyFile>{}};
+#endif
+constexpr TypeSpec storeSpec{
+	.settings = SettingsTable<>{"t"}, .banks = Banks<out>{}, .stores = Stores<keyFile>{}, .loops = Loops<helper>{}};
+struct StoredZeros {
+	void process(Io<storeSpec> io, const GraphCycle&) noexcept {
+		for (auto member : io[out])
+			for (float& sample : member) sample = 0.0F;
+	}
+};
+struct Stored {
+	static Members<storeSpec> ports(const CheckedOf<storeSpec>&) { return {out(members(1))}; }
+	Configured configure(CreateOf<storeSpec>& cx, const CheckedOf<storeSpec>&) {
+		[[maybe_unused]] Store& kept = cx.store(keyFile);
+#ifdef EAR_CASE_store_the_spec_lacks
+		static_cast<void>(cx.store(otherFile));
+#endif
+		cx.use(StoredZeros{});
+		return Configured::applied();
+	}
+};
+[[maybe_unused]] void storedType() { static_cast<void>(makeNodeType<storeSpec, Stored>()); }
+#ifdef EAR_CASE_harness_store_the_spec_lacks
+[[maybe_unused]] void badStoreHarness() {
+	testing::TypeHarness<storeSpec, Stored> harness;
+	static_cast<void>(harness.storeText(otherFile));
 }
 #endif
 

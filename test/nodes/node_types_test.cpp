@@ -61,7 +61,7 @@ TEST_CASE("Each built-in type declares every key once, and a value of each decla
 	                                                                               {"port", wholeNumber},
 	                                                                               {"format", text},
 	                                                                               {"channels", wholeNumber},
-	                                                                               {"rate", wholeNumber},
+	                                                                               {"rate", rate},
 	                                                                               {"latencyMs", wholeNumber}});
 	CHECK(declared["sendspin"] == std::vector<std::pair<std::string, ear::SettingKind>>{
 									  {"server", text}, {"port", wholeNumber}, {"name", text}});

@@ -1,6 +1,7 @@
 // The type SPI (docs/writing-a-node-type.md#the-class; docs/writing-a-node-type.md): a spec, a class with configure and
 // its hooks, makeNodeType, Io by bank and the harness that runs a type over a real NodeHost without PipeWire. What must
 // not compile is compile_fail/type_spec_bad.cpp's.
+#include <algorithm>
 #include <concepts>
 #include <cstdint>
 #include <expected>
@@ -47,8 +48,42 @@ struct Doubler {
 };
 
 int prepares = 0;
+/// The upstreamFrames of every chunk the sink's consumer took, in order.
+std::vector<std::uint32_t> upstreams;
+
+/// Keeps each chunk's upstreamFrames.
+struct Upstreams final : SinkConsumer {
+	void consume(const Chunk& chunk) override { upstreams.push_back(chunk.upstreamFrames); }
+	void finish() override {}
+};
 /// What every Probe instance did, in order: "made <node>", "configure", "start", "stop", "destroyed".
 std::vector<std::string> calls;
+
+/// What the "clocked" mode's source clock heard, in order: each tick's jump and playback latency, what it was told, and
+/// whether it was freed.
+struct ClockHeard {
+	std::vector<std::int64_t> jumps;
+	std::vector<Latency> playbacks;
+	std::vector<SourcePlayed> played;
+	bool freed = false;
+};
+ClockHeard clockHeard;
+
+/// A source's clock that skips a catch-up's whole jump and asks after every tick that read frames.
+struct JumpClock final : SourceClock {
+	~JumpClock() override { clockHeard.freed = true; }
+	std::uint64_t skipBefore(const SourceTick& tick, SourceHeld) noexcept override {
+		clockHeard.jumps.push_back(tick.cycle.facts.jumpFrames);
+		clockHeard.playbacks.push_back(tick.playback);
+		return tick.cycle.facts.causes.has(CycleCause::catchUp)
+		           ? static_cast<std::uint64_t>(tick.cycle.facts.jumpFrames)
+		           : 0;
+	}
+	bool played(const SourceTick&, const SourcePlayed& played) noexcept override {
+		clockHeard.played.push_back(played);
+		return played.read > 0;
+	}
+};
 
 class Probe {
 public:
@@ -68,13 +103,28 @@ public:
 		calls.emplace_back("configure");
 		const auto mode = settings.get<modeRow>();
 		if (mode == "card") {
-			cx.soundCard(toDevice,
-			             SoundCardRequest{.card = *CardId::parse("Probe"), .direction = CardDirection::playback});
+			cx.soundCard(toDevice, SoundCardShape{.card = *CardId::parse("Probe")});
+			cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
+			return Configured::applied();
+		}
+		if (mode == "sink") {
+			cx.sink(toDevice, SinkShape{.frames = 1024}).consumedBy(std::make_unique<Upstreams>());
+			cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
+			cx.declareLatency(in, toDevice, Latency{30, 40});
+			return Configured::applied();
+		}
+		if (mode == "source") {
+			cx.source(fromDevice, SourceShape{.frames = 1000});
+			cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
+			return Configured::applied();
+		}
+		if (mode == "clocked") {
+			cx.source(fromDevice, SourceShape{.frames = 1000}, std::make_unique<JumpClock>());
 			cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
 			return Configured::applied();
 		}
 		if (mode == "fail") return Configured::failed("asked to");
-		if (mode == "say") node_.handle().say("configured at " + std::to_string(cx.format().rate));
+		if (mode == "say") node_.handle().say("configured at " + std::to_string(cx.format().rate.hz()));
 		cx.use(Doubler{&prepares});
 		return Configured::applied();
 	}
@@ -123,6 +173,24 @@ struct Changing {
 	Changed configure(ChangeOf<spec>&, const Checked&, const Checked&) { return Changed::applied(); }
 };
 
+// U1 (docs/design/node-primitives.md 18): every subset of the members after the banks, given in declaration order,
+// deduces the rest on GCC 14; out of order does not compile (compile_fail/type_spec_bad.cpp, stores-after-loops). A
+// store, a loop and a bank may share a name.
+constexpr auto u1 = store::file<"out">({.maxBytes = 8});
+constexpr auto u1Loop = loop::strand<"out">;
+constexpr TypeSpec bare{.settings = SettingsTable<>{"u1"}, .banks = Banks<out>{}};
+constexpr TypeSpec storesOnly{.settings = SettingsTable<>{"u1"}, .banks = Banks<out>{}, .stores = Stores<u1>{}};
+constexpr TypeSpec loopsOnly{.settings = SettingsTable<>{"u1"}, .banks = Banks<out>{}, .loops = Loops<u1Loop>{}};
+constexpr TypeSpec both{
+	.settings = SettingsTable<>{"u1"}, .banks = Banks<out>{}, .stores = Stores<u1>{}, .loops = Loops<u1Loop>{}};
+static_assert(std::same_as<StoresOf<bare>, Stores<>> && std::same_as<LoopsOf<bare>, Loops<>>);
+static_assert(std::same_as<StoresOf<storesOnly>, Stores<u1>> && std::same_as<LoopsOf<storesOnly>, Loops<>>);
+static_assert(std::same_as<StoresOf<loopsOnly>, Stores<>> && std::same_as<LoopsOf<loopsOnly>, Loops<u1Loop>>);
+static_assert(std::same_as<StoresOf<both>, Stores<u1>> && std::same_as<LoopsOf<both>, Loops<u1Loop>>);
+// A store's declaration carries its rule, defaults filled: the mode 0600 when none is given.
+static_assert(StoresOf<both>::declared[0].suffix == "out" && StoresOf<both>::declared[0].rule.maxBytes == 8 &&
+              StoresOf<both>::declared[0].rule.mode == 0600 && StoresOf<both>::declared[0].rule.initial == nullptr);
+
 } // namespace type_spec_test
 using namespace type_spec_test;
 
@@ -152,7 +220,7 @@ TEST_CASE("The class is made from NodeOf for each configuration, configured, sta
           "[type-spec]") {
 	calls.clear();
 	prepares = 0;
-	Harness harness({.format = {.rate = 48000, .maxBlock = 64}, .node = "probe"});
+	Harness harness({.format = {.rate = ear::SampleRate::fixed<48000>(), .maxBlock = 64}, .node = "probe"});
 	REQUIRE_FALSE(harness.parse({{"channels", 2}}));
 	harness.add();
 	CHECK(calls == std::vector<std::string>{"made probe", "configure"});
@@ -170,7 +238,7 @@ TEST_CASE("The class is made from NodeOf for each configuration, configured, sta
 
 TEST_CASE("A code reads and writes by bank through Io, bound by use to the node's ports", "[type-spec]") {
 	prepares = 0;
-	Harness harness({.format = {.rate = 48000, .maxBlock = 64}});
+	Harness harness({.format = {.rate = ear::SampleRate::fixed<48000>(), .maxBlock = 64}});
 	REQUIRE_FALSE(harness.parse({{"channels", 2}}));
 	harness.add();
 	harness.blockReady();
@@ -203,9 +271,10 @@ TEST_CASE("The harness readies and loses a sound card configure asked for", "[ty
 	harness.blockReady();
 	CHECK(harness.phase() == "configuring");
 	const testing::CompanionFake& card = harness.companion(toDevice);
-	CHECK(card.engineName == "node.playback");
-	CHECK(card.kind == testing::CompanionFake::Kind::soundCard);
-	CHECK(std::get<SoundCardRequest>(card.request).bank == "to_device"); // filled from the handle
+	CHECK(card.name == "node.playback");
+	CHECK(card.kind == CompanionKind::cardPlayback); // the bank's direction is the card's
+	CHECK(card.bank == "to_device");
+	CHECK(std::get<SoundCardShape>(card.shape).card.text() == "Probe");
 	harness.ready(toDevice);
 	CHECK(harness.phase() == "running");
 	harness.process(); // the fade-in
@@ -220,6 +289,185 @@ TEST_CASE("The harness readies and loses a sound card configure asked for", "[ty
 	CHECK(harness->health().reason->code == FailureReason::Code::engineRefused);
 	CHECK(harness->health().reason->detail == "card gone");
 	CHECK(harness.companion(toDevice).destroyed);
+}
+
+TEST_CASE("The harness stamps each sink chunk with the most capture latency the plan gives the sink's bank",
+          "[type-spec]") {
+	upstreams.clear();
+	Harness harness;
+	REQUIRE_FALSE(harness.parse({{"mode", "sink"}, {"channels", 1}}));
+	harness.add();
+	harness.blockReady();
+	REQUIRE(harness.phase() == "running");
+	// Nothing peers in the harness, so to_device tells what configure declared on it: 30 to 40 frames.
+	harness.process(16);
+	harness.process(16);
+	REQUIRE(harness.companion(toDevice).chunks.size() == 2);
+	CHECK(harness.companion(toDevice).chunks[0].stamp.upstreamFrames == 40);
+	CHECK(upstreams == std::vector<std::uint32_t>{40, 40}); // the consumer's chunks carry the stamp's
+}
+
+TEST_CASE("The harness's cycles are discontinuities where the real block's are: the first, and each drive's first",
+          "[type-spec]") {
+	upstreams.clear();
+	Harness harness;
+	REQUIRE_FALSE(harness.parse({{"mode", "sink"}, {"channels", 1}}));
+	harness.add();
+	harness.blockReady();
+	harness.process(16);
+	harness.process(16);
+	REQUIRE(harness.stop());
+	harness.process(16); // stopped: the sink is unbound
+	REQUIRE(harness.start());
+	harness.process(16);
+	harness.process(16);
+	const auto& chunks = harness.companion(toDevice).chunks; // a stop closes nothing: the same sink
+	REQUIRE(chunks.size() == 4);
+	CHECK(chunks[0].stamp.discontinuity());
+	CHECK_FALSE(chunks[1].stamp.discontinuity());
+	CHECK(chunks[2].stamp.causes == CycleCause::drive); // the start's drive
+	CHECK(chunks[2].stamp.position == 48);
+	CHECK_FALSE(chunks[3].stamp.discontinuity());
+}
+
+TEST_CASE("The harness's fade-out ramps down from the next cycle and a cycle that ends it at zero acknowledges it, as "
+          "the real block's does",
+          "[type-spec]") {
+	// At 1000 Hz a fade is 5 frames. out = 2 * in, faded.
+	Harness harness(testing::HarnessOptions{.format = {.rate = ear::SampleRate::fixed<1000>(), .maxBlock = 16},
+	                                        .autoComplete = false});
+	REQUIRE_FALSE(harness.parse({{"channels", 1}}));
+	harness.add();
+	harness.blockReady();
+	harness->completeBarrier(); // the drive
+	REQUIRE(harness.phase() == "running");
+	std::ranges::fill(harness.input(in, 0), 1.0F);
+	harness.process(16); // in over 5 frames, then full
+	CHECK(harness->lastFadeGain("out.1") == 1.0F);
+	REQUIRE(harness.stop());
+	harness.process(2); // 5/5 then 4/5
+	CHECK(harness.output(out, 0)[0] == 2.0F);
+	CHECK(harness.output(out, 0)[1] == Approx(1.6F));
+	CHECK(harness->lastFadeGain("out.1") == Approx(0.8F));
+	harness.process(4); // 3/5, 2/5, 1/5 and zero: acknowledged at this cycle's end
+	CHECK(harness.output(out, 0)[2] == Approx(0.4F));
+	CHECK(harness.output(out, 0)[3] == 0.0F);
+	CHECK_THROWS_AS(harness->acknowledgeFade(), std::logic_error); // nothing left to acknowledge
+	harness->completeBarrier(); // the silence the acknowledgement let NodeHost ask for
+	CHECK(harness.phase() == "stopped");
+}
+
+TEST_CASE("A drive applied while the harness's fade-out waits cancels it, as the real block's does, so a fade left "
+          "unacknowledged for 100 ms, then a start, fades in from zero and leaves nothing to acknowledge",
+          "[type-spec]") {
+	// At 1000 Hz a fade is 5 frames. out = 2 * in, faded.
+	Harness harness(testing::HarnessOptions{.format = {.rate = ear::SampleRate::fixed<1000>(), .maxBlock = 16},
+	                                        .autoComplete = false});
+	REQUIRE_FALSE(harness.parse({{"channels", 1}}));
+	harness.add();
+	harness.blockReady();
+	harness->completeBarrier(); // the drive
+	REQUIRE(harness.phase() == "running");
+	std::ranges::fill(harness.input(in, 0), 1.0F);
+	harness.process(16);
+	REQUIRE(harness.stop()); // the fade-out waits: no cycle comes to end it
+	harness->advance(std::chrono::milliseconds{100});
+	// NodeHost took the silence unfaded: the drive cancelled the fade-out, whose acknowledgement never comes.
+	REQUIRE_FALSE(harness->diagnostics().empty());
+	CHECK(harness->diagnostics().back().code == "ear.fade-unacknowledged");
+	CHECK_THROWS_AS(harness->acknowledgeFade(), std::logic_error);
+	harness->completeBarrier(); // the silence
+	CHECK(harness.phase() == "stopped");
+	REQUIRE(harness.start());
+	harness->completeBarrier(); // the start's drive
+	REQUIRE(harness.phase() == "running");
+	harness.process(8);
+	// The engine's rule: the new code ramps in from zero over 5 frames, exact at both ends.
+	for (std::uint32_t i = 0; i < 8; ++i) {
+		INFO("sample " << i);
+		CHECK(harness.output(out, 0)[i] == Approx(2.0F * static_cast<float>(std::min(i, 5U)) / 5.0F));
+	}
+	CHECK_THROWS_AS(harness->acknowledgeFade(), std::logic_error); // still nothing waits
+}
+
+TEST_CASE("The harness plays what a test feeds a source into its bank before the code, by the source's own rules",
+          "[type-spec]") {
+	// At 1000 Hz a fade is 5 frames and a frame lasts 1 ms.
+	Harness harness(testing::HarnessOptions{.format = {.rate = ear::SampleRate::fixed<1000>(), .maxBlock = 16}});
+	REQUIRE_FALSE(harness.parse({{"mode", "source"}, {"channels", 2}}));
+	harness.add();
+	CHECK(harness.companion(fromDevice).kind == CompanionKind::source);
+	CHECK(harness.companion(fromDevice).ready);
+	harness.blockReady();
+	REQUIRE(harness.phase() == "running");
+	REQUIRE(harness->latencyPlan().beyond.size() == 1);
+	CHECK(harness->latencyPlan().beyond[0] == std::pair<std::string, Delay>{"from_device", Delay{{0, 1024}}});
+	std::vector<float> interleaved;
+	for (int frame = 0; frame < 24; ++frame) {
+		interleaved.push_back(static_cast<float>(frame + 1));
+		interleaved.push_back(-static_cast<float>(frame + 1));
+	}
+	CHECK(harness.feed(fromDevice, interleaved) == 24);
+	harness.process(16);
+	// The source fades in over 5 frames (and the drive fades `out` in over the same 5), then exact, through the
+	// pass-through.
+	CHECK(harness.output(out, 0)[0] == 0.0F);
+	for (std::uint32_t i = 5; i < 16; ++i) {
+		CHECK(harness.output(out, 0)[i] == static_cast<float>(i + 1));
+		CHECK(harness.output(out, 1)[i] == -static_cast<float>(i + 1));
+	}
+	CHECK(harness.lastPlayed(fromDevice) == SourcePlayed{.read = 16});
+	harness.process(16); // 8 frames, then dry
+	CHECK(harness.output(out, 0)[7] == 24.0F);
+	CHECK(harness.lastPlayed(fromDevice) == SourcePlayed{.read = 8, .zeros = 8});
+	CHECK(harness.shortfall(fromDevice) == 8);
+	// No clock: a catch-up skips nothing, the ring plays on in order.
+	CHECK(harness.feed(fromDevice, interleaved) == 24);
+	harness->loseCycles(1, testing::Lost::cut);
+	harness.process(16);
+	REQUIRE(harness->facts().causes == CycleCause::catchUp);
+	CHECK(harness.lastPlayed(fromDevice) == SourcePlayed{.read = 16});
+	CHECK(harness.output(out, 0)[15] == 16.0F);
+	// A stop drops what the ring holds; the writer waits as at a full ring until the next cycle after a start.
+	REQUIRE(harness.stop());
+	CHECK(harness.feed(fromDevice, interleaved) == 0);
+	REQUIRE(harness.start());
+	harness.process(16);
+	CHECK(harness.lastPlayed(fromDevice) == SourcePlayed{.zeros = 16});
+	CHECK(harness.feed(fromDevice, interleaved) == 24);
+	harness.remove();
+	CHECK(harness.companion(fromDevice).destroyed);
+}
+
+TEST_CASE("The harness plays a source with a clock by the block's own play rule, and frees the clock with the source",
+          "[type-spec]") {
+	clockHeard = {};
+	Harness harness(testing::HarnessOptions{.format = {.rate = ear::SampleRate::fixed<1000>(), .maxBlock = 16}});
+	REQUIRE_FALSE(harness.parse({{"mode", "clocked"}, {"channels", 1}}));
+	harness.add();
+	harness.blockReady();
+	REQUIRE(harness.phase() == "running");
+	std::vector<float> stream;
+	for (int frame = 0; frame < 48; ++frame) stream.push_back(static_cast<float>(frame + 1));
+	CHECK(harness.feed(fromDevice, stream) == 48);
+	harness.process(16);
+	CHECK(harness.lastPlayed(fromDevice) == SourcePlayed{.read = 16});
+	// A cycle cut: the next states a catch-up of 16, and the clock skips it (16 of the 32 held), exactly.
+	harness->loseCycles(1, testing::Lost::cut);
+	harness.process(16);
+	CHECK(harness.lastPlayed(fromDevice) == SourcePlayed{.skipped = 16, .read = 16});
+	for (std::uint32_t i = 0; i < 16; ++i) CHECK(harness.output(out, 0)[i] == static_cast<float>(32 + i + 1));
+	// A stall past what is held: capped at nothing held.
+	harness->loseCycles(4, testing::Lost::cut);
+	harness.process(16);
+	CHECK(harness.lastPlayed(fromDevice) == SourcePlayed{.zeros = 16});
+	REQUIRE(clockHeard.jumps == std::vector<std::int64_t>{0, 16, 64});
+	REQUIRE(clockHeard.played.size() == 3);
+	CHECK(clockHeard.played[1] == SourcePlayed{.skipped = 16, .read = 16});
+	CHECK(clockHeard.playbacks[0] == Latency{}); // `out` is linked to nothing: no playback latency is told
+	CHECK_FALSE(clockHeard.freed);
+	harness.remove();
+	CHECK(clockHeard.freed);
 }
 
 TEST_CASE("A configure that answers failed fails the node start-failed with its detail", "[type-spec]") {
@@ -241,7 +489,7 @@ TEST_CASE("A layout that disagrees with the spec is a logic error at prepare", "
 	CHECK_THROWS_AS(Io<spec>::resolve(turned), std::logic_error);
 	int unused = 0;
 	const auto erased = eraseSpecCode(Doubler{&unused});
-	CHECK_THROWS_WITH(erased->prepare({48000, 64}),
+	CHECK_THROWS_WITH(erased->prepare({ear::SampleRate::fixed<48000>(), 64}),
 	                  "a code written against a spec runs only in a type made by makeNodeType");
 }
 
@@ -271,4 +519,10 @@ TEST_CASE("A class that writes the change version compiles, and every change res
 	CHECK(harness.change({{"channels", 1}, {"mode", "x"}}) == NodeOutcome::restart);
 	CHECK(harness.phase() == "running");
 	CHECK(calls == std::vector<std::string>{"configure", "configure"}); // configured afresh; the change version unused
+}
+
+TEST_CASE("A type made from a spec answers its stores, and a store's file is <type>-<node>.<suffix>", "[type-spec]") {
+	const auto type = makeNodeType<spec, Probe>();
+	CHECK(type->stores().empty());
+	CHECK(storeFileName("sendspin", "kitchen", "key") == "sendspin-kitchen.key");
 }

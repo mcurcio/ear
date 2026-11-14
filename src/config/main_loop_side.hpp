@@ -24,6 +24,7 @@ struct FileState {
 	std::vector<control::Diagnostic> diagnostics;
 	std::vector<control::FormatKey> pendingRestart; // the file's format against the engine's, FormatKey order
 	std::optional<std::string> writeFailed;
+	std::optional<std::vector<control::NodeText>> nodeTexts = std::nullopt; // the read's (GraphFileRead::nodeTexts)
 };
 struct Offer {
 	FileState file;

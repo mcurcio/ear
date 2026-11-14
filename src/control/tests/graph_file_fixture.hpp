@@ -50,8 +50,10 @@ inline ear::NodeHealth health(const std::string& node, ear::NodeState state,
 }
 
 /// The record's file format example (docs/graph-file.md#edits-at-the-source).
-inline const std::string recordExample = R"(graph_frequency 48000;
-block_size 256;
+inline const std::string recordExample = R"(graph {
+    rate 48khz;
+    block_size 256;
+}
 @set $ch 2;                      # comments survive every edit
 @snippet card_out $id {          # written once, used by both cards
     card $id;
@@ -80,7 +82,7 @@ struct Texts {
 	std::string t7 = replaced(t2, "@set $ch 2;", "@set $ch 4;");
 	std::string t8 = replaced(t7, "take2.wav", "take3.wav");
 	std::string t9 = t7 + "route noise:noise.mono rec:FX;\n";
-	std::string t10 = replaced(t7, "graph_frequency 48000;", "graph_frequency 44100;");
+	std::string t10 = replaced(t7, "rate 48khz;", "rate 44.1khz;");
 	std::string t11 = replaced(t10, "take2.wav", "take4.wav");
 };
 
@@ -89,15 +91,32 @@ inline GraphFile file(std::string version, std::string text, std::optional<std::
 	return GraphFile{std::move(version), std::move(text), {}, std::move(running), std::nullopt, {}, std::nullopt};
 }
 
+/// Where the record example's four nodes are written (feature node-text): the same in every text of the session that
+/// reads, since its edits change values of the same length or lines above the nodes.
+inline std::vector<NodeText> recordNodeTexts() {
+	return {{"noise", {10, 1}, {10, 18}},
+	        {"rec", {11, 1}, {11, 36}},
+	        {"desk", {12, 1}, {12, 39}},
+	        {"porch", {13, 1}, {13, 40}}};
+}
+
+/// file() of one of the session's texts that reads, with its nodeTexts.
+inline GraphFile recordFile(std::string version, std::string text, std::optional<std::string> running) {
+	GraphFile f = file(std::move(version), std::move(text), std::move(running));
+	f.nodeTexts = recordNodeTexts();
+	return f;
+}
+
 inline const Diagnostic includeUnsupported{Severity::error, "ear/include-unsupported",
                                            "@include is not supported yet: write the whole graph in ear.conf",
-                                           TextPlace{14, 1}};
+                                           TextPlace{16, 1}};
 
 /// graph-file.json's graph: the cards fail (no such card), noise and rec run.
 inline ear::GraphView graphView(int playback, const std::string& recPath) {
 	using ear::NodeState;
 	using Code = ear::FailureReason::Code;
-	ear::GraphView view{{{48000, 256}, false, "SCHED_OTHER"}, {"card", "file", "white"}, {}, {}};
+	ear::GraphView view{
+		{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {"card", "file", "white"}, {}, {}};
 	const ear::Ports cardPorts{{{ear::Direction::input, "play", ear::numbered(static_cast<std::uint32_t>(playback))}}};
 	view.nodes.push_back(
 		{{"desk", "card", {{"card", "MOTU"}, {"playback", playback}}},
@@ -121,11 +140,13 @@ inline ear::GraphView graphView(int playback, const std::string& recPath) {
 }
 
 /// snapshot.json's graph, as GraphStatus reads it and the gateway fills it: a card that failed, a running node the
-/// gateway was told of (its since), a node ear.conf disables, a running node and a file node that failed.
+/// gateway was told of (its since), a node ear.conf disables, a running node that missed cycles and overran, a file
+/// node that failed, and the graph's counters.
 inline ear::GraphView snapshotView() {
 	using ear::NodeState;
 	using Code = ear::FailureReason::Code;
-	ear::GraphView view{{{48000, 256}, true, "SCHED_FIFO 88"}, {"card", "file", "white"}, {}, {}};
+	ear::GraphView view{
+		{{ear::SampleRate::fixed<48000>(), 256}, true, "SCHED_FIFO 88"}, {"card", "file", "white"}, {}, {}};
 	view.nodes.push_back(
 		{{"motu", "card", {{"card", "Pro24"}, {"playback", 2}}},
 	     ear::Ports{{{ear::Direction::input, "play", {"1", "2"}}}},
@@ -139,9 +160,13 @@ inline ear::GraphView snapshotView() {
 	quiet.disabled = true;
 	view.nodes.push_back(
 		{quiet, ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}}, health("quiet", NodeState::disabled)});
-	view.nodes.push_back({{"rec", "file", {{"path", "x.wav"}}},
-	                      ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
-	                      health("rec", NodeState::running)});
+	view.nodes.push_back(
+		{{"rec", "file", {{"path", "x.wav"}}},
+	     ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
+	     health("rec", NodeState::running),
+	     std::nullopt,
+	     ear::NodeCounts{.missedCycles = 33, .overruns = 2},
+	     {{.name = "rec.writer", .kind = ear::CompanionKind::sink, .bank = "writer", .ready = true, .dropped = 0}}});
 	view.nodes.push_back(
 		{{"tape", "file", {{"path", "nope/t.wav"}}},
 	     ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
@@ -153,6 +178,7 @@ inline ear::GraphView snapshotView() {
 	view.routes.push_back({{{"noise", "noise.mono"}, {"tape", "record.left"}},
 	                       ear::RouteMatch::refused,
 	                       "the engine removed the link before it was active"});
+	view.counts = ear::GraphCounts{.cycles = 18750, .cutCycles = 39, .stalls = 1}; // lostMs 208: 39 blocks of 256
 	return view;
 }
 

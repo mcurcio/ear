@@ -1,6 +1,6 @@
 // The graph file model: ear.conf loaded with knobly and read with ear's directives
 // (docs/graph-file.md#edits-at-the-source; graph_file_model.hpp). knobly finds the language's
-// problems; this file finds ear's (unknown and malformed directives, missing settings, @include),
+// problems; this file finds ear's (unknown and malformed directives, the graph block and its rates, @include),
 // and turns knobly's places into the wire's through placeIn. Edits are made at the source on a
 // fresh load of the text, through knobly's written layer, and the result is loaded again.
 #include "graph_file_model.hpp"
@@ -18,6 +18,7 @@
 #include <knobly/rendered.hpp>
 #include <knobly/written.hpp>
 
+#include "ear/core/rate_text.hpp"
 #include "place.hpp"
 
 namespace ear::config {
@@ -28,8 +29,14 @@ namespace vw = knobly::written;
 namespace vr = knobly::rendered;
 using json = nlohmann::json;
 
-constexpr std::string_view graphFrequencyName = "graph_frequency";
-constexpr std::string_view blockSizeName = "block_size";
+constexpr std::string_view graphName = "graph";
+constexpr std::string_view rateKey = "rate";
+constexpr std::string_view blockSizeKey = "block_size";
+/// The graph's settings as a written example, in every message that says what to write.
+constexpr std::string_view graphExample = "graph { rate 48khz; block_size 256; }";
+/// The top-level directives the graph block replaced (docs/graph-file.md#directives): refused, with what to write.
+constexpr std::string_view oldFrequencyName = "graph_frequency";
+constexpr std::string_view oldBlockSizeName = "block_size";
 constexpr std::string_view nodeName = "node";
 constexpr std::string_view routeName = "route";
 constexpr std::string_view includeWord = "@include";
@@ -46,6 +53,27 @@ constexpr std::string_view disabledNotASetting =
 control::TextPlace placeOf(std::string_view text, const vl::place& place) {
 	const auto start = place.span().start();
 	return placeIn(text, static_cast<std::uint32_t>(start.line()), static_cast<std::uint32_t>(start.column()));
+}
+
+/// The wire's place of byte `offset` of `text`.
+control::TextPlace placeAt(std::string_view text, std::size_t offset) {
+	offset = std::min(offset, text.size());
+	const auto before = text.substr(0, offset);
+	const auto line0 = static_cast<std::uint32_t>(std::count(before.begin(), before.end(), '\n'));
+	const auto lineStart = before.rfind('\n');
+	const std::size_t column0 = lineStart == std::string_view::npos ? offset : offset - lineStart - 1;
+	return placeIn(text, line0, static_cast<std::uint32_t>(column0));
+}
+
+/// A node's statement is its own when it is written at the top level and read once: node.setText may replace it
+/// (docs/control-port.md#a-nodes-own-text). One in a snippet, however many use it, is shared.
+bool ownStatement(const vw::statement& statement) { return !statement.parent() && statement.copies().size() == 1; }
+
+/// Where `statement` (a wanted node's, named `name`) is written in `text`, owned comments included.
+control::NodeText nodeTextOf(std::string_view text, const std::string& name, const vw::statement& statement) {
+	const auto span = statement.place().span();
+	return control::NodeText{name, placeAt(text, static_cast<std::size_t>(span.start().offset())),
+	                         placeAt(text, static_cast<std::size_t>(span.end().offset())), !ownStatement(statement)};
 }
 
 control::Diagnostic plain(std::string_view text, const vl::located_diagnostic& diagnostic) {
@@ -100,12 +128,23 @@ std::optional<PortRef> splitEnd(const std::string& text) {
 	return PortRef{text.substr(0, colon), text.substr(colon + 1)};
 }
 
-/// One of the two format lines as read: its value when it read, and where it is written.
+/// One of the graph block's two lines: whether it was seen and where it is written.
 struct FormatLine {
-	std::optional<std::uint32_t> value;
 	std::optional<ByteRange> range;
 	bool seen = false;
 };
+
+/// A whole number from 1 to the engine's 32 bits as knobly's integer reader gives it, read quietly; nothing otherwise.
+std::optional<std::uint32_t> quietWhole(const vr::directive& directive) {
+	if (directive.values().size() != 1 || directive.block()) return std::nullopt;
+	try {
+		const auto number = directive.values().at(0).integer();
+		if (number < 1 || number > std::numeric_limits<std::uint32_t>::max()) return std::nullopt;
+		return static_cast<std::uint32_t>(number);
+	} catch (const vl::diagnostic_error&) {
+		return std::nullopt;
+	}
+}
 
 /// Reads ear.conf's rendered tree with ear's directives, collecting ear's diagnostics.
 class Reader {
@@ -113,34 +152,39 @@ public:
 	Reader(std::string_view text, const NodeCatalogue& catalogue) : text_(text), catalogue_(catalogue) {}
 
 	void readTop(const vr::rendered& tree) {
+		std::vector<vr::directive> old; // graph_frequency and block_size at the top level
 		for (const vr::directive& directive : tree.block()) {
 			const std::string name = directive.name();
-			if (name == graphFrequencyName) readFormatLine(directive, frequency_);
-			else if (name == blockSizeName) readFormatLine(directive, blockSize_);
+			if (name == graphName) readGraph(directive);
 			else if (name == nodeName) readNode(directive);
 			else if (name == routeName) readRoute(directive);
+			else if (name == oldFrequencyName || name == oldBlockSizeName) old.push_back(directive);
 			else
-				report(directive.error(std::format("{} is not one of ear's directives: ear.conf takes graph_frequency, "
-				                                   "block_size, node and route",
-				                                   name),
-				                       vl::program_code(unknownDirectiveCode)));
+				report(directive.error(
+					std::format("{} is not one of ear's directives: ear.conf takes graph, node and route", name),
+					vl::program_code(unknownDirectiveCode)));
 		}
-		for (const auto& [line, missing] :
-		     {std::pair{graphFrequencyName, &frequency_}, std::pair{blockSizeName, &blockSize_}})
-			if (!missing->seen)
-				report(tree.error(std::format("{} is missing: write {} <whole number>;", line, line),
-				                  vl::program_code(missingDirectiveCode)));
+		if (!old.empty()) {
+			const std::string hint = movedHint(old);
+			for (const vr::directive& directive : old)
+				report(directive.error(std::format("{} is no longer a directive: {}", directive.name(), hint),
+				                       vl::program_code(unknownDirectiveCode)));
+		} else if (!graph_.seen) {
+			// An old file's lines already say what to write; a file with neither gets this.
+			report(tree.error(std::format("graph is missing: write {}", graphExample),
+			                  vl::program_code(missingDirectiveCode)));
+		}
 	}
 
-	/// Both format lines read, and none of knobly's diagnostics is placed on either. (ear's own never
-	/// is once both read: each of them on a format line leaves its value unset, and a repeated line's
-	/// sits on the repeat, outside the first line's range.)
+	/// The graph block's rate and block_size read, and none of knobly's diagnostics is placed on either. (ear's own
+	/// never is once both read: each of them on a line leaves its value unset, and a repeated line's sits on the
+	/// repeat, outside the first line's range.)
 	std::optional<AudioFormat> format(const vl::sequence<vl::located_diagnostic>& knobly) const {
-		if (!frequency_.value || !blockSize_.value) return std::nullopt;
+		if (!rate_ || !blockSize_) return std::nullopt;
 		for (const auto& diagnostic : knobly)
-			if (frequency_.range->holds(diagnostic.place()) || blockSize_.range->holds(diagnostic.place()))
+			if (rateLine_.range->holds(diagnostic.place()) || blockSizeLine_.range->holds(diagnostic.place()))
 				return std::nullopt;
-		return AudioFormat{*frequency_.value, *blockSize_.value};
+		return AudioFormat{*rate_, *blockSize_};
 	}
 
 	/// ear's diagnostics, in text order.
@@ -156,6 +200,7 @@ public:
 	std::vector<NodeSpec> nodes;
 	std::vector<Route> routes;
 	Placements placements;
+	std::vector<control::NodeText> nodeTexts; // parallel to nodes
 
 private:
 	void report(const vl::diagnostic_error& error) { found_.push_back(error.diagnostic()); }
@@ -177,25 +222,104 @@ private:
 		return false;
 	}
 
-	void readFormatLine(const vr::directive& directive, FormatLine& line) {
-		if (line.seen) {
-			report(directive.error(std::format("{} is given twice", directive.name()),
+	/// What an old file writes instead (docs/graph-file.md#directives): its own values where they read, else the
+	/// example's.
+	static std::string movedHint(const std::vector<vr::directive>& old) {
+		std::string rate = "48khz";
+		std::string blockSize = "256";
+		bool rateFound = false;
+		bool blockSizeFound = false;
+		for (const vr::directive& directive : old) {
+			const auto number = quietWhole(directive);
+			if (!number) continue;
+			if (directive.name() == oldFrequencyName && !rateFound) {
+				rate = rateText(*SampleRate::of(*number));
+				rateFound = true;
+			} else if (directive.name() == oldBlockSizeName && !blockSizeFound) {
+				blockSize = std::to_string(*number);
+				blockSizeFound = true;
+			}
+		}
+		return std::format("graph settings moved: write graph {{ rate {}; block_size {}; }}", rate, blockSize);
+	}
+
+	/// `graph { rate <rate>; block_size <frames>; }`: once, no value, a block holding exactly these two keys, each once.
+	void readGraph(const vr::directive& directive) {
+		if (graph_.seen) {
+			report(directive.error("graph is given twice", vl::program_code(badDirectiveCode)));
+			return;
+		}
+		graph_.seen = true;
+		const auto block = directive.block();
+		if (!directive.values().empty() || !block) {
+			report(directive.error(std::format("graph takes no value and a block: {}", graphExample),
 			                       vl::program_code(badDirectiveCode)));
 			return;
 		}
+		for (const vr::directive& setting : *block) {
+			const std::string key = setting.name();
+			if (key == rateKey) readGraphRate(setting);
+			else if (key == blockSizeKey) readBlockSize(setting);
+			else
+				report(setting.error(std::format("graph has no setting {}: it takes rate and block_size", key),
+				                     vl::program_code(badDirectiveCode)));
+		}
+		if (!rateLine_.seen)
+			report(directive.error("graph is missing rate: write rate 48khz; inside graph { }",
+			                       vl::program_code(missingDirectiveCode)));
+		if (!blockSizeLine_.seen)
+			report(directive.error("graph is missing block_size: write block_size 256; inside graph { }",
+			                       vl::program_code(missingDirectiveCode)));
+	}
+
+	/// The first sight of a graph key; false, reported, for a second.
+	bool firstSight(const vr::directive& setting, FormatLine& line) {
+		if (line.seen) {
+			report(setting.error(std::format("graph's {} is given twice", setting.name()),
+			                     vl::program_code(badDirectiveCode)));
+			return false;
+		}
 		line.seen = true;
-		line.range = rangeOf(directive);
-		if (!oneValueNoBlock(directive)) return;
-		const auto value = directive.values().at(0);
+		line.range = rangeOf(setting);
+		return true;
+	}
+
+	void readGraphRate(const vr::directive& setting) {
+		if (!firstSight(setting, rateLine_)) return;
+		const auto values = setting.values();
+		if (values.size() == 2 && !setting.block()) { // `rate 48 khz;`: the unit written apart
+			const std::string unit = values.at(1).text();
+			if (readRate("1" + unit)) {
+				report(setting.error("rate takes one value: write the unit with no space, such as 48khz",
+				                     vl::program_code(badRateCode)));
+				return;
+			}
+		}
+		if (!oneValueNoBlock(setting)) return;
+		const auto value = values.at(0);
+		const auto word = attempt([&] { return value.word(); });
+		if (!word) return;
+		const auto rate = readRate(*word, graphRates);
+		if (!rate) {
+			report(value.error(std::format("rate: {}", rate.error()), vl::program_code(badRateCode)));
+			return;
+		}
+		rate_ = *rate;
+	}
+
+	void readBlockSize(const vr::directive& setting) {
+		if (!firstSight(setting, blockSizeLine_)) return;
+		if (!oneValueNoBlock(setting)) return;
+		const auto value = setting.values().at(0);
 		const auto number = attempt([&] { return value.integer(); });
 		if (!number) return;
 		if (*number < 1 || *number > std::numeric_limits<std::uint32_t>::max()) {
-			report(value.error(std::format("{} takes a whole number from 1 to {}", directive.name(),
+			report(value.error(std::format("{} takes a whole number from 1 to {}", blockSizeKey,
 			                               std::numeric_limits<std::uint32_t>::max()),
 			                   vl::program_code(badDirectiveCode)));
 			return;
 		}
-		line.value = static_cast<std::uint32_t>(*number);
+		blockSize_ = static_cast<std::uint32_t>(*number);
 	}
 
 	void readNode(const vr::directive& directive) {
@@ -236,8 +360,12 @@ private:
 				}
 				const auto value = setting.values().at(0);
 				// Undeclared, or an unknown type: read as text, and the plan judges it.
-				if (declaredKind(nodeType, key).value_or(SettingKind::text) == SettingKind::wholeNumber) {
+				const SettingKind kind = declaredKind(nodeType, key).value_or(SettingKind::text);
+				if (kind == SettingKind::wholeNumber) {
 					if (const auto number = attempt([&] { return value.integer(); })) settings[key] = *number;
+					else ok = false;
+				} else if (kind == SettingKind::rate) { // any rate the grammar gives: the range is the row's
+					if (const auto rate = readSettingRate(key, value)) settings[key] = rateSetting(*rate);
 					else ok = false;
 				} else {
 					if (const auto text = attempt([&] { return value.string(); })) settings[key] = *text;
@@ -248,6 +376,19 @@ private:
 		if (!ok) return;
 		nodes.push_back(NodeSpec{*name, *type, std::move(settings), disabled});
 		placements.nodes.push_back(placeOf(text_, directive.written().place()));
+		nodeTexts.push_back(nodeTextOf(text_, *name, directive.written()));
+	}
+
+	/// A rate setting's value written with its unit (docs/graph-file.md#rates); nothing, reported, otherwise.
+	std::optional<SampleRate> readSettingRate(const std::string& key, const vw::expanded_value& value) {
+		const auto word = attempt([&] { return value.word(); });
+		if (!word) return std::nullopt;
+		const auto rate = readRate(*word);
+		if (!rate) {
+			report(value.error(std::format("{}: {}", key, rate.error()), vl::program_code(badRateCode)));
+			return std::nullopt;
+		}
+		return *rate;
 	}
 
 	/// One `disabled` line: one value, knobly's boolean (E4006 for another word, E4002 for another kind), no block, at
@@ -294,8 +435,11 @@ private:
 
 	std::string_view text_;
 	const NodeCatalogue& catalogue_;
-	FormatLine frequency_;
-	FormatLine blockSize_;
+	FormatLine graph_; // the block itself: only seen is used
+	FormatLine rateLine_;
+	FormatLine blockSizeLine_;
+	std::optional<SampleRate> rate_;
+	std::optional<std::uint32_t> blockSize_;
 	std::vector<vl::located_diagnostic> found_;
 };
 
@@ -319,8 +463,9 @@ bool writable(std::string_view text) {
 	});
 }
 
-/// knobly's quote of a text, escapes included.
-std::string quoted(std::string_view text) {
+/// knobly's quote of a text, escapes included. Not named `quoted`: a std::string argument would find std::quoted by
+/// argument-dependent lookup wherever <iomanip> comes in through another header (<chrono> brings it).
+std::string knoblyQuoted(std::string_view text) {
 	const vl::config_text quote = vl::quote(text);
 	return std::string(quote.view());
 }
@@ -334,12 +479,12 @@ bool bareWord(std::string_view word, std::string_view more = "") {
 }
 
 /// A name or type: bare when it is a bare word, otherwise quoted.
-std::string wordText(std::string_view word) { return bareWord(word) ? std::string(word) : quoted(word); }
+std::string wordText(std::string_view word) { return bareWord(word) ? std::string(word) : knoblyQuoted(word); }
 
 /// A route's end: bare when its node is a bare word and its port one with a port's '.', otherwise quoted.
 std::string endText(const PortRef& end) {
 	const std::string joined = end.node + ":" + end.port;
-	return bareWord(end.node) && bareWord(end.port, ".") ? joined : quoted(joined);
+	return bareWord(end.node) && bareWord(end.port, ".") ? joined : knoblyQuoted(joined);
 }
 
 /// A setting's key is written as a directive name: a word starting with a letter or one of _ . / * ?,
@@ -358,11 +503,12 @@ std::expected<std::string, InvalidSettings> textValue(const NodeName& node, cons
                                                       const std::string& text) {
 	if (!writable(text))
 		return std::unexpected(InvalidSettings{node, key + ": holds a control character ear.conf cannot hold"});
-	return quoted(text);
+	return knoblyQuoted(text);
 }
 
 /// One setting's value as knobly text: text is knobly's quote of the JSON string, a whole number the
-/// bare integer; an undeclared key takes a string (quoted) or an integer (bare).
+/// bare integer, a rate its unit form (rateText: 44.1khz); an undeclared key takes a string (quoted) or an integer
+/// (bare).
 std::expected<std::string, InvalidSettings> valueText(const NodeName& node, const NodeType* type,
                                                       const std::string& key, const json& value) {
 	if (!writableKey(key)) return std::unexpected(InvalidSettings{node, key + ": cannot be written"});
@@ -370,6 +516,11 @@ std::expected<std::string, InvalidSettings> valueText(const NodeName& node, cons
 		if (*kind == SettingKind::text) {
 			if (!value.is_string()) return std::unexpected(InvalidSettings{node, key + ": expected text"});
 			return textValue(node, key, value.get<std::string>());
+		}
+		if (*kind == SettingKind::rate) { // written with its unit; the row's range is the plan's to judge
+			const auto rate = rateOfSetting(value);
+			if (!rate) return std::unexpected(InvalidSettings{node, key + ": expected a whole number of Hz above 0"});
+			return rateText(*rate);
 		}
 		if (!value.is_number_integer())
 			return std::unexpected(InvalidSettings{node, key + ": expected a whole number"});
@@ -434,7 +585,11 @@ public:
 	}
 
 	/// Appends statements after the last top-level statement.
-	void append(const std::string& statements) const { graph_.root().block().add_statements(vl::text(statements)); }
+	void append(const std::string& statements) const { appended(statements); }
+	/// Appends statements after the last top-level statement and returns them (bad_text_error: they do not parse).
+	vl::sequence<vw::statement> appended(const std::string& statements) const {
+		return graph_.root().block().add_statements(vl::text(statements));
+	}
 
 	std::string text() const { return graph_.root().text(); }
 	const std::string& original() const { return text_; }
@@ -672,6 +827,7 @@ GraphFileModel GraphFileModel::load(const DiskText& disk, const NodeCatalogue& c
 		read.wanted =
 			GraphSpec{read.format->rate, read.format->maxBlock, std::move(reader.nodes), std::move(reader.routes)};
 		read.placements = std::move(reader.placements);
+		read.nodeTexts = std::move(reader.nodeTexts);
 	}
 	return GraphFileModel(std::move(impl));
 }
@@ -862,6 +1018,218 @@ EditOutcome GraphFileModel::removeRoute(const Route& route) const {
 		if (auto shared = editing.shared(found->written())) return refuse(std::move(*shared));
 		found->written().remove();
 		return finish(editing, *impl_->catalogue);
+	});
+}
+
+namespace {
+
+/// node.setText's text in its candidate (docs/control-port.md#a-nodes-own-text): where it went, and how a place in the
+/// candidate maps into the text as the client sent it.
+class BoxMap {
+public:
+	BoxMap(std::string_view sent, std::size_t lead, std::size_t length, const std::string& file, std::size_t from,
+	       std::size_t to, const std::string& candidate)
+		: start_(placeAt(candidate, from)), end_(placeAt(candidate, from + length)), fileEnd_(placeAt(file, to)) {
+		const std::string_view dropped = sent.substr(0, lead);
+		leadLines_ = static_cast<std::uint32_t>(std::count(dropped.begin(), dropped.end(), '\n'));
+		const auto lastBreak = dropped.rfind('\n');
+		leadColumn_ = static_cast<std::uint32_t>(lastBreak == std::string_view::npos ? lead : lead - lastBreak - 1);
+	}
+
+	/// A place inside the text, in the text as sent.
+	control::TextPlace inText(control::TextPlace place) const {
+		return control::TextPlace{place.line - start_.line + 1 + leadLines_,
+		                          place.line == start_.line ? place.column - start_.column + 1 + leadColumn_
+		                                                    : place.column};
+	}
+	control::TextPlace textStart() const { return inText(start_); }
+	control::TextPlace textEnd() const { return inText(end_); }
+
+	/// A candidate's diagnostic placed in the text; one outside it at the text's start or end, saying where it is in
+	/// the file as it stands (after the text, lines move by what the text changed).
+	control::Diagnostic map(control::Diagnostic diagnostic) const {
+		const auto before = [](control::TextPlace a, control::TextPlace b) {
+			return std::pair{a.line, a.column} < std::pair{b.line, b.column};
+		};
+		const auto elsewhere = [&](control::TextPlace inFile, control::TextPlace shown) {
+			diagnostic.message =
+				std::format("{} {}:{}: {}", rootDocument, inFile.line, inFile.column, diagnostic.message);
+			diagnostic.place = shown;
+		};
+		const control::TextPlace at = diagnostic.place;
+		if (before(at, start_)) elsewhere(at, textStart());
+		else if (!before(at, end_))
+			elsewhere(control::TextPlace{at.line - end_.line + fileEnd_.line,
+			                             at.line == end_.line ? at.column - end_.column + fileEnd_.column : at.column},
+			          inText(end_));
+		else diagnostic.place = inText(at);
+		return diagnostic;
+	}
+
+private:
+	control::TextPlace start_;
+	control::TextPlace end_;
+	control::TextPlace fileEnd_;
+	std::uint32_t leadLines_ = 0;
+	std::uint32_t leadColumn_ = 0;
+};
+
+constexpr std::string_view textWhitespace = " \t\r\n";
+constexpr std::string_view notOneNodeMessage =
+	"the text must be one node statement: node <type> <name> { <setting> <value>; ... }";
+
+constexpr std::string_view overrunMessage =
+	"the text's statement runs on past its end into ear.conf: close every { with } so the text is one whole node "
+	"statement";
+
+std::unexpected<EditRefusal> invalidText(std::vector<control::Diagnostic> diagnostics) {
+	return refuse(control::FileRefusal{control::InvalidText{std::move(diagnostics)}});
+}
+
+/// The file's own line ending (docs/control-port.md#a-nodes-own-text): the one ending the statement's first line, else
+/// the file's first line's; "\n" for a file of one line.
+std::string_view lineEndingOf(std::string_view file, std::size_t from) {
+	auto end = file.find('\n', from);
+	if (end == std::string_view::npos) end = file.find('\n');
+	return end != std::string_view::npos && end > 0 && file[end - 1] == '\r' ? "\r\n" : "\n";
+}
+
+/// `text` with every line ending written as `ending`: a browser's textarea gives "\n" whatever the file holds.
+std::string withLineEnding(std::string_view text, std::string_view ending) {
+	std::string out;
+	out.reserve(text.size());
+	for (std::size_t at = 0; at < text.size(); ++at) {
+		if (text[at] == '\r' && at + 1 < text.size() && text[at + 1] == '\n') continue; // its \n writes the ending
+		if (text[at] == '\n') out += ending;
+		else out += text[at];
+	}
+	return out;
+}
+
+} // namespace
+
+EditOutcome GraphFileModel::setNodeText(const NodeName& name, const std::string& text) const {
+	return guarded([&]() -> EditOutcome {
+		if (heldNode(wantedOf(impl_->read), name) == nullptr) return refuse(UnknownNode{name});
+		std::size_t from = 0;
+		std::size_t to = 0;
+		{
+			const Editing editing(impl_->text);
+			const auto node = editing.node(name);
+			if (!node) throw std::logic_error("graph file model: a wanted node is not in its render");
+			const vw::written_directive statement = node->written();
+			if (!ownStatement(statement))
+				return refuse(control::SharedDefinition{placeOf(impl_->text, statement.place())});
+			const auto span = statement.place().span();
+			from = static_cast<std::size_t>(span.start().offset());
+			to = static_cast<std::size_t>(span.end().offset());
+		}
+		const std::size_t lead = std::min(text.size(), text.find_first_not_of(textWhitespace));
+		const std::size_t last = text.find_last_not_of(textWhitespace);
+		if (last == std::string::npos)
+			return invalidText({control::Diagnostic{control::Severity::error, std::string(notOneNodeCode),
+			                                        std::string(notOneNodeMessage), control::TextPlace{1, 1}}});
+		// Written with the file's own line ending, so a CRLF file stays CRLF and an unchanged text changes nothing.
+		const std::string trimmed =
+			withLineEnding(std::string_view(text).substr(lead, last + 1 - lead), lineEndingOf(impl_->text, from));
+		std::string after = impl_->text.substr(0, from) + trimmed + impl_->text.substr(to);
+		if (after == impl_->text) return std::optional<GraphFileModel>{};
+		GraphFileModel candidate = load(DiskText{after}, *impl_->catalogue);
+		const BoxMap box(text, lead, trimmed.size(), impl_->text, from, to, after);
+		// The statement the text starts must end where the text ends: one that runs on (a { left open) would take what
+		// follows it in the file, whatever a node type's settings would accept of it.
+		if (candidate.impl_->graph)
+			for (const vw::statement& statement : candidate.impl_->graph->root().block()) {
+				const auto span = statement.place().span();
+				const auto at = static_cast<std::size_t>(span.start().offset());
+				if (at < from || at >= from + trimmed.size()) continue;
+				if (static_cast<std::size_t>(span.end().offset()) > from + trimmed.size())
+					return invalidText({control::Diagnostic{control::Severity::error, std::string(notOneNodeCode),
+					                                        std::string(overrunMessage), box.textEnd()}});
+				break;
+			}
+		const GraphFileRead& read = candidate.read();
+		if (read.hasErrors()) {
+			std::vector<control::Diagnostic> mapped;
+			for (const auto& diagnostic : read.diagnostics) mapped.push_back(box.map(diagnostic));
+			return invalidText(std::move(mapped));
+		}
+		if (!candidate.impl_->graph) throw std::logic_error("graph file model: a candidate that reads has no graph");
+		const vw::document_graph& graph = *candidate.impl_->graph;
+		// Where the text went, the candidate holds exactly one top-level statement: a node of the same name.
+		std::vector<vw::statement> inside;
+		for (const vw::statement& statement : graph.root().block()) {
+			const auto at = static_cast<std::size_t>(statement.place().span().start().offset());
+			if (at >= from && at < from + trimmed.size()) inside.push_back(statement);
+		}
+		const auto written = inside.size() == 1 ? inside.front().as<vw::written_directive>() : std::nullopt;
+		if (!written || written->name() != nodeName)
+			return invalidText({control::Diagnostic{control::Severity::error, std::string(notOneNodeCode),
+			                                        std::string(notOneNodeMessage), box.textStart()}});
+		const vr::rendered tree = vr::render(graph);
+		for (const vr::directive& directive : tree.block().directives(nodeName)) {
+			if (!(directive.written() == *written)) continue;
+			const std::string given = directive.values().at(1).string(); // it read, so it has a type and a name
+			if (given == name) break;
+			// Routes name the node: a rename of its statement alone would leave them naming a node that is gone.
+			return invalidText({control::Diagnostic{
+				control::Severity::error, std::string(nodeRenamedCode),
+				std::format("this text edits node {}: rename it in {}, where its routes are renamed with it", name,
+			                rootDocument),
+				box.inText(placeOf(after, written->values().at(1).place()))}});
+		}
+		return std::optional<GraphFileModel>(std::move(candidate));
+	});
+}
+
+EditOutcome GraphFileModel::addNodeText(const std::string& text) const {
+	return guarded([&]() -> EditOutcome {
+		wantedOf(impl_->read); // a file with errors takes no edit
+		const std::size_t lead = std::min(text.size(), text.find_first_not_of(textWhitespace));
+		const std::size_t last = text.find_last_not_of(textWhitespace);
+		if (last == std::string::npos)
+			return invalidText({control::Diagnostic{control::Severity::error, std::string(notOneNodeCode),
+			                                        std::string(notOneNodeMessage), control::TextPlace{1, 1}}});
+		// knobly's append writes the file's own line ending (a CRLF file stays CRLF), as it does for node.add.
+		const std::string trimmed = text.substr(lead, last + 1 - lead);
+		const Editing editing(impl_->text);
+		std::vector<vw::statement> added;
+		try {
+			// knobly parses the text alone, so it can never run into the rest of the file.
+			for (const vw::statement& statement : editing.appended(trimmed)) added.push_back(statement);
+		} catch (const vl::bad_text_error& error) {
+			const BoxMap alone(text, lead, trimmed.size(), trimmed, 0, 0, trimmed); // places in the text alone
+			std::vector<control::Diagnostic> found;
+			for (const vl::diagnostic& diagnostic : error.diagnostics()) {
+				const auto start = diagnostic.span().start();
+				found.push_back(control::Diagnostic{
+					control::Severity::error, vl::to_string(diagnostic.code()), diagnostic.message(),
+					alone.inText(placeIn(trimmed, static_cast<std::uint32_t>(start.line()),
+				                         static_cast<std::uint32_t>(start.column())))});
+			}
+			return invalidText(std::move(found));
+		}
+		const std::string after = editing.text();
+		const auto from =
+			added.empty() ? after.size() : static_cast<std::size_t>(added.front().place().span().start().offset());
+		const auto end =
+			added.empty() ? after.size() : static_cast<std::size_t>(added.back().place().span().end().offset());
+		// What follows the text in the candidate is the end of the file as it was.
+		const std::size_t rest = after.size() - std::min(after.size(), end);
+		const std::size_t to = impl_->text.size() - std::min(impl_->text.size(), rest);
+		const BoxMap box(text, lead, end - from, impl_->text, from, to, after);
+		const auto written = added.size() == 1 ? added.front().as<vw::written_directive>() : std::nullopt;
+		if (!written || written->name() != nodeName)
+			return invalidText({control::Diagnostic{control::Severity::error, std::string(notOneNodeCode),
+			                                        std::string(notOneNodeMessage), box.textStart()}});
+		GraphFileModel candidate = load(DiskText{after}, *impl_->catalogue);
+		const GraphFileRead& read = candidate.read();
+		if (read.hasErrors()) {
+			std::vector<control::Diagnostic> mapped;
+			for (const auto& diagnostic : read.diagnostics) mapped.push_back(box.map(diagnostic));
+			return invalidText(std::move(mapped));
+		}
+		return std::optional<GraphFileModel>(std::move(candidate));
 	});
 }
 

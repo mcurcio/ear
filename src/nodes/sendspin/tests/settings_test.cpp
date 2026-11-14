@@ -5,24 +5,21 @@
 #include <utility>
 
 #include "catch2/catch.hpp"
-#include "ear/core/log.hpp"
-#include "ear/folder/confined_folder.hpp"
 #include "ear/nodes/sendspin.hpp"
 #include "settings.hpp"
-#include "temp_folder.hpp"
 
 using ear::NodeSettings;
-using ear::sendspin::ServerUrl;
+using ear::nodes::sendspin::ServerUrl;
 
 namespace {
 
 constexpr auto url = "ws://10.0.0.1:8927/sendspin";
 
-std::expected<ear::sendspin::SendspinSettings, std::string> parseSettings(const ear::NodeName& node,
-                                                                          const NodeSettings& settings) {
-	auto checked = ear::sendspin::settingsTable.check(settings);
+std::expected<ear::nodes::sendspin::SendspinSettings, std::string> parseSettings(const ear::NodeName& node,
+                                                                                 const NodeSettings& settings) {
+	auto checked = ear::nodes::sendspin::settingsTable.check(settings);
 	if (!checked) return std::unexpected(std::move(checked.error()));
-	return ear::sendspin::settingsFrom(node, *checked);
+	return ear::nodes::sendspin::settingsFrom(node, *checked);
 }
 
 std::string refusal(const NodeSettings& settings) {
@@ -106,14 +103,7 @@ TEST_CASE("A name is 1 to 64 bytes of UTF-8 with no control characters, and abse
 
 TEST_CASE("The type declares its ports and its settings' kinds, and refuses through InvalidSettings",
           "[sendspin][settings]") {
-	const ear::test::TempFolder dir;
-	auto folder = ear::folder::ConfinedFolder::open(dir.path());
-	REQUIRE(folder.has_value());
-	struct Unread final : ear::LogSink { // an empty folder: nothing to report
-		void log(const ear::LogEntry&) override {}
-	} boot;
-	const auto type = ear::nodes::makeSendspinNodeType(
-		{.config = std::make_shared<const ear::folder::ConfinedFolder>(std::move(*folder)), .log = &boot});
+	const auto type = ear::nodes::makeSendspinNodeType();
 	CHECK(type->name() == "sendspin");
 	const auto kinds = type->settingKinds();
 	REQUIRE(kinds.size() == 3);
@@ -134,6 +124,7 @@ TEST_CASE("The type declares its ports and its settings' kinds, and refuses thro
 	const ear::Ports& ports = (*config)->ports();
 	CHECK(ports.inputs() == std::vector<ear::PortName>{"to.left", "to.right"});
 	CHECK(ports.outputs() == std::vector<ear::PortName>{"from.left", "from.right"});
-	CHECK(ports.insideInputs().empty());
-	CHECK(ports.insideOutputs().empty());
+	// The inside banks: what the server sends, before `from`, and the sink's bank after `to`.
+	CHECK(ports.insideInputs() == std::vector<ear::PortName>{"from_server.left", "from_server.right"});
+	CHECK(ports.insideOutputs() == std::vector<ear::PortName>{"to_server.left", "to_server.right"});
 }

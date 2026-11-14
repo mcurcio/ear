@@ -122,7 +122,7 @@ public:
 		});
 	}
 
-	ear::GraphView view{};
+	ear::GraphView view{{{ear::SampleRate::fixed<48000>(), 256}, false, ""}, {}, {}, {}};
 	bool hold = false; // set before the request; read on the main loop
 	std::promise<void> held;
 	std::promise<void> release;

@@ -7,7 +7,7 @@
 #include <utility>
 #include "ear/core/graph_spec.hpp"
 #include "ear/core/settings_table.hpp"
-namespace ear::sendspin {
+namespace ear::nodes::sendspin {
 /// ws://<host>[:<port>]/<path>: a host of letters, digits, '-' and '.' (a dotted quad among them), at most 253; a port
 /// of 1-65535; a path of '/' and [A-Za-z0-9._~-]. No wss://, no user, query or fragment. Only parse() makes one.
 class ServerUrl {
@@ -41,4 +41,4 @@ inline constexpr auto name =
 inline constexpr SettingsTable<rows::server, rows::port, rows::name> settingsTable{"sendspin"};
 /// Pure. `node`: the node's name, the default of "name".
 SendspinSettings settingsFrom(const NodeName& node, const decltype(settingsTable)::Checked& checked);
-} // namespace ear::sendspin
+} // namespace ear::nodes::sendspin

@@ -43,7 +43,8 @@ test: ${BUILDDIR}
 
 # The graph editor (web/, its toolchain in web/package.json). Both install exactly what
 # web/package-lock.json pins (npm ci). "web" builds it into web/dist, the folder the run image
-# serves; "web-test" typechecks it, runs its tests (vitest) and builds it.
+# serves; "web-test" first checks that web/'s knobly is cmake/knobly.json's (scripts/knobly-pin.mjs),
+# then typechecks it, runs its tests (vitest) and builds it.
 WEB = cd web &&
 
 web:
@@ -52,6 +53,7 @@ web:
 .PHONY: web
 
 web-test:
+	node scripts/knobly-pin.mjs --check
 	${WEB} npm ci
 	${WEB} npm run typecheck
 	${WEB} npm test

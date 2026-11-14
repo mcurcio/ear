@@ -12,8 +12,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
-#include <thread>
 #include "ear/core/node_host.hpp"
+#include "sleeps.hpp"
 namespace ear::testing {
 /// Drives `block` with `code` (null: silence), unfaded, and waits until the drive completed; false past `deadline`.
 /// It polls settle() every 100 microseconds, sleeping between, so a loaded host is not loaded further.
@@ -26,7 +26,7 @@ namespace ear::testing {
 		block.settle();
 		if (*done) return true;
 		if (std::chrono::steady_clock::now() > until) return false;
-		std::this_thread::sleep_for(std::chrono::microseconds(100));
+		ear::sleeps::poll(std::chrono::microseconds(100), "between looks at settle(): the drive's completion decides");
 	}
 }
 /// For destructors: silences `block` and waits for it (up to a minute); past that, ends the process with a message,

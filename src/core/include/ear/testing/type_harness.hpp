@@ -8,6 +8,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 #include "ear/core/lifecycle.hpp"
@@ -16,6 +17,8 @@ namespace ear::testing {
 
 template <const auto& Spec, class Type> class TypeHarness {
 	template <class Bank> static constexpr bool ownBank = isBankHandle<Bank> && BanksOf<Spec>::template has<Bank>;
+	template <class Handle> static constexpr bool ownStore =
+		isStoreHandle<Handle> && StoresOf<Spec>::template has<Handle>;
 
 public:
 	using Options = HarnessOptions;
@@ -40,10 +43,54 @@ public:
 	NodeHealth health() const { return node_->health(); }
 	bool gone() const noexcept { return node_->gone(); }
 	std::uint64_t droppedFrames() const { return node_->droppedFrames(); }
+	std::vector<CompanionView> companionList() const { return node_->companionList(); }
 	std::size_t unwritten() const { return node_->unwritten(); }
 	const std::vector<CompanionFake>& companions() const noexcept { return node_->companions(); }
 	const std::vector<SeenHandoff>& handoffs() const noexcept { return node_->handoffs(); }
 	const std::vector<RecordingRequest>& recordingRequests() const noexcept { return node_->recordingRequests(); }
+	/// The recordings on the harness's in-memory disk, by path (NodeHarness's recording calls).
+	std::optional<std::string> recordingBytes(std::string_view path) const { return node_->recordingBytes(path); }
+	void presetRecording(std::string_view path, std::string bytes) { node_->presetRecording(path, std::move(bytes)); }
+	void failRecordingOpen(std::string_view path, std::string why) { node_->failRecordingOpen(path, std::move(why)); }
+	void pipeRecording(std::string_view path) { node_->pipeRecording(path); }
+	std::size_t openRecordings() const { return node_->openRecordings(); }
+
+	void runLoops() { node_->runLoops(); }
+	void loopsReady() { node_->loopsReady(); }
+	void readable(int fd) { node_->readable(fd); }
+	/// The sources armed on loop `Handle` whose handles live.
+	template <class Handle> std::size_t armed(Handle) const {
+		static_assert(isLoopHandle<Handle> && LoopsOf<Spec>::template has<Handle>,
+		              "the harness takes only its spec's loops");
+		return node_->armed(Handle::name);
+	}
+
+	void runIo() { node_->runIo(); }
+	/// Store `Handle`'s file on the harness's in-memory disk (NodeHarness's store calls, by the spec's handle).
+	template <class Handle> void presetStore(Handle, std::string text, std::uint32_t mode = 0600) {
+		static_assert(ownStore<Handle>, "the harness takes only its spec's stores");
+		node_->presetStore(Handle::suffix, std::move(text), mode);
+	}
+	template <class Handle> std::optional<std::string> storeText(Handle) const {
+		static_assert(ownStore<Handle>, "the harness takes only its spec's stores");
+		return node_->storeText(Handle::suffix);
+	}
+	template <class Handle> std::uint32_t storeMode(Handle) const {
+		static_assert(ownStore<Handle>, "the harness takes only its spec's stores");
+		return node_->storeMode(Handle::suffix);
+	}
+	template <class Handle> std::string storeFile(Handle) const {
+		static_assert(ownStore<Handle>, "the harness takes only its spec's stores");
+		return node_->storeFile(Handle::suffix);
+	}
+	template <class Handle> void failStoreOpen(Handle, std::string why) {
+		static_assert(ownStore<Handle>, "the harness takes only its spec's stores");
+		node_->failStoreOpen(Handle::suffix, std::move(why));
+	}
+	template <class Handle> void failNextWrite(Handle, std::string why) {
+		static_assert(ownStore<Handle>, "the harness takes only its spec's stores");
+		node_->failNextWrite(Handle::suffix, std::move(why));
+	}
 
 	template <class Bank> void ready(Bank) {
 		static_assert(ownBank<Bank>, "the harness takes only its spec's banks");
@@ -66,6 +113,22 @@ public:
 	template <class Bank> CompanionFake& companion(Bank) {
 		static_assert(ownBank<Bank>, "the harness takes only its spec's banks");
 		return node_->companion(Bank::name);
+	}
+	/// A source's bank (an inside input bank): what its writer takes, what it played, its shortfall.
+	template <class Bank> std::uint32_t feed(Bank, std::span<const float> interleaved) {
+		static_assert(ownBank<Bank>, "the harness takes only its spec's banks");
+		static_assert(Bank::reach == PortBank::Reach::inside && Bank::direction == Direction::input,
+		              "a source plays into an inside input bank");
+		return node_->feed(Bank::name, interleaved);
+	}
+	/// What the last process() did with the source's ring: exactly what its clock was told (SourcePlayed).
+	template <class Bank> SourcePlayed lastPlayed(Bank) const {
+		static_assert(ownBank<Bank>, "the harness takes only its spec's banks");
+		return node_->lastPlayed(Bank::name);
+	}
+	template <class Bank> std::uint64_t shortfall(Bank) const {
+		static_assert(ownBank<Bank>, "the harness takes only its spec's banks");
+		return node_->shortfall(Bank::name);
 	}
 	template <class Bank> float lastFadeGain(Bank, std::size_t member = 0) const {
 		static_assert(ownBank<Bank>, "the harness takes only its spec's banks");

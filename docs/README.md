@@ -22,6 +22,7 @@ These pages describe ear as it is built. Building, testing, CI and releases are 
 | Use or change the graph editor in the browser | [editor.md](editor.md) |
 | Read or parse ear's log | [output-records.md](output-records.md) |
 | Add a node type | [writing-a-node-type.md](writing-a-node-type.md), after [architecture.md](architecture.md#the-node-lifecycle) |
+| Understand how audio time works: one tick, one rate, clocks at the graph's edges | [architecture.md](architecture.md#the-timing-model), then [engine.md](engine.md#the-clock) |
 | Change the engine side, or understand the clock, latency and PipeWire's behaviour | [engine.md](engine.md) |
 | Know what the tests prove and the rules they follow | [testing.md](testing.md) |
 
@@ -34,8 +35,10 @@ stream and a `sendspin` node in a pod). Research notes are in [`research/`](rese
 
 ```conf
 # config/ear.conf
-graph_frequency 48000;
-block_size 256;
+graph {
+    rate 48khz;
+    block_size 256;
+}
 node white noise;
 node file rec { path "take1.wav"; }
 route noise:noise.mono rec:record.left;
@@ -60,11 +63,13 @@ exact silence on its right.
 | node | One instance of a node type, named in `ear.conf` |
 | port block | A node's one PipeWire filter, made once for the node's life, with one mono port per declared port |
 | bank | A named group of a node's ports, all one direction; a port is `<bank>.<member>` |
-| inside bank | A bank no route can name, reached only by the node's own code and outside nodes |
+| inside bank | A bank no route can name, reached only by the node's own code and engine companions |
 | route | A link from one node's output port to another's input port |
 | configuration | What a node's settings make behind its block: the type's instance, its resources and its code. Restarted, it is torn down and made again |
-| outside node | A PipeWire node a configuration asks for (a sound card's ALSA node, an RTP receiver), joined to an inside bank |
+| companion | A hidden helper a configuration asks for on an inside bank, carrying audio to or from non-realtime code: an engine companion, a sink or a source ([architecture.md](architecture.md#companions)) |
+| engine companion | A PipeWire node a configuration asks for (a sound card's ALSA node, an RTP receiver), joined to an inside bank |
 | sink | A lock-free ring and a thread that take a bank's audio off the realtime thread (a `file` node's writer) |
+| source | A lock-free ring an ordinary thread writes and the block plays into a bank before its code |
 | internal clock | The dummy driver that always drives the graph, tracking `CLOCK_MONOTONIC_RAW` |
 | desired graph | The wanted nodes and routes, and the one judge of every change |
 | keeper | The graph file keeper: owns the working copy of `ear.conf`, watches and writes it |

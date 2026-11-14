@@ -34,6 +34,9 @@ constexpr auto cardRow = setting::optional("card", setting::text<anyText>("text"
 constexpr auto playbackRow = setting::defaulted("playback", setting::number(0, 64), 0);
 constexpr auto captureRow = setting::defaulted("capture", setting::number(0, 64), 0);
 constexpr SettingsTable<cardRow, playbackRow, captureRow> cardTable{"card"};
+constexpr auto rateRow =
+	setting::optional("rate", setting::rate(SampleRate::fixed<8'000>(), SampleRate::fixed<192'000>()));
+constexpr SettingsTable<rateRow> rtpTable{"rtp"};
 
 class WhiteType final : public NodeTypeOf<whiteTable> {
 	MadeConfig make(const NodeName&, const Checked&) const override {
@@ -55,6 +58,12 @@ class CardType final : public NodeTypeOf<cardTable> {
 	}
 };
 
+class RtpType final : public NodeTypeOf<rtpTable> {
+	MadeConfig make(const NodeName&, const Checked&) const override {
+		return std::make_unique<FixedConfig>(Ports{{{Direction::output, "stream", {"1"}}}});
+	}
+};
+
 } // namespace tables
 using namespace tables;
 
@@ -63,6 +72,7 @@ std::vector<std::unique_ptr<const NodeType>> testTypes() {
 	types.push_back(std::make_unique<WhiteType>());
 	types.push_back(std::make_unique<FileType>());
 	types.push_back(std::make_unique<CardType>());
+	types.push_back(std::make_unique<RtpType>());
 	return types;
 }
 

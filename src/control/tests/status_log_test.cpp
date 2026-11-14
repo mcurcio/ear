@@ -280,6 +280,89 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 		[](StatusLog& log, Lines&) { log.actionAnswered({"desk", "restart", "ok", std::nullopt}); },
 		[](StatusLog& log, Lines&) { log.actionAnswered({"desk", "restart", "not-restartable", "block-lost"}); },
 		[](StatusLog& log, Lines&) { log.actionAnswered({"porch", "start", "node-disabled", std::nullopt}); },
+		[](StatusLog& log, Lines&) {
+			log.internalError(
+				{.callback = "FilterPortBlock::onStateChanged", .node = "hall", .where = {}, .what = "bad state"});
+		},
+		[](StatusLog& log, Lines&) {
+			log.internalError({.callback = "MainLoopExecutor's posted work",
+		                       .node = {},
+		                       .where = "make block hall",
+		                       .what = "a block made twice",
+		                       .fatal = true});
+		},
+		[](StatusLog& log, Lines&) {
+			log.internalError({.callback = "LinkProxy::onInfo", .node = {}, .where = {}, .what = "bad info"});
+		},
+		[](StatusLog& log, Lines&) {
+			log.graphLostCycles({.cycles = 18750, .cutCycles = 39, .stalls = 1},
+		                        {.cycles = 900, .cutCycles = 39, .stalls = 1}, 208);
+		},
+		[](StatusLog& log, Lines&) {
+			log.nodeMissedCycles("rec", {.missedCycles = 33, .overruns = 2, .repositions = 1},
+		                         {.missedCycles = 33, .overruns = 1, .repositions = 1});
+		},
+		[](StatusLog& log, Lines&) {
+			log.companionFramesLost("rec",
+		                            {.name = "rec.writer",
+		                             .kind = ear::CompanionKind::sink,
+		                             .bank = "writer",
+		                             .ready = true,
+		                             .dropped = 8192},
+		                            4096, 8192);
+		},
+		[](StatusLog& log, Lines&) {
+			log.companionFramesLost("kitchen",
+		                            {.name = "kitchen.from_server",
+		                             .kind = ear::CompanionKind::source,
+		                             .bank = "from_server",
+		                             .ready = true,
+		                             .shortfall = 256},
+		                            1, 256);
+		},
+		[](StatusLog& log, Lines&) {
+			const std::array fields{ear::DiagnosticField{"ms", 140}};
+			log.nodeDiagnostic("porch", "ear.loop-slow", "loop control ran one handler for 140 ms", fields);
+		},
+		[](StatusLog& log, Lines&) {
+			const std::array fields{ear::DiagnosticField{"sources", 2}};
+			log.nodeDiagnostic("kitchen", "ear.loop-source-left",
+		                       "2 sources were still armed on loop sendspin when the node's configuration closed",
+		                       fields);
+		},
+		[](StatusLog& log, Lines&) {
+			// fpp is still configuring (above); 10 s after its last still record, a new list is written.
+			paceNow += std::chrono::seconds(10);
+			log.nodeChanged(health("fpp", NodePhase::configuring, {}, {}, {{ear::WaitingFor::Kind::loop, "sendspin"}}));
+		},
+		[](StatusLog& log, Lines&) {
+			// Still configuring, 10 s on: now it waits for one of its stores to open, by its file's name.
+			paceNow += std::chrono::seconds(10);
+			log.nodeChanged(
+				health("fpp", NodePhase::configuring, {}, {}, {{ear::WaitingFor::Kind::store, "sendspin-fpp.key"}}));
+		},
+		[](StatusLog& log, Lines&) {
+			const std::array fields{ear::DiagnosticField{"ms", 14250}};
+			log.nodeDiagnostic("kitchen", "ear.close-late",
+		                       "the configuration leaked at the close deadline closed 14250 ms after its close began",
+		                       fields);
+		},
+		[](StatusLog& log, Lines&) {
+			// Still configuring, 10 s on: now it waits for one of its claims, whose holder is closing, by its key.
+			paceNow += std::chrono::seconds(10);
+			log.nodeChanged(
+				health("fpp", NodePhase::configuring, {}, {}, {{ear::WaitingFor::Kind::claim, "udp:5004"}}));
+		},
+		[](StatusLog& log, Lines&) {
+			log.nodeDiagnostic("fpp2", "ear.claim-wait", "udp:5004 held by node fpp, which is closing", {});
+		},
+		[](StatusLog& log, Lines&) {
+			// Still configuring, 10 s on: now it waits for one of its recordings to open, by its path.
+			paceNow += std::chrono::seconds(10);
+			log.nodeChanged(
+				health("fpp", NodePhase::configuring, {}, {}, {{ear::WaitingFor::Kind::recording, "take1.wav"}}));
+		},
+		[](StatusLog& log, Lines&) { log.stopped(); },
 	};
 }
 

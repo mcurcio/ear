@@ -7,8 +7,8 @@
 #include "advertiser.hpp"
 #include "catch2/catch.hpp"
 
-using ear::sendspin::advertisedInstance;
-using ear::sendspin::onLink;
+using ear::nodes::sendspin::advertisedInstance;
+using ear::nodes::sendspin::onLink;
 
 namespace {
 

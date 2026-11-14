@@ -21,7 +21,9 @@ How every node starts, stops, fails and restarts is the framework's, the same fo
 problem a refusal names is stable: not an object; then an undeclared key (the first in sorted
 order); then each row in the table's order (missing, then a key given with one it may not be
 given with, then the kind and the range or meaning); then the type's own rule across settings. A
-whole number must be a JSON integer (`5004.5`, `"5004"` and `true` are not). Every refusal's text
+whole number must be a JSON integer (`5004.5`, `"5004"` and `true` are not), and so must a rate,
+in hertz (in `ear.conf` a rate is written with its unit:
+[graph-file.md](graph-file.md#rates)). Every refusal's text
 and order is tested in `test/nodes/settings_refusals_test.cpp`.
 
 ## `white`
@@ -46,14 +48,21 @@ node file rec { path "take1.wav"; }
 |---|---|---|---|
 | `path` | text, required | Relative to the recordings folder (`--recordings-dir`): non-empty, not absolute, no `..` component | `path: missing`, `path: must be a non-empty string`, `path: must be relative to the recordings folder, without ".."` |
 
+- **One writer per path.** Its path is a [recording](writing-a-node-type.md#recordings) and so a claim, judged
+  before the file is touched: a second `file` node on a path another one records to fails `start-failed: cannot open
+  take1.wav: held by node <first>`, and the first one's file is left as it is (`take1.wav` and `./take1.wav` are one
+  path). Removing one node and adding another on its path in one edit works: the new one waits until the old one's
+  file is finished and closed, then opens it.
 - **Where it writes.** The file is opened beneath the recordings folder only (`openat2` with
   `RESOLVE_BENEATH` on the folder's descriptor, held from boot), so a symlink that leads out fails
-  the node's configure, and so does a missing subfolder (none is made). The file is created or
-  truncated at configure.
+  the node `start-failed: cannot open <path>: it leads outside the folder`, and so does a missing subfolder (none is
+  made). It is created or truncated on ear's I/O thread before the node is configured, never on the main loop; an
+  open past 5 s fails it `start-failed: cannot open <path>: not opened within 5 s`.
 - **How it writes.** It writes no audio code: the framework's pass-through copies `record` to its
   inside bank `writer`, whose sink holds 2 s of ring. The WAV is opened on the sink's own thread,
   never the main loop or the realtime thread; if libsndfile refuses it, the node fails
-  `start-failed: cannot open <path>: <reason>` before it is configured.
+  `start-failed: cannot open <path>: <reason>` before it is configured, and if the open has not
+  finished within 5 s, `start-failed: the sink writer's consumer did not begin within 5 s`.
 - **What it records.** Every cycle its code drove, sample for sample (its bank is never faded), and
   none while it is stopped: a stop closes nothing, a start appends again. The file is complete once
   its configuration is torn down (a restart, a disable, a removal, or ear stopping). A restart
@@ -90,7 +99,8 @@ node card mic  { card USB2; capture 1; }
 - The node is `running` once the card's PCM runs and every channel is linked. A card that cannot
   open, or is lost later (unplugged, a rate the kernel refuses, a link that fails), makes the node
   `failed engine-refused: <detail>`; its block and routes stay, and the rest of the graph keeps its
-  clock. There is no automatic retry: `node.restart` or `node.start` opens the card afresh, as
+  clock. A card that opens but whose PCM has not run within 10 s fails it `engine-refused: the card
+  never started: <card id>` ([engine.md](engine.md#readiness-deadlines)). There is no automatic retry: `node.restart` or `node.start` opens the card afresh, as
   does `node.update` with changed settings; an update with the same settings changes nothing.
 - A **stopped** card keeps its device open and plays the block's silence; a **disabled** one
   releases the device, so another program may use it.
@@ -108,7 +118,7 @@ node card mic  { card USB2; capture 1; }
 Receives one RTP audio stream from the network, such as FPP's.
 
 ```conf
-node rtp fpp { address "0.0.0.0"; port 5004; format "L24"; channels 2; rate 48000; latencyMs 100; }
+node rtp fpp { address "0.0.0.0"; port 5004; format "L24"; channels 2; rate 48khz; latencyMs 100; }
 ```
 
 | Key | Kind | Rule | Default | Refused with |
@@ -117,12 +127,13 @@ node rtp fpp { address "0.0.0.0"; port 5004; format "L24"; channels 2; rate 4800
 | `port` | whole number, required | 1 to 65535 | | `port: must be a whole number, 1-65535` |
 | `format` | text, required | `L16` or `L24` (big-endian PCM) | | `format: must be "L16" or "L24"` |
 | `channels` | whole number, required | 1 to 64 | | `channels: must be a whole number, 1-64` |
-| `rate` | whole number | 8000 to 192000 Hz, the sender's rate | the graph frequency | `rate: must be a whole number of Hz, 8000-192000` |
+| `rate` | rate | 8 kHz to 192 kHz, the sender's rate: `44.1khz` in `ear.conf`, `44100` (Hz) on the control port | the graph frequency | `rate: must be a rate from 8khz to 192khz (on the control port, a whole number of Hz)` |
 | `latencyMs` | whole number | 1 to 1000, the receive buffer | 100 | `latencyMs: must be a whole number of milliseconds, 1-1000` |
 
 - Outputs `stream.1`..`stream.N`; no inputs. The receiver, `<node>.rtp`, feeds the inside bank
-  `from_rtp`, passed straight through. The node declares `latencyMs` as its own latency on
-  `stream`, so downstream nodes are told it.
+  `from_rtp`, passed straight through. The receiver's `latencyMs` is latency beyond `from_rtp`
+  ([engine.md](engine.md#latency-per-bank-pair)), carried to `stream`, so downstream nodes are
+  told it.
 - The stream follows the graph's clock and never drives it. A sender at another rate is
   resampled to the graph frequency.
 - **Why only those addresses:** a unicast address does not mean "this host's address" to
@@ -130,10 +141,22 @@ node rtp fpp { address "0.0.0.0"; port 5004; format "L24"; channels 2; rate 4800
   A host name is refused because looking it up blocks the main loop (15 s for `fpp.local` once).
 - **No packets is not a failure.** With no sender the node is `running` and silent (its meters show
   it). A sender that restarts (a new SSRC) is heard again.
-- **A port another program holds** leaves the node `configuring` (state `starting`) for good with
-  silent outputs: PipeWire only logs the failed bind. After 2 s the node says `node fpp still
-  configuring after 2s: waiting for fpp.rtp`, and `graph.get` shows `waitingFor` `companion`
-  `fpp.rtp`. Two `rtp` nodes on one port both bind, and unicast packets reach only one.
+- **One node per UDP port.** The port is the node's [claim](writing-a-node-type.md#claims), judged
+  before its receiver is made. A second `rtp` node on it fails at once,
+  `node fpp2 failed start-failed: cannot bind UDP port 5004: held by node fpp`, even when the two
+  listen to different multicast groups (allowing that waits for a multicast test). A port another
+  program holds fails the node at once with the kernel's reason,
+  `node fpp failed start-failed: cannot bind UDP port 5004: Address already in use`; on a multicast
+  `address`, a program that shares the port with `SO_REUSEADDR` (a monitor listening to the group)
+  is left to share it, as PipeWire's receiver would ([engine.md](engine.md#rtp-receivers)). Free the port,
+  then `node.start` or `node.restart` retries it. A node removed and another added on its port in one
+  edit, or two nodes swapping ports, wait for the old one to let go (`ear.claim-wait`, `waitingFor`
+  `claim`), then run.
+- **A program that takes the port after ear checked it** (between the claim's probe and the
+  receiver's bind) is not caught there: PipeWire only logs the failed bind, so the node stays
+  `configuring` waiting for `fpp.rtp`, and fails at the receiver's 5 s readiness deadline,
+  `node fpp failed engine-refused: the RTP receiver never ran (UDP port 5004 held?)`
+  ([engine.md](engine.md#readiness-deadlines)).
 - **A packet lost or out of order** resets the receiver, so about `latencyMs` of silence follows.
   Even one sending thread over loopback reorders packets under load.
 - **Channel limits:** a datagram longer than 1280 bytes is cut short and garbled, so 1 ms packets
@@ -159,13 +182,13 @@ it can play audio into the graph. Keep it reachable only from the sender's netwo
 - Each receiver costs a fixed 4 MiB ring, a connection and a socket, and the graph has no limit on
   its nodes: anyone who reaches port 7777 can add receivers until the pod runs out of memory.
 
-**Not built:** a failure for a port that cannot be bound (ear binding the port itself first, or a
-PipeWire that reports it); a "receiving" status from the module's `rtp.receiving`; multicast
+**Not built:** a failure for a port taken between ear's probe and the receiver's bind (ear binding
+the port itself and handing it over, or a PipeWire that reports it); a "receiving" status from the module's `rtp.receiving`; multicast
 tested, and a multicast-capable pod network; a larger datagram (`net.mtu`) for many channels, and
 a `latencyMs` bound tied to the ring (`latencyMs * rate / 1000 * channels * bytesPerSample` under
 4 MiB); packet handling on a data loop of its own (`context.data-loops` and the module's
-`node.loop.class`); refusing `224.0.0.0/24` and other well-known groups; refusing a second `rtp`
-node on one port; a limit on outside nodes; SAP discovery; IPv6 and a sender-address filter; an
+`node.loop.class`); refusing `224.0.0.0/24` and other well-known groups; two `rtp` nodes on one
+port for two multicast groups (a claim keyed by group and port); a limit on engine companions; SAP discovery; IPv6 and a sender-address filter; an
 RTP sender.
 
 ## `sendspin`
@@ -217,25 +240,32 @@ Each node's identity and pairings are `<config-dir>/sendspin-<node>.key`, mode 0
 object with audit fields (`createdAt`, `createdBy`, `changedAt`, `changedBy`) and the library's
 blobs in base64url (private key, pairing secrets, output delay). At most 64 KiB, written whole on
 each change through the confined folder, swapped in as `ear.conf` is. It holds a private key:
-never log it or send it to the editor.
+never log it or send it to the editor. It is the node's store `key`
+([writing-a-node-type.md](writing-a-node-type.md#stores)): opened, narrowed and judged off the main
+loop before any of the node's work runs, and created if missing, so a node that cannot trust its
+file never runs.
 
 - A wider mode is narrowed, not refused, at each boot for every key file in the folder (whatever
-  its node) and at each start and save. *Why:* a Kubernetes `fsGroup` widens it on every mount.
-  What boot cannot narrow is a `log` record from source `sendspin`.
+  its node) and at each configuration and save. *Why:* a Kubernetes `fsGroup` widens it on every
+  mount. What boot cannot narrow is a `log` record from source `sendspin`.
 - Renaming a node makes a new identity (re-pair); `node.remove` leaves the file, so a name added
   back inherits it. To wipe an identity, delete the file and `node.restart` the node.
 - A file it cannot trust (not JSON, a missing field, a key of the wrong size, a symlink, too
-  large) fails the node, left unchanged but for its mode: fix or delete it. No new identity is
-  minted over it, or the server's trust would be lost silently. A missing file in a folder it
-  cannot write fails the node too.
+  large) fails the node `start-failed` before it was ever `running`, left unchanged but for its
+  mode: fix or delete it. No new identity is minted over it, or the server's trust would be lost
+  silently. A missing file in a folder it cannot write fails the node too.
 - A key file something else changed or removed since it was read fails the write
-  (`key-write-failed`), and theirs stands.
+  (`key-write-failed`), and theirs stands. A write the disk has not finished within 5 s is judged
+  by what the store then holds: written if it shows the new record, else `key-write-failed`
+  (`not confirmed within 5 s`), though it may still land; the pairing holds for this run either
+  way.
 
 ### Notes
 
 A note is `node <n> says <text>` on standard output (a `note` record), never a state. Notes pass
-32 at once, then one a second; `notes-dropped <n>` says how many were held back, before the next
-that passes.
+32 at once, then one a second, the framework's rate for every node's notes
+([writing-a-node-type.md](writing-a-node-type.md#the-node-handle)); `notes-dropped <n>` says how
+many were held back, before the next that passes.
 
 | Note | Means |
 |---|---|
@@ -263,17 +293,39 @@ that passes.
 |---|---|---|
 | No server, or the server gone | `running`, outputs silent, inputs dropped; `says disconnected` | Nothing: it redials |
 | The listening port is held by another program or another `sendspin` node | `failed start-failed: cannot listen on port <p>: held by node <n>` or `: <reason>` | `node.update` to a free port. A program taking the port just after the check is not caught: the library only logs, and retries every 5 s |
-| A key file it cannot trust, or the insides dying | `failed start-failed: <detail>` (or `lost` once it ran) | Fix the cause, then `node.restart` or `node.start`; a change of settings or a restart of ear also retries |
+| A key file it cannot trust | `failed start-failed: sendspin-<node>.key: <detail>`, before it ran | Fix or delete the file, then `node.restart` or `node.start`; a change of settings or a restart of ear also retries |
+| The library dying | `failed lost: the Sendspin client died: <what>` (or `the Sendspin client did not start`) | `node.restart` or `node.start` |
 | The mDNS socket cannot open | Listening, not advertising; `says advertise-failed` | Give the server the URL |
 | A later key write fails | `says key-write-failed` | Fix the folder; pair again |
 
 ### Stop, restart, disable
 
-A stopped `sendspin` node keeps its connection, pairing and library running, silent: nothing it is
-sent is played or reported played, and nothing is sent. Up to about 43 ms the feed held from before
-plays first at the next start. A restart, a disable or a removal says goodbye (`shutdown`) and
-drops the connection; a restart or an enable builds a new client from the key file. A disabled node
-holds no port and no connection. A name added back waits for its old node to go.
+**A stopped `sendspin` node stays connected to Music Assistant** (the owner's decision): a stop
+silences its audio and keeps its connection, pairing and library running, so Music Assistant still
+lists the player with its roles, and `node.start` plays again at once, with no code asked. The
+client lives as long as the node's configuration, not its run: a node restarted while stopped
+connects again and rests stopped.
+
+- **What Music Assistant sends while stopped** is not played. The stop drops what the node's
+  source held, unplayed (the source's rule), and for the clock's undrained bound ([clock](#clock))
+  the library waits on the stopped source as through a stall; after that its writes are played into
+  nothing at the graph's rate and told to the library, so a stream goes on for as long as the stop
+  lasts and the connection holds. At the start the stream plays from where it has got to. A stop
+  shorter than the bound starts on what the library writes next: what the stop dropped is told
+  played at the start (as a stop past the bound counts it with everything written), so the library
+  corrects once, for the time it was held back, and is on the server's stamps after.
+- **What is routed to `to` while stopped** does not reach the server: the node's code does not
+  run, so nothing reaches its sink and the source role sends nothing (a server listening to it
+  hears it go quiet; its stream is not ended). It resumes at the start.
+
+| | Connection | Pairing | Port and key file |
+|---|---|---|---|
+| `node.stop`, `node.start` | Kept | Kept, and a held pairing stays held | Kept |
+| `node.restart`, a change of settings | Goodbye (`shutdown`), then a new client from the key file, which dials or listens again | Kept in the key file; a held pairing is released | Released, then claimed and opened again |
+| `node.disable`, `node.remove` | Goodbye (`shutdown`), dropped | Kept in the key file | Released: a disabled node holds no port and no connection |
+
+`node.enable` builds a new client from the key file, as a restart does. A name added back waits for
+its old node to go.
 
 After a `node.update` or `node.restart` the goodbye is `shutdown`, and a server that dialled by hand
 (`aiosendspin`'s `connect_to_client`) did not redial within 30 s in tests, though the spec has a
@@ -292,7 +344,8 @@ server reconnect on that reason; one browsing mDNS comes back by itself.
   that asks again within the second is answered the next time it asks.
 - The instance name is `ear-<first 50 bytes of node>-<first 8 of client id>`, a DNS label's 63 bytes
   at most, stable and unique without probing. Music Assistant shows `name`, from the hello.
-- A goodbye goes out when the worker stops; a crash leaves the record until its TTL.
+- A goodbye goes out when the worker's state goes (a restart, a disable or a removal, never a
+  stop); a crash leaves the record until its TTL.
 
 ### On an untrusted network
 
@@ -303,10 +356,12 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   client MUST reject it; a carried patch does it). The peer sees 101, then the close.
 - A frame or message over 1 MiB, or over 1024 fragments, is refused before it costs anything.
 - **Sockets that prove nothing give way to newcomers**, so holding them keeps no server out: an
-  address holds at most 8 sockets still to upgrade (counting only sockets its peer has not closed),
-  and the node at most 32; in the upgraded room, the newcomer's own address's oldest goes first,
-  then one with its Noise handshake unfinished, then the oldest. A connection that proved a
-  long-term pairing never gives way.
+  address holds at most 8 sockets still to upgrade and the node at most 32, both counting only
+  sockets whose peer has not closed (a burst of connects closed at once refuses no one after it,
+  unless it outruns the 64-thread bound, which every address shares), and the transport at most
+  64 threads, closed or not; in the upgraded room, the newcomer's own
+  address's oldest goes first, then one with its Noise handshake unfinished, then the oldest. A
+  connection that proved a long-term pairing never gives way.
 - **A sustained flood keeps servers out for as long as it lasts** (measured on loopback: about 16k
   connects a second from 4 addresses, or 9.6k from the server's own; slower floods cost a server a
   few seconds), and only stopping it lets them in. The owner accepted this cost.
@@ -324,11 +379,163 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   the raw clock (`GraphCycle::startRawNs`) plus the latency downstream of its outputs (a following
   card's buffer, carried back by the framework), never from when the thread woke. *Why:* wake time
   failed the spike, 52% of cycles within 1 ms against 100% from the cycle's start.
-- A skipped cycle counts as played; otherwise it costs 25 ms (the library sees -5.3 ms, drops a
-  chunk and inserts silence). A jump larger than the feed, or backward, is a change of driver, not
-  a skip.
-- The feed (the library's decoded audio waiting for the block) is about 43 ms at 48 kHz, small on
-  purpose: with 2.7 s a correction lands 2.7 s late. The node declares it as its latency on `from`.
+- The finish it tells is where the library's next frame plays, the end of the telling cycle: the
+  library puts its next audio at the finish plus what it still holds, and a cycle the source left
+  short played zeros to its end.
+- The audio sent to the server (`to`) is dated by when its cycle started, each piece from its own
+  chunk's cycle start by its frames ([engine.md](engine.md#dating)). The capture latency upstream
+  of `to` is not counted yet, so a card's capture reaches the server dated late by the card's
+  buffer, though the sink's chunks carry it (`Chunk::upstreamFrames`).
+- **The node's clock is an honest sink with a local skip** ([the timing model](architecture.md#the-timing-model),
+  rule 3): it plays every frame the library wrote, in order, and tells the library what played and
+  when, true when told. It keeps no debt and no model of the library: what it could not skip of lost
+  time, the library sees in the next finish it is told and corrects once, on its own.
+- **One owner of the played timeline.** The library's audio reaches `from` through a
+  [source](writing-a-node-type.md#sources) on the inside bank `from_server`, whose clock,
+  `SendspinClock` (`sendspin_clock.hpp`), owns the one timeline the library is told: one played
+  count and one finish. Each tick advances it while the graph drains the source; while nothing
+  drains it, the library's own writes do, and which side may is one atomic owner word, so a
+  hand-over either way is a single compare-and-swap and no frame is counted by both. The library's
+  sync thread writes through the clock (`SendspinClock::write`), never the source's writer directly.
+- **It never holds the library back for long.** The clock counts as drained when it is made (a node
+  configured during a stream buffers its first chunks for its first tick). When no tick has run for
+  its bound (a stop, or a host stall the graph does not come back from in that time), the next write
+  takes the timeline over from a tick that is done (one between its skip and its play holds it):
+  everything the library wrote of its stream counts played then (what the source still holds, and
+  what a stop dropped), dated now, and from then on what it writes is played into nothing at the
+  graph's rate, up to now and never ahead, so the library runs on its
+  own time and its inbound ring never pins behind audio no tick will read (which closes the
+  connection). Each step is told at once, dated by when the next frame would be heard at that rate
+  plus what lies downstream of the outputs, the same downstream the ticks add, so it is one timeline.
+  It must be told: the library needs a report to leave a stream's priming silence, and puts its next
+  frame at the finish told plus what it wrote and was not told. A stream that ends while paced starts
+  its count afresh, the time going on; a writer away for longer than the ring lasts gets no credit
+  for the time it missed.
+- **The hand-over back is one step.** The first tick, overdue or not, swaps the timeline back and
+  reads the pacer's anchor and count, written whole before the owner word named them, so it is
+  never half read. It skips what the source holds of the stream, uncounted (the pacer counted it and
+  wrote nothing into the source), nothing for its jump (the pacer covered it), and then, as late,
+  what the library wrote since that is heard by the tick's run on the pacer's timeline (the graph's
+  tick comes later by up to a block and its wait), counted played, so the stream plays on from the
+  pacer's time with nothing for the library to correct. That holds until a tick reads with nothing
+  late left, and for a ring's worth of ticks at most: a library that keeps pace has written every
+  late frame by then, so what is still late is a gap of its own (a network gap, a server that
+  underran), which it corrects itself as it does outside a hand-over rather than ear skipping the
+  gap's length of fresh audio. A stream end applied by that tick with nothing of the next stream
+  paced ends it too: the next stream is the library's to place.
+- **Why the late skip is ear's, not left to the library.** The honest sink leaves lost time to the
+  library's one correction, but that correction is a hard sync, which the library makes only past
+  5 ms off; under it, it moves one frame a chunk (21 us each 96 ms). The lateness at a hand-over
+  back is under a block plus the tick's wait, so left to the library the stream would sit milliseconds
+  off for tens of seconds after each, and past 5 ms it would be an audible step at every start. It is
+  also ear's own making (the graph's tick against the pacer's phase), not time the library lost, so
+  ear skips it; the window ends by the rule above, never by a model of the library.
+- **Never a step back across a hand-over, by construction.** Back from the pacer, a tick tells only
+  once its own finish, what lies downstream included, is at or past the pacer's last finish, so
+  neither the tick's phase nor a graph edited while stopped (a following card gone, its latency
+  shrunk) can step it back; the reports it leaves wait for the next tick, which counts their frames
+  too (no clamp: nothing told is moved). *Why not a block behind now, which would need no waiting:*
+  the library hard-syncs when its playtime is 5 ms off, and a pacer telling it a block (5.3 ms)
+  behind now made it drop and add silence in turn, a correction each chunk. What the library must
+  correct is only the time it was held back first, the bound, which it does once.
+- **Who tells is the owner word alone.** Each owner writes its own report box (one writer each, its
+  own sequence), and a reader takes the box the word names: the takeover fills the pacer's box before
+  its swap, and the tick that takes the timeline back copies the pacer's last report into its own at
+  once. A report the pacer finishes after the tick took the timeline back lands in a box nobody reads
+  (its frames are in the tick's count), so neither owner waits on the other, and a reader waits only
+  while the owner itself is mid-write.
+- **Streams.** The source tells the clock which stream it plays (the clears it applied,
+  `SourceHeld::clears`), and the clock's `clear()` (the worker's `on_stream_end`) counts the
+  library's. A tick tells only while both agree: the library zeroed its count at the stream's end.
+  The report carries its stream and where its count began (`base`); the notifier tells only frames
+  above the base, and nothing of a report whose stream is no longer the library's, judged and told
+  under the lock the worker's `on_stream_end` clears the clock under (`PlayerSlot`), so no frame of an
+  ended stream lands in the next one's count. (The library itself resets its count when its sync
+  task goes idle, before it calls `on_stream_end`; a report told in that window is the library's.)
+- **The bound is derived from what it protects** (`undrainedBoundFor`, `worker.hpp`): a server that
+  fills the player's advertised buffer (two thirds of its 1 MB quota in the library's inbound ring)
+  leaves a third for what arrives while nothing is taken; at the stream's worst-case byte rate
+  (FLAC's verbatim frames, as large as 24-bit stereo PCM at the graph's rate) that lasts
+  `room / rate`, less the library's 100 ms wait for ring room before it closes the connection; and
+  never less than two rings' worth (about 85 ms), so a scheduling hiccup never paces. About 1.06 s
+  at 48 kHz, 0.48 s at 96 kHz and 0.19 s at 192 kHz. The clock tests' 200 ms and 700 ms stalls stay
+  under it at 48 kHz by a clear margin with their catch-up burst (a `static_assert` holds the 700 ms
+  one to it), so they keep the rules below exactly, and one more stalls for twice it, so its
+  hand-over is judged on every run ([testing.md](testing.md#the-cycle-judge)).
+- **It skips only the graph's lost time.** On the cycle that states a catch-up or a pause
+  (`GraphCycle::facts`: cycles missed, the position moved by exactly their frames, cut or not;
+  [writing-a-node-type.md](writing-a-node-type.md#lost-cycles)) with a jump above 0, overdue or not,
+  it skips min(jump, what the source holds now): that audio is stale. Every other cause (a
+  reposition, a driver change, a drive, a first cycle, the cycle after an oversized one) is a new
+  clock and skips nothing, and nothing of a stream is skipped on the cycle that applies a clear
+  (the clear ended the stream the jump was lost from). A cycle the source leaves short plays zeros (an underrun's
+  decay, the source's fade),
+  which are not counted.
+- **It counts every frame.** The frames told played grow by exactly what was skipped and read, and
+  what a stop dropped of the stream, never the zeros of a short cycle nor anything of a cleared
+  stream: the library takes what it is told played from what it wrote (clamping at zero with a
+  warning), so a frame it did not write, told played, would be taken from audio still to play, and
+  one it wrote and is never told stays in its count, which puts its next audio that far late in its
+  own reckoning and so plays it that far early.
+- **What a stop drops** is told, one rule for both kinds of stop. The source drops its ring at a
+  stop's silence (and what a writer slipped in during it at the first tick back), unplayed and not at
+  the clock's word, and tells the clock at the stop's first tick what it dropped of the stream it
+  plays (`SourceHeld::dropped`; none of a stream a clear ended). Shorter than the bound, that tick
+  counts it played and tells it at its report; past the bound the takeover already counted it with
+  everything written, so the tick back counts nothing again. A stop empties the ring, so at its first
+  tick (`SourceHeld::stopEnded`) the clock also ends what it kept about the ring's frames: stale
+  frames the pacer counted that a clearing tick back left in the ring are among the drop, so that
+  much of it is not counted again and nothing stale is left to skip; and, unless that tick takes the
+  timeline back, the pacer's timeline ends, so the library's writes after a short stop are never
+  skipped as late by the stop's length.
+- **It tells only from a cycle that began on time** (`GraphCycle::overdueNs` 0). *Why:* the driver
+  catches a stall up in a burst of timeouts, of which the block runs as many as the host lets it,
+  from none to every one ([engine.md](engine.md#the-internal-clock)). A burst's cycle starts on the
+  driver's own time, behind now by the graph's lag until the burst ends, and it runs at now; neither
+  is where the library's next frame plays while the burst runs. Told the nominal start, the library
+  would see its playtime behind now and, without the floor patch, floor it at now mid-burst; told
+  the run time, in a burst that runs every cycle and loses nothing it would find its next chunk late
+  by the lag, drop it, run that far ahead once the burst ended and add it back as silence: two
+  corrections where nothing was lost. Its frames are told with the first on-time cycle's report,
+  dated by that cycle's start, which is then true. A cycle on time tells even if it lost frames.
+- **The deferral has one bound**, `untoldBound`: when the library has gone untold for 2 s of the
+  graph's nominal time (the cycles' `startRawNs`, so a burst of short cycles does not stretch it),
+  it is told from the next cycle even if that one is overdue, so a host that never runs a cycle on
+  time does not leave it untold for good. That report is dated by when the cycle really ran
+  (`GraphCycle::ranRawNs()`, [engine.md](engine.md#graphcycle)), and the report after it is clamped
+  to it: dated by its own nominal start, earlier than the forced report's run time by up to its
+  overdue time, it would step back. The clamp has no other case: reports from on-time cycles follow
+  one another by their nominal starts, and a unit row holds it idle otherwise. **A finish may step
+  back when what lies downstream shrinks** (a following card's latency told smaller): that is
+  intended, since the finish is true and the library re-anchors on every report. The library may correct after a forced report: the bound's
+  price.
+- **While ear defers, the library's playtime runs open loop** (the last finish plus what it wrote
+  since), trailing now through a burst of either shape with frames still buffered; upstream's floor
+  would take that for an underrun and realign mid-burst, so the floor patch, which floors only when
+  nothing is buffered, is carried with the deferral ([below](#library-facts-and-carried-patches)).
+- **After a stall past the source's ring** the library corrects once what the ring did not hold (the stall's
+  lost frames less the skip) and the zeros ear played meanwhile (a skip that empties the ring leaves
+  its cycle to read nothing), at the next chunk it syncs: until then, what it had already written
+  (the ring and the rest of its chunk) plays late by that much, and ear's own silence after the
+  burst is at most a block, while the library refills the ring. *Why not pay it locally:* a node
+  that owed the rest kept a model of the library to know when it could, and the library corrected
+  the same time again whenever the model was wrong. The trade, accepted by the owner: up to about a
+  chunk played late where the old wrapper played ear's silence. A stall the ring holds (a missed
+  cycle or two) is skipped exactly and the library corrects nothing. A burst that runs every cycle
+  loses nothing, so it needs no correction and plays no silence. The clock tests prove each on the
+  real server with stalls of the data thread of 200 ms and 1 s and a 1.5-cycle hiccup, made
+  upstream of the block so it misses the stall and its burst on any host, and the same stalls made
+  inside the block, judged in whichever shape the host gives and recorded
+  (`out/Testing/sendspin-stall-shapes.txt`, which CI prints): with frames lost, one correction of what was not
+  skipped and the zeros, within the library's 500 us settle threshold, and at most one settle step
+  of up to two blocks after it, only where a cycle between was dry or began with the ring empty
+  (its next write landing late, as after a network gap); with none, no correction, no silence and nothing told from an overdue cycle. Every report's frames and finish are checked
+  against the rule, and a finish behind the last fails.
+- The source's ring (the library's decoded audio waiting for the block) is about 43 ms at 48 kHz,
+  small on purpose: with 2.7 s a correction lands 2.7 s late. It is the source's latency beyond
+  `from_server`, which `from` tells through the pass-through
+  ([sources](writing-a-node-type.md#sources)). The source fades at its edges: after an underrun the
+  audio decays, and fades in over 5 ms when it comes back.
 - Only routed paths count toward the downstream latency (unrouted, or routed to a `file` node, it
   is 0). A resampler before the card and anything past the card are left to the output delay in
   Music Assistant, which the library keeps in the key file.
@@ -341,17 +548,24 @@ instead, or filter both, if that matters. What a peer can and cannot do:
 The library never touches a realtime thread or the main loop (`notify_audio_played` and
 `write_audio` take mutexes; `stop()` and the destructor can wait).
 
+The node's own threads are its two dedicated [loops](writing-a-node-type.md#loops), whose states
+the framework makes in `configure`, starts once the key store is open, and destroys on their own
+threads at teardown; the node writes no thread.
+
 | Thread | Runs |
 |---|---|
-| Data loop | The node's code: reads the feed, writes the handoff to the server, publishes what played through a mailbox and rings a bell |
-| Worker `ear-sendspin <node>` | The library's "main loop": the key file, start, a 10 ms `poll`, stop and destruction; every listener callback but `on_audio_write`; the connection watch; mDNS |
-| Notifier `ear-notify <node>` | Waits on the bell, then `notify_audio_played` (apart from the worker, whose disk writes would delay it) |
-| Handoff thread | `write_audio` |
-| The library's own | Protocol, sync (`on_audio_write`), source, IXWebSocket's |
+| Data loop | The block plays the source on `from_server` by its clock (skip, count, tell, ring the clock wake), then the node's pass-through: `from_server` to `from`, `to` to the sink's bank `to_server` |
+| Worker loop `ear-sendspin <node>` | Its state is the library's "main loop": on a 10 ms tick, the client's making (the key record read, start, listen or dial) at its first run, then `loop()`, the connection watch and mDNS; every listener callback but `on_audio_write`; the key store's writes; at teardown, stop and destruction |
+| Notifier loop `ear-notify <node>` | Its state watches the source's clock wake, then calls `notify_audio_played` with the frames counted since its last report of the stream (apart from the worker, whose disk writes would delay it), through a slot the worker clears before it stops the client |
+| The sink's thread | `ToServer`, a member of the worker's state: `write_audio` |
+| The library's own | Protocol, sync (`on_audio_write`, writing through the clock, which paces there while no tick drains), source, IXWebSocket's |
 
-Teardown: the block goes silent, the handoff drains, then the worker says goodbye, stops and joins
-the notifier, stops and destroys the client, and posts `closed`, never waiting on the main loop. A
-dial in flight cancels within a poll; a half-open inbound socket takes up to 3 s.
+Teardown, by the framework's steps ([architecture.md](architecture.md#teardown-by-dependency)): the
+block goes silent, the sink drains into `ToServer` and finishes, then each loop runs what was posted
+and destroys its state: the notifier's watch goes, and the worker's state sends the mDNS goodbye,
+cuts the notifier off from the player, says the Sendspin goodbye, stops and destroys the client,
+never waiting on the main loop. A dial in flight cancels within a tick; a half-open inbound socket
+takes up to 3 s.
 
 ### Library facts and carried patches
 
@@ -361,10 +575,35 @@ dial in flight cancels within a poll; a half-open inbound socket takes up to 3 s
 - `cmake/sendspin-listener.patch`: refuses an upgrade carrying `Origin`; makes an unproved
   connection give way in the nursery; lengthens the listen queue (its 5 dropped a server's SYN under
   a burst). The worker's `server_max_connections` is 32 (the library's default is 4).
+  IXWebSocket's client always sends `Origin` (its own `ws://<host>:<port>` when none is given), so
+  a server written on it cannot reach a listening node, and the library's own suite, whose fake
+  servers are IXWebSocket clients, fails wherever one dials in (82 of its tests, which pass with
+  the refusal alone taken out); two more assume the nursery's old refusal of a newcomer. No product
+  bug: `aiosendspin`, Music Assistant's server, sends no `Origin`, and a server gets in beside a
+  port scan's sockets held open (`test/system/sendspin_floods_test.cpp`).
+- `cmake/sendspin-starved-floor.patch`: floors the playtime at now only when nothing is buffered
+  (`starved_playtime_floor`), the spec's underrun recovery. Without it a playtime trailing now with
+  frames still buffered is taken for an underrun: the library's open-loop playtime does so while ear
+  defers its reports through a catch-up's burst ([above](#clock)). Kept with the deferral; whether
+  it can go is a separate step, gated on evidence from both burst shapes.
+- `cmake/sendspin-late-chunk.patch`: skips a chunk as too late only once its last frame is, so a
+  chunk whose front is late is decoded and its front dropped by the hard sync. Without it every
+  chunk whose start was late was skipped whole, overshooting the timeline by up to a chunk, which
+  the next hard sync filled with silence. Both carry tests in the library's own suite
+  (`PlayerHardSync.*`), which ear's build does not compile; the `sendspin` skill says how to run it.
+  The late chunk's is also proven through ear: a network gap that starves the library (the test
+  server holds the audio it sends past its own late check, then sends it at once, the release
+  placed inside a chunk) is corrected in one step, the late chunk's front dropped, with no silence
+  added; with the patch's change reverted the same test adds silence every run. The floor puts the
+  next frame at now, and the block plays it from the first cycle to start after the library wrote
+  it, so the stream comes back late by up to a block, or two when its decode outlasts the cycle it
+  floored in, which the next chunk's sync may drop once more (a settle step).
 - `cmake/ixwebsocket-limits.patch`: refuses frames over 1 MiB and messages over 1024 fragments;
   lets one transport log line through every 10 s; makes a socket still to upgrade give way (8 per
-  address, counting only sockets whose peer has not closed); keeps a close racing a peer's reset from
-  ending the process.
+  address and 32 in all, both counting only sockets whose peer has not closed); keeps a close
+  racing a peer's reset from ending the process; ends a connection whose socket closes while it is
+  open (a stop landing as an upgrade was answered left its thread spinning, and the stop never
+  returned).
 - The library has no log hook: its lines (and IXWebSocket's) are a bare `fprintf(stderr, ...)`, so
   they reach standard output as unattributed `log` records from `stderr` at `warn`. ear fixes its
   level at WARN.
@@ -380,7 +619,9 @@ dial in flight cancels within a poll; a half-open inbound socket takes up to 3 s
   frame gives `n-1`, the blend of `n-1` and `n`, `n`; dropping one gives `n-1`, the blend of `n` and
   `n+1`, `n+2` (a step of 3). A recorded ramp is exact but for those, which the system tests' ramp
   check (`checkRamp`) allows and counts. At the low word's wrap the blends are not `k + 0.5`, because
-  each channel is a signed sample.
+  each channel is a signed sample. The node's source fades its own edges (an underrun's decay, the
+  fade-in after it, a clear's 5 ms tail): `checkRamp` reads each such frame as the ramp frame it
+  fades, at gain `g/240`, against the exact ramp around it, and counts it apart (`fades`).
 - What Music Assistant does was read in its source (`providers/sendspin/{provider,player}.py`), never
   run: **pairing with a real Music Assistant has not been tested.** Every test runs against
   `aiosendspin`, Music Assistant's pinned server.
@@ -399,6 +640,6 @@ a question's type and class past the buffer.
 
 Not yet checked: a real Music Assistant (above); real hardware, and so a real card's latency in
 the clock; realtime scheduling; a pod with a CPU limit (the library's unprioritised threads refill
-a 43 ms feed); a real `fsGroup` mount; an off-link mDNS query from a real other subnet.
+a 43 ms ring); a real `fsGroup` mount; an off-link mDNS query from a real other subnet.
 Operating it is also the `sendspin` skill's (`.claude/skills/sendspin/SKILL.md`), and running it in
 a pod the `ear-on-talos` skill's.
