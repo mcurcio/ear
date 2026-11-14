@@ -77,7 +77,8 @@ client is the configuration's. What that means to an operator (the owner's answe
 
 - **A stop keeps the connection.** `node.stop` fades and silences the node's code, and nothing else: the worker, the
   connection, the pairing and the library keep running, so Music Assistant still lists the player with its roles. Its
-  outputs are silent, nothing it is sent is played or reported played, and the sink takes nothing. `node.start` drives
+  outputs are silent, nothing it is sent is played (past the feed's undrained bound what it is sent is played into
+  nothing and reported played: `docs/node-types.md#clock`), and the sink takes nothing. `node.start` drives
   the code again, with no code asked. While stopped past the feed's undrained bound (its value and derivation:
   `docs/node-types.md#clock`) the feed plays what the library writes into nothing at the graph's rate and the notifier
   tells it, so a live stream neither pins the library's inbound ring (which closes the connection: "ring pinned behind

@@ -47,8 +47,10 @@ public:
 	/// nothing in its time (dropped()), until the reader takes the feed back (skipStale()): a drop under way then is
 	/// refused, and its frames go to the ring.
 	std::uint32_t write(std::span<const float> interleaved, std::uint32_t frames, std::chrono::milliseconds patience);
-	/// Any ordinary thread. What was written so far is gone at the next read, not counted played, and what was dropped
-	/// so far is forgotten (Dropped::forgotten).
+	/// Any ordinary thread, never while write() runs: the library fires on_stream_end only once its sync task, the
+	/// writer, is idle, and starts the next stream's writes only after it (player_role.cpp's sync-idle gate), so no drop
+	/// is mid-publish while this reads the total. What was written so far is gone at the next read, not counted played,
+	/// and what was dropped so far is forgotten (Dropped::forgotten).
 	void clear() noexcept;
 	/// Realtime, each cycle: the reader drained the feed in a cycle that ran at `ranRawNs` (CLOCK_MONOTONIC_RAW). The
 	/// feed counts as drained when it is made, so a configuration that starts during a stream waits for its first
