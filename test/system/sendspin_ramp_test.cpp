@@ -435,6 +435,22 @@ TEST_CASE("A block dropped after a stall past the feed is paid by no record of t
 		INFO(json(unpaid).dump());
 		CHECK(unpaid.size() == 1);
 		if (!unpaid.empty()) CHECK(unpaid[0].starts_with("a skip of 1 blocks at frame "));
+		// A red carries each unpaid skip's evidence: its blocks and charge, the drift in its window, whether the feed ran
+		// dry there, and the library's sync lines in its due window. The library's line came as the stall ended.
+		const json lostSync = {
+			{"kind", "log"}, {"t", lossRecord(stalled.stallEndMs + 50, 0)["t"]}, {"text", "Lost sync (-60000us off)"}};
+		const auto told = unpaidRampSkipsOf({stallRecord, lostSync}, at, ramp);
+		REQUIRE(told.size() == 1);
+		CHECK(told[0].find("evidence: skipped 1 blocks, charged 1 blocks (256 frames)") != std::string::npos);
+		CHECK(told[0].find("zeros: none (the feed never ran dry there)") != std::string::npos);
+		CHECK(told[0].find("sync lines: none") != std::string::npos);
+		// Unpaid, the stall shows its whole charge, the zeros of the feed running dry and the library's line.
+		const auto stallTold = unpaidRampSkipsOf({lostSync}, at, ramp);
+		REQUIRE(stallTold.size() == 2);
+		INFO(stallTold[0]);
+		CHECK(stallTold[0].find("evidence: skipped 8 blocks, charged 180 blocks") != std::string::npos);
+		CHECK(stallTold[0].find(" 64@") != std::string::npos);
+		CHECK(stallTold[0].find("\"Lost sync (-60000us off)\"") != std::string::npos);
 		// With a record of its own the dropped block is paid, as a cut would be.
 		const json dropRecord = lossRecord(stalled.stallEndMs + dropAfterMs + 150, 1);
 		CHECK(unpaidSkipsOf({stallRecord, dropRecord}, seen).empty());
