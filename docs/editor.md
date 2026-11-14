@@ -93,11 +93,14 @@ through the reducer into the badges drawn. The rules:
   shortfall "... frames played short since it was made"). An engine kind has no counter. A counter
   member the editor knows is shown whatever the kind; one it does not know is ignored.
 - **A mark only while it moves.** A badge carries the warning mark (an "!" in a circle) only while
-  its `dropped` or `shortfall` rose in the last minute, on the browser's clock; the box redraws
-  when the minute ends. A rise is a value above the one last held for that node and companion: the
-  first value seen (a snapshot's, a new configuration's), a value that fell (a new configuration
-  seen without its `[]`, as after a reconnect) and an entry seen again after its list dropped it
-  are not. *Why:* the canvas stays quiet when all is well and points at trouble while it happens;
+  its `dropped` or `shortfall` rose in the last minute, timed on the browser's monotonic clock
+  (`performance.now()`, so a step of the wall clock never stretches or cuts the minute; the
+  counters' marks, not built yet, are to use the same clock and minute); the box redraws when the
+  minute ends. A rise is a value above the one last held for that node and companion: the first
+  value seen (a snapshot's, a new configuration's), a value that fell (a new configuration seen
+  without its `[]`) and an entry seen again after its list dropped it are not. A closed connection
+  forgets every value held, so the reconnect's snapshot is a first sighting: what dropped while the
+  editor was away is in the totals, never marked as the last minute's. *Why:* the canvas stays quiet when all is well and points at trouble while it happens;
   the totals are always in the tooltip and panel. `CompanionMoves` keeps what was held and when it
   rose, outside the reducer (which holds only what ear sent), and is the graph store's first
   listener, so a box drawn for a new graph reads that graph's moves.

@@ -31,7 +31,11 @@ export class Editor {
         }
       },
       onStatus: (status) => {
-        if (status === "closed") this.levels.clear();
+        if (status === "closed") {
+          this.levels.clear();
+          // The next snapshot is a first sighting: what moved while away did not move "in the last minute".
+          this.moves.forget();
+        }
         this.status = status;
         for (const listener of [...this.statusListeners]) listener();
       },

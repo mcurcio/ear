@@ -962,14 +962,19 @@ the wire as 3b.6 left it (`docs/control-port.md#companions`) and the editor as i
   strip (a stop keeps the configuration). An unknown phase draws the list it holds.
 - **Dropped and shortfall: recent movement marks, the total is in words** (Q-CF4's rule, applied to the companions'
   counters too, replacing 3.7's "a counter above zero puts a warning mark"). The badge carries the warning mark (a
-  small "!" in a circle) only while its `dropped` or `shortfall` rose in the last minute, on the browser's clock, from
+  small "!" in a circle) only while its `dropped` or `shortfall` rose in the last minute, on the browser's monotonic
+  clock (`performance.now()`, found building), from
   what the editor last held for that companion; the tooltip and the panel always give the total. Why: the counters
   count per configuration, so 3.7's lifetime mark would stay on a recording that dropped once until its next restart,
   the "always shown" Q-CF4 turned down; and D3's node mark (`cycle-facts.md` 8.5) uses the same glyph, the same
-  minute and the same browser clock, so the two read alike. What is a rise: a value above the one held for the same
+  minute and the same clock, so the two read alike. **This is a reading of the owner's rules, not an answer of
+  theirs**: Q28 asked for the drop count on hover and no mark at all; 3.7's "mark when above zero" was the design's
+  addition; Q-CF4 answered "recent marks" for the cycle counters, and it is applied here to the companions' counters in
+  place of 3.7's rule. The owner may overturn it (back to no mark, or to 3.7's), a change to `companionBadges`' one
+  `warning` line and `docs/editor.md#companions`. What is a rise: a value above the one held for the same
   node and companion name. Not a rise: the first value seen (a snapshot or a new list's first entry: when it moved is
-  unknown, its total is still in words), a value below the held one (a new configuration seen without its `[]`, as
-  after a reconnect's snapshot), and an entry seen again after its list dropped it (a restart's companion counts from
+  unknown, its total is still in words; a closed connection forgets everything held, so a reconnect's snapshot is a
+  first sighting, found building), a value below the held one (a new configuration seen without its `[]`), and an entry seen again after its list dropped it (a restart's companion counts from
   zero, and what was held is forgotten with the entry). The mark leaves on its own once the minute passes (the box
   redraws then). The movement is kept by `CompanionMoves`, beside the graph store and fed by it, outside React: the
   reducer keeps only what ear sent, so the browser's times stay out of it.
@@ -994,7 +999,7 @@ export interface CompanionBadge {
 export function companionLabel(kind: CompanionKind): string;
 export function companionDetail(companion: Companion): string;
 /** Each companion's last counter value and when it last rose, per node; told by the graph store first. */
-export class CompanionMoves { note(graph: GraphState, now: number): void; movedAt(node: string, companion: string): number | undefined; nextExpiry(node: GraphNode, now: number): number | undefined; attach(store: GraphStore): () => void; }
+export class CompanionMoves { note(graph: GraphState, now: number): void; forget(): void; movedAt(node: string, companion: string): number | undefined; nextExpiry(node: GraphNode, now: number): number | undefined; attach(store: GraphStore): () => void; }
 export function companionBadges(node: GraphNode, moves: CompanionMoves, now: number): CompanionBadge[];
 ```
 
@@ -1103,8 +1108,8 @@ settled in the building:
 
 - **`graph.ts` did not change**: 3b.6's reducer already keeps the list. What 3b.7 adds beside it is `CompanionMoves`,
   attached in `Editor`'s constructor as the graph store's first listener; a test proves a listener subscribed after
-  it (as React's are) reads the new graph's moves. `attach` takes the clock (`Date.now` by default) so its tests run
-  on their own times; `useCompanionBadges` (`hooks.ts`) reads `Date.now()` per draw and sets one timer for
+  it (as React's are) reads the new graph's moves. `attach` takes the clock (`performance.now` by default) so its tests run
+  on their own times; `useCompanionBadges` (`hooks.ts`) reads `performance.now()` per draw and sets one timer for
   `nextExpiry`, the earliest shown mark's end.
 - **The drawing is one component file**, `CompanionStrip.tsx`: the box's strip and the panel's list, both from
   `companionBadges`, so the panel's lines are the badges' titles (detail, and the mark's words while it shows).
@@ -1113,6 +1118,13 @@ settled in the building:
 - **The fixture replay shows the gap rule**: in `companions.json` `fpp`'s strip empties at its `failed` `node.state`,
   one message before its `[]` arrives, and `rec`'s mark from its 0 to 4096 rise stays across its stop and goes with
   the restart's `[]`.
+- **A reconnect forgets what was held** (found in review): `CompanionMoves` first kept its values across a closed
+  connection, so the reconnect's snapshot with a higher `dropped` counted as a rise and marked drops made while the
+  editor was away as the last minute's. `Editor` now calls `forget()` when the connection closes, beside clearing the
+  levels; a test replays an old graph, a close and a snapshot with a higher count through an `Editor` on a fake
+  socket, and fails without the call.
+- **The minute is on `performance.now()`** (found in review), not `Date.now()`: a step of the wall clock can neither
+  stretch nor cut it. `attach`'s default clock and `useCompanionBadges` both read it; D3's marks are to use the same.
 - **Rendering is still checked by eye** (no browser test runner, `docs/editor.md#developing-it`): the screenshot taken
   while building it used the machine's own Playwright against `web/dist` with a faked socket, and is not committed.
 

@@ -2,7 +2,7 @@
 // words, the details with their totals, no strip for a failed or disabled node and one kept by a stopped node, and the
 // warning mark only while a counter rose in the last minute; then the companions and unknown-values fixtures replayed
 // through the reducer into the badges drawn.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   CompanionMoves,
   companionBadges,
@@ -14,6 +14,7 @@ import {
 import { Editor } from "./editor";
 import { GraphStore, reduce, type GraphState } from "./graph";
 import type { Companion, Graph, GraphNode, ServerMessage } from "./protocol";
+import type { SocketEvents } from "./rpc";
 import { fixtures, messagesOf } from "./testFixtures";
 
 const sink = (dropped: number, ready = true): Companion => ({
@@ -214,6 +215,47 @@ describe("the warning mark", () => {
     store.apply({ jsonrpc: "2.0", method: "node.companionsChanged", params: { name: "rec", companions: [sink(64)] } });
     expect(order).toEqual(["unmoved", "moved"]);
     expect(moves.movedAt("rec", "rec.writer")).toBe(at + 7);
+  });
+
+  it("times a rise on the monotonic clock, never the wall clock", () => {
+    const monotonic = vi.spyOn(performance, "now").mockReturnValue(5000);
+    const wall = vi.spyOn(Date, "now").mockReturnValue(9_999_999);
+    try {
+      const store = new GraphStore();
+      const moves = new CompanionMoves();
+      moves.attach(store);
+      store.apply({ jsonrpc: "2.0", id: 1, result: graphOf(node([sink(0)])) as never });
+      store.apply({ jsonrpc: "2.0", method: "node.companionsChanged", params: { name: "rec", companions: [sink(1)] } });
+      expect(moves.movedAt("rec", "rec.writer")).toBe(5000);
+    } finally {
+      monotonic.mockRestore();
+      wall.mockRestore();
+    }
+  });
+
+  it("takes a reconnect's snapshot as a first sighting: drops made while away are no mark", () => {
+    const sockets: SocketEvents[] = [];
+    const retries: (() => void)[] = [];
+    const editor = new Editor({
+      url: "ws://ear.invalid/rpc",
+      openSocket: (_url, events) => {
+        sockets.push(events);
+        return { send: () => undefined, close: () => undefined };
+      },
+      schedule: (retry) => void retries.push(retry),
+    });
+    const snapshot = (dropped: number) => JSON.stringify({ jsonrpc: "2.0", id: 1, result: graphOf(node([sink(dropped)])) });
+    editor.client.start();
+    sockets[0]!.open();
+    sockets[0]!.message(snapshot(0));
+    sockets[0]!.close();
+    retries.shift()!();
+    sockets[1]!.open();
+    sockets[1]!.message(snapshot(4096));
+    expect(editor.moves.movedAt("rec", "rec.writer")).toBeUndefined();
+    const rec = editor.graph.get()!.nodes[0]!;
+    expect(companionBadges(rec, editor.moves, performance.now())[0]!.warning).toBe(false);
+    editor.client.stop();
   });
 
   it("is noted by an editor session before anything that draws hears its graph", () => {

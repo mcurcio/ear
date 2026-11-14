@@ -1,7 +1,8 @@
 // A node's companions in words and badges (docs/editor.md#companions): the one place that turns the wire's companion
 // list (docs/control-port.md#companions) into what the box's strip and the node panel draw. A kind this editor does
 // not know is drawn by its own text; dropped and shortfall are totals in words, and a badge's warning mark shows only
-// while its counter rose in the last minute on the browser's clock, the rule the counters' marks follow too.
+// while its counter rose in the last minute on the browser's monotonic clock (performance.now, so a step of the wall
+// clock never stretches or cuts the minute), the rule the counters' marks follow too.
 import type { GraphState, GraphStore } from "./graph";
 import type { Companion, CompanionKind, GraphNode } from "./protocol";
 
@@ -74,14 +75,20 @@ interface Held {
 }
 
 /**
- * Each companion's last counter value and when it last rose, per node, on the browser's clock. A rise is a value
- * above the one held for the same node and companion; a first sighting, a fall (a new configuration) and an entry
- * seen again after its list dropped it are not. Kept outside the reducer, which holds only what ear sent.
+ * Each companion's last counter value and when it last rose, per node, on the browser's monotonic clock. A rise is a
+ * value above the one held for the same node and companion; a first sighting, a fall (a new configuration) and an
+ * entry seen again after its list dropped it are not. Everything held is forgotten when the connection closes, so a
+ * reconnect's snapshot is a first sighting. Kept outside the reducer, which holds only what ear sent.
  */
 export class CompanionMoves {
   private held = new Map<string, Map<string, Held>>();
 
-  /** Takes the graph as it now is, at `now` (ms on the browser's clock). */
+  /** Forgets every value held: what moved while the editor was away did not move in its last minute. */
+  forget(): void {
+    this.held = new Map();
+  }
+
+  /** Takes the graph as it now is, at `now` (ms on the browser's monotonic clock). */
   note(graph: GraphState, now: number): void {
     const next = new Map<string, Map<string, Held>>();
     for (const node of graph?.nodes ?? []) {
@@ -121,7 +128,7 @@ export class CompanionMoves {
    * Notes every graph the store makes from now on. Attach before anything that draws subscribes, so a box drawn for a
    * new graph reads the moves of that graph. Returns the unsubscribe.
    */
-  attach(store: GraphStore, clock: () => number = Date.now): () => void {
+  attach(store: GraphStore, clock: () => number = () => performance.now()): () => void {
     this.note(store.get(), clock());
     return store.subscribe(() => this.note(store.get(), clock()));
   }

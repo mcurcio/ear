@@ -56,11 +56,11 @@ export function useLevel(node: string, port: string): Level {
 export function useCompanionBadges(node: GraphNode): CompanionBadge[] {
   const { moves } = useEditor();
   const [, redraw] = useState(0);
-  const now = Date.now();
+  const now = performance.now();
   const leaves = moves.nextExpiry(node, now);
   useEffect(() => {
     if (leaves === undefined) return undefined;
-    const timer = setTimeout(() => redraw((n) => n + 1), Math.max(0, leaves - Date.now()));
+    const timer = setTimeout(() => redraw((n) => n + 1), Math.max(0, leaves - performance.now()));
     return () => clearTimeout(timer);
   }, [leaves]);
   return companionBadges(node, moves, now);
