@@ -6,7 +6,7 @@
 #include <system_error>
 #include <sys/eventfd.h>
 #include <unistd.h>
-namespace ear::sendspin {
+namespace ear::nodes::sendspin {
 class EventFd {
 public:
 	/// Throws std::system_error when it cannot make one.
@@ -30,4 +30,4 @@ public:
 private:
 	int fd_;
 };
-} // namespace ear::sendspin
+} // namespace ear::nodes::sendspin

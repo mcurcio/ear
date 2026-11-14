@@ -355,3 +355,48 @@ TEST_CASE("A node removed and added back while a server is connected takes its p
 	CHECK(rpc.readUntilClosed() == 1001);
 	CHECK(waitForStop(ear) == 0);
 }
+
+// The owner's answer (docs/node-types.md#stop-restart-disable): a stop silences the node and keeps its connection and
+// pairing, so the server still holds the player with its roles, and a start plays again at once, with no code asked.
+TEST_CASE("A stopped node stays connected and paired: the server still holds its roles, and a start plays again "
+          "with no code",
+          "[system][sendspin]") {
+	SendspinTestServer server;
+	TempDirectory directory;
+	writeGraphFile(directory, dialToRec(server.url()));
+	auto ear = runEar(directory);
+	REQUIRE_SEEN(ear, waitForLines(ear, runningAndLinked) && ear.waitForLine(connectedUnpaired, deadline));
+	pairOnce(ear, server);
+	const auto wav = directory.recordings() / "rec.wav";
+	server.send(playLong);
+	REQUIRE_SEEN(ear, waitForRampFrames(wav));
+	REQUIRE_SEEN(ear, endStream(ear, server));
+	const std::size_t connectedBefore = countLines(ear, "node ma says connected ");
+
+	Rpc rpc(controlPort(ear));
+	REQUIRE(rpc.call("graph.subscribe").contains("result"));
+	REQUIRE(rpc.call("node.stop", {{"name", "ma"}})["result"] == json{{"applied", "stop"}});
+	rpc.waitFor([](const json& m) { return Rpc::matches(m, "node.state", {{"name", "ma"}, {"phase", "stopped"}}); });
+	// Stopped, the server still sees the player and the source on their connection.
+	server.send("roles");
+	const auto roles = server.waitForEvent("roles ", deadline);
+	INFO("the server printed:\n" << server.events());
+	REQUIRE(roles);
+	CHECK(*roles == "roles player,source");
+
+	REQUIRE(rpc.call("node.start", {{"name", "ma"}})["result"] == json{{"applied", "start"}});
+	rpc.waitFor([](const json& m) { return Rpc::matches(m, "node.state", {{"name", "ma"}, {"phase", "running"}}); });
+	const std::size_t resumedAt = wavFramesSoFar(wav);
+	server.send(playLong);
+	REQUIRE_SEEN(
+		ear, waitForRamp(wav, [](const RampSoFar& ramp) { return ramp.rampFrames >= rampFramesAtLeast; }, resumedAt));
+	REQUIRE_SEEN(ear, endStream(ear, server));
+	// One connection throughout: no goodbye heard, nothing redialled, no code asked again.
+	CHECK(server.events().find("disconnected") == std::string::npos);
+	CHECK(countLines(ear, "node ma says connected ") == connectedBefore);
+	CHECK_FALSE(ear.lineStartingWith("node ma says disconnected"));
+	CHECK(countLines(ear, pairingCodePrefix) == 1);
+	ear.signal(SIGTERM);
+	CHECK(rpc.readUntilClosed() == 1001);
+	CHECK(waitForStop(ear) == 0);
+}

@@ -6,7 +6,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
-namespace ear::sendspin {
+namespace ear::nodes::sendspin {
 /// `ear-<first 50 bytes of node>-<first 8 of client id>`: within a DNS label's 63 bytes, stable and unique without
 /// probing.
 std::string advertisedInstance(std::string_view node, std::string_view clientId);
@@ -28,4 +28,4 @@ private:
 	explicit Advertiser(std::unique_ptr<State> state);
 	std::unique_ptr<State> state_;
 };
-} // namespace ear::sendspin
+} // namespace ear::nodes::sendspin

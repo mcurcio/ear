@@ -240,19 +240,25 @@ Each node's identity and pairings are `<config-dir>/sendspin-<node>.key`, mode 0
 object with audit fields (`createdAt`, `createdBy`, `changedAt`, `changedBy`) and the library's
 blobs in base64url (private key, pairing secrets, output delay). At most 64 KiB, written whole on
 each change through the confined folder, swapped in as `ear.conf` is. It holds a private key:
-never log it or send it to the editor.
+never log it or send it to the editor. It is the node's store `key`
+([writing-a-node-type.md](writing-a-node-type.md#stores)): opened, narrowed and judged off the main
+loop before any of the node's work runs, and created if missing, so a node that cannot trust its
+file never runs.
 
 - A wider mode is narrowed, not refused, at each boot for every key file in the folder (whatever
-  its node) and at each start and save. *Why:* a Kubernetes `fsGroup` widens it on every mount.
-  What boot cannot narrow is a `log` record from source `sendspin`.
+  its node) and at each configuration and save. *Why:* a Kubernetes `fsGroup` widens it on every
+  mount. What boot cannot narrow is a `log` record from source `sendspin`.
 - Renaming a node makes a new identity (re-pair); `node.remove` leaves the file, so a name added
   back inherits it. To wipe an identity, delete the file and `node.restart` the node.
 - A file it cannot trust (not JSON, a missing field, a key of the wrong size, a symlink, too
-  large) fails the node, left unchanged but for its mode: fix or delete it. No new identity is
-  minted over it, or the server's trust would be lost silently. A missing file in a folder it
-  cannot write fails the node too.
+  large) fails the node `start-failed` before it was ever `running`, left unchanged but for its
+  mode: fix or delete it. No new identity is minted over it, or the server's trust would be lost
+  silently. A missing file in a folder it cannot write fails the node too.
 - A key file something else changed or removed since it was read fails the write
-  (`key-write-failed`), and theirs stands.
+  (`key-write-failed`), and theirs stands. A write the disk has not finished within 5 s is judged
+  by what the store then holds: written if it shows the new record, else `key-write-failed`
+  (`not confirmed within 5 s`), though it may still land; the pairing holds for this run either
+  way.
 
 ### Notes
 
@@ -287,17 +293,28 @@ many were held back, before the next that passes.
 |---|---|---|
 | No server, or the server gone | `running`, outputs silent, inputs dropped; `says disconnected` | Nothing: it redials |
 | The listening port is held by another program or another `sendspin` node | `failed start-failed: cannot listen on port <p>: held by node <n>` or `: <reason>` | `node.update` to a free port. A program taking the port just after the check is not caught: the library only logs, and retries every 5 s |
-| A key file it cannot trust, or the insides dying | `failed start-failed: <detail>` (or `lost` once it ran) | Fix the cause, then `node.restart` or `node.start`; a change of settings or a restart of ear also retries |
+| A key file it cannot trust | `failed start-failed: sendspin-<node>.key: <detail>`, before it ran | Fix or delete the file, then `node.restart` or `node.start`; a change of settings or a restart of ear also retries |
+| The library dying | `failed lost: the Sendspin client died: <what>` (or `the Sendspin client did not start`) | `node.restart` or `node.start` |
 | The mDNS socket cannot open | Listening, not advertising; `says advertise-failed` | Give the server the URL |
 | A later key write fails | `says key-write-failed` | Fix the folder; pair again |
 
 ### Stop, restart, disable
 
-A stopped `sendspin` node keeps its connection, pairing and library running, silent: nothing it is
-sent is played or reported played, and nothing is sent. Up to about 43 ms the feed held from before
-plays first at the next start. A restart, a disable or a removal says goodbye (`shutdown`) and
-drops the connection; a restart or an enable builds a new client from the key file. A disabled node
-holds no port and no connection. A name added back waits for its old node to go.
+**A stopped `sendspin` node stays connected to Music Assistant** (the owner's decision): a stop
+silences its audio and keeps its connection, pairing and library running, so Music Assistant still
+lists the player with its roles, and `node.start` plays again at once, with no code asked. Stopped,
+nothing it is sent is played or reported played, and nothing is sent; up to about 43 ms the feed
+held from before plays first at the next start. The client lives as long as the node's
+configuration, not its run: a node restarted while stopped connects again and rests stopped.
+
+| | Connection | Pairing | Port and key file |
+|---|---|---|---|
+| `node.stop`, `node.start` | Kept | Kept, and a held pairing stays held | Kept |
+| `node.restart`, a change of settings | Goodbye (`shutdown`), then a new client from the key file, which dials or listens again | Kept in the key file; a held pairing is released | Released, then claimed and opened again |
+| `node.disable`, `node.remove` | Goodbye (`shutdown`), dropped | Kept in the key file | Released: a disabled node holds no port and no connection |
+
+`node.enable` builds a new client from the key file, as a restart does. A name added back waits for
+its old node to go.
 
 After a `node.update` or `node.restart` the goodbye is `shutdown`, and a server that dialled by hand
 (`aiosendspin`'s `connect_to_client`) did not redial within 30 s in tests, though the spec has a
@@ -316,7 +333,8 @@ server reconnect on that reason; one browsing mDNS comes back by itself.
   that asks again within the second is answered the next time it asks.
 - The instance name is `ear-<first 50 bytes of node>-<first 8 of client id>`, a DNS label's 63 bytes
   at most, stable and unique without probing. Music Assistant shows `name`, from the hello.
-- A goodbye goes out when the worker stops; a crash leaves the record until its TTL.
+- A goodbye goes out when the worker's state goes (a restart, a disable or a removal, never a
+  stop); a crash leaves the record until its TTL.
 
 ### On an untrusted network
 
@@ -353,10 +371,10 @@ instead, or filter both, if that matters. What a peer can and cannot do:
 - The finish it tells is where the library's next frame plays, the end of the telling cycle: the
   library puts its next audio at the finish plus what it still holds, and a cycle the feed left
   short played zeros to its end.
-- The audio sent to the server (`to`) is dated by when its cycle started, each piece from the
-  newest cycle's start by its frames ([engine.md](engine.md#dating)). The capture latency upstream
+- The audio sent to the server (`to`) is dated by when its cycle started, each piece from its own
+  chunk's cycle start by its frames ([engine.md](engine.md#dating)). The capture latency upstream
   of `to` is not counted yet, so a card's capture reaches the server dated late by the card's
-  buffer; it is counted once `to` is a sink's bank, whose chunks carry it (slice 3c).
+  buffer, though the sink's chunks carry it (`Chunk::upstreamFrames`).
 - **The node's clock is an honest sink with a local skip** ([the timing model](architecture.md#the-timing-model),
   rule 3): it plays every frame the library wrote, in order, and tells the library what played and
   when, true when told. It keeps no debt and no model of the library: what it could not skip of lost
@@ -417,7 +435,8 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   (its next write landing late, as after a network gap); with none, no correction, no silence and nothing told from an overdue cycle. Every report's frames and finish are checked
   against the rule, and a finish behind the last fails.
 - The feed (the library's decoded audio waiting for the block) is about 43 ms at 48 kHz, small on
-  purpose: with 2.7 s a correction lands 2.7 s late. The node declares it as its latency on `from`.
+  purpose: with 2.7 s a correction lands 2.7 s late. The node declares it as its latency on its path
+  from `from_server` to `from`.
 - Only routed paths count toward the downstream latency (unrouted, or routed to a `file` node, it
   is 0). A resampler before the card and anything past the card are left to the output delay in
   Music Assistant, which the library keeps in the key file.
@@ -430,17 +449,24 @@ instead, or filter both, if that matters. What a peer can and cannot do:
 The library never touches a realtime thread or the main loop (`notify_audio_played` and
 `write_audio` take mutexes; `stop()` and the destructor can wait).
 
+The node's own threads are its two dedicated [loops](writing-a-node-type.md#loops), whose states
+the framework makes in `configure`, starts once the key store is open, and destroys on their own
+threads at teardown; the node writes no thread.
+
 | Thread | Runs |
 |---|---|
-| Data loop | The node's code: reads the feed, writes the handoff to the server, publishes what played through a mailbox and rings a bell |
-| Worker `ear-sendspin <node>` | The library's "main loop": the key file, start, a 10 ms `poll`, stop and destruction; every listener callback but `on_audio_write`; the connection watch; mDNS |
-| Notifier `ear-notify <node>` | Waits on the bell, then `notify_audio_played` (apart from the worker, whose disk writes would delay it) |
-| Handoff thread | `write_audio` |
+| Data loop | The node's code: passes `to` to the sink's bank `to_server`, reads the feed into `from`, publishes what played through a mailbox and rings a bell |
+| Worker loop `ear-sendspin <node>` | Its state is the library's "main loop": on a 10 ms tick, the client's making (the key record read, start, listen or dial) at its first run, then `loop()`, the connection watch and mDNS; every listener callback but `on_audio_write`; the key store's writes; at teardown, stop and destruction |
+| Notifier loop `ear-notify <node>` | Its state watches the bell, then calls `notify_audio_played` (apart from the worker, whose disk writes would delay it), through a slot the worker clears before it stops the client |
+| The sink's thread | `ToServer`, a member of the worker's state: `write_audio` |
 | The library's own | Protocol, sync (`on_audio_write`), source, IXWebSocket's |
 
-Teardown: the block goes silent, the handoff drains, then the worker says goodbye, stops and joins
-the notifier, stops and destroys the client, and posts `closed`, never waiting on the main loop. A
-dial in flight cancels within a poll; a half-open inbound socket takes up to 3 s.
+Teardown, by the framework's steps ([architecture.md](architecture.md#teardown-by-dependency)): the
+block goes silent, the sink drains into `ToServer` and finishes, then each loop runs what was posted
+and destroys its state: the notifier's watch goes, and the worker's state sends the mDNS goodbye,
+cuts the notifier off from the player, says the Sendspin goodbye, stops and destroys the client,
+never waiting on the main loop. A dial in flight cancels within a tick; a half-open inbound socket
+takes up to 3 s.
 
 ### Library facts and carried patches
 

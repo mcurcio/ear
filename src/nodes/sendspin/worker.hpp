@@ -1,37 +1,149 @@
-// A sendspin node's own threads (docs/node-types.md#threads): the worker, the library's "main loop", and the
-// notifier, telling the library what played. They own the library's client and the node's key file; nothing else
-// touches the client but the handoff's thread, through the consumer here, so it never meets a realtime thread or
-// PipeWire's main loop.
+// A sendspin node's two loops' states (docs/node-types.md#threads): the worker, the library's "main loop", and the
+// notifier, telling the library what played. The worker owns the library's client and reads the node's key store;
+// nothing else touches the client but the sink's thread, through ToServer, and the notifier, through the PlayerSlot,
+// so the library never meets a realtime thread or the main loop.
 #pragma once
+#include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <functional>
 #include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <vector>
+#include "advertiser.hpp"
+#include "connection_watch.hpp"
+#include "ear/core/loop.hpp"
+#include "ear/core/node_handle.hpp"
 #include "ear/core/node_type.hpp"
-#include "ear/folder/confined_folder.hpp"
+#include "ear/core/store.hpp"
+#include "event_fd.hpp"
 #include "feed.hpp"
+#include "key_store.hpp"
 #include "mailbox.hpp"
+#include "sendspin/client.h"
+#include "sendspin/player_role.h"
+#include "sendspin/source_role.h"
 #include "sendspin_code.hpp"
 #include "settings.hpp"
-namespace ear::sendspin {
+#include "to_server.hpp"
+namespace ear::nodes::sendspin {
 /// The lead a player reports (spec "required_lead_time_ms": at least what still plays after a stream/clear): all a feed
 /// of `feedFrames` holds, and the block being played. The library reports its own pipeline's lead if that is larger.
 std::uint16_t requiredLeadMs(std::uint32_t feedFrames, std::uint32_t maxBlock, SampleRate rate) noexcept;
-class SendspinWorker {
+
+/// The library's player as the worker lends it to the notifier: set once the client started, cleared before the
+/// client stops, so the notifier never calls a player that is going. Every call under one lock; any thread.
+class PlayerSlot {
 public:
-	/// Starts the threads; `feed` and `events` outlive `stopped`. Throws std::system_error when it cannot. The node's
-	/// key file lives in `folder`.
-	SendspinWorker(std::shared_ptr<const folder::ConfinedFolder> folder, NodeName node, SendspinSettings settings,
-	               AudioFormat format, Feed& feed, NodeHandle& events);
-	void stop(std::move_only_function<void()> stopped); // main thread; the insides' close()
-	~SendspinWorker();                                  // after `stopped`; joins a finished thread
-	const EventFd& bell() const noexcept;               // what the code rings
-	Mailbox<PlayProgress>& progress() noexcept;
-	HandoffConsumer& toServer() noexcept;                   // the handoff's far end: write_audio; closed before stop()
-	Mailbox<CaptureAnchor>& capture() noexcept;             // when what the handoff holds was captured
-	std::int64_t clientTimeOf(std::int64_t serverUs) const; // the tests' window on the time filter
+	void set(::sendspin::PlayerRole* player) noexcept;
+	/// notify_audio_played on the player; false (and nothing called) while there is none.
+	bool notify(std::uint32_t frames, std::int64_t finishUs);
+
 private:
-	class Impl;
-	std::unique_ptr<Impl> impl_;
+	std::mutex mutex_;
+	::sendspin::PlayerRole* player_ = nullptr;
 };
-} // namespace ear::sendspin
+
+/// What the worker's state is made with, in configure (on the main loop): references the configuration keeps until
+/// teardown step 5, after the state is destroyed.
+struct WorkerParts {
+	NodeHandle& handle; // the configuration's: notes and losses
+	Store& keys;        // the key file, open and trusted once the node is configured
+	Feed& feed;         // what the library's sync thread writes
+	PlayerSlot& player; // lent to the notifier
+	Loop& self;         // the worker loop, its 10 ms tick
+	SendspinSettings settings;
+	AudioFormat format;
+};
+
+/// The worker loop's state. Made in configure with no I/O and nothing armed; begin() runs once the node is configured
+/// and makes the client on the tick's first run; the client lives as long as the configuration, so a stop and a start
+/// keep its connection and pairing (docs/node-types.md#stop-restart-disable). Destroyed on its loop at teardown step 4:
+/// the mDNS goodbye, the client stopped (the Sendspin goodbye, its threads joined) and destroyed.
+class Worker final : public ::sendspin::PlayerRoleListener,
+					 public ::sendspin::SendspinNetworkProvider,
+					 public ::sendspin::SendspinClientListener,
+					 public ::sendspin::SourceRoleListener,
+					 public SourceSink {
+public:
+	explicit Worker(WorkerParts parts);
+	~Worker() override;
+	Worker(const Worker&) = delete;
+	Worker& operator=(const Worker&) = delete;
+	/// The worker loop, once: arms the tick, whose first run reads the key record and makes, starts and (listening)
+	/// advertises the client, and whose every later run turns the library, reads the connection and answers mDNS.
+	void begin();
+	/// The sink on `to_server`'s consumer (consumedBy(worker, &Worker::toServer)): its calls are the sink's thread's.
+	ToServer toServer;
+	/// Any thread: the library's time filter, for the tests; 0 before the client is made.
+	std::int64_t clientTimeOf(std::int64_t serverUs) const;
+
+	// SendspinNetworkProvider. Nothing to wait for: the library looks a host up when it dials, and a listener binds now.
+	bool is_network_ready() override { return true; }
+	// PlayerRoleListener: on_audio_write on the library's sync thread, the rest on the worker.
+	std::size_t on_audio_write(std::uint8_t* data, std::size_t length, std::uint32_t timeout_ms) override;
+	void on_stream_start() override;
+	void on_stream_end() override;
+	// SendspinClientListener. The worker. Pairing is the connection's domain: notes, never node states.
+	void on_pairing_succeeded(const std::string& server_id) override;
+	void on_pairing_failed(const std::string& server_id, ::sendspin::SendspinPairAbortReason reason) override;
+	void on_display_pairing_code(const std::string& code, ::sendspin::SendspinPairingCodeFormat format) override;
+	void on_clear_pairing_code() override;
+	void on_open_pairing_window() override;
+	// SourceRoleListener. The worker.
+	void on_streaming_started() override;
+	void on_streaming_stopped() override;
+	// SourceSink. The sink's thread.
+	void writeAudio(const std::uint8_t* pcm, std::size_t bytes, std::int64_t stampUs) override;
+
+private:
+	void tick();
+	void startClient();
+	std::unique_ptr<::sendspin::SendspinClient> makeClient(NodeKeyStore& keys);
+	void startListening(std::string_view clientId);
+	void turn();
+	/// A loss: the tick stops, and the framework tears the node down (its state destroyed, the client with it).
+	void fail(std::string detail);
+
+	NodeHandle& handle_;
+	Store& keys_;
+	Feed& feed_;
+	PlayerSlot& player_;
+	Loop& self_;
+	SendspinSettings settings_;
+	AudioFormat format_;
+	std::vector<float> scratch_;           // the sync thread's; a feed's worth of floats
+	std::atomic<bool> streamAsked_{false}; // the stream's format is the one the node listed
+	bool streaming_ = false;               // worker only
+	bool saidDialling_ = false;            // worker only
+	std::unique_ptr<Timer> tick_;          // worker only
+	std::optional<ConnectionWatch> watch_; // worker only, once the client started
+	std::unique_ptr<Advertiser> advertiser_;
+	std::unique_ptr<NodeKeyStore> keyStore_;
+	::sendspin::PlayerRole* playerRole_ = nullptr; // set before the client starts
+	::sendspin::SourceRole* source_ = nullptr;     // set before the client starts, and outlives every consume()
+	mutable std::mutex clientMutex_;               // client_'s pointer, for clientTimeOf
+	std::unique_ptr<::sendspin::SendspinClient> client_;
+};
+
+/// The notifier loop's state: tells the library what played, one call per ring of the code's bell. Apart from the
+/// worker, whose writes sync to disk: a late notify can cost a hard sync. Made in configure; begin() watches the bell
+/// once the node is configured; destroyed on its loop at teardown step 4, the watch with it.
+class Notifier {
+public:
+	/// `bell` and `progress` (the code's) and `player` outlive the state.
+	Notifier(Loop& self, const EventFd& bell, const Mailbox<PlayProgress>& progress, PlayerSlot& player) noexcept;
+	/// The notifier loop, once.
+	void begin();
+
+private:
+	void notify();
+	Loop& self_;
+	const EventFd& bell_;
+	const Mailbox<PlayProgress>& progress_;
+	PlayerSlot& player_;
+	std::uint64_t reported_ = 0;
+	std::unique_ptr<Timer> watch_;
+};
+} // namespace ear::nodes::sendspin

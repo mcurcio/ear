@@ -13,6 +13,7 @@
 
 #include "catch2/catch.hpp"
 #include "ear/core/lifecycle.hpp"
+#include "ear/core/pass_through.hpp"
 #include "ear/testing/type_harness.hpp"
 
 // Named, never unnamed: every table, row and spec a template is keyed on (settings_table.hpp, linkage).
@@ -343,4 +344,87 @@ TEST_CASE("A loop not yet running is what the node waits for, after 2 s, by name
 TEST_CASE("A loop handler's throw fails the node as a hook's does", "[loops]") {
 	auto h = running({}, {.throwInBegin = true});
 	CHECK(failure(*h) == "lost: loop worker's handler threw: no server");
+}
+
+// A sink whose consumer is part of a loop's state (SinkOf::consumedBy(loop, &State::member) and consumedBy(loop)).
+namespace loop_member_test {
+
+using namespace ear;
+
+std::vector<std::string> events;
+std::ptrdiff_t at(const std::string& what) { return std::ranges::find(events, what) - events.begin(); }
+
+/// A consumer that says each call, `name` first.
+struct Recorder final : SinkConsumer {
+	explicit Recorder(std::string name) : name_(std::move(name)) {}
+	void begin() override { events.push_back(name_ + " began"); }
+	void consume(const Chunk& chunk) override {
+		events.push_back(name_ + " consumed " + std::to_string(chunk.frames) + " of " +
+		                 std::to_string(chunk.interleaved.front()));
+	}
+	void finish() override { events.push_back(name_ + " finished"); }
+
+private:
+	std::string name_;
+};
+/// A state holding the consumer as a member.
+struct Keeper {
+	~Keeper() { events.push_back("keeper destroyed"); }
+	Recorder recorder{"member"};
+};
+/// A state that is the consumer itself.
+struct Whole final : SinkConsumer {
+	~Whole() override { events.push_back("whole destroyed"); }
+	void begin() override { inner.begin(); }
+	void consume(const Chunk& chunk) override { inner.consume(chunk); }
+	void finish() override { inner.finish(); }
+	Recorder inner{"whole"};
+};
+
+constexpr SettingsTable<> table{"member"};
+constexpr auto in = bank::input<"in">;
+constexpr auto tap = bank::insideOutput<"tap">;
+constexpr auto tap2 = bank::insideOutput<"tap2">;
+constexpr auto keeper = loop::dedicated<"keeper", Keeper>;
+constexpr auto whole = loop::strand<"whole", Whole>;
+constexpr TypeSpec spec{.settings = table, .banks = Banks<in, tap, tap2>{}, .loops = Loops<keeper, whole>{}};
+using Checked = CheckedOf<spec>;
+
+struct Member {
+	static Members<spec> ports(const Checked&) { return {in(members(1)), tap(members(1)), tap2(members(1))}; }
+	Configured configure(CreateOf<spec>& cx, const Checked&) {
+		cx.loop(keeper, std::make_unique<Keeper>());
+		cx.loop(whole, std::make_unique<Whole>());
+		cx.sink(tap, {.frames = 1024}).consumedBy(keeper, &Keeper::recorder);
+		cx.sink(tap2, {.frames = 1024}).consumedBy(whole);
+		cx.use(passThrough({bankPair(in, tap), bankPair(in, tap2)}));
+		return Configured::applied();
+	}
+};
+
+} // namespace loop_member_test
+
+TEST_CASE("A sink consumed by a loop's state, or a member of it, begins once the loop runs and finishes before the "
+          "state goes",
+          "[loops][sinks]") {
+	namespace lm = loop_member_test;
+	lm::events.clear();
+	testing::TypeHarness<lm::spec, lm::Member> h({.node = "porch", .holdLoops = true});
+	REQUIRE_FALSE(h.parse({}));
+	h.add();
+	CHECK(lm::events.empty()); // its loops do not run yet, so neither consumer begins
+	h.loopsReady();
+	CHECK(lm::events == std::vector<std::string>{"member began", "whole began"});
+	h.blockReady();
+	REQUIRE(h.phase() == "running");
+	std::ranges::fill(h.input(lm::in, 0), 0.5F);
+	h.process(64);
+	const auto seen = [](const std::string& what) { return lm::at(what) < std::ssize(lm::events); };
+	CHECK(seen("member consumed 64 of 0.500000"));
+	CHECK(seen("whole consumed 64 of 0.500000"));
+	h.remove();
+	REQUIRE(seen("keeper destroyed"));
+	REQUIRE(seen("whole destroyed"));
+	CHECK(lm::at("member finished") < lm::at("keeper destroyed"));
+	CHECK(lm::at("whole finished") < lm::at("whole destroyed"));
 }

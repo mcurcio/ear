@@ -9,6 +9,10 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <deque>
+#include <functional>
+#include <thread>
 #include <cstdint>
 #include <cinttypes>
 #include <cstdio>
@@ -47,12 +51,14 @@
 #include "standard_error_lines.hpp"
 #include "temp_folder.hpp"
 #include "worker.hpp"
+#include "ear/runtime/loops.hpp"
+#include "key_store.hpp"
 
 namespace {
 using namespace ear;
 using namespace ear::pipewire;
 using namespace ear::pipewire::testing;
-using namespace ear::sendspin;
+using namespace ear::nodes::sendspin;
 using namespace std::chrono_literals;
 using ear::test::CycleLedger;
 using ear::test::SendspinTestServer;
@@ -128,11 +134,11 @@ class Tap final : public AudioCode {
 public:
 	Tap(SendspinCode& code, const Feed& feed, const Mailbox<PlayProgress>& progress, Waiter& waiter)
 		: code_(code), feed_(feed), progress_(progress), waiter_(waiter), ledger_(kCapacity), cycles_(kCapacity) {}
-	void prepare(const AudioFormat& format) override { code_.prepare(format); }
-	void release() noexcept override { code_.release(); }
-	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
+	void prepare(const AudioFormat&) override {}
+	void release() noexcept override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
 	             std::uint32_t frames, const GraphCycle& cycle) noexcept override {
-		code_.process(inputs, outputs, frames, cycle);
+		code_.process(outputs, frames, cycle);
 		const std::size_t at = count_.load(std::memory_order_relaxed);
 		if (at >= kCapacity) return;
 		// The one planned stall, once armed. Made by a StallProbe upstream, it stalls a graph cycle the block never runs,
@@ -347,36 +353,141 @@ private:
 	std::optional<std::size_t> endedAt_;
 };
 
-/// The handoff's realtime end, where these tests need none: only the audio from the server is timed.
-class DropWriter final : public RtWriter {
+/// The node's key store, in memory: these tests time audio, not the disk. Opened as the framework opens it, with the
+/// type's initial text.
+class MemoryStore final : public Store {
 public:
-	std::uint32_t write(std::span<const std::span<const float>>, std::uint32_t frames) noexcept override {
-		return frames;
+	const std::string& fileName() const noexcept override { return name_; }
+	std::string text() const override {
+		const std::scoped_lock lock(mutex_);
+		return text_;
 	}
+	StoreWritten replace(std::string text) override {
+		const std::scoped_lock lock(mutex_);
+		text_ = std::move(text);
+		return {};
+	}
+	void replaceLater(std::string text, Loop& loop, std::move_only_function<void(StoreWritten)> done) override {
+		static_cast<void>(replace(std::move(text)));
+		loop.post([done = std::move(done)]() mutable { done({}); });
+	}
+
+private:
+	const std::string name_ = "sendspin-clock.key";
+	mutable std::mutex mutex_;
+	std::string text_ = emptyKeyRecord();
 };
 
-/// The folder of the node's key file.
-struct KeyFolder {
-	KeyFolder() {
-		path = dir.path();
-		auto opened = folder::ConfinedFolder::open(path);
-		REQUIRE(opened.has_value());
-		held = std::make_shared<const folder::ConfinedFolder>(std::move(*opened));
+/// The node's two loops on ear_runtime's real threads, as NodeHost runs them, with the states the type gives them: the
+/// worker (the library's client, dialling the real server) and the notifier. The adapter's events land on a main loop
+/// of the fixture's own, a thread that runs what is posted.
+class NodeLoops {
+public:
+	NodeLoops() : loops_(main_) {}
+	~NodeLoops() { main_.stop(); }
+	/// Makes both loops and waits until they run.
+	void make() {
+		worker_ = loops_.make("clock", "sendspin", LoopKind::dedicated, workerTold_);
+		notifier_ = loops_.make("clock", "notify", LoopKind::dedicated, notifierTold_);
+		REQUIRE(main_.until([&] { return workerTold_.isReady && notifierTold_.isReady; }));
 	}
-	ear::test::TempFolder dir{"sendspin-keys"}; // first, so it is removed last
-	std::filesystem::path path;
-	std::shared_ptr<const folder::ConfinedFolder> held;
+	Loop& worker() { return *worker_; }
+	Loop& notifier() { return *notifier_; }
+	/// Teardown step 4, as NodeHost runs it: every loop runs what was posted, then destroys its state on its own thread
+	/// (`lastWorker`, `lastNotifier`); once both have, each closes.
+	void finish(std::move_only_function<void()> lastWorker, std::move_only_function<void()> lastNotifier) {
+		std::atomic<int> finished{0};
+		std::atomic<int> closed{0};
+		worker_->finish(std::move(lastWorker), [&] { ++finished; });
+		notifier_->finish(std::move(lastNotifier), [&] { ++finished; });
+		CHECK(main_.until([&] { return finished.load() == 2; }));
+		worker_->close([&] { ++closed; });
+		notifier_->close([&] { ++closed; });
+		CHECK(main_.until([&] { return closed.load() == 2; }));
+		worker_.reset();
+		notifier_.reset();
+	}
+
+private:
+	/// A thread that runs what is posted, in order.
+	class MainLoop final : public Executor {
+	public:
+		MainLoop()
+			: thread_([this] {
+				  std::unique_lock lock(mutex_);
+				  for (;;) {
+					  changed_.wait(lock, [&] { return stopping_ || !queue_.empty(); });
+					  if (queue_.empty()) return;
+					  auto work = std::move(queue_.front());
+					  queue_.pop_front();
+					  lock.unlock();
+					  work();
+					  lock.lock();
+					  changed_.notify_all();
+				  }
+			  }) {}
+		void post(std::move_only_function<void()> work) override {
+			const std::scoped_lock lock(mutex_);
+			queue_.push_back(std::move(work));
+			changed_.notify_all();
+		}
+		/// Whether `done` holds within 10 s, looked at after each piece of work.
+		bool until(const std::function<bool()>& done) {
+			std::unique_lock lock(mutex_);
+			return changed_.wait_for(lock, 10s, [&] { return done(); });
+		}
+		void stop() {
+			{
+				const std::scoped_lock lock(mutex_);
+				stopping_ = true;
+			}
+			changed_.notify_all();
+			thread_.join();
+		}
+
+	private:
+		std::mutex mutex_;
+		std::condition_variable changed_;
+		std::deque<std::move_only_function<void()>> queue_;
+		bool stopping_ = false;
+		std::thread thread_;
+	};
+	/// What the adapter told of one loop, on the fixture's main loop. A loop that cannot start never reads ready, so
+	/// make() fails; a handler's throw is the worker's bug, which the timing tests would see as a silent node.
+	struct Told final : LoopEvents {
+		void ready() override { isReady = true; }
+		void failed(std::string) override {}
+		void slow(std::int64_t) override {}
+		void threw(std::string) override {}
+		std::atomic<bool> isReady{false};
+	};
+
+	MainLoop main_;
+	runtime::Loops loops_;
+	Told workerTold_;
+	Told notifierTold_;
+	std::unique_ptr<NodeLoop> worker_;
+	std::unique_ptr<NodeLoop> notifier_;
 };
 
 /// An output block with the real insides, as NodeHost would run them, dialling the real server.
 struct Rig {
 	Rig()
 		: engine(makeEngine()), waiter(*engine), blocks(*engine, bell), feed(2, kFeedFrames), notes(waiter),
-		  worker(keys.held, "clock", SendspinSettings{ServerUrl::parse(server.url()), defaultListenPort, "clock"},
-	             kFormat, feed, notes),
-		  code(feed, worker.progress(), worker.bell(), ear::SampleRate::fixed<kRate>(), toServer, worker.capture()),
-		  tap(code, feed, worker.progress(), waiter), pulse(ear::SampleRate::fixed<kRate>()), blockEvents(waiter),
-		  pulseEvents(waiter), registry(*engine, waiter) {
+		  code(feed, progress, played, ear::SampleRate::fixed<kRate>()), tap(code, feed, progress, waiter),
+		  pulse(ear::SampleRate::fixed<kRate>()), blockEvents(waiter), pulseEvents(waiter), registry(*engine, waiter) {
+		loops.make();
+		worker = std::make_unique<Worker>(
+			WorkerParts{.handle = notes,
+		                .keys = keys,
+		                .feed = feed,
+		                .player = player,
+		                .self = loops.worker(),
+		                .settings = SendspinSettings{ServerUrl::parse(server.url()), defaultListenPort, "clock"},
+		                .format = kFormat});
+		notifier = std::make_unique<Notifier>(loops.notifier(), played, progress, player);
+		loops.worker().post([this] { worker->begin(); });
+		loops.notifier().post([this] { notifier->begin(); });
 		notes.connectTap(tap);
 		log.connectTap(tap.counter());
 		block = blocks.make(
@@ -409,12 +520,8 @@ struct Rig {
 		ear::testing::silenceOrAbort(*block);
 		block.reset();
 		tap.release();
-		std::atomic<bool> stopped{false};
-		worker.stop([&] {
-			stopped = true;
-			waiter.wake();
-		});
-		CHECK(waiter.until([&] { return stopped.load(); }, 10s));
+		// The states destroyed on their loops: the worker's says goodbye and stops the client.
+		loops.finish([this] { worker.reset(); }, [this] { notifier.reset(); });
 	}
 
 	/// Connected and paired, then the server has committed the ramp's first frames. Their play time is not taken from
@@ -477,15 +584,19 @@ struct Rig {
 	} alsa;
 	LibraryLog log; // before the library's threads start, and after they stop
 	SendspinTestServer server;
-	KeyFolder keys;
+	MemoryStore keys;
 	std::unique_ptr<Engine> engine;
 	Waiter waiter;
 	NoBell bell;
 	FilterPortBlocks blocks;
 	Feed feed;
+	Mailbox<PlayProgress> progress;
+	EventFd played; // the code's bell, which the notifier watches
+	PlayerSlot player;
 	Notes notes;
-	DropWriter toServer;
-	SendspinWorker worker;
+	NodeLoops loops;
+	std::unique_ptr<Worker> worker;
+	std::unique_ptr<Notifier> notifier;
 	SendspinCode code;
 	Tap tap;
 	ear::test::ArmedStall pulse;
@@ -966,7 +1077,7 @@ private:
 		                        static_cast<double>(cycle.firstAt + cycle.delayFrames) * 1e6 / kRate;
 		errors.mostDelayFrames = std::max(errors.mostDelayFrames, cycle.delayFrames);
 		errors.leastDelayFrames = std::min(errors.leastDelayFrames, cycle.delayFrames);
-		const double errorUs = outputUs - static_cast<double>(rig_.worker.clientTimeOf(rampUs));
+		const double errorUs = outputUs - static_cast<double>(rig_.worker->clientTimeOf(rampUs));
 		ramp_.push_back({index, errorUs, libraryStep, !cycle.ramp, cycle.innerStep, skippedSince});
 		if (cycle.startRawNs - *firstFrameNs_ <= 3000000000) return;
 		++errors.afterFirst3s;
@@ -1258,7 +1369,7 @@ private:
 	/// more in it is the library's clock moving, which a hard sync then follows.
 	void sampleFilter() {
 		if (sent_.empty()) return;
-		const std::int64_t now = rig_.worker.clientTimeOf(sent_.front().us);
+		const std::int64_t now = rig_.worker->clientTimeOf(sent_.front().us);
 		if (lastFilterUs_ && std::abs(now - *lastFilterUs_) >= 1000)
 			errors.filterSteps.push_back(std::to_string(next_) + ": " + std::to_string(now - *lastFilterUs_));
 		lastFilterUs_ = now;

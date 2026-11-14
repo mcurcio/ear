@@ -5,7 +5,7 @@
 #include "catch2/catch.hpp"
 #include "notes.hpp"
 
-using namespace ear::sendspin;
+using namespace ear::nodes::sendspin;
 
 TEST_CASE("printable turns every control character into ?", "[sendspin][notes]") {
 	CHECK(notes::printable("plain name") == "plain name");

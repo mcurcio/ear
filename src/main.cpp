@@ -254,7 +254,7 @@ int main(int argc, char** argv) {
 	// ear.conf is read once here, on the main thread, before the keeper's thread starts. Its graph
 	// block's rate and block_size set the engine when both read; otherwise the flags do (the file's own
 	// values then show as pending restart).
-	std::vector<std::unique_ptr<const ear::NodeType>> types = ear::nodes::allNodeTypes({.config = config, .log = &log});
+	std::vector<std::unique_ptr<const ear::NodeType>> types = ear::nodes::allNodeTypes();
 	// Every declared store's files narrowed before any node exists (docs/writing-a-node-type.md#stores); what could not
 	// be is a log record from the store's type.
 	for (const ear::runtime::StoreSweepFinding& finding : ear::runtime::sweepStores(*config, types))

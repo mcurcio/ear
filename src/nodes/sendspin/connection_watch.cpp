@@ -1,6 +1,6 @@
 #include "connection_watch.hpp"
 
-namespace ear::sendspin {
+namespace ear::nodes::sendspin {
 namespace {
 
 /// is_connected() reads false through a re-handshake, so a shorter false says nothing.
@@ -33,4 +33,4 @@ ConnectionWatch::Told ConnectionWatch::read(Reading now, std::chrono::steady_clo
 	return told;
 }
 
-} // namespace ear::sendspin
+} // namespace ear::nodes::sendspin

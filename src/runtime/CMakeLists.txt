@@ -28,6 +28,7 @@ if(BUILD_TESTS)
 		tests/io_thread_test.cpp
 		tests/loops_test.cpp
 		tests/port_probe_test.cpp
+		tests/port_probe_time_wait_test.cpp
 		tests/recordings_test.cpp
 		tests/stores_test.cpp)
 	target_link_libraries(ear_runtime_tests PRIVATE ear_runtime ear_folder ear_temp_folder ear_catch_main)

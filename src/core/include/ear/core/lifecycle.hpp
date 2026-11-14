@@ -116,14 +116,18 @@ protected:
 	~NodeContext() = default;
 };
 
-/// What `cx.sink(...)` returns: names the sink's one consumer. Main thread, inside configure only.
+/// What `cx.sink(...)` names the sink's one consumer through (CreateOf's SinkOf<Spec> wraps it). Main thread, inside
+/// configure only. Exactly one consumer per sink, in either form: a second call, a null consumer or none by configure's
+/// return (when it answered applied) is a std::logic_error naming the node and the sink's bank.
 class SinkRequest {
 public:
-	/// A consumer of the type's own, given whole and owned by the sink (file's WavWriter). Exactly once per sink, and
-	/// not null: a second call, a null consumer or none by configure's return (when it answered applied) is a
-	/// std::logic_error naming the node and the sink's bank. Slice 3c adds the loop-member forms
-	/// (docs/writing-a-node-type.md#the-class) as templates over this.
+	/// A consumer of the type's own, given whole and owned by the sink (file's WavWriter).
 	virtual void consumedBy(std::unique_ptr<SinkConsumer> consumer) = 0;
+	/// A consumer that is part of declared loop `loop`'s state (its index in the spec's Loops), found in the state by
+	/// `member` when the consumer begins, and owned by the state: the sink closes (teardown step 3) before the state is
+	/// destroyed (step 4), and a sink whose loop never ran never begins. A loop declared without a state is a
+	/// std::logic_error.
+	virtual void consumedByState(std::size_t loop, std::move_only_function<SinkConsumer&(void*)> member) = 0;
 
 protected:
 	~SinkRequest() = default;
@@ -217,6 +221,47 @@ template <class Handle, class Work> std::move_only_function<void(void*)> loopWor
 }
 } // namespace spec_detail
 
+/// What `cx.sink(...)` returns (docs/writing-a-node-type.md#sinks): names the sink's one consumer, given whole or as a
+/// part of one of the spec's loops' states. A loop the spec lacks, a loop without a state, or a member that is no
+/// SinkConsumer does not compile.
+template <const auto& Spec> class CreateOf;
+template <const auto& Spec> class SinkOf {
+	template <class Handle> static constexpr bool ownLoop = isLoopHandle<Handle> && LoopsOf<Spec>::template has<Handle>;
+
+public:
+	/// A consumer of the type's own, owned by the sink (file's WavWriter).
+	void consumedBy(std::unique_ptr<SinkConsumer> consumer) { request_->consumedBy(std::move(consumer)); }
+	/// The consumer is `member` of loop `Handle`'s state (`consumedBy(worker, &Worker::toServer)`): it lives as long as
+	/// the state, which outlives the sink's last call. Its calls still run on the sink's own thread, never the loop's.
+	template <class Handle, class State, class Member>
+		requires isLoopHandle<Handle>
+	void consumedBy(Handle, Member State::* member) {
+		static_assert(ownLoop<Handle>, "a sink is consumed by one of its spec's loops");
+		static_assert(Handle::stateful && std::same_as<State, typename Handle::State>,
+		              "a sink's consumer is a member of that loop's state");
+		static_assert(std::derived_from<Member, SinkConsumer>, "a sink's consumer is a SinkConsumer");
+		request_->consumedByState(LoopsOf<Spec>::template indexOf<Handle>, [member](void* state) -> SinkConsumer& {
+			return static_cast<State*>(state)->*member;
+		});
+	}
+	/// The consumer is loop `Handle`'s state itself.
+	template <class Handle>
+		requires isLoopHandle<Handle>
+	void consumedBy(Handle) {
+		static_assert(ownLoop<Handle>, "a sink is consumed by one of its spec's loops");
+		using State = typename Handle::State;
+		static_assert(Handle::stateful && std::derived_from<State, SinkConsumer>,
+		              "a loop's state that consumes a sink is a SinkConsumer");
+		request_->consumedByState(LoopsOf<Spec>::template indexOf<Handle>,
+		                          [](void* state) -> SinkConsumer& { return *static_cast<State*>(state); });
+	}
+
+private:
+	template <const auto&> friend class CreateOf;
+	explicit SinkOf(SinkRequest& request) noexcept : request_(&request) {}
+	SinkRequest* request_;
+};
+
 /// What the instance keeps: the node's own, for the instance's life, main loop only (handle() excepted, as
 /// NodeContext's). Slice 3c adds post(), slice 5 report() (docs/writing-a-node-type.md#the-class).
 template <const auto& Spec> class NodeOf {
@@ -292,12 +337,13 @@ public:
 	/// consumer, which reads its descriptor from begin() on. Its refusal is the framework's: the node fails, and
 	/// configure answers nothing for it.
 	Recording& recording(RecordingRequest request) { return context_->recording(request); }
-	/// A sink on an inside output bank, the same call (docs/writing-a-node-type.md#sinks).
-	template <class Bank> SinkRequest& sink(Bank, SinkShape shape) {
+	/// A sink on an inside output bank, the same call (docs/writing-a-node-type.md#sinks); its consumer is named on what
+	/// it returns.
+	template <class Bank> SinkOf<Spec> sink(Bank, SinkShape shape) {
 		static_assert(ownBank<Bank>, "a context takes only its spec's banks");
 		static_assert(Bank::reach == PortBank::Reach::inside && Bank::direction == Direction::output,
 		              "a sink reads an inside output bank of the spec");
-		return context_->sink(Bank::name, shape);
+		return SinkOf<Spec>(context_->sink(Bank::name, shape));
 	}
 	/// A source on an inside input bank (docs/writing-a-node-type.md#sources): what the type's ordinary thread writes,
 	/// played into the bank by the block before the code; `clock` its own clock, null for a source with no clock

@@ -38,13 +38,20 @@ operate it, and what bites.
   `changedBy`) and the library's blobs in base64url: the private key, the pairing secrets, the output delay. At most 64 KiB, and
   written whole on each change, through `ConfinedFolder`, swapped in as `ear.conf` is. The keeper's watch ignores it. Never log
   it or send it to the editor.
-- A wider mode is narrowed, not refused, at each boot for every key file in the folder and its staging file, and at each start
-  and save, because the `fsGroup` that `ear-on-talos` prescribes widens it on every mount.
+- It is the node's store `key` (`docs/writing-a-node-type.md#stores`): the framework opens, narrows and judges it
+  (`whyNotKeyRecord`) on the I/O thread before the node's loops run, creating it as `emptyKeyRecord()` when missing; the
+  worker reads it through `NodeKeyStore` and writes it with the store's blocking `replace`.
+- A wider mode is narrowed, not refused, at each boot for every key file in the folder and its staging file (the
+  framework's sweep over declared stores), and at each configuration and save, because the `fsGroup` that `ear-on-talos`
+  prescribes widens it on every mount.
 - Renaming a node makes a new identity, and adding a removed name back inherits the old one (`node.remove` leaves the file). To
   wipe one, delete the file and restart the node (`node.restart`): a file something else changed or removed fails the write
   (`key-write-failed`), so ear never puts it back.
-- A file it cannot trust (not JSON, a missing field, a `keypair` of the wrong size, a symlink, too large) fails the node, left
-  unchanged, mode included: delete or fix it. No new identity is minted over it, or the server's trust would be lost silently.
+- A file it cannot trust (not JSON, a missing field, a `keypair` of the wrong size, a symlink, too large) fails the node
+  `start-failed` before it was ever `running`, left unchanged but for its mode: delete or fix it. No new identity is minted
+  over it, or the server's trust would be lost silently.
+- A write the store reports `unconfirmed` (still under way when its 5 s passed) is judged by the store's `text()`: written
+  if it shows the new record, else `key-write-failed`, though it may still land.
 - No file at all and a folder it cannot write fails the node too, rather than run a fresh identity each boot.
 
 ## What a line means
@@ -57,29 +64,31 @@ operate it, and what bites.
 | `says listening`, no `says connected` | Nobody dialled. See mDNS, below |
 | `says advertise-failed <detail>` | Listening, not advertising. Give the server `ws://<address>:<port>/sendspin` |
 | `says stream <codec> ...` and silence | A format ear did not ask for breaks the spec: the sink stays full, and the library closes the connection when its ring pins |
-| `says key-write-failed <detail>` | Pairing holds this run only. Fix the folder, pair again. A key file something else changed is left as it is |
+| `says key-write-failed <detail>` | Pairing holds this run only. Fix the folder, pair again. A key file something else changed is left as it is; `not confirmed within 5 s` is a slow disk, and the write may still land |
 
-## Lifecycle: the legacy adapter until slice 3c
+## Lifecycle: the type's class
 
-`sendspin` is the one type still written on the old type interface (`NodeTypeOf`, a config whose `start` returns a
-`StartResult` with a recipe that builds the `RunObject`, its handoff asked through `StartContext`). Since slice 3a it runs
-under the node lifecycle through the framework's legacy adapter (`src/core/legacy_instance.hpp`,
-`docs/writing-a-node-type.md#the-old-interface`): its `start` is the configuration's `configure`, its recipe runs once every resource is ready,
-its code is driven and faded like any other, and its `RunObject::close` runs off the main loop at the teardown. What
-that means to an operator:
+`sendspin` is a class on the framework (`sendspin_spec.hpp`: `spec`, `Sendspin`; `docs/writing-a-node-type.md#the-class`).
+Its `configure` claims a listening node's port (`claim::TcpListen`, judged across every node and probed before anything
+opens), takes the key store, makes the feed, gives its two dedicated loops their states (`Worker`, `Notifier`, nothing armed),
+posts their `begin()` (staged until the node is configured), names the worker's `ToServer` as the consumer of the sink on
+`to_server` (`consumedBy(worker, &Worker::toServer)`) and uses `SendspinNodeCode`. It has no `start()` or `stop()`: the
+client is the configuration's. What that means to an operator (the owner's answer, Q-3c1):
 
-- **A stop keeps the connection.** `node.stop` fades and silences its code, and nothing else: the worker, the
-  connection, the pairing and the library keep running (there is no `stop()` hook to say goodbye with). Its
-  outputs are silent and nothing it is sent is played or reported played. `node.start` drives the code again; the feed
-  is not cleared at a stop, so up to about 43 ms it held from before plays first (accepted until slice 3c,
-  `docs/design/node-primitives.md`). It never reports the stop's gap as played (every stop prepares the code afresh).
-- **A restart, a disable or a removal drops it.** The run object closes (goodbye `shutdown`, the worker joined) and a
-  restart or an enable builds a new client from the key file. A disabled node holds no port and no connection.
-- **Bugs fail, never crash.** A recipe that throws fails the node `start-failed` (`recipe threw: ...`), a `close` that
-  throws is a `log` record, and the run past its close deadline (10 s) is leaked with `ear.close-overdue`.
-- **It is not in the type harness** (`notYetInHarness` in `test/nodes/all_types.hpp`); its own tests and the system
-  tests cover it. Slice 3c moves it onto the type's class (loops, a source and a sink instead of the feed and the
-  handoff), and the adapter, `StartContext`, `RunObject` and `ThreadHandoffs` go with that step.
+- **A stop keeps the connection.** `node.stop` fades and silences the node's code, and nothing else: the worker, the
+  connection, the pairing and the library keep running, so Music Assistant still lists the player with its roles. Its
+  outputs are silent, nothing it is sent is played or reported played, and the sink takes nothing. `node.start` drives
+  the code again, with no code asked; the feed is not cleared at a stop, so up to about 43 ms it held from before plays
+  first. It never reports the stop's gap as played.
+- **A restart, a disable or a removal drops it.** The configuration is torn down: the sink drains, then the worker's
+  state, destroyed on its loop, says goodbye (`shutdown`) and stops the client; a restart or an enable builds a new client
+  from the key file. A disabled node holds no port and no connection.
+- **Bugs fail, never crash.** A loop handler's throw fails the node (`loop sendspin's handler threw: ...`); the library
+  dying is `lost: the Sendspin client died: ...`; a state that never finishes is leaked at the close deadline (10 s) with
+  `ear.close-overdue`.
+- **It runs in the type harness** with no network: the harness runs no loop work and fires no timer unless a test asks,
+  and the worker makes its client only at its tick's first run (`tests/type_test.cpp`). The library itself is
+  `clock_test.cpp`'s (its states on `ear_runtime`'s real loops) and the system tests'.
 
 ## mDNS
 
@@ -94,13 +103,14 @@ that means to an operator:
   probing. Music Assistant shows `name`, from the hello.
 - One interface, the one the kernel routes 224.0.0.251 through, and its address is read once at the node's start. A pod on an
   overlay network cannot advertise (`ear-on-talos`).
-- Goodbye goes out when the worker leaves its loop. A crash leaves the record until its TTL.
+- Goodbye goes out when the worker's state is destroyed (a restart, a disable, a removal; never a stop). A crash leaves
+  the record until its TTL.
 
 ## Threads and clock
 
 - **The library never touches a realtime thread or PipeWire's main loop.** `notify_audio_played` and `write_audio` take
-  mutexes on host; `stop()` and the destructor can wait. So: feed (network to audio), handoff (audio to network), mailboxes
-  and a bell.
+  mutexes on host; `stop()` and the destructor can wait. So: feed (network to audio), a sink (audio to network), mailboxes
+  and a bell the notifier loop watches.
 - **Audio time is the graph's.** The library is told when frames play from the cycle's start on the raw clock
   (`GraphCycle::startRawNs`, which the framework makes by sampling both clocks; the code reads no clock), never from when the
   thread woke. Wake time failed the spike: 52% within 1 ms against 100%.
@@ -136,8 +146,8 @@ that means to an operator:
   `from` outputs (`GraphCycle::downstream`), which the card block's pass-through carries back from the card's playback node
   (one quantum plus its headroom; 256 frames on the test card), in the finish time. Only routed paths count: unrouted, or
   routed to a `file` node, it is 0. A resampler before the card and anything past the card are left to the output delay in
-  Music Assistant, which the library keeps in the key file. The node declares its feed (0 to its size) as the latency of
-  `from`. PipeWire 1.4.2 never tells a block a port's last link went, so after a card is lost the old latency stays until a
+  Music Assistant, which the library keeps in the key file. The node declares its feed (0 to its size) as the latency on
+  its path from `from_server` to `from`. PipeWire 1.4.2 never tells a block a port's last link went, so after a card is lost the old latency stays until a
   new card reports (the `pipewire-engine` skill's latency trap).
 - **One format, FLAC 24.** The library's sync thread gives ear audio with no format beside it, and a `stream/start` reaches the
   worker out of step with it, so a server changing depth mid-stream would turn it to noise if a second depth were listed.
@@ -150,10 +160,11 @@ that means to an operator:
   that has never played (the spec's rule, item 2). Port 8928 and mDNS's 5353 are on every interface, with no address setting. Dial there
   or filter both if that matters. A dialling node has no listener.
 - `loop()` needs a timer, because the inbox has no wake hook, and nothing tells of a lost connection or a failed dial. So a 10 ms
-  poll and the connection watch stay inside the worker; they never act on a live attempt.
+  tick and the connection watch stay on the worker loop; they never act on a live attempt.
 - **Opus is off.** libsndfile pulls in `libopus.so`, and micro-opus's static C symbols would interpose on it.
-- Teardown: block gone, handoff drained, `close`: the worker says goodbye, stops and destroys the client, then posts `closed`.
-  Never a wait on the main loop. A dial in flight cancels within a poll; a half-open inbound socket takes up to 3 s.
+- Teardown: block silent, the sink drained, then each loop destroys its state: the worker's says goodbye, cuts the
+  notifier off from the player, stops and destroys the client. Never a wait on the main loop. A dial in flight cancels
+  within a tick; a half-open inbound socket takes up to 3 s.
 
 ## What the spike learned
 

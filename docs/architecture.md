@@ -100,17 +100,17 @@ the main loop by posting.
 | The control thread | Port 7777: sockets, JSON-RPC, sessions, queues. It holds only the gateway, which sends every request whole to the keeper and gets replies and events back in order from the main loop |
 | The keeper thread | The graph file keeper: every request, disk check and write, one step at a time; the working copy (knobly's object, which never leaves this thread); the inotify watch. It waits in `poll()` with no timeout |
 | The I/O thread (`ear-io`) | The framework's blocking work, off the main loop and every node's threads, one job at a time in post order (`IoThread`, `ear_runtime`). A node's stores are opened and written there ([writing-a-node-type.md](writing-a-node-type.md#stores)), and its recordings opened and closed ([writing-a-node-type.md](writing-a-node-type.md#recordings)). A job holds by `shared_ptr` what it fills and reports through its configuration's channel ([teardown](#teardown-by-dependency)), on the main loop, so one whose configuration ended reports nothing and the handle to what it opened goes back to this thread to be released, never closed on the main loop |
-| A node's loops ([writing-a-node-type.md](writing-a-node-type.md#loops)) | A type's work off the realtime thread and the main loop, each loop with its state, one handler at a time per loop (`Loops`, `ear_runtime`). A dedicated loop has a thread of its own, `ear-<name> <node>` cut to 15 bytes, and may block; strands share a pool started with the first strand: `min(4, hardware threads)` workers (`ear-strand`), one more for a handler stuck past 1 s (at most 16 in all), and one reactor thread (`ear-strands`) that turns the strands' timers and watches into work and watches the workers. Timers on `CLOCK_MONOTONIC`, watches on epoll; each loop's events reach the main loop by posting. No shipped type has one yet |
-| Sink and handoff threads | A `file` node's sink (its WAV writer); a `sendspin` node's legacy handoff |
+| A node's loops ([writing-a-node-type.md](writing-a-node-type.md#loops)) | A type's work off the realtime thread and the main loop, each loop with its state, one handler at a time per loop (`Loops`, `ear_runtime`). A dedicated loop has a thread of its own, `ear-<name> <node>` cut to 15 bytes, and may block; strands share a pool started with the first strand: `min(4, hardware threads)` workers (`ear-strand`), one more for a handler stuck past 1 s (at most 16 in all), and one reactor thread (`ear-strands`) that turns the strands' timers and watches into work and watches the workers. Timers on `CLOCK_MONOTONIC`, watches on epoll; each loop's events reach the main loop by posting. A `sendspin` node has two dedicated loops, `ear-sendspin <node>` (its worker) and `ear-notify <node>` (its notifier) |
+| Sink threads | A `file` node's sink (its WAV writer); a `sendspin` node's sink to the server (`write_audio`) |
 | The output thread | Every write to the real standard output, from a bounded queue |
 | The capture thread | Reads the pipes on descriptors 1 and 2 into `log` records, and drains the engine's log ring |
 | The watchdog thread | `StallWatch`: watches the main loop's heartbeat ([below](#bounds-the-wedged-data-loop-and-the-watchdog)) |
-| A `sendspin` node's threads | Its worker, its notifier and the protocol library's own ([node-types.md](node-types.md#sendspin)) |
+| A `sendspin` node's library | The protocol library's own threads (protocol, sync, source, IXWebSocket's), started and joined by its worker loop's state ([node-types.md](node-types.md#threads)) |
 
-Everything is moved by events, not polling, with one exception: a `sendspin` node's worker polls
-its library every 10 ms and watches its connection with 5 s and 31 s timers, because the library
-has no wake hook and no event for a lost connection or a failed dial. Those timers stay inside
-that thread.
+Everything is moved by events, not polling, with one exception: a `sendspin` node's worker loop
+turns its library on a 10 ms timer and watches its connection with 5 s and 31 s timers, because the
+library has no wake hook and no event for a lost connection or a failed dial. Those timers stay on
+that loop.
 
 ## The callback boundary
 
@@ -480,15 +480,13 @@ count that kept it is deleted, and a source with a clock of its own keeps its ti
 - `sendspin`'s clock follows the model (an honest sink with a local skip of lost time, its
   reports deferred from overdue ticks under a 2 s bound, with `sendspin-starved-floor.patch`:
   [node-types.md](node-types.md#clock)), but in the node's own code over its own feed, not yet as
-  the `SourceClock` of a source ([writing-a-node-type.md](writing-a-node-type.md#a-sources-clock)),
-  which comes when the node moves off the old interface.
+  the `SourceClock` of a source ([writing-a-node-type.md](writing-a-node-type.md#a-sources-clock)).
 - The converter companion has only its module-run mode
   ([engine.md](engine.md#module-run-converters)), whose one user is the RTP receiver: there is no
   set or tracked converter yet for a ring whose clock is a type's own, so only cards and RTP
   receivers convert.
-- `sendspin` is not yet a source and a sink: its audio crosses through its own feed and a legacy
-  handoff ([writing-a-node-type.md](writing-a-node-type.md#the-old-interface)) until it moves
-  onto the type's class.
+- `sendspin` is on the type's class with a sink to the server, but not yet a source: the server's
+  audio crosses through the node's own feed, which its code plays into `from`.
 
 ## The node lifecycle
 
@@ -621,8 +619,8 @@ the main loop never joins a thread:
 3. Sinks and handoffs drained and finished, each on its own thread.
 4. Each loop finishes: it runs the work already posted (the goodbye), then destroys its state on
    its own thread; once every loop has, each closes, cancelling any source its state left armed
-   (`ear.loop-source-left`). Then a legacy run object closed, off the main loop (a `sendspin`
-   node's worker says goodbye on its own thread).
+   (`ear.loop-source-left`); a `sendspin` node's worker state says goodbye as it is destroyed, on
+   its own loop. Then a legacy run object closed, off the main loop.
 5. On the main loop: the code, then its sinks (each closed in step 3, so its consumer, which may
    hold a reference into the instance, is idle), then the state of each loop that never started
    (which may read the instance too), then the instance (or run object), then its loops (a
@@ -786,8 +784,7 @@ of the process: the record, not the process's end, says when ear's stop is done.
 
 These are designed or wanted but not in the code: routes naming a whole bank; changing a node's
 settings in place without a restart (a type's change version of `configure` compiles but is
-never called); `sendspin` on the type's class (and so on a source and a sink) (it still runs through
-the legacy adapter); recovery of failed nodes; sound cards opened off the main loop; an internal
+never called); `sendspin`'s server audio on a source (it still plays its own feed); recovery of failed nodes; sound cards opened off the main loop; an internal
 clock anchored to one card; serving PipeWire's socket, a program supervisor and the `airplay`
 type; a login on port 7777; automatic card retry and hotplug; `@include`; undo; changing the graph
 frequency or block size while ear runs; arm64 images; a fault caught at the callback boundary

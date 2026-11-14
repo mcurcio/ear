@@ -1,4 +1,5 @@
-// Who holds a listening port (docs/node-types.md#failures), and the probe against a real socket.
+// The kernel's TCP probe (docs/writing-a-node-type.md#claims) on a port in TIME_WAIT, where a node that just restarted
+// leaves its listening port: real sockets, and the kernel's own word on which of them it keeps.
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
@@ -17,10 +18,9 @@
 #include <unistd.h>
 
 #include "catch2/catch.hpp"
-#include "port_claims.hpp"
+#include "ear/runtime/port_probe.hpp"
 
-using ear::sendspin::PortClaims;
-using ear::sendspin::probeListenPort;
+using ear::runtime::KernelPortProbe;
 
 namespace {
 
@@ -177,44 +177,18 @@ long long timeWaitsDropped() {
 
 } // namespace
 
-TEST_CASE("A port is claimed by one node until it is released", "[sendspin][port_claims]") {
-	PortClaims claims;
-	CHECK(claims.claim(9000, "a").has_value());
-	CHECK(claims.claim(9001, "b").has_value());
-	const auto refused = claims.claim(9000, "b");
-	REQUIRE_FALSE(refused.has_value());
-	CHECK(refused.error() == "held by node a");
-	claims.release(9000);
-	CHECK(claims.claim(9000, "b").has_value());
-}
-
-TEST_CASE("The probe refuses a live listener with the kernel's reason, and passes once it is gone",
-          "[sendspin][port_claims]") {
-	const HeldPort held;
-	const int listener = listenOn(held);
-
-	const auto refused = probeListenPort(held.port());
-	REQUIRE_FALSE(refused.has_value());
-	CHECK(refused.error() == "Address already in use");
-
-	::close(listener);
-	const auto probed = probeListenPort(held.port());
-	INFO((probed ? std::string("passed") : probed.error()));
-	CHECK(probed.has_value());
-}
-
-// What the probe's SO_REUSEADDR is for: the port of a node that just restarted is in TIME_WAIT, and the library's own
-// listener could bind it. A host whose TIME_WAIT table is full (other programs' churn) keeps none for a round, so the
+// What the probe's SO_REUSEADDR is for: the port of a node that just restarted is in TIME_WAIT, and a listener (the
+// sendspin library's) could bind it. A host whose TIME_WAIT table is full (other programs' churn) keeps none for a round, so the
 // test makes rounds until one shows the TIME_WAIT it judges; the deadline only fails, naming the kernel's count of
 // TIME_WAITs it dropped meanwhile.
-TEST_CASE("The probe passes on a port in TIME_WAIT, the server side having closed first", "[sendspin][port_claims]") {
+TEST_CASE("The probe passes on a port in TIME_WAIT, the server side having closed first", "[runtime][claims]") {
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
 	const auto droppedBefore = timeWaitsDropped();
 	const HeldPort held;
 	const HeldPort peerEnd;
 	for (int round = 1;; ++round) {
 		if (closeIntoTimeWait(held, peerEnd)) {
-			const auto probed = probeListenPort(held.port());
+			const auto probed = KernelPortProbe().tcpListen(held.port());
 			INFO("round " << round << ": " << (probed ? std::string("passed") : probed.error()));
 			CHECK(probed.has_value());
 			return;

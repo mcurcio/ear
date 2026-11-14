@@ -7,7 +7,7 @@
 #include <span>
 #include "ear/core/frame_ring.hpp"
 #include "event_fd.hpp"
-namespace ear::sendspin {
+namespace ear::nodes::sendspin {
 /// A FrameRing and an eventfd, written only while the writer says it waits.
 class Feed {
 public:
@@ -60,4 +60,4 @@ private:
 	std::uint32_t heldAtSkip_ = 0; // reader only
 	bool clearedSince_ = false;    // reader only: a clear was applied since the last takeCleared()
 };
-} // namespace ear::sendspin
+} // namespace ear::nodes::sendspin

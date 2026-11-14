@@ -28,7 +28,7 @@ changing this code.
 | Sound cards | `sound_cards.cpp` | One ALSA adapter node per card and direction |
 | Module-run converters | `module_converter_body.hpp`, `converter_modules.hpp`, `module_converters.hpp` | The engine companion a PipeWire module runs: loaded, found by name, linked, its latency carried, its life judged ([below](#module-run-converters)) |
 | RTP receivers | `rtp_receivers.cpp` | The first module-run converter: `libpipewire-module-rtp-source`, one per `rtp` node |
-| Sinks and handoffs | `handoffs.cpp` | `ThreadSinks` (the sinks: a ring the block taps and a thread that drains it, [below](#sinks)) and `ThreadHandoffs` (the legacy handoff `sendspin` uses) |
+| Sinks and handoffs | `handoffs.cpp` | `ThreadSinks` (the sinks: a ring the block taps and a thread that drains it, [below](#sinks)) and `ThreadHandoffs` (the legacy handoff, which no shipped type uses any more) |
 | Sources | `sources.cpp` | `EventSources`: core's `SourceRing` with the writer's wait and the clock wake's eventfd ([below](#sources)) |
 | The engine's log | `engine_log.cpp` | ear's own `pw_log` and alsa-lib's error handler ([output-records.md](output-records.md#how-output-is-written)), both `noexcept` and registered through the callback boundary as realtime functions |
 | The wedge mark | `data_loop_wedge.hpp` | Once the data loop is judged wedged, the adapters stop calling into it |
@@ -676,7 +676,7 @@ the delay counts both ways on it (as PipeWire adds a node's process latency to b
 tells and in what `from` tells. For a code of the type's own the pair is added to `pairs`; a
 pass-through must already copy it, or the node fails at configure's return (a declared path must
 exist). Typed declarations are keyed by their path, so a mixer declares each input's path into one
-output. A legacy declaration on one bank (`sendspin`'s) is `onPair` on the
+output. A legacy declaration on one bank is `onPair` on the
 pass-through's pair that ends at the bank or, on a bank no pair ends at, `onBank`. NodeHost works
 the plan out with no peer before configure's return is accepted, so a plan that does not fit the
 ports fails the node `start-failed` (`configure gave a latency plan that does not fit: <why>`)
@@ -716,7 +716,9 @@ The pairs are the pass-through's, so a card block forwards the card's playback l
 `latencyMs` is its `beyond` entry on `from_rtp` (`moduleRunDelay`; rtp-source's ports report zero,
 not the buffer, resampling or not),
 which the framework adds and `rtp`'s pass-through carries to `stream`. A configuration declares its
-own with `declareLatency`: `sendspin` its feed on `from` (in no pair: `onBank`). Frames are at the
+own with `declareLatency`: `sendspin` its feed on its path from `from_server` (its inside bank of
+what the server sends) to `from`, and nothing on its path from `to` to `to_server` (its sink's
+bank), so the sink's chunks carry what lies upstream of `to`. Frames are at the
 graph frequency. ALSA's playback node reports one quantum plus its headroom (`alsa-pcm-sink.c`,
 `alsa-pcm.c`): 256 frames on the test card at a 256 quantum.
 
@@ -754,8 +756,9 @@ it is read ([graph-file.md](graph-file.md#rates)).
 - **`enteredRawNs(startRawNs, offset, upstream)`**: that frame entered the graph its upstream's most
   before. `offset` may be negative, a frame taken before the cycle's first. A sink's chunk entered
   at `enteredRawNs(startRawNs, 0, {0, upstreamFrames})` ([above](#sinks)); `sendspin`'s capture is
-  dated from its newest anchor with no upstream yet (its `to` bank is not a sink's, so the capture
-  latency a card adds is not counted yet: [node-types.md](node-types.md#clock)).
+  dated from its chunk's start with no upstream yet (the chunk carries `upstreamFrames`, which the
+  node does not read yet, so the capture latency a card adds is not counted:
+  [node-types.md](node-types.md#clock)).
 
 The rule is a type, not a guard: since a rate has no operator, using one as an operand of `*`, `/`,
 `%` or `+` does not compile, nor does making a rate from a number, a `FrameClock`, a format or a

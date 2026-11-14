@@ -5,7 +5,7 @@
 
 #include <poll.h>
 
-namespace ear::sendspin {
+namespace ear::nodes::sendspin {
 namespace {
 
 constexpr std::uint64_t clearPending = std::uint64_t{1} << 32U;
@@ -87,4 +87,4 @@ std::uint32_t Feed::write(std::span<const float> interleaved, std::uint32_t fram
 
 void Feed::clear() noexcept { clearTo_.store(clearPending | ring_.writePosition(), std::memory_order_release); }
 
-} // namespace ear::sendspin
+} // namespace ear::nodes::sendspin

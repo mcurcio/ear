@@ -38,7 +38,7 @@ knobly node text. [V] here means read in that tree. This section is the plan; se
 | `NodeHandle::log` needs a log entry type | `LogEntry` (`source`, `topic`, `node`, `cut`) and `LogSink` exist, marked "the seam for slice 3c's node-facing log" (`ear/core/log.hpp`) | The handle fills `node`; no new record kind |
 | `waitingFor` gains four kinds | The wire's enums are open (`docs/control-port.md#protocol-and-features`), and `web/src/protocol.ts` types `kind` as the four names or any string | Each kind lands with its step, together with `docs/control-port.md`, `test/protocol/lifecycle.json` and `protocol.ts`; no feature name |
 | Core's `NodeHost` tests are on the class SPI | `node_host_test.cpp` builds its test types on the legacy SPI (54 uses of `StartContext`, `StartResult`, `RunObject`, `RunRecipe` and `HandoffRequest`); `graph_status_test.cpp` and `desired_graph_test.cpp` use a few | Retiring the legacy adapter first ports those tests (S3c.6a), as a step of its own |
-| `sendspin` is not in the harness | Still `notYetInHarness` (`test/nodes/all_types.hpp`) | Unchanged: it goes in S3c.6b |
+| `sendspin` is not in the harness | Still `notYetInHarness` (`test/nodes/all_types.hpp`) | Unchanged: it goes in S3c.6b (gone: S3c.6b built) |
 
 ### 0.2 Clusters: where several primitives work around one missing abstraction
 
@@ -451,12 +451,63 @@ protected:
   `openRecordings`; `HarnessOptions::recordings` (an adapter) became `noRecordingsFolder`. `file_test.cpp` runs on it;
   that a path never leads out is `ear_folder`'s and `ear_runtime`'s to prove.
 
-**A sink's consumer as a loop state's member** (S3c.6b): 6.5's `consumedBy(loop, &State::member)` and
-`consumedBy(loop)`. The consumer still runs on the sink's own thread: naming the loop only ties the consumer's life
-to the state's (finished at step 3, before the state is destroyed at step 4). From S3c.6b `ToServer` dates each piece
-from its own chunk's `startRawNs` (the capture anchor and its mailbox go: a chunk carries its cycle's start), still
-with no upstream, as today; S3c.6d adds it, `FrameClock::enteredRawNs(chunk.startRawNs, offset,
-Latency{0, chunk.upstreamFrames})`.
+**A sink's consumer as a loop state's member** (S3c.6b, built: `docs/writing-a-node-type.md#sinks`): 6.5's
+`consumedBy(loop, &State::member)` and `consumedBy(loop)`. The consumer still runs on the sink's own thread: naming the
+loop only ties the consumer's life to the state's (finished at step 3, before the state is destroyed at step 4). From
+S3c.6b `ToServer` dates each piece from its own chunk's `startRawNs` (the capture anchor and its mailbox go: a chunk
+carries its cycle's start), still with no upstream, as today; S3c.6d adds it, `FrameClock::enteredRawNs(chunk.startRawNs,
+offset, Latency{0, chunk.upstreamFrames})`. *Found building S3c.6b:* `SinkRequest` is not spec-typed, so the forms are
+templates on `SinkOf<Spec>`, which `CreateOf::sink` now returns (its `consumedBy(std::unique_ptr<SinkConsumer>)` as
+before, so `file` is unchanged), over one erased call, `SinkRequest::consumedByState(loop, member)`; NodeHost finds the
+member in the loop's state when the consumer begins (the loops' step is earlier, so the state is the loop's then) and
+hands the sink a forwarder that owns nothing. A loop the spec lacks, one with no state, or a member that is no
+`SinkConsumer` does not compile; core's `loop_test.cpp` has the row (begun only once the loop runs, finished before the
+state goes).
+
+**`sendspin` on the class** (S3c.6b, built: `docs/node-types.md#sendspin`). *Found building S3c.6b:*
+
+- **Q-3c1 is answered: a stop keeps the connection** (0.6). So `Sendspin` has no `start()` or `stop()`: 4.1's `begin()`
+  and `end()` posted by them would make a stop the goodbye. The client is the configuration's: `configure` posts each
+  state's `begin()` (staged until configured), the worker's arms its 10 ms tick, and the tick's first run reads the key
+  record and makes, starts and (listening) advertises the client; the state's destructor, at teardown step 4, is the
+  goodbye. A node restarted while stopped connects and rests stopped. Section 8's visible change 5 is withdrawn; 4.1's
+  last paragraph is the other answer.
+- **The notifier is a loop with a state** (`Notifier`), not 4.1's stateless loop the worker arms: a watch is destroyed
+  on its own loop, and at step 4 the loops finish in no order between them, so the worker's state could not destroy a
+  watch it armed on the notifier as it went. The worker lends the library's player through a `PlayerSlot` (one mutex),
+  which it clears before it stops the client, so no notify reaches a player that is going; that replaces 4.1's `end()`
+  bouncing between the loops.
+- **The instance owns what the code and both states share**: the feed, the code's bell, the progress mailbox and the
+  slot, freed at teardown step 5 after the code and the states (a state may read the instance, as the loops' rules
+  say).
+- **The feed stays until S3c.6c, so `from_server` joins nothing yet.** The class declares latency only on a path, so
+  the feed's is declared on the path from `from_server` to `from` (`Latency{0, feedFrames}`): `from` tells what it told.
+  The path from `to` to `to_server` is declared with `Latency{}`, so the sink's chunks carry what lies upstream of `to`
+  for S3c.6d. The code is `SendspinNodeCode` (spec code): `to` copied to `to_server`, and `SendspinCode`, now the
+  playback half only (no `RtWriter`, no anchor), playing the feed into `from`. `event_fd.hpp` stays with the feed and
+  the bell (S3c.6c deletes both); the notifier watches the bell with `onReadable`, since a type has no core `Wake` of
+  its own to give `onWake`.
+- **The key store** writes with the blocking `replace` (the library's `save_blob` answers at once), and an `unconfirmed`
+  outcome is judged by `text()`: written if it shows the new record, else `key-write-failed` with the store's detail.
+  `whyNotKeyRecord` keeps today's texts after the store's `<file>: `; `emptyKeyRecord` is the old open's creation.
+- **`clientMutex_` guards only `clientTimeOf`'s read of the client.** 12's reason for it (a stop's goodbye destroying
+  the client while the sink's thread still writes) went with Q-3c1: the client lives until step 4, after the sink's
+  last call at step 3.
+- **The harness has no claim fakes** (section 10's `holdClaim` and `claims()` were not built), so `type_test.cpp` does
+  not see the `tcp:` claim; the refusal `held by node <n>` is the system test's (two nodes on one port), which already
+  existed. The all-type harness test runs `sendspin` with no network: the harness fires no timer unless a test
+  advances it, so the worker never makes its client there.
+- **What moved and what stayed in the tests.** `code_test.cpp`'s rig lost the handoff and the anchor, and its three
+  rows on them went (the copy to `type_test.cpp`, the dating to `to_server_test.cpp`); its clock rows are unedited.
+  `clock_test.cpp`'s rig runs the worker's and notifier's states on `ear_runtime`'s real loops over an in-memory store;
+  its judging is unedited. `keys_test.cpp` keeps the record's rows over a scripted store, plus the unconfirmed rows and
+  the boot sweep over the type's declaration; the open's disk rows are core's and `ear_runtime`'s. The TIME_WAIT probe
+  row moved to `ear_runtime` (`port_probe_time_wait_test.cpp`).
+- **Of the legacy adapter, `sendspin` alone used `NodeFolders`**, which went with `allNodeTypes`' argument. Every other
+  name (`LegacyInstance`, `StartContext`, `StartResult`, `RunRecipe`, `Ready`, `RunObject`, `HandoffRequest`,
+  `RtWriter`, `HandoffConsumer`, `HandoffAdapter`, `ThreadHandoffs`, `NodeTypeOf`, `NodeConfig::start`) is still used by
+  core's `[legacy]` rows, `ear_config`'s, `ear_control`'s and `ear_pipewire`'s tests and `main.cpp`'s `ThreadHandoffs`,
+  as 0.3's S3c.6a notes list; S3c.6e removes them.
 Whether a capture's chunks in a catch-up's burst also want `overdueNs` is still [U] (`timing-model.md` 4.5) and is
 measured in S3c.6d.
 
@@ -489,7 +540,8 @@ empty list, under the `requires` clause. U1 held (found building S3c.4, above): 
 | 0.3, 6.8 | `Claim::Kind::device` | Not a kind until 0.2 C's check shows the race |
 | 6.10 | `int fd = cx.recording(...)` | `Recording&` |
 | 6.10, 0.3 | `RecordingAdapter::open(node, path, ReadyEvents&)` returning a `NodeRecording`; `descriptor()` asserted in debug builds | 0.3's recordings, found building S3c.5b: the adapter's `open(node, path)` blocks on its `io()` thread and NodeHost completes it through `Completions`; `descriptor()` throws |
-| 8, visible change 5 | A stopped `sendspin` node closing its connection | Q-3c1 (0.6): kept open unless the owner says otherwise |
+| 8, visible change 5 | A stopped `sendspin` node closing its connection | Q-3c1 (0.6), answered: kept open |
+| 4.1 | `start()` and `stop()` posting `begin()` and `end()`; a stateless notifier the worker arms | 0.3's `sendspin`, found building S3c.6b: no hooks, the client is the configuration's; the notifier has a state |
 | 12 | `sendspin_code.*`'s playback half still to be written | Written (T2); moved whole |
 | 13 | The cut | 0.5 |
 
@@ -528,6 +580,10 @@ needs only S3c.6b (the worker's state sets the sink). T5 follows S3c.6c with its
 ### 0.6 Questions for the owner
 
 **Q-3c1. When you stop a `sendspin` node, should it stay connected to Music Assistant, silent, or disconnect?**
+**Answered (the owner, 2026-11-14, binding): stay connected.** A stopped `sendspin` node stays connected to Music
+Assistant. Stopping it stops its audio; it does not drop the connection or its pairing, so Music Assistant still sees
+the player, and starting it again resumes without re-pairing. Restart, disable and removal still say goodbye. Built in
+S3c.6b.
 
 *Scenario.* The kitchen is a `sendspin` node that Music Assistant reaches by dialling ear. You press Stop on it in the
 editor. *Stay connected* (today's behaviour): Music Assistant still lists the kitchen player and keeps it in its

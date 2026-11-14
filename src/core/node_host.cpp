@@ -1138,9 +1138,26 @@ struct NodeHost::Impl {
 					consumer_ = std::move(consumer);
 				});
 			}
+			/// Once, inside configure: the consumer is part of a loop's state, found in it when the consumer begins.
+			void consumedByState(std::size_t loop, std::move_only_function<SinkConsumer&(void*)> member) override {
+				node_->guarded([&] {
+					const LoopSlot& slot = node_->loopSlot("consumedBy", loop);
+					if (given) throw std::logic_error("consumedBy called twice on sink " + bank);
+					if (!slot.declared.stateful)
+						throw std::logic_error("sink " + bank + " is consumed by loop " +
+						                       std::string(slot.declared.name) + ", which has no state");
+					given = true;
+					stateLoop = loop;
+					member_ = std::move(member);
+				});
+			}
 			/// Main thread, at configure's applied return: the consumer handed to the sink, called through its catch.
-			void begin(std::shared_ptr<Channel> channel, std::move_only_function<void()> begun) {
-				sink->begin(std::make_unique<GuardedSinkConsumer>(std::move(consumer_), std::move(channel), bank),
+			/// `state`: the state of loop `stateLoop` when the consumer is part of it (it lives until teardown step 4,
+			/// after the sink's last call at step 3), else null.
+			void begin(std::shared_ptr<Channel> channel, std::move_only_function<void()> begun, void* state) {
+				std::unique_ptr<SinkConsumer> consumer =
+					stateLoop ? std::make_unique<StateConsumer>(member_(state)) : std::move(consumer_);
+				sink->begin(std::make_unique<GuardedSinkConsumer>(std::move(consumer), std::move(channel), bank),
 				            std::move(begun));
 			}
 
@@ -1150,10 +1167,24 @@ struct NodeHost::Impl {
 			bool given = false;                     // consumedBy was called
 			bool closed = false;                    // its close reported
 			std::size_t item = detail::noReadiness; // its consumer's readiness item: ready once it began
+			std::optional<std::size_t> stateLoop;   // the loop whose state holds the consumer (consumedByState)
 
 		private:
+			/// A consumer a loop's state owns, called through: the sink owns only this.
+			class StateConsumer final : public SinkConsumer {
+			public:
+				explicit StateConsumer(SinkConsumer& owned) noexcept : owned_(owned) {}
+				void begin() override { owned_.begin(); }
+				void consume(const Chunk& chunk) override { owned_.consume(chunk); }
+				void finish() override { owned_.finish(); }
+
+			private:
+				SinkConsumer& owned_;
+			};
+
 			Node* node_;
-			std::unique_ptr<SinkConsumer> consumer_; // until Sink::begin takes it
+			std::unique_ptr<SinkConsumer> consumer_;               // until Sink::begin takes it
+			std::move_only_function<SinkConsumer&(void*)> member_; // finds a state's consumer (consumedByState)
 		};
 
 		/// One cx.source call (docs/writing-a-node-type.md#sources): the source, its bank, and what a drive binds.
@@ -2505,9 +2536,14 @@ struct NodeHost::Impl {
 				}
 				break;
 			}
-			case Family::consumer:
-				c.sinks[owner.index]->begin(c.channel, c.channel->sinkBegunCall(owner.index));
+			case Family::consumer: {
+				SinkSlot& sink = *c.sinks[owner.index];
+				// A state's consumer begins only once its loop runs (loops are the step before), so the state is the
+				// loop's still, until teardown step 4.
+				void* state = sink.stateLoop ? c.loops.at(*sink.stateLoop)->state.get() : nullptr;
+				sink.begin(c.channel, c.channel->sinkBegunCall(owner.index), state);
 				break;
+			}
 			case Family::engine:
 				// Queued in the flush once the block is ready; a ready step behind a later input asks it then.
 				host_.inputFor(serial_, [](Node& node) { node.askResources(); });

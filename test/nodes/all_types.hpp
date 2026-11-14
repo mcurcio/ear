@@ -1,64 +1,20 @@
-// Every node type, as the all-type tests get them: from the generated list, given a real and empty folder beneath one
-// temporary folder that lasts the test program (sendspin's config folder). The harness keeps a recording in memory.
+// Every node type, as the all-type tests get them: from the generated list. The harness keeps a store and a recording
+// in memory.
 #pragma once
 
 #include <functional>
 #include <map>
 #include <memory>
-#include <mutex>
-#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 #include "ear/all_node_types/all_node_types.hpp"
-#include "ear/core/log.hpp"
-#include "ear/folder/confined_folder.hpp"
-#include "temp_folder.hpp"
 
 namespace ear::test {
 
-/// `name`, made and opened beneath the temporary folder. Throws when it cannot be: Catch reports the test's failure.
-inline std::shared_ptr<const folder::ConfinedFolder> openedForAllTypes(std::string_view name) {
-	static const TempFolder root("all-types");
-	auto opened = folder::ConfinedFolder::open(root.path() / name);
-	if (!opened) throw std::runtime_error("cannot open " + std::string(name) + ": " + opened.error().detail);
-	return std::make_shared<const folder::ConfinedFolder>(std::move(*opened));
-}
-
-inline const std::shared_ptr<const folder::ConfinedFolder>& configFolder() {
-	static const auto folder = openedForAllTypes("config");
-	return folder;
-}
-
-/// What the types' factories report at boot, kept for the test program's life (any thread).
-struct BootLog final : LogSink {
-	std::mutex mutex;
-	std::vector<LogEntry> entries;
-	void log(const LogEntry& entry) override {
-		const std::scoped_lock lock(mutex);
-		entries.push_back(entry);
-	}
-};
-
-inline BootLog& bootLog() {
-	static BootLog log;
-	return log;
-}
-
-inline std::vector<std::unique_ptr<const NodeType>> allTypes() {
-	return nodes::allNodeTypes({.config = configFolder(), .log = &bootLog()});
-}
-
-/// The types the all-type harness test does not run yet (docs/writing-a-node-type.md#testing-a-type): every other type
-/// runs, so a new type adds nothing here. sendspin waits for slice 3c (its start still builds its worker, the key file
-/// and its threads, which the harness does not fake). The harness test fails on a name here that is no type.
-inline const std::set<std::string, std::less<>>& notYetInHarness() {
-	static const std::set<std::string, std::less<>> types{"sendspin"};
-	return types;
-}
+inline std::vector<std::unique_ptr<const NodeType>> allTypes() { return nodes::allNodeTypes(); }
 
 /// Settings `type` accepts, the one home of what the all-type tests need of a type: together they give every key it
 /// declares. Throws, naming the type, when it has none here: Catch reports the test's failure.

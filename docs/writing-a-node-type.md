@@ -47,7 +47,11 @@ src/nodes/<type>/
   descriptor 1 or 2. A type speaks through notes (`say`) and failures (`lost`); see
   [output-records.md](output-records.md).
 - The generated list (`out/src/all_node_types/all_node_types.cpp`) calls each factory with no
-  argument. (`sendspin`'s alone still takes `const NodeFolders&`, an interim seam.)
+  argument.
+- **No type starts a thread**: a CTest test refuses any file under `src/nodes/` (but those in a
+  `tests` folder) that names `std::thread`, `std::jthread` or `std::async`, or calls
+  `pthread_create` or `fork`. A type's own work runs on its [loops](#loops); a library it links
+  may start threads of its own, which its loop's state joins.
 
 ## The spec
 
@@ -136,7 +140,7 @@ optional row read as a plain value does not compile.
 | `cx.soundCard(bank, SoundCardShape{.card})` | A sound card, an [engine companion](#engine-companions) on an inside bank: playback on an inside output, capture on an inside input (the bank's direction is the card's). Named `<node>.playback` or `<node>.capture`; made once the block is ready | Inside banks only (compile time); one companion per bank |
 | `cx.rtpReceiver(bank, RtpReceiverShape{...})` | An RTP receiver, an [engine companion](#engine-companions) on an inside input bank, `<node>.rtp`; its `latencyMs` is latency beyond the bank | Inside input banks only (compile time); one companion per bank |
 | `const Recording& r = cx.recording(RecordingRequest{path})` | A [recording](#recordings): a file beneath the recordings folder, claimed, then created or truncated off the main loop; give it to the sink's consumer, which reads `r.descriptor()` from `begin()` on | Nothing to answer: a refusal fails the node at its readiness step; one path asked for twice (however spelled) fails it `start-failed` |
-| `cx.sink(bank, SinkShape{.frames = n}).consumedBy(std::make_unique<Consumer>(...))` | A sink on an inside output bank ([sinks](#sinks)) | Inside output banks only; exactly one consumer; one companion per bank |
+| `cx.sink(bank, SinkShape{.frames = n}).consumedBy(std::make_unique<Consumer>(...))` | A sink on an inside output bank ([sinks](#sinks)); or `.consumedBy(loop, &State::member)` / `.consumedBy(loop)`, a consumer that is part of a [loop](#loops)'s state | Inside output banks only; exactly one consumer (a loop's form: a loop of the spec, declared with a state, at compile time); one companion per bank |
 | `SourceWriter& w = cx.source(bank, SourceShape{.frames = n}, clock)` | A source on an inside input bank ([sources](#sources)): what the type's own thread writes, played into the bank before the code; `clock`, a `std::unique_ptr<SourceClock>`, its own clock ([a source's clock](#a-sources-clock)), left out for a source with none | Inside input banks only (compile time); `0 < n <= maxSourceFrames` (2^24); one companion per bank |
 | `cx.declareLatency(from, to, Latency{min, max})` | The code's own latency on the path from an input bank to an output bank, in frames: carried as a path through the block, so it counts in both banks' told latency ([latency](#latency)) | Once per path (a mixer declares each of its inputs' paths into one output); with a pass-through, one of its pairs; a plan that does not fit the ports fails the node `start-failed` |
 | `cx.loop(handle, std::make_unique<State>(...))` | A [loop](#loops)'s state, constructed here with no I/O and no threads, owned by the framework from now on | Exactly once for a loop declared with a state type (compile time: never for one declared without) |
@@ -294,6 +298,14 @@ cx.use(passThrough({bankPair(record, writer)}));
 - The consumer is owned by its sink and freed at teardown step 5 after the code and before the
   instance, so it may keep a reference into the instance (or what the instance owns) and use it in
   `finish()` and its destructor ([architecture.md](architecture.md#teardown-by-dependency)).
+- **A consumer that is part of a loop's state**: `consumedBy(worker, &Worker::toServer)` names a
+  member of loop `worker`'s state, `consumedBy(worker)` the state itself (a `SinkConsumer`). The
+  state owns it; the sink calls it, still on the sink's own thread, from its `begin()`, which comes
+  only once the loop runs (loops are the readiness step before), until its `finish()` at teardown
+  step 3, before the state is destroyed at step 4. So the consumer may use the rest of the state
+  (`sendspin`'s `ToServer` hands its pieces to the library's client the state owns), with whatever
+  lock or atomic the two threads need. A loop the spec lacks, one declared without a state, or a
+  member that is not a `SinkConsumer` does not compile.
 
 ## Sources
 
@@ -352,8 +364,7 @@ engine and the harness both run, so a type's tests and the engine never disagree
   rule broken (`start-failed`), and so is `frames == 0` or a source on any other bank (which does
   not compile).
 
-No shipped type uses a source yet: `sendspin`'s feed moves onto one when its node moves off the old
-interface.
+No shipped type uses a source yet: `sendspin`'s feed moves onto one next.
 
 ### A source's clock
 
@@ -550,7 +561,10 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>&) {
   the node `lost`, `internal error in StoreAdapter::<call>: <what>`, said first in an
   `ear.internal-error` record ([architecture.md](architecture.md#faults-by-owner)).
 
-No shipped type has a store yet: `sendspin`'s key file is its own until it moves onto one.
+`sendspin`'s key file is a store: `store::file<"key">` with mode 0600, at most 64 KiB, created as an
+empty key record and distrusted unless it is one ([node-types.md](node-types.md#the-identity-file)).
+Its worker writes it with the blocking `replace` from its dedicated loop and the library's threads,
+and reads an `unconfirmed` outcome by comparing `text()` with what it wrote.
 
 ## Recordings
 
@@ -671,8 +685,7 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
   test exists), and a sound card's device (until a card renamed in one plan is shown on the hardware to open its device
   before the old node closed it).
 
-`sendspin`'s listening port is still its own claim, judged among its own nodes only, until it moves onto
-`cx.claim`.
+`sendspin` claims its listening port with `cx.claim(claim::TcpListen(port))`, and a dialling node claims nothing.
 
 ## Latency
 
@@ -850,24 +863,26 @@ harness's own record, its cycles, cut cycles and stalls.
   settings objects that together give every key the type declares. The all-type tests (which list
   no type: they take them from `allNodeTypes()`) fail naming the type without it. They run every
   type through the harness: added, configured, running once every engine companion is ready, every
-  output sample written, then stopped, started, restarted, disabled, enabled and removed. (A type
-  that cannot run there yet is listed in `notYetInHarness`; today only `sendspin`.)
+  output sample written, then stopped, started, restarted, disabled, enabled and removed. The
+  harness runs no loop's work and fires no timer unless a test asks (`runLoops`, `advance`), so a
+  type whose loops start a network library (`sendspin`) is run with no network.
 - **Refusals.** Add a test case to `test/nodes/settings_refusals_test.cpp` giving each refusal's
   exact text and which of several problems is told first.
 
 ### Removing a type
 
-Delete its folder and its entry in `validSettings` (and `notYetInHarness`, if there), its cases in
+Delete its folder and its entry in `validSettings`, its cases in
 `settings_refusals_test.cpp` (a case left there fails naming the type) and its name in
 `test/nodes/node_types_test.cpp`.
 
 ## The old interface
 
-`sendspin` alone is still written on the old type interface: a `NodeTypeOf<table>` whose config's
-`start(StartContext&)` returns a `StartResult` with a recipe that builds a `RunObject` with its
-threads, its inputs going through a legacy handoff. It runs under the same lifecycle through the
-framework's legacy adapter (`src/core/legacy_instance.hpp`), with no `stop()` hook, so a stopped
-`sendspin` node keeps its connection. Do not copy it; a new type uses the class above.
+No shipped type is written on the old type interface any more (a `NodeTypeOf<table>` whose
+config's `start(StartContext&)` returns a `StartResult` with a recipe that builds a `RunObject`,
+its inputs going through a legacy handoff), but the framework's legacy adapter
+(`src/core/legacy_instance.hpp`) and its names remain, for some of core's, `ear_config`'s,
+`ear_control`'s and `ear_pipewire`'s tests, until it is removed. Do not use it; a new type uses the
+class above.
 
 ## Worked example: `tone`
 

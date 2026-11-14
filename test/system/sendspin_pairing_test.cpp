@@ -207,10 +207,10 @@ TEST_CASE("A corrupt key file fails the node, unchanged, and the rest of the gra
 	const bool others = waitForLines(ear, {"node rec running", "route noise:noise.mono -> rec:record.left linked"});
 	INFO("ear printed:\n" << ear.output());
 	REQUIRE(failed);
-	// The worker reads the key file on its own thread, so the node may have rested running first: then it is lost
-	// (docs/node-types.md#failures). Which comes first is the host's, not the test's.
-	if (ear.hasLine("node ma running")) CHECK(*failed == "node ma failed lost: sendspin-ma.key: malformed: not JSON");
-	else CHECK(*failed == "node ma failed start-failed: sendspin-ma.key: malformed: not JSON");
+	// The key file is the node's store, opened and judged before anything of the node runs, so the node fails before it
+	// was ever running (docs/node-types.md#the-identity-file).
+	CHECK(*failed == "node ma failed start-failed: sendspin-ma.key: malformed: not JSON");
+	CHECK_FALSE(ear.hasLine("node ma running"));
 	REQUIRE(others);
 	CHECK(readText(keyFile) == corrupt);
 	CHECK(modeOf(keyFile) == std::filesystem::perms(0600)); // a refused file may still hold a private key

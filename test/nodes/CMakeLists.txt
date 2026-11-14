@@ -70,3 +70,30 @@ add_test(NAME ear_standard_output_guard_refuses_checking_nothing
 		"-DGLOB=no-such-file.snippet" -P "${ear_guard}")
 set_tests_properties(ear_standard_output_guard_refuses_checking_nothing PROPERTIES
 	PASS_REGULAR_EXPRESSION "the guard would check nothing")
+
+# No node type's own code starts a thread (docs/writing-a-node-type.md#loops): the guard over src/nodes/, its tests left
+# out, and the guard itself refusing each spelling it knows (thread_guard/<spelling>.snippet), letting through what only
+# looks like one (allowed.snippet), and leaving out a file in a tests folder (excluded/).
+set(ear_thread_guard "${CMAKE_CURRENT_SOURCE_DIR}/thread_guard.cmake")
+add_test(NAME ear_nodes_never_start_threads
+	COMMAND "${CMAKE_COMMAND}" "-DROOT=${PROJECT_SOURCE_DIR}/src/nodes" -P "${ear_thread_guard}")
+foreach(spelling thread jthread async pthread_create fork)
+	add_test(NAME ear_thread_guard_refuses_${spelling}
+		COMMAND "${CMAKE_COMMAND}" "-DROOT=${CMAKE_CURRENT_SOURCE_DIR}/thread_guard" "-DGLOB=${spelling}.snippet"
+			-P "${ear_thread_guard}")
+	set_tests_properties(ear_thread_guard_refuses_${spelling} PROPERTIES
+		PASS_REGULAR_EXPRESSION "${spelling}\\.snippet:1: starts a thread")
+endforeach()
+add_test(NAME ear_thread_guard_allows_lookalikes
+	COMMAND "${CMAKE_COMMAND}" "-DROOT=${CMAKE_CURRENT_SOURCE_DIR}/thread_guard" "-DGLOB=allowed.snippet"
+		-P "${ear_thread_guard}")
+add_test(NAME ear_thread_guard_leaves_out_tests
+	COMMAND "${CMAKE_COMMAND}" "-DROOT=${CMAKE_CURRENT_SOURCE_DIR}/thread_guard/excluded" "-DGLOB=*.snippet"
+		-P "${ear_thread_guard}")
+set_tests_properties(ear_thread_guard_leaves_out_tests PROPERTIES
+	PASS_REGULAR_EXPRESSION "thread_guard: 1 files under .*, none starts a thread")
+add_test(NAME ear_thread_guard_refuses_checking_nothing
+	COMMAND "${CMAKE_COMMAND}" "-DROOT=${CMAKE_CURRENT_SOURCE_DIR}/thread_guard" "-DGLOB=no-such-file.snippet"
+		-P "${ear_thread_guard}")
+set_tests_properties(ear_thread_guard_refuses_checking_nothing PROPERTIES
+	PASS_REGULAR_EXPRESSION "the guard would check nothing")

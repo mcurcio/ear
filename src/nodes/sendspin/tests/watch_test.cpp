@@ -4,7 +4,7 @@
 #include "catch2/catch.hpp"
 #include "connection_watch.hpp"
 
-using ear::sendspin::ConnectionWatch;
+using ear::nodes::sendspin::ConnectionWatch;
 using namespace std::chrono_literals;
 
 namespace {

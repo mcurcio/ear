@@ -13,7 +13,7 @@
 #include "catch2/catch.hpp"
 #include "feed.hpp"
 
-using ear::sendspin::Feed;
+using ear::nodes::sendspin::Feed;
 using namespace std::chrono_literals;
 
 // Counts allocations made by a thread that asks for it (read() must make none). Replacing the global operator new applies

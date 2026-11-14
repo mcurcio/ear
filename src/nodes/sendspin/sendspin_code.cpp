@@ -2,24 +2,16 @@
 
 #include <algorithm>
 
-namespace ear::sendspin {
+namespace ear::nodes::sendspin {
 
-SendspinCode::SendspinCode(Feed& feed, Mailbox<PlayProgress>& progress, const EventFd& bell, SampleRate rate,
-                           RtWriter& toServer, Mailbox<CaptureAnchor>& capture) noexcept
-	: feed_(feed), progress_(progress), bell_(bell), clock_(rate), toServer_(toServer), capture_(capture) {}
+SendspinCode::SendspinCode(Feed& feed, Mailbox<PlayProgress>& progress, const EventFd& bell, SampleRate rate) noexcept
+	: feed_(feed), progress_(progress), bell_(bell), clock_(rate) {}
 
-void SendspinCode::prepare(const AudioFormat&) {}
-
-void SendspinCode::release() noexcept {}
-
-void SendspinCode::process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
-                           std::uint32_t frames, const GraphCycle& cycle) noexcept {
+void SendspinCode::process(std::span<const std::span<float>> outputs, std::uint32_t frames,
+                           const GraphCycle& cycle) noexcept {
 	// The cycle's start on the library's clock, CLOCK_MONOTONIC_RAW, as the framework made it from the graph's, never
 	// from when this thread woke (docs/engine.md#graphcycle).
 	const std::int64_t startRawNs = cycle.startRawNs;
-
-	capture_.publish({framesWritten_, startRawNs});
-	framesWritten_ += toServer_.write(inputs, frames);
 
 	// Every frame plays in order (docs/node-types.md#clock). The one exception is the graph's lost time: on the cycle
 	// that states a catch-up or a pause (the graph moved on by `jumpFrames` while the block did not run), overdue or not,
@@ -67,4 +59,4 @@ void SendspinCode::process(std::span<const std::span<const float>> inputs, std::
 	bell_.ring();
 }
 
-} // namespace ear::sendspin
+} // namespace ear::nodes::sendspin

@@ -18,7 +18,7 @@
 #include "sendspin_code.hpp"
 #include "worker.hpp"
 
-using namespace ear::sendspin;
+using namespace ear::nodes::sendspin;
 using namespace std::chrono_literals;
 
 namespace {
@@ -32,23 +32,6 @@ std::int64_t nowNs(clockid_t clock) {
 	clock_gettime(clock, &now);
 	return static_cast<std::int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
 }
-
-/// The handoff's realtime end: keeps the frames it accepts, up to a limit.
-class FakeWriter final : public ear::RtWriter {
-public:
-	std::uint32_t write(std::span<const std::span<const float>> channels, std::uint32_t frames) noexcept override {
-		const std::uint32_t accepted = std::min(frames, room);
-		room -= accepted;
-		for (std::uint32_t frame = 0; frame < accepted; ++frame) {
-			fromLeft.push_back(channels[0][frame]);
-			fromRight.push_back(channels[1][frame]);
-		}
-		return accepted;
-	}
-	std::uint32_t room = 1000000;
-	std::vector<float> fromLeft;
-	std::vector<float> fromRight;
-};
 
 /// The graph's driver as the engine tells a block (docs/writing-a-node-type.md#lost-cycles): cycles numbered and cuts
 /// recorded in a CutRing, each cycle's facts worked out by the one rule, CycleAccount, so the code is handed the facts
@@ -90,10 +73,7 @@ private:
 };
 
 struct Rig {
-	Rig()
-		: feed(2, capacity), code(feed, progress, bell, ear::SampleRate::fixed<rate>(), toServer, capture),
-		  inLeft(block, 0.25F), inRight(block, -0.5F) {
-		code.prepare({ear::SampleRate::fixed<rate>(), block});
+	Rig() : feed(2, capacity), code(feed, progress, bell, ear::SampleRate::fixed<rate>()) {
 		left.resize(block);
 		right.resize(block);
 	}
@@ -113,13 +93,12 @@ struct Rig {
 	ear::CycleFacts cycle(std::int64_t startRawNs = 1000, std::uint32_t downstreamFrames = 0,
 	                      std::int64_t overdueNs = 0) {
 		const std::array<std::span<float>, 2> outputs{left, right};
-		const std::array<std::span<const float>, 2> inputs{inLeft, inRight};
 		const std::array<ear::Latency, 2> downstream{ear::Latency{downstreamFrames, downstreamFrames},
 		                                             ear::Latency{downstreamFrames, downstreamFrames}};
 		const std::uint64_t position = driver.position();
 		const ear::CycleFacts facts = driver.next(block, startRawNs);
 		const std::int64_t startNs = startRawNs - 7; // another clock: the code must not read it
-		code.process(inputs, outputs, block,
+		code.process(outputs, block,
 		             ear::GraphCycle{.startNs = startNs,
 		                             .position = position,
 		                             .startRawNs = startRawNs,
@@ -133,9 +112,7 @@ struct Rig {
 	/// oversized one) or a jump too long to lose cycle by cycle.
 	void scripted(ear::CycleFacts facts) {
 		const std::array<std::span<float>, 2> outputs{left, right};
-		const std::array<std::span<const float>, 2> inputs{inLeft, inRight};
-		code.process(inputs, outputs, block,
-		             ear::GraphCycle{.startNs = 0, .position = 0, .startRawNs = 1000, .facts = facts});
+		code.process(outputs, block, ear::GraphCycle{.startNs = 0, .position = 0, .startRawNs = 1000, .facts = facts});
 	}
 	/// Whether the bell rang since the last look.
 	bool rang() { return bell.drain(); }
@@ -145,12 +122,8 @@ struct Rig {
 	Driver driver;
 	Feed feed;
 	Mailbox<PlayProgress> progress;
-	Mailbox<CaptureAnchor> capture;
-	FakeWriter toServer;
 	EventFd bell;
 	SendspinCode code;
-	std::vector<float> inLeft;
-	std::vector<float> inRight;
 	std::vector<float> left;
 	std::vector<float> right;
 	std::uint32_t written = 0;
@@ -563,36 +536,6 @@ TEST_CASE("Cleared frames are never reported", "[sendspin][code]") {
 	rig.cycle();
 	CHECK(rig.left[0] == static_cast<float>(6 * block + 1));
 	CHECK(rig.progress.read()->totalFrames == 4 * block);
-}
-
-TEST_CASE("Inputs go to the handoff whatever the feed holds, side for side", "[sendspin][code]") {
-	Rig rig;
-	rig.cycle();
-	REQUIRE(rig.toServer.fromLeft.size() == block);
-	CHECK(rig.toServer.fromLeft[0] == 0.25F);
-	CHECK(rig.toServer.fromRight[block - 1] == -0.5F);
-}
-
-TEST_CASE("The capture anchor dates each cycle's first frame from the cycle's start on the raw clock",
-          "[sendspin][code]") {
-	Rig rig;
-	const std::int64_t start = nowNs(CLOCK_MONOTONIC_RAW) - 5000000;
-	rig.cycle(start);
-
-	const auto first = rig.capture.read();
-	REQUIRE(first.has_value());
-	CHECK(first->framesWritten == 0);
-	CHECK(first->atRawNs == start);
-
-	rig.cycle(start);
-	CHECK(rig.capture.read()->framesWritten == block);
-}
-
-TEST_CASE("Frames the handoff refuses are not counted in the anchor, so what it took stays dated", "[sendspin][code]") {
-	Rig rig;
-	rig.toServer.room = block + 10;
-	for (int i = 0; i < 4; ++i) rig.cycle();
-	CHECK(rig.capture.read()->framesWritten == block + 10);
 }
 
 TEST_CASE("The mailbox holds the newest value, and nothing before the first", "[sendspin][code]") {

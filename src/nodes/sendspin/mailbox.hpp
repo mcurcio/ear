@@ -9,7 +9,7 @@
 #include <cstring>
 #include <optional>
 #include <type_traits>
-namespace ear::sendspin {
+namespace ear::nodes::sendspin {
 template <typename Value> class Mailbox {
 	static_assert(std::is_trivially_copyable_v<Value>);
 
@@ -45,4 +45,4 @@ private:
 	std::atomic<std::uint64_t> sequence_{0};
 	std::array<std::atomic<std::uint64_t>, wordCount> words_{};
 };
-} // namespace ear::sendspin
+} // namespace ear::nodes::sendspin

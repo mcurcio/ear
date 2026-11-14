@@ -6,7 +6,7 @@
 #include "catch2/catch.hpp"
 #include "pcm.hpp"
 
-namespace pcm = ear::sendspin::pcm;
+namespace pcm = ear::nodes::sendspin::pcm;
 
 TEST_CASE("Every 16-bit value round-trips exact", "[sendspin][pcm]") {
 	std::uint64_t wrong = 0;

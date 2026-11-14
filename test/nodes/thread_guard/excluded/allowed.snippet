@@ -1,0 +1,4 @@
+	std::size_t my_thread_count = 0;
+	const auto self = std::this_thread::get_id();
+	const bool forked = is_forked(); // a thread of the library's, named in a comment
+	pthread_setname_np(handle, "x");

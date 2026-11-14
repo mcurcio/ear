@@ -60,7 +60,6 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/loop.hpp
 	include/ear/core/main_loop_activity.hpp
 	include/ear/core/node_catalogue.hpp
-	include/ear/core/node_folders.hpp
 	include/ear/core/node_handle.hpp
 	include/ear/core/node_host.hpp
 	include/ear/core/node_lifecycle.hpp
