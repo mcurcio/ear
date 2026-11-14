@@ -809,22 +809,25 @@ A node never waits for good on something that will never be ready. Each engine c
 sink's consumer has a deadline from its asking, on the main loop's timers (`companions.hpp`:
 `cardReadinessBound` and friends, `readinessBound(kind)`); a source is ready when made and has none.
 `NodeHost` keeps them as the items of one readiness list per configuration
-(`src/core/readiness.hpp`): the node's loops first ([writing-a-node-type.md](writing-a-node-type.md#loops)),
-then the engine companions, then the sinks' consumers, each in request order. The list arms every
+(`src/core/readiness.hpp`): the node's stores first ([writing-a-node-type.md](writing-a-node-type.md#stores)),
+then its loops ([writing-a-node-type.md](writing-a-node-type.md#loops)), then the engine companions, then the sinks'
+consumers, each in declaration or request order. The list arms every
 bound through one timer rule (below), judges it, and is what `waitingFor` reads; the
 configuration's resources are ready once every item is. Its items are asked in steps, a later step
-only once every earlier one is ready, and each is started when it is asked: a loop made (step
-`loops`, no bound: its adapter says at once whether its thread started), then an engine companion
+only once every earlier one is ready, and each is started when it is asked: a store opened (step
+`opens`, one job on the I/O thread), then a loop made (step `loops`, no bound: its adapter says at
+once whether its thread started), then an engine companion
 made once the block is ready too, and a sink's consumer begun (step `companions`). A node with no
-loops asks its companions at configure's applied return, so the wait counts from the request and
-time the block took to be ready counts too; a node with loops asks them, and starts their bounds,
-once its loops run.
+stores or loops asks its companions at configure's applied return, so the wait counts from the
+request and time the block took to be ready counts too; a node with them asks its companions, and
+starts their bounds, once its stores are open and its loops run.
 
 | Kind | Deadline | Past it, the node fails |
 |---|---|---|
 | Sound card (either direction) | 10 s | `engine-refused: the card never started: <card id>` |
 | RTP receiver | 5 s | `engine-refused: the RTP receiver never ran (UDP port <port> held?)` |
 | A sink's consumer | 5 s | `start-failed: the sink <bank>'s consumer did not begin within 5 s` (its `begin` is the type's code) |
+| A store's open | 5 s | `start-failed: <file>: not opened within 5 s` (a refusal before it, at once: `start-failed: <file>: <why>`) |
 
 Each deadline is an input of its own when its timer fires, and judges then: if its configuration is
 still the current one, still readying (not torn down, not failed) and the companion not ready, the
@@ -836,7 +839,7 @@ deadline, fails the node `engine-refused: <node>.<suffix> was never made: the no
 ready within <n> s` rather than blaming the card or the port. The failure tears the configuration
 down as any other: the flush destroys an engine companion made or not (destroying one tells nothing,
 so its `lost` never comes), and a sink is closed (a `begin` still running finishes first; the close deadline covers one that
-never returns). Meanwhile `waitingFor` shows `companion` or `consumer` after 2 s. A failed node is
+never returns). Meanwhile `waitingFor` shows `store`, `loop`, `companion` or `consumer` after 2 s. A failed node is
 retried only by `node.start`, `node.restart` or a change until recovery is built; a USB card that
 takes longer than 10 s to start fails.
 

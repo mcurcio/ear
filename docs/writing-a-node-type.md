@@ -138,6 +138,7 @@ optional row read as a plain value does not compile.
 | `cx.loop(handle, std::make_unique<State>(...))` | A [loop](#loops)'s state, constructed here with no I/O and no threads, owned by the framework from now on | Exactly once for a loop declared with a state type (compile time: never for one declared without) |
 | `Loop& l = cx.executor(handle)` | A loop as an executor, for a state to keep: `post`, timers and watches | Valid until the configuration is freed; what it is sent before the node is configured is staged |
 | `cx.post(handle, [](State& s) { ... })` | Work on the loop with its state (`[] { ... }` for a loop with none), staged | A function of another loop's state does not compile |
+| `Store& s = cx.store(handle)` | A [store](#stores), for a loop's state or a consumer to keep | Valid until the configuration is freed; readable once the node is configured; a store the spec lacks does not compile |
 
 Then answer `Configured::applied()`, or `Configured::failed(detail)` for what only the type can see
 (the node fails `start-failed: <detail>`). A `CreateOf` is valid only inside the `configure` it is
@@ -146,7 +147,7 @@ handed to. What a type needs from outside it acquires here; a type's factory tak
 Each call is served by the host's adapter of its kind (`ResourceAdapters`, one member per kind,
 `node_host.hpp`). ear's host has every kind; a host without one (a test's) refuses the call as an
 adapter's refusal is: the node fails `start-failed: configure threw: no <kind> in this host`
-(`sinks`, `sources`, `sound cards`, `RTP receivers`, `loops`), and `openRecording` answers
+(`sinks`, `sources`, `sound cards`, `RTP receivers`, `loops`, `stores`), and `openRecording` answers
 `no recordings folder`.
 
 ### The node handle
@@ -465,6 +466,78 @@ keeps it as a member), or on the main loop while the node is not yet configured.
   does, `loop <name>'s handler threw: <what>` (`start-failed`, or `lost` once rested; during a
   teardown a `log` record), and the loop runs on.
 
+## Stores
+
+A store is a small file that belongs to one node and outlives its configurations (a private key,
+a stream's identity), declared in the spec, named by the framework, read and judged before any of
+the node's loop work runs, kept no wider than its mode, and replaced only if unchanged
+(`ear/core/store.hpp`).
+
+```cpp
+std::string newSsrc();                                          // the text a missing file is created with
+std::optional<std::string> whyNotSsrc(std::string_view text);   // why a text is not trusted, or nothing
+inline constexpr auto ssrcFile =
+	store::file<"ssrc">({.mode = 0644, .maxBytes = 64, .initial = &newSsrc, .distrust = &whyNotSsrc});
+inline constexpr TypeSpec spec{.settings = ..., .banks = Banks<...>{}, .stores = Stores<ssrcFile>{},
+                               .loops = Loops<control>{}};
+
+Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>&) {
+	cx.loop(control, std::make_unique<Sender>(node_.handle(), cx.store(ssrcFile), cx.executor(control)));
+	...
+}
+```
+
+| `StoreRule` | What |
+|---|---|
+| `mode` | The most the file's mode may be (default `0600`): a wider file is narrowed, never refused |
+| `maxBytes` | Required, at most 1 MiB: a larger file is neither read nor written |
+| `initial` | The text a missing file is created with; left out, a missing file stays missing (`text()` is empty) |
+| `distrust` | Why a file's text is not trusted, or nothing; left out, any text is. It runs on the I/O thread, so it reads nothing but its argument |
+
+| On a `Store&` | What |
+|---|---|
+| `fileName()` | `<type>-<node>.<suffix>` |
+| `text()` | Any thread: what the file held when it was opened (or was created with), then the text of the last write that committed |
+| `replace(text)` | Blocking, at most 5 s, so from a dedicated loop or a library's thread, never a strand (asserted in debug builds), the main loop or `process` |
+| `replaceLater(text, loop, done)` | The same without waiting; `done(outcome)` runs on `loop`, one of the node's own, or never once that loop closed |
+
+- **Name and place.** A store's file is `<type>-<node>.<suffix>` in the graph file folder
+  (`--config-dir`): its suffix is 1 to 16 of `[a-z0-9-]`, unique in the spec. A spec gives its
+  members in order, `.stores` before `.loops`, and may leave out either.
+- **Open.** Every declared store, taken by `configure` or not, is an item of the configuration's
+  readiness list at step `opens`, before its loops ([engine.md](engine.md#readiness-deadlines)): one
+  job on the I/O thread reads the file (no symlink anywhere on the path, at most `maxBytes`); a file
+  there is narrowed to the mode **before** its text is judged (a file refused for its text may still
+  hold a secret), then judged by `distrust`; a missing file is created with `initial()` at exactly
+  the mode. So a store that fails starts no loop. It fails the node `start-failed: <file>: <why>`
+  (`distrust`'s reason, or the disk's: `rtpsend-porch.ssrc: malformed: not eight hex digits`), the file left as it
+  was: a distrusted or unreadable file is never replaced by a new one. An open past 5 s fails it
+  `start-failed: <file>: not opened within 5 s`; one not yet open is `waitingFor` `store`, by its
+  file.
+- **Reading.** The node is configured only once every store is trusted, and staged loop work runs
+  only then, so a loop's handler, `start()` and a sink consumer's `begin` read it freely. Read or
+  written before its open completed (in `configure`) is a `std::logic_error`: the node fails.
+- **Writing.** Every write is one job on the I/O thread, in order, each against the text the one
+  before committed: the file narrowed first (a mode widened since is never kept), then the new
+  text swapped in (a staging file renamed over it) only if the file still holds `text()`. Its error
+  names the file: `<file>: changed by something else` (someone else's text stands),
+  `<file>: larger than <n> bytes`, `<file>: not written within 5 s`, or the disk's; the file is
+  left as it was, but for a write already under way when the 5 s passed, which may still land
+  (`text()` then shows it). A failed write fails nothing: telling it (a note) is the type's.
+- **Its life.** A stop and a start keep it; a restart, a change of settings or a failure opens it
+  again in the next configuration. It is usable until teardown step 4 and freed at step 5. An open
+  or a write still on the I/O thread when its configuration ended tells nothing, and what it held
+  is released on the I/O thread.
+- **Boot.** Before any node exists, every file in the folder that is one of a declared store's
+  (`<type>-*.<suffix>`, whatever its node, so one no longer in the graph too) and each one's
+  staging file a crash left is narrowed to its store's mode; what cannot be is a `log` record at
+  `warn` from the type.
+- **Faults.** A bug of the stores' adapter (a throw from the disk's part, on the I/O thread) fails
+  the node `lost`, `internal error in StoreAdapter::<call>: <what>`, said first in an
+  `ear.internal-error` record ([architecture.md](architecture.md#faults-by-owner)).
+
+No shipped type has a store yet: `sendspin`'s key file is its own until it moves onto one.
+
 ## Latency
 
 A type declares only **its own** latency: how long its code holds audio between an input bank and
@@ -495,7 +568,10 @@ no `ports` or `configure`, a member of the wrong signature (`configure`, `start`
 interface), a call `CreateOf` does not offer, a sound card, RTP receiver, sink or source on the wrong
 bank, a loop's name that is not 1 to 8 of `[a-z0-9-]` or names two loops, a state given to a loop
 declared without one, a loop the spec lacks (in a context, a post or the harness), a post of a
-function of another loop's state, and the harness given a bank the spec lacks.
+function of another loop's state, a store whose rule has no `maxBytes`, more than 1 MiB or a mode
+beyond `0777`, a store's suffix that is not 1 to 16 of `[a-z0-9-]` or names two stores, a store
+the spec lacks (in a context or the harness), the spec's members out of order (`.stores` after
+`.loops`), and the harness given a bank the spec lacks.
 
 **At run time**, a rule the type breaks fails the node `start-failed` with the rule's text, even
 when the type catches the throw; none takes ear down:
@@ -515,6 +591,9 @@ when the type catches the throw; none takes ear down:
 | Loops declared on a host with no loops adapter | `no loops in this host` (`configure threw: no loops in this host` at a loop call) |
 | A loop that cannot start | `cannot start loop <name>: <why>` |
 | A loop's handler throws | `loop <name>'s handler threw: <what>` (`start-failed`, or `lost` once rested; once the teardown began, a `log` record) |
+| Stores declared on a host with no stores adapter | `no stores in this host` (`configure threw: no stores in this host` at `cx.store`) |
+| A store read or written before its open completed (in `configure`) | `configure threw: store <file> was read before it was opened` (`... was written ...`) |
+| A store that cannot be opened, or whose text its `distrust` refuses | `<file>: <why>` ([stores](#stores)) |
 | A `CreateOf` call after `configure` returned | `<call> outside configure` |
 | `Configured::failed("")` | `configure answered failed with no detail` |
 | `configure` throws | `configure threw: <what>` |
@@ -555,7 +634,7 @@ fakes allow. Banks are named by the spec's handles.
 
 | Call | What |
 |---|---|
-| `TypeHarness h({.format = {48000, 256}, .node = "x", .recordings = &adapter})` | Options: format, node name, a recordings adapter (none: every recording refused), `autoComplete` (off: each fade-out and barrier waits for the test, or a fade-out for a cycle that ends it at zero, and a drive cancels a fade-out still waiting, as the real block does), `holdSinks` (each sink's consumer begins only at `h.ready(bank)`, not at configure's return), and `sinkRingFrames` (each sink's ring in frames instead of the size the type asked for, rounded up to a power of two as the engine's is: cycles that do not divide it make the sink split chunks at its end); and for loops `holdLoops`, `refuseLoops` and `allowSourcesLeft` (below) |
+| `TypeHarness h({.format = {48000, 256}, .node = "x", .recordings = &adapter})` | Options: format, node name, a recordings adapter (none: every recording refused), `autoComplete` (off: each fade-out and barrier waits for the test, or a fade-out for a cycle that ends it at zero, and a drive cancels a fade-out still waiting, as the real block does), `holdSinks` (each sink's consumer begins only at `h.ready(bank)`, not at configure's return), and `sinkRingFrames` (each sink's ring in frames instead of the size the type asked for, rounded up to a power of two as the engine's is: cycles that do not divide it make the sink split chunks at its end); for loops `holdLoops`, `refuseLoops` and `allowSourcesLeft`, and for stores `holdIo` (below) |
 | `h.parse(settings)` | The type's parse: nothing, or the refusal's text |
 | `h.add()`, `h.add({.disabled = true})` | Adds the node and configures it |
 | `h.blockReady()` | The block becomes ready: the code drives, the node runs |
@@ -572,6 +651,8 @@ fakes allow. Banks are named by the spec's handles.
 | `h.companion(bank)` | What was made on a bank (an engine companion's bank as `NodeHost` named it): its `kind` (`CompanionKind`: a card's by its bank's direction), `name`, `shape`, `made`, `ready`, `destroyed`, and a sink's `chunks` as its consumer got them, one per call (a chunk split at the ring's end is two) |
 | `h.recordingRequests()` | Every recording asked for |
 | `h.runLoops()`, `h->advance(ms)`, `h.armed(loop)`, `h.readable(fd)`, `h.loopsReady()`, `h->loops()` | The loops ([loops](#loops)), on the test's thread with their kind kept: `runLoops()` runs what was posted and each watch rung (a source's clock wake rung by `process()`, a descriptor marked `readable(fd)`) until all are idle, never a timer; `advance` fires their timers in time order with the framework's (an `every` once per period passed: a handler takes no time); `armed(loop)` counts the sources armed on it whose handles live. Loops start when the framework asks (with `holdLoops`, at `loopsReady()`; with `refuseLoops = "<why>"`, never); a teardown turns each loop until it finished and closed; a source a state left armed fails the call that tore it down unless `allowSourcesLeft` (then only `ear.loop-source-left` in `diagnostics()`). `loops()` lists each loop made: its name, kind, and whether it closed to others, finished and closed |
+| `h.presetStore(store, text, mode)`, `h.storeText(store)`, `h.storeMode(store)`, `h.failStoreOpen(store, why)`, `h.failNextWrite(store, why)`, `h.runIo()`, `h->ioJobs()`, `h->storeCalls()`, `h->breakStores(what)` | The [stores](#stores), by the spec's handle, on an in-memory disk under the framework's own store rules: a file put there before the node opens it, what it holds and its mode now, every open's read refused or the next write refused with `<file>: <why>`. Each open and write is a job on the harness's I/O executor, run as each call settles (with the option `holdIo`, only at `runIo()`); a blocking `replace` runs its job inside the call. `ioJobs()` names every job run (`open store <file>`, `write store <file>`, and `release store <file>` for a dropped open's handle), `storeCalls()` every disk call in order (`read`, `narrow`, `replace`), and `breakStores(what)` makes every disk call throw, an adapter's bug |
+| `h->internalErrors()` | Every adapter bug told about the node (the `ear.internal-error` record's callback, node, where and what), in order |
 
 The harness does not see a class's `start()` and `stop()`; their pairing is tested in
 `node_host_test.cpp`.

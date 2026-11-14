@@ -316,6 +316,57 @@ private:
 }
 #endif
 
+// Stores (docs/writing-a-node-type.md#stores): the control declares a store and a loop and takes the store in
+// configure; the cases break a store's rule, name one twice or wrongly, take one the spec lacks, or give the spec's
+// members out of order. Every subset spelling compiles (type_spec_test.cpp, U1).
+constexpr auto keyFile = store::file<"key">({.mode = 0600, .maxBytes = 64});
+constexpr auto otherFile = store::file<"other">({.maxBytes = 8});
+#ifdef EAR_CASE_store_suffix_invalid
+[[maybe_unused]] constexpr auto badFile = store::file<"Bad_Key">({.maxBytes = 8});
+#endif
+#ifdef EAR_CASE_stores_named_twice
+[[maybe_unused]] constexpr Stores<keyFile, store::file<"key">({.maxBytes = 9})> twiceStored{};
+#endif
+#ifdef EAR_CASE_store_max_bytes_left_out
+[[maybe_unused]] constexpr auto unbounded = store::file<"open">({.mode = 0600});
+#endif
+#ifdef EAR_CASE_store_above_1_mib
+[[maybe_unused]] constexpr auto huge = store::file<"huge">({.maxBytes = 2 * 1024 * 1024});
+#endif
+#ifdef EAR_CASE_store_mode_beyond_0777
+[[maybe_unused]] constexpr auto sticky = store::file<"sticky">({.mode = 01777, .maxBytes = 8});
+#endif
+#ifdef EAR_CASE_stores_after_loops
+[[maybe_unused]] constexpr TypeSpec backwards{
+	.settings = SettingsTable<>{"t"}, .banks = Banks<out>{}, .loops = Loops<helper>{}, .stores = Stores<keyFile>{}};
+#endif
+constexpr TypeSpec storeSpec{
+	.settings = SettingsTable<>{"t"}, .banks = Banks<out>{}, .stores = Stores<keyFile>{}, .loops = Loops<helper>{}};
+struct StoredZeros {
+	void process(Io<storeSpec> io, const GraphCycle&) noexcept {
+		for (auto member : io[out])
+			for (float& sample : member) sample = 0.0F;
+	}
+};
+struct Stored {
+	static Members<storeSpec> ports(const CheckedOf<storeSpec>&) { return {out(members(1))}; }
+	Configured configure(CreateOf<storeSpec>& cx, const CheckedOf<storeSpec>&) {
+		[[maybe_unused]] Store& kept = cx.store(keyFile);
+#ifdef EAR_CASE_store_the_spec_lacks
+		static_cast<void>(cx.store(otherFile));
+#endif
+		cx.use(StoredZeros{});
+		return Configured::applied();
+	}
+};
+[[maybe_unused]] void storedType() { static_cast<void>(makeNodeType<storeSpec, Stored>()); }
+#ifdef EAR_CASE_harness_store_the_spec_lacks
+[[maybe_unused]] void badStoreHarness() {
+	testing::TypeHarness<storeSpec, Stored> harness;
+	static_cast<void>(harness.storeText(otherFile));
+}
+#endif
+
 } // namespace type_spec_bad
 
 // A spec, or a row its table lists, in an unnamed namespace: GCC 14 would give two files' same-named ones one symbol.

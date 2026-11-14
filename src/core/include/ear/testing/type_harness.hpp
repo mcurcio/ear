@@ -16,6 +16,8 @@ namespace ear::testing {
 
 template <const auto& Spec, class Type> class TypeHarness {
 	template <class Bank> static constexpr bool ownBank = isBankHandle<Bank> && BanksOf<Spec>::template has<Bank>;
+	template <class Handle> static constexpr bool ownStore =
+		isStoreHandle<Handle> && StoresOf<Spec>::template has<Handle>;
 
 public:
 	using Options = HarnessOptions;
@@ -54,6 +56,33 @@ public:
 		static_assert(isLoopHandle<Handle> && LoopsOf<Spec>::template has<Handle>,
 		              "the harness takes only its spec's loops");
 		return node_->armed(Handle::name);
+	}
+
+	void runIo() { node_->runIo(); }
+	/// Store `Handle`'s file on the harness's in-memory disk (NodeHarness's store calls, by the spec's handle).
+	template <class Handle> void presetStore(Handle, std::string text, std::uint32_t mode = 0600) {
+		static_assert(ownStore<Handle>, "the harness takes only its spec's stores");
+		node_->presetStore(Handle::suffix, std::move(text), mode);
+	}
+	template <class Handle> std::optional<std::string> storeText(Handle) const {
+		static_assert(ownStore<Handle>, "the harness takes only its spec's stores");
+		return node_->storeText(Handle::suffix);
+	}
+	template <class Handle> std::uint32_t storeMode(Handle) const {
+		static_assert(ownStore<Handle>, "the harness takes only its spec's stores");
+		return node_->storeMode(Handle::suffix);
+	}
+	template <class Handle> std::string storeFile(Handle) const {
+		static_assert(ownStore<Handle>, "the harness takes only its spec's stores");
+		return node_->storeFile(Handle::suffix);
+	}
+	template <class Handle> void failStoreOpen(Handle, std::string why) {
+		static_assert(ownStore<Handle>, "the harness takes only its spec's stores");
+		node_->failStoreOpen(Handle::suffix, std::move(why));
+	}
+	template <class Handle> void failNextWrite(Handle, std::string why) {
+		static_assert(ownStore<Handle>, "the harness takes only its spec's stores");
+		node_->failNextWrite(Handle::suffix, std::move(why));
 	}
 
 	template <class Bank> void ready(Bank) {

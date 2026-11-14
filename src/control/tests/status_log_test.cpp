@@ -335,6 +335,12 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 			paceNow += std::chrono::seconds(10);
 			log.nodeChanged(health("fpp", NodePhase::configuring, {}, {}, {{ear::WaitingFor::Kind::loop, "sendspin"}}));
 		},
+		[](StatusLog& log, Lines&) {
+			// Still configuring, 10 s on: now it waits for one of its stores to open, by its file's name.
+			paceNow += std::chrono::seconds(10);
+			log.nodeChanged(
+				health("fpp", NodePhase::configuring, {}, {}, {{ear::WaitingFor::Kind::store, "sendspin-fpp.key"}}));
+		},
 		[](StatusLog& log, Lines&) { log.stopped(); },
 	};
 }

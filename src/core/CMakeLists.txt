@@ -29,7 +29,8 @@ add_library(ear_core STATIC
 	rtp_receiver.cpp
 	settings_table.cpp
 	sound_card.cpp
-	source_ring.cpp)
+	source_ring.cpp
+	store.cpp)
 # The public headers as a header set: its base directory is the include path of ear_core and
 # of everything that links it, and VERIFY_INTERFACE_HEADER_SETS adds a target that compiles
 # each header on its own, so none depends on what an includer happened to include first. The
@@ -73,6 +74,8 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/sound_card.hpp
 	include/ear/core/source.hpp
 	include/ear/core/source_ring.hpp
+	include/ear/core/store.hpp
+	include/ear/core/store_rule.hpp
 	include/ear/core/timers.hpp
 	include/ear/core/type_spec.hpp)
 set_target_properties(ear_core PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)
@@ -121,6 +124,7 @@ if(BUILD_TESTS)
 		tests/settings_table_test.cpp
 		tests/sound_card_test.cpp
 		tests/source_ring_test.cpp
+		tests/store_test.cpp
 		tests/type_spec_test.cpp)
 	target_link_libraries(ear_core_tests PRIVATE ear_core ear_type_harness ear_latency_table ear_cycle_table ear_inducers
 		ear_catch_main)
@@ -286,4 +290,15 @@ if(BUILD_TESTS)
 	ear_type_spec_compile_fail(post-loop-the-spec-lacks "a post names one of its spec's loops")
 	ear_type_spec_compile_fail(post-other-loop-state "a post to a loop takes a function of that loop's state")
 	ear_type_spec_compile_fail(harness-loop-the-spec-lacks "the harness takes only its spec's loops")
+	# Stores (docs/writing-a-node-type.md#stores): a store's rule broken (no maxBytes, more than 1 MiB, a mode beyond
+	# 0777), a suffix named wrongly or twice, a store the spec lacks (in a context or the harness), and the spec's members
+	# out of order (stores come before loops).
+	ear_type_spec_compile_fail(store-suffix-invalid "a store's suffix is 1 to 16 of")
+	ear_type_spec_compile_fail(stores-named-twice "a type's stores have unique suffixes")
+	ear_type_spec_compile_fail(store-max-bytes-left-out "a_store_gives_its_maxBytes")
+	ear_type_spec_compile_fail(store-above-1-mib "a_store_holds_at_most_1_MiB")
+	ear_type_spec_compile_fail(store-mode-beyond-0777 "a_store_mode_has_no_bits_outside_0777")
+	ear_type_spec_compile_fail(store-the-spec-lacks "a context takes only its spec's stores")
+	ear_type_spec_compile_fail(harness-store-the-spec-lacks "the harness takes only its spec's stores")
+	ear_type_spec_compile_fail(stores-after-loops "designator order")
 endif()

@@ -14,6 +14,7 @@
 #include "ear/core/latency.hpp" // Latency, BankPair
 #include "ear/core/node_handle.hpp"
 #include "ear/core/sample_rate.hpp"
+#include "ear/core/store_rule.hpp"
 namespace ear {
 /// One named group of a node's ports, all one way. Each is "<name>.<member>" (portName). A routable bank's ports are
 /// public: routes name them. An inside bank's ports belong to the port block only: nothing reaches them but the node's
@@ -336,13 +337,17 @@ public:
 	                                                                        const NodeSettings& settings) const;
 	/// Every key parse() accepts, each once, with its kind, in row order; the same span every call; pure.
 	std::span<const SettingDeclaration> settingKinds() const noexcept;
+	/// The stores every node of the type has (docs/writing-a-node-type.md#stores), from its spec, in declaration
+	/// order: the boot sweep reads them before any node exists. None for a type on the old interface.
+	std::span<const StoreDeclaration> stores() const noexcept { return stores_; }
 
 private:
 	template <const auto& Table> friend class NodeTypeOf; // nothing else can derive, but makeNodeType's type
 	template <const auto& Spec, class Type> friend class spec_detail::SpecNodeType;
-	explicit NodeType(const AnySettingsTable& table) noexcept;
+	explicit NodeType(const AnySettingsTable& table, std::span<const StoreDeclaration> stores = {}) noexcept;
 	/// The one customisation point. Called only with what the table's walk made.
 	virtual MadeConfig makeConfig(const NodeName& node, CheckedSettings settings) const = 0;
-	const AnySettingsTable* table_; // static storage, because NodeTypeOf takes it as a template argument
+	const AnySettingsTable* table_;            // static storage, because NodeTypeOf takes it as a template argument
+	std::span<const StoreDeclaration> stores_; // static storage: the spec's Stores::declared
 };
 } // namespace ear

@@ -58,7 +58,7 @@ Each C++ package lives in `src/<package>/` with its own `CMakeLists.txt`, public
 | Target | Owns | Never |
 |---|---|---|
 | `ear_core` (`src/core`) | The desired graph (`DesiredGraph`: the one judge of every change, `plan` then `commit`); the node type contract (`NodeType`, settings tables, `TypeSpec`, the type's class and its contexts); the node framework (`NodeHost`, the node lifecycle machines, health, `NodeOperations`, the pass-through, companions, latency plans); the reconciler (route links and route status); levels; the graph read (`GraphStatus`); `FrameRing`. Beside it, for tests only, `ear_type_harness` (`ear/testing/`) | Any PipeWire call, socket, thread or file access. nlohmann/json is its only dependency |
-| `ear_runtime` (`src/runtime`) | The threads the node framework runs work on, behind `ear_core`'s interfaces: the I/O thread (`IoThread`, core's `IoExecutor`), the one thread for blocking work, and the nodes' loops (`Loops`, core's `LoopAdapter`: the strand pool and each dedicated loop's thread) ([threads](#threads)) | Policy (what a job means is its caller's; staging, a loop's state and the sources it left are `NodeHost`'s); PipeWire. No node type links it |
+| `ear_runtime` (`src/runtime`) | The threads the node framework runs work on, behind `ear_core`'s interfaces: the I/O thread (`IoThread`, core's `IoExecutor`), the one thread for blocking work; the nodes' loops (`Loops`, core's `LoopAdapter`: the strand pool and each dedicated loop's thread) ([threads](#threads)); and the nodes' stores on disk (`ConfinedStores`, core's `StoreAdapter`, over the graph file folder) with the boot sweep of every declared store ([writing-a-node-type.md](writing-a-node-type.md#stores)) | Policy (what a job means is its caller's; staging, a loop's state and the sources it left, and when a store is narrowed, trusted or written, are `NodeHost`'s); PipeWire. No node type links it |
 | `ear_folder` (`src/folder`) | `ConfinedFolder`: a folder held open from boot, every path resolved beneath it by the kernel (`openat2` with `RESOLVE_BENEATH`); files replaced only if unchanged (`renameat2(RENAME_EXCHANGE)`); `requireApart`, the boot check that no two folders overlap | Following `..`, absolute paths or (for the graph file) any symlink |
 | `ear_node_white`, `ear_node_file`, `ear_node_card`, `ear_node_rtp`, `ear_node_sendspin` (`src/nodes/<type>`) | One built-in node type each ([node-types.md](node-types.md)) | Another node type; PipeWire or the framework's threads (only `ear_core`'s interfaces: no type links `ear_pipewire`, `ear_runtime`, `ear_control`, `ear_config` or `ear_server`) |
 | `ear_all_node_types` (`src/all_node_types`) | `allNodeTypes()`, the one list of node types, generated at configure from the folders in `src/nodes/` | Naming a type by hand |
@@ -72,7 +72,7 @@ Each C++ package lives in `src/<package>/` with its own `CMakeLists.txt`, public
 
 **Dependency rules.** Dependencies point one way: `ear_core` is below everything; the node types,
 `ear_runtime`, `ear_pipewire`, `ear_control` and `ear_config` depend on it; `ear_control` is below
-`ear_server` and `ear_config`; `ear_folder` is below `ear_node_sendspin` and `ear_config`; `ear`
+`ear_server` and `ear_config`; `ear_folder` is below `ear_runtime`, `ear_node_sendspin` and `ear_config`; `ear`
 links all of them, and links the node types only through `ear_all_node_types`. No node type links
 another, nor `ear_runtime`, `ear_pipewire`, `ear_control`, `ear_config` or `ear_server` (configure
 refuses each, `cmake/NodeType.cmake`). `ear_output` and `ear_folder` depend on nothing of ear's. No Boost,
@@ -99,7 +99,7 @@ the main loop by posting.
 | PipeWire's main loop (the main thread) | Every piece of graph state: the engine, desired graph, node framework, reconciler, adapters, the gateway's graph side, the keeper's main-loop side; `ear.conf`'s first read at boot |
 | The control thread | Port 7777: sockets, JSON-RPC, sessions, queues. It holds only the gateway, which sends every request whole to the keeper and gets replies and events back in order from the main loop |
 | The keeper thread | The graph file keeper: every request, disk check and write, one step at a time; the working copy (knobly's object, which never leaves this thread); the inotify watch. It waits in `poll()` with no timeout |
-| The I/O thread (`ear-io`) | The framework's blocking work, off the main loop and every node's threads, one job at a time in post order (`IoThread`, `ear_runtime`). Nothing posts to it yet: slice 3c's stores and recordings will open there ([design](design/node-primitives.md#03-the-interfaces-as-they-must-now-be)). A job holds by `shared_ptr` what it fills and reports through its configuration's channel ([teardown](#teardown-by-dependency)), on the main loop, so one whose configuration ended reports nothing and the handle to what it opened goes back to this thread to be released, never closed on the main loop |
+| The I/O thread (`ear-io`) | The framework's blocking work, off the main loop and every node's threads, one job at a time in post order (`IoThread`, `ear_runtime`). A node's stores are opened and written there ([writing-a-node-type.md](writing-a-node-type.md#stores)); slice 3c's recordings will open there too ([design](design/node-primitives.md#03-the-interfaces-as-they-must-now-be)). A job holds by `shared_ptr` what it fills and reports through its configuration's channel ([teardown](#teardown-by-dependency)), on the main loop, so one whose configuration ended reports nothing and the handle to what it opened goes back to this thread to be released, never closed on the main loop |
 | A node's loops ([writing-a-node-type.md](writing-a-node-type.md#loops)) | A type's work off the realtime thread and the main loop, each loop with its state, one handler at a time per loop (`Loops`, `ear_runtime`). A dedicated loop has a thread of its own, `ear-<name> <node>` cut to 15 bytes, and may block; strands share a pool started with the first strand: `min(4, hardware threads)` workers (`ear-strand`), one more for a handler stuck past 1 s (at most 16 in all), and one reactor thread (`ear-strands`) that turns the strands' timers and watches into work and watches the workers. Timers on `CLOCK_MONOTONIC`, watches on epoll; each loop's events reach the main loop by posting. No shipped type has one yet |
 | Sink and handoff threads | A `file` node's sink (its WAV writer); a `sendspin` node's legacy handoff |
 | The output thread | Every write to the real standard output, from a bounded queue |
@@ -250,7 +250,7 @@ throwing is said and told only the first time (`FaultOwner::firstFault`).
 | An adapter NodeHost calls inside a type's context call (`SinkAdapter::make`, `SourceAdapter::make`, `HandoffAdapter::make`, `RecordingAdapter::open`): a `std::logic_error`, or nothing made where it must make something | The adapter | The record, with the node and where (`configure <node>`); the node fails `lost` even if the type caught the throw |
 | The same call's refusal (any other exception: no thread, no eventfd, no memory), through any context call it is nested in (a recording through the legacy start's `acquire`), and `std::bad_alloc` from NodeHost's own code there | Not a bug | The node's `start-failed`, `configure threw: <what>`, even if the type caught it; no record |
 | A port block factory or an engine companion adapter, in the flush (each refuses through its events, never by a throw) | The adapter | The record, with the node and its flush item; the node fails `lost` (the block lost for good). Safe to run on because every adapter constructor is strongly exception-safe by construction (below) |
-| An adapter's job on the I/O thread (none yet: slice 3c's stores and recordings) | The adapter | The job catches its own throw and reports it through its configuration's completions: the record, with the node, and the node fails `lost`, as for any adapter bug. Once the configuration ended, nothing is reported and what the job held is released on the I/O thread |
+| An adapter's job on the I/O thread (a store's open or write: `StoreAdapter`'s calls, `where` the job, `the I/O job open store <file>`) | The adapter | The job catches its own throw and reports it through its configuration's completions: the record, with the node, and the node fails `lost`, as for any adapter bug. Once the configuration ended, nothing is reported and what the job held is released on the I/O thread |
 | A job's throw no adapter caught (the I/O thread's last-resort catch) | No owner but ear's core | The record without a node, `fatal` (`callback` `IoThread job`, `where` the job's name), told through the `InternalErrorListener` the thread was made with, then `std::terminate`; never a bare terminate |
 | NodeHost itself, or any adapter call that interrupts NodeHost's own update (a block's `drive` or `carryLatency` as NodeHost carries out its actions), anything of core's an adapter's callback tells (a route link's listeners: the reconciler, and through it standard output and the gateway), the main loop's posted work and timers, the engine's signals, the live graph's registry, a sink's or handoff's own thread | No owner but ear's core | The record without a node, `fatal`, then the line and `std::terminate` (above) |
 
@@ -622,8 +622,9 @@ the main loop never joins a thread:
    node's worker says goodbye on its own thread).
 5. On the main loop: the code, then the instance (or run object), then its loops (a state whose
    loop never started is destroyed here; a dedicated loop's thread has already returned), then
-   its sinks and sources (whose writers the instance's threads may hold) and its config freed, and
-   recordings closed after them.
+   its sinks and sources (whose writers the instance's threads may hold), then its stores (which a
+   state, a consumer or the instance may hold; an open or write still queued holds only the store's
+   state) and its config freed, and recordings closed after them.
 
 Steps 3 and 4 have the close deadline ([bounds](#bounds-the-wedged-data-loop-and-the-watchdog)).
 A restart or retry completes the teardown before the
@@ -687,6 +688,8 @@ Running it on Talos with the MOTU 24Ao is the `ear-on-talos` skill's.
 1. Read the flags. Bad flags and `--help` are plain text; from here on every line is a record.
 2. Capture descriptors 1 and 2 ([output-records.md](output-records.md#how-output-is-written)).
 3. Open the two folders and check the three are apart; a failure is an `exit` record and exit 1.
+   Every declared store's files in the graph file folder are narrowed to their stores' modes
+   ([writing-a-node-type.md](writing-a-node-type.md#stores)); what cannot be is a `log` record.
 4. Read `ear.conf` once on the main thread. Its `graph` block's `rate` and `block_size` set the engine
    when both read; otherwise the flags do (the file's own values then show as pending restart).
 5. Start the engine and print how its audio thread is scheduled (`engine` record).

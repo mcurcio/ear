@@ -173,6 +173,24 @@ struct Changing {
 	Changed configure(ChangeOf<spec>&, const Checked&, const Checked&) { return Changed::applied(); }
 };
 
+// U1 (docs/design/node-primitives.md 18): every subset of the members after the banks, given in declaration order,
+// deduces the rest on GCC 14; out of order does not compile (compile_fail/type_spec_bad.cpp, stores-after-loops). A
+// store, a loop and a bank may share a name.
+constexpr auto u1 = store::file<"out">({.maxBytes = 8});
+constexpr auto u1Loop = loop::strand<"out">;
+constexpr TypeSpec bare{.settings = SettingsTable<>{"u1"}, .banks = Banks<out>{}};
+constexpr TypeSpec storesOnly{.settings = SettingsTable<>{"u1"}, .banks = Banks<out>{}, .stores = Stores<u1>{}};
+constexpr TypeSpec loopsOnly{.settings = SettingsTable<>{"u1"}, .banks = Banks<out>{}, .loops = Loops<u1Loop>{}};
+constexpr TypeSpec both{
+	.settings = SettingsTable<>{"u1"}, .banks = Banks<out>{}, .stores = Stores<u1>{}, .loops = Loops<u1Loop>{}};
+static_assert(std::same_as<StoresOf<bare>, Stores<>> && std::same_as<LoopsOf<bare>, Loops<>>);
+static_assert(std::same_as<StoresOf<storesOnly>, Stores<u1>> && std::same_as<LoopsOf<storesOnly>, Loops<>>);
+static_assert(std::same_as<StoresOf<loopsOnly>, Stores<>> && std::same_as<LoopsOf<loopsOnly>, Loops<u1Loop>>);
+static_assert(std::same_as<StoresOf<both>, Stores<u1>> && std::same_as<LoopsOf<both>, Loops<u1Loop>>);
+// A store's declaration carries its rule, defaults filled: the mode 0600 when none is given.
+static_assert(StoresOf<both>::declared[0].suffix == "out" && StoresOf<both>::declared[0].rule.maxBytes == 8 &&
+              StoresOf<both>::declared[0].rule.mode == 0600 && StoresOf<both>::declared[0].rule.initial == nullptr);
+
 } // namespace type_spec_test
 using namespace type_spec_test;
 
@@ -501,4 +519,10 @@ TEST_CASE("A class that writes the change version compiles, and every change res
 	CHECK(harness.change({{"channels", 1}, {"mode", "x"}}) == NodeOutcome::restart);
 	CHECK(harness.phase() == "running");
 	CHECK(calls == std::vector<std::string>{"configure", "configure"}); // configured afresh; the change version unused
+}
+
+TEST_CASE("A type made from a spec answers its stores, and a store's file is <type>-<node>.<suffix>", "[type-spec]") {
+	const auto type = makeNodeType<spec, Probe>();
+	CHECK(type->stores().empty());
+	CHECK(storeFileName("sendspin", "kitchen", "key") == "sendspin-kitchen.key");
 }

@@ -4,8 +4,9 @@
 // TypeHarness (type_harness.hpp) adds the spec's bank handles. The test's thread stands in for the main loop and the
 // realtime thread both: every call pumps the harness's manual executor until nothing is queued, so each returns with
 // the transition it asked for applied as far as the fakes allow. The harness does not observe a class's start() and
-// stop(): their pairing is node_host_test.cpp's. Not yet: holds and stores, which come with the slices that build them
-// (docs/design/). The fake clock (advance) runs every main-loop timer NodeHost arms, each companion's readiness
+// stop(): their pairing is node_host_test.cpp's. Not yet: holds, which come with the slice that builds them
+// (docs/design/). The store fake is an in-memory disk under the real store policy, its jobs on an I/O executor run on the
+// test's thread as each call settles (or, with holdIo, at runIo()). The fake clock (advance) runs every main-loop timer NodeHost arms, each companion's readiness
 // deadline included (docs/engine.md#readiness-deadlines), and every loop's timer. The loop fake runs each of the node's
 // loops on the test's thread (docs/writing-a-node-type.md#loops): a queue and the fake clock's timers per loop, its
 // kind kept (a strand's handlers run with StrandScope, so onStrand() judges them); started when the framework asks (at
@@ -73,6 +74,14 @@ struct SeenDiagnostic {
 	std::vector<std::pair<std::string, std::int64_t>> fields;
 };
 
+/// One bug of an adapter's NodeHost caught and told (InternalErrorListener), before its node failed lost, in order.
+struct SeenInternalError {
+	std::string callback;
+	std::string node;
+	std::string where;
+	std::string what;
+};
+
 /// One legacy handoff a configuration made (its request's bank and capacity, the channels the framework gave it).
 struct SeenHandoff {
 	std::string bank;
@@ -103,6 +112,8 @@ struct HarnessOptions {
 	std::optional<std::string> refuseLoops{};
 	/// A source a loop's state left armed is only said (ear.loop-source-left), not a std::logic_error.
 	bool allowSourcesLeft = false;
+	/// The I/O executor's jobs (a store's open and writes) run only at runIo(), not as each call settles.
+	bool holdIo = false;
 };
 /// How add() adds the node.
 struct AddOptions {
@@ -173,6 +184,28 @@ public:
 		bool closed = false;
 	};
 	std::vector<SeenLoop> loops() const;
+
+	// The stores (docs/writing-a-node-type.md#stores), on an in-memory disk by file name ("<type>-<node>.<suffix>"),
+	// opened and written by jobs on the harness's I/O executor, which runs on the test's thread.
+	/// With holdIo: every job queued runs, and what each posts, in order.
+	void runIo();
+	/// Every I/O job run so far, by the name it was posted with ("open store <file>", "write store <file>", "release
+	/// store <file>": a dropped open's handle released on the I/O executor), in order.
+	const std::vector<std::string>& ioJobs() const noexcept;
+	/// The file of store `suffix` of the harness's node.
+	std::string storeFile(std::string_view suffix) const;
+	/// The file holds `text` with `mode` before the node opens it.
+	void presetStore(std::string_view suffix, std::string text, std::uint32_t mode = 0600);
+	/// What the file holds now (nothing: no file), and its mode (std::logic_error when it has none).
+	std::optional<std::string> storeText(std::string_view suffix) const;
+	std::uint32_t storeMode(std::string_view suffix) const;
+	/// Every open's read of the file is refused with "<file>: <why>"; the next write of it likewise.
+	void failStoreOpen(std::string_view suffix, std::string why);
+	void failNextWrite(std::string_view suffix, std::string why);
+	/// From now on every call of the stores' adapter throws std::logic_error(what): an adapter's bug.
+	void breakStores(std::string what);
+	/// Every call the adapter was asked, in order: "read <file>", "narrow <file>", "replace <file>".
+	const std::vector<std::string>& storeCalls() const noexcept;
 	/// One cycle of `frames` (0: maxBlock) through the code the fake block was driven with, outputs NaN-filled first,
 	/// with a GraphCycle the harness advances on its driver, its facts (GraphCycle::facts, and facts()) stated by the
 	/// real block's rule,
@@ -233,6 +266,8 @@ public:
 	/// as a type's own thread may log while it is read.
 	std::vector<LogEntry> logs() const;
 	const std::vector<SeenDiagnostic>& diagnostics() const noexcept;
+	/// Every adapter bug told about the node (ear.internal-error's record), in order.
+	const std::vector<SeenInternalError>& internalErrors() const noexcept;
 
 	// Buffers and fakes.
 	/// A port's buffer (public or inside), maxBlock frames; std::logic_error for a port the node lacks.

@@ -55,6 +55,8 @@ describe("describeHealth", () => {
     expect(describeHealth(waits, at).line).toBe("waiting for desk.playback");
     const loop = node({ phase: "configuring", waitingFor: [{ kind: "loop", name: "sendspin" }, { kind: "consumer" }] });
     expect(describeHealth(loop, at).line).toBe("waiting for its loop sendspin, its consumer");
+    const store = node({ phase: "configuring", waitingFor: [{ kind: "store", name: "sendspin-fpp.key" }] });
+    expect(describeHealth(store, at).line).toBe("waiting for its store sendspin-fpp.key");
     expect(describeHealth(node({ phase: "configuring" }), long).line).toBe("configuring");
     expect(describeHealth(node({ phase: "configuring", cause: { kind: "enabling" } }), long).line).toBe(
       "configuring: enabled",

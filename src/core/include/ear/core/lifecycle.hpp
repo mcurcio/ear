@@ -51,6 +51,7 @@
 #include "ear/core/node_type.hpp"
 #include "ear/core/sink.hpp"
 #include "ear/core/source.hpp"
+#include "ear/core/store.hpp"
 #include "ear/core/type_spec.hpp"
 namespace ear {
 
@@ -178,6 +179,9 @@ public:
 	virtual Loop& loopExecutor(std::size_t loop) = 0;
 	/// As NodeContext::postToLoop, staged.
 	virtual void postToLoop(std::size_t loop, std::move_only_function<void(void*)> work) = 0;
+	/// Declared store `store` (its index in the spec's Stores; docs/writing-a-node-type.md#stores): opened at readiness
+	/// step `opens` whether or not this is called, valid until the configuration is freed (teardown step 5).
+	virtual Store& store(std::size_t store) = 0;
 	/// A rule CreateOf finds broken before it reaches a call above (a code written against another type's spec): records
 	/// it on the configuration, so the node fails with it whatever configure does next, and throws std::logic_error(rule).
 	[[noreturn]] virtual void refuse(std::string rule) = 0;
@@ -242,6 +246,8 @@ template <const auto& Spec> class CreateOf {
 	using List = BanksOf<Spec>;
 	template <class Bank> static constexpr bool ownBank = isBankHandle<Bank> && List::template has<Bank>;
 	template <class Handle> static constexpr bool ownLoop = isLoopHandle<Handle> && LoopsOf<Spec>::template has<Handle>;
+	template <class Handle> static constexpr bool ownStore =
+		isStoreHandle<Handle> && StoresOf<Spec>::template has<Handle>;
 
 public:
 	CreateOf(const CreateOf&) = delete;
@@ -326,6 +332,14 @@ public:
 		                     spec_detail::loopWork<Handle>(std::forward<Work>(work)));
 	}
 
+	/// Store `Handle` (docs/writing-a-node-type.md#stores), for a loop's state or a consumer to keep: valid until the
+	/// configuration is freed, open and trusted once the node is configured. Every declared store is opened, kept or
+	/// not. A store the spec lacks does not compile.
+	template <class Handle> Store& store(Handle) {
+		static_assert(ownStore<Handle>, "a context takes only its spec's stores");
+		return context_->store(StoresOf<Spec>::template indexOf<Handle>);
+	}
+
 private:
 	template <const auto&, class> friend class spec_detail::SpecInstance;
 	explicit CreateOf(CreateContext& context) noexcept : context_(&context) {}
@@ -354,6 +368,8 @@ public:
 	virtual ~ErasedInstance() = default;
 	/// The spec's loops, in declaration order (docs/writing-a-node-type.md#loops); none for a legacy instance.
 	virtual std::span<const LoopDeclaration> loops() const noexcept { return {}; }
+	/// The spec's stores, in declaration order (docs/writing-a-node-type.md#stores); none for a legacy instance.
+	virtual std::span<const StoreDeclaration> stores() const noexcept { return {}; }
 	/// T2: creation's configure (or the legacy start). Called once, timed as the hook `configure`.
 	virtual Configured configure(InstanceContexts& cx) = 0;
 	/// Legacy only: whether its start returned a recipe.
@@ -457,6 +473,7 @@ template <const auto& Spec, class Type> class SpecInstance final : public Erased
 public:
 	SpecInstance(NodeContext& node, const Checked& settings) : node_(node), settings_(settings), type_(make(node_)) {}
 	std::span<const LoopDeclaration> loops() const noexcept override { return LoopsOf<Spec>::declared; }
+	std::span<const StoreDeclaration> stores() const noexcept override { return StoresOf<Spec>::declared; }
 	Configured configure(InstanceContexts& cx) override {
 		CreateOf<Spec> create(cx.create);
 		return type_.configure(create, settings_);
@@ -508,7 +525,7 @@ template <const auto& Spec, class Type> class SpecNodeType final : public NodeTy
 	static_assert(sizeof(SpecInstance<Spec, Type>) > 0); // the class's checks, at makeNodeType
 
 public:
-	SpecNodeType() noexcept : NodeType(Spec.settings) {}
+	SpecNodeType() noexcept : NodeType(Spec.settings, StoresOf<Spec>::declared) {}
 
 private:
 	/// The table's walk passed: the class's check, a rule across settings, then the config.

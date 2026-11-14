@@ -22,20 +22,21 @@
 #include "ear/core/node_lifecycle.hpp"
 #include "ear/core/sink.hpp"
 #include "ear/core/source.hpp"
+#include "ear/core/store.hpp"
 #include "ear/core/timers.hpp"
 namespace ear {
 /// What a node still waits for, once its phase has lasted 2 s (docs/control-port.md#node-health): an older node of its
 /// name still closing (`name` its name), the engine's block (`block`), a companion (`name`: an engine companion's
 /// engine name, `<node>.<suffix>`), a sink's consumer (`consumer`), one of its loops to start (`loop`, `name` the
-/// loop's).
+/// loop's), one of its stores to open (`store`, `name` its file's).
 struct WaitingFor {
-	enum class Kind { olderNode, block, companion, consumer, loop };
+	enum class Kind { olderNode, block, companion, consumer, loop, store };
 	Kind kind;
-	std::string name{}; // olderNode, companion and loop only
+	std::string name{}; // olderNode, companion, loop and store only
 	friend bool operator==(const WaitingFor&, const WaitingFor&) = default;
 };
 std::string_view
-waitingKindName(WaitingFor::Kind kind) noexcept; // "older-node" | "block" | "companion" | "consumer" | "loop"
+waitingKindName(WaitingFor::Kind kind) noexcept; // "older-node" | "block" | "companion" | "consumer" | "loop" | "store"
 /// A node's health, the framework's judgement alone (docs/architecture.md#the-node-lifecycle; on the wire:
 /// docs/control-port.md#node-health): its state (the phase's
 /// colour), why it failed (while failed), its exact phase, what the graph wants of it, why it is stopping or
@@ -257,6 +258,7 @@ struct ResourceAdapters {
 	SourceAdapter* sources = nullptr;
 	RecordingAdapter* recordings = nullptr;
 	LoopAdapter* loops = nullptr;
+	StoreAdapter* stores = nullptr;
 };
 /// The resource registry (docs/writing-a-node-type.md#configure-and-createof): one adapter per kind of companion and
 /// of ResourceRequest, so a new kind is one adapter here and nothing more in NodeHost's constructor. A kind the host
@@ -286,6 +288,8 @@ public:
 	SourceAdapter* sources() const noexcept { return adapters_.sources; }
 	/// The loops' adapter (a spec's loops; docs/writing-a-node-type.md#loops); null: the host has none.
 	LoopAdapter* loops() const noexcept { return adapters_.loops; }
+	/// The stores' adapter (a spec's stores; docs/writing-a-node-type.md#stores); null: the host has none.
+	StoreAdapter* stores() const noexcept { return adapters_.stores; }
 
 private:
 	ResourceAdapters adapters_;
@@ -337,7 +341,8 @@ public:
 	void subscribeLog(LogSink& sink);
 	/// Where a bug of an adapter's that NodeHost caught is told, before its node fails lost
 	/// (docs/architecture.md#faults-by-owner): a sink, source, handoff or recording adapter's std::logic_error inside a
-	/// context call, and a port block factory's or engine companion adapter's throw in the flush. Main thread.
+	/// context call, a port block factory's or engine companion adapter's throw in the flush, and a store adapter's throw
+	/// in one of a store's I/O jobs, told once its completion lands. Main thread.
 	void subscribeInternalErrors(InternalErrorListener& listener);
 	/// starting; port block made (in the turn's flush, once no older block of the name exists); then a configuration
 	/// (docs/architecture.md#the-node-lifecycle; docs/writing-a-node-type.md#configure-and-createof):

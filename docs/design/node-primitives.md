@@ -220,7 +220,39 @@ fixed inside `ear_refuse_node_type_links` (`ear_runtime`, `ear_pipewire`, and th
 links: `ear_control`, `ear_config`, `ear_server`), so its every caller gets them; a type's test program may still link
 any of them.
 
-**Stores** (S3c.4): 6.7 as written, with `StoreAdapter::open` taking a `ReadyEvents&`.
+**Stores** (S3c.4, built: `docs/writing-a-node-type.md#stores`): 6.7's rules (names, modes, narrowing, trust,
+serialised writes, the sweep) as written; its interfaces as found building. *Found building S3c.4:*
+
+- **The open is NodeHost's, the disk the adapter's.** 6.7's `StoreAdapter::open(..., ReadyEvents&)` cannot complete
+  as 0.3 asks: `Completions` (and its `postHolding`) is private to `ear_core`, and section 11 keeps policy ("when a
+  store is trusted") out of `ear_runtime`. So `StoreAdapter` (`ear/core/store.hpp`) is the disk's part only: `io()`,
+  `read` (no symlink, at most `maxBytes`), `narrow`, `replaceIf`, and `await`. NodeHost's store slot posts the open and
+  each write to `io()` as jobs holding only the store's state (`detail::StoreState`, `src/core/stores.hpp`: the policy,
+  read then narrow then judge then create) and the configuration's `Completions`; the open completes through
+  `postHolding`, its handle the state, and its landing calls the slot's `ReadyEvents` on the main loop. `ConfinedStores`
+  (`ear_runtime`, over `ear_folder`) implements the adapter. No `NodeStore`: the slot implements `Store`.
+- **Names.** The compile-time handle is `StoreHandle<Suffix>` (as `BankHandle` and `LoopHandle`), its rule its value;
+  the type's view is `Store`, so `cx.store(handle)` returns `Store&` (6.1's table said `StoreHandle&`). A suffix is 1
+  to 16 of `[a-z0-9-]`; `store::file`'s refusals are consteval calls to undefined functions named for the rule broken
+  (`a_store_gives_its_maxBytes`), so GCC names it.
+- **Waiting is the adapter's.** Core reads no clock of its own, so a blocking `replace`'s 5 s is `StoreAdapter::await`
+  (a condition variable in `ConfinedStores`, the job inline in the harness). A write its waiter gave up on before it
+  began never runs; one already under way may still land, and `text()` then shows it.
+- **`replaceLater`'s `done`** reaches its loop from the main loop through the configuration's `Completions`, never from
+  the I/O thread, since a queued job may outlive the loop.
+- **The sweep** is `runtime::sweepStores(folder, types)`, called by main.cpp before the catalogue is built (so before
+  the I/O thread exists), its findings `log` records at `warn` from the type; `NodeType` takes its declarations at
+  construction (`stores()`), and `ErasedInstance::stores()` gives NodeHost a configuration's.
+- **Faults.** A `distrust` or `initial` that throws is the type's: `start-failed: <file>: distrust threw: <what>`. An
+  adapter's throw in an open or write is caught by the job and reported through the `Completions` (`ear.internal-error`,
+  `where` `the I/O job open store <file>`), the node `lost`. A host with no stores adapter refuses a spec with stores
+  (`no stores in this host`). `waitingFor` gains `store` (its file), on the wire with its fixture.
+- **No claim yet.** `store:<file>` comes with S3c.5a's registry.
+- **U1 holds** on GCC 14: `{.settings, .banks}`, with `.stores`, with `.loops`, and with both each deduce the rest
+  (`type_spec_test.cpp`); `.stores` after `.loops` is refused (`designator order`).
+- **The harness** gains an in-memory disk under the real policy: `presetStore`, `storeText`, `storeMode`,
+  `failStoreOpen`, `failNextWrite`, `breakStores`, `storeCalls`, and an I/O executor on the test's thread (`holdIo`,
+  `runIo`, `ioJobs`), plus `internalErrors()`.
 
 **Claims** (S3c.5a): 6.8's `claim::TcpListen`, `claim::Udp`, `PortProbe` and registry, plus where implicit claims
 come from:
@@ -270,8 +302,8 @@ seams replace the feed's (`dryTicks()`, `dryFrames()`, `lastHeld()`, `lastSkippe
 `CycleJudge::librarySettle`'s `dry` cause reads the clock, not a feed. The companion's `shortfall` counter is the
 operator's view; the judge does not read it.
 
-**`TypeSpec`** (S3c.3 and S3c.4): 6.11's members `stores` and `loops` after `banks`, each defaulting to an empty list.
-Today's `TypeSpec<Settings, BankList>` keeps its `requires` clause. U1 still decides the spelling.
+**`TypeSpec`** (S3c.3 and S3c.4, built): 6.11's members `stores` and `loops` after `banks`, each defaulting to an
+empty list, under the `requires` clause. U1 held (found building S3c.4, above): the designated spelling stands.
 
 ### 0.4 Obsolete in this page
 
@@ -285,6 +317,8 @@ Today's `TypeSpec<Settings, BankList>` keeps its `requires` clause. U1 still dec
 | 6.6 | Jobs checking the generation | 0.2 B |
 | 6.6 | "Its completion is posted to the main loop and checked there against the configuration's generation and liveness: a completion for a configuration that is gone, or past its deadline, is dropped, and a descriptor it opened is closed by a second job" | 0.3's I/O executor: the completion rides the configuration's `Completions` (`postHolding`), which drops it once detached and posts its handle back to the I/O executor, where it is released; a deadline is the readiness item's bound, not the job's |
 | 6.6 | "Each has a 5 s deadline" read as the job's own | The 5 s is the store or recording item's readiness bound (0.2 A); the job keeps none |
+| 6.7 | `StoreAdapter::open(node, type, store, ReadyEvents&)` and `sweep`; `NodeStore`; the adapter reading, narrowing and judging | 0.3's stores, found building S3c.4: the adapter is the disk's part, NodeHost runs the policy as jobs; `runtime::sweepStores`; the slot is the `Store` |
+| 6.1 | `cx.store(handle)` → `StoreHandle&` | `Store&`; `StoreHandle<Suffix>` is the compile-time handle |
 | 6.8 | `udp:<p>` claimed "by every RTP receiver companion" as a rule of NodeHost's | `claimsOf(shape)` |
 | 6.10 | `int fd = cx.recording(...)` | `Recording&` |
 | 8, visible change 5 | A stopped `sendspin` node closing its connection | Q-3c1 (0.6): kept open unless the owner says otherwise |
@@ -348,7 +382,7 @@ test yet, so this would be the first.
 
 ### 0.7 Open items, re-checked
 
-U1 to U8 (section 18) stand; U4 also covers Q-3c1's answer in the `sendspin` system tests. New: the card device race
+U1 to U8 (section 18) stand (U1 held for stores and loops in S3c.4, still open for slice 5's members); U4 also covers Q-3c1's answer in the `sendspin` system tests. New: the card device race
 (0.2 C) and `overdueNs` for chunks in a burst (S3c.6d).
 
 ## 1. The owner's words that bind this slice
@@ -1315,7 +1349,8 @@ any.
 
 - **U1.** Aggregate deduction for `TypeSpec{.settings, .banks, [.stores], [.loops]}` with defaulted later parameters on
   GCC 14: S3c.4 compiles every subset spelling first; slice 5 extends it. Fallback: a consteval `makeSpec(...)` with the
-  same members in the same order.
+  same members in the same order. *Held for `.stores` and `.loops` (S3c.4, `type_spec_test.cpp`)*; slice 5's members
+  are still to check.
 - **U2.** That every `SS_LOG*` line sendspin's tests provoke runs inside a scope: S3c.7's system test counts
   unattributed `sendspin-cpp` records over the pairing and connection tests; each one found is a missed entry point.
 - **U3.** That the library calls the persistence provider only on threads in the client's scope (`client.cpp:1648-1741`,

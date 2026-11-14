@@ -58,6 +58,7 @@
 #include "ear/pipewire/sources.hpp"
 #include "ear/runtime/io_thread.hpp"
 #include "ear/runtime/loops.hpp"
+#include "ear/runtime/stores.hpp"
 #include "ear/server/control_port.hpp"
 #include "ear/server/control_thread.hpp"
 
@@ -277,7 +278,12 @@ int main(int argc, char** argv) {
 	// ear.conf is read once here, on the main thread, before the keeper's thread starts. Its graph
 	// block's rate and block_size set the engine when both read; otherwise the flags do (the file's own
 	// values then show as pending restart).
-	const ear::NodeCatalogue catalogue(ear::nodes::allNodeTypes({.config = config, .log = &log}));
+	std::vector<std::unique_ptr<const ear::NodeType>> types = ear::nodes::allNodeTypes({.config = config, .log = &log});
+	// Every declared store's files narrowed before any node exists (docs/writing-a-node-type.md#stores); what could not
+	// be is a log record from the store's type.
+	for (const ear::runtime::StoreSweepFinding& finding : ear::runtime::sweepStores(*config, types))
+		log.log({.level = ear::LogLevel::warn, .source = finding.type, .text = finding.detail, .cut = false});
+	const ear::NodeCatalogue catalogue(std::move(types));
 	auto first = ear::config::GraphFileKeeper::load(*config, catalogue);
 	const ear::AudioFormat format = first.format().value_or(ear::AudioFormat{*flagRate, *flagBlock});
 
@@ -303,6 +309,9 @@ int main(int argc, char** argv) {
 	// The framework's one thread for blocking work (docs/architecture.md#threads), before anything that posts to it and
 	// stopped after all of them; after Engine::create, so it inherits the blocked stop signals.
 	ear::runtime::IoThread io(log); // a job's throw no adapter caught: ear.internal-error, then the end
+	// The nodes' stores (docs/writing-a-node-type.md#stores): files in the graph file folder, opened and written on the
+	// I/O thread.
+	ear::runtime::ConfinedStores stores(config, io);
 
 	ear::pipewire::MainLoopExecutor mainLoop(*engine);
 	// The main-loop watchdog: its thread reads the heartbeat, asks MainLoopActivity where the loop is (ear_output sees
@@ -335,7 +344,8 @@ int main(int argc, char** argv) {
 	                                                      .sinks = &sinks,
 	                                                      .sources = &sources,
 	                                                      .recordings = &recordingFiles,
-	                                                      .loops = &loops});
+	                                                      .loops = &loops,
+	                                                      .stores = &stores});
 	ear::NodeHost nodes(format, blocks, resources, mainLoop, mainLoop);
 	const ear::GraphStatus status({format, scheduling.realtime, scheduling.detail}, catalogue, graph, nodes, reconciler,
 	                              engine.get());

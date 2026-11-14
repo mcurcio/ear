@@ -139,6 +139,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 								 NodeNoteListener,
 								 NodeDiagnosticListener,
 								 EngineDiagnosticListener,
+								 InternalErrorListener,
 								 LogSink {
 	// ---- The fakes ----
 
@@ -597,6 +598,92 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		Impl& harness;
 	};
 
+	/// The I/O thread on the test's thread: jobs queued, run as each call settles (with holdIo, only at runIo()), each
+	/// one's name recorded as it runs.
+	struct FakeIo final : IoExecutor {
+		void post(std::move_only_function<void()> work) override { post("a job", std::move(work)); }
+		void post(std::string job, std::move_only_function<void()> work) override {
+			queue.emplace_back(std::move(job), std::move(work));
+		}
+		/// The oldest job queued, run; false when none is.
+		bool runOne() {
+			if (queue.empty()) return false;
+			auto [job, work] = std::move(queue.front());
+			queue.pop_front();
+			ran.push_back(job);
+			work();
+			return true;
+		}
+		std::deque<std::pair<std::string, std::move_only_function<void()>>> queue;
+		std::vector<std::string> ran;
+	};
+
+	/// The stores' disk in memory, by file name, with each file's mode; every call it is asked recorded, in order.
+	struct FakeStores final : StoreAdapter {
+		struct File {
+			std::string text;
+			std::uint32_t mode;
+		};
+		IoExecutor& io() noexcept override { return fakeIo; }
+		/// The harness's loops run on the test's thread, so a blocking replace runs its job inside the call, behind the
+		/// jobs queued before it, as the one I/O thread would.
+		JobWait await(std::string job, std::move_only_function<void()> work, std::chrono::milliseconds) override {
+			while (fakeIo.runOne()) {
+			}
+			fakeIo.ran.push_back(std::move(job));
+			work();
+			return JobWait::ran;
+		}
+		std::expected<std::optional<std::string>, std::string> read(const std::string& file,
+		                                                            std::uint32_t maxBytes) override {
+			called("read " + file);
+			if (auto failed = failOpen.find(file); failed != failOpen.end())
+				return std::unexpected(file + ": " + failed->second);
+			const auto found = files.find(file);
+			if (found == files.end()) return std::optional<std::string>();
+			if (found->second.text.size() > maxBytes)
+				return std::unexpected(file + ": larger than " + std::to_string(maxBytes) + " bytes");
+			return std::optional<std::string>(found->second.text);
+		}
+		std::expected<void, std::string> narrow(const std::string& file, std::uint32_t mode) override {
+			called("narrow " + file);
+			const auto found = files.find(file);
+			if (found == files.end()) return std::unexpected(file + ": no such file");
+			found->second.mode &= mode;
+			return {};
+		}
+		std::expected<StoreWrite, std::string> replaceIf(const std::string& file,
+		                                                 const std::optional<std::string>& expected,
+		                                                 std::string_view text, std::uint32_t maxBytes,
+		                                                 std::uint32_t mode) override {
+			called("replace " + file);
+			if (auto failed = failWrite.find(file); failed != failWrite.end()) {
+				std::string why = file + ": " + failed->second;
+				failWrite.erase(failed);
+				return std::unexpected(std::move(why));
+			}
+			if (text.size() > maxBytes)
+				return std::unexpected(file + ": larger than " + std::to_string(maxBytes) + " bytes");
+			const auto found = files.find(file);
+			const std::optional<std::string> there =
+				found == files.end() ? std::nullopt : std::optional<std::string>(found->second.text);
+			if (there != expected) return StoreWrite::changed;
+			if (found == files.end()) files.emplace(file, File{std::string(text), mode});
+			else found->second.text = std::string(text);
+			return StoreWrite::replaced;
+		}
+		void called(std::string call) {
+			calls.push_back(std::move(call));
+			if (broken) throw std::logic_error(*broken);
+		}
+		FakeIo fakeIo;
+		std::map<std::string, File, std::less<>> files;
+		std::map<std::string, std::string, std::less<>> failOpen;  // each open's read refused, by file
+		std::map<std::string, std::string, std::less<>> failWrite; // the next write refused, by file
+		std::optional<std::string> broken;                         // every call throws std::logic_error(this)
+		std::vector<std::string> calls;
+	};
+
 	/// Every config the type parses, wrapped so the harness sees the instance each configuration makes (a legacy run
 	/// object, for runObject()) and when it goes.
 	/// Both contexts, forwarded to NodeHost's, recording the requests the harness shows (handoffs, recordings). Lives
@@ -635,6 +722,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		void postToLoop(std::size_t loop, std::move_only_function<void(void*)> work) override {
 			create.postToLoop(loop, std::move(work));
 		}
+		Store& store(std::size_t store) override { return create.store(store); }
 		NodeHandle& events() override { return legacy.events(); }
 		void declareLatency(const std::string& bank, Latency internal) override {
 			legacy.declareLatency(bank, internal);
@@ -670,6 +758,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			return inner->configure(contexts);
 		}
 		std::span<const LoopDeclaration> loops() const noexcept override { return inner->loops(); }
+		std::span<const StoreDeclaration> stores() const noexcept override { return inner->stores(); }
 		bool hasRecipe() const noexcept override { return inner->hasRecipe(); }
 		bool engineRefused() const noexcept override { return inner->engineRefused(); }
 		std::expected<void, FailureReason> ready(Ready& ready) override { return inner->ready(ready); }
@@ -699,7 +788,8 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	                                .sinks = &sinks,
 	                                .sources = &sources,
 	                                .recordings = options.recordings,
-	                                .loops = &loops}),
+	                                .loops = &loops,
+	                                .stores = &stores}),
 		  graph(catalogue), fade(options.format.rate), account(FrameClock(options.format.rate), &cuts),
 		  host(std::make_unique<NodeHost>(options.format, blocks, registry, executor, clock)) {
 		host->subscribe(*this);
@@ -707,6 +797,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		host->subscribeLog(*this);
 		host->subscribeDiagnostics(*this);
 		host->subscribeEngineDiagnostics(*this);
+		host->subscribeInternalErrors(*this);
 		clock.setOthers(FakeClock::Others{
 			.nextDue = [this]() -> std::optional<std::chrono::milliseconds> {
 				std::optional<std::chrono::milliseconds> next;
@@ -743,6 +834,10 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		for (const DiagnosticField& field : fields) seen.fields.emplace_back(std::string(field.key), field.value);
 		diagnosticList.push_back(std::move(seen));
 		if (code == "ear.loop-source-left" && !options.allowSourcesLeft) sourcesLeft.push_back(detail);
+	}
+	void internalError(const InternalError& error) override {
+		internalErrorList.push_back(SeenInternalError{std::string(error.callback), std::string(error.node),
+		                                              std::string(error.where), std::string(error.what)});
 	}
 	void engineDiagnostic(const EngineDiagnostic& diagnostic) override {
 		SeenDiagnostic seen{std::string(diagnostic.code), diagnostic.detail, {}};
@@ -835,12 +930,17 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			if (loop != nullptr) live.push_back(loop);
 		return live;
 	}
-	/// The main loop pumped, and each loop with a finish or a close queued turned until none is (as the framework's
-	/// teardown waits on them), then a source a state left armed thrown (unless allowSourcesLeft).
+	/// The main loop pumped, the I/O executor's jobs run (unless holdIo), and each loop with a finish or a close queued
+	/// turned until none is (as the framework's teardown waits on them), then a source a state left armed thrown (unless
+	/// allowSourcesLeft).
 	void settle() {
 		executor.pump();
 		for (bool turned = true; turned;) {
 			turned = false;
+			while (!options.holdIo && stores.fakeIo.runOne()) {
+				turned = true;
+				executor.pump();
+			}
 			for (FakeLoop* loop : liveLoops())
 				if (loop->marked()) {
 					loop->turn();
@@ -881,6 +981,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	FakeSinks sinks;
 	FakeSources sources;
 	FakeLoops loops;
+	FakeStores stores;
 	ResourceRegistry registry;
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph; // only for close(), the proof stopAll takes
@@ -932,6 +1033,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	mutable std::mutex logMutex;
 	std::vector<LogEntry> logList; // logMutex
 	std::vector<SeenDiagnostic> diagnosticList;
+	std::vector<SeenInternalError> internalErrorList;
 
 	std::vector<PortName> inputNames;
 	std::vector<PortName> outputNames;
@@ -1224,6 +1326,8 @@ std::vector<LogEntry> NodeHarness::logs() const {
 
 const std::vector<SeenDiagnostic>& NodeHarness::diagnostics() const noexcept { return impl_->diagnosticList; }
 
+const std::vector<SeenInternalError>& NodeHarness::internalErrors() const noexcept { return impl_->internalErrorList; }
+
 std::span<float> NodeHarness::input(std::string_view port) {
 	return impl_->inputs.at(Impl::indexOf(impl_->inputNames, port));
 }
@@ -1305,6 +1409,45 @@ std::size_t NodeHarness::armed(std::string_view loop) const {
 }
 
 std::vector<NodeHarness::SeenLoop> NodeHarness::loops() const { return impl_->loopList; }
+
+void NodeHarness::runIo() {
+	while (impl_->stores.fakeIo.runOne()) impl_->executor.pump();
+	impl_->settle();
+}
+
+const std::vector<std::string>& NodeHarness::ioJobs() const noexcept { return impl_->stores.fakeIo.ran; }
+
+std::string NodeHarness::storeFile(std::string_view suffix) const {
+	return storeFileName(impl_->type.name(), impl_->options.node, suffix);
+}
+
+void NodeHarness::presetStore(std::string_view suffix, std::string text, std::uint32_t mode) {
+	impl_->stores.files.insert_or_assign(storeFile(suffix), Impl::FakeStores::File{std::move(text), mode});
+}
+
+std::optional<std::string> NodeHarness::storeText(std::string_view suffix) const {
+	const auto found = impl_->stores.files.find(storeFile(suffix));
+	if (found == impl_->stores.files.end()) return std::nullopt;
+	return found->second.text;
+}
+
+std::uint32_t NodeHarness::storeMode(std::string_view suffix) const {
+	const auto found = impl_->stores.files.find(storeFile(suffix));
+	if (found == impl_->stores.files.end()) throw std::logic_error("no store file " + storeFile(suffix));
+	return found->second.mode;
+}
+
+void NodeHarness::failStoreOpen(std::string_view suffix, std::string why) {
+	impl_->stores.failOpen.insert_or_assign(storeFile(suffix), std::move(why));
+}
+
+void NodeHarness::failNextWrite(std::string_view suffix, std::string why) {
+	impl_->stores.failWrite.insert_or_assign(storeFile(suffix), std::move(why));
+}
+
+void NodeHarness::breakStores(std::string what) { impl_->stores.broken = std::move(what); }
+
+const std::vector<std::string>& NodeHarness::storeCalls() const noexcept { return impl_->stores.calls; }
 
 RunObject* NodeHarness::runObject() const noexcept {
 	if (impl_->instance == nullptr) return nullptr;

@@ -8,9 +8,10 @@
 // made by its config: the type's class (lifecycle.hpp's SpecInstance), or the legacy adapter over the old SPI's start
 // (legacy_instance.hpp). Its configure acquires only, through CreateContext (the class) or StartContext (the
 // legacy start), both implemented here on one set of internals, and gives the code; a rule it breaks at a call or at
-// the return, and a configure that throws, fail the node start-failed. Its loops (docs/writing-a-node-type.md#loops)
-// are started first, each with its state; the engine companions it asked for are made once those are running and the
-// block is ready; each loop, each engine companion and each sink's consumer is an item of the configuration's
+// the return, and a configure that throws, fail the node start-failed. Its stores (docs/writing-a-node-type.md#stores)
+// are opened first, each one job on the stores' I/O executor completing through the configuration's Completions; its
+// loops (docs/writing-a-node-type.md#loops) are started next, each with its state; the engine companions it asked for are made once those are running and the
+// block is ready; each store, each loop, each engine companion and each sink's consumer is an item of the configuration's
 // readiness list (readiness.hpp), a companion's and a consumer's with its kind's deadline from its asking, past which
 // the node fails
 // (docs/engine.md#readiness-deadlines), and every companion is in the node's list a client
@@ -70,6 +71,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cassert>
 #include <deque>
 #include <exception>
 #include <expected>
@@ -92,6 +94,7 @@
 #include "completions.hpp"
 #include "note_gate.hpp"
 #include "readiness.hpp"
+#include "stores.hpp"
 
 namespace ear {
 namespace {
@@ -257,6 +260,8 @@ std::string_view waitingKindName(WaitingFor::Kind kind) noexcept {
 		return "consumer";
 	case WaitingFor::Kind::loop:
 		return "loop";
+	case WaitingFor::Kind::store:
+		return "store";
 	}
 	return "unknown";
 }
@@ -681,6 +686,15 @@ struct NodeHost::Impl {
 		void postToLoop(std::size_t loop, std::move_only_function<void(void*)> work) override {
 			guarded([&] { loopSlot("post", loop).postState(std::move(work)); });
 		}
+		/// A declared store (docs/writing-a-node-type.md#stores): opened at readiness step `opens` whether or not it is
+		/// asked for here; a host with no stores adapter refuses it.
+		Store& store(std::size_t store) override {
+			return guarded([&]() -> Store& {
+				requireConfiguring("store");
+				given(host_.resources.stores(), "stores");
+				return *config_->stores.at(store);
+			});
+		}
 
 	protected:
 		Acquired acquireResource(const ResourceRequest& request) override {
@@ -863,6 +877,8 @@ struct NodeHost::Impl {
 			}
 			/// Main thread. The configuration is going (its teardown began): a fact no longer reaches the node.
 			void closing() noexcept { closing_ = true; }
+			/// The configuration's way back to the main loop, for its I/O jobs' completions (its stores').
+			const std::shared_ptr<detail::Completions>& completions() const noexcept { return completions_; }
 			/// Main thread. Nothing more of this configuration reaches the node.
 			void detach() noexcept {
 				node_ = nullptr;
@@ -1299,6 +1315,156 @@ struct NodeHost::Impl {
 			std::shared_ptr<std::atomic<std::size_t>> live_ = std::make_shared<std::atomic<std::size_t>>(0);
 		};
 
+		/// What a store's jobs carry back to the main loop: the configuration's Completions, and where the node is
+		/// found once they land (only while the configuration is attached, so the node is alive then).
+		struct StoreLink {
+			Impl* host;
+			std::uint64_t serial;
+			std::uint64_t generation;
+			std::size_t index;
+			std::shared_ptr<detail::Completions> completions;
+			/// Any thread (the I/O thread's job): the store adapter threw in `job`'s call `callback`. On the main loop,
+			/// while attached: the record, then the node fails lost (docs/architecture.md#faults-by-owner).
+			void faulted(std::string job, std::string callback, std::string what) const {
+				completions->post([host = host, serial = serial, generation = generation, job = std::move(job),
+				                   callback = std::move(callback), what = std::move(what)]() mutable {
+					host->inputFor(serial, [generation, job = std::move(job), callback = std::move(callback),
+					                        what = std::move(what)](Node& node) mutable {
+						node.storeFaulted(generation, job, callback, what);
+					});
+				});
+			}
+		};
+		/// A store adapter's throw in a job, caught on the I/O thread.
+		struct StoreFault {
+			std::string callback;
+			std::string what;
+		};
+		/// The open's outcome, carried by its completion. Its state is the job's handle: dropped, it goes back to the I/O
+		/// thread and is released there.
+		struct OpenedStore {
+			std::shared_ptr<detail::StoreState> state;
+			std::expected<void, std::string> outcome;
+			std::optional<StoreFault> fault;
+		};
+
+		/// One declared store of a configuration (docs/writing-a-node-type.md#stores): the type's view of it, its state
+		/// (shared with its jobs), its readiness item, and the ReadyEvents its open's completion tells on the main loop.
+		/// Its open and writes run on the store adapter's I/O executor, each job holding only the state and the
+		/// configuration's Completions, never this slot, and complete through those Completions, so nothing of them
+		/// lands once the configuration ended.
+		class StoreSlot final : public Store, public ReadyEvents {
+		public:
+			StoreSlot(Node& node, std::shared_ptr<detail::StoreState> state, StoreLink link)
+				: node_(node), state_(std::move(state)), link_(std::move(link)) {}
+			const std::string& fileName() const noexcept override { return state_->file; }
+			std::string text() const override { return state_->text(); }
+			std::expected<void, std::string> replace(std::string text) override {
+				assert(!onStrand() &&
+				       "a store's replace waits: never from a strand (docs/writing-a-node-type.md#stores)");
+				requireOpened("written");
+				// 0 pending, 1 running, 2 given up: a job its waiter gave up on before it began never writes.
+				auto ticket = std::make_shared<std::atomic<int>>(0);
+				auto outcome = std::make_shared<std::expected<void, std::string>>();
+				const JobWait waited = state_->adapter.await(
+					"write store " + state_->file,
+					[state = state_, link = link_, ticket, outcome, text = std::move(text)]() mutable {
+						int pending = 0;
+						if (!ticket->compare_exchange_strong(pending, 1)) return;
+						*outcome = written(*state, link, std::move(text));
+					},
+					storeBound);
+				switch (waited) {
+				case JobWait::ran:
+					return std::move(*outcome);
+				case JobWait::overdue: {
+					int pending = 0;
+					ticket->compare_exchange_strong(pending, 2);
+					const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(storeBound).count();
+					return std::unexpected(state_->file + ": not written within " + std::to_string(seconds) + " s");
+				}
+				case JobWait::dropped:
+					break;
+				}
+				return std::unexpected(state_->file + ": not written: the I/O thread has stopped");
+			}
+			void replaceLater(std::string text, Loop& loop,
+			                  std::move_only_function<void(std::expected<void, std::string>)> done) override {
+				requireOpened("written");
+				// The loop is reached from the main loop, through the configuration's Completions, never from the I/O
+				// thread: a job may outlive the loop, and the Completions drop what lands once the configuration ended.
+				state_->adapter.io().post("write store " + state_->file, [state = state_, link = link_, loop = &loop,
+				                                                          done = std::move(done),
+				                                                          text = std::move(text)]() mutable {
+					auto outcome = written(*state, link, std::move(text));
+					link.completions->post([loop, done = std::move(done), outcome = std::move(outcome)]() mutable {
+						loop->post([done = std::move(done), outcome = std::move(outcome)]() mutable {
+							done(std::move(outcome));
+						});
+					});
+				});
+			}
+
+			// ReadyEvents, main thread: told by the open's completion.
+			void ready() override { node_.storeReady(link_.generation, link_.index); }
+			void failed(std::string detail) override {
+				node_.storeFailed(link_.generation, link_.index, std::move(detail));
+			}
+
+			/// Main thread, at readiness step `opens`: the open, one job on the I/O executor; its completion lands on the
+			/// main loop through the configuration's Completions (postHolding), so once the configuration ended it is
+			/// dropped and its state released on the I/O thread.
+			void open() {
+				IoExecutor& io = state_->adapter.io();
+				io.post("open store " + state_->file, [state = state_, link = link_, io = &io]() mutable {
+					auto opened = std::make_shared<OpenedStore>();
+					opened->state = state;
+					try {
+						opened->outcome = state->open();
+					} catch (...) {
+						opened->fault =
+							StoreFault{std::string(state->calling), detail::whatOf(std::current_exception())};
+					}
+					const std::string release = "release store " + state->file;
+					state.reset(); // the completion's handle holds it now
+					link.completions->postHolding<OpenedStore>(
+						std::move(opened), *io, release,
+						[host = link.host, serial = link.serial, generation = link.generation,
+					     index = link.index](OpenedStore& done) {
+							host->inputFor(serial, [generation, index, outcome = std::move(done.outcome),
+						                            fault = std::move(done.fault)](Node& node) mutable {
+								node.storeOpened(generation, index, std::move(outcome), std::move(fault));
+							});
+						});
+				});
+			}
+
+			std::size_t item = detail::noReadiness; // its readiness item: ready once its open trusted it
+
+		private:
+			/// A write on the I/O thread: the adapter's throw is its bug, reported (the node fails lost) and answered as
+			/// the failure it gives the node.
+			static std::expected<void, std::string> written(detail::StoreState& state, const StoreLink& link,
+			                                                std::string text) {
+				try {
+					return state.write(std::move(text));
+				} catch (...) {
+					const std::string what = detail::whatOf(std::current_exception());
+					const std::string callback(state.calling);
+					link.faulted("write store " + state.file, callback, what);
+					return std::unexpected(internalErrorDetail(callback, what));
+				}
+			}
+			void requireOpened(std::string_view done) const {
+				if (!state_->opened())
+					throw std::logic_error("store " + state_->file + " was " + std::string(done) +
+					                       " before it was opened");
+			}
+			Node& node_; // the configuration's slots go before the node
+			std::shared_ptr<detail::StoreState> state_;
+			StoreLink link_;
+		};
+
 		/// One engine companion a configuration asked for, until its block is ready: its shape, and where it goes, the
 		/// inside bank it joins named in it (one companion per bank).
 		struct EngineAsk {
@@ -1330,6 +1496,9 @@ struct NodeHost::Impl {
 			std::shared_ptr<const NodeConfig> config;
 			std::shared_ptr<Channel> channel;
 			std::unique_ptr<Context> context;
+			// Each declared store: a loop's state, a sink's consumer or the instance may hold it, so it goes after all
+			// of them (teardown step 5); its jobs hold only its state.
+			std::vector<std::unique_ptr<StoreSlot>> stores;
 			// Outlives the handoffs that write it and the instance (a legacy run object and recipe) that may hold it
 			// open (file's WavWriter closes its SNDFILE on the descriptor when freed).
 			std::vector<std::unique_ptr<RecordingFile>> recordings;
@@ -1351,9 +1520,10 @@ struct NodeHost::Impl {
 			std::vector<std::unique_ptr<Companion>> engineCompanions;
 			detail::ReadinessList readiness; // every engine ask's item, then every sink's, from configure's return
 			std::vector<Asked> requestOrder; // every companion, as asked: the companions' list's order
-			/// Whose each readiness item is, by item: a loop's, an engine companion's or a sink consumer's, and its index.
+			/// Whose each readiness item is, by item: a store's, a loop's, an engine companion's or a sink consumer's, and
+			/// its index.
 			struct ItemOwner {
-				enum class Family { loop, engine, consumer } family;
+				enum class Family { store, loop, engine, consumer } family;
 				std::size_t index;
 			};
 			std::vector<ItemOwner> itemOwners;
@@ -1386,6 +1556,7 @@ struct NodeHost::Impl {
 			std::shared_ptr<const NodeConfig> config;
 			std::shared_ptr<Channel> channel;
 			std::unique_ptr<Context> context;
+			std::vector<std::unique_ptr<StoreSlot>> stores; // its loops' states may still use them
 			std::unique_ptr<ErasedInstance> instance;
 			std::unique_ptr<AudioCode> code;
 			std::vector<std::unique_ptr<RecordingFile>> recordings;
@@ -1807,6 +1978,16 @@ struct NodeHost::Impl {
 				const std::span<const LoopDeclaration> declared = c.instance->loops();
 				for (std::size_t i = 0; i < declared.size(); ++i)
 					c.loops.push_back(std::make_unique<LoopSlot>(host_, serial_, c.generation, i, declared[i]));
+				// Each declared store, on a host that has stores (else refused below, and at a store call).
+				if (StoreAdapter* stores = host_.resources.stores()) {
+					const std::span<const StoreDeclaration> kept = c.instance->stores();
+					for (std::size_t i = 0; i < kept.size(); ++i)
+						c.stores.push_back(std::make_unique<StoreSlot>(
+							*this,
+							std::make_shared<detail::StoreState>(*stores, storeFileName(type_, name_, kept[i].suffix),
+						                                         kept[i].rule),
+							StoreLink{&host_, serial_, c.generation, i, c.channel->completions()}));
+				}
 				InstanceContexts contexts{*this, *this};
 				return c.instance->configure(contexts);
 			});
@@ -1832,9 +2013,11 @@ struct NodeHost::Impl {
 					                     std::string("configure gave a pass-through: ") + error.what());
 				}
 			}
-			// Each loop declared with a state type was given one, on a host that runs loops.
+			// Each loop declared with a state type was given one, on a host that runs loops; stores on a host that has them.
 			if (!c.loops.empty() && host_.resources.loops() == nullptr)
 				return failConfigure(lc::Fact::configureFailed, "no loops in this host");
+			if (!c.instance->stores().empty() && host_.resources.stores() == nullptr)
+				return failConfigure(lc::Fact::configureFailed, "no stores in this host");
 			for (const auto& slot : c.loops)
 				if (slot->declared.stateful && !slot->stateGiven)
 					return failConfigure(lc::Fact::configureFailed,
@@ -1890,6 +2073,21 @@ struct NodeHost::Impl {
 		void addReadiness() {
 			Configuration& c = *config_;
 			using Family = Configuration::ItemOwner::Family;
+			// Each store at step `opens`, before any loop starts, bounded: its open is one job on the I/O thread.
+			const auto storeSeconds = std::chrono::duration_cast<std::chrono::seconds>(storeBound).count();
+			for (std::size_t i = 0; i < c.stores.size(); ++i) {
+				StoreSlot& slot = *c.stores[i];
+				slot.item = c.readiness.add(detail::ReadinessItem{
+					.kind = WaitingFor::Kind::store,
+					.name = slot.fileName(),
+					.step = detail::ReadinessStep::opens,
+					.bound = storeBound,
+					.fact = lc::Fact::configureFailed,
+					.overdue = [text = slot.fileName() + ": not opened within " + std::to_string(storeSeconds) +
+				                       " s"] { return text; },
+				});
+				c.itemOwners.push_back({Family::store, i});
+			}
 			// Each loop at step `loops`, with no bound: an adapter tells at once whether its thread started.
 			for (std::size_t i = 0; i < c.loops.size(); ++i) {
 				LoopSlot& slot = *c.loops[i];
@@ -1941,6 +2139,9 @@ struct NodeHost::Impl {
 			using Family = Configuration::ItemOwner::Family;
 			const Configuration::ItemOwner owner = c.itemOwners.at(item);
 			switch (owner.family) {
+			case Family::store:
+				c.stores[owner.index]->open();
+				break;
 			case Family::loop: {
 				LoopSlot& slot = *c.loops[owner.index];
 				try {
@@ -1963,6 +2164,42 @@ struct NodeHost::Impl {
 				host_.inputFor(serial_, [](Node& node) { node.askResources(); });
 				break;
 			}
+		}
+
+		/// Store `index`'s open landed (attached, so this configuration's): a fault of the adapter's fails the node lost;
+		/// otherwise its ReadyEvents hear it.
+		void storeOpened(std::uint64_t generation, std::size_t index, std::expected<void, std::string> outcome,
+		                 std::optional<StoreFault> fault) {
+			if (!current(generation) || index >= config_->stores.size()) return;
+			StoreSlot& slot = *config_->stores[index];
+			if (fault) return storeFaulted(generation, "open store " + slot.fileName(), fault->callback, fault->what);
+			if (outcome) slot.ready();
+			else slot.failed(std::move(outcome.error()));
+		}
+
+		/// Store `index` was opened and trusted: its readiness item is ready.
+		void storeReady(std::uint64_t generation, std::size_t index) {
+			if (!current(generation) || config_->startFailed || config_->tearing || index >= config_->stores.size())
+				return;
+			itemReady(generation, config_->stores[index]->item);
+		}
+
+		/// Store `index` cannot be opened, or is not trusted: the node fails start-failed with "<file>: <why>", unless it
+		/// moved on.
+		void storeFailed(std::uint64_t generation, std::size_t index, std::string detail) {
+			if (!stillReadying(generation) || index >= config_->stores.size()) return;
+			if (auto failure = config_->readiness.failed(config_->stores[index]->item, std::move(detail)))
+				feed(aggregate_.fault(failure->fact, std::move(failure->detail)));
+		}
+
+		/// A store adapter threw in one of this configuration's I/O jobs (`job`, its call `callback`): ear's own bug,
+		/// told as ear.internal-error, and the node fails lost (docs/architecture.md#faults-by-owner).
+		void storeFaulted(std::uint64_t generation, const std::string& job, const std::string& callback,
+		                  const std::string& what) {
+			if (!current(generation)) return;
+			const std::string where = "the I/O job " + job;
+			host_.internalError(InternalError{.callback = callback, .node = name_, .where = where, .what = what});
+			feed(aggregate_.fault(lc::Fact::adapterFaulted, internalErrorDetail(callback, what)));
 		}
 
 		/// The adapter says loop `index` runs: its readiness item is ready.
@@ -2612,6 +2849,7 @@ struct NodeHost::Impl {
 			c.loops.clear();
 			c.sinks.clear();   // each closed (its thread idle) or never begun
 			c.sources.clear(); // after the instance, whose threads may hold a writer
+			c.stores.clear();  // after every state and consumer that may hold one; a job still queued holds its state
 			c.recordings.clear();
 			config_.reset();
 		}
@@ -2640,10 +2878,11 @@ struct NodeHost::Impl {
 			companionsEnded(); // their counts as they stand: the configuration is never read again
 			// Deliberately never deleted: the configuration's threads may still touch any of it.
 			static_cast<void>(new Leaked{std::move(c.config), std::move(c.channel), std::move(c.context),
-			                             std::move(c.instance), std::move(c.code), std::move(c.recordings),
-			                             std::move(c.sinks), std::move(c.bindings), std::move(c.sources),
-			                             std::move(c.sourceBindings), std::move(c.loops), std::move(c.handoffConsumers),
-			                             std::move(c.handoffs), std::move(c.engineCompanions), std::move(c.faded)});
+			                             std::move(c.stores), std::move(c.instance), std::move(c.code),
+			                             std::move(c.recordings), std::move(c.sinks), std::move(c.bindings),
+			                             std::move(c.sources), std::move(c.sourceBindings), std::move(c.loops),
+			                             std::move(c.handoffConsumers), std::move(c.handoffs),
+			                             std::move(c.engineCompanions), std::move(c.faded)});
 			++host_.leaked;
 			config_.reset();
 			runClosing_ = false;
