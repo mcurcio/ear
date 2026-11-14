@@ -56,6 +56,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/pass_through.hpp
 	include/ear/core/reconciler.hpp
 	include/ear/core/rtp_receiver.hpp
+	include/ear/core/sample_rate.hpp
 	include/ear/core/settings_table.hpp
 	include/ear/core/sink.hpp
 	include/ear/core/sink_ring.hpp
@@ -166,6 +167,29 @@ if(BUILD_TESTS)
 	ear_latency_compile_fail(delay-as-latency "conversion from 'ear::Delay'")
 	ear_latency_compile_fail(delay-as-optional-peer "no matching function for call to 'std::optional<ear::Latency>")
 	ear_latency_compile_fail(paths-in-series "no match for 'operator\\+'")
+
+	# What must not compile about a rate (docs/engine.md#dating): a raw number is never a rate, and a rate is never an
+	# operand, so frames and time convert only through FrameClock; tests/compile_fail/sample_rate_bad.cpp says what
+	# each case is.
+	set(bad_rate "${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail/sample_rate_bad.cpp")
+	ear_compile_check(ear_sample_rate_compile_fail_control "${bad_rate}")
+	function(ear_sample_rate_compile_fail case regex)
+		ear_compile_fail(ear_sample_rate_compile_fail_${case} "${bad_rate}" ${case} "${regex}")
+	endfunction()
+	ear_sample_rate_compile_fail(raw-integer-constructed "SampleRate::SampleRate\\(uint32_t\\)' is private")
+	ear_sample_rate_compile_fail(raw-integer-converted "conversion from 'int' to non-scalar type 'const ear::SampleRate'")
+	ear_sample_rate_compile_fail(raw-integer-passed "could not convert '48000' from 'int' to 'ear::SampleRate'")
+	ear_sample_rate_compile_fail(fixed-zero "no matching function for call to 'ear::SampleRate::fixed<0>\\(\\)'")
+	ear_sample_rate_compile_fail(rate-as-integer "cannot convert 'ear::SampleRate' to 'const uint32_t'")
+	ear_sample_rate_compile_fail(rate-cast "invalid 'static_cast' from type 'ear::SampleRate'")
+	ear_sample_rate_compile_fail(rate-times-frames "no match for 'operator\\*' \\(operand types are 'ear::SampleRate'")
+	ear_sample_rate_compile_fail(frames-over-rate "no match for 'operator/' \\(operand types are [^)]* and 'ear::SampleRate'")
+	ear_sample_rate_compile_fail(frames-remainder-rate "no match for 'operator%' \\(operand types are [^)]* and 'ear::SampleRate'")
+	ear_sample_rate_compile_fail(rate-plus-frames "no match for 'operator\\+' \\(operand types are 'ear::SampleRate'")
+	ear_sample_rate_compile_fail(rate-times-duration "no match for 'operator\\*' \\(operand types are 'ear::SampleRate' and 'std::chrono::")
+	ear_sample_rate_compile_fail(duration-over-rate "no match for 'operator/' \\(operand types are 'std::chrono::nanoseconds'.* and 'ear::SampleRate'")
+	ear_sample_rate_compile_fail(rate-compared-with-integer "no match for 'operator==' \\(operand types are 'ear::SampleRate' and 'int'\\)")
+	ear_sample_rate_compile_fail(rate-as-frames "cannot convert 'ear::SampleRate' to 'int64_t'")
 
 	# What must not compile about a type spec, its class, the contexts its configure is handed, Io and the harness
 	# (docs/writing-a-node-type.md#the-class; docs/writing-a-node-type.md#rules-the-framework-enforces):

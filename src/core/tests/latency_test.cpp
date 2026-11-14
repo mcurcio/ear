@@ -1,11 +1,13 @@
 // ear's one latency model (ear/core/latency.hpp, docs/engine.md#latency-per-bank-pair), by table: the algebra (series
 // apart from parallel, no path apart from zero), then one row per bank shape and per past regression through workOut
 // (the table, test/support/latency_table.hpp, which ear_pipewire_tests runs through a real block too), then
-// FrameClock's units and its two dating rules. What must not compile is in compile_fail/latency_bad.cpp.
+// FrameClock's units, its two roundings (framesCeil, framesNearest) and its two dating rules, and SampleRate, the
+// rate it takes. What must not compile is in compile_fail/latency_bad.cpp and compile_fail/sample_rate_bad.cpp.
 #include <chrono>
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <ratio>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -14,6 +16,7 @@
 #include "catch2/catch.hpp"
 #include "ear/core/latency.hpp"
 #include "ear/core/node_type.hpp"
+#include "ear/core/sample_rate.hpp"
 #include "latency_table.hpp"
 
 using namespace ear;
@@ -279,6 +282,133 @@ TEST_CASE("FrameClock agrees with the exact quotient at every rate and every edg
 				REQUIRE(clock.frames(std::chrono::nanoseconds{static_cast<std::int64_t>(signedNs)}) ==
 				        static_cast<std::int64_t>(signedNs * Wide{rate} / nsPerSecond));
 			}
+	}
+}
+
+namespace {
+
+// The exact quotient worked out in 128 bits, rounded up, and rounded to the nearest with halves away from zero.
+Wide ceilQuotient(Wide numerator, Wide denominator) {
+	return numerator / denominator + (numerator % denominator > 0 ? 1 : 0);
+}
+Wide nearestQuotient(Wide numerator, Wide denominator) {
+	const Wide left = numerator % denominator;
+	return numerator / denominator + (2 * left >= denominator ? 1 : (2 * left <= -denominator ? -1 : 0));
+}
+
+} // namespace
+
+// A rate is made only from a number that is one, and never converts back but through hz().
+static_assert(SampleRate::of(0) == std::nullopt);
+static_assert(SampleRate::of(48000)->hz() == 48000);
+static_assert(SampleRate::of(UINT32_MAX)->hz() == UINT32_MAX);
+static_assert(SampleRate::fixed<44100>() == *SampleRate::of(44100));
+static_assert(SampleRate::fixed<44100>() < SampleRate::fixed<48000>());
+static_assert(!std::is_convertible_v<std::uint32_t, SampleRate> && !std::is_constructible_v<SampleRate, std::uint32_t>);
+static_assert(!std::is_convertible_v<SampleRate, std::uint32_t> && !std::is_convertible_v<SampleRate, double>);
+static_assert(FrameClock(SampleRate::fixed<48000>()).ns(48000) == 1'000'000'000);
+static_assert(FrameClock(SampleRate::fixed<48000>())
+                  .framesCeil(std::chrono::duration<std::int64_t, std::ratio<1, 30>>{1}) == 1600);
+
+TEST_CASE("FrameClock(SampleRate) converts as FrameClock at the same number does", "[latency]") {
+	for (const std::uint32_t rate : oracleRates) {
+		INFO("at " << rate << " Hz");
+		const FrameClock clock(*SampleRate::of(rate));
+		const FrameClock number(rate);
+		CHECK(clock.rate() == number.rate());
+		for (std::int64_t frames = -2048; frames <= 100'000; frames += 7)
+			REQUIRE(clock.ns(frames) == number.ns(frames));
+		for (std::int64_t ms = -50; ms <= 2000; ++ms)
+			REQUIRE(clock.frames(std::chrono::milliseconds{ms}) == number.frames(std::chrono::milliseconds{ms}));
+	}
+}
+
+// framesCeil: exact for any period, so the level window's thirtieth of a second is ceil(rate / 30), the rule
+// levelWindowFrames wrote by hand ((rate + 29) / 30).
+TEST_CASE("FrameClock::framesCeil rounds up, exactly, for any period", "[latency]") {
+	using Thirtieth = std::chrono::duration<std::int64_t, std::ratio<1, 30>>;
+	using Seventh = std::chrono::duration<std::int64_t, std::ratio<1, 7>>;
+	using std::chrono::milliseconds;
+	for (const std::uint32_t rate : oracleRates) {
+		INFO("at " << rate << " Hz");
+		const FrameClock clock(*SampleRate::of(rate));
+		REQUIRE(clock.framesCeil(Thirtieth{1}) == (std::int64_t{rate} + 29) / 30);
+		for (const std::int64_t count : {-61, -30, -29, -1, 0, 1, 2, 29, 30, 31, 3600, 2'592'000}) {
+			INFO(count << " thirtieths");
+			REQUIRE(clock.framesCeil(Thirtieth{count}) ==
+			        static_cast<std::int64_t>(ceilQuotient(Wide{count} * Wide{rate}, Wide{30})));
+		}
+		for (const std::int64_t count : {-8, -7, -1, 0, 1, 6, 7, 8, 7 * 86'400}) {
+			INFO(count << " sevenths");
+			REQUIRE(clock.framesCeil(Seventh{count}) ==
+			        static_cast<std::int64_t>(ceilQuotient(Wide{count} * Wide{rate}, Wide{7})));
+		}
+		for (const std::int64_t ms : {-1001, -1, 0, 1, 5, 999, 1000, 1001}) {
+			INFO(ms << " ms");
+			REQUIRE(clock.framesCeil(milliseconds{ms}) ==
+			        static_cast<std::int64_t>(ceilQuotient(Wide{ms} * Wide{rate}, Wide{1000})));
+		}
+		REQUIRE(clock.framesCeil(std::chrono::hours{24}) == std::int64_t{rate} * 86'400);
+	}
+	struct Row {
+		const char* what;
+		std::uint32_t rate;
+		std::int64_t thirtieths;
+		std::int64_t frames;
+	};
+	const std::vector<Row> rows{
+		{"the level window at 48 kHz", 48000, 1, 1600},
+		{"the level window at 44.1 kHz", 44100, 1, 1470},
+		{"the level window at 22.05 kHz: 735 exactly", 22050, 1, 735},
+		{"the level window at 11.025 kHz: 367.5 rounded up", 11025, 1, 368},
+		{"the level window at 1 Hz: a thirtieth of a frame, rounded up to one", 1, 1, 1},
+		{"a thirtieth before, rounded up toward zero", 44100, -1, -1470},
+	};
+	for (const Row& row : rows) {
+		INFO(row.what);
+		CHECK(FrameClock(*SampleRate::of(row.rate)).framesCeil(Thirtieth{row.thirtieths}) == row.frames);
+	}
+}
+
+// framesNearest: a peer's latency in ns at the graph's rate, to the nearest frame, halves away from zero (as lround
+// rounds), worked out in integers so no count loses a frame to a double's rounding.
+TEST_CASE("FrameClock::framesNearest rounds to the nearest frame, exactly", "[latency]") {
+	using std::chrono::nanoseconds;
+	for (const std::uint32_t rate : oracleRates) {
+		INFO("at " << rate << " Hz");
+		const FrameClock clock(*SampleRate::of(rate));
+		for (const Wide ns : edgeCounts(rate, nsPerSecond, int64Max)) {
+			if (!fits(ns)) continue;
+			INFO("ns " << static_cast<std::int64_t>(ns));
+			REQUIRE(clock.framesNearest(nanoseconds{static_cast<std::int64_t>(ns)}) ==
+			        static_cast<std::int64_t>(nearestQuotient(ns * Wide{rate}, nsPerSecond)));
+		}
+		const Wide frameNs = nsPerSecond / Wide{rate};
+		for (const Wide ns : {Wide{1}, frameNs / 2 - 1, frameNs / 2, frameNs / 2 + 1, frameNs, frameNs + frameNs / 2})
+			for (const Wide sign : {Wide{1}, Wide{-1}}) {
+				INFO("ns " << static_cast<std::int64_t>(sign * ns));
+				REQUIRE(clock.framesNearest(nanoseconds{static_cast<std::int64_t>(sign * ns)}) ==
+				        static_cast<std::int64_t>(nearestQuotient(sign * ns * Wide{rate}, nsPerSecond)));
+			}
+	}
+	struct Row {
+		const char* what;
+		std::uint32_t rate;
+		nanoseconds duration;
+		std::int64_t frames;
+	};
+	const std::vector<Row> rows{
+		{"a millisecond at 48 kHz", 48000, nanoseconds{1'000'000}, 48},
+		{"half a frame at 48 kHz, rounded away from zero", 48000, nanoseconds{10'417}, 1},
+		{"just under half a frame", 48000, nanoseconds{10'416}, 0},
+		{"half a frame before, away from zero", 48000, nanoseconds{-10'417}, -1},
+		{"a millisecond at 44.1 kHz: 44.1 rounded down", 44100, nanoseconds{1'000'000}, 44},
+		{"10 ms at 44.1 kHz: 441", 44100, nanoseconds{10'000'000}, 441},
+		{"0.25 s at 2 Hz: half a frame, away from zero", 2, nanoseconds{250'000'000}, 1},
+	};
+	for (const Row& row : rows) {
+		INFO(row.what);
+		CHECK(FrameClock(*SampleRate::of(row.rate)).framesNearest(row.duration) == row.frames);
 	}
 }
 

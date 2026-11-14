@@ -719,12 +719,21 @@ a PipeWire that fixes it fails it.
 
 `FrameClock` (`ear/core/latency.hpp`) is the one code that converts between frames and time at the
 graph's rate; nothing else in ear uses a rate as an operand of `*`, `/` or `%` to get one from the other.
+It is made from a `SampleRate` (`ear/core/sample_rate.hpp`): a rate in hertz with no arithmetic,
+made only by `SampleRate::of(hz)` (none for 0) or `SampleRate::fixed<hz>()`, comparing only with
+another rate and converting to nothing; `hz()` is its one way out, for a library or the wire.
+`src/core/tests/compile_fail/sample_rate_bad.cpp` holds what must not compile: a number made,
+converted or passed as a rate, a rate read or cast as a number, a rate as an operand beside frames
+or a duration, a rate compared with a number, a rate passed as frames.
 
 - **`ns(frames)`** is how long frames last, and **`frames(duration)`** how many whole frames a
   duration holds. Each is the exact quotient of the whole count, truncated toward zero (one
   division, never one per part, so two frames at 44.1 kHz are 45,351 ns, not 2 × 22,675), and
   converts whole seconds and the rest apart, so no count overflows on the way: a week of frames at
   96 kHz converts exactly where `frames * 1e9` would leave `int64`.
+- **`framesCeil(duration)`** rounds up, exactly for any period (a thirtieth of a second is
+  `ceil(rate / 30)` frames), and **`framesNearest(ns)`** rounds to the nearest frame, halves away
+  from zero, worked out in integers.
 - **`heardRawNs(startRawNs, offset, downstream)`**: frame `offset` of a cycle that started at
   `startRawNs` is heard once its downstream's most has played. `sendspin`'s progress uses it, and so
   does a source's clock that dates what played, from its tick's start and `playback`
