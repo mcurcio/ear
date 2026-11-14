@@ -132,8 +132,9 @@ private:
 /// once the node is configured; destroyed on its loop at teardown step 4, the watch with it.
 class Notifier {
 public:
-	/// `bell` and `progress` (the code's) and `player` outlive the state.
-	Notifier(Loop& self, const EventFd& bell, const Mailbox<PlayProgress>& progress, PlayerSlot& player) noexcept;
+	/// `bell` and `progress` (the code's), `feed` (what its writer dropped) and `player` outlive the state.
+	Notifier(Loop& self, const EventFd& bell, const Mailbox<PlayProgress>& progress, const Feed& feed,
+	         PlayerSlot& player) noexcept;
 	/// The notifier loop, once.
 	void begin();
 
@@ -142,8 +143,10 @@ private:
 	Loop& self_;
 	const EventFd& bell_;
 	const Mailbox<PlayProgress>& progress_;
+	const Feed& feed_;
 	PlayerSlot& player_;
-	std::uint64_t reported_ = 0;
+	std::uint64_t reported_ = 0;        // of the code's frames
+	std::uint64_t reportedDropped_ = 0; // of the feed's dropped frames
 	std::unique_ptr<Timer> watch_;
 };
 } // namespace ear::nodes::sendspin

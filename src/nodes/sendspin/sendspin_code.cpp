@@ -1,6 +1,7 @@
 #include "sendspin_code.hpp"
 
 #include <algorithm>
+#include <limits>
 
 namespace ear::nodes::sendspin {
 
@@ -21,13 +22,19 @@ void SendspinCode::process(std::span<const std::span<float>> outputs, std::uint3
 	const CycleFacts& facts = cycle.facts;
 	const bool movedOn = facts.causes.has(CycleCause::catchUp) || facts.causes.has(CycleCause::absent);
 	const bool cleared = feed_.takeCleared();
+	// Undrained past its bound (a stop, a stall the graph does not come back from in time), the feed's writer played
+	// what the library wrote into nothing at the graph's rate rather than wait (docs/node-types.md#clock), and the
+	// notifier told it: what the feed still holds is from before, stale, and is skipped whole. Taken before the stamp,
+	// so the writer drops until this cycle has skipped what it left.
+	lastStaleSkipped_ = feed_.takeStale() ? feed_.skip(std::numeric_limits<std::uint64_t>::max()) : 0;
+	feed_.drained(cycle.ranRawNs());
 	lastHeldAtStart_ = feed_.held();
 	lastSkipped_ =
 		!cleared && movedOn && facts.jumpFrames > 0 ? feed_.skip(static_cast<std::uint64_t>(facts.jumpFrames)) : 0;
 	const std::uint32_t got = feed_.read(outputs, frames);
-	// Counted played: what was skipped and what was read, never the zeros a short cycle played (the library wrote
-	// none of them).
-	played_ += std::uint64_t{lastSkipped_} + got;
+	// Counted played: what was skipped and read, never the zeros a short cycle played (the library wrote none of
+	// them).
+	played_ += std::uint64_t{lastStaleSkipped_} + lastSkipped_ + got;
 	if (played_ == told_) return;
 	if (!untoldSince_) untoldSince_ = startRawNs;
 

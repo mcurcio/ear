@@ -497,6 +497,20 @@ state goes).
   not see the `tcp:` claim; the refusal `held by node <n>` is the system test's (two nodes on one port), which already
   existed. The all-type harness test runs `sendspin` with no network: the harness fires no timer unless a test
   advances it, so the worker never makes its client there.
+- **A stopped node's live stream (review follow-up).** With the server streaming to a stopped node, no cycle drains
+  the feed, its writer (the library's sync thread) waited out its patience on every call, the player's held items
+  pinned the library's inbound ring, and the library closed the connection: Q-3c1 broken whenever a stop met a
+  stream. The rule is the feed's, so a long host stall gets it too: undrained past `undrainedBound` (1.5 s, longer
+  than the stalls the clock tests recover from exactly, shorter than the ring's room behind a server that fills the
+  player's buffer), the writer plays what it is given into nothing at the graph's rate, a feed's worth ahead of now at
+  most, and marks what the feed holds stale; the code's first cycle back skips that whole (counted played, as any
+  skip). The dropped frames are told by the notifier, dated by when the next would play on that rate (the code's
+  finish when the code played since the last report). Leaving them untold, as asked first, does not work: the
+  library's priming waits for its first report (`handle_initial_sync`), so a stream begun while stopped never leaves
+  its silence, and it puts its next frame at the finish told plus what it wrote and was not told, so every later
+  finish would be late by what was dropped. A drop of a stream since ended is forgotten (`Feed::Dropped::forgotten`),
+  since the library zeroes its count at the end. No framework API for stop and start was needed. Proved by "A node
+  stopped while the server streams stays connected" (noise, so the 1 MB buffer fills in seconds).
 - **What moved and what stayed in the tests.** `code_test.cpp`'s rig lost the handoff and the anchor, and its three
   rows on them went (the copy to `type_test.cpp`, the dating to `to_server_test.cpp`); its clock rows are unedited.
   `clock_test.cpp`'s rig runs the worker's and notifier's states on `ear_runtime`'s real loops over an in-memory store;
@@ -594,7 +608,7 @@ silent until Music Assistant finds it again.
 
 *Recommendation: stay connected.* It is what a stop does today, it matches "a stopped node keeps everything" (R26),
 and it avoids the gap before the server dials back. Restart, disable and removal still say goodbye. (Section 8's
-visible change 5 is the other answer.)
+visible change 5 was the other answer; this one withdrew it.)
 
 **Q-3c2. Should two `rtp` nodes be allowed on the same UDP port when they listen to different multicast groups?**
 **Answered (the owner, 2026-11-14, binding): refuse.** The second fails at once, "cannot bind UDP port <p>: held by
@@ -775,7 +789,8 @@ source's clock (`timing-model.md` 6.1: a skip and a report, the report in its ow
 note pacing, a claims map, a probe, a `HeldPort`, a key file's open, mode or sweep, a `NodeConfig`, a `NodeTypeOf`, a
 latency declaration, a folder parameter, a close hook, or a lambda that carries resources between hooks.
 
-A stopped `sendspin` node then keeps its configuration but says goodbye in `stop()` (its worker's `end()`), so its
+*(Withdrawn by Q-3c1, 0.6: a stop keeps the connection, and the class has no `start()` or `stop()`.)* A stopped
+`sendspin` node then keeps its configuration but says goodbye in `stop()` (its worker's `end()`), so its
 connection closes (today, on the legacy adapter, a stopped node keeps its connection and plays the feed's leftover, up
 to about 43 ms, after a start; the source companion clears its ring at a stop).
 
@@ -1357,8 +1372,10 @@ Invariants this slice adds to the built ones, each a test's to prove:
    nodes on one port are refused `held by node <n>`; two multicast groups on one port too (section 15).
 4. **New diagnostics**: `ear.claim-wait`, `ear.close-late`, `ear.loop-slow`, `ear.loop-source-left`; `ear.close-overdue`
    gains its counts. Each is in `test/protocol/output-records.json` from the step that adds it.
-5. **A stopped `sendspin` node closes its connection** (its `stop()` posts the goodbye), where on the legacy adapter it
-   kept it; Start then reconnects.
+5. ~~**A stopped `sendspin` node closes its connection** (its `stop()` posts the goodbye), where on the legacy adapter
+   it kept it; Start then reconnects.~~ **Withdrawn by Q-3c1** (0.6): a stopped node keeps its connection and pairing,
+   and while it is stopped its feed plays what the library writes into nothing (0.3's `sendspin`, found building
+   S3c.6b).
 
 ## 9. The carried sendspin-cpp log patch
 

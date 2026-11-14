@@ -4,6 +4,9 @@
 #include <utility>
 
 #include <poll.h>
+#include <time.h>
+
+#include "ear/core/latency.hpp"
 
 namespace ear::nodes::sendspin {
 namespace {
@@ -12,7 +15,14 @@ constexpr std::uint64_t clearPending = std::uint64_t{1} << 32U;
 
 } // namespace
 
-Feed::Feed(std::uint32_t channels, std::uint32_t capacityFrames) : ring_(channels, capacityFrames) {}
+std::int64_t rawNowNs() noexcept {
+	timespec now{};
+	::clock_gettime(CLOCK_MONOTONIC_RAW, &now);
+	return std::int64_t{now.tv_sec} * 1'000'000'000 + now.tv_nsec;
+}
+
+Feed::Feed(std::uint32_t channels, std::uint32_t capacityFrames, std::optional<FeedDrain> drain)
+	: ring_(channels, capacityFrames), drain_(drain) {}
 
 bool Feed::applyClear() noexcept {
 	const std::uint64_t asked = clearTo_.exchange(0, std::memory_order_acq_rel);
@@ -61,6 +71,11 @@ bool Feed::takeCleared() noexcept {
 
 std::uint32_t Feed::write(std::span<const float> interleaved, std::uint32_t frames,
                           std::chrono::milliseconds patience) {
+	if (drain_) {
+		const std::int64_t since = drain_->nowRawNs() - drainedRawNs_.load(std::memory_order_acquire);
+		if (since > drain_->bound.count()) return discard(frames, patience);
+		discarding_ = false;
+	}
 	const auto until = std::chrono::steady_clock::now() + patience;
 	for (;;) {
 		if (const std::uint32_t accepted = ring_.writeInterleaved(interleaved, frames); accepted > 0 || frames == 0) {
@@ -85,6 +100,51 @@ std::uint32_t Feed::write(std::span<const float> interleaved, std::uint32_t fram
 	}
 }
 
-void Feed::clear() noexcept { clearTo_.store(clearPending | ring_.writePosition(), std::memory_order_release); }
+void Feed::clear() noexcept {
+	clearTo_.store(clearPending | ring_.writePosition(), std::memory_order_release);
+	forgotten_.store(dropped_.load(std::memory_order_acquire),
+	                 std::memory_order_release); // the library zeroes its count
+}
+
+/// The reader is gone (a stop, a stall past the bound): this side plays the frames into nothing at the graph's rate, a
+/// feed's worth ahead of now at most, as a reader would have taken them, so the library's own thread runs at its own
+/// pace and never pins its inbound ring behind audio no cycle will read. The library needs telling what played to run
+/// at all (its stream's priming waits for the first report) and puts its next frame at the finish told plus what it
+/// wrote and was not told, so each frame dropped is said, with when the next would play, for the notifier to tell.
+std::uint32_t Feed::discard(std::uint32_t frames, std::chrono::milliseconds patience) {
+	const std::int64_t now = drain_->nowRawNs();
+	if (!discarding_) {
+		discarding_ = true;
+		paceRawNs_ = now;
+		stale_.store(true, std::memory_order_release); // what the feed holds will not be read in its time
+	}
+	paceRawNs_ = std::max(paceRawNs_, now);
+	const FrameClock clock(drain_->rate);
+	const std::int64_t roomNs = clock.ns(ring_.capacityFrames()) - (paceRawNs_ - now);
+	const std::int64_t room =
+		std::int64_t{ring_.capacityFrames()} - clock.framesNearest(std::chrono::nanoseconds{paceRawNs_ - now});
+	if (room <= 0) {
+		// Until a frame's room comes, at most its patience.
+		const auto untilRoom =
+			std::chrono::ceil<std::chrono::milliseconds>(std::chrono::nanoseconds{clock.ns(1) - roomNs});
+		waitForRoom(std::min(patience, untilRoom));
+		return 0;
+	}
+	const auto accepted = static_cast<std::uint32_t>(std::min<std::int64_t>(frames, room));
+	paceRawNs_ += clock.ns(accepted);
+	finishRawNs_.store(paceRawNs_, std::memory_order_release);
+	dropped_.fetch_add(accepted, std::memory_order_acq_rel);
+	if (drain_->bell != nullptr) drain_->bell->ring();
+	return accepted;
+}
+
+/// Waits up to `patience` for the clock to make room, or for a read (the reader back) to end the wait.
+void Feed::waitForRoom(std::chrono::milliseconds patience) {
+	writerWaits_.store(true, std::memory_order_relaxed);
+	pollfd ready{room_.fd(), POLLIN, 0};
+	::poll(&ready, 1, static_cast<int>(patience.count()));
+	room_.drain();
+	writerWaits_.store(false, std::memory_order_relaxed);
+}
 
 } // namespace ear::nodes::sendspin

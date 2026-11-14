@@ -431,5 +431,6 @@ Music Assistant's audio (`sendspin` skill). All **[check]**: not run in a pod ye
   the code reaches only standard output (`kubectl logs -n audio deploy/ear | grep says`), not the
   editor. Type it there. The pairing lives in the key file, so the graph file volume must persist
   (section 4), or every restart asks again.
-- **Stop.** The node's goodbye runs on its own thread and is short, but an inbound half-open socket can
-  take up to 3 s; it all has to fit `terminationGracePeriodSeconds` with the last `ear.conf` write.
+- **Pod termination** (ear stopping on SIGTERM, not `node.stop`, which keeps the connection). The node's goodbye
+  runs on its own thread and is short, but an inbound half-open socket can take up to 3 s; it all has to fit
+  `terminationGracePeriodSeconds` with the last `ear.conf` write.

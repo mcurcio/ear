@@ -400,3 +400,67 @@ TEST_CASE("A stopped node stays connected and paired: the server still holds its
 	CHECK(rpc.readUntilClosed() == 1001);
 	CHECK(waitForStop(ear) == 0);
 }
+
+/// The ramp frame the server has sent up to, once it has sent past `frame`: each `chunk-sent <first> <frames> <stamp>`
+/// it says names where its chunk starts in the stream. Nothing once it stops sending (a connection gone) for longer than
+/// the deadline.
+std::optional<std::uint64_t> waitUntilSentPast(SendspinTestServer& server, std::uint64_t frame) {
+	const auto until = std::chrono::steady_clock::now() + playDeadline;
+	for (;;) {
+		const auto left =
+			std::chrono::duration_cast<std::chrono::milliseconds>(until - std::chrono::steady_clock::now());
+		if (left.count() <= 0) return std::nullopt;
+		const auto sent = server.waitForEvent("chunk-sent ", left);
+		if (!sent) return std::nullopt;
+		const std::uint64_t first = std::stoull(sent->substr(std::string_view("chunk-sent ").size()));
+		if (first > frame) return first;
+	}
+}
+
+// The owner's answer, while the server streams: a stopped node's code no longer drains what the library writes, and the
+// library's own thread must not be held back by that (docs/node-types.md#stop-restart-disable). Held, the player's
+// items would pin the library's inbound ring and the library would close the connection within its acquire timeout
+// (100 ms) of its buffer (1 MB of encoded audio) filling. So the server streams noise, which FLAC cannot shrink, to the
+// stopped node for 15 s, several times what fills that buffer, then the ramp once the node is started again.
+TEST_CASE("A node stopped while the server streams stays connected, and a start plays the stream again",
+          "[system][sendspin]") {
+	SendspinTestServer server;
+	TempDirectory directory;
+	writeGraphFile(directory, dialToRec(server.url()));
+	auto ear = runEar(directory);
+	REQUIRE_SEEN(ear, waitForLines(ear, runningAndLinked) && ear.waitForLine(connectedUnpaired, deadline));
+	pairOnce(ear, server);
+	const std::size_t connectedBefore = countLines(ear, "node ma says connected ");
+
+	Rpc rpc(controlPort(ear));
+	REQUIRE(rpc.call("graph.subscribe").contains("result"));
+	REQUIRE(rpc.call("node.stop", {{"name", "ma"}})["result"] == json{{"applied", "stop"}});
+	rpc.waitFor([](const json& m) { return Rpc::matches(m, "node.state", {{"name", "ma"}, {"phase", "stopped"}}); });
+	server.send("noise 60");
+	REQUIRE(server.waitForEvent("play-start ", playDeadline));
+	// Fifteen seconds of the stream sent to the stopped node: the server sends only while the connection lives.
+	const bool sent = waitUntilSentPast(server, 15 * graphFrequency).has_value();
+	INFO("the server printed:\n" << server.events());
+	REQUIRE_SEEN(ear, sent);
+	server.send("roles");
+	const auto roles = server.waitForEvent("roles ", deadline);
+	REQUIRE(roles);
+	CHECK(*roles == "roles player,source");
+	REQUIRE_SEEN(ear, endStream(ear, server));
+
+	REQUIRE(rpc.call("node.start", {{"name", "ma"}})["result"] == json{{"applied", "start"}});
+	rpc.waitFor([](const json& m) { return Rpc::matches(m, "node.state", {{"name", "ma"}, {"phase", "running"}}); });
+	const auto wav = directory.recordings() / "rec.wav";
+	const std::size_t resumedAt = wavFramesSoFar(wav);
+	server.send(playLong);
+	REQUIRE_SEEN(
+		ear, waitForRamp(wav, [](const RampSoFar& ramp) { return ramp.rampFrames >= rampFramesAtLeast; }, resumedAt));
+	REQUIRE_SEEN(ear, endStream(ear, server));
+	CHECK(server.events().find("disconnected") == std::string::npos);
+	CHECK(countLines(ear, "node ma says connected ") == connectedBefore);
+	CHECK_FALSE(ear.lineStartingWith("node ma says disconnected"));
+	CHECK(countLines(ear, pairingCodePrefix) == 1);
+	ear.signal(SIGTERM);
+	CHECK(rpc.readUntilClosed() == 1001);
+	CHECK(waitForStop(ear) == 0);
+}

@@ -33,6 +33,9 @@ public:
 	/// What it read short, the feed counts itself (Feed::dryFrames).
 	std::uint32_t lastHeldAtStart() const noexcept { return lastHeldAtStart_; }
 	std::uint32_t lastSkipped() const noexcept { return lastSkipped_; }
+	/// Test seam, the data thread's own: what the last process() skipped as stale, the feed having been left undrained
+	/// past its bound.
+	std::uint32_t lastStaleSkipped() const noexcept { return lastStaleSkipped_; }
 	/// Test seam, read on the data thread: the reports whose finish the clamp moved. It acts only on the report after one
 	/// the bound forced from an overdue cycle (docs/node-types.md#clock); a test holds it idle otherwise.
 	std::uint64_t clamped() const noexcept { return clamped_; }
@@ -49,6 +52,7 @@ private:
 	std::optional<std::int64_t> untoldSince_; // the start, on the raw clock, of the first cycle not yet told
 	std::uint32_t lastHeldAtStart_ = 0;       // test seam: lastHeldAtStart()
 	std::uint32_t lastSkipped_ = 0;           // test seam: lastSkipped()
+	std::uint32_t lastStaleSkipped_ = 0;      // test seam: lastStaleSkipped()
 	std::uint64_t clamped_ = 0;               // test seam: clamped()
 };
 } // namespace ear::nodes::sendspin

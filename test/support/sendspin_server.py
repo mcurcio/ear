@@ -7,7 +7,7 @@ Arguments: --listen 0 [--slow-upgrade <seconds>] [--dial <url>] [--state <dir>] 
 --state keeps its identity and its pairings in <dir> across restarts. --discover browses mDNS with aiosendspin's own discovery,
 which dials what it finds, among only the instances starting with <prefix>, since tests running side by side share a network.
 Commands: dial <url>, use <client id> (later commands act on that client; each `connected` moves them to the new one), trust (approve the client for unpaired playback), roles (say which roles it holds), play <seconds> (the ramp),
-end (stream/end now), prefer-16 (ask for FLAC 16, as Music Assistant's per-player format setting does), lead (say the player's required_lead_time_ms), pair (a dynamic-code attempt, as Music Assistant starts one), code <digits> (what the operator
+noise <seconds> (white noise, which FLAC cannot shrink, so the client's buffer fills in seconds where the ramp's takes minutes; its events are the ramp's), end (stream/end now), prefer-16 (ask for FLAC 16, as Music Assistant's per-player format setting does), lead (say the player's required_lead_time_ms), pair (a dynamic-code attempt, as Music Assistant starts one), code <digits> (what the operator
 typed: one per round), gap <ms> (hold the audio sent until the client has starved for about <ms>, then send it at
 once: _Gap), source-start, source-stop, quit. --name is what the server calls itself. --hold-activate stops each connection after the hellos, before its first server/activate, until the command activate-release: a server the client has proved or not by its Noise handshake, and not yet admitted.
 Events: ready <url>, upgrade (a WebSocket upgrade arrived), connected <client id>, trusted, roles <list|none>,
@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -152,6 +153,10 @@ def ramp(start: int, frames: int) -> bytes:
     for index in range(start, start + frames):
         pcm += (index & 0xFFFF).to_bytes(2, "little") + ((index >> 16) & 0xFFFF).to_bytes(2, "little")
     return bytes(pcm)
+
+
+def noise(_start: int, frames: int) -> bytes:
+    return os.urandom(frames * 4)
 
 
 class DiscoveringServer(SendspinServer):
@@ -374,7 +379,7 @@ class TestServer:
             client = self._server.get_client(client_id)
         return client
 
-    async def _play_ramp(self, client_id: str, seconds: float) -> None:
+    async def _play_ramp(self, client_id: str, seconds: float, audio=ramp) -> None:  # noqa: ANN001
         group = (await self._player_active(client_id)).group
         _SentRamp.start()
         stream = group.start_stream()
@@ -382,7 +387,7 @@ class TestServer:
         total = int(seconds * RATE)
         first_us = None
         for start in range(0, total, CHUNK_FRAMES):
-            stream.prepare_audio(ramp(start, min(CHUNK_FRAMES, total - start)), audio_format)
+            stream.prepare_audio(audio(start, min(CHUNK_FRAMES, total - start)), audio_format)
             try:
                 start_us = await stream.commit_audio()
             except StreamStoppedError:
@@ -397,8 +402,8 @@ class TestServer:
         emit(f"play-finished {total}")
         group.stop_stream()
 
-    def play(self, seconds: float) -> None:
-        play = asyncio.ensure_future(self._play_ramp(self._client_id, seconds))
+    def play(self, seconds: float, audio=ramp) -> None:  # noqa: ANN001
+        play = asyncio.ensure_future(self._play_ramp(self._client_id, seconds, audio))
         play.add_done_callback(self._done)
         self._plays.append(play)
 
@@ -518,6 +523,8 @@ async def main() -> None:
             server._source_role().request_stop()
         elif command == "play":
             server.play(float(rest[0]))
+        elif command == "noise":
+            server.play(float(rest[0]), noise)
         elif command == "gap":
             server.gap(float(rest[0]))
         elif command == "end":

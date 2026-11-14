@@ -473,7 +473,8 @@ private:
 /// An output block with the real insides, as NodeHost would run them, dialling the real server.
 struct Rig {
 	Rig()
-		: engine(makeEngine()), waiter(*engine), blocks(*engine, bell), feed(2, kFeedFrames), notes(waiter),
+		: engine(makeEngine()), waiter(*engine), blocks(*engine, bell),
+		  feed(2, kFeedFrames, FeedDrain{.rate = ear::SampleRate::fixed<kRate>(), .bell = &played}), notes(waiter),
 		  code(feed, progress, played, ear::SampleRate::fixed<kRate>()), tap(code, feed, progress, waiter),
 		  pulse(ear::SampleRate::fixed<kRate>()), blockEvents(waiter), pulseEvents(waiter), registry(*engine, waiter) {
 		loops.make();
@@ -485,7 +486,7 @@ struct Rig {
 		                .self = loops.worker(),
 		                .settings = SendspinSettings{ServerUrl::parse(server.url()), defaultListenPort, "clock"},
 		                .format = kFormat});
-		notifier = std::make_unique<Notifier>(loops.notifier(), played, progress, player);
+		notifier = std::make_unique<Notifier>(loops.notifier(), played, progress, feed, player);
 		loops.worker().post([this] { worker->begin(); });
 		loops.notifier().post([this] { notifier->begin(); });
 		notes.connectTap(tap);

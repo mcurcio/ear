@@ -302,10 +302,19 @@ many were held back, before the next that passes.
 
 **A stopped `sendspin` node stays connected to Music Assistant** (the owner's decision): a stop
 silences its audio and keeps its connection, pairing and library running, so Music Assistant still
-lists the player with its roles, and `node.start` plays again at once, with no code asked. Stopped,
-nothing it is sent is played or reported played, and nothing is sent; up to about 43 ms the feed
-held from before plays first at the next start. The client lives as long as the node's
-configuration, not its run: a node restarted while stopped connects again and rests stopped.
+lists the player with its roles, and `node.start` plays again at once, with no code asked. The
+client lives as long as the node's configuration, not its run: a node restarted while stopped
+connects again and rests stopped.
+
+- **What Music Assistant sends while stopped** is not played. For the first 1.5 s the library
+  waits on the full feed as through a stall; after that the feed plays what it writes into nothing
+  at the graph's rate and tells the library so ([clock](#clock)), so a stream goes on for as long
+  as the stop lasts and the connection holds. At the start, what the feed held from before the
+  stop is skipped, and the stream plays from where it has got to. A stop shorter than 1.5 s plays
+  the feed's 43 ms from before first.
+- **What is routed to `to` while stopped** does not reach the server: the node's code does not
+  run, so nothing reaches its sink and the source role sends nothing (a server listening to it
+  hears it go quiet; its stream is not ended). It resumes at the start.
 
 | | Connection | Pairing | Port and key file |
 |---|---|---|---|
@@ -379,6 +388,18 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   rule 3): it plays every frame the library wrote, in order, and tells the library what played and
   when, true when told. It keeps no debt and no model of the library: what it could not skip of lost
   time, the library sees in the next finish it is told and corrects once, on its own.
+- **It never holds the library back for long.** A cycle stamps the feed as drained; left
+  undrained for `undrainedBound` (1.5 s: a stop, or a host stall the graph does not come back from
+  in that time) the feed's writer stops waiting and plays what the library writes into nothing at
+  the graph's rate, a feed's worth ahead of now at most, so the library runs on its own time and
+  its inbound ring never pins behind audio no cycle will read (which closes the connection). Those
+  frames are told played by the notifier, each report dated by when the next frame would play at
+  that rate: the library needs a report to leave a stream's priming silence, and puts its next
+  frame at the finish told plus what it wrote and was not told. The first cycle back skips what
+  the feed held from before as stale, counted played. Shorter stalls, the clock tests' 200 ms and
+  1 s among them, keep the rules below exactly. *Why 1.5 s:* longer than those stalls, and shorter
+  than the room a server that fills the player's advertised buffer leaves in the inbound ring
+  (about 2 s of FLAC 24 stereo).
 - **It skips only the graph's lost time.** On the cycle that states a catch-up or a pause
   (`GraphCycle::facts`: cycles missed, the position moved by exactly their frames, cut or not;
   [writing-a-node-type.md](writing-a-node-type.md#lost-cycles)) with a jump above 0, overdue or not,

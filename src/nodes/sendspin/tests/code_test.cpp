@@ -578,3 +578,58 @@ TEST_CASE("The mailbox's fields, read while it is written from another thread, a
 	CHECK(mixed == 0);
 	CHECK(backwards == 0);
 }
+
+namespace {
+std::int64_t fakeRaw = 0;
+std::int64_t fakeRawNow() noexcept { return fakeRaw; }
+} // namespace
+
+TEST_CASE(
+	"After the feed was left undrained past its bound, what it held is skipped stale and counted played, and what "
+	"it dropped is the feed's to say",
+	"[sendspin][code]") {
+	constexpr std::int64_t msNs = 1'000'000;
+	fakeRaw = 50'000 * msNs;
+	Feed feed(2, capacity, FeedDrain{.rate = ear::SampleRate::fixed<rate>(), .bound = 1500ms, .nowRawNs = &fakeRawNow});
+	Mailbox<PlayProgress> progress;
+	EventFd bell;
+	SendspinCode code(feed, progress, bell, ear::SampleRate::fixed<rate>());
+	std::vector<float> left(block);
+	std::vector<float> right(block);
+	const std::array<std::span<float>, 2> outputs{left, right};
+	const auto cycle = [&](std::int64_t startRawNs, ear::CycleFacts facts) {
+		code.process(outputs, block,
+		             ear::GraphCycle{.startNs = 0, .position = 0, .startRawNs = startRawNs, .facts = facts});
+	};
+	std::uint32_t written = 0;
+	const auto write = [&](std::uint32_t frames) {
+		std::vector<float> samples;
+		for (std::uint32_t i = 0; i < frames; ++i) {
+			samples.push_back(static_cast<float>(++written));
+			samples.push_back(0.0F);
+		}
+		return feed.write(samples, frames, 0ms);
+	};
+
+	cycle(fakeRaw, {}); // drained now
+	REQUIRE(write(capacity) == capacity);
+	cycle(fakeRaw, {});
+	CHECK(progress.read()->totalFrames == block);
+	REQUIRE(write(block) == block); // full again: 2048 held
+
+	fakeRaw += 2000 * msNs; // stopped for 2 s: the writer drops what it is given rather than wait
+	REQUIRE(write(1000) == 1000);
+	CHECK(feed.dropped().total == 1000); // the notifier's to tell, dated by the feed's own clock
+
+	ear::CycleFacts drive;
+	drive.causes = ear::CycleCause::drive;
+	cycle(fakeRaw, drive); // the start: what the feed held is stale
+	CHECK(code.lastStaleSkipped() == capacity);
+	CHECK(left[0] == 0.0F); // nothing fresh to read yet
+	CHECK(progress.read()->totalFrames == block + capacity);
+	REQUIRE(write(block) == block); // the reader is back: the feed takes it to be read
+	cycle(fakeRaw + 5 * msNs, {});
+	CHECK(code.lastStaleSkipped() == 0);
+	CHECK(left[0] == static_cast<float>(capacity + block + 1000 + 1));
+	CHECK(progress.read()->totalFrames == block + capacity + block);
+}

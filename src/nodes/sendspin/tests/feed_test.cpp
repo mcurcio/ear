@@ -285,3 +285,70 @@ TEST_CASE("read and skip allocate nothing", "[feed]") {
 	reader.join();
 	CHECK(allocations == 0);
 }
+
+// The undrained rule (docs/node-types.md#clock), on a clock the test moves: the writer is held back by a reader that
+// stopped only for the bound, then takes what it is given at the graph's rate and drops it.
+namespace {
+
+std::int64_t fakeNow = 0;
+std::int64_t fakeRawNow() noexcept { return fakeNow; }
+
+constexpr std::int64_t msNs = 1'000'000;
+constexpr std::uint32_t kRate = 48000;
+
+ear::nodes::sendspin::FeedDrain fakeDrain() {
+	return {.rate = ear::SampleRate::fixed<kRate>(), .bound = 1500ms, .nowRawNs = &fakeRawNow};
+}
+
+} // namespace
+
+TEST_CASE(
+	"Undrained past its bound the feed drops what it is given, a feed's worth ahead at the graph's rate, and marks "
+	"what it holds stale",
+	"[feed]") {
+	fakeNow = 10'000 * msNs;
+	Feed feed(2, capacity, fakeDrain());
+	feed.drained(fakeNow); // the reader's stamp
+	std::vector<float> samples;
+	fill(samples, 0, capacity);
+	REQUIRE(feed.write(samples, capacity, 0ms) == capacity); // full: the reader keeps up, so far
+	CHECK(feed.write(samples, 100, 0ms) == 0);               // full and drained 0 ms ago: it waits, as ever
+	CHECK_FALSE(feed.takeStale());
+
+	fakeNow += 1500 * msNs; // at the bound: still held back
+	CHECK(feed.write(samples, 100, 0ms) == 0);
+	fakeNow += 1; // past it: dropped, up to a feed's worth (2048 frames) ahead of now
+	CHECK(feed.write(samples, capacity, 0ms) == capacity);
+	CHECK(feed.write(samples, 100, 0ms) == 0); // a feed's worth ahead: no room until the clock moves
+	CHECK(feed.held() == capacity);            // the ring untouched
+	CHECK(feed.dropped().total == capacity);
+	CHECK(feed.dropped().finishRawNs == fakeNow + 42'666'666); // when the frame after them would play: 2048 at 48 kHz
+	fakeNow += 10 * msNs;                                      // 480 frames of the graph's time
+	CHECK(feed.write(samples, capacity, 0ms) == 480);
+	CHECK(feed.dropped().total == capacity + 480);
+	CHECK(feed.takeStale()); // what the ring holds is from before the reader stopped
+	CHECK_FALSE(feed.takeStale());
+
+	feed.drained(fakeNow); // the reader is back: writes wait on the ring again
+	CHECK(feed.skip(capacity) == capacity);
+	CHECK(feed.write(samples, 100, 0ms) == 100);
+	CHECK(feed.held() == 100);
+	CHECK(feed.dropped().total == capacity + 480);
+}
+
+TEST_CASE("A clear forgets the frames dropped so far, and a feed with no rule never drops", "[feed]") {
+	fakeNow = 10'000 * msNs;
+	Feed feed(2, capacity, fakeDrain()); // never stamped: undrained from the start
+	std::vector<float> samples;
+	fill(samples, 0, 256);
+	CHECK(feed.write(samples, 256, 0ms) == 256);
+	CHECK(feed.held() == 0);
+	feed.clear();
+	CHECK(feed.dropped().forgotten == 256); // the library forgets them at a stream's end, so they are never told
+
+	Feed plain(2, capacity);
+	fill(samples, 0, capacity);
+	REQUIRE(plain.write(samples, capacity, 0ms) == capacity);
+	CHECK(plain.write(samples, 1, 0ms) == 0);
+	CHECK(plain.dropped().total == 0);
+}

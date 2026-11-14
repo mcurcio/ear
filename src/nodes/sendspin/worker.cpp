@@ -287,20 +287,31 @@ void Worker::writeAudio(const std::uint8_t* pcm, std::size_t bytes, std::int64_t
 	source_->write_audio(pcm, bytes, stampUs);
 }
 
-Notifier::Notifier(Loop& self, const EventFd& bell, const Mailbox<PlayProgress>& progress, PlayerSlot& player) noexcept
-	: self_(self), bell_(bell), progress_(progress), player_(player) {}
+Notifier::Notifier(Loop& self, const EventFd& bell, const Mailbox<PlayProgress>& progress, const Feed& feed,
+                   PlayerSlot& player) noexcept
+	: self_(self), bell_(bell), progress_(progress), feed_(feed), player_(player) {}
 
 void Notifier::begin() {
 	watch_ = self_.onReadable(bell_.fd(), [this] { notify(); });
 }
 
+/// Two tellers, one report: the code's frames, and those the feed's writer played into nothing while the graph did not
+/// drain it (docs/node-types.md#clock). The finish is the code's when it played anything since the last report (the
+/// graph is live), else the feed's. Dropped frames of a stream since ended are not told: the library forgot them.
 void Notifier::notify() {
 	bell_.drain();
 	const std::optional<PlayProgress> progress = progress_.read();
-	if (!progress || progress->totalFrames == reported_) return;
+	const std::uint64_t played = progress ? progress->totalFrames : reported_;
+	const Feed::Dropped dropped = feed_.dropped();
+	const std::uint64_t droppedFrom = std::max(reportedDropped_, dropped.forgotten);
+	const std::uint64_t droppedNow = dropped.total > droppedFrom ? dropped.total - droppedFrom : 0;
+	if (played == reported_ && droppedNow == 0) return;
+	const std::int64_t finishRawNs = played != reported_ ? progress->finishRawNs : dropped.finishRawNs;
 	// Before the client started nothing is told and nothing counted told: the library learns it all at its first report.
-	if (player_.notify(static_cast<std::uint32_t>(progress->totalFrames - reported_), progress->finishRawNs / 1000))
-		reported_ = progress->totalFrames;
+	if (player_.notify(static_cast<std::uint32_t>(played - reported_ + droppedNow), finishRawNs / 1000)) {
+		reported_ = played;
+		reportedDropped_ = std::max(reportedDropped_, dropped.total);
+	}
 }
 
 std::uint16_t requiredLeadMs(std::uint32_t feedFrames, std::uint32_t maxBlock, SampleRate rate) noexcept {

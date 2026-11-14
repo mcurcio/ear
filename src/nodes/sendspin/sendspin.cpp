@@ -17,8 +17,10 @@ Configured Sendspin::configure(CreateOf<spec>& cx, const Checked& s) {
 	if (!settings.server) cx.claim(claim::TcpListen(settings.port));
 	const AudioFormat format = cx.format();
 	const std::uint32_t feedFrames = feedFramesFor(format);
-	feed_ = std::make_unique<Feed>(nodeChannels, feedFrames);
+	// The library's own thread is never held back long by a graph that does not drain the feed (a stop, a long stall):
+	// past undrainedBound the feed drops what it is given at the graph's rate (docs/node-types.md#clock).
 	bell_ = std::make_unique<EventFd>();
+	feed_ = std::make_unique<Feed>(nodeChannels, feedFrames, FeedDrain{.rate = format.rate, .bell = bell_.get()});
 
 	cx.loop(worker, std::make_unique<Worker>(WorkerParts{.handle = node_.handle(),
 	                                                     .keys = cx.store(keyFile),
@@ -27,7 +29,7 @@ Configured Sendspin::configure(CreateOf<spec>& cx, const Checked& s) {
 	                                                     .self = cx.executor(worker),
 	                                                     .settings = std::move(settings),
 	                                                     .format = format}));
-	cx.loop(notifier, std::make_unique<Notifier>(cx.executor(notifier), *bell_, progress_, player_));
+	cx.loop(notifier, std::make_unique<Notifier>(cx.executor(notifier), *bell_, progress_, *feed_, player_));
 	// Staged until the node is configured: so the key store is open and trusted, and the sink's consumer began, before
 	// the worker's first tick makes the client.
 	cx.post(worker, [](Worker& state) { state.begin(); });
