@@ -9,6 +9,7 @@
 #include <chrono>
 #include <expected>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include "ear/core/graph_spec.hpp"
@@ -24,9 +25,16 @@ struct RecordingRequest {
 /// A recording's open is a readiness item with this bound (docs/engine.md#readiness-deadlines).
 inline constexpr std::chrono::milliseconds recordingBound{5'000};
 
+/// The recording path rule, the one home of it: why `path` may not name a recording (it is absolute, or has a ".."
+/// component, so it could leave the folder or name one file by two claims), else nothing. CreateOf::recording refuses
+/// such a path (the node fails start-failed "cannot open <path>: <why>"); a type whose setting is a path checks it at
+/// parse with this, so the edit is refused before any node starts ("file"'s check).
+std::optional<std::string> recordingPathRefused(std::string_view path);
+
 /// A recording's claim value: `path` with its "." and empty components removed ("./take//1.wav" is "take/1.wav"), so
-/// two spellings of one path are one claim. Symlinks are not followed: two paths that reach one file through a symlink
-/// are two claims.
+/// two spellings of one path are one claim (a path the rule above refuses never reaches a claim). Symlinks are not
+/// followed: two paths that reach one file through a symlink inside the folder are two claims
+/// (docs/writing-a-node-type.md#recordings says why).
 std::string recordingClaimPath(std::string_view path);
 
 /// A recording as a type sees it (cx.recording(request)): valid from configure until the configuration is freed

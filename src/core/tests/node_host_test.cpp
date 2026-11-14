@@ -3162,15 +3162,21 @@ TEST_CASE("A recording a configuration leaked at the close deadline keeps refuse
 	                           "not close; it starts when that closes");
 	CHECK(linesOf(f.log, "recording b take.wav") == 0);      // nothing of it opened, the file never truncated
 	CHECK(linesOf(f.log, "recording closed take.wav") == 0); // the leaked configuration's sink may still write it
+	REQUIRE(f.sinks.made.size() == 2);
+	f.sinks.made[1]->runClose(); // the refused node's failed configuration is gone first, so its restart is at once
+	f.settle();
 	f.log.clear();
 
-	finishEverySink(f); // the leaked configuration's sink (then the refused node's) finally drains
+	finishEverySink(f); // the leaked configuration's sink finally drains
 	CHECK(linesOf(f.log, "diagnostic a ear.close-late ms=10000") == 1);
 	CHECK(std::ranges::count(f.diagnostics.details, std::string("the configuration leaked at the close deadline closed "
 	                                                            "10000 ms after its close began; its claims are "
 	                                                            "released")) == 1);
-	CHECK(linesOf(f.log, "recording closed take.wav") == 1); // freed after its late close, on the I/O executor
+	CHECK(linesOf(f.log, "recording closed take.wav") == 1); // closed at its late close, on the I/O executor
 	CHECK(indexOf(f.log, "diagnostic a ear.close-late ms=10000") < indexOf(f.log, "recording b take.wav"));
+	// The leaked file's close is on the I/O executor before the refused node's open truncates the path.
+	CHECK(indexOf(f.log, "io close recording take.wav") < indexOf(f.log, "io open recording take.wav"));
+	CHECK(indexOf(f.log, "recording closed take.wav") < indexOf(f.log, "recording b take.wav"));
 	CHECK(newestOf(f, "b").state == NodeState::running);
 	CHECK(std::ranges::count(f.listener.phases("b"), std::string("configuring (retry)")) == 1);
 	CHECK(f.host.leaked() == 0);
@@ -4930,6 +4936,38 @@ TEST_CASE("A configure that threw after it asked for a recording opens nothing: 
 	f.stopAll();
 	finishEverySink(f);
 	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A recording path that is absolute or has a .. component fails its node start-failed, nothing claimed or "
+          "opened, whatever the type checked",
+          "[node_host][recording]") {
+	const std::string why = R"(must be relative to the recordings folder, without "..")";
+	for (const std::string path : {"/tmp/take.wav", "../take.wav", "sub/../take.wav", "sub/..", ".."}) {
+		INFO(path);
+		CHECK(recordingPathRefused(path) == why);
+		Fixture f;
+		auto config = std::make_shared<ProbeConfig>(f.log);
+		config->onConfigure = [&](InstanceContexts& cx) -> Configured {
+			static_cast<void>(cx.create.recording(RecordingRequest{path}));
+			cx.create.use(std::make_unique<TestAudioCode>(f.log));
+			return Configured::applied();
+		};
+		f.add("rec", config);
+		f.settle();
+		CHECK(failureOf(f, "rec") == "start-failed: cannot open " + path + ": " + why);
+		CHECK(std::ranges::none_of(f.log, [](const std::string& line) { return line.starts_with("io "); }));
+		f.add("other", recordingConfig(f.log, "take.wav")); // "sub/../take.wav" claimed nothing
+		f.blocks.events.at(1)->ready();
+		f.settle();
+		CHECK(f.host.health().back().state == NodeState::running);
+		f.stopAll();
+		finishEverySink(f);
+		CHECK(f.allGone == 1);
+	}
+	for (const std::string path : {"take.wav", "./take.wav", "sub/take.wav", "..take.wav", "take..wav"}) {
+		INFO(path);
+		CHECK_FALSE(recordingPathRefused(path));
+	}
 }
 
 TEST_CASE("One path asked for twice in one configuration is the type's bug, however it is spelled",

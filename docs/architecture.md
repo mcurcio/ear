@@ -666,7 +666,8 @@ record ear keeps for it, so nothing it tells reaches the node or a newer configu
   since its threads may still write them, refusing a claimant `<file>: held by node <n>'s earlier
   configuration, which did not close; it starts when that closes`. The record lists each node its
   claims refuse that way, and each refused by a fresh probe of a port it abandoned.
-- **The late close.** Once everything it held has reported, its claims are released, the record
+- **The late close.** Once everything it held has reported, its recordings' closes are posted to
+  the I/O thread (so they come before any open of their paths that follows), its claims are released, the record
   says `ear.close-late` ([output-records.md](output-records.md#diagnostic); `; its claims are
   released` when it still held one), each node its claims refused is started again, once, as
   `node.restart` would (if that refusal is still what it rests failed on), the channel is detached, and the

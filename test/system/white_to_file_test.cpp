@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <csignal>
 #include <filesystem>
+#include <fstream>
 #include <string>
 
 #include "ear_system.hpp"
@@ -140,4 +141,25 @@ TEST_CASE("A second file node on one path is refused held by node <first>, and a
 	CHECK(waitForStop(ear) == 0);
 	checkAllRecords(ear);
 	checkNoiseOnOneChannel(take, 1, 48000); // c's: it truncated the path when it opened it
+}
+
+TEST_CASE("A file node whose path is a symlink in the recordings folder leading outside it fails start-failed, the "
+          "file outside untouched",
+          "[system][file]") {
+	TempDirectory directory;
+	std::filesystem::create_directories(directory.recordings());
+	const auto outside = directory.path() / "outside.wav";
+	std::ofstream(outside, std::ios::binary) << "keep";
+	std::filesystem::create_symlink(outside, directory.recordings() / "out.wav");
+	writeGraphFile(directory, graphFileText("node white noise;\n"
+	                                        "node file rec { path \"out.wav\"; }\n"
+	                                        "route noise:noise.mono rec:record.left;\n"));
+	ChildProcess ear(EAR_BINARY, earArguments(directory));
+	const bool failed =
+		ear.waitForLine("node rec failed start-failed: cannot open out.wav: it leads outside the folder", deadline);
+	INFO("ear printed:\n" << ear.output());
+	CHECK(failed);
+	ear.signal(SIGTERM);
+	CHECK(waitForStop(ear) == 0);
+	CHECK(readText(outside) == "keep");
 }

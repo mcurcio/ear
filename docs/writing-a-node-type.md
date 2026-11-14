@@ -570,9 +570,21 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
 | `path()` | The path as asked, relative to the recordings folder |
 | `descriptor()` | Any thread, once opened: the file's descriptor, the framework's (never close it: libsndfile takes it with `sf_open_fd(fd, mode, &info, SF_FALSE)`). Read before its open completed (in `configure`) is a `std::logic_error`: the node fails |
 
+- **The path rule.** A path is relative to the recordings folder, with no `..` component: one home,
+  `recordingPathRefused` (`ear/core/recording.hpp`), which `cx.recording` enforces whatever the type checked. A path
+  reaches a type from its settings, so a refused one is the node's failure, not the type's bug: `start-failed: cannot
+  open ../take.wav: must be relative to the recordings folder, without ".."`, at configure's return, nothing claimed or
+  opened. A type whose setting is a path checks it at parse with the same function, so the edit is refused as
+  `invalid-settings` before any node starts (`file`'s `path: must be relative to the recordings folder, without
+  ".."`).
 - **Claimed first.** Its path is a [claim](#claims), `recording:<path>` with the path's `.` and empty components
-  removed (`./take//1.wav` is `recording:take/1.wav`; a symlink is not followed, so two paths that reach one file
-  through one are two claims). A path another node's configuration holds is refused before anything is opened, so
+  removed (`./take//1.wav` is `recording:take/1.wav`). A symlink inside the folder is not followed, so two spellings
+  that reach one file through one are two claims and the second open truncates the first one's file. Telling them
+  apart would need the file's identity (`st_dev`, `st_ino`), which only an open can read: either after a truncating
+  open, too late, or by an open in two phases (open, compare among the open recordings on the I/O thread, then
+  truncate) that would refuse where a claim waits (a removal and an addition in one edit) and owe nothing to a leaked
+  holder's late close. The recordings folder is ear's, written only by its `file` nodes, so such a symlink is the
+  operator's own; ear leaves it to them. A path another node's configuration holds is refused before anything is opened, so
   the other node's file is never truncated: `start-failed: cannot open take1.wav: held by node a`; one held by a
   configuration that is closing (a removal and an addition on one path in one edit) waits for its last step. One path
   asked for twice in one configuration, however spelled, is the type's bug: `start-failed: configure threw:
@@ -591,7 +603,8 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
   open are jobs on that one thread in order, so the next configuration's truncation comes after the close. An open
   still on the I/O thread when its configuration ended tells nothing, and its file is closed on the I/O thread. A
   leaked configuration keeps its recordings and their claims until it closes late (its sink may still write the
-  file).
+  file); then each one's close is posted to the I/O thread before its claims are released, so a node its claims
+  refused, started again then, opens the path after the close.
 - **Faults.** A bug of the recordings' adapter (its `std::logic_error`, or no file made) fails the node `lost`,
   `internal error in RecordingAdapter::open: <what>`, said first in an `ear.internal-error` record whose `where` is
   `the I/O job open recording <path>` ([architecture.md](architecture.md#faults-by-owner)); any other throw (no

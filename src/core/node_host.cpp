@@ -98,6 +98,7 @@
 #include "caught.hpp"
 #include "claims.hpp"
 #include "completions.hpp"
+#include "io_opens.hpp"
 #include "note_gate.hpp"
 #include "readiness.hpp"
 #include "stores.hpp"
@@ -574,11 +575,15 @@ struct NodeHost::Impl {
 			});
 		}
 		/// A recording (docs/writing-a-node-type.md#recordings): nothing opened here. Its path is claimed at readiness
-		/// step `claims` and the file opened at step `opens`; a host with no recordings adapter fails the node at
-		/// configure's return, "cannot open <path>: no recordings folder".
+		/// step `claims` and the file opened at step `opens`. A path the recording path rule refuses (it reaches a
+		/// type from its settings, so it is the node's failure, not the type's bug) and a host with no recordings
+		/// adapter fail the node at configure's return, "cannot open <path>: <why>".
 		Recording& recording(const RecordingRequest& request) override {
 			return guarded([&]() -> Recording& {
 				requireConfiguring("recording");
+				if (auto refused = recordingPathRefused(request.path))
+					return *config_->recordings.emplace_back(
+						std::make_unique<RecordingSlot>(request.path, nullptr, name_, std::move(*refused)));
 				const std::string claimed = recordingClaimPath(request.path);
 				for (const auto& slot : config_->recordings)
 					if (slot->claimPath() == claimed)
@@ -1414,19 +1419,6 @@ struct NodeHost::Impl {
 				});
 			}
 		};
-		/// A store adapter's throw in a job, caught on the I/O thread.
-		struct StoreFault {
-			std::string callback;
-			std::string what;
-		};
-		/// The open's outcome, carried by its completion. Its state is the job's handle: dropped, it goes back to the I/O
-		/// thread and is released there.
-		struct OpenedStore {
-			std::shared_ptr<detail::StoreState> state;
-			std::expected<void, std::string> outcome;
-			std::optional<StoreFault> fault;
-		};
-
 		/// One declared store of a configuration (docs/writing-a-node-type.md#stores): the type's view of it, its state
 		/// (shared with its jobs), its readiness item, and the ReadyEvents its open's completion tells on the main loop.
 		/// Its open and writes run on the store adapter's I/O executor, each job holding only the state and the
@@ -1499,32 +1491,28 @@ struct NodeHost::Impl {
 				node_.storeFailed(link_.generation, link_.index, std::move(detail));
 			}
 
-			/// Main thread, at readiness step `opens`: the open, one job on the I/O executor; its completion lands on the
-			/// main loop through the configuration's Completions (postHolding), so once the configuration ended it is
-			/// dropped and its state released on the I/O thread.
+			/// Main thread, at readiness step `opens`: the open, one job on the I/O executor (detail::postIoOpen); any
+			/// throw of the adapter's there is its bug.
 			void open() {
-				IoExecutor& io = state_->adapter.io();
-				io.post("open store " + state_->file, [state = state_, link = link_, io = &io]() mutable {
-					auto opened = std::make_shared<OpenedStore>();
-					opened->state = state;
-					try {
-						opened->outcome = state->open();
-					} catch (...) {
-						opened->fault =
-							StoreFault{std::string(state->calling), detail::whatOf(std::current_exception())};
-					}
-					const std::string release = "release store " + state->file;
-					state.reset(); // the completion's handle holds it now
-					link.completions->postHolding<OpenedStore>(
-						std::move(opened), *io, release,
-						[host = link.host, serial = link.serial, generation = link.generation,
-					     index = link.index](OpenedStore& done) {
-							host->inputFor(serial, [generation, index, outcome = std::move(done.outcome),
-						                            fault = std::move(done.fault)](Node& node) mutable {
-								node.storeOpened(generation, index, std::move(outcome), std::move(fault));
-							});
+				detail::postIoOpen(
+					state_->adapter.io(), "open store " + state_->file, "release store " + state_->file, state_,
+					link_.completions,
+					[](detail::StoreState& state) -> detail::IoOpened {
+						try {
+							return {state.open(), std::nullopt};
+						} catch (...) {
+							return {
+								{},
+								detail::IoFault{std::string(state.calling), detail::whatOf(std::current_exception())}};
+						}
+					},
+					[host = link_.host, serial = link_.serial, generation = link_.generation, index = link_.index](
+						std::expected<void, std::string> outcome, std::optional<detail::IoFault> fault) {
+						host->inputFor(serial, [generation, index, outcome = std::move(outcome),
+					                            fault = std::move(fault)](Node& node) mutable {
+							node.storeOpened(generation, index, std::move(outcome), std::move(fault));
 						});
-				});
+					});
 			}
 
 			std::size_t item = detail::noReadiness; // its readiness item: ready once its open trusted it
@@ -1569,76 +1557,74 @@ struct NodeHost::Impl {
 			std::string path;
 			std::unique_ptr<RecordingFile> file; // the open job's, then read-only
 		};
-		/// The open's outcome, carried by its completion. Its state is the job's handle: dropped, it goes back to the I/O
-		/// thread and is released there.
-		struct OpenedRecording {
-			std::shared_ptr<RecordingState> state;
-			std::expected<void, std::string> outcome;
-			std::optional<StoreFault> fault; // the adapter's bug: its std::logic_error, or no file made
-		};
 
 		/// One recording of a configuration (docs/writing-a-node-type.md#recordings): the type's view of it, its claim's
 		/// path, its readiness item, and its state (shared with its jobs). Opened at readiness step `opens` as one job
-		/// on the recordings adapter's I/O executor, completing through the configuration's Completions (postHolding),
-		/// so nothing of it lands once the configuration ended; closed on the I/O thread when the slot goes (teardown
+		/// on the recordings adapter's I/O executor (detail::postIoOpen), so nothing of it lands once the configuration
+		/// ended; closed on the I/O thread when the slot goes (teardown
 		/// step 5, after the sinks that write it), so a later open of the path, posted after, runs after the close.
 		class RecordingSlot final : public Recording {
 		public:
-			RecordingSlot(std::string path, RecordingAdapter* adapter, const NodeName& node)
-				: path_(std::move(path)), claimPath_(recordingClaimPath(path_)),
+			/// `refused`: why the path rule refuses it (then `adapter` is null, and nothing is claimed or opened).
+			RecordingSlot(std::string path, RecordingAdapter* adapter, const NodeName& node,
+			              std::optional<std::string> refused = std::nullopt)
+				: path_(std::move(path)), claimPath_(recordingClaimPath(path_)), refused_(std::move(refused)),
 				  state_(adapter == nullptr
 			                 ? nullptr
 			                 : std::make_shared<RecordingState>(RecordingState{*adapter, node, path_, {}})) {}
 			RecordingSlot(const RecordingSlot&) = delete;
 			RecordingSlot& operator=(const RecordingSlot&) = delete;
-			~RecordingSlot() {
+			~RecordingSlot() { close(); }
+			/// Main thread, once nothing writes it any more (teardown step 5, or a leaked configuration's late close
+			/// before it releases its claims): its file's last reference goes to the I/O executor, closed there. Once.
+			void close() noexcept {
 				if (!state_) return;
+				opened_.store(false, std::memory_order_release);
 				IoExecutor& io = state_->adapter.io();
 				try {
 					io.post("close recording " + path_, [state = std::move(state_)]() mutable { state.reset(); });
 				} catch (...) { // no memory to post: closed here, the last resort
 				}
+				state_.reset();
 			}
 			int descriptor() const override {
 				if (!opened_.load(std::memory_order_acquire))
-					throw std::logic_error("recording " + path_ + "'s descriptor was read before it was opened");
+					throw std::logic_error("recording " + path_ + "'s descriptor was read while it was not open");
 				return state_->file->descriptor();
 			}
 			const std::string& path() const noexcept override { return path_; }
 			const std::string& claimPath() const noexcept { return claimPath_; }
+			const std::optional<std::string>& refused() const noexcept { return refused_; }
 
-			/// Main thread, at readiness step `opens`: the open, one job on the I/O executor; its completion lands on the
-			/// main loop through the configuration's Completions, which drop it once the configuration ended, its state
-			/// then released on the I/O thread.
+			/// Main thread, at readiness step `opens`: the open, one job on the I/O executor (detail::postIoOpen). The
+			/// adapter's std::logic_error, or no file made, is its bug; any other throw its refusal, as an error is.
 			void open(Impl* host, std::uint64_t serial, std::uint64_t generation, std::size_t index,
-			          const std::shared_ptr<detail::Completions>& completions) {
-				IoExecutor& io = state_->adapter.io();
-				io.post("open recording " + path_, [state = state_, completions, io = &io, host, serial, generation,
-				                                    index]() mutable {
-					auto opened = std::make_shared<OpenedRecording>();
-					opened->state = state;
-					try {
-						auto file = state->adapter.open(state->node, state->path);
-						if (!file) opened->outcome = std::unexpected(std::move(file.error()));
-						else if (*file == nullptr)
-							opened->fault =
-								StoreFault{"RecordingAdapter::open", "the recording adapter opened no file"};
-						else state->file = std::move(*file);
-					} catch (const std::logic_error&) {
-						opened->fault = StoreFault{"RecordingAdapter::open", detail::whatOf(std::current_exception())};
-					} catch (...) { // a refusal (no descriptor, no memory), as an error is
-						opened->outcome = std::unexpected(detail::whatOf(std::current_exception()));
-					}
-					const std::string release = "release recording " + state->path;
-					state.reset(); // the completion's handle holds it now
-					completions->postHolding<OpenedRecording>(
-						std::move(opened), *io, release, [host, serial, generation, index](OpenedRecording& done) {
-							host->inputFor(serial, [generation, index, outcome = std::move(done.outcome),
-						                            fault = std::move(done.fault)](Node& node) mutable {
-								node.recordingOpened(generation, index, std::move(outcome), std::move(fault));
-							});
+			          std::shared_ptr<detail::Completions> completions) {
+				detail::postIoOpen(
+					state_->adapter.io(), "open recording " + path_, "release recording " + path_, state_,
+					std::move(completions),
+					[](RecordingState& state) -> detail::IoOpened {
+						constexpr const char* callback = "RecordingAdapter::open";
+						try {
+							auto file = state.adapter.open(state.node, state.path);
+							if (!file) return {std::unexpected(std::move(file.error())), std::nullopt};
+							if (*file == nullptr)
+								return {{}, detail::IoFault{callback, "the recording adapter opened no file"}};
+							state.file = std::move(*file);
+							return {};
+						} catch (const std::logic_error&) {
+							return {{}, detail::IoFault{callback, detail::whatOf(std::current_exception())}};
+						} catch (...) {
+							return {std::unexpected(detail::whatOf(std::current_exception())), std::nullopt};
+						}
+					},
+					[host, serial, generation, index](std::expected<void, std::string> outcome,
+				                                      std::optional<detail::IoFault> fault) {
+						host->inputFor(serial, [generation, index, outcome = std::move(outcome),
+					                            fault = std::move(fault)](Node& node) mutable {
+							node.recordingOpened(generation, index, std::move(outcome), std::move(fault));
 						});
-				});
+					});
 			}
 			/// Main thread: its open landed and made the file; the descriptor may be read from now on.
 			void opened() noexcept { opened_.store(true, std::memory_order_release); }
@@ -1648,6 +1634,7 @@ struct NodeHost::Impl {
 		private:
 			const std::string path_;      // as asked
 			const std::string claimPath_; // its claim's value
+			const std::optional<std::string> refused_;
 			std::shared_ptr<RecordingState> state_;
 			std::atomic<bool> opened_{false};
 		};
@@ -1822,14 +1809,17 @@ struct NodeHost::Impl {
 					closedLate();
 				}
 			}
-			/// Everything it held reported: its claims released and said, no longer counted, and each node its claims
-			/// refused started again, once (R15); then freed in a turn of its own (never inside the close that called
-			/// this), as teardown step 5 frees a configuration that closed in time.
+			/// Everything it held reported: its recordings' closes posted to the I/O thread first, so they come
+			/// before any open of their paths that releasing its claims allows; its claims released and said, no
+			/// longer counted, and each node its claims refused started again, once (R15); then freed in a turn of its
+			/// own (never inside the close that called this), as teardown step 5 frees a configuration that closed in
+			/// time.
 			void closedLate() {
 				if (closed_) return;
 				closed_ = true;
 				config_->channel->detach();
 				--host_.leaked;
+				for (const auto& recording : config_->recordings) recording->close();
 				const bool held = host_.claims.holds(generation_);
 				host_.claimsDecided(host_.claims.release(generation_));
 				const auto refused = host_.refusedByLeaked.extract(generation_);
@@ -2326,6 +2316,10 @@ struct NodeHost::Impl {
 				return failConfigure(lc::Fact::configureFailed, "no loops in this host");
 			if (!c.instance->stores().empty() && host_.resources.stores() == nullptr)
 				return failConfigure(lc::Fact::configureFailed, "no stores in this host");
+			for (const auto& slot : c.recordings)
+				if (slot->refused())
+					return failConfigure(lc::Fact::configureFailed,
+					                     "cannot open " + slot->path() + ": " + *slot->refused());
 			if (!c.recordings.empty() && host_.resources.recordings() == nullptr)
 				return failConfigure(lc::Fact::configureFailed,
 				                     "cannot open " + c.recordings.front()->path() + ": no recordings folder");
@@ -2418,15 +2412,9 @@ struct NodeHost::Impl {
 			const auto storeSeconds = std::chrono::duration_cast<std::chrono::seconds>(storeBound).count();
 			for (std::size_t i = 0; i < c.stores.size(); ++i) {
 				StoreSlot& slot = *c.stores[i];
-				slot.item = c.readiness.add(detail::ReadinessItem{
-					.kind = WaitingFor::Kind::store,
-					.name = slot.fileName(),
-					.step = detail::ReadinessStep::opens,
-					.bound = storeBound,
-					.fact = lc::Fact::configureFailed,
-					.overdue = [text = slot.fileName() + ": not opened within " + std::to_string(storeSeconds) +
-				                       " s"] { return text; },
-				});
+				slot.item = c.readiness.add(
+					detail::ioOpenItem(WaitingFor::Kind::store, slot.fileName(), storeBound,
+				                       slot.fileName() + ": not opened within " + std::to_string(storeSeconds) + " s"));
 				c.itemOwners.push_back({Family::store, i});
 			}
 			// Each recording at step `opens`, after the stores, in request order, bounded: its open is one job on the
@@ -2434,15 +2422,9 @@ struct NodeHost::Impl {
 			const auto recordingSeconds = std::chrono::duration_cast<std::chrono::seconds>(recordingBound).count();
 			for (std::size_t i = 0; i < c.recordings.size(); ++i) {
 				RecordingSlot& slot = *c.recordings[i];
-				slot.item = c.readiness.add(detail::ReadinessItem{
-					.kind = WaitingFor::Kind::recording,
-					.name = slot.path(),
-					.step = detail::ReadinessStep::opens,
-					.bound = recordingBound,
-					.fact = lc::Fact::configureFailed,
-					.overdue = [text = "cannot open " + slot.path() + ": not opened within " +
-				                       std::to_string(recordingSeconds) + " s"] { return text; },
-				});
+				slot.item = c.readiness.add(detail::ioOpenItem(WaitingFor::Kind::recording, slot.path(), recordingBound,
+				                                               "cannot open " + slot.path() + ": not opened within " +
+				                                                   std::to_string(recordingSeconds) + " s"));
 				c.itemOwners.push_back({Family::recording, i});
 			}
 			// Each loop at step `loops`, with no bound: an adapter tells at once whether its thread started.
@@ -2608,7 +2590,7 @@ struct NodeHost::Impl {
 		/// Store `index`'s open landed (attached, so this configuration's): a fault of the adapter's fails the node lost;
 		/// otherwise its ReadyEvents hear it.
 		void storeOpened(std::uint64_t generation, std::size_t index, std::expected<void, std::string> outcome,
-		                 std::optional<StoreFault> fault) {
+		                 std::optional<detail::IoFault> fault) {
 			if (!current(generation) || index >= config_->stores.size()) return;
 			StoreSlot& slot = *config_->stores[index];
 			if (fault) return ioJobFaulted(generation, "open store " + slot.fileName(), fault->callback, fault->what);
@@ -2619,7 +2601,7 @@ struct NodeHost::Impl {
 		/// Recording `index`'s open landed (attached, so this configuration's): a fault of the adapter's fails the node
 		/// lost (ear.internal-error); a refusal fails it start-failed "cannot open <path>: <why>"; a file made is ready.
 		void recordingOpened(std::uint64_t generation, std::size_t index, std::expected<void, std::string> outcome,
-		                     std::optional<StoreFault> fault) {
+		                     std::optional<detail::IoFault> fault) {
 			if (!current(generation) || index >= config_->recordings.size()) return;
 			RecordingSlot& slot = *config_->recordings[index];
 			if (fault) return ioJobFaulted(generation, "open recording " + slot.path(), fault->callback, fault->what);
