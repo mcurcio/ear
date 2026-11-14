@@ -55,7 +55,9 @@ export function NodeTextBox({
 
   return (
     <div className="node-text">
-      <label htmlFor={`node-text-${node}`}>Its text in ear.conf</label>
+      <label htmlFor={`node-text-${node}`}>
+        Its text in ear.conf{box.base.text.kind !== "own" && " (read-only)"}
+      </label>
       {box.stale && (
         <div className="banner banner-connection" role="status">
           {node} changed in ear.conf; reload{" "}

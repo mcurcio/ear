@@ -108,8 +108,9 @@ only that statement. The rules:
   `file-changed`, the box goes stale ("rec changed in ear.conf; reload") and keeps the draft until
   the person reloads.
 - **Read-only when it cannot be replaced.** A node written in a snippet (`shared`) shows that
-  statement greyed, with where it is and that the pane edits it; while `ear.conf` has errors there
-  are no `nodeTexts` and the box says to fix them in the pane. Neither offers Save.
+  statement on a grey surface, its label saying "(read-only)", with where it is and that the pane
+  edits it; while `ear.conf` has errors there are no `nodeTexts` and the box says to fix them in
+  the pane. Neither offers Save. The text keeps its full contrast: it is never dimmed.
 
 ## Highlighting
 
@@ -123,7 +124,8 @@ the browser's knobly never accepts, refuses or diagnoses a text. The rules:
   stale and dirty logic and what Save and Add send are as above. Its glyphs are transparent; a
   highlighted copy of what it shows is drawn behind it (a `pre`, hidden from screen readers) with
   the same font, size, line height, padding, border and tabs and no wrapping, and follows its
-  scroll. No editor library is added.
+  scroll. No editor library is added. Under forced colours (Windows high contrast) the copy is
+  hidden and the textarea draws its text in the system's colours.
 - **The copy is what the textarea shows.** A textarea holds `\n` only, so the copy is the value
   with each `\r\n` and lone `\r` as `\n`; the value itself is never changed. `highlight.test.tsx`
   checks that the runs drawn join to exactly that text and that the textarea, the pane's Save, the
@@ -131,8 +133,8 @@ the browser's knobly never accepts, refuses or diagnoses a text. The rules:
 - **knobly's classes, the editor's palette.** Each token is drawn by knobly's highlight class
   (`directive`, `keyword`, `word`, `variable`, `number`, `string`, `comment`, `punctuation`,
   `space`, `error`), each a CSS token (`--knobly-directive`, ...) on `.knobly-text` taken from the
-  editor's colours, with a dark set under `prefers-color-scheme: dark`. The rest of the editor has
-  no dark theme yet, so in a dark system theme the boxes are dark in the light panel. A class this
+  editor's colours, each shade at 4.5:1 or better on the white and the read-only grey surface. The
+  tokens are light only: a dark set waits for an editor-wide dark theme. A class this
   editor does not know is drawn plainly. An `error` span is a token that does not lex (a stray
   character, an unterminated string), never a diagnostic: those are ear's, listed under the box.
 

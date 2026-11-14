@@ -373,17 +373,14 @@ body,
 }
 
 /* The node panel's knobly box (docs/editor.md#the-node-panels-text): the pane's text style; a read-only one (a
-   snippet's node, a file with errors) is greyed, with the note saying why. */
+   snippet's node, a file with errors) is on a grey surface at full contrast, its label saying "(read-only)" and the
+   note why. */
 .node-text {
   margin: 8px 0 4px;
 }
 
 .node-text .knobly-text-readonly {
   --knobly-surface: var(--knobly-surface-readonly);
-}
-
-.node-text .knobly-text-readonly .knobly-text-shown {
-  opacity: 0.75;
 }
 
 .node-text-note {
@@ -395,45 +392,27 @@ body,
 /* knobly's highlighting (docs/editor.md#highlighting), display only: the textarea on top holds the text, caret and
    selection with its glyphs transparent; the highlighted copy behind it draws them. Both boxes share every metric
    (font, size, line height, padding, border, tabs, no wrapping), so each glyph lies under its caret position. The
-   colours are tokens, each class's taken from the editor's palette (the selection blue, the warnings' amber and
-   brown, the meters' green, the errors' red, the type's grey), with a dark set for a dark system theme. */
+   colours are tokens from the editor's palette (its blue, the warnings' amber and brown, the meters' green, the
+   errors' red), each a shade at 4.5:1 or better on both the white and the read-only grey surface. */
 .knobly-text {
   --knobly-surface: #fff;
   --knobly-surface-readonly: #f1f3f5;
   --knobly-border: #adb5bd;
   --knobly-text: #212529;
-  --knobly-directive: #1c7ed6;
+  --knobly-directive: #1864ab;
   --knobly-keyword: #a35200;
   --knobly-variable: #8a6100;
-  --knobly-number: #2b8a3e;
+  --knobly-number: #2b7a3a;
   --knobly-string: #a61e1e;
-  --knobly-comment: #777;
+  --knobly-comment: #666;
   --knobly-punctuation: #495057;
-  --knobly-error: #e03131;
+  --knobly-error: #c92a2a;
   --knobly-error-surface: #ffe3e3;
   position: relative;
   background: var(--knobly-surface);
   border-radius: 2px;
 }
 
-@media (prefers-color-scheme: dark) {
-  .knobly-text {
-    --knobly-surface: #1f2328;
-    --knobly-surface-readonly: #2c3036;
-    --knobly-border: #495057;
-    --knobly-text: #dee2e6;
-    --knobly-directive: #74c0fc;
-    --knobly-keyword: #ffa94d;
-    --knobly-variable: #ffd43b;
-    --knobly-number: #8ce99a;
-    --knobly-string: #ffa8a8;
-    --knobly-comment: #909296;
-    --knobly-punctuation: #adb5bd;
-    --knobly-error: #ff8787;
-    --knobly-error-surface: #5c1f1f;
-    color-scheme: dark;
-  }
-}
 
 .knobly-text-shown,
 .panel .knobly-text-input {
@@ -515,4 +494,16 @@ body,
 .hl-error {
   color: var(--knobly-error);
   background: var(--knobly-error-surface);
+}
+
+/* Forced colours (Windows high contrast): the plain textarea in the system's colours, no copy behind it. */
+@media (forced-colors: active) {
+  .knobly-text-shown {
+    display: none;
+  }
+
+  .panel .knobly-text-input {
+    color: CanvasText;
+    background: Canvas;
+  }
 }
