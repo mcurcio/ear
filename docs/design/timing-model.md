@@ -213,7 +213,7 @@ model, none a count the sink keeps across ticks. The rule this page adds, for th
 skips, pads or re-dates audio; a consumer whose destination has a clock (sendspin's `to`, a later RTP sender)
 reconciles in its consumer from the chunk's facts** (writing silence for `lostFrames`, dating by `enteredRawNs`).
 `Chunk` and `ChunkStamp` do not change. Whether a capture's chunks in a catch-up's burst want `overdueNs` too is not
-known [U: measured when `to` becomes a sink in S3c.6; captured audio waits in the card's buffer through a stall, so the
+known [U: measured in S3c.6d, after `to` becomes a sink in S3c.6b; captured audio waits in the card's buffer through a stall, so the
 driver's nominal start may date it better than when the tick ran, the reverse of playback].
 
 ### 4.6 Found building T3
@@ -592,7 +592,7 @@ price, the same as C4's.
 `untoldSince_`, as the deferral's bound only; `code_test.cpp`'s rows for the deferral and its bound;
 `cmake/sendspin-starved-floor.patch` with its library test and upstream report (6.5);
 `cmake/sendspin-late-chunk.patch` and its gap test; `StallProbe` and the in-block stalls (6.4 uses them);
-`Feed::dryReads`, `dryFrames` until S3c.6 (then the source's shortfall); the settle causes `dry` and `logged`.
+`Feed::dryReads`, `dryFrames` until S3c.6c (then `SendspinClock`'s seams, `node-primitives.md` 0.3, not the companion's shortfall); the settle causes `dry` and `logged`.
 
 ### 6.4 The tests that replace C4's
 
@@ -656,8 +656,8 @@ stale in the same commit.
 **How it fits slice 3c and the rest.** T1 to T3 come before S3c.1: they touch only the source, `GraphCycle` and
 `sendspin`'s code, none of which S3c.1 to S3c.5 change, and they shrink S3c.6 (the source it moves onto keeps no time,
 and its clock is already written and proven). T2 needs T1; T3 needs neither and may land first. T4 comes before S3c.1 too (the
-owner moved it earlier): it touches only the RTP companion's code in `ear_pipewire` and NodeHost's latency plan and
-readiness text, which 3c's steps do not, and it needs none of T1 to T3. T5 comes after S3c.6 (it uses 3c's `ResourceAdapters` and the clockless source), with
+owner moved it earlier): it touched only the RTP companion's code in `ear_pipewire` and NodeHost's latency plan and
+readiness text (S3c.0 later moves that readiness into the readiness list, its text unchanged), and it needs none of T1 to T3. T5 comes after S3c.6 (it uses 3c's `ResourceAdapters` and the clockless source), with
 its first user.
 
 ## 8. What this changes on other design pages

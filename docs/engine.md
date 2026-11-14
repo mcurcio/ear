@@ -152,7 +152,7 @@ and a filter's connect flags.
 | card | `api.alsa.period-num` | `cardPeriods(the block size)` | So the buffer stays what it was under the old limit of 8192 ([the quantum guard](#the-quantum-guard)) | the ALSA buffer, not 4 x `clock.quantum-limit` | "A card's engine node carries no property that forces or locks the graph's quantum or rate, keeps the adapters' old quantum limit for its ALSA buffer, and the extra properties refuse every clock property" |
 | card seam | `clock.name` | `clock.system.monotonic-raw` | `clocklessCardProperties()`, for CI's test card alone, which has no oscillator: matching would never settle. A real card keeps matching on ([sound cards](#sound-cards)) | a follower whose `clock.name` is its driver's turns rate matching off | "What a port block sends to inside output to_card.2 lands on the card's channel 2" |
 | RTP receiver | `remote.name` | `internal` | After `pw_context_connect_self` nothing registers the core object, so the module calls `pw_context_connect` with its `remote.name`; unset, that is the daemon's socket, which ear does not serve. `internal` is protocol-native's connection to the local context (`module-rtp-source.c:671-679`, `module-protocol-native.c:1336-1350`) ([RTP receivers](#rtp-receivers)) | the module's connection is to ear's own context | "A receiver is ready once, every channel's link active, and it and the block follow the Dummy-Driver" |
-| RTP receiver | `source.ip` | the rtp node's address | `0.0.0.0` binds any address. A multicast group is joined on the default interface. Any other address binds any address and `connect()`s to `source.ip:source.port`, so it hears only that sender, and only from a source port equal to the receiving port (`module-rtp-source.c:277-283, 314-319`) ([RTP receivers](#rtp-receivers)) | the address the socket binds or connects to | "L24 at the graph rate: channel 1 reaches from_rtp.1 and channel 2 from_rtp.2" |
+| RTP receiver | `source.ip` | the rtp node's address | `0.0.0.0` binds any address. A multicast group is joined on the default interface and the socket binds the group's address. Any other address binds any address and `connect()`s to `source.ip:source.port`, so it hears only that sender, and only from a source port equal to the receiving port (`module-rtp-source.c:277-283, 314-319`) ([RTP receivers](#rtp-receivers)) | the address the socket binds or connects to | "L24 at the graph rate: channel 1 reaches from_rtp.1 and channel 2 from_rtp.2" |
 | RTP receiver | `source.port` | the rtp node's port | The `rtp` node's port ([RTP receivers](#rtp-receivers)) | the UDP port the socket binds | "L24 at the graph rate: channel 1 reaches from_rtp.1 and channel 2 from_rtp.2" |
 | RTP receiver | `sess.media` | `audio` | Audio ([RTP receivers](#rtp-receivers)) | nothing | "L24 at the graph rate: channel 1 reaches from_rtp.1 and channel 2 from_rtp.2" |
 | RTP receiver | `sess.latency.msec` | the rtp node's latencyMs | The receive buffer, declared upstream of the bank as `beyond` it, since rtp-source reports none ([latency](#latency-per-bank-pair)) | the ring's target fill, rounded down to whole packets | "A real receiver's buffer beyond from_rtp reaches stream whole: the told capture latency's least and most are both the buffer once the receiver is linked and reports its own" |
@@ -996,8 +996,11 @@ PipeWire keeps the jitter buffer, the tracking of the sender's clock and the res
   `module-rtp/stream.c:228-251`). With always-process the node never reaches RUNNING, so the `rtp`
   node stays `configuring`, waiting for its companion, until the receiver's 5 s deadline fails it
   `engine-refused: the RTP receiver never ran (UDP port <port> held?)`
-  ([readiness deadlines](#readiness-deadlines)). The module sets `SO_REUSEADDR`, so two receivers on
-  one port both bind.
+  ([readiness deadlines](#readiness-deadlines)). That happens only when the port's holder did not set
+  `SO_REUSEADDR` (another program). The module sets it, so two receivers on one port both bind and
+  both run: Linux hands each unicast datagram to one of them, and the other plays silence with
+  nothing said. Two `rtp` nodes on one port are today's known case of this, until claims refuse the
+  second (slice 3c, `design/node-primitives.md` S3c.5a).
 - **No packets is not a failure.** The module never destroys itself; after `cleanup.sec` without
   packets it sets the node property `rtp.receiving = false` (a bound node proxy sees it, the registry
   does not; `module-rtp-source.c:456-481`). ear does not read it.
