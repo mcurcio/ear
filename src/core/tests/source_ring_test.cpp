@@ -438,7 +438,7 @@ TEST_CASE("A stop drops and counts what the ring holds, plays nothing of it and 
 	clock.lose(3, 16);
 	time.skip = 48;
 	CHECK(play(ring, bank, clock.next(16), 16, &time) == SourcePlayed{.zeros = 16});
-	CHECK(time.heard.back().held == SourceHeld{.dropped = 24});
+	CHECK(time.heard.back().held == SourceHeld{.dropped = 24, .stopEnded = true});
 	for (std::uint32_t i = 0; i < 16; ++i) CHECK(bank.data[0][i] == 0.0F);
 	CHECK(ring.shortfallFrames() == 0);
 	CHECK(signals.room == room + 1);
@@ -507,9 +507,11 @@ TEST_CASE(
 		ring.dropForStop();
 		play(ring, bank, clock.next(16), 16, &time);
 		CHECK(time.heard.back().held.dropped == 24);
+		CHECK(time.heard.back().held.stopEnded);
 		REQUIRE(offer(ring, 40, 16) == 16);
 		play(ring, bank, clock.next(16), 16, &time);
 		CHECK(time.heard.back().held.dropped == 0);
+		CHECK_FALSE(time.heard.back().held.stopEnded); // only the stop's first tick
 		// Written 56, read 32, dropped 24 told: nothing of the stream unaccounted for.
 		std::uint64_t told = 0;
 		for (const TestClock::Heard& heard : time.heard)
@@ -523,7 +525,7 @@ TEST_CASE(
 		REQUIRE(offer(ring, 20, 12) == 12);
 		ring.dropForStop();
 		play(ring, bank, clock.next(16), 16, &time);
-		CHECK(time.heard.back().held == SourceHeld{.clears = 1, .dropped = 12});
+		CHECK(time.heard.back().held == SourceHeld{.clears = 1, .dropped = 12, .stopEnded = true});
 		CHECK(ring.droppedFrames() == 32);
 	}
 	SECTION("a clear asked during the stop: nothing of the stream it ended") {
@@ -532,6 +534,6 @@ TEST_CASE(
 		ring.dropForStop();
 		ring.clear();
 		play(ring, bank, clock.next(16), 16, &time);
-		CHECK(time.heard.back().held == SourceHeld{.clears = 1, .dropped = 0});
+		CHECK(time.heard.back().held == SourceHeld{.clears = 1, .dropped = 0, .stopEnded = true});
 	}
 }

@@ -125,9 +125,16 @@ std::uint64_t SendspinClock::skipBefore(const SourceTick& tick, SourceHeld held)
 	// Back from the pacer, everything the ring holds of the stream was counted played as it took over (it wrote none
 	// into it since): skipped now, uncounted. So was what a stop dropped of it, if the pacer took over during the stop;
 	// otherwise those frames are counted played now, as a sink that played them would have (docs/node-types.md#clock):
-	// the library counts every frame it wrote as buffered until it is told it played.
+	// the library counts every frame it wrote as buffered until it is told it played. A stop empties the ring, so what
+	// the clock kept about the ring's frames ends at its first tick: the stale frames the pacer counted are among what
+	// it dropped (counted once, by the pacer), and, unless this tick took the timeline back, the anchor ends: the frames
+	// written after the stop are the library's to place, not the pacer's late ones.
 	if (lastTookBack_ && countable_) staleLeft_ = held.frames;
-	else if (countable_) played_ += held.dropped;
+	else if (countable_) played_ += held.dropped - std::min(staleLeft_, held.dropped);
+	if (held.stopEnded && !lastTookBack_) {
+		staleLeft_ = 0;
+		anchored_ = false;
+	}
 	if (anchored_ && ranSince_ >= capacity_) anchored_ = false; // a ring's worth of ticks at most
 	lastAnchored_ = anchored_ && countable_;
 	if (!countable_) return 0;

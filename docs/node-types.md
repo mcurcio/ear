@@ -482,7 +482,12 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   the clock's word, and tells the clock at the stop's first tick what it dropped of the stream it
   plays (`SourceHeld::dropped`; none of a stream a clear ended). Shorter than the bound, that tick
   counts it played and tells it at its report; past the bound the takeover already counted it with
-  everything written, so the tick back counts nothing again.
+  everything written, so the tick back counts nothing again. A stop empties the ring, so at its first
+  tick (`SourceHeld::stopEnded`) the clock also ends what it kept about the ring's frames: stale
+  frames the pacer counted that a clearing tick back left in the ring are among the drop, so that
+  much of it is not counted again and nothing stale is left to skip; and, unless that tick takes the
+  timeline back, the pacer's timeline ends, so the library's writes after a short stop are never
+  skipped as late by the stop's length.
 - **It tells only from a cycle that began on time** (`GraphCycle::overdueNs` 0). *Why:* the driver
   catches a stall up in a burst of timeouts, of which the block runs as many as the host lets it,
   from none to every one ([engine.md](engine.md#the-internal-clock)). A burst's cycle starts on the

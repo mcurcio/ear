@@ -390,7 +390,9 @@ the harness) runs in this order:
    counts by stream knows exactly which stream `frames` and this tick's frames are of.
    `held.dropped` is what the ring dropped of that stream since the last tick without the clock
    asking: on the first tick after a stop, what the stop dropped and what a writer slipped in during
-   it (never a clear's frames, which are of a stream that ended).
+   it (never a clear's frames, which are of a stream that ended). `held.stopEnded` says this tick
+   is the first after a stop, even one that dropped nothing of the stream: the ring holds nothing
+   written before the stop, so a clock that keeps state about the ring's frames ends it here.
    The ring drops **min(answer, held.frames)**, and **nothing on a clearing tick** (a clear ends the
    stream: nothing of the next is skipped for the old one's lost time). Any answer is allowed; the
    clock reads the tick's facts (`tick.cycle.facts`: a `catchUp` and its `jumpFrames`,

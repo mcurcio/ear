@@ -1002,6 +1002,82 @@ TEST_CASE("A stream ended while paced, before anything of the next: the tick bac
 	CHECK(progress->played == paced + rig.clock.lastPlayed().read);
 }
 
+// docs/node-types.md#clock: a stop empties the ring, so the pacer's timeline ends at the stop's first tick unless that
+// tick takes it back: the library's writes after a short stop are its own to place, never late by the stop's length.
+TEST_CASE("A short stop soon after a hand-over back ends the pacer's timeline: the ticks after it skip nothing as late",
+          "[sendspin][code]") {
+	Rig rig(280'000 * msNs);
+	const auto told = [&] {
+		std::uint64_t sum = 0;
+		for (const Rig::Told& one : rig.told) sum += one.frames;
+		return sum;
+	};
+	rig.fill();
+	rig.tick();
+	rig.notify();
+	rig.stop();
+	rig.away(2000); // paced from 1.5 s on
+	REQUIRE(rig.clock.takeovers() == 1);
+	fakeRaw += 5 * msNs;
+	rig.tick(drive()); // the start: the timeline taken back, the ring empty
+	REQUIRE(rig.clock.lastTookBack());
+	REQUIRE(rig.clock.lastAnchored());
+	rig.notify();
+	REQUIRE(rig.fill() == capacity); // the library writes, and the node stops again before a tick reads any of it
+	rig.stop();
+	rig.away(500); // under the bound: no takeover
+	REQUIRE(rig.clock.takeovers() == 1);
+	fakeRaw += frameClock.ns(block);
+	rig.tick(drive()); // the start: the stop's drop counted played
+	CHECK(rig.clock.lastHeld().stopEnded);
+	CHECK_FALSE(rig.clock.lastAnchored());
+	rig.notify();
+	CHECK(rig.written - told() == 0);
+	REQUIRE(rig.fill() == capacity);
+	fakeRaw += frameClock.ns(block);
+	rig.tick();
+	rig.notify();
+	CHECK(rig.clock.lastResumeSkipped() == 0);
+	CHECK(rig.clock.lastSkipped() == 0);
+	CHECK(rig.written - told() == capacity - block); // what the ring holds
+}
+
+// docs/node-types.md#clock: the stale frames the pacer counted are among what a stop drops, so the stop's first tick
+// counts only the rest of its drop, and nothing stale is left to skip of what the library writes after it.
+TEST_CASE("Stale frames a clearing tick back leaves, dropped by a stop, are counted once and skip nothing fresh",
+          "[sendspin][code]") {
+	Rig rig(290'000 * msNs);
+	REQUIRE(rig.write(1024) == 1024);
+	rig.tick();        // reads a block: 768 of the first stream held
+	rig.clock.clear(); // the stream ends while ticking, and the library writes the next at once
+	const std::uint32_t atClear = rig.written;
+	REQUIRE(rig.write(1024) == 1024);
+	fakeRaw += 2000 * msNs; // no tick for 2 s: the writer takes over, counting the next stream's 1024 played
+	rig.write(block);
+	REQUIRE(rig.clock.takeovers() == 1);
+	REQUIRE(rig.clock.lastStaleCounted() == 1024);
+	fakeRaw += 5 * msNs;
+	rig.tick(
+		drive()); // takes the timeline back and applies the clear: the ended stream's tail, then a few stale frames
+	REQUIRE(rig.clock.lastTookBack());
+	REQUIRE(rig.clock.lastHeld().clearing);
+	REQUIRE(rig.clock.lastPlayed().read < 1024); // stale frames left in the ring
+	rig.stop();
+	rig.away(100); // under the bound: no takeover
+	REQUIRE(rig.clock.takeovers() == 1);
+	fakeRaw += frameClock.ns(block);
+	rig.tick(drive()); // the start: the stop dropped the stale rest, already counted by the pacer
+	CHECK(rig.clock.lastHeld().stopEnded);
+	REQUIRE(rig.fill() == capacity);
+	fakeRaw += frameClock.ns(block);
+	rig.tick();
+	CHECK(rig.clock.lastStaleSkipped() == 0);
+	CHECK(rig.clock.lastPlayed().skipped == 0);
+	const auto progress = rig.clock.progress();
+	REQUIRE(progress.has_value());
+	CHECK(rig.written - atClear - (progress->played - progress->base) == capacity - block); // what the ring holds
+}
+
 // The one owner, raced for real: the library's thread writing through the clock while the ticks come and go on
 // another, stopping for past the bound and coming back. Every frame the clock took is counted played exactly once
 // (no clear, no jump: every one is played or skipped as stale or late), and the count told never goes back.

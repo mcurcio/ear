@@ -42,6 +42,10 @@ struct SourceHeld {
 	/// a clear's frames, which are of a stream that ended. A clock that tells what played counts them as a sink that
 	/// played them would (docs/writing-a-node-type.md#a-sources-clock).
 	std::uint32_t dropped = 0;
+	/// This tick is the first since a stop: the ring dropped everything it held (`dropped` is what of it was the current
+	/// stream's, which may be none), so nothing written before the stop is in it now. A clock that keeps state about
+	/// what the ring holds, or about frames written before the stop, ends it here (docs/writing-a-node-type.md#a-sources-clock).
+	bool stopEnded = false;
 	friend bool operator==(const SourceHeld&, const SourceHeld&) = default;
 };
 
