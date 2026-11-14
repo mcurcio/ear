@@ -394,7 +394,8 @@ route names a port that vanishes. Wanted routes may name ports that appear; they
   the engine first, calls the change version, which must swap the code (its `Io` layout changed; a hook that does not
   fails the node with the rule's text), and removes the vanished ports after the swap's barrier. A type whose channel
   count is `.inPlace()`, going from 2 to 3 channels, keeps channels 1 and 2 playing. Companions on resized inside banks
-  are replaced make-before-break.
+  are replaced make-before-break: the new companion is handed over in one invoke, so a bank never holds two at once
+  (the block's binding storage is one per inside bank, `docs/architecture.md#companions`).
 
 ### 7.3 Two layouts while a reshape is in flight
 

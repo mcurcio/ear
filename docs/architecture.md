@@ -360,8 +360,7 @@ new one is a change of the framework, never a type's own.
   (`<node>.<bank>`); a node's name has no `.`, so a companion's never equals a node's.
 - **One per inside bank,** of any kind. *Why:* the block sizes its storage for bindings when it is
   made (one source per inside input bank, one sink per inside output bank), so nothing allocates on
-  the data loop, and a companion replaced later is handed over in one invoke, never two held at
-  once on a bank.
+  the data loop.
 - **Its failure is its node's alone** (the owner's per-node rule: "Some node
   stopping/reconfiguring/failing does not effect the graph globally"). An engine companion lost or
   not ready by its deadline fails its node `engine-refused`; a sink whose consumer does not begin
