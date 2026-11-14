@@ -5,6 +5,7 @@
 
 #include <concepts>
 #include <cstdint>
+#include <expected>
 #include <memory>
 #include <optional>
 #include <string>
@@ -13,6 +14,7 @@
 #include <vector>
 
 #include "catch2/catch.hpp"
+#include "ear/core/lifecycle.hpp"
 
 // Named, never unnamed: every table, row and spec a template is keyed on (settings_table.hpp, linkage).
 namespace settings_table_test {
@@ -276,30 +278,24 @@ TEST_CASE("Checked settings own their values, past the table and the settings", 
 // Named, never unnamed: every table, row and spec a template is keyed on (settings_table.hpp, linkage).
 namespace settings_table_test {
 
-class NoPorts final : public ear::NodeConfig {
-public:
-	const ear::Ports& ports() const override { return ports_; }
-	ear::StartResult start(ear::StartContext&) const override {
-		return std::unexpected(ear::FailureReason{ear::FailureReason::Code::startFailed, "not started in these tests"});
+constexpr auto out = ear::bank::output<"out">;
+constexpr ear::TypeSpec countingSpec{.settings = numbers, .banks = ear::Banks<out>{}};
+
+/// How often Counting's check ran, and whether it refuses.
+inline int checked = 0;
+inline bool refuse = false;
+
+/// A type of the table numbers whose check, the type's own rule after the table's walk, counts every call and refuses
+/// when told to.
+struct Counting {
+	static ear::Members<countingSpec> ports(const ear::CheckedOf<countingSpec>&) { return {out(ear::members(1))}; }
+	static std::expected<void, std::string> check(const ear::CheckedOf<countingSpec>& settings) {
+		++checked;
+		if (refuse) return std::unexpected("check says no to " + std::to_string(*settings.get<plainRow>()));
+		return {};
 	}
-
-private:
-	ear::Ports ports_;
-};
-
-/// Counts every call of make, and refuses when told to.
-class CountingType final : public ear::NodeTypeOf<numbers> {
-public:
-	mutable int made = 0;
-	mutable NodeName madeFor;
-	bool refuse = false;
-
-private:
-	MadeConfig make(const NodeName& node, const Checked& settings) const override {
-		++made;
-		madeFor = node;
-		if (refuse) return std::unexpected("make says no to " + std::to_string(*settings.get<plainRow>()));
-		return std::make_unique<const NoPorts>();
+	ear::Configured configure(ear::CreateOf<countingSpec>&, const ear::CheckedOf<countingSpec>&) {
+		return ear::Configured::failed("not started in these tests");
 	}
 };
 
@@ -307,10 +303,10 @@ private:
 using namespace settings_table_test;
 
 TEST_CASE("A type's name, kinds and parse come from its table", "[settings-table]") {
-	const CountingType type;
-	const ear::NodeType& asType = type;
+	const auto type = ear::makeNodeType<countingSpec, Counting>();
+	const ear::NodeType& asType = *type;
 	CHECK(asType.name() == "t");
-	CHECK(asType.settingKinds().data() == numbers.kinds().data());
+	CHECK(asType.settingKinds().data() == countingSpec.settings.kinds().data());
 	CHECK(asType.settingKinds().size() == numbers.kinds().size());
 	const auto refused = asType.parse("node", {{"unknown", 1}});
 	REQUIRE_FALSE(refused.has_value());
@@ -319,19 +315,22 @@ TEST_CASE("A type's name, kinds and parse come from its table", "[settings-table
 	CHECK(asType.parse("node", NodeSettings::object()).has_value());
 }
 
-TEST_CASE("A refusal never reaches make, and a refusal from make carries the node", "[settings-table]") {
-	CountingType type;
-	CHECK_FALSE(type.parse("node", {{"plain", 99}}).has_value());
-	CHECK(type.made == 0);
+TEST_CASE("A refusal never reaches the type's check, and a refusal from its check carries the node",
+          "[settings-table]") {
+	checked = 0;
+	refuse = false;
+	const auto type = ear::makeNodeType<countingSpec, Counting>();
+	CHECK_FALSE(type->parse("node", {{"plain", 99}}).has_value());
+	CHECK(checked == 0);
 
-	CHECK(type.parse("node", {{"plain", 3}}).has_value());
-	CHECK(type.made == 1);
-	CHECK(type.madeFor == "node");
+	CHECK(type->parse("node", {{"plain", 3}}).has_value());
+	CHECK(checked == 1);
 
-	type.refuse = true;
-	const auto refused = type.parse("other", {{"plain", 3}});
+	refuse = true;
+	const auto refused = type->parse("other", {{"plain", 3}});
+	refuse = false;
 	REQUIRE_FALSE(refused.has_value());
-	CHECK(type.made == 2);
+	CHECK(checked == 2);
 	CHECK(refused.error().node == "other");
-	CHECK(refused.error().detail == "make says no to 3");
+	CHECK(refused.error().detail == "check says no to 3");
 }

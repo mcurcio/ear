@@ -8,7 +8,7 @@
 
 #include "catch2/catch.hpp"
 #include "ear/core/desired_graph.hpp"
-#include "ear/core/settings_table.hpp"
+#include "ear/core/lifecycle.hpp"
 
 using namespace ear;
 using json = nlohmann::json;
@@ -16,36 +16,51 @@ using json = nlohmann::json;
 // Named, never unnamed: every table, row and spec a template is keyed on (settings_table.hpp, linkage).
 namespace desired_graph_test {
 
-/// A node whose ports are fixed.
-class TestConfig final : public NodeConfig {
-public:
-	explicit TestConfig(Ports ports) : ports_(std::move(ports)) {}
-	const Ports& ports() const override { return ports_; }
-	StartResult start(StartContext&) const override {
-		return std::unexpected(FailureReason{FailureReason::Code::startFailed, "not started in these tests"});
+/// What every type here answers at configure: these tests parse and plan, and never configure a node.
+struct NeverStarted {
+	template <class Create, class Checked> static Configured never(Create&, const Checked&) {
+		return Configured::failed("not started in these tests");
 	}
-
-private:
-	Ports ports_;
 };
 
 constexpr auto levelRow = setting::optional("level", setting::number(0, 100));
-constexpr SettingsTable<levelRow> sourceTable{"source"};
-constexpr SettingsTable<levelRow> sinkTable{"sink"};
-constexpr SettingsTable<> dashedTable{"send-spin"};
-constexpr SettingsTable<> upperTable{"Sink"};
+constexpr auto noise = bank::output<"noise">;
+constexpr auto record = bank::input<"record">;
+constexpr auto in = bank::input<"in">;
+constexpr auto play = bank::input<"play">;
+constexpr auto out = bank::output<"out">;
 
-/// A node type whose nodes have fixed ports; settings {"bad": ...} are invalid: its table declares no such key.
-template <const auto& Table> class TestType final : public NodeTypeOf<Table> {
-public:
-	explicit TestType(Ports ports) : ports_(std::move(ports)) {}
+/// "source": output noise.mono. Settings {"bad": ...} are invalid for every type here: no table declares the key.
+constexpr TypeSpec sourceSpec{.settings = SettingsTable<levelRow>{"source"}, .banks = Banks<noise>{}};
+struct SourceType : NeverStarted {
+	static Members<sourceSpec> ports(const CheckedOf<sourceSpec>&) { return {noise(members("mono"))}; }
+	Configured configure(CreateOf<sourceSpec>& cx, const CheckedOf<sourceSpec>& s) { return never(cx, s); }
+};
 
-private:
-	MadeConfig make(const NodeName&, const typename NodeTypeOf<Table>::Checked&) const override {
-		return std::make_unique<TestConfig>(ports_);
-	}
+/// "sink": inputs record.left and record.right.
+constexpr TypeSpec sinkSpec{.settings = SettingsTable<levelRow>{"sink"}, .banks = Banks<record>{}};
+struct SinkType : NeverStarted {
+	static Members<sinkSpec> ports(const CheckedOf<sinkSpec>&) { return {record(members("left", "right"))}; }
+	Configured configure(CreateOf<sinkSpec>& cx, const CheckedOf<sinkSpec>& s) { return never(cx, s); }
+};
 
-	Ports ports_;
+/// A second type named "sink", whose input is in.a.
+constexpr TypeSpec otherSinkSpec{.settings = SettingsTable<levelRow>{"sink"}, .banks = Banks<in>{}};
+struct OtherSink : NeverStarted {
+	static Members<otherSinkSpec> ports(const CheckedOf<otherSinkSpec>&) { return {in(members("a"))}; }
+	Configured configure(CreateOf<otherSinkSpec>& cx, const CheckedOf<otherSinkSpec>& s) { return never(cx, s); }
+};
+
+/// Types whose names the catalogue refuses: "send-spin" and "Sink".
+constexpr TypeSpec dashedSpec{.settings = SettingsTable<>{"send-spin"}, .banks = Banks<out>{}};
+struct Dashed : NeverStarted {
+	static Members<dashedSpec> ports(const CheckedOf<dashedSpec>&) { return {out(members(1))}; }
+	Configured configure(CreateOf<dashedSpec>& cx, const CheckedOf<dashedSpec>& s) { return never(cx, s); }
+};
+constexpr TypeSpec upperSpec{.settings = SettingsTable<>{"Sink"}, .banks = Banks<out>{}};
+struct Upper : NeverStarted {
+	static Members<upperSpec> ports(const CheckedOf<upperSpec>&) { return {out(members(1))}; }
+	Configured configure(CreateOf<upperSpec>& cx, const CheckedOf<upperSpec>& s) { return never(cx, s); }
 };
 
 /// Any text at all.
@@ -53,14 +68,15 @@ std::optional<std::string> anyText(std::string_view text) { return std::string(t
 
 constexpr auto cardRow = setting::optional("card", setting::text<anyText>("text"));
 constexpr auto playbackRow = setting::defaulted("playback", setting::number(0, 64), 0);
-constexpr SettingsTable<cardRow, playbackRow> cardTable{"card"};
+constexpr TypeSpec cardSpec{.settings = SettingsTable<cardRow, playbackRow>{"card"}, .banks = Banks<play>{}};
 
 /// A sound-card-like type: {"card": <text>, "playback": <n>} declares inputs play.1..play.<n>,
 /// so a new channel count changes its ports.
-class CardType final : public NodeTypeOf<cardTable> {
-	MadeConfig make(const NodeName&, const Checked& settings) const override {
-		return std::make_unique<TestConfig>(Ports{{{Direction::input, "play", numbered(settings.get<playbackRow>())}}});
+struct CardType : NeverStarted {
+	static Members<cardSpec> ports(const CheckedOf<cardSpec>& settings) {
+		return {play(members(settings.get<playbackRow>()))};
 	}
+	Configured configure(CreateOf<cardSpec>& cx, const CheckedOf<cardSpec>& s) { return never(cx, s); }
 };
 
 /// Text that throws when it reads "boom", as a type's parse with a bug.
@@ -70,22 +86,23 @@ std::optional<std::string> throwingText(std::string_view text) {
 }
 
 constexpr auto modeRow = setting::optional("mode", setting::text<throwingText>("text"));
-constexpr SettingsTable<modeRow> faultyTable{"faulty"};
+constexpr TypeSpec faultySpec{.settings = SettingsTable<modeRow>{"faulty"}, .banks = Banks<out>{}};
 
-/// A type with bugs: its row's parse throws for "boom", and its make for {"mode": "make"}.
-class FaultyType final : public NodeTypeOf<faultyTable> {
-	MadeConfig make(const NodeName&, const Checked& settings) const override {
+/// A type with bugs: its row's parse throws for "boom", and its ports for {"mode": "make"}.
+struct Faulty : NeverStarted {
+	static Members<faultySpec> ports(const CheckedOf<faultySpec>& settings) {
 		if (const auto mode = settings.get<modeRow>(); mode && *mode == "make")
 			throw std::logic_error("no ports for it");
-		return std::make_unique<TestConfig>(Ports{{{Direction::output, "out", {"1"}}}});
+		return {out(members(1))};
 	}
+	Configured configure(CreateOf<faultySpec>& cx, const CheckedOf<faultySpec>& s) { return never(cx, s); }
 };
 
 std::vector<std::unique_ptr<const NodeType>> testTypes() {
 	std::vector<std::unique_ptr<const NodeType>> types;
-	types.push_back(std::make_unique<CardType>());
-	types.push_back(std::make_unique<TestType<sourceTable>>(Ports{{{Direction::output, "noise", {"mono"}}}}));
-	types.push_back(std::make_unique<TestType<sinkTable>>(Ports{{{Direction::input, "record", {"left", "right"}}}}));
+	types.push_back(makeNodeType<cardSpec, CardType>());
+	types.push_back(makeNodeType<sourceSpec, SourceType>());
+	types.push_back(makeNodeType<sinkSpec, SinkType>());
 	return types;
 }
 
@@ -183,7 +200,7 @@ TEST_CASE("A wanted node of a known type is added once and told once", "[desired
 TEST_CASE("A type that throws at parse refuses the edit as invalid settings, and the graph runs on as it was",
           "[desired_graph][type-throw]") {
 	std::vector<std::unique_ptr<const NodeType>> types = testTypes();
-	types.push_back(std::make_unique<FaultyType>());
+	types.push_back(makeNodeType<faultySpec, Faulty>());
 	NodeCatalogue catalogue{std::move(types)};
 	DesiredGraph graph{catalogue};
 	apply(graph, {noiseSpec}, {});
@@ -228,7 +245,7 @@ TEST_CASE("The catalogue finds types by name and refuses two types with one name
 	CHECK(catalogue.find("pink") == nullptr);
 
 	auto types = testTypes();
-	types.push_back(std::make_unique<TestType<sinkTable>>(Ports{{{Direction::input, "in", {"a"}}}}));
+	types.push_back(makeNodeType<otherSinkSpec, OtherSink>());
 	CHECK_THROWS_AS(NodeCatalogue{std::move(types)}, std::invalid_argument);
 }
 
@@ -241,8 +258,8 @@ TEST_CASE("The catalogue refuses a type whose name is not 1 or more of [a-z0-9]"
 		CHECK_THROWS_WITH(NodeCatalogue{std::move(types)},
 		                  "node catalogue: a node type's name is 1 or more of [a-z0-9], not \"" + name + "\"");
 	};
-	refused(std::make_unique<TestType<dashedTable>>(Ports{}));
-	refused(std::make_unique<TestType<upperTable>>(Ports{}));
+	refused(makeNodeType<dashedSpec, Dashed>());
+	refused(makeNodeType<upperSpec, Upper>());
 }
 
 TEST_CASE("Command errors have one code each and describe what they name", "[command_error]") {
