@@ -77,7 +77,8 @@ const nodeKnown: Known[] = [
 ];
 
 const graphGroup = "graph";
-const nodeGroup = (name: string) => `node ${name}`;
+const nodeGroupPrefix = "node ";
+const nodeGroup = (name: string) => `${nodeGroupPrefix}${name}`;
 
 function knownOf(list: Known[], key: string): Known | undefined {
   return list.find((known) => known.key === key);
@@ -99,12 +100,15 @@ function lossCounters(graph: GraphState): HeldValues {
 
 /**
  * The loss counters' last values and their rises, the graph's and each node's, by the mark's one rule (marks.ts): a
- * first sighting (a snapshot's, a node.added's), a fall and a node seen again after it was removed are no rise, and a
- * closed connection forgets everything held.
+ * first sighting (a snapshot's, a new node's), a fall and a counter seen again after the graph dropped it are no rise,
+ * and a closed connection forgets everything held. A removed node's values are kept, so a port-caused replace's
+ * carried counts continue its mark and a new node under the name (its zeros a fall) starts fresh.
  */
 export class CounterMoves extends GraphMoves {
   constructor() {
-    super(lossCounters);
+    // A node's counters never step back while it lives, and only a port-caused replace's node.added carries any:
+    // keeping a removed node's values lets that replace's mark go on, and a new node's zeros are a fall.
+    super(lossCounters, (group) => group.startsWith(nodeGroupPrefix));
   }
 
   /** How much the node's counter rose in the last minute. */

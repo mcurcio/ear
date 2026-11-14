@@ -364,6 +364,10 @@ body,
   font-variant-numeric: tabular-nums;
 }
 
+.counter-recent {
+  color: #a35200;
+}
+
 .counter-unknown th {
   font-family: ui-monospace, monospace;
 }

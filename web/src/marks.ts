@@ -49,8 +49,15 @@ export function soonestExpiry(movedAts: Iterable<number | undefined>, now: numbe
 export class GraphMoves {
   private held = new Map<string, Map<string, Held>>();
 
-  /** `valuesOf` reads the counters this mark watches from a graph. */
-  constructor(private readonly valuesOf: (graph: GraphState) => HeldValues) {}
+  /**
+   * `valuesOf` reads the counters this mark watches from a graph. `keepDropped` names the groups whose values are kept
+   * when the graph drops them, for counters that never step back while their owner lives (a node's: its return with
+   * zeros is a fall, with what it carried on is no rise); every other group is forgotten when dropped.
+   */
+  constructor(
+    private readonly valuesOf: (graph: GraphState) => HeldValues,
+    private readonly keepDropped: (group: string) => boolean = () => false,
+  ) {}
 
   /** Forgets every value held: what moved while the editor was away did not move in its last minute. */
   forget(): void {
@@ -72,6 +79,12 @@ export class GraphMoves {
         else entries.set(key, { ...old, rises });
       }
       if (entries.size > 0) next.set(group, entries);
+    }
+    for (const [group, entries] of this.held) {
+      if (next.has(group) || !this.keepDropped(group)) continue;
+      const kept = new Map<string, Held>();
+      for (const [key, old] of entries) kept.set(key, { ...old, rises: old.rises.filter((rise) => isRecent(rise.at, now)) });
+      next.set(group, kept);
     }
     this.held = next;
   }

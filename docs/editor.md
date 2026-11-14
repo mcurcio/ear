@@ -132,7 +132,7 @@ happened in the last minute. The rules:
   Every counter is shown, zeros included, each label's tooltip saying what it counts. A counter
   this editor does not know follows, in the order sent, by its own name (in monospace) and number,
   its tooltip "a counter this editor does not know". A row whose counter rose in the last minute
-  carries the mark, with how much in words ("3 more in the last minute").
+  carries the mark and, beside it, how much in words ("3 more in the last minute").
 - **Only losses mark.** The loss counters are a node's four and the graph's `cutCycles` and
   `stalls`. `cycles` moves every cycle and `lostMs` follows `cutCycles`, so neither marks; an
   unknown counter may count anything (a total like `cycles`), so it is shown and never marked.
@@ -147,9 +147,12 @@ happened in the last minute. The rules:
   the last minute, with the last minute's count ("5 dropouts"), which falls as each rise leaves its
   minute; its tooltip says the host held up the audio thread and gives the totals ("44 dropouts
   (234 ms) in 2 stalls since ear started").
-- **A port-caused replace's counts are a first sighting.** Its `node.removed` and `node.added`
-  arrive as two messages, and the editor cannot tell it from a remove and an add, so the carried
-  counts are no rise and a mark the older node showed ends with it; the next rise marks again.
+- **A mark lasts across a port-caused replace.** A node's counters never step back while it
+  lives, so the values held for a node are kept when it is removed (until the connection closes).
+  A port-caused replace's `node.added` carries at least what was held, so its carried counts are
+  no rise and a mark the older node showed goes on; a new node under the name comes with zeros, a
+  fall, so its counts start fresh. Companions' entries are still forgotten when their list drops
+  them, as their counters count per configuration.
 - **In text, not colour alone.** Each mark's glyph is hidden from screen readers beside its words
   ("in the last minute: overran 1 time", "3 more in the last minute"); the badge's count is its
   text. Nothing shows without the feature: an ear without it sends no counters.
@@ -161,8 +164,9 @@ happened in the last minute. The rules:
 and rises. The mark is an "!" in a circle (`WarnMark`).
 
 - **A rise is a value above the one last held** for the same counter. The first value seen (a
-  snapshot's, a `node.added`'s), a value that fell and a counter seen again after the graph dropped
-  it are not. A closed connection forgets every value held, so the reconnect's snapshot is a first
+  snapshot's, a new node's), a value that fell and a counter seen again after the graph dropped it
+  are not; a reading may keep a dropped group's values instead (the node counters do,
+  [above](#counters)), and then its return is judged against them. A closed connection forgets every value held, so the reconnect's snapshot is a first
   sighting: what was lost while the editor was away is in the totals, never marked as the last
   minute's.
 - **The minute** is timed on the browser's monotonic clock (`performance.now()`, so a step of the

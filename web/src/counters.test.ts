@@ -180,6 +180,39 @@ describe("the node's mark", () => {
   });
 });
 
+describe("a removed node", () => {
+  const two = (rec?: Partial<NodeCounters>) =>
+    graphOf(graphCounts(), ...(rec === undefined ? [] : [node(nodeCounts(rec as Record<string, number>))]));
+
+  it("keeps its mark when it comes back with what it carried on, and marks what it carried beyond that", () => {
+    const moves = seen([two({}), two({ overruns: 2 }), two(), two({ overruns: 2 })], [at, at + 1, at + 2, at + 3]);
+    expect(nodeCounterMark(node(nodeCounts({ overruns: 2 })), moves, at + 3).warningText).toBe(
+      "in the last minute: overran 2 times",
+    );
+    moves.note(two(), at + 4);
+    moves.note(two({ overruns: 3 }), at + 5);
+    expect(nodeCounterRows(node(nodeCounts({ overruns: 3 })), moves, at + 5)[1]!.warningText).toBe(
+      "3 more in the last minute",
+    );
+  });
+
+  it("starts fresh when a new node of the name comes with zeros: a fall", () => {
+    const moves = seen([two({}), two({ overruns: 2 }), two(), two({})], [at, at + 1, at + 2, at + 3]);
+    expect(nodeCounterMark(node(nodeCounts()), moves, at + 3).warning).toBe(false);
+    moves.note(two({ overruns: 1 }), at + 4);
+    expect(nodeCounterMark(node(nodeCounts({ overruns: 1 })), moves, at + 4).warningText).toBe(
+      "in the last minute: overran 1 time",
+    );
+  });
+
+  it("is still forgotten at a reconnect", () => {
+    const moves = seen([two({}), two({ overruns: 2 }), two()], [at, at + 1, at + 2]);
+    moves.forget();
+    moves.note(two({ overruns: 2 }), at + 3);
+    expect(nodeCounterMark(node(nodeCounts({ overruns: 2 })), moves, at + 3).warning).toBe(false);
+  });
+});
+
 describe("the dropouts badge", () => {
   const g = (counts: Record<string, number>) => graphOf(graphCounts(counts));
 
@@ -356,13 +389,15 @@ describe("the fixtures, replayed through the reducer into what is drawn", () => 
     expect(Object.keys(drawn[second]!.tables)).toEqual(["desk", "rec"]);
   });
 
-  it("takes the port-caused replace's carried counts as a first sighting, then marks the next rise", () => {
+  it("keeps desk's mark across the port-caused replace, its carried counts no rise, then marks the next rise", () => {
+    const removed = isMethod("node.removed");
+    expect(drawn[removed]!.marks.desk).toBeUndefined();
     const added = isMethod("node.added");
-    expect(drawn[added]!.marks.desk).toBe(false);
-    expect(drawn[added]!.tables.desk![0]).toBe("missed cycles 12");
+    expect(drawn[added]!.marks.desk).toBe(true);
+    expect(drawn[added]!.tables.desk![0]).toBe("missed cycles 12!");
     const last = drawn[drawn.length - 1]!;
     expect(last.marks).toEqual({ desk: true, rec: true });
-    expect(last.tables.desk).toEqual(["missed cycles 12", "overruns 1!", "repositions 0", "driver changes 0"]);
+    expect(last.tables.desk).toEqual(["missed cycles 12!", "overruns 1!", "repositions 0", "driver changes 0"]);
     expect(last.badge).toBe("5 dropouts");
   });
 

@@ -41,7 +41,16 @@ export function CounterTable({ heading, rows }: { heading: string; rows: Counter
                 {row.label}
               </th>
               <td>{row.text}</td>
-              <td>{row.warning && <WarnMark text={row.warningText} title={row.warningText} />}</td>
+              <td>
+                {row.warning && (
+                  <>
+                    <span className="warn-mark" aria-hidden="true">
+                      !
+                    </span>{" "}
+                    <span className="counter-recent">{row.warningText}</span>
+                  </>
+                )}
+              </td>
             </tr>
           ))}
         </tbody>

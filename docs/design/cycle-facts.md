@@ -1738,14 +1738,16 @@ from 8.5 as first written, and why.
   a panel no one opens. The tooltip names which rose.
 - **The graph's badge is in the side panel**, beside "not realtime" as 8.5 says, which is where that badge already is
   (the engine facts at the panel's top), not on the canvas.
-- **Rows mark too.** The panel's rows carry the mark and "N more in the last minute", as the companion list's lines
-  carry theirs: the panel is where the person looks after seeing a mark.
-- **A port-caused replace's counts are a first sighting.** D2 made `node.added` carry them so the replace would not
-  look like a sudden loss; the editor gets `node.removed` and `node.added` as two messages and cannot tell the replace
-  from a remove and an add, so the shared rule forgets the removed node's values and the carried counts are no rise. A
-  mark the older node showed ends at the replace (`counters-changed.json`'s desk); its totals stay in the panel.
-  Keeping a removed node's values would carry the mark, but would also keep every removed node's values until a
-  reconnect, and companions' entries must be forgotten when their list drops them.
+- **Rows mark too.** The panel's rows carry the mark and, beside it in text, "N more in the last minute", as the
+  companion list's lines carry theirs: the panel is where the person looks after seeing a mark.
+- **A removed node's counters are kept, so a port-caused replace keeps its mark.** D2 made `node.added` carry a
+  replace's counts so it would not look like a sudden loss; the editor gets `node.removed` and `node.added` as two
+  messages. As first built the shared rule forgot the removed node, so a mark ended at the replace. Only a port-caused
+  replace's `node.added` carries non-zero counters, so the node counters' reading keeps a removed node's values (a
+  `keepDropped` flag on `GraphMoves`, not a change to the rule): the replace carries at least what was held and its mark
+  goes on (`counters-changed.json`'s desk); a new node under the name comes with zeros, a fall, and starts fresh.
+  Companions still forget a dropped entry: their counters count per configuration. The cost is a removed node's few
+  values held until a reconnect.
 - **Gated by the counters' presence**, not by reading `features`: ear sends `counters` only with the feature, so an
   older ear draws nothing.
 - **Proven to fail a broken rule**, each injected, run and reverted: `cycles` marking (3 counters tests fail: the badge
@@ -1755,8 +1757,9 @@ from 8.5 as first written, and why.
   marks); the minute's sum counting older rises (6); no `forget` on close (the counters' reconnect test); the session
   not noting counters (its ordering test); the wall clock as the default (both monotonic-clock tests); the node
   redrawing at the last rise's minute instead of the oldest's (1); the badge never redrawing (1); the badge counting
-  `stalls` (4); a group the graph dropped kept (3, one of each: the port-caused replace, the companion dropped, the
-  rule's own).
+  `stalls` (4); a group the graph dropped kept by every reading (2: the companion dropped, the rule's own); a removed
+  node's values not kept (2: the fixture's replace, the removed node's return); a fall keeping the old values (4,
+  the new node's zeros among them).
 
 ## 10. Decided here (technical)
 
