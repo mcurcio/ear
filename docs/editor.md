@@ -15,9 +15,10 @@ Vitest); it shares no code with the C++, only the wire format and the fixtures i
 - **Routes** are wires coloured by status (`linked`, `pending`, `refused`) and drawn by their
   from port's level: louder is thicker and brighter.
 - **Editing:** a drag from an output to an input adds a route (any other drag is refused before
-  it reaches ear); the delete key removes the selected wire or node; a side panel adds nodes (a
-  type and JSON settings), edits the selected node's own text in knobly ([below](#the-node-panels-text);
-  its settings as JSON from an ear without `node-text`), and offers Start, Stop, Restart,
+  it reaches ear); the delete key removes the selected wire or node; a side panel adds nodes from
+  a statement in knobly ([below](#adding-a-node)), edits the selected node's own text in knobly
+  ([below](#the-node-panels-text)), both as JSON settings from an ear without `node-text`, and
+  offers Start, Stop, Restart,
   Disable and Enable when ear has the `lifecycle` feature. The engine facts give the graph's rate
   and block size ("48 kHz, 256 frames", from `graphFrequency` in hertz). A "not realtime" badge shows when the
   audio thread is not realtime, and a dropouts badge while the host cut cycles in the last minute;
@@ -36,9 +37,9 @@ Vitest); it shares no code with the C++, only the wire format and the fixtures i
   neutrally, or ignored, never a failure ([control-port.md](control-port.md#protocol-and-features)).
   A newer protocol than the editor knows shows a banner.
 - **A person edits knobly; JSON is the machine API.** What a person types about a node is its
-  statement as `ear.conf` has it, in the node panel's box or the pane; JSON settings are for
-  scripts (`node.add`, `node.update`), and the panel shows them only to an ear without the
-  `node-text` feature. The add-node form still takes JSON settings.
+  statement as `ear.conf` has it, in the add-node form, the node panel's box or the pane; JSON
+  settings are for scripts (`node.add`, `node.update`), and the panel shows them only to an ear
+  without the `node-text` feature.
 - **A draft is never overwritten.** A new `ear.conf` arriving while the pane has unsaved changes
   makes the pane stale ("ear.conf changed; reload") until the person reloads; ear refuses a Save
   over a file that changed meanwhile (`file-changed`). The node panel's box does the same for its
@@ -61,6 +62,25 @@ Vitest); it shares no code with the C++, only the wire format and the fixtures i
 - **A lost socket reconnects** after a growing wait (1 s doubling to 30 s), failing the calls in
   flight, and the new socket subscribes again (graph, graph file, levels), so the editor starts
   over from a fresh snapshot.
+
+## Adding a node
+
+`web/src/addText.ts` is the add-node form's logic (`addText.test.ts` replays `node-text.json`'s
+refusals through it); `components/AddNodeText.tsx` draws it. With the `node-text` feature the form
+takes a whole statement, `node <type> <name> { ... }`, in the pane's textarea style, and Add sends
+`node.addText` ([control-port.md](control-port.md#a-nodes-own-text)): ear appends it where
+`node.add` would, reads it with the whole file (so `$ch` and `@use card_out MOTU;` work as by
+hand), and places its diagnostics in the form's text. The rules:
+
+- **A template per type.** Choosing a type writes `node <type> <name> {\n}`, the name the type's
+  word and the first number no node holds (`file1`, `white2`); the block starts empty, since a
+  type's settings are not on the wire. The template follows the chosen type, and the nodes as they
+  change, only while the text is still the last template: what the person typed is never written
+  over.
+- **Add sends the newest version the editor holds.** `file-changed` then means ear.conf changed
+  while the request was on its way; the form keeps the text and says to press Add again.
+- **A node added gives a fresh template.** The node appears when ear announces it; the form's
+  diagnostics are listed under it as the pane's, and a click puts the caret there.
 
 ## The node panel's text
 
@@ -221,7 +241,8 @@ forwards `/rpc` to an ear on `localhost:7777`; `scripts/dev.sh`'s header shows h
 port. Node.js comes from `web/.nvmrc` and the packages from `web/package-lock.json`.
 
 The tests cover the reducer against every `test/protocol` fixture, the graph file's state and the
-pane's logic (drafts, stale files, Save, refusals), the node panel's knobly box (`nodeText.ts`), the reconnecting client with a fake socket,
+pane's logic (drafts, stale files, Save, refusals), the node panel's knobly box (`nodeText.ts`), the add-node
+form (`addText.ts`), the reconnecting client with a fake socket,
 the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`. There is no browser test runner:
 rendering is checked by eye. *Why:* a Playwright leg costs about 150 MB of browsers and a minute
 or two a CI run, while the logic sits in the reducer, client and rules, which Vitest covers

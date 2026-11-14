@@ -1,8 +1,10 @@
 // The side panel: the engine facts (with the "not realtime" and dropouts badges, and the graph's counters), the
-// add-node form (type list, JSON settings) and the selected node's health, its counters, its companions in words, its
-// Start, Stop, Restart, Disable and Enable (when ear has the lifecycle feature; each enabled by health.ts,
+// add-node form (a node's statement in knobly with the node-text feature, docs/editor.md#adding-a-node; else a type
+// list and JSON settings) and the selected node's health, its counters, its companions in words, its Start, Stop,
+// Restart, Disable and Enable (when ear has the lifecycle feature; each enabled by health.ts,
 // docs/editor.md#a-nodes-health), its text in knobly (with the node-text feature, docs/editor.md#the-node-panels-text;
-// else its settings as JSON) and delete button. Every change is a request to ear; the canvas changes only when ear announces it.
+// else its settings as JSON) and delete button. Every change is a request to ear; the canvas changes only when ear
+// announces it.
 import { useEffect, useState } from "react";
 import { rateLabel } from "../graph";
 import { describeHealth, type ActionAvailability, type HealthView } from "../health";
@@ -10,6 +12,7 @@ import { lifecycleFeature, nodeTextFeature, type Graph, type GraphNode, type Jso
 import { CompanionList } from "./CompanionStrip";
 import { CounterTable, DropoutsBadge } from "./Counters";
 import { useCompanionBadges, useEditor, useGraphCounters, useGraphFile, useNodeCounters } from "./hooks";
+import { AddNodeText } from "./AddNodeText";
 import { NodeTextBox } from "./NodeTextBox";
 
 /** The newest protocol this editor knows (docs/control-port.md#protocol-and-features): a higher one shows a banner. */
@@ -49,7 +52,25 @@ export function EngineFacts({ graph }: { graph: Graph }) {
   );
 }
 
-export function AddNodePanel({ types, onError }: { types: string[]; onError: (error: unknown) => void }) {
+export function AddNodePanel({
+  types,
+  names,
+  features,
+  onError,
+}: {
+  types: string[];
+  names: string[];
+  features: string[];
+  onError: (error: unknown) => void;
+}) {
+  const file = useGraphFile();
+  // A person edits knobly; JSON is the machine API: the JSON form is only for an ear without node-text.
+  if (features.includes(nodeTextFeature) && file !== null)
+    return <AddNodeText types={types} names={names} file={file.file} onError={onError} />;
+  return <AddNodeJson types={types} onError={onError} />;
+}
+
+function AddNodeJson({ types, onError }: { types: string[]; onError: (error: unknown) => void }) {
   const { client } = useEditor();
   const [name, setName] = useState("");
   const [type, setType] = useState("");
