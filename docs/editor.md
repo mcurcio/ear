@@ -148,14 +148,12 @@ cache offline. *Why a URL:* knobly is published only on its GitHub releases and 
 and GitHub Packages asks for a token even to read a public package, which `npm ci` in CI and in the
 dev image has none of. The tarball's `package.json` depends on the ANTLR runtime (`antlr4`
 4.13.2, from npm), so `npm ci` installs it, but `knobly/highlight` never imports it and the bundle
-holds none of it. Bump it with `npm install --save-exact <the new release's tarball URL>` in
-`web/`, and check the tarball against the release's `SHA256SUMS` before committing the lock.
+holds none of it.
 
-The C++ side reads knobly from its own pin, `KNOBLY_COMMIT` in `docker/Dockerfile`
-([AGENTS.md](../AGENTS.md#build-run-and-test)): two pins, one per toolchain, since npm and the
-image take knobly in different forms. The highlighter tokenises by knobly's grammar, so it matches
-ear's reader while both pins have the same `grammar/Knobly.g4`; bump them together when knobly's
-grammar changes.
+That URL and SHA-512 are copies of knobly's one pin, `cmake/knobly.json`, which ear's reader is
+built from too: one version for both, checked and moved as
+[AGENTS.md](../AGENTS.md#build-run-and-test) says. The highlighter tokenises by knobly's grammar,
+so with one version on both sides it matches what ear's reader parses.
 
 ## A node's health
 

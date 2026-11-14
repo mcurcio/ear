@@ -89,14 +89,19 @@ Toolchain notes:
   copy, so point `CMAKE_ARGS` at a tree another checkout already keeps (as above); the main
   checkout may have none. Bump Boost by changing `boost_url` and `boost_sha256` in
   `CMakeLists.txt` together.
-- knobly comes from the dev image's `/opt/knobly`: its C++ release tree, which the Dockerfile's
-  throwaway `knobly` stage builds from a pinned commit with knobly's own release script (python3,
-  uv and a clang-format download, at image build only). ear adds it as a subproject in compiled
-  mode (`src/config/knobly_implementation.cpp`), and only `ear_config` links it. A Linux build
-  outside the image points the CMake cache variable `EAR_KNOBLY_DIR` at such a tree
-  (`CMAKE_ARGS=-DEAR_KNOBLY_DIR=<path>`); configure fails naming it when
-  `include/knobly/knobly.hpp` is not there. Bump knobly by changing `KNOBLY_COMMIT` in
-  `docker/Dockerfile` (the pin's one home); `scripts/dev.sh` rebuilds the image.
+- knobly has one pin for C++ and JS, `cmake/knobly.json`: its `version` (the one constant), the
+  SHA-256 of the C++ release asset (`cppSha256`) and the SHA-512 integrity of the npm tarball
+  (`jsIntegrity`); the URLs follow from the version by knobly's release naming. Configure reads it
+  and fetches `knobly-cpp-<version>.tar.gz` (`CMakeLists.txt` and `include/` with the generated
+  headers) by URL and SHA-256, kept in `.cache/deps/knobly-src/` as Boost's is, and copies its
+  licence to `out/licenses/`; ear adds it as a subproject in compiled mode
+  (`src/config/knobly_implementation.cpp`), and only `ear_config` links it.
+  `CMAKE_ARGS=-DFETCHCONTENT_SOURCE_DIR_KNOBLY=<path>` names another tree, which must stamp the
+  same version. npm cannot read the pin, so `web/package.json` and `web/package-lock.json` repeat
+  the URL and integrity, and two checks hold them to it: configure stops naming each mismatch, and
+  `node scripts/knobly-pin.mjs --check` (first in `make web-test`) does the same. Bump knobly with
+  `scripts/dev.sh node scripts/knobly-pin.mjs <version>`, which downloads both assets, rewrites the
+  pin and runs `npm install` of the tarball in `web/`; the script's header says the rest.
 - The `sendspin` node's fetched dependencies are in `cmake/SendspinDeps.cmake`, each at a full
   commit or by SHA-256: sendspin-cpp (with `cmake/sendspin-listener.patch`,
   `sendspin-starved-floor.patch` and `sendspin-late-chunk.patch`; a failed apply, or a tree without
@@ -112,8 +117,8 @@ Toolchain notes:
   `web/package-lock.json` pins its packages and `npm ci` installs exactly those. npm's cache is the
   main checkout's `.cache/npm`. Every package comes from the npm registry but one: knobly (its
   highlighter), which `web/package.json` names by its GitHub Release tarball's URL and the lock by
-  its SHA-512, since GitHub Packages wants a token even to read; it is a pin apart from the C++
-  side's `KNOBLY_COMMIT` ([`docs/editor.md`](docs/editor.md#highlighting) says how they relate). Developing it with hot reload: [`docs/editor.md`](docs/editor.md#developing-it).
+  its SHA-512, since GitHub Packages wants a token even to read; both follow `cmake/knobly.json`,
+  the C++ side's pin too ([`docs/editor.md`](docs/editor.md#highlighting)). Developing it with hot reload: [`docs/editor.md`](docs/editor.md#developing-it).
 
 ## Repository layout
 
@@ -193,7 +198,8 @@ unless you are updating a dependency. Update one with `git subtree pull --prefix
 never enter ear's history, so the release notes get only the merge commit's message (one
 Dependencies line and a patch release); the squash commit's own message is not a Conventional
 Commit, so it is ignored. Bumps of the fetched dependencies (Boost's `boost_url` and
-`boost_sha256`, `KNOBLY_COMMIT`, those in `cmake/SendspinDeps.cmake`) use the same message. The
+`boost_sha256`, knobly's `cmake/knobly.json` through `scripts/knobly-pin.mjs`, those in
+`cmake/SendspinDeps.cmake`) use the same message: `build(deps): upgrade knobly to <x>`. The
 subtrees were first added without `--squash`, so their upstream histories are in ear's history;
 the baseline tag `v0.0.0` on cb6d71f64c (the last `git subtree add`, 2020-05-27) ends them, since
 semantic-release reads only the commits after the last `v*` tag. PipeWire, alsa-lib and libsndfile

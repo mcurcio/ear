@@ -709,7 +709,8 @@ inside or around each other. `ear` reads `engine.conf` from beside its own binar
 The run image (`docker/Dockerfile`'s `run` target, published as `ghcr.io/mcurcio/ear`, amd64 only
 until the Talos nodes' CPU is known; anonymous pulls work) is `debian:trixie-slim` with only the
 run-time libraries: no compiler and no knobly (it is compiled in). It holds `/opt/ear/ear`,
-`engine.conf`, `web/` and `licenses/` (the licences of what the `sendspin` node compiles in), runs
+`engine.conf`, `web/` and `licenses/` (the licences of the fetched code compiled in: knobly and
+what the `sendspin` node links), runs
 as user `ear` (uid 10001), exposes 7777 and 8928 (a listening `sendspin` node's default), and
 defaults to `--config-dir /var/lib/ear/config --recordings-dir /var/lib/ear/recordings`, two
 volumes owned by `ear`. Arguments given to the container replace both, so pass them again.

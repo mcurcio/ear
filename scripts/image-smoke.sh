@@ -52,7 +52,7 @@ docker run --rm --entrypoint /bin/sh "$image" -euc '
 		fi
 	done
 	for file in /opt/ear/engine.conf /opt/ear/web/index.html \
-		/opt/ear/licenses/arduinojson-LICENSE /opt/ear/licenses/ixwebsocket-LICENSE /opt/ear/licenses/micro_flac-LICENSE \
+		/opt/ear/licenses/knobly-LICENSE /opt/ear/licenses/arduinojson-LICENSE /opt/ear/licenses/ixwebsocket-LICENSE /opt/ear/licenses/micro_flac-LICENSE \
 		/opt/ear/licenses/noise_c-LICENSE /opt/ear/licenses/sendspin-LICENSE /opt/ear/licenses/mdns-LICENSE; do
 		if [ ! -f "$file" ]; then
 			echo "image-smoke: $file is missing" >&2

@@ -1,0 +1,6 @@
+{
+	"//": "knobly's one pin, for C++ and JS. CMakeLists.txt reads it; scripts/knobly-pin.mjs moves it and checks web/ against it.",
+	"version": "1.0.0",
+	"cppSha256": "d30753c6beb9cb77e03478703cc6c95c5f23c9e72ffc2917429a82e5ec0db9cb",
+	"jsIntegrity": "sha512-UUfCU0/x+2Riou/3cUIJSXXq/GbU8i4Xt5mlBuUXBxSHvYRB+NP81TBpVyhh67AXThqjiJqH7K0sWdVvnA2CQw=="
+}

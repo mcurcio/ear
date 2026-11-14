@@ -3,8 +3,8 @@
 # - test: builds EAR's build image (docker/Dockerfile, target dev) and, inside it, builds
 #   everything and runs every test (make test), the same way scripts/dev.sh does on a
 #   developer's machine.
-# - web: in the same image, the graph editor's checks (make web-test: npm ci, typecheck, vitest,
-#   build).
+# - web: in the same image, the graph editor's checks (make web-test: knobly's pin agrees with
+#   web/'s, npm ci, typecheck, vitest, build).
 # - format: in the same image, clang-format's check of every C++ file (make format-check).
 # - image: builds the run image (target run, what publish pushes) and checks it with
 #   scripts/image-smoke.sh; first, scripts/version-tags.sh's own check.
@@ -56,9 +56,9 @@ jobs:
           cache-from: type=gha,scope=dev
           cache-to: type=gha,scope=dev,mode=max
 
-      # The fetched trees (kept_fetchcontent, cmake/KeptFetchContent.cmake): Boost and the
-      # sendspin node's (cmake/SendspinDeps.cmake). Each marker records its pin, so a tree
-      # restored from an older key is fetched again by configure. Boost's extracted tree is
+      # The fetched trees (kept_fetchcontent, cmake/KeptFetchContent.cmake): Boost, knobly
+      # (cmake/knobly.json) and the sendspin node's (cmake/SendspinDeps.cmake). Each marker
+      # records its pin, so a tree restored from an older key is fetched again by configure. Boost's extracted tree is
       # cached rather than its archive (.cache/deps/boost-tmp, unused once the marker matches):
       # about the same compressed size, and it skips the 30-40 s xz extraction.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -67,13 +67,15 @@ jobs:
             .cache/deps/boost-src
             .cache/deps/arduinojson-src
             .cache/deps/ixwebsocket-src
+            .cache/deps/knobly-src
             .cache/deps/mdns-src
             .cache/deps/micro_flac-src
             .cache/deps/noise_c-src
             .cache/deps/sendspin-src
           key: >-
             deps-${{ runner.os }}-${{ runner.arch }}-${{
-            hashFiles('CMakeLists.txt', 'cmake/KeptFetchContent.cmake', 'cmake/SendspinDeps.cmake') }}
+            hashFiles('CMakeLists.txt', 'cmake/KeptFetchContent.cmake', 'cmake/SendspinDeps.cmake',
+            'cmake/knobly.json') }}
           restore-keys: deps-${{ runner.os }}-${{ runner.arch }}-
 
       # Compiler output: ccache (the image's compiler launcher), in .cache/ccache, where
