@@ -474,9 +474,11 @@ above; and a paced counter's report is the pacer's, as a node's misses are.
   only for each name's newest span, the node a client holds. A configuration's end forgets what it
   named, so the next one's companions of the same names start from zero.
 - **The records.** `ear.sink-dropped` and `ear.source-shortfall` are paced as
-  `ear.node-missed-cycles` is, per companion: once its count held still for a beat (or kept moving
-  10 s: a full disk), at most once per 10 s per companion (`companionDropDiagnosticPace`), and at
-  once, pace and hold waived, as its configuration ends (`companionsEnded`, with the final counts),
+  `ear.node-missed-cycles` is, per companion: once its count held still for a beat, at most once
+  per 10 s per companion (`companionDropDiagnosticPace`), and at once, pace and hold waived, as its
+  configuration ends. A count that never holds still (a full disk) is not said at once: its first
+  record comes once it has kept moving 10 s, then one about every 10 s while it moves, each with
+  what moved since; the companion list shows the count within a second meanwhile (`companionsEnded`, with the final counts),
   so each configuration's records sum to its totals. A superseded node's records are written too.
 
 **At a stop**, every node's span ends as it goes, and once the main loop has ended `flush()`
