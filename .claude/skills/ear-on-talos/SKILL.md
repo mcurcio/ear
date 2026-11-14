@@ -1,6 +1,6 @@
 ---
 name: ear-on-talos
-description: Running EAR's run image on a Talos Linux Kubernetes node with a USB sound card (the owner's MOTU 24Ao): the usb-audio-drivers extension and loading snd_usb_audio, Pod Security and SYS_NICE, /dev/snd and containerd's device ownership, CAP_SYS_NICE for realtime priority, the writable graph file volume and seeding ear.conf, setting the MOTU's rate and channel count, its Linux quirks (quirk flags, the playback channels rotated by 8, freezes), finding the card id, the checks to run on the hardware, getting FPP's RTP audio into the pod (a UDP Service for unicast, hostNetwork for multicast, PipeWire's module-rtp-sink as the sender), and a sendspin node in the pod (its key file under fsGroup, dialling, listening and mDNS). Use when deploying EAR to the cluster, when a card node fails on the hardware, when graph.get says "realtime": false in the pod, when an rtp node in the pod is silent, stays starting (configuring) or fails "never ran", or when a sendspin node in the pod is not found or loses its pairing.
+description: Running EAR's run image on a Talos Linux Kubernetes node with a USB sound card (the owner's MOTU 24Ao): the usb-audio-drivers extension and loading snd_usb_audio, Pod Security and SYS_NICE, /dev/snd and containerd's device ownership, CAP_SYS_NICE for realtime priority, the writable graph file volume and seeding ear.conf, setting the MOTU's rate and channel count, its Linux quirks (quirk flags, the playback channels rotated by 8, freezes), finding the card id, the checks to run on the hardware, getting FPP's RTP audio into the pod (a UDP Service for unicast, hostNetwork for multicast, PipeWire's module-rtp-sink as the sender), and a sendspin node in the pod (its key file under fsGroup, dialling, listening and mDNS). Use when deploying EAR to the cluster, when a card node fails on the hardware, when graph.get says "realtime": false in the pod, when an rtp node in the pod is silent, stays starting (configuring) or fails "never ran", or when a sendspin node in the pod is not found or loses its pairing, or when upgrading the volume's ear.conf past the graph { } and rate-unit change (the pod runs no nodes, or exits on --graph-frequency).
 ---
 
 # EAR on Talos with a MOTU 24Ao
@@ -194,6 +194,74 @@ machine:
   check `kubectl logs --previous` after a restart if an edit seems lost.
 - Recordings: `file` nodes write only beneath `/var/lib/ear/recordings` (their `path` is relative
   to it); mount a volume there writable by uid 10001 (for example `fsGroup: 10001`) to keep them.
+
+### Upgrading past the `graph { }` change
+
+The release that moved the graph's settings into a `graph { }` block and put units on every rate
+(`docs/graph-file.md#directives`, `#rates`) refuses older files and keeps no compatibility. The
+volume's `ear.conf` is seeded only when missing and ear has rewritten it since, so it is still in
+the old form after the image is upgraded: edit it once, by hand.
+
+Before:
+
+```conf
+graph_frequency 48000;
+block_size 256;
+node rtp fpp { address "0.0.0.0"; port 5004; format "L24"; channels 2; rate 48000; }
+```
+
+After:
+
+```conf
+graph {
+    rate 48khz;
+    block_size 256;
+}
+node rtp fpp { address "0.0.0.0"; port 5004; format "L24"; channels 2; rate 48khz; }
+```
+
+`44100` is `44.1khz`, `96000` is `96khz`; `48000hz` also works. Every `rtp` node's `rate` needs
+its unit; an `rtp` node without `rate` needs nothing. In the same rollout, replace
+`--graph-frequency 48000` in the container's args, if it is there, with `--rate 48khz`.
+
+Three ways to make the edit, from simplest:
+
+1. **The editor's text pane.** ear stays up on an old file (below), so open port 7777, fix the
+   text and Save (`graphFile.set` writes the volume's file). If the file's rate or block size
+   differs from the flags the engine took, the pane says it applies at restart: restart the pod
+   (`kubectl rollout restart -n audio deploy/ear`).
+2. **kubectl, through the running container.** The run image has `sh`, `cat` and `mv` but no
+   editor, so edit a copy locally and write it back by renaming inside the folder (ear reads a
+   renamed file once, whole; never truncate `ear.conf` in place):
+
+   ```bash
+   kubectl exec -n audio deploy/ear -- cat /var/lib/ear/config/ear.conf > ear.conf
+   # edit ear.conf as above
+   kubectl exec -i -n audio deploy/ear -- sh -c \
+     'cat > /var/lib/ear/config/ear.conf.new && mv /var/lib/ear/config/ear.conf.new /var/lib/ear/config/ear.conf' < ear.conf
+   kubectl rollout restart -n audio deploy/ear   # only when the rate or block size changed
+   ```
+
+3. **Re-seed.** Put the new-form file in the seed ConfigMap, delete the volume's copy
+   (`kubectl exec -n audio deploy/ear -- rm /var/lib/ear/config/ear.conf`) and restart the pod, so
+   the initContainer copies it again. This throws away every edit made in the editor since the
+   first seed.
+
+**If the step is skipped**, the pod still starts and ear stays up, but runs no nodes: the file has
+errors, so nothing applies. `kubectl logs -n audio deploy/ear` shows the refusals, one record each,
+for example:
+
+```
+graph-file error 1:1 ear/unknown-directive: graph_frequency is no longer a directive: graph settings moved: write graph { rate 48khz; block_size 256; }
+graph-file error 2:1 ear/unknown-directive: block_size is no longer a directive: graph settings moved: write graph { rate 48khz; block_size 256; }
+graph-file error 3:77 ear/bad-rate: rate: 48000 has no unit: write 48000hz or 48khz
+```
+
+The engine falls back to `--rate` and `--block-size` (48khz and 256 unless the args say
+otherwise), `graph.get` lists no nodes, and the editor's pane shows the same diagnostics. Args that
+still carry `--graph-frequency` are worse: ear exits 1 at once with `ear: --graph-frequency is gone:
+write --rate with a unit, such as --rate 48khz`, and the pod goes into CrashLoopBackOff until the
+args change.
 
 ## 5. Checks on the hardware
 

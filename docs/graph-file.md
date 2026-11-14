@@ -78,6 +78,16 @@ each problem says:
 { rate 44.1khz; block_size 512; }`. No compatibility is kept; with these lines there is no
 missing-`graph` error besides.
 
+**Upgrading a file** is a one-time edit: the two old lines become one `graph { rate <rate>;
+block_size <frames>; }` block, every rate setting (`rtp`'s `rate`) gets its unit (`48000` becomes
+`48khz`, `44100` becomes `44.1khz`), and a `--graph-frequency` flag becomes `--rate` with a unit.
+Until the file is upgraded ear stays up but runs nothing: its errors are `graph-file error`
+records and the pane's diagnostics, and the engine takes `--rate` and `--block-size`. A
+`--graph-frequency` left in the arguments exits 1 at boot instead. Fix the file by hand or with
+the pane's Save, then restart ear if its rate or block size differs from the flags'
+([below](#settings-applied-only-at-restart)). On the owner's cluster, where the file lives on a
+volume seeded only when missing, the `ear-on-talos` skill has the steps.
+
 ### Rates
 
 A rate is never a bare number: it is one word, a number (`48`, `44.1`) and then `hz` or `khz` in
