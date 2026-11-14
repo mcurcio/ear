@@ -452,8 +452,9 @@ keeps it as a member), or on the main loop while the node is not yet configured.
   ([architecture.md](architecture.md#teardown-by-dependency)).
 - **Sources left armed.** A state destroys the timers and watches it armed, before or in its
   destructor; one armed on another loop it destroys by a post to that loop. The framework counts
-  every one whose handle lives; one still armed when the loops close is a type bug: its loop
-  cancels it, the node says `ear.loop-source-left`, and the harness fails the call that tore the
+  every one whose handle lives; one still armed when the loops close is a type bug: its handler
+  never runs once its loop's state is gone (between the state's destruction and the close it may
+  still come due, and is skipped), its loop cancels it at the close, the node says `ear.loop-source-left`, and the harness fails the call that tore the
   node down.
 - **Threads.** A handler runs on its loop's thread, one at a time per loop. Nothing here is
   realtime. A strand must not block: `SourceWriter::write` and `idle` assert in debug builds that

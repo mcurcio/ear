@@ -695,9 +695,26 @@ struct TestLoops final : LoopAdapter {
 		std::unique_ptr<Timer> after(std::chrono::milliseconds, std::move_only_function<void()>) override {
 			return std::make_unique<Mark>();
 		}
-		std::unique_ptr<Timer> every(std::chrono::milliseconds, std::move_only_function<void()>) override {
-			return std::make_unique<Mark>();
+		std::unique_ptr<Timer> every(std::chrono::milliseconds, std::move_only_function<void()> due) override {
+			auto armed = std::make_shared<Armed>(Armed{std::move(due)});
+			timers.push_back(armed);
+			return std::make_unique<Held>(armed);
 		}
+		/// Every `every` whose handle lives fires once, as the loop's thread would.
+		void fireTimers() {
+			for (const auto& armed : timers)
+				if (!armed->cancelled) armed->due();
+		}
+		struct Armed {
+			std::move_only_function<void()> due;
+			bool cancelled = false;
+		};
+		struct Held final : Timer {
+			explicit Held(std::shared_ptr<Armed> a) : armed(std::move(a)) {}
+			~Held() override { armed->cancelled = true; }
+			std::shared_ptr<Armed> armed;
+		};
+		std::vector<std::shared_ptr<Armed>> timers;
 		std::unique_ptr<Timer> onWake(Wake&, std::move_only_function<void()>) override {
 			return std::make_unique<Mark>();
 		}
@@ -721,8 +738,18 @@ struct TestLoops final : LoopAdapter {
 		}
 		void close(std::move_only_function<void()> closed) override {
 			owner.log.push_back("loop " + name + " close");
+			if (owner.holdClose) {
+				heldClose = std::move(closed);
+				return;
+			}
 			if (owner.autoClose) owner.mainLoop.post(std::move(closed));
 		}
+		/// With holdClose: the close held runs, cancelling every timer left, as a loop's close does.
+		void closeNow() {
+			for (const auto& armed : timers) armed->cancelled = true;
+			owner.mainLoop.post(std::move(heldClose));
+		}
+		std::move_only_function<void()> heldClose;
 		TestLoops& owner;
 		std::string name;
 		LoopKind loopKind;
@@ -734,12 +761,16 @@ struct TestLoops final : LoopAdapter {
 		log.push_back("loop " + node + "." + std::string(name) + " made");
 		told.push_back(&events);
 		if (autoReady) mainLoop.post([&events] { events.ready(); });
-		return std::make_unique<One>(*this, node + "." + std::string(name), kind);
+		auto one = std::make_unique<One>(*this, node + "." + std::string(name), kind);
+		made.push_back(one.get());
+		return one;
 	}
 	Log& log;
 	QueueExecutor& mainLoop;
 	bool autoReady = true;
 	bool autoClose = true;
+	bool holdClose = false;        // a finished loop's close waits for One::closeNow()
+	std::vector<One*> made;        // each loop made, in order; valid while its configuration lives
 	std::vector<LoopEvents*> told; // each loop's, in making order; valid while its configuration lives
 };
 
@@ -6246,6 +6277,50 @@ TEST_CASE("A loop's events: a slow strand handler is ear.loop-slow, a handler's 
 	f.loops.told[0]->threw("the library's bad day");
 	f.settle();
 	CHECK(failureOf(f, "porch") == "lost: loop helper's handler threw: the library's bad day");
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A timer a state left armed never runs its handler once the state is gone, in the window between the loop's "
+          "finish and its close",
+          "[node_host][loops]") {
+	Fixture f;
+	f.loops.holdClose = true;
+	static bool gone = false;
+	static bool touchedAfterGone = false;
+	gone = false;
+	touchedAfterGone = false;
+	/// Says, by a flag its destructor sets, whether anything reached it after it was destroyed.
+	struct Touched {
+		~Touched() { gone = true; }
+		void touch() {
+			if (gone) touchedAfterGone = true;
+		}
+	};
+	std::unique_ptr<Timer> left; // held past the state, as a careless type might: the source left armed
+	auto config = std::make_shared<LoopProbeConfig>(f.log, std::vector{statefulWorker});
+	config->onConfigure = [&f, &left](CreateContext& cx) {
+		auto* state = new Touched;
+		cx.loopState(
+			0, std::unique_ptr<void, void (*)(void*)>(state, [](void* given) { delete static_cast<Touched*>(given); }));
+		left = cx.loopExecutor(0).every(std::chrono::milliseconds(1), [state] { state->touch(); });
+		cx.use(std::make_unique<TestAudioCode>(f.log));
+		return Configured::applied();
+	};
+	addRunning(f, "porch", config);
+	REQUIRE(f.loops.made.size() == 1);
+	TestLoops::One& loop = *f.loops.made[0];
+	f.host.nodeRemoved("porch");
+	f.settle(); // finished: the staged arming ran, then the state was destroyed; the close is held
+	REQUIRE(gone);
+	REQUIRE(loop.timers.size() == 1);
+	loop.fireTimers(); // the left timer fires before the close cancels it
+	CHECK_FALSE(touchedAfterGone);
+	loop.closeNow();
+	f.settle();
+	CHECK(countOf(f.log, "diagnostic porch ear.loop-source-left sources=1") == 1);
+	left.reset();
 	f.stopAll();
 	f.settle();
 	CHECK(f.allGone == 1);

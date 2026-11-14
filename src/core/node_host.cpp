@@ -1098,23 +1098,23 @@ struct NodeHost::Impl {
 			}
 			std::unique_ptr<Timer> after(std::chrono::milliseconds delay,
 			                             std::move_only_function<void()> due) override {
-				return arm([delay, due = std::move(due)](NodeLoop& loop) mutable {
+				return arm([delay, due = whileStateLives(std::move(due))](NodeLoop& loop) mutable {
 					return loop.after(delay, std::move(due));
 				});
 			}
 			std::unique_ptr<Timer> every(std::chrono::milliseconds period,
 			                             std::move_only_function<void()> due) override {
-				return arm([period, due = std::move(due)](NodeLoop& loop) mutable {
+				return arm([period, due = whileStateLives(std::move(due))](NodeLoop& loop) mutable {
 					return loop.every(period, std::move(due));
 				});
 			}
 			std::unique_ptr<Timer> onWake(Wake& wake, std::move_only_function<void()> rung) override {
-				return arm([&wake, rung = std::move(rung)](NodeLoop& loop) mutable {
+				return arm([&wake, rung = whileStateLives(std::move(rung))](NodeLoop& loop) mutable {
 					return loop.onWake(wake, std::move(rung));
 				});
 			}
 			std::unique_ptr<Timer> onReadable(int fd, std::move_only_function<void()> readable) override {
-				return arm([fd, readable = std::move(readable)](NodeLoop& loop) mutable {
+				return arm([fd, readable = whileStateLives(std::move(readable))](NodeLoop& loop) mutable {
 					return loop.onReadable(fd, std::move(readable));
 				});
 			}
@@ -1124,6 +1124,14 @@ struct NodeHost::Impl {
 				return real_ != nullptr && real_->inLoop();
 			}
 
+			/// A timer's or watch's handler, run only while the loop's state lives: between teardown step 4's finish (the
+			/// state destroyed) and its close (the sources left cancelled), a source the state left armed may still fire,
+			/// and its handler may reach the state. Both run on the loop's thread.
+			std::move_only_function<void()> whileStateLives(std::move_only_function<void()> handler) {
+				return [this, handler = std::move(handler)]() mutable {
+					if (!stateGone_) handler();
+				};
+			}
 			/// A post with the loop's state (null for a loop with none), run only while the state lives: once its loop
 			/// destroyed it, a post still queued is destroyed unrun (both on the loop's thread).
 			void postState(std::move_only_function<void(void*)> work) {

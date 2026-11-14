@@ -470,3 +470,43 @@ TEST_CASE("A handler's throw is caught and told, and the loop runs on", "[loops]
 	CHECK(made.told.throws[0] == "the library's bad day");
 	finishAndClose(main, made);
 }
+
+TEST_CASE("Workers that left after their replacements carried on are joined, so the pool's threads return to its size "
+          "after each stuck episode",
+          "[loops]") {
+	TestMainLoop main;
+	Loops loops(main, LoopOptions{.strandThreads = 1, .replaceAfter = 30ms, .maxThreads = 2});
+	Made stuck;
+	Made other;
+	make(loops, main, stuck, LoopKind::strand, "stuck");
+	make(loops, main, other, LoopKind::strand, "other");
+	for (int episode = 0; episode < 3; ++episode) {
+		INFO("episode " << episode);
+		Latch hold;
+		std::atomic<bool> holding{false};
+		stuck.loop->post([&] {
+			holding = true;
+			static_cast<void>(hold.wait());
+		});
+		REQUIRE(main.runUntil([&] {
+			ear::sleeps::poll(1ms, "the stuck handler began");
+			return holding.load();
+		}));
+		bool ran = false;
+		other.loop->post([&] { main.post([&] { ran = true; }); });
+		REQUIRE(main.runUntil([&] { return ran; })); // on the replacement
+		hold.open();
+		REQUIRE(main.runUntil([&] {
+			ear::sleeps::poll(1ms, "the stuck thread, back, leaves the pool to its size");
+			return loops.poolThreads() == 1;
+		}));
+		// The reactor joins a worker that left at its next look, which a strand's work wakes it for.
+		REQUIRE(main.runUntil([&] {
+			other.loop->post([] {});
+			ear::sleeps::poll(5ms, "the reactor's look joining the worker that left");
+			return loops.poolThreadsHeld() == 1;
+		}));
+	}
+	finishAndClose(main, stuck);
+	finishAndClose(main, other);
+}

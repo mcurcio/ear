@@ -37,6 +37,9 @@ public:
 	                               LoopEvents& events) override;
 	/// Any thread: the threads the pool runs now (its workers, replacements included; not its reactor).
 	std::size_t poolThreads() const;
+	/// Any thread: the pool's worker threads not yet joined (a worker that left is joined by the pool's reactor at its
+	/// next look, while a strand runs).
+	std::size_t poolThreadsHeld() const;
 
 private:
 	Executor& mainLoop_;

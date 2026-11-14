@@ -619,14 +619,33 @@ public:
 	}
 	/// Every 50 ms while a worker is busy: one past replaceAfter gets a replacement, within maxThreads.
 	bool supervise() {
-		const std::scoped_lock lock(mutex);
-		const Clock::time_point now = Clock::now();
-		for (Worker& worker : workers)
-			if (worker.busy && !worker.replaced && now - worker.since > options.replaceAfter) {
-				worker.replaced = true;
-				if (live < options.maxThreads) spawnLocked();
+		std::list<Worker> exited;
+		bool busy = false;
+		{
+			const std::scoped_lock lock(mutex);
+			const Clock::time_point now = Clock::now();
+			for (Worker& worker : workers)
+				if (worker.busy && !worker.replaced && now - worker.since > options.replaceAfter) {
+					worker.replaced = true;
+					if (live < options.maxThreads) spawnLocked();
+				}
+			// A worker that left (its replacement carries on) is joined here, so threads never pile up: it set `exited`
+			// as its last act under the lock, so the join waits only for its return.
+			for (auto it = workers.begin(); it != workers.end();) {
+				auto next = std::next(it);
+				if (it->exited) exited.splice(exited.end(), workers, it);
+				it = next;
 			}
-		return busyCount > 0;
+			busy = busyCount > 0;
+		}
+		for (Worker& worker : exited)
+			if (worker.thread.joinable()) worker.thread.join();
+		return busy;
+	}
+	/// Threads the pool still holds, running or not yet joined.
+	std::size_t held() const {
+		const std::scoped_lock lock(mutex);
+		return workers.size();
 	}
 	void reactorLoop() {
 		for (;;) {
@@ -755,5 +774,7 @@ std::unique_ptr<NodeLoop> Loops::make(const NodeName& node, std::string_view nam
 }
 
 std::size_t Loops::poolThreads() const { return pool_ ? poolOf(pool_)->threads() : 0; }
+
+std::size_t Loops::poolThreadsHeld() const { return pool_ ? poolOf(pool_)->held() : 0; }
 
 } // namespace ear::runtime
