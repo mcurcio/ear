@@ -1045,7 +1045,15 @@ TEST_CASE(
 	ThrowingLinkListener buggy;
 	pair.links.subscribe(buggy);
 	pair.links.createLink(kLink + 1, out, left);
-	REQUIRE(waiter.until([&] { return faults.reports.size() == 2; }));
+	// The wait also ends on the second link's own end, so a failure names how it ended (refused by the engine, or never
+	// active) rather than only running out the deadline.
+	const bool ended = waiter.until([&] { return faults.reports.size() == 2 || pair.linkLog.failed.size() > 1; });
+	INFO("the second link was " << (pair.linkLog.active.empty() ? "never active" : "active") << ", "
+	                            << pair.linkLog.failed.size() << " link(s) failed, " << faults.reports.size()
+	                            << " fault(s) reported");
+	REQUIRE(ended);
+	if (pair.linkLog.failed.size() > 1) FAIL("the second link failed: " << pair.linkLog.failed.back().second);
+	REQUIRE(faults.reports.size() == 2);
 	CHECK(faults.reports[1].callback == "LinkProxy::onInfo");
 	CHECK(faults.reports[1].where == "tell route links");
 	CHECK(faults.reports[1].detail == "the reconciler's bug");
