@@ -937,11 +937,11 @@ tests in `ear_pipewire_tests` judge only what the host left alone.
   ear's own data thread is not seen there at all. Both are judged where they can be, in `ear_pipewire_tests`.
 - **Interim limit: lateness between 20 and 100 ms.** Only a 20 ms hold is proven clean; that a late send up to the
   receiver's whole 100 ms leaves the tone clean is assumed from the buffer's size, not shown. Owed with the single
-  judge (`cycle-facts.md` 5.4: the late sends' reach becomes the receiver's configured latency through `FrameClock`),
+  judge (since built, c96b883070: the late sends' reach is the receiver's configured latency through `FrameClock`),
   by holds across that range.
 - **The ramp judge's steps are whole blocks or what the library logged.** Under load the depth test saw steps of 256
   and 512 at cycle boundaries, 4 runs in 20, and the first cut let any step within a frame of whole blocks through.
-  Spike S6 (`cycle-facts.md` 9.1) showed that with `engine.conf`'s `resync.ms` a running block's jumps are whole blocks
+  Spike S6 (`docs/engine.md#the-one-data-loop-and-invokes`) showed that with `engine.conf`'s `resync.ms` a running block's jumps are whole blocks
   exactly, so the frame either way is gone (review): `isSkipStep` is one more than whole blocks, on a signed step, so a
   step back never passes as a skip round the 32-bit index. A step of 256 or 512 is then no skip. In the WAV it is judged
   against what ear prints of the library (its warnings, as log records): each `Lost sync (<n>us off)` with `n` below
@@ -963,7 +963,7 @@ tests in `ear_pipewire_tests` judge only what the host left alone.
 - **Interim limit: a `Lost sync` line is matched by size, not by place.** A step it accounts for may be less than
   `lossDropFrames(n)`, where the library's drop is exact (`late_frames`) and can be less only where the chunk ended;
   and the line is matched to whichever step it covers, not to the step at the frames ear had written when it printed
-  it. Both are owed with ear's own records (`cycle-facts.md` D2, and C3c for the judge): the exact size, and the line
+  it. Both were owed with ear's own records (built since: ced7c08d18 and c96b883070): the exact size, and the line
   stamped with the WAV frames held when ear printed it. A loss that began with silence bounds its drop by the silence
   only by reading of the library, not by its word, and a step inside a loss past what its line says
   (`stepsInLoss`) is bounded by nothing but the line's being there, one step each: the library's later hard syncs in a

@@ -36,8 +36,8 @@ constexpr double amplitude = 0.5;
 /// The rtp node's receive buffer: the graph file names no latencyMs, so the node's default (docs/node-types.md#rtp). A
 /// packet late by less is still in time for it.
 constexpr std::chrono::milliseconds receiverHeadroom{100};
-/// Interim, until ear reports its own lost cycles (docs/design/cycle-facts.md, step D2): how much later than its frames
-/// were due to be sent a tenth is first seen in the WAV (heldBy below), so heldBy less this is no later than the tenth
+/// ear counts its own lost cycles (docs/engine.md#counters) but not this test sender's late sends, so a tenth is timed by
+/// the WAV: how much later than its frames were due to be sent a tenth is first seen in the WAV (heldBy below), so heldBy less this is no later than the tenth
 /// played. It is the receiver's buffer (100 ms), the file node's write behind the graph and the 50 ms between looks.
 /// Measured every look (mostLag, checked against this): 147 to 158 ms over 20 runs at load 2 to 3, at most 188 ms
 /// over 10 beside six busy threads; 300 ms leaves a loaded host room, and a look past it fails the test naming it.

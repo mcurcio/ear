@@ -326,6 +326,15 @@ The block makes one `GraphCycle` a cycle (`port_blocks.cpp`, `onProcess`), so no
 | `downstream` | The latency downstream of each output port ([below](#latency-per-bank-pair)) |
 | `ranRawNs()` | Not a field: when the block really began the cycle, on the raw clock. `startRawNs` when it began on time; when overdue, `startRawNs + (nextNs - startNs) + overdueNs`, the next cycle's due time plus how long that was already overdue, moved onto the raw clock (the two clocks differ by parts per million over the few milliseconds between). A `nextNs` of 0, a test's own cycle, is on time. A node that must date something by when a burst's cycle really ran reads it here; `sendspin` does for the one report its bound forces ([node-types.md](node-types.md#clock)) |
 
+**Why one home.** Before the facts, every consumer worked a loss out again from what it could see
+(the position against its own last end, a driver id, its ring's capacity), each by its own rule, and
+each timing test had its own judge whose excuse was a window or a shape (a second and a half, 600 ms,
+whole blocks within a frame), each looser than what it excused: a bug that dropped a block inside a
+window passed. The driver keeps its own account (its realtime `incomplete` event), so the block
+states the facts once from it, `GraphCycle` carries them to every consumer (one carrier, no second
+view: each consumer already holds the cycle), and one judge excuses exactly the cycles the driver
+cut ([testing.md](testing.md#the-cycle-judge)).
+
 **The internal clock's cuts.** `Engine::create` finds the dummy by its `node.name`
 (`engine_names.hpp`'s `internalClockNode`, the property table's row; none is an `EngineError`) and
 adds `DriverCuts`, a realtime listener on its `start` and `incomplete` events, through the callback
@@ -359,7 +368,9 @@ say what the host did to the whole graph: a cycle the driver cut is a dropout on
 once, which no node caused. **A node's** say what happened to that node beyond the graph's own
 losses. Each fact is counted once, where it is stated: repeating the graph's cuts on every node
 would make each look faulty for what the host did, and summing nodes' misses into the graph would
-count one dropout once per node.
+count one dropout once per node. The owner asked for counters like these in ear's core diagnostics
+(2026-11-10) and asked whether per node or per graph; both, each counting what it means, is the
+design's answer, which the owner may still overturn.
 
 | Counter | Scope | Counts | Where it is counted |
 |---|---|---|---|
@@ -1168,6 +1179,11 @@ the base image by digest, not the packages).
    `scripts/dev.sh bash -c 'ls /usr/lib/*/pipewire-0.3/'`.
 4. Run `scripts/dev.sh make test`: `ear_pipewire_tests` cover these facts (among them the property
    table's live check, which fails for any property the new version drops or overrides,
-   [above](#properties-ear-sets)) and `ear_system_tests` the whole path.
+   [above](#properties-ear-sets)) and `ear_system_tests` the whole path. S6 (`[s6]`) checks the
+   cycle judge's premise, that the driver reports every cycle a node misses
+   ([above](#the-one-data-loop-and-invokes)): if a version loses one unreported, that is a question
+   for the owner (carry a patch to PipeWire; excuse such a cycle only by a mark PipeWire leaves on
+   it, of which 1.4.2 leaves none; or report it upstream and let the timing tests fail until it is
+   fixed), never a judge loosened.
 5. Update the version named in `engine.conf`'s header, the `pipewire-engine` skill, `AGENTS.md` and
    this page.

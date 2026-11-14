@@ -797,6 +797,14 @@ client is destroyed on the worker before the worker's state is, so no thread of 
 Configure refuses a tree without the patch (`cmake/CarriedPatch.cmake`, built); `sendspin_patched_dep` takes a list of
 patches. Offering it upstream is worth a try (U8).
 
+**What it retires in the tests and the counts** (moved here when the cycle-facts design was retired, its steps all
+built). The `sendspin` clock tests match a library line within an interim reach, `kLogReach` and `kLogLag`, and
+stretch a loss of sync by `kLogLag` (`inLoss`), because a line read from standard error is stamped when it was read,
+not where its audio plays (`docs/testing.md#the-librarys-own-word`); with the patch, ear's sink stamps each line with
+the feed's write position, so a line names the frame it acts on and the three go. A count of the library's re-locks,
+when ear keeps one, is the node's status (`control-plane.md` 3.1), not a framework counter; and a legacy handoff's
+drops, in `node.gone`'s `droppedFrames` today, become the sink companion's `dropped` when S3c.6 retires the handoff.
+
 ## 10. The type harness, for slice 3c
 
 `TypeHarness<spec, Type>` runs a type over a real `NodeHost` with in-memory fakes (built: `parse`, `add`,

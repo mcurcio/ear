@@ -434,7 +434,7 @@ Recorded in `docs/engine.md#the-one-data-loop-and-invokes` with PipeWire's sourc
   never an engine miscount), and after
   a cycle its upstream ran and it did not, a node reads the upstream's frames of the cycle it runs,
   never the cut one's (`docs/engine.md#the-one-data-loop-and-invokes`).
-- **S6 (cycle facts, tag `[s6]`, its first case also `[s2]`)**: the driver reports every cycle a node
+- **S6 (tag `[s6]`, its first case also `[s2]`)**: the driver reports every cycle a node
   misses (`incomplete`, before the next `start`), across planned stalls of 1.5 to 150 cycles in each
   node of a chain and a sibling beside a busy thread per core; the `TRIGGERED` recovery loses nothing;
   `clock.cycle` is the listener's count plus a fixed offset; a running node's position jumps by whole

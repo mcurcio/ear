@@ -398,6 +398,10 @@ no call: the audit that emptied the last of them (`docs/design/root-classes.md`,
 left none, and the test waits for the event instead. Nor does a test tell and go on where it should
 fail naming what it waited for: Catch's `WARN` and `CHECK_NOFAIL` do not compile.
 
+*Why calls, not a list.* Each guard that read source text for a rule a type or the compiler could
+hold (frames, callbacks, sleeps) was bypassed in review by a spelling it did not know. A role call
+says at its place what the sleep is for, and the compiler refuses every other spelling.
+
 The compiler holds the rule. Every source of every target that compiles test code is compiled with
 `test/support/no_raw_sleeps.hpp` forced in first (`ear_poison_raw_sleeps`, `cmake/RawSleeps.cmake`:
 `ear_catch_tests` gives it to each test program, `src/core` to `ear_type_harness`). The header reads

@@ -1029,7 +1029,7 @@ public:
 /// next node_ready before that cycle's `start`) and each it reports complete (`complete`: from the driver's own process
 /// once every follower finished, or from the recovery in the next node_ready, which runs with
 /// SPA_IO_CLOCK_FLAG_XRUN_RECOVER set on the driver's clock). Cycles are numbered from 1 by its own count, as
-/// cycle-facts' DriverCuts would; it reads the driver's clock (clock.cycle, the flag) through the pointer a probe's
+/// the engine's DriverCuts does (docs/engine.md#graphcycle); it reads the driver's clock (clock.cycle, the flag) through the pointer a probe's
 /// process was handed, which is the driver's shared position that every follower reads.
 class S6Driver {
 public:
@@ -1858,8 +1858,8 @@ TEST_CASE("S3: the engine has one data loop, context.num-data-loops = 1, and blo
 	CHECK(named.find("fpp.rtp") != std::string::npos);       // rtp-source names its loop itself
 }
 
-// S6 (docs/design/cycle-facts.md, "Found in S6"): what PipeWire 1.4.2 reports of every graph cycle, as the design's
-// DriverCuts and CycleAccount would read it.
+// S6 (cc60464df4; its findings in docs/engine.md#the-one-data-loop-and-invokes): what PipeWire 1.4.2 reports of every
+// graph cycle, as DriverCuts and CycleAccount read it.
 namespace {
 constexpr std::size_t kS6Cycles = 1 << 17; // graph cycles the listener keeps: 175 s at S2's block
 constexpr std::size_t kS6Runs = 1 << 16;   // runs each probe keeps

@@ -417,7 +417,9 @@ device and the module's socket are PipeWire's. The reasons:
 ear's audio runs on one tick at one rate, and every other clock belongs to the node at the
 graph's edge that brings it in. *Why:* the owner's model, after `sendspin` showed that time the
 framework keeps for a node is kept again by whatever the node talks to, and the two correct the
-same lost time.
+same lost time. It reversed the owner's earlier answer (2026-11-10) that what a source reports as
+played keep in step with the clock across a stall longer than its buffer: the framework's played
+count that kept it is deleted, and a source with a clock of its own keeps its time itself.
 
 1. **The tick.** The framework supplies one tick, the graph cycle, and states its facts at the
    graph rate: its start on the raw clock, whether it began overdue, and what was lost or cut

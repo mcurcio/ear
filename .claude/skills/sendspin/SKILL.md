@@ -112,7 +112,7 @@ that means to an operator:
   take from what it wrote**: it subtracts what it is told from what it wrote and clamps at zero with a `Buffered frames
   underflow` warning (`sync_task.cpp`, `process_playback_progress`). What the feed did not hold of a jump is the
   library's: it sees it in the next finish it is told and corrects once at its next chunk's sync. No debt, no model of
-  the library: the C4 wrapper owed that remainder from the library's next writes and kept `LibraryView` to know when it
+  the library: the earlier wrapper (C4, 339149bf53 to a96f841750) owed that remainder from the library's next writes and kept `LibraryView` to know when it
   could, and both correcting the same lost time was the bug class it existed to fence off.
 - **Told only from a cycle that began on time** (`GraphCycle::overdueNs` 0), its finish dated by that cycle's start: the
   driver catches a stall up in a burst of timeouts, of which the block runs as many as the host lets it
@@ -193,7 +193,7 @@ Thrown away; its numbers are in `docs/node-types.md#library-facts-and-carried-pa
   20 rounds. The peer sees 101, then the close, as IXWebSocket has no earlier hook. It also makes an unproved connection give way
   in the nursery, its own address's first, and lengthens the listen queue, whose 5 dropped a server's SYN under a burst.
 - **Worker's `server_max_connections` is 32,** the room those two need to turn over in; it was the library's 4.
-- `cmake/sendspin-starved-floor.patch` is carried (the owner's decision, cycle facts C4, kept by the timing model with
+- `cmake/sendspin-starved-floor.patch` is carried (the owner's decision when C4 was built, b8e359689e, kept by the timing model with
   the deferral): `starved_playtime_floor` moved the playtime up to now whenever it trailed now by more than 5 ms, taking
   that for an underrun, but it also trails now with frames still buffered: while ear tells nothing through a catch-up's
   burst the library keeps its playtime open loop (the last finish plus what it wrote since), behind now by the graph's

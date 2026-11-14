@@ -8,10 +8,14 @@ says is already true. It states how audio time works in ear (the owner's model, 
 framework's timekeeping out of the source (`SourceRing`'s `Played` and its keep-in-step), moves `sendspin`'s sync onto
 the spike's "honest sink plus local skip" (section 6), and adds the converter companion (section 5). The model itself
 is `docs/architecture.md#the-timing-model`, which says where the code still departs from it; this page designs the
-change that removes each departure. It reverses `cycle-facts.md`'s Q-CF2 and slice 3b's design that a source keeps
+change that removes each departure. It reverses the owner's earlier answer that a source's played count keep in step across a stall (now
+`docs/architecture.md#the-timing-model`) and slice 3b's design that a source keeps
 time by default and says what played (section 8). When it is built it is deleted, and what lasts moves into
 `docs/architecture.md`, `docs/engine.md`, `docs/writing-a-node-type.md`, `docs/node-types.md#clock` and the `sendspin`
 skill.
+
+**C4** names, here, the `sendspin` stall handling the cycle-facts design built (339149bf53 to a96f841750; that design
+was retired once all its steps were built, and what lasts of it is in the library docs).
 
 [V] = verified in the code, PipeWire 1.4.2's installed headers (`pipewire-1.4.2/src/pipewire/stream.h`,
 `spa/node/io.h`) or the spike's results (`scripts/spike/` on branch `worktree-agent-a573a8b29870d1f49`: `summary.md`,
@@ -31,7 +35,7 @@ Decided by the owner on 2026-11-13 and given to the designer as decided; the wor
 | TM6 | **The internal clock drives.** Cards follow it and adapt to the graph: the existing choice, kept and stated | Built (`docs/engine.md#the-internal-clock`) |
 | TM8 | (Q-TM1, 2026-11-13) **RTP is the converter companion's first user.** Build the converter out of the RTP companion's wiring (module load, finding its node, linking, binding, latency, lifecycle and failure) with a third mode, module-run, where a PipeWire module owns the stream, its resampler and its loop. RTP moves onto the shared code with no behaviour change, its tests unchanged; RTP reception is not reimplemented (PipeWire keeps the jitter buffer and the clock tracking). Set and tracked are built on that base with their first user (AirPlay for tracked). The step moves earlier, with spike S7 folded in; check whether the card fits the base | Section 5; step T4 |
 | TM9 | (Q-TM2, 2026-11-13, narrowed by the owner) A host stall stalls the whole graph, one tick and one data thread, so every node inside ear resumes together and stays in time with the others. The jump-or-speed-up default concerns only a source whose own clock falls behind while the graph ticks on, and staying in time with what is outside ear after a graph-wide stall | Section 11; the default "jump" decided unless the owner objects |
-| TM7 | **Accepted consequences.** `SourceRing`'s timekeeping leaves the framework (its Played count and dating, its keep-in-step across stalls), reversing Q-CF2; the source node keeps its own time. `sendspin`'s sync stays in its node with the spike's winning design, "honest sink plus local skip": play every frame in order; on a tick stating a catch-up or absent jump skip min(jump, what the feed holds now); report every tick played = skipped + read with an honest finish that never steps back; no debt, no deferral, no `LibraryView`. Only `cmake/sendspin-late-chunk.patch` remains of the timing patches (`sendspin-starved-floor.patch` is dropped). C4's machinery is deleted (`LibraryView`, owed/catchingUp/untoldBound, `Feed::skipThenRead`, the overdue deferral, their tests); `GraphCycle::overdueNs` stays, as a tick fact | Sections 4, 6 and 7 |
+| TM7 | **Accepted consequences.** `SourceRing`'s timekeeping leaves the framework (its Played count and dating, its keep-in-step across stalls), reversing the owner's earlier keep-in-step answer (2026-11-10); the source node keeps its own time. `sendspin`'s sync stays in its node with the spike's winning design, "honest sink plus local skip": play every frame in order; on a tick stating a catch-up or absent jump skip min(jump, what the feed holds now); report every tick played = skipped + read with an honest finish that never steps back; no debt, no deferral, no `LibraryView`. Only `cmake/sendspin-late-chunk.patch` remains of the timing patches (`sendspin-starved-floor.patch` is dropped). C4's machinery is deleted (`LibraryView`, owed/catchingUp/untoldBound, `Feed::skipThenRead`, the overdue deferral, their tests); `GraphCycle::overdueNs` stays, as a tick fact | Sections 4, 6 and 7 |
 
 *Amended by the design review (2026-11-13, M1):* TM7's "defers nothing" is narrowed. `sendspin` keeps C4's rule
 that an overdue tick tells the library nothing, under a bound, because in a burst that loses nothing every other
@@ -506,7 +510,7 @@ test passed unedited, "L16 sent at 44100 into the 48000 graph is resampled" amon
 report is true when it is given. An overdue tick's start is the driver's nominal time, behind now by the graph's lag
 `L` until the burst ends, and its run time is now; neither is where the library's next frame plays while the burst
 runs. Told the nominal time, the library sees its playtime behind now and, without the floor patch, floors it at now
-mid-burst (`cycle-facts.md` 9.9, finding 1). Told the run time, it puts its playtime at now plus what it holds; in the
+mid-burst (found building C4: b8e359689e, `cmake/sendspin-starved-floor.patch`). Told the run time, it puts its playtime at now plus what it holds; in the
 runner's burst, where every tick runs whole and nothing is lost, its next chunk then looks late by `L` and it drops
 `L` mid-burst, the output runs about `L` ahead once the burst ends, and it adds `L` of silence back: two corrections and
 silence where nothing was lost. Waiting for the first on-time tick tells it a finish that is true then. This is the
@@ -536,7 +540,7 @@ deferral with the patch; the spike's `honest-local` told every tick and never ra
   after a stall past the feed, about one library chunk of audio plays late by what the feed did not hold, then the
   library corrects once; C4 played ear's silence instead and needed no correction.
 - **The uncut shape, not measured.** No spike run made it: the dev host's bursts always cut. It is the shape the
-  deferral exists for, and the one a GitHub runner makes (`cycle-facts.md` 9.10, 9.14). **T2 must prove it on CI**:
+  deferral exists for, and the one a GitHub runner makes (seen on CI after C4 and after the counters reached the wire: 01b54dd731, 67433123d2). **T2 must prove it on CI**:
   the in-block stall tests (200 ms and 1 s) run there with zero lost frames, and for a run with zero lost frames they
   require zero library corrections, no silence and every report's finish at or after now, as for a run with cuts they
   require 6.4's one correction. A run of either shape passes only its own shape's rule, and the test names which shape
@@ -631,7 +635,7 @@ Each through the real server and the real engine (`clock_test.cpp`), judged by t
   carried as built.
 - **The late chunk's report stays**, as today: a sink that reports honestly still starves the library in a
   network gap, and `decode_chunk` then skips a chunk whose front is late but whose end is not (the gap test fails 5 of
-  5 with the patch's change reverted [V: `cycle-facts.md` 9.9]). The `sendspin` skill's draft keeps both halves and
+  5 with the patch's change reverted [V: the C4 review, 1a6bad80b2]). The `sendspin` skill's draft keeps both halves and
   their three tests; T2 replaces its measurement with the honest wrapper's.
 
 ## 7. Order of build steps
@@ -653,15 +657,13 @@ stale in the same commit.
 `sendspin`'s code, none of which S3c.1 to S3c.5 change, and they shrink S3c.6 (the source it moves onto keeps no time,
 and its clock is already written and proven). T2 needs T1; T3 needs neither and may land first. T4 comes before S3c.1 too (the
 owner moved it earlier): it touches only the RTP companion's code in `ear_pipewire` and NodeHost's latency plan and
-readiness text, which 3c's steps do not, and it needs none of T1 to T3. `cycle-facts.md`'s open steps (D3, C6, C7, C8)
-are independent of all of them. T5 comes after S3c.6 (it uses 3c's `ResourceAdapters` and the clockless source), with
+readiness text, which 3c's steps do not, and it needs none of T1 to T3. T5 comes after S3c.6 (it uses 3c's `ResourceAdapters` and the clockless source), with
 its first user.
 
 ## 8. What this changes on other design pages
 
 | Page | Change |
 |---|---|
-| `cycle-facts.md` | Q-CF2 reversed (TM7); 4.4's `SourceRing`, `Played` and `SendspinCode` rows superseded; C4a and C4b's machinery deleted by T2 and T3; the follow-ups section 9.15 lists are moot |
 | Slice 3b's design (built; its page deleted) | A source keeping time by default and `Played`'s meaning reversed; its "keeping time" and "says what played" are this page's 4.1 and 4.2 |
 | `node-primitives.md` | 4.1's worker watches the source's clock wake, not a played wake; 6.2's list of the framework's wakes; 12's `sendspin_code.*` and `mailbox.hpp`; 13's S3c.6 |
 | `programs.md` | 2.2's paced source is a source with a converter companion in tracked mode (5.1, 5.2) |
@@ -688,14 +690,14 @@ Each the designer's; the owner can overturn any.
 
 | Alternative | Why not |
 |---|---|
-| Keep `Played` beside the clock, as a framework count | A count the framework keeps is audio time it keeps (TM1); `sendspin` could not use it (it would count frames the library never wrote, `cycle-facts.md` 9.7) |
+| Keep `Played` beside the clock, as a framework count | A count the framework keeps is audio time it keeps (TM1); `sendspin` could not use it (it would count frames the library never wrote, found building C4a: 339149bf53) |
 | The type's own code reads the ring through `Io` | Every type would write the fades, a clear's tail and the shortfall again; harness and block could drift |
 | An in-code resampler for converted rings | TM5: conversion is PipeWire's converter |
 | Reimplement RTP reception on the set or tracked converter (ear's own jitter buffer and clock tracking) | TM8: PipeWire keeps the jitter buffer and the clock tracking; RTP moves onto the shared wiring as module-run |
 | Move the card onto the module-run base | 5.4: it would add a registry search and a latency rule the card does not use |
 | The converter skipping a stall's backlog on `catchUp` | The framework would be keeping time again (TM1); a node that wants the skip gives a clock |
 | Tell every tick, an overdue one dated by its run time and clamped (this page's first design) | In the runner's uncut burst every tick is whole and overdue: told its run time, the library puts its playtime at now plus what it holds, finds its next chunk late by the graph's lag `L`, drops `L` mid-burst, runs about `L` ahead once the burst ends and adds `L` of silence: two corrections and silence where nothing was lost (the design review, M1) |
-| Tell every tick, an overdue one dated by its nominal start | The nominal start trails now by `L` until the burst ends; without the floor patch the library floors that at now with frames still buffered, mid-burst (`cycle-facts.md` 9.9, finding 1, and 9.10) |
+| Tell every tick, an overdue one dated by its nominal start | The nominal start trails now by `L` until the burst ends; without the floor patch the library floors that at now with frames still buffered, mid-burst (b8e359689e, 01b54dd731) |
 | Keep the floor patch so nominal dating works | The patch is kept, but for the deferral, not for this: it does not save nominal dating, whose reports are untrue when given and would still be corrected once the library's buffer drains |
 | Drop the floor patch with the deferral in place (this page's earlier text) | While ear defers, the library's open-loop playtime trails now through a burst of either shape and upstream floors it mid-burst: the double correction again. C4 never ran the deferral without the patch, and the spike never ran the deferral; dropping it waits for 6.5's evidence |
 
