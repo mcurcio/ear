@@ -12,10 +12,10 @@ std::size_t ReadinessList::add(ReadinessItem item) {
 	return entries_.size() - 1;
 }
 
-void ReadinessList::begin(Arm arm) {
+void ReadinessList::begin(Ask ask) {
 	if (begun_) throw std::logic_error("a readiness list begun twice");
 	begun_ = true;
-	arm_ = std::move(arm);
+	ask_ = std::move(ask);
 	askNext();
 }
 
@@ -33,7 +33,7 @@ void ReadinessList::askNext() {
 		Entry& entry = entries_[i];
 		if (entry.item.step != step || entry.asked) continue;
 		entry.asked = true;
-		if (!entry.ready && entry.item.bound) entry.bound = arm_(i, *entry.item.bound);
+		if (!entry.ready) entry.bound = ask_(i);
 	}
 }
 

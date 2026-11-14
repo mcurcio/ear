@@ -1517,8 +1517,14 @@ struct NodeHost::Impl {
 			for (const auto& slot : c.sinks) c.bindings.push_back(slot->binding);
 			c.sourceBindings.reserve(c.sources.size());
 			for (const auto& slot : c.sources) c.sourceBindings.push_back(slot.binding);
+			// Every readiness item exists before a consumer begins, so a begun told at once still finds its item.
+			addReadiness();
 			for (std::size_t i = 0; i < c.sinks.size(); ++i) c.sinks[i]->begin(c.channel, c.channel->sinkBegunCall(i));
-			askReadiness();
+			c.readiness.begin([this, generation = c.generation](std::size_t item) -> std::unique_ptr<Timer> {
+				const auto bound = config_->readiness.item(item).bound;
+				if (!bound) return nullptr;
+				return armDeadline(generation, item, *bound);
+			});
 			askResources();
 		}
 
@@ -1526,7 +1532,7 @@ struct NodeHost::Impl {
 		/// request (docs/engine.md#readiness-deadlines), engine companions first, each kind in request order; a source
 		/// is ready when made and has none. Each deadline is an input of its own when it fires and judges readiness
 		/// then, so a ready heard first wins.
-		void askReadiness() {
+		void addReadiness() {
 			Configuration& c = *config_;
 			for (std::size_t i = 0; i < c.engineAsks.size(); ++i) {
 				EngineAsk& asked = c.engineAsks[i];
@@ -1552,9 +1558,6 @@ struct NodeHost::Impl {
 					.overdue = [text = "the sink " + slot->bank + "'s consumer did not begin within " +
 				                       std::to_string(sinkSeconds) + " s"] { return text; },
 				});
-			c.readiness.begin([this, generation = c.generation](std::size_t item, std::chrono::milliseconds bound) {
-				return armDeadline(generation, item, bound);
-			});
 		}
 
 		/// One readiness deadline's timer. When it fires late (the main loop stalled), the judgement is posted to the

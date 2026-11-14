@@ -71,9 +71,11 @@ struct Fixture {
 						  }});
 	}
 	void begin() {
-		list.begin([this](std::size_t index, std::chrono::milliseconds bound) {
+		list.begin([this](std::size_t index) -> std::unique_ptr<Timer> {
 			log.push_back("asked " + names.at(index) + " at " + std::to_string(timers.clock.count()));
-			return timers.after(bound, [this, index] {
+			const auto bound = list.item(index).bound;
+			if (!bound) return nullptr;
+			return timers.after(*bound, [this, index] {
 				if (auto overdue = list.passed(index)) log.push_back("failed " + overdue->detail);
 			});
 		});
@@ -103,19 +105,43 @@ TEST_CASE("A later step is asked only once every item of every earlier step is r
 	CHECK_FALSE(f.list.done());
 }
 
-TEST_CASE("A bound runs from its item's asking, not from the list's beginning", "[readiness]") {
+TEST_CASE("Every item is asked when its step is, a bound or not, and a bound runs from that asking, not from the "
+          "list's beginning",
+          "[readiness]") {
 	Fixture f;
-	const auto claim = f.add("claim", ReadinessStep::claims, std::nullopt); // bounded elsewhere: no timer
+	const auto claim = f.add("claim", ReadinessStep::claims, std::nullopt); // bounded elsewhere: asked, no timer
 	f.add("card", ReadinessStep::companions, 50ms);
 	f.begin();
+	CHECK(f.log == Log{"asked claim at 0"});
 	CHECK(f.timers.live() == 0);
 	f.timers.advance(100ms);
-	CHECK(f.log.empty()); // the card is not asked yet, so its 50 ms have not begun
+	CHECK(f.log == Log{"asked claim at 0"}); // the card is not asked yet, so its 50 ms have not begun
 	f.list.ready(claim);
 	f.timers.advance(49ms);
-	CHECK(f.log == Log{"asked card at 100"});
+	CHECK(f.log == Log{"asked claim at 0", "asked card at 100"});
 	f.timers.advance(1ms);
-	CHECK(f.log == Log{"asked card at 100", "failed card overdue"});
+	CHECK(f.log == Log{"asked claim at 0", "asked card at 100", "failed card overdue"});
+}
+
+TEST_CASE("An item ready before its step is asked is never asked and arms no bound, and the list is done once the "
+          "rest are",
+          "[readiness]") {
+	Fixture f;
+	const auto claim = f.add("claim", ReadinessStep::claims, 50ms);
+	const auto first = f.add("first", ReadinessStep::companions, 50ms);
+	const auto card = f.add("card", ReadinessStep::companions, 50ms);
+	f.list.ready(first); // before the list began, as a consumer's begun told at once would be
+	f.begin();
+	CHECK(f.log == Log{"asked claim at 0"});
+	f.list.ready(claim);
+	CHECK(f.log == Log{"asked claim at 0", "asked card at 0"});
+	CHECK(f.timers.live() == 1); // the card's alone
+	CHECK_FALSE(f.list.done());
+	f.list.ready(card);
+	CHECK(f.list.done());
+	f.timers.advance(100ms);
+	CHECK(f.log == Log{"asked claim at 0", "asked card at 0"});
+	CHECK_FALSE(f.list.passed(first).has_value());
 }
 
 TEST_CASE("An item that becomes ready cancels its bound, a second ready is nothing, and the list is done once every "
@@ -164,7 +190,7 @@ TEST_CASE("A bound that passes unready fails with its item's fact and text, and 
 	                       .bound = 50ms,
 	                       .fact = Fact::consumerNeverBegan,
 	                       .overdue = [] { return std::string("the sink pb's consumer did not begin within 5 s"); }});
-	list.begin([](std::size_t, std::chrono::milliseconds) { return std::unique_ptr<Timer>(); });
+	list.begin([](std::size_t) { return std::unique_ptr<Timer>(); });
 	const std::optional<ReadinessOverdue> overdue = list.passed(0);
 	REQUIRE(overdue.has_value());
 	CHECK(overdue->fact == Fact::consumerNeverBegan);

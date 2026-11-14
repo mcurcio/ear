@@ -46,14 +46,15 @@ struct ReadinessOverdue {
 /// nothing more is asked and no other bound is judged.
 class ReadinessList {
 public:
-	/// Arms item `index`'s bound: a timer whose firing calls passed(index), unless destroyed first (Timers::after).
-	/// The owner's, so every kind's bound shares one rule for a timer that fires late.
-	using Arm = std::move_only_function<std::unique_ptr<Timer>(std::size_t index, std::chrono::milliseconds bound)>;
+	/// Called once for every item when its step is asked, unless it is already ready: the moment its owner may start
+	/// it. Returns its bound's timer, whose firing calls passed(index) unless destroyed first (Timers::after), or null
+	/// for an item with no bound. The owner's, so every kind's bound shares one rule for a timer that fires late.
+	using Ask = std::move_only_function<std::unique_ptr<Timer>(std::size_t index)>;
 
 	/// Before begin(). Its index, which ready() and passed() take.
 	std::size_t add(ReadinessItem item);
 	/// Once: asks every item of the earliest step that has one not ready (and the next, while a step is all ready).
-	void begin(Arm arm);
+	void begin(Ask ask);
 	/// Item `index` is ready: its bound cancelled, and once its step is all ready the next step asked. Again is nothing.
 	void ready(std::size_t index);
 	/// Item `index`'s bound passed: its failure, unless it became ready first or the list already ended.
@@ -62,6 +63,8 @@ public:
 	void disarm() noexcept;
 
 	bool isReady(std::size_t index) const noexcept;
+	/// Item `index` as added.
+	const ReadinessItem& item(std::size_t index) const { return entries_.at(index).item; }
 	/// Every item is ready (and so with none).
 	bool done() const noexcept;
 	/// What it still waits for, in item order: each item not ready, as its kind and name, a repeated one once.
@@ -72,13 +75,13 @@ private:
 		ReadinessItem item;
 		bool asked = false;
 		bool ready = false;
-		std::unique_ptr<Timer> bound; // while asked and not ready
+		std::unique_ptr<Timer> bound; // what its asking returned, while not ready
 	};
 	/// Asks every item of the earliest step not all ready, if that step is not asked yet.
 	void askNext();
 
 	std::vector<Entry> entries_;
-	Arm arm_;
+	Ask ask_;
 	bool begun_ = false;
 	bool ended_ = false; // a bound passed unready
 };

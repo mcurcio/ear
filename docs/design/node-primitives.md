@@ -82,8 +82,10 @@ Each is `ear_core`'s unless it says otherwise. Sections 5 to 6.11 keep every rul
 **The readiness list** (private to NodeHost, `src/core/readiness.hpp`; S3c.0, built:
 `docs/engine.md#readiness-deadlines`). *Found building S3c.0:* an item fails with the lifecycle's `Fact` (NodeHost
 feeds facts; the machine derives the code), not a `FailureReason::Code`; its `name` is its subject as `waitingFor`
-names it, empty for a consumer (the wire names none, and two consumers are one wait); the list arms each bound through
-an `Arm` its owner gives, so every kind keeps NodeHost's one rule for a timer that fires late; and `ReadyEvents` lands
+names it, empty for a consumer (the wire names none, and two consumers are one wait); the list calls its owner's `Ask`
+once for every item when its step is asked (unless it is already ready), the moment the owner starts it (S3c.3 to 5
+open a recording, start a loop or make a companion there, once claims are granted), and keeps the bound's timer it
+returns (null for none), so every kind keeps NodeHost's one rule for a timer that fires late; and `ReadyEvents` lands
 with its first user (S3c.3's loops, S3c.4's stores), since today's two kinds tell ready through their own events.
 
 ```cpp
@@ -98,13 +100,14 @@ struct ReadinessItem {
 };
 class ReadinessList { // one per configuration; main thread
 public:
-	using Arm = std::move_only_function<std::unique_ptr<Timer>(std::size_t index, std::chrono::milliseconds bound)>;
+	using Ask = std::move_only_function<std::unique_ptr<Timer>(std::size_t index)>; // its bound's timer, or null
 	std::size_t add(ReadinessItem item);                       // before begin()
-	void begin(Arm arm);                                       // asks the earliest step not all ready
+	void begin(Ask ask);                                       // asks the earliest step not all ready
 	void ready(std::size_t index);                             // cancels its bound; a step all ready asks the next
 	std::optional<ReadinessOverdue> passed(std::size_t index); // its fact and detail unless ready; ends the list
 	void disarm() noexcept;                                    // teardown: every bound cancelled
 	bool isReady(std::size_t index) const noexcept;
+	const ReadinessItem& item(std::size_t index) const;
 	bool done() const noexcept;                                // every item ready: resourcesReady may follow
 	std::vector<WaitingFor> waiting() const;                   // each item not ready, in item order, a repeat once
 };
@@ -222,7 +225,9 @@ existing test unedited: a test that needs editing means behaviour moved, and the
 
 | Step | What | Behaviour | Proof |
 |---|---|---|---|
-| **S3c.0 Readiness list** (done: dffa92077a) | `readiness.hpp`; NodeHost's engine-companion and sink-consumer readiness, their deadlines and `waitingFor` read from it; the `Deadline` enum and its branches go | None | Every `node_host_test.cpp` readiness and `waitingFor` case passes unedited (each kind's deadline and text, a ready first wins, a restart's own, a consumer's 5 s). New unit rows on the list: steps gate in order, a bound runs from its asking, a failure ends the list, `waitingFor` in item order. Mutation check: asking step 3 before step 1 is ready fails a new row |
+| **S3c.0 Readiness list** (done: dffa92077a) | `readiness.hpp`; NodeHost's engine-companion and sink-consumer readiness, their deadlines and `waitingFor` read from it; the `Deadline` enum and its branches go | None | Every `node_host_test.cpp` readiness and `waitingFor` case passes unedited (each kind's deadline and text, a ready first wins, a restart's own, a consumer's 5 s). New unit rows on the list: steps gate in order, a bound runs from its asking, a failure ends the list, `waitingFor` in item order. Mutation check: asking step 3 before step 1 is ready fails a new row. **Owed by the first step that adds an item
+outside the `companions` step (S3c.3, S3c.4 or S3c.5a):** a `node_host_test.cpp` row, with its revert proof, showing a
+companion's deadline does not start until the earlier step is ready (S3c.0's rows prove that on the list alone) |
 | **S3c.1 Node handle** | `node_handle.hpp`; the `Channel` implements it; `NodeHost::logTo`; pacing in core; `InsidesEvents` and `sendspin`'s `NoteGate` go (`notes_test.cpp`'s gate cases move to core) | None an operator sees: the same notes; `notes-dropped` said by the framework | Section 5's tests: a log carries its node; after detach, dropped; an old configuration's late `say` dropped; a goodbye heard; 32 then one a second per node, kept across a stop and a start, reset by a restart; `lost` never held. Revert proof: core without the gate fails the pacing rows |
 | **S3c.2 `ear_runtime`, the I/O thread** | The package; `IoThread`; `ResourceAdapters` (one member per kind; a null adapter refuses its kind); `ear_refuse_node_type_links` refuses `ear_runtime` and `ear_pipewire`; `main.cpp` stops the thread after `stopAll` and the keeper | None | A completion after its configuration ended is dropped and its descriptor closed; a job busy at stop (2 s, the log record, `std::_Exit`); a null adapter's refusal; the link refusal per package (configure fails on a test type that links either). Revert proof: the link refusal's test fails without it |
 | **S3c.3 Loops** | 6.3 with 0.3's changes; `Loops`, `TypeSpec::loops`; `StrandPool`, `DedicatedLoops`; staging; `closeToOthers`; teardown step 4 closes loops (beside the run object's `close`, which stays until S3c.6e); the harness's loops and fake clock | None for shipped types | Section 13's S3c.3 list, through a test type in `ear_core_tests` and on real threads in `ear_runtime`'s tests; `ear.loop-slow` and `ear.loop-source-left` in `output-records.json`. Revert proofs: with staging off, "staged work runs only once configured" fails; with the source count off, "a source left armed" fails |
