@@ -1,0 +1,29 @@
+"""time.sleep(1) in a docstring is text, not the name."""
+
+import asyncio
+import time
+
+
+async def induce(seconds, why):
+    await asyncio.sleep(seconds)
+
+
+async def negative(seconds, why):
+    await asyncio.sleep(seconds)
+
+
+async def poll(seconds, why):
+    await asyncio.sleep(seconds)
+
+
+def pace(seconds, why):
+    time.sleep(seconds)
+
+
+async def serve(stream, loop, done):
+    # asyncio.sleep(1) in a comment
+    text = "asyncio.sleep(1) and time.sleep(2) in a string"
+    await stream.sleep_to_limit_buffer(1_000_000)
+    loop.call_later(0.5, done)
+    await poll(0.005, "between looks at what decides")
+    return text

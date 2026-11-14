@@ -57,6 +57,31 @@ SOURCE_BYTES_PER_FRAME = 6  # PCM 24 stereo
 SOURCE_SAMPLE_SCALE = 8388608.0
 
 
+# The only sleeps here, each named for its role (docs/testing.md#sleeps-by-role): ear_python_sleeps_by_role refuses a
+# sleep in the tests' Python anywhere but in a function so named. Each says why, never empty.
+def _says_why(why: str) -> None:
+    if not why:
+        raise ValueError("a sleep says why it sleeps")
+
+
+async def induce(seconds: float, why: str) -> None:
+    """The sleep is the event: a stall, a hold or a slow step the test asks for on purpose."""
+    _says_why(why)
+    await asyncio.sleep(seconds)
+
+
+async def poll(seconds: float, why: str) -> None:
+    """A pause between looks at the event waited for: the look decides."""
+    _says_why(why)
+    await asyncio.sleep(seconds)
+
+
+async def pace(seconds: float, why: str) -> None:
+    """The clock of a stand-in for something that keeps real time."""
+    _says_why(why)
+    await asyncio.sleep(seconds)
+
+
 def emit(event: str) -> None:
     print(event, flush=True)
 
@@ -264,7 +289,7 @@ class TestServer:
     async def _upgrade(self, request: web.Request) -> web.StreamResponse:
         emit("upgrade")
         if self._slow_upgrade > 0:
-            await asyncio.sleep(self._slow_upgrade)
+            await induce(self._slow_upgrade, "a slow WebSocket upgrade, asked for by the test")
         return await self._server.on_client_connect(request)
 
     async def listen(self) -> None:
@@ -345,7 +370,7 @@ class TestServer:
         """
         client = self._server.get_client(client_id)
         while client is None or client.awaits_role_state("player") or not client.roles_by_family("player"):
-            await asyncio.sleep(0.005)
+            await poll(0.005, "until the player role is active: the library has no event for it")
             client = self._server.get_client(client_id)
         return client
 
@@ -368,7 +393,7 @@ class TestServer:
             await stream.sleep_to_limit_buffer(MAX_AHEAD_US)
         # stream/end clears what the client holds, so a stream ends once it has played out, as a track does.
         left_us = first_us + total * 1_000_000 // RATE - stream.now_us()
-        await asyncio.sleep(max(left_us / 1_000_000, 0.0) + PLAYED_OUT_MARGIN_S)
+        await pace(max(left_us / 1_000_000, 0.0) + PLAYED_OUT_MARGIN_S, "a stream ends once it has played out")
         emit(f"play-finished {total}")
         group.stop_stream()
 
@@ -407,7 +432,7 @@ class TestServer:
                     target = (entry.timestamp_us, duration, at)
                     break
         stamp, duration, at = target
-        await asyncio.sleep(max(at - clock.now_us(), 0) / 1_000_000)
+        await induce(max(at - clock.now_us(), 0) / 1_000_000, "the network gap's end, a fixed way into a chunk")
         count = 0
         while _Gap.held:
             connection, wsock, role, entry, buffer_tracker = _Gap.held.pop(0)

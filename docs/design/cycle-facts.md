@@ -17,7 +17,8 @@ built (section 9.13: the counters reported on the control port and standard outp
 `docs/engine.md#reporting-the-counters`, `docs/control-port.md#counters` and `docs/output-records.md#diagnostic`); step D3
 built (section 9.16: the editor's counters panel and recent marks, described in `docs/editor.md#counters`); steps C6a
 and C6b built (section 9.17: `SampleRate`, described in `docs/engine.md#dating`); step C7 built (section 9.18: the
-callback poison, described in `docs/architecture.md#the-callback-boundary`), the rest not. Its steps
+callback poison, described in `docs/architecture.md#the-callback-boundary`); step C8 built (section 9.19: sleeps by
+role, described in `docs/testing.md#sleeps-by-role`). Its steps
 (section 9) follow `root-classes.md`'s and come before slice 3c, whose `sendspin` on a source takes the source rule this page changes (section 4.4). The built system
 it changes is described in `docs/engine.md` (`#graphcycle`, `#the-internal-clock`, `#sinks`, `#sources`, `#dating`,
 `#the-one-data-loop-and-invokes`), `docs/testing.md` (`#making-the-rare-event`, `#the-sleep-guard`),
@@ -902,7 +903,7 @@ R5d).
 | **C6a** | **Done** (9.17). `SampleRate`, `FrameClock(SampleRate)` beside the old constructor, `framesCeil`, `framesNearest`; compile-fail cases | nothing | none |
 | **C6b** | **Done** (9.17). `AudioFormat::rate` and every rate to `SampleRate`; the `.hz()` check | `frame_guard.cmake`, `test/frame_guard/`, the `uint32_t` constructor | none |
 | **C7** | **Done** (9.18). The callback poison: `no_raw_callbacks.hpp` forced into every source of `ear_pipewire`, configure's refusal of a target that sees PipeWire's headers without it, the compile-fail cases | `test/pipewire/callback_guard.cmake` and its snippets | none |
-| **C8** | Sleep roles as calls (optional, 7.4) | `test/sleeps.txt`, `sleep_guard.cmake`, `test/sleep_guard/` | none |
+| **C8** | **Done** (9.19). Sleep roles as calls: `ear::sleeps`, the poison forced into every test target, configure's refusal, the compile-fail cases; Python's rule by its syntax tree | `test/sleeps.txt`, `sleep_guard.cmake`, `test/sleep_guard/` | none |
 
 Order: S6 first (it can change 4.1's causes), then C1, C2, C3a; C4a may jump ahead of C3a when sendspin's bug needs
 it. C3c needs the sendspin branch merged and C4a (its judge reads progress). C6 and C7 are independent of the rest and
@@ -1943,6 +1944,60 @@ link's fails), the exempt list ignored (the listed test's fails), include direct
   behind them. Nothing in `ear_pipewire` outside the boundary used any.
 - **One case names every identifier, under a driver**, rather than one CTest test per name: 139 names at a second and
   more each would add half again to the compile-fail suite's time; one compile reports each name on its own.
+
+### 9.19 C8 as built against today's code
+
+Written before building C8 (2026-11-14), against the guard R5a left and R5b to R5d emptied of `luck` and `owed`. 7.3
+holds, with the departures at the end.
+
+**What the guard lists today** (`test/sleeps.txt`, 22 entries, no `WARN`, `CATCH_WARN` or `CHECK_NOFAIL` among them):
+18 C++ sleeps (8 `induce`, 3 `negative`, 3 `poll`, 4 `pace`; 4 of them `nanosleep` in `ear_pipewire_tests`, one
+`sleep_until`, the rest `sleep_for`) and 4 `asyncio.sleep` in `test/support/sendspin_server.py` (2 `induce`, 1 `poll`, 1
+`pace`). The guard reads every C, C++ and Python file under `test/` and in a `tests` or `testing` folder under `src/`,
+so the Python test support is covered today, by text. Its spellings: `sleep_for`, `sleep_until`, `sleep`, `usleep`,
+`nanosleep`, `clock_nanosleep`, `time.sleep`, `asyncio.sleep`, `poll` and `select` on nothing, `WARN`, `CATCH_WARN`,
+`CHECK_NOFAIL`. ear's own `nanosleep` (the engine's wait for its data loop, `engine.cpp`) is product code, outside it.
+
+**What each becomes.** The 18 C++ sleeps call `ear::sleeps::induce`, `negative`, `poll` or `pace` (`test/support/
+sleeps.hpp`, the interface library `ear_sleeps`), each with its entry's why as a string literal, which must not be empty
+(a `consteval` constructor refuses it, naming why). `pace` also takes a time point (the RTP sender's `sleep_until`).
+`drive_now.hpp` (in `ear_type_harness`, under `src/core/include/ear/testing/`) reaches the header through
+`ear_sleeps`. The four Python sleeps become `induce`, `poll` and `pace` defined in `sendspin_server.py` itself: it is
+run with `-I`, so a module beside it is not importable.
+
+**The mechanism: `#pragma GCC poison` behind a forced include, as C7.** `test/support/no_raw_sleeps.hpp` reads the
+role calls, Catch, and every header that names a poisoned identifier, then poisons the sleeps and Catch's go-on macros
+(`#undef` first: poisoning a defined macro warns). Checked in the image by compiling every test source with it: the
+standard library's headers ear's tests include name none after `<thread>`; two libraries' do, each read first where the
+target can see it (`__has_include`): Boost's `sp_thread_sleep.hpp` (`nanosleep`, reached by Beast and Asio) and
+sendspin-cpp's `client.h` (`LogLevel::WARN`). `ear_catch_tests` forces it into every test program; `src/core` into
+`ear_type_harness`. Configure (`cmake/RawSleeps.cmake`) refuses any target with a source in a `test`, `tests` or
+`testing` folder of the source tree that lacks it, but `ear_catch_main` (Catch's runner configures Catch before including
+it, which a forced Catch would precede; it holds no test).
+
+**Departures from 7.3:**
+
+- **`poll` and `select` on nothing by overload, not by name.** Tests poll descriptors (`::poll` in nine files), so the
+  names cannot be poisoned; a deleted overload taking `nullptr` exactly (`poll`, `ppoll`, `select`, `pselect`) refuses
+  a call with no set. It takes `nullptr` alone, not `0` or `NULL`: Asio calls `::select(0, 0, 0, 0, &tv)` in a header
+  read after the forced one, and an overload for `0` would make its call ambiguous.
+- **`sleep` poisoned whole.** The guard let `obj.sleep(1)` and `ns::sleep(1)` through; the poison refuses the token
+  anywhere. No test names it.
+- **Python by syntax tree, not by token.** `ear_python_sleeps_by_role` (`test/python_sleeps.py`, run by the sendspin
+  server's venv) parses every `.py` under `test/` and refuses the name `sleep` (called, referred to or imported, from
+  any module, under any alias) outside a module-level function named for a role. A string or comment is not the name,
+  so it has no lookalike rules.
+- **Compile-fail cases** (`test/compile_fail/no_raw_sleeps_bad.cpp`, its control the role calls, descriptor waits,
+  Catch's checks and the standard library's waits on an event): each raw sleep; a call split across lines, a `using`, a
+  name pasted by `##`, a macro defined after the poison; a header read later that names one; each Catch macro and a
+  `#undef WARN`; `poll`, `ppoll`, `select` and `pselect` on nothing; an empty why, a why not a literal, no why. Each
+  proven by weakening its refusal (the name off the pragma, the overload deleted, the header read first, `Why` taking a
+  pointer or a default or an empty literal) and seeing its test fail; the control by poisoning what it uses.
+
+**What is left to text.** Python, by its syntax tree, for want of a compiler; nothing reads C++ source. Neither holds:
+a sleep in product code; a `poll` of length 0 or a `select` whose sets are a null variable; a sleep reached by a string
+(`getattr`, `dlsym`) or a `-D`; Python outside `test/` (there is none in a `tests` folder under `src/`, which the guard
+also read).
 
 ## 10. Decided here (technical)
 

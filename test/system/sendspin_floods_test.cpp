@@ -26,6 +26,7 @@
 #include <unistd.h>
 
 #include "sendspin_system.hpp"
+#include "sleeps.hpp"
 
 namespace {
 
@@ -542,7 +543,8 @@ TEST_CASE("A flood from every address holds the transport to twice its budget of
 	std::size_t peak = 0;
 	for (int sample = 0; sample < 3000; ++sample) {
 		peak = std::max(peak, threads());
-		std::this_thread::sleep_for(1ms);
+		ear::sleeps::negative(1ms,
+		                      "the thread peak sampled while the flood runs: it can miss a breach, never invent one");
 	}
 	INFO("idle " << idle << " threads, peak " << peak);
 	// 64 sockets with a thread each. Each one's thread ends just after it is forgotten, so a few more can be seen at once.

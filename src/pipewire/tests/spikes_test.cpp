@@ -77,6 +77,7 @@
 #include "inducers.hpp"
 #include "probes.hpp"
 #include "rtp_tone.hpp"
+#include "sleeps.hpp"
 #include "temp_folder.hpp"
 
 namespace {
@@ -268,8 +269,7 @@ public:
 		if (armed.exchange(false, std::memory_order_acq_rel)) {
 			stalling.store(true, std::memory_order_release);
 			record_.waiter.wake();
-			const timespec twoSeconds{2, 0};
-			nanosleep(&twoSeconds, nullptr);
+			ear::sleeps::induce(std::chrono::seconds(2), "S2's data-loop stall");
 			stalling.store(false, std::memory_order_release);
 			stalled.store(true, std::memory_order_release);
 		}
@@ -753,8 +753,7 @@ public:
 						  counts.refused.fetch_add(1, std::memory_order_relaxed);
 					  counts.posts.fetch_add(1, std::memory_order_relaxed);
 				  }
-				  const timespec pause{0, 50'000};
-				  nanosleep(&pause, nullptr);
+				  ear::sleeps::pace(std::chrono::microseconds(50), "the invoke storm's rate between bursts of posts");
 			  }
 		  }) {}
 	~InvokeStorm() { stop(); }
@@ -1310,8 +1309,8 @@ TEST_CASE(
 		const double ms = poster.one(number);
 		slowestStalledMs = std::max(slowestStalledMs, ms);
 		if (ms >= 1.0) ++stalledOverOneMs;
-		const timespec pause{0, 200'000};
-		nanosleep(&pause, nullptr);
+		ear::sleeps::pace(std::chrono::microseconds(200),
+		                  "posts 200 us apart, so 3,000 of them span 0.6 s inside the stall");
 	}
 	countAllocationsOnThisThread(false);
 	const bool stillStalled = codeB.stalling.load();

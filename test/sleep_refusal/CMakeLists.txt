@@ -1,0 +1,37 @@
+# Run by the ear_raw_sleeps_* tests (test/CMakeLists.txt): targets whose sources lie as EAR_SHAPE says, each in or out
+# of a test folder. The refusal is asked for before any target is made, as test/CMakeLists.txt asks before src/ is
+# read. Nothing is built: configure stops at a refusal, and only generates otherwise.
+cmake_minimum_required(VERSION 3.28...4.2)
+project(SleepRefusal LANGUAGES CXX)
+include("${EAR_CMAKE_DIR}/RawSleeps.cmake")
+
+set(header "${CMAKE_CURRENT_SOURCE_DIR}/no_raw_sleeps.hpp")
+ear_refuse_raw_sleeps("${header}" EXEMPT ear_listed)
+add_library(ear_roles INTERFACE)
+
+set(product "${CMAKE_CURRENT_SOURCE_DIR}/product.cpp")
+if(EAR_SHAPE STREQUAL "tests")
+	add_library(ear_user STATIC "${CMAKE_CURRENT_SOURCE_DIR}/tests/empty.cpp")
+elseif(EAR_SHAPE STREQUAL "testing")
+	add_library(ear_user STATIC "${CMAKE_CURRENT_SOURCE_DIR}/testing/empty.cpp")
+elseif(EAR_SHAPE STREQUAL "test")
+	add_executable(ear_user "${CMAKE_CURRENT_SOURCE_DIR}/test/empty.cpp")
+elseif(EAR_SHAPE STREQUAL "mixed")
+	add_library(ear_user STATIC "${product}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/empty.cpp")
+elseif(EAR_SHAPE STREQUAL "relative")
+	add_library(ear_user STATIC tests/empty.cpp)
+elseif(EAR_SHAPE STREQUAL "none")
+	add_library(ear_user STATIC "${product}")
+elseif(EAR_SHAPE STREQUAL "poisoned")
+	add_library(ear_user STATIC "${CMAKE_CURRENT_SOURCE_DIR}/tests/empty.cpp")
+	ear_poison_raw_sleeps(ear_user "${header}" ear_roles)
+elseif(EAR_SHAPE STREQUAL "exempt")
+	add_executable(ear_listed "${CMAKE_CURRENT_SOURCE_DIR}/tests/empty.cpp")
+elseif(EAR_SHAPE STREQUAL "generated")
+	# A source made in the build tree is the build's, whatever its folder is called.
+	set(generated "${CMAKE_CURRENT_BINARY_DIR}/tests/generated.cpp")
+	file(WRITE "${generated}" "// generated\n")
+	add_library(ear_user STATIC "${product}" "${generated}")
+else()
+	message(FATAL_ERROR "Unknown EAR_SHAPE: ${EAR_SHAPE}")
+endif()

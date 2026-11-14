@@ -5,7 +5,21 @@ add_library(ear_catch_main STATIC main.cpp)
 target_include_directories(ear_catch_main SYSTEM PUBLIC
 	"${PROJECT_SOURCE_DIR}/vendor/catch/single_include")
 
-# ear_catch_tests(<target>): catch_discover_tests with --warn NoTests, so a CTest test whose name
+# Sleeps by role (docs/testing.md#sleeps-by-role): ear_sleeps is the role calls a test sleeps through
+# (support/sleeps.hpp), and every target that compiles test code is compiled with support/no_raw_sleeps.hpp forced in
+# (ear_poison_raw_sleeps), which poisons every raw sleep and Catch's WARN and CHECK_NOFAIL after them. ear_catch_tests
+# gives it to each test program, src/core to ear_type_harness; configure refuses any other target with a source in a
+# test, tests or testing folder that lacks it. Catch's runner is the one exempt: it includes Catch's implementation
+# behind its own configuration, which a forced Catch header would come before, and holds no test.
+add_library(ear_sleeps INTERFACE)
+target_include_directories(ear_sleeps INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/support")
+include("${PROJECT_SOURCE_DIR}/cmake/RawSleeps.cmake")
+set(EAR_NO_RAW_SLEEPS "${CMAKE_CURRENT_SOURCE_DIR}/support/no_raw_sleeps.hpp" CACHE INTERNAL
+	"The header forced into every test target (read from sibling directories)")
+ear_refuse_raw_sleeps("${EAR_NO_RAW_SLEEPS}" EXEMPT ear_catch_main)
+
+# ear_catch_tests(<target>): the raw sleeps poisoned in every source of <target> (above), and catch_discover_tests
+# with --warn NoTests, so a CTest test whose name
 # matches no Catch test case fails (exit 2) instead of passing having run nothing. A Catch name
 # holding ';' is split by CMake into two such tests, and Catch's own "No test cases matched"
 # exits 0; this is what makes that, or any other filter that runs nothing, fail. Catch.cmake is
@@ -28,6 +42,7 @@ function(ear_catch_tests target)
 		message(FATAL_ERROR "ear_catch_tests: unexpected arguments: ${arg_UNPARSED_ARGUMENTS}")
 	endif()
 	include(Catch)
+	ear_poison_raw_sleeps(${target} "${EAR_NO_RAW_SLEEPS}" ear_sleeps)
 	add_custom_command(TARGET ${target} POST_BUILD
 		COMMAND $<TARGET_FILE:${target}> --ear-check-test-names
 		COMMENT "Checking ${target}'s test names"
@@ -90,7 +105,8 @@ add_test(NAME ear_carried_patch_check COMMAND "${CMAKE_COMMAND}"
 
 # The worked example of docs/writing-a-node-type.md, the `tone` type, taken from the page and compiled (syntax only)
 # against today's headers, so the page cannot drift from them: the type, with the folder's name its table must carry,
-# and its tests. It is never a node type of this build: nothing under src/nodes/ is made.
+# and its tests (with the raw sleeps poisoned, as every test program). It is never a node type of this build: nothing
+# under src/nodes/ is made.
 set(doc_tone "${CMAKE_CURRENT_BINARY_DIR}/doc_example/tone")
 add_test(NAME ear_doc_example_extract COMMAND "${CMAKE_COMMAND}"
 	"-DDOC=${PROJECT_SOURCE_DIR}/docs/writing-a-node-type.md" "-DOUT=${doc_tone}"
@@ -99,7 +115,7 @@ set_tests_properties(ear_doc_example_extract PROPERTIES FIXTURES_SETUP doc_examp
 ear_compile_check(ear_doc_example_type "${doc_tone}/tone.cpp" "-I${doc_tone}" "-I${doc_tone}/include"
 	"-DEAR_NODE_TYPE_NAME=\"tone\"")
 ear_compile_check(ear_doc_example_tests "${doc_tone}/tests/tone_test.cpp" "-I${doc_tone}" "-I${doc_tone}/include"
-	"-I${PROJECT_SOURCE_DIR}/vendor/catch/single_include")
+	"-I${PROJECT_SOURCE_DIR}/vendor/catch/single_include" -include "${EAR_NO_RAW_SLEEPS}")
 set_tests_properties(ear_doc_example_type ear_doc_example_tests PROPERTIES FIXTURES_REQUIRED doc_example)
 
 # ear_ws_client: the tests' WebSocket client (test/support/ws_client.hpp, header-only, on
@@ -119,7 +135,7 @@ target_include_directories(ear_temp_folder INTERFACE "${CMAKE_CURRENT_SOURCE_DIR
 # ear_core for FrameClock, through which a late send's reach is the receiver's configured buffer.
 add_library(ear_rtp_tone INTERFACE)
 target_include_directories(ear_rtp_tone INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/support")
-target_link_libraries(ear_rtp_tone INTERFACE ear_core)
+target_link_libraries(ear_rtp_tone INTERFACE ear_core ear_sleeps)
 
 # ear_sendspin_server: the real Sendspin server for the sendspin node's clock and system tests (test/support/
 # sendspin_server.py, run by sendspin_server.hpp, header-only, in the venv CMakeLists.txt checks for).
@@ -142,7 +158,7 @@ add_subdirectory(nodes)
 # statistical bound from the count measured (test/support/statistics.hpp, docs/testing.md#statistics-from-the-count).
 add_library(ear_inducers INTERFACE)
 target_include_directories(ear_inducers INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/support")
-target_link_libraries(ear_inducers INTERFACE ear_core)
+target_link_libraries(ear_inducers INTERFACE ear_core ear_sleeps)
 add_library(ear_statistics INTERFACE)
 target_include_directories(ear_statistics INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/support")
 
@@ -173,43 +189,82 @@ target_link_libraries(ear_test_support_tests PRIVATE ear_inducers ear_cycle_judg
 	ear_catch_main)
 ear_catch_tests(ear_test_support_tests)
 
-# The sleep guard (docs/testing.md#the-sleep-guard): every sleep and WARN in the tests and their support listed in
-# sleeps.txt with its role; and the guard itself refusing each spelling it knows (sleep_guard/<spelling>.snippet),
-# letting through what only looks like one (allowed.snippet, allowed.py.snippet), taking a listed line as often as it
-# is listed, and refusing a stale entry, a role a line may not have, an unknown role, a luck-wait that names no step, a
-# malformed entry, a missing listing and a check of nothing.
-set(ear_sleep_guard "${CMAKE_CURRENT_SOURCE_DIR}/sleep_guard.cmake")
-set(ear_sleep_guard_dir "${CMAKE_CURRENT_SOURCE_DIR}/sleep_guard")
-add_test(NAME ear_sleeps_are_listed
-	COMMAND "${CMAKE_COMMAND}" "-DROOT=${PROJECT_SOURCE_DIR}"
-		"-DGLOB=test/*.cpp,test/*.hpp,test/*.h,test/*.c,test/*.py,src/*.cpp,src/*.hpp,src/*.h,src/*.c,src/*.py"
-		"-DFILTER=^(test/|src/.*/(tests|testing)/)" "-DLIST=${CMAKE_CURRENT_SOURCE_DIR}/sleeps.txt" -P "${ear_sleep_guard}")
-# ear_sleep_guard_case(<name> <snippet glob> <listing> <regex the output must hold>)
-function(ear_sleep_guard_case name glob listing regex)
-	add_test(NAME ear_sleep_guard_${name}
-		COMMAND "${CMAKE_COMMAND}" "-DROOT=${ear_sleep_guard_dir}" "-DGLOB=${glob}"
-			"-DLIST=${ear_sleep_guard_dir}/${listing}" -P "${ear_sleep_guard}")
-	set_tests_properties(ear_sleep_guard_${name} PROPERTIES PASS_REGULAR_EXPRESSION "${regex}")
+# What must not compile in a test (docs/testing.md#sleeps-by-role): each raw way to sleep, and Catch's macros that tell
+# and go on, refused by the poison no_raw_sleeps.hpp forces in, as every test target's sources are compiled; a poll or
+# select on nothing; a role call that says no why. compile_fail/no_raw_sleeps_bad.cpp says what each case is, and its
+# control (no case) must compile. The regexes are GCC's.
+set(bad_sleeps "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/no_raw_sleeps_bad.cpp")
+set(sleeps_flags "-I${PROJECT_SOURCE_DIR}/vendor/catch/single_include" "-I${CMAKE_CURRENT_SOURCE_DIR}/support"
+	-include "${EAR_NO_RAW_SLEEPS}")
+ear_compile_check(ear_no_raw_sleeps_compile_fail_control "${bad_sleeps}" ${sleeps_flags})
+function(ear_no_raw_sleeps_compile_fail case regex)
+	string(MAKE_C_IDENTIFIER "${case}" macro)
+	set(test ear_no_raw_sleeps_compile_fail_${case})
+	ear_compile_check(${test} "${bad_sleeps}" ${sleeps_flags} -DEAR_CASE_${macro})
+	set_tests_properties(${test} PROPERTIES PASS_REGULAR_EXPRESSION "${regex}")
 endfunction()
-foreach(spelling sleep_for sleep_until usleep nanosleep clock_nanosleep posix_sleep bare_sleep poll_nothing
-		select_nothing time_sleep.py asyncio_sleep.py after_string)
-	ear_sleep_guard_case(refuses_${spelling} ${spelling}.snippet empty.txt "${spelling}\\.snippet:1: unlisted sleep")
+foreach(pair sleep-for:sleep_for sleep-until:sleep_until split-call:sleep_for using:sleep_for pasted:sleep_for
+		macro-after:usleep usleep:usleep nanosleep:nanosleep clock-nanosleep:clock_nanosleep posix-sleep:sleep
+		bare-sleep:sleep later-header:sleep_for warn:WARN catch-warn:CATCH_WARN check-nofail:CHECK_NOFAIL
+		catch-check-nofail:CATCH_CHECK_NOFAIL undef-warn:WARN)
+	string(REPLACE ":" ";" pair "${pair}")
+	list(GET pair 0 case)
+	list(GET pair 1 name)
+	ear_no_raw_sleeps_compile_fail(${case} "attempt to use poisoned \"${name}\"")
 endforeach()
-foreach(spelling warn catch_warn check_nofail)
-	ear_sleep_guard_case(refuses_${spelling} ${spelling}.snippet empty.txt "${spelling}\\.snippet:1: unlisted WARN")
+foreach(call poll ppoll select pselect)
+	ear_no_raw_sleeps_compile_fail(${call}-nothing "use of deleted function 'int ${call}\\(")
 endforeach()
-ear_sleep_guard_case(allows_lookalikes allowed.snippet empty.txt "1 files under .*, 0 sleeps and WARNs")
-ear_sleep_guard_case(allows_python_lookalikes allowed.py.snippet empty.txt "1 files under .*, 0 sleeps and WARNs")
-ear_sleep_guard_case(takes_listed listed.snippet listed.txt "1 files under .*, 3 sleeps and WARNs, each listed")
-ear_sleep_guard_case(refuses_a_line_listed_once_too_few listed.snippet once.txt "listed\\.snippet:3: unlisted sleep")
-ear_sleep_guard_case(refuses_stale allowed.snippet listed.txt "listed but not found: listed\\.snippet \\| ")
-ear_sleep_guard_case(refuses_warn_as_induce warn.snippet warn_as_induce.txt "listed only as luck or owed, not induce")
-ear_sleep_guard_case(refuses_sleep_owed sleep_for.snippet sleep_owed.txt "a sleep is listed by its role, never owed")
-ear_sleep_guard_case(refuses_unknown_role sleep_for.snippet unknown_role.txt "unknown role 'maybe'")
-ear_sleep_guard_case(refuses_luck_without_step sleep_for.snippet luck_without_step.txt "names no audit step")
-ear_sleep_guard_case(refuses_malformed sleep_for.snippet malformed.txt "malformed\\.txt:2: not '<role>")
-ear_sleep_guard_case(refuses_missing_listing sleep_for.snippet no-such-listing.txt "does not exist")
-ear_sleep_guard_case(refuses_checking_nothing no-such-file.snippet empty.txt "the guard would check nothing")
+ear_no_raw_sleeps_compile_fail(empty-why "a_sleep_says_why_it_sleeps")
+ear_no_raw_sleeps_compile_fail(why-not-a-literal "no matching function for call to 'induce")
+ear_no_raw_sleeps_compile_fail(no-why "no matching function for call to 'negative")
+
+# Configure stops at a target that compiles test code without the poison forced in, wherever its test source is, and
+# goes on for a poisoned target, an exempt one, a target of product code alone and one whose only test-named source is
+# generated in the build tree: sleep_refusal is a project of its own, because the refusal stops the whole configure.
+function(ear_raw_sleeps_test name shape)
+	add_test(NAME ${name} COMMAND "${CMAKE_COMMAND}" -S "${CMAKE_CURRENT_SOURCE_DIR}/sleep_refusal"
+		-B "${CMAKE_CURRENT_BINARY_DIR}/${name}" "-DEAR_CMAKE_DIR=${PROJECT_SOURCE_DIR}/cmake" -DEAR_SHAPE=${shape}
+		"-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}")
+endfunction()
+foreach(shape tests testing test mixed relative)
+	ear_raw_sleeps_test(ear_raw_sleeps_refused_${shape} ${shape})
+	set_tests_properties(ear_raw_sleeps_refused_${shape} PROPERTIES
+		PASS_REGULAR_EXPRESSION "RawSleeps\\.cmake:[0-9]+ \\(message\\):[^a-z]*ear_user compiles test code \\([^)]*\\) without")
+endforeach()
+foreach(shape none poisoned exempt generated)
+	ear_raw_sleeps_test(ear_raw_sleeps_allowed_${shape} ${shape})
+endforeach()
+
+# The tests' Python has no compiler to poison a name, so its rule is read from its syntax tree: python_sleeps.py refuses
+# `sleep` named, imported or called anywhere in test/'s Python but in the body of a module-level function named for a
+# role (induce, negative, poll, pace), as sendspin_server.py's are; and its own tests (python_sleeps/) refuse each way of
+# naming it, let strings, comments and library calls that only contain the word through, and refuse a file that does
+# not parse and a check of nothing.
+set(ear_python_sleeps "${CMAKE_CURRENT_SOURCE_DIR}/python_sleeps.py")
+set(ear_python_snippets "${CMAKE_CURRENT_SOURCE_DIR}/python_sleeps")
+add_test(NAME ear_python_sleeps_by_role
+	COMMAND "${EAR_SENDSPIN_SERVER_PYTHON}" -I "${ear_python_sleeps}" "${CMAKE_CURRENT_SOURCE_DIR}" "*.py")
+set_tests_properties(ear_python_sleeps_by_role PROPERTIES
+	PASS_REGULAR_EXPRESSION "python_sleeps: [1-9][0-9]* files under .*, every sleep in a role")
+foreach(way time_sleep asyncio_sleep from_import aliased outside_role method_named_role nested_in_other)
+	add_test(NAME ear_python_sleeps_refuses_${way}
+		COMMAND "${EAR_SENDSPIN_SERVER_PYTHON}" -I "${ear_python_sleeps}" "${ear_python_snippets}" "${way}.py.snippet")
+	set_tests_properties(ear_python_sleeps_refuses_${way} PROPERTIES
+		PASS_REGULAR_EXPRESSION "${way}\\.py\\.snippet:[0-9]+: a sleep outside a role")
+endforeach()
+add_test(NAME ear_python_sleeps_allows_roles_and_lookalikes
+	COMMAND "${EAR_SENDSPIN_SERVER_PYTHON}" -I "${ear_python_sleeps}" "${ear_python_snippets}" "allowed.py.snippet")
+set_tests_properties(ear_python_sleeps_allows_roles_and_lookalikes PROPERTIES
+	PASS_REGULAR_EXPRESSION "python_sleeps: 1 files under .*, every sleep in a role")
+add_test(NAME ear_python_sleeps_refuses_what_does_not_parse
+	COMMAND "${EAR_SENDSPIN_SERVER_PYTHON}" -I "${ear_python_sleeps}" "${ear_python_snippets}" "broken.py.snippet")
+set_tests_properties(ear_python_sleeps_refuses_what_does_not_parse PROPERTIES
+	PASS_REGULAR_EXPRESSION "broken\\.py\\.snippet: does not parse")
+add_test(NAME ear_python_sleeps_refuses_checking_nothing
+	COMMAND "${EAR_SENDSPIN_SERVER_PYTHON}" -I "${ear_python_sleeps}" "${ear_python_snippets}" "no-such-file.py")
+set_tests_properties(ear_python_sleeps_refuses_checking_nothing PROPERTIES
+	PASS_REGULAR_EXPRESSION "the check would check nothing")
 
 # Where a rate leaves its type (docs/engine.md#dating): SampleRate has no arithmetic, so the compiler refuses a rate as
 # an operand (src/core/tests/compile_fail/sample_rate_bad.cpp). What is left is one word: `hz`, a rate's number,

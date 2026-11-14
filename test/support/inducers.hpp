@@ -16,12 +16,12 @@
 #include <limits>
 #include <optional>
 #include <span>
-#include <thread>
 #include <utility>
 #include <vector>
 
 #include "ear/core/cycle_facts.hpp"
 #include "ear/core/node_type.hpp"
+#include "sleeps.hpp"
 
 namespace ear::test {
 
@@ -89,7 +89,7 @@ private:
 /// A plan carried out: called from inside a process() (or a probe's cycle) with that cycle's index, it sleeps on the
 /// data thread when the plan says so and counts what it made. Given a cut record, it keeps the graph cycle each stall
 /// was made in (the record's started(), read on the data thread inside that cycle), for a judge to find it excused. The
-/// one sleep that stalls a data thread on purpose (test/sleeps.txt).
+/// one sleep that stalls a data thread on purpose (docs/testing.md#sleeps-by-role).
 class Stalls {
 public:
 	explicit Stalls(StallPlan plan = {}, const CutRecord* cuts = nullptr)
@@ -101,7 +101,7 @@ public:
 		const std::size_t at = made_.load(std::memory_order_relaxed);
 		if (at < cycles_.size()) cycles_[at] = cuts_ != nullptr ? cuts_->started() : 0; // published by made_ below
 		const auto clock = rate.transform([](SampleRate graph) { return FrameClock(graph); });
-		std::this_thread::sleep_for(length->at(frames, clock)); // the data thread stalls, on purpose
+		ear::sleeps::induce(length->at(frames, clock), "a planned data-thread stall");
 		made_.fetch_add(1, std::memory_order_release);
 		return true;
 	}

@@ -5,7 +5,8 @@ harness on `workOut`, `docs/engine.md#latency-per-bank-pair`; section 3.6), R3 b
 `FrameClock`, `docs/engine.md#dating`; section 3.7), R4a built (section 4.5 says what changed from 4.3), R4c built (a
 type's throw is its node's fact, `docs/writing-a-node-type.md#rules-the-framework-enforces`; section 4.6), R4b built
 (faults split by owner, `docs/architecture.md#faults-by-owner`; section 4.7), R5a built
-(its tools and guard: `docs/testing.md#the-tools`, section 5.4), R5b built (`ear_pipewire_tests` audited, section
+(its tools and guard: `docs/testing.md#the-tools`, section 5.4; the guard's list since replaced by role calls the
+compiler holds, `docs/testing.md#sleeps-by-role`), R5b built (`ear_pipewire_tests` audited, section
 5.5), R5c built (`ear_node_sendspin_tests` audited, section 5.6), R5d built (`ear_system_tests`, `ear_output_tests`,
 `ear_folder_tests` and the RTP receiver tests audited, section 5.7), R6 built (the property table:
 `docs/engine.md#properties-ear-sets`, section 6.5 says what changed from 6.3) and R7 built (the harness runs the engine's

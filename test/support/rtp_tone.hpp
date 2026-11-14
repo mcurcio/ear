@@ -24,6 +24,7 @@
 #include <unistd.h>
 
 #include "ear/core/latency.hpp"
+#include "sleeps.hpp"
 
 namespace ear::test {
 
@@ -194,9 +195,9 @@ struct RtpSender::Impl {
 		for (std::uint64_t sent = 0; sent < total && !stopping.load(); sent += framesPerPacket) {
 			const std::chrono::duration<double> due(static_cast<double>(sent + framesPerPacket) / rate);
 			const auto dueAt = start + std::chrono::duration_cast<std::chrono::steady_clock::duration>(due);
-			std::this_thread::sleep_until(dueAt);
+			ear::sleeps::pace(dueAt, "each packet sent when its last frame is due, as a device clock would");
 			if (holdFor.count() > 0 && sent + framesPerPacket > holdAt) {
-				std::this_thread::sleep_for(holdFor); // the stall holdOnce asked for, on purpose
+				ear::sleeps::induce(holdFor, "the hold holdOnce asked for, then catching up");
 				holdFor = {};
 			}
 			const auto bytes = packet(sent);

@@ -588,8 +588,8 @@ Nothing like WirePlumber runs. Two things make that work:
   timer only fails the test. Copy that pattern for new engine tests. A test that needs a stall or a
   cut-short cycle makes it (`StallingCode`, `Stalls`), excuses a lost cycle only through the one judge
   (`CycleJudge`, `docs/testing.md#the-cycle-judge`), and reads a retold latency after
-  `Quiescence::quiesce`; a new sleep or `WARN` must be
-  listed in `test/sleeps.txt` (`docs/testing.md#the-tools`).
+  `Quiescence::quiesce`; a sleep is a role call (`ear::sleeps::induce`, `negative`, `poll`, `pace`), and a raw
+  sleep or a `WARN` does not compile (`docs/testing.md#sleeps-by-role`).
 
 ## Bumping PipeWire
 

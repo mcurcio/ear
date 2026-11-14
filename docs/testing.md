@@ -9,8 +9,8 @@ that build and run them are in [`AGENTS.md`](../AGENTS.md#build-run-and-test).
   notification, a link going active, a thread's answer); a deadline only fails a test, never
   decides when something happens. A sleep that stands in for an event is a bug, and so is a
   `WARN` that tells and goes on where the test should fail naming the event it waited for:
-  every sleep and `WARN` is listed with its role, and a guard fails on one that is not
-  ([the sleep guard](#the-sleep-guard)).
+  every sleep is a call that names its role, and a raw sleep or a `WARN` does not compile
+  ([sleeps by role](#sleeps-by-role)).
 - **Audio is verified here, never on real hardware.** The engine runs in-process with no daemon,
   so the tests read samples, stamps and WAV files exactly. Hardware checks (the MOTU 24Ao, a real
   Music Assistant) are listed as owed in the skills, never run in CI.
@@ -204,8 +204,8 @@ or running every one while the next is due (`GraphCycle::overdueNs`, nothing los
 only its own shape's rule, and each appends the shape it judged, pass or fail, to
 `out/Testing/sendspin-stall-shapes.txt` (`sendspin stall judged: ...`), which CI's `test` job prints
 after the suite: a passing test's output reaches no log, a node's tests may not write standard
-output (`ear_nodes_never_write_standard_output`), and no `WARN` is added
-([the sleep guard](#the-sleep-guard)). What the
+output (`ear_nodes_never_write_standard_output`), and a `WARN` does not compile
+([sleeps by role](#sleeps-by-role)). What the
 library does after a planned event (a stall, the network gap) is judged as its answer until the
 first cycle after the stream's return that the host disturbed in a way the library could see (one
 the ledger did not call clean, other than a catch-up the feed held whole, which ear skips from audio
@@ -378,26 +378,55 @@ holds when an RMS of the white node's noise (uniform on [-1, 1): sqrt(1/3)) meas
 samples lies within `sigmas` standard deviations for that count, `noiseRmsSigma(frames)` = 0.258 /
 sqrt(frames); no frames is never within. A check states its sigmas and the frames it measured.
 
-### The sleep guard
+### Sleeps by role
 
-`test/sleeps.txt` lists every sleep in the tests and their support (`sleep_for`, `sleep_until`,
-`sleep`, `usleep`, `nanosleep`, `clock_nanosleep`, Python's `time.sleep` and `asyncio.sleep`, a
-`poll` or `select` on nothing) and every Catch `WARN`, `CATCH_WARN` or `CHECK_NOFAIL`, one line each:
-its role, its file, the line as it stands and why. A sleep's role is `induce` (the sleep is the
-event), `negative` (a bounded look for what must not happen, taken after the event that would cause
-it), `poll` (a pause between looks at the event, which decides), `pace` (the clock of a stand-in
-that keeps real time: a sender, a heartbeat) or `luck`; a `WARN`'s is `luck` or `owed`. `luck` and
-`owed` entries are the audit's inventory (`docs/design/root-classes.md`, steps R5b to R5d): each
-names the step that removes it, and none is added.
+A test sleeps only through a call that names the sleep's role, `ear::sleeps::<role>(length, why)`
+(`test/support/sleeps.hpp`, the target `ear_sleeps`), where `why` is a string literal that is not
+empty (an empty one, or a value made elsewhere, does not compile):
 
-`ear_sleeps_are_listed` (`test/sleep_guard.cmake`) reads every C, C++ and Python file under `test/`
-and under `src/` in a `tests` or `testing` folder, and fails naming the place of a sleep or `WARN`
-not listed (as often as a line occurs, so often it is listed), an entry that matches no line, a
-`WARN` listed by a sleep's role, a sleep listed `owed`, an unknown role, a `luck` or `owed` entry
-naming no step, and a check of nothing; strings and comments are not code. Its own tests
-(`ear_sleep_guard_*`, on `test/sleep_guard/`) refuse each spelling, let through what only looks
-like one, and refuse each of those faults. Editing a listed line, its comment included, means
-editing its entry.
+- **`induce`**: the sleep is the event, a stall, a hold or a slow step the test makes on purpose
+  (`Stalls`' data-thread stalls, a held RTP sender, a main loop held stopped);
+- **`negative`**: a bounded look for what must not happen, taken after the event that would cause
+  it (no report after stop);
+- **`poll`**: a pause between looks at the event waited for, which the look decides and a deadline
+  only fails (a WAV holding enough, a drive's completion);
+- **`pace`**: the clock of a stand-in for something that keeps real time, for a length or until a
+  moment (an RTP sender's packets, a heartbeat, an invoke storm's rate).
+
+A sleep that stands in for an event, or a test that passes only on a quick host, has no role and
+no call: the audit that emptied the last of them (`docs/design/root-classes.md`, steps R5b to R5d)
+left none, and the test waits for the event instead. Nor does a test tell and go on where it should
+fail naming what it waited for: Catch's `WARN` and `CHECK_NOFAIL` do not compile.
+
+The compiler holds the rule. Every source of every target that compiles test code is compiled with
+`test/support/no_raw_sleeps.hpp` forced in first (`ear_poison_raw_sleeps`, `cmake/RawSleeps.cmake`:
+`ear_catch_tests` gives it to each test program, `src/core` to `ear_type_harness`). The header reads
+the role calls, Catch, and every header that names a raw sleep (the standard library's, and where
+the target can see them, Boost's spinlock back-off and sendspin-cpp's log levels), then poisons
+`sleep_for`, `sleep_until`, `sleep`, `usleep`, `nanosleep`, `clock_nanosleep`, `WARN`, `CATCH_WARN`,
+`CHECK_NOFAIL` and `CATCH_CHECK_NOFAIL` (`#pragma GCC poison`): any later use of those names, however
+it is spelt (split across lines, pasted by a macro, in a `using` or a `#undef`), is refused, and a
+header read later that names one fails to compile until the forced header reads it first. `poll`,
+`ppoll`, `select` and `pselect` stay a test's for waiting on descriptors; on none (`nullptr` for the
+set) they are a sleep, and a deleted overload refuses them. Configure refuses any target with a source
+in a `test`, `tests` or `testing` folder that lacks the forced header, but Catch's runner
+(`test/main.cpp`, which configures Catch before including it and holds no test).
+
+What must not compile is `test/compile_fail/no_raw_sleeps_bad.cpp`, one CTest test per case
+(`ear_no_raw_sleeps_compile_fail_*`), each matched on GCC's own message, beside its control, which
+must compile (each role call, waiting on descriptors, Catch's failing checks, the standard library's
+waits on an event); `ear_raw_sleeps_*` run the configure refusal on a project of its own
+(`test/sleep_refusal/`). The tests' Python has no compiler to poison a name, so its rule is read from
+its syntax tree: `ear_python_sleeps_by_role` (`test/python_sleeps.py`) refuses the name `sleep`,
+called, referred to or imported, anywhere in `test/`'s Python but in the body of a module-level
+function named for a role (`sendspin_server.py`'s `induce`, `poll` and `pace`, which refuse an empty
+why when called), and its own tests (`ear_python_sleeps_*`, on `test/python_sleeps/`) refuse each way
+of naming it.
+
+What neither holds: a sleep in product code (ear's own waits are its design, not a test's); a poll on
+a descriptor array of length 0, or a select whose sets are a variable that happens to be null; a sleep
+reached by a string (`getattr(asyncio, "sleep")`) or a `-D` on a target's command line; and Python
+outside `test/` (there is none in a test folder under `src/`).
 
 ## How the suites are built
 
@@ -421,8 +450,8 @@ tests and goes on past one that listed nothing, which would drop the whole execu
 unseen, so `test/catch_tests_guard.cmake` fails the build unless every file discovery wrote names
 a test.
 
-Beside the executables, `test/CMakeLists.txt` runs the sleep guard and its own tests
-([above](#the-sleep-guard)), `ear_sample_rate_exits` and its own (in the table below), `ear --help` (the binary loads its shared libraries), `ear_carried_patch_check` runs what configure asks of a tree that must carry a patch,
+Beside the executables, `test/CMakeLists.txt` runs the compile-fail cases and the configure refusal
+of raw sleeps, and the Python check and its own tests ([above](#sleeps-by-role)), `ear_sample_rate_exits` and its own (in the table below), `ear --help` (the binary loads its shared libraries), `ear_carried_patch_check` runs what configure asks of a tree that must carry a patch,
 `ear_engine_conf_beside_ear` checks that the copy of `engine.conf` beside the binary matches
 the source, and `ear_doc_example_*` take the worked example out of
 [writing-a-node-type.md](writing-a-node-type.md#worked-example-tone) and compile it against today's

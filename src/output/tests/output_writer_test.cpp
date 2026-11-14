@@ -13,6 +13,7 @@
 
 #include "catch2/catch.hpp"
 #include "ear/output/output_writer.hpp"
+#include "sleeps.hpp"
 
 using ear::output::OutputWriter;
 
@@ -149,7 +150,7 @@ TEST_CASE("The crash path's spill gives up in bounded time on a writer stuck in 
 	int held = 0;
 	while (::ioctl(pipe.read, FIONREAD, &held) == 0 && static_cast<std::size_t>(held) < filled &&
 	       std::chrono::steady_clock::now() < until)
-		std::this_thread::sleep_for(std::chrono::milliseconds(1)); // between looks at the pipe, which decide
+		ear::sleeps::poll(std::chrono::milliseconds(1), "between looks at the pipe, which decide");
 	REQUIRE(static_cast<std::size_t>(held) == filled);
 	REQUIRE(writer.offer("still queued"));
 	const auto before = std::chrono::steady_clock::now();

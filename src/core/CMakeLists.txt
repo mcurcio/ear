@@ -81,7 +81,10 @@ if(BUILD_TESTS)
 		include/ear/testing/node_harness.hpp
 		include/ear/testing/type_harness.hpp)
 	set_target_properties(ear_type_harness PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)
-	target_link_libraries(ear_type_harness PUBLIC ear_core)
+	# ear_sleeps: drive_now.hpp polls through its role call; and the raw sleeps poisoned here, as in every test program
+	# (docs/testing.md#sleeps-by-role).
+	target_link_libraries(ear_type_harness PUBLIC ear_core ear_sleeps)
+	ear_poison_raw_sleeps(ear_type_harness "${EAR_NO_RAW_SLEEPS}" ear_sleeps)
 
 	add_executable(ear_core_tests
 		tests/block_rules_test.cpp

@@ -11,13 +11,13 @@
 #include <fstream>
 #include <optional>
 #include <string>
-#include <thread>
 #include <utility>
 #include <vector>
 
 #include <sys/types.h>
 
 #include "ear_system.hpp"
+#include "sleeps.hpp"
 
 namespace {
 
@@ -72,7 +72,7 @@ void stall(ChildProcess& process, pid_t thread) {
 	while (!running(process.pid(), thread) && std::chrono::steady_clock::now() < until) {
 	}
 	process.signal(SIGSTOP);
-	std::this_thread::sleep_for(stallFor); // the stall itself, made on purpose
+	ear::sleeps::induce(stallFor, "the whole of ear held stopped, until a stall cuts a cycle");
 	process.signal(SIGCONT);
 }
 

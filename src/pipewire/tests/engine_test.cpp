@@ -18,7 +18,6 @@
 #include <span>
 #include <stdexcept>
 #include <string>
-#include <thread>
 #include <vector>
 
 #include <sched.h>
@@ -47,6 +46,7 @@
 #include "ear/testing/drive_now.hpp"
 #include "cycle_judge.hpp"
 #include "inducers.hpp"
+#include "sleeps.hpp"
 #include "temp_folder.hpp"
 
 namespace {
@@ -683,7 +683,9 @@ TEST_CASE("After the data loop is judged wedged a route's link is leaked, not de
 		dataLoop,
 		[](spa_loop*, bool, std::uint32_t, const void*, std::size_t, void* data) -> int {
 			auto* flag = static_cast<std::atomic<bool>*>(data);
-			while (!flag->load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			while (!flag->load())
+				ear::sleeps::induce(std::chrono::milliseconds(1),
+			                        "the wedge: an invoke that holds the data loop until the test lets it go");
 			return 0;
 		},
 		0, nullptr, 0, false, &release);

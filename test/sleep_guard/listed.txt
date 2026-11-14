@@ -1,4 +1,0 @@
-# The sleep guard's own tests: every line of listed.snippet, each as often as it occurs.
-negative | listed.snippet | std::this_thread::sleep_for(50ms); // a look for what must not come | a bounded look after its event
-negative | listed.snippet | std::this_thread::sleep_for(50ms); // a look for what must not come | the same line again, listed again
-luck | listed.snippet | WARN("an xrun at the take-up"); | goes on under load; R5b fails it naming its event

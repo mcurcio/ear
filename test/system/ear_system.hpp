@@ -26,13 +26,13 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
 #include "catch2/catch.hpp"
 #include "child_process.hpp"
+#include "sleeps.hpp"
 #include "statistics.hpp"
 #include "temp_folder.hpp"
 #include "ws_client.hpp"
@@ -508,7 +508,7 @@ inline bool waitForWav(const std::filesystem::path& path,
 		const std::span<const float> fresh = wav.next();
 		if (wav.channels() > 0 && enough(fresh, static_cast<std::size_t>(wav.channels()))) return true;
 		if (std::chrono::steady_clock::now() >= until) return false;
-		std::this_thread::sleep_for(50ms); // between looks at the WAV, which decide
+		ear::sleeps::poll(50ms, "between looks at the WAV, which decide");
 	}
 }
 

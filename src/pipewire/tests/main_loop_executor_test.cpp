@@ -23,6 +23,7 @@
 #include "ear/core/main_loop_activity.hpp"
 #include "ear/output/stall_watch.hpp"
 #include "ear/pipewire/main_loop_executor.hpp"
+#include "sleeps.hpp"
 
 namespace {
 using namespace ear;
@@ -214,7 +215,7 @@ TEST_CASE("The main-loop watchdog reports a stall of the engine's main loop with
 	// After a few beats, one main-loop turn runs 900 ms inside a named call.
 	auto stall = executor.after(std::chrono::milliseconds(350), [] {
 		const MainLoopActivity::Scope scope("configure", "desk");
-		std::this_thread::sleep_for(std::chrono::milliseconds(900));
+		ear::sleeps::induce(std::chrono::milliseconds(900), "the main-loop stall the watchdog must see");
 	});
 	REQUIRE(runUntilQuit(*engine, std::chrono::seconds(10)));
 	beat.reset();

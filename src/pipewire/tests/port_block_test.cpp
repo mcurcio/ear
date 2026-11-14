@@ -49,6 +49,7 @@
 #include "latency_table.hpp"
 #include "probes.hpp"
 #include "quiescence.hpp"
+#include "sleeps.hpp"
 
 // Allocations are counted on a thread that asks for it (the realtime thread, from a test code's process() on), by the
 // binary's one malloc hook.
@@ -1710,8 +1711,9 @@ public:
 		if (armed.exchange(false, std::memory_order_acq_rel)) {
 			stalling.store(true, std::memory_order_release);
 			waiter_.wake();
-			const timespec stall{0, 150'000'000};
-			nanosleep(&stall, nullptr);
+			ear::sleeps::induce(
+				std::chrono::milliseconds(150),
+				"a hold inside one process(), so the requests made meanwhile reach the data loop together");
 		}
 		waiter_.wake();
 	}

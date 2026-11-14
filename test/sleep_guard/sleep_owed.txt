@@ -1,2 +1,0 @@
-# The sleep guard's own tests: a sleep listed as owed.
-owed | sleep_for.snippet | std::this_thread::sleep_for(10ms); | R5b
