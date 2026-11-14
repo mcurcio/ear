@@ -395,7 +395,7 @@ TEST_CASE("graphFile.set: a stale version, a text with errors, the same text and
 	CHECK(f.graphFile().text == handText);
 }
 
-TEST_CASE("node.setText: a stale version first, file-invalid, then the text's own checks; accepted, it is an edit",
+TEST_CASE("node.setText: a stale version first, file-invalid, then the text's own checks, and accepted it is an edit",
           "[keeper][node-text]") {
 	Fixture f("set_text");
 	f.start();

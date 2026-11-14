@@ -136,7 +136,7 @@ TEST_CASE("A stall ear took reaches a graph record, the control port agrees with
 	// The snapshot: the feature, the graph's counters and each node's.
 	const json snapshot = rpc.call("graph.subscribe")["result"];
 	INFO("the snapshot: " << snapshot.dump());
-	CHECK(snapshot["features"] == json::array({"lifecycle", "counters", "companions"}));
+	CHECK(snapshot["features"] == json::array({"lifecycle", "counters", "companions", "node-text"}));
 	REQUIRE(snapshot.contains("counters"));
 	CHECK(number(snapshot["counters"], "cycles") > 0);
 	REQUIRE(snapshot["nodes"].size() == 2);
