@@ -7,6 +7,7 @@
 #include "ear/testing/node_harness.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <deque>
@@ -59,32 +60,35 @@ private:
 	std::deque<std::move_only_function<void()>> queue_;
 };
 
-/// Main-loop timers on a clock the test moves.
+/// Main-loop timers on a clock the test moves. The clock is atomic: Timers::now() may be read from any thread (a node
+/// handle's note rate reads it on the thread that says), while only the test's thread moves it.
 class FakeClock final : public Timers {
 public:
 	explicit FakeClock(ManualExecutor& executor) : executor_(executor) {}
 	std::unique_ptr<Timer> after(std::chrono::milliseconds delay, std::move_only_function<void()> due) override {
-		auto armed = std::make_shared<Armed>(Armed{now_ + delay, std::move(due)});
+		auto armed = std::make_shared<Armed>(Armed{now_.load() + delay, std::move(due)});
 		armed_.push_back(armed);
 		return std::make_unique<Handle>(armed);
 	}
-	std::chrono::steady_clock::time_point now() const override { return std::chrono::steady_clock::time_point{now_}; }
+	std::chrono::steady_clock::time_point now() const override {
+		return std::chrono::steady_clock::time_point{now_.load()};
+	}
 	/// Moves the clock and runs what came due, in due order, pumping between.
 	void advance(std::chrono::milliseconds by) {
-		const auto until = now_ + by;
+		const auto until = now_.load() + by;
 		for (;;) {
 			std::shared_ptr<Armed> next;
 			for (const auto& armed : armed_)
 				if (!armed->cancelled && armed->due && armed->at <= until && (!next || armed->at < next->at))
 					next = armed;
 			if (!next) break;
-			now_ = std::max(now_, next->at);
+			now_.store(std::max(now_.load(), next->at));
 			auto call = std::move(next->due);
 			next->due = nullptr;
 			call();
 			executor_.pump();
 		}
-		now_ = until;
+		now_.store(until);
 		std::erase_if(armed_, [](const auto& armed) { return armed->cancelled || !armed->due; });
 	}
 
@@ -100,7 +104,7 @@ private:
 		std::shared_ptr<Armed> armed;
 	};
 	ManualExecutor& executor_;
-	std::chrono::milliseconds now_{0};
+	std::atomic<std::chrono::milliseconds> now_{std::chrono::milliseconds{0}};
 	std::vector<std::shared_ptr<Armed>> armed_;
 };
 

@@ -140,8 +140,10 @@ handed to. What a type needs from outside it acquires here; a type's factory tak
 ### The node handle
 
 `NodeOf::handle()` gives the configuration's `NodeHandle` (`ear/core/node_handle.hpp`), the type's
-one way out from any of its threads. A thread or a sink consumer the instance owns may keep it and
-call it from any thread, never blocking, until the configuration's teardown ended:
+one way out from its own threads. The instance, a thread it owns or its sink consumer may keep it
+and call it until the configuration's teardown ended, from any of those threads but never from the
+realtime thread (`process`): a call takes brief locks (the note rate's, the main loop's queue, a
+log sink's) and never waits on the main loop.
 
 | Call | What | Order and rate |
 |---|---|---|
@@ -153,8 +155,10 @@ call it from any thread, never blocking, until the configuration's teardown ende
 The handle is the configuration's: a stop and a start keep it (and its note rate), a restart, a
 change of settings or a failure ends it, and the next configuration has its own. What it carries
 lands only on the configuration that made it: once that configuration has ended (closed, failed
-to start, or leaked), every call through it is dropped, so a thread of an old configuration that
-is still finishing never reaches a newer one. A note said during the teardown, before the
+to start, or leaked), calls through it are dropped, so a thread of an old configuration that is
+still finishing never reaches a newer one. One exception is narrow: a `log` that races the end
+itself may still write its one line, since it checks the configuration, then writes, and the end
+does not wait for it; a note or a loss that races it is dropped on the main loop. A note said during the teardown, before the
 configuration ended, is still heard, so a goodbye is. NodeHost implements the handle on the
 configuration's own channel, the one queue to the main loop every cross-thread report of the
 configuration rides ([architecture.md](architecture.md#teardown-by-dependency)); no type keeps a

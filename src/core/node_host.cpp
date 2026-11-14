@@ -804,7 +804,8 @@ struct NodeHost::Impl {
 				});
 			}
 			/// Straight to the sinks on the calling thread, as captured output goes; the attached flag is atomic, so a
-			/// configuration that ended logs nothing.
+			/// configuration that ended logs nothing, but for one entry that read the flag just before the detach
+			/// (the detach does not wait for a log in progress).
 			void log(LogEntry entry) override {
 				if (!attached_.load(std::memory_order_acquire)) return;
 				entry.node = name_;

@@ -9,6 +9,7 @@
 // Every step a fake engine would take later (ready, lost, a completion, a handoff closing, a card or receiver ready or
 // lost, a close deadline passing) is an event the test sends.
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <chrono>
 #include <condition_variable>
@@ -601,7 +602,8 @@ struct TestListener final : NodeHealthListener {
 	}
 };
 
-/// Main-loop timers on a clock the test moves.
+/// Main-loop timers on a clock the test moves. The clock is atomic: Timers::now() may be read from any thread (a node
+/// handle's note rate reads it on the thread that says), while only the test's thread moves it.
 struct FakeTimers final : Timers {
 	struct Armed {
 		std::chrono::milliseconds at;
@@ -613,14 +615,16 @@ struct FakeTimers final : Timers {
 		explicit Handle(std::shared_ptr<Armed> a) : armed(std::move(a)) {}
 		~Handle() override { armed->cancelled = true; }
 	};
-	std::chrono::milliseconds clock{0};
+	std::atomic<std::chrono::milliseconds> clock{std::chrono::milliseconds{0}};
 	std::vector<std::shared_ptr<Armed>> armed;
 	std::unique_ptr<Timer> after(std::chrono::milliseconds delay, std::move_only_function<void()> due) override {
-		auto timer = std::make_shared<Armed>(Armed{clock + delay, std::move(due)});
+		auto timer = std::make_shared<Armed>(Armed{clock.load() + delay, std::move(due)});
 		armed.push_back(timer);
 		return std::make_unique<Handle>(timer);
 	}
-	std::chrono::steady_clock::time_point now() const override { return std::chrono::steady_clock::time_point{clock}; }
+	std::chrono::steady_clock::time_point now() const override {
+		return std::chrono::steady_clock::time_point{clock.load()};
+	}
 	/// Timers still armed (not cancelled, not yet due).
 	std::size_t live() const {
 		return static_cast<std::size_t>(
@@ -628,10 +632,10 @@ struct FakeTimers final : Timers {
 	}
 	/// Moves the clock and runs what came due, in arming order.
 	void advance(std::chrono::milliseconds by) {
-		clock += by;
+		clock.store(clock.load() + by);
 		auto due = armed; // a due timer may arm or cancel others
 		for (const auto& timer : due) {
-			if (timer->cancelled || !timer->due || timer->at > clock) continue;
+			if (timer->cancelled || !timer->due || timer->at > clock.load()) continue;
 			auto call = std::move(timer->due);
 			timer->due = nullptr;
 			call();
@@ -2349,6 +2353,72 @@ TEST_CASE("A run mid-handler at teardown finishes off the main loop: close retur
 	// The note is heard (notes last until closed); the loss is not, as the run's close had begun.
 	CHECK(f.log == Log{"note net handler done", "run destroyed", "node net gone dropped=0"});
 	f.stopAll();
+}
+
+namespace {
+
+/// Every log entry NodeHost hands its sinks, kept apart from the fixture's log.
+struct TestLogs final : LogSink {
+	std::vector<LogEntry> entries;
+	void log(const LogEntry& entry) override { entries.push_back(entry); }
+};
+
+} // namespace
+
+TEST_CASE("An old configuration's handle kept past a restart that returned says, logs and loses nothing, and the new "
+          "configuration is untouched",
+          "[node_handle][node_host][teardown]") {
+	Fixture f;
+	TestLogs logs;
+	f.host.subscribeLog(logs);
+	auto old = std::make_shared<ThreadedConfig>(f.log);
+	f.add("net", old);
+	f.blocks.events.at(0)->ready();
+	f.settle();
+	// Its thread never finishes, so its configuration is leaked at the close deadline and its handle stays valid: a
+	// handle may be called only until its configuration's teardown ended, so a leak is the one way an old handle is
+	// still callable once the restart has returned (docs/writing-a-node-type.md#the-node-handle).
+	NodeHandle* oldHandle = old->events;
+	REQUIRE(oldHandle != nullptr);
+
+	auto next = std::make_shared<ThreadedConfig>(f.log);
+	f.update("net", next);
+	f.settle();
+	f.timers.advance(closeDeadline);
+	f.settle();
+	REQUIRE(f.host.leaked() == 1);
+	REQUIRE(next->events != nullptr);
+	REQUIRE(next->events != oldHandle);
+	REQUIRE(f.host.health().at(0).state == NodeState::running);
+	f.log.clear();
+	logs.entries.clear();
+
+	oldHandle->say("from the old configuration");
+	oldHandle->warn("logged by the old configuration");
+	oldHandle->lost("lost by the old configuration");
+	f.mainLoop.runPosted();
+	CHECK(f.log.empty());
+	CHECK(logs.entries.empty());
+	CHECK(f.host.health().at(0).state == NodeState::running);
+	CHECK_FALSE(f.host.health().at(0).reason);
+
+	// The new configuration's handle is heard, with its own whole note rate.
+	for (int i = 0; i < 32; ++i) next->events->say("new " + std::to_string(i));
+	next->events->info("new log");
+	f.mainLoop.runPosted();
+	REQUIRE(f.log.size() == 32);
+	CHECK(f.log.front() == "note net new 0");
+	CHECK(f.log.back() == "note net new 31");
+	REQUIRE(logs.entries.size() == 1);
+	CHECK(logs.entries[0].text == "new log");
+	CHECK(logs.entries[0].node == std::optional<NodeName>("net"));
+	CHECK(logs.entries[0].source == "test");
+
+	f.stopAll();
+	f.settle();
+	next->run->closed();
+	f.settle();
+	CHECK(f.allGone == 1);
 }
 
 TEST_CASE("Nothing from an old run lands on a new one, even when it closed at once and the next configuration began "
