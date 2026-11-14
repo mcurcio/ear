@@ -12,6 +12,7 @@
 #include "ear/core/command_error.hpp"
 #include "ear/core/cycle_facts.hpp"
 #include "ear/core/latency.hpp" // Latency, BankPair
+#include "ear/core/node_handle.hpp"
 #include "ear/core/sample_rate.hpp"
 namespace ear {
 /// One named group of a node's ports, all one way. Each is "<name>.<member>" (portName). A routable bank's ports are
@@ -171,16 +172,6 @@ struct RecordingRequest {
 /// promises (docs/writing-a-node-type.md#configure-and-createof). Each kind has one adapter (node_host.hpp). Sound
 /// cards and RTP receivers are engine companions a class asks for (CreateOf::soundCard, CreateOf::rtpReceiver).
 using ResourceRequest = std::variant<HandoffRequest, RecordingRequest>;
-/// What a run tells, from any of its threads; never blocks. Told on the main loop in order, and only to the run that
-/// wrote it: nothing after its close's `closed`, and nothing of an older run lands on a newer one
-/// (docs/architecture.md#the-node-lifecycle).
-class InsidesEvents {
-public:
-	virtual void say(std::string text) = 0;    // a note: `node <n> says <text>`; never a state
-	virtual void lost(std::string detail) = 0; // `failed start-failed: <detail>`; ignored once the run's close began
-protected:
-	~InsidesEvents() = default;
-};
 /// What `start` sees (docs/writing-a-node-type.md#the-class): the format, the node's name, and the acquire calls. Main
 /// thread, inside start() only: any call outside it throws std::logic_error. Everything acquired belongs to the run and
 /// is torn down by the framework by dependency: handoffs, then the run object.
@@ -194,9 +185,9 @@ public:
 	std::expected<int, std::string> acquire(const RecordingRequest& request) {
 		return std::get<std::expected<int, std::string>>(acquireResource(request));
 	}
-	/// The run's events, until its close's `closed`; may be kept by the run's threads. (Kept on the start context
-	/// until sendspin builds its run in the recipe, slice 3.)
-	virtual InsidesEvents& events() = 0;
+	/// The run's handle (node_handle.hpp), the configuration's; may be kept by the run's threads. (Kept on the start
+	/// context until sendspin builds its run in the recipe, slice 3.)
+	virtual NodeHandle& events() = 0;
 	/// The run's own latency on `bank`, for the whole run (docs/engine.md#latency-per-bank-pair): on an output bank,
 	/// how long its audio was held inside the node before it leaves (rtp's receive buffer, sendspin's feed); on an
 	/// input bank, how long what it takes is held inside before it leaves the node. The framework adds it to the
@@ -222,7 +213,7 @@ protected:
 class Ready {
 public:
 	virtual AudioFormat format() const = 0;
-	virtual InsidesEvents& events() = 0; // as StartContext::events
+	virtual NodeHandle& events() = 0; // as StartContext::events
 protected:
 	~Ready() = default;
 };

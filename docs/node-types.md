@@ -242,8 +242,9 @@ never log it or send it to the editor.
 ### Notes
 
 A note is `node <n> says <text>` on standard output (a `note` record), never a state. Notes pass
-32 at once, then one a second; `notes-dropped <n>` says how many were held back, before the next
-that passes.
+32 at once, then one a second, the framework's rate for every node's notes
+([writing-a-node-type.md](writing-a-node-type.md#the-node-handle)); `notes-dropped <n>` says how
+many were held back, before the next that passes.
 
 | Note | Means |
 |---|---|

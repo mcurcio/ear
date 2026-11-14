@@ -65,10 +65,13 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <deque>
 #include <exception>
 #include <expected>
+#include <mutex>
 #include <new>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -82,6 +85,7 @@
 #include "ear/core/node_lifecycle.hpp"
 #include "ear/core/pass_through.hpp"
 #include "caught.hpp"
+#include "note_gate.hpp"
 #include "readiness.hpp"
 
 namespace ear {
@@ -268,8 +272,8 @@ struct NodeHost::Impl {
 	/// order, so destroying a node that never stopped still removes its port block first.
 	class Node final : public PortBlockEvents, public StartContext, public Ready, public CreateContext {
 	public:
-		Node(Impl& host, NodeName name, std::uint64_t serial)
-			: host_(host), name_(std::move(name)), serial_(serial), span_(serial) {}
+		Node(Impl& host, NodeName name, std::string type, std::uint64_t serial)
+			: host_(host), name_(std::move(name)), type_(std::move(type)), serial_(serial), span_(serial) {}
 		/// On a wedged data loop nothing that loop may still reach is destroyed: destroying a block waits on it.
 		~Node() {
 			if (!host_.wedged) return;
@@ -527,8 +531,8 @@ struct NodeHost::Impl {
 		AudioFormat format() const override { return host_.format; }
 		const NodeName& node() const override { return name_; }
 		const Ports& ports() const override { return ports_; }
-		InsidesEvents& events() override {
-			return guarded([&]() -> InsidesEvents& {
+		NodeHandle& events() override {
+			return guarded([&]() -> NodeHandle& {
 				if (!configuring_ && !building_) throw std::logic_error("events outside configure and its recipe");
 				return *config_->channel;
 			});
@@ -763,30 +767,55 @@ struct NodeHost::Impl {
 			std::size_t index_;
 		};
 
-		/// One configuration as its own threads reach the node: everything they tell crosses to the main loop, in
-		/// order, and lands only while the configuration is attached. Each configuration has its own Channel, detached
-		/// on every path that ends it (it closed, it failed to start, or it was leaked), before the next one can start:
-		/// that is the configuration's generation, so no write of an old configuration lands on a new one. Whatever is
-		/// still queued holds this object, not the node, so it may outlive the node.
-		class Channel final : public InsidesEvents, public std::enable_shared_from_this<Channel> {
+		/// One configuration as its own threads reach the node, and its handle's implementation
+		/// (docs/writing-a-node-type.md#the-node-handle): everything they tell crosses to the main loop, in order, and
+		/// lands only while the configuration is attached. Each configuration has its own Channel, detached on every path
+		/// that ends it (it closed, it failed to start, or it was leaked), before the next one can start: that is the
+		/// configuration's generation, so no write of an old configuration lands on a new one. Whatever is still queued
+		/// holds this object, not the node, so it may outlive the node. Its note rate is its own, so it is per node and
+		/// lasts as long as the configuration: a stop and a start keep it, a restart begins a fresh one.
+		class Channel final : public NodeHandle, public std::enable_shared_from_this<Channel> {
 		public:
-			Channel(Node& node, Executor& mainLoop) : node_(&node), mainLoop_(mainLoop) {}
+			/// `sinks` are NodeHost's log sinks, all subscribed before the first node (subscribeLog); `timers` is the
+			/// clock the note rate counts on.
+			Channel(Node& node, Executor& mainLoop, Timers& timers, NodeName name, std::string type,
+			        std::vector<LogSink*> sinks)
+				: node_(&node), mainLoop_(mainLoop), name_(std::move(name)), type_(std::move(type)),
+				  sinks_(std::move(sinks)), gate_([&timers] { return timers.now(); }) {}
+			const NodeName& node() const noexcept override { return name_; }
+			/// Judged on the saying thread, so a note held back is never queued; posted under the gate's lock, so the
+			/// order notes pass the gate is the order they land in, `notes-dropped` just before the note it precedes.
 			void say(std::string text) override {
-				mainLoop_.post([self = shared_from_this(), text = std::move(text)] {
-					if (Node* node = self->node()) node->host_.noted(node->name_, text);
+				if (!attached_.load(std::memory_order_acquire)) return;
+				const std::scoped_lock lock(sayMutex_);
+				const std::optional<std::uint64_t> held = gate_.pass();
+				if (!held) return;
+				mainLoop_.post([self = shared_from_this(), held = *held, text = std::move(text)] {
+					Node* node = self->attachedNode();
+					if (node == nullptr) return;
+					if (held > 0) node->host_.noted(node->name_, detail::notesDropped(held));
+					node->host_.noted(node->name_, text);
 				});
 			}
 			void lost(std::string detail) override {
 				mainLoop_.post([self = shared_from_this(), detail = std::move(detail)]() mutable {
-					if (Node* node = self->node(); node != nullptr && !self->closing_)
+					if (Node* node = self->attachedNode(); node != nullptr && !self->closing_)
 						node->insidesLost(std::move(detail));
 				});
+			}
+			/// Straight to the sinks on the calling thread, as captured output goes; the attached flag is atomic, so a
+			/// configuration that ended logs nothing.
+			void log(LogEntry entry) override {
+				if (!attached_.load(std::memory_order_acquire)) return;
+				entry.node = name_;
+				if (entry.source.empty()) entry.source = type_;
+				for (LogSink* sink : sinks_) sink->log(entry);
 			}
 			/// Any thread: a consumer of this configuration threw (ConsumerCalls). A fact, as a hook's throw is, while
 			/// facts reach the node; once its teardown began a log record, as a stop() that throws then is.
 			void threw(std::string detail) {
 				mainLoop_.post([self = shared_from_this(), detail = std::move(detail)]() mutable {
-					Node* node = self->node();
+					Node* node = self->attachedNode();
 					if (node == nullptr) return;
 					if (self->closing_)
 						node->host_.logged(LogEntry{LogLevel::error, "ear", std::move(detail), {}, node->name_});
@@ -796,24 +825,29 @@ struct NodeHost::Impl {
 			/// Main thread. The configuration is going (its teardown began): a fact no longer reaches the node.
 			void closing() noexcept { closing_ = true; }
 			/// Main thread. Nothing more of this configuration reaches the node.
-			void detach() noexcept { node_ = nullptr; }
+			void detach() noexcept {
+				node_ = nullptr;
+				attached_.store(false, std::memory_order_release);
+			}
 			/// The `closed` a handoff of this configuration gets: on the main thread, later.
 			std::move_only_function<void(std::uint64_t)> handoffClosedCall() {
 				return [self = shared_from_this()](std::uint64_t droppedFrames) {
-					if (Node* node = self->node()) node->handoffClosed(node->config_->generation, droppedFrames);
+					if (Node* node = self->attachedNode())
+						node->handoffClosed(node->config_->generation, droppedFrames);
 				};
 			}
 			/// The `begun` sink `index` of this configuration gets: on the main thread, later, behind any lost() its
 			/// consumer said inside begin() (the same FIFO).
 			std::move_only_function<void()> sinkBegunCall(std::size_t index) {
 				return [self = shared_from_this(), index] {
-					if (Node* node = self->node()) node->sinkBegun(node->config_->generation, index);
+					if (Node* node = self->attachedNode()) node->sinkBegun(node->config_->generation, index);
 				};
 			}
 			/// The `closed` sink `index` of this configuration gets: on the main thread, later.
 			std::move_only_function<void(std::uint64_t)> sinkClosedCall(std::size_t index) {
 				return [self = shared_from_this(), index](std::uint64_t droppedFrames) {
-					if (Node* node = self->node()) node->sinkClosed(node->config_->generation, index, droppedFrames);
+					if (Node* node = self->attachedNode())
+						node->sinkClosed(node->config_->generation, index, droppedFrames);
 				};
 			}
 			/// The `closed` the run object gets: from any thread, later or inside close().
@@ -826,7 +860,7 @@ struct NodeHost::Impl {
 						return;
 					}
 					self->mainLoop_.post([self] {
-						if (Node* node = self->node()) node->runClosed();
+						if (Node* node = self->attachedNode()) node->runClosed();
 					});
 				};
 			}
@@ -846,9 +880,15 @@ struct NodeHost::Impl {
 
 		private:
 			/// Main thread: the node, while this configuration is attached.
-			Node* node() const noexcept { return node_; }
+			Node* attachedNode() const noexcept { return node_; }
 			Node* node_; // main thread only
 			Executor& mainLoop_;
+			const NodeName name_;    // a copy: a leaked configuration may outlive its node
+			const std::string type_; // a log entry's source when the type gave none
+			const std::vector<LogSink*> sinks_;
+			std::atomic<bool> attached_{true}; // node_ for the threads that cannot read it: false once detached
+			std::mutex sayMutex_;
+			detail::NoteGate gate_;     // sayMutex_
 			bool closing_ = false;      // main thread only
 			bool insideClose_ = false;  // main thread only
 			bool closedInside_ = false; // main thread only
@@ -862,7 +902,7 @@ struct NodeHost::Impl {
 				: format_(format), name_(std::move(name)), channel_(channel) {}
 			AudioFormat format() const noexcept override { return format_; }
 			const NodeName& node() const noexcept override { return name_; }
-			InsidesEvents& handle() noexcept override { return channel_; }
+			NodeHandle& handle() noexcept override { return channel_; }
 
 		private:
 			AudioFormat format_;
@@ -1450,7 +1490,7 @@ struct NodeHost::Impl {
 			Configuration& c = *config_;
 			c.generation = ++host_.generations;
 			c.config = queued_;
-			c.channel = std::make_shared<Channel>(*this, host_.mainLoop);
+			c.channel = std::make_shared<Channel>(*this, host_.mainLoop, host_.timers, name_, type_, host_.logSinks);
 			c.context = std::make_unique<Context>(host_.format, name_, *c.channel);
 			c.fadedCount = ports_.outputs().size() + ports_.insideOutputs().size();
 			c.faded = std::make_unique<bool[]>(c.fadedCount);
@@ -2152,6 +2192,7 @@ struct NodeHost::Impl {
 
 		Impl& host_;
 		NodeName name_;
+		std::string type_; // its NodeSpec type, a log entry's source when the type gave none
 		std::uint64_t serial_;
 		lc::NodeAggregate aggregate_;
 		Ports ports_;
@@ -2362,7 +2403,7 @@ struct NodeHost::Impl {
 			return true;
 		});
 		const std::uint64_t serial = ++serials;
-		nodes.emplace_back(std::make_unique<Node>(*this, spec.name, serial));
+		nodes.emplace_back(std::make_unique<Node>(*this, spec.name, spec.type, serial));
 		inputFor(serial, [this, spec, config = std::move(config),
 		                  change = change ? std::optional<NodeChange>(*change) : std::nullopt](Node& added) mutable {
 			// Older nodes of the name, as they stand when this input is handled (T1, rule 1).

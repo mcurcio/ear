@@ -304,10 +304,12 @@ private:
 	                                    {"V ", "D ", "I "}};
 };
 
-/// What the worker says, as a node's insides would be told; `stream-ended` also records the tap's cycle.
-class Notes final : public InsidesEvents {
+/// What the worker says, as a node's handle would be told; `stream-ended` also records the tap's cycle.
+class Notes final : public NodeHandle {
 public:
 	explicit Notes(Waiter& waiter) : waiter_(waiter) {}
+	const NodeName& node() const noexcept override { return name_; }
+	void log(LogEntry) override {}
 	void connectTap(const Tap& tap) { tap_ = &tap; }
 	void say(std::string text) override {
 		{
@@ -338,6 +340,7 @@ public:
 
 private:
 	Waiter& waiter_;
+	NodeName name_ = "kitchen";
 	std::mutex mutex_;
 	std::vector<std::string> said_;
 	const Tap* tap_ = nullptr;

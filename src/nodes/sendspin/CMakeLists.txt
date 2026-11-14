@@ -8,7 +8,6 @@ ear_node_type(
 		connection_watch.cpp
 		feed.cpp
 		key_store.cpp
-		note_gate.cpp
 		port_claims.cpp
 		sendspin_code.cpp
 		sendspin_type.cpp

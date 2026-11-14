@@ -18,6 +18,7 @@ add_library(ear_core STATIC
 	node_catalogue.cpp
 	node_host.cpp
 	node_lifecycle.cpp
+	note_gate.cpp
 	pass_through.cpp
 	rate_text.cpp
 	ports.cpp
@@ -52,6 +53,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/main_loop_activity.hpp
 	include/ear/core/node_catalogue.hpp
 	include/ear/core/node_folders.hpp
+	include/ear/core/node_handle.hpp
 	include/ear/core/node_host.hpp
 	include/ear/core/node_lifecycle.hpp
 	include/ear/core/node_type.hpp
@@ -100,8 +102,10 @@ if(BUILD_TESTS)
 		tests/levels_test.cpp
 		tests/main_loop_activity_test.cpp
 		tests/module_run_test.cpp
+		tests/node_handle_test.cpp
 		tests/node_host_test.cpp
 		tests/node_lifecycle_test.cpp
+		tests/note_gate_test.cpp
 		tests/ports_test.cpp
 		tests/rate_text_test.cpp
 		tests/readiness_test.cpp
@@ -113,7 +117,8 @@ if(BUILD_TESTS)
 		tests/type_spec_test.cpp)
 	target_link_libraries(ear_core_tests PRIVATE ear_core ear_type_harness ear_latency_table ear_cycle_table ear_inducers
 		ear_catch_main)
-	# The readiness list is private to ear_core (readiness.hpp), and its rows test it directly.
+	# The readiness list and the note gate are private to ear_core (readiness.hpp, note_gate.hpp), and their rows test
+	# them directly.
 	target_include_directories(ear_core_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 	add_dependencies(ear_core_tests ear_core_verify_interface_header_sets ear_type_harness_verify_interface_header_sets)
 	ear_catch_tests(ear_core_tests)

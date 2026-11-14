@@ -342,7 +342,7 @@ int main(int argc, char** argv) {
 	nodes.subscribe(gateway);
 	nodes.subscribeNotes(log);
 	nodes.subscribeDiagnostics(log); // ear.close-overdue, ear.fade-unacknowledged, ear.barrier-overdue, ear.hook-slow
-	nodes.subscribeLog(log);         // a stop() that threw during a teardown
+	nodes.subscribeLog(log);         // a stop() that threw during a teardown; each node handle's log
 	nodes.subscribeInternalErrors(log);    // an adapter's bug NodeHost caught: ear.internal-error, then its node lost
 	nodes.subscribeEngineDiagnostics(log); // ear.data-loop-wedged, as a record with no node
 	WedgeMarker wedgeMarker(*engine);

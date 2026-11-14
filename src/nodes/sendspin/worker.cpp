@@ -23,7 +23,6 @@
 #include "advertiser.hpp"
 #include "connection_watch.hpp"
 #include "key_store.hpp"
-#include "note_gate.hpp"
 #include "notes.hpp"
 #include "pcm.hpp"
 #include "sendspin/client.h"
@@ -86,7 +85,7 @@ class SendspinWorker::Impl final : public ::sendspin::PlayerRoleListener,
 								   public SourceSink {
 public:
 	Impl(std::shared_ptr<const folder::ConfinedFolder> folder, NodeName node, SendspinSettings settings,
-	     AudioFormat format, Feed& feed, InsidesEvents& events)
+	     AudioFormat format, Feed& feed, NodeHandle& events)
 		: folder_(std::move(folder)), node_(std::move(node)), settings_(std::move(settings)), format_(format),
 		  feed_(feed), events_(events), scratch_(std::size_t{feed.capacityFrames()} * nodeChannels),
 		  toServer_(format.rate, *this, capture_) {
@@ -354,7 +353,7 @@ private:
 	SendspinSettings settings_;
 	AudioFormat format_;
 	Feed& feed_;
-	NoteGate events_;            // every note of the node's goes through it
+	NodeHandle& events_;         // the configuration's handle, which paces every note (the framework's rate)
 	std::vector<float> scratch_; // the sync thread's; a feed's worth of floats
 	EventFd bell_;
 	EventFd stop_;
@@ -381,7 +380,7 @@ std::uint16_t requiredLeadMs(std::uint32_t feedFrames, std::uint32_t maxBlock, S
 }
 
 SendspinWorker::SendspinWorker(std::shared_ptr<const folder::ConfinedFolder> folder, NodeName node,
-                               SendspinSettings settings, AudioFormat format, Feed& feed, InsidesEvents& events)
+                               SendspinSettings settings, AudioFormat format, Feed& feed, NodeHandle& events)
 	: impl_(std::make_unique<Impl>(std::move(folder), std::move(node), std::move(settings), format, feed, events)) {}
 
 SendspinWorker::~SendspinWorker() = default;

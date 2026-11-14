@@ -19,7 +19,7 @@ private:
 /// The sinks (docs/engine.md#sinks), ring companions their block taps (docs/architecture.md#companions):
 /// ThreadHandoff's FrameRing, wake and pw_thread_loop, with a stamp ring beside the frame ring, a consumer that begins
 /// on the sink's thread, and the realtime tap the port block writes after the code. Every `begun` and `closed` is
-/// posted through `mainLoop`, the Executor NodeHost's InsidesEvents post through, so a consumer's lost() said inside
+/// posted through `mainLoop`, the Executor a node's handle posts through, so a consumer's lost() said inside
 /// begin() lands first.
 class ThreadSinks final : public SinkAdapter {
 public:

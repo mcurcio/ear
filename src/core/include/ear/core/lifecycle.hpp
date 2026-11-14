@@ -96,13 +96,13 @@ private:
 
 /// What NodeOf<Spec> wraps: the node's own, for one configuration's instance. NodeHost implements it on the
 /// configuration, declared before the instance, so it outlives the instance. Main thread, but handle(), whose result
-/// any of the node's threads may keep and call until the configuration's teardown ended (InsidesEvents' rules).
+/// any of the node's threads may keep and call until the configuration's teardown ended (node_handle.hpp).
 class NodeContext {
 public:
 	virtual AudioFormat format() const noexcept = 0;
 	virtual const NodeName& node() const noexcept = 0;
-	/// 3a: the configuration's Channel (say, lost); slice 3c makes it NodeHandle&.
-	virtual InsidesEvents& handle() noexcept = 0;
+	/// The configuration's handle: its Channel's public face.
+	virtual NodeHandle& handle() noexcept = 0;
 
 protected:
 	~NodeContext() = default;
@@ -187,8 +187,9 @@ public:
 	NodeOf& operator=(const NodeOf&) = delete;
 	AudioFormat format() const noexcept { return context_->format(); }
 	const NodeName& node() const noexcept { return context_->node(); }
-	/// 3a: the configuration's InsidesEvents (say, lost); keep it in a sink's consumer or a thread the instance owns.
-	InsidesEvents& handle() noexcept { return context_->handle(); }
+	/// The configuration's handle (node_handle.hpp: say, lost, log); keep it in a sink's consumer or a thread the
+	/// instance owns.
+	NodeHandle& handle() noexcept { return context_->handle(); }
 
 private:
 	template <const auto&, class> friend class spec_detail::SpecInstance;

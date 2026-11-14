@@ -352,13 +352,13 @@ struct TestHandoffs final : HandoffAdapter {
 	}
 };
 
-/// A sink's consumer that logs its calls; one given an InsidesEvents says lost in begin, as a WAV it cannot open; one
+/// A sink's consumer that logs its calls; one given a NodeHandle says lost in begin, as a WAV it cannot open; one
 /// given a call's name throws in that call, as one with a bug.
 struct TestSinkConsumer final : SinkConsumer {
 	Log& log;
-	InsidesEvents* loseInBegin = nullptr;
+	NodeHandle* loseInBegin = nullptr;
 	std::string throwIn;
-	explicit TestSinkConsumer(Log& l, InsidesEvents* lose = nullptr, std::string t = {})
+	explicit TestSinkConsumer(Log& l, NodeHandle* lose = nullptr, std::string t = {})
 		: log(l), loseInBegin(lose), throwIn(std::move(t)) {}
 	~TestSinkConsumer() override { log.push_back("consumer destroyed"); }
 	void begin() override {
@@ -1688,7 +1688,7 @@ namespace {
 struct ThreadedRun final : RunObject {
 	Log& log;
 	TestConsumer consumer;
-	InsidesEvents* events = nullptr;
+	NodeHandle* events = nullptr;
 	std::move_only_function<void()> closed;
 	bool closeAtOnce = false; // closes inside close(), as a run whose threads already ended
 	explicit ThreadedRun(Log& l) : log(l) {}
@@ -1706,7 +1706,7 @@ struct ThreadedConfig final : NodeConfig {
 	int handoffs = 0;
 	bool closeAtOnce = false;
 	mutable ThreadedRun* run = nullptr; // the latest run object built
-	mutable InsidesEvents* events = nullptr;
+	mutable NodeHandle* events = nullptr;
 	explicit ThreadedConfig(Log& l) : log(l) {}
 	const Ports& ports() const override { return ports_; }
 	StartResult start(StartContext& context) const override {
@@ -1947,7 +1947,9 @@ TEST_CASE("What a run says reaches the note listeners on the main loop, in order
 	f.settle();
 	f.log.clear();
 
-	constexpr int notes = 200;
+	// Within the note rate's burst of 32 (docs/writing-a-node-type.md#the-node-handle), with two left for the close's
+	// notes below: the rate itself is node_handle_test.cpp's.
+	constexpr int notes = 30;
 	std::thread talker([&] {
 		for (int i = 0; i < notes; ++i) config->events->say(std::to_string(i));
 	});
@@ -1962,7 +1964,7 @@ TEST_CASE("What a run says reaches the note listeners on the main loop, in order
 	f.settle(); // the run is told to close
 	f.log.clear();
 	// Still heard while closing; a note posted after `closed` was never told.
-	InsidesEvents* events = config->events;
+	NodeHandle* events = config->events;
 	events->say("closing");
 	config->run->closed();
 	events->say("too late");
@@ -2279,7 +2281,7 @@ TEST_CASE("A run never closing past the deadline is leaked, and a restart then c
 	f.add("net", old);
 	f.blocks.events.at(0)->ready();
 	f.settle();
-	InsidesEvents* oldEvents = old->events;
+	NodeHandle* oldEvents = old->events;
 	ThreadedRun* oldRun = old->run;
 	f.log.clear();
 
@@ -2358,7 +2360,7 @@ TEST_CASE("Nothing from an old run lands on a new one, even when it closed at on
 	f.add("net", old);
 	f.blocks.events.at(0)->ready();
 	f.settle();
-	InsidesEvents* oldEvents = old->events;
+	NodeHandle* oldEvents = old->events;
 	f.log.clear();
 
 	// Written by the old run's thread just before its close; heard on the main loop only after the next configuration

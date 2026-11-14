@@ -21,7 +21,7 @@ namespace {
 /// open file, not its descriptor (the framework's recording, closed after the sink: teardown step 5).
 class WavWriter final : public SinkConsumer {
 public:
-	WavWriter(int descriptor, std::string path, AudioFormat format, InsidesEvents& events)
+	WavWriter(int descriptor, std::string path, AudioFormat format, NodeHandle& events)
 		: descriptor_(descriptor), path_(std::move(path)), format_(format), events_(events) {}
 	WavWriter(const WavWriter&) = delete;
 	WavWriter& operator=(const WavWriter&) = delete;
@@ -48,7 +48,7 @@ public:
 	void consume(const Chunk& chunk) override {
 		if (file_ == nullptr) return;
 		const sf_count_t written = sf_writef_float(file_, chunk.interleaved.data(), chunk.frames);
-		// A short write (a full disk) loses frames from the WAV: said once, as a note (3a gives a type no log seam).
+		// A short write (a full disk) loses frames from the WAV: said once, as a note (docs/node-types.md#file).
 		if (written < static_cast<sf_count_t>(chunk.frames) && !shortSaid_) {
 			shortSaid_ = true;
 			events_.say("write-short " + path_ + ": " + sf_strerror(file_));
@@ -66,7 +66,7 @@ private:
 	int descriptor_;
 	std::string path_;
 	AudioFormat format_;
-	InsidesEvents& events_; // the configuration's channel, which outlives the sink
+	NodeHandle& events_; // the configuration's handle, which outlives the sink
 	SNDFILE* file_ = nullptr;
 	bool shortSaid_ = false; // the sink's thread only
 };

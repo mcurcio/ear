@@ -89,7 +89,7 @@ public:
 protected:
 	~NodeOperations() = default;
 };
-/// What a node's run says: a sentence, never a state (InsidesEvents::say).
+/// What a node's run says: a sentence, never a state (NodeHandle::say), paced as it says.
 class NodeNoteListener {
 public:
 	virtual void nodeSays(const NodeName& node, const std::string& text) = 0; // main thread
@@ -312,9 +312,11 @@ public:
 	/// the teardown; a stop keeps it. Only the node a client holds tells: never a superseded node, nor the older node of
 	/// a port-caused replace. A move of a counter alone is CounterWatch's to tell. Main thread, before the first node.
 	void subscribeCompanions(NodeCompanionsListener& listener);
-	/// Where the framework's own log entries go (source "ear", attributed to the node): in 3a a stop() that threw
-	/// during a teardown, whose fault is dropped (docs/writing-a-node-type.md#rules-the-framework-enforces edges). Main
-	/// thread, before the first node.
+	/// Where log entries attributed to a node go: the framework's own (source "ear", on the main thread: a stop() that
+	/// threw during a teardown, whose fault is dropped, docs/writing-a-node-type.md#rules-the-framework-enforces), and
+	/// each node handle's log (docs/writing-a-node-type.md#the-node-handle), called on the thread that logs, so `sink`
+	/// takes entries from any thread. Main thread, before the first node: each configuration keeps the sinks it began
+	/// with.
 	void subscribeLog(LogSink& sink);
 	/// Where a bug of an adapter's that NodeHost caught is told, before its node fails lost
 	/// (docs/architecture.md#faults-by-owner): a sink, source, handoff or recording adapter's std::logic_error inside a

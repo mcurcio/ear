@@ -617,9 +617,15 @@ the main loop never joins a thread:
 Steps 3 and 4 have the close deadline ([bounds](#bounds-the-wedged-data-loop-and-the-watchdog)).
 A restart or retry completes the teardown before the
 next `configure`, so a node has one configuration at a time and never waits on its own old one.
-Anything a configuration's threads tell lands only on that configuration (it carries an internal
-generation), never on the next, and facts are dropped once its teardown began. A stop does only
-step 1's fade and silence, keeping everything else.
+Anything a configuration's threads tell lands only on that configuration, never on the next: each
+configuration has one channel to the main loop, which every report from another thread rides (its
+node handle's notes, losses and log entries, [writing-a-node-type.md](writing-a-node-type.md#the-node-handle);
+a sink's or handoff's begun and closed; a consumer's throw; a run object's closed), and which is
+detached on every path that ends the configuration (it closed, it failed to start, or it was
+leaked), before the next can begin. That detach is the configuration's generation: nothing
+queued, or said later through a kept handle, reaches the node after it. Facts (a loss, a throw)
+are dropped once its teardown began; notes are heard until the detach. A stop does only step 1's
+fade and silence, keeping everything else, the channel and its note rate included.
 
 ## Boot and stop
 

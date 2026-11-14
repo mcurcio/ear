@@ -32,6 +32,7 @@
 #include "ear/core/cycle_counters.hpp"
 #include "ear/core/cycle_facts.hpp"
 #include "ear/core/desired_graph.hpp"
+#include "ear/core/log.hpp"
 #include "ear/core/node_host.hpp"
 #include "ear/core/node_lifecycle.hpp"
 #include "ear/core/sink.hpp"
@@ -194,7 +195,11 @@ public:
 	/// The node's companion list as NodeHost lists it for a client (NodeHost::companionsOf): its configuration's
 	/// companions in request order, each ready or not, a sink's `dropped` and a source's `shortfall` read now.
 	std::vector<CompanionView> companionList() const;
+	/// Every note the node said, as the main loop heard it (after the note rate: docs/writing-a-node-type.md#the-node-handle).
 	const std::vector<std::string>& notes() const noexcept;
+	/// Every log entry attributed to the node (its handle's log, and the framework's own), in the order logged; a copy,
+	/// as a type's own thread may log while it is read.
+	std::vector<LogEntry> logs() const;
 	const std::vector<SeenDiagnostic>& diagnostics() const noexcept;
 
 	// Buffers and fakes.

@@ -115,7 +115,8 @@ struct PendingRequest {
 struct NodeHarness::Impl final : NodeHealthListener,
 								 NodeNoteListener,
 								 NodeDiagnosticListener,
-								 EngineDiagnosticListener {
+								 EngineDiagnosticListener,
+								 LogSink {
 	// ---- The fakes ----
 
 	/// The node's one block: a drive applies its code at once (its fade-in and its first cycle's discontinuity with
@@ -409,7 +410,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			create.refuse(rule);
 			throw std::logic_error(rule); // never reached: refuse throws
 		}
-		InsidesEvents& events() override { return legacy.events(); }
+		NodeHandle& events() override { return legacy.events(); }
 		void declareLatency(const std::string& bank, Latency internal) override {
 			legacy.declareLatency(bank, internal);
 		}
@@ -473,6 +474,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		  host(std::make_unique<NodeHost>(options.format, blocks, registry, executor, clock)) {
 		host->subscribe(*this);
 		host->subscribeNotes(*this);
+		host->subscribeLog(*this);
 		host->subscribeDiagnostics(*this);
 		host->subscribeEngineDiagnostics(*this);
 	}
@@ -484,6 +486,11 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		dropped_ = dropped;
 	}
 	void nodeSays(const NodeName&, const std::string& text) override { noteList.push_back(text); }
+	/// Any thread: a type's own thread may log through its handle.
+	void log(const LogEntry& entry) override {
+		const std::scoped_lock lock(logMutex);
+		logList.push_back(entry);
+	}
 	void nodeDiagnostic(const NodeName&, std::string_view code, const std::string& detail,
 	                    std::span<const DiagnosticField> fields) override {
 		SeenDiagnostic seen{std::string(code), detail, {}};
@@ -644,6 +651,8 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	bool wentAway = false;
 	std::uint64_t dropped_ = 0;
 	std::vector<std::string> noteList;
+	mutable std::mutex logMutex;
+	std::vector<LogEntry> logList; // logMutex
 	std::vector<SeenDiagnostic> diagnosticList;
 
 	std::vector<PortName> inputNames;
@@ -929,6 +938,11 @@ std::uint64_t NodeHarness::droppedFrames() const { return impl_->dropped_; }
 std::vector<CompanionView> NodeHarness::companionList() const { return impl_->host->companionsOf(impl_->options.node); }
 
 const std::vector<std::string>& NodeHarness::notes() const noexcept { return impl_->noteList; }
+
+std::vector<LogEntry> NodeHarness::logs() const {
+	const std::scoped_lock lock(impl_->logMutex);
+	return impl_->logList;
+}
 
 const std::vector<SeenDiagnostic>& NodeHarness::diagnostics() const noexcept { return impl_->diagnosticList; }
 

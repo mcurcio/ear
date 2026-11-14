@@ -123,7 +123,7 @@ private:
 /// One sink: ThreadHandoff's wake and thread around a SinkRing, so the sink's thread hands its consumer one
 /// stamped chunk per cycle the tap wrote, in two calls where it wraps the ring's end (docs/engine.md#sinks). Every
 /// `begun` and `closed` is posted through the main-loop Executor, after the consumer's begin or finish returned, so a
-/// lost() its consumer said inside begin() (the node's InsidesEvents, the same FIFO) always lands first.
+/// lost() its consumer said inside begin() (the node's handle, the same FIFO) always lands first.
 class ThreadSink final : public Sink, public SinkTap {
 public:
 	ThreadSink(Executor& mainLoop, const NodeName& node, std::string_view bank, std::uint32_t channels,

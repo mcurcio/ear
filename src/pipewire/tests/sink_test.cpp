@@ -123,7 +123,7 @@ private:
 };
 
 /// Records every call, in order: "begin", each chunk, "finish". Optionally says lost (by posting it to the test's main
-/// loop, as a node's InsidesEvents would) inside begin, and stalls in its first consume until released.
+/// loop, as a node's handle would) inside begin, and stalls in its first consume until released.
 struct Shared {
 	std::mutex mutex;
 	std::condition_variable changed;

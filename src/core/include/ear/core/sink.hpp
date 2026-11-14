@@ -57,7 +57,7 @@ class SinkConsumer {
 public:
 	virtual ~SinkConsumer() = default;
 	/// Once, before any consume and before the node is `configured` (readiness 4'). Opens what it writes to; a failure
-	/// is the node handle's lost(detail) (in 3a NodeOf::handle(), an InsidesEvents&), which fails the node
+	/// is the node handle's lost(detail) (NodeOf::handle(), a NodeHandle&), which fails the node
 	/// start-failed. May block on I/O.
 	virtual void begin() {}
 	/// In order; may block on I/O.
@@ -141,7 +141,7 @@ struct SinkBinding {
 
 /// One interim sink: a ring, its stamp ring and its own thread (docs/engine.md#sinks). Made inside configure by
 /// CreateOf::sink, for the configuration's life. Main thread for every call; `begun` and `closed` run on the main loop
-/// through the adapter's Executor, the FIFO the node's InsidesEvents post through, so a lost() said inside begin()
+/// through the adapter's Executor, the FIFO the node's handle posts through, so a lost() said inside begin()
 /// always lands before `begun`.
 class Sink {
 public:

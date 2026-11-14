@@ -62,7 +62,7 @@ std::vector<std::string> narrowKeyFiles(const folder::ConfinedFolder& folder) {
 }
 
 std::expected<std::unique_ptr<NodeKeyStore>, std::string>
-NodeKeyStore::open(std::shared_ptr<const folder::ConfinedFolder> folder, const NodeName& node, InsidesEvents& events) {
+NodeKeyStore::open(std::shared_ptr<const folder::ConfinedFolder> folder, const NodeName& node, NodeHandle& events) {
 	const std::string file = "sendspin-" + node + ".key";
 	auto read = folder->read(file, maxFileBytes);
 	if (!read) return std::unexpected(read.error().detail);
@@ -96,8 +96,8 @@ NodeKeyStore::open(std::shared_ptr<const folder::ConfinedFolder> folder, const N
 		new NodeKeyStore(std::move(folder), file, events, std::move(record), std::move(text)));
 }
 
-NodeKeyStore::NodeKeyStore(std::shared_ptr<const folder::ConfinedFolder> folder, std::string file,
-                           InsidesEvents& events, nlohmann::json record, std::string text) noexcept
+NodeKeyStore::NodeKeyStore(std::shared_ptr<const folder::ConfinedFolder> folder, std::string file, NodeHandle& events,
+                           nlohmann::json record, std::string text) noexcept
 	: folder_(std::move(folder)), file_(std::move(file)), events_(events), record_(std::move(record)),
 	  text_(std::move(text)) {}
 

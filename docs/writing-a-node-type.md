@@ -137,16 +137,28 @@ Then answer `Configured::applied()`, or `Configured::failed(detail)` for what on
 (the node fails `start-failed: <detail>`). A `CreateOf` is valid only inside the `configure` it is
 handed to. What a type needs from outside it acquires here; a type's factory takes no arguments.
 
-### Answers, notes and failures from the type's own threads
+### The node handle
 
-`NodeOf::handle()` gives the configuration's `InsidesEvents`, which a thread or a sink consumer the
-instance owns may keep and call from any thread until the configuration's teardown ended:
+`NodeOf::handle()` gives the configuration's `NodeHandle` (`ear/core/node_handle.hpp`), the type's
+one way out from any of its threads. A thread or a sink consumer the instance owns may keep it and
+call it from any thread, never blocking, until the configuration's teardown ended:
 
-- `say(text)`: a note, `node <n> says <text>` on standard output. Never a state.
-- `lost(detail)`: the node fails, `start-failed: <detail>` before it first rested `running` or
-  `stopped`, `lost: <detail>` after.
+| Call | What | Order and rate |
+|---|---|---|
+| `node()` | The node's name | |
+| `say(text)` | A note, `node <n> says <text>` on standard output (a `note` record, [output-records.md](output-records.md)). Never a state | Crosses to the main loop in the order said, so it is ordered with the node's states. Paced per configuration: 32 at once, then one a second; the framework says `notes-dropped <n>`, the count held back, as the configuration's own note just before the next that passes. Judged on the thread that says, so a note held back is never queued |
+| `lost(detail)` | The node fails, `start-failed: <detail>` before it first rested `running` or `stopped`, `lost: <detail>` after; ignored once the configuration's teardown began | In order with notes; never held back by their rate |
+| `log(entry)`, `debug(text)`, `info(text)`, `warn(text)`, `error(text)` | A `log` record ([output-records.md](output-records.md)): the framework sets its `node`, and an empty `source` becomes the type's name (a library's own lines give its name, and a `topic`) | Straight to the log sinks on the calling thread, unordered with notes and states, as captured output is; paced per node by standard output's encoder |
 
-What a configuration's threads tell lands only on that configuration, never on the next one.
+The handle is the configuration's: a stop and a start keep it (and its note rate), a restart, a
+change of settings or a failure ends it, and the next configuration has its own. What it carries
+lands only on the configuration that made it: once that configuration has ended (closed, failed
+to start, or leaked), every call through it is dropped, so a thread of an old configuration that
+is still finishing never reaches a newer one. A note said during the teardown, before the
+configuration ended, is still heard, so a goodbye is. NodeHost implements the handle on the
+configuration's own channel, the one queue to the main loop every cross-thread report of the
+configuration rides ([architecture.md](architecture.md#teardown-by-dependency)); no type keeps a
+generation of its own.
 
 ## The code
 
@@ -461,7 +473,7 @@ fakes allow. Banks are named by the spec's handles.
 | `h.input(bank, i)`, `h.output(bank, i)` | A port's buffer |
 | `h.stop()`, `h.start()`, `h.restart()`, `h.change(settings)`, `h.disable()`, `h.enable()`, `h.remove()` | The operations |
 | `h.phase()`, `h.health()`, `h.gone()`, `h.droppedFrames()`, `h.companionList()` | What the node shows; its companion list as a client will see it ([engine.md](engine.md#companions-in-a-nodes-list)), read now |
-| `h->unwritten()`, `h->notes()`, `h->diagnostics()`, `h->latencyPlan()`, `h->ports()` | Through `->`, the underlying `NodeHarness` |
+| `h->unwritten()`, `h->notes()`, `h->logs()`, `h->diagnostics()`, `h->latencyPlan()`, `h->ports()` | Through `->`, the underlying `NodeHarness`; `notes()` as the main loop heard them (after the [note rate](#the-node-handle)), `logs()` every log entry attributed to the node |
 | `h.companion(bank)` | What was made on a bank (an engine companion's bank as `NodeHost` named it): its `kind` (`CompanionKind`: a card's by its bank's direction), `name`, `shape`, `made`, `ready`, `destroyed`, and a sink's `chunks` as its consumer got them, one per call (a chunk split at the ring's end is two) |
 | `h.recordingRequests()` | Every recording asked for |
 

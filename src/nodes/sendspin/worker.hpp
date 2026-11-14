@@ -22,7 +22,7 @@ public:
 	/// Starts the threads; `feed` and `events` outlive `stopped`. Throws std::system_error when it cannot. The node's
 	/// key file lives in `folder`.
 	SendspinWorker(std::shared_ptr<const folder::ConfinedFolder> folder, NodeName node, SendspinSettings settings,
-	               AudioFormat format, Feed& feed, InsidesEvents& events);
+	               AudioFormat format, Feed& feed, NodeHandle& events);
 	void stop(std::move_only_function<void()> stopped); // main thread; the insides' close()
 	~SendspinWorker();                                  // after `stopped`; joins a finished thread
 	const EventFd& bell() const noexcept;               // what the code rings

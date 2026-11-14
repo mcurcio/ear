@@ -132,10 +132,19 @@ bound does, comes with `ReadyEvents`. Companions also wait for the block, as bui
 step because a `file` consumer's `begin` writes a header into a recording opened at step 1; that is 6.1's
 "4'".
 
-**The node handle** (S3c.1): section 5's `NodeHandle`, implemented by the configuration's `Channel`.
+**The node handle** (S3c.1, built: `docs/writing-a-node-type.md#the-node-handle`): section 5's `NodeHandle`, implemented by the configuration's `Channel`.
 `NodeContext::handle()` and `NodeOf::handle()` return it, and `InsidesEvents` goes. `log(LogEntry)` sets `node` and
 goes to the `LogSink` that `NodeHost::logTo` names (the one `main.cpp` gives captured output). `say`'s pacing is
 `NoteGate` moved into core, per node, and `sendspin`'s gate is deleted in the same step, so nothing is paced twice.
+*Found building S3c.1:* `NodeHost::subscribeLog` already existed (the framework's own `ear` entries), so the handle's
+`log` goes to its sinks rather than a new `logTo`; each configuration copies them when it begins, and calls them on the
+logging thread. The rate is judged on the saying thread (as `sendspin`'s was, so a held note is never queued), which
+needs a clock any thread may read: `Timers::now()`'s contract widens to any thread, so core still reads no clock of its
+own. The gate is the `Channel`'s (`src/core/note_gate.hpp`, private), so "per node, kept across a stop and a start,
+reset by a restart" is "per configuration". The legacy `StartContext::events()` and `Ready::events()` return
+`NodeHandle&` until S3c.6e. Section 5's "shared-owned, so it outlives every thread" holds as built, not further: the
+configuration owns its `Channel` until teardown step 5 (a leaked one for ever), so a thread may call it until its
+teardown ended, and a call after its detach is dropped. The harness gains `logs()`.
 
 **Loops** (S3c.3): 6.3 as written, with three changes. `Loop::after` and `every` return `std::unique_ptr<Timer>` (core's
 `timers.hpp` already defines a timer cancelled by its destruction), and that type replaces `LoopSource`.

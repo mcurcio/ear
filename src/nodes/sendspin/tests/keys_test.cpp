@@ -25,11 +25,14 @@ namespace {
 using ear::sendspin::NodeKeyStore;
 using nlohmann::json;
 
-class Heard final : public ear::InsidesEvents {
+class Heard final : public ear::NodeHandle {
 public:
+	const ear::NodeName& node() const noexcept override { return name; }
+	void log(ear::LogEntry) override {}
 	void say(std::string text) override { said.push_back(std::move(text)); }
 	void lost(std::string detail) override { said.push_back("LOST " + std::move(detail)); }
 	std::vector<std::string> said;
+	ear::NodeName name = "kitchen";
 };
 
 struct Rig {
