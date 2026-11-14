@@ -1822,6 +1822,127 @@ process and hand it a number in `ear.conf`.
   `FrameClock(48000)` and `FrameClock{48000U}`, an `AudioFormat` from a number, a `SinkRing` at a number and a level
   window at a number.
 
+### 9.18 C7 as built against today's code
+
+Written before building C7 (2026-11-14), against the boundary C2 left (`listenRealtime`, `RealtimeListener`) and PipeWire
+1.4.2's headers in the image. 7.2 holds, with the departures at the end.
+
+**What the guard refuses today, and where the boundary uses it** [V] (`test/pipewire/callback_guard.cmake`'s twelve
+rules; the boundary's two files and anything under `tests/` exempt):
+
+| The guard's rule | Used by the boundary | Unused by ear |
+|---|---|---|
+| `pw_loop_add_*` | `pw_loop_add_event`, `_timer`, `_signal` in `addEvent`, `addTimer`, `addSignal` | `pw_loop_add_io`, `_idle`, `_hook` |
+| `spa_loop_add_source`, `spa_loop_utils_add_*` | none | all |
+| `pw_loop_invoke`, `pw_data_loop_invoke`, `spa_loop_invoke` | `pw_loop_invoke` in both `invoke`s | the other two |
+| `pw_loop_locked`, `spa_loop_locked`, `pw_work_queue_add` | none | all (the two `locked` calls are not in 1.4.2 at all) |
+| `*_add_listener`, `*_add_object_listener`, `*_add_rt_listener` | `pw_filter_add_listener`, `pw_proxy_add_listener`, `pw_proxy_add_object_listener` (node, link), `pw_registry_add_listener`, `pw_core_add_listener`, `pw_impl_module_add_listener` in the `listen`s; `pw_impl_node_add_rt_listener` in `listenRealtime` | 1.4.2 has 48 such names; ear uses 7 |
+| `spa_hook_list_append` | none (the boundary's `spa_hook_remove` and `pw_impl_node_remove_rt_listener`, in `Listener` and `RealtimeListener`, are not on the list) | it |
+| `pw_stream_new_simple`, `pw_filter_new_simple` | none | both |
+| `SPA_INTERFACE_INIT`, `SPA_CALLBACKS_INIT`, `spa_callbacks`, `spa_*_methods`, `pw_*_methods` | `SPA_INTERFACE_INIT` and `spa_log_methods` in `installLog` | the rest (1.4.2 has 33 methods tables) |
+| `pw_log_set` | `installLog` | none |
+| `snd_lib_error_set_handler` | `setAlsaErrorHandler`, by name through `dlsym` (alsa-lib is never linked) | none |
+
+**What it misses** (found writing this, by listing every function in 1.4.2's `pipewire-0.3` and `spa-0.2` headers that
+takes a function pointer, a `*_func_t`, an events or methods table or a `spa_hook`): PipeWire's walks that call back
+on the calling thread (`pw_context_for_each_global`, which the boundary's `.cpp` uses in `engineNode`,
+`pw_global_for_each_resource`, `pw_impl_node_for_each_port` and `_param`, `pw_impl_device_for_each_param`,
+`pw_map_for_each`, `pw_conf_section_for_each`, `pw_context_conf_section_for_each` and the three `*_match_rules`); an
+implementation or callbacks handed over (`pw_impl_node_set_implementation` and the device's, factory's and metadata's,
+`spa_node_set_callbacks`, `spa_graph_node_set_callbacks`, `spa_pod_builder_set_callbacks`, `pw_global_new`'s bind
+function); `pw_loop_add_hook` and `spa_loop_control_add_hook` (the guard's `pw_loop_add_` caught the first only);
+`pw_thread_utils_create` and `spa_thread_utils_create` (a thread's start routine); `spa_hook_list_prepend` and
+`_isolate`; and any of these reached by name through `dlsym`. A throw out of any of them unwinds through C as a loop
+callback's does. The poison refuses them all.
+
+**The mechanism: `#pragma GCC poison` behind a forced include.** `src/pipewire/no_raw_callbacks.hpp` includes every
+PipeWire and SPA header `ear_pipewire`'s sources include, then `callback_boundary.hpp`, then poisons. What GCC 14.2 does
+with it, each checked in the image before choosing it:
+
+- **The poison is lexical and per translation unit**: every identifier token lexed after the pragma, in that TU only,
+  is refused (`attempt to use poisoned "pw_loop_add_event"`), however it was spelt: a call split across lines, a name
+  made by `##` in a macro defined after the pragma, a backslash-newline splice inside the name, a macro defined after
+  the pragma whose body names it.
+- **What was lexed before it is untouched**: a template defined before the pragma and instantiated after it compiles
+  (the boundary's `addEvent`, `listen`, `listenRealtime` and `installLog` are templates and inline functions in its
+  header); so do PipeWire's own inline functions, and a macro defined before the pragma that expands to a poisoned
+  name after it (GCC's documented exemption; below, what that leaves).
+- **A PipeWire header included after the pragma that names a poisoned identifier fails** (`<pipewire/impl.h>` after
+  `spa_hook` is poisoned stops in `control.h`). That is why the forced header includes them all first: a source that
+  includes one of them again gets nothing new, and a source that includes a PipeWire header the forced one lacks fails
+  closed until it is added there.
+- **Another TU is not poisoned**, so the header is forced into every source of `ear_pipewire` by a target option
+  (`-include`, `ear_poison_raw_callbacks`), and configure refuses any other target that can see PipeWire's headers
+  without the option (below).
+- **Poisoning an existing macro warns** (`poisoning existing macro`, with no `-W` flag to name it), so
+  `SPA_INTERFACE_INIT` and `SPA_CALLBACKS_INIT` are `#undef`d first: the boundary's one use was expanded when its
+  header was read.
+
+**What is poisoned**, by name, from 1.4.2's headers: every loop source and hook (`pw_loop_add_io`, `_idle`, `_event`,
+`_timer`, `_signal`, `_hook`, `spa_loop_utils_add_*`, `spa_loop_add_source`, `spa_loop_control_add_hook`); every invoke
+and locked call (`pw_loop_invoke`, `pw_data_loop_invoke`, `spa_loop_invoke`, `pw_loop_locked`, `spa_loop_locked`,
+`pw_work_queue_add`); every listener (the 48 `*_add_listener`, `*_add_object_listener` and `*_add_rt_listener`
+names, `pw_impl_node_remove_rt_listener`, `spa_hook_list_append`, `_prepend`, `_isolate` and `spa_hook_remove`); the
+streams and filters made with their events (`pw_stream_new_simple`, `pw_filter_new_simple`); every interface and
+callbacks table (`SPA_INTERFACE_INIT`, `SPA_CALLBACKS_INIT` and the 33 `*_methods` tables), handed over or not
+(`pw_log_set`, the four `*_set_implementation`, the three `*_set_callbacks`, `pw_global_new`, the two
+`*_thread_utils_create`); the walks above; and `snd_lib_error_set_handler`, `dlsym` and `dlvsym`. Behind the names,
+the types a registration cannot be made without: `spa_hook` and `spa_hook_list` (every listener, a new one on a
+PipeWire bump included), `spa_source` (a source added by hand), `spa_interface` and `spa_callbacks` (an interface
+made by hand). `ear_pipewire` outside the boundary names none of them today [V], and still calls what is not a
+registration (`pw_loop_signal_event`, `pw_loop_update_timer`, `pw_thread_loop_*`, the `spa_list_for_each*` macros).
+
+**The configure refusal.** `ear_refuse_raw_pipewire` (`cmake/RawCallbacks.cmake`, deferred to the end of configure, as
+`ear_refuse_node_type_links` is) walks every target of the build and refuses one that sees PipeWire's headers (links
+`PkgConfig::PIPEWIRE`, directly, through an interface library or inside a generator expression; a static library's
+private link, which gives no headers, is not seeing them) and lacks the option, unless its name is on the call's
+list: `ear_pipewire_tests` and `ear_node_sendspin_tests`, the two test programs that drive PipeWire themselves, as
+`tests/` is exempt today. Its own test project (`test/pipewire/poison_refusal/`) refuses each spelling of the link and
+lets the option, a listed test and a private link through.
+
+**What is left to text: nothing reads ear's source.** The one list left is configure's: target names, two, each a
+test program, deny by default (a new target that sees PipeWire's headers is refused until it takes the option or is
+listed), and read by a reviewer in one line of `src/pipewire/CMakeLists.txt`. As the C6 review asked of `.hz()`'s
+list, its limit is what a listed target does: those two may register anything, as tests may today. What neither the
+compiler nor configure holds, and why no text check is added for it:
+
+- **A macro defined before the pragma.** A `-D` on a target (`-Dregister=pw_loop_add_event`) expands past the poison.
+  It is written in a `CMakeLists.txt`, not in a source, where a slip cannot hide. PipeWire's own macros in the forced
+  headers that name a poisoned identifier (listed with `-dM` over them) call an interface's method or a hook list's
+  hooks and add none: `spa_api_method_*` and `spa_interface_call*` (through `pw_proxy_call` and `pw_resource_call`),
+  `spa_hook_list_call_simple` and `spa_hook_list_do_call`, and `spa_log_logt` (the `pw_log_*` macros). The session
+  manager's six `*_add_listener` macros are in headers ear does not include, and a source that includes one fails
+  closed, as above.
+- **`dlsym` outside `ear_pipewire`.** No other package can see PipeWire's headers, so its code cannot name a callback's
+  types; reaching a PipeWire function by a string in another package means writing its C signature by hand, which is
+  evasion, not the slip the guard was for. The text guard did not catch evasion either (`"pw_loop_" "add_event"`).
+- **A PipeWire bump.** A new callback API with a new name passes until it is listed, unless it needs one of the
+  poisoned types (every listener does: a `spa_hook`). The pipewire-engine skill's bump steps list it again with the
+  command that found 1.4.2's.
+
+**Compile-fail cases** (`src/pipewire/tests/compile_fail/no_raw_callbacks_bad.cpp`, compiled with the forced header
+and `ear_pipewire`'s include paths, beside a control of each registration the boundary makes and each PipeWire call
+ear makes that is not one): a raw call (`pw_loop_add_event`), a call whose parenthesis is on the next line, a name made
+by `##`, a name spliced by a backslash-newline, a macro defined after the poison naming one, a PipeWire header the
+forced one lacks, a hook declared by hand, an interface's methods table, a walk with a lambda, `dlsym` by name; and
+one case naming every poisoned identifier (139), one per line, whose driver (`compile_fail/every_name.cmake`) fails
+naming each one the compiler did not refuse as poisoned. Each case proven by weakening its refusal (the name taken off
+the pragma, or the forced header given the missing include) and seeing its test fail; the every-name case once per
+name, each of the 139 taken off in turn. The configure refusal's tests proven the same way: its message made a status
+line (the six refusals fail: each asks for the error's `RawCallbacks.cmake:<line> (message):`), a private link counted as seeing (the private
+link's fails), the exempt list ignored (the listed test's fails), include directories not read (that refusal fails).
+
+**Departures from 7.2:**
+
+- **No source is compiled without the forced include.** 7.2 left the boundary's `.cpp` outside; its one raw call,
+  `pw_context_for_each_global` in `engineNode`, moves into the header before the pragma (`boundary::matchNode` and an
+  inline `engineNode`), so the target option is one rule with no exception and configure checks the target, not each
+  source.
+- **More is poisoned than the guard listed** (above): every callback-taking API 1.4.2's headers have, and the types
+  behind them. Nothing in `ear_pipewire` outside the boundary used any.
+- **One case names every identifier, under a driver**, rather than one CTest test per name: 139 names at a second and
+  more each would add half again to the compile-fail suite's time; one compile reports each name on its own.
+
 ## 10. Decided here (technical)
 
 - One carrier (`GraphCycle::facts`), not a second view.
