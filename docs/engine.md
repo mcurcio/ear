@@ -33,7 +33,7 @@ changing this code.
 | The engine's log | `engine_log.cpp` | ear's own `pw_log` and alsa-lib's error handler ([output-records.md](output-records.md#how-output-is-written)), both `noexcept` and registered through the callback boundary as realtime functions |
 | The wedge mark | `data_loop_wedge.hpp` | Once the data loop is judged wedged, the adapters stop calling into it |
 | Main-loop executor | `main_loop_executor.cpp` | Work posted from any thread runs on the main loop |
-| The callback boundary | `callback_boundary.hpp`, `faults.hpp` | Every C function ear gives PipeWire or alsa-lib, with no exception: `guarded<>` (caught, reported to the engine's `Faults`), `realtime<>` on the data loop (a `DataLoop` takes nothing else), `realtimeFunction<>` for the log and alsa-lib's handler ([architecture.md](architecture.md#the-callback-boundary)) |
+| The callback boundary | `callback_boundary.hpp`, `faults.hpp`, `no_raw_callbacks.hpp` | Every C function ear gives PipeWire or alsa-lib, with no exception: `guarded<>` (caught, reported to the engine's `Faults`), `realtime<>` on the data loop (a `DataLoop` takes nothing else), `realtimeFunction<>` for the log and alsa-lib's handler; every raw registration poisoned after it in every source of the package ([architecture.md](architecture.md#the-callback-boundary)) |
 | The internal clock's cuts | `driver_cuts.hpp` | `DriverCuts`: a realtime listener on the dummy driver's `start` and `incomplete` events, the record every block numbers its cycles by and reads its cuts from ([below](#graphcycle)) |
 | Shared names | `engine_names.hpp` | The graph group's name, a card's driver priority, the internal clock's node and clock names |
 | The property table | `engine_properties.hpp`, `engine_property_set.cpp` | Every PipeWire property ear sets, in `engine.conf` or in code, and every one it never sets; a key is a `PropertyKey` only the table makes, and only `engine_property_set` writes properties ([below](#properties-ear-sets)) |
@@ -1124,7 +1124,8 @@ gone (`module-link-factory.c` 1.0.5:263-277,365-400). ear never destroys a proxy
   `std::terminate` with no word of where. Every callback is registered through the callback
   boundary instead (`addEvent`, `addTimer`, `addSignal`, `invoke`, `listen`, `installLog`,
   `setAlsaErrorHandler`), never with `pw_loop_add_*`, `pw_loop_invoke`, an `*_add_listener`,
-  `pw_log_set` or an interface table of its own; a CTest test refuses those outside the boundary ([architecture.md](architecture.md#the-callback-boundary)).
+  `pw_log_set` or an interface table of its own: `no_raw_callbacks.hpp`, forced into every source of
+  `ear_pipewire`, poisons those after the boundary, so they do not compile outside it ([architecture.md](architecture.md#the-callback-boundary)).
 - **A user node named like another engine node** (only `Dummy-Driver` today) gets engine-companion links
   that fail, since the block side of those links is matched by name.
 

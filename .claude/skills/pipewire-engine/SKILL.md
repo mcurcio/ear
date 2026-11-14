@@ -149,8 +149,8 @@ clock, never into the driver's position.
 core's `CycleAccount` over the engine's record of the internal clock's cuts: `DriverCuts`
 (`driver_cuts.hpp`, private), made in `Engine::create` before any block, found by `node.name`
 (`internalClockNode`; none is an `EngineError`), listening to the dummy's realtime `start` and
-`incomplete` through the boundary's `listenRealtime` (realtime entries only; the guard refuses a raw
-`pw_impl_node_add_rt_listener`). Traps: number a block's cycle by the listener's own count
+`incomplete` through the boundary's `listenRealtime` (realtime entries only; a raw
+`pw_impl_node_add_rt_listener` is poisoned outside the boundary). Traps: number a block's cycle by the listener's own count
 (`Engine::cuts().started()` inside `process`), never `clock.cycle`; never read the clock through a
 filter's mapping from the listener (it goes with the filter); the listener must be added before the
 first block (an async invoke the data loop runs before any block's node reaches the driver);
@@ -555,9 +555,13 @@ Nothing like WirePlumber runs. Two things make that work:
   data loop; `realtime<&C::m>` (the member `noexcept`, nothing added) on the data loop, invoked
   through a `DataLoop`, which takes nothing else; a `noexcept` C function as `realtimeFunction<&f>`
   for the log and alsa-lib. A raw function pointer, or the wrong kind for the loop, does not
-  compile, and `ear_callbacks_through_the_boundary` fails on any raw `pw_loop_add_*`,
-  `pw_loop_invoke`, `*_add_listener`, `pw_log_set`, interface table and the rest it lists outside
-  the boundary's two files and tests. One engine holds the boundary at a time: a second
+  compile, and a raw `pw_loop_add_*`, `pw_loop_invoke`, `*_add_listener`, `spa_hook`, `pw_log_set`,
+  interface table, callback walk and the rest does not compile anywhere in `ear_pipewire`:
+  `no_raw_callbacks.hpp` is forced into every source and poisons them after the boundary. A new
+  PipeWire header a source needs is added to that header's includes (read after the poison, one
+  naming a poisoned identifier fails with `attempt to use poisoned` inside PipeWire's own file),
+  and a new target that sees PipeWire's headers takes `ear_poison_raw_callbacks` or configure stops
+  (only the two test programs that drive PipeWire themselves are listed). One engine holds the boundary at a time: a second
   `Engine::create` fails while another lives. A listener table PipeWire has that the boundary lacks (say `pw_stream_events`)
   is added there as one more `*Callbacks` table and `listen` overload
   (`docs/architecture.md#the-callback-boundary`).
@@ -613,5 +617,14 @@ pins the base image by digest, not the packages. To move to another PipeWire:
    receiver, `[module_run]` the shared body on pipe-tunnel, `[s7]` the order and latency it relies
    on) and `ear_system_tests` the whole path. Check `libpipewire-module-pipe-tunnel` and
    `libpipewire-module-profiler` still exist too (tests only).
-5. Update the tested-against line in `engine.conf`'s header and the version named in this
+5. List the callback APIs again for `src/pipewire/no_raw_callbacks.hpp`'s poison and its every-name
+   case in `tests/compile_fail/no_raw_callbacks_bad.cpp`: every identifier the new headers declare
+   that takes a callback (`scripts/dev.sh bash -c 'cd /usr/include; grep -rhoE
+   "\b(pw|spa)_[a-z0-9_]*(_add_(object_|rt_)?listener|_add_hook|_set_callbacks|_set_implementation|_for_each_[a-z]+|_match_rules|_new_simple|utils_create|_methods)\b"
+   pipewire-0.3 spa-0.2 | sort -u'`, less the `spa_list_for_each*` macros, which take none), and
+   read the release notes for any other function taking a `*_func_t` or a function pointer. A
+   listener added under a new name is refused already (it needs a poisoned `spa_hook`); a new
+   function-pointer API is not until listed. A forced-in header that now names a poisoned
+   identifier stops the build there.
+6. Update the tested-against line in `engine.conf`'s header and the version named in this
    skill's first section and in `AGENTS.md` and `docs/engine.md`.

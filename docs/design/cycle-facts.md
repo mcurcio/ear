@@ -15,8 +15,9 @@ tests on the judge, library settles, the feed's dry count, described in `docs/te
 (section 9.12: the diagnostics counters kept, per graph and per node, described in `docs/engine.md#counters`); step D2
 built (section 9.13: the counters reported on the control port and standard output, described in
 `docs/engine.md#reporting-the-counters`, `docs/control-port.md#counters` and `docs/output-records.md#diagnostic`); step D3
-built (section 9.16: the editor's counters panel and recent marks, described in `docs/editor.md#counters`), the
-rest not. Its steps
+built (section 9.16: the editor's counters panel and recent marks, described in `docs/editor.md#counters`); steps C6a
+and C6b built (section 9.17: `SampleRate`, described in `docs/engine.md#dating`); step C7 built (section 9.18: the
+callback poison, described in `docs/architecture.md#the-callback-boundary`), the rest not. Its steps
 (section 9) follow `root-classes.md`'s and come before slice 3c, whose `sendspin` on a source takes the source rule this page changes (section 4.4). The built system
 it changes is described in `docs/engine.md` (`#graphcycle`, `#the-internal-clock`, `#sinks`, `#sources`, `#dating`,
 `#the-one-data-loop-and-invokes`), `docs/testing.md` (`#making-the-rare-event`, `#the-sleep-guard`),
@@ -900,7 +901,7 @@ R5d).
 | **D3** | **Done** (9.16). The editor (8.5): panel totals, recent marks (Q-CF4); `docs/editor.md` | the companions' own copy of the mark's rule (into `web/src/marks.ts`) | the marks and badge |
 | **C6a** | **Done** (9.17). `SampleRate`, `FrameClock(SampleRate)` beside the old constructor, `framesCeil`, `framesNearest`; compile-fail cases | nothing | none |
 | **C6b** | **Done** (9.17). `AudioFormat::rate` and every rate to `SampleRate`; the `.hz()` check | `frame_guard.cmake`, `test/frame_guard/`, the `uint32_t` constructor | none |
-| **C7** | The callback poison | `test/pipewire/callback_guard.cmake` and its snippets | none |
+| **C7** | **Done** (9.18). The callback poison: `no_raw_callbacks.hpp` forced into every source of `ear_pipewire`, configure's refusal of a target that sees PipeWire's headers without it, the compile-fail cases | `test/pipewire/callback_guard.cmake` and its snippets | none |
 | **C8** | Sleep roles as calls (optional, 7.4) | `test/sleeps.txt`, `sleep_guard.cmake`, `test/sleep_guard/` | none |
 
 Order: S6 first (it can change 4.1's causes), then C1, C2, C3a; C4a may jump ahead of C3a when sendspin's bug needs

@@ -137,18 +137,40 @@ to `ear_pipewire`), with no exception:
   function of the boundary's own. A raw function pointer, a
   method that can throw, or an object of another class than the member's does not compile
   (`src/pipewire/tests/compile_fail/callback_boundary_bad.cpp` holds each refused case).
-- **The guard.** The CTest test `ear_callbacks_through_the_boundary`
-  (`test/pipewire/callback_guard.cmake`) fails on any file under `src/` that names a way to hand a
-  library a callback itself: a loop source, invoke or locked call (`pw_loop_add_*`,
-  `spa_loop_add_source`, `spa_loop_utils_add_*`, `pw_loop_invoke`, `pw_data_loop_invoke`,
-  `spa_loop_invoke`, `pw_loop_locked`, `spa_loop_locked`, `pw_work_queue_add`), a listener (any
-  `*_add_listener`, `*_add_object_listener` or `*_add_rt_listener`, its parenthesis on the same line
-  or not, or `spa_hook_list_append`), a stream or filter made with its events (`pw_stream_new_simple`,
-  `pw_filter_new_simple`), an interface implemented (`SPA_INTERFACE_INIT`, `SPA_CALLBACKS_INIT`,
-  `spa_callbacks`, a `spa_*_methods` or `pw_*_methods` table), `pw_log_set` or
-  `snd_lib_error_set_handler`. Exempt are exactly `pipewire/callback_boundary.hpp` and `.cpp` and
-  tests, which drive PipeWire directly. The guard is tested on each spelling it refuses, on
-  look-alikes, on a file merely named like the boundary, and on having nothing to check.
+- **The poison.** Nothing but the boundary can hand a library a callback, by the compiler:
+  `src/pipewire/no_raw_callbacks.hpp`, forced into every source of `ear_pipewire` (`-include`,
+  `ear_poison_raw_callbacks` in `cmake/RawCallbacks.cmake`), reads every PipeWire and SPA header
+  the package includes and `callback_boundary.hpp`, then poisons (`#pragma GCC poison`) each way to
+  hand one over: every loop source and hook (`pw_loop_add_*`, `spa_loop_utils_add_*`,
+  `spa_loop_add_source`, `spa_loop_control_add_hook`), invoke and locked call (`pw_loop_invoke`,
+  `pw_data_loop_invoke`, `spa_loop_invoke`, `pw_loop_locked`, `spa_loop_locked`,
+  `pw_work_queue_add`), listener (every `*_add_listener`, `*_add_object_listener` and
+  `*_add_rt_listener` PipeWire 1.4.2 declares, `pw_impl_node_remove_rt_listener` and the
+  `spa_hook_list_*` and `spa_hook_remove` calls), stream or filter made with its events
+  (`pw_stream_new_simple`, `pw_filter_new_simple`), interface or callbacks table made or handed
+  over (`SPA_INTERFACE_INIT`, `SPA_CALLBACKS_INIT`, every `*_methods` table, `pw_log_set`, the
+  `*_set_implementation` and `*_set_callbacks` calls, `pw_global_new`, `*_thread_utils_create`),
+  walk that calls back on the calling thread (`pw_context_for_each_global`, the `*_for_each_*`
+  and `*_match_rules` calls), `snd_lib_error_set_handler`, `dlsym` and `dlvsym`; and the types no
+  registration can be made without (`spa_hook`, `spa_hook_list`, `spa_source`, `spa_interface`,
+  `spa_callbacks`), so a listener PipeWire adds later is refused too. GCC refuses a poisoned name
+  lexed after the pragma however it is spelt (split across lines, pasted by `##`, spliced by a
+  backslash-newline, inside a macro defined after it) and leaves alone what was lexed before it:
+  the boundary's templates and inline functions, which make every registration ear has, its
+  `.cpp` making none, and PipeWire's own inline code. A PipeWire header read after the pragma that
+  names a poisoned identifier fails, so one the forced header lacks fails closed until it is added
+  there. Configure (`ear_refuse_raw_pipewire`, at its end) refuses any other target that sees
+  PipeWire's headers (links `PkgConfig::PIPEWIRE` directly, through an interface library or an
+  alias or inside a generator expression, or names its include directories; a static library's
+  private link gives none) without the header forced in, but the two test programs that drive
+  PipeWire themselves, `ear_pipewire_tests` and `ear_node_sendspin_tests`, named in
+  `src/pipewire/CMakeLists.txt`. What neither holds: a macro defined before the pragma (a target's
+  `-D`, written in CMake) expands past it, and another package could reach a PipeWire function
+  through `dlsym` by a string, writing its C signature by hand; and a callback API a PipeWire bump
+  adds under a new name, needing none of the poisoned types, passes until it is listed (the
+  pipewire-engine skill's bump steps). The refusals are tested
+  (`src/pipewire/tests/compile_fail/no_raw_callbacks_bad.cpp`, every poisoned name in one compile
+  through `every_name.cmake`, and `test/pipewire/poison_refusal/` for configure's).
 - **The main-loop executor** runs each posted item through the boundary on its own (named
   `MainLoopExecutor's posted work`), and each of its timers is a guarded callback
   (`LoopTimer::onTimeout`), so an item that throws is reported as itself and never drops the items

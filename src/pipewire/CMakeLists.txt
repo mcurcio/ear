@@ -5,7 +5,8 @@
 # engine_names.hpp, link_proxy.hpp, engine_companions.hpp, converter_modules.hpp, module_converter_body.hpp,
 # latency_spa.hpp, engine_properties.hpp (every PipeWire
 # property ear sets, docs/engine.md#properties-ear-sets), engine_property_set.hpp (the only writer of them) and
-# callback_boundary.hpp (every C callback ear gives PipeWire, docs/architecture.md#the-callback-boundary) and
+# callback_boundary.hpp (every C callback ear gives PipeWire, docs/architecture.md#the-callback-boundary), with
+# no_raw_callbacks.hpp (forced into every source here, below), and
 # driver_cuts.hpp (the internal clock's cuts, docs/engine.md#graphcycle) are private to this package: its sources
 # include them by path.
 add_library(ear_pipewire STATIC
@@ -41,6 +42,15 @@ target_sources(ear_pipewire PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/pipewire/sources.hpp)
 set_target_properties(ear_pipewire PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)
 target_link_libraries(ear_pipewire PUBLIC ear_core PRIVATE PkgConfig::PIPEWIRE)
+
+# Every C function ear gives PipeWire or alsa-lib goes through the callback boundary
+# (docs/architecture.md#the-callback-boundary): no_raw_callbacks.hpp, forced into every source here, poisons each raw
+# way to hand one over after the boundary's header, so it does not compile. Configure refuses any other target that sees
+# PipeWire's headers without it, but the two test programs that drive PipeWire themselves.
+include("${PROJECT_SOURCE_DIR}/cmake/RawCallbacks.cmake")
+set(ear_no_raw_callbacks "${CMAKE_CURRENT_SOURCE_DIR}/no_raw_callbacks.hpp")
+ear_poison_raw_callbacks(ear_pipewire "${ear_no_raw_callbacks}")
+ear_refuse_raw_pipewire(PkgConfig::PIPEWIRE "${ear_no_raw_callbacks}" EXEMPT ear_pipewire_tests ear_node_sendspin_tests)
 
 # The engine's configuration. The ear binary reads the copy beside out/ear (main passes
 # <its directory>/engine.conf; Engine does no lookup of its own). configure_file copies it
@@ -114,6 +124,35 @@ if(BUILD_TESTS)
 	ear_callback_boundary_compile_fail(log-method-not-noexcept "must be noexcept: the data loop never throws")
 	ear_callback_boundary_compile_fail(guarded-node-event "could not convert '[^']*guarded<.* to '[^']*RealtimeSlot<")
 	ear_callback_boundary_compile_fail(raw-node-event "could not convert '[^']*rawStart' from 'void \\(\\*\\)")
+	# What must not compile outside the boundary (docs/architecture.md#the-callback-boundary): each raw way to hand
+	# PipeWire a callback, refused by the poison no_raw_callbacks.hpp forces in after the boundary, as ear_pipewire's
+	# sources are compiled; tests/compile_fail/no_raw_callbacks_bad.cpp says what each case is. The regexes are GCC's.
+	set(bad_raw "${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail/no_raw_callbacks_bad.cpp")
+	set(raw_flags ${boundary_includes} -include "${ear_no_raw_callbacks}")
+	ear_compile_check(ear_no_raw_callbacks_compile_fail_control "${bad_raw}" ${raw_flags})
+	function(ear_no_raw_callbacks_compile_fail case name)
+		string(MAKE_C_IDENTIFIER "${case}" macro)
+		set(test ear_no_raw_callbacks_compile_fail_${case})
+		ear_compile_check(${test} "${bad_raw}" ${raw_flags} -DEAR_CASE_${macro})
+		set_tests_properties(${test} PROPERTIES PASS_REGULAR_EXPRESSION "attempt to use poisoned \"${name}\"")
+	endfunction()
+	ear_no_raw_callbacks_compile_fail(raw-call pw_loop_add_event)
+	ear_no_raw_callbacks_compile_fail(split-call pw_filter_add_listener)
+	ear_no_raw_callbacks_compile_fail(pasted pw_loop_invoke)
+	ear_no_raw_callbacks_compile_fail(spliced pw_core_add_listener)
+	ear_no_raw_callbacks_compile_fail(macro-after pw_impl_node_add_rt_listener)
+	ear_no_raw_callbacks_compile_fail(hook-by-hand spa_hook)
+	ear_no_raw_callbacks_compile_fail(interface-by-hand SPA_INTERFACE_INIT)
+	ear_no_raw_callbacks_compile_fail(walk pw_context_for_each_global)
+	ear_no_raw_callbacks_compile_fail(by-name dlsym)
+	ear_no_raw_callbacks_compile_fail(later-header pw_profiler_methods)
+	# Every poisoned name in one compile, each reported on its own (tests/compile_fail/every_name.cmake).
+	add_test(NAME ear_no_raw_callbacks_compile_fail_every_name
+		COMMAND "${CMAKE_COMMAND}" "-DSOURCE=${bad_raw}" -DCASE=EAR_CASE_every_name
+			-P "${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail/every_name.cmake" --
+			"${CMAKE_CXX_COMPILER}" ${CMAKE_CXX23_STANDARD_COMPILE_OPTION} -w -fsyntax-only
+			"-I$<JOIN:$<TARGET_PROPERTY:ear_core,INTERFACE_INCLUDE_DIRECTORIES>,;-I>" ${raw_flags}
+		COMMAND_EXPAND_LISTS)
 	# What must not compile about the property table (docs/engine.md#properties-ear-sets):
 	# tests/compile_fail/engine_properties_bad.cpp says what each case is. property() refuses a key by calling a function
 	# that is not constexpr, named for the reason, so each regex is that function's name, which the compiler's error
