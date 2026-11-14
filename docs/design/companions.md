@@ -1,6 +1,6 @@
 # Companions: slice 3b of the node framework
 
-Status: steps 3b.0 to 3b.6 built (8.10; 3b.6, the wire, on 2026-11-14), the editor's badges and the words to come; module
+Status: steps 3b.0 to 3b.7 built (8.10; 3b.6, the wire, and 3b.7, the editor's badges, on 2026-11-14), the words to come; module
 design in section 8 (2026-11-09), its headers landed as declarations. Slice 3b follows
 slice 3a (the lifecycle, built 2026-11-09) and comes before slice 3c (node primitives, `node-primitives.md`), because
 companions remove two of 3c's would-be primitives (feeds and late handoffs) and a third's use (sendspin's bell). The
@@ -1043,7 +1043,7 @@ makes stale (the rule in `AGENTS.md`).
 | **3b.4 Readiness deadlines, the quantum guard** | `NodeHost`'s timers per kind and their texts; the harness's clock; `quantum-limit` at the block size; the card seam's refusal; `docs/node-types.md#rtp` (a held port fails after 5 s), `docs/engine.md` | The [U] of 3.6: if cards or rtp-source will not run at the limit, the limit stays `max(block, 8192)` and the step keeps only the refusal |
 | **3b.5 Companions in core's view** (done, 2026-11-13) | `CompanionView`, `NodeCompanionsListener`, `subscribeCompanions`, `companionsOf`, the counter sampling, the two diagnostics through `StatusLog`; `docs/output-records.md#diagnostic` and `output-records.json`. Found building: below the table | Low |
 | **3b.6 The wire** (done, 2026-11-14) | feature `companions`; `companions_wire.cpp`; `GraphEvent`, `NodeAdded`, `encodeGraph`, the gateway, `GraphStatus`; `docs/control-port.md`, `test/protocol/companions.json`, `web/src/protocol.ts` in this one commit. Found building: below the table | Low; the order rules are the subtle part (`gateway_test.cpp`) |
-| **3b.7 The editor's badges** | `companions.ts`, `graph.ts`, `EarNode.tsx`, `Panels.tsx`; `docs/editor.md` | Low |
+| **3b.7 The editor's badges** (done, 2026-11-14) | `companions.ts`, `CompanionStrip.tsx`, `EarNode.tsx`, `Panels.tsx`, `editor.ts`; `docs/editor.md#companions`. Found building: below the table | Low |
 | **3b.8 Words** | what lasts of this page moved into the library docs (most already moved step by step), the `pipewire-engine` and `control-port` skills updated, this page deleted and `docs/design/README.md`'s row removed | — |
 
 **Found building 3b.5** (what lasts is `docs/engine.md#companions-in-a-nodes-list` and
@@ -1097,6 +1097,24 @@ settled in the building:
   by 3b.4 and by the name rule; they are not repeated.
 - **The editor's reducer** keeps a node's `companions` as sent and replaces it on `node.companionsChanged` (`graph.ts`),
   enough for the fixtures; `companions.ts` and the badges are 3b.7's.
+
+**Found building 3b.7** (what lasts is `docs/editor.md#companions`). Built as "3b.7 as built against today's code"
+(8.7) says, with these settled in the building:
+
+- **`graph.ts` did not change**: 3b.6's reducer already keeps the list. What 3b.7 adds beside it is `CompanionMoves`,
+  attached in `Editor`'s constructor as the graph store's first listener; a test proves a listener subscribed after
+  it (as React's are) reads the new graph's moves. `attach` takes the clock (`Date.now` by default) so its tests run
+  on their own times; `useCompanionBadges` (`hooks.ts`) reads `Date.now()` per draw and sets one timer for
+  `nextExpiry`, the earliest shown mark's end.
+- **The drawing is one component file**, `CompanionStrip.tsx`: the box's strip and the panel's list, both from
+  `companionBadges`, so the panel's lines are the badges' titles (detail, and the mark's words while it shows).
+- **A kind named like an `Object` prototype member** (`toString`) is an unknown kind drawn by its own text: the word
+  table is read with `Object.hasOwn`, not by indexing.
+- **The fixture replay shows the gap rule**: in `companions.json` `fpp`'s strip empties at its `failed` `node.state`,
+  one message before its `[]` arrives, and `rec`'s mark from its 0 to 4096 rise stays across its stop and goes with
+  the restart's `[]`.
+- **Rendering is still checked by eye** (no browser test runner, `docs/editor.md#developing-it`): the screenshot taken
+  while building it used the machine's own Playwright against `web/dist` with a faked socket, and is not committed.
 
 ### 8.11 Decided
 
