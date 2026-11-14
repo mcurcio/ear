@@ -28,8 +28,8 @@ struct ClaimJudged {
 	enum class Outcome { granted, probe, refused, waits };
 	Outcome outcome = Outcome::granted;
 	std::string why{};
-	/// The generation of a leaked configuration that refused it (a store or recording it keeps) or whose abandoned port
-	/// it probes, else 0: a refusal on its account is that configuration's to undo when it closes late.
+	/// The generation of a leaked configuration that will close late and refused it (a store or recording it keeps) or
+	/// whose abandoned port it probes, else 0: a refusal on its account is that configuration's to undo when it closes.
 	std::uint64_t leaked = 0;
 };
 
@@ -53,7 +53,9 @@ public:
 	/// `generation`'s teardown began: its claims are going, and its own waits leave their queues.
 	void going(std::uint64_t generation);
 	/// `generation` was leaked: its ports abandoned, its stores and recordings kept. What waited for them is judged now.
-	std::vector<ClaimDecided> leaked(std::uint64_t generation);
+	/// `closes`: it was leaked at the close deadline and still listens, so a refusal it makes is undone at its late close;
+	/// otherwise (leaked on an overdue barrier, the data loop wedged) it never closes, and its refusal says so.
+	std::vector<ClaimDecided> leaked(std::uint64_t generation, bool closes);
 	/// `generation` let go (teardown step 5, or a leaked configuration's late close): every claim it held released and
 	/// its waits dropped. What waited for those is judged again, in arrival order.
 	std::vector<ClaimDecided> release(std::uint64_t generation);
@@ -61,7 +63,7 @@ public:
 	bool holds(std::uint64_t generation) const noexcept;
 
 private:
-	enum class State { live, going, leaked };
+	enum class State { live, going, leaked, wedged }; // wedged: leaked for good, never closing
 	struct Held {
 		Claim claim;
 		ClaimHolder holder;

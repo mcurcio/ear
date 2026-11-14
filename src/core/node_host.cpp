@@ -709,7 +709,7 @@ struct NodeHost::Impl {
 				requireConfiguring("claim");
 				if (claim.kind != Claim::Kind::tcp && claim.kind != Claim::Kind::udp)
 					throw std::logic_error("claim takes a port: " + claimKey(claim) + " is the framework's to claim");
-				addClaim(std::move(claim));
+				addPortClaim(std::move(claim));
 			});
 		}
 
@@ -2044,6 +2044,8 @@ struct NodeHost::Impl {
 			const NodeName engineNode = name_ + "." + std::string(engineSuffix(shape, bank.direction));
 			requireOneName(engineNode);
 			requireFreeBank(bank);
+			// What it holds ear-wide, by its shape's rule, so no shape's field is named here.
+			for (Claim& claim : claimsOf(shape)) addPortClaim(std::move(claim));
 			config_->engineAsks.push_back(EngineAsk{std::move(shape), CompanionTarget{.engineNode = engineNode,
 			                                                                          .blockNode = name_,
 			                                                                          .bank = bank.direction,
@@ -2274,12 +2276,9 @@ struct NodeHost::Impl {
 				                     std::string("configure gave a latency plan that does not fit: ") + error.what());
 			}
 			c.startFailed = false;
-			// Every claim it holds while it lives (docs/writing-a-node-type.md#claims): its own (cx.claim, already listed),
-			// each store's file, and each engine companion's by its shape, so no shape's field is named here.
+			// Every claim it holds while it lives (docs/writing-a-node-type.md#claims): its ports, listed at the call that
+			// asked for each (cx.claim, an engine companion's by its shape), then each store's file.
 			for (const auto& slot : c.stores) addClaim(Claim{Claim::Kind::store, slot->fileName()});
-			for (const EngineAsk& asked : c.engineAsks)
-				for (Claim& claim : std::visit([](const auto& shape) { return claimsOf(shape); }, asked.shape))
-					addClaim(std::move(claim));
 			// A drive fades exactly the outputs flagged (a sink's bank never is), so a teardown fades first only when
 			// one is: a node whose only outputs are sinks' banks is silenced at once.
 			aggregate_.outputsFaded(std::any_of(c.faded.get(), c.faded.get() + c.fadedCount, [](bool f) { return f; }));
@@ -2429,10 +2428,20 @@ struct NodeHost::Impl {
 			}
 		}
 
-		/// One claim, once each in a configuration.
+		/// One claim, once each in a configuration (a store's file, named by the framework, is held once).
 		void addClaim(Claim claim) {
 			if (std::ranges::find(config_->claims, claim, &ClaimSlot::claim) == config_->claims.end())
 				config_->claims.push_back(ClaimSlot{std::move(claim)});
+		}
+
+		/// A port, from inside a context call: one the configuration already claimed (by cx.claim or an engine
+		/// companion's shape) is the type's bug, a std::logic_error the call records, so the node fails start-failed.
+		void addPortClaim(Claim claim) {
+			const std::string key = claimKey(claim);
+			if (std::ranges::any_of(config_->claims,
+			                        [&](const ClaimSlot& slot) { return claimKey(slot.claim) == key; }))
+				throw std::logic_error(key + " claimed twice");
+			config_->claims.push_back(ClaimSlot{std::move(claim)});
 		}
 
 		/// Claim `index` is a port the registry granted: probed against the kernel (a host with no probe grants it). The
@@ -2450,7 +2459,7 @@ struct NodeHost::Impl {
 				std::expected<void, std::string> outcome;
 				std::optional<std::string> fault;
 				try {
-					outcome = claim.kind == Claim::Kind::tcp ? probe->tcpListen(port) : probe->udp(port);
+					outcome = claim.kind == Claim::Kind::tcp ? probe->tcpListen(port) : probe->udp(port, claim.group);
 				} catch (...) {
 					fault = detail::whatOf(std::current_exception());
 				}
@@ -3227,7 +3236,7 @@ struct NodeHost::Impl {
 			// Its ports abandoned, its stores and recordings kept: what waited for them is judged now. One that listens
 			// lists the nodes its claims refuse, which its late close starts again (R15).
 			if (listening) host_.refusedByLeaked.try_emplace(c.generation);
-			host_.claimsDecided(host_.claims.leaked(c.generation));
+			host_.claimsDecided(host_.claims.leaked(c.generation, listening));
 			// Not deleted here: the configuration's threads may still touch any of it. A listening record deletes
 			// itself once they all reported closed (LeakedRecord::closedLate); any other is never deleted.
 			auto* record = new LeakedRecord(host_, name_, std::move(config_), runClosing_);

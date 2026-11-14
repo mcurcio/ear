@@ -140,7 +140,9 @@ node rtp fpp { address "0.0.0.0"; port 5004; format "L24"; channels 2; rate 48kh
   `node fpp2 failed start-failed: cannot bind UDP port 5004: held by node fpp`, even when the two
   listen to different multicast groups (allowing that waits for a multicast test). A port another
   program holds fails the node at once with the kernel's reason,
-  `node fpp failed start-failed: cannot bind UDP port 5004: Address already in use`. Free the port,
+  `node fpp failed start-failed: cannot bind UDP port 5004: Address already in use`; on a multicast
+  `address`, a program that shares the port with `SO_REUSEADDR` (a monitor listening to the group)
+  is left to share it, as PipeWire's receiver would ([engine.md](engine.md#rtp-receivers)). Free the port,
   then `node.start` or `node.restart` retries it. A node removed and another added on its port in one
   edit, or two nodes swapping ports, wait for the old one to let go (`ear.claim-wait`, `waitingFor`
   `claim`), then run.

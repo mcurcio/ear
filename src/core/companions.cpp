@@ -11,7 +11,7 @@ Delay moduleRunDelay(const RtpReceiverShape& shape, FrameClock graph) noexcept {
 }
 
 std::vector<Claim> claimsOf(const RtpReceiverShape& shape) {
-	return {Claim{Claim::Kind::udp, std::to_string(shape.port)}};
+	return {Claim{Claim::Kind::udp, std::to_string(shape.port), shape.address.multicast() ? shape.address.text() : ""}};
 }
 
 std::vector<Claim> claimsOf(const SoundCardShape&) { return {}; }

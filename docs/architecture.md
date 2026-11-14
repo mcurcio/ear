@@ -677,8 +677,9 @@ record ear keeps for it, so nothing it tells reaches the node or a newer configu
 
 A configuration leaked on an overdue barrier ([bounds](#bounds-the-wedged-data-loop-and-the-watchdog))
 is detached instead: the data loop may still run its code, so it never closes and counts as leaked
-for good; its ports are abandoned and its stores kept for good, as no node is configured again
-once the data loop is wedged.
+for good; its ports are abandoned and its stores kept for good, a claimant refused in words of its
+own (`... which the wedged data loop keeps; it starts once ear restarts`), as no node is configured
+again once the data loop is wedged.
 
 ## Boot and stop
 

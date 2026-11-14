@@ -903,7 +903,11 @@ struct TestProbe final : PortProbe {
 	std::expected<void, std::string> tcpListen(std::uint16_t port) override {
 		return answer("tcp:" + std::to_string(port));
 	}
-	std::expected<void, std::string> udp(std::uint16_t port) override { return answer("udp:" + std::to_string(port)); }
+	std::expected<void, std::string> udp(std::uint16_t port, std::string_view group) override {
+		groups.emplace_back(group);
+		return answer("udp:" + std::to_string(port));
+	}
+	std::vector<std::string> groups; // each UDP probe's group, in order ("" for every address)
 };
 
 /// How a Fixture's host is made: whether it probes ports (a host without a probe judges them between its nodes only),
@@ -6990,6 +6994,7 @@ TEST_CASE("A port the kernel refuses fails the node at once with the kernel's re
 		CHECK(failureOf(f, "fpp") == "start-failed: cannot bind UDP port 5004: Address already in use");
 		CHECK(f.receivers.events.empty());
 		CHECK(countOf(f.log, "probe udp:5004") == 1);
+		CHECK(f.probe.groups == std::vector<std::string>{"239.69.0.1"}); // probed on its group, as it binds
 	}
 	SECTION("a listening port, judged before the type's store is opened or its loop started") {
 		const StoreRule rule{
@@ -7008,6 +7013,42 @@ TEST_CASE("A port the kernel refuses fails the node at once with the kernel's re
 		CHECK(countOf(f.log, "io open store test-ma.key") == 0);
 		CHECK(f.loops.made.empty());
 	}
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A port claimed twice in one configuration is the type's bug: the node fails start-failed naming the key, "
+          "whether the type claims it twice or claims its own receiver's port",
+          "[node_host][claims]") {
+	Fixture f;
+	auto config = std::make_shared<LoopProbeConfig>(f.log, std::vector<LoopDeclaration>{});
+	SECTION("claimed twice by the type") {
+		config->onConfigure = [&f](CreateContext& cx) {
+			cx.claim(claim::of(claim::TcpListen(8928)));
+			cx.claim(claim::of(claim::TcpListen(8928)));
+			cx.use(std::make_unique<TestAudioCode>(f.log));
+			return Configured::applied();
+		};
+		f.add("ma", config);
+		CHECK(failureOf(f, "ma") == "start-failed: configure threw: tcp:8928 claimed twice");
+	}
+	SECTION("the type's claim and its receiver's, caught by the type") {
+		config->onConfigure = [&f](CreateContext& cx) {
+			cx.claim(claim::of(claim::Udp(5004)));
+			try {
+				cx.rtpReceiver("cap", fppStream);
+			} catch (const std::logic_error&) {
+			}
+			cx.use(std::make_unique<TestAudioCode>(f.log));
+			return Configured::applied();
+		};
+		f.add("ma", config);
+		CHECK(failureOf(f, "ma") == "start-failed: configure threw: udp:5004 claimed twice");
+	}
+	f.blocks.events.at(0)->ready();
+	f.settle();
+	CHECK(f.receivers.events.empty());
 	f.stopAll();
 	f.settle();
 	CHECK(f.allGone == 1);

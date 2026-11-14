@@ -74,12 +74,18 @@ ClaimJudged ClaimRegistry::claim(const ClaimHolder& claimant, const Claim& claim
 	case State::going:
 		waiting_.push_back(Waiting{key, claim, claimant});
 		return ClaimJudged{ClaimJudged::Outcome::waits, held.holder.node};
-	case State::leaked: {
-		const std::uint64_t leaked = held.holder.generation;
+	case State::leaked:
+	case State::wedged: {
+		const std::uint64_t leaked = held.state == State::leaked ? held.holder.generation : 0;
 		if (isPort(claim.kind)) { // abandoned: whoever probes it next holds it
 			held = Held{claim, claimant, State::live};
 			return ClaimJudged{ClaimJudged::Outcome::probe, {}, leaked};
 		}
+		if (held.state == State::wedged)
+			return ClaimJudged{ClaimJudged::Outcome::refused,
+			                   "held by node " + held.holder.node +
+			                       "'s earlier configuration, which the wedged data loop keeps; it starts once ear "
+			                       "restarts"};
 		return ClaimJudged{ClaimJudged::Outcome::refused,
 		                   "held by node " + held.holder.node +
 		                       "'s earlier configuration, which did not close; it starts when that closes",
@@ -95,11 +101,11 @@ void ClaimRegistry::going(std::uint64_t generation) {
 	dropWaits(generation);
 }
 
-std::vector<ClaimDecided> ClaimRegistry::leaked(std::uint64_t generation) {
+std::vector<ClaimDecided> ClaimRegistry::leaked(std::uint64_t generation, bool closes) {
 	std::vector<std::string> keys;
 	for (auto& [key, held] : held_)
 		if (held.holder.generation == generation) {
-			held.state = State::leaked;
+			held.state = closes ? State::leaked : State::wedged;
 			keys.push_back(key);
 		}
 	dropWaits(generation);

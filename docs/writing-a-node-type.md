@@ -581,13 +581,20 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
   | a configuration that is going (its teardown began: a restart's, a failure's, a removal's or a rename's old one) | waits, said once by `ear.claim-wait` and `waitingFor` `claim`; granted at that configuration's step 5 | after 15 s: `... held by node fpp, which did not let go within 15 s` |
   | a configuration leaked at the close deadline: a port | abandoned to the claimant, probed afresh | the kernel's reason, owed to the leaked configuration (below) |
   | a configuration leaked at the close deadline: a store or recording | refused, owed to the leaked configuration | `<file>: held by node porch's earlier configuration, which did not close; it starts when that closes` |
+  | a configuration leaked on an overdue barrier (the data loop wedged), which never closes: a port | abandoned, probed afresh, owed to nobody | the kernel's reason |
+  | the same: a store or recording | refused, owed to nobody | `<file>: held by node porch's earlier configuration, which the wedged data loop keeps; it starts once ear restarts` |
 
   A disabled node holds nothing (it has no configuration). A node never waits on its own old configuration, whose
-  step 5 comes before its next configure; two nodes whose restarts swap ports both run. A configuration claiming one
-  key twice holds it once.
+  step 5 comes before its next configure; two nodes whose restarts swap ports both run. A port claimed twice in one
+  configuration (by `cx.claim` twice, or by `cx.claim` and an engine companion's shape) is the type's bug: the call
+  throws `std::logic_error`, and the node fails `start-failed: configure threw: udp:5004 claimed twice` even when the
+  type catches it. The framework's own store claims are held once each.
 - **The probe.** Once the registry grants a port, it is bound once by a non-blocking socket on the main loop and
-  closed: a UDP port with neither `SO_REUSEADDR` nor `SO_REUSEPORT`, so a holder that set it (PipeWire's RTP
-  receiver, [engine.md](engine.md#rtp-receivers)) still refuses; a TCP port with `SO_REUSEADDR`, as a listener binds,
+  closed, as its holder will bind it. A UDP port on every address with neither `SO_REUSEADDR` nor `SO_REUSEPORT`, so
+  a holder that set it (PipeWire's RTP receiver, [engine.md](engine.md#rtp-receivers)) still refuses; a UDP port on a
+  multicast group (an RTP receiver's, which a `Claim` carries beside the port, never in its key) at `<group>:<port>`
+  with `SO_REUSEADDR`, as the receiver binds it, so another program sharing the port that way (a monitor listening to
+  the group) passes and one holding it alone refuses; a TCP port with `SO_REUSEADDR`, as a listener binds,
   so a `TIME_WAIT` passes. The probe runs behind the turn's flush, so an engine companion a teardown has just queued
   for destruction (a restarted `rtp` node's own receiver) has let go of the port first. A program taking the port just
   after the probe is not caught. A host with no probe (a test's) judges ports between its nodes only.

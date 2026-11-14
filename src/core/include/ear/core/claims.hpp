@@ -13,14 +13,18 @@
 #include <string>
 #include <string_view>
 namespace ear {
-/// One claim: its kind and value. Its key is the two together ("tcp:8928", "udp:5004", "store:sendspin-ma.key",
-/// "recording:take1.wav"); a key has one holder ear-wide, across types.
+/// One claim: its kind and value, and for a UDP port the multicast group it is bound to (empty: every address). Its key
+/// is the kind and value alone ("tcp:8928", "udp:5004", "store:sendspin-ma.key", "recording:take1.wav"), so two
+/// claims of one port are one key whatever their groups; a key has one holder ear-wide, across types.
 struct Claim {
 	/// recording: S3c.5b's file paths, not claimed yet. A sound card's device is not a kind until a card renamed in one
 	/// plan is shown to open its device before the old node closed it (docs/design/node-primitives.md 0.2 C).
 	enum class Kind { tcp, udp, store, recording };
 	Kind kind;
 	std::string value;
+	/// udp only: the IPv4 multicast group the holder binds (an RTP receiver on a group), which the probe binds as the
+	/// holder will; empty for every address. Never part of the key.
+	std::string group{};
 	friend bool operator==(const Claim&, const Claim&) = default;
 };
 /// "tcp:8928" | "udp:5004" | "store:<file>" | "recording:<path>": the one home of the keys' spelling, which waitingFor
@@ -59,9 +63,12 @@ class PortProbe {
 public:
 	/// All IPv4 addresses with SO_REUSEADDR, as a listener binds, so a TIME_WAIT passes and a live listener refuses.
 	virtual std::expected<void, std::string> tcpListen(std::uint16_t port) = 0;
-	/// All IPv4 addresses with neither SO_REUSEADDR nor SO_REUSEPORT: PipeWire's RTP receiver binds with SO_REUSEADDR
-	/// (docs/engine.md#rtp-receivers), so a probe that set it would pass while one holds the port.
-	virtual std::expected<void, std::string> udp(std::uint16_t port) = 0;
+	/// With no `group`: all IPv4 addresses with neither SO_REUSEADDR nor SO_REUSEPORT, so any socket on the port refuses,
+	/// PipeWire's RTP receiver (which sets SO_REUSEADDR, docs/engine.md#rtp-receivers) among them. With a multicast
+	/// `group` (dotted quad): `<group>:<port>` with SO_REUSEADDR, as that receiver binds it, so another program that
+	/// shares the port by SO_REUSEADDR (a monitor listening to the group) still passes, and one that holds it alone
+	/// refuses.
+	virtual std::expected<void, std::string> udp(std::uint16_t port, std::string_view group) = 0;
 
 protected:
 	~PortProbe() = default;

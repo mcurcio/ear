@@ -1017,10 +1017,13 @@ PipeWire keeps the jitter buffer, the tracking of the sender's clock and the res
   and both run: Linux hands each unicast datagram to one of them, and the other plays silence with
   nothing said. So ear judges the port before the module is loaded: it is the receiver's claim
   (`claimsOf(RtpReceiverShape)`, [writing-a-node-type.md](writing-a-node-type.md#claims)), one
-  holder ear-wide, then probed with neither `SO_REUSEADDR` nor `SO_REUSEPORT`, so a second `rtp`
-  node and another program's socket both fail the node at once (`start-failed: cannot bind UDP port
-  <port>: held by node <n>` or the kernel's reason). Only a program that binds the port between the
-  probe and the module's bind still reaches the 5 s deadline.
+  holder ear-wide, so a second `rtp` node fails at once (`start-failed: cannot bind UDP port <port>:
+  held by node <n>`), whatever its group. Then the port is probed as the module will bind it: on
+  `0.0.0.0` with neither `SO_REUSEADDR` nor `SO_REUSEPORT`, so any other program's socket fails the
+  node at once with the kernel's reason; on a multicast group at `<group>:<port>` with
+  `SO_REUSEADDR`, so another program sharing the port that way (a monitor on the group) is left to
+  share it, as the module would, and one holding it alone fails the node. Only a program that binds
+  the port between the probe and the module's bind still reaches the 5 s deadline.
 - **No packets is not a failure.** The module never destroys itself; after `cleanup.sec` without
   packets it sets the node property `rtp.receiving = false` (a bound node proxy sees it, the registry
   does not; `module-rtp-source.c:456-481`). ear does not read it.

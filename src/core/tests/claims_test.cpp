@@ -42,7 +42,10 @@ TEST_CASE("A claim's key and its text name its kind", "[claims]") {
 	// An engine companion's claims come from its shape: an RTP receiver's port whatever its address, a card none.
 	const RtpReceiverShape group{*RtpAddress::parse("239.0.0.1"), 5004, RtpEncoding::l24, SampleRate::fixed<48000>(),
 	                             100};
-	CHECK(claimsOf(group) == std::vector<Claim>{udp5004});
+	CHECK(claimsOf(group) == std::vector<Claim>{{Claim::Kind::udp, "5004", "239.0.0.1"}}); // probed on its group
+	CHECK(claimKey(claimsOf(group).at(0)) == "udp:5004");                                  // keyed by the port alone
+	const RtpReceiverShape any{*RtpAddress::parse("0.0.0.0"), 5004, RtpEncoding::l24, SampleRate::fixed<48000>(), 100};
+	CHECK(claimsOf(any) == std::vector<Claim>{udp5004});
 	CHECK(claimsOf(SoundCardShape{*CardId::parse("Pro24")}).empty());
 }
 
@@ -98,7 +101,7 @@ TEST_CASE("A leaked holder's port is abandoned to the next claimant's probe, its
 	// One waits for the store and one for the port when it is leaked: each judged then.
 	REQUIRE(registry.claim(holder(2, "a"), key).outcome == Outcome::waits);
 	REQUIRE(registry.claim(holder(3, "b"), tcp8928).outcome == Outcome::waits);
-	const std::vector<ClaimDecided> decided = registry.leaked(1);
+	const std::vector<ClaimDecided> decided = registry.leaked(1, true);
 	REQUIRE(decided.size() == 2);
 	CHECK(decided[0].waiter.generation == 2);
 	CHECK(decided[0].judged.outcome == Outcome::refused);
@@ -120,4 +123,29 @@ TEST_CASE("A leaked holder's port is abandoned to the next claimant's probe, its
 	CHECK_FALSE(registry.holds(1));
 	CHECK(registry.claim(holder(7, "a"), key).outcome == Outcome::granted);
 	CHECK(registry.holds(4));
+}
+
+TEST_CASE("Two claims of one port are one key whatever their groups, and the second is refused", "[claims]") {
+	ClaimRegistry registry;
+	REQUIRE(registry.claim(holder(1, "a"), {Claim::Kind::udp, "5004", "239.0.0.1"}).outcome == Outcome::probe);
+	const ClaimJudged refused = registry.claim(holder(2, "b"), {Claim::Kind::udp, "5004", "239.0.0.2"});
+	CHECK(refused.outcome == Outcome::refused);
+	CHECK(refused.why == "held by node a");
+}
+
+TEST_CASE("A holder leaked on a wedged data loop never closes: its store refuses in words of their own, owed to "
+          "nobody, and its port is abandoned owing nothing",
+          "[claims][leak]") {
+	ClaimRegistry registry;
+	REQUIRE(registry.claim(holder(1, "a"), key).outcome == Outcome::granted);
+	REQUIRE(registry.claim(holder(1, "a"), udp5004).outcome == Outcome::probe);
+	CHECK(registry.leaked(1, false).empty());
+	const ClaimJudged store = registry.claim(holder(2, "a"), key);
+	CHECK(store.outcome == Outcome::refused);
+	CHECK(store.why ==
+	      "held by node a's earlier configuration, which the wedged data loop keeps; it starts once ear restarts");
+	CHECK(store.leaked == 0);
+	const ClaimJudged port = registry.claim(holder(3, "b"), udp5004);
+	CHECK(port.outcome == Outcome::probe);
+	CHECK(port.leaked == 0);
 }

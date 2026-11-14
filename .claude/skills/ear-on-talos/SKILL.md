@@ -374,9 +374,14 @@ owner, 2026-10-30: "If 100ms is the best rep can do, then so be it").
   (`hostNetwork: true`) with FPP on the same network segment (PipeWire's sender uses TTL 1 by
   default, `net.ttl`). Baseline Pod Security forbids `hostNetwork`, so the ValidatingAdmissionPolicy
   of section 4 must allow it too, and port 7777 and the RTP port are then the node's own ports.
-  Not tested anywhere yet, not even in CI.
+  On the node's network another program may listen to the same group and port (a monitor, VLC):
+  one that binds with `SO_REUSEADDR` shares the port and the node still starts; one that holds it
+  alone fails the node `start-failed: cannot bind UDP port <port>: Address already in use`. Two
+  `rtp` nodes on one port are refused whatever their groups. Not tested anywhere yet, not even in
+  CI.
 - **A busy port.** If another program on the same network (the node's, with `hostNetwork`)
-  already holds the UDP port, the node fails at once, `start-failed: cannot bind UDP port <port>:
+  already holds the UDP port (on `0.0.0.0`, any holder; on a group, one not sharing it by
+  `SO_REUSEADDR`), the node fails at once, `start-failed: cannot bind UDP port <port>:
   Address already in use`; a second `rtp` node on it fails `... held by node <n>`. Pick another
   port, or free it and `node.restart` the node. A program that takes the port in the moment
   between ear's check and PipeWire's bind leaves the node `configuring` waiting for `fpp.rtp`,

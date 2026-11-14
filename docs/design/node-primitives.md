@@ -366,8 +366,8 @@ std::vector<Claim> claimsOf(const SoundCardShape& shape);   // none until 0.2 C'
   until S3c.5b.
 - **`cx.claim` takes a port only** (`claim::TcpListen`, `claim::Udp`, each a `std::logic_error` outside 1 to 65535,
   and `claim::of` makes the `Claim`); `CreateContext::claim(Claim)` refuses another kind (a `std::logic_error`): stores
-  and recordings are the framework's. A configuration claiming one key twice (a type's port and its receiver's, say)
-  holds it once.
+  and recordings are the framework's. A port claimed twice in one
+  configuration is refused (review follow-up, below).
 - **`waitingFor` `claim` names the key only** (`udp:5004`). 6.1's `holder` and `leaked: true` are not needed: a wait
   shows only while a holder is closing, and `ear.claim-wait` names the holder once; a leaked holder never makes a
   wait (it is judged at the leak, and at once afterwards).
@@ -376,6 +376,13 @@ std::vector<Claim> claimsOf(const SoundCardShape& shape);   // none until 0.2 C'
 - **The R15 restart is narrowed to the refusal.** The record lists each node with the configuration its claims refused;
   at the late close a node is restarted (as `node.restart`, so a retry) only while it still rests failed and has not
   configured since, so an operator's own retry, removal or disable meanwhile is never overturned.
+- **Review follow-ups.** A UDP claim carries its multicast group beside the port, never in its key: two `rtp` nodes on
+  one port are still refused whatever their groups (Q-3c2), but the probe binds `<group>:<port>` with `SO_REUSEADDR`,
+  as module-rtp-source does, so another program sharing a group's port by `SO_REUSEADDR`, which worked before this
+  step, still does (`PortProbe::udp(port, group)`). A holder leaked on an overdue barrier never closes, so the
+  registry knows whether a leak closes: its store or recording refuses `... which the wedged data loop keeps; it
+  starts once ear restarts`, owed to nobody. A port claimed twice in one configuration is the type's bug, refused at
+  the call (`configure threw: udp:5004 claimed twice`); the framework's store claims are held once each.
 - **A store claim only ever meets another configuration of its own node** (a store's file is
   `<type>-<node>.<suffix>`, and a node configures only once its older configuration and any older node of its name
   are gone), so its one refusal is the leaked one's.
