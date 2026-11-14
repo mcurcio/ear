@@ -412,9 +412,13 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   drop's timeline holds until a cycle reads with nothing late left, and for a feed's worth of
   cycles at most: a library that keeps pace has written every late frame by then, so what is still
   late is a gap of its own (a network gap, a server that underran), which it corrects itself as it
-  does outside a drop rather than ear skipping the gap's length of fresh audio. While it holds, a
-  catch-up's jump is not skipped either: the late skip, measured from when a frame is heard, already
-  covers the graph's lost time, and both would skip it twice. What
+  does outside a drop rather than ear skipping the gap's length of fresh audio. The cycle anchors
+  the timeline when it reads the drop's last finish; a writer it found mid-publish (preempted there
+  on a loaded host, maybe for many cycles) leaves it pending until a cycle reads it. Anchored, a
+  catch-up's jump is not skipped: the late skip, measured from when a frame is heard, already
+  covers the graph's lost time, and both would skip it twice. Pending, nothing measures lateness,
+  so the jump is skipped as outside a drop and counted consumed on the timeline, so the late skip
+  once it anchors does not skip that time again. What
   it read in the instant the writer began is counted twice, so as many of its next frames go
   uncounted, counted from what the reader read of its own, never from a read position a clear moved;
   a clear forgets that debt, and keeps the drop's timeline only if the writer has dropped some of the

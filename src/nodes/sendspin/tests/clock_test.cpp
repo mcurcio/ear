@@ -120,13 +120,14 @@ struct Cycle {
 	std::uint32_t resumeSkipped; // what it skipped as late for the drop's timeline (lastResumeSkipped)
 	bool anchored;               // it measured that from the drop's last finish (lastAnchored)
 	std::uint32_t heldAtSkip;    // what the feed held at its last skip (Feed::heldAtSkip)
-	std::int64_t dropFinishRawNs; // when the frame after the last one dropped would be heard (Feed::dropped)
-	bool dropCounted;             // the library still counts drops of this stream (Feed::dropped: total past forgotten)
-	std::int64_t ranRawNs;        // when the block really began it (GraphCycle::ranRawNs)
-	bool dry;                     // the feed's own count of short reads moved in it (Feed::dryReads)
-	std::uint32_t fed;            // frames the code read from the feed: its frames less those the feed counted lacking
-	double rateDiff;              // the driver's rate correction, as the code was handed it
-	PlayProgress progress;        // the newest the code told the library, after it ran
+	// The drop's facts the code decided its timeline by in this cycle (SendspinCode::lastResumeFacts), as it read them
+	// in the cycle: a read here, after it, could see a clear or a drop that came between.
+	std::optional<Feed::Dropped> resumeFacts;
+	std::int64_t ranRawNs; // when the block really began it (GraphCycle::ranRawNs)
+	bool dry;              // the feed's own count of short reads moved in it (Feed::dryReads)
+	std::uint32_t fed;     // frames the code read from the feed: its frames less those the feed counted lacking
+	double rateDiff;       // the driver's rate correction, as the code was handed it
+	PlayProgress progress; // the newest the code told the library, after it ran
 	// Worked out by the Judge from the facts and what the feed held, by the code's rule (docs/node-types.md#clock): the
 	// frames it skips in it for the graph's lost time, whether it tells the library of this cycle, and whether that
 	// report is one the bound forced from an overdue cycle.
@@ -196,8 +197,7 @@ public:
 		const Feed::Dropped dropped = feed_.dropped();
 		out.dropped = dropped.total - dropped_;
 		dropped_ = dropped.total;
-		out.dropFinishRawNs = dropped.finishRawNs;
-		out.dropCounted = dropped.total > dropped.forgotten;
+		out.resumeFacts = code_.lastResumeFacts();
 		out.ranRawNs = cycle.ranRawNs();
 		// The feed's own word on its read this cycle: the code reads it once a cycle, on this thread.
 		const std::uint64_t dryReads = feed_.dryReads();
@@ -1013,17 +1013,18 @@ private:
 		const bool caughtUp = cycle.facts.causes.has(CycleCause::catchUp) || cycle.facts.causes.has(CycleCause::absent);
 		const std::uint64_t lostNow =
 			caughtUp && cycle.facts.jumpFrames > 0 ? static_cast<std::uint64_t>(cycle.facts.jumpFrames) : 0;
-		// Back after a drop, the drop covered the lost time, and while its timeline holds the late skip covers it:
-		// nothing is skipped for it.
-		const bool onTimeline = timeline(index, cycle);
-		cycle.skipped = cycle.stale || onTimeline
+		// Back after a drop, the drop covered the lost time, and once its timeline is anchored the late skip covers it:
+		// nothing is skipped for it. While the timeline is pending the jump is skipped as outside a drop.
+		const bool anchored = timeline(index, cycle);
+		cycle.skipped = cycle.stale || anchored
 		                    ? 0
 		                    : static_cast<std::uint32_t>(std::min<std::uint64_t>(lostNow, cycle.heldAtStart));
+		advanceTimeline(cycle, cycle.skipped);
 		if (cycle.codeSkipped != cycle.skipped)
 			errors.bad.push_back("skipped " + std::to_string(cycle.codeSkipped) + " of a jump of " +
 			                     std::to_string(lostNow) + " with " + std::to_string(cycle.heldAtStart) +
 			                     " held, for " + std::to_string(cycle.skipped) + " at " + std::to_string(index));
-		if (lostNow > cycle.skipped && !cycle.stale && !onTimeline)
+		if (lostNow > cycle.skipped && !cycle.stale && !anchored)
 			settle(ear::test::LibrarySettle::unskipped, index, lostNow - cycle.skipped);
 		// Past the feed's undrained bound (a stall that long on a loaded host), its writer played the library's audio
 		// into nothing in its time, told by the notifier, and the code skipped what the feed held as stale, told in its
@@ -1152,20 +1153,25 @@ private:
 	/// The library realigns itself after `cause`, having lost `lost` frames by its evidence: declared to the judge in its
 	/// chunks, and open from now to kSettleChunks past the first ramp frame played after it. Inside it the library's own
 	/// forward steps are excused as checkStep says, by what was lost.
-	/// The drop's timeline after a hand-over, by the code's rule (docs/node-types.md#clock): from the cycle that took the
-	/// feed back, anchored at the drop's last finish once the code reads it (at once, unless the writer was mid-publish),
-	/// for a feed's worth of cycles at most, done once a cycle reads with nothing late left. While it holds, each cycle
-	/// skips what is heard by its run since that finish and not consumed since, as far as the feed holds it: worked out
-	/// here and held against the code's lastResumeSkipped. Returns whether it holds for this cycle's jump.
+	/// The drop's timeline after a hand-over, by the code's rule (docs/node-types.md#clock): pending from the cycle that
+	/// took the feed back, anchored at the drop's last finish by the first facts the code read of it (at once, unless
+	/// the writer was mid-publish), ended by facts that show the library forgot every drop (a clear), for a feed's worth
+	/// of cycles at most, done once a cycle reads with nothing late left. Only when the code read those facts is the
+	/// code's (lastResumeFacts: the writer's race, which this side cannot see); what it makes of them is worked out here.
+	/// Anchored, each cycle skips what is heard by its run since that finish and not consumed since, as far as the feed
+	/// holds it: held against the code's lastResumeSkipped. Returns whether it is anchored for this cycle's jump.
 	bool timeline(std::size_t index, const Cycle& cycle) {
-		if (cycle.stale)
-			timeline_ = {.state = cycle.dropCounted ? Timeline::pending : Timeline::none,
-			             .fromRawNs = cycle.dropFinishRawNs,
-			             .consumed = 0,
-			             .ran = 0};
+		if (cycle.stale) timeline_ = {.state = Timeline::pending, .fromRawNs = 0, .consumed = 0, .ran = 0};
+		if (cycle.resumeFacts && timeline_.state != Timeline::none) {
+			if (cycle.resumeFacts->total == cycle.resumeFacts->forgotten) {
+				timeline_.state = Timeline::none;
+			} else if (timeline_.state == Timeline::pending) {
+				timeline_.state = Timeline::anchored;
+				timeline_.fromRawNs = cycle.resumeFacts->finishRawNs;
+			}
+		}
 		if (timeline_.state != Timeline::none && timeline_.ran >= kFeedFrames) timeline_.state = Timeline::none;
-		const bool holds = timeline_.state != Timeline::none;
-		if (timeline_.state == Timeline::pending && cycle.anchored) timeline_.state = Timeline::anchored;
+		timelineHolds_ = timeline_.state != Timeline::none;
 		const bool anchored = timeline_.state == Timeline::anchored;
 		std::uint64_t expected = 0;
 		std::int64_t late = 0;
@@ -1181,13 +1187,19 @@ private:
 			                     (cycle.anchored ? "" : " unanchored") + " as late, for " + std::to_string(expected) +
 			                     (anchored ? "" : " unanchored") + " of " + std::to_string(late) + " late at " +
 			                     std::to_string(index));
-		if (holds) {
-			timeline_.consumed += std::uint64_t{cycle.resumeSkipped} + cycle.fed;
-			timeline_.ran += cycle.frames;
-			if (anchored && cycle.fed > 0 && late <= static_cast<std::int64_t>(cycle.resumeSkipped))
-				timeline_.state = Timeline::none;
-		}
-		return holds;
+		timelineLate_ = late;
+		return anchored;
+	}
+
+	/// After timeline() and the jump's skip worked out for the cycle: what it consumed counts on the timeline, and an
+	/// anchored cycle that read with nothing late left ends it.
+	void advanceTimeline(const Cycle& cycle, std::uint32_t jumpSkipped) {
+		if (!timelineHolds_) return;
+		timeline_.consumed += std::uint64_t{jumpSkipped} + cycle.resumeSkipped + cycle.fed;
+		timeline_.ran += cycle.frames;
+		if (timeline_.state == Timeline::anchored && cycle.fed > 0 &&
+		    timelineLate_ <= static_cast<std::int64_t>(cycle.resumeSkipped))
+			timeline_.state = Timeline::none;
 	}
 
 	void settle(ear::test::LibrarySettle cause, std::size_t index, std::uint64_t lost) {
@@ -1548,6 +1560,8 @@ private:
 		std::uint64_t consumed = 0;
 		std::uint64_t ran = 0;
 	} timeline_;
+	bool timelineHolds_ = false;                            // timeline() to advanceTimeline(): it held for this cycle
+	std::int64_t timelineLate_ = 0;                         // and what it found late
 	std::optional<std::int64_t> untoldSince_;               // the start of the first cycle not yet told
 	std::int64_t lastFinish_ = 0;                           // the finish the code last told
 	bool afterForced_ = false;                              // the last report was one the bound forced

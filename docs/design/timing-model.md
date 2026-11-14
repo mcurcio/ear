@@ -505,6 +505,20 @@ test passed unedited, "L16 sent at 44100 into the 48000 graph is resampled" amon
   report is dated). The bound has no other role: there is no debt for it to forget.
 - **It keeps no debt and has no `LibraryView`.** What the ring did not hold of a jump is the library's to correct: it
   sees it in the next honest finish (its next chunk late by that much) and corrects once.
+- **One played timeline** (amended after S3c.6b, which built Q-3c1's drop path on the feed: `docs/node-types.md#clock`).
+  The clock owns one played count and one heard finish (dated with what lies downstream). The tick advances them;
+  while no tick drains the source past its bound (a stopped node the server streams to, a stall past the bound), the
+  undrained pacer advances the same two at the graph's rate, up to now and never ahead, and takes what the source
+  held then as played, so the library's thread runs and its inbound ring never pins (which would close the
+  connection, breaking Q-3c1). The tick taking it back is a change of who advances that timeline, not a second
+  timeline merged after the fact: its first cycle back plays on from the pacer's finish, skipping as late what is
+  heard by its run since, as S3c.6b's code does, and the finish told never steps back. What S3c.6b keeps apart and
+  reconciles folds into the clock: `PlayedTeller`'s merge of two tellers and its clamp at the last told, the stale
+  skip and `countedTwice` (a frame read in the instant the pacer began), the resume states (pending while the
+  writer is mid-publish, anchored) and their expiry after a feed's worth of ticks. The drop's finish is the clock's
+  own state rather than another thread's sequence-counted publish, so a tick never finds it unreadable and the
+  pending state goes. `SourceRing`'s stop drop (untold, playing nothing into the library's time) is not this and
+  does not replace it.
 
 *Why the deferral stays* (the design review, M1, amending TM7's "defers nothing"; the owner can overturn it): every
 report is true when it is given. An overdue tick's start is the driver's nominal time, behind now by the graph's lag
@@ -650,7 +664,7 @@ stale in the same commit.
 | **T3** (**done**, 2026-11-13) | The clockless source: `SourceClock`, `SourceTick`, `SourceHeld`, `SourcePlayed`, `clockWake`; `SourceRing` without time (4.1 to 4.3); `EventSources`, the block, the harness; `docs/writing-a-node-type.md#sources`, `docs/engine.md#sources`, `#latency-per-bank-pair`, `#dating` | `Played`, the played wake, `SourceCycle`, the keep-time and debt code | none for any shipped type (none uses a source) | 4.4's rows; the system tests' ramp-skip windows checked against `sendspin`'s own clock and kept, their premise said where it is owed (4.4). *Found building* (4.6): the source owns its clock (`SourceAdapter::make` takes it; `SourceRing::play` is called by the source's tap, so `SourceRing` is no tap); `play` returns the `SourcePlayed` it told, which the harness's `lastPlayed` reads; the clock is asked on every tick, a clearing one included; a clear's decay past the ended stream's frames counts as `zeros`; a skip is no drop; the stamp window's follow-up folded in (the measured arrival in place of the 2 s `captureLag`) |
 | **T4** | **Done** (5.6). The converter base from RTP's wiring, module-run mode, RTP on it (5.1 to 5.5), with S7's checks folded in (test only) | `RtpReceiverBody` and NodeHost's RTP branches, moved | none: every RTP test passes unedited | 5.5's new tests and S7's checks |
 | *S3c.0 to S3c.5* | As `node-primitives.md` 0.5 has them (re-cut 2026-11-14 against today's code) | | | |
-| **S3c.6** | As `node-primitives.md` 0.5 cuts it (6a to 6e; the move onto the source is S3c.6c), with the honest wrapper moved onto `from_server`'s source as `SendspinClock` (the feed, its skip and its dry counts go; the clock's report replaces the bell and the played wake in `node-primitives.md` 4.1's worker) | `feed.*`, `sendspin_code.*`'s playback half | as `node-primitives.md` 8 says, and no timing change: T2's tests pass unchanged on the source | T2's tests on the source; the clock's unit rows through `TypeHarness<spec, Sendspin>` |
+| **S3c.6** | As `node-primitives.md` 0.5 cuts it (6a to 6e; the source is S3c.6c), with the honest wrapper moved onto `from_server`'s source as `SendspinClock` and made the single owner of the played timeline, the undrained pacer and the hand-over its own (6.1, "One played timeline"; the feed, its skip and its dry counts go; the clock's report replaces the bell and the played wake in `node-primitives.md` 4.1's worker) | `feed.*`, `sendspin_code.*`'s playback half, `PlayedTeller` | as `node-primitives.md` 8 says, and no timing change on the tick's path: T2's tests pass unchanged on the source; the drop's path changes owner, Q-3c1 kept | T2's tests on the source; the clock's unit rows through `TypeHarness<spec, Sendspin>`; the stopped-node system test and `code_test.cpp`'s hand-over rows, their revert proofs shown again on the clock (`node-primitives.md` 0.5's S3c.6c row) |
 | **T5** | Set and tracked modes (5.2), with their first user (AirPlay, slice 9, for tracked): `StreamConverterBody`, `ConverterShape`, `SetRatio`, `RateReport`, `convertedSource`, `convertedSink`, the harness's fake; `docs/engine.md#engine-companions`, `docs/writing-a-node-type.md#engine-companions` | nothing | none until its user | 5.5's T5 tests |
 
 **How it fits slice 3c and the rest.** T1 to T3 come before S3c.1: they touch only the source, `GraphCycle` and

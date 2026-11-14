@@ -1003,3 +1003,94 @@ TEST_CASE("A gap in the library's writes after a hand-over ends the drop's timel
 	CHECK(rig.code.lastResumeSkipped() == 0);
 	CHECK(rig.left[0] == 0.5F);
 }
+
+// docs/node-types.md#clock: a hand-over that finds the writer mid-publish leaves the drop's timeline pending, which a
+// loaded host can stretch past many cycles. Nothing measures lateness then, so a catch-up's jump is skipped as outside
+// a drop, and counted on the timeline: once it anchors, the late skip does not skip that time again.
+TEST_CASE("A catch-up while the drop's finish cannot be read yet skips its jump, and the late skip counts it",
+          "[sendspin][code]") {
+	const ear::FrameClock clock(ear::SampleRate::fixed<rate>());
+	HandOver rig(220'000 * HandOver::msNs);
+	rig.write();
+	rig.cycle();
+	for (int at = 0; at < 2000; at += 5) {
+		fakeRaw += 5 * HandOver::msNs;
+		rig.write();
+	}
+	const Feed::Dropped drop = rig.feed.dropped();
+	REQUIRE(drop.total > 0);
+	rig.feed.holdMidPublish(true); // the writer preempted inside a drop's publish
+	fakeRaw += 5 * HandOver::msNs;
+	ear::CycleFacts drive;
+	drive.causes = ear::CycleCause::drive;
+	rig.cycle(drive);
+	REQUIRE(rig.code.lastStale());
+	CHECK_FALSE(rig.code.lastAnchored());
+	CHECK_FALSE(rig.code.lastResumeFacts().has_value());
+	REQUIRE(rig.write() == capacity); // the ring refilled
+	constexpr std::uint32_t jump = 512;
+	fakeRaw += clock.ns(block + jump);
+	ear::CycleFacts caughtUp;
+	caughtUp.causes = ear::CycleCause::catchUp;
+	caughtUp.jumpFrames = jump;
+	rig.cycle(caughtUp);
+	CHECK_FALSE(rig.code.lastAnchored());
+	CHECK(rig.code.lastSkipped() == jump);
+	CHECK(rig.code.lastResumeSkipped() == 0);
+	rig.feed.holdMidPublish(false);
+	fakeRaw += clock.ns(block);
+	rig.cycle();
+	REQUIRE(rig.code.lastAnchored());
+	REQUIRE(rig.code.lastResumeFacts().has_value());
+	CHECK(rig.code.lastResumeFacts()->finishRawNs == drop.finishRawNs);
+	// Late by this cycle's run on the drop's timeline, less what the catch-up consumed: its jump and its block.
+	const std::int64_t late =
+		clock.framesNearest(std::chrono::nanoseconds{fakeRaw + clock.ns(HandOver::held) - drop.finishRawNs}) -
+		(jump + block);
+	REQUIRE(late > 0);
+	REQUIRE(late < capacity - jump - block);
+	CHECK(rig.code.lastResumeSkipped() == late);
+	CHECK(rig.code.lastSkipped() == 0);
+}
+
+// docs/testing.md: the judge models the drop's timeline from the facts the code read in its cycle
+// (SendspinCode::lastResumeFacts), not from a read after it: a clear between the two would make them disagree.
+TEST_CASE("The drop's facts a cycle used are its own read, which a later clear does not move", "[sendspin][code]") {
+	HandOver rig(240'000 * HandOver::msNs);
+	rig.stopAndStart();
+	REQUIRE(rig.code.lastAnchored());
+	const auto used = rig.code.lastResumeFacts();
+	REQUIRE(used.has_value());
+	CHECK(used->total > used->forgotten);
+	rig.feed.clear(); // on_stream_end, after the cycle
+	const Feed::Dropped after = rig.feed.dropped();
+	CHECK(after.total == after.forgotten);
+	CHECK(rig.code.lastResumeFacts()->forgotten == used->forgotten);
+}
+
+TEST_CASE("A clear while the drop's finish cannot be read yet ends the timeline, by the facts the cycle read",
+          "[sendspin][code]") {
+	const ear::FrameClock clock(ear::SampleRate::fixed<rate>());
+	HandOver rig(260'000 * HandOver::msNs);
+	rig.write();
+	rig.cycle();
+	for (int at = 0; at < 2000; at += 5) {
+		fakeRaw += 5 * HandOver::msNs;
+		rig.write();
+	}
+	rig.feed.holdMidPublish(true);
+	fakeRaw += 5 * HandOver::msNs;
+	ear::CycleFacts drive;
+	drive.causes = ear::CycleCause::drive;
+	rig.cycle(drive);
+	REQUIRE(rig.code.lastStale());
+	REQUIRE_FALSE(rig.code.lastResumeFacts().has_value());
+	rig.feed.clear(); // the stream ends while the timeline is pending
+	rig.feed.holdMidPublish(false);
+	fakeRaw += clock.ns(block);
+	rig.cycle();
+	const auto used = rig.code.lastResumeFacts();
+	REQUIRE(used.has_value());
+	CHECK(used->total == used->forgotten);
+	CHECK_FALSE(rig.code.lastAnchored());
+}

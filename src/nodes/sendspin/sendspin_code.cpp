@@ -22,12 +22,13 @@ void SendspinCode::process(std::span<const std::span<float>> outputs, std::uint3
 	const bool movedOn = facts.causes.has(CycleCause::catchUp) || facts.causes.has(CycleCause::absent);
 	// A clear ends the stream: what this side read twice of it (below) was of a stream the library forgot, and a drop's
 	// timeline it follows is kept only if the writer has dropped some of the next stream since (docs/node-types.md#clock).
+	lastResumeFacts_.reset();
 	const bool cleared = feed_.takeCleared();
 	if (cleared) {
 		countedTwice_ = 0;
 		if (resume_ != Resume::none) {
-			const auto dropped = feed_.tryDropped();
-			if (dropped && dropped->total == dropped->forgotten) resume_ = Resume::none;
+			lastResumeFacts_ = feed_.tryDropped();
+			if (lastResumeFacts_ && lastResumeFacts_->total == lastResumeFacts_->forgotten) resume_ = Resume::none;
 		}
 	}
 	// Both tellers date by when a frame is heard, so the feed's writer dates its drops with what lies downstream too.
@@ -39,7 +40,8 @@ void SendspinCode::process(std::span<const std::span<float>> outputs, std::uint3
 	// what the feed held then with it, and the notifier told both: this cycle takes the feed back (after the stamp, so
 	// a writer it refuses waits on the ring again), skips that as stale, and does not count it again. What this side read
 	// of it in the instant the writer began is counted twice; as many of its next frames go uncounted. The drop covered
-	// the graph's lost time, so this cycle skips nothing for its jump, nor does any while the drop's timeline holds (below).
+	// the graph's lost time, so this cycle skips nothing for its jump, nor does any once the drop's timeline is anchored
+	// (below).
 	lastStaleSkipped_ = 0;
 	lastStale_ = false;
 	if (const auto stale = feed_.skipStale()) {
@@ -55,9 +57,10 @@ void SendspinCode::process(std::span<const std::span<float>> outputs, std::uint3
 	// finish is final; read once the writer is not mid-publish, and kept only while the library still counts drops of
 	// this stream (a clear since they began makes it forget them).
 	if (resume_ == Resume::pending) {
-		if (const auto dropped = feed_.tryDropped()) {
-			resume_ = dropped->total > dropped->forgotten ? Resume::anchored : Resume::none;
-			resumeFromRawNs_ = dropped->finishRawNs;
+		lastResumeFacts_ = feed_.tryDropped();
+		if (lastResumeFacts_) {
+			resume_ = lastResumeFacts_->total > lastResumeFacts_->forgotten ? Resume::anchored : Resume::none;
+			resumeFromRawNs_ = lastResumeFacts_->finishRawNs;
 		}
 	}
 	// The drop's timeline lasts a feed's worth of cycles at most: a library that keeps pace writes its frames ahead of
@@ -66,9 +69,11 @@ void SendspinCode::process(std::span<const std::span<float>> outputs, std::uint3
 	// would cost the gap's length of fresh audio, told played.
 	if (resume_ != Resume::none && ranSinceResume_ >= feed_.capacityFrames()) resume_ = Resume::none;
 	lastHeldAtStart_ = feed_.held();
-	// While the drop's timeline holds, the late skip below, measured from the time a frame is heard, already covers the
-	// graph's lost time: a jump skipped as well would skip that time twice.
-	lastSkipped_ = !cleared && !lastStale_ && resume_ == Resume::none && movedOn && facts.jumpFrames > 0
+	// Anchored, the late skip below, measured from the time a frame is heard, already covers the graph's lost time: a
+	// jump skipped as well would skip that time twice. Still pending (the writer mid-publish, which a loaded host can
+	// stretch past many cycles), nothing measures lateness yet, so the jump is skipped as outside a drop, and counted
+	// consumed on the timeline, so a late skip once it anchors does not skip it again.
+	lastSkipped_ = !cleared && !lastStale_ && resume_ != Resume::anchored && movedOn && facts.jumpFrames > 0
 	                   ? feed_.skip(static_cast<std::uint64_t>(facts.jumpFrames))
 	                   : 0;
 	// Back after a drop, each frame keeps the time the drop gave it: what is heard by this cycle's run and not consumed
@@ -86,7 +91,7 @@ void SendspinCode::process(std::span<const std::span<float>> outputs, std::uint3
 	}
 	const std::uint32_t got = feed_.read(outputs, frames);
 	if (resume_ != Resume::none) {
-		consumedSinceResume_ += std::uint64_t{lastResumeSkipped_} + got;
+		consumedSinceResume_ += std::uint64_t{lastSkipped_} + lastResumeSkipped_ + got;
 		ranSinceResume_ += frames;
 		if (resume_ == Resume::anchored && got > 0 && late <= static_cast<std::int64_t>(lastResumeSkipped_))
 			resume_ = Resume::none;

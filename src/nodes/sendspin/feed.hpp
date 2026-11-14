@@ -84,6 +84,13 @@ public:
 	Dropped dropped() const noexcept;
 	/// Realtime: the same in one attempt, or nothing while the writer is publishing a drop.
 	std::optional<Dropped> tryDropped() const noexcept;
+	/// Test seam, never while write() runs: holds the drop's sequence count odd, as a writer preempted mid-publish
+	/// would, until called again with false, so a test makes tryDropped() find nothing for as long as it likes (and
+	/// dropped() wait for it).
+	void holdMidPublish(bool held) noexcept {
+		if (((dropSeq_.load(std::memory_order_relaxed) & 1U) != 0) != held)
+			dropSeq_.fetch_add(1, std::memory_order_acq_rel);
+	}
 	/// Test seam: what the writer counted stale as it last began dropping (what the feed held then).
 	std::uint32_t lastStaleFrames() const noexcept { return lastStaleFrames_.load(std::memory_order_acquire); }
 	/// Whether a writer has said it waits and no read has woken it yet: the tests' window on the wake.
