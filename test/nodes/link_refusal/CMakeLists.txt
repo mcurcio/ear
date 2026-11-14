@@ -1,5 +1,5 @@
-# Run by the ear_node_type_link_* tests (test/nodes/CMakeLists.txt): two node types and a helper library, linked as
-# EAR_LINK says. The check is asked for before any link is made, as src/nodes asks before later directories are read, so
+# Run by the ear_node_type_link_* tests (test/nodes/CMakeLists.txt): two node types, a helper library and the two
+# packages no type may link (ear_runtime, ear_pipewire), linked as EAR_LINK says. The check is asked for before any link is made, as src/nodes asks before later directories are read, so
 # every refusal here is of a link made after it. No languages, so it configures in moments.
 cmake_minimum_required(VERSION 3.28...4.2)
 project(LinkRefusal LANGUAGES NONE)
@@ -11,6 +11,9 @@ ear_refuse_node_type_links(a c)
 
 add_library(ear_helper INTERFACE)
 add_library(ear_alias ALIAS ear_node_c)
+add_library(ear_runtime INTERFACE)
+add_library(ear_pipewire INTERFACE)
+add_library(ear_runtime_alias ALIAS ear_runtime)
 if(EAR_LINK STREQUAL "direct")
 	target_link_libraries(ear_node_a INTERFACE ear_node_c)
 elseif(EAR_LINK STREQUAL "helper")
@@ -29,6 +32,21 @@ elseif(EAR_LINK STREQUAL "alias-in-generator-expression")
 elseif(EAR_LINK STREQUAL "helper-in-generator-expression")
 	target_link_libraries(ear_node_a INTERFACE $<BUILD_INTERFACE:ear_helper>)
 	target_link_libraries(ear_helper INTERFACE ear_node_c)
+elseif(EAR_LINK STREQUAL "runtime")
+	target_link_libraries(ear_node_a INTERFACE ear_runtime)
+elseif(EAR_LINK STREQUAL "runtime-through-helper")
+	target_link_libraries(ear_node_a INTERFACE ear_helper)
+	target_link_libraries(ear_helper INTERFACE ear_runtime)
+elseif(EAR_LINK STREQUAL "runtime-alias")
+	target_link_libraries(ear_node_a INTERFACE ear_runtime_alias)
+elseif(EAR_LINK STREQUAL "pipewire")
+	target_link_libraries(ear_node_a INTERFACE ear_pipewire)
+elseif(EAR_LINK STREQUAL "pipewire-in-generator-expression")
+	target_link_libraries(ear_node_a INTERFACE $<BUILD_INTERFACE:ear_pipewire>)
+elseif(EAR_LINK STREQUAL "packages-from-a-test-program")
+	# Not a type's library: a type's test program may link the engine and the runtime (sendspin's does).
+	add_library(ear_node_a_tests INTERFACE)
+	target_link_libraries(ear_node_a_tests INTERFACE ear_node_a ear_runtime ear_pipewire)
 elseif(NOT EAR_LINK STREQUAL "none")
 	message(FATAL_ERROR "Unknown EAR_LINK: ${EAR_LINK}")
 endif()

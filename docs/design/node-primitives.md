@@ -152,10 +152,27 @@ teardown ended, and a call after its detach is dropped. The harness gains `logs(
 `source.hpp` states). `LoopAdapter::make` takes a `ReadyEvents&` (an item of step 2). Dedicated threads are named
 `ear-<name> <node>`, as today's are.
 
-**The I/O executor** (S3c.2): `class IoExecutor : public Executor` in core, and `IoThread` in `ear_runtime`. A job
-holds `shared_ptr`s to what it fills, and its completion is a call taken from the configuration's `Channel`. So a
-completion for a configuration that ended is dropped by the `Channel`, and a descriptor the job opened is closed by
-the job's own destructor.
+**The I/O executor** (S3c.2, built: `docs/architecture.md#threads`): `class IoExecutor : public Executor` in core, and
+`IoThread` in `ear_runtime`. A job holds `shared_ptr`s to what it fills, and its completion is a call taken from the
+configuration's `Channel`. So a completion for a configuration that ended is dropped by the `Channel`, and a descriptor
+the job opened is closed by the job's own destructor. *Found building S3c.2:* the call taken from the `Channel` is the
+configuration's `detail::Completions` (`src/core/completions.hpp`, private): an `Executor` whose work lands on the main
+loop in order and runs only while the configuration is attached, destroyed unrun after the detach. Every report the
+`Channel` already posted (`say`, `lost`, `threw`, the run object's close) rides it, so there is one drop rule, and the
+`Channel`'s own attached flag is its. No job posts yet: S3c.4's `ReadyEvents` is the first to hand it to a job, so
+`ReadyEvents` may be called from the I/O thread (it crosses through `Completions`) rather than "main thread". NodeHost
+takes no executor: the adapters that run jobs (S3c.4's `ConfinedStores`, S3c.5b's recordings adapter) hold the
+`IoExecutor&` main.cpp gives them, so `ResourceAdapters` has no executor member. `IoExecutor` adds
+`post(std::string job, work)`, the name the stop's record gives (`post(work)` is `"a job"`). A job that throws is
+`std::terminate`. `IoThread::stop(grace)` destroys the queued jobs on the stopping thread and returns the running job's
+name if it outlives `grace` (2 s); main.cpp says the record before `ear: stopped` and leaves through `std::_Exit(0)`
+after it, as for a leak. `ResourceAdapters` is a struct of nullable pointers, and `ResourceRegistry` keeps its two
+reference constructors (every kind; every kind but recordings) over it, so no test's setup changed (15's cost is not
+paid). A missing kind is refused at the context call that asks for it, as an adapter's refusal: `start-failed:
+configure threw: no <kind> in this host` (an engine companion at its ask, since its adapter may not tell `lost` inside
+`make`); a missing recordings adapter still answers `no recordings folder`, today's text. The refused packages are
+fixed inside `ear_refuse_node_type_links` (`ear_runtime`, `ear_pipewire`), so its every caller gets them; a type's
+test program may still link either.
 
 **Stores** (S3c.4): 6.7 as written, with `StoreAdapter::open` taking a `ReadyEvents&`.
 

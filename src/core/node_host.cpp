@@ -85,6 +85,7 @@
 #include "ear/core/node_lifecycle.hpp"
 #include "ear/core/pass_through.hpp"
 #include "caught.hpp"
+#include "completions.hpp"
 #include "note_gate.hpp"
 #include "readiness.hpp"
 
@@ -254,9 +255,9 @@ std::string_view waitingKindName(WaitingFor::Kind kind) noexcept {
 	return "unknown";
 }
 
-ResourceRegistry::ResourceRegistry(SoundCardCompanions& cards, RtpReceiverCompanions& receivers,
-                                   HandoffAdapter& handoffs, SinkAdapter& sinks, SourceAdapter& sources) noexcept
-	: ResourceRegistry(cards, receivers, handoffs, sinks, sources, noRecordings) {}
+RecordingAdapter& ResourceRegistry::adapterFor(const RecordingRequest&) const noexcept {
+	return adapters_.recordings != nullptr ? *adapters_.recordings : noRecordings;
+}
 
 struct NodeHost::Impl {
 	/// PipeWire's object changes a turn queues, in the order a flush runs them: destroys (engine companions, then
@@ -498,7 +499,10 @@ struct NodeHost::Impl {
 			target.blockId = block_->blockId(); // ready, so read
 			try {
 				companion.made = std::visit(
-					[&](const auto& shape) { return host_.resources.adapterFor(shape).make(target, shape, companion); },
+					// Asked only where the host has the kind's adapter (askEngineCompanion).
+					[&](const auto& shape) {
+						return host_.resources.adapterFor(shape)->make(target, shape, companion);
+					},
 					asked.shape);
 			} catch (...) {
 				// An adapter refuses through lost(), never by a throw, so one that throws has a bug of its own; the
@@ -586,7 +590,7 @@ struct NodeHost::Impl {
 				requireOneName(name_ + "." + found.name);
 				requireFreeBank(found);
 				Configuration& c = *config_;
-				SinkAdapter& sinks = host_.resources.sinks();
+				SinkAdapter& sinks = given(host_.resources.sinks(), "sinks");
 				std::unique_ptr<Sink> made = adapter("SinkAdapter::make", [&] {
 					auto sink = sinks.make(name_, found.name, static_cast<std::uint32_t>(found.ports.size()),
 					                       shape.frames, host_.format.rate);
@@ -619,7 +623,7 @@ struct NodeHost::Impl {
 				requireOneName(name_ + "." + found.name);
 				requireFreeBank(found);
 				Configuration& c = *config_;
-				SourceAdapter& sources = host_.resources.sources();
+				SourceAdapter& sources = given(host_.resources.sources(), "sources");
 				std::unique_ptr<Source> made = adapter("SourceAdapter::make", [&] {
 					auto source = sources.make(name_, found.name, static_cast<std::uint32_t>(found.ports.size()),
 					                           shape.frames, host_.format.rate, std::move(clock));
@@ -669,7 +673,7 @@ struct NodeHost::Impl {
 							auto& caught =
 								*config_->handoffConsumers.emplace_back(std::make_unique<GuardedHandoffConsumer>(
 									*handoff.consumer, config_->channel, bank.name));
-							HandoffAdapter& handoffs = host_.resources.adapterFor(handoff);
+							HandoffAdapter& handoffs = given(host_.resources.adapterFor(handoff), "handoffs");
 							auto& made = config_->handoffs.emplace_back(adapter("HandoffAdapter::make", [&] {
 								auto made = handoffs.make(name_, static_cast<std::uint32_t>(bank.ports.size()),
 						                                  handoff.capacityFrames, caught);
@@ -705,6 +709,15 @@ struct NodeHost::Impl {
 				if (refused_ != nullptr && std::current_exception() == refused_) throw;
 				throw recordFault(FaultOwner::host, {});
 			}
+		}
+
+		/// The host's adapter of a kind, from inside a context call; for a kind the host has none of (a test's host), the
+		/// node's refusal "no <kind> in this host", recorded and thrown as an adapter's refusal is (adapter()).
+		template <class Adapter> Adapter& given(Adapter* found, std::string_view kind) {
+			if (found != nullptr) return *found;
+			return adapter("ResourceRegistry", [&]() -> Adapter& {
+				throw std::runtime_error("no " + std::string(kind) + " in this host");
+			});
 		}
 
 		/// Calls an adapter from inside a context call. What it throws is told apart by its class, as only an adapter's
@@ -780,17 +793,17 @@ struct NodeHost::Impl {
 			/// clock the note rate counts on.
 			Channel(Node& node, Executor& mainLoop, Timers& timers, NodeName name, std::string type,
 			        std::vector<LogSink*> sinks)
-				: node_(&node), mainLoop_(mainLoop), name_(std::move(name)), type_(std::move(type)),
-				  sinks_(std::move(sinks)), gate_([&timers] { return timers.now(); }) {}
+				: node_(&node), completions_(std::make_shared<detail::Completions>(mainLoop)), name_(std::move(name)),
+				  type_(std::move(type)), sinks_(std::move(sinks)), gate_([&timers] { return timers.now(); }) {}
 			const NodeName& node() const noexcept override { return name_; }
 			/// Judged on the saying thread, so a note held back is never queued; posted under the gate's lock, so the
 			/// order notes pass the gate is the order they land in, `notes-dropped` just before the note it precedes.
 			void say(std::string text) override {
-				if (!attached_.load(std::memory_order_acquire)) return;
+				if (!completions_->attached()) return;
 				const std::scoped_lock lock(sayMutex_);
 				const std::optional<std::uint64_t> held = gate_.pass();
 				if (!held) return;
-				mainLoop_.post([self = shared_from_this(), held = *held, text = std::move(text)] {
+				completions_->post([self = shared_from_this(), held = *held, text = std::move(text)] {
 					Node* node = self->attachedNode();
 					if (node == nullptr) return;
 					if (held > 0) node->host_.noted(node->name_, detail::notesDropped(held));
@@ -798,7 +811,7 @@ struct NodeHost::Impl {
 				});
 			}
 			void lost(std::string detail) override {
-				mainLoop_.post([self = shared_from_this(), detail = std::move(detail)]() mutable {
+				completions_->post([self = shared_from_this(), detail = std::move(detail)]() mutable {
 					if (Node* node = self->attachedNode(); node != nullptr && !self->closing_)
 						node->insidesLost(std::move(detail));
 				});
@@ -807,7 +820,7 @@ struct NodeHost::Impl {
 			/// configuration that ended logs nothing, but for one entry that read the flag just before the detach
 			/// (the detach does not wait for a log in progress).
 			void log(LogEntry entry) override {
-				if (!attached_.load(std::memory_order_acquire)) return;
+				if (!completions_->attached()) return;
 				entry.node = name_;
 				if (entry.source.empty()) entry.source = type_;
 				for (LogSink* sink : sinks_) sink->log(entry);
@@ -815,7 +828,7 @@ struct NodeHost::Impl {
 			/// Any thread: a consumer of this configuration threw (ConsumerCalls). A fact, as a hook's throw is, while
 			/// facts reach the node; once its teardown began a log record, as a stop() that throws then is.
 			void threw(std::string detail) {
-				mainLoop_.post([self = shared_from_this(), detail = std::move(detail)]() mutable {
+				completions_->post([self = shared_from_this(), detail = std::move(detail)]() mutable {
 					Node* node = self->attachedNode();
 					if (node == nullptr) return;
 					if (self->closing_)
@@ -828,7 +841,7 @@ struct NodeHost::Impl {
 			/// Main thread. Nothing more of this configuration reaches the node.
 			void detach() noexcept {
 				node_ = nullptr;
-				attached_.store(false, std::memory_order_release);
+				completions_->detach();
 			}
 			/// The `closed` a handoff of this configuration gets: on the main thread, later.
 			std::move_only_function<void(std::uint64_t)> handoffClosedCall() {
@@ -860,7 +873,7 @@ struct NodeHost::Impl {
 						self->closedInside_ = true;
 						return;
 					}
-					self->mainLoop_.post([self] {
+					self->completions_->post([self] {
 						if (Node* node = self->attachedNode()) node->runClosed();
 					});
 				};
@@ -883,11 +896,12 @@ struct NodeHost::Impl {
 			/// Main thread: the node, while this configuration is attached.
 			Node* attachedNode() const noexcept { return node_; }
 			Node* node_; // main thread only
-			Executor& mainLoop_;
+			/// The way back to the main loop for everything this configuration's threads tell, detached with node_; its
+			/// attached() is node_ for the threads that cannot read it. Slice 3c's I/O jobs report through it too.
+			const std::shared_ptr<detail::Completions> completions_;
 			const NodeName name_;    // a copy: a leaked configuration may outlive its node
 			const std::string type_; // a log entry's source when the type gave none
 			const std::vector<LogSink*> sinks_;
-			std::atomic<bool> attached_{true}; // node_ for the threads that cannot read it: false once detached
 			std::mutex sayMutex_;
 			detail::NoteGate gate_;     // sayMutex_
 			bool closing_ = false;      // main thread only
@@ -1351,6 +1365,8 @@ struct NodeHost::Impl {
 
 		/// Records an engine companion to make once the block is ready, under its one name, on a bank of its own.
 		template <class Shape> void askEngineCompanion(Shape shape, const Ports::Bank& bank) {
+			given(host_.resources.adapterFor(shape),
+			      std::is_same_v<Shape, SoundCardShape> ? "sound cards" : "RTP receivers");
 			const NodeName engineNode = name_ + "." + std::string(engineSuffix(shape, bank.direction));
 			requireOneName(engineNode);
 			requireFreeBank(bank);

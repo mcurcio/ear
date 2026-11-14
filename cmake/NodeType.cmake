@@ -1,5 +1,6 @@
-# What makes a folder in src/nodes/ a node type, and the rule that no type links another. Function definitions only, so
-# a project with no languages can include this file (test/nodes/link_refusal does).
+# What makes a folder in src/nodes/ a node type, and the rule that no type links another, nor the framework's packages
+# that only main.cpp links. Function definitions only, so a project with no languages can include this file
+# (test/nodes/link_refusal does).
 
 # ear_node_type(SOURCES <file>... TESTS <file>...), called from src/nodes/<type>/CMakeLists.txt. The folder names the
 # type: the library ear_node_<type> with the checked header include/ear/nodes/<type>.hpp and, with BUILD_TESTS, the
@@ -48,9 +49,11 @@ function(ear_node_type)
 endfunction()
 
 # ear_refuse_node_type_links(<type>...): stops configure, once the whole project has been read, if the library of one of
-# these types reaches another's: directly, through a helper library, through an alias or from inside a generator
-# expression, whichever spelling, wherever the link was made. It reads library targets only, so a test program may link
-# what it needs. A generator expression is read for the targets it names, whatever its condition would come to.
+# these types reaches another's, or reaches ear_runtime or ear_pipewire (the framework's threads and the engine, which a
+# type reaches only through ear_core's interfaces, docs/architecture.md#packages): directly, through a helper library,
+# through an alias or from inside a generator expression, whichever spelling, wherever the link was made. It reads
+# library targets only, so a test program may link what it needs. A generator expression is read for the targets it
+# names, whatever its condition would come to.
 function(ear_refuse_node_type_links)
 	# Deferred calls expand their arguments when they run, in that directory, so the list is written into the call now.
 	cmake_language(EVAL CODE
@@ -58,6 +61,7 @@ function(ear_refuse_node_type_links)
 endfunction()
 
 function(ear_refuse_node_type_links_now)
+	set(packages ear_runtime ear_pipewire)
 	set(libraries "")
 	foreach(type IN LISTS ARGN)
 		list(APPEND libraries ear_node_${type})
@@ -89,6 +93,10 @@ function(ear_refuse_node_type_links_now)
 						endif()
 						if(name IN_LIST libraries)
 							message(FATAL_ERROR "${start} links ${name} (through ${current}): no node type links another")
+						endif()
+						if(name IN_LIST packages)
+							message(FATAL_ERROR "${start} links ${name} (through ${current}): no node type links "
+								"${name}; a type reaches it only through ear_core's interfaces")
 						endif()
 						list(APPEND seen "${name}")
 						list(APPEND waiting "${name}")

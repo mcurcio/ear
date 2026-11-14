@@ -9,8 +9,8 @@ target_compile_definitions(ear_node_types_tests PRIVATE
 add_dependencies(ear_node_types_tests ear_all_node_types_verify_interface_header_sets)
 ear_catch_tests(ear_node_types_tests)
 
-# Configure stops when one node type links another, however it is spelled, and goes on when none does: link_refusal is a
-# project of its own, because the refusal stops the whole configure.
+# Configure stops when one node type links another, or links ear_runtime or ear_pipewire, however it is spelled, and
+# goes on when none does: link_refusal is a project of its own, because the refusal stops the whole configure.
 function(ear_node_type_link_test name link)
 	add_test(NAME ${name} COMMAND "${CMAKE_COMMAND}" -S "${CMAKE_CURRENT_SOURCE_DIR}/link_refusal"
 		-B "${CMAKE_CURRENT_BINARY_DIR}/${name}" "-DEAR_CMAKE_DIR=${PROJECT_SOURCE_DIR}/cmake" -DEAR_LINK=${link})
@@ -23,7 +23,18 @@ foreach(link direct link-only alias generator-expression nested-generator-expres
 	set_tests_properties(ear_node_type_link_refused_${link} PROPERTIES
 		PASS_REGULAR_EXPRESSION "ear_node_a links ear_node_c")
 endforeach()
+foreach(link runtime runtime-through-helper runtime-alias)
+	ear_node_type_link_test(ear_node_type_link_refused_${link} ${link})
+	set_tests_properties(ear_node_type_link_refused_${link} PROPERTIES
+		PASS_REGULAR_EXPRESSION "ear_node_a links ear_runtime \\(through [a-z_]+\\): no node type links[ \n]+ear_runtime;")
+endforeach()
+foreach(link pipewire pipewire-in-generator-expression)
+	ear_node_type_link_test(ear_node_type_link_refused_${link} ${link})
+	set_tests_properties(ear_node_type_link_refused_${link} PROPERTIES
+		PASS_REGULAR_EXPRESSION "ear_node_a links ear_pipewire \\(through [a-z_]+\\): no node type links[ \n]+ear_pipewire;")
+endforeach()
 ear_node_type_link_test(ear_node_type_link_allowed none)
+ear_node_type_link_test(ear_node_type_link_allowed_packages_from_a_test_program packages-from-a-test-program)
 
 add_test(NAME ear_node_types_none_refused COMMAND "${CMAKE_COMMAND}" -S "${CMAKE_CURRENT_SOURCE_DIR}/no_types"
 	-B "${CMAKE_CURRENT_BINARY_DIR}/ear_node_types_none_refused"

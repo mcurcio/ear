@@ -4804,6 +4804,55 @@ TEST_CASE("A sink with no consumer or two, on a bank that is no inside output, b
 	}
 }
 
+// docs/writing-a-node-type.md#configure-and-createof: a host with no adapter of a kind (a test's) refuses it where it is
+// asked, as an adapter's refusal is.
+TEST_CASE("A kind the host has no adapter for fails the node that asks for it start-failed \"no <kind> in this host\"",
+          "[node_host][resources]") {
+	Log codes;
+	struct Case {
+		std::string kind;
+		std::function<void(InstanceContexts&)> ask;
+	};
+	const std::vector<Case> cases{
+		{"sinks",
+	     [&](InstanceContexts& cx) {
+			 cx.create.sink("pb", SinkShape{.frames = 64}).consumedBy(std::make_unique<TestSinkConsumer>(codes));
+		 }},
+		{"sources",
+	     [](InstanceContexts& cx) { static_cast<void>(cx.create.source("cap", SourceShape{.frames = 64}, nullptr)); }},
+		{"sound cards", [](InstanceContexts& cx) { cx.create.soundCard("pb", motuOut.shape); }},
+		{"RTP receivers", [](InstanceContexts& cx) { cx.create.rtpReceiver("cap", fppStream); }},
+	};
+	for (const Case& asked : cases) {
+		INFO(asked.kind);
+		Log log;
+		QueueExecutor mainLoop;
+		TestBlocks blocks{log, mainLoop};
+		FakeTimers timers;
+		ResourceRegistry resources{ResourceAdapters{}};
+		NodeCatalogue catalogue{{}};
+		DesiredGraph graph{catalogue};
+		NodeHost host{
+			AudioFormat{ear::SampleRate::fixed<44100>(), 256}, blocks, resources, mainLoop, timers, closeDeadline};
+		auto config = std::make_shared<ProbeConfig>(log);
+		config->onConfigure = [&](InstanceContexts& cx) {
+			asked.ask(cx);
+			cx.create.use(std::make_unique<TestAudioCode>(codes));
+			return Configured::applied();
+		};
+		host.nodeAdded(NodeSpec{"n", "test", {}}, config);
+		mainLoop.runPosted();
+		REQUIRE(host.health().size() == 1);
+		CHECK(host.health()[0].state == NodeState::failed);
+		REQUIRE(host.health()[0].reason);
+		CHECK(host.health()[0].reason->code == FailureReason::Code::startFailed);
+		CHECK(host.health()[0].reason->detail == "configure threw: no " + asked.kind + " in this host");
+		host.stopAll(graph.close(), [] {});
+		mainLoop.settle();
+		CHECK(host.health().empty());
+	}
+}
+
 TEST_CASE("A sink's engine name is one of its configuration's: a sink on bank playback beside a playback card is "
           "refused",
           "[node_host][sink]") {

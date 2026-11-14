@@ -58,8 +58,9 @@ Each C++ package lives in `src/<package>/` with its own `CMakeLists.txt`, public
 | Target | Owns | Never |
 |---|---|---|
 | `ear_core` (`src/core`) | The desired graph (`DesiredGraph`: the one judge of every change, `plan` then `commit`); the node type contract (`NodeType`, settings tables, `TypeSpec`, the type's class and its contexts); the node framework (`NodeHost`, the node lifecycle machines, health, `NodeOperations`, the pass-through, companions, latency plans); the reconciler (route links and route status); levels; the graph read (`GraphStatus`); `FrameRing`. Beside it, for tests only, `ear_type_harness` (`ear/testing/`) | Any PipeWire call, socket, thread or file access. nlohmann/json is its only dependency |
+| `ear_runtime` (`src/runtime`) | The threads the node framework runs work on, behind `ear_core`'s interfaces: the I/O thread (`IoThread`, core's `IoExecutor`), the one thread for blocking work ([threads](#threads)) | Policy (what a job means is its caller's); PipeWire. No node type links it |
 | `ear_folder` (`src/folder`) | `ConfinedFolder`: a folder held open from boot, every path resolved beneath it by the kernel (`openat2` with `RESOLVE_BENEATH`); files replaced only if unchanged (`renameat2(RENAME_EXCHANGE)`); `requireApart`, the boot check that no two folders overlap | Following `..`, absolute paths or (for the graph file) any symlink |
-| `ear_node_white`, `ear_node_file`, `ear_node_card`, `ear_node_rtp`, `ear_node_sendspin` (`src/nodes/<type>`) | One built-in node type each ([node-types.md](node-types.md)) | Another node type; PipeWire (only `ear_core`'s interfaces) |
+| `ear_node_white`, `ear_node_file`, `ear_node_card`, `ear_node_rtp`, `ear_node_sendspin` (`src/nodes/<type>`) | One built-in node type each ([node-types.md](node-types.md)) | Another node type; PipeWire or the framework's threads (only `ear_core`'s interfaces: no type links `ear_pipewire` or `ear_runtime`) |
 | `ear_all_node_types` (`src/all_node_types`) | `allNodeTypes()`, the one list of node types, generated at configure from the folders in `src/nodes/` | Naming a type by hand |
 | `ear_pipewire` (`src/pipewire`) | The in-process engine and the adapters that implement `ear_core`'s interfaces: port blocks, links, live ports, sinks and handoffs, engine companions (sound cards, module-run converters: RTP receivers), the main-loop executor, the engine's log ([engine.md](engine.md)); the callback boundary every C callback ear gives PipeWire goes through ([below](#the-callback-boundary)) | Policy; a C callback registered outside the boundary |
 | `ear_output` (`src/output`) | Where standard output goes: the output thread, the capture of descriptors 1 and 2, the main-loop watchdog ([output-records.md](output-records.md)) | A record's text |
@@ -70,10 +71,10 @@ Each C++ package lives in `src/<package>/` with its own `CMakeLists.txt`, public
 | `web/` | The graph editor (React, React Flow, Vite; [editor.md](editor.md)) | Graph rules: it draws only what ear announced and never parses knobly |
 
 **Dependency rules.** Dependencies point one way: `ear_core` is below everything; the node types,
-`ear_pipewire`, `ear_control` and `ear_config` depend on it; `ear_control` is below `ear_server`
-and `ear_config`; `ear_folder` is below `ear_node_sendspin` and `ear_config`; `ear` links all of
-them, and links the node types only through `ear_all_node_types`. No node type links another
-(configure refuses it). `ear_output` and `ear_folder` depend on nothing of ear's. No Boost,
+`ear_runtime`, `ear_pipewire`, `ear_control` and `ear_config` depend on it; `ear_control` is below
+`ear_server` and `ear_config`; `ear_folder` is below `ear_node_sendspin` and `ear_config`; `ear`
+links all of them, and links the node types only through `ear_all_node_types`. No node type links
+another, nor `ear_runtime` or `ear_pipewire` (configure refuses each, `cmake/NodeType.cmake`). `ear_output` and `ear_folder` depend on nothing of ear's. No Boost,
 knobly or sendspin-cpp type appears in a public header.
 
 **An interface lives with the package that consumes it.** `node_host.hpp` declares
@@ -97,6 +98,7 @@ the main loop by posting.
 | PipeWire's main loop (the main thread) | Every piece of graph state: the engine, desired graph, node framework, reconciler, adapters, the gateway's graph side, the keeper's main-loop side; `ear.conf`'s first read at boot |
 | The control thread | Port 7777: sockets, JSON-RPC, sessions, queues. It holds only the gateway, which sends every request whole to the keeper and gets replies and events back in order from the main loop |
 | The keeper thread | The graph file keeper: every request, disk check and write, one step at a time; the working copy (knobly's object, which never leaves this thread); the inotify watch. It waits in `poll()` with no timeout |
+| The I/O thread (`ear-io`) | The framework's blocking work, off the main loop and every node's threads, one job at a time in post order (`IoThread`, `ear_runtime`). Nothing posts to it yet: slice 3c's stores and recordings will open there ([design](design/node-primitives.md#03-the-interfaces-as-they-must-now-be)). A job holds by `shared_ptr` what it fills and reports through its configuration's channel ([teardown](#teardown-by-dependency)), so one whose configuration ended reports nothing and what it opened is closed with it |
 | Sink and handoff threads | A `file` node's sink (its WAV writer); a `sendspin` node's legacy handoff |
 | The output thread | Every write to the real standard output, from a bounded queue |
 | The capture thread | Reads the pipes on descriptors 1 and 2 into `log` records, and drains the engine's log ring |
@@ -620,7 +622,8 @@ next `configure`, so a node has one configuration at a time and never waits on i
 Anything a configuration's threads tell lands only on that configuration, never on the next: each
 configuration has one channel to the main loop, which every report from another thread rides (its
 node handle's notes, losses and log entries, [writing-a-node-type.md](writing-a-node-type.md#the-node-handle);
-a sink's or handoff's begun and closed; a consumer's throw; a run object's closed), and which is
+a sink's or handoff's begun and closed; a consumer's throw; a run object's closed; an I/O job's
+completion), and which is
 detached on every path that ends the configuration (it closed, it failed to start, or it was
 leaked), before the next can begin. That detach is the configuration's generation: nothing
 queued, or said later through a kept handle, reaches the node after it. Facts (a loss, a throw)
@@ -699,13 +702,18 @@ engine that does not start, a folder watch it cannot arm, or a control port it c
 5. The main thread joins the keeper's thread, which first writes the last accepted version of
    `ear.conf` if it was not written yet (a failure is a `graph-file-write-failed` record; a hung
    disk delays exit without limit).
-6. ear writes its last record, `exit` with status 0 (`ear: stopped`,
+6. The I/O thread stops: jobs still queued are dropped unrun, and the one in flight gets 2 s. One
+   still running then is a `log` record (`source` `ear`, `warn`:
+   `the I/O thread was still busy at exit: <job>`), and its thread is never waited for.
+7. ear writes its last record, `exit` with status 0 (`ear: stopped`,
    [output-records.md](output-records.md#exit)).
-7. Every queued record is written; ear exits 0 (through `std::_Exit(0)` if anything was leaked).
+8. Every queued record is written; ear exits 0 (through `std::_Exit(0)` if anything was leaked or
+   the I/O thread was still busy).
 
 *Why stop in this order:* recordings are finished before anything waits on the disk, and the
 last `ear.conf` write happens before Kubernetes' grace period ends whatever the data loop or a
-card does.
+card does. The I/O thread stops last because every node, and the keeper, may post to it until
+they are gone; a hung disk under its job delays exit by 2 s at most.
 
 *Why the descriptor closes at step 2:* closing an inotify descriptor waits for the kernel's mark
 reaper, a delayed work item and an RCU grace period that is host-wide: the close waits on any

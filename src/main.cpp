@@ -6,7 +6,7 @@
 // (docs/output-records.md): from then on everything on standard output is one JSON record a line, from the one encoder
 // (StatusLog), written by the output thread. Stopping closes the graph to edits, stops the keeper taking edits, stops
 // every node, then closes the control port, stops the control thread and ends the main loop; the keeper's last write
-// runs as its thread is joined, and the record `ear: stopped` ends the stop.
+// runs as its thread is joined, the I/O thread stops last, and the record `ear: stopped` ends the stop.
 
 #include <array>
 #include <chrono>
@@ -56,6 +56,7 @@
 #include "ear/pipewire/rtp_receivers.hpp"
 #include "ear/pipewire/sound_cards.hpp"
 #include "ear/pipewire/sources.hpp"
+#include "ear/runtime/io_thread.hpp"
 #include "ear/server/control_port.hpp"
 #include "ear/server/control_thread.hpp"
 
@@ -280,7 +281,7 @@ int main(int argc, char** argv) {
 	const ear::AudioFormat format = first.format().value_or(ear::AudioFormat{*flagRate, *flagBlock});
 
 	// Declaration order is boot order; destruction runs the other way: port, gateway, keeper, core,
-	// adapters, control thread, main-loop executor, engine.
+	// adapters, control thread, main-loop executor, I/O thread, engine.
 	// Where the engine's callback boundary reports a caught exception, split by owner
 	// (docs/architecture.md#faults-by-owner): the record first; a fault no adapter owns then has the capture write out
 	// what is queued (the record among it) and what its pipes hold, then its line straight to the real standard error
@@ -297,6 +298,10 @@ int main(int argc, char** argv) {
 
 	const ear::pipewire::Scheduling scheduling = engine->dataThreadScheduling();
 	log.engineScheduling(scheduling.realtime, scheduling.detail);
+
+	// The framework's one thread for blocking work (docs/architecture.md#threads), before anything that posts to it and
+	// stopped after all of them; after Engine::create, so it inherits the blocked stop signals.
+	ear::runtime::IoThread io;
 
 	ear::pipewire::MainLoopExecutor mainLoop(*engine);
 	// The main-loop watchdog: its thread reads the heartbeat, asks MainLoopActivity where the loop is (ear_output sees
@@ -320,7 +325,12 @@ int main(int argc, char** argv) {
 	ear::DesiredGraph graph(catalogue);
 	ear::Reconciler reconciler(links);
 	ConfinedRecordings recordingFiles(std::move(*recordings));
-	ear::ResourceRegistry resources(cards, receivers, handoffs, sinks, sources, recordingFiles);
+	ear::ResourceRegistry resources(ear::ResourceAdapters{.cards = &cards,
+	                                                      .receivers = &receivers,
+	                                                      .handoffs = &handoffs,
+	                                                      .sinks = &sinks,
+	                                                      .sources = &sources,
+	                                                      .recordings = &recordingFiles});
 	ear::NodeHost nodes(format, blocks, resources, mainLoop, mainLoop);
 	const ear::GraphStatus status({format, scheduling.realtime, scheduling.detail}, catalogue, graph, nodes, reconciler,
 	                              engine.get());
@@ -410,6 +420,15 @@ int main(int argc, char** argv) {
 
 	// The keeper's last write runs as its thread ends; its failure reaches standard output only.
 	if (const auto failed = keeper.join()) log.graphFileWriteFailed(*failed);
+	// The I/O thread last, once nothing can post to it (every node gone, the keeper joined): what is queued is dropped,
+	// and the job in flight gets its grace. One still running after it is said; its thread cannot be waited for, so ear
+	// ends below as it does after a leak. ear.conf is written by now.
+	const std::optional<std::string> ioBusy = io.stop();
+	if (ioBusy)
+		log.log({.level = ear::LogLevel::warn,
+		         .source = "ear",
+		         .text = "the I/O thread was still busy at exit: " + *ioBusy,
+		         .cut = false});
 	// ear's last record: what follows is destruction and the kernel's teardown of the process, ear's work no more.
 	log.stopped();
 	// A run leaked past its close deadline may still post to the main loop or signal an engine source from its own
@@ -417,8 +436,9 @@ int main(int argc, char** argv) {
 	// it (docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog); destroying the executor and the engine
 	// under them would be a use after free or a hang. ear.conf is written by now, so end here without running
 	// destructors, once the output thread's queue (the diagnostics among it) is written out: standard output is a
-	// captured pipe now, so flushing std::cout would write nothing.
-	if (nodes.leaked() > 0) {
+	// captured pipe now, so flushing std::cout would write nothing. An I/O thread still busy is the same: its destructor
+	// would wait on the job for good.
+	if (nodes.leaked() > 0 || ioBusy) {
 		writer.spill();
 		std::_Exit(0);
 	}

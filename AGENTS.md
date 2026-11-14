@@ -116,7 +116,7 @@ Toolchain notes:
 
 | Path | Holds |
 |---|---|
-| `src/<package>/` | One C++ package each (`core`, `folder`, `pipewire`, `output`, `control`, `config`, `server`, `all_node_types`), with its own `CMakeLists.txt`, public headers in `include/ear/<package>/` and tests in `tests/` |
+| `src/<package>/` | One C++ package each (`core`, `runtime`, `folder`, `pipewire`, `output`, `control`, `config`, `server`, `all_node_types`), with its own `CMakeLists.txt`, public headers in `include/ear/<package>/` and tests in `tests/` |
 | `src/nodes/<type>/` | One node type each, its own library; a folder here registers its type and nothing else names it ([`docs/writing-a-node-type.md`](docs/writing-a-node-type.md) is how to add or remove one) |
 | `src/main.cpp` | The composition root: wiring, boot and stop order, glue |
 | `web/` | The graph editor; shares no code with the C++, only the wire format and `test/protocol/` |
@@ -126,8 +126,9 @@ Toolchain notes:
 
 The packages, what each owns and must never do, and the dependency rules are in
 [`docs/architecture.md#packages`](docs/architecture.md#packages); keep them: dependencies point
-one way, an interface lives with the package that consumes it, no node type links another
-(configure refuses it), and no Boost, knobly or sendspin-cpp type appears in a public header.
+one way, an interface lives with the package that consumes it, no node type links another, nor
+`ear_runtime` or `ear_pipewire` (configure refuses each), and no Boost, knobly or sendspin-cpp type
+appears in a public header.
 
 ## Conventions
 

@@ -6,6 +6,7 @@
 add_library(ear_core STATIC
 	command_error.cpp
 	companions.cpp
+	completions.cpp
 	counter_watch.cpp
 	cut_ring.cpp
 	desired_graph.cpp
@@ -46,6 +47,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/graph_spec.hpp
 	include/ear/core/graph_view.hpp
 	include/ear/core/internal_error.hpp
+	include/ear/core/io_executor.hpp
 	include/ear/core/latency.hpp
 	include/ear/core/levels.hpp
 	include/ear/core/lifecycle.hpp
@@ -91,6 +93,7 @@ if(BUILD_TESTS)
 
 	add_executable(ear_core_tests
 		tests/block_rules_test.cpp
+		tests/completions_test.cpp
 		tests/counter_watch_test.cpp
 		tests/cycle_counters_test.cpp
 		tests/cycle_facts_test.cpp
@@ -117,8 +120,8 @@ if(BUILD_TESTS)
 		tests/type_spec_test.cpp)
 	target_link_libraries(ear_core_tests PRIVATE ear_core ear_type_harness ear_latency_table ear_cycle_table ear_inducers
 		ear_catch_main)
-	# The readiness list and the note gate are private to ear_core (readiness.hpp, note_gate.hpp), and their rows test
-	# them directly.
+	# The readiness list, the note gate and a configuration's completions are private to ear_core (readiness.hpp,
+	# note_gate.hpp, completions.hpp), and their rows test them directly.
 	target_include_directories(ear_core_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 	add_dependencies(ear_core_tests ear_core_verify_interface_header_sets ear_type_harness_verify_interface_header_sets)
 	ear_catch_tests(ear_core_tests)

@@ -33,8 +33,10 @@ src/nodes/<type>/
   public header, or a stray file beside the folders in `src/nodes/`, stops configure.
 - Plain CMake after the call adds any outside library the type needs, `PRIVATE`, so no other
   target sees it (`target_link_libraries(ear_node_file PRIVATE PkgConfig::SNDFILE)`).
-- **No type links another**: configure refuses it once the whole project is read, through a helper
-  library, an alias or a generator expression too.
+- **No type links another, nor `ear_runtime` or `ear_pipewire`**: configure refuses it once the
+  whole project is read, through a helper library, an alias or a generator expression too. A type
+  reaches the engine and the framework's threads only through `ear_core`'s interfaces; its test
+  program may link what it needs.
 - **No type writes to standard output or error**: a CTest test refuses any file under `src/nodes/`
   that names `std::cout`, `std::cerr`, `stdout`, `stderr`, `printf`, `std::print` or writes to
   descriptor 1 or 2. A type speaks through notes (`say`) and failures (`lost`); see
@@ -136,6 +138,12 @@ optional row read as a plain value does not compile.
 Then answer `Configured::applied()`, or `Configured::failed(detail)` for what only the type can see
 (the node fails `start-failed: <detail>`). A `CreateOf` is valid only inside the `configure` it is
 handed to. What a type needs from outside it acquires here; a type's factory takes no arguments.
+
+Each call is served by the host's adapter of its kind (`ResourceAdapters`, one member per kind,
+`node_host.hpp`). ear's host has every kind; a host without one (a test's) refuses the call as an
+adapter's refusal is: the node fails `start-failed: configure threw: no <kind> in this host`
+(`sinks`, `sources`, `sound cards`, `RTP receivers`), and `openRecording` answers
+`no recordings folder`.
 
 ### The node handle
 

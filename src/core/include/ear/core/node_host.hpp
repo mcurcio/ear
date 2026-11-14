@@ -242,36 +242,47 @@ public:
 protected:
 	~RecordingAdapter() = default;
 };
+/// The adapter of each kind of companion and of ResourceRequest a host has
+/// (docs/writing-a-node-type.md#configure-and-createof): one member per kind, each null where the host has none, so a
+/// new kind is one member here and a host that does not need it (a test's) leaves it out. All given outlive the
+/// registry.
+struct ResourceAdapters {
+	SoundCardCompanions* cards = nullptr;
+	RtpReceiverCompanions* receivers = nullptr;
+	HandoffAdapter* handoffs = nullptr;
+	SinkAdapter* sinks = nullptr;
+	SourceAdapter* sources = nullptr;
+	RecordingAdapter* recordings = nullptr;
+};
 /// The resource registry (docs/writing-a-node-type.md#configure-and-createof): one adapter per kind of companion and
-/// of ResourceRequest, so a new kind is one adapter here and nothing more in NodeHost's constructor.
+/// of ResourceRequest, so a new kind is one adapter here and nothing more in NodeHost's constructor. A kind the host
+/// has no adapter for is refused at the context call that asks for it, as an adapter's refusal is: the node fails
+/// start-failed "no <kind> in this host" (a recording: the type is told "no recordings folder", as a recordings
+/// adapter tells why a path cannot be opened).
 class ResourceRegistry {
 public:
-	/// All outlive the registry.
+	explicit ResourceRegistry(const ResourceAdapters& adapters) noexcept : adapters_(adapters) {}
+	/// Every kind given.
 	ResourceRegistry(SoundCardCompanions& cards, RtpReceiverCompanions& receivers, HandoffAdapter& handoffs,
 	                 SinkAdapter& sinks, SourceAdapter& sources, RecordingAdapter& recordings) noexcept
-		: cards_(cards), receivers_(receivers), handoffs_(handoffs), sinks_(sinks), sources_(sources),
-		  recordings_(&recordings) {}
-	/// With no recordings folder: every recording is refused ("no recordings folder"). For hosts that run no "file"
-	/// node (tests).
+		: ResourceRegistry(ResourceAdapters{&cards, &receivers, &handoffs, &sinks, &sources, &recordings}) {}
+	/// Every kind but recordings, for hosts that run no "file" node (tests).
 	ResourceRegistry(SoundCardCompanions& cards, RtpReceiverCompanions& receivers, HandoffAdapter& handoffs,
-	                 SinkAdapter& sinks, SourceAdapter& sources) noexcept;
-	/// The engine companions' adapters (docs/engine.md#engine-companions).
-	SoundCardCompanions& adapterFor(const SoundCardShape&) const noexcept { return cards_; }
-	RtpReceiverCompanions& adapterFor(const RtpReceiverShape&) const noexcept { return receivers_; }
-	HandoffAdapter& adapterFor(const HandoffRequest&) const noexcept { return handoffs_; }
-	RecordingAdapter& adapterFor(const RecordingRequest&) const noexcept { return *recordings_; }
-	/// The sinks' adapter (CreateOf::sink; docs/writing-a-node-type.md#sinks).
-	SinkAdapter& sinks() const noexcept { return sinks_; }
-	/// The sources' adapter (CreateOf::source; docs/writing-a-node-type.md#sources).
-	SourceAdapter& sources() const noexcept { return sources_; }
+	                 SinkAdapter& sinks, SourceAdapter& sources) noexcept
+		: ResourceRegistry(ResourceAdapters{&cards, &receivers, &handoffs, &sinks, &sources, nullptr}) {}
+	/// The engine companions' adapters (docs/engine.md#engine-companions); null: the host has none.
+	SoundCardCompanions* adapterFor(const SoundCardShape&) const noexcept { return adapters_.cards; }
+	RtpReceiverCompanions* adapterFor(const RtpReceiverShape&) const noexcept { return adapters_.receivers; }
+	HandoffAdapter* adapterFor(const HandoffRequest&) const noexcept { return adapters_.handoffs; }
+	/// Never null: a host with no recordings folder answers every open "no recordings folder".
+	RecordingAdapter& adapterFor(const RecordingRequest&) const noexcept;
+	/// The sinks' adapter (CreateOf::sink; docs/writing-a-node-type.md#sinks); null: the host has none.
+	SinkAdapter* sinks() const noexcept { return adapters_.sinks; }
+	/// The sources' adapter (CreateOf::source; docs/writing-a-node-type.md#sources); null: the host has none.
+	SourceAdapter* sources() const noexcept { return adapters_.sources; }
 
 private:
-	SoundCardCompanions& cards_;
-	RtpReceiverCompanions& receivers_;
-	HandoffAdapter& handoffs_;
-	SinkAdapter& sinks_;
-	SourceAdapter& sources_;
-	RecordingAdapter* recordings_;
+	ResourceAdapters adapters_;
 };
 /// How long a run's teardown may wait on other threads (teardown steps 3 and 4) before the framework stops waiting.
 inline constexpr std::chrono::milliseconds defaultCloseDeadline{10'000};
