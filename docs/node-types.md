@@ -21,7 +21,9 @@ How every node starts, stops, fails and restarts is the framework's, the same fo
 problem a refusal names is stable: not an object; then an undeclared key (the first in sorted
 order); then each row in the table's order (missing, then a key given with one it may not be
 given with, then the kind and the range or meaning); then the type's own rule across settings. A
-whole number must be a JSON integer (`5004.5`, `"5004"` and `true` are not). Every refusal's text
+whole number must be a JSON integer (`5004.5`, `"5004"` and `true` are not), and so must a rate,
+in hertz (in `ear.conf` a rate is written with its unit:
+[graph-file.md](graph-file.md#rates)). Every refusal's text
 and order is tested in `test/nodes/settings_refusals_test.cpp`.
 
 ## `white`
@@ -110,7 +112,7 @@ node card mic  { card USB2; capture 1; }
 Receives one RTP audio stream from the network, such as FPP's.
 
 ```conf
-node rtp fpp { address "0.0.0.0"; port 5004; format "L24"; channels 2; rate 48000; latencyMs 100; }
+node rtp fpp { address "0.0.0.0"; port 5004; format "L24"; channels 2; rate 48khz; latencyMs 100; }
 ```
 
 | Key | Kind | Rule | Default | Refused with |
@@ -119,7 +121,7 @@ node rtp fpp { address "0.0.0.0"; port 5004; format "L24"; channels 2; rate 4800
 | `port` | whole number, required | 1 to 65535 | | `port: must be a whole number, 1-65535` |
 | `format` | text, required | `L16` or `L24` (big-endian PCM) | | `format: must be "L16" or "L24"` |
 | `channels` | whole number, required | 1 to 64 | | `channels: must be a whole number, 1-64` |
-| `rate` | whole number | 8000 to 192000 Hz, the sender's rate | the graph frequency | `rate: must be a whole number of Hz, 8000-192000` |
+| `rate` | rate | 8 kHz to 192 kHz, the sender's rate: `44.1khz` in `ear.conf`, `44100` (Hz) on the control port | the graph frequency | `rate: must be a rate from 8khz to 192khz (on the control port, a whole number of Hz)` |
 | `latencyMs` | whole number | 1 to 1000, the receive buffer | 100 | `latencyMs: must be a whole number of milliseconds, 1-1000` |
 
 - Outputs `stream.1`..`stream.N`; no inputs. The receiver, `<node>.rtp`, feeds the inside bank

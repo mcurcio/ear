@@ -1,6 +1,7 @@
 #include "ear/core/settings_table.hpp"
 
 #include "caught.hpp"
+#include "ear/core/rate_text.hpp"
 
 #include <algorithm>
 #include <utility>
@@ -85,6 +86,14 @@ std::expected<CheckedSettings, std::string> AnySettingsTable::walk(const NodeSet
 				return std::unexpected(notWithinRange(row->key, *number));
 			}
 			slot = value->get<std::uint32_t>();
+		} else if (const auto* rate = std::get_if<RateRule>(&row->rule)) {
+			const auto read = rateOfSetting(*value);
+			if (!read || *read < rate->low || *read > rate->high) {
+				return std::unexpected(std::string(row->key) + ": must be a rate from " +
+				                       rangeText(RateRange{rate->low, rate->high}) +
+				                       " (on the control port, a whole number of Hz)");
+			}
+			slot = *read;
 		} else {
 			const TextRule& text = std::get<TextRule>(row->rule);
 			if (value->is_string()) slot = text.read(value->get_ref<const std::string&>());

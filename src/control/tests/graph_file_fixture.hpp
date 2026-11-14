@@ -50,8 +50,10 @@ inline ear::NodeHealth health(const std::string& node, ear::NodeState state,
 }
 
 /// The record's file format example (docs/graph-file.md#edits-at-the-source).
-inline const std::string recordExample = R"(graph_frequency 48000;
-block_size 256;
+inline const std::string recordExample = R"(graph {
+    rate 48khz;
+    block_size 256;
+}
 @set $ch 2;                      # comments survive every edit
 @snippet card_out $id {          # written once, used by both cards
     card $id;
@@ -80,7 +82,7 @@ struct Texts {
 	std::string t7 = replaced(t2, "@set $ch 2;", "@set $ch 4;");
 	std::string t8 = replaced(t7, "take2.wav", "take3.wav");
 	std::string t9 = t7 + "route noise:noise.mono rec:FX;\n";
-	std::string t10 = replaced(t7, "graph_frequency 48000;", "graph_frequency 44100;");
+	std::string t10 = replaced(t7, "rate 48khz;", "rate 44.1khz;");
 	std::string t11 = replaced(t10, "take2.wav", "take4.wav");
 };
 
@@ -91,7 +93,7 @@ inline GraphFile file(std::string version, std::string text, std::optional<std::
 
 inline const Diagnostic includeUnsupported{Severity::error, "ear/include-unsupported",
                                            "@include is not supported yet: write the whole graph in ear.conf",
-                                           TextPlace{14, 1}};
+                                           TextPlace{16, 1}};
 
 /// graph-file.json's graph: the cards fail (no such card), noise and rec run.
 inline ear::GraphView graphView(int playback, const std::string& recPath) {

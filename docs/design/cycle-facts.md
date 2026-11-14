@@ -1805,9 +1805,9 @@ process and hand it a number in `ear.conf`.
 
 **Departures from 7.1, each to keep behaviour unchanged:**
 
-- **No upper bound in `SampleRate::of`.** 7.1 caps a rate at 768 kHz; `ear.conf` and `--graph-frequency` take 1 to
-  4,294,967,295 today, and `FrameClock` is exact over that range (`latency_test.cpp`'s oracle). A cap would refuse
-  files ear accepts now, so `of` refuses only 0. Capping is a behaviour change of its own, left for the owner.
+- **No upper bound in `SampleRate::of`.** 7.1 caps a rate at 768 kHz; `FrameClock` is exact up to 4,294,967,295
+  (`latency_test.cpp`'s oracle), so `of` refuses only 0. The cap is the graph file's and `--rate`'s, the owner's
+  decision since ([graph-file.md](../graph-file.md#rates)).
 - **`framesNearest` rounds the ns part alone.** `fromSpa` summed quanta, rate units and ns in `double` and rounded
   once; the ns part now rounds exactly in integers first. The result is the same whenever the quantum part is whole
   (every peer ear has seen reports whole quanta); a fractional quantum with a ns part can round one frame apart.

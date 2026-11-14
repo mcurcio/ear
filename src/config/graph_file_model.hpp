@@ -27,6 +27,7 @@ inline constexpr std::string_view includeUnsupportedCode = "ear/include-unsuppor
 inline constexpr std::string_view unknownDirectiveCode = "ear/unknown-directive";
 inline constexpr std::string_view badDirectiveCode = "ear/bad-directive";
 inline constexpr std::string_view missingDirectiveCode = "ear/missing-directive";
+inline constexpr std::string_view badRateCode = "ear/bad-rate";
 inline constexpr std::string_view tooLargeCode = "ear/too-large";
 inline constexpr std::string_view unwritableEditCode = "ear/unwritable-edit";
 /// ear.conf as read from disk: its text; std::nullopt when it is not there; or why it cannot be read.
@@ -45,7 +46,7 @@ class GraphFileModel;
 using EditOutcome = std::expected<std::optional<GraphFileModel>, EditRefusal>;
 struct GraphFileRead {
 	std::vector<control::Diagnostic> diagnostics; // knobly's in its order, then ear's in text order
-	std::optional<AudioFormat> format;            // both lines read, with no diagnostic placed on them
+	std::optional<AudioFormat> format;            // graph's rate and block_size read, no diagnostic placed on them
 	std::optional<GraphSpec> wanted;              // only when no diagnostic is an error
 	Placements placements;                        // empty when wanted is absent
 	bool hasErrors() const noexcept;

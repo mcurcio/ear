@@ -55,7 +55,7 @@ node card motu { card <card id>; playback 24; }
 
 `playback` and `capture` are channel counts (0 to 64, at least one above 0); the ports are
 `play.1`..`play.N` (inputs) and `capture.1`..`capture.M` (outputs). The card's rate is
-always the graph frequency (`graph_frequency` in `ear.conf`), never a setting.
+always the graph frequency (`graph { rate 48khz; ... }` in `ear.conf`), never a setting.
 
 ## 3. The MOTU's own settings
 
@@ -220,7 +220,7 @@ machine:
    freeze, run a watcher that pings the MOTU and exits after 2 missed pings (EAR does not notice:
    check 2).
 5. Latency (the owner: "under 10ms is obviously ideal"): one cycle is `block_size /
-   graph_frequency` (256 at 48 kHz is 5.3 ms). One way to measure the round trip: a loopback
+   rate` (256 at 48 kHz is 5.3 ms). One way to measure the round trip: a loopback
    cable from a MOTU output to an input it captures (the 24Ao is mostly outputs, so which input
    is **[check]**), a capture card node and a `file` node recording both; EAR has no latency
    tool yet, so the delay is read from the recording **[not designed yet]**.
@@ -318,7 +318,7 @@ owner, 2026-10-30: "If 100ms is the best rep can do, then so be it").
   address (its default, `224.0.0.56`, is multicast), `destination.port` = the node's `port` (its
   default is a random port from 46000), `audio.format` = `S16BE` for `L16` (its default) or
   `S24BE` for `L24`, `audio.channels` (default 2) and `audio.rate` (default 48000) as the node's
-  `channels` and `rate`. Leave `net.mtu` at 1280 or below: ear's receiver reads at most 1280
+  `channels` and `rate` (in `ear.conf` the rate takes its unit: `rate 48khz;`). Leave `net.mtu` at 1280 or below: ear's receiver reads at most 1280
   bytes a packet and garbles longer ones; the sender sizes its packets to its own `net.mtu`. Its
   SSRC changes when it restarts; ear hears it again. Prefer an IP literal for `destination.ip`
   (a name is looked up while the sender's loop waits).

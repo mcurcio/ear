@@ -317,6 +317,8 @@ public:
 enum class SettingKind {
 	text,        // JSON string; written quoted (knobly's quote), read with knobly's string reader
 	wholeNumber, // JSON integer; written as a bare word, read with knobly's integer reader
+	rate,        // JSON integer of hertz; written with its unit (rateText: 44.1khz), read with knobly's word reader
+				 // and readRate (docs/graph-file.md#rates)
 };
 struct SettingDeclaration {
 	std::string_view key;

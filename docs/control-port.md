@@ -246,7 +246,7 @@ type GraphFile = {
   diagnostics: Diagnostic[];    // any error means the file does not apply
   running?: string;             // the version the graph runs; absent: none yet
   refusal?: Refusal;            // the desired graph refused `version`
-  pendingRestart: ("graphFrequency" | "blockSize")[];  // the file's value differs from the engine's
+  pendingRestart: ("graphFrequency" | "blockSize")[];  // the graph block's rate or block_size differs from the engine's
   writeFailed?: string;         // the disk refused the last write
 };
 type GraphFileChanged = GraphFile & {

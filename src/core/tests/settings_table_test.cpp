@@ -56,6 +56,10 @@ constexpr SettingsTable<aOptional, bOptional, cOptional> optional{"t"};
 constexpr SettingsTable<plainRow, measuredRow, nameRow> numbers{"t"};
 constexpr SettingsTable<aRow, bNumber, cRow> required{"t"};
 constexpr SettingsTable<mRow, nRow, zRow> across{"t"};
+constexpr auto senderRow =
+	setting::optional("sender", setting::rate(ear::SampleRate::fixed<8'000>(), ear::SampleRate::fixed<192'000>()));
+constexpr SettingsTable<senderRow> rates{"t"};
+static_assert(rates.kinds()[0].key == "sender" && rates.kinds()[0].kind == rate);
 
 // The table is a constant, and so is what it declares.
 static_assert(numbers.kinds().size() == 3);
@@ -191,6 +195,22 @@ TEST_CASE("Reading a key the table lacks, or as the other kind, is a type's bug"
 	static_assert(std::same_as<decltype(checked->get<measuredRow>()), std::uint32_t>);
 	static_assert(std::same_as<decltype(checked->get<nameRow>()), std::optional<std::string>>);
 	CHECK(checked->get<plainRow>() == 7U);
+}
+
+TEST_CASE("A rate is a JSON whole number of Hz within the row's range, read as a SampleRate", "[settings-table]") {
+	const NodeSettings settings = {{"sender", 44'100}};
+	const auto checked = rates.check(settings);
+	REQUIRE(checked.has_value());
+	static_assert(std::same_as<decltype(checked->get<senderRow>()), std::optional<ear::SampleRate>>);
+	CHECK(checked->get<senderRow>() == ear::SampleRate::fixed<44'100>());
+	CHECK(rates.check(NodeSettings{{"sender", 8'000}}).has_value());
+	CHECK(rates.check(NodeSettings{{"sender", 192'000}}).has_value());
+	const std::string range = "sender: must be a rate from 8khz to 192khz (on the control port, a whole number of Hz)";
+	for (const std::string_view bad : {"7999", "192001", "0", "-48000", "48000.0", "48000.5", R"("48khz")",
+	                                   R"("48000")", "true", "null", "[]", "4294967296", "18446744073709551616"}) {
+		INFO(bad);
+		CHECK(refusal(rates, {{"sender", parsed(bad)}}) == range);
+	}
 }
 
 TEST_CASE("kinds() is every key once, in row order", "[settings-table]") {

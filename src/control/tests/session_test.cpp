@@ -853,7 +853,7 @@ TEST_CASE("graph-file.json: file changes come before the events they cause, and 
 	w.receive(session, requests[3]);
 	w.graph.script.push_back(
 		{"setGraphFile v2", refused(FileRefusal{InvalidText{{Diagnostic{
-								Severity::error, "E2001", "unexpected token: \"}\"", TextPlace{9, 34}}}}})});
+								Severity::error, "E2001", "unexpected token: \"}\"", TextPlace{11, 34}}}}})});
 	w.receive(session, requests[4]);
 	w.graph.script.push_back(
 		{"addRoute noise:noise.mono->rec:FX", refused(Result(std::unexpected(ear::UnknownPort{{"rec", "FX"}})))});
@@ -874,7 +874,7 @@ TEST_CASE("graph-file.json: file changes come before the events they cause, and 
 		w.gateway.nodeUpdated({"rec", "file", {{"path", "take2.wav"}}}, config(recPorts));
 	});
 
-	w.graph.script.push_back({R"(updateNode desk {"card":"MOTU"})", refused(FileRefusal{SharedDefinition{{6, 5}}})});
+	w.graph.script.push_back({R"(updateNode desk {"card":"MOTU"})", refused(FileRefusal{SharedDefinition{{8, 5}}})});
 	w.receive(session, requests[8]);
 
 	w.graph.script.push_back({R"(updateNode desk {"card":"MOTU","playback":4})", [&]() -> CommandResult {
@@ -903,7 +903,7 @@ TEST_CASE("graph-file.json: file changes come before the events they cause, and 
 		{R"(updateNode rec {"path":"take3.wav"})", recEdit(fx::file("v8", t.t8, "v8"), "take3.wav")});
 	w.receive(session, requests[10]);
 	GraphFile refusedByJudge = fx::file("v9", t.t9, "v8");
-	refusedByJudge.refusal = Refusal{ear::UnknownPort{{"rec", "FX"}}, TextPlace{14, 1}};
+	refusedByJudge.refusal = Refusal{ear::UnknownPort{{"rec", "FX"}}, TextPlace{16, 1}};
 	w.onMain([&] { w.fileChanged(refusedByJudge, FileChangeCause::disk, 1); });
 
 	GraphFile pending = fx::file("v10", t.t10, "v10");

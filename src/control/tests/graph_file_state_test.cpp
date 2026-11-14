@@ -107,11 +107,11 @@ TEST_CASE("Every graph-file.json message encodes as the fixture has it", "[graph
 	SECTION("the refusals") {
 		CHECK(resultOf(4, FileRefusal{FileChanged{}}) == m[5]);
 		CHECK(resultOf(5, FileRefusal{InvalidText{{Diagnostic{Severity::error, "E2001", "unexpected token: \"}\"",
-		                                                      TextPlace{9, 34}}}}}) == m[6]);
+		                                                      TextPlace{11, 34}}}}}) == m[6]);
 		CHECK(resultOf(6, std::expected<void, ear::CommandError>(std::unexpected(ear::UnknownPort{{"rec", "FX"}}))) ==
 		      m[7]);
 		CHECK(resultOf(7, FileRefusal{FileInvalid{}}) == m[9]);
-		CHECK(resultOf(9, FileRefusal{SharedDefinition{{6, 5}}}) == m[16]);
+		CHECK(resultOf(9, FileRefusal{SharedDefinition{{8, 5}}}) == m[16]);
 	}
 	SECTION("hand edits: an error, the fix, and one that drops an unwritten edit") {
 		GraphFile included = file("v3", t.t3, "v2");
@@ -151,7 +151,7 @@ TEST_CASE("Every graph-file.json message encodes as the fixture has it", "[graph
 	SECTION("a hand edit the graph refuses, then graphFile.set with another graph frequency") {
 		CHECK(changed(file("v8", t.t8, "v8"), FileChangeCause::edit) == m[29]);
 		GraphFile refused = file("v9", t.t9, "v8");
-		refused.refusal = Refusal{ear::UnknownPort{{"rec", "FX"}}, TextPlace{14, 1}};
+		refused.refusal = Refusal{ear::UnknownPort{{"rec", "FX"}}, TextPlace{16, 1}};
 		CHECK(changed(refused, FileChangeCause::disk, 1) == m[32]);
 		GraphFile pending = file("v10", t.t10, "v10");
 		pending.pendingRestart = {FormatKey::graphFrequency};

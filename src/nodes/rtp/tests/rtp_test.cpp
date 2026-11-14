@@ -129,7 +129,7 @@ TEST_CASE("Rtp refuses each setting outside its grammar with exactly its detail"
 	const std::string badPort = "port: must be a whole number, 1-65535";
 	const std::string badFormat = R"(format: must be "L16" or "L24")";
 	const std::string badChannels = "channels: must be a whole number, 1-64";
-	const std::string badRate = "rate: must be a whole number of Hz, 8000-192000";
+	const std::string badRate = "rate: must be a rate from 8khz to 192khz (on the control port, a whole number of Hz)";
 	const std::string badLatency = "latencyMs: must be a whole number of milliseconds, 1-1000";
 
 	const std::vector<std::pair<NodeSettings, std::string>> cases{
@@ -157,6 +157,7 @@ TEST_CASE("Rtp refuses each setting outside its grammar with exactly its detail"
 		{settingsWith({{"rate", 7999}}), badRate},
 		{settingsWith({{"rate", 192001}}), badRate},
 		{settingsWith({{"rate", 48000.5}}), badRate},
+		{settingsWith({{"rate", "48khz"}}), badRate}, // ear.conf's form; the wire's is a number of Hz
 		{settingsWith({{"latencyMs", 0}}), badLatency},
 		{settingsWith({{"latencyMs", 1001}}), badLatency},
 		{settingsWith({{"latencyMs", true}}), badLatency},

@@ -43,8 +43,10 @@ inline std::size_t inotifyDescriptors() {
 }
 
 /// The record's file format example (docs/graph-file.md#edits-at-the-source).
-inline const std::string recordExample = R"(graph_frequency 48000;
-block_size 256;
+inline const std::string recordExample = R"(graph {
+    rate 48khz;
+    block_size 256;
+}
 @set $ch 2;                      # comments survive every edit
 @snippet card_out $id {          # written once, used by both cards
     card $id;

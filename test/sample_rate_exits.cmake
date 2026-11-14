@@ -9,6 +9,8 @@
 # limit. ALLOWED's default names, exactly:
 #   core/include/ear/core/sample_rate.hpp   the type itself;
 #   core/include/ear/core/latency.hpp       FrameClock, the one conversion between frames and time;
+#   core/include/ear/core/rate_text.hpp     the unit form ear.conf and --rate write (48khz), and a rate setting's JSON;
+#   core/rate_text.cpp                      the same;
 #   pipewire/engine.cpp                     default.clock.rate and allowed-rates;
 #   pipewire/sound_cards.cpp                a card's audio.rate and its SPA format's rate;
 #   pipewire/rtp_receivers.cpp              the RTP receiver's audio.rate, the sender's own rate;
@@ -27,6 +29,8 @@ if(NOT DEFINED ALLOWED)
 	set(ALLOWED
 		core/include/ear/core/sample_rate.hpp
 		core/include/ear/core/latency.hpp
+		core/include/ear/core/rate_text.hpp
+		core/rate_text.cpp
 		pipewire/engine.cpp
 		pipewire/sound_cards.cpp
 		pipewire/rtp_receivers.cpp

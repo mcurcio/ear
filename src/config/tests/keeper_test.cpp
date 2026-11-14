@@ -254,7 +254,7 @@ TEST_CASE("A boot file the graph refuses shows the refusal at its place, and not
 	CHECK_FALSE(change.file.running.has_value());
 	REQUIRE(change.file.refusal.has_value());
 	CHECK(errorCode(change.file.refusal->error) == "unknown-port");
-	CHECK(change.file.refusal->place == control::TextPlace{12, 1});
+	CHECK(change.file.refusal->place == control::TextPlace{14, 1});
 	CHECK(f.graph.nodes().empty());
 }
 
@@ -344,7 +344,7 @@ TEST_CASE("A refused hand edit after a dropped edit shows the refusal, and the g
 	CHECK(change.droppedEdits == 1);
 	REQUIRE(change.file.refusal.has_value());
 	CHECK(errorCode(change.file.refusal->error) == "unknown-port");
-	CHECK(change.file.refusal->place == control::TextPlace{12, 1});
+	CHECK(change.file.refusal->place == control::TextPlace{14, 1});
 	CHECK(change.file.running == edited);
 	CHECK(f.graphFile().text == hand);
 	f.free();
@@ -638,7 +638,7 @@ TEST_CASE("A file at another rate is accepted with a pending restart, and a miss
 	SECTION("pending restart") {
 		Fixture f("pending", recordExample, nullptr, {ear::SampleRate::fixed<48000>(), 256});
 		f.start();
-		const auto other = replaced(recordExample, "graph_frequency 48000;", "graph_frequency 44100;");
+		const auto other = replaced(recordExample, "rate 48khz;", "rate 44.1khz;");
 		CHECK(ok(f.set(other, f.graphFile().version)));
 		CHECK(f.lastChange().file.pendingRestart ==
 		      std::vector<control::FormatKey>{control::FormatKey::graphFrequency});

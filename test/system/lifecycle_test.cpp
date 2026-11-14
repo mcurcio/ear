@@ -291,7 +291,7 @@ TEST_CASE("A hand-written node white noise disabled boots nothing and is an ear/
 	INFO("ear printed:\n" << ear.process().output());
 	const auto error = ear.process().lineStartingWith("graph-file error ");
 	REQUIRE(error);
-	CHECK(*error == "graph-file error 3:1 ear/bad-directive: node takes a type and a name: node <type> <name> [{ "
+	CHECK(*error == "graph-file error 5:1 ear/bad-directive: node takes a type and a name: node <type> <name> [{ "
 	                "<setting> <value>; ... }]; to disable a node, write disabled true; inside its braces");
 	Rpc rpc(ear.port());
 	CHECK(rpc.call("graph.get")["result"]["nodes"].empty());
@@ -299,7 +299,7 @@ TEST_CASE("A hand-written node white noise disabled boots nothing and is an ear/
 	INFO(file.dump());
 	REQUIRE(file["diagnostics"].size() == 1);
 	CHECK(file["diagnostics"][0]["code"] == "ear/bad-directive");
-	CHECK(file["diagnostics"][0]["line"] == 3);
+	CHECK(file["diagnostics"][0]["line"] == 5);
 	CHECK_FALSE(file.contains("running"));
 	CHECK(ear.stop(rpc) == 0);
 	CHECK(ear.process().output().find("node noise") == std::string::npos);

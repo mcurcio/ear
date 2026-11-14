@@ -74,8 +74,8 @@ describe("the ear.conf pane", () => {
   });
 
   it("saveRequest carries the draft and the base version", () => {
-    const pane = edited(paneFrom(v2), "graph_frequency 48000;\n");
-    expect(saveRequest(pane)).toStrictEqual({ text: "graph_frequency 48000;\n", version: v2.version });
+    const pane = edited(paneFrom(v2), "graph { rate 48khz; block_size 256; }\n");
+    expect(saveRequest(pane)).toStrictEqual({ text: "graph { rate 48khz; block_size 256; }\n", version: v2.version });
   });
 
   it("file-changed makes it stale; invalid-text sets the errors, listed first", () => {

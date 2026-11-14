@@ -10,8 +10,10 @@ committed to the repository. The code is `src/config/`.
 ## An example
 
 ```conf
-graph_frequency 48000;
-block_size 256;
+graph {
+    rate 48khz;
+    block_size 256;
+}
 @set $ch 2;                      # comments survive every edit
 @snippet card_out $id {          # written once, used by both cards
     card $id;
@@ -27,17 +29,17 @@ route noise:noise.mono desk:play.1;
 
 ## Directives
 
-Only ear's four directives are allowed at the top level.
+Only ear's three directives are allowed at the top level.
 
 | Directive | Form | Rules |
 |---|---|---|
-| `graph_frequency` | `graph_frequency <Hz>;` | Required, once; a whole number from 1 to 4294967295 |
-| `block_size` | `block_size <samples>;` | Required, once; the same range |
+| `graph` | `graph { rate <rate>; block_size <frames>; }` | Required, once; no value; its block holds exactly `rate` and `block_size`, each once |
 | `node` | `node <type> <name>;` or `node <type> <name> { <key> <value>; ... }` | One type, one name, an optional block of settings, each key once |
 | `route` | `route <node>:<port> <node>:<port>;` | From an output to an input; no block |
 
 Anything else is `ear/unknown-directive`, a malformed directive is `ear/bad-directive`, and a
-missing `graph_frequency` or `block_size` is `ear/missing-directive`.
+missing `graph` block, or a `graph` block without `rate` or `block_size`, is
+`ear/missing-directive`.
 
 **Node names** are unique, 1 to 64 characters of letters, digits, `-` and `_`. *Why no `.`:*
 engine objects a node makes are named `<node>.<suffix>` (`desk.playback`, `fpp.rtp`), so they can
@@ -47,6 +49,55 @@ never collide with a node.
 `<node>:<bank>.<member>` (`route kitchen:from.left desk:play.1;`). Each type's banks are listed
 in [node-types.md](node-types.md#ports-at-a-glance). Older names (`MONO`, `FL`, `playback_1`) are
 `unknown-port`; no compatibility is kept.
+
+### The `graph` block
+
+The graph's own settings, fixed at boot ([below](#settings-applied-only-at-restart)):
+
+| Key | Rule |
+|---|---|
+| `rate` | The graph's rate ([rates](#rates)), 8 kHz to 768 kHz |
+| `block_size` | Frames a cycle, a whole number from 1 to 4294967295 |
+
+Variables and snippets work inside it as in a node's block (`rate $r;`, `@use frames 256;`). What
+each problem says:
+
+| Problem | Code | Message |
+|---|---|---|
+| No `graph` block | `ear/missing-directive` | `graph is missing: write graph { rate 48khz; block_size 256; }` |
+| A second one | `ear/bad-directive` | `graph is given twice` |
+| A value, or no block | `ear/bad-directive` | `graph takes no value and a block: graph { rate 48khz; block_size 256; }` |
+| Another key | `ear/bad-directive` | `graph has no setting <key>: it takes rate and block_size` |
+| A key twice | `ear/bad-directive` | `graph's <key> is given twice` |
+| A key missing | `ear/missing-directive` | `graph is missing rate: write rate 48khz; inside graph { }`, or `block_size 256;` |
+| A bad `block_size` | `ear/bad-directive` | `block_size takes a whole number from 1 to 4294967295` |
+
+**Older files are refused.** A top-level `graph_frequency` or `block_size` is
+`ear/unknown-directive` saying what to write instead, from the file's own values where they read
+(else 48khz and 256): `graph_frequency is no longer a directive: graph settings moved: write graph
+{ rate 44.1khz; block_size 512; }`. No compatibility is kept; with these lines there is no
+missing-`graph` error besides.
+
+### Rates
+
+A rate is never a bare number: it is one word, a number (`48`, `44.1`) and then `hz` or `khz` in
+any case, with nothing between (`48khz`, `44.1kHz`, `48000hz`). It must come to a whole number of
+hertz, worked out exactly. There is no `MHz`, sign, exponent or space before the unit, and a
+quoted `"48khz"` is knobly's wrong-kind error, as a quoted number is. The graph's `rate`, the
+`--rate` flag and every rate setting ([node-types.md](node-types.md#rtp)) read it the same way
+(`ear/core/rate_text.hpp`). A problem is `ear/bad-rate`, at the value, the key first:
+
+| Written | Message |
+|---|---|
+| `48000` | `rate: 48000 has no unit: write 48000hz or 48khz` |
+| `48mhz` | `rate: 48mhz is not a rate: write a number, then hz or khz, such as 48khz, 44.1khz or 48000hz` |
+| `44.1003khz` | `rate: 44.1003khz is not a whole number of hertz` |
+| `4khz` (the graph's) | `rate: 4khz is outside 8khz to 768khz` |
+| `48 khz` (the graph's) | `rate takes one value: write the unit with no space, such as 48khz` |
+
+ear writes a rate as `<n>khz` when it is whole kilohertz, `<n>.<d>khz` when it is whole hundreds
+of hertz (`44.1khz`, `88.2khz`), else `<n>hz` (`11025hz`). The 768 kHz cap is the graph's; a rate
+setting's range is its type's.
 
 ### Knobly's features
 
@@ -59,7 +110,10 @@ in [node-types.md](node-types.md#ports-at-a-glance). Older names (`MONO`, `FL`, 
 ### Settings and their kinds
 
 Each setting is read and written as the kind its node type declares: **text** (a bare word or a
-quoted string) or a **whole number**. A key the type does not declare is invalid settings. The
+quoted string), a **whole number**, or a **rate** ([rates](#rates)). A rate setting is written
+with its unit in `ear.conf` and is a whole number of hertz in the node's settings on the control
+port (`rate 44.1khz;` is `"rate": 44100`); an edit that changes it writes ear's form, and one that
+does not leaves its spelling as written. A key the type does not declare is invalid settings. The
 keys, ranges and defaults of each type are in [node-types.md](node-types.md). A text setting, node
 name or port holding a control character other than newline, tab and carriage return cannot be
 written in `ear.conf` and is refused.
@@ -90,9 +144,10 @@ codes look like `E2001`; ear's are:
 | `ear/missing-file` | `ear.conf` does not exist |
 | `ear/unreadable-file` | `ear.conf` is a symlink, a directory, another kind of file, or larger than 1 MiB |
 | `ear/include-unsupported` | An `@include` |
-| `ear/unknown-directive` | A directive other than the four |
-| `ear/bad-directive` | A malformed directive, a setting given twice, a bad `disabled` line |
-| `ear/missing-directive` | No `graph_frequency` or no `block_size` |
+| `ear/unknown-directive` | A directive other than `graph`, `node` and `route`, an old `graph_frequency` or `block_size` among them |
+| `ear/bad-directive` | A malformed directive or `graph` block, a setting given twice, a bad `disabled` line |
+| `ear/missing-directive` | No `graph` block, or one without `rate` or `block_size` |
+| `ear/bad-rate` | A rate not written as a number and `hz` or `khz`, not whole hertz, or (the graph's) outside 8 kHz to 768 kHz ([rates](#rates)) |
 | `ear/too-large` | An edit's or a `graphFile.set`'s text over 1 MiB (answered `invalid-text`) |
 | `ear/unwritable-edit` | An edit knobly could not write (answered `invalid-text`) |
 
@@ -113,7 +168,8 @@ An edit through the control port (`node.add`, `node.update`, `node.remove`, `rou
 - Setting `playback 4` on `desk` rewrites `@set $ch 4;`, so both cards change in one commit.
 - Setting `card` on `desk` rewrites only `MOTU` on its `@use` line.
 - `node.remove` removes the node's line and every `route` line that names it.
-- Added nodes and routes are appended at the end.
+- Added nodes and routes are appended at the end. No edit writes the `graph` block: only
+  `graphFile.set` or a hand edit changes it.
 - `node.disable` sets the node's own `disabled` line to `true`, or writes `disabled true;` first in
   its braces (making `{ disabled true; }` on a node written without braces). A `disabled $quiet;`
   that other nodes share becomes `disabled true;` on that node alone, `$quiet` left as it was.
@@ -156,8 +212,8 @@ the next accepted change; at stop, the last accepted version is written before e
 
 ## Settings applied only at restart
 
-`graph_frequency` and `block_size` are fixed at boot, and the engine runs at exactly these. When
-the file cannot be read or does not give both, the engine takes `--graph-frequency` and
+The `graph` block's `rate` and `block_size` are fixed at boot, and the engine runs at exactly
+these. When the file cannot be read or does not give both, the engine takes `--rate` and
 `--block-size`. A file whose two values differ from the engine's still runs, and says
 `pendingRestart` (on the wire) or `graph-file pending-restart <keys>` (on standard output): they
 apply at the next start. Nodes always see the engine's format.

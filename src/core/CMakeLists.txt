@@ -19,6 +19,7 @@ add_library(ear_core STATIC
 	node_host.cpp
 	node_lifecycle.cpp
 	pass_through.cpp
+	rate_text.cpp
 	ports.cpp
 	reconciler.cpp
 	rtp_receiver.cpp
@@ -54,6 +55,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/node_lifecycle.hpp
 	include/ear/core/node_type.hpp
 	include/ear/core/pass_through.hpp
+	include/ear/core/rate_text.hpp
 	include/ear/core/reconciler.hpp
 	include/ear/core/rtp_receiver.hpp
 	include/ear/core/sample_rate.hpp
@@ -97,6 +99,7 @@ if(BUILD_TESTS)
 		tests/node_host_test.cpp
 		tests/node_lifecycle_test.cpp
 		tests/ports_test.cpp
+		tests/rate_text_test.cpp
 		tests/reconciler_test.cpp
 		tests/rtp_receiver_test.cpp
 		tests/settings_table_test.cpp
@@ -122,6 +125,7 @@ if(BUILD_TESTS)
 	ear_settings_table_compile_fail(key-twice "a setting's key is given twice")
 	ear_settings_table_compile_fail(name-empty "a table's name is empty")
 	ear_settings_table_compile_fail(low-above-high "low is above its high")
+	ear_settings_table_compile_fail(rate-low-above-high "a rate's low is above its high")
 	ear_settings_table_compile_fail(number-without-range "too few arguments")
 	ear_settings_table_compile_fail(number-with-mustBe "too many arguments")
 	ear_settings_table_compile_fail(default-outside-range "byDefault is outside its range")

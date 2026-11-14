@@ -19,8 +19,9 @@ using namespace ear::test;
 /// The record's example (docs/graph-file.md#edits-at-the-source) at `rate`: noise -> rec:record.left,
 /// and two cards ear cannot open, desk (with a route) and porch.
 std::string recordExample(std::uint32_t rate = 48000) {
-	return "graph_frequency " + std::to_string(rate) + R"(;
-block_size 256;
+	return "graph {\n    rate " + std::to_string(rate) + R"(hz;
+    block_size 256;
+}
 @set $ch 2;                      # comments survive every edit
 @snippet card_out $id {          # written once, used by both cards
     card $id;
@@ -257,15 +258,15 @@ TEST_CASE("T5: a boot with a typo runs nothing, shows the diagnostic and stops c
 
 TEST_CASE("T6: a boot with a route to an undeclared port runs nothing and shows where", "[system][graph-file]") {
 	TempDirectory directory;
-	writeGraphFile(directory, noiseToRec("FX")); // line 5: route noise:noise.mono rec:FX;
-	Ear ear(directory, {"graph-file refused unknown-port at 5:1"});
+	writeGraphFile(directory, noiseToRec("FX")); // line 7: route noise:noise.mono rec:FX;
+	Ear ear(directory, {"graph-file refused unknown-port at 7:1"});
 	INFO("ear printed:\n" << ear.process().output());
 	Rpc rpc(ear.port());
 	CHECK(rpc.call("graph.get")["result"]["nodes"].empty());
 	const json file = rpc.call("graphFile.get")["result"];
 	INFO(file.dump());
 	CHECK(file["refusal"] ==
-	      json{{"code", "unknown-port"}, {"message", "unknown-port rec:FX"}, {"line", 5}, {"column", 1}});
+	      json{{"code", "unknown-port"}, {"message", "unknown-port rec:FX"}, {"line", 7}, {"column", 1}});
 	CHECK_FALSE(file.contains("running"));
 	CHECK(ear.stop(rpc) == 0);
 	CHECK_FALSE(std::filesystem::exists(directory.recordings() / "rec.wav"));
@@ -326,7 +327,7 @@ TEST_CASE("An old port name is the ordinary unknown-port refusal, and nothing ru
 	TempDirectory directory;
 	writeGraphFile(directory, graphFileText("node white noise;\nnode file rec { path \"rec.wav\"; }\n" + nodes + "\n" +
 	                                        route + "\n"));
-	Ear ear(directory, {"graph-file refused unknown-port at 6:1"});
+	Ear ear(directory, {"graph-file refused unknown-port at 8:1"});
 	INFO("ear printed:\n" << ear.process().output());
 	Rpc rpc(ear.port());
 	CHECK(rpc.call("graph.get")["result"]["nodes"].empty());
@@ -336,7 +337,7 @@ TEST_CASE("An old port name is the ordinary unknown-port refusal, and nothing ru
 
 TEST_CASE("T7: without ear.conf the flags set the engine, and graphFile.set makes the file", "[system][graph-file]") {
 	TempDirectory directory;
-	Ear ear(directory, {"graph-file error 1:1 ear/missing-file", true}, {"--graph-frequency", "44100"});
+	Ear ear(directory, {"graph-file error 1:1 ear/missing-file", true}, {"--rate", "44.1khz"});
 	INFO("ear printed:\n" << ear.process().output());
 	Rpc rpc(ear.port());
 	const json graph = rpc.call("graph.get")["result"];
@@ -362,7 +363,7 @@ TEST_CASE("T7: without ear.conf the flags set the engine, and graphFile.set make
 
 TEST_CASE("T7: ear.conf without block_size runs nothing and the engine takes the flags'", "[system][graph-file]") {
 	TempDirectory directory;
-	writeGraphFile(directory, "graph_frequency 44100;\nnode white noise;\n");
+	writeGraphFile(directory, "graph { rate 44.1khz; }\nnode white noise;\n");
 	Ear ear(directory, firstOffer);
 	INFO("ear printed:\n" << ear.process().output());
 	Rpc rpc(ear.port());
@@ -414,19 +415,58 @@ TEST_CASE("T8: a graph file or recordings folder that is or is inside the web ro
 	}
 }
 
-TEST_CASE("A --graph-frequency or --block-size that is not a whole number above 0 exits 1", "[system][graph-file]") {
+TEST_CASE("A --rate ear.conf would refuse, or a --block-size that is not a whole number above 0, exits 1 saying why",
+          "[system][graph-file]") {
 	TempDirectory directory;
-	for (const auto& [flag, value] :
-	     {std::pair{"--graph-frequency", "0"}, std::pair{"--block-size", "0"}, std::pair{"--graph-frequency", "-48000"},
-	      std::pair{"--block-size", "4294967296"}}) {
+	for (const auto& [flag, value, said] : {
+			 std::tuple{"--rate", "48000", "ear: --rate: 48000 has no unit: write 48000hz or 48khz"},
+			 std::tuple{"--rate", "0khz", "ear: --rate: 0khz is outside 8khz to 768khz"},
+			 std::tuple{"--rate", "1mhz",
+	                    "ear: --rate: 1mhz is not a rate: write a number, then hz or khz, such as "
+	                    "48khz, 44.1khz or 48000hz"},
+			 std::tuple{"--rate", "44.1003khz", "ear: --rate: 44.1003khz is not a whole number of hertz"},
+			 std::tuple{"--rate", "769khz", "ear: --rate: 769khz is outside 8khz to 768khz"},
+			 std::tuple{"--block-size", "0", "ear: --block-size must be a whole number above 0"},
+			 std::tuple{"--block-size", "4294967296", "ear: --block-size must be a whole number above 0"},
+		 }) {
 		INFO(flag << ' ' << value);
 		ChildProcess ear(EAR_BINARY, earArguments(directory, {flag, value}));
 		const auto exitStatus = ear.waitForExit(deadline);
 		INFO("ear printed:\n" << ear.output());
 		CHECK(exitStatus == 1);
-		CHECK(ear.output().find("--graph-frequency and --block-size must be whole numbers above 0") !=
-		      std::string::npos);
+		CHECK(ear.output().find(said) != std::string::npos);
 	}
+}
+
+TEST_CASE("The old --graph-frequency flag is gone: it exits 1 saying to write --rate", "[system][graph-file]") {
+	TempDirectory directory;
+	ChildProcess ear(EAR_BINARY, earArguments(directory, {"--graph-frequency", "48000"}));
+	const auto exitStatus = ear.waitForExit(deadline);
+	INFO("ear printed:\n" << ear.output());
+	CHECK(exitStatus == 1);
+	CHECK(ear.output().find("ear: --graph-frequency is gone: write --rate with a unit, such as --rate 48khz") !=
+	      std::string::npos);
+}
+
+TEST_CASE("An old ear.conf runs nothing, the engine takes the flags', and both old lines say what to write",
+          "[system][graph-file]") {
+	TempDirectory directory;
+	writeGraphFile(directory, "graph_frequency 44100;\nblock_size 512;\nnode white noise;\n");
+	Ear ear(directory, {"graph-file error ", true});
+	INFO("ear printed:\n" << ear.process().output());
+	const std::string hint = "graph settings moved: write graph { rate 44.1khz; block_size 512; }";
+	CHECK(ear.process().waitForLine(
+		"graph-file error 1:1 ear/unknown-directive: graph_frequency is no longer a directive: " + hint, deadline));
+	CHECK(ear.process().waitForLine(
+		"graph-file error 2:1 ear/unknown-directive: block_size is no longer a directive: " + hint, deadline));
+	Rpc rpc(ear.port());
+	const json graph = rpc.call("graph.get")["result"];
+	CHECK(graph["graphFrequency"] == 48000);
+	CHECK(graph["blockSize"] == 256);
+	CHECK(graph["nodes"].empty());
+	CHECK(codesOf(rpc.call("graphFile.get")["result"]) ==
+	      std::vector<std::string>{"ear/unknown-directive", "ear/unknown-directive"});
+	CHECK(ear.stop(rpc) == 0);
 }
 
 TEST_CASE("Edits holding a control character ear.conf cannot hold are refused, and ear stays up",

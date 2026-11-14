@@ -724,8 +724,8 @@ number is deleted): a rate in hertz with no arithmetic, made only by `SampleRate
 rate ear holds is one: the graph's format (`AudioFormat::rate`), `GraphSpec`'s and the engine's
 settings', the fades', the rings', a source's tick, a card's, and an RTP sender's own rate
 (`RtpReceiverShape::rate`, which is not the graph's and is never made into a `FrameClock`). The
-graph frequency is a number only as `ear.conf` or `--graph-frequency` writes it, and becomes a rate
-where it is read.
+graph frequency is text only as `ear.conf` or `--rate` writes it (`48khz`), and becomes a rate where
+it is read ([graph-file.md](graph-file.md#rates)).
 
 - **`ns(frames)`** is how long frames last, and **`frames(duration)`** how many whole frames a
   duration holds. Each is the exact quotient of the whole count, truncated toward zero (one

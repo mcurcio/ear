@@ -325,8 +325,10 @@ Thrown away; its numbers are in `docs/node-types.md#library-facts-and-carried-pa
 In one `scripts/dev.sh bash`, after `scripts/dev.sh make debug`, with `/tmp/c/ear.conf` as:
 
 ```conf
-graph_frequency 48000;
-block_size 256;
+graph {
+    rate 48khz;
+    block_size 256;
+}
 node sendspin ma;
 node file rec { path "ma.wav"; }
 route ma:from.left rec:record.left;

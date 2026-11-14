@@ -48,8 +48,10 @@ leads, the disk wins; judge before keep; one keeper thread, one step at a time.
 Against one `ear.conf`:
 
 ```conf
-graph_frequency 48000;
-block_size 256;
+graph {
+    rate 48khz;
+    block_size 256;
+}
 @set $trim 0;
 node white noise;
 node gain amp { gainDb -6; }

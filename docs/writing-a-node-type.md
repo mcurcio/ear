@@ -58,7 +58,8 @@ and `makeNodeType` refuse an unnamed namespace at compile time.
 ```cpp
 inline constexpr auto cardRow = setting::required("card", setting::text<CardId::parse>("an ALSA card id, ..."));
 inline constexpr auto playbackRow = setting::defaulted("playback", setting::number(0, 64, "channels"), 0);
-inline constexpr auto rateRow = setting::optional("rate", setting::number(8000, 192000, "Hz"));
+inline constexpr auto rateRow =
+	setting::optional("rate", setting::rate(SampleRate::fixed<8'000>(), SampleRate::fixed<192'000>()));
 inline constexpr auto portRow = setting::optional("port", setting::number(1, 65535)).onlyWithout(serverRow);
 ```
 
@@ -71,6 +72,7 @@ inline constexpr auto portRow = setting::optional("port", setting::number(1, 655
 | Rule | A good value | Refused with |
 |---|---|---|
 | `setting::number(low, high, unit = {})` | a JSON integer in [low, high] (not a float, bool or string) | `<key>: must be a whole number[ of <unit>], <low>-<high>` |
+| `setting::rate(low, high)` | a JSON integer of hertz in [low, high], read as a `SampleRate`; in `ear.conf` written with its unit (`44.1khz`, [graph-file.md](graph-file.md#rates)) | `<key>: must be a rate from <low> to <high> (on the control port, a whole number of Hz)`, the ends as ear writes them (`8khz`) |
 | `setting::text<Parse>(mustBe)` | a JSON string `Parse` accepts; `Parse` is `std::optional<T>(std::string_view)`, and `T` (what the row reads) must own what it holds | `<key>: must be <mustBe>` |
 
 - `.onlyWithout(above)` refuses the key given together with a row above it: `<key>: only without
@@ -78,7 +80,7 @@ inline constexpr auto portRow = setting::optional("port", setting::number(1, 655
 - Each key once; `disabled` (the framework's key) cannot be declared; a table's name must be its
   folder's. Each is a compile error.
 - The table is `SettingsTable<row1, row2, ...>{"<type>"}` (`SettingsTable<>{"white"}` for none).
-  It gives the type's name, its settings' kinds (text or whole number, which is how `ear.conf` is
+  It gives the type's name, its settings' kinds (text, whole number or rate, which is how `ear.conf` is
   read and written) and the whole check, so the graph file reader cannot disagree with `parse`.
 - A parsed value is parsed once: a text row reads as what its parse function made (a `CardId`, an
   `RtpAddress`, a path).

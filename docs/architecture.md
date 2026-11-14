@@ -436,8 +436,8 @@ same lost time.
    in the `SourceClock` it gives the source, which alone decides what the ring skips
    ([writing-a-node-type.md](writing-a-node-type.md#a-sources-clock)).
 4. **One rate inside the graph.** Every port in the graph runs at the graph rate, and conversion
-   happens only in edge nodes. The rate is configurable (`graph_frequency` in `ear.conf`, the
-   `--graph-frequency` flag as fallback: [boot](#boot)) but fixed for the engine's life, and it is
+   happens only in edge nodes. The rate is configurable (`graph { rate 48khz; }` in `ear.conf`, the
+   `--rate` flag as fallback: [boot](#boot)) but fixed for the engine's life, and it is
    the only rate allowed ([engine.md](engine.md#the-clock)). A graph of mixed rates, two graphs
    joined by a converting edge, is out of scope.
 5. **Conversion is a converter companion.** Rate and drift conversion is PipeWire's converter
@@ -617,7 +617,7 @@ step 1's fade and silence, keeping everything else.
 |---|---|---|
 | `--config-dir` | `config` | The graph file folder, holding `ear.conf` and each `sendspin` node's key file; made at boot if missing (not its parents). It must be writable for edits to be saved |
 | `--recordings-dir` | `recordings` | The folder `file` nodes write into; made at boot if missing (not its parents) |
-| `--graph-frequency` | `48000` | The engine's rate, used only when `ear.conf` cannot be read or does not give both `graph_frequency` and `block_size` |
+| `--rate` | `48khz` | The engine's rate, used only when `ear.conf` cannot be read or its `graph` block does not give both `rate` and `block_size`; written as `ear.conf` writes a rate, 8 kHz to 768 kHz ([graph-file.md](graph-file.md#rates)). The old `--graph-frequency` is refused, saying to write `--rate` |
 | `--block-size` | `256` | The engine's block size, under the same rule |
 | `--control-address` | `0.0.0.0` | The control port's address |
 | `--control-port` | `7777` | Its port; `0` takes any free one |
@@ -652,7 +652,7 @@ Running it on Talos with the MOTU 24Ao is the `ear-on-talos` skill's.
 1. Read the flags. Bad flags and `--help` are plain text; from here on every line is a record.
 2. Capture descriptors 1 and 2 ([output-records.md](output-records.md#how-output-is-written)).
 3. Open the two folders and check the three are apart; a failure is an `exit` record and exit 1.
-4. Read `ear.conf` once on the main thread. Its `graph_frequency` and `block_size` set the engine
+4. Read `ear.conf` once on the main thread. Its `graph` block's `rate` and `block_size` set the engine
    when both read; otherwise the flags do (the file's own values then show as pending restart).
 5. Start the engine and print how its audio thread is scheduled (`engine` record).
 6. Wire the packages and start the keeper's thread. Its first offer (posted once the main loop

@@ -9,7 +9,8 @@ import type { FormatKey, RpcErrorCode } from "../protocol";
 import { RpcError } from "../rpc";
 import { useEditor } from "./hooks";
 
-const formatNames: { [K in FormatKey]: string } = { graphFrequency: "graph frequency", blockSize: "block size" };
+// The wire's keys named as ear.conf's graph block writes them (graph { rate ...; block_size ...; }).
+const formatNames: { [K in FormatKey]: string } = { graphFrequency: "graph rate", blockSize: "block size" };
 
 function place(line: number, column: number): string {
   return `${line}:${column}`;

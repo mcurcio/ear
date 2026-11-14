@@ -38,6 +38,7 @@
 #include "ear/core/main_loop_activity.hpp"
 #include "ear/core/node_catalogue.hpp"
 #include "ear/core/node_host.hpp"
+#include "ear/core/rate_text.hpp"
 #include "ear/core/reconciler.hpp"
 #include "ear/folder/confined_folder.hpp"
 #include "ear/output/descriptor_capture.hpp"
@@ -168,8 +169,9 @@ int main(int argc, char** argv) {
 	options.add_options()("help,h", "print these options and exit")(
 		"config-dir", po::value<std::string>()->default_value("config"),
 		"the graph file folder (ear.conf; made if missing, not its parents)")(
-		"graph-frequency", po::value<std::int64_t>()->default_value(48000),
-		"the engine's rate when ear.conf cannot be read or does not give one")(
+		"rate", po::value<std::string>()->default_value("48khz"),
+		"the engine's rate (8khz to 768khz, written as ear.conf writes it: 48khz, 44.1khz, 48000hz) when ear.conf "
+		"cannot be read or does not give one")(
 		"block-size", po::value<std::int64_t>()->default_value(256),
 		"the engine's block size when ear.conf cannot be read or does not give one")(
 		"control-address", po::value<std::string>()->default_value("0.0.0.0"), "address the control port listens on")(
@@ -185,6 +187,15 @@ int main(int argc, char** argv) {
 	try {
 		po::store(po::parse_command_line(argc, argv, options), arguments);
 		po::notify(arguments);
+	} catch (const po::unknown_option& error) {
+		// The flag the graph file's old graph_frequency had (docs/architecture.md#boot-and-stop): no compatibility is
+		// kept, so it is refused, saying what replaced it.
+		if (error.get_option_name() == "--graph-frequency") {
+			std::cerr << "ear: --graph-frequency is gone: write --rate with a unit, such as --rate 48khz\n";
+			return 1;
+		}
+		std::cerr << "ear: " << error.what() << "\n\n" << options << '\n';
+		return 1;
 	} catch (const po::error& error) {
 		std::cerr << "ear: " << error.what() << "\n\n" << options << '\n';
 		return 1;
@@ -204,10 +215,15 @@ int main(int argc, char** argv) {
 	                                                    : std::vector<std::string>{},
 	};
 
-	const auto flagRate = positive(arguments["graph-frequency"].as<std::int64_t>()).and_then(ear::SampleRate::of);
+	// The same grammar and range as ear.conf's graph { rate ...; } (docs/graph-file.md#rates).
+	const auto flagRate = ear::readRate(arguments["rate"].as<std::string>(), ear::graphRates);
+	if (!flagRate) {
+		std::cerr << "ear: --rate: " << flagRate.error() << '\n';
+		return 1;
+	}
 	const auto flagBlock = positive(arguments["block-size"].as<std::int64_t>());
-	if (!flagRate || !flagBlock) {
-		std::cerr << "ear: --graph-frequency and --block-size must be whole numbers above 0\n";
+	if (!flagBlock) {
+		std::cerr << "ear: --block-size must be a whole number above 0\n";
 		return 1;
 	}
 
@@ -256,9 +272,9 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 
-	// ear.conf is read once here, on the main thread, before the keeper's thread starts. Its two
-	// format lines set the engine when both read; otherwise the flags do (the file's own values then
-	// show as pending restart).
+	// ear.conf is read once here, on the main thread, before the keeper's thread starts. Its graph
+	// block's rate and block_size set the engine when both read; otherwise the flags do (the file's own
+	// values then show as pending restart).
 	const ear::NodeCatalogue catalogue(ear::nodes::allNodeTypes({.config = config, .log = &log}));
 	auto first = ear::config::GraphFileKeeper::load(*config, catalogue);
 	const ear::AudioFormat format = first.format().value_or(ear::AudioFormat{*flagRate, *flagBlock});

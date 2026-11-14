@@ -78,9 +78,10 @@ inline void writeGraphFile(const TempDirectory& directory, const std::string& te
 	std::filesystem::rename(staging, directory.graphFile());
 }
 
-/// `graph_frequency <rate>; block_size <block>;`, then `body`.
+/// `graph { rate <rate>hz; block_size <block>; }` on four lines, then `body` (which starts on line 5).
 inline std::string graphFileText(const std::string& body, std::uint32_t rate = 48000, std::uint32_t block = 256) {
-	return "graph_frequency " + std::to_string(rate) + ";\nblock_size " + std::to_string(block) + ";\n" + body;
+	return "graph {\n    rate " + std::to_string(rate) + "hz;\n    block_size " + std::to_string(block) + ";\n}\n" +
+	       body;
 }
 
 /// white "noise" routed to file "rec":record.left (rec.wav in the recordings folder), plus `more`.

@@ -35,8 +35,10 @@ stream and a `sendspin` node in a pod). Research notes are in [`research/`](rese
 
 ```conf
 # config/ear.conf
-graph_frequency 48000;
-block_size 256;
+graph {
+    rate 48khz;
+    block_size 256;
+}
 node white noise;
 node file rec { path "take1.wav"; }
 route noise:noise.mono rec:record.left;

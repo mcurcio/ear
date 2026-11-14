@@ -90,8 +90,10 @@ trap cleanup EXIT
 # writable by uid 10001, as a real one is.
 mkdir "$scratch/config"
 cat >"$scratch/config/ear.conf" <<'CONF'
-graph_frequency 48000;
-block_size 256;
+graph {
+    rate 48khz;
+    block_size 256;
+}
 node white noise;
 node file rec { path "rec.wav"; }
 route noise:noise.mono rec:record.left;
