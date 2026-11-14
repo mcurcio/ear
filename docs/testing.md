@@ -162,7 +162,11 @@ the clock tests declare a **library settle** there, with the evidence that makes
 (`unskipped`: the frames the code could not skip), a hard sync or loss of sync the library
 logged, or the feed left undrained past its bound (`dropped`: its writer's dropped count moved, or
 the code came back after a drop, `SendspinCode::lastStale()`; its evidence the lost time the drop
-did not cover, less what the code then skipped as late, `lastResumeSkipped()`). The stall past the
+did not cover, less what the code then skipped as late, `lastResumeSkipped()`). That late skip is
+itself modelled, not taken on trust: the judge follows the drop's timeline by the code's rule (from
+the drop's last finish, `Feed::dropped()`, read when the code says it measured from it,
+`lastAnchored()`, for a feed's worth of cycles at most) and works out each cycle's late frames,
+as far as the feed held them (`Feed::heldAtSkip()`), failing on any other count. The stall past the
 bound makes that shape on every run, and its test judges it exactly: one hand-over, the stale skip
 what the feed held as the writer began (`Feed::lastStaleFrames()`), the drop and the late skip
 after it the time lost past the bound, one correction and at most one settle step with its
