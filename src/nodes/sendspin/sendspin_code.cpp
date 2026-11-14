@@ -39,7 +39,7 @@ void SendspinCode::process(std::span<const std::span<float>> outputs, std::uint3
 	// what the feed held then with it, and the notifier told both: this cycle takes the feed back (after the stamp, so
 	// a writer it refuses waits on the ring again), skips that as stale, and does not count it again. What this side read
 	// of it in the instant the writer began is counted twice; as many of its next frames go uncounted. The drop covered
-	// the graph's lost time, so this cycle skips nothing for its jump.
+	// the graph's lost time, so this cycle skips nothing for its jump, nor does any while the drop's timeline holds (below).
 	lastStaleSkipped_ = 0;
 	lastStale_ = false;
 	if (const auto stale = feed_.skipStale()) {
@@ -48,6 +48,7 @@ void SendspinCode::process(std::span<const std::span<float>> outputs, std::uint3
 		countedTwice_ += stale->readSince;
 		resume_ = Resume::pending;
 		consumedSinceResume_ = 0;
+		ranSinceResume_ = 0;
 	}
 	// The library's next frame is heard when the frame after the last one dropped would have been; the graph takes the
 	// frames it writes from now from a cycle of its own, later by up to a block and its wait. Taken back, the drop's last
@@ -59,8 +60,15 @@ void SendspinCode::process(std::span<const std::span<float>> outputs, std::uint3
 			resumeFromRawNs_ = dropped->finishRawNs;
 		}
 	}
+	// The drop's timeline lasts a feed's worth of cycles at most: a library that keeps pace writes its frames ahead of
+	// their time, so by then every late frame has reached the feed. What is still late then is a gap of the library's
+	// own (a network gap, a server that underran), which it corrects itself as it does outside a drop; skipped here, it
+	// would cost the gap's length of fresh audio, told played.
+	if (resume_ != Resume::none && ranSinceResume_ >= feed_.capacityFrames()) resume_ = Resume::none;
 	lastHeldAtStart_ = feed_.held();
-	lastSkipped_ = !cleared && !lastStale_ && movedOn && facts.jumpFrames > 0
+	// While the drop's timeline holds, the late skip below, measured from the time a frame is heard, already covers the
+	// graph's lost time: a jump skipped as well would skip that time twice.
+	lastSkipped_ = !cleared && !lastStale_ && resume_ == Resume::none && movedOn && facts.jumpFrames > 0
 	                   ? feed_.skip(static_cast<std::uint64_t>(facts.jumpFrames))
 	                   : 0;
 	// Back after a drop, each frame keeps the time the drop gave it: what is heard by this cycle's run and not consumed
@@ -68,8 +76,9 @@ void SendspinCode::process(std::span<const std::span<float>> outputs, std::uint3
 	// to correct (it would take its slow sync seconds for the part of a block the graph's cycle came later). Done once
 	// a cycle reads with nothing late left.
 	lastResumeSkipped_ = 0;
+	lastAnchored_ = resume_ == Resume::anchored;
 	std::int64_t late = 0;
-	if (resume_ == Resume::anchored) {
+	if (lastAnchored_) {
 		const std::int64_t heard = clock_.heardRawNs(cycle.ranRawNs(), 0, downstream);
 		late = clock_.framesNearest(std::chrono::nanoseconds{heard - resumeFromRawNs_}) -
 		       static_cast<std::int64_t>(consumedSinceResume_);
@@ -78,6 +87,7 @@ void SendspinCode::process(std::span<const std::span<float>> outputs, std::uint3
 	const std::uint32_t got = feed_.read(outputs, frames);
 	if (resume_ != Resume::none) {
 		consumedSinceResume_ += std::uint64_t{lastResumeSkipped_} + got;
+		ranSinceResume_ += frames;
 		if (resume_ == Resume::anchored && got > 0 && late <= static_cast<std::int64_t>(lastResumeSkipped_))
 			resume_ = Resume::none;
 	}

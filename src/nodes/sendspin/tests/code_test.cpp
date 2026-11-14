@@ -898,3 +898,108 @@ TEST_CASE("Where the two tellers meet a finish that would step back is held at t
 	CHECK(third->finishRawNs == 1'100'000);
 	CHECK_FALSE(third->clamped);
 }
+
+namespace {
+
+/// A feed left undrained past its bound and taken back, cycle by cycle on the fake raw clock: the drop's timeline
+/// (docs/node-types.md#clock) as the code sees it, the writer filling the ring as the library would.
+struct HandOver {
+	static constexpr std::int64_t msNs = 1'000'000;
+	static constexpr std::uint32_t held = 512; // a following card's buffer, so the timeline's heard time adds it
+	explicit HandOver(std::int64_t at)
+		: feed(2, capacity,
+	           FeedDrain{.rate = ear::SampleRate::fixed<rate>(), .bound = 1500ms, .nowRawNs = &fakeRawNow}),
+		  code(feed, progress, bell, ear::SampleRate::fixed<rate>()), left(block), right(block) {
+		fakeRaw = at;
+	}
+	/// One on-time cycle at the fake clock's now, stating `facts`.
+	void cycle(ear::CycleFacts facts = {}) {
+		const std::array<std::span<float>, 2> outputs{left, right};
+		const std::array<ear::Latency, 2> downstream{ear::Latency{held, held}, ear::Latency{held, held}};
+		code.process(outputs, block,
+		             ear::GraphCycle{
+						 .startNs = 0, .position = 0, .startRawNs = fakeRaw, .facts = facts, .downstream = downstream});
+	}
+	/// As much as the feed takes now; the frames it took.
+	std::uint32_t write() {
+		const std::vector<float> samples(std::size_t{block} * 2, 0.5F);
+		std::uint32_t taken = 0;
+		while (const std::uint32_t accepted = feed.write(samples, block, 0ms)) taken += accepted;
+		return taken;
+	}
+	/// Played, stopped for 2 s (dropped from 1.5 s on), and started 5 ms after the last drop: the cycle that takes the
+	/// feed back, which reads nothing (the writer refills the ring only after it).
+	void stopAndStart() {
+		write();
+		cycle();
+		for (int at = 0; at < 2000; at += 5) {
+			fakeRaw += 5 * msNs;
+			write();
+		}
+		REQUIRE(feed.dropped().total > 0);
+		fakeRaw += 5 * msNs;
+		ear::CycleFacts drive;
+		drive.causes = ear::CycleCause::drive;
+		cycle(drive);
+		REQUIRE(code.lastStale());
+		REQUIRE(code.lastResumeSkipped() == 0);
+	}
+	/// Frames from the drop's last finish to when this cycle's first frame is heard: what the drop's timeline makes late.
+	std::int64_t lateNow() const {
+		const ear::FrameClock clock(ear::SampleRate::fixed<rate>());
+		return clock.framesNearest(std::chrono::nanoseconds{fakeRaw + clock.ns(held) - feed.dropped().finishRawNs});
+	}
+
+	Feed feed;
+	Mailbox<PlayProgress> progress;
+	EventFd bell;
+	SendspinCode code;
+	std::vector<float> left;
+	std::vector<float> right;
+};
+
+} // namespace
+
+TEST_CASE("A catch-up while the drop's timeline holds skips its late frames once, never its jump as well",
+          "[sendspin][code]") {
+	const ear::FrameClock clock(ear::SampleRate::fixed<rate>());
+	HandOver rig(180'000 * HandOver::msNs);
+	rig.stopAndStart();
+	REQUIRE(rig.write() == capacity); // the ring refilled
+	// The graph stalls past a block and catches up: the next cycle states a jump of 512 frames, 512 frames' time on.
+	constexpr std::int64_t jump = 512;
+	fakeRaw += clock.ns(block + jump);
+	ear::CycleFacts caughtUp;
+	caughtUp.causes = ear::CycleCause::catchUp;
+	caughtUp.jumpFrames = jump;
+	const std::int64_t late = rig.lateNow();
+	REQUIRE(late > jump);
+	REQUIRE(late < capacity);
+	rig.cycle(caughtUp);
+	CHECK(rig.code.lastAnchored());
+	CHECK(rig.code.lastSkipped() == 0);
+	CHECK(rig.code.lastSkipped() + rig.code.lastResumeSkipped() == late);
+}
+
+TEST_CASE("A gap in the library's writes after a hand-over ends the drop's timeline after a feed's worth of cycles",
+          "[sendspin][code]") {
+	const ear::FrameClock clock(ear::SampleRate::fixed<rate>());
+	HandOver rig(200'000 * HandOver::msNs);
+	rig.stopAndStart();
+	// The library writes nothing for 100 ms (a network gap with no stream end): the cycles play zeros.
+	std::uint32_t ran = block; // the cycle that took the feed back
+	for (; clock.ns(ran) < 100 * HandOver::msNs; ran += block) {
+		fakeRaw += clock.ns(block);
+		rig.cycle();
+		INFO("cycle " << ran / block);
+		CHECK(rig.code.lastAnchored() == (ran < capacity));
+	}
+	REQUIRE(rig.write() == capacity); // its audio comes back
+	fakeRaw += clock.ns(block);
+	REQUIRE(rig.lateNow() > capacity);
+	rig.cycle();
+	// The gap is the library's to correct, as outside a drop: what it wrote plays, none of it skipped and told played.
+	CHECK_FALSE(rig.code.lastAnchored());
+	CHECK(rig.code.lastResumeSkipped() == 0);
+	CHECK(rig.left[0] == 0.5F);
+}

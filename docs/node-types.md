@@ -408,7 +408,13 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   the code reads a total with another drop's finish. The cycle skips the stale frames, nothing for
   its jump (the drop covered it), and then, as late, what the library wrote since that is heard by
   the cycle's run on the drop's timeline (the graph's cycle comes later by up to a block), counted
-  played, so the stream plays on from the drop's time with nothing for the library to correct. What
+  played, so the stream plays on from the drop's time with nothing for the library to correct. The
+  drop's timeline holds until a cycle reads with nothing late left, and for a feed's worth of
+  cycles at most: a library that keeps pace has written every late frame by then, so what is still
+  late is a gap of its own (a network gap, a server that underran), which it corrects itself as it
+  does outside a drop rather than ear skipping the gap's length of fresh audio. While it holds, a
+  catch-up's jump is not skipped either: the late skip, measured from when a frame is heard, already
+  covers the graph's lost time, and both would skip it twice. What
   it read in the instant the writer began is counted twice, so as many of its next frames go
   uncounted, counted from what the reader read of its own, never from a read position a clear moved;
   a clear forgets that debt, and keeps the drop's timeline only if the writer has dropped some of the

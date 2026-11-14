@@ -40,6 +40,9 @@ public:
 	/// late for the drop's timeline.
 	bool lastStale() const noexcept { return lastStale_; }
 	std::uint32_t lastResumeSkipped() const noexcept { return lastResumeSkipped_; }
+	/// Test seam, the data thread's own: whether the last process() measured that late skip from the drop's last finish
+	/// (false while the finish is not yet read, the writer mid-publish, and once the drop's timeline ended or expired).
+	bool lastAnchored() const noexcept { return lastAnchored_; }
 	/// Test seam, read on the data thread: the reports whose finish the clamp moved. It acts only on the report after one
 	/// the bound forced from an overdue cycle (docs/node-types.md#clock); a test holds it idle otherwise.
 	std::uint64_t clamped() const noexcept { return clamped_; }
@@ -60,11 +63,13 @@ private:
 	std::uint64_t countedTwice_ = 0;          // frames read that the feed's writer also counted dropped
 	bool lastStale_ = false;                  // test seam: lastStale()
 	std::uint32_t lastResumeSkipped_ = 0;     // test seam: lastResumeSkipped()
+	bool lastAnchored_ = false;               // test seam: lastAnchored()
 	// Back after a drop: none, the drop's last finish not yet read (the writer mid-publish), or anchored to it.
 	enum class Resume : std::uint8_t { none, pending, anchored };
 	Resume resume_ = Resume::none;
 	std::int64_t resumeFromRawNs_ = 0;      // anchored: when the first frame written since the drop is heard
 	std::uint64_t consumedSinceResume_ = 0; // frames skipped and read since the feed was taken back
+	std::uint64_t ranSinceResume_ = 0;      // frames of the cycles run since: the timeline expires at a feed's worth
 	std::uint64_t clamped_ = 0;             // test seam: clamped()
 };
 } // namespace ear::nodes::sendspin
