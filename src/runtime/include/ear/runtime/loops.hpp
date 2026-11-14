@@ -26,7 +26,7 @@ class Loops final : public LoopAdapter {
 public:
 	/// `mainLoop` (outliving every loop) is where each loop's events, finished and closed are posted.
 	explicit Loops(Executor& mainLoop, LoopOptions options = {});
-	/// The pool's threads stopped and joined. Precondition: every loop made was closed and destroyed.
+	/// The pool's threads stopped and joined. Precondition: every loop made was closed.
 	~Loops();
 	Loops(const Loops&) = delete;
 	Loops& operator=(const Loops&) = delete;

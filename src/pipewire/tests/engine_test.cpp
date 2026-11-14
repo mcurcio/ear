@@ -3,6 +3,7 @@
 // Every wait is event-gated: the main loop runs until the events a test waits for have
 // arrived; the deadline only fails the test.
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -12,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <iterator>
 #include <memory>
 #include <optional>
@@ -43,6 +45,7 @@
 #include "ear/pipewire/rtp_receivers.hpp"
 #include "ear/pipewire/sound_cards.hpp"
 #include "ear/pipewire/sources.hpp"
+#include "ear/runtime/loops.hpp"
 #include "ear/testing/drive_now.hpp"
 #include "cycle_judge.hpp"
 #include "inducers.hpp"
@@ -913,6 +916,151 @@ TEST_CASE("A sink consumer that throws on its real sink thread fails only its no
 	});
 	REQUIRE(waiter.until([&] { return gone; }, 10s));
 	CHECK(host.leaked() == 0);
+}
+
+namespace {
+
+/// A sink's consumer whose finish, on the real sink's thread, waits for the test.
+class LateConsumer final : public SinkConsumer {
+public:
+	explicit LateConsumer(std::shared_future<void> gate) : gate_(std::move(gate)) {}
+	void consume(const Chunk&) override {}
+	void finish() override { gate_.wait(); }
+
+private:
+	std::shared_future<void> gate_;
+};
+
+/// A loop's state whose destruction, on its dedicated loop's real thread at teardown step 4, waits for the test.
+struct LateState {
+	std::shared_future<void> gate;
+	~LateState() { gate.wait(); }
+};
+
+constexpr std::array lateLoops{LoopDeclaration{"worker", LoopKind::dedicated, true}};
+
+/// A class's instance with a sink on "tap" consumed by a LateConsumer and a dedicated loop with a LateState; it says
+/// when it is freed.
+class LateInstance final : public ErasedInstance {
+public:
+	LateInstance(std::shared_future<void> sinkGate, std::shared_future<void> stateGate, std::function<void()> freed)
+		: sinkGate_(std::move(sinkGate)), stateGate_(std::move(stateGate)), freed_(std::move(freed)) {}
+	~LateInstance() override { freed_(); }
+	std::span<const LoopDeclaration> loops() const noexcept override { return lateLoops; }
+	Configured configure(InstanceContexts& cx) override {
+		cx.create.sink("tap", SinkShape{.frames = 4096}).consumedBy(std::make_unique<LateConsumer>(sinkGate_));
+		cx.create.loopState(0, std::unique_ptr<void, void (*)(void*)>(new LateState{stateGate_}, [](void* state) {
+								delete static_cast<LateState*>(state);
+							}));
+		cx.create.use(std::make_unique<LevelCode>());
+		return Configured::applied();
+	}
+
+private:
+	std::shared_future<void> sinkGate_;
+	std::shared_future<void> stateGate_;
+	std::function<void()> freed_;
+};
+
+class LateConfig final : public NodeConfig {
+public:
+	LateConfig(std::shared_future<void> sinkGate, std::shared_future<void> stateGate, std::function<void()> freed)
+		: sinkGate_(std::move(sinkGate)), stateGate_(std::move(stateGate)), freed_(std::move(freed)) {}
+	const Ports& ports() const override { return ports_; }
+	std::unique_ptr<ErasedInstance> make(NodeContext&) const override {
+		return std::make_unique<LateInstance>(sinkGate_, stateGate_, freed_);
+	}
+
+private:
+	Ports ports_{{{Direction::output, "tap", {"1"}, PortBank::Reach::inside}}};
+	std::shared_future<void> sinkGate_;
+	std::shared_future<void> stateGate_;
+	std::function<void()> freed_;
+};
+
+/// The codes of NodeHost's diagnostics, in order; each wakes the waiter.
+class Diagnosed final : public NodeDiagnosticListener {
+public:
+	explicit Diagnosed(Waiter& waiter) : waiter_(waiter) {}
+	void nodeDiagnostic(const NodeName&, std::string_view code, const std::string&,
+	                    std::span<const DiagnosticField>) override {
+		codes.emplace_back(code);
+		waiter_.wake();
+	}
+	std::vector<std::string> codes;
+
+private:
+	Waiter& waiter_;
+};
+
+} // namespace
+
+// The leaked configuration (docs/architecture.md#teardown-by-dependency) on the real engine and real threads: a sink
+// consumer that drains late on its real sink thread and a dedicated loop whose state is destroyed late on its real
+// thread leak the configuration at the close deadline; once both let go, the record carries the teardown on, says
+// ear.close-late, frees the configuration, and the stop that follows ends normally with nothing leaked.
+TEST_CASE("A configuration leaked at the close deadline that closes late is freed, and the stop after it is normal",
+          "[engine][sink][leak]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	NoLevelWake wake;
+	FilterPortBlocks blocks(*engine, wake);
+	ThreadHandoffs handoffs(engine->mainLoop());
+	AlsaSoundCards cards(*engine);
+	RtpReceivers receivers(*engine);
+	MainLoopExecutor mainLoop(*engine);
+	ThreadSinks sinks(mainLoop);
+	EventSources sources;
+	runtime::Loops loops(mainLoop);
+	ResourceRegistry resources(ResourceAdapters{.cards = &cards,
+	                                            .receivers = &receivers,
+	                                            .handoffs = &handoffs,
+	                                            .sinks = &sinks,
+	                                            .sources = &sources,
+	                                            .loops = &loops});
+	NodeCatalogue catalogue{{}};
+	DesiredGraph graph(catalogue);
+	HealthWake health(waiter);
+	Diagnosed diagnosed(waiter);
+	std::promise<void> sinkGate;
+	std::promise<void> stateGate;
+	bool freed = false;
+	{
+		NodeHost host(kFormat, blocks, resources, mainLoop, mainLoop, 300ms);
+		host.subscribe(health);
+		host.subscribeDiagnostics(diagnosed);
+		host.nodeAdded(NodeSpec{"rec", "test", {}},
+		               std::make_shared<LateConfig>(sinkGate.get_future().share(), stateGate.get_future().share(), [&] {
+						   freed = true;
+						   waiter.wake();
+					   }));
+		REQUIRE(waiter.until(
+			[&] {
+				const auto all = host.health();
+				return all.size() == 1 && all[0].state == NodeState::running;
+			},
+			10s));
+		host.nodeRemoved("rec");
+		REQUIRE(waiter.until([&] { return std::ranges::count(diagnosed.codes, "ear.close-overdue") == 1; }, 10s));
+		REQUIRE(waiter.until([&] { return host.health().empty(); }, 10s)); // gone: the node moved on
+		CHECK(host.leaked() == 1);
+		CHECK_FALSE(freed);
+
+		sinkGate.set_value(); // the sink drains; the record finishes the loop, whose state now waits
+		stateGate.set_value();
+		REQUIRE(waiter.until([&] { return std::ranges::count(diagnosed.codes, "ear.close-late") == 1; }, 10s));
+		CHECK(host.leaked() == 0);
+		REQUIRE(waiter.until([&] { return freed; }, 10s)); // freed in a turn of its own, as step 5 frees
+
+		bool gone = false;
+		host.stopAll(graph.close(), [&] {
+			gone = true;
+			waiter.wake();
+		});
+		REQUIRE(waiter.until([&] { return gone; }, 10s));
+		CHECK(host.leaked() == 0); // so main.cpp would return normally, not leave through std::_Exit
+	}
+	CHECK(diagnosed.codes == std::vector<std::string>{"ear.close-overdue", "ear.close-late"});
 }
 
 namespace {

@@ -287,7 +287,11 @@ record, the configuration's `Channel` re-pointed at it. *Found building S3c.5c:*
 - **`ear.close-late`** carries `ms` (from teardown step 3's start to the late close) and reads `the configuration
   leaked at the close deadline closed <ms> ms after its close began`; S3c.5a appends `; its claims are released` when
   it releases them there. Then the `Channel` is detached and `leaked()` counts one fewer, so a stop afterwards ends
-  normally; the memory stays leaked.
+  normally. Review follow-up: 6.9's "its memory stays leaked" is overturned. Once every thread has reported
+  closed the record frees the configuration in a main-loop turn of its own, in step 5's order, so a node that leaks
+  and recovers again and again grows nothing. And a write of a leaked configuration's stores not yet begun is
+  dropped (a flag the leak clears, read by the job), as its `done` is, so its thread never replaces what a newer
+  configuration of the node keeps (a newer `sendspin` pairing, say).
 - **`ear.close-overdue`'s counts** were already built by S3c.3 (`<n> handoffs open, <s> sinks open, <k> loops open`):
   nothing left for this step.
 

@@ -127,7 +127,7 @@ The framework's own observations. With a node:
 | Code | Fields | When |
 |---|---|---|
 | `ear.close-overdue` | | A configuration's teardown did not finish within 10 s; it is leaked, never freed. `detail` counts what was still open (handoffs, sinks, loops) |
-| `ear.close-late` | `ms` | A configuration leaked at the close deadline finally closed: everything it held reported, `ms` after its teardown began (`detail`: `the configuration leaked at the close deadline closed <ms> ms after its close began`). Its memory stays leaked, but it no longer keeps ear's stop from ending normally ([architecture.md](architecture.md#teardown-by-dependency)) |
+| `ear.close-late` | `ms` | A configuration leaked at the close deadline finally closed: everything it held reported, `ms` after its teardown began (`detail`: `the configuration leaked at the close deadline closed <ms> ms after its close began`). It is then freed, and no longer keeps ear's stop from ending normally ([architecture.md](architecture.md#teardown-by-dependency)) |
 | `ear.fade-unacknowledged` | `ms` | A planned silence's fade was not acknowledged within 100 ms; the silence was taken unfaded |
 | `ear.barrier-overdue` | `ms` | A drive or silence posted to the data loop did not complete within 5 s; the configuration and block are leaked |
 | `ear.hook-slow` | `ms` | A hook (`configure`, `start` or `stop`, named in `detail`) ran past 20 ms on the main loop; once per node and hook |

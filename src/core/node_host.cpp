@@ -1359,6 +1359,8 @@ struct NodeHost::Impl {
 			std::uint64_t generation;
 			std::size_t index;
 			std::shared_ptr<detail::Completions> completions;
+			/// The configuration's stores may still be written: false once it was leaked (any thread reads it).
+			std::shared_ptr<const std::atomic<bool>> writable;
 			/// Any thread (the I/O thread's job): the store adapter threw in `job`'s call `callback`. On the main loop,
 			/// while attached: the record, then the node fails lost (docs/architecture.md#faults-by-owner).
 			void faulted(std::string job, std::string callback, std::string what) const {
@@ -1489,7 +1491,11 @@ struct NodeHost::Impl {
 		private:
 			/// A write on the I/O thread: the adapter's throw is its bug, reported (the node fails lost) and answered as
 			/// the failure it gives the node.
+			/// The I/O thread's: a write of a configuration leaked since it was asked is dropped, the file left as it is
+			/// (docs/architecture.md#teardown-by-dependency); its outcome reaches no one, as its `done` is dropped too.
 			static StoreWritten written(detail::StoreState& state, const StoreLink& link, std::string text) {
+				if (!link.writable->load(std::memory_order_acquire))
+					return refused(state.file + ": not written: its configuration was leaked");
 				try {
 					auto wrote = state.write(std::move(text));
 					if (!wrote) return refused(std::move(wrote.error()));
@@ -1548,6 +1554,9 @@ struct NodeHost::Impl {
 			// Each declared store: a loop's state, a sink's consumer or the instance may hold it, so it goes after all
 			// of them (teardown step 5); its jobs hold only its state.
 			std::vector<std::unique_ptr<StoreSlot>> stores;
+			// Cleared when the configuration is leaked: a write of its stores that has not begun is dropped, so a leaked
+			// configuration's thread never replaces what a newer configuration of the node keeps in the file.
+			std::shared_ptr<std::atomic<bool>> storesWritable = std::make_shared<std::atomic<bool>>(true);
 			// Outlives the handoffs that write it and the instance (a legacy run object and recipe) that may hold it
 			// open (file's WavWriter closes its SNDFILE on the descriptor when freed).
 			std::vector<std::unique_ptr<RecordingFile>> recordings;
@@ -1601,14 +1610,14 @@ struct NodeHost::Impl {
 			std::size_t sinksClosed = 0;
 		};
 
-		/// A configuration leaked at the close deadline (docs/architecture.md#teardown-by-dependency): never freed, since
-		/// its threads may still touch any of it, and still listening. Its Channel is re-pointed here, so every close it
+		/// A configuration leaked at the close deadline (docs/architecture.md#teardown-by-dependency): not freed while its
+		/// threads may still touch any of it, and still listening. Its Channel is re-pointed here, so every close it
 		/// still reports (a sink's, a handoff's, a loop's finish and close, the run object's) lands here in order on the
 		/// main loop, and the teardown carries on from where it stopped: once the sinks and handoffs closed, the loops
 		/// finish and close, then a legacy run object closes. Once everything reported, ear.close-late is said, the
-		/// Channel is detached and the configuration no longer counts in leaked(). A consumer's throw is an `ear` log
-		/// record naming the node, never a fact: nothing here reaches the node or a newer configuration. NodeHost keeps
-		/// it by the configuration's Channel alone (the Impl outlives every record but on an exit through _Exit).
+		/// Channel is detached, the configuration no longer counts in leaked(), and a later turn frees it. A consumer's throw is an `ear` log
+		/// record naming the node, never a fact: nothing here reaches the node or a newer configuration. Until then
+		/// NodeHost reaches it by the configuration's Channel alone (the Impl outlives it but on an exit through _Exit).
 		class LeakedRecord {
 		public:
 			LeakedRecord(Impl& host, NodeName name, std::unique_ptr<Configuration> config, bool runClosing)
@@ -1670,7 +1679,8 @@ struct NodeHost::Impl {
 					closedLate();
 				}
 			}
-			/// Everything it held reported: said, and no longer counted; its memory stays leaked.
+			/// Everything it held reported: said, and no longer counted; then freed in a turn of its own (never inside
+			/// the close that called this), as teardown step 5 frees a configuration that closed in time.
 			void closedLate() {
 				if (closed_) return;
 				closed_ = true;
@@ -1682,6 +1692,28 @@ struct NodeHost::Impl {
 				                "the configuration leaked at the close deadline closed " + std::to_string(ms) +
 				                    " ms after its close began",
 				                fields);
+				host_.mainLoop.post([record = this, alive = std::weak_ptr<char>(host_.alive)] {
+					if (!alive.lock()) return; // the host is gone: so is what the record would free into
+					record->free();
+					delete record;
+				});
+			}
+			/// Teardown step 5's order (freeConfiguration): every thread of it has reported closed, so nothing reaches
+			/// what goes here. The code, the instance, the loops (a dedicated one's thread has returned), the sinks
+			/// and sources, the stores, the recordings, then the rest with the config; its Channel may outlive it, held
+			/// by a type's thread, detached.
+			void free() {
+				const MainLoopActivity::Scope activity("free configuration", name_);
+				Configuration& c = *config_;
+				c.code.reset();
+				c.instance.reset();
+				for (const auto& slot : c.loops) slot->state.reset();
+				c.loops.clear();
+				c.sinks.clear();
+				c.sources.clear();
+				c.stores.clear();
+				c.recordings.clear();
+				config_.reset();
 			}
 
 			Impl& host_;
@@ -2107,7 +2139,7 @@ struct NodeHost::Impl {
 							*this,
 							std::make_shared<detail::StoreState>(*stores, storeFileName(type_, name_, kept[i].suffix),
 						                                         kept[i].rule),
-							StoreLink{&host_, serial_, c.generation, i, c.channel->completions()}));
+							StoreLink{&host_, serial_, c.generation, i, c.channel->completions(), c.storesWritable}));
 				}
 				InstanceContexts contexts{*this, *this};
 				return c.instance->configure(contexts);
@@ -3011,8 +3043,10 @@ struct NodeHost::Impl {
 			c.readiness.disarm();
 			companionsEnded(); // their counts as they stand: the configuration reaches no node again
 			const bool listening = c.tearing;
+			c.storesWritable->store(false, std::memory_order_release); // a write not begun is dropped
 			if (!listening) c.channel->detach();
-			// Deliberately never deleted: the configuration's threads may still touch any of it.
+			// Not deleted here: the configuration's threads may still touch any of it. A listening record deletes
+			// itself once they all reported closed (LeakedRecord::closedLate); any other is never deleted.
 			auto* record = new LeakedRecord(host_, name_, std::move(config_), runClosing_);
 			if (listening) record->repoint();
 			++host_.leaked;

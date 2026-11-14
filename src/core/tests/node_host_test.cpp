@@ -6360,11 +6360,12 @@ TEST_CASE("A configuration leaked at the close deadline is said ear.close-late o
 
 	f.loops.made.at(0)->finishNow(); // what held the loop's thread lets go
 	f.settle();
-	CHECK(f.log == Log{"loop porch.worker close", "diagnostic porch ear.close-late ms=12500"});
+	// Said, then freed in a turn of its own, in teardown step 5's order.
+	CHECK(f.log == Log{"loop porch.worker close", "diagnostic porch ear.close-late ms=12500", "instance destroyed",
+	                   "loop porch.worker freed"});
 	CHECK(f.diagnostics.details.back() == "the configuration leaked at the close deadline closed 12500 ms after its "
 	                                      "close began");
-	CHECK(f.host.leaked() == 0);                      // so a stop now ends normally, not through std::_Exit
-	CHECK(countOf(f.log, "instance destroyed") == 0); // its memory stays leaked
+	CHECK(f.host.leaked() == 0); // so a stop now ends normally, not through std::_Exit
 	f.stopAll();
 	f.settle();
 	CHECK(f.allGone == 1);
@@ -6406,7 +6407,8 @@ TEST_CASE(
 	f.sinks.made.at(0)->runClose(); // the old sink drains at last; its consumer's finish throws
 	f.settle();
 	CHECK(f.log == Log{"consumer finish", "loop porch.worker finish", "loop porch.worker close",
-	                   "diagnostic porch ear.close-late ms=10000"});
+	                   "diagnostic porch ear.close-late ms=10000", "instance destroyed", "loop porch.worker freed",
+	                   "sink porch.pb destroyed", "consumer destroyed"});
 	REQUIRE(logs.entries.size() == 1);
 	CHECK(logs.entries[0].level == LogLevel::error);
 	CHECK(logs.entries[0].source == "ear");
@@ -6422,9 +6424,9 @@ TEST_CASE(
 	f.settle();
 	CHECK(f.allGone == 1);
 }
-
-TEST_CASE("A leaked configuration's handle and I/O completions reach nothing: its notes, losses and log entries "
-          "dropped, a store write's completion dropped, while the newer configuration opens its store and runs",
+TEST_CASE("A leaked configuration's handle and store writes reach nothing: its notes, losses and log entries dropped, "
+          "a store write it asked for dropped unwritten with its completion, while the newer configuration opens its "
+          "store and runs, keeping its text",
           "[node_host][loops][stores][leak]") {
 	Fixture f;
 	TestLog logs;
@@ -6465,9 +6467,10 @@ TEST_CASE("A leaked configuration's handle and I/O completions reach nothing: it
 	oldHandle->say("from the leaked configuration");
 	oldHandle->warn("logged by the leaked configuration");
 	oldHandle->lost("lost by the leaked configuration");
-	f.stores.runIo(); // the old write lands on disk; its completion is dropped. The newer open completes
+	f.stores.runIo(); // the old write is dropped unwritten, so is its completion. The newer open completes
 	f.settle();
-	CHECK(f.stores.files.at("test-porch.key") == "key 2");
+	CHECK(f.stores.files.at("test-porch.key") == "key 1"); // what the newer configuration opened, kept
+	CHECK(countOf(f.log, "io write store test-porch.key") == 1);
 	CHECK(countOf(f.log, "late write done") == 0);
 	CHECK(countOf(f.log, "note porch from the leaked configuration") == 0);
 	CHECK(logs.entries.empty());

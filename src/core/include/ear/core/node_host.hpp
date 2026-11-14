@@ -424,8 +424,8 @@ public:
 	/// a wedged data loop, and the blocks and engine companions a wedged loop kept. Their threads may still post to
 	/// `mainLoop` or touch engine objects at any time, so while any counts the process must end without destroying
 	/// those (main.cpp ends with std::_Exit). A configuration leaked at the close deadline that closed late
-	/// (ear.close-late, docs/architecture.md#teardown-by-dependency) no longer counts: its memory stays leaked, but
-	/// nothing of it runs.
+	/// (ear.close-late, docs/architecture.md#teardown-by-dependency) no longer counts: nothing of it runs, and it
+	/// is freed in a later turn.
 	std::size_t leaked() const noexcept;
 
 private:

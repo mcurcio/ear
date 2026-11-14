@@ -642,7 +642,7 @@ are dropped once its teardown began; notes are heard until the detach. A stop do
 fade and silence, keeping everything else, the channel and its note rate included.
 
 **A configuration leaked at the close deadline keeps listening.** Past the deadline it is
-`ear.close-overdue` and leaked: never freed, since its threads may still touch any of it, and the
+`ear.close-overdue` and leaked: not freed while its threads may still touch any of it, and the
 node moves on (its next configuration may begin). Its channel is not detached but re-pointed at a
 record ear keeps for it, so nothing it tells reaches the node or a newer configuration:
 
@@ -651,14 +651,18 @@ record ear keeps for it, so nothing it tells reaches the node or a newer configu
   from where it stopped (a configuration leaked while a sink drained has its loops finished and
   closed once that sink reports, then its run object closed). A consumer's or loop handler's throw
   is a `log` record (`source` `ear`, `error`, naming the node), never a fact.
-- **Dropped:** its node handle's notes, losses and log entries, and its I/O jobs' completions (the
+- **Dropped:** its node handle's notes, losses and log entries, its I/O jobs' completions (the
   handle a dropped completion carries is released on the I/O thread, as for any ended
-  configuration).
+  configuration), and every write of its stores not yet begun, so a thread of it never replaces
+  what a newer configuration of the node keeps in the file (a `replace` it waits on is refused
+  `not written: its configuration was leaked`).
 - **The late close.** Once everything it held has reported, the record says `ear.close-late`
   ([output-records.md](output-records.md#diagnostic)), the channel is detached, and the
   configuration no longer counts as leaked (`NodeHost::leaked()`), so a stop afterwards ends
-  normally rather than through `std::_Exit` ([stop](#stop-sigint-or-sigterm)). Its memory stays
-  leaked.
+  normally rather than through `std::_Exit` ([stop](#stop-sigint-or-sigterm)). Then, in a main-loop
+  turn of its own, the configuration is freed in step 5's order: every thread of it has reported
+  closed, so nothing reaches what is freed, and a node that leaks and recovers again and again
+  holds nothing for it.
 
 A configuration leaked on an overdue barrier ([bounds](#bounds-the-wedged-data-loop-and-the-watchdog))
 is detached instead: the data loop may still run its code, so it never closes and counts as leaked
