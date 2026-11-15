@@ -110,11 +110,13 @@ Toolchain notes:
   commit or by SHA-256: sendspin-cpp (with `cmake/sendspin-listener.patch`,
   `sendspin-starved-floor.patch` and `sendspin-late-chunk.patch`; a failed apply, or a tree without
   one, stops configure), ArduinoJson, IXWebSocket (likewise,
-  `cmake/ixwebsocket-limits.patch`), micro-flac, noise-c and mjansson/mdns (one header). Each is
-  kept in `.cache/deps/` as Boost's is, and `ear_node_sendspin` is the only library that sees
-  them. Configure copies their licences to `out/licenses/`. With `BUILD_TESTS=ON` configure stops
-  naming `EAR_SENDSPIN_SERVER_PYTHON` when the image's `/opt/sendspin-server/bin/python` (the real
-  Sendspin server the tests run against, `test/sendspin/requirements.txt`) is missing.
+  `cmake/ixwebsocket-limits.patch`), micro-flac and noise-c. Each is kept in `.cache/deps/` as
+  Boost's is, and `ear_node_sendspin` is the only library that sees them. mjansson/mdns (one
+  header) is `ear_mdns`'s, in `cmake/MdnsDeps.cmake` by SHA-256 and kept the same way, and only
+  `ear_mdns` sees it. Configure copies all their licences to `out/licenses/`. With
+  `BUILD_TESTS=ON` configure stops naming `EAR_SENDSPIN_SERVER_PYTHON` when the image's
+  `/opt/sendspin-server/bin/python` (the real Sendspin server the tests run against,
+  `test/sendspin/requirements.txt`) is missing.
 - ccache is the image's compiler launcher; `scripts/dev.sh` points `CCACHE_DIR` at the main
   checkout's `.cache/ccache`, shared by every worktree.
 - The graph editor (`web/`) builds with the image's Node.js 24 (`web/.nvmrc`);
@@ -128,7 +130,7 @@ Toolchain notes:
 
 | Path | Holds |
 |---|---|
-| `src/<package>/` | One C++ package each (`core`, `runtime`, `folder`, `pipewire`, `output`, `control`, `config`, `server`, `all_node_types`), with its own `CMakeLists.txt`, public headers in `include/ear/<package>/` and tests in `tests/` |
+| `src/<package>/` | One C++ package each (`core`, `runtime`, `folder`, `pipewire`, `output`, `mdns`, `control`, `config`, `server`, `all_node_types`), with its own `CMakeLists.txt`, public headers in `include/ear/<package>/` and tests in `tests/` |
 | `src/nodes/<type>/` | One node type each, its own library; a folder here registers its type and nothing else names it ([`docs/writing-a-node-type.md`](docs/writing-a-node-type.md) is how to add or remove one) |
 | `src/main.cpp` | The composition root: wiring, boot and stop order, glue |
 | `web/` | The graph editor; shares no code with the C++, only the wire format and `test/protocol/` |
@@ -203,7 +205,7 @@ never enter ear's history, so the release notes get only the merge commit's mess
 Dependencies line and a patch release); the squash commit's own message is not a Conventional
 Commit, so it is ignored. Bumps of the fetched dependencies (Boost's `boost_url` and
 `boost_sha256`, knobly's `cmake/knobly.json` through `scripts/knobly-pin.mjs`, those in
-`cmake/SendspinDeps.cmake`) use the same message: `build(deps): upgrade knobly to <x>`. The
+`cmake/SendspinDeps.cmake` and `cmake/MdnsDeps.cmake`) use the same message: `build(deps): upgrade knobly to <x>`. The
 subtrees were first added without `--squash`, so their upstream histories are in ear's history;
 the baseline tag `v0.0.0` on cb6d71f64c (the last `git subtree add`, 2020-05-27) ends them, since
 semantic-release reads only the commits after the last `v*` tag. PipeWire, alsa-lib and libsndfile

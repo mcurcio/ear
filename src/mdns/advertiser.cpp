@@ -1,6 +1,6 @@
-// The one user of mjansson/mdns (docs/node-types.md#mdns): no daemon, no probing (the instance is unique
-// by its client id), one address, the one the kernel routes the mDNS group through.
-#include "advertiser.hpp"
+// The one user of mjansson/mdns (docs/node-types.md#mdns): no daemon, no probing (the caller makes the instance and
+// host unique), one address, the one the kernel routes the mDNS group through.
+#include "ear/mdns/advertiser.hpp"
 
 #include <algorithm>
 #include <array>
@@ -8,7 +8,6 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
-#include <optional>
 #include <system_error>
 #include <utility>
 
@@ -20,11 +19,9 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-namespace ear::nodes::sendspin {
+namespace ear::mdns {
 namespace {
 
-constexpr std::size_t maxNodeBytes = 50;
-constexpr std::size_t maxIdBytes = 8;
 constexpr std::size_t packetBytes = 2048;
 /// mdns_socket_listen reads a question's type and class with no bound, up to 5 bytes past the end of what it was given,
 /// and into the next member of State. So it is told less than the buffer holds.
@@ -32,19 +29,18 @@ constexpr std::size_t listenBytes = packetBytes - 8;
 constexpr std::size_t headerBytes = 12;
 /// Flags of a query: QR, opcode and rcode all zero. Anything else is ignored (RFC 6762 section 18), an answer above all.
 constexpr std::uint16_t notAQuery = 0xF80F;
-/// One answer() call, every 10 ms at most, reads no more than this, so a flood cannot hold the worker up.
+/// One answer() call reads no more than this, so a flood cannot hold its owner's loop up.
 constexpr int maxPacketsPerAnswer = 32;
 /// RFC 6762 section 6: a record goes out by multicast at most once a second.
 constexpr std::chrono::seconds multicastInterval{1};
 /// Unicast has no such rule, but each reply goes wherever a datagram's source says, which a peer can forge. One-shot queriers
 /// are rare and ask again, so this many a second is plenty, and it bounds what can be reflected.
 constexpr int unicastRepliesPerSecond = 16;
-constexpr std::string_view serviceType = "_sendspin._tcp.local.";
 constexpr std::string_view allServices = "_services._dns-sd._udp.local.";
-constexpr std::string_view path = "/sendspin";
-constexpr std::string_view pathKey = "path";
-constexpr std::string_view nameKey = "name";
+constexpr std::string_view localDomain = ".local.";
 constexpr const char* mdnsGroup = "224.0.0.251";
+constexpr std::size_t maxLabelBytes = 63;
+constexpr std::size_t maxTxtBytes = 255;
 
 std::string lastError() { return std::system_category().message(errno); }
 
@@ -54,6 +50,76 @@ bool sameName(mdns_string_t asked, std::string_view name) noexcept {
 	return std::ranges::equal(std::string_view(asked.str, asked.length), name, [](char a, char b) {
 		return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
 	});
+}
+
+bool isLetterOrDigit(char c) noexcept {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+}
+
+/// `_<name>._tcp` or `_<name>._udp`, its name letters, digits and "-" (RFC 6335 section 5.1's characters).
+bool validService(std::string_view service) noexcept {
+	if (!service.ends_with("._tcp") && !service.ends_with("._udp")) return false;
+	const std::string_view name = service.substr(0, service.size() - 5);
+	return name.size() >= 2 && name.front() == '_' &&
+	       std::ranges::all_of(name.substr(1), [](char c) { return isLetterOrDigit(c) || c == '-'; });
+}
+
+/// Whether `text` is RFC 3629's UTF-8 (no overlong form, no surrogate, nothing above U+10FFFF) holding no C0, DEL, C1
+/// or Unicode line or paragraph separator, which a browser's list or a log would act on.
+bool printableUtf8(std::string_view text) noexcept {
+	for (std::size_t at = 0; at < text.size();) {
+		const auto lead = static_cast<unsigned char>(text[at]);
+		std::size_t continuation = 0;
+		unsigned char low = 0x80;
+		unsigned char high = 0xBF;
+		char32_t code = 0;
+		if (lead < 0x80) {
+			code = lead;
+		} else if (lead >= 0xC2 && lead <= 0xDF) {
+			continuation = 1;
+			code = lead & 0x1FU;
+		} else if (lead >= 0xE0 && lead <= 0xEF) {
+			continuation = 2;
+			code = lead & 0x0FU;
+			if (lead == 0xE0) low = 0xA0;
+			if (lead == 0xED) high = 0x9F;
+		} else if (lead >= 0xF0 && lead <= 0xF4) {
+			continuation = 3;
+			code = lead & 0x07U;
+			if (lead == 0xF0) low = 0x90;
+			if (lead == 0xF4) high = 0x8F;
+		} else {
+			return false;
+		}
+		if (at + continuation >= text.size() && continuation > 0) return false;
+		for (std::size_t c = 1; c <= continuation; ++c) {
+			const auto byte = static_cast<unsigned char>(text[at + c]);
+			if (byte < low || byte > high) return false;
+			code = (code << 6U) | (byte & 0x3FU);
+			low = 0x80;
+			high = 0xBF;
+		}
+		if (code < 0x20 || (code >= 0x7F && code <= 0x9F) || code == 0x2028 || code == 0x2029) return false;
+		at += continuation + 1;
+	}
+	return true;
+}
+
+std::optional<std::string> txtRefused(std::string_view txt) {
+	if (txt.empty() || txt.size() > maxTxtBytes) return "a TXT string is 1 to 255 bytes";
+	const auto equals = txt.find('=');
+	if (equals == std::string_view::npos) return "a TXT string needs key=value";
+	const std::string_view key = txt.substr(0, equals);
+	if (key.empty() || !std::ranges::all_of(key, [](char c) { return c >= 0x20 && c <= 0x7E; }))
+		return "a TXT string's key is 1 or more of printable ASCII";
+	return std::nullopt;
+}
+
+std::optional<std::string> txtRefused(const std::vector<std::string>& txt) {
+	for (const auto& each : txt) {
+		if (auto why = txtRefused(each)) return why;
+	}
+	return std::nullopt;
 }
 
 /// The address the kernel would send to the mDNS group from: a connected datagram socket sends nothing.
@@ -92,8 +158,16 @@ in_addr netmaskOf(in_addr address) noexcept {
 
 } // namespace
 
-std::string advertisedInstance(std::string_view node, std::string_view clientId) {
-	return "ear-" + std::string(node.substr(0, maxNodeBytes)) + "-" + std::string(clientId.substr(0, maxIdBytes));
+std::optional<std::string> listingRefused(const Listing& listing) {
+	if (!validService(listing.service))
+		return "a service is _<name>._tcp or _<name>._udp, its name letters, digits and -";
+	if (listing.instance.empty() || listing.instance.size() > maxLabelBytes || !printableUtf8(listing.instance))
+		return "an instance is 1 to 63 bytes of UTF-8, no control character";
+	if (listing.host.empty() || listing.host.size() > maxLabelBytes ||
+	    !std::ranges::all_of(listing.host, [](char c) { return isLetterOrDigit(c) || c == '-' || c == '_'; }))
+		return "a host is 1 to 63 of letters, digits, - and _";
+	if (listing.port == 0) return "a port is 1 to 65535";
+	return txtRefused(listing.txt);
 }
 
 bool onLink(std::uint32_t sourceAddress, std::uint32_t localAddress, std::uint32_t netmask) noexcept {
@@ -107,36 +181,50 @@ struct Advertiser::State {
 	enum Answer { types, pointerAndAll, serviceAndAll, addressOnly, answerCount };
 	using Clock = std::chrono::steady_clock;
 
-	State(const std::string& instance, std::string friendlyName, std::uint16_t port, in_addr address, in_addr netmask)
-		: local(address), mask(netmask), qualifiedInstance(instance + "." + std::string(serviceType)),
-		  host(instance + ".local."), name(std::move(friendlyName)) {
-		pointer.name = text(serviceType);
+	State(Listing from, in_addr address, in_addr netmask)
+		: listing(std::move(from)), local(address), mask(netmask),
+		  serviceName(listing.service + std::string(localDomain)),
+		  qualifiedInstance(listing.instance + "." + serviceName), hostName(listing.host + std::string(localDomain)) {
+		pointer.name = text(serviceName);
 		pointer.type = MDNS_RECORDTYPE_PTR;
 		pointer.data.ptr.name = text(qualifiedInstance);
 
 		service.name = text(qualifiedInstance);
 		service.type = MDNS_RECORDTYPE_SRV;
-		service.data.srv.name = text(host);
-		service.data.srv.port = port;
+		service.data.srv.name = text(hostName);
+		service.data.srv.port = listing.port;
 
-		hostAddress.name = text(host);
+		hostAddress.name = text(hostName);
 		hostAddress.type = MDNS_RECORDTYPE_A;
 		hostAddress.data.a.addr.sin_family = AF_INET;
 		hostAddress.data.a.addr.sin_addr = address;
-
-		// The library joins consecutive TXT records into one, with both strings.
-		txtPath.name = text(qualifiedInstance);
-		txtPath.type = MDNS_RECORDTYPE_TXT;
-		txtPath.data.txt.key = text(pathKey);
-		txtPath.data.txt.value = text(path);
-		txtName = txtPath;
-		txtName.data.txt.key = text(nameKey);
-		txtName.data.txt.value = text(name);
+		buildTxt();
 	}
 	State(const State&) = delete;
 	State& operator=(const State&) = delete;
 	~State() {
 		if (socket >= 0) ::close(socket);
+	}
+
+	/// The TXT records, one per string, each split at its first "=" (the library joins consecutive TXT records into
+	/// one, with every string), and the sets each answer carries after its own record. They point into listing.txt, so
+	/// they are built again whenever it changes.
+	void buildTxt() {
+		txt.clear();
+		for (const std::string& each : listing.txt) {
+			const std::string_view whole = each;
+			const auto equals = whole.find('=');
+			mdns_record_t record{};
+			record.name = text(qualifiedInstance);
+			record.type = MDNS_RECORDTYPE_TXT;
+			record.data.txt.key = text(whole.substr(0, equals));
+			record.data.txt.value = text(whole.substr(equals + 1));
+			txt.push_back(record);
+		}
+		withPointer = {service, hostAddress};
+		withPointer.insert(withPointer.end(), txt.begin(), txt.end());
+		withService = {hostAddress};
+		withService.insert(withService.end(), txt.begin(), txt.end());
 	}
 
 	/// Whether `answer` may go out by multicast now. Taking it counts the records that go with it, so a question for the
@@ -161,21 +249,31 @@ struct Advertiser::State {
 		}
 		return unicastSent < unicastRepliesPerSecond && ++unicastSent > 0;
 	}
+	/// Every record by multicast, the cache-flush bit set on all but the PTR (RFC 6762 section 8.3).
+	bool announce() noexcept {
+		if (mdns_announce_multicast(socket, sending.data(), packetBytes, pointer, nullptr, 0, withPointer.data(),
+		                            withPointer.size()) != 0)
+			return false;
+		stampMulticast(pointerAndAll, Clock::now());
+		return true;
+	}
 
+	Listing listing;
 	in_addr local;
 	in_addr mask;
 	std::array<bool, answerCount> answered{}; // in this datagram
 	std::array<std::optional<Clock::time_point>, answerCount> lastMulticast{};
 	Clock::time_point unicastWindow{};
 	int unicastSent = 0;
+	std::string serviceName;
 	std::string qualifiedInstance;
-	std::string host;
-	std::string name;
+	std::string hostName;
 	mdns_record_t pointer{};
 	mdns_record_t service{};
 	mdns_record_t hostAddress{};
-	mdns_record_t txtPath{};
-	mdns_record_t txtName{};
+	std::vector<mdns_record_t> txt;
+	std::vector<mdns_record_t> withPointer; // the SRV, the A and the TXT
+	std::vector<mdns_record_t> withService; // the A and the TXT
 	int socket = -1;
 	alignas(std::uint32_t) std::array<char, packetBytes> received{};
 	alignas(std::uint32_t) std::array<char, packetBytes> sending{};
@@ -224,11 +322,11 @@ bool queryIsNext(const Advertiser::State& state, int socket) noexcept {
 
 } // namespace
 
-std::expected<std::unique_ptr<Advertiser>, std::string> Advertiser::open(std::string instance, std::string name,
-                                                                         std::uint16_t port) {
+std::expected<std::unique_ptr<Advertiser>, std::string> Advertiser::open(Listing listing) {
+	if (auto why = listingRefused(listing)) return std::unexpected(std::move(*why));
 	const auto address = addressTowardsGroup();
 	if (!address) return std::unexpected(address.error());
-	auto state = std::make_unique<State>(instance, std::move(name), port, *address, netmaskOf(*address));
+	auto state = std::make_unique<State>(std::move(listing), *address, netmaskOf(*address));
 
 	state->socket = ::socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
 	if (state->socket < 0) return std::unexpected("cannot open a socket: " + lastError());
@@ -240,22 +338,30 @@ std::expected<std::unique_ptr<Advertiser>, std::string> Advertiser::open(std::st
 		return std::unexpected("cannot join " + std::string(mdnsGroup) + " on port " + std::to_string(MDNS_PORT) +
 		                       ": " + lastError());
 	}
-
-	const std::array<mdns_record_t, 4> details{state->service, state->hostAddress, state->txtPath, state->txtName};
-	if (mdns_announce_multicast(state->socket, state->sending.data(), packetBytes, state->pointer, nullptr, 0,
-	                            details.data(), details.size()) != 0) {
-		return std::unexpected("cannot announce: " + lastError());
-	}
-	state->stampMulticast(State::pointerAndAll, State::Clock::now());
+	if (!state->announce()) return std::unexpected("cannot announce: " + lastError());
 	return std::unique_ptr<Advertiser>(new Advertiser(std::move(state)));
 }
 
 Advertiser::Advertiser(std::unique_ptr<State> state) : state_(std::move(state)) {}
 
 Advertiser::~Advertiser() {
-	const std::array<mdns_record_t, 4> details{state_->service, state_->hostAddress, state_->txtPath, state_->txtName};
 	mdns_goodbye_multicast(state_->socket, state_->sending.data(), packetBytes, state_->pointer, nullptr, 0,
-	                       details.data(), details.size());
+	                       state_->withPointer.data(), state_->withPointer.size());
+}
+
+int Advertiser::descriptor() const noexcept { return state_->socket; }
+
+const Listing& Advertiser::listing() const noexcept { return state_->listing; }
+
+std::expected<void, std::string> Advertiser::update(std::vector<std::string> txt) {
+	if (auto why = txtRefused(txt)) return std::unexpected(std::move(*why));
+	std::swap(state_->listing.txt, txt);
+	state_->buildTxt();
+	if (state_->announce()) return {};
+	const std::string why = "cannot announce: " + lastError();
+	std::swap(state_->listing.txt, txt);
+	state_->buildTxt();
+	return std::unexpected(why);
 }
 
 void Advertiser::answer() noexcept {
@@ -277,16 +383,15 @@ void Advertiser::answer() noexcept {
 			mdns_record_t types{};
 			types.name = asked;
 			types.type = MDNS_RECORDTYPE_PTR;
-			types.data.ptr.name = text(serviceType);
+			types.data.ptr.name = text(state.serviceName);
 			send(State::types, types, std::array<mdns_record_t, 0>{});
-		} else if (sameName(asked, serviceType) && (any || type == MDNS_RECORDTYPE_PTR)) {
-			send(State::pointerAndAll, state.pointer,
-			     std::array{state.service, state.hostAddress, state.txtPath, state.txtName});
+		} else if (sameName(asked, state.serviceName) && (any || type == MDNS_RECORDTYPE_PTR)) {
+			send(State::pointerAndAll, state.pointer, state.withPointer);
 		} else if (sameName(asked, state.qualifiedInstance) &&
 		           (any || type == MDNS_RECORDTYPE_SRV || type == MDNS_RECORDTYPE_TXT)) {
 			// The SRV answers a question about the TXT too: a multicast answer carries no question, and the TXT is with it.
-			send(State::serviceAndAll, state.service, std::array{state.hostAddress, state.txtPath, state.txtName});
-		} else if (sameName(asked, state.host) && (any || type == MDNS_RECORDTYPE_A)) {
+			send(State::serviceAndAll, state.service, state.withService);
+		} else if (sameName(asked, state.hostName) && (any || type == MDNS_RECORDTYPE_A)) {
 			send(State::addressOnly, state.hostAddress, std::array<mdns_record_t, 0>{});
 		}
 		return 0;
@@ -300,4 +405,4 @@ void Advertiser::answer() noexcept {
 	}
 }
 
-} // namespace ear::nodes::sendspin
+} // namespace ear::mdns

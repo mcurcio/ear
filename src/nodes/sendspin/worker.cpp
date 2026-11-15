@@ -9,6 +9,7 @@
 #include <string>
 #include <utility>
 
+#include "advertiser.hpp"
 #include "notes.hpp"
 #include "pcm.hpp"
 
@@ -188,7 +189,12 @@ std::unique_ptr<::sendspin::SendspinClient> Worker::makeClient(NodeKeyStore& key
 void Worker::startListening(std::string_view clientId) {
 	std::string instance = advertisedInstance(handle_.node(), clientId);
 	handle_.say(notes::listening(settings_.port, instance));
-	auto advertiser = Advertiser::open(std::move(instance), settings_.name, settings_.port);
+	auto advertiser =
+		ear::mdns::Advertiser::open(ear::mdns::Listing{.service = "_sendspin._tcp",
+	                                                   .instance = instance,
+	                                                   .host = instance,
+	                                                   .port = settings_.port,
+	                                                   .txt = {"path=/sendspin", "name=" + settings_.name}});
 	if (!advertiser) {
 		handle_.say(notes::advertiseFailed(advertiser.error()));
 		return;

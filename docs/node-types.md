@@ -333,6 +333,10 @@ server reconnect on that reason; one browsing mDNS comes back by itself.
 
 ### mDNS
 
+A listening node's listing is `ear_mdns`'s (`src/mdns`, [architecture.md](architecture.md#packages)):
+`_sendspin._tcp` on its port, its TXT `path=/sendspin` and `name=<name>`, under the instance name
+below, which is its host label too. The worker keeps the advertiser and answers on its 10 ms turn.
+
 - One socket per node on port 5353 (shared with `SO_REUSEPORT`), one interface: the one the kernel
   routes 224.0.0.251 through, its address read once at the node's start. A pod on an overlay network
   cannot advertise.

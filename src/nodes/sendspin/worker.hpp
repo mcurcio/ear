@@ -12,13 +12,13 @@
 #include <optional>
 #include <string>
 #include <vector>
-#include "advertiser.hpp"
 #include "connection_watch.hpp"
 #include "ear/core/loop.hpp"
 #include "ear/core/node_handle.hpp"
 #include "ear/core/node_type.hpp"
 #include "ear/core/source.hpp"
 #include "ear/core/store.hpp"
+#include "ear/mdns/advertiser.hpp"
 #include "key_store.hpp"
 #include "sendspin/client.h"
 #include "sendspin/player_role.h"
@@ -155,7 +155,7 @@ private:
 	bool saidDialling_ = false;            // worker only
 	std::unique_ptr<Timer> tick_;          // worker only
 	std::optional<ConnectionWatch> watch_; // worker only, once the client started
-	std::unique_ptr<Advertiser> advertiser_;
+	std::unique_ptr<ear::mdns::Advertiser> advertiser_;
 	std::unique_ptr<NodeKeyStore> keyStore_;
 	::sendspin::PlayerRole* playerRole_ = nullptr; // set before the client starts
 	::sendspin::SourceRole* source_ = nullptr;     // set before the client starts, and outlives every consume()

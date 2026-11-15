@@ -16,12 +16,15 @@ namespace ear::mdns {
 /// One DNS-SD service instance (RFC 6763): `<instance>.<service>.local.` on `<host>.local.`, port `port`, with its TXT
 /// strings. Announced without probing: the caller makes `instance` and `host` unique (sendspin by its client id).
 struct Listing {
-	std::string service;    // "_raop._tcp", "_sendspin._tcp": "_<name>._tcp" or "_<name>._udp", no ".local"
-	std::string instance;   // its instance label: 1 to 63 bytes of UTF-8, no control character
-	std::string host;       // the label of the host its SRV and A records name: 1 to 63 of [A-Za-z0-9-]
+	std::string service;  // "_raop._tcp", "_sendspin._tcp": "_<name>._tcp" or "_<name>._udp", no ".local"
+	std::string instance; // its instance label: 1 to 63 bytes of UTF-8, no control character
+	// The label of the host its SRV and A records name: 1 to 63 of [A-Za-z0-9_-] ("_" for sendspin's, which carries
+	// the start of a base64url client id and a node name).
+	std::string host;
 	std::uint16_t port = 0; // 1-65535
-	std::vector<std::string>
-		txt; // each "key=value" or "key", 1 to 255 bytes; its key 1 or more of printable ASCII but "="
+	// Each "key=value", 1 to 255 bytes, its key (up to the first "=") 1 or more of printable ASCII. mjansson/mdns writes
+	// a TXT string as a key and value pair, so a bare "key" is refused until a listing needs one.
+	std::vector<std::string> txt;
 	friend bool operator==(const Listing&, const Listing&) = default;
 };
 

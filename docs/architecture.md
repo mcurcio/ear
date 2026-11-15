@@ -63,6 +63,7 @@ Each C++ package lives in `src/<package>/` with its own `CMakeLists.txt`, public
 | `ear_node_white`, `ear_node_file`, `ear_node_card`, `ear_node_rtp`, `ear_node_sendspin` (`src/nodes/<type>`) | One built-in node type each ([node-types.md](node-types.md)) | Another node type; PipeWire or the framework's threads (only `ear_core`'s interfaces: no type links `ear_pipewire`, `ear_runtime`, `ear_control`, `ear_config` or `ear_server`) |
 | `ear_all_node_types` (`src/all_node_types`) | `allNodeTypes()`, the one list of node types, generated at configure from the folders in `src/nodes/` | Naming a type by hand |
 | `ear_pipewire` (`src/pipewire`) | The in-process engine and the adapters that implement `ear_core`'s interfaces: port blocks, links, live ports, sinks and handoffs, engine companions (sound cards, module-run converters: RTP receivers and pipe receivers), the main-loop executor, the engine's log ([engine.md](engine.md)); the callback boundary every C callback ear gives PipeWire goes through ([below](#the-callback-boundary)) | Policy; a C callback registered outside the boundary |
+| `ear_mdns` (`src/mdns`) | A node's mDNS listing (`Advertiser`, its `Listing` and `listingRefused`): one DNS-SD service instance announced, answered and said goodbye to over its own socket on port 5353, run on whichever loop of the node type keeps it ([node-types.md](node-types.md#mdns)); mjansson/mdns, privately | A thread, a timer, anything of ear's |
 | `ear_output` (`src/output`) | Where standard output goes: the output thread, the capture of descriptors 1 and 2, the main-loop watchdog ([output-records.md](output-records.md)) | A record's text |
 | `ear_control` (`src/control`) | Standard output's one encoder (`StatusLog`); the JSON-RPC protocol (envelope, decoding, commands, events, sessions); the wire types of the graph file and the lifecycle; `MainLoopGateway`, the one crossing between the main loop and the control thread | Sockets; graph rules; knobly |
 | `ear_config` (`src/config`) | The graph file keeper: `ear.conf`'s model through knobly, the keeper's thread (working copy, folder watch, writes) and its main-loop side (plan and commit, the running version) | Judging a graph; letting a knobly type leave its thread |
@@ -72,10 +73,12 @@ Each C++ package lives in `src/<package>/` with its own `CMakeLists.txt`, public
 
 **Dependency rules.** Dependencies point one way: `ear_core` is below everything; the node types,
 `ear_runtime`, `ear_pipewire`, `ear_control` and `ear_config` depend on it; `ear_control` is below
-`ear_server` and `ear_config`; `ear_folder` is below `ear_runtime`, `ear_node_sendspin` and `ear_config`; `ear`
+`ear_server` and `ear_config`; `ear_folder` is below `ear_runtime`, `ear_node_sendspin` and
+`ear_config`; `ear_mdns` is below the node types that keep a listing (`ear_node_sendspin`); `ear`
 links all of them, and links the node types only through `ear_all_node_types`. No node type links
 another, nor `ear_runtime`, `ear_pipewire`, `ear_control`, `ear_config` or `ear_server` (configure
-refuses each, `cmake/NodeType.cmake`). `ear_output` and `ear_folder` depend on nothing of ear's. No Boost,
+refuses each, `cmake/NodeType.cmake`); a node type may link `ear_mdns`, which is no node type.
+`ear_output`, `ear_folder` and `ear_mdns` depend on nothing of ear's. No Boost,
 knobly or sendspin-cpp type appears in a public header.
 
 **An interface lives with the package that consumes it.** `node_host.hpp` declares

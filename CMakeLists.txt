@@ -174,8 +174,9 @@ if(missing_packages)
 		"(scripts/dev.sh make test), whose docker/Dockerfile installs them.")
 endif()
 
-# The sendspin node's protocol library and what it needs, at pinned commits.
+# The sendspin node's protocol library and what it needs, at pinned commits; mjansson/mdns, ear_mdns's.
 include(cmake/SendspinDeps.cmake)
+include(cmake/MdnsDeps.cmake)
 
 # The real server the sendspin node's tests run against (docs/node-types.md#library-facts-and-carried-patches): a venv
 # the image builds from test/sendspin/requirements.txt.
