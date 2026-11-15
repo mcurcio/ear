@@ -318,26 +318,43 @@ Samples tones(std::uint32_t rate) {
 	};
 }
 
-/// Writes `seconds` of interleaved stereo S16LE at `rate` into a FIFO the module made, from a thread of its own, in
-/// hundredths of a second, each when it is due: the stand-in for a program writing in real time (its pace is
+/// One sample in `format`, little-endian (the host's order: every target ear builds for is little-endian), appended.
+void appendSample(std::vector<char>& bytes, PipeFormat format, double sample) {
+	switch (format) {
+	case PipeFormat::s16le: {
+		const auto value = static_cast<std::int16_t>(std::lround(sample * 32767.0));
+		bytes.insert(bytes.end(), reinterpret_cast<const char*>(&value), reinterpret_cast<const char*>(&value + 1));
+		return;
+	}
+	case PipeFormat::s32le: {
+		const auto value = static_cast<std::int32_t>(std::llround(sample * 2147483647.0));
+		bytes.insert(bytes.end(), reinterpret_cast<const char*>(&value), reinterpret_cast<const char*>(&value + 1));
+		return;
+	}
+	}
+}
+
+/// Writes `seconds` of interleaved stereo in `format` at `rate` into a FIFO the module made, from a thread of its own,
+/// in hundredths of a second, each when it is due: the stand-in for a program writing in real time (its pace is
 /// ear::sleeps::pace's), in pieces as small as a real writer's, since the module steers its rate by its ring's fill and
 /// a writer's lumps swing that fill. It closes the FIFO when it goes.
 class FifoWriter {
 public:
-	FifoWriter(const std::string& fifo, std::uint32_t rate, Samples samples, std::size_t seconds = 30) {
+	FifoWriter(const std::string& fifo, std::uint32_t rate, Samples samples, std::size_t seconds = 30,
+	           PipeFormat format = PipeFormat::s16le) {
 		fd_ = ::open(fifo.c_str(), O_WRONLY | O_CLOEXEC);
 		REQUIRE(fd_ >= 0);
-		thread_ = std::thread([this, rate, samples = std::move(samples), seconds] {
+		thread_ = std::thread([this, rate, samples = std::move(samples), seconds, format] {
 			const std::size_t piece = rate / 100;
-			std::vector<std::int16_t> chunk(2 * piece);
+			std::vector<char> chunk;
 			const auto start = std::chrono::steady_clock::now();
 			for (std::size_t n = 0; n < seconds * 100 && !stop_.load(); ++n) {
+				chunk.clear();
 				for (std::size_t i = 0; i < piece; ++i)
 					for (std::size_t channel = 0; channel < 2; ++channel)
-						chunk[2 * i + channel] =
-							static_cast<std::int16_t>(std::lround(samples(n * piece + i, channel) * 32767.0));
-				const auto* bytes = reinterpret_cast<const char*>(chunk.data());
-				const std::size_t size = chunk.size() * sizeof(std::int16_t);
+						appendSample(chunk, format, samples(n * piece + i, channel));
+				const char* bytes = chunk.data();
+				const std::size_t size = chunk.size();
 				for (std::size_t at = 0; at < size && !stop_.load();) {
 					const ssize_t wrote = ::write(fd_, bytes + at, size - at);
 					if (wrote < 0 && errno == EINTR) continue;
@@ -376,6 +393,21 @@ TEST_CASE("A pipe receiver is ready once its module's node runs, every channel l
 
 	FifoWriter writer(graph.target().fifo, kRate, constants());
 	// A tenth of a second of both channels in their places, through the module's buffer and its resampler.
+	REQUIRE(graph.waiter.until([&] { return graph.listener.longest() >= kRate / 10; }, 20s));
+	CHECK(graph.listener.longestSwapped() == 0);
+	CHECK(events.readyCount == 1);
+	CHECK_FALSE(events.lostDetail.has_value());
+}
+
+// AirPlay 2's shape (docs/engine.md#pipe-receivers): the same placing, judged the same way, from 32-bit samples at the
+// graph's own rate.
+TEST_CASE("A pipe receiver reading s32le at 48 kHz carries channel n of its FIFO to port n", "[module_run][pipe]") {
+	Graph graph;
+	ConverterEvents events(graph.waiter, graph.registry);
+	const auto converter = graph.ready(events, PipeReceiverShape{PipeFormat::s32le, ear::SampleRate::fixed<kRate>()});
+	CHECK(events.readyCount == 1);
+
+	FifoWriter writer(graph.target().fifo, kRate, constants(), 30, PipeFormat::s32le);
 	REQUIRE(graph.waiter.until([&] { return graph.listener.longest() >= kRate / 10; }, 20s));
 	CHECK(graph.listener.longestSwapped() == 0);
 	CHECK(events.readyCount == 1);

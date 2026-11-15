@@ -720,7 +720,10 @@ until the Talos nodes' CPU is known; anonymous pulls work) is `debian:trixie-sli
 run-time libraries: no compiler and no knobly (it is compiled in). It holds `/opt/ear/ear`,
 `engine.conf`, `web/` and `licenses/` (the licences of the fetched code compiled in: knobly and
 what the `sendspin` node links; and shairport-sync's, under `licenses/shairport-sync/`), and
-`/usr/local/bin/shairport-sync`, which each `airplay` node runs ([node-types.md](node-types.md#airplay)); it runs
+`/usr/local/bin/shairport-sync` (built with AirPlay 2), which each `airplay` node runs
+([node-types.md](node-types.md#airplay)), and not nqptp, which an AirPlay 2 node needs and the operator runs
+beside ear ([node-types.md](node-types.md#airplay-2-and-nqptp)); only the dev image has nqptp, for the tests,
+and `scripts/image-smoke.sh` fails a run image that holds it. It runs
 as user `ear` (uid 10001), exposes 7777 and 8928 (a listening `sendspin` node's default), and
 defaults to `--config-dir /var/lib/ear/config --recordings-dir /var/lib/ear/recordings`, two
 volumes owned by `ear`. Arguments given to the container replace both, so pass them again.
@@ -803,8 +806,7 @@ of the process: the record, not the process's end, says when ear's stop is done.
 These are designed or wanted but not in the code: routes naming a whole bank; changing a node's
 settings in place without a restart (a type's change version of `configure` compiles but is
 never called); recovery of failed nodes; sound cards opened off the main loop; an internal
-clock anchored to one card; serving PipeWire's socket (for a program that can only be a PipeWire client; its nodes would be engine companions, marked by the socket's peer credentials); many `airplay` speakers and its AirPlay 2 setting
-([design/airplay.md](design/airplay.md)); a login on port 7777; automatic card retry and hotplug; `@include`; undo; changing the graph
+clock anchored to one card; serving PipeWire's socket (for a program that can only be a PipeWire client; its nodes would be engine companions, marked by the socket's peer credentials); a login on port 7777; automatic card retry and hotplug; `@include`; undo; changing the graph
 frequency or block size while ear runs; arm64 images; a fault caught at the callback boundary
 failing only the node that owns it (today it ends the process); a source whose clock is a type's own on any shipped type,
 and the converter companion's set and tracked modes ([the timing model](#the-timing-model)). The design pages for the unbuilt slices

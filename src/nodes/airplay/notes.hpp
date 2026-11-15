@@ -6,8 +6,9 @@
 #include <string>
 #include <string_view>
 namespace ear::nodes::airplay::notes {
-/// Its listing is on the network, once probing found its names free: the instance it holds (shairport-sync's
-/// `<device id>@<speaker name>`, or its rename) and its RTSP port.
+/// A listing is on the network, once probing found its names free: the instance it holds (shairport-sync's
+/// `<device id>@<speaker name>` for _raop._tcp, the speaker name for AirPlay 2's _airplay._tcp, or its rename) and its
+/// RTSP port. Said once per service.
 inline std::string listed(std::string_view instance, std::uint16_t port) {
 	return std::format("listed {} on port {}", instance, port);
 }

@@ -204,6 +204,14 @@ if(BUILD_TESTS)
 		message(FATAL_ERROR "shairport-sync is not at ${EAR_SHAIRPORT_SYNC} (EAR_SHAIRPORT_SYNC): build in the image "
 			"(scripts/dev.sh make test), whose docker/Dockerfile puts it there")
 	endif()
+	# The nqptp the airplay node's AirPlay 2 tests start (test/system/nqptp.hpp): the operator runs one beside ear
+	# (docs/node-types.md#airplay), and only the dev image has one, built in docker/Dockerfile's nqptp stage.
+	set(EAR_NQPTP "/usr/local/bin/nqptp" CACHE FILEPATH
+		"The nqptp the airplay node's tests start (docker/Dockerfile's nqptp stage)")
+	if(NOT EXISTS "${EAR_NQPTP}")
+		message(FATAL_ERROR "nqptp is not at ${EAR_NQPTP} (EAR_NQPTP): build in the image (scripts/dev.sh make test), "
+			"whose docker/Dockerfile puts it there")
+	endif()
 endif()
 
 #add_subdirectory(benchmark)

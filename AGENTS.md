@@ -20,7 +20,7 @@ ships as a container image published from GitHub Actions.
 |---|---|
 | How ear works, as built: architecture, the graph file, node types, writing a node type, the control port, standard output's records, the engine, the editor, testing | `docs/` ([`docs/README.md`](docs/README.md) is the index and reading order) |
 | The timing model: one tick at one graph rate, clocks and rate conversion only in edge nodes | [`docs/architecture.md#the-timing-model`](docs/architecture.md#the-timing-model) (as built, and where the code still departs); its unbuilt part is [`docs/design/timing-model.md`](docs/design/timing-model.md) |
-| Designs for work not built yet (slices 3c, 3d, 5, 6, 8, 9, cards and the clock, the root classes behind slice 3's fix clusters) | [`docs/design/`](docs/design/README.md) |
+| Designs for work not built yet (slices 3c, 3d, 5, 6, 8, cards and the clock, the root classes behind slice 3's fix clusters) | [`docs/design/`](docs/design/README.md) |
 | Working guides for specific jobs | The skills in `.claude/skills/`: `pipewire-engine` (changing `src/pipewire/` or `engine.conf`, engine traps), `control-port` (talking to port 7777), `sendspin` (pairing and operating a `sendspin` node, the protocol library), `ear-on-talos` (the image on Talos with the MOTU 24Ao, FPP's RTP stream, `sendspin` in a pod) |
 | Research notes | `docs/research/` (`motu-24ao-drivers/`: MOTU's macOS driver against `snd-usb-motu`, and the 24Ao's USB descriptors) |
 
@@ -121,12 +121,15 @@ Toolchain notes:
   `docker/Dockerfile`'s throwaway `shairport-sync` stage builds it from source at
   `SHAIRPORT_SYNC_COMMIT` (the pin's one home; its comment says how to bump it, with the same
   `build(deps)` message), and the `dev` and `run` images copy in its binary as
-  `/usr/local/bin/shairport-sync`, with its run-time libraries (and in `run`, its licences under
-  `/opt/ear/licenses/shairport-sync/`). The `dev` image also holds `/opt/airplay-sender`, the
+  `/usr/local/bin/shairport-sync` (built with AirPlay 2), with its run-time libraries (and in `run`,
+  its licences under `/opt/ear/licenses/shairport-sync/`). The throwaway `nqptp` stage builds nqptp at
+  `NQPTP_COMMIT` (the pin's one home; bump it with shairport-sync, to a tag speaking the shared-memory
+  version that shairport-sync reads), and only `dev` copies it in, as `/usr/local/bin/nqptp`, for the
+  AirPlay 2 tests. The `dev` image also holds `/opt/airplay-sender`, the
   scripted AirPlay 1 sender's venv (`test/airplay/requirements.txt`, pinned by hash for both
   architectures, wheels only; `test/airplay/requirements.in` and its header say how to regenerate
-  it). With `BUILD_TESTS=ON` configure stops naming `EAR_AIRPLAY_SENDER_PYTHON` or
-  `EAR_SHAIRPORT_SYNC` when either is missing.
+  it). With `BUILD_TESTS=ON` configure stops naming `EAR_AIRPLAY_SENDER_PYTHON`,
+  `EAR_SHAIRPORT_SYNC` or `EAR_NQPTP` when one is missing.
 - ccache is the image's compiler launcher; `scripts/dev.sh` points `CCACHE_DIR` at the main
   checkout's `.cache/ccache`, shared by every worktree.
 - The graph editor (`web/`) builds with the image's Node.js 24 (`web/.nvmrc`);
@@ -197,7 +200,9 @@ appears in a public header.
 - **The images.** `docker/Dockerfile` has three targets, `dev` (the build and test image),
   `build` (`make release` and the editor's build) and `run` (what ships:
   [`docs/architecture.md#the-container-image`](docs/architecture.md#the-container-image)), and a
-  throwaway stage, `shairport-sync`. To check the run image locally:
+  throwaway stages, `shairport-sync` and `nqptp` (AirPlay 2's timing service, which the operator runs
+  beside ear: copied into `dev` alone, for the tests, so `build` inherits it and `run` never has it).
+  To check the run image locally:
 
   ```bash
   docker build --target run --tag ear:local --file docker/Dockerfile .

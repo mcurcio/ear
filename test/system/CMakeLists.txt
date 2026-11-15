@@ -11,7 +11,7 @@ target_link_libraries(ear_system_tests PRIVATE ear_catch_main nlohmann_json::nlo
 target_compile_definitions(ear_system_tests PRIVATE EAR_BINARY="${PROJECT_BINARY_DIR}/ear"
 	EAR_PROTOCOL_DIR="${PROJECT_SOURCE_DIR}/test/protocol"
 	EAR_AIRPLAY_SENDER_PYTHON="${EAR_AIRPLAY_SENDER_PYTHON}"
-	EAR_AIRPLAY_SENDER_SCRIPT="${PROJECT_SOURCE_DIR}/test/support/airplay_sender.py")
+	EAR_AIRPLAY_SENDER_SCRIPT="${PROJECT_SOURCE_DIR}/test/support/airplay_sender.py" EAR_NQPTP="${EAR_NQPTP}")
 add_dependencies(ear_system_tests ear)
 # The airplay tests run with nothing beside them: each plays a tone through shairport-sync, the pipe module's resampler
 # and a file node, whose level a loaded host's stall dips below the floor they judge.

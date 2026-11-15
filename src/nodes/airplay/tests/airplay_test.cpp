@@ -181,6 +181,12 @@ private:
 	in_addr_t group_ = inet_addr("224.0.0.251");
 };
 
+/// shairport-sync's report item for a listing (an 'svrg' item): `data` base64-encoded as it writes it.
+std::string svrgItem(std::string_view data) {
+	return "<item><type>73736e63</type><code>73767267</code><length>" + std::to_string(data.size()) +
+	       "</length>\n<data encoding=\"base64\">\n" + base64(data) + "</data></item>\n";
+}
+
 /// Until the node said `count` notes starting "listed ".
 void untilListed(Harness& h, std::size_t count = 1) {
 	REQUIRE(loopsUntil(h, [&] { return saidCount(h, "listed ") >= count; }));
@@ -190,8 +196,10 @@ void untilListed(Harness& h, std::size_t count = 1) {
 
 using namespace airplay_test;
 
-TEST_CASE("Airplay declares out.1 and out.2, an inside bank from_airplay, and one optional text setting name",
-          "[airplay]") {
+TEST_CASE(
+	"Airplay declares out.1 and out.2, an inside bank from_airplay, an optional text setting name and an optional "
+	"boolean setting airplay2",
+	"[airplay]") {
 	Harness h;
 	REQUIRE_FALSE(h.parse(ear::NodeSettings::object()));
 	CHECK(h->ports().inputs().empty());
@@ -230,7 +238,8 @@ TEST_CASE("The host label is ear- and the node's name, each underscore a dash, c
 }
 
 TEST_CASE("The program is shairport-sync with its config, the speaker name and the granted port, and the config names "
-          "the FIFO, the feed and AirPlay 1's format, ignores the sender's volume and lets the kernel pick UDP ports",
+          "the FIFO, the feed, AirPlay 1 outright and its format, ignores the sender's volume and lets the kernel pick "
+          "UDP ports",
           "[airplay][program]") {
 	Harness h({.node = "kitchen"});
 	running(h, {{"name", "Kitchen"}});
@@ -241,12 +250,82 @@ TEST_CASE("The program is shairport-sync with its config, the speaker name and t
 	REQUIRE(launch.files.size() == 1);
 	CHECK(launch.files[0].first == "/ear-runtime/kitchen.1.config");
 	CHECK(launch.files[0].second ==
-	      "general = { mdns_backend = \"metadata\"; output_backend = \"pipe\"; ignore_volume_control = \"yes\"; "
-	      "udp_port_base = 0; };\n"
+	      "general = { mdns_backend = \"metadata\"; output_backend = \"pipe\"; service_type = \"classic\"; "
+	      "ignore_volume_control = \"yes\"; udp_port_base = 0; };\n"
 	      "metadata = { enabled = \"yes\"; pipe_name = \"/ear-runtime/kitchen.1.feed\"; };\n"
 	      "pipe = { name = \"/ear-runtime/kitchen.1.from_airplay.fifo\"; output_format = \"S16_LE\"; "
 	      "output_rate = 44100; };\n");
 	CHECK(launch.feed == std::optional<std::string>("/ear-runtime/kitchen.1.feed"));
+	CHECK(launch.needs.empty());
+}
+
+TEST_CASE("With airplay2 the config sets AirPlay 2 outright with the node's device id and nqptp channel and its "
+          "format, and the program needs the channel",
+          "[airplay][program][airplay2]") {
+	Harness h({.node = "kitchen"});
+	running(h, {{"name", "Kitchen"}, {"airplay2", true}});
+	const ear::ProgramLaunch& launch = h.programs().at(0).launch;
+	const std::string deviceId = airplay::DeviceId::of(airplay::thisHostName(), "kitchen").configText();
+	REQUIRE(launch.files.size() == 1);
+	CHECK(launch.files[0].second ==
+	      "general = { mdns_backend = \"metadata\"; output_backend = \"pipe\"; service_type = \"airplay2\"; "
+	      "ignore_volume_control = \"yes\"; udp_port_base = 0; airplay_device_id = " +
+	          deviceId +
+	          "; nqptp_shared_memory_interface_name = \"/ear-kitchen\"; };\n"
+	          "metadata = { enabled = \"yes\"; pipe_name = \"/ear-runtime/kitchen.1.feed\"; };\n"
+	          "pipe = { name = \"/ear-runtime/kitchen.1.from_airplay.fifo\"; output_format = \"S32_LE\"; "
+	          "output_rate = 48000; };\n");
+	CHECK(launch.needs == std::vector<std::string>{"/ear-kitchen"});
+	CHECK(launch.argv == std::vector<std::string>{"shairport-sync", "-c", "/ear-runtime/kitchen.1.config", "--name",
+	                                              "Kitchen", "--port", "49152"});
+}
+
+TEST_CASE("With airplay2 the pipe receiver reads s32le at 48 kHz", "[airplay][program][airplay2]") {
+	Harness h({.node = "kitchen"});
+	running(h, {{"airplay2", true}});
+	const auto* shape = std::get_if<ear::PipeReceiverShape>(&h.companion(airplay::fromAirplay).shape);
+	REQUIRE(shape != nullptr);
+	CHECK(shape->format == ear::PipeFormat::s32le);
+	CHECK(shape->rate == ear::SampleRate::fixed<48'000>());
+}
+
+TEST_CASE("A device id is locally administered and unicast, the same for the same names, different for another host "
+          "or node, written as libconfig's 64-bit hex and as the RAOP prefix",
+          "[airplay][airplay2]") {
+	using airplay::DeviceId;
+	const DeviceId id = DeviceId::of("hawking", "kitchen");
+	const auto firstByte = static_cast<unsigned>((id.bits() >> 40U) & 0xFFU);
+	CHECK((firstByte & 0x02U) == 0x02U); // locally administered
+	CHECK((firstByte & 0x01U) == 0U);    // unicast
+	CHECK(id.bits() >> 48U == 0U);
+	CHECK(id == DeviceId::of("hawking", "kitchen"));
+	SECTION("differs by host") { CHECK_FALSE(id == DeviceId::of("einstein", "kitchen")); }
+	SECTION("differs by node") { CHECK_FALSE(id == DeviceId::of("hawking", "porch")); }
+	// FNV-1a 64 of "hawking/kitchen", its low 48 bits: fixed by the hash's definition, so it holds across builds.
+	CHECK(id.raopPrefix() == "CAD06FC9EB03");
+	CHECK(id.configText() == "0xCAD06FC9EB03L");
+	for (const DeviceId one : {id, DeviceId::of("a", "b"), DeviceId::of("", "x")}) {
+		const std::string prefix = one.raopPrefix();
+		CHECK(prefix.size() == 12);
+		CHECK(std::ranges::all_of(prefix, [](char c) { return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F'); }));
+		CHECK(one.configText() == "0x" + prefix + "L");
+	}
+}
+
+TEST_CASE("A node's nqptp channel is /ear-<node>, kept whole to 63 bytes and hashed past them", "[airplay][airplay2]") {
+	CHECK(airplay::channelOf("kitchen").text() == "/ear-kitchen");
+	const std::string kept(58, 'k');
+	CHECK(airplay::channelOf(kept).text() == "/ear-" + kept);
+	CHECK(airplay::channelOf(kept).text().size() == 63);
+	const std::string longName(64, 'n');
+	const std::string hashed = airplay::channelOf(longName).text();
+	CHECK(hashed.size() == 63);
+	CHECK(hashed == "/ear-" + std::string(41, 'n') + "-078b793dde92c425");
+	// Two long names alike in all but their last byte, so in the 41 bytes kept and in any cut, still have channels of
+	// their own.
+	const std::string other = std::string(63, 'n') + "m";
+	CHECK(airplay::channelOf(other).text() != hashed);
+	CHECK(airplay::channelOf(other).text().starts_with("/ear-" + std::string(41, 'n') + "-"));
 }
 
 TEST_CASE("With no name setting the speaker goes by the node's name", "[airplay][program]") {
@@ -288,6 +367,27 @@ TEST_CASE("The report loop announces the listing once probed, updates it on the 
 	CHECK(h->notes() == std::vector<std::string>{"listed D6065625AF29@Den on port 5100",
 	                                             std::string(airplay::notes::playing),
 	                                             std::string(airplay::notes::idle)});
+	h.remove();
+	CHECK(h.gone());
+}
+
+TEST_CASE("AirPlay 2's two listings, _raop._tcp and _airplay._tcp, each get their own advertiser and listed note",
+          "[airplay][reports][airplay2]") {
+	Harness h({.node = "attic"});
+	running(h, {{"name", "Attic"}, {"airplay2", true}});
+	h.feedProgram(0, svrgItem("service=_raop._tcp\nname=0A1B2C3D4E5F@Attic\nport=7000\ntxt=cn=0,1\ntxt=tp=UDP\n") +
+	                     svrgItem("service=_airplay._tcp\nname=Attic\nport=7000\ntxt=deviceid=0a:1b:2c:3d:4e:5f\n"));
+	h.runLoops();
+	CHECK(h.watchedDescriptors(airplay::reports).size() == 2);
+	untilListed(h, 2);
+	std::vector<std::string> notes = h->notes();
+	std::ranges::sort(notes);
+	CHECK(notes == std::vector<std::string>{"listed 0A1B2C3D4E5F@Attic on port 7000", "listed Attic on port 7000"});
+	// The same instances again: updates, never new listings.
+	h.feedProgram(0, svrgItem("service=_airplay._tcp\nname=Attic\nport=7000\ntxt=deviceid=0a:1b:2c:3d:4e:5f\n"));
+	h.runLoops();
+	CHECK(h.watchedDescriptors(airplay::reports).size() == 2);
+	CHECK(h->notes().size() == 2);
 	h.remove();
 	CHECK(h.gone());
 }

@@ -1,9 +1,11 @@
 // What shairport-sync reports through its feed, and the loop that acts on it (docs/node-types.md#airplay): the feed's
-// items parsed, its listing announced through ear_mdns, its sessions said as notes. Private to the type and its tests.
+// items parsed, its listings announced through ear_mdns, its sessions said as notes. Private to the type and its tests.
 #pragma once
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -52,30 +54,35 @@ private:
 /// label `host`. Error, in words: a missing line, a port that is not 1 to 65535, or what listingRefused refuses.
 std::expected<mdns::Listing, std::string> listingOf(std::string_view svrgData, std::string_view host);
 
-/// The report loop's state: the feed's items in order, on the node's strand. It opens the node's advertiser on the
-/// first listing and turns it whenever its descriptor is readable, saying listed once it announced (and renamed first
-/// when a clash renamed it); a later listing of the instance shairport-sync asked for (never the published name)
-/// updates its TXT records, one of another instance replaces it. Sessions are notes, never the node's state.
+/// The report loop's state: the feed's items in order, on the node's strand. It keeps one listing per service (AirPlay
+/// 2 lists _raop._tcp and _airplay._tcp): the first listing of a service opens that service's own advertiser, turned
+/// whenever its descriptor is readable, saying listed once it announced (and renamed first when a clash renamed it); a
+/// later listing of the service's instance shairport-sync asked for (never the published name) updates its TXT
+/// records, one of another instance replaces it. Sessions are notes, never the node's state.
 class Reports {
 public:
 	Reports(NodeHandle& handle, Loop& loop, std::string host);
-	/// The watch, then the advertiser, whose destructor is the listing's goodbye: at teardown step 4, once shairport-sync
-	/// was reaped.
+	/// Every watch, then every advertiser, whose destructor is its listing's goodbye: at teardown step 4, once
+	/// shairport-sync was reaped.
 	~Reports();
 	void onFeed(std::string_view bytes);
 	Reports(const Reports&) = delete;
 	Reports& operator=(const Reports&) = delete;
 
 private:
+	/// One service's listing.
+	struct Listed {
+		mdns::Listing asked; // the listing shairport-sync asked for, before any rename
+		std::unique_ptr<mdns::Advertiser> advertiser;
+		std::unique_ptr<Timer> watch; // readable: the advertiser has work (a datagram, or a step of probing due)
+	};
 	void onListing(std::string_view data);
-	void onTurn();
+	void onTurn(const std::string& service);
 	NodeHandle& handle_;
 	Loop& loop_;
 	std::string host_;
 	ReportParser parser_;
-	mdns::Listing asked_; // the listing shairport-sync asked for, before any rename
-	std::unique_ptr<mdns::Advertiser> advertiser_;
-	std::unique_ptr<Timer> watch_; // readable: the advertiser has work (a datagram, or a step of probing due)
+	std::map<std::string, Listed, std::less<>> listed_; // by service
 };
 
 } // namespace ear::nodes::airplay

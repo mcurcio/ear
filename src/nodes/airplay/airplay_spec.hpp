@@ -4,14 +4,15 @@
 //
 // The node composes three things the framework owns and names nothing they share: a pipe receiver on from_airplay (the
 // join), a port the framework picks, and shairport-sync as the configuration's program, its config file naming the
-// receiver's FIFO and its report feed. Its audio passes straight through to `out`; its reports reach the report loop,
-// which announces its listing (reports.hpp).
+// receiver's FIFO and its report feed, and in AirPlay 2 the nqptp channel it needs. Its audio passes straight through to
+// `out`; its reports reach the report loop, which announces its listings (reports.hpp).
 #pragma once
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "ear/core/lifecycle.hpp"
@@ -74,24 +75,44 @@ private:
 
 inline constexpr auto nameRow = setting::optional(
 	"name", setting::text<SpeakerName::parse>("a speaker name: 1 to 50 bytes, no control characters, no %, @ or dot"));
+/// AirPlay 2 instead of AirPlay 1 (docs/node-types.md#airplay): the operator runs nqptp beside ear. Absent: false.
+inline constexpr auto airplay2Row = setting::optional("airplay2", setting::boolean());
 inline constexpr auto out = bank::output<"out">;
 inline constexpr auto fromAirplay = bank::insideInput<"from_airplay">;
 class Reports;
 inline constexpr auto reports = loop::strand<"reports", Reports>;
-inline constexpr TypeSpec spec{
-	.settings = SettingsTable<nameRow>{"airplay"}, .banks = Banks<out, fromAirplay>{}, .loops = Loops<reports>{}};
+inline constexpr TypeSpec spec{.settings = SettingsTable<nameRow, airplay2Row>{"airplay"},
+                               .banks = Banks<out, fromAirplay>{},
+                               .loops = Loops<reports>{}};
 using Checked = CheckedOf<spec>;
 
 /// The mDNS host label the node's listing names: "ear-" and the node's name, each '_' a '-', cut to 63 bytes (a DNS
 /// label's most). A node's name is unique in ear, so two nodes never share a host.
 std::string hostLabelOf(std::string_view node);
 
-/// shairport-sync's config file, in libconfig's syntax: the "metadata" mDNS backend (its listing handed to the report
-/// feed, which ear announces), the sender's volume ignored (the node's level is ear's to own), AirPlay 1's UDP ports
-/// picked by the kernel (base 0: many nodes never collide), the pipe output into `fifo` in airplay1Format at
-/// airplay1Rate, and the metadata feed.
+/// Which AirPlay a node speaks, set outright in shairport-sync's config: its "auto" is never written, since a binary
+/// built with AirPlay 2 would pick AirPlay 2 whenever nqptp runs on the host, and fall back to AirPlay 1 silently
+/// whenever it does not.
+struct Airplay1 {
+	friend bool operator==(const Airplay1&, const Airplay1&) = default;
+};
+/// AirPlay 2's identity, from the node (docs/node-types.md#airplay): its device id and the nqptp channel it needs.
+struct Airplay2 {
+	DeviceId deviceId;
+	SharedMemoryName channel;
+	friend bool operator==(const Airplay2&, const Airplay2&) = default;
+};
+using Protocol = std::variant<Airplay1, Airplay2>;
+
+/// The pipe receiver's shape for `protocol`: airplay1Format at airplay1Rate, or airplay2Format at airplay2Rate.
+PipeReceiverShape pipeShapeOf(const Protocol& protocol);
+
+/// shairport-sync's config file, in libconfig's syntax: the "metadata" mDNS backend (its listings handed to the report
+/// feed, which ear announces), the protocol's service type, the sender's volume ignored (the node's level is ear's to
+/// own), UDP ports picked by the kernel (base 0: many nodes never collide), in AirPlay 2 the device id and nqptp
+/// channel, the pipe output into `fifo` in the protocol's format and rate (pipeShapeOf), and the metadata feed.
 /// A file and not flags: shairport-sync dies "pipename needed" when its config lacks pipe.name.
-std::vector<ProgramPart> configText(part::Fifo fifo);
+std::vector<ProgramPart> configText(part::Fifo fifo, const Protocol& protocol);
 
 class Airplay {
 public:

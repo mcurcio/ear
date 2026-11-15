@@ -2,10 +2,11 @@
 """The airplay node's scripted AirPlay 1 sender (docs/testing.md#the-airplay-sender): one JSON event per stdout line, so
 a test moves when an event arrives. Run by the image's /opt/airplay-sender venv (test/airplay/requirements.txt).
 
---browse <speaker>: a zeroconf browser on _raop._tcp.local. over multicast, as a phone's is. It emits
-{"event":"discovered","address":...,"port":...,"txt":{...}} when an instance whose name ends in "@<speaker>" is added
-(a RAOP instance is <device id>@<speaker name>), and {"event":"removed"} when that instance goes. It runs until
-SIGTERM or SIGINT.
+--browse <speaker> [--service raop|airplay]: a zeroconf browser over multicast, as a phone's is, on _raop._tcp.local.
+(raop, the default) or AirPlay 2's _airplay._tcp.local. (airplay). It emits
+{"event":"discovered","instance":...,"address":...,"port":...,"txt":{...}} when an instance of the speaker is added (a
+RAOP instance is <device id>@<speaker name>, an _airplay._tcp one the speaker name alone), and {"event":"removed"} when
+that instance goes. It runs until SIGTERM or SIGINT.
 
 --play <wav> --address A --port P --txt JSON [--speaker S] [--volume V]: pyatv streams the file to that speaker as
 AirPlay 1 (RAOP), given the listing's address, port and TXT records as found, so pyatv does no discovery of its own. It
@@ -23,6 +24,7 @@ import signal
 import sys
 
 RAOP = "_raop._tcp.local."
+SERVICES = {"raop": RAOP, "airplay": "_airplay._tcp.local."}
 
 
 def emit(event: str, **fields: object) -> None:
@@ -38,17 +40,20 @@ async def until_signalled() -> None:
     await stop.wait()
 
 
-async def browse(speaker: str) -> int:
+async def browse(speaker: str, service: str) -> int:
     from zeroconf import IPVersion, ServiceStateChange
     from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZeroconf
 
-    suffix = f"@{speaker}.{RAOP}"
+    def ours(name: str) -> bool:
+        if service == RAOP:
+            return name.endswith(f"@{speaker}.{RAOP}")
+        return name == f"{speaker}.{service}"
     zeroconf = AsyncZeroconf(ip_version=IPVersion.V4Only)
     found: set[str] = set()
     pending: set[asyncio.Task[None]] = set()
 
     async def resolve(name: str) -> None:
-        info = AsyncServiceInfo(RAOP, name)
+        info = AsyncServiceInfo(service, name)
         if not await info.async_request(zeroconf.zeroconf, 3000):
             emit("unresolved", instance=name)
             return
@@ -61,7 +66,7 @@ async def browse(speaker: str) -> int:
         emit("discovered", instance=name, address=addresses[0] if addresses else "", port=info.port, txt=txt)
 
     def changed(zeroconf: object, service_type: str, name: str, state_change: ServiceStateChange) -> None:
-        if not name.endswith(suffix):
+        if not ours(name):
             return
         if state_change is ServiceStateChange.Added:
             task = asyncio.ensure_future(resolve(name))
@@ -71,8 +76,8 @@ async def browse(speaker: str) -> int:
             found.discard(name)
             emit("removed", instance=name)
 
-    browser = AsyncServiceBrowser(zeroconf.zeroconf, RAOP, handlers=[changed])
-    emit("browsing", service=RAOP, speaker=speaker)
+    browser = AsyncServiceBrowser(zeroconf.zeroconf, service, handlers=[changed])
+    emit("browsing", service=service, speaker=speaker)
     try:
         await until_signalled()
     finally:
@@ -110,6 +115,7 @@ async def play(wav: str, address: str, port: int, txt: dict[str, str], speaker: 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--browse", metavar="SPEAKER")
+    parser.add_argument("--service", choices=sorted(SERVICES), default="raop")
     parser.add_argument("--play", metavar="WAV")
     parser.add_argument("--address")
     parser.add_argument("--port", type=int)
@@ -120,7 +126,7 @@ def main() -> int:
     if not 0.0 <= args.volume <= 100.0:
         parser.error("--volume is 0 to 100")
     if args.browse:
-        return asyncio.run(browse(args.browse))
+        return asyncio.run(browse(args.browse, SERVICES[args.service]))
     if args.play and args.address and args.port:
         return asyncio.run(
             play(args.play, args.address, args.port, json.loads(args.txt), args.speaker, args.volume)

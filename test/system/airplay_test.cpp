@@ -3,10 +3,14 @@
 // docs/testing.md#the-airplay-sender) finds a speaker by a multicast mDNS browse, as a phone does, and plays a tone to
 // it, which the WAV must hold channel for channel at its own level whatever volume the sender asks for. Removing the
 // node must leave no process, no runtime file and no listing; two nodes of one speaker name are told apart by probing.
-// Every wait is for an event (a line ear prints, a notification, a line the sender prints, ear's exit); a deadline
-// only fails the test.
+// With airplay2 the tests run nqptp as an operator would (test/system/nqptp.hpp) and judge the listings, the identity
+// across a restart and both ways nqptp's absence fails the node; AirPlay 2's sound is checked by hand
+// (docs/testing.md#what-ci-does-not-prove). Every wait is for an event (a line ear prints, a notification, a line the
+// sender prints, a file nqptp makes, ear's exit); a deadline only fails the test.
 #include <sndfile.h>
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <csignal>
@@ -15,6 +19,7 @@
 #include <fstream>
 #include <numbers>
 #include <optional>
+#include <set>
 #include <span>
 #include <sstream>
 #include <string>
@@ -24,6 +29,7 @@
 #include <nlohmann/json.hpp>
 
 #include "ear_system.hpp"
+#include "nqptp.hpp"
 #include "rtp_tone.hpp"
 
 namespace {
@@ -123,6 +129,19 @@ constexpr std::size_t judgedTenths = 30;
 /// a separation are judged, not an exact amplitude.
 constexpr double levelFloor = 0.25;
 
+/// The best fit of a tone within 1% of `hz` (steps of 0.025%): the pipe module steers its resampler by its ring's fill
+/// (docs/engine.md#pipe-receivers), so a tenth's pitch wanders by up to a few tenths of a percent, which a fit at
+/// exactly `hz` would read as a level lost (a 0.4% wander halves a 1.5 kHz tone's fit over a tenth). A level or a
+/// leak is judged at the tone's own pitch, as module_converter_test.cpp's tone test judges it.
+SineFit nearestFit(std::span<const float> window, double hz) {
+	SineFit best{0.0, INFINITY};
+	for (int step = -40; step <= 40; ++step) {
+		const auto fit = fitSine(window, hz * (1.0 + step * 0.00025), graphFrequency);
+		if (fit.amplitude > best.amplitude) best = fit;
+	}
+	return best;
+}
+
 void checkTone(const Wav& wav, int channel, std::size_t from, double wanted, double other) {
 	INFO("channel " << channel + 1 << ": " << wanted << " Hz, not " << other << " Hz, from frame " << from);
 	std::string profile;
@@ -131,8 +150,8 @@ void checkTone(const Wav& wav, int channel, std::size_t from, double wanted, dou
 	for (std::size_t i = 0; i < judgedTenths; ++i) {
 		const std::vector<float> samples = channelOf(wav, channel, from + i * tenth, tenth);
 		const std::span<const float> window(samples);
-		const auto fit = fitSine(window, wanted, graphFrequency);
-		const auto leak = fitSine(window, other, graphFrequency);
+		const auto fit = nearestFit(window, wanted);
+		const auto leak = nearestFit(window, other);
 		profile += std::to_string(fit.amplitude) + "/" + std::to_string(leak.amplitude) + " ";
 		weakest = std::min(weakest, fit.amplitude);
 		strongestOther = std::max(strongestOther, leak.amplitude);
@@ -187,6 +206,53 @@ ChildProcess playTo(const std::filesystem::path& wav, const json& discovered, in
 	               std::to_string(port), "--txt", discovered["txt"].dump(), "--speaker", speaker, "--volume",
 	               senderVolume});
 }
+
+/// Node `node`'s first `count` distinct `listed` notes, once ear printed them all.
+std::vector<Listed> listingsBy(ChildProcess& process, const std::string& node, std::size_t count) {
+	const std::string prefix = "node " + node + " says listed ";
+	std::set<std::string> seen;
+	std::vector<Listed> all;
+	while (all.size() < count) {
+		const auto record = process.waitForRecord(
+			[&](const json& r) {
+				const std::string msg = r.value("msg", "");
+				return msg.starts_with(prefix) && !seen.contains(msg);
+			},
+			deadline);
+		INFO("ear printed:\n" << process.output());
+		REQUIRE(record);
+		const std::string msg = (*record)["msg"].get<std::string>();
+		seen.insert(msg);
+		const std::string words = msg.substr(prefix.size());
+		const auto on = words.find(" on port ");
+		REQUIRE(on != std::string::npos);
+		all.push_back({words.substr(0, on), std::stoi(words.substr(on + std::string_view(" on port ").size()))});
+	}
+	return all;
+}
+
+/// AirPlay 2's RAOP instance's device id, from the two listings: "<12 uppercase hex>@<speaker>", the other the speaker.
+std::string raopPrefixOf(const std::vector<Listed>& listings, const std::string& speaker) {
+	std::vector<std::string> instances;
+	for (const Listed& one : listings) instances.push_back(one.instance);
+	REQUIRE(instances.size() == 2);
+	const auto raop = std::ranges::find_if(instances, [&](const std::string& i) { return i.ends_with("@" + speaker); });
+	REQUIRE(raop != instances.end());
+	CHECK(std::ranges::count(instances, speaker) == 1);
+	const std::string prefix = raop->substr(0, raop->size() - speaker.size() - 1);
+	CHECK(prefix.size() == 12);
+	CHECK(std::ranges::all_of(prefix, [](char c) { return std::isdigit(c) || (c >= 'A' && c <= 'F'); }));
+	return prefix;
+}
+
+/// The airplay node "kitchen" (speaker name "Kitchen") with airplay2, alone.
+void writeAirplay2Graph(const TempDirectory& directory) {
+	writeGraphFile(directory,
+	               graphFileText("node airplay kitchen { name \"Kitchen\"; airplay2 true; }\n", graphFrequency));
+}
+
+/// nqptp's start, its control port's first answer and its stop: only fail the test.
+constexpr auto nqptpDeadline = std::chrono::seconds(10);
 
 } // namespace
 
@@ -332,4 +398,94 @@ TEST_CASE("Two airplay nodes of one speaker name are told apart by probing: one 
 	REQUIRE(status == 0);
 	checkRecording(directory.recordings() / "rec1.wav", 1000.0, 1500.0);
 	checkRecording(directory.recordings() / "rec2.wav", 700.0, 1100.0);
+}
+
+TEST_CASE("With airplay2 and nqptp running, an airplay node lists _raop._tcp and _airplay._tcp under one device id, "
+          "kept across a restart, and leaves no process or runtime file once removed",
+          "[system][airplay][nqptp]") {
+	Nqptp nqptp(nqptpDeadline);
+	TempDirectory directory;
+	const std::filesystem::path runtime = directory.path() / "runtime";
+	std::filesystem::create_directories(runtime);
+	writeAirplay2Graph(directory);
+	std::string prefix;
+	{
+		Ear ear(directory, {"node kitchen running"}, {"--runtime-dir", runtime.string()});
+		ChildProcess& process = ear.process();
+		const std::vector<Listed> listings = listingsBy(process, "kitchen", 2);
+		prefix = raopPrefixOf(listings, "Kitchen");
+		CHECK(sharedMemoryExists("/ear-kitchen"));
+
+		// Found as AirPlay 2 senders find it: _airplay._tcp, its TXT deviceid the RAOP instance's prefix.
+		auto browser = sender({"--browse", "Kitchen", "--service", "airplay"});
+		const auto discovered = waitForEvent(browser, "discovered", browseDeadline);
+		INFO("browser printed:\n" << browser.output());
+		REQUIRE(discovered);
+		CHECK((*discovered)["instance"] == "Kitchen._airplay._tcp.local.");
+		std::string deviceid = (*discovered)["txt"].value("deviceid", "");
+		std::erase(deviceid, ':');
+		std::ranges::transform(deviceid, deviceid.begin(), [](unsigned char c) { return std::toupper(c); });
+		CHECK(deviceid == prefix);
+		browser.signal(SIGTERM);
+		CHECK(browser.waitForExit(deadline) == 0);
+
+		const auto status = ear.stop();
+		INFO("ear printed:\n" << process.output());
+		REQUIRE(status == 0);
+	}
+
+	// The same host and node: the same device id, so a sender knows the speaker again.
+	Ear ear(directory, {"node kitchen running"}, {"--runtime-dir", runtime.string()});
+	ChildProcess& process = ear.process();
+	CHECK(raopPrefixOf(listingsBy(process, "kitchen", 2), "Kitchen") == prefix);
+
+	Rpc rpc(ear.port());
+	REQUIRE(rpc.call("graph.subscribe").contains("result"));
+	REQUIRE(rpc.call("node.remove", {{"name", "kitchen"}}).contains("result"));
+	rpc.waitFor([](const json& m) { return Rpc::matches(m, "node.gone", {{"name", "kitchen"}}); });
+	CHECK(processesOf(process.pid(), "shairport-sync") == std::vector<std::string>{});
+	std::vector<std::string> left;
+	for (const auto& entry : std::filesystem::directory_iterator(runtime)) left.push_back(entry.path().string());
+	CHECK(left == std::vector<std::string>{});
+
+	const auto status = ear.stop(rpc);
+	INFO("ear printed:\n" << process.output());
+	REQUIRE(status == 0);
+}
+
+TEST_CASE("With airplay2 and no nqptp, an airplay node fails start-failed in shairport-sync's own words",
+          "[system][airplay][nqptp]") {
+	TempDirectory directory;
+	writeAirplay2Graph(directory);
+	Ear ear(directory, {"node kitchen failed ", true});
+	const auto failed = ear.process().lineStartingWith("node kitchen failed ");
+	INFO("ear printed:\n" << ear.process().output());
+	REQUIRE(failed);
+	const std::string start = "node kitchen failed start-failed: shairport-sync exited with status ";
+	CHECK(failed->starts_with(start));
+	const auto colon = failed->find(": ", start.size());
+	REQUIRE(colon != std::string::npos);
+	CHECK(failed->find("The NQPTP service can not be found", colon) != std::string::npos);
+	CHECK(processesOf(ear.process().pid(), "shairport-sync") == std::vector<std::string>{});
+	REQUIRE(ear.stop() == 0);
+}
+
+TEST_CASE("With airplay2, nqptp stopping removes the node's channel, and ear ends shairport-sync and fails the node "
+          "lost in the removal's words",
+          "[system][airplay][nqptp]") {
+	Nqptp nqptp(nqptpDeadline);
+	TempDirectory directory;
+	writeAirplay2Graph(directory);
+	Ear ear(directory, {"node kitchen running"});
+	ChildProcess& process = ear.process();
+	REQUIRE(sharedMemoryExists("/ear-kitchen"));
+
+	CHECK(nqptp.stop(nqptpDeadline) == 0);
+	const bool lost = process.waitForLine(
+		"node kitchen failed lost: shairport-sync was ended: shared memory /ear-kitchen, which it needs, was removed",
+		deadline);
+	INFO("ear printed:\n" << process.output());
+	CHECK(lost);
+	CHECK(processesOf(process.pid(), "shairport-sync") == std::vector<std::string>{});
+	REQUIRE(ear.stop() == 0);
 }

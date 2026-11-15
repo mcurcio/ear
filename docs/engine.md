@@ -1092,7 +1092,9 @@ receiver a configuration asks for ([writing-a-node-type.md](writing-a-node-type.
 [module-run converter](#module-run-converters) whose `ModuleRun<PipeReceiverShape>`
 (`pipe_receivers.cpp`) holds what is the pipe module's own. It reads interleaved little-endian
 samples from a FIFO a node's program writes and feeds the block's inside input bank, channel for
-channel. Its arguments are built in one place from closed values only (a `PipeFormat`, a
+channel, in either shape a type asks for: S16LE (`airplay`'s AirPlay 1, at 44.1 kHz, resampled to the
+graph's rate) or S32LE (its AirPlay 2, at 48 kHz, which a 48 kHz graph takes unresampled), each tested
+channel for channel in `module_converter_test.cpp`. Its arguments are built in one place from closed values only (a `PipeFormat`, a
 `SampleRate`, the bank's channel count, the engine node's name and the FIFO's path, which is ear's
 own, `[A-Za-z0-9_./-]`, refused with `std::logic_error` otherwise): the `pipe receiver` and `pipe
 stream` rows of [the table](#properties-ear-sets), which say why each. Its node is an `Audio/Source`
@@ -1112,8 +1114,8 @@ stream, `<node>.pipe`, whose ports are `capture_AUX<n>`; its words are `pipe rec
 - **Latency, measured.** Its ring keeps `pipeReceiverBufferFrames` (8192 frames at the writer's
   rate, `module-pipe-tunnel.c`'s `target_buffer`, which no argument changes) ahead of what it plays.
   Its ports tell 0 frames once linked, and the block tells exactly `moduleRunDelay` downstream: 8916
-  frames for a 44.1 kHz writer in a 48 kHz graph. So the ring enters the plan once, as `beyond` its
-  bank.
+  frames for a 44.1 kHz writer in a 48 kHz graph, 8192 for a 48 kHz one. So the ring enters the plan
+  once, as `beyond` its bank.
 
 **What PipeWire 1.4.2 does that ear cannot see or change** (`module-pipe-tunnel.c`), each only
 logged by PipeWire:

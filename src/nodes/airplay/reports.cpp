@@ -180,8 +180,8 @@ Reports::Reports(NodeHandle& handle, Loop& loop, std::string host)
 	: handle_(handle), loop_(loop), host_(std::move(host)) {}
 
 Reports::~Reports() {
-	watch_.reset();
-	advertiser_.reset();
+	for (auto& [service, one] : listed_) one.watch.reset();
+	for (auto& [service, one] : listed_) one.advertiser.reset();
 }
 
 void Reports::onFeed(std::string_view bytes) {
@@ -199,37 +199,45 @@ void Reports::onListing(std::string_view data) {
 		handle_.say(notes::advertiseFailed(listing.error()));
 		return;
 	}
-	// The same instance as asked, whatever a clash renamed it to: its TXT only.
-	if (advertiser_ && asked_.service == listing->service && asked_.instance == listing->instance) {
-		asked_.txt = listing->txt;
-		if (auto updated = advertiser_->update(std::move(listing->txt)); !updated)
-			handle_.say(notes::advertiseFailed(updated.error()));
-		return;
+	const auto found = listed_.find(listing->service);
+	if (found != listed_.end()) {
+		Listed& one = found->second;
+		// The same instance as asked, whatever a clash renamed it to: its TXT only.
+		if (one.asked.instance == listing->instance) {
+			one.asked.txt = listing->txt;
+			if (auto updated = one.advertiser->update(std::move(listing->txt)); !updated)
+				handle_.say(notes::advertiseFailed(updated.error()));
+			return;
+		}
+		// Another instance of the service: the old one's goodbye first, so a sender never sees both.
+		listed_.erase(found);
 	}
-	// Another instance: the old one's goodbye first, so a sender never sees both.
-	watch_.reset();
-	advertiser_.reset();
 	auto opened = mdns::Advertiser::open(*listing);
 	if (!opened) {
 		handle_.say(notes::advertiseFailed(opened.error()));
 		return;
 	}
-	asked_ = std::move(*listing);
-	advertiser_ = std::move(*opened);
-	watch_ = loop_.onReadable(advertiser_->descriptor(), [this] { onTurn(); });
+	const std::string service = listing->service;
+	Listed& one = listed_[service];
+	one.asked = std::move(*listing);
+	one.advertiser = std::move(*opened);
+	one.watch = loop_.onReadable(one.advertiser->descriptor(), [this, service] { onTurn(service); });
 }
 
-void Reports::onTurn() {
-	auto turn = advertiser_->turn();
+void Reports::onTurn(const std::string& service) {
+	// Its watch is the entry's own, so the entry is there whenever it rings.
+	const auto found = listed_.find(service);
+	Listed& one = found->second;
+	auto turn = one.advertiser->turn();
 	if (turn.announced) {
-		if (turn.announced->instance != asked_.instance)
-			handle_.say(notes::renamed(asked_.instance, turn.announced->instance));
+		if (turn.announced->instance != one.asked.instance)
+			handle_.say(notes::renamed(one.asked.instance, turn.announced->instance));
 		handle_.say(notes::listed(turn.announced->instance, turn.announced->port));
 	}
 	if (turn.failed) {
 		handle_.say(notes::advertiseFailed(*turn.failed));
-		watch_.reset();
-		advertiser_.reset();
+		// Its watch goes before its advertiser, as at teardown: erasing destroys members in reverse order.
+		listed_.erase(found);
 	}
 }
 

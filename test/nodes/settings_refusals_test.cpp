@@ -226,7 +226,7 @@ TEST_CASE("Airplay's refusals, in order", "[nodes][settings]") {
 	constexpr std::string_view nameText =
 		"name: must be a speaker name: 1 to 50 bytes, no control characters, no %, @ or dot";
 	for (const std::string_view bad : {"null", "true", "3", R"("x")", "[]"}) {
-		CHECK(says("airplay", bad) == R"(settings: must be an object with optional "name")");
+		CHECK(says("airplay", bad) == R"(settings: must be an object with optional "name" and "airplay2")");
 	}
 	CHECK(says("airplay", R"({"gain":1})") == "unknown key gain");
 	CHECK(says("airplay", R"({"name":5})") == nameText);
@@ -238,6 +238,12 @@ TEST_CASE("Airplay's refusals, in order", "[nodes][settings]") {
 	CHECK(says("airplay", R"({"name":"Mr. K"})") == nameText);
 	CHECK(says("airplay", "{}") == accepted);
 	CHECK(says("airplay", R"({"name":"Kitchen"})") == accepted);
+	constexpr std::string_view airplay2Text = "airplay2: must be true or false";
+	CHECK(says("airplay", R"({"airplay2":"yes"})") == airplay2Text);
+	CHECK(says("airplay", R"({"airplay2":1})") == airplay2Text);
+	CHECK(says("airplay", R"({"airplay2":null})") == airplay2Text);
+	CHECK(says("airplay", R"({"airplay2":true})") == accepted);
+	CHECK(says("airplay", R"({"name":"Kitchen","airplay2":false})") == accepted);
 	// Several problems: the first in order is told.
 	CHECK(says("airplay", R"({"name":"","zeta":1})") == "unknown key zeta");
 }
