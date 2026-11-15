@@ -84,6 +84,7 @@ inline constexpr auto portRow = setting::optional("port", setting::number(1, 655
 |---|---|---|
 | `setting::number(low, high, unit = {})` | a JSON integer in [low, high] (not a float, bool or string) | `<key>: must be a whole number[ of <unit>], <low>-<high>` |
 | `setting::rate(low, high)` | a JSON integer of hertz in [low, high], read as a `SampleRate`; in `ear.conf` written with its unit (`44.1khz`, [graph-file.md](graph-file.md#rates)) | `<key>: must be a rate from <low> to <high> (on the control port, a whole number of Hz)`, the ends as ear writes them (`8khz`) |
+| `setting::boolean()` | JSON `true` or `false` (not a string, number or null), read as `bool`; in `ear.conf` the bare word `true` or `false`, or a variable ([graph-file.md](graph-file.md#settings-and-their-kinds)) | `<key>: must be true or false` |
 | `setting::text<Parse>(mustBe)` | a JSON string `Parse` accepts; `Parse` is `std::optional<T>(std::string_view)`, and `T` (what the row reads) must own what it holds | `<key>: must be <mustBe>` |
 
 - `.onlyWithout(above)` refuses the key given together with a row above it: `<key>: only without
@@ -91,8 +92,8 @@ inline constexpr auto portRow = setting::optional("port", setting::number(1, 655
 - Each key once; `disabled` (the framework's key) cannot be declared; a table's name must be its
   folder's. Each is a compile error.
 - The table is `SettingsTable<row1, row2, ...>{"<type>"}` (`SettingsTable<>{"white"}` for none).
-  It gives the type's name, its settings' kinds (text, whole number or rate, which is how `ear.conf` is
-  read and written) and the whole check, so the graph file reader cannot disagree with `parse`.
+  It gives the type's name, its settings' kinds (text, whole number, rate or boolean, which is how
+  `ear.conf` is read and written) and the whole check, so the graph file reader cannot disagree with `parse`.
 - A parsed value is parsed once: a text row reads as what its parse function made (a `CardId`, an
   `RtpAddress`, a path).
 
@@ -758,10 +759,19 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
   port's number, `cx.fifoOf(bank)` the bank's pipe receiver's FIFO, `part::Feed{}` the report feed's path, and
   `part::File{name}` a runtime file's path. Its environment is `PATH` alone, its working folder ear's runtime folder,
   its standard input `/dev/null`.
+- **What it needs** (`ProgramShape::needs`): POSIX shared-memory objects another process keeps (`shm_open(3)`), each
+  a `SharedMemoryName`: `/` then 1 to 62 of `[A-Za-z0-9._-]`, never `/.` or `/..` (`SharedMemoryName::parse`
+  refuses anything else). On Linux each is the file `/dev/shm/<name without its />`, and the adapter watches
+  `/dev/shm` with inotify from before the program's files are written until it is reaped. A program is ready only
+  once it started and every name it needs exists; a name it needs that it saw and that goes while it runs (and was
+  not stopped) makes ear end it (`SIGTERM`, `SIGKILL` 3 s later), and its node then fails `<name> was ended: shared
+  memory <removed>, which it needs, was removed` (`ProgramExit::removed`). A program that needs nothing is ready
+  with its start.
 - **Broken rules at the call**, each a `std::logic_error`, so the node fails `start-failed: configure threw: <text>`:
   `no programs in this host`; `no runtime folder in this host`; `a second program: one per configuration`;
   `program <name>: bad file name <n>` (not 1 to 32 of `[a-z0-9.-]`, or `feed`, or a duplicate); `program <name>:
-  more than 8 files`; `program <name> names its feed but has none`; `program <name> names no file <n>`; and `program
+  more than 8 files`; `program <name>: more than 4 needs`; `program <name> needs <text> twice`; `program <name> names
+  its feed but has none`; `program <name> names no file <n>`; and `program
   <name> names a port this configuration was not granted` (a `GrantedPort` that is not an AnyTcp claim of this
   configuration). At an applied configure's return, a `cx.fifoOf` of a bank with no pipe receiver fails the node
   `start-failed: configure gave program <name> the FIFO of bank <bank>, which has no pipe receiver`.
@@ -771,9 +781,12 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
   and each file to the configuration's runtime paths (`runtimePath(folder, node, configuration, what)`:
   `<folder>/<node>.<configuration>.<what>`, `what` being `feed` or the file's name, so no two configurations, a
   leaked one and its successor among them, share a path). The adapter (ear_runtime's) writes the files (mode 0600),
-  makes the feed and holds it open for reading, then spawns the process. Its start makes the item ready; one not
-  started within 5 s fails the node `start-failed: <name> did not start within 5 s`; one that cannot start fails it
-  `start-failed: cannot start <name>: <why>`, the kernel's words.
+  makes the feed and holds it open for reading, then spawns the process. Its being ready (started, and every name
+  it needs there) makes the item ready; one not ready within 5 s of its asking fails the node `start-failed:
+  <name> did not start within 5 s`, or with needs `start-failed: <name> did not start, or find <n1>[, <n2>...],
+  within 5 s` (`programOverdueDetail`); one that cannot start fails it `start-failed: cannot start <name>: <why>`,
+  the kernel's words (a watch on `/dev/shm` the kernel refuses is `cannot watch /dev/shm: <why>`). One that ends
+  after it started and before it was ready fails it `start-failed` with its end's words.
 - **What it tells**, each crossing through the configuration's own channel, so nothing reaches a newer configuration:
   each line of its standard output (level `info`, topic `stdout`) or error (`warn`, `stderr`) is a log entry with its
   name as source and the node set ([output-records.md](output-records.md#log)), dropped once the configuration ended;
@@ -781,8 +794,9 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
   node is configured as every post is, and dropped from teardown step 1, when the loops refuse outside work.
 - **Its end.** A program that ends while no teardown is under way fails the node with its words (`programExitDetail`):
   `<name> exited with status <n>` or `<name> was killed by signal <n> (SIG<abbrev>)`, then `: <its last line on
-  standard error>` when it has one; `start-failed` before the node first rested running or stopped, `lost` after (so
-  `lost` while stopped too). A stop and a start keep it running.
+  standard error>` when it has one, or, when ear ended it for a removed name, the removal's words above;
+  `start-failed` before the node first rested running or stopped, `lost` after (so `lost` while stopped too). A
+  stop and a start keep it running.
 - **Torn down with the configuration** ([architecture.md](architecture.md#teardown-by-dependency)): at step 1, right
   after the loops close to outside work, it is told to stop (`SIGTERM` to its process group, `SIGKILL` 3 s later
   unless it was reaped); step 3 waits for its reaping beside the sinks' drain, under the close deadline, and its end

@@ -367,6 +367,9 @@ private:
 				} else if (kind == SettingKind::rate) { // any rate the grammar gives: the range is the row's
 					if (const auto rate = readSettingRate(key, value)) settings[key] = rateSetting(*rate);
 					else ok = false;
+				} else if (kind == SettingKind::boolean) { // knobly's boolean, as disabled's
+					if (const auto flag = attempt([&] { return value.boolean(); })) settings[key] = *flag;
+					else ok = false;
 				} else {
 					if (const auto text = attempt([&] { return value.string(); })) settings[key] = *text;
 					else ok = false;
@@ -507,8 +510,8 @@ std::expected<std::string, InvalidSettings> textValue(const NodeName& node, cons
 }
 
 /// One setting's value as knobly text: text is knobly's quote of the JSON string, a whole number the
-/// bare integer, a rate its unit form (rateText: 44.1khz); an undeclared key takes a string (quoted) or an integer
-/// (bare).
+/// bare integer, a rate its unit form (rateText: 44.1khz), a boolean the bare word true or false; an undeclared key
+/// takes a string (quoted) or an integer (bare).
 std::expected<std::string, InvalidSettings> valueText(const NodeName& node, const NodeType* type,
                                                       const std::string& key, const json& value) {
 	if (!writableKey(key)) return std::unexpected(InvalidSettings{node, key + ": cannot be written"});
@@ -521,6 +524,10 @@ std::expected<std::string, InvalidSettings> valueText(const NodeName& node, cons
 			const auto rate = rateOfSetting(value);
 			if (!rate) return std::unexpected(InvalidSettings{node, key + ": expected a whole number of Hz above 0"});
 			return rateText(*rate);
+		}
+		if (*kind == SettingKind::boolean) {
+			if (!value.is_boolean()) return std::unexpected(InvalidSettings{node, key + ": expected true or false"});
+			return std::string(value.get<bool>() ? "true" : "false");
 		}
 		if (!value.is_number_integer())
 			return std::unexpected(InvalidSettings{node, key + ": expected a whole number"});

@@ -407,6 +407,24 @@ TEST_CASE("A rate setting is written back with its unit, and a spelling no edit 
 	}
 }
 
+TEST_CASE("A boolean setting is written back as the bare word true or false, and only a JSON boolean is",
+          "[graph_file_edit]") {
+	const Fixture f;
+	const std::string head = "graph {\n    rate 48khz;\n    block_size 256;\n}\n";
+	const auto model = f.load(head + "node lamp a { x true; }\nnode lamp b;\n");
+	REQUIRE(model.read().wanted.has_value());
+	const auto changed = candidate(model.updateNode("a", {{"x", false}}));
+	CHECK(changed.text() == head + "node lamp a { x false; }\nnode lamp b;\n");
+	CHECK(nodeIn(changed, "a").settings == json{{"x", false}});
+	const auto added = candidate(model.updateNode("b", {{"x", true}}));
+	CHECK(added.text() == head + "node lamp a { x true; }\nnode lamp b { x true; }\n");
+	CHECK(nodeIn(added, "b").settings == json{{"x", true}});
+	for (const json& bad : {json("false"), json(0), json(nullptr)}) {
+		INFO(bad.dump());
+		CHECK(commandDetail(model.updateNode("a", {{"x", bad}})) == "invalid-settings a: x: expected true or false");
+	}
+}
+
 TEST_CASE("No edit touches the graph block", "[graph_file_model][graph-block]") {
 	const Fixture f;
 	const std::string block = "graph {   # the engine\n    rate 44.1khz;   # the MOTU's\n    block_size 128;\n}\n";

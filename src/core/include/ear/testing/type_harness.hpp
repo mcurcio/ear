@@ -57,6 +57,7 @@ public:
 
 	const std::vector<ProgramFake>& programs() const noexcept { return node_->programs(); }
 	void programStarted(std::size_t index = 0) { node_->programStarted(index); }
+	void programReady(std::size_t index = 0) { node_->programReady(index); }
 	void programRefused(std::size_t index, std::string why) { node_->programRefused(index, std::move(why)); }
 	void feedProgram(std::size_t index, std::string bytes) { node_->feedProgram(index, std::move(bytes)); }
 	void programSays(std::size_t index, LogLevel level, std::string line) {

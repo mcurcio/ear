@@ -297,10 +297,16 @@ public:
 /// How one setting is written in the graph file: the keeper reads it with knobly's reader of this
 /// kind and writes a JSON value of this kind back. The one home of each key's kind.
 enum class SettingKind {
-	text,        // JSON string; written quoted (knobly's quote), read with knobly's string reader
-	wholeNumber, // JSON integer; written as a bare word, read with knobly's integer reader
-	rate,        // JSON integer of hertz; written with its unit (rateText: 44.1khz), read with knobly's word reader
-				 // and readRate (docs/graph-file.md#rates)
+	/// JSON string; written quoted (knobly's quote), read with knobly's string reader.
+	text,
+	/// JSON integer; written as a bare word, read with knobly's integer reader.
+	wholeNumber,
+	/// JSON integer of hertz; written with its unit (rateText: 44.1khz), read with knobly's word reader and readRate
+	/// (docs/graph-file.md#rates).
+	rate,
+	/// JSON true or false; in ear.conf the bare word true or false, read with knobly's boolean reader as disabled's is
+	/// (a variable allowed).
+	boolean,
 };
 struct SettingDeclaration {
 	std::string_view key;

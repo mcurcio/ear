@@ -20,6 +20,7 @@ void print(const std::string& line) {
 class Relay final : public ear::ProgramEvents {
 public:
 	void started() override {}
+	void ready() override {}
 	void refused(std::string why) override { print("refused " + why); }
 	void fed(std::string) override {}
 	void said(ear::LogEntry entry) override {

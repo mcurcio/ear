@@ -62,6 +62,11 @@ constexpr auto senderRow =
 	setting::optional("sender", setting::rate(ear::SampleRate::fixed<8'000>(), ear::SampleRate::fixed<192'000>()));
 constexpr SettingsTable<senderRow> rates{"t"};
 static_assert(rates.kinds()[0].key == "sender" && rates.kinds()[0].kind == rate);
+constexpr auto loudRow = setting::required("loud", setting::boolean());
+constexpr auto quietRow = setting::optional("quiet", setting::boolean());
+constexpr SettingsTable<loudRow, quietRow> booleans{"t"};
+static_assert(booleans.kinds()[0].key == "loud" && booleans.kinds()[0].kind == boolean);
+static_assert(booleans.kinds()[1].kind == boolean);
 
 // The table is a constant, and so is what it declares.
 static_assert(numbers.kinds().size() == 3);
@@ -213,6 +218,24 @@ TEST_CASE("A rate is a JSON whole number of Hz within the row's range, read as a
 		INFO(bad);
 		CHECK(refusal(rates, {{"sender", parsed(bad)}}) == range);
 	}
+}
+
+TEST_CASE("A boolean is JSON true or false, read as bool", "[settings-table]") {
+	const auto yes = booleans.check(NodeSettings{{"loud", true}});
+	REQUIRE(yes.has_value());
+	static_assert(std::same_as<decltype(yes->get<loudRow>()), bool>);
+	static_assert(std::same_as<decltype(yes->get<quietRow>()), std::optional<bool>>);
+	CHECK(yes->get<loudRow>());
+	CHECK_FALSE(yes->get<quietRow>().has_value());
+	const auto no = booleans.check(NodeSettings{{"loud", false}, {"quiet", false}});
+	REQUIRE(no.has_value());
+	CHECK_FALSE(no->get<loudRow>());
+	CHECK(no->get<quietRow>() == std::optional<bool>(false));
+	for (const std::string_view bad : {R"("true")", "1", "0", "null", "[]", "{}"}) {
+		INFO(bad);
+		CHECK(refusal(booleans, {{"loud", parsed(bad)}}) == "loud: must be true or false");
+	}
+	CHECK(refusal(booleans, NodeSettings::object()) == "loud: missing");
 }
 
 TEST_CASE("kinds() is every key once, in row order", "[settings-table]") {

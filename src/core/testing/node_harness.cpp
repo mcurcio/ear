@@ -623,7 +623,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		Impl& harness;
 		std::size_t index;
 	};
-	/// The programs' adapter: each launch recorded as a ProgramFake, told started at once unless holdPrograms.
+	/// The programs' adapter: each launch recorded as a ProgramFake, told started and ready at once unless holdPrograms.
 	struct FakePrograms final : ProgramAdapter {
 		explicit FakePrograms(Impl& h) : harness(h) {}
 		std::unique_ptr<RunningProgram> launch(ProgramLaunch launch, ProgramEvents& events) override {
@@ -632,7 +632,9 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			const std::size_t index = harness.programList.size() - 1;
 			if (!harness.options.holdPrograms) {
 				harness.programList.back().started = true;
+				harness.programList.back().ready = true;
 				events.started();
+				events.ready();
 			}
 			return std::make_unique<FakeRunning>(harness, index);
 		}
@@ -1597,6 +1599,19 @@ void NodeHarness::programStarted(std::size_t index) {
 	if (fake.started) throw std::logic_error("programStarted: program " + std::to_string(index) + " was told already");
 	fake.started = true;
 	impl_->programEvents.at(index)->started();
+	if (fake.launch.needs.empty()) {
+		fake.ready = true;
+		impl_->programEvents.at(index)->ready();
+	}
+	impl_->settle();
+}
+
+void NodeHarness::programReady(std::size_t index) {
+	ProgramFake& fake = liveProgram(impl_->programList, index, "programReady");
+	if (!fake.started) throw std::logic_error("programReady: program " + std::to_string(index) + " has not started");
+	if (fake.ready) throw std::logic_error("programReady: program " + std::to_string(index) + " is ready already");
+	fake.ready = true;
+	impl_->programEvents.at(index)->ready();
 	impl_->settle();
 }
 

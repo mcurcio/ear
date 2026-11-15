@@ -22,6 +22,9 @@ public:
 	void started() override {
 		tell([&] { isStarted = true; });
 	}
+	void ready() override {
+		tell([&] { isReady = true; });
+	}
 	void refused(std::string why) override {
 		tell([&] { refusal = std::move(why); });
 	}
@@ -60,6 +63,7 @@ public:
 
 	// Read inside until's predicate, or once ended() returned true.
 	bool isStarted = false;
+	bool isReady = false;
 	std::optional<std::string> refusal;
 	std::string feed;
 	std::vector<LogEntry> lines;

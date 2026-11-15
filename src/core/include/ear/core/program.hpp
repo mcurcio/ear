@@ -16,6 +16,7 @@
 #include <initializer_list>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -145,8 +146,9 @@ struct ProgramShape {
 	std::vector<SharedMemoryName> needs{};
 };
 
-/// How long a program may take to start, from its asking (the files written, the feed opened, the process spawned).
-/// Past it the node fails start-failed "<name> did not start within 5 s" (docs/engine.md#readiness-deadlines).
+/// How long a program may take to be ready, from its asking (the files written, the feed opened, the process spawned)
+/// until ready (ProgramEvents::ready: started, and every shared-memory name it needs exists). Past it the node fails
+/// start-failed with programOverdueDetail's words (docs/engine.md#readiness-deadlines).
 inline constexpr std::chrono::milliseconds programReadinessBound{5'000};
 /// How long a program has to end after its teardown's SIGTERM before its process group is sent SIGKILL. Inside the
 /// close deadline, so a program that ignores SIGTERM is reaped before the configuration would be leaked.
@@ -170,9 +172,14 @@ struct ProgramExit {
 };
 
 /// "<name> exited with status <n>" or "<name> was killed by signal <n> (SIG<abbrev>)", then ": <last line>" when it has
-/// one: the one home of the words of a program's end, which its node fails with (start-failed before the node first
-/// rested running or stopped, lost after).
+/// one; when exit.removed is set, "<name> was ended: shared memory <removed>, which it needs, was removed", with no how,
+/// number or last line, which are only its answer to ear's own SIGTERM. The one home of the words of a program's end,
+/// which its node fails with (start-failed before the node first rested running or stopped, lost after).
 std::string programExitDetail(std::string_view name, const ProgramExit& exit);
+
+/// "<name> did not start within 5 s" when `needs` is empty; else "<name> did not start, or find <n1>[, <n2>...], within
+/// 5 s". The one home of a program's readiness deadline words.
+std::string programOverdueDetail(std::string_view name, std::span<const SharedMemoryName> needs);
 
 /// `<folder>/<node>.<configuration>.<what>`: the one home of a configuration's runtime file paths (a pipe receiver's
 /// FIFO, `<bank>.fifo`; a program's feed, `feed`; its files, by name). `configuration` is NodeHost's count of the
@@ -200,6 +207,9 @@ class ProgramEvents {
 public:
 	/// It runs: its files written, its feed open, its process spawned (exec succeeded). At most once.
 	virtual void started() = 0;
+	/// Every shared-memory name it needs exists (ProgramLaunch::needs): at most once, after started; at once after
+	/// started when it needs none or each exists already. Its readiness item becomes ready here, not at started.
+	virtual void ready() = 0;
 	/// It cannot run (a file, the feed or the spawn failed): `why`, the cause in the kernel's words. At most once,
 	/// instead of started; nothing follows it, and whatever it made is already removed.
 	virtual void refused(std::string why) = 0;
@@ -208,8 +218,8 @@ public:
 	/// One line of its standard output (level info) or error (warn): `source` its name, `topic` "stdout" or "stderr",
 	/// `node` set, cut at programLineBytes. Only after started.
 	virtual void said(LogEntry entry) = 0;
-	/// It was reaped: how it ended. At most once, after started; its files and feed are already removed, and the
-	/// adapter calls nothing more.
+	/// It was reaped: how it ended. At most once, after started, ready or not; its files and feed are already removed,
+	/// and the adapter calls nothing more.
 	virtual void exited(ProgramExit exit) = 0;
 
 protected:

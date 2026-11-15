@@ -9,8 +9,16 @@ namespace ear::runtime {
 /// Every program ear runs, and the reaping of every process re-parented to ear (docs/architecture.md#boot-and-stop: ear
 /// is its descendants' subreaper, PID 1 in its image).
 ///  - Its thread starts with the first launch and stops in the destructor. It waits in epoll on each program's pidfd,
-///    its standard output and error pipes and its feed, and on a signalfd for SIGCHLD, which main.cpp blocked in every
-///    thread before the first started; it never sleeps or polls on a timer but programTermBound's.
+///    its standard output and error pipes and its feed, on a signalfd for SIGCHLD, which main.cpp blocked in every
+///    thread before the first started, and on one inotify descriptor (IN_CLOEXEC | IN_NONBLOCK) for /dev/shm; it never
+///    sleeps or polls on a timer but programTermBound's.
+///  - A launch that needs shared-memory names (ProgramLaunch::needs) first arms, before any file or the spawn, one watch
+///    on /dev/shm (IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_DELETE_SELF), shared by every program while
+///    any needs a name, and then looks (stat) for each /dev/shm/<name without its "/">; a watch the kernel refuses is
+///    refused "cannot watch /dev/shm: <its words>". ready is told once it started and every name is present, at once
+///    after started when each already is or it needs none. A name seen present that goes (IN_DELETE, IN_MOVED_FROM)
+///    while it runs and was not stopped is recorded as ProgramExit::removed and the program stopped as stop() does,
+///    so its exited carries it. A queue overflow (IN_Q_OVERFLOW) looks at every watched name again.
 ///  - A launch writes the files (0600, O_CLOEXEC | O_EXCL), makes the feed (mkfifo 0600) and opens it O_RDWR |
 ///    O_NONBLOCK (so its reader never sees end of file while the program restarts its writer), then spawns with
 ///    pidfd_spawn: the executable through `/usr/bin/setpriv --pdeathsig KILL --`, so the program dies with this thread

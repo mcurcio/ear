@@ -43,10 +43,13 @@ enum class Broken {
 	unknownFile,
 	foreignPort,
 	fifoWithoutReceiver,
+	tooManyNeeds,
+	twinNeeds,
 };
 struct Behaviour {
 	Broken broken = Broken::none;
-	bool pipe = true; // configure asks for the pipe receiver
+	bool pipe = true;                 // configure asks for the pipe receiver
+	std::vector<std::string> needs{}; // the shared-memory names the program needs
 };
 Behaviour behaviour;
 
@@ -80,6 +83,7 @@ public:
 				"config",
 				{part::Text{"pipe = "}, cx.fifoOf(fromPipe), part::Text{"\nfeed = "}, part::Feed{}, part::Text{"\n"}}}},
 		};
+		for (const std::string& need : behaviour.needs) shape.needs.push_back(*SharedMemoryName::parse(need));
 		switch (behaviour.broken) {
 		case Broken::none:
 		case Broken::secondProgram:
@@ -107,6 +111,14 @@ public:
 		case Broken::foreignPort:
 			shape.args.push_back({part::Port{GrantedPort(7)}});
 			break;
+		case Broken::tooManyNeeds:
+			for (const char* need : {"/n1", "/n2", "/n3", "/n4", "/n5"})
+				shape.needs.push_back(*SharedMemoryName::parse(need));
+			break;
+		case Broken::twinNeeds:
+			shape.needs.push_back(*SharedMemoryName::parse("/x"));
+			shape.needs.push_back(*SharedMemoryName::parse("/x"));
+			break;
 		}
 		cx.loop(reports, std::make_unique<Reports>());
 		cx.program(shape, reports, &Reports::onFeed);
@@ -127,8 +139,8 @@ std::unique_ptr<Harness> fresh(Harness::Options options = {}, Behaviour asked = 
 }
 
 /// Added, its block and pipe receiver ready: its program launched (and, unless held, started and the node running).
-std::unique_ptr<Harness> launched(Harness::Options options = {}) {
-	auto h = fresh(std::move(options));
+std::unique_ptr<Harness> launched(Harness::Options options = {}, Behaviour asked = {}) {
+	auto h = fresh(std::move(options), std::move(asked));
 	h->add();
 	h->blockReady();
 	h->node().ready(fromPipe.name);
@@ -188,6 +200,78 @@ TEST_CASE("A program's words: its runtime paths, its end, its arguments and its 
 	      std::vector<ProgramPart>{part::Text{"--fifo="}, part::Fifo{"in"}});
 	CHECK(ProgramPath{"/usr/local/bin/x"}.name() == "x");
 	CHECK(ProgramPath{"/usr/local/bin/x"}.path() == "/usr/local/bin/x");
+}
+
+TEST_CASE("A shared-memory name is \"/\" then 1 to 62 of [A-Za-z0-9._-], never \"/.\" or \"/..\"", "[program][needs]") {
+	CHECK(SharedMemoryName::parse("/ear-kitchen")->text() == "/ear-kitchen");
+	const std::string longest = "/" + std::string(62, 'a');
+	REQUIRE(longest.size() == 63);
+	CHECK(SharedMemoryName::parse(longest)->text() == longest);
+	CHECK(SharedMemoryName::parse("/A.b_c-9"));
+	for (const std::string& bad :
+	     {std::string(), std::string("/"), std::string("ear"), std::string("/a/b"), std::string("/."),
+	      std::string("/.."), std::string("/a b"), "/" + std::string(63, 'a')}) {
+		INFO(bad);
+		CHECK_FALSE(SharedMemoryName::parse(bad));
+	}
+}
+
+TEST_CASE("A program ended for a removed name says so, and its deadline names what it needs", "[program][needs]") {
+	CHECK(programExitDetail("x", ProgramExit{ProgramExit::How::killed, 15, "bye", "/ear-kitchen"}) ==
+	      "x was ended: shared memory /ear-kitchen, which it needs, was removed");
+	CHECK(programExitDetail("x", ProgramExit{ProgramExit::How::exited, 0, {}, "/a"}) ==
+	      "x was ended: shared memory /a, which it needs, was removed");
+	CHECK(programOverdueDetail("p", {}) == "p did not start within 5 s");
+	const std::vector<SharedMemoryName> one{*SharedMemoryName::parse("/x")};
+	CHECK(programOverdueDetail("p", one) == "p did not start, or find /x, within 5 s");
+	const std::vector<SharedMemoryName> two{*SharedMemoryName::parse("/x"), *SharedMemoryName::parse("/y")};
+	CHECK(programOverdueDetail("p", two) == "p did not start, or find /x, /y, within 5 s");
+}
+
+TEST_CASE("A program that needs shared memory is launched with the names, and its node waits for it as program after "
+          "it started, running only once it is ready",
+          "[program][needs]") {
+	auto h = launched({.holdPrograms = true}, {.needs = {"/x", "/ear-kitchen"}});
+	CHECK(h->programs().at(0).launch.needs == std::vector<std::string>{"/x", "/ear-kitchen"});
+	h->programStarted();
+	CHECK(h->programs().at(0).started);
+	CHECK_FALSE(h->programs().at(0).ready);
+	CHECK(h->phase() == "configuring");
+	h->node().advance(2s); // waitingFor is told only once a wait has lasted waitingForDelay
+	CHECK(h->health().waitingFor == std::vector<WaitingFor>{{WaitingFor::Kind::program, "fake-player"}});
+	h->programReady();
+	CHECK(h->phase() == "running");
+	CHECK_THROWS_AS(h->programReady(), std::logic_error); // told once
+}
+
+TEST_CASE("A program that needs nothing is ready with its start, held or not", "[program][needs]") {
+	auto held = launched({.holdPrograms = true});
+	CHECK_THROWS_AS(held->programReady(), std::logic_error); // not started
+	held->programStarted();
+	CHECK(held->programs().at(0).ready);
+	CHECK(held->phase() == "running");
+	auto unheld = launched({}, {.needs = {"/x"}});
+	CHECK(unheld->programs().at(0).ready);
+	CHECK(unheld->phase() == "running");
+}
+
+TEST_CASE("A program that ends after it started and before it was ready fails its node start-failed with its words",
+          "[program][needs]") {
+	auto h = launched({.holdPrograms = true}, {.needs = {"/x"}});
+	h->programStarted();
+	h->programExited(0, ProgramExit{ProgramExit::How::exited, 1, "The NQPTP service can not be found."});
+	CHECK(failure(*h) == "start-failed: fake-player exited with status 1: The NQPTP service can not be found.");
+}
+
+TEST_CASE("A program that needs shared memory and is not ready within 5 s fails its node start-failed, naming what it "
+          "needs",
+          "[program][needs][deadline]") {
+	auto h = launched({.holdPrograms = true}, {.needs = {"/x"}});
+	h->programStarted();
+	h->node().advance(programReadinessBound - 1ms);
+	CHECK(h->phase() == "configuring");
+	h->node().advance(1ms);
+	CHECK(failure(*h) == "start-failed: fake-player did not start, or find /x, within 5 s");
 }
 
 TEST_CASE("NodeHost resolves every part of the program it launches: the granted port, the pipe receiver's FIFO, the "
@@ -351,6 +435,8 @@ TEST_CASE("Every rule a program's shape breaks fails its node with the rule's wo
 			 Row{Broken::unknownFile, "configure threw: program fake-player names no file missing"},
 			 Row{Broken::foreignPort,
 	             "configure threw: program fake-player names a port this configuration was not granted"},
+			 Row{Broken::tooManyNeeds, "configure threw: program fake-player: more than 4 needs"},
+			 Row{Broken::twinNeeds, "configure threw: program fake-player needs /x twice"},
 		 }) {
 		INFO(row.words);
 		auto h = fresh({}, {.broken = row.broken});

@@ -95,7 +95,9 @@ struct SeenHandoff {
 /// configuration: what NodeHost resolved for it, and what happened to it.
 struct ProgramFake {
 	ProgramLaunch launch;
-	bool started = false;   // told started: at its launch, or with holdPrograms at programStarted
+	bool started = false; // told started: at its launch, or with holdPrograms at programStarted
+	/// Told ready: at its launch; with holdPrograms at programStarted when it needs nothing, else at programReady.
+	bool ready = false;
 	bool stopped = false;   // RunningProgram::stop was called: its teardown began
 	bool ended = false;     // told refused or exited
 	bool destroyed = false; // its RunningProgram was destroyed (teardown step 5)
@@ -128,8 +130,9 @@ struct HarnessOptions {
 	/// The I/O executor's jobs (a store's open and writes, a recording's open and close) run only at runIo(), not as
 	/// each call settles.
 	bool holdIo = false;
-	/// Each program is told started only at programStarted(index), not at its launch; and a program stopped is told
-	/// exited only at programExited(index, ...), not at once (killed by SIGTERM, as the real one is).
+	/// Each program is told started only at programStarted(index), not at its launch (and ready with it when it needs
+	/// nothing, else only at programReady(index)); and a program stopped is told exited only at programExited(index,
+	/// ...), not at once (killed by SIGTERM, as the real one is).
 	bool holdPrograms = false;
 	/// The host's runtime folder (ResourceAdapters::runtimeFolder), which every runtime path the harness resolves
 	/// begins with; empty: none, and pipe receivers and programs are refused "no runtime folder in this host".
@@ -344,8 +347,12 @@ public:
 	// only what the harness options and the test say, on the test's thread, as the real adapter's thread would.
 	/// Every program launched, in order, over every configuration.
 	const std::vector<ProgramFake>& programs() const noexcept;
-	/// With holdPrograms: program `index` is told started. std::logic_error when it was told anything already.
+	/// With holdPrograms: program `index` is told started, and ready too when its launch needs nothing.
+	/// std::logic_error when it was told anything already.
 	void programStarted(std::size_t index = 0);
+	/// Program `index` is told ready: every shared-memory name it needs exists. std::logic_error unless it started, is
+	/// not ready and has not ended.
+	void programReady(std::size_t index = 0);
 	/// Program `index` is told refused with `why` instead of started.
 	void programRefused(std::size_t index, std::string why);
 	/// Program `index`'s report feed delivers `bytes` (at most programFeedChunkBytes); std::logic_error before started.

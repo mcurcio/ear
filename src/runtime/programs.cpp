@@ -1,8 +1,9 @@
 // Programs (programs.hpp, docs/writing-a-node-type.md#programs): the thread `ear-programs`, which spawns every program
 // a node asks for, tells its lines, its feed and its end, stops it, and reaps every child of ear's, a program's or an
 // orphan re-parented to ear (docs/architecture.md#boot-and-stop). It waits in epoll and nowhere else: a program's pidfd
-// is its end, its pipes its lines, its feed its reports, an eventfd the main thread's asks, a signalfd SIGCHLD, and one
-// timerfd the SIGKILL a stop owes past programTermBound.
+// is its end, its pipes its lines, its feed its reports, an eventfd the main thread's asks, a signalfd SIGCHLD, an
+// inotify descriptor the shared-memory names programs need coming and going in /dev/shm, and one timerfd the SIGKILL a
+// stop owes past programTermBound.
 #include "ear/runtime/programs.hpp"
 
 #include <algorithm>
@@ -27,6 +28,7 @@
 #include <spawn.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
+#include <sys/inotify.h>
 // glibc 2.41's sys/pidfd.h declares its functions without C linkage (no __BEGIN_DECLS), so C++ would look for mangled
 // names that libc does not have.
 extern "C" {
@@ -47,6 +49,16 @@ namespace {
 constexpr const char* kShim = "/usr/bin/setpriv";
 /// A program's whole environment.
 constexpr const char* kPath = "PATH=/usr/local/bin:/usr/bin:/bin";
+/// Where Linux keeps POSIX shared memory: shm_open's "/<name>" is the file /dev/shm/<name>.
+constexpr const char* kShm = "/dev/shm";
+
+/// The file behind a shared-memory name ("/x" is /dev/shm/x).
+std::string shmPath(const std::string& name) { return std::string(kShm) + name; }
+
+bool exists(const std::string& path) {
+	struct stat seen{};
+	return ::stat(path.c_str(), &seen) == 0;
+}
 
 /// A descriptor closed when it goes.
 class Fd {
@@ -118,6 +130,12 @@ struct ProgramRecord {
 	bool stopped = false;                           // stop() was heard once it ran
 	std::optional<std::chrono::nanoseconds> killAt; // CLOCK_MONOTONIC: its group's SIGKILL is due
 	std::string lastLine;                           // its last line on standard error
+	std::vector<bool> present;                      // by launch.needs' index: seen in /dev/shm
+	bool readyTold = false;
+	std::string removed; // the need whose removal made the thread stop it; empty: none
+	bool allPresent() const {
+		return std::ranges::all_of(present, [](bool seen) { return seen; });
+	}
 };
 
 struct Programs::Shared {
@@ -134,15 +152,18 @@ struct Programs::Shared {
 	static constexpr std::uint64_t kWake = 0;
 	static constexpr std::uint64_t kSignals = 1;
 	static constexpr std::uint64_t kTimer = 2;
+	static constexpr std::uint64_t kShmEvents = 3;
 
 	Shared()
 		: epoll(required(::epoll_create1(EPOLL_CLOEXEC), "epoll_create1")),
 		  wake(required(::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK), "eventfd")),
 		  signals(required(childSignal(), "signalfd")),
-		  timer(required(::timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK), "timerfd_create")) {
+		  timer(required(::timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK), "timerfd_create")),
+		  shmEvents(required(::inotify_init1(IN_CLOEXEC | IN_NONBLOCK), "inotify_init1")) {
 		add(wake.get(), kWake);
 		add(signals.get(), kSignals);
 		add(timer.get(), kTimer);
+		add(shmEvents.get(), kShmEvents);
 	}
 
 	/// A signalfd for SIGCHLD. It hears the signal only while every thread blocks it, as main.cpp does before the first
@@ -200,6 +221,8 @@ struct Programs::Shared {
 					reapChildren();
 				} else if (token == kTimer) {
 					killOverdue();
+				} else if (token == kShmEvents) {
+					shmChanged();
 				} else {
 					heard(token);
 				}
@@ -264,14 +287,30 @@ struct Programs::Shared {
 		program.made.clear();
 	}
 
-	/// A launch: the files, the feed, the pipes, then the spawn. Any failure removes what it made and tells refused.
+	/// A launch: the watch on what it needs, the files, the feed, the pipes, then the spawn. Any failure removes what it
+	/// made and tells refused.
 	void start(const std::shared_ptr<ProgramRecord>& shared) {
 		ProgramRecord& program = *shared;
 		const ProgramLaunch& launch = program.launch;
 		const auto refuse = [&](int error) {
 			removeMade(program);
+			forgetNeeds(program);
 			program.events.refused(std::strerror(error));
 		};
+		if (!launch.needs.empty()) {
+			// The watch before the look, so a name made between the two is still heard.
+			if (shmWatch < 0) {
+				shmWatch = ::inotify_add_watch(shmEvents.get(), kShm,
+				                               IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_DELETE_SELF);
+				if (shmWatch < 0) {
+					const int error = errno;
+					removeMade(program);
+					return program.events.refused(std::string("cannot watch ") + kShm + ": " + std::strerror(error));
+				}
+			}
+			needing.push_back(shared);
+			for (const std::string& name : launch.needs) program.present.push_back(exists(shmPath(name)));
+		}
 		for (const auto& [path, text] : launch.files) {
 			Fd file(::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600));
 			if (!file) return refuse(errno);
@@ -352,6 +391,72 @@ struct Programs::Shared {
 		if (program.feed) program.feedToken = watch(program.feed.get(), shared, Watch::feed);
 		byPid.emplace(program.pid, shared);
 		program.events.started();
+		tellReady(program);
+	}
+
+	/// Ready, once: started, and every name it needs seen.
+	static void tellReady(ProgramRecord& program) {
+		if (program.readyTold || !program.running || !program.allPresent()) return;
+		program.readyTold = true;
+		program.events.ready();
+	}
+
+	/// It needs nothing more: out of the watched programs, and the watch on /dev/shm gone with the last of them.
+	void forgetNeeds(const ProgramRecord& program) {
+		if (std::erase_if(needing, [&](const auto& other) { return other.get() == &program; }) == 0) return;
+		if (needing.empty() && shmWatch >= 0) {
+			::inotify_rm_watch(shmEvents.get(), shmWatch);
+			shmWatch = -1;
+		}
+	}
+
+	/// Name `name` (its "/" included) seen made or gone, in every program that needs it.
+	void shmSeen(const std::string& name, bool made) {
+		for (const std::shared_ptr<ProgramRecord>& program : needing) {
+			const std::vector<std::string>& needs = program->launch.needs;
+			for (std::size_t i = 0; i < needs.size(); ++i) {
+				if (needs[i] != name || program->present[i] == made) continue;
+				program->present[i] = made;
+				if (made) {
+					tellReady(*program);
+				} else if (program->running && !program->stopped && program->removed.empty()) {
+					// It needs what went: ear ends it, and its end carries the cause (ProgramExit::removed).
+					program->removed = name;
+					stop(*program);
+				}
+			}
+		}
+	}
+
+	/// /dev/shm changed: each name made or gone, or with the queue overflowed every watched name looked at again.
+	void shmChanged() {
+		alignas(inotify_event) std::array<char, 4096> buffer{};
+		for (;;) {
+			const ssize_t got = ::read(shmEvents.get(), buffer.data(), buffer.size());
+			if (got < 0 && errno == EINTR) continue;
+			if (got <= 0) return; // EAGAIN: all of it for now
+			for (ssize_t at = 0; at < got;) {
+				const auto* event = reinterpret_cast<const inotify_event*>(buffer.data() + at);
+				at += static_cast<ssize_t>(sizeof(inotify_event) + event->len);
+				if ((event->mask & IN_Q_OVERFLOW) != 0) {
+					lookAgain();
+				} else if (event->wd != shmWatch) {
+					continue; // a watch removed earlier
+				} else if ((event->mask & IN_IGNORED) != 0) {
+					shmWatch = -1; // /dev/shm itself went: the kernel removed the watch
+				} else if (event->len > 0) {
+					const std::string name = std::string("/") + event->name; // NUL-padded: up to its first NUL
+					if ((event->mask & (IN_CREATE | IN_MOVED_TO)) != 0) shmSeen(name, true);
+					if ((event->mask & (IN_DELETE | IN_MOVED_FROM)) != 0) shmSeen(name, false);
+				}
+			}
+		}
+	}
+
+	/// The queue overflowed, so events were lost: every watched name is looked at in /dev/shm again.
+	void lookAgain() {
+		for (const std::shared_ptr<ProgramRecord>& program : needing)
+			for (const std::string& name : program->launch.needs) shmSeen(name, exists(shmPath(name)));
 	}
 
 	/// SIGTERM to its group at once, SIGKILL at programTermBound unless it is reaped first. Before it ran (refused),
@@ -437,8 +542,10 @@ struct Programs::Shared {
 		program.running = false;
 		program.killAt.reset();
 		byPid.erase(program.pid); // its caller holds the record through the tell
+		forgetNeeds(program);
 		armTimer();
 		exit.lastLine = program.lastLine;
+		exit.removed = program.removed;
 		program.events.exited(std::move(exit));
 	}
 
@@ -498,6 +605,7 @@ struct Programs::Shared {
 	Fd wake;
 	Fd signals;
 	Fd timer;
+	Fd shmEvents; // inotify: /dev/shm, watched while any program needs a name
 	std::mutex mutex;
 	std::deque<Command> commands; // under mutex
 	bool quitting = false;        // under mutex
@@ -505,7 +613,9 @@ struct Programs::Shared {
 	// The thread's only:
 	std::map<std::uint64_t, Watched> watched;
 	std::map<pid_t, std::shared_ptr<ProgramRecord>> byPid; // every program running
-	std::uint64_t nextToken = 3;
+	std::vector<std::shared_ptr<ProgramRecord>> needing;   // every program that needs a name, from launch to end
+	int shmWatch = -1;                                     // the watch on /dev/shm, or none
+	std::uint64_t nextToken = 4;
 };
 
 namespace {

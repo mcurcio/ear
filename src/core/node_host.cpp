@@ -642,6 +642,13 @@ struct NodeHost::Impl {
 					if (!plainFileName(file) || twice)
 						throw std::logic_error("program " + name + ": bad file name " + file);
 				}
+				if (shape.needs.size() > maxProgramNeeds)
+					throw std::logic_error("program " + name + ": more than " + std::to_string(maxProgramNeeds) +
+					                       " needs");
+				for (std::size_t i = 0; i < shape.needs.size(); ++i)
+					if (std::ranges::find(shape.needs.begin(), shape.needs.begin() + i, shape.needs[i]) !=
+					    shape.needs.begin() + i)
+						throw std::logic_error("program " + name + " needs " + shape.needs[i].text() + " twice");
 				const auto check = [&](const ProgramPart& piece) {
 					std::visit(Overloaded{
 								   [](const part::Text&) {},
@@ -1084,11 +1091,16 @@ struct NodeHost::Impl {
 				};
 			}
 			/// What the configuration's program tells (ProgramEvents, on the adapter's thread), crossing to the main loop as
-			/// a close does: started, refused and exited land on the node while attached, refused and exited on the
+			/// a close does: started, ready, refused and exited land on the node while attached, refused and exited on the
 			/// leaked record once re-pointed (a program reaped is one of the closes its late close waits for).
 			void programStarted() {
 				mainLoop_.post([self = shared_from_this()] {
 					if (Node* node = self->attachedNode()) node->programStarted(node->config_->generation);
+				});
+			}
+			void programReady() {
+				mainLoop_.post([self = shared_from_this()] {
+					if (Node* node = self->attachedNode()) node->programReady(node->config_->generation);
 				});
 			}
 			void programRefused(std::string why) {
@@ -1580,6 +1592,7 @@ struct NodeHost::Impl {
 		public:
 			explicit ProgramLink(std::shared_ptr<Channel> channel) noexcept : channel_(std::move(channel)) {}
 			void started() override { channel_->programStarted(); }
+			void ready() override { channel_->programReady(); }
 			void refused(std::string why) override { channel_->programRefused(std::move(why)); }
 			void fed(std::string bytes) override { channel_->programFed(std::move(bytes)); }
 			void said(LogEntry entry) override { channel_->log(std::move(entry)); }
@@ -1594,7 +1607,7 @@ struct NodeHost::Impl {
 		struct ProgramSlot {
 			ProgramShape shape;
 			std::optional<ProgramFeedTo> feed;
-			std::size_t item = detail::noReadiness; // ready once it started
+			std::size_t item = detail::noReadiness; // ready once it is (ProgramEvents::ready)
 			std::unique_ptr<ProgramLink> events{};  // made at its launch; outlives `running`
 			std::unique_ptr<RunningProgram> running{};
 			bool started = false;
@@ -2704,18 +2717,17 @@ struct NodeHost::Impl {
 				});
 				c.itemOwners.push_back({Family::consumer, i});
 			}
-			// The program at step `programs`, once every engine companion and consumer is ready, bounded from its asking.
+			// The program at step `programs`, once every engine companion and consumer is ready, bounded from its asking
+			// until it is ready.
 			if (c.program) {
-				const auto programSeconds =
-					std::chrono::duration_cast<std::chrono::seconds>(programReadinessBound).count();
 				c.program->item = c.readiness.add(detail::ReadinessItem{
 					.kind = WaitingFor::Kind::program,
 					.name = c.program->name(),
 					.step = detail::ReadinessStep::programs,
 					.bound = programReadinessBound,
 					.fact = lc::Fact::configureFailed,
-					.overdue = [text = c.program->name() + " did not start within " + std::to_string(programSeconds) +
-				                       " s"] { return text; },
+					.overdue = [text =
+				                    programOverdueDetail(c.program->name(), c.program->shape.needs)] { return text; },
 				});
 				c.itemOwners.push_back({Family::program, 0});
 			}
@@ -2864,6 +2876,7 @@ struct NodeHost::Impl {
 			for (const ProgramFile& file : program.shape.files)
 				launch.files.emplace_back(pathOf(file.name), text(file.text));
 			if (program.feed) launch.feed = pathOf("feed");
+			for (const SharedMemoryName& need : program.shape.needs) launch.needs.push_back(need.text());
 			program.events = std::make_unique<ProgramLink>(c.channel);
 			try {
 				program.running = host_.resources.programs()->launch(std::move(launch), *program.events);
@@ -2880,13 +2893,19 @@ struct NodeHost::Impl {
 			}
 		}
 
-		/// The program started: its readiness item is ready.
+		/// The program started. Its readiness waits for ready: a program that needs shared memory runs only once that
+		/// exists (docs/writing-a-node-type.md#programs).
 		void programStarted(std::uint64_t generation) {
 			host_.inputFor(serial_, [generation](Node& node) {
 				if (!node.current(generation) || !node.config_->program) return;
-				ProgramSlot& program = *node.config_->program;
-				program.started = true;
-				if (node.stillReadying(generation)) node.itemReady(generation, program.item);
+				node.config_->program->started = true;
+			});
+		}
+		/// The program is ready (started, and every shared-memory name it needs exists): its readiness item is ready.
+		void programReady(std::uint64_t generation) {
+			host_.inputFor(serial_, [generation](Node& node) {
+				if (!node.current(generation) || !node.config_->program) return;
+				if (node.stillReadying(generation)) node.itemReady(generation, node.config_->program->item);
 			});
 		}
 		/// The program cannot run: the node fails start-failed "cannot start <name>: <why>"; nothing of it is left to wait

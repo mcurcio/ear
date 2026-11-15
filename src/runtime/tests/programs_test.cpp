@@ -8,6 +8,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -19,6 +20,7 @@
 extern "C" {
 #include <sys/pidfd.h>
 }
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -70,6 +72,30 @@ void killIfAlive(pid_t pid) {
 	::pidfd_send_signal(fd, SIGKILL, nullptr, 0);
 	::close(fd);
 }
+
+/// A POSIX shared-memory name of this test process's own (so parallel runs never share one), unlinked when it goes.
+class SharedMemory {
+public:
+	explicit SharedMemory(std::string_view what) : name_("/ear-programs-test-" + std::to_string(::getpid()) + "-") {
+		name_ += what;
+		::shm_unlink(name_.c_str()); // a crashed earlier run of this pid's
+	}
+	~SharedMemory() { ::shm_unlink(name_.c_str()); }
+	SharedMemory(const SharedMemory&) = delete;
+	SharedMemory& operator=(const SharedMemory&) = delete;
+	const std::string& name() const noexcept { return name_; }
+	void make() const {
+		const int fd = ::shm_open(name_.c_str(), O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, 0600);
+		REQUIRE(fd >= 0);
+		::close(fd);
+	}
+	void remove() const { REQUIRE(::shm_unlink(name_.c_str()) == 0); }
+
+private:
+	std::string name_;
+};
+
+bool saidReady(const RecordedProgram& program) { return !program.texts("stdout").empty(); }
 
 } // namespace
 
@@ -272,4 +298,102 @@ TEST_CASE("stop() reaches the program's whole process group: a child it started 
 	if (!died) killIfAlive(child);
 	CHECK(died);
 	CHECK((events.exit && events.exit->how == ProgramExit::How::killed));
+}
+
+TEST_CASE("A program needing a name that exists before its launch is told started, then ready", "[programs][needs]") {
+	asEarRuns();
+	ear::test::TempFolder folder("programs");
+	const SharedMemory shm("before");
+	shm.make();
+	ear::runtime::Programs programs;
+	RecordedProgram events;
+	ProgramLaunch launch = script(folder, "sleeps.sh");
+	launch.needs = {shm.name()};
+	const auto running = programs.launch(std::move(launch), events);
+	REQUIRE(events.until([](const RecordedProgram& program) { return program.isReady; }));
+	CHECK(events.isStarted);
+	running->stop();
+	REQUIRE(events.ended());
+	CHECK(events.exit == std::optional<ProgramExit>(ProgramExit{ProgramExit::How::killed, SIGTERM, ""}));
+}
+
+TEST_CASE("A program needing a name made after it started is told ready only once the name is made",
+          "[programs][needs]") {
+	asEarRuns();
+	ear::test::TempFolder folder("programs");
+	const SharedMemory shm("after");
+	ear::runtime::Programs programs;
+	RecordedProgram events;
+	ProgramLaunch launch = script(folder, "sleeps.sh");
+	launch.needs = {shm.name()};
+	const auto running = programs.launch(std::move(launch), events);
+	REQUIRE(events.until(saidReady)); // started, and running its script
+	CHECK(events.until([](const RecordedProgram& program) { return program.isStarted && !program.isReady; }));
+	shm.make();
+	REQUIRE(events.until([](const RecordedProgram& program) { return program.isReady; }));
+	running->stop();
+	REQUIRE(events.ended());
+	CHECK(events.exit->removed.empty());
+}
+
+TEST_CASE("A name a running program needs, once removed, ends it, and its end says which", "[programs][needs]") {
+	asEarRuns();
+	ear::test::TempFolder folder("programs");
+	const SharedMemory shm("removed");
+	shm.make();
+	ear::runtime::Programs programs;
+	RecordedProgram events;
+	ProgramLaunch launch = script(folder, "sleeps.sh");
+	launch.needs = {shm.name()};
+	const auto running = programs.launch(std::move(launch), events);
+	REQUIRE(events.until([](const RecordedProgram& program) { return program.isReady && saidReady(program); }));
+	shm.remove();
+	REQUIRE(events.ended());
+	REQUIRE(events.exit);
+	CHECK(events.exit->removed == shm.name());
+	CHECK(events.exit->how == ProgramExit::How::killed);
+	CHECK(events.exit->number == SIGTERM);
+}
+
+TEST_CASE("A program needing a name never made that exits is told exited, and never ready", "[programs][needs]") {
+	asEarRuns();
+	ear::test::TempFolder folder("programs");
+	const SharedMemory shm("never");
+	ear::runtime::Programs programs;
+	RecordedProgram events;
+	ProgramLaunch launch = script(folder, "exit3.sh");
+	launch.needs = {shm.name()};
+	const auto running = programs.launch(std::move(launch), events);
+	REQUIRE(events.ended());
+	CHECK(events.isStarted);
+	CHECK_FALSE(events.isReady);
+	REQUIRE(events.exit);
+	CHECK(*events.exit == ProgramExit{ProgramExit::How::exited, 3, "last words"});
+}
+
+TEST_CASE("A name removed after the program was stopped is no cause of its end", "[programs][needs][stop]") {
+	asEarRuns();
+	ear::test::TempFolder folder("programs");
+	const SharedMemory shm("stopped");
+	shm.make();
+	const std::string hold = (folder.path() / "hold").string();
+	REQUIRE(::mkfifo(hold.c_str(), 0600) == 0);
+	ear::runtime::Programs programs;
+	RecordedProgram events;
+	ProgramLaunch launch = script(folder, "term_waits.sh", {hold});
+	launch.needs = {shm.name()};
+	const auto running = programs.launch(std::move(launch), events);
+	REQUIRE(events.until([](const RecordedProgram& program) { return program.isReady && saidReady(program); }));
+	running->stop();
+	// Its "term" line: the stop was heard and the program holds, alive, until the test lets it go.
+	REQUIRE(events.until([](const RecordedProgram& program) { return program.texts("stdout").size() == 2; }));
+	shm.remove();
+	const int writer = ::open(hold.c_str(), O_WRONLY | O_CLOEXEC);
+	REQUIRE(writer >= 0);
+	REQUIRE(::write(writer, "go\n", 3) == 3);
+	::close(writer);
+	REQUIRE(events.ended());
+	REQUIRE(events.exit);
+	CHECK(events.exit->removed.empty());
+	CHECK(*events.exit == ProgramExit{ProgramExit::How::exited, 0, ""});
 }
