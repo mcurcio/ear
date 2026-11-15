@@ -89,6 +89,16 @@ struct SeenHandoff {
 	std::uint32_t capacityFrames;
 };
 
+/// One program a configuration launched (ProgramAdapter::launch on the harness's fake), in order, over every
+/// configuration: what NodeHost resolved for it, and what happened to it.
+struct ProgramFake {
+	ProgramLaunch launch;
+	bool started = false;   // told started: at its launch, or with holdPrograms at programStarted
+	bool stopped = false;   // RunningProgram::stop was called: its teardown began
+	bool ended = false;     // told refused or exited
+	bool destroyed = false; // its RunningProgram was destroyed (teardown step 5)
+};
+
 /// How a lost cycle was lost, for NodeHarness::loseCycles (docs/writing-a-node-type.md#lost-cycles).
 enum class Lost : std::uint8_t {
 	cut,          // the driver cut it short: a stall of the graph
@@ -116,6 +126,12 @@ struct HarnessOptions {
 	/// The I/O executor's jobs (a store's open and writes, a recording's open and close) run only at runIo(), not as
 	/// each call settles.
 	bool holdIo = false;
+	/// Each program is told started only at programStarted(index), not at its launch; and a program stopped is told
+	/// exited only at programExited(index, ...), not at once (killed by SIGTERM, as the real one is).
+	bool holdPrograms = false;
+	/// The host's runtime folder (ResourceAdapters::runtimeFolder), which every runtime path the harness resolves
+	/// begins with; empty: none, and pipe receivers and programs are refused "no runtime folder in this host".
+	std::string runtimeFolder = "/ear-runtime";
 };
 /// How add() adds the node.
 struct AddOptions {
@@ -318,6 +334,21 @@ public:
 	/// recording), in order, whether or not the folder opened it.
 	const std::vector<SeenHandoff>& handoffs() const noexcept;
 	const std::vector<RecordingRequest>& recordingRequests() const noexcept;
+
+	// Programs (docs/writing-a-node-type.md#programs), on a fake adapter: launched when the framework asks, each told
+	// only what the harness options and the test say, on the test's thread, as the real adapter's thread would.
+	/// Every program launched, in order, over every configuration.
+	const std::vector<ProgramFake>& programs() const noexcept;
+	/// With holdPrograms: program `index` is told started. std::logic_error when it was told anything already.
+	void programStarted(std::size_t index = 0);
+	/// Program `index` is told refused with `why` instead of started.
+	void programRefused(std::size_t index, std::string why);
+	/// Program `index`'s report feed delivers `bytes` (at most programFeedChunkBytes); std::logic_error before started.
+	void feedProgram(std::size_t index, std::string bytes);
+	/// Program `index` writes `line` on its standard output (info) or error (warn), as the adapter tells it.
+	void programSays(std::size_t index, LogLevel level, std::string line);
+	/// Program `index` is reaped, ending as `exit` says.
+	void programExited(std::size_t index, ProgramExit exit);
 
 private:
 	struct Impl;

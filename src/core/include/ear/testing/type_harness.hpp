@@ -55,6 +55,15 @@ public:
 	void pipeRecording(std::string_view path) { node_->pipeRecording(path); }
 	std::size_t openRecordings() const { return node_->openRecordings(); }
 
+	const std::vector<ProgramFake>& programs() const noexcept { return node_->programs(); }
+	void programStarted(std::size_t index = 0) { node_->programStarted(index); }
+	void programRefused(std::size_t index, std::string why) { node_->programRefused(index, std::move(why)); }
+	void feedProgram(std::size_t index, std::string bytes) { node_->feedProgram(index, std::move(bytes)); }
+	void programSays(std::size_t index, LogLevel level, std::string line) {
+		node_->programSays(index, level, std::move(line));
+	}
+	void programExited(std::size_t index, ProgramExit exit) { node_->programExited(index, std::move(exit)); }
+
 	void runLoops() { node_->runLoops(); }
 	void loopsReady() { node_->loopsReady(); }
 	void readable(int fd) { node_->readable(fd); }

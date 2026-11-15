@@ -36,6 +36,7 @@ target_sources(ear_pipewire PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/pipewire/live_graph.hpp
 	include/ear/pipewire/main_loop_executor.hpp
 	include/ear/pipewire/module_converters.hpp
+	include/ear/pipewire/pipe_receivers.hpp
 	include/ear/pipewire/port_blocks.hpp
 	include/ear/pipewire/rtp_receivers.hpp
 	include/ear/pipewire/sound_cards.hpp

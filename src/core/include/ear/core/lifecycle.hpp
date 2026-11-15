@@ -49,6 +49,7 @@
 #include "ear/core/companions.hpp"
 #include "ear/core/loop.hpp"
 #include "ear/core/node_type.hpp"
+#include "ear/core/program.hpp"
 #include "ear/core/recording.hpp"
 #include "ear/core/sink.hpp"
 #include "ear/core/source.hpp"
@@ -399,6 +400,27 @@ public:
 	/// holds fails the node start-failed before anything of it is opened or started.
 	void claim(claim::TcpListen port) { context_->claim(claim::of(port)); }
 	void claim(claim::Udp port) { context_->claim(claim::of(port)); }
+	/// A listening TCP port nobody holds, picked by the framework at the first readiness step (claim::AnyTcp): its
+	/// handle, which names the port in a program's arguments or files (part::Port) before it is picked.
+	GrantedPort claim(claim::AnyTcp port);
+
+	/// A pipe receiver on an inside input bank (docs/writing-a-node-type.md#engine-companions): an engine companion,
+	/// `<node>.pipe`, reading a FIFO the framework names, which a program of the configuration writes (fifoOf). Its
+	/// module's fixed buffer is latency beyond the bank (moduleRunDelay); never faded.
+	template <class Bank> void pipeReceiver(Bank, PipeReceiverShape shape);
+	/// The FIFO of the pipe receiver this configuration asked for on `Bank`, as a part of a program's argument or file.
+	/// A bank the spec lacks, or one that is not an inside input bank, does not compile; one with no pipe receiver by
+	/// configure's return fails the node start-failed "configure gave program <name> the FIFO of bank <bank>, which has
+	/// no pipe receiver".
+	template <class Bank> part::Fifo fifoOf(Bank) const;
+
+	/// A program (docs/writing-a-node-type.md#programs), started once every companion is ready, with no report feed.
+	void program(ProgramShape shape);
+	/// A program whose report feed (part::Feed in its arguments or files) reaches loop `Handle`'s state: `onFeed`
+	/// called on the loop's thread with each chunk read, in order, from the node's configuring on (staged until the
+	/// node is configured, as every post is). A loop the spec lacks, or one declared without a state, does not compile.
+	template <class Handle>
+	void program(ProgramShape shape, Handle, void (Handle::State::*onFeed)(std::string_view bytes));
 
 private:
 	template <const auto&, class> friend class spec_detail::SpecInstance;

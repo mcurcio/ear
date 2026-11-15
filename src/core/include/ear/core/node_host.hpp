@@ -21,6 +21,7 @@
 #include "ear/core/log.hpp"
 #include "ear/core/loop.hpp"
 #include "ear/core/node_lifecycle.hpp"
+#include "ear/core/program.hpp"
 #include "ear/core/recording.hpp"
 #include "ear/core/sink.hpp"
 #include "ear/core/source.hpp"
@@ -251,6 +252,14 @@ struct ResourceAdapters {
 	/// The ports' probe (docs/writing-a-node-type.md#claims); null: a port claim is judged between the host's nodes
 	/// only, never against the kernel (a test's host).
 	PortProbe* ports = nullptr;
+	/// The pipe receivers' adapter (docs/engine.md#pipe-receivers); null: the host has none.
+	PipeReceiverCompanions* pipeReceivers = nullptr;
+	/// The programs' adapter (docs/writing-a-node-type.md#programs); null: the host has none.
+	ProgramAdapter* programs = nullptr;
+	/// Where every configuration's runtime files go (runtimePath: a pipe receiver's FIFO, a program's feed and files):
+	/// ear's runtime folder, main.cpp's (docs/architecture.md#boot-and-stop). Empty: the host has none, and a pipe
+	/// receiver or a program is refused at its call, "no runtime folder in this host".
+	std::string runtimeFolder{};
 };
 /// The resource registry (docs/writing-a-node-type.md#configure-and-createof): one adapter per kind of companion and
 /// of ResourceRequest, so a new kind is one adapter here and nothing more in NodeHost's constructor. A kind the host
@@ -285,6 +294,11 @@ public:
 	StoreAdapter* stores() const noexcept { return adapters_.stores; }
 	/// The ports' probe (claims); null: the host probes no port.
 	PortProbe* ports() const noexcept { return adapters_.ports; }
+	PipeReceiverCompanions* adapterFor(const PipeReceiverShape&) const noexcept { return adapters_.pipeReceivers; }
+	/// The programs' adapter (CreateOf::program; docs/writing-a-node-type.md#programs); null: the host has none.
+	ProgramAdapter* programs() const noexcept { return adapters_.programs; }
+	/// ear's runtime folder; empty: the host has none.
+	const std::string& runtimeFolder() const noexcept { return adapters_.runtimeFolder; }
 
 private:
 	ResourceAdapters adapters_;

@@ -65,6 +65,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/node_lifecycle.hpp
 	include/ear/core/node_type.hpp
 	include/ear/core/pass_through.hpp
+	include/ear/core/program.hpp
 	include/ear/core/rate_text.hpp
 	include/ear/core/ready_events.hpp
 	include/ear/core/reconciler.hpp

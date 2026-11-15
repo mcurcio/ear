@@ -18,6 +18,7 @@ target_sources(ear_runtime PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/runtime/io_thread.hpp
 	include/ear/runtime/loops.hpp
 	include/ear/runtime/port_probe.hpp
+	include/ear/runtime/programs.hpp
 	include/ear/runtime/recordings.hpp
 	include/ear/runtime/stores.hpp)
 set_target_properties(ear_runtime PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)
