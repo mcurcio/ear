@@ -1,7 +1,8 @@
 // What a program finds when it starts, printed one fact a line for programs_test.cpp: its environment ("env <entry>"),
 // its working folder ("cwd <path>"), what its standard input is ("stdin <target>"), each descriptor it holds ("fd <n>",
-// leaving out the one it reads /proc/self/fd through) and its signal mask and ignored set (/proc/self/status's SigBlk and
-// SigIgn lines). A compiled program, not a script, so no shell's own descriptors or signals stand in the way.
+// leaving out the one it reads /proc/self/fd through), its argv[0] ("argv0 <text>"), and its signal mask, ignored set
+// and no_new_privs flag (/proc/self/status's SigBlk, SigIgn and NoNewPrivs lines). A compiled program, not a script, so
+// no shell's own descriptors or signals stand in the way.
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -13,7 +14,8 @@
 
 extern char** environ;
 
-int main() {
+int main(int, char** argv) {
+	std::printf("argv0 %s\n", argv[0]);
 	for (char** entry = environ; *entry != nullptr; ++entry) std::printf("env %s\n", *entry);
 	char cwd[PATH_MAX];
 	if (::getcwd(cwd, sizeof cwd) != nullptr) std::printf("cwd %s\n", cwd);
@@ -34,6 +36,7 @@ int main() {
 	::closedir(fds);
 	std::ifstream status("/proc/self/status");
 	for (std::string line; std::getline(status, line);)
-		if (line.starts_with("SigBlk:") || line.starts_with("SigIgn:")) std::printf("%s\n", line.c_str());
+		if (line.starts_with("SigBlk:") || line.starts_with("SigIgn:") || line.starts_with("NoNewPrivs:"))
+			std::printf("%s\n", line.c_str());
 	return 0;
 }

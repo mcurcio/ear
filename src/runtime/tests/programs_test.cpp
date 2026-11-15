@@ -3,6 +3,7 @@
 // compiled probe beside it; each test first blocks and ignores signals as ear does (asEarRuns), since Programs' thread,
 // started by the first launch, inherits its launcher's mask, and what a program must not inherit has to be there to be
 // inherited. Every wait is event-gated: a test waits for the event it needs, and a deadline only fails it.
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <optional>
@@ -151,6 +152,32 @@ TEST_CASE("A program's feed bytes arrive in order across a writer that closes an
 	CHECK(events.feed == "onetwothree");
 }
 
+TEST_CASE("A program's feed bytes are told while it runs, not only at its end", "[programs]") {
+	asEarRuns();
+	ear::test::TempFolder folder("programs");
+	ear::runtime::Programs programs;
+	RecordedProgram events;
+	const std::string feed = (folder.path() / "air.1.feed").string();
+	// The program holds until this FIFO is written, which the test does only once the feed's bytes were told.
+	const std::string release = (folder.path() / "release").string();
+	REQUIRE(::mkfifo(release.c_str(), 0600) == 0);
+	ProgramLaunch launch = script(folder, "feed_holds.sh", {feed, release});
+	launch.feed = feed;
+	const auto running = programs.launch(std::move(launch), events);
+	const bool toldLive = events.until([](const RecordedProgram& program) { return program.feed == "live"; });
+	const bool stillRunning = events.until([](const RecordedProgram& program) { return !program.exit; });
+	{
+		const int writer = ::open(release.c_str(), O_WRONLY | O_CLOEXEC); // the program reads it: never blocks long
+		REQUIRE(writer >= 0);
+		REQUIRE(::write(writer, "\n", 1) == 1);
+		::close(writer);
+	}
+	REQUIRE(events.ended());
+	CHECK(toldLive);
+	CHECK(stillRunning);
+	CHECK(events.feed == "live");
+}
+
 TEST_CASE("A program's files are mode 0600 with their text before it runs, and they and its feed are gone before it "
           "is told exited",
           "[programs]") {
@@ -198,8 +225,8 @@ TEST_CASE("A missing executable is refused in the kernel's words, with nothing l
 	CHECK(std::filesystem::is_empty(folder.path()));
 }
 
-TEST_CASE("A program runs with PATH alone, the folder as its working folder, /dev/null as standard input and "
-          "descriptors 0 to 2 only",
+TEST_CASE("A program runs with PATH alone, the folder as its working folder, /dev/null as standard input, "
+          "descriptors 0 to 2 only and its executable's path as its argv[0]",
           "[programs]") {
 	asEarRuns();
 	ear::test::TempFolder folder("programs");
@@ -220,7 +247,9 @@ TEST_CASE("A program runs with PATH alone, the folder as its working folder, /de
 	std::set<std::string> fds;
 	std::optional<std::string> cwd;
 	std::optional<std::string> stdinTarget;
+	std::optional<std::string> argv0;
 	for (const std::string& line : events.texts("stdout")) {
+		if (line.starts_with("argv0 ")) argv0 = line.substr(6);
 		if (line.starts_with("env ")) env.push_back(line.substr(4));
 		if (line.starts_with("fd ")) fds.insert(line.substr(3));
 		if (line.starts_with("cwd ")) cwd = line.substr(4);
@@ -230,9 +259,12 @@ TEST_CASE("A program runs with PATH alone, the folder as its working folder, /de
 	CHECK(cwd == std::filesystem::canonical(folder.path()).string());
 	CHECK(stdinTarget == std::optional<std::string>("/dev/null"));
 	CHECK(fds == std::set<std::string>{"0", "1", "2"});
+	// setpriv executes the path, so the launch's argv[0] (its name, its lines' source) is not what the program sees.
+	CHECK(argv0 == std::optional<std::string>(EAR_PROGRAMS_PROBE));
 }
 
-TEST_CASE("A program starts with no signal blocked or ignored, though its launcher blocks and ignores some",
+TEST_CASE("A program starts with no signal blocked or ignored, though its launcher blocks and ignores some, and with "
+          "no_new_privs set",
           "[programs]") {
 	asEarRuns();
 	ear::test::TempFolder folder("programs");
@@ -247,6 +279,8 @@ TEST_CASE("A program starts with no signal blocked or ignored, though its launch
 	for (const std::string& line : events.texts("stdout"))
 		if (line.starts_with("Sig")) signals.push_back(line);
 	CHECK(signals == std::vector<std::string>{"SigBlk:\t0000000000000000", "SigIgn:\t0000000000000000"});
+	const std::vector<std::string> out = events.texts("stdout");
+	CHECK(std::ranges::find(out, "NoNewPrivs:\t1") != out.end());
 }
 
 TEST_CASE("stop() ends a sleeping program with SIGTERM", "[programs][stop]") {
@@ -298,6 +332,50 @@ TEST_CASE("stop() reaches the program's whole process group: a child it started 
 	if (!died) killIfAlive(child);
 	CHECK(died);
 	CHECK((events.exit && events.exit->how == ProgramExit::How::killed));
+}
+
+TEST_CASE("A child that ignores SIGTERM dies with the program that obeyed it: nothing of the group outlives its leader",
+          "[programs][stop]") {
+	asEarRuns();
+	ear::test::TempFolder folder("programs");
+	ear::runtime::Programs programs;
+	RecordedProgram events;
+	const auto running = programs.launch(script(folder, "stubborn_child.sh"), events);
+	std::string said;
+	REQUIRE(events.until([&](const RecordedProgram& program) {
+		const auto out = program.texts("stdout");
+		if (!out.empty()) said = out.front();
+		return !out.empty();
+	}));
+	const pid_t child = std::stoi(said);
+	running->stop();
+	REQUIRE(events.ended());
+	CHECK(events.exit == std::optional<ProgramExit>(ProgramExit{ProgramExit::How::killed, SIGTERM, ""}));
+	const bool died = diesWithin(child, 5s);
+	if (!died) killIfAlive(child);
+	CHECK(died);
+}
+
+TEST_CASE("A program and its child that both ignore SIGTERM are both killed once programTermBound has passed",
+          "[programs][stop]") {
+	asEarRuns();
+	ear::test::TempFolder folder("programs");
+	ear::runtime::Programs programs;
+	RecordedProgram events;
+	const auto running = programs.launch(script(folder, "ignores_term_with_child.sh"), events);
+	std::string said;
+	REQUIRE(events.until([&](const RecordedProgram& program) {
+		const auto out = program.texts("stdout");
+		if (!out.empty()) said = out.front();
+		return !out.empty();
+	}));
+	const pid_t child = std::stoi(said);
+	running->stop();
+	REQUIRE(events.ended(10s));
+	CHECK(events.exit == std::optional<ProgramExit>(ProgramExit{ProgramExit::How::killed, SIGKILL, ""}));
+	const bool died = diesWithin(child, 5s);
+	if (!died) killIfAlive(child);
+	CHECK(died);
 }
 
 TEST_CASE("A program needing a name that exists before its launch is told started, then ready", "[programs][needs]") {

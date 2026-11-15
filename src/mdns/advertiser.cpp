@@ -189,15 +189,26 @@ std::chrono::milliseconds firstProbeWait() {
 
 } // namespace
 
+std::string hostLabelOf(std::string_view text) {
+	std::string label(text);
+	for (char& c : label)
+		if (!isLetterOrDigit(c) && c != '-') c = '-';
+	if (label.size() > maxLabelBytes) label.resize(maxLabelBytes);
+	const auto first = label.find_first_not_of('-');
+	if (first == std::string::npos) return "ear";
+	return label.substr(first, label.find_last_not_of('-') - first + 1);
+}
+
 std::optional<std::string> listingRefused(const Listing& listing) {
 	if (!validService(listing.service))
 		return "a service is _<name>._tcp or _<name>._udp, its name letters, digits and -";
 	if (listing.instance.empty() || listing.instance.size() > maxLabelBytes || !printableUtf8(listing.instance) ||
 	    listing.instance.find('.') != std::string::npos)
 		return "an instance is 1 to 63 bytes of UTF-8, no control character and no .";
-	if (listing.host.empty() || listing.host.size() > maxLabelBytes ||
-	    !std::ranges::all_of(listing.host, [](char c) { return isLetterOrDigit(c) || c == '-' || c == '_'; }))
-		return "a host is 1 to 63 of letters, digits, - and _";
+	if (listing.host.empty() || listing.host.size() > maxLabelBytes || listing.host.front() == '-' ||
+	    listing.host.back() == '-' ||
+	    !std::ranges::all_of(listing.host, [](char c) { return isLetterOrDigit(c) || c == '-'; }))
+		return "a host is 1 to 63 of letters, digits and -, not starting or ending with -";
 	if (listing.port == 0) return "a port is 1 to 65535";
 	return txtRefused(listing.txt);
 }

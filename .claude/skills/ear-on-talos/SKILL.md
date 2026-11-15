@@ -194,6 +194,12 @@ machine:
   check `kubectl logs --previous` after a restart if an edit seems lost.
 - Recordings: `file` nodes write only beneath `/var/lib/ear/recordings` (their `path` is relative
   to it); mount a volume there writable by uid 10001 (for example `fsGroup: 10001`) to keep them.
+- The runtime folder: at every start, whatever the graph holds, ear makes a fresh `ear-XXXXXX` (mode
+  0700) for programs' and pipe receivers' files (an `airplay` node's FIFO, feed and config) inside
+  `$TMPDIR`, else `/tmp`, or the folder `--runtime-dir` names (`docs/architecture.md#boot-and-stop`).
+  With `readOnlyRootFilesystem: true` mount a writable `emptyDir` at `/tmp` (or give `--runtime-dir` one),
+  or ear exits 1 at boot: `runtime folder /tmp/ear-XXXXXX: Read-only file system`. The path may hold only
+  letters, digits and `_ . / -`.
 
 ### Upgrading past the `graph { }` change
 

@@ -19,8 +19,9 @@ namespace {
 /// output ports "capture_<position>" (impl-port.c), and its positions are AUX0...
 std::string capturePort(std::size_t channel) { return "capture_AUX" + std::to_string(channel); }
 
-/// The FIFO's path, quoted for the module's parser. It is ear's own (runtimePath beneath the runtime folder), so a
-/// character outside [A-Za-z0-9_./-] is ear's bug, never a user's text reaching PipeWire's parser.
+/// The FIFO's path, quoted for the module's parser. It is ear's own (runtimePath beneath the runtime folder, whose path
+/// boot refuses unless it is all [A-Za-z0-9_./-]: docs/architecture.md#boot-and-stop), so any other character is ear's
+/// bug, never a user's text reaching PipeWire's parser.
 std::string quotedFifo(const std::string& fifo) {
 	if (fifo.empty() || fifo.front() != '/') throw std::logic_error("a pipe receiver's FIFO is an absolute path");
 	for (const char c : fifo) {

@@ -1096,7 +1096,8 @@ channel, in either shape a type asks for: S16LE (`airplay`'s AirPlay 1, at 44.1 
 graph's rate) or S32LE (its AirPlay 2, at 48 kHz, which a 48 kHz graph takes unresampled), each tested
 channel for channel in `module_converter_test.cpp`. Its arguments are built in one place from closed values only (a `PipeFormat`, a
 `SampleRate`, the bank's channel count, the engine node's name and the FIFO's path, which is ear's
-own, `[A-Za-z0-9_./-]`, refused with `std::logic_error` otherwise): the `pipe receiver` and `pipe
+own, `[A-Za-z0-9_./-]` since boot refuses a runtime folder whose path is not, and refused with
+`std::logic_error` otherwise): the `pipe receiver` and `pipe
 stream` rows of [the table](#properties-ear-sets), which say why each. Its node is an `Audio/Source`
 stream, `<node>.pipe`, whose ports are `capture_AUX<n>`; its words are `pipe receiver` and
 `pipe-tunnel`, and its body's callbacks are `PipeReceiverBody::...`.
@@ -1121,7 +1122,8 @@ stream, `<node>.pipe`, whose ports are `capture_AUX<n>`; its words are `pipe rec
 logged by PipeWire:
 
 - **The FIFO is open to every writer** (mode 0666, whatever ear's umask): only the runtime folder's
-  own mode (0700, ear's) keeps other users out.
+  own mode keeps other users out, which is why ear always makes that folder itself (mode 0700),
+  inside any folder given ([architecture.md](architecture.md#boot-and-stop)).
 - **A writer that stops, or has not started, is not a failure.** At an underrun the module plays
   silence (`underrun` in PipeWire's log) and, with `tunnel.may-pause` false, keeps its stream
   running: the receiver stays ready and its channels go silent. When the writer comes back the

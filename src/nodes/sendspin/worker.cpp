@@ -192,7 +192,7 @@ void Worker::startListening(std::string_view clientId) {
 	auto advertiser =
 		ear::mdns::Advertiser::open(ear::mdns::Listing{.service = "_sendspin._tcp",
 	                                                   .instance = instance,
-	                                                   .host = instance,
+	                                                   .host = ear::mdns::hostLabelOf(instance),
 	                                                   .port = settings_.port,
 	                                                   .txt = {"path=/sendspin", "name=" + settings_.name}});
 	if (!advertiser) {

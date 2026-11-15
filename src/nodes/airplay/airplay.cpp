@@ -62,13 +62,15 @@ std::optional<SpeakerName> SpeakerName::parse(std::string_view text) {
 	return SpeakerName(std::string(text));
 }
 
-std::string hostLabelOf(std::string_view node) {
-	constexpr std::size_t labelBytes = 63;
-	std::string label = "ear-" + std::string(node);
-	std::ranges::replace(label, '_', '-');
-	if (label.size() > labelBytes) label.resize(labelBytes);
-	return label;
+SpeakerName SpeakerName::defaultFor(std::string_view node) {
+	constexpr std::size_t most = 50;
+	auto name = parse(node.substr(0, most));
+	// A node's name is [A-Za-z0-9_-] (docs/control-port.md#error-codes), all of which a speaker name holds.
+	if (!name) throw std::logic_error("SpeakerName::defaultFor: node " + std::string(node) + " makes no speaker name");
+	return *std::move(name);
 }
+
+std::string hostLabelOf(std::string_view node) { return mdns::hostLabelOf("ear-" + std::string(node)); }
 
 DeviceId DeviceId::of(std::string_view host, std::string_view node) {
 	constexpr std::uint64_t low48 = (std::uint64_t{1} << 48U) - 1;
@@ -114,8 +116,8 @@ std::vector<ProgramPart> configText(part::Fifo fifo, const Protocol& protocol) {
 		           "\"; };\n";
 	else general += "\"classic\"; ignore_volume_control = \"yes\"; udp_port_base = 0; };\n";
 	const PipeReceiverShape shape = pipeShapeOf(protocol);
-	return {part::Text{general + "metadata = { enabled = \"yes\"; pipe_name = \""}, part::Feed{},
-	        part::Text{"\"; };\npipe = { name = \""}, std::move(fifo),
+	return {part::Text{general + "metadata = { enabled = \"yes\"; include_cover_art = \"no\"; pipe_name = \""},
+	        part::Feed{}, part::Text{"\"; };\npipe = { name = \""}, std::move(fifo),
 	        part::Text{"\"; output_format = \"" + std::string(formatName(shape.format)) + "\"; output_rate = " +
 	                   std::to_string(FrameClock(shape.rate).frames(std::chrono::seconds(1))) + "; };\n"}};
 }
@@ -129,19 +131,16 @@ Configured Airplay::configure(CreateOf<spec>& cx, const Checked& s) {
 	cx.pipeReceiver(fromAirplay, pipeShapeOf(protocol));
 	const GrantedPort rtsp = cx.claim(claim::AnyTcp{});
 	cx.loop(reports, std::make_unique<Reports>(node_.handle(), cx.executor(reports), hostLabelOf(cx.node())));
-	const std::optional<SpeakerName> name = s.get<nameRow>();
-	cx.program(
-		ProgramShape{
-			.executable = shairportSync,
-			.args =
-				{"-c", {part::File{"config"}}, "--name", name ? name->text() : cx.node(), "--port", {part::Port{rtsp}}},
-			.files = {{"config", configText(cx.fifoOf(fromAirplay), protocol)}},
-			// shairport-sync never notices nqptp leaving, so ear ends it when its channel goes
-			// (docs/writing-a-node-type.md#programs).
-			.needs = std::holds_alternative<Airplay2>(protocol)
-	                     ? std::vector<SharedMemoryName>{std::get<Airplay2>(protocol).channel}
-	                     : std::vector<SharedMemoryName>{}},
-		reports, &Reports::onFeed);
+	const SpeakerName name = s.get<nameRow>().value_or(SpeakerName::defaultFor(cx.node()));
+	cx.program(ProgramShape{.executable = shairportSync,
+	                        .args = {"-c", {part::File{"config"}}, "--name", name.text(), "--port", {part::Port{rtsp}}},
+	                        .files = {{"config", configText(cx.fifoOf(fromAirplay), protocol)}},
+	                        // shairport-sync never notices nqptp leaving, so ear ends it when its channel goes
+	                        // (docs/writing-a-node-type.md#programs).
+	                        .needs = std::holds_alternative<Airplay2>(protocol)
+	                                     ? std::vector<SharedMemoryName>{std::get<Airplay2>(protocol).channel}
+	                                     : std::vector<SharedMemoryName>{}},
+	           reports, &Reports::onFeed);
 	cx.use(passThrough({bankPair(fromAirplay, out)}));
 	return Configured::applied();
 }

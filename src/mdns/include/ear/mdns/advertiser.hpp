@@ -20,8 +20,8 @@ struct Listing {
 	std::string service; // "_raop._tcp", "_sendspin._tcp": "_<name>._tcp" or "_<name>._udp", no ".local"
 	// Its instance label: 1 to 63 bytes of UTF-8, no control character and no '.' (mjansson/mdns splits names at dots).
 	std::string instance;
-	// The label of the host its SRV and A records name: 1 to 63 of [A-Za-z0-9_-] ("_" for sendspin's, which carries
-	// the start of a base64url client id and a node name).
+	// The label of the host its SRV and A records name: a DNS host name's label (RFC 1123), 1 to 63 of letters, digits
+	// and '-', not starting or ending with '-'. hostLabelOf makes one from any text.
 	std::string host;
 	std::uint16_t port = 0; // 1-65535
 	// Each "key=value", 1 to 255 bytes, its key (up to the first "=") 1 or more of printable ASCII. mjansson/mdns writes
@@ -29,6 +29,10 @@ struct Listing {
 	std::vector<std::string> txt;
 	friend bool operator==(const Listing&, const Listing&) = default;
 };
+
+/// A host label made of `text` (a node's name, a client id): each character not a letter, digit or '-' becomes '-',
+/// then cut to 63 bytes with no '-' at either end; "ear" if nothing is left. The one place a host label is made.
+std::string hostLabelOf(std::string_view text);
 
 /// Why `listing` cannot be announced (the first rule above it breaks, in words), else nothing: the one check, which
 /// Advertiser::open and update apply and a caller may apply first.

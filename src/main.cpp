@@ -7,9 +7,10 @@
 // (docs/output-records.md): from then on everything on standard output is one JSON record a line, from the one encoder
 // (StatusLog), written by the output thread. Stopping closes the graph to edits, stops the keeper taking edits, stops
 // every node, then closes the control port, stops the control thread and ends the main loop; the keeper's last write
-// runs as its thread is joined, the I/O thread stops last, a runtime folder ear made is removed, and the record
+// runs as its thread is joined, the I/O thread stops last, the runtime folder ear made is removed, and the record
 // `ear: stopped` ends the stop.
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -151,27 +152,39 @@ private:
 	std::unique_ptr<ear::Timer> timer_;
 };
 
-/// The folder for programs' and pipe receivers' runtime files (docs/architecture.md#boot-and-stop): the one given,
-/// which must exist and is used as is, or a fresh one ear makes (mkdtemp: mode 0700) and removes at stop.
+/// The folder for programs' and pipe receivers' runtime files (docs/architecture.md#boot-and-stop): always a fresh
+/// ear-XXXXXX that ear makes (mkdtemp: mode 0700, ear's own) inside the folder given, else $TMPDIR or /tmp, and removes
+/// at stop. Making it every boot is what keeps the pipe receiver's FIFO (open to every writer) behind a mode only ear
+/// set, and a crashed run's files out of the next run's names, whatever the given folder's owner, mode or contents.
+/// Its path is written into the pipe module's arguments and a program's config text unescaped, so a path holding a
+/// character outside [A-Za-z0-9_./-] is refused here, the operator's input, before any node could fail on it.
 struct RuntimeFolder {
 	std::filesystem::path path;
-	bool made = false;
 };
 
 std::expected<RuntimeFolder, std::string> runtimeFolder(const std::optional<std::string>& given) {
-	if (given) {
-		std::error_code error;
-		if (!std::filesystem::is_directory(*given, error))
-			return std::unexpected("runtime folder " + *given + ": " +
-			                       (error ? error.message() : std::string("not a folder that exists")));
-		return RuntimeFolder{std::filesystem::absolute(*given), false};
-	}
 	const char* tmp = std::getenv("TMPDIR");
-	std::string pattern =
-		(std::filesystem::path(tmp != nullptr && *tmp != '\0' ? tmp : "/tmp") / "ear-XXXXXX").string();
+	const std::filesystem::path parent =
+		given ? std::filesystem::path(*given) : std::filesystem::path(tmp != nullptr && *tmp != '\0' ? tmp : "/tmp");
+	std::error_code error;
+	const std::filesystem::path absolute = std::filesystem::absolute(parent, error);
+	if (error) return std::unexpected("runtime folder " + parent.string() + ": " + error.message());
+	const std::string text = absolute.string();
+	const auto allowed = [](char c) {
+		return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '.' ||
+		       c == '/' || c == '-';
+	};
+	if (!std::ranges::all_of(text, allowed))
+		return std::unexpected("runtime folder " + text +
+		                       ": its path may hold only letters, digits and _ . / - (it is written into the pipe "
+		                       "module's arguments and programs' configs)");
+	if (!std::filesystem::is_directory(absolute, error))
+		return std::unexpected("runtime folder " + text + ": " +
+		                       (error ? error.message() : std::string("not a folder that exists")));
+	std::string pattern = (absolute / "ear-XXXXXX").string();
 	if (::mkdtemp(pattern.data()) == nullptr)
 		return std::unexpected("runtime folder " + pattern + ": " + std::strerror(errno));
-	return RuntimeFolder{pattern, true};
+	return RuntimeFolder{pattern};
 }
 
 } // namespace
@@ -195,8 +208,8 @@ int main(int argc, char** argv) {
 		"the folder file nodes write into (made if missing, not its parents); their paths are "
 		"relative to it")(
 		"runtime-dir", po::value<std::string>(),
-		"the folder for programs' and pipe receivers' runtime files (FIFOs, configs); default: a fresh ear-XXXXXX in "
-		"$TMPDIR or /tmp, removed at stop");
+		"the folder in which ear makes its runtime folder for programs' and pipe receivers' files (FIFOs, configs): a "
+		"fresh ear-XXXXXX, removed at stop; default: $TMPDIR or /tmp");
 
 	po::variables_map arguments;
 	try {
@@ -300,9 +313,9 @@ int main(int argc, char** argv) {
 		log.exiting(1, runtime.error());
 		return 1;
 	}
-	// A folder ear made goes again at every exit from here on; a given one is the operator's.
+	// The folder ear made goes again at every exit from here on.
 	const auto removeRuntime = [&] {
-		if (!runtime->made || ::rmdir(runtime->path.c_str()) == 0) return;
+		if (::rmdir(runtime->path.c_str()) == 0) return;
 		const int error = errno;
 		log.log(
 			{.level = ear::LogLevel::warn,

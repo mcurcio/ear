@@ -249,12 +249,13 @@ TEST_CASE("The program is shairport-sync with its config, the speaker name and t
 	                                              "Kitchen", "--port", "49152"});
 	REQUIRE(launch.files.size() == 1);
 	CHECK(launch.files[0].first == "/ear-runtime/kitchen.1.config");
-	CHECK(launch.files[0].second ==
-	      "general = { mdns_backend = \"metadata\"; output_backend = \"pipe\"; service_type = \"classic\"; "
-	      "ignore_volume_control = \"yes\"; udp_port_base = 0; };\n"
-	      "metadata = { enabled = \"yes\"; pipe_name = \"/ear-runtime/kitchen.1.feed\"; };\n"
-	      "pipe = { name = \"/ear-runtime/kitchen.1.from_airplay.fifo\"; output_format = \"S16_LE\"; "
-	      "output_rate = 44100; };\n");
+	CHECK(
+		launch.files[0].second ==
+		"general = { mdns_backend = \"metadata\"; output_backend = \"pipe\"; service_type = \"classic\"; "
+		"ignore_volume_control = \"yes\"; udp_port_base = 0; };\n"
+		"metadata = { enabled = \"yes\"; include_cover_art = \"no\"; pipe_name = \"/ear-runtime/kitchen.1.feed\"; };\n"
+		"pipe = { name = \"/ear-runtime/kitchen.1.from_airplay.fifo\"; output_format = \"S16_LE\"; "
+		"output_rate = 44100; };\n");
 	CHECK(launch.feed == std::optional<std::string>("/ear-runtime/kitchen.1.feed"));
 	CHECK(launch.needs.empty());
 }
@@ -272,7 +273,8 @@ TEST_CASE("With airplay2 the config sets AirPlay 2 outright with the node's devi
 	      "ignore_volume_control = \"yes\"; udp_port_base = 0; airplay_device_id = " +
 	          deviceId +
 	          "; nqptp_shared_memory_interface_name = \"/ear-kitchen\"; };\n"
-	          "metadata = { enabled = \"yes\"; pipe_name = \"/ear-runtime/kitchen.1.feed\"; };\n"
+	          "metadata = { enabled = \"yes\"; include_cover_art = \"no\"; pipe_name = "
+	          "\"/ear-runtime/kitchen.1.feed\"; };\n"
 	          "pipe = { name = \"/ear-runtime/kitchen.1.from_airplay.fifo\"; output_format = \"S32_LE\"; "
 	          "output_rate = 48000; };\n");
 	CHECK(launch.needs == std::vector<std::string>{"/ear-kitchen"});
@@ -333,6 +335,20 @@ TEST_CASE("With no name setting the speaker goes by the node's name", "[airplay]
 	running(h);
 	const auto& argv = h.programs().at(0).launch.argv;
 	CHECK(std::ranges::find(argv, "--name")[1] == "porch");
+}
+
+TEST_CASE("With no name setting a node name over 50 bytes is cut to 50, so its instance can be listed",
+          "[airplay][program]") {
+	const std::string node = std::string(50, 'k') + "_and_more_too";
+	Harness h({.node = node});
+	running(h);
+	const auto& argv = h.programs().at(0).launch.argv;
+	CHECK(std::ranges::find(argv, "--name")[1] == std::string(50, 'k'));
+	CHECK(airplay::SpeakerName::defaultFor("porch").text() == "porch");
+	CHECK(airplay::SpeakerName::defaultFor(std::string(64, '-')).text() == std::string(50, '-'));
+	// AirPlay 1's instance, "<12 hex>@<name>", fits a label: the longest is 63 bytes.
+	CHECK_FALSE(ear::mdns::listingRefused(ear::mdns::Listing{
+		.service = "_raop._tcp", .instance = "0123456789AB@" + std::string(50, 'k'), .host = "ear", .port = 1}));
 }
 
 TEST_CASE("The pipe receiver is <node>.pipe on from_airplay, reading s16le at 44.1 kHz from its configuration's FIFO",

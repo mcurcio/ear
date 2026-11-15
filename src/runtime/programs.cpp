@@ -45,7 +45,9 @@ namespace ear::runtime {
 namespace {
 
 /// What every program runs under: setpriv sets PR_SET_PDEATHSIG and executes the program, so the program dies when the
-/// thread that spawned it does (this one, so ear), even outside a container whose PID 1 would end it.
+/// thread that spawned it does (this one, so ear), even outside a container whose PID 1 would end it; and sets
+/// no_new_privs, so a program that parses the network's input never gains a privilege through a setuid file it runs.
+/// setpriv executes the path, so the program's own argv[0] is the executable's path.
 constexpr const char* kShim = "/usr/bin/setpriv";
 /// A program's whole environment.
 constexpr const char* kPath = "PATH=/usr/local/bin:/usr/bin:/bin";
@@ -363,7 +365,7 @@ struct Programs::Shared {
 		std::memset(&all, 0xff, sizeof all);
 		posix_spawnattr_setsigdefault(&attributes, &all);
 
-		std::vector<std::string> words{"setpriv", "--pdeathsig", "KILL", "--", launch.executable};
+		std::vector<std::string> words{"setpriv", "--pdeathsig", "KILL", "--nnp", "--", launch.executable};
 		for (std::size_t i = 1; i < launch.argv.size(); ++i) words.push_back(launch.argv[i]);
 		std::vector<char*> argv;
 		for (std::string& word : words) argv.push_back(word.data());
@@ -514,8 +516,13 @@ struct Programs::Shared {
 		}
 	}
 
-	/// Its pidfd readable: reap it, tell what its pipes and feed still hold, remove its files and feed, then exited.
+	/// Its pidfd readable: SIGKILL to what is left of its group, reap it, tell what its pipes and feed still hold,
+	/// remove its files and feed, then exited. Nothing of its group outlives it (docs/writing-a-node-type.md#programs):
+	/// its node releases its claims once exited is told, and a member left behind (one that ignored the stop's SIGTERM,
+	/// or any once the program ended on its own) could hold its port or its FIFO. Sent while it is still a zombie, so
+	/// its pid, the group's id, cannot have been reused; members re-parented to ear are reaped as any orphan is.
 	void end(ProgramRecord& program) {
+		::killpg(program.pid, SIGKILL);
 		siginfo_t info{};
 		const int reaped = ::waitid(P_PIDFD, static_cast<id_t>(program.pidfd.get()), &info, WEXITED);
 		ProgramExit exit;

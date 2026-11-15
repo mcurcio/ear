@@ -752,13 +752,17 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
 
 - **What a type writes.** `ProgramPath` is the executable, an absolute path of plain components (`[A-Za-z0-9._+-]`),
   checked at compile time by its `consteval` constructor, so no setting or peer's text can name what ear executes;
-  its last component is the program's name (its `argv[0]`, its log lines' source and its failures' subject). An
+  its last component is the program's name (its log lines' source and its failures' subject; the program's own
+  `argv[0]` is the full path, as `setpriv` executes the path). An
   argument (`ProgramArg`) is a string, one part, or a braced list of parts joined into one argument; a runtime file
   (`ProgramFile`) is a name and its parts. The parts: `part::Text` as given (an argument is never read by a shell, so
   nothing needs escaping in one; escaping text into a file's syntax is the type's), `part::Port{p}` the granted
   port's number, `cx.fifoOf(bank)` the bank's pipe receiver's FIFO, `part::Feed{}` the report feed's path, and
   `part::File{name}` a runtime file's path. Its environment is `PATH` alone, its working folder ear's runtime folder,
-  its standard input `/dev/null`.
+  its standard input `/dev/null`. It runs under `setpriv --pdeathsig KILL --nnp`: it dies with ear, and with
+  `no_new_privs` set it gains no privilege by executing a setuid file (a program that needs one cannot be run as a
+  node's program). It runs with ear's user and can reach what ear can (the graph file folder, the recordings); no
+  further confinement is applied.
 - **What it needs** (`ProgramShape::needs`): POSIX shared-memory objects another process keeps (`shm_open(3)`), each
   a `SharedMemoryName`: `/` then 1 to 62 of `[A-Za-z0-9._-]`, never `/.` or `/..` (`SharedMemoryName::parse`
   refuses anything else). On Linux each is the file `/dev/shm/<name without its />`, and the adapter watches
@@ -792,6 +796,11 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
   name as source and the node set ([output-records.md](output-records.md#log)), dropped once the configuration ended;
   each chunk of its report feed (at most 4096 bytes) is posted to the named loop's state, in order, staged until the
   node is configured as every post is, and dropped from teardown step 1, when the loops refuse outside work.
+- **Nothing of its process group outlives it.** When the program itself is reaped, whatever is left of its process
+  group is sent `SIGKILL` first (a helper it forked, one that ignored the stop's `SIGTERM`, or any once it ended on
+  its own), so no straggler holds its port or its FIFO once its claims are released. A program that must leave a
+  process behind cannot be a node's program. A process that leaves the group (`setsid`) is beyond this: ear only
+  reaps it once it ends.
 - **Its end.** A program that ends while no teardown is under way fails the node with its words (`programExitDetail`):
   `<name> exited with status <n>` or `<name> was killed by signal <n> (SIG<abbrev>)`, then `: <its last line on
   standard error>` when it has one, or, when ear ended it for a removed name, the removal's words above;
@@ -799,8 +808,8 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
   stop and a start keep it running.
 - **Torn down with the configuration** ([architecture.md](architecture.md#teardown-by-dependency)): at step 1, right
   after the loops close to outside work, it is told to stop (`SIGTERM` to its process group, `SIGKILL` 3 s later
-  unless it was reaped); step 3 waits for its reaping beside the sinks' drain, under the close deadline, and its end
-  then is no failure; at step 5 it is freed after the instance and before the claims are released, so a port it held
+  unless it was reaped, and to what is left of the group at its reaping either way); step 3 waits for its reaping
+  beside the sinks' drain, under the close deadline, and its end then is no failure; at step 5 it is freed after the instance and before the claims are released, so a port it held
   is released only once it was reaped. A program still unreaped at the close deadline counts open in
   `ear.close-overdue` and the configuration is leaked; its reaping is one of the closes the leaked configuration's
   late close waits for. A program that could not start has nothing to wait for.

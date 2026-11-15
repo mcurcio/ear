@@ -339,8 +339,9 @@ A listening node's listing is `_sendspin._tcp` on its port, its TXT `path=/sends
 by `ear_mdns`'s `Advertiser` in the worker's state, which turns it on its 10 ms turn ([the advertiser's
 rules](#mdns)): probed first, then announced.
 
-- The instance name, which is its host label too, is `ear-<first 50 bytes of node>-<first 8 of client id>`, a
-  DNS label's 63 bytes at most, stable, and unique wherever client ids are. Should another responder hold it,
+- The instance name is `ear-<first 50 bytes of node>-<first 8 of client id>`, a DNS label's 63 bytes at
+  most, stable, and unique wherever client ids are; its host label is the same made a DNS host label
+  (`mdns::hostLabelOf`: each `_` a `-`, no `-` at either end). Should another responder hold it,
   probing renames it and the node says `renamed <asked> to <published>` (the instance's `(2)`, `(3)`, ...);
   a renamed host label is not said. Music Assistant shows `name`, from the hello.
 - A goodbye goes out when the worker's state goes (a restart, a disable or a removal, never a
@@ -660,7 +661,7 @@ route kitchen:out.2 desk:play.2;
 
 | Key | Kind | Rule | Default | Refused with |
 |---|---|---|---|---|
-| `name` | text | The speaker name a sender's list shows: 1 to 50 bytes of UTF-8, no control character, no `%` (shairport-sync expands `%h`, `%H`, `%v` and `%V` in a name), no `@` (a RAOP instance is `<device id>@<name>`) and no `.` (the advertiser's instance rule, [below](#mdns)) | the node's name | `name: must be a speaker name: 1 to 50 bytes, no control characters, no %, @ or dot` |
+| `name` | text | The speaker name a sender's list shows: 1 to 50 bytes of UTF-8, no control character, no `%` (shairport-sync expands `%h`, `%H`, `%v` and `%V` in a name), no `@` (a RAOP instance is `<device id>@<name>`) and no `.` (the advertiser's instance rule, [below](#mdns)) | the node's name, cut to its first 50 bytes | `name: must be a speaker name: 1 to 50 bytes, no control characters, no %, @ or dot` |
 | `airplay2` | boolean | AirPlay 2 instead of AirPlay 1, set outright in shairport-sync's config (its `auto`, which falls back to AirPlay 1 silently whenever nqptp is not running, is never written); needs nqptp on ear's machine | `false` | `airplay2: must be true or false` |
 
 - Outputs `out.1` (left) and `out.2` (right); no inputs. The node is three things the framework
@@ -743,13 +744,14 @@ each listing to the report feed as an `ssnc`/`svrg` item (lines `service=`, `nam
 interface, probed and renamed on a clash, answers by multicast, a goodbye at teardown). AirPlay 1 lists
 `_raop._tcp`, the instance shairport-sync's `<device id>@<name>`; AirPlay 2 lists that and
 `_airplay._tcp`, the instance the speaker name alone, its TXT `deviceid` the device id with colons. The
-report loop keeps one listing, with its own advertiser, per service. The host is `ear-<node>` (each `_` a
-`-`, at most 63 bytes). A later listing of a service's instance shairport-sync asked for (its busy flag
-in `sf` as a session starts and ends), whatever probing renamed it to, updates its TXT records; one of
+report loop keeps one listing, with its own advertiser, per service. The host is `ear-<node>` made a host label
+(`mdns::hostLabelOf`: each `_` a `-`, at most 63 bytes, no `-` at its end). A later listing of a
+service's instance shairport-sync asked for (its busy flag in `sf` as a session starts and ends), whatever probing renamed it to, updates its TXT records; one of
 another instance of the service withdraws the first, then is probed and announced anew. The
 listings are withdrawn after shairport-sync was reaped, when the report loop's state goes. The feed's
-items are read incrementally: one past 64 KiB (cover art) or one that does not parse is dropped up
-to the next item.
+items are read incrementally: one past 64 KiB or one that does not parse is dropped up
+to the next item. Cover art is never asked for (`include_cover_art = "no"`): nothing reads it, and a
+sender's images would only cross the feed to be dropped.
 
 ### AirPlay 2 and nqptp
 
@@ -830,6 +832,9 @@ protocol time; no event says "nobody objected".
   goodbye for what it announced and renames.
 - **Instance names** are 1 to 63 bytes of UTF-8 with no control character and no `.`: mjansson/mdns
   splits names at dots, so a dot would go out as two labels.
+- **Host labels** are a DNS host name's label (RFC 1123): 1 to 63 of letters, digits and `-`, not
+  starting or ending with `-`; `_` belongs to service and instance names only. `mdns::hostLabelOf`
+  makes one from any text (each other character a `-`), the one place a type's host label is made.
 - A listing's TXT strings can be replaced: while probing they go into the later probes and the
   announcement, once announced they are announced at once. A goodbye (every record again with TTL 0)
   goes out when the advertiser is destroyed, only if it announced, under the names it holds.

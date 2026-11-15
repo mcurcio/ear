@@ -80,7 +80,7 @@ describe("companionLabel", () => {
   });
 
   it("draws an unknown kind by its own text, a name Object's prototype has included", () => {
-    expect(companionLabel("paced-source")).toBe("paced-source");
+    expect(companionLabel("invented-kind")).toBe("invented-kind");
     expect(companionLabel("toString")).toBe("toString");
   });
 });
@@ -103,8 +103,8 @@ describe("companionDetail", () => {
   });
 
   it("shows a counter it knows on a kind it does not, and ignores a member it does not know", () => {
-    const paced = { name: "n.from_feed", kind: "paced-source", bank: "from_feed", ready: true, shortfall: 0, lagFrames: 120 };
-    expect(companionDetail(paced)).toBe("n.from_feed (paced-source on from_feed): ready; 0 frames played short since it was made");
+    const paced = { name: "n.from_feed", kind: "invented-kind", bank: "from_feed", ready: true, shortfall: 0, lagFrames: 120 };
+    expect(companionDetail(paced)).toBe("n.from_feed (invented-kind on from_feed): ready; 0 frames played short since it was made");
   });
 });
 
@@ -364,8 +364,8 @@ describe("the fixtures, replayed through the reducer into the badges drawn", () 
     const last = states[states.length - 1]!;
     const noise = last.nodes.find((n) => n.name === "noise")!;
     const [badge] = companionBadges(noise, moves, 0);
-    expect(badge!.label).toBe("paced-source");
+    expect(badge!.label).toBe("invented-kind");
     expect(badge!.readyText).toBe("ready");
-    expect(badge!.title).toBe("noise.from_feed (paced-source on from_feed): ready; 0 frames played short since it was made");
+    expect(badge!.title).toBe("noise.from_feed (invented-kind on from_feed): ready; 0 frames played short since it was made");
   });
 });

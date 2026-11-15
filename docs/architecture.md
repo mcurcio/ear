@@ -695,7 +695,7 @@ again once the data loop is wedged.
 ```bash
 ./out/ear                                                   # ./config/ear.conf; file nodes write into ./recordings
 ./out/ear --config-dir ~/ear-config --web-root web/dist     # another graph file folder; the editor built by make web
-./out/ear --runtime-dir /run/ear                            # programs' and pipe receivers' files in a folder of your own
+./out/ear --runtime-dir /run/ear                            # ear's runtime folder made inside a folder of your own
 ```
 
 | Flag | Default | What |
@@ -708,7 +708,7 @@ again once the data loop is wedged.
 | `--control-port` | `7777` | Its port; `0` takes any free one |
 | `--web-root` | `<directory of ear>/web` | The editor's built files |
 | `--allowed-host` | none | A DNS name the Host header may carry (repeatable) |
-| `--runtime-dir` | a fresh `ear-XXXXXX` in `$TMPDIR` or `/tmp` | The folder for programs' and pipe receivers' runtime files: each configuration's FIFOs, a program's feed and its files, each named `<node>.<configuration>.<what>` (`runtimePath`). A given folder must exist and is used as is; the default is made at boot (mode 0700) and removed at stop, and one not empty then (a leaked configuration's files) is a `log` record, `warn`: `the runtime folder <path> was not empty at exit` |
+| `--runtime-dir` | `$TMPDIR`, else `/tmp` | The folder ear makes its runtime folder in. The runtime folder holds programs' and pipe receivers' runtime files: each configuration's FIFOs, a program's feed and its files, each named `<node>.<configuration>.<what>` (`runtimePath`). It is always a fresh `ear-XXXXXX` (`mkdtemp`: mode 0700, ear's own) made at boot inside the folder given, which must exist and be writable; it is removed at stop, and one not empty then (a leaked configuration's files) is a `log` record, `warn`: `the runtime folder <path> was not empty at exit`. *Why always made:* a pipe receiver's FIFO is open to every writer ([engine.md](engine.md#pipe-receivers)), so only a folder whose mode ear set keeps other users out whatever the given folder's owner or mode; and a run killed before its stop leaves files whose names (`<node>.1.config`) the next run would use. The folder's path (made absolute) may hold only letters, digits and `_ . / -`, as it is written into the pipe module's arguments and a program's config unescaped; any other exits 1: `runtime folder <path>: its path may hold only letters, digits and _ . / - (...)`. Every start needs it, whether or not the graph holds a program: in a container with a read-only root, mount a writable volume at `/tmp` or give `--runtime-dir` one |
 
 The four folders (graph file folder, recordings folder, web root, runtime folder) may not be the
 same, nor inside or around each other. `ear` reads `engine.conf` from beside its own binary.
@@ -745,9 +745,9 @@ Running it on Talos with the MOTU 24Ao is the `ear-on-talos` skill's.
    programs' thread hears it, through its signalfd) and make ear its descendants' subreaper
    (`PR_SET_CHILD_SUBREAPER`): a process a program leaves behind is re-parented to ear, whether
    or not ear is PID 1, and reaped by the programs' thread, never left a zombie. A program also dies
-   with ear: it runs under `setpriv --pdeathsig KILL`.
+   with ear: it runs under `setpriv --pdeathsig KILL --nnp`.
 2. Capture descriptors 1 and 2 ([output-records.md](output-records.md#how-output-is-written)).
-3. Open the two folders, make or check the runtime folder, and check the four are apart; a failure
+3. Open the two folders, make the runtime folder, and check the four are apart; a failure
    is an `exit` record and exit 1.
    Every declared store's files in the graph file folder are narrowed to their stores' modes
    ([writing-a-node-type.md](writing-a-node-type.md#stores)); what cannot be is a `log` record.
@@ -760,7 +760,7 @@ Running it on Talos with the MOTU 24Ao is the `ear-on-talos` skill's.
 7. Open the control port (`control` record).
 
 Exit 1 comes only from bad flags, a folder it cannot make or open (a `--runtime-dir` that does
-not exist among them), folders that overlap, node types
+not exist, or whose path holds a character outside `[A-Za-z0-9_./-]`, among them), folders that overlap, node types
 the catalogue refuses (two of one name, or a name not 1 or more of `[a-z0-9]`), an
 engine that does not start, a folder watch it cannot arm, or a control port it cannot bind.
 
@@ -779,7 +779,7 @@ engine that does not start, a folder watch it cannot arm, or a control port it c
    disk delays exit without limit).
 6. The I/O thread stops: jobs still queued are dropped unrun, and the one in flight gets 2 s. One
    still running then is a `log` record (`source` `ear`, `warn`:
-   `the I/O thread was still busy at exit: <job>`), and its thread is never waited for. Then a
+   `the I/O thread was still busy at exit: <job>`), and its thread is never waited for. Then the
    runtime folder ear made is removed (one not empty is a `log` record, above).
 7. ear writes its last record, `exit` with status 0 (`ear: stopped`,
    [output-records.md](output-records.md#exit)).

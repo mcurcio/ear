@@ -39,7 +39,8 @@ public:
 		if (!plain(path)) throw "a program's executable is an absolute path of plain components: [A-Za-z0-9._+-]";
 	}
 	constexpr std::string_view path() const noexcept { return path_; }
-	/// The last component: the program's argv[0], its log lines' source and the name its failures give.
+	/// The last component: its log lines' source and the name its failures give (the program's own argv[0] is path(),
+	/// as the adapter's setpriv executes the path: docs/writing-a-node-type.md#programs).
 	constexpr std::string_view name() const noexcept {
 		const std::string_view whole(path_);
 		return whole.substr(whole.rfind('/') + 1);
@@ -139,7 +140,7 @@ inline constexpr std::size_t maxProgramNeeds = 4;
 /// (`/usr/local/bin:/usr/bin:/bin`), its working folder ear's runtime folder, its standard input /dev/null.
 struct ProgramShape {
 	ProgramPath executable;
-	std::vector<ProgramArg> args{};   // argv[1] onwards; argv[0] is executable.name()
+	std::vector<ProgramArg> args{};   // argv[1] onwards
 	std::vector<ProgramFile> files{}; // at most 8
 	/// What it needs that another process keeps: it is ready once every one exists, and ear ends it when one it saw is
 	/// removed (its node then fails with ProgramExit::removed's words). At most maxProgramNeeds, each once.
@@ -194,7 +195,7 @@ std::string runtimePath(std::string_view folder, const NodeName& node, std::uint
 struct ProgramLaunch {
 	NodeName node;                                            // whose: its log lines' node
 	std::string executable;                                   // ProgramPath::path()
-	std::vector<std::string> argv;                            // argv[0] is the executable's name
+	std::vector<std::string> argv;                            // [0] its name, its lines' source (it is given the path)
 	std::vector<std::pair<std::string, std::string>> files{}; // path, text: each written 0600 before it starts
 	std::optional<std::string> feed{}; // a FIFO to make (0600) and hold open for reading before it starts
 	std::vector<std::string> needs{};  // SharedMemoryName texts: watched from before it starts until it is reaped
@@ -232,7 +233,8 @@ public:
 	/// Precondition: refused or exited was told, so nothing of it runs; never waits on the adapter's thread.
 	virtual ~RunningProgram() = default;
 	/// Its teardown's first step: SIGTERM to its process group, then SIGKILL to it past programTermBound unless it was
-	/// reaped first; exited follows. Again, or after it ended, is nothing.
+	/// reaped first; exited follows. Whatever is left of the group is sent SIGKILL as the program is reaped, stopped or
+	/// not, so nothing of it outlives exited. Again, or after it ended, is nothing.
 	virtual void stop() = 0;
 };
 

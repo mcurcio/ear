@@ -13,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <arpa/inet.h>
@@ -238,10 +239,10 @@ struct Served {
 };
 
 /// Turns each of `served` whenever its descriptor is readable, and calls `onSocket` whenever `socket` is, until
-/// `done()`; false at the deadline. A failed turn fails the test.
+/// `done()`; false at `patience`. A failed turn fails the test.
 bool turnUntil(const std::vector<Served*>& served, const std::function<bool()>& done, int socket = -1,
-               const std::function<void()>& onSocket = {}) {
-	const auto until = std::chrono::steady_clock::now() + deadline;
+               const std::function<void()>& onSocket = {}, std::chrono::seconds patience = deadline) {
+	const auto until = std::chrono::steady_clock::now() + patience;
 	for (;;) {
 		if (done()) return true;
 		const auto left =
@@ -331,7 +332,7 @@ TEST_CASE("A listing is refused for the first rule it breaks, in words", "[mdns]
 	CHECK_FALSE(listingRefused([&] {
 		Listing unicode = good;
 		unicode.instance = "Küche \xF0\x9F\x8E\xB5";
-		unicode.host = "ear-Back_room-AbC_9-x";
+		unicode.host = "ear-Back-room-AbC-9-x";
 		unicode.txt = {};
 		return unicode;
 	}()));
@@ -363,8 +364,11 @@ TEST_CASE("A listing is refused for the first rule it breaks, in words", "[mdns]
 	CHECK(refusal([](Listing& l) { l.instance = "Mr. K"; }) == instance);
 	CHECK(refusal([](Listing& l) { l.instance = "."; }) == instance);
 
-	const std::string host = "a host is 1 to 63 of letters, digits, - and _";
+	const std::string host = "a host is 1 to 63 of letters, digits and -, not starting or ending with -";
 	CHECK(refusal([](Listing& l) { l.host = ""; }) == host);
+	CHECK(refusal([](Listing& l) { l.host = "ear_host"; }) == host);
+	CHECK(refusal([](Listing& l) { l.host = "-ear"; }) == host);
+	CHECK(refusal([](Listing& l) { l.host = "ear-"; }) == host);
 	CHECK(refusal([](Listing& l) { l.host = std::string(64, 'h'); }) == host);
 	CHECK(refusal([](Listing& l) { l.host = "a.b"; }) == host);
 	CHECK(refusal([](Listing& l) { l.host = "sp ace"; }) == host);
@@ -574,6 +578,97 @@ TEST_CASE("Two opened together with one instance: the later records keep it, the
 	Listing renamed = low;
 	renamed.instance = low.instance + " (2)";
 	CHECK(first.announced[0] == renamed);
+}
+
+TEST_CASE("A host label is made of any text: other characters a '-', cut to 63 bytes, no '-' at either end",
+          "[mdns][advertiser]") {
+	using ear::mdns::hostLabelOf;
+	CHECK(hostLabelOf("ear-kitchen") == "ear-kitchen");
+	CHECK(hostLabelOf("ear-back_porch-AbC_9-x") == "ear-back-porch-AbC-9-x");
+	CHECK(hostLabelOf("ear-den-ab_-") == "ear-den-ab");
+	CHECK(hostLabelOf("_x_") == "x");
+	CHECK(hostLabelOf("___") == "ear");
+	CHECK(hostLabelOf("") == "ear");
+	CHECK(hostLabelOf(std::string(62, 'h') + "_x") == std::string(62, 'h'));
+	CHECK(hostLabelOf(std::string(80, 'h')) == std::string(63, 'h'));
+	for (const std::string& text :
+	     {std::string("ear-back_porch-"), std::string(70, '_') + "y", std::string("caf\xC3\xA9 ok")}) {
+		Listing listing = listingFor("_ear-host-label._tcp");
+		listing.host = hostLabelOf(text);
+		INFO(text);
+		CHECK_FALSE(listingRefused(listing));
+	}
+}
+
+TEST_CASE("A response that clashes with a name already announced sends it back to probing that name, and losing "
+          "renames it",
+          "[mdns][advertiser][probing]") {
+	Listing listing = listingFor("_ear-late-clash._tcp");
+	listing.host = "ear-test-late-clash";
+	MdnsSocket responder(true);
+	Served served(listing);
+	announce(served);
+	REQUIRE(served.announced[0] == listing);
+	// From here on, another host holds the host name: it says so once unasked, then answers each probe for it.
+	const std::string asked = labels(listing.host).substr(0, 1 + listing.host.size());
+	std::string elsewhere(4, '\0');
+	const std::uint32_t other = address("192.0.2.1");
+	std::memcpy(elsewhere.data(), &other, 4);
+	const std::string answer = word(0) + word(0x8400) + word(0) + word(1) + word(0) + word(0) +
+	                           record(listing.host + ".local.", MDNS_RECORDTYPE_A, elsewhere, true);
+	while (responder.read()) {
+	} // what it heard of the first round
+	responder.send(answer);
+	bool probedAgain = false;
+	REQUIRE(turnUntil(
+		{&served}, [&] { return served.announced.size() == 2; }, responder.fd(),
+		[&] {
+			while (auto datagram = responder.read()) {
+				if (datagram->response || datagram->bytes.find(asked) == std::string::npos) continue;
+				probedAgain = probedAgain || datagram->authorities > 0;
+				responder.send(answer);
+			}
+		}));
+	// Section 9: probed again under the name it held, and renamed only once that probe lost.
+	CHECK(probedAgain);
+	Listing renamed = listing;
+	renamed.host = "ear-test-late-clash-2";
+	CHECK(served.announced[1] == renamed);
+}
+
+TEST_CASE("Past 15 clashes in 10 s, the next round of probing waits 5 s first", "[mdns][advertiser][probing]") {
+	Listing listing = listingFor("_ear-paced._tcp");
+	listing.host = "ear-test-paced";
+	MdnsSocket responder(true);
+	Served served(listing);
+	std::string elsewhere(4, '\0');
+	const std::uint32_t other = address("192.0.2.1");
+	std::memcpy(elsewhere.data(), &other, 4);
+	// The first probe of each host name it tries, and when: each is answered by a holder of that name, so each is a
+	// clash, and the 16th clash in a row (the probe of "-16" answered) makes "-17" wait.
+	std::vector<std::pair<std::string, std::chrono::steady_clock::time_point>> firstProbes;
+	REQUIRE(turnUntil(
+		{&served}, [&] { return firstProbes.size() == 17; }, responder.fd(),
+		[&] {
+			while (auto datagram = responder.read()) {
+				if (datagram->response || datagram->authorities == 0) continue;
+				const auto host = std::ranges::find_if(datagram->records, [&](const Record& each) {
+					return each.section == MDNS_ENTRYTYPE_AUTHORITY && each.type == MDNS_RECORDTYPE_A &&
+				           each.name.starts_with(listing.host);
+				});
+				if (host == datagram->records.end()) continue;
+				if (firstProbes.empty() || firstProbes.back().first != host->name)
+					firstProbes.emplace_back(host->name, std::chrono::steady_clock::now());
+				responder.send(word(0) + word(0x8400) + word(0) + word(1) + word(0) + word(0) +
+			                   record(host->name, MDNS_RECORDTYPE_A, elsewhere, true));
+			}
+		},
+		std::chrono::seconds(30)));
+	CHECK(firstProbes[15].first == listing.host + "-16.local.");
+	CHECK(firstProbes[16].first == listing.host + "-17.local.");
+	// Before the pace: each round's wait at most 250 ms. After it: 5 s, which no quick round could reach.
+	CHECK(firstProbes[15].second - firstProbes[14].second < std::chrono::seconds(5));
+	CHECK(firstProbes[16].second - firstProbes[15].second >= std::chrono::seconds(5));
 }
 
 TEST_CASE("A responder answering for its host with another address renames the host to '<host>-2'",

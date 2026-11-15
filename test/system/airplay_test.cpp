@@ -110,6 +110,15 @@ std::vector<std::string> processesOf(pid_t parent, std::string_view name) {
 	return found;
 }
 
+/// Every file beneath `given`, the folder given as --runtime-dir, inside which ear makes its own runtime folder
+/// (docs/architecture.md#boot-and-stop): a FIFO, feed or config a node left behind.
+std::vector<std::string> runtimeFilesIn(const std::filesystem::path& given) {
+	std::vector<std::string> found;
+	for (const auto& entry : std::filesystem::recursive_directory_iterator(given))
+		if (!entry.is_directory()) found.push_back(entry.path().string());
+	return found;
+}
+
 /// Channel `channel` of a stereo WAV, frames [from, from + frames).
 std::vector<float> channelOf(const Wav& wav, int channel, std::size_t from, std::size_t frames) {
 	std::vector<float> samples;
@@ -303,9 +312,7 @@ TEST_CASE("An airplay node is found by an mDNS browse, plays an AirPlay 1 tone i
 	INFO("browser printed:\n" << browser.output());
 	CHECK(removed);
 	CHECK(processesOf(process.pid(), "shairport-sync") == std::vector<std::string>{});
-	std::vector<std::string> left;
-	for (const auto& entry : std::filesystem::directory_iterator(runtime)) left.push_back(entry.path().string());
-	CHECK(left == std::vector<std::string>{});
+	CHECK(runtimeFilesIn(runtime) == std::vector<std::string>{});
 
 	const auto status = ear.stop(rpc);
 	INFO("ear printed:\n" << process.output());
@@ -444,9 +451,7 @@ TEST_CASE("With airplay2 and nqptp running, an airplay node lists _raop._tcp and
 	REQUIRE(rpc.call("node.remove", {{"name", "kitchen"}}).contains("result"));
 	rpc.waitFor([](const json& m) { return Rpc::matches(m, "node.gone", {{"name", "kitchen"}}); });
 	CHECK(processesOf(process.pid(), "shairport-sync") == std::vector<std::string>{});
-	std::vector<std::string> left;
-	for (const auto& entry : std::filesystem::directory_iterator(runtime)) left.push_back(entry.path().string());
-	CHECK(left == std::vector<std::string>{});
+	CHECK(runtimeFilesIn(runtime) == std::vector<std::string>{});
 
 	const auto status = ear.stop(rpc);
 	INFO("ear printed:\n" << process.output());
@@ -471,7 +476,7 @@ TEST_CASE("With airplay2 and no nqptp, an airplay node fails start-failed in sha
 }
 
 TEST_CASE("With airplay2, nqptp stopping removes the node's channel, and ear ends shairport-sync and fails the node "
-          "lost in the removal's words",
+          "lost in the removal's words, and once nqptp runs again node.restart brings it back running and listed",
           "[system][airplay][nqptp]") {
 	Nqptp nqptp(nqptpDeadline);
 	TempDirectory directory;
@@ -487,5 +492,27 @@ TEST_CASE("With airplay2, nqptp stopping removes the node's channel, and ear end
 	INFO("ear printed:\n" << process.output());
 	CHECK(lost);
 	CHECK(processesOf(process.pid(), "shairport-sync") == std::vector<std::string>{});
-	REQUIRE(ear.stop() == 0);
+
+	// The operator's recovery (docs/node-types.md#airplay-2-and-nqptp): nqptp started again, then node.restart.
+	Nqptp again(nqptpDeadline);
+	const std::size_t from = process.records().size();
+	Rpc rpc(ear.port());
+	REQUIRE(rpc.call("node.restart", {{"name", "kitchen"}}).contains("result"));
+	const auto running = process.waitForRecord(
+		[](const json& r) { return r.value("msg", "") == "node kitchen running"; }, deadline, from);
+	INFO("ear printed:\n" << process.output());
+	REQUIRE(running);
+	std::set<std::string> listed;
+	while (listed.size() < 2) {
+		const auto record = process.waitForRecord(
+			[&](const json& r) {
+				const std::string msg = r.value("msg", "");
+				return msg.starts_with("node kitchen says listed ") && !listed.contains(msg);
+			},
+			deadline, from);
+		REQUIRE(record);
+		listed.insert((*record)["msg"].get<std::string>());
+	}
+	CHECK(sharedMemoryExists("/ear-kitchen"));
+	REQUIRE(ear.stop(rpc) == 0);
 }

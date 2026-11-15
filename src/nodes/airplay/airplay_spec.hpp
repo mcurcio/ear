@@ -65,6 +65,9 @@ std::string thisHostName();
 class SpeakerName {
 public:
 	static std::optional<SpeakerName> parse(std::string_view text);
+	/// The name a node with no name setting goes by: its node name (all [A-Za-z0-9_-], each allowed here) cut to 50
+	/// bytes, since a node name may run to 64 and a longer instance would never be listed.
+	static SpeakerName defaultFor(std::string_view node);
 	const std::string& text() const noexcept { return text_; }
 	friend bool operator==(const SpeakerName&, const SpeakerName&) = default;
 
@@ -86,8 +89,8 @@ inline constexpr TypeSpec spec{.settings = SettingsTable<nameRow, airplay2Row>{"
                                .loops = Loops<reports>{}};
 using Checked = CheckedOf<spec>;
 
-/// The mDNS host label the node's listing names: "ear-" and the node's name, each '_' a '-', cut to 63 bytes (a DNS
-/// label's most). A node's name is unique in ear, so two nodes never share a host.
+/// The mDNS host label the node's listing names: mdns::hostLabelOf("ear-" and the node's name). Two node names alike in
+/// their first 59 bytes, or apart only by '_' and '-', share one, which is harmless: their A records are identical.
 std::string hostLabelOf(std::string_view node);
 
 /// Which AirPlay a node speaks, set outright in shairport-sync's config: its "auto" is never written, since a binary
@@ -110,8 +113,11 @@ PipeReceiverShape pipeShapeOf(const Protocol& protocol);
 /// shairport-sync's config file, in libconfig's syntax: the "metadata" mDNS backend (its listings handed to the report
 /// feed, which ear announces), the protocol's service type, the sender's volume ignored (the node's level is ear's to
 /// own), UDP ports picked by the kernel (base 0: many nodes never collide), in AirPlay 2 the device id and nqptp
-/// channel, the pipe output into `fifo` in the protocol's format and rate (pipeShapeOf), and the metadata feed.
-/// A file and not flags: shairport-sync dies "pipename needed" when its config lacks pipe.name.
+/// channel, the pipe output into `fifo` in the protocol's format and rate (pipeShapeOf), and the metadata feed with no
+/// cover art (a sender's images, which nothing reads, would only cross the feed to be dropped).
+/// A file and not flags: shairport-sync dies "pipename needed" when its config lacks pipe.name. The FIFO's and the
+/// feed's paths go inside libconfig's quotes unescaped: they are runtime paths, all [A-Za-z0-9_./-] once boot has
+/// checked the runtime folder's (docs/architecture.md#boot-and-stop).
 std::vector<ProgramPart> configText(part::Fifo fifo, const Protocol& protocol);
 
 class Airplay {
