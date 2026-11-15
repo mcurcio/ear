@@ -2,6 +2,7 @@
 #
 # - dev: the build and test image, for development (scripts/dev.sh) and CI
 #   (.github/workflows/test.yml). Debian 13 (trixie): PipeWire 1.4, GCC 14 (C++23), Node.js 24.
+# - shairport-sync (throwaway): the AirPlay receiver the airplay node runs, built from a pinned commit.
 # - build: dev plus this checkout, built: "make release" and the graph editor's "npm run build".
 # - run: what ships (test.yml's publish job): the ear binary, its engine.conf, the built editor
 #   and the fetched dependencies' licences on debian:trixie-slim with the libraries they load at run time, no compiler.
@@ -16,6 +17,51 @@
 # glibc). Only node and npm are copied out of it (dev, below).
 FROM node:24-trixie-slim@sha256:54f84b4cf8432b21aaffd5d3ce8d41e12cea0d10d33c09d2f3c9879d49d6b446 AS node
 
+# shairport-sync, the AirPlay receiver every airplay node runs (docs/node-types.md#airplay), built from source: its
+# "metadata" mDNS backend, which hands its listing to ear instead of advertising it, is first in 5.6.3, which no
+# Debian release carries. A throwaway stage, so the image keeps only its binary (and run, its licences). Built with
+# the pipe output and the metadata feed only: no Avahi, no D-Bus, no ALSA, no AirPlay 2.
+# - autoconf, automake, libtool, pkg-config, g++, make: its autotools build.
+# - git, ca-certificates: the clone over HTTPS.
+# - libpopt-dev, libconfig-dev, libssl-dev: its command line, its config file and its AirPlay 1 crypto (OpenSSL).
+# - libavcodec-dev, libavformat-dev, libavutil-dev, libswresample-dev: FFmpeg, its ALAC decoder (configure's default,
+#   and upstream's recommendation: the other two decoders are deprecated "for security reasons").
+FROM debian:trixie@sha256:2dc419c6d7fe3dad0a2f9fd469c34cc90b0f9ba642d8fde837fe3d7d34a0e7f1 AS shairport-sync
+# The pin's one home: tag 5.6.3 (2026-11-10). Bump it by replacing the commit with a newer tag's
+# ("git ls-remote https://github.com/mikebrady/shairport-sync refs/tags/<tag>"); scripts/dev.sh rebuilds the images.
+ARG SHAIRPORT_SYNC_COMMIT=7ce90d89529dd760488f20592a7cbff626672f6c
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends \
+		autoconf \
+		automake \
+		ca-certificates \
+		g++ \
+		git \
+		libavcodec-dev \
+		libavformat-dev \
+		libavutil-dev \
+		libconfig-dev \
+		libpopt-dev \
+		libssl-dev \
+		libswresample-dev \
+		libtool \
+		make \
+		pkg-config \
+	&& rm -rf /var/lib/apt/lists/*
+WORKDIR /src/shairport-sync
+# The proof at the end: -V names the pipe backend and the metadata feed, and -h lists "metadata" among the mDNS
+# backends, which is how the airplay node's config (src/nodes/airplay/airplay_spec.hpp) reaches its listing.
+RUN git init --quiet . \
+	&& git remote add origin https://github.com/mikebrady/shairport-sync.git \
+	&& git fetch --quiet --depth 1 origin "$SHAIRPORT_SYNC_COMMIT" \
+	&& git checkout --quiet FETCH_HEAD \
+	&& autoreconf -fi \
+	&& ./configure --prefix=/usr/local --sysconfdir=/etc --with-pipe --with-metadata --with-ssl=openssl \
+	&& make -j"$(nproc)" \
+	&& ./shairport-sync -V | tee /dev/stderr | grep -q pipe \
+	&& ./shairport-sync -V | grep -q metadata \
+	&& ./shairport-sync -h | sed -n '/mDNS backends/,$p' | grep -qw metadata
+
 FROM debian:trixie@sha256:2dc419c6d7fe3dad0a2f9fd469c34cc90b0f9ba642d8fde837fe3d7d34a0e7f1 AS dev
 
 # - g++ and make: the compiler and the build tool; cmake (trixie: 3.31) runs the build.
@@ -28,7 +74,10 @@ FROM debian:trixie@sha256:2dc419c6d7fe3dad0a2f9fd469c34cc90b0f9ba642d8fde837fe3d
 # - libsndfile1-dev: the file node writes WAV files with libsndfile.
 # - clang-format: make format and make format-check (.clang-format), the one C++ style CI enforces.
 # - git: FetchContent clones the sendspin node's dependencies (micro-flac's submodule needs a clone).
-# - python3, python3-venv: the real Sendspin server the sendspin node's tests run against (below).
+# - python3, python3-venv: the real Sendspin server the sendspin node's tests run against, and the AirPlay sender
+#   the airplay node's run against (below).
+# - libpopt0, libconfig11, libssl3t64, libavcodec61, libavformat61, libavutil59, libswresample5: shairport-sync's
+#   run-time libraries (its stage, above).
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends \
 		ca-certificates \
@@ -37,11 +86,18 @@ RUN apt-get update \
 		cmake \
 		g++ \
 		git \
+		libavcodec61 \
+		libavformat61 \
+		libavutil59 \
+		libconfig11 \
 		libpipewire-0.3-dev \
 		libpipewire-0.3-modules \
+		libpopt0 \
 		libsndfile1-dev \
 		libspa-0.2-dev \
 		libspa-0.2-modules \
+		libssl3t64 \
+		libswresample5 \
 		make \
 		pkg-config \
 		python3 \
@@ -55,6 +111,17 @@ COPY test/sendspin/requirements.txt /opt/sendspin-server/requirements.txt
 RUN python3 -m venv /opt/sendspin-server \
 	&& /opt/sendspin-server/bin/pip install --quiet --no-cache-dir --no-compile --require-hashes \
 		--only-binary :all: --requirement /opt/sendspin-server/requirements.txt
+
+# The scripted AirPlay 1 sender the airplay node's system test plays through (test/support/airplay_sender.py,
+# docs/testing.md#the-airplay-sender): pyatv and zeroconf, every package pinned by hash for both architectures, built
+# as the Sendspin server's venv is. The run image gets none of it.
+COPY test/airplay/requirements.txt /opt/airplay-sender/requirements.txt
+RUN python3 -m venv /opt/airplay-sender \
+	&& /opt/airplay-sender/bin/pip install --quiet --no-cache-dir --no-compile --require-hashes \
+		--only-binary :all: --requirement /opt/airplay-sender/requirements.txt
+
+# shairport-sync, which the airplay node runs (its stage, above): the same binary in dev and run.
+COPY --from=shairport-sync /src/shairport-sync/shairport-sync /usr/local/bin/shairport-sync
 
 # Node.js and npm for web/ (the graph editor's toolchain: web/package.json; web/.nvmrc names the
 # same major version).
@@ -87,15 +154,24 @@ FROM debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1de
 #   its modules and SPA plugins (the dummy driver, and the ALSA plugin a sound card node uses).
 # - libasound2t64: alsa-lib, which the ALSA plugin opens sound cards through.
 # - libsndfile1: the file node.
+# - libpopt0, libconfig11, libssl3t64, libavcodec61, libavformat61, libavutil59, libswresample5: shairport-sync, which
+#   the airplay node runs (its stage, above).
 # Boost and the sendspin node's protocol library are linked statically (program_options is the only compiled Boost
 # library).
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends \
 		libasound2t64 \
+		libavcodec61 \
+		libavformat61 \
+		libavutil59 \
+		libconfig11 \
 		libpipewire-0.3-0t64 \
 		libpipewire-0.3-modules \
+		libpopt0 \
 		libsndfile1 \
 		libspa-0.2-modules \
+		libssl3t64 \
+		libswresample5 \
 	&& rm -rf /var/lib/apt/lists/*
 
 # engine.conf sits beside the binary, where main.cpp looks for it.
@@ -104,6 +180,9 @@ COPY --from=build /src/out/ear /src/out/engine.conf /opt/ear/
 # (cmake/SendspinDeps.cmake).
 COPY --from=build /src/out/licenses /opt/ear/licenses
 COPY --from=build /src/web/dist /opt/ear/web
+# shairport-sync, which the airplay node runs (its stage, above), and its licences.
+COPY --from=shairport-sync /src/shairport-sync/shairport-sync /usr/local/bin/shairport-sync
+COPY --from=shairport-sync /src/shairport-sync/LICENSES /opt/ear/licenses/shairport-sync/
 
 # Realtime priority for an ordinary user: a capability a pod adds does not reach a non-root
 # process (execve drops it without file or ambient capabilities), so the binary carries

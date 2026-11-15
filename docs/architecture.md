@@ -60,7 +60,7 @@ Each C++ package lives in `src/<package>/` with its own `CMakeLists.txt`, public
 | `ear_core` (`src/core`) | The desired graph (`DesiredGraph`: the one judge of every change, `plan` then `commit`); the node type contract (`NodeType`, settings tables, `TypeSpec`, the type's class and its contexts); the node framework (`NodeHost`, the node lifecycle machines, health, `NodeOperations`, the pass-through, companions, latency plans, the claim registry); the reconciler (route links and route status); levels; the graph read (`GraphStatus`); `FrameRing`. Beside it, for tests only, `ear_type_harness` (`ear/testing/`) | Any PipeWire call, socket, thread or file access. nlohmann/json is its only dependency |
 | `ear_runtime` (`src/runtime`) | The threads the node framework runs work on, behind `ear_core`'s interfaces: the I/O thread (`IoThread`, core's `IoExecutor`), the one thread for blocking work; the nodes' loops (`Loops`, core's `LoopAdapter`: the strand pool and each dedicated loop's thread) ([threads](#threads)); and the nodes' stores on disk (`ConfinedStores`, core's `StoreAdapter`, over the graph file folder) with the boot sweep of every declared store ([writing-a-node-type.md](writing-a-node-type.md#stores)); and the kernel's word on a port a claim names (`KernelPortProbe`, core's `PortProbe`, [writing-a-node-type.md](writing-a-node-type.md#claims)); and the processes under the nodes' programs (`Programs`, core's `ProgramAdapter`, on the `ear-programs` thread, which also reaps every orphan ear inherits: [writing-a-node-type.md](writing-a-node-type.md#programs)) | Policy (what a job means is its caller's; staging, a loop's state and the sources it left, when a store is narrowed, trusted or written, and who holds a claim, are `NodeHost`'s); PipeWire. No node type links it |
 | `ear_folder` (`src/folder`) | `ConfinedFolder`: a folder held open from boot, every path resolved beneath it by the kernel (`openat2` with `RESOLVE_BENEATH`); files replaced only if unchanged (`renameat2(RENAME_EXCHANGE)`); `requireApart`, the boot check that no two folders overlap | Following `..`, absolute paths or (for the graph file) any symlink |
-| `ear_node_white`, `ear_node_file`, `ear_node_card`, `ear_node_rtp`, `ear_node_sendspin` (`src/nodes/<type>`) | One built-in node type each ([node-types.md](node-types.md)) | Another node type; PipeWire or the framework's threads (only `ear_core`'s interfaces: no type links `ear_pipewire`, `ear_runtime`, `ear_control`, `ear_config` or `ear_server`) |
+| `ear_node_white`, `ear_node_file`, `ear_node_card`, `ear_node_rtp`, `ear_node_sendspin`, `ear_node_airplay` (`src/nodes/<type>`) | One built-in node type each ([node-types.md](node-types.md)) | Another node type; PipeWire or the framework's threads (only `ear_core`'s interfaces: no type links `ear_pipewire`, `ear_runtime`, `ear_control`, `ear_config` or `ear_server`) |
 | `ear_all_node_types` (`src/all_node_types`) | `allNodeTypes()`, the one list of node types, generated at configure from the folders in `src/nodes/` | Naming a type by hand |
 | `ear_pipewire` (`src/pipewire`) | The in-process engine and the adapters that implement `ear_core`'s interfaces: port blocks, links, live ports, sinks and handoffs, engine companions (sound cards, module-run converters: RTP receivers and pipe receivers), the main-loop executor, the engine's log ([engine.md](engine.md)); the callback boundary every C callback ear gives PipeWire goes through ([below](#the-callback-boundary)) | Policy; a C callback registered outside the boundary |
 | `ear_mdns` (`src/mdns`) | A node's mDNS listing (`Advertiser`, its `Listing` and `listingRefused`): one DNS-SD service instance announced, answered and said goodbye to over its own socket on port 5353, run on whichever loop of the node type keeps it ([node-types.md](node-types.md#mdns)); mjansson/mdns, privately | A thread, a timer, anything of ear's |
@@ -74,7 +74,7 @@ Each C++ package lives in `src/<package>/` with its own `CMakeLists.txt`, public
 **Dependency rules.** Dependencies point one way: `ear_core` is below everything; the node types,
 `ear_runtime`, `ear_pipewire`, `ear_control` and `ear_config` depend on it; `ear_control` is below
 `ear_server` and `ear_config`; `ear_folder` is below `ear_runtime`, `ear_node_sendspin` and
-`ear_config`; `ear_mdns` is below the node types that keep a listing (`ear_node_sendspin`); `ear`
+`ear_config`; `ear_mdns` is below the node types that keep a listing (`ear_node_sendspin`, `ear_node_airplay`); `ear`
 links all of them, and links the node types only through `ear_all_node_types`. No node type links
 another, nor `ear_runtime`, `ear_pipewire`, `ear_control`, `ear_config` or `ear_server` (configure
 refuses each, `cmake/NodeType.cmake`); a node type may link `ear_mdns`, which is no node type.
@@ -719,7 +719,8 @@ The run image (`docker/Dockerfile`'s `run` target, published as `ghcr.io/mcurcio
 until the Talos nodes' CPU is known; anonymous pulls work) is `debian:trixie-slim` with only the
 run-time libraries: no compiler and no knobly (it is compiled in). It holds `/opt/ear/ear`,
 `engine.conf`, `web/` and `licenses/` (the licences of the fetched code compiled in: knobly and
-what the `sendspin` node links), runs
+what the `sendspin` node links; and shairport-sync's, under `licenses/shairport-sync/`), and
+`/usr/local/bin/shairport-sync`, which each `airplay` node runs ([node-types.md](node-types.md#airplay)); it runs
 as user `ear` (uid 10001), exposes 7777 and 8928 (a listening `sendspin` node's default), and
 defaults to `--config-dir /var/lib/ear/config --recordings-dir /var/lib/ear/recordings`, two
 volumes owned by `ear`. Arguments given to the container replace both, so pass them again.
@@ -802,8 +803,8 @@ of the process: the record, not the process's end, says when ear's stop is done.
 These are designed or wanted but not in the code: routes naming a whole bank; changing a node's
 settings in place without a restart (a type's change version of `configure` compiles but is
 never called); recovery of failed nodes; sound cards opened off the main loop; an internal
-clock anchored to one card; serving PipeWire's socket and the `airplay` type (its programs and pipe receivers are built,
-[writing-a-node-type.md](writing-a-node-type.md#programs)); a login on port 7777; automatic card retry and hotplug; `@include`; undo; changing the graph
+clock anchored to one card; serving PipeWire's socket; many `airplay` speakers and its AirPlay 2 setting
+([design/airplay.md](design/airplay.md)); a login on port 7777; automatic card retry and hotplug; `@include`; undo; changing the graph
 frequency or block size while ear runs; arm64 images; a fault caught at the callback boundary
 failing only the node that owns it (today it ends the process); a source whose clock is a type's own on any shipped type,
 and the converter companion's set and tracked modes ([the timing model](#the-timing-model)). The design pages for the unbuilt slices

@@ -1,0 +1,4 @@
+# The AirPlay sender's packages, unpinned: requirements.txt pins them (its header says how).
+# pyatv streams to a speaker as AirPlay 1 (RAOP); zeroconf browses for it.
+pyatv
+zeroconf

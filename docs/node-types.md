@@ -1,6 +1,6 @@
 # Node types
 
-ear has five built-in node types. Each is its own library in `src/nodes/<type>/`, declared by one
+ear has six built-in node types. Each is its own library in `src/nodes/<type>/`, declared by one
 settings table and one list of port banks ([writing-a-node-type.md](writing-a-node-type.md)).
 Settings are written in a node's braces in `ear.conf` ([graph-file.md](graph-file.md)) or sent as
 JSON on the control port; the refusal texts below are exactly what `invalid-settings` carries.
@@ -16,6 +16,7 @@ How every node starts, stops, fails and restarts is the framework's, the same fo
 | `card` | `play.1`..`play.N` (audio going to the card) | `capture.1`..`capture.M` | `to_card`, `from_card` |
 | `rtp` | none | `stream.1`..`stream.N` | `from_rtp` |
 | `sendspin` | `to.left`, `to.right` | `from.left`, `from.right` | none |
+| `airplay` | none | `out.1`, `out.2` | `from_airplay` |
 
 **How settings are checked.** The table checks a settings object in a fixed order, so the first
 problem a refusal names is stable: not an object; then an undeclared key (the first in sorted
@@ -647,3 +648,89 @@ the clock; realtime scheduling; a pod with a CPU limit (the library's unprioriti
 a 43 ms ring); a real `fsGroup` mount; an off-link mDNS query from a real other subnet.
 Operating it is also the `sendspin` skill's (`.claude/skills/sendspin/SKILL.md`), and running it in
 a pod the `ear-on-talos` skill's.
+
+## `airplay`
+
+An AirPlay 1 speaker: phones and Macs on ear's network list it and play to it, and its outputs carry
+what they play. Each node runs its own shairport-sync (5.6.3, built from source in the images:
+`docker/Dockerfile`'s `shairport-sync` stage, its pin's one home; no Avahi, no D-Bus, no ALSA).
+
+```conf
+node airplay kitchen { name "Kitchen"; }
+route kitchen:out.1 desk:play.1;
+route kitchen:out.2 desk:play.2;
+```
+
+| Key | Kind | Rule | Default | Refused with |
+|---|---|---|---|---|
+| `name` | text | The speaker name a sender's list shows: 1 to 50 bytes of UTF-8, no control character, no `%` (shairport-sync expands `%h`, `%H`, `%v` and `%V` in a name) and no `@` (a RAOP instance is `<device id>@<name>`) | the node's name | `name: must be a speaker name: 1 to 50 bytes, no control characters, no % or @` |
+
+- Outputs `out.1` (left) and `out.2` (right); no inputs. The node is three things the framework
+  makes and a type only asks for ([writing-a-node-type.md](writing-a-node-type.md#programs)): a pipe
+  receiver, `<node>.pipe`, on the inside bank `from_airplay`, passed straight through to `out`; a TCP
+  port nobody types (`claim::AnyTcp`), shairport-sync's RTSP port; and shairport-sync itself, the
+  configuration's program, its config file naming the receiver's FIFO and its report feed.
+- **The audio** is AirPlay 1's, 16-bit at 44.1 kHz, pinned in shairport-sync's config and in the
+  receiver's shape (never shairport-sync's defaults, which are 32-bit at 48 kHz in a build with
+  AirPlay 2), resampled to the graph frequency by the receiver
+  ([engine.md](engine.md#pipe-receivers)). Its clock is the sender's, kept by shairport-sync; two
+  `airplay` nodes keep independent clocks and are never aligned with each other.
+- **Delay:** about 0.19 s from the pipe module's fixed buffer (8192 frames at 44.1 kHz), carried to
+  `out` as latency beyond `from_airplay`, on top of AirPlay's own (about 2 s between a sender and
+  what shairport-sync writes, which the sender allows for). Not compensated.
+- **The sender's volume** is applied by shairport-sync, in the audio it writes: a phone's slider at
+  half is heard quieter in the graph. ear does not read or set it.
+- **Health is shairport-sync alive.** The node is `running` once the pipe receiver is ready and
+  shairport-sync has started. Its end fails the node with its words, `start-failed` before the node
+  first rested and `lost` after: `node kitchen failed lost: shairport-sync exited with status 1:
+  <its last line on standard error>`. Its standard output and error lines are the node's `log`
+  records, source `shairport-sync`.
+- **A stop keeps it running and listed**: a stopped node's speaker is still in senders' lists, and
+  what a sender plays to it is not heard until `node.start`. A restart, a change of settings, a
+  disable or a removal stops shairport-sync (`SIGTERM`, `SIGKILL` 3 s later), reaps it, removes its
+  FIFO, feed and config from ear's runtime folder (`--runtime-dir`), withdraws its listing and
+  releases its port.
+- **ear must be on the senders' network**, the same link, for its listing to reach them (and port
+  7777, which has no login, is then on it too).
+- **Ports outside ear's claims:** shairport-sync's AirPlay 1 audio, control and timing ports, UDP
+  from 6001 upwards (its `udp_port_base`), which ear neither claims nor checks. An `rtp` node on one
+  of them fails to start, and so may a second `airplay` node until many speakers are built.
+
+**Notes** (`node <n> says <text>`, never a state; the texts are `src/nodes/airplay/notes.hpp`'s):
+
+| Note | Means |
+|---|---|
+| `listed <device id>@<name> on port <port>` | The listing is on the network: the instance shairport-sync named, on its RTSP port |
+| `advertise-failed <detail>` | The listing could not be announced (the mDNS socket's or the listing's words): senders cannot find the speaker, though one given its address can still play |
+| `playing` | A sender began playing (shairport-sync's `pbeg`) |
+| `idle` | It stopped (`pend`) |
+
+**Failures:**
+
+| What | The node | What to do |
+|---|---|---|
+| shairport-sync ends | `failed start-failed:` or `lost: shairport-sync exited with status <n>[: <line>]` (or `was killed by signal <n> (SIG<abbrev>)`) | Read its `log` lines; `node.restart` |
+| shairport-sync cannot start (missing, not executable) | `failed start-failed: cannot start shairport-sync: <why>` | Run the image ear ships in |
+| The pipe receiver never runs | `failed engine-refused: ...` ([engine.md](engine.md#readiness-deadlines)) | `node.restart` |
+| No free TCP port | `failed start-failed: cannot find a free TCP port: <why>` | Free some |
+| The mDNS socket cannot open | `running`; `says advertise-failed` | A sender must be given the address |
+
+**mDNS.** shairport-sync advertises nothing itself: its `metadata` mDNS backend (new in 5.6.3) hands
+its listing to the report feed as an `ssnc`/`svrg` item (lines `service=`, `name=`, `port=`, then
+`txt=` per record), and the node's report loop announces it with `ear_mdns`
+([sendspin's mDNS](#mdns) gives the advertiser's rules: one socket per node on port 5353, one
+interface, answers by multicast, a goodbye at teardown). The service is `_raop._tcp`, the instance
+shairport-sync's `<device id>@<name>`, the host `ear-<node>` (each `_` a `-`, at most 63 bytes). A
+later listing of the same instance (shairport-sync's busy flag in `sf` as a session starts and ends)
+updates the TXT records; one of another instance withdraws the first, then announces anew. The
+listing is withdrawn after shairport-sync was reaped, when the report loop's state goes. The feed's
+items are read incrementally: one past 64 KiB (cover art) or one that does not parse is dropped up
+to the next item. Names are announced without probing: two speakers of one name on a network are
+not told apart yet.
+
+Tested end to end in `ear_system_tests` ([testing.md](testing.md#the-airplay-sender)): a scripted
+AirPlay 1 sender finds the speaker by a multicast browse, plays a tone a `file` node records, and
+sees the listing go when the node is removed. Not built: AirPlay 2 (a setting, with nqptp run by
+the operator), many speakers (names probed and renamed on a clash, distinct UDP ranges, identity
+from the node), sender volume as a node level, passwords, track information, recovery's retries;
+see [design/airplay.md](design/airplay.md).

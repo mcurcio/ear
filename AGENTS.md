@@ -9,7 +9,7 @@ docs in `docs/` do.
 EAR ("Einstein Audio Router") is a C++23 program for Linux that runs PipeWire's audio engine inside
 its own process and builds an audio graph from its graph file, `ear.conf` (written in the knobly
 language, mcurcio/knobly). It starts the nodes the file names (`white`, `file`, `card`, `rtp`,
-`sendspin`), links their ports as the file's routes say, prints a JSON record for every change, and
+`sendspin`, `airplay`), links their ports as the file's routes say, prints a JSON record for every change, and
 keeps the file live: edits made through its control port (7777: a graph editor and JSON-RPC) are
 applied and written back into `ear.conf`, and hand edits are applied and shown in the editor. It
 ships as a container image published from GitHub Actions.
@@ -117,6 +117,16 @@ Toolchain notes:
   `BUILD_TESTS=ON` configure stops naming `EAR_SENDSPIN_SERVER_PYTHON` when the image's
   `/opt/sendspin-server/bin/python` (the real Sendspin server the tests run against,
   `test/sendspin/requirements.txt`) is missing.
+- The `airplay` node runs shairport-sync, which no Debian release carries at the version it needs:
+  `docker/Dockerfile`'s throwaway `shairport-sync` stage builds it from source at
+  `SHAIRPORT_SYNC_COMMIT` (the pin's one home; its comment says how to bump it, with the same
+  `build(deps)` message), and the `dev` and `run` images copy in its binary as
+  `/usr/local/bin/shairport-sync`, with its run-time libraries (and in `run`, its licences under
+  `/opt/ear/licenses/shairport-sync/`). The `dev` image also holds `/opt/airplay-sender`, the
+  scripted AirPlay 1 sender's venv (`test/airplay/requirements.txt`, pinned by hash for both
+  architectures, wheels only; `test/airplay/requirements.in` and its header say how to regenerate
+  it). With `BUILD_TESTS=ON` configure stops naming `EAR_AIRPLAY_SENDER_PYTHON` or
+  `EAR_SHAIRPORT_SYNC` when either is missing.
 - ccache is the image's compiler launcher; `scripts/dev.sh` points `CCACHE_DIR` at the main
   checkout's `.cache/ccache`, shared by every worktree.
 - The graph editor (`web/`) builds with the image's Node.js 24 (`web/.nvmrc`);
@@ -187,7 +197,7 @@ appears in a public header.
 - **The images.** `docker/Dockerfile` has three targets, `dev` (the build and test image),
   `build` (`make release` and the editor's build) and `run` (what ships:
   [`docs/architecture.md#the-container-image`](docs/architecture.md#the-container-image)), and a
-  throwaway stage, `knobly`. To check the run image locally:
+  throwaway stage, `shairport-sync`. To check the run image locally:
 
   ```bash
   docker build --target run --tag ear:local --file docker/Dockerfile .
@@ -205,7 +215,7 @@ never enter ear's history, so the release notes get only the merge commit's mess
 Dependencies line and a patch release); the squash commit's own message is not a Conventional
 Commit, so it is ignored. Bumps of the fetched dependencies (Boost's `boost_url` and
 `boost_sha256`, knobly's `cmake/knobly.json` through `scripts/knobly-pin.mjs`, those in
-`cmake/SendspinDeps.cmake` and `cmake/MdnsDeps.cmake`) use the same message: `build(deps): upgrade knobly to <x>`. The
+`cmake/SendspinDeps.cmake` and `cmake/MdnsDeps.cmake`, and `SHAIRPORT_SYNC_COMMIT` in `docker/Dockerfile`) use the same message: `build(deps): upgrade knobly to <x>`. The
 subtrees were first added without `--squash`, so their upstream histories are in ear's history;
 the baseline tag `v0.0.0` on cb6d71f64c (the last `git subtree add`, 2020-05-27) ends them, since
 semantic-release reads only the commits after the last `v*` tag. PipeWire, alsa-lib and libsndfile

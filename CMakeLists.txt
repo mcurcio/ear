@@ -188,6 +188,22 @@ if(BUILD_TESTS)
 			"(EAR_SENDSPIN_SERVER_PYTHON): build in the image (scripts/dev.sh make test), whose docker/Dockerfile "
 			"puts it there")
 	endif()
+	# The airplay node's system test (test/system/airplay_test.cpp): the scripted AirPlay 1 sender's Python, a venv the
+	# image builds from test/airplay/requirements.txt, and the shairport-sync the node runs, built in the image's
+	# shairport-sync stage.
+	set(EAR_AIRPLAY_SENDER_PYTHON "/opt/airplay-sender/bin/python" CACHE FILEPATH
+		"Python of a venv holding test/airplay/requirements.txt (docker/Dockerfile, target dev)")
+	if(NOT EXISTS "${EAR_AIRPLAY_SENDER_PYTHON}")
+		message(FATAL_ERROR "the AirPlay test sender's Python is not at ${EAR_AIRPLAY_SENDER_PYTHON} "
+			"(EAR_AIRPLAY_SENDER_PYTHON): build in the image (scripts/dev.sh make test), whose docker/Dockerfile "
+			"puts it there")
+	endif()
+	set(EAR_SHAIRPORT_SYNC "/usr/local/bin/shairport-sync" CACHE FILEPATH
+		"The shairport-sync the airplay node runs (docker/Dockerfile's shairport-sync stage)")
+	if(NOT EXISTS "${EAR_SHAIRPORT_SYNC}")
+		message(FATAL_ERROR "shairport-sync is not at ${EAR_SHAIRPORT_SYNC} (EAR_SHAIRPORT_SYNC): build in the image "
+			"(scripts/dev.sh make test), whose docker/Dockerfile puts it there")
+	endif()
 endif()
 
 #add_subdirectory(benchmark)
