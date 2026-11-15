@@ -1,13 +1,12 @@
 # AirPlay into ear: the `airplay` node type
 
-**Status:** revision 3 for the owner's gate, 2026-11-14 (read-only run: no repo file changed).
+**Status:** revision 3, system layer; both questions answered by the owner on 2026-11-14. The shape: each `airplay` node runs its own shairport-sync as a subprocess. AirPlay 1 is built in and tested end to end. AirPlay 2 is a setting on the same node, with nqptp run by the operator.
 **Layer:** Domain · **System (this page: the concepts it adds, its parts, their public interfaces)** · Service (skipped: one process) · Module · Interfaces · Implementation
-**What you are asked:** agree the shape, then answer two questions. The shape: each `airplay` node runs its own shairport-sync as a subprocess. AirPlay 1 is built in and tested end to end. AirPlay 2 is a setting on the same node, with nqptp run by you.
 
-| # | Question | Kind | Where |
+| # | Question | Kind | Owner's pick, 2026-11-14 (guidance) |
 |---|---|---|---|
-| Q1 | Should a node's audio join through PipeWire's pipe module (ear already tests it; fixed ~0.18 s delay) or ear's own tracked converter (not built; adjustable)? | general guidance | §3 |
-| Q2 | May the AirPlay 2 setting ship with its sound checked by hand, since no scripted AirPlay 2 sender is known? | general guidance | §8 |
+| Q1 | Should a node's audio join through PipeWire's pipe module (ear already tests it; fixed ~0.18 s delay) or ear's own tracked converter (not built; adjustable)? | general guidance | A, PipeWire's pipe module (§3); T5's tracked mode waits for another first user |
+| Q2 | May the AirPlay 2 setting ship with its sound checked by hand, since no scripted AirPlay 2 sender is known? | general guidance | ship, sound checked by hand: an exception to `docs/testing.md` for the AirPlay 2 sound path only (§8) |
 
 ## What changed since your last look
 Your answers of 2026-11-14, all guidance: **A1** "different Airplay nodes in ear have no requirement to align with one another. they will maintain their own independent clocks, as all nodes do". **A2** "ear shouldnt know anything about kubernetes. So if there are aspects that cant be handled as pure subprocess, then ear cant do it. What about having an airplay1 node built in and also having instructions for how to configure an airplay2 node?" **A3** (follow-up): you picked "ear node, host runs nqptp" (worded by the agent): an AirPlay 2 setting, nqptp run by you from written instructions, ear only checking that nqptp is reachable. Q3: no preference.
