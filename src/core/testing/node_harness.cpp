@@ -1561,6 +1561,20 @@ std::size_t NodeHarness::armed(std::string_view loop) const {
 	return 0;
 }
 
+std::vector<int> NodeHarness::watchedDescriptors(std::string_view loop) const {
+	std::vector<int> watched;
+	for (std::size_t i = impl_->loopList.size(); i-- > 0;) {
+		if (impl_->loopList[i].name != loop) continue;
+		const Impl::FakeLoop* fake = impl_->loopFakes.at(i);
+		if (fake == nullptr) return watched;
+		for (const auto& source : fake->sources)
+			if (source->kind == Impl::FakeLoop::Source::Kind::readable && !source->cancelled)
+				watched.push_back(source->fd);
+		return watched;
+	}
+	return watched;
+}
+
 std::vector<NodeHarness::SeenLoop> NodeHarness::loops() const { return impl_->loopList; }
 
 void NodeHarness::runIo() {

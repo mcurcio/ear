@@ -199,8 +199,9 @@ void Reports::onListing(std::string_view data) {
 		handle_.say(notes::advertiseFailed(listing.error()));
 		return;
 	}
-	if (advertiser_ && advertiser_->listing().service == listing->service &&
-	    advertiser_->listing().instance == listing->instance) {
+	// The same instance as asked, whatever a clash renamed it to: its TXT only.
+	if (advertiser_ && asked_.service == listing->service && asked_.instance == listing->instance) {
+		asked_.txt = listing->txt;
 		if (auto updated = advertiser_->update(std::move(listing->txt)); !updated)
 			handle_.say(notes::advertiseFailed(updated.error()));
 		return;
@@ -213,9 +214,23 @@ void Reports::onListing(std::string_view data) {
 		handle_.say(notes::advertiseFailed(opened.error()));
 		return;
 	}
+	asked_ = std::move(*listing);
 	advertiser_ = std::move(*opened);
-	watch_ = loop_.onReadable(advertiser_->descriptor(), [this] { advertiser_->answer(); });
-	handle_.say(notes::listed(listing->instance, listing->port));
+	watch_ = loop_.onReadable(advertiser_->descriptor(), [this] { onTurn(); });
+}
+
+void Reports::onTurn() {
+	auto turn = advertiser_->turn();
+	if (turn.announced) {
+		if (turn.announced->instance != asked_.instance)
+			handle_.say(notes::renamed(asked_.instance, turn.announced->instance));
+		handle_.say(notes::listed(turn.announced->instance, turn.announced->port));
+	}
+	if (turn.failed) {
+		handle_.say(notes::advertiseFailed(*turn.failed));
+		watch_.reset();
+		advertiser_.reset();
+	}
 }
 
 } // namespace ear::nodes::airplay

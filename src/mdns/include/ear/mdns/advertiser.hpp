@@ -1,8 +1,8 @@
-// A node's mDNS listing (docs/architecture.md#packages, docs/node-types.md#mdns): one service instance announced, its
-// questions answered and a goodbye said, over one socket of its own on port 5353, with no daemon. The node type keeps
-// the Advertiser in one of its loops' states and runs it there: it never starts a thread or arms a timer, so whatever
-// loop it lives on paces it (sendspin's worker turns it every 10 ms; airplay's report loop answers when its descriptor
-// is readable). mjansson/mdns stays inside advertiser.cpp.
+// A node's mDNS listing (docs/architecture.md#packages, docs/node-types.md#mdns): one service instance probed, renamed
+// on a clash, announced, its questions answered and a goodbye said, over one socket of its own on port 5353, with no
+// daemon. The node type keeps the Advertiser in one of its loops' states and turns it there whenever its descriptor is
+// readable: it never starts a thread, and probing's waits (RFC 6762's protocol time, not a stand-in for an event) are
+// a timerfd of its own behind that descriptor. mjansson/mdns stays inside advertiser.cpp.
 #pragma once
 #include <cstdint>
 #include <expected>
@@ -14,10 +14,12 @@
 namespace ear::mdns {
 
 /// One DNS-SD service instance (RFC 6763): `<instance>.<service>.local.` on `<host>.local.`, port `port`, with its TXT
-/// strings. Announced without probing: the caller makes `instance` and `host` unique (sendspin by its client id).
+/// strings. Probed before it is announced, and renamed when another responder holds a name (RFC 6762 sections 8 and
+/// 9): `instance` and `host` are the names asked for, Advertiser::listing() the names held.
 struct Listing {
-	std::string service;  // "_raop._tcp", "_sendspin._tcp": "_<name>._tcp" or "_<name>._udp", no ".local"
-	std::string instance; // its instance label: 1 to 63 bytes of UTF-8, no control character
+	std::string service; // "_raop._tcp", "_sendspin._tcp": "_<name>._tcp" or "_<name>._udp", no ".local"
+	// Its instance label: 1 to 63 bytes of UTF-8, no control character and no '.' (mjansson/mdns splits names at dots).
+	std::string instance;
 	// The label of the host its SRV and A records name: 1 to 63 of [A-Za-z0-9_-] ("_" for sendspin's, which carries
 	// the start of a base64url client id and a node name).
 	std::string host;
@@ -40,15 +42,13 @@ bool onLink(std::uint32_t sourceAddress, std::uint32_t localAddress, std::uint32
 class Advertiser {
 public:
 	/// Joins 224.0.0.251 on port 5353 (shared: SO_REUSEADDR and SO_REUSEPORT) on the one interface the kernel routes the
-	/// group through, its address read once here, and announces PTR, SRV, TXT and A by multicast. Never blocks. Error: a
-	/// listing listingRefused refuses, or the socket's failure, in words.
+	/// group through, its address read once here, opens a timerfd (CLOCK_MONOTONIC) and an epoll over both, and starts
+	/// probing. Sends nothing yet: the first probe waits a random 0 to 250 ms. Never blocks. Error: listingRefused's words,
+	/// or the socket's, the timer's or the epoll's failure in the kernel's words.
 	static std::expected<std::unique_ptr<Advertiser>, std::string> open(Listing listing);
-	/// Readable whenever a datagram waits: its owner calls answer() then (a loop's onReadable), or on its own pace.
+	/// The epoll descriptor: readable whenever turn() has work (a datagram waits, or a step of probing or announcing is
+	/// due). Its owner calls turn() then (a loop's onReadable), or on its own pace.
 	int descriptor() const noexcept;
-	/// Never blocks. Queries from this link only, at most 32 datagrams a call; each answer once per datagram, by
-	/// multicast at most once a second per record set, by unicast (to a querier on another port than 5353) at most 16
-	/// a second; responses and anything else ignored.
-	void answer() noexcept;
 	/// What one turn changed, for its owner to say (docs/node-types.md#mdns).
 	struct Turn {
 		/// The listing won its probes and its first announcement went out (RFC 6762 sections 8.1 and 8.3), with the
@@ -58,15 +58,19 @@ public:
 		/// It cannot go on (its socket failed: the kernel's words): it sends nothing more, and its owner drops it.
 		std::optional<std::string> failed;
 	};
-	/// Never blocks. Reads what waits on the socket (at most 32 datagrams), answers questions once announced, hears a
-	/// clash in a response or a simultaneous probe, and sends what is due: a probe, the end of probing's wait, an
-	/// announcement. Its owner calls it whenever descriptor() is readable, or on its own pace.
+	/// Never blocks. Reads what waits on the socket (at most 32 datagrams), answers questions once announced (from this
+	/// link only; each answer once per datagram, by multicast at most once a second per record set, by unicast to a
+	/// querier on another port than 5353 at most 16 a second; a probe for a name it holds at once, at most once per 250
+	/// ms per record set), hears a clash in a response or a simultaneous probe, and sends what is due: a probe, an
+	/// announcement. After failed, every turn returns nothing.
 	Turn turn() noexcept;
-	/// New TXT strings, the rest unchanged: announced at once, the cache-flush bit set. Error: as open's, and nothing
-	/// changes.
+	/// New TXT strings, the rest unchanged. While probing: used in the later probes and the announcement. Once
+	/// announced: announced at once, the cache-flush bit set. Error: as open's, and nothing changes.
 	std::expected<void, std::string> update(std::vector<std::string> txt);
+	/// The names it probes or holds now (after any rename), and its TXT.
 	const Listing& listing() const noexcept;
-	/// The goodbye: every record sent again with TTL 0, by multicast; then the socket closed.
+	/// The goodbye (every record sent again with TTL 0, by multicast) only if it announced, under the names it holds;
+	/// then its descriptors closed.
 	~Advertiser();
 	Advertiser(const Advertiser&) = delete;
 	Advertiser& operator=(const Advertiser&) = delete;

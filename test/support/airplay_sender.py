@@ -7,10 +7,10 @@ a test moves when an event arrives. Run by the image's /opt/airplay-sender venv 
 (a RAOP instance is <device id>@<speaker name>), and {"event":"removed"} when that instance goes. It runs until
 SIGTERM or SIGINT.
 
---play <wav> --address A --port P --txt JSON [--speaker S]: pyatv streams the file to that speaker as AirPlay 1
-(RAOP), given the listing's address, port and TXT records as found, so pyatv does no discovery of its own. It sets
-the sender's volume to full first, as a phone's slider at the top: shairport-sync attenuates the audio by the sender's
-volume, and pyatv's default (-20) would leave the tone 43 dB down. It emits {"event":"started"} once connected and
+--play <wav> --address A --port P --txt JSON [--speaker S] [--volume V]: pyatv streams the file to that speaker as
+AirPlay 1 (RAOP), given the listing's address, port and TXT records as found, so pyatv does no discovery of its own. It
+sets the sender's volume first, as a phone's slider: V from 0 to 100 (default 100, the top). The airplay node tells
+shairport-sync to ignore it, so a test sends a low one to prove that. It emits {"event":"started"} once connected and
 {"event":"finished"} once the file has been sent, then exits 0; any failure is {"event":"failed","why":...} and exit 1.
 """
 
@@ -81,7 +81,7 @@ async def browse(speaker: str) -> int:
     return 0
 
 
-async def play(wav: str, address: str, port: int, txt: dict[str, str], speaker: str) -> int:
+async def play(wav: str, address: str, port: int, txt: dict[str, str], speaker: str, volume: float) -> int:
     import pyatv
     from pyatv import conf
     from pyatv.const import Protocol
@@ -96,7 +96,7 @@ async def play(wav: str, address: str, port: int, txt: dict[str, str], speaker: 
         return 1
     try:
         emit("started")
-        await atv.audio.set_volume(100.0)
+        await atv.audio.set_volume(volume)
         await atv.stream.stream_file(wav)
         emit("finished")
         return 0
@@ -115,11 +115,16 @@ def main() -> int:
     parser.add_argument("--port", type=int)
     parser.add_argument("--txt", default="{}")
     parser.add_argument("--speaker", default="ear")
+    parser.add_argument("--volume", type=float, default=100.0)
     args = parser.parse_args()
+    if not 0.0 <= args.volume <= 100.0:
+        parser.error("--volume is 0 to 100")
     if args.browse:
         return asyncio.run(browse(args.browse))
     if args.play and args.address and args.port:
-        return asyncio.run(play(args.play, args.address, args.port, json.loads(args.txt), args.speaker))
+        return asyncio.run(
+            play(args.play, args.address, args.port, json.loads(args.txt), args.speaker, args.volume)
+        )
     parser.error("give --browse <speaker>, or --play <wav> --address <a> --port <p> [--txt <json>]")
     return 2
 

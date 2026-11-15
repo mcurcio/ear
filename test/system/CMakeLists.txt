@@ -13,4 +13,6 @@ target_compile_definitions(ear_system_tests PRIVATE EAR_BINARY="${PROJECT_BINARY
 	EAR_AIRPLAY_SENDER_PYTHON="${EAR_AIRPLAY_SENDER_PYTHON}"
 	EAR_AIRPLAY_SENDER_SCRIPT="${PROJECT_SOURCE_DIR}/test/support/airplay_sender.py")
 add_dependencies(ear_system_tests ear)
-ear_catch_tests(ear_system_tests)
+# The airplay tests run with nothing beside them: each plays a tone through shairport-sync, the pipe module's resampler
+# and a file node, whose level a loaded host's stall dips below the floor they judge.
+ear_catch_tests(ear_system_tests SERIAL "[airplay]")

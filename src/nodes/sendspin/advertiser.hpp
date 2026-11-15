@@ -5,8 +5,8 @@
 #include <string>
 #include <string_view>
 namespace ear::nodes::sendspin {
-/// `ear-<first 50 bytes of node>-<first 8 of client id>`: within a DNS label's 63 bytes, stable and unique without
-/// probing.
+/// `ear-<first 50 bytes of node>-<first 8 of client id>`: within a DNS label's 63 bytes, stable, and unique wherever
+/// client ids are (probing renames it otherwise).
 inline std::string advertisedInstance(std::string_view node, std::string_view clientId) {
 	constexpr std::size_t maxNodeBytes = 50;
 	constexpr std::size_t maxIdBytes = 8;

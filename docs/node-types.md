@@ -286,6 +286,7 @@ many were held back, before the next that passes.
 | `sending-stopped` | Sending stopped |
 | `key-write-failed <detail>` | The pairing holds for this run only: fix the folder and pair again |
 | `advertise-failed <detail>` | Listening but not advertising: give the server `ws://<address>:<port>/sendspin` |
+| `renamed <asked> to <published>` | Another responder held its instance, so it is listed as the second ([its listing](#its-listing)) |
 | `notes-dropped <n>` | Notes held back by the rate |
 
 ### Failures
@@ -335,11 +336,13 @@ server reconnect on that reason; one browsing mDNS comes back by itself.
 ### Its listing
 
 A listening node's listing is `_sendspin._tcp` on its port, its TXT `path=/sendspin` and `name=<name>`, kept
-by `ear_mdns`'s `Advertiser` in the worker's state, which answers on its 10 ms turn ([the advertiser's
-rules](#mdns)).
+by `ear_mdns`'s `Advertiser` in the worker's state, which turns it on its 10 ms turn ([the advertiser's
+rules](#mdns)): probed first, then announced.
 
 - The instance name, which is its host label too, is `ear-<first 50 bytes of node>-<first 8 of client id>`, a
-  DNS label's 63 bytes at most, stable and unique without probing. Music Assistant shows `name`, from the hello.
+  DNS label's 63 bytes at most, stable, and unique wherever client ids are. Should another responder hold it,
+  probing renames it and the node says `renamed <asked> to <published>` (the instance's `(2)`, `(3)`, ...);
+  a renamed host label is not said. Music Assistant shows `name`, from the hello.
 - A goodbye goes out when the worker's state goes (a restart, a disable or a removal, never a
   stop); a crash leaves the record until its TTL.
 
@@ -654,7 +657,7 @@ route kitchen:out.2 desk:play.2;
 
 | Key | Kind | Rule | Default | Refused with |
 |---|---|---|---|---|
-| `name` | text | The speaker name a sender's list shows: 1 to 50 bytes of UTF-8, no control character, no `%` (shairport-sync expands `%h`, `%H`, `%v` and `%V` in a name) and no `@` (a RAOP instance is `<device id>@<name>`) | the node's name | `name: must be a speaker name: 1 to 50 bytes, no control characters, no % or @` |
+| `name` | text | The speaker name a sender's list shows: 1 to 50 bytes of UTF-8, no control character, no `%` (shairport-sync expands `%h`, `%H`, `%v` and `%V` in a name), no `@` (a RAOP instance is `<device id>@<name>`) and no `.` (the advertiser's instance rule, [below](#mdns)) | the node's name | `name: must be a speaker name: 1 to 50 bytes, no control characters, no %, @ or dot` |
 
 - Outputs `out.1` (left) and `out.2` (right); no inputs. The node is three things the framework
   makes and a type only asks for ([writing-a-node-type.md](writing-a-node-type.md#programs)): a pipe
@@ -669,8 +672,10 @@ route kitchen:out.2 desk:play.2;
 - **Delay:** about 0.19 s from the pipe module's fixed buffer (8192 frames at 44.1 kHz), carried to
   `out` as latency beyond `from_airplay`, on top of AirPlay's own (about 2 s between a sender and
   what shairport-sync writes, which the sender allows for). Not compensated.
-- **The sender's volume** is applied by shairport-sync, in the audio it writes: a phone's slider at
-  half is heard quieter in the graph. ear does not read or set it.
+- **The sender's volume** is ignored (shairport-sync's `ignore_volume_control`): a phone's slider moves
+  nothing in the graph, which hears the audio at the level it was sent. *Why:* a level applied inside
+  shairport-sync would be a second owner of the node's level that ear can neither see nor report; it
+  stays ignored until nodes get a level of their own.
 - **Health is shairport-sync alive.** The node is `running` once the pipe receiver is ready and
   shairport-sync has started. Its end fails the node with its words, `start-failed` before the node
   first rested and `lost` after: `node kitchen failed lost: shairport-sync exited with status 1:
@@ -683,15 +688,20 @@ route kitchen:out.2 desk:play.2;
   releases its port.
 - **ear must be on the senders' network**, the same link, for its listing to reach them (and port
   7777, which has no login, is then on it too).
-- **Ports outside ear's claims:** shairport-sync's AirPlay 1 audio, control and timing ports, UDP
-  from 6001 upwards (its `udp_port_base`), which ear neither claims nor checks. An `rtp` node on one
-  of them fails to start, and so may a second `airplay` node until many speakers are built.
+- **Ports outside ear's claims:** shairport-sync's AirPlay 1 audio, control and timing ports, UDP, each
+  picked by the kernel (its `udp_port_base` is 0), so many `airplay` nodes never collide and none takes
+  a port an `rtp` node named.
+- **Identity:** the instance is shairport-sync's own, `<device id>@<name>`, the device id an MD5 of
+  the speaker name and the host's first MAC address: stable across restarts, and the same for two
+  nodes of one speaker name on one host, which probing tells apart by renaming one
+  (`<device id>@<name> (2)`, [below](#mdns)).
 
 **Notes** (`node <n> says <text>`, never a state; the texts are `src/nodes/airplay/notes.hpp`'s):
 
 | Note | Means |
 |---|---|
-| `listed <device id>@<name> on port <port>` | The listing is on the network: the instance shairport-sync named, on its RTSP port |
+| `renamed <device id>@<name> to <device id>@<name> (<n>)` | Another responder holds the instance shairport-sync named, so the listing goes by the second; said just before its `listed` |
+| `listed <instance> on port <port>` | The listing is on the network, once probing found its names free (about 0.5 to 1 s after shairport-sync reported it): the instance it holds, on its RTSP port |
 | `advertise-failed <detail>` | The listing could not be announced (the mDNS socket's or the listing's words): senders cannot find the speaker, though one given its address can still play |
 | `playing` | A sender began playing (shairport-sync's `pbeg`) |
 | `idle` | It stopped (`pend`) |
@@ -710,29 +720,31 @@ route kitchen:out.2 desk:play.2;
 its listing to the report feed as an `ssnc`/`svrg` item (lines `service=`, `name=`, `port=`, then
 `txt=` per record), and the node's report loop announces it with `ear_mdns`
 ([the advertiser's rules](#mdns): one socket per node on port 5353, one
-interface, answers by multicast, a goodbye at teardown). The service is `_raop._tcp`, the instance
-shairport-sync's `<device id>@<name>`, the host `ear-<node>` (each `_` a `-`, at most 63 bytes). A
-later listing of the same instance (shairport-sync's busy flag in `sf` as a session starts and ends)
-updates the TXT records; one of another instance withdraws the first, then announces anew. The
+interface, probed and renamed on a clash, answers by multicast, a goodbye at teardown). The service is
+`_raop._tcp`, the instance shairport-sync's `<device id>@<name>`, the host `ear-<node>` (each `_` a `-`, at
+most 63 bytes). A later listing of the instance shairport-sync asked for (its busy flag in `sf` as a
+session starts and ends), whatever probing renamed it to, updates the TXT records; one of another
+instance withdraws the first, then is probed and announced anew. The
 listing is withdrawn after shairport-sync was reaped, when the report loop's state goes. The feed's
 items are read incrementally: one past 64 KiB (cover art) or one that does not parse is dropped up
-to the next item. Names are announced without probing: two speakers of one name on a network are
-not told apart yet.
+to the next item.
 
 Tested end to end in `ear_system_tests` ([testing.md](testing.md#the-airplay-sender)): a scripted
-AirPlay 1 sender finds the speaker by a multicast browse, plays a tone a `file` node records, and
-sees the listing go when the node is removed. Not built: AirPlay 2 (a setting, with nqptp run by
-the operator), many speakers (names probed and renamed on a clash, distinct UDP ranges, identity
-from the node), sender volume as a node level, passwords, track information, recovery's retries;
-see [design/airplay.md](design/airplay.md).
+AirPlay 1 sender finds the speaker by a multicast browse, plays a tone a `file` node records at its
+own level whatever the sender's volume, and sees the listing go when the node is removed; two nodes
+of one speaker name are told apart (one renamed), each found by its own name, and play at once into
+their own `file` nodes. Not built: AirPlay 2 (a setting, with nqptp run by the operator), a node
+level, passwords, track information, recovery's retries; see [design/airplay.md](design/airplay.md).
 
 ## mDNS
 
 A node type that waits for senders to find it lists itself on the network with `ear_mdns`'s `Advertiser`
 (`src/mdns`, [architecture.md](architecture.md#packages)): `sendspin` ([its listing](#its-listing)) and
-`airplay` ([its mDNS](#airplay)). The type makes the listing and keeps its names unique (nothing is
-probed), and keeps the advertiser in the state of one of its loops, which paces it: the advertiser starts
-no thread and arms no timer.
+`airplay` ([its mDNS](#airplay)). The type makes the listing and keeps the advertiser in the state of one
+of its loops, which turns it whenever its descriptor is readable: the advertiser starts no thread and arms
+none of the loop's timers. Its descriptor is an epoll over its socket and a timerfd of its own
+(`CLOCK_MONOTONIC`), which holds probing's and announcing's waits. *Why a timer:* those waits are RFC 6762's
+protocol time; no event says "nobody objected".
 
 - One socket per node on port 5353 (shared with `SO_REUSEPORT`), one interface: the one the kernel
   routes 224.0.0.251 through, its address read once at the node's start. A container on an overlay network
@@ -740,8 +752,32 @@ no thread and arms no timer.
 - Answers go by multicast whatever a question's unicast bit; only a querier on another port than
   5353 gets a unicast answer. *Why:* the kernel hands a unicast datagram to one socket of a shared
   port, so it could reach a neighbour's.
-- Limits, so it reflects nothing: queries only (responses ignored), from this link only, each answer
+- Limits, so it reflects nothing: queries only (a response is only ever heard for a clash), from this link only, each answer
   once per datagram, by multicast at most once a second, by unicast at most 16 a second. A querier
   that asks again within the second is answered the next time it asks.
-- A listing's TXT strings can be replaced and are announced at once; a goodbye (every record again
-  with TTL 0) goes out when the advertiser is destroyed.
+- **Probing** (RFC 6762 section 8): before anything is announced, the unique records (the SRV and TXT
+  at `<instance>.<service>.local.`, the A at `<host>.local.`; the PTR is shared and never probed) are
+  probed: a random wait of 0 to 250 ms, three probes 250 ms apart, 250 ms more, then the announcement
+  (the cache-flush bit on all but the PTR) and a second one a second later. A probe is a query asking
+  both names, type ANY, the unicast bit never set, its authority section the proposed records. Nothing
+  is answered while probing.
+- **A clash renames.** A response from this link holding a record of a name it probes, of the same
+  type and class with other rdata, renames that name: the instance to `<asked> (2)`, `(3)`, ... (cut on
+  a UTF-8 character's boundary to 63 bytes), the host to `<asked>-2`, `-3`, ...; then it probes again.
+  More than 15 clashes in 10 s and each further round waits 5 s first. Identical rdata is never a clash
+  (its own probes and announcements heard back, two listings sharing a host label and address), nor is a
+  goodbye, nor a TXT it sent itself before an update. Its owner says the instance's rename
+  ([sendspin](#its-listing), [airplay](#airplay)).
+- **Two probing at once** (section 8.2): when another host's probe names a name it probes, each side's
+  records at that name are sorted and compared, class, type, then rdata byte by byte; the later set
+  wins, and the loser waits a second, then probes the same names again (and so hears the winner's
+  answer, and renames).
+- **Once announced**, a probe for a name it holds is answered by multicast at once (at most every
+  250 ms per record set, beside the once-a-second rule), and a response holding one of its names with
+  other rdata sends it back to probing under the same names (section 9); if it then loses, it says a
+  goodbye for what it announced and renames.
+- **Instance names** are 1 to 63 bytes of UTF-8 with no control character and no `.`: mjansson/mdns
+  splits names at dots, so a dot would go out as two labels.
+- A listing's TXT strings can be replaced: while probing they go into the later probes and the
+  announcement, once announced they are announced at once. A goodbye (every record again with TTL 0)
+  goes out when the advertiser is destroyed, only if it announced, under the names it holds.

@@ -6,9 +6,15 @@
 #include <string>
 #include <string_view>
 namespace ear::nodes::airplay::notes {
-/// Its listing is on the network: the instance shairport-sync named (`<device id>@<speaker name>`) and its RTSP port.
+/// Its listing is on the network, once probing found its names free: the instance it holds (shairport-sync's
+/// `<device id>@<speaker name>`, or its rename) and its RTSP port.
 inline std::string listed(std::string_view instance, std::uint16_t port) {
 	return std::format("listed {} on port {}", instance, port);
+}
+/// Another responder held the instance shairport-sync asked for, so the listing goes by `published` (RFC 6762 section
+/// 9's "<name> (n)"; docs/node-types.md#mdns). Said before its listed.
+inline std::string renamed(std::string_view asked, std::string_view published) {
+	return std::format("renamed {} to {}", asked, published);
 }
 /// Its listing could not be announced (the advertiser's words, or the report's): it plays to a sender that knows it.
 inline std::string advertiseFailed(std::string_view why) { return std::format("advertise-failed {}", why); }

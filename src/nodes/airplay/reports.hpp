@@ -53,8 +53,9 @@ private:
 std::expected<mdns::Listing, std::string> listingOf(std::string_view svrgData, std::string_view host);
 
 /// The report loop's state: the feed's items in order, on the node's strand. It opens the node's advertiser on the
-/// first listing and answers its questions when its socket is readable; a later listing of the same instance updates
-/// its TXT records, one of another instance replaces it. Sessions are notes, never the node's state.
+/// first listing and turns it whenever its descriptor is readable, saying listed once it announced (and renamed first
+/// when a clash renamed it); a later listing of the instance shairport-sync asked for (never the published name)
+/// updates its TXT records, one of another instance replaces it. Sessions are notes, never the node's state.
 class Reports {
 public:
 	Reports(NodeHandle& handle, Loop& loop, std::string host);
@@ -67,12 +68,14 @@ public:
 
 private:
 	void onListing(std::string_view data);
+	void onTurn();
 	NodeHandle& handle_;
 	Loop& loop_;
 	std::string host_;
 	ReportParser parser_;
+	mdns::Listing asked_; // the listing shairport-sync asked for, before any rename
 	std::unique_ptr<mdns::Advertiser> advertiser_;
-	std::unique_ptr<Timer> watch_; // readable: a question waits on the advertiser's socket
+	std::unique_ptr<Timer> watch_; // readable: the advertiser has work (a datagram, or a step of probing due)
 };
 
 } // namespace ear::nodes::airplay

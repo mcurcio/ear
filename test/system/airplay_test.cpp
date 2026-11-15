@@ -1,9 +1,10 @@
-// The owner's end-to-end test of the airplay node (docs/node-types.md#airplay): the real out/ear runs an airplay node
-// routed into a file node; the scripted AirPlay 1 sender (test/support/airplay_sender.py,
-// docs/testing.md#the-airplay-sender) finds the speaker by a multicast mDNS browse, as a phone does, and plays a tone to
-// it, which the WAV must hold channel for channel. Removing the node must leave no process, no runtime file and no
-// listing. Every wait is for an event (a line ear prints, a notification, a line the sender prints, ear's exit); a
-// deadline only fails the test.
+// The owner's end-to-end tests of the airplay node (docs/node-types.md#airplay): the real out/ear runs airplay nodes
+// routed into file nodes; the scripted AirPlay 1 sender (test/support/airplay_sender.py,
+// docs/testing.md#the-airplay-sender) finds a speaker by a multicast mDNS browse, as a phone does, and plays a tone to
+// it, which the WAV must hold channel for channel at its own level whatever volume the sender asks for. Removing the
+// node must leave no process, no runtime file and no listing; two nodes of one speaker name are told apart by probing.
+// Every wait is for an event (a line ear prints, a notification, a line the sender prints, ear's exit); a deadline
+// only fails the test.
 #include <sndfile.h>
 
 #include <chrono>
@@ -115,7 +116,8 @@ constexpr std::size_t tenth = graphFrequency / 10;
 /// The tenths judged: three seconds of the five-second tone, from half a second after it is first heard, so neither
 /// the session's start nor its end is inside.
 constexpr std::size_t judgedTenths = 30;
-/// Each tenth's fitted tone must be above this (the tone is sent at 0.5, at the sender's full volume), and the other
+/// Each tenth's fitted tone must be above this (the tone is sent at 0.5; the sender's volume, 20 of 100, is ignored, and
+/// would leave it near 0.01 if shairport-sync applied it), and the other
 /// channel's frequency below a tenth of it: AirPlay 1 is lossless (ALAC), but shairport-sync keeps its own sync by
 /// inserting and dropping frames, and the pipe module resamples 44.1 kHz to the graph's 48 kHz, so a level floor and
 /// a separation are judged, not an exact amplitude.
@@ -140,6 +142,52 @@ void checkTone(const Wav& wav, int channel, std::size_t from, double wanted, dou
 	CHECK(strongestOther < weakest / 10);
 }
 
+/// The sender's volume in every test: low, so a level that clears levelFloor proves the node ignored it.
+const std::string senderVolume = "20";
+
+/// The recording at `path` holds `left` Hz on channel 1 and `right` Hz on channel 2 at the graph's rate, judged over
+/// judgedTenths from half a second after its first sound.
+void checkRecording(const std::filesystem::path& path, double left, double right) {
+	INFO("recording " << path);
+	const Wav wav = readWav(path);
+	REQUIRE(wav.info.channels == 2);
+	CHECK(wav.info.samplerate == static_cast<int>(graphFrequency));
+	const auto frames = static_cast<std::size_t>(wav.info.frames);
+	std::size_t first = frames;
+	for (std::size_t frame = 0; frame < frames && first == frames; ++frame)
+		if (std::abs(wav.samples[frame * 2]) > 0.01F || std::abs(wav.samples[frame * 2 + 1]) > 0.01F) first = frame;
+	REQUIRE(first < frames);
+	const std::size_t from = first + graphFrequency / 2;
+	REQUIRE(from + judgedTenths * tenth <= frames);
+	checkTone(wav, 0, from, left, right);
+	checkTone(wav, 1, from, right, left);
+}
+
+/// What a `listed` note names: the instance and its port.
+struct Listed {
+	std::string instance;
+	int port = 0;
+};
+
+/// Node `node`'s first `listed` note, once ear printed it.
+Listed listedBy(ChildProcess& process, const std::string& node) {
+	const std::string prefix = "node " + node + " says listed ";
+	const auto listed = process.waitForLineStartingWith(prefix, deadline);
+	INFO("ear printed:\n" << process.output());
+	REQUIRE(listed);
+	const std::string words = listed->substr(prefix.size());
+	const auto on = words.find(" on port ");
+	REQUIRE(on != std::string::npos);
+	return {words.substr(0, on), std::stoi(words.substr(on + std::string_view(" on port ").size()))};
+}
+
+/// The sender playing `wav` to the speaker `discovered` found, named `speaker`, at senderVolume.
+ChildProcess playTo(const std::filesystem::path& wav, const json& discovered, int port, const std::string& speaker) {
+	return sender({"--play", wav.string(), "--address", discovered["address"].get<std::string>(), "--port",
+	               std::to_string(port), "--txt", discovered["txt"].dump(), "--speaker", speaker, "--volume",
+	               senderVolume});
+}
+
 } // namespace
 
 TEST_CASE("An airplay node is found by an mDNS browse, plays an AirPlay 1 tone into a file node channel for channel, "
@@ -153,15 +201,10 @@ TEST_CASE("An airplay node is found by an mDNS browse, plays an AirPlay 1 tone i
 	Ear ear(directory, {"node kitchen running"}, {"--runtime-dir", runtime.string()});
 	ChildProcess& process = ear.process();
 
-	// Its listing: the instance shairport-sync named, `<device id>@Kitchen`, on the port ear picked for it.
-	const auto listed = process.waitForLineStartingWith("node kitchen says listed ", deadline);
-	INFO("ear printed:\n" << process.output());
-	REQUIRE(listed);
-	const std::string words = listed->substr(std::string_view("node kitchen says listed ").size());
-	const auto on = words.find(" on port ");
-	REQUIRE(on != std::string::npos);
-	CHECK(words.substr(0, on).ends_with("@Kitchen"));
-	const auto port = std::stoi(words.substr(on + std::string_view(" on port ").size()));
+	// Its listing, once probed: the instance shairport-sync named, `<device id>@Kitchen`, on the port ear picked for it.
+	const Listed listed = listedBy(process, "kitchen");
+	CHECK(listed.instance.ends_with("@Kitchen"));
+	const int port = listed.port;
 
 	// Found as a phone finds it: by multicast, on the port the note named.
 	auto browser = sender({"--browse", "Kitchen"});
@@ -171,9 +214,7 @@ TEST_CASE("An airplay node is found by an mDNS browse, plays an AirPlay 1 tone i
 	CHECK((*discovered)["port"] == port);
 
 	{
-		auto player = sender({"--play", (directory.path() / "tone.wav").string(), "--address",
-		                      (*discovered)["address"].get<std::string>(), "--port", std::to_string(port), "--txt",
-		                      (*discovered)["txt"].dump(), "--speaker", "Kitchen"});
+		auto player = playTo(directory.path() / "tone.wav", *discovered, port, "Kitchen");
 		const bool playing = process.waitForLine("node kitchen says playing", playDeadline);
 		const auto finished = waitForEvent(player, "finished", playDeadline);
 		const bool idle = process.waitForLine("node kitchen says idle", playDeadline);
@@ -204,16 +245,91 @@ TEST_CASE("An airplay node is found by an mDNS browse, plays an AirPlay 1 tone i
 	INFO("ear printed:\n" << process.output());
 	REQUIRE(status == 0);
 
-	const Wav wav = readWav(directory.recordings() / "rec.wav");
-	REQUIRE(wav.info.channels == 2);
-	CHECK(wav.info.samplerate == static_cast<int>(graphFrequency));
-	const auto frames = static_cast<std::size_t>(wav.info.frames);
-	std::size_t first = frames;
-	for (std::size_t frame = 0; frame < frames && first == frames; ++frame)
-		if (std::abs(wav.samples[frame * 2]) > 0.01F || std::abs(wav.samples[frame * 2 + 1]) > 0.01F) first = frame;
-	REQUIRE(first < frames);
-	const std::size_t from = first + graphFrequency / 2;
-	REQUIRE(from + judgedTenths * tenth <= frames);
-	checkTone(wav, 0, from, 1000.0, 1500.0);
-	checkTone(wav, 1, from, 1500.0, 1000.0);
+	checkRecording(directory.recordings() / "rec.wav", 1000.0, 1500.0);
+}
+
+TEST_CASE("Two airplay nodes of one speaker name are told apart by probing: one renamed, both found, both play at once "
+          "into their own file nodes",
+          "[system][airplay]") {
+	TempDirectory directory;
+	const std::filesystem::path runtime = directory.path() / "runtime";
+	std::filesystem::create_directories(runtime);
+	writeTone(directory.path() / "kitchen.wav", 1000.0, 1500.0, 5);
+	writeTone(directory.path() / "porch.wav", 700.0, 1100.0, 5);
+	// AirPlay 1's instance is MD5(speaker name, MAC)@<speaker name>: the two nodes ask for the same one.
+	writeGraphFile(directory, graphFileText("node airplay kitchen { name \"Kitchen\"; }\n"
+	                                        "node airplay porch { name \"Kitchen\"; }\n"
+	                                        "node file rec1 { path \"rec1.wav\"; }\n"
+	                                        "node file rec2 { path \"rec2.wav\"; }\n"
+	                                        "route kitchen:out.1 rec1:record.left;\n"
+	                                        "route kitchen:out.2 rec1:record.right;\n"
+	                                        "route porch:out.1 rec2:record.left;\n"
+	                                        "route porch:out.2 rec2:record.right;\n",
+	                                        graphFrequency));
+	Ear ear(directory, {"node kitchen running"}, {"--runtime-dir", runtime.string()});
+	ChildProcess& process = ear.process();
+	REQUIRE(process.waitForLine("node porch running", deadline));
+
+	const Listed kitchen = listedBy(process, "kitchen");
+	const Listed porch = listedBy(process, "porch");
+	INFO("ear printed:\n" << process.output());
+	CHECK(kitchen.port != porch.port);
+	// A rename is said before its listed, so both are in by now: exactly one node's, from the other's instance.
+	const auto kitchenRenamed = process.lineStartingWith("node kitchen says renamed ");
+	const auto porchRenamed = process.lineStartingWith("node porch says renamed ");
+	REQUIRE(kitchenRenamed.has_value() != porchRenamed.has_value());
+	const Listed& kept = kitchenRenamed ? porch : kitchen;
+	const Listed& renamed = kitchenRenamed ? kitchen : porch;
+	REQUIRE(kept.instance.ends_with("@Kitchen"));
+	CHECK(renamed.instance == kept.instance + " (2)");
+	const std::string renamer = kitchenRenamed ? "kitchen" : "porch";
+	CHECK(process.lineStartingWith("node " + renamer + " says renamed ") ==
+	      std::optional<std::string>("node " + renamer + " says renamed " + kept.instance + " to " + renamed.instance));
+
+	// Each found by its own name, on its own port.
+	auto keptBrowser = sender({"--browse", "Kitchen"});
+	auto renamedBrowser = sender({"--browse", "Kitchen (2)"});
+	const auto keptFound = waitForEvent(keptBrowser, "discovered", browseDeadline);
+	const auto renamedFound = waitForEvent(renamedBrowser, "discovered", browseDeadline);
+	INFO("browsers printed:\n" << keptBrowser.output() << renamedBrowser.output());
+	REQUIRE(keptFound);
+	REQUIRE(renamedFound);
+	CHECK((*keptFound)["instance"] == kept.instance + "._raop._tcp.local.");
+	CHECK((*keptFound)["port"] == kept.port);
+	CHECK((*renamedFound)["instance"] == renamed.instance + "._raop._tcp.local.");
+	CHECK((*renamedFound)["port"] == renamed.port);
+
+	// Both at once, a tone each: kitchen's to the kitchen node, porch's to the porch node.
+	const json& kitchenFound = kitchenRenamed ? *renamedFound : *keptFound;
+	const json& porchFound = kitchenRenamed ? *keptFound : *renamedFound;
+	{
+		auto toKitchen = playTo(directory.path() / "kitchen.wav", kitchenFound, kitchen.port, "Kitchen");
+		auto toPorch = playTo(directory.path() / "porch.wav", porchFound, porch.port, "Kitchen");
+		const bool kitchenPlaying = process.waitForLine("node kitchen says playing", playDeadline);
+		const bool porchPlaying = process.waitForLine("node porch says playing", playDeadline);
+		const auto kitchenFinished = waitForEvent(toKitchen, "finished", playDeadline);
+		const auto porchFinished = waitForEvent(toPorch, "finished", playDeadline);
+		const bool kitchenIdle = process.waitForLine("node kitchen says idle", playDeadline);
+		const bool porchIdle = process.waitForLine("node porch says idle", playDeadline);
+		INFO("players printed:\n" << toKitchen.output() << toPorch.output());
+		INFO("ear printed:\n" << process.output());
+		CHECK(kitchenPlaying);
+		CHECK(porchPlaying);
+		REQUIRE(kitchenFinished);
+		REQUIRE(porchFinished);
+		CHECK(kitchenIdle);
+		CHECK(porchIdle);
+		CHECK(toKitchen.waitForExit(deadline) == 0);
+		CHECK(toPorch.waitForExit(deadline) == 0);
+	}
+	keptBrowser.signal(SIGTERM);
+	renamedBrowser.signal(SIGTERM);
+	CHECK(keptBrowser.waitForExit(deadline) == 0);
+	CHECK(renamedBrowser.waitForExit(deadline) == 0);
+
+	const auto status = ear.stop();
+	INFO("ear printed:\n" << process.output());
+	REQUIRE(status == 0);
+	checkRecording(directory.recordings() / "rec1.wav", 1000.0, 1500.0);
+	checkRecording(directory.recordings() / "rec2.wav", 700.0, 1100.0);
 }

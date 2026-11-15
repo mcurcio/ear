@@ -59,7 +59,8 @@ SharedMemoryName channelOf(std::string_view node);
 std::string thisHostName();
 
 /// How a sender's list shows the speaker: 1 to 50 bytes of valid UTF-8 with no control character, no '%' (shairport-sync
-/// expands %h, %H, %v and %V in a name) and no '@' (the separator of a RAOP instance, `<device id>@<name>`).
+/// expands %h, %H, %v and %V in a name), no '@' (the separator of a RAOP instance, `<device id>@<name>`) and no '.' (the
+/// advertiser's instance rule: mjansson/mdns splits names at dots).
 class SpeakerName {
 public:
 	static std::optional<SpeakerName> parse(std::string_view text);
@@ -72,7 +73,7 @@ private:
 };
 
 inline constexpr auto nameRow = setting::optional(
-	"name", setting::text<SpeakerName::parse>("a speaker name: 1 to 50 bytes, no control characters, no % or @"));
+	"name", setting::text<SpeakerName::parse>("a speaker name: 1 to 50 bytes, no control characters, no %, @ or dot"));
 inline constexpr auto out = bank::output<"out">;
 inline constexpr auto fromAirplay = bank::insideInput<"from_airplay">;
 class Reports;
@@ -86,7 +87,9 @@ using Checked = CheckedOf<spec>;
 std::string hostLabelOf(std::string_view node);
 
 /// shairport-sync's config file, in libconfig's syntax: the "metadata" mDNS backend (its listing handed to the report
-/// feed, which ear announces), the pipe output into `fifo` in airplay1Format at airplay1Rate, and the metadata feed.
+/// feed, which ear announces), the sender's volume ignored (the node's level is ear's to own), AirPlay 1's UDP ports
+/// picked by the kernel (base 0: many nodes never collide), the pipe output into `fifo` in airplay1Format at
+/// airplay1Rate, and the metadata feed.
 /// A file and not flags: shairport-sync dies "pipename needed" when its config lacks pipe.name.
 std::vector<ProgramPart> configText(part::Fifo fifo);
 

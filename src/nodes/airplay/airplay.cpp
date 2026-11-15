@@ -35,8 +35,8 @@ constexpr std::string_view formatName(PipeFormat format) {
 std::optional<SpeakerName> SpeakerName::parse(std::string_view text) {
 	constexpr std::size_t most = 50;
 	if (text.empty() || text.size() > most || text.find_first_of("%@") != std::string_view::npos) return std::nullopt;
-	// UTF-8 with no control character: the one home of that rule is the advertiser's, which announces the name in the
-	// instance shairport-sync makes of it.
+	// UTF-8 with no control character and no dot: the one home of that rule is the advertiser's, which announces the
+	// name in the instance shairport-sync makes of it.
 	if (mdns::listingRefused(
 			mdns::Listing{.service = "_raop._tcp", .instance = std::string(text), .host = "ear", .port = 1, .txt = {}}))
 		return std::nullopt;
@@ -52,7 +52,8 @@ std::string hostLabelOf(std::string_view node) {
 }
 
 std::vector<ProgramPart> configText(part::Fifo fifo) {
-	return {part::Text{"general = { mdns_backend = \"metadata\"; output_backend = \"pipe\"; };\n"
+	return {part::Text{"general = { mdns_backend = \"metadata\"; output_backend = \"pipe\"; ignore_volume_control = "
+	                   "\"yes\"; udp_port_base = 0; };\n"
 	                   "metadata = { enabled = \"yes\"; pipe_name = \""},
 	        part::Feed{}, part::Text{"\"; };\npipe = { name = \""}, std::move(fifo),
 	        part::Text{"\"; output_format = \"" + std::string(formatName(airplay1Format)) + "\"; output_rate = " +

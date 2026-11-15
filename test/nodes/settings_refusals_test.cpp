@@ -224,7 +224,7 @@ TEST_CASE("Sendspin's refusals, in order", "[nodes][settings]") {
 
 TEST_CASE("Airplay's refusals, in order", "[nodes][settings]") {
 	constexpr std::string_view nameText =
-		"name: must be a speaker name: 1 to 50 bytes, no control characters, no % or @";
+		"name: must be a speaker name: 1 to 50 bytes, no control characters, no %, @ or dot";
 	for (const std::string_view bad : {"null", "true", "3", R"("x")", "[]"}) {
 		CHECK(says("airplay", bad) == R"(settings: must be an object with optional "name")");
 	}
@@ -235,6 +235,7 @@ TEST_CASE("Airplay's refusals, in order", "[nodes][settings]") {
 	CHECK(says("airplay", R"({"name":"100%"})") == nameText);
 	CHECK(says("airplay", R"({"name":"a@b"})") == nameText);
 	CHECK(says("airplay", R"({"name":"a\nb"})") == nameText);
+	CHECK(says("airplay", R"({"name":"Mr. K"})") == nameText);
 	CHECK(says("airplay", "{}") == accepted);
 	CHECK(says("airplay", R"({"name":"Kitchen"})") == accepted);
 	// Several problems: the first in order is told.
