@@ -1,3 +1,107 @@
+## [4.0.0](https://github.com/mcurcio/ear/compare/v3.0.0...v4.0.0) (2026-11-15)
+
+### ⚠ BREAKING CHANGES
+
+* **config:** ear.conf's top-level graph_frequency and block_size are
+refused (ear/unknown-directive) with what to write instead, from the file's
+own values: "graph_frequency is no longer a directive: graph settings moved:
+write graph { rate 44.1khz; block_size 512; }". A bare-number rate, the graph
+rate's or an rtp node's, is refused (ear/bad-rate: "48000 has no unit: write
+48000hz or 48khz"). --graph-frequency is refused, saying to write --rate
+with a unit. No compatibility is kept: rewrite ear.conf with a graph { }
+block and units on every rate.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01MtEdSSMnWMDCszQdw5TZut
+
+### Features
+
+* **config:** rates are written with units, in a graph { } block ([39c0f45](https://github.com/mcurcio/ear/commit/39c0f45c99dc07471138acc80541978d07306891))
+* **control:** a node's own knobly text, read and replaced (node-text) ([3e9a2c6](https://github.com/mcurcio/ear/commit/3e9a2c657e7c641707d9e9fa05c3688103884f5b))
+* **control:** ear.sink-dropped and ear.source-shortfall on standard output ([371c4e5](https://github.com/mcurcio/ear/commit/371c4e5f6a944808a13615fef68914450f5a24c5))
+* **control:** node.addText appends a new node's knobly statement (node-text) ([7e852f1](https://github.com/mcurcio/ear/commit/7e852f1059d07595991249e2891df316e44b90fc))
+* **control:** the companions feature: each node's companion list on the wire and node.companionsChanged ([4230a3c](https://github.com/mcurcio/ear/commit/4230a3cd591654321796b1e60f7714e6ed5f3914))
+* **control:** the counters feature and counters.changed, and the two counter records (cycle facts D2) ([ced7c08](https://github.com/mcurcio/ear/commit/ced7c08d18cd39e1797872434fb9f51a4110fb1b))
+* **core:** a node's companion list, told by NodeHost and its counters paced by CounterWatch ([84026c3](https://github.com/mcurcio/ear/commit/84026c375de3cc74be3a68d5c7979f79c711583f))
+* **core:** claims, so a second rtp node on one UDP port is refused held by node <first> (slice 3c) ([7b5a1ff](https://github.com/mcurcio/ear/commit/7b5a1ff6331045b93c57413f15d7d66abfb4ad87)), closes [writing-a-node-type.md#claims](https://github.com/mcurcio/writing-a-node-type.md/issues/claims) [engine.md#rtp-receivers](https://github.com/mcurcio/engine.md/issues/rtp-receivers) [#readiness-deadlines](https://github.com/mcurcio/ear/issues/readiness-deadlines) [node-types.md#rtp](https://github.com/mcurcio/node-types.md/issues/rtp)
+* **core:** cycle counters per graph and per node (cycle facts D1) ([b24bfbf](https://github.com/mcurcio/ear/commit/b24bfbf87498d23db3d9bbba5049a95d918dd2db))
+* **core:** cycle facts and the one rule that states them (cycle facts C1) ([6874285](https://github.com/mcurcio/ear/commit/68742852bebdb09f63822a02d6617c7e515dd850))
+* **core:** GraphCycle::ranRawNs, when the block really began a cycle ([910279b](https://github.com/mcurcio/ear/commit/910279bb02c162b36b69aa8e866418c1888d48e3))
+* **core:** one latency model, series and parallel kept apart (root classes R1) ([8d11cd7](https://github.com/mcurcio/ear/commit/8d11cd7aab7fffed97d00dee03b4f6d4f0d28a5a))
+* **core:** readiness deadlines for companions and the quantum guard (slice 3b.4) ([55601e2](https://github.com/mcurcio/ear/commit/55601e274837d5415f7669223cfa04613089973d))
+* **core:** recordings, so a second file node on one path is refused held by node <first> (slice 3c) ([5a3396d](https://github.com/mcurcio/ear/commit/5a3396d67c9abbd7259a16a898a3c4e61d4afb20)), closes [writing-a-node-type.md#recordings](https://github.com/mcurcio/writing-a-node-type.md/issues/recordings) [#claims](https://github.com/mcurcio/ear/issues/claims) [#file](https://github.com/mcurcio/ear/issues/file) [engine.md#readiness-deadlines](https://github.com/mcurcio/engine.md/issues/readiness-deadlines)
+* **core:** SampleRate and FrameClock(SampleRate) (cycle facts C6a) ([0d16b07](https://github.com/mcurcio/ear/commit/0d16b07e06ef2e08754c87caf3b65f2871f7d687))
+* **core:** sinks stamp their upstream latency and count their drops (slice 3b.1) ([51410af](https://github.com/mcurcio/ear/commit/51410af26b88316af6df6127740fbafc2bc261c2)), closes [docs/engine.md#sinks](https://github.com/docs/engine.md/issues/sinks) [docs/engine.md#latency-per-bank-pair](https://github.com/docs/engine.md/issues/latency-per-bank-pair) [docs/writing-a-node-type.md#sinks](https://github.com/docs/writing-a-node-type.md/issues/sinks)
+* **core:** sources keep in step with the clock on cycle facts, and sinks' chunks carry them (cycle facts C4b) ([75a64c1](https://github.com/mcurcio/ear/commit/75a64c1f7c34e814134719abd905be5a272aef26))
+* **core:** sources, played by their block before its code (slice 3b.2) ([cbe6cf7](https://github.com/mcurcio/ear/commit/cbe6cf7f261ea49fbdb9395d17155853a01556d3))
+* faults split by owner, an adapter's bug reported as ear.internal-error (root classes R4b) ([49a3047](https://github.com/mcurcio/ear/commit/49a3047fbe38315b659b3130594003e218ccc607)), closes [docs/architecture.md#faults-by-owner](https://github.com/docs/architecture.md/issues/faults-by-owner)
+* **pipewire:** the engine states every cycle's facts (cycle facts C2) ([5e214ba](https://github.com/mcurcio/ear/commit/5e214ba0acfacf7bccc00a2e7bdb4b352b0fe048))
+* **sendspin:** one owner of the played timeline, the source's clock (slice 3c) ([31285ed](https://github.com/mcurcio/ear/commit/31285edb700b9e61b219c798f383f2cfe82be445))
+* **sendspin:** sendspin on the type's class, and a stopped node stays connected (slice 3c) ([9ad571a](https://github.com/mcurcio/ear/commit/9ad571a98e021d47cb89ae89bca2e0f03d4015bc))
+* **sendspin:** skip every catch-up the cycle facts state, however long (cycle facts C4a) ([339149b](https://github.com/mcurcio/ear/commit/339149bf53c1212d63db30c16e6eab75a90f2874))
+* **web:** companion badges on each node ([ddedf1f](https://github.com/mcurcio/ear/commit/ddedf1f6886fee0a61b038ca4212a43febd63f09))
+* **web:** knobly syntax highlighting from knobly v1.0.0 ([feb45dc](https://github.com/mcurcio/ear/commit/feb45dc770f95fb4de9df86d9fa2c2b44f17223c))
+* **web:** the add-node form takes knobly ([fece90f](https://github.com/mcurcio/ear/commit/fece90f84098977bb4459f55f5d7b49157fa5f82))
+* **web:** the counters panel and recent marks (cycle facts D3) ([f3d5971](https://github.com/mcurcio/ear/commit/f3d5971ab1a72c9d0649568816801f138911499e))
+* **web:** the engine facts show the graph's rate in kHz ([d9c8c9e](https://github.com/mcurcio/ear/commit/d9c8c9e51bbad3b1492654292a6d79b07218d1c7))
+* **web:** the node box edits knobly ([d4a7fac](https://github.com/mcurcio/ear/commit/d4a7faceb6f770a54f068efbd7407dce862a693b))
+
+### Bug Fixes
+
+* a stop ends with ear: stopped, and the keeper's watch goes as it begins ([d5b08d0](https://github.com/mcurcio/ear/commit/d5b08d0ef85457957d7e4144e9d619e340b1c151)), closes [docs/node-types.md#failures](https://github.com/docs/node-types.md/issues/failures)
+* an idle writer owes nothing, and a stall past the feed is proven back in sync (cycle facts C4 review) ([1a6bad8](https://github.com/mcurcio/ear/commit/1a6bad80b22bf09fb3bea1bec41ccbc0bf849793)), closes [docs/node-types.md#clock](https://github.com/docs/node-types.md/issues/clock)
+* **control:** a node's text ends where it ends, in the file's line ending ([7f7aeff](https://github.com/mcurcio/ear/commit/7f7aeff9804c48ff0a8ebbfbc4b391d8c53d192a))
+* **control:** companion lists only for nodes a client holds ([70c621a](https://github.com/mcurcio/ear/commit/70c621a61da45a5c4743f204a7d1d2f72fd6b27c))
+* **core:** a declared delay is a latency path, a misfit plan fails configure (root classes R2 review) ([884f8c9](https://github.com/mcurcio/ear/commit/884f8c9a6ca68908e64c4a482e47bf76983df8f3))
+* **core:** a declared delay names its path, and the path must exist (root classes R2) ([26e75ff](https://github.com/mcurcio/ear/commit/26e75fffdedb8bc60708eb53af767b6af4028f4b))
+* **core:** a leaked configuration's store writes dropped, its record freed after its late close, checked on the real engine (slice 3c) ([7879852](https://github.com/mcurcio/ear/commit/78798528fcd5d2cc455a3b659f827fa9eb48e7ae))
+* **core:** a left source never runs on a state that is gone, replaced strand workers joined (slice 3c) ([e302d49](https://github.com/mcurcio/ear/commit/e302d496e7b1a0a572fe3abd5548f7cf43459b21)), closes [writing-a-node-type.md#loops](https://github.com/mcurcio/writing-a-node-type.md/issues/loops)
+* **core:** a multicast rtp node shares its port with a program that binds it by SO_REUSEADDR, and a wedged leak's refusal says so (slice 3c) ([4edb09d](https://github.com/mcurcio/ear/commit/4edb09dec3742cbf87009c2962f7998870acbec8)), closes [writing-a-node-type.md#claims](https://github.com/mcurcio/writing-a-node-type.md/issues/claims) [engine.md#rtp-receivers](https://github.com/mcurcio/engine.md/issues/rtp-receivers) [node-types.md#rtp](https://github.com/mcurcio/node-types.md/issues/rtp)
+* **core:** a node whose only outputs are sinks' banks is silenced with no fade (slice 3c) ([874dce9](https://github.com/mcurcio/ear/commit/874dce905fe7732378997b9042f87ebe0695ff87)), closes [architecture.md#fades](https://github.com/mcurcio/architecture.md/issues/fades) [writing-a-node-type.md#sinks](https://github.com/mcurcio/writing-a-node-type.md/issues/sinks)
+* **core:** a stall lasts while the graph is behind, not while cuts are adjacent ([7a1b4fe](https://github.com/mcurcio/ear/commit/7a1b4fe58f60049b59bd280674981237f5ab1114))
+* **core:** a superseded node's counts reach the records, its span open until it is gone ([c82e5be](https://github.com/mcurcio/ear/commit/c82e5be3f63d8af846c2f1511ea97baa4a7aa0d6)), closes [docs/engine.md#counters](https://github.com/docs/engine.md/issues/counters)
+* **core:** a type's throw at parse refuses the edit, and none goes unrecorded (root classes R4c review) ([d98ed47](https://github.com/mcurcio/ear/commit/d98ed476533c12ef539b677a403528e4f6c16d88))
+* **core:** a type's throw is a fact about its node (root classes R4c) ([e598251](https://github.com/mcurcio/ear/commit/e598251e6233a28baf5569eb3834ebe1d01329ea))
+* **core:** add a companion's latency in series beyond its bank's peers, and cover the companion rules (slice 3b.3 review) ([40be60a](https://github.com/mcurcio/ear/commit/40be60af040988a9c12899dd27e26d2f630acc2c))
+* **core:** cuts counted for any span, not only the ring's (cycle facts C1 review) ([c27c109](https://github.com/mcurcio/ear/commit/c27c109460225b165f139a1c4d641c74362c4175))
+* **core:** date a source by its paired outputs' declared latency, keep time exactly, and harden its waits (slice 3b.2 review) ([6c1299b](https://github.com/mcurcio/ear/commit/6c1299b5567f580e3258fedf87f4f3bf2e84eba9))
+* **core:** date a split chunk's second call by its own first frame, and harden the block's latency (slice 3b.1 review) ([e4b72cf](https://github.com/mcurcio/ear/commit/e4b72cf66190e972e428e27613a6b45f715f9f05))
+* **core:** keep a card's ALSA buffer, pin the quantum floor, and judge late or unmade deadlines fairly (slice 3b.4 review) ([f7a4295](https://github.com/mcurcio/ear/commit/f7a4295c3d029e5b0401bf25ae2b0944c4689456))
+* **core:** stores refuse a blocking write on the main loop, tell an unconfirmed write apart, read and narrow on one descriptor (slice 3c) ([2e3888e](https://github.com/mcurcio/ear/commit/2e3888e86fa87a4092675d05ff81a3098e2a3976))
+* **core:** teardown step 5 destroys a never-started loop's state before the instance (slice 3c) ([5fe3bf4](https://github.com/mcurcio/ear/commit/5fe3bf4a91955eae3308e677f83a6f907895ff01)), closes [docs/architecture.md#teardown-by-dependency](https://github.com/docs/architecture.md/issues/teardown-by-dependency) [writing-a-node-type.md#loops](https://github.com/mcurcio/writing-a-node-type.md/issues/loops)
+* **core:** teardown step 5 frees the sinks before the instance (slice 3c) ([97d1c5e](https://github.com/mcurcio/ear/commit/97d1c5e8cbcaf6edb0eafb35255ad6ebb3d4d8ff)), closes [docs/architecture.md#teardown-by-dependency](https://github.com/docs/architecture.md/issues/teardown-by-dependency) [writing-a-node-type.md#sinks](https://github.com/mcurcio/writing-a-node-type.md/issues/sinks)
+* **core:** the node machine says what it drops, and every dropped type fault is logged (root classes R4c) ([9756961](https://github.com/mcurcio/ear/commit/9756961572e76a6e39a07259eda10f8f0bd319e4))
+* **core:** the recording path rule is core's, and a leaked recording closes before its path is free (slice 3c) ([ee8d4e8](https://github.com/mcurcio/ear/commit/ee8d4e83b2aed04089822f03f0bac27f662d1274)), closes [writing-a-node-type.md#recordings](https://github.com/mcurcio/writing-a-node-type.md/issues/recordings)
+* no blocking invoke into a wedged data loop, from any path (root classes R4b) ([b9ab3db](https://github.com/mcurcio/ear/commit/b9ab3db61029b2cc98f7b9c00691f9b68f7f58f6))
+* owned faults leave nothing registered and refusals survive nesting (root classes R4b review) ([10b4337](https://github.com/mcurcio/ear/commit/10b4337fc7d92c14e4c35a0cd3f769cba6bedbc7))
+* **pipewire:** a lost cut fails, and a left listener keeps itself (cycle facts C2 review) ([a119aea](https://github.com/mcurcio/ear/commit/a119aea89a6b9fb647cfbe33f4f7e26dfe104eca))
+* **pipewire:** no route around the property table (root classes R6 review) ([f7067aa](https://github.com/mcurcio/ear/commit/f7067aadfd3a5622748890bc12e18cbdc18463af))
+* **sendspin:** a debt is paid from everything readable, skipping again what the writer adds while it is owed ([a3bbd37](https://github.com/mcurcio/ear/commit/a3bbd377781ccf300ce0382d2652edf685043b44))
+* **sendspin:** a debt's payment skips in two passes at most, so the data thread's work is bounded ([d26e833](https://github.com/mcurcio/ear/commit/d26e833725ea973efebcc17b3046438521f5b206))
+* **sendspin:** a node stopped while the server streams stays connected (slice 3c) ([66e0bb0](https://github.com/mcurcio/ear/commit/66e0bb06f42975d90dbd13c2da11aa862cda059a)), closes [node-types.md#sendspin](https://github.com/mcurcio/node-types.md/issues/sendspin)
+* **sendspin:** a pending drop timeline skips a jump, the judge models it from the code's own facts, and S3c.6c owns one timeline (slice 3c) ([40a4fad](https://github.com/mcurcio/ear/commit/40a4fad7d64f144b215e7946e445c60a8e523625))
+* **sendspin:** a stall's unskipped remainder is paid before the library is told (cycle facts C4) ([5affeb3](https://github.com/mcurcio/ear/commit/5affeb38c5a3751a3453917a11fc862fe0e46599))
+* **sendspin:** a stop's drop is told, each owner reports in its own box, no report outlives its stream (slice 3c) ([9c45f6e](https://github.com/mcurcio/ear/commit/9c45f6e56965d4052cad311a465c62116f1e2f3c))
+* **sendspin:** a stop's first tick ends what the clock kept about the ring (slice 3c) ([b561df6](https://github.com/mcurcio/ear/commit/b561df61530b4b741813931a8bd46a9b976d99c7))
+* **sendspin:** count only open sockets in the transport's room, and end a connection closed under it while open ([e22f998](https://github.com/mcurcio/ear/commit/e22f99893bf76a4eaeb1872fea5381fe1b888fea))
+* **sendspin:** ear owes lost time only while the library cannot realign itself (cycle facts C4) ([7632a62](https://github.com/mcurcio/ear/commit/7632a62e33ca5c2f59d24089195834b36b1933fe)), closes [docs/node-types.md#clock](https://github.com/docs/node-types.md/issues/clock)
+* **sendspin:** one hand-over and one timeline between the code and the feed's writer (slice 3c) ([4514e1c](https://github.com/mcurcio/ear/commit/4514e1cb63f6d4dcae5616ac0cd166851866963c))
+* **sendspin:** tell the library nothing from a cycle dated behind raw time, and pay a debt in one step with the read ([01b54dd](https://github.com/mcurcio/ear/commit/01b54dd731a45e65068ce3496bfd581368a6fbb1))
+* **sendspin:** the drop's timeline skips a catch-up once, and expires after a feed's worth of cycles (slice 3c) ([5527d57](https://github.com/mcurcio/ear/commit/5527d576a195372f8b2de40129882daa0baa38b3))
+* **sendspin:** the dropped feed's finish never runs ahead, and its bound is derived (slice 3c) ([73a3bf8](https://github.com/mcurcio/ear/commit/73a3bf88b9dcad84dacb79145251785335e7dd38))
+* **sendspin:** the library floors its playtime only when starved, so a stall's catch-up stays in sync (cycle facts C4) ([b8e3596](https://github.com/mcurcio/ear/commit/b8e359689e25082522407a21fd20478836ce0685))
+* **sendspin:** the library is told after untoldBound even under constant loss, and its underrun recovery is tested (cycle facts C4) ([a96f841](https://github.com/mcurcio/ear/commit/a96f8417506a0d5159a1e25df39df9158ce24338)), closes [docs/node-types.md#clock](https://github.com/docs/node-types.md/issues/clock)
+* **sendspin:** the node keeps its own time as an honest sink with a local skip ([f599d4f](https://github.com/mcurcio/ear/commit/f599d4ff420b2c4de9a42806bf4d06dcb71aa1fd))
+* the keeper's watch and descriptor go as the stop begins, and a stop is bounded by ear's own word ([582c55a](https://github.com/mcurcio/ear/commit/582c55a48b450c4a3de3abda6075808f5f8137eb))
+* **web:** a node's mark lasts across a port-caused replace, and rows say how much in text ([ca5a4b5](https://github.com/mcurcio/ear/commit/ca5a4b570b046c6bd2f1f9e9e6e18b545ceca545))
+* **web:** a reconnect's snapshot never marks companion drops as recent ([3bc87ab](https://github.com/mcurcio/ear/commit/3bc87ab8a43c329046441ec8a69aee18b275e19a))
+* **web:** the knobly boxes in forced colours, at 4.5:1, light only ([3d3f230](https://github.com/mcurcio/ear/commit/3d3f2300305a6f1535be10dbdbf41156043ad295)), closes [#f1f3f5](https://github.com/mcurcio/ear/issues/f1f3f5) [#212529](https://github.com/mcurcio/ear/issues/212529) [#1864ab](https://github.com/mcurcio/ear/issues/1864ab) [#1c7ed6](https://github.com/mcurcio/ear/issues/1c7ed6) [#a35200](https://github.com/mcurcio/ear/issues/a35200) [#8a6100](https://github.com/mcurcio/ear/issues/8a6100) [#2b7a3a](https://github.com/mcurcio/ear/issues/2b7a3a) [#2b8a3e](https://github.com/mcurcio/ear/issues/2b8a3e) [#a61e1e](https://github.com/mcurcio/ear/issues/a61e1e) [#666](https://github.com/mcurcio/ear/issues/666) [#777](https://github.com/mcurcio/ear/issues/777) [#495057](https://github.com/mcurcio/ear/issues/495057) [#c92a2a](https://github.com/mcurcio/ear/issues/c92a2a) [#e03131](https://github.com/mcurcio/ear/issues/e03131) [docs/editor.md#highlighting](https://github.com/docs/editor.md/issues/highlighting)
+
+### Dependencies
+
+* **deps:** knobly's pin holds its URL templates, and a bump checks SHA256SUMS and is all or nothing ([50fbae5](https://github.com/mcurcio/ear/commit/50fbae59be7576f7e9d7e7e680a7a56845bfb82e))
+* **deps:** upgrade knobly to 1.0.0, one pin for C++ and JS ([53a19f7](https://github.com/mcurcio/ear/commit/53a19f7307205837a194104a3128e9baaf67f660))
+
 ## [3.0.0](https://github.com/mcurcio/ear/compare/v2.0.0...v3.0.0) (2026-11-09)
 
 ### ⚠ BREAKING CHANGES
