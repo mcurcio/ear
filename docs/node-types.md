@@ -786,9 +786,43 @@ listings under one device id, the same after a restart, found by an `_airplay._t
 missing fails `start-failed`, nqptp stopping fails `lost`. AirPlay 2's sound from a real sender is
 checked by hand ([testing.md](testing.md#what-ci-does-not-prove)).
 
-Not built: a node level, passwords, track information, recovery's retries; a test pinning the pipe
-module's 8192 frames; ear's probe of the RTSP port racing shairport-sync's bind (another process may
-take the port between the two, failing the node).
+**Why it is built this way** (the owner's answers of 2026-11-14, all general guidance, not requirements):
+
+- *Independent clocks.* "different Airplay nodes in ear have no requirement to align with one another.
+  they will maintain their own independent clocks, as all nodes do". So the receiver keeps its own
+  clock and nothing aligns two `airplay` nodes.
+- *Pure subprocess.* "ear shouldnt know anything about kubernetes. So if there are aspects that cant
+  be handled as pure subprocess, then ear cant do it." Hence shairport-sync runs as ear's own
+  subprocess, and nqptp, which cannot be one (it is one per machine, shared by every room, and needs
+  low ports), is the operator's, run from the written instructions above; ear only reads whether its
+  channel exists. AirPlay 2 is therefore a setting on the same node, not a second type.
+- *The join is PipeWire's pipe module* (the owner picked it over ear's own tracked converter): ear
+  already tests it, and it keeps the receiver's clock tracking. It costs a fixed delay, about 0.19 s
+  a speaker ([above](#airplay)), uncompensated and adjustable only by a converter of ear's own, which
+  waits for another first user ([timing-model.md](design/timing-model.md), T5).
+- *AirPlay 2 ships with its sound checked by hand*, no scripted AirPlay 2 sender being known: an
+  exception to testing.md's rule that audio is verified in tests, for that one path
+  ([testing.md](testing.md#what-ci-does-not-prove)).
+- Several speakers on one machine ("i will want multiple shairport instances", 2026-10-29) is why each
+  node runs its own program, with its own ports, identity and listing; a node that fails fails alone
+  (recovery's "does not effect the graph globally", 2026-11-08).
+
+**Costs.** A young upstream: shairport-sync's `metadata` mDNS hand-off is first in 5.6.3 (2026-11-10),
+in no Debian release, so ear builds it from source, and the images are bigger. A listing puts ear on
+the senders' network. Each node is a process and its ports (UDP picked by the kernel; nqptp's
+319, 320 and 9000 outside ear's claims). nqptp keeps at most 16 AirPlay 2 node names a run.
+
+**Prior art.** shairport-sync is the one maintained Linux receiver with AirPlay 2 and many
+instances; nqptp is its timing service; PipeWire's pipe module is the join. pyatv is the test sender
+([testing.md](testing.md#the-airplay-sender)). Rejected: UxPlay (screen mirroring), RPiPlay and
+shairplay (AirPlay 1 only, unmaintained), an in-process receiver, a container per speaker, and ear
+starting nqptp.
+
+**Not built:** a node level (the sender's volume), passwords, track information, Home app pairing,
+remote control, 96 and 192 kHz, multichannel, arm64, a lip-sync offset, recovery's retries (a room
+lost with nqptp returns only on `node.restart`); a test pinning the pipe module's 8192 frames; ear's
+probe of the RTSP port racing shairport-sync's bind (another process may take the port between the
+two, failing the node).
 
 ## mDNS
 
