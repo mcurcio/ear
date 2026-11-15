@@ -31,8 +31,9 @@ template <> struct ModuleRun<RtpReceiverShape> {
 	/// The module's arguments, each key from the property table (docs/engine.md#properties-ear-sets says why each): the
 	/// one home of this form. Every value is a number, a closed enum, an RtpAddress or the engine node's name
 	/// ([A-Za-z0-9_.-]), so no user text reaches PipeWire's parsers.
-	static Arguments arguments(const NodeName& engineNode, const RtpReceiverShape& shape, std::size_t channels) {
-		const std::string name = "\"" + engineNode + "\"";
+	static Arguments arguments(const CompanionTarget& target, const RtpReceiverShape& shape) {
+		const std::size_t channels = target.blockPorts.size();
+		const std::string name = "\"" + target.engineNode + "\"";
 		ModuleArguments<Home::rtpStream> stream;
 		stream.add(property<Home::rtpStream>("node.always-process"), "true")
 			.add(property<Home::rtpStream>("adapter.auto-port-config"),

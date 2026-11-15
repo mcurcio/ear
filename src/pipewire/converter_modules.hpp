@@ -28,7 +28,8 @@ struct ConverterModule {
 /// Per module-run shape, defined beside its adapter's instantiation (an explicit specialization):
 ///   static constexpr ConverterModule module;
 ///   using Arguments = ...;  // the module's arguments, built only from parsed values
-///   static Arguments arguments(const NodeName& engineNode, const Shape& shape, std::size_t channels);
+///   static Arguments arguments(const CompanionTarget& target, const Shape& shape); // one channel per target.blockPorts
+///                                                                               // entry; the node is target.engineNode
 ///   static pw_impl_module* load(pw_context* context, const Arguments& arguments); // null, errno set, when it does not
 /// A shipped module loads through engine_property_set.hpp's loadModule, the only module loading the property guard
 /// lets ear_pipewire's sources do; a test's stand-in, under a tests folder, loads its own.
@@ -36,10 +37,10 @@ template <class Shape> struct ModuleRun;
 
 /// A shape whose ModuleRun is complete.
 template <class Shape>
-concept DescribedModuleRun = requires(const NodeName& engineNode, const Shape& shape, std::size_t channels,
-                                      pw_context* context, const typename ModuleRun<Shape>::Arguments& arguments) {
+concept DescribedModuleRun = requires(const CompanionTarget& target, const Shape& shape, pw_context* context,
+                                      const typename ModuleRun<Shape>::Arguments& arguments) {
 	{ ModuleRun<Shape>::module } -> std::convertible_to<ConverterModule>;
-	{ ModuleRun<Shape>::arguments(engineNode, shape, channels) } -> std::same_as<typename ModuleRun<Shape>::Arguments>;
+	{ ModuleRun<Shape>::arguments(target, shape) } -> std::same_as<typename ModuleRun<Shape>::Arguments>;
 	{ ModuleRun<Shape>::load(context, arguments) } -> std::same_as<pw_impl_module*>;
 };
 

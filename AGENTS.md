@@ -63,6 +63,7 @@ scripts/dev.sh out/src/nodes/white/ear_node_white_tests "[white]"          # one
 
 ./out/ear                                                  # ./config/ear.conf; file nodes write into ./recordings
 ./out/ear --config-dir ~/ear-config --web-root web/dist    # another graph file folder; the editor built by make web
+./out/ear --runtime-dir /run/ear                           # programs' and pipe receivers' FIFOs and files in your folder
 node scripts/rpc-call.mjs ws://127.0.0.1:7777/rpc graph.get   # one control-port call from a script
 ```
 

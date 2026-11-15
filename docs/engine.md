@@ -28,6 +28,7 @@ changing this code.
 | Sound cards | `sound_cards.cpp` | One ALSA adapter node per card and direction |
 | Module-run converters | `module_converter_body.hpp`, `converter_modules.hpp`, `module_converters.hpp` | The engine companion a PipeWire module runs: loaded, found by name, linked, its latency carried, its life judged ([below](#module-run-converters)) |
 | RTP receivers | `rtp_receivers.cpp` | The first module-run converter: `libpipewire-module-rtp-source`, one per `rtp` node |
+| Pipe receivers | `pipe_receivers.cpp` | The second: `libpipewire-module-pipe-tunnel` in source mode, reading a FIFO a node's program writes ([below](#pipe-receivers)) |
 | Sinks and handoffs | `handoffs.cpp` | `ThreadSinks` (the sinks: a ring the block taps and a thread that drains it, [below](#sinks)) and `ThreadHandoffs` (the legacy handoff, which no shipped type uses any more) |
 | Sources | `sources.cpp` | `EventSources`: core's `SourceRing` with the writer's wait and the clock wake's eventfd ([below](#sources)) |
 | The engine's log | `engine_log.cpp` | ear's own `pw_log` and alsa-lib's error handler ([output-records.md](output-records.md#how-output-is-written)), both `noexcept` and registered through the callback boundary as realtime functions |
@@ -50,8 +51,9 @@ it couples to. Where says which object carries it and which code builds it: `eng
 properties), `internal clock` (`engine.conf`'s `context.objects`), `block` and `block port`
 (`port_blocks.cpp`), `card` (`sound_cards.cpp`), `card seam` (what `AlsaSoundCards`' test seam
 adds: `clocklessCardProperties()` alone), `RTP receiver` (`libpipewire-module-rtp-source`'s
-arguments, `rtp_receivers.cpp`), `RTP stream` (its `stream.props`), `route link` (`links.cpp`)
-and `companion link` (`engine_companions.cpp`). The table is checked four ways:
+arguments, `rtp_receivers.cpp`), `RTP stream` (its `stream.props`), `pipe receiver`
+(`libpipewire-module-pipe-tunnel`'s arguments, `pipe_receivers.cpp`), `pipe stream` (its
+`stream.props`), `route link` (`links.cpp`) and `companion link` (`engine_companions.cpp`). The table is checked four ways:
 
 - **By type, at compile time.** A key carries its home: `property<Home::h>("key")` returns a
   `PropertyKey<h>` and is the only way to make one from a string; it does not compile for a key the
@@ -59,8 +61,9 @@ and `companion link` (`engine_companions.cpp`). The table is checked four ways:
   PipeWire properties, makes a core object from them or loads a module with arguments is
   `engine_property_set.{hpp,cpp}`: `PropertySet<h>` (an object's properties, set only with
   `PropertyKey<h>`, released to the PipeWire call that takes them), `createObject` (which takes only
-  a `PropertySet`), `ModuleArguments<h>` and `loadModule` (an RTP receiver's arguments, whose
-  `stream.props` alone nests `ModuleArguments<Home::rtpStream>`). So a string, a `const char*` or
+  a `PropertySet`), `ModuleArguments<h>` and `loadModule` (a receiver module's arguments, whose
+  `stream.props` alone nests its stream's, `nestedStream`: `ModuleArguments<Home::rtpStream>` in
+  an RTP receiver's, `ModuleArguments<Home::pipeStream>` in a pipe receiver's). So a string, a `const char*` or
   a key of another home where a key is wanted does not compile
   (`ear_engine_properties_compile_fail_*`). The one key made at run time is the card seam's:
   `seamChecked(key)` refuses a key the table forbids on a card or sets on every card and returns a
@@ -91,7 +94,11 @@ and `companion link` (`engine_companions.cpp`). The table is checked four ways:
   `remote.name` and `stream.props` are held only there. The RTP stream's
   `adapter.auto-port-config` is consumed by the stream's own adapter and never reaches the node:
   it is read in the arguments, and its effect is checked as the node's exact ports (one
-  `receive_AUX<n>` per channel, no monitor or control port). No object holds a key
+  `receive_AUX<n>` per channel, no monitor or control port). The pipe receiver's rows are read
+  likewise, from its node and its module's arguments: the module copies its audio, name and
+  `pipe.filename` keys to its stream, so its node holds them; `remote.name`, `tunnel.mode`,
+  `tunnel.may-pause` and `stream.props` only the arguments hold; its ports are exactly one
+  `capture_AUX<n>` per channel. No object holds a key
   [ear never sets](#properties-ear-never-sets) on its home, except `node.driver` on a card, which
   the ALSA node publishes itself. "engine.conf sets exactly the property table's engine.conf and
   internal clock rows, and nothing it forbids" reads the file with PipeWire's own parser: it holds
@@ -167,6 +174,20 @@ and a filter's connect flags.
 | RTP receiver | `stream.props` | the RTP stream rows | The receiver's own node properties, the RTP stream rows ([RTP receivers](#rtp-receivers)) | the receiver node's own properties | "A receiver is ready once, every channel's link active, and it and the block follow the Dummy-Driver" |
 | RTP stream | `node.always-process` | `true` | The receiver runs on the graph's driver before it is linked, so its RUNNING proves its socket is bound (the module opens it when the stream starts); the lifecycle links on that RUNNING ([RTP receivers](#rtp-receivers)) | it runs before it is linked, so RUNNING means its socket is bound | "A receiver is ready once, every channel's link active, and it and the block follow the Dummy-Driver" |
 | RTP stream | `adapter.auto-port-config` | `{ mode = dsp monitor = false control = false position = preserve }` | Without it the stream's converter has no format and so no ports at all; with it the ports are `receive_AUX0`.. (`audioadapter.c:2164-2171`, `audioconvert.c:1606-1617`). It works here, unlike on a card's adapter, because a stream's format is fixed. The module's side consumes it: the engine's node never holds it ([RTP receivers](#rtp-receivers)) | the stream's converter makes its ports | "L24 at the graph rate: channel 1 reaches from_rtp.1 and channel 2 from_rtp.2" |
+| pipe receiver | `remote.name` | `internal` | As an RTP receiver's: the module calls `pw_context_connect` when no core object is registered, and `internal` is the local context ([pipe receivers](#pipe-receivers)) | the module's connection is to ear's own context | "A pipe receiver is ready once its module's node runs, every channel linked by the node's and the block's ids, and channel n of its FIFO reaches the bank's port n" |
+| pipe receiver | `tunnel.mode` | `source` | An `Audio/Source` stream the module feeds from the FIFO it reads ([pipe receivers](#pipe-receivers)) | the module reads the FIFO; its ports are `capture_AUX<n>` | "A pipe receiver is ready once its module's node runs, every channel linked by the node's and the block's ids, and channel n of its FIFO reaches the bank's port n" |
+| pipe receiver | `tunnel.may-pause` | `false` | Source mode's default, pinned: a stream allowed to pause goes inactive at an underrun until its writer writes again ([pipe receivers](#pipe-receivers)) | the stream keeps running, silent, while no writer writes | "A pipe receiver whose writer stops stays ready and its channels go silent" |
+| pipe receiver | `pipe.filename` | the receiver's FIFO | `CompanionTarget::fifo`, a path that does not exist yet: the module makes it, opens it and removes it when it is destroyed. Only ear's own paths, `[A-Za-z0-9_./-]`, are quoted into it ([pipe receivers](#pipe-receivers)) | the FIFO the module makes, reads and removes | "A pipe receiver's FIFO is at its target's path once it is ready, open to every writer, and gone once it is destroyed" |
+| pipe receiver | `audio.format` | S16LE or S32LE | The shape's `PipeFormat`, never the module's default ([pipe receivers](#pipe-receivers)) | how the module reads the FIFO's bytes | "S16LE stereo written at 44.1 kHz reaches the 48 kHz block resampled: 1 kHz on from_pipe.1, 1.5 kHz on from_pipe.2" |
+| pipe receiver | `audio.rate` | the writer's rate | The shape's rate, the writer's own ([pipe receivers](#pipe-receivers)) | the stream resamples it to the graph's; the ring's length in time | "S16LE stereo written at 44.1 kHz reaches the 48 kHz block resampled: 1 kHz on from_pipe.1, 1.5 kHz on from_pipe.2" |
+| pipe receiver | `audio.channels` | the bank's channel count | The bank's ports, channel for channel ([pipe receivers](#pipe-receivers)) | one port per channel, and the FIFO's frame size | "A pipe receiver is ready once its module's node runs, every channel linked by the node's and the block's ids, and channel n of its FIFO reaches the bank's port n" |
+| pipe receiver | `audio.position` | `[ AUX0 AUX1 ... ]` | AUX positions name the ports ([pipe receivers](#pipe-receivers)) | the ports `capture_AUX<n>` | "A pipe receiver is ready once its module's node runs, every channel linked by the node's and the block's ids, and channel n of its FIFO reaches the bank's port n" |
+| pipe receiver | `node.name` | `<node>.pipe` | The module makes the node through its own connection, so ear finds it by name ([pipe receivers](#pipe-receivers)) | how ear finds the module's node in the registry | "A pipe receiver is ready once its module's node runs, every channel linked by the node's and the block's ids, and channel n of its FIFO reaches the bank's port n" |
+| pipe receiver | `node.description` | `<node>.pipe` | Replaces the module's own description ([pipe receivers](#pipe-receivers)) | link-factory matches descriptions too | "A pipe receiver made while another node of its name is still going binds and links its own node, never the stale one" |
+| pipe receiver | `stream.props` | the pipe stream rows | The receiver's own node properties, the pipe stream rows ([pipe receivers](#pipe-receivers)) | the receiver node's own properties | "A pipe receiver is ready once its module's node runs, every channel linked by the node's and the block's ids, and channel n of its FIFO reaches the bank's port n" |
+| pipe stream | `media.name` | `<node>.pipe` | Replaces the module's own `pipe`; set here, not among the module's arguments, because the module copies no `media.name` to its stream (`module-pipe-tunnel.c`, `copy_props`) ([pipe receivers](#pipe-receivers)) | nothing | "Every property ear sets is held by PipeWire as the property table says" |
+| pipe stream | `node.always-process` | `true` | The receiver runs on the graph's driver before it is linked, writer or not, so it reaches RUNNING once loaded; the lifecycle links on that RUNNING ([pipe receivers](#pipe-receivers)) | it runs before it is linked | "A pipe receiver is ready once its module's node runs, every channel linked by the node's and the block's ids, and channel n of its FIFO reaches the bank's port n" |
+| pipe stream | `adapter.auto-port-config` | `{ mode = dsp monitor = false control = false position = preserve }` | As the RTP stream's: without it the stream's converter has no ports; with it they are `capture_AUX0`.. The stream's adapter consumes it ([pipe receivers](#pipe-receivers)) | the stream's converter makes its ports | "A pipe receiver is ready once its module's node runs, every channel linked by the node's and the block's ids, and channel n of its FIFO reaches the bank's port n" |
 | route link | `link.output.port` | the output port's global id | A route is made by port global id, from the live graph ([no session manager](#no-session-manager)) | link-factory finds the port by id alone | "A link carries a source block's ramp to a sink block sample for sample" |
 | route link | `link.input.port` | the input port's global id | A route is made by port global id, from the live graph ([no session manager](#no-session-manager)) | link-factory finds the port by id alone | "A link carries a source block's ramp to a sink block sample for sample" |
 | companion link | `link.output.node` | the block's or the companion's global id | By id: a node of the same name still going would otherwise match first, and `link-factory` matches a name against nick, description and object path too ([engine companions](#engine-companions)) | never an older node of the same name | "A card joins its block by the block's id: beside an older block of the same name it reaches only the newer" |
@@ -185,7 +206,7 @@ them). A key ending in `.*` is every key under it.
 |---|---|---|
 | engine.conf | `default.clock.*`, `clock.power-of-two-quantum` | `context.properties` from the file overwrite the properties `Engine` passes to `pw_context_new`, which carry the clock (`context.c:245`, `conf.c:986-990`) |
 | engine.conf | `cpu.zero.denormals` | On 1.4.2 it lands on the main thread in this engine and leaks to every thread made later ([denormals](#denormals)) |
-| internal clock, block, card, card seam, RTP receiver, RTP stream | `node.force-quantum`, `node.force-rate`, `node.lock-quantum`, `node.lock-rate` | A node that carries one asks the driver for its own quantum or rate, and every block would run at it ([the quantum guard](#the-quantum-guard)) |
+| internal clock, block, card, card seam, RTP receiver, RTP stream, pipe receiver, pipe stream | `node.force-quantum`, `node.force-rate`, `node.lock-quantum`, `node.lock-rate` | A node that carries one asks the driver for its own quantum or rate, and every block would run at it ([the quantum guard](#the-quantum-guard)) |
 | card | `node.group` | A card in the group would follow from creation and never start before it is linked, which a lifecycle that links once RUNNING cannot do ([sound cards](#sound-cards)) |
 | card | `node.driver` | `node.driver = false` would not hold: the ALSA node publishes `node.driver = true` again ([sound cards](#sound-cards)) |
 | card | `node.link-group` | It would join the card's driving to other nodes' and take it from the internal clock ([the internal clock](#the-internal-clock)) |
@@ -207,8 +228,9 @@ them). A key ending in `.*` is every key under it.
 | `libpipewire-module-link-factory` | Makes route links (by port global id) and engine companions' links |
 | `libpipewire-module-adapter` | Makes a sound card: an ALSA PCM node wrapped in a converter |
 
-`libpipewire-module-rtp-source` is not listed: `RtpReceivers` loads one per `rtp` node with
-`pw_context_load_module` ([module-run converters](#module-run-converters)). Debian's `libpipewire-0.3-modules` holds it. The internal clock has no
+`libpipewire-module-rtp-source` and `libpipewire-module-pipe-tunnel` are not listed:
+`RtpReceivers` and `PipeReceivers` load one per receiver with `pw_context_load_module`
+([module-run converters](#module-run-converters)). Debian's `libpipewire-0.3-modules` holds both. The internal clock has no
 ports, so it never shows as a live port.
 
 ## The clock
@@ -780,16 +802,17 @@ and at each count where a conversion can go wrong
 
 An engine companion is a PipeWire node a node's configuration asks for, joined channel for channel
 to the ports of one of its block's inside banks and torn down with the configuration. Sound cards
-and RTP receivers are the two kinds; an RTP receiver is a module-run converter
+RTP receivers and pipe receivers are the kinds; the receivers are module-run converters
 ([below](#module-run-converters)). A type asks with its bank and a shape (`companions.hpp`:
-`SoundCardShape{card}`, `RtpReceiverShape{...}`); a card's direction is its bank's (playback on an
+`SoundCardShape{card}`, `RtpReceiverShape{...}`, `PipeReceiverShape{...}`); a card's direction is its bank's (playback on an
 inside output bank, capture on an inside input bank), and an inside bank has at most one companion
 of any kind ([writing-a-node-type.md](writing-a-node-type.md#engine-companions)). `NodeHost` works
 out each one's `CompanionTarget` (its engine name, the block, the bank's direction, ports and name) and,
 once the block is ready, hands it with the shape to the kind's `EngineCompanionAdapter`
-(`AlsaSoundCards`, `RtpReceivers` = `ModuleConverters<RtpReceiverShape>`), which tells `ready` and
-`lost` through `EngineCompanionEvents`.
-Both kinds share one lifecycle (`NodeHost` in `ear_core`, `joinEngineCompanion` in `ear_pipewire`),
+(`AlsaSoundCards`, `RtpReceivers` = `ModuleConverters<RtpReceiverShape>`, `PipeReceivers` =
+`ModuleConverters<PipeReceiverShape>`), which tells `ready` and `lost` through
+`EngineCompanionEvents`.
+Every kind shares one lifecycle (`NodeHost` in `ear_core`, `joinEngineCompanion` in `ear_pipewire`),
 and a kind says only how its node is made, how ear hears from it, and what fails it:
 
 1. **Alone.** The engine companion is made and runs on its own until it reports RUNNING.
@@ -803,7 +826,7 @@ and a kind says only how its node is made, how ear hears from it, and what fails
    round trip, and only then tells `lost(detail)`: the node fails `engine-refused: <detail>`, its
    block and routes stay.
 
-Engine companions are named `<node>.playback`, `<node>.capture` and `<node>.rtp`. A module-run
+Engine companions are named `<node>.playback`, `<node>.capture`, `<node>.rtp` and `<node>.pipe`. A module-run
 converter's buffer enters the configuration's latency plan as `beyond` its bank (`moduleRunDelay`,
 [latency](#latency-per-bank-pair)); a card reports its own through its links.
 
@@ -941,14 +964,16 @@ between a node's own side and one of its block's inside banks: the one place a c
 other than the graph's meet the graph ([architecture.md](architecture.md#the-timing-model)). In
 **module-run** mode a PipeWire module owns all of it: it makes the stream, keeps its own buffer and
 runs the loop that steers its resampler. ear loads the module, finds its node, links it, carries
-its latency and judges its life. RTP receivers are the first and only shipped one.
+its latency and judges its life. RTP receivers are the first, [pipe receivers](#pipe-receivers)
+the second.
 
 The code is one shared body for every module-run shape, and a description per module:
 
 - **`ModuleConverters<Shape>`** (`module_converters.hpp`) is the shape's `EngineCompanionAdapter`:
   `make` joins the body to the block through `joinEngineCompanion` with the module's kind, flow and
   port names. `RtpReceivers` is `ModuleConverters<RtpReceiverShape>`, instantiated in
-  `rtp_receivers.cpp`.
+  `rtp_receivers.cpp`; `PipeReceivers` is `ModuleConverters<PipeReceiverShape>`, in
+  `pipe_receivers.cpp`.
 - **`ModuleConverterBody<Shape>`** (`module_converter_body.hpp`) loads the module and finds its node
   (below), hears its state (`tellNodeState`: RUNNING, ERROR) and fails on its node's removal or the
   module's destruction. Its failure details use the module's words: `cannot load PipeWire's <word>
@@ -957,18 +982,22 @@ The code is one shared body for every module-run shape, and a description per mo
 - **`ModuleRun<Shape>`** (`converter_modules.hpp`, specialised beside the adapter's instantiation)
   is what is the module's own: `module` (a `ConverterModule`: its `kind` word, its module `word`, the
   `body` name its fault reports use, its `flow` and its node's port for each channel), `Arguments`
-  and `arguments(engineNode, shape, channels)`, built only from parsed values, and `load`. A shipped
+  and `arguments(target, shape)` (from the `CompanionTarget`: its engine node's name, a channel per
+  block port, a pipe receiver's FIFO), built only from parsed values and ear's own paths, and
+  `load`. A shipped
   module loads through `engine_property_set`'s `loadModule`, so its keys come from
   [the table](#properties-ear-sets) and the property guard holds.
 - **`moduleRunDelay(shape, graph)`** (`companions.hpp`, `ear_core`) is the one latency rule: what
   the module buffers beyond the bank, at the graph rate, least and most alike. `NodeHost`'s plan
   enters it as `beyond` the bank for every shape that has one (`ModuleRunShape`), and for no other.
-  RTP's is `latencyMs` through `FrameClock`.
+  RTP's is `latencyMs` through `FrameClock`; a pipe receiver's is `pipeReceiverBufferFrames` at the
+  writer's rate, in graph frames.
 - **The readiness deadline and its failure text** stay the shape's kind's, in `NodeHost`
   ([readiness deadlines](#readiness-deadlines)): a node that never runs tells nothing here.
 - **Fault reports** name a body's callbacks by its module's `body`, not by the template's spelling
   (`NamesItself` in `callback_boundary.hpp`): RTP's are `RtpReceiverBody::onCoreDone` and its
-  siblings, as before the body was shared, so a report says which module's converter threw.
+  siblings, as before the body was shared, and the pipe receiver's `PipeReceiverBody::...`, so a
+  report says which module's converter threw.
 
 **How ear finds its node.** The module makes the node through its own connection, so there is no
 proxy to watch. ear binds a registry on its own connection and sends a `pw_core_sync`; node globals
@@ -998,13 +1027,14 @@ quantum-guard sizing and test seam are its own ([sound cards](#sound-cards)). Wh
 the lifecycle, and both already use `joinEngineCompanion`; the module-run body would add a registry
 search and a latency rule the card does not use.
 
-**Tested apart from RTP** (`module_converter_test.cpp`) through a test-only shape whose module is
-`libpipewire-module-pipe-tunnel` in source mode: like rtp-source it owns its stream, its buffer and
-the loop steering its resampler, reads from outside the graph (a FIFO the test writes) and makes its
-node on its own connection, but it needs no network or sender thread, its ports are `capture_AUX<n>`
-and a bad `pipe.filename` makes it refuse to load. Ready and channel order, the stale-name rule, a
-module that will not load, a node that never runs, a node removed, a module destroyed and a fault
-named by the module's body are each proved through the shared code in its words.
+**Tested apart from RTP** (`module_converter_test.cpp`) through `PipeReceivers`: like rtp-source
+the pipe module owns its stream, its buffer and the loop steering its resampler, reads from outside
+the graph (a FIFO the test writes) and makes its node on its own connection, but it needs no network
+or sender thread, its ports are `capture_AUX<n>` and a FIFO it cannot make makes it refuse to load.
+Ready and channel order, the stale-name rule, a module that will not load, a node removed, a module
+destroyed and a fault named by the module's body are each proved through the shared code in its
+words. A node that never runs is proved through a test-only stand-in shape (pipe-tunnel without
+`node.always-process`), which the shipped arguments cannot express.
 
 ### RTP receivers
 
@@ -1054,6 +1084,54 @@ PipeWire keeps the jitter buffer, the tracking of the sender's clock and the res
 
 CI's tests use a sender thread on 127.0.0.1 (`test/support/rtp_tone.hpp`), never PipeWire's
 `module-rtp-sink`, and never multicast.
+
+### Pipe receivers
+
+`PipeReceivers` loads `libpipewire-module-pipe-tunnel` into the engine in source mode, one per pipe
+receiver a configuration asks for ([writing-a-node-type.md](writing-a-node-type.md#programs)): a
+[module-run converter](#module-run-converters) whose `ModuleRun<PipeReceiverShape>`
+(`pipe_receivers.cpp`) holds what is the pipe module's own. It reads interleaved little-endian
+samples from a FIFO a node's program writes and feeds the block's inside input bank, channel for
+channel. Its arguments are built in one place from closed values only (a `PipeFormat`, a
+`SampleRate`, the bank's channel count, the engine node's name and the FIFO's path, which is ear's
+own, `[A-Za-z0-9_./-]`, refused with `std::logic_error` otherwise): the `pipe receiver` and `pipe
+stream` rows of [the table](#properties-ear-sets), which say why each. Its node is an `Audio/Source`
+stream, `<node>.pipe`, whose ports are `capture_AUX<n>`; its words are `pipe receiver` and
+`pipe-tunnel`, and its body's callbacks are `PipeReceiverBody::...`.
+
+- **The FIFO.** `CompanionTarget::fifo` is `runtimePath(<runtime folder>, node, configuration,
+  "<bank>.fifo")` (the runtime folder: [architecture.md](architecture.md#boot-and-stop)), unique to
+  its configuration, so it never exists beforehand. At load the module makes it (`mkfifo`, then
+  `chmod 0666`) and opens it `O_RDWR | O_NONBLOCK`, so it never sees end of file while its writer
+  restarts; when the module is destroyed it removes it, because it made it. A path it cannot make (a
+  folder that is not there) fails the load, told later as every module's is: `cannot load
+  PipeWire's pipe-tunnel module: <errno>`.
+- **Ready.** With `node.always-process` its stream runs on the graph's driver as soon as it is
+  loaded, writer or not, so RUNNING comes at once and the lifecycle links it. It never drives: every
+  cycle's driver stays the internal clock while its writer stops and starts again.
+- **Latency, measured.** Its ring keeps `pipeReceiverBufferFrames` (8192 frames at the writer's
+  rate, `module-pipe-tunnel.c`'s `target_buffer`, which no argument changes) ahead of what it plays.
+  Its ports tell 0 frames once linked, and the block tells exactly `moduleRunDelay` downstream: 8916
+  frames for a 44.1 kHz writer in a 48 kHz graph. So the ring enters the plan once, as `beyond` its
+  bank.
+
+**What PipeWire 1.4.2 does that ear cannot see or change** (`module-pipe-tunnel.c`), each only
+logged by PipeWire:
+
+- **The FIFO is open to every writer** (mode 0666, whatever ear's umask): only the runtime folder's
+  own mode (0700, ear's) keeps other users out.
+- **A writer that stops, or has not started, is not a failure.** At an underrun the module plays
+  silence (`underrun` in PipeWire's log) and, with `tunnel.may-pause` false, keeps its stream
+  running: the receiver stays ready and its channels go silent. When the writer comes back the
+  module resyncs: it starts again `pipeReceiverBufferFrames` behind the newest frame, those frames
+  silent.
+- **A writer too far ahead resyncs.** Past three times `pipeReceiverBufferFrames` in its ring the
+  module drops back to the target (`resync`), an audible jump.
+- **Rate.** The module steers its resampler by its ring's fill, with a loop of the slowest
+  bandwidth, so after a start or a resync its pitch wobbles by tenths of a percent for some seconds
+  (measured: still so three seconds in, steady by eight), and a writer's lumps swing the fill (one
+  writing tenth-second lumps kept it wobbling). Check a received tone window by window, once
+  settled.
 
 ## The one data loop and invokes
 

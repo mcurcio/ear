@@ -58,11 +58,11 @@ Each C++ package lives in `src/<package>/` with its own `CMakeLists.txt`, public
 | Target | Owns | Never |
 |---|---|---|
 | `ear_core` (`src/core`) | The desired graph (`DesiredGraph`: the one judge of every change, `plan` then `commit`); the node type contract (`NodeType`, settings tables, `TypeSpec`, the type's class and its contexts); the node framework (`NodeHost`, the node lifecycle machines, health, `NodeOperations`, the pass-through, companions, latency plans, the claim registry); the reconciler (route links and route status); levels; the graph read (`GraphStatus`); `FrameRing`. Beside it, for tests only, `ear_type_harness` (`ear/testing/`) | Any PipeWire call, socket, thread or file access. nlohmann/json is its only dependency |
-| `ear_runtime` (`src/runtime`) | The threads the node framework runs work on, behind `ear_core`'s interfaces: the I/O thread (`IoThread`, core's `IoExecutor`), the one thread for blocking work; the nodes' loops (`Loops`, core's `LoopAdapter`: the strand pool and each dedicated loop's thread) ([threads](#threads)); and the nodes' stores on disk (`ConfinedStores`, core's `StoreAdapter`, over the graph file folder) with the boot sweep of every declared store ([writing-a-node-type.md](writing-a-node-type.md#stores)); and the kernel's word on a port a claim names (`KernelPortProbe`, core's `PortProbe`, [writing-a-node-type.md](writing-a-node-type.md#claims)) | Policy (what a job means is its caller's; staging, a loop's state and the sources it left, when a store is narrowed, trusted or written, and who holds a claim, are `NodeHost`'s); PipeWire. No node type links it |
+| `ear_runtime` (`src/runtime`) | The threads the node framework runs work on, behind `ear_core`'s interfaces: the I/O thread (`IoThread`, core's `IoExecutor`), the one thread for blocking work; the nodes' loops (`Loops`, core's `LoopAdapter`: the strand pool and each dedicated loop's thread) ([threads](#threads)); and the nodes' stores on disk (`ConfinedStores`, core's `StoreAdapter`, over the graph file folder) with the boot sweep of every declared store ([writing-a-node-type.md](writing-a-node-type.md#stores)); and the kernel's word on a port a claim names (`KernelPortProbe`, core's `PortProbe`, [writing-a-node-type.md](writing-a-node-type.md#claims)); and the processes under the nodes' programs (`Programs`, core's `ProgramAdapter`, on the `ear-programs` thread, which also reaps every orphan ear inherits: [writing-a-node-type.md](writing-a-node-type.md#programs)) | Policy (what a job means is its caller's; staging, a loop's state and the sources it left, when a store is narrowed, trusted or written, and who holds a claim, are `NodeHost`'s); PipeWire. No node type links it |
 | `ear_folder` (`src/folder`) | `ConfinedFolder`: a folder held open from boot, every path resolved beneath it by the kernel (`openat2` with `RESOLVE_BENEATH`); files replaced only if unchanged (`renameat2(RENAME_EXCHANGE)`); `requireApart`, the boot check that no two folders overlap | Following `..`, absolute paths or (for the graph file) any symlink |
 | `ear_node_white`, `ear_node_file`, `ear_node_card`, `ear_node_rtp`, `ear_node_sendspin` (`src/nodes/<type>`) | One built-in node type each ([node-types.md](node-types.md)) | Another node type; PipeWire or the framework's threads (only `ear_core`'s interfaces: no type links `ear_pipewire`, `ear_runtime`, `ear_control`, `ear_config` or `ear_server`) |
 | `ear_all_node_types` (`src/all_node_types`) | `allNodeTypes()`, the one list of node types, generated at configure from the folders in `src/nodes/` | Naming a type by hand |
-| `ear_pipewire` (`src/pipewire`) | The in-process engine and the adapters that implement `ear_core`'s interfaces: port blocks, links, live ports, sinks and handoffs, engine companions (sound cards, module-run converters: RTP receivers), the main-loop executor, the engine's log ([engine.md](engine.md)); the callback boundary every C callback ear gives PipeWire goes through ([below](#the-callback-boundary)) | Policy; a C callback registered outside the boundary |
+| `ear_pipewire` (`src/pipewire`) | The in-process engine and the adapters that implement `ear_core`'s interfaces: port blocks, links, live ports, sinks and handoffs, engine companions (sound cards, module-run converters: RTP receivers and pipe receivers), the main-loop executor, the engine's log ([engine.md](engine.md)); the callback boundary every C callback ear gives PipeWire goes through ([below](#the-callback-boundary)) | Policy; a C callback registered outside the boundary |
 | `ear_output` (`src/output`) | Where standard output goes: the output thread, the capture of descriptors 1 and 2, the main-loop watchdog ([output-records.md](output-records.md)) | A record's text |
 | `ear_control` (`src/control`) | Standard output's one encoder (`StatusLog`); the JSON-RPC protocol (envelope, decoding, commands, events, sessions); the wire types of the graph file and the lifecycle; `MainLoopGateway`, the one crossing between the main loop and the control thread | Sockets; graph rules; knobly |
 | `ear_config` (`src/config`) | The graph file keeper: `ear.conf`'s model through knobly, the keeper's thread (working copy, folder watch, writes) and its main-loop side (plan and commit, the running version) | Judging a graph; letting a knobly type leave its thread |
@@ -101,6 +101,7 @@ the main loop by posting.
 | The keeper thread | The graph file keeper: every request, disk check and write, one step at a time; the working copy (knobly's object, which never leaves this thread); the inotify watch. It waits in `poll()` with no timeout |
 | The I/O thread (`ear-io`) | The framework's blocking work, off the main loop and every node's threads, one job at a time in post order (`IoThread`, `ear_runtime`). A node's stores are opened and written there ([writing-a-node-type.md](writing-a-node-type.md#stores)), and its recordings opened and closed ([writing-a-node-type.md](writing-a-node-type.md#recordings)). A job holds by `shared_ptr` what it fills and reports through its configuration's channel ([teardown](#teardown-by-dependency)), on the main loop, so one whose configuration ended reports nothing and the handle to what it opened goes back to this thread to be released, never closed on the main loop |
 | A node's loops ([writing-a-node-type.md](writing-a-node-type.md#loops)) | A type's work off the realtime thread and the main loop, each loop with its state, one handler at a time per loop (`Loops`, `ear_runtime`). A dedicated loop has a thread of its own, `ear-<name> <node>` cut to 15 bytes, and may block; strands share a pool started with the first strand: `min(4, hardware threads)` workers (`ear-strand`), one more for a handler stuck past 1 s (at most 16 in all), and one reactor thread (`ear-strands`) that turns the strands' timers and watches into work and watches the workers. Timers on `CLOCK_MONOTONIC`, watches on epoll; each loop's events reach the main loop by posting. A `sendspin` node has two dedicated loops, `ear-sendspin <node>` (its worker) and `ear-notify <node>` (its notifier) |
+| The programs' thread (`ear-programs`) | Every node's program (`Programs`, `ear_runtime`), started by the first launch: it writes a program's files and makes its feed, spawns it, tells its output's lines, its feed's bytes and its end, stops it (SIGTERM to its group, SIGKILL past 3 s) and reaps every child ear has, a program or an orphan re-parented to ear ([boot](#boot)). It waits in epoll on each program's pidfd, pipes and feed and on a signalfd for SIGCHLD; its one timer is the SIGKILL a stop owes, a timerfd. What it tells crosses to the main loop through the configuration's channel ([writing-a-node-type.md](writing-a-node-type.md#programs)) |
 | Sink threads | A `file` node's sink (its WAV writer); a `sendspin` node's sink to the server (`write_audio`) |
 | The output thread | Every write to the real standard output, from a bounded queue |
 | The capture thread | Reads the pipes on descriptors 1 and 2 into `log` records, and drains the engine's log ring |
@@ -691,6 +692,7 @@ again once the data loop is wedged.
 ```bash
 ./out/ear                                                   # ./config/ear.conf; file nodes write into ./recordings
 ./out/ear --config-dir ~/ear-config --web-root web/dist     # another graph file folder; the editor built by make web
+./out/ear --runtime-dir /run/ear                            # programs' and pipe receivers' files in a folder of your own
 ```
 
 | Flag | Default | What |
@@ -703,9 +705,10 @@ again once the data loop is wedged.
 | `--control-port` | `7777` | Its port; `0` takes any free one |
 | `--web-root` | `<directory of ear>/web` | The editor's built files |
 | `--allowed-host` | none | A DNS name the Host header may carry (repeatable) |
+| `--runtime-dir` | a fresh `ear-XXXXXX` in `$TMPDIR` or `/tmp` | The folder for programs' and pipe receivers' runtime files: each configuration's FIFOs, a program's feed and its files, each named `<node>.<configuration>.<what>` (`runtimePath`). A given folder must exist and is used as is; the default is made at boot (mode 0700) and removed at stop, and one not empty then (a leaked configuration's files) is a `log` record, `warn`: `the runtime folder <path> was not empty at exit` |
 
-The three folders (graph file folder, recordings folder, web root) may not be the same, nor
-inside or around each other. `ear` reads `engine.conf` from beside its own binary.
+The four folders (graph file folder, recordings folder, web root, runtime folder) may not be the
+same, nor inside or around each other. `ear` reads `engine.conf` from beside its own binary.
 
 ### The container image
 
@@ -731,8 +734,14 @@ Running it on Talos with the MOTU 24Ao is the `ear-on-talos` skill's.
 ### Boot
 
 1. Read the flags. Bad flags and `--help` are plain text; from here on every line is a record.
+   Then, before any thread starts, block SIGCHLD (every thread inherits it blocked; only the
+   programs' thread hears it, through its signalfd) and make ear its descendants' subreaper
+   (`PR_SET_CHILD_SUBREAPER`): a process a program leaves behind is re-parented to ear, whether
+   or not ear is PID 1, and reaped by the programs' thread, never left a zombie. A program also dies
+   with ear: it runs under `setpriv --pdeathsig KILL`.
 2. Capture descriptors 1 and 2 ([output-records.md](output-records.md#how-output-is-written)).
-3. Open the two folders and check the three are apart; a failure is an `exit` record and exit 1.
+3. Open the two folders, make or check the runtime folder, and check the four are apart; a failure
+   is an `exit` record and exit 1.
    Every declared store's files in the graph file folder are narrowed to their stores' modes
    ([writing-a-node-type.md](writing-a-node-type.md#stores)); what cannot be is a `log` record.
 4. Read `ear.conf` once on the main thread. Its `graph` block's `rate` and `block_size` set the engine
@@ -743,7 +752,8 @@ Running it on Talos with the MOTU 24Ao is the `ear-on-talos` skill's.
    up and the editor's pane shows why until the file is fixed.
 7. Open the control port (`control` record).
 
-Exit 1 comes only from bad flags, a folder it cannot make or open, folders that overlap, node types
+Exit 1 comes only from bad flags, a folder it cannot make or open (a `--runtime-dir` that does
+not exist among them), folders that overlap, node types
 the catalogue refuses (two of one name, or a name not 1 or more of `[a-z0-9]`), an
 engine that does not start, a folder watch it cannot arm, or a control port it cannot bind.
 
@@ -762,7 +772,8 @@ engine that does not start, a folder watch it cannot arm, or a control port it c
    disk delays exit without limit).
 6. The I/O thread stops: jobs still queued are dropped unrun, and the one in flight gets 2 s. One
    still running then is a `log` record (`source` `ear`, `warn`:
-   `the I/O thread was still busy at exit: <job>`), and its thread is never waited for.
+   `the I/O thread was still busy at exit: <job>`), and its thread is never waited for. Then a
+   runtime folder ear made is removed (one not empty is a `log` record, above).
 7. ear writes its last record, `exit` with status 0 (`ear: stopped`,
    [output-records.md](output-records.md#exit)).
 8. Every queued record is written; ear exits 0 (through `std::_Exit(0)` if anything leaked is still open,
@@ -788,8 +799,8 @@ of the process: the record, not the process's end, says when ear's stop is done.
 These are designed or wanted but not in the code: routes naming a whole bank; changing a node's
 settings in place without a restart (a type's change version of `configure` compiles but is
 never called); recovery of failed nodes; sound cards opened off the main loop; an internal
-clock anchored to one card; serving PipeWire's socket, a program supervisor and the `airplay`
-type; a login on port 7777; automatic card retry and hotplug; `@include`; undo; changing the graph
+clock anchored to one card; serving PipeWire's socket and the `airplay` type (its programs and pipe receivers are built,
+[writing-a-node-type.md](writing-a-node-type.md#programs)); a login on port 7777; automatic card retry and hotplug; `@include`; undo; changing the graph
 frequency or block size while ear runs; arm64 images; a fault caught at the callback boundary
 failing only the node that owns it (today it ends the process); a source whose clock is a type's own on any shipped type,
 and the converter companion's set and tracked modes ([the timing model](#the-timing-model)). The design pages for the unbuilt slices

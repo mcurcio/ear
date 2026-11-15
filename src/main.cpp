@@ -2,11 +2,13 @@
 // (apart from each other and the web root), reads ear.conf, starts the engine at the file's rate and block size (else
 // the flags') and prints how its audio thread is scheduled, wires the packages together, starts the graph file keeper
 // (its first offer runs the file, or nothing runs and the editor shows why), opens the control port and runs until
-// SIGINT or SIGTERM. Once the flags are read, before any thread starts, it captures descriptors 1 and 2
+// SIGINT or SIGTERM. Once the flags are read, before any thread starts, it blocks SIGCHLD and makes itself its
+// descendants' subreaper (the programs' thread reaps them), then captures descriptors 1 and 2
 // (docs/output-records.md): from then on everything on standard output is one JSON record a line, from the one encoder
 // (StatusLog), written by the output thread. Stopping closes the graph to edits, stops the keeper taking edits, stops
 // every node, then closes the control port, stops the control thread and ends the main loop; the keeper's last write
-// runs as its thread is joined, the I/O thread stops last, and the record `ear: stopped` ends the stop.
+// runs as its thread is joined, the I/O thread stops last, a runtime folder ear made is removed, and the record
+// `ear: stopped` ends the stop.
 
 #include <array>
 #include <chrono>
@@ -27,6 +29,12 @@
 
 #include <boost/program_options.hpp>
 
+#include <cerrno>
+#include <cstring>
+
+#include <signal.h>
+#include <stdlib.h>
+#include <sys/prctl.h>
 #include <unistd.h>
 
 #include "ear/all_node_types/all_node_types.hpp"
@@ -53,6 +61,7 @@
 #include "ear/pipewire/links.hpp"
 #include "ear/pipewire/live_graph.hpp"
 #include "ear/pipewire/main_loop_executor.hpp"
+#include "ear/pipewire/pipe_receivers.hpp"
 #include "ear/pipewire/port_blocks.hpp"
 #include "ear/pipewire/rtp_receivers.hpp"
 #include "ear/pipewire/sound_cards.hpp"
@@ -60,6 +69,7 @@
 #include "ear/runtime/io_thread.hpp"
 #include "ear/runtime/loops.hpp"
 #include "ear/runtime/port_probe.hpp"
+#include "ear/runtime/programs.hpp"
 #include "ear/runtime/recordings.hpp"
 #include "ear/runtime/stores.hpp"
 #include "ear/server/control_port.hpp"
@@ -141,6 +151,29 @@ private:
 	std::unique_ptr<ear::Timer> timer_;
 };
 
+/// The folder for programs' and pipe receivers' runtime files (docs/architecture.md#boot-and-stop): the one given,
+/// which must exist and is used as is, or a fresh one ear makes (mkdtemp: mode 0700) and removes at stop.
+struct RuntimeFolder {
+	std::filesystem::path path;
+	bool made = false;
+};
+
+std::expected<RuntimeFolder, std::string> runtimeFolder(const std::optional<std::string>& given) {
+	if (given) {
+		std::error_code error;
+		if (!std::filesystem::is_directory(*given, error))
+			return std::unexpected("runtime folder " + *given + ": " +
+			                       (error ? error.message() : std::string("not a folder that exists")));
+		return RuntimeFolder{std::filesystem::absolute(*given), false};
+	}
+	const char* tmp = std::getenv("TMPDIR");
+	std::string pattern =
+		(std::filesystem::path(tmp != nullptr && *tmp != '\0' ? tmp : "/tmp") / "ear-XXXXXX").string();
+	if (::mkdtemp(pattern.data()) == nullptr)
+		return std::unexpected("runtime folder " + pattern + ": " + std::strerror(errno));
+	return RuntimeFolder{pattern, true};
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -160,7 +193,10 @@ int main(int argc, char** argv) {
 		"a DNS name requests may name in Host (repeatable); IP addresses and localhost always may")(
 		"recordings-dir", po::value<std::string>()->default_value("recordings"),
 		"the folder file nodes write into (made if missing, not its parents); their paths are "
-		"relative to it");
+		"relative to it")(
+		"runtime-dir", po::value<std::string>(),
+		"the folder for programs' and pipe receivers' runtime files (FIFOs, configs); default: a fresh ear-XXXXXX in "
+		"$TMPDIR or /tmp, removed at stop");
 
 	po::variables_map arguments;
 	try {
@@ -206,6 +242,18 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 
+	// ear reaps its descendants (docs/architecture.md#boot-and-stop): SIGCHLD blocked here, before any thread, so every
+	// thread inherits it blocked and only the programs' thread hears it, through its signalfd; and ear the subreaper of
+	// every process its programs leave behind, whether or not it is PID 1.
+	sigset_t child;
+	sigemptyset(&child);
+	sigaddset(&child, SIGCHLD);
+	pthread_sigmask(SIG_BLOCK, &child, nullptr);
+	if (::prctl(PR_SET_CHILD_SUBREAPER, 1) != 0) {
+		std::cerr << "ear: cannot become its programs' reaper: " << std::strerror(errno) << '\n';
+		return 1;
+	}
+
 	// Standard output's one way out, before any thread: descriptors 1 and 2 become pipes the capture thread reads into
 	// unattributed log records, the output thread writes every record to the real standard output, and PipeWire logs
 	// through ear's own pw_log, drained on the capture thread. Declaration order is what stopping needs: the capture
@@ -245,8 +293,28 @@ int main(int argc, char** argv) {
 		log.exiting(1, "recordings " + recordings.error().detail);
 		return 1;
 	}
-	const std::array<std::filesystem::path, 3> folders{configDir, recordingsDir, portSettings.webRoot};
+	auto runtime = runtimeFolder(arguments.count("runtime-dir")
+	                                 ? std::optional<std::string>(arguments["runtime-dir"].as<std::string>())
+	                                 : std::nullopt);
+	if (!runtime) {
+		log.exiting(1, runtime.error());
+		return 1;
+	}
+	// A folder ear made goes again at every exit from here on; a given one is the operator's.
+	const auto removeRuntime = [&] {
+		if (!runtime->made || ::rmdir(runtime->path.c_str()) == 0) return;
+		const int error = errno;
+		log.log(
+			{.level = ear::LogLevel::warn,
+		     .source = "ear",
+		     .text = error == ENOTEMPTY || error == EEXIST
+		                 ? "the runtime folder " + runtime->path.string() + " was not empty at exit"
+		                 : "cannot remove the runtime folder " + runtime->path.string() + ": " + std::strerror(error),
+		     .cut = false});
+	};
+	const std::array<std::filesystem::path, 4> folders{configDir, recordingsDir, portSettings.webRoot, runtime->path};
 	if (const auto apart = ear::folder::requireApart(folders); !apart) {
+		removeRuntime();
 		log.exiting(1, apart.error().detail);
 		return 1;
 	}
@@ -265,6 +333,7 @@ int main(int argc, char** argv) {
 	try {
 		registered.emplace(std::move(types));
 	} catch (const std::invalid_argument& refused) {
+		removeRuntime();
 		log.exiting(1, refused.what());
 		return 1;
 	}
@@ -283,6 +352,7 @@ int main(int argc, char** argv) {
 	auto created =
 		ear::pipewire::Engine::create({binaryDirectory() / "engine.conf", format.rate, format.maxBlock, &faults});
 	if (!created) {
+		removeRuntime();
 		log.exiting(1, created.error().detail);
 		return 1;
 	}
@@ -319,6 +389,11 @@ int main(int argc, char** argv) {
 	ear::runtime::Loops loops(mainLoop);
 	ear::pipewire::AlsaSoundCards cards(*engine);
 	ear::pipewire::RtpReceivers receivers(*engine);
+	// The nodes' pipe receivers (docs/engine.md#pipe-receivers) and programs (docs/writing-a-node-type.md#programs):
+	// made before NodeHost and freed after it, once every program ended. The programs' thread starts with the first
+	// launch, from this thread, so it inherits the blocked stop signals and SIGCHLD.
+	ear::pipewire::PipeReceivers pipeReceivers(*engine);
+	ear::runtime::Programs programs;
 	ear::pipewire::Links links(*engine);
 	ear::pipewire::LiveGraph live(*engine);
 
@@ -336,7 +411,10 @@ int main(int argc, char** argv) {
 	                                                      .recordings = &recordingFiles,
 	                                                      .loops = &loops,
 	                                                      .stores = &stores,
-	                                                      .ports = &ports});
+	                                                      .ports = &ports,
+	                                                      .pipeReceivers = &pipeReceivers,
+	                                                      .programs = &programs,
+	                                                      .runtimeFolder = runtime->path.string()});
 	ear::NodeHost nodes(format, blocks, resources, mainLoop, mainLoop);
 	const ear::GraphStatus status({format, scheduling.realtime, scheduling.detail}, catalogue, graph, nodes, reconciler,
 	                              engine.get());
@@ -386,6 +464,7 @@ int main(int argc, char** argv) {
 	// Before the control port, so every request finds the keeper's thread; after Engine::create, so
 	// the thread inherits the blocked stop signals. Its first offer waits for the main loop to run.
 	if (const auto started = keeper.start(); !started) {
+		removeRuntime();
 		log.exiting(1, "graph file " + started.error());
 		return 1;
 	}
@@ -395,6 +474,7 @@ int main(int argc, char** argv) {
 		// The keeper's thread closes its inotify descriptor, which waits on the kernel, before ear's last record.
 		keeper.stop();
 		[[maybe_unused]] const auto unwritten = keeper.join(); // nothing was edited: nothing to write
+		removeRuntime();
 		log.exiting(1, started.error().detail);
 		return 1;
 	}
@@ -436,6 +516,9 @@ int main(int argc, char** argv) {
 		         .source = "ear",
 		         .text = "the I/O thread was still busy at exit: " + *ioBusy,
 		         .cut = false});
+	// Every configuration's runtime files went with it (a program's when it was reaped, a pipe receiver's FIFO with its
+	// module); one left is a leaked configuration's, said and kept.
+	removeRuntime();
 	// ear's last record: what follows is destruction and the kernel's teardown of the process, ear's work no more.
 	log.stopped();
 	// A run leaked past its close deadline may still post to the main loop or signal an engine source from its own
