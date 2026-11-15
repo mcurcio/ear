@@ -1,3 +1,18 @@
+## [4.1.0](https://github.com/mcurcio/ear/compare/v4.0.0...v4.1.0) (2026-11-15)
+
+### Features
+
+* **airplay:** an airplay node type on AirPlay 1, with shairport-sync in the images (slice 9) ([da29b42](https://github.com/mcurcio/ear/commit/da29b429770dab7c7d25d2a90aa25f657b97a97f))
+* **airplay:** the airplay2 setting, nqptp run by the operator, a listing per service, nqptp in the dev image for tests (slice 9) ([7f86408](https://github.com/mcurcio/ear/commit/7f864089df56780cd623d17752673433cef8fd96))
+* **core:** pipe receivers, programs and any-port claims in the node framework (slice 9) ([ed9093e](https://github.com/mcurcio/ear/commit/ed9093e5a75c785b2dbce951bdfd633422180840))
+* **core:** programs that need shared memory, ready once it exists and ended when it goes, and boolean setting rows (slice 9) ([a7f3145](https://github.com/mcurcio/ear/commit/a7f3145f8e5a4bc27b9092430a95bcfcab671c29))
+* **mdns:** listings probed and renamed on a clash, two airplay nodes of one name told apart (slice 9) ([2290f42](https://github.com/mcurcio/ear/commit/2290f421d7606ae0b0416f53138761e2f950da24))
+* **runtime:** programs run by ear and pipe receivers on PipeWire's pipe module (slice 9) ([ee971ce](https://github.com/mcurcio/ear/commit/ee971ce171675bd4f98a80847db8151dc97225c4))
+
+### Bug Fixes
+
+* **airplay:** ear's own runtime folder every boot, a program's whole group ended, host labels that are DNS labels (slice 9 review) ([57aa06a](https://github.com/mcurcio/ear/commit/57aa06a34c723e4cc65e45753f9d5547abfa1120))
+
 ## [4.0.0](https://github.com/mcurcio/ear/compare/v3.0.0...v4.0.0) (2026-11-15)
 
 ### ⚠ BREAKING CHANGES
