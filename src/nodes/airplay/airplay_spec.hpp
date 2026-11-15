@@ -25,6 +25,38 @@ inline constexpr ProgramPath shairportSync{"/usr/local/bin/shairport-sync"};
 /// to shairport-sync's defaults, which are S32_LE at 48 kHz in a build with AirPlay 2.
 inline constexpr PipeFormat airplay1Format = PipeFormat::s16le;
 inline constexpr SampleRate airplay1Rate = SampleRate::fixed<44'100>();
+/// AirPlay 2's audio as shairport-sync writes it into its pipe (the airplay2 setting): pinned in its config and in the
+/// receiver's shape the same way.
+inline constexpr PipeFormat airplay2Format = PipeFormat::s32le;
+inline constexpr SampleRate airplay2Rate = SampleRate::fixed<48'000>();
+
+/// An AirPlay 2 speaker's device id: 48 bits shaped as a MAC address, locally administered and unicast (its first
+/// byte's low two bits 1 and 0). shairport-sync reads it in AirPlay 2 only; in AirPlay 1 its own (an MD5 of the speaker
+/// name and the host's first MAC address) stands.
+class DeviceId {
+public:
+	/// From this host's name and the node's: FNV-1a 64 of "<host>/<node>", its low 48 bits, the first byte made
+	/// locally administered and unicast. Stable while both names are; unique on the network while host names are.
+	static DeviceId of(std::string_view host, std::string_view node);
+	std::uint64_t bits() const noexcept { return bits_; }
+	/// libconfig's 64-bit integer, "0x", 12 uppercase hex digits and "L": shairport-sync's general.airplay_device_id.
+	std::string configText() const;
+	/// 12 uppercase hex digits: what comes before the "@" of the node's RAOP instance in AirPlay 2.
+	std::string raopPrefix() const;
+	friend bool operator==(const DeviceId&, const DeviceId&) = default;
+
+private:
+	explicit DeviceId(std::uint64_t bits) : bits_(bits) {}
+	std::uint64_t bits_;
+};
+
+/// The node's nqptp channel (the shared memory nqptp keeps for it): "/ear-<node>" when that is at most 63 bytes, else
+/// "/ear-<first 41 bytes of node>-<16 lowercase hex digits of FNV-1a 64 of node>", so every node name ear holds has
+/// its own.
+SharedMemoryName channelOf(std::string_view node);
+
+/// This host's name (gethostname(2)), read at configure: what DeviceId::of takes beside the node's name.
+std::string thisHostName();
 
 /// How a sender's list shows the speaker: 1 to 50 bytes of valid UTF-8 with no control character, no '%' (shairport-sync
 /// expands %h, %H, %v and %V in a name) and no '@' (the separator of a RAOP instance, `<device id>@<name>`).

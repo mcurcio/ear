@@ -117,12 +117,32 @@ struct ProgramFile {
 	friend bool operator==(const ProgramFile&, const ProgramFile&) = default;
 };
 
+/// A POSIX shared-memory object's name (shm_open(3)) that a program needs (ProgramShape::needs): "/" then 1 to 62 of
+/// [A-Za-z0-9._-], never "/." or "/..". A type builds one from its own constant text and the node's name, which holds
+/// no "/".
+class SharedMemoryName {
+public:
+	static std::optional<SharedMemoryName> parse(std::string_view text);
+	const std::string& text() const noexcept { return text_; }
+	friend bool operator==(const SharedMemoryName&, const SharedMemoryName&) = default;
+
+private:
+	explicit SharedMemoryName(std::string text) : text_(std::move(text)) {}
+	std::string text_;
+};
+
+/// The most shared-memory names one program may need.
+inline constexpr std::size_t maxProgramNeeds = 4;
+
 /// A program a configuration asks for (CreateOf::program). Its environment is PATH alone
 /// (`/usr/local/bin:/usr/bin:/bin`), its working folder ear's runtime folder, its standard input /dev/null.
 struct ProgramShape {
 	ProgramPath executable;
 	std::vector<ProgramArg> args{};   // argv[1] onwards; argv[0] is executable.name()
 	std::vector<ProgramFile> files{}; // at most 8
+	/// What it needs that another process keeps: it is ready once every one exists, and ear ends it when one it saw is
+	/// removed (its node then fails with ProgramExit::removed's words). At most maxProgramNeeds, each once.
+	std::vector<SharedMemoryName> needs{};
 };
 
 /// How long a program may take to start, from its asking (the files written, the feed opened, the process spawned).
@@ -144,6 +164,8 @@ struct ProgramExit {
 	How how = How::exited;
 	int number = 0;         // the exit status (0-255), or the signal that killed it
 	std::string lastLine{}; // its last line on standard error, cut at programLineBytes; empty: none
+	/// The shared-memory name it needed whose removal made the adapter end it (SharedMemoryName::text); empty: none.
+	std::string removed{};
 	friend bool operator==(const ProgramExit&, const ProgramExit&) = default;
 };
 
@@ -168,6 +190,7 @@ struct ProgramLaunch {
 	std::vector<std::string> argv;                            // argv[0] is the executable's name
 	std::vector<std::pair<std::string, std::string>> files{}; // path, text: each written 0600 before it starts
 	std::optional<std::string> feed{}; // a FIFO to make (0600) and hold open for reading before it starts
+	std::vector<std::string> needs{};  // SharedMemoryName texts: watched from before it starts until it is reaped
 	std::string folder;                // its working folder: ear's runtime folder
 };
 

@@ -49,6 +49,19 @@ public:
 	/// multicast at most once a second per record set, by unicast (to a querier on another port than 5353) at most 16
 	/// a second; responses and anything else ignored.
 	void answer() noexcept;
+	/// What one turn changed, for its owner to say (docs/node-types.md#mdns).
+	struct Turn {
+		/// The listing won its probes and its first announcement went out (RFC 6762 sections 8.1 and 8.3), with the
+		/// names it holds now: its instance or its host renamed when a clash made it (section 9). Once per round of
+		/// probing: again only after a later clash sent it back to probing.
+		std::optional<Listing> announced;
+		/// It cannot go on (its socket failed: the kernel's words): it sends nothing more, and its owner drops it.
+		std::optional<std::string> failed;
+	};
+	/// Never blocks. Reads what waits on the socket (at most 32 datagrams), answers questions once announced, hears a
+	/// clash in a response or a simultaneous probe, and sends what is due: a probe, the end of probing's wait, an
+	/// announcement. Its owner calls it whenever descriptor() is readable, or on its own pace.
+	Turn turn() noexcept;
 	/// New TXT strings, the rest unchanged: announced at once, the cache-flush bit set. Error: as open's, and nothing
 	/// changes.
 	std::expected<void, std::string> update(std::vector<std::string> txt);

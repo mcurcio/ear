@@ -2,6 +2,8 @@
 // host unique), one address, the one the kernel routes the mDNS group through.
 #include "ear/mdns/advertiser.hpp"
 
+#include "probing.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cctype>

@@ -195,6 +195,9 @@ public:
 	void readable(int fd);
 	/// The sources armed on the newest loop named `loop` whose handles still live (none: 0).
 	std::size_t armed(std::string_view loop) const;
+	/// The descriptors the live readable watches (onReadable) of the newest loop named `loop` watch, in arming order: a
+	/// test waits on the real ones (poll), then rings them with readable().
+	std::vector<int> watchedDescriptors(std::string_view loop) const;
 	/// Each loop the framework made, oldest first: its name, whether it closed to others, finished and closed.
 	struct SeenLoop {
 		std::string name;

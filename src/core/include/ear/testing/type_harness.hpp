@@ -73,6 +73,12 @@ public:
 		              "the harness takes only its spec's loops");
 		return node_->armed(Handle::name);
 	}
+	/// The descriptors loop `Handle`'s live readable watches watch (NodeHarness::watchedDescriptors).
+	template <class Handle> std::vector<int> watchedDescriptors(Handle) const {
+		static_assert(isLoopHandle<Handle> && LoopsOf<Spec>::template has<Handle>,
+		              "the harness takes only its spec's loops");
+		return node_->watchedDescriptors(Handle::name);
+	}
 
 	void runIo() { node_->runIo(); }
 	/// Store `Handle`'s file on the harness's in-memory disk (NodeHarness's store calls, by the spec's handle).
