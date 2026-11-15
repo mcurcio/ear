@@ -1,10 +1,10 @@
 # What the sendspin node fetches (docs/node-types.md#library-facts-and-carried-patches): the protocol library,
 # sendspin-cpp, with three carried patches; the four dependencies it would fetch itself at moving tags, each kept here at a
-# full commit, IXWebSocket with a carried patch of its own; and the one header ear's mDNS uses. kept_fetchcontent
-# declares each one first, and FetchContent's first declaration wins, so the library's own FetchContent_Declare of a
-# name changes nothing and its FetchContent_MakeAvailable finds it already there. Every tree is kept in .cache/deps
-# across "make clean", as Boost's is; only what ear_node_sendspin links is built (EXCLUDE_FROM_ALL), and SYSTEM keeps
-# their headers' warnings out of EAR's. ear_node_sendspin is the only package that sees any of them. Bump one by
+# full commit, IXWebSocket with a carried patch of its own. (mjansson/mdns, which its mDNS listing uses, is ear_mdns's:
+# cmake/MdnsDeps.cmake.) kept_fetchcontent declares each one first, and FetchContent's first declaration wins, so the
+# library's own FetchContent_Declare of a name changes nothing and its FetchContent_MakeAvailable finds it already
+# there. Every tree is kept in .cache/deps across "make clean", as Boost's is; only what ear_node_sendspin links is
+# built (EXCLUDE_FROM_ALL), and SYSTEM keeps their headers' warnings out of EAR's. ear_node_sendspin is the only package that sees any of them. Bump one by
 # changing its commit here, and sendspin-cpp's by reading its cmake/host.cmake for new dependencies.
 
 include("${CMAKE_CURRENT_LIST_DIR}/CarriedPatch.cmake")
@@ -90,21 +90,9 @@ sendspin_patched_dep(sendspin https://github.com/Sendspin/sendspin-cpp.git
 	"${CMAKE_CURRENT_LIST_DIR}/sendspin-starved-floor.patch"
 	"${CMAKE_CURRENT_LIST_DIR}/sendspin-late-chunk.patch")
 
-# ear's mDNS: one header, so nothing of the project is added (its example would be built). Public domain.
-set(mdns_url https://github.com/mjansson/mdns/archive/refs/tags/1.4.3.tar.gz)
-set(mdns_sha256 be1fd8e35599cb7de179decbd0633c121d11a2dcb9cc193ff5c590bd0d480483)
-kept_fetchcontent(mdns "${mdns_url}\n${mdns_sha256}"
-	URL ${mdns_url}
-	URL_HASH SHA256=${mdns_sha256}
-	DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-	EXCLUDE_FROM_ALL
-	SYSTEM
-	SOURCE_SUBDIR no-such-directory
-)
-
 # Each licence, beside the binary for the run image (docker/Dockerfile) and any other copy: <name>-LICENSE.
 foreach(entry IN ITEMS "arduinojson LICENSE.txt" "ixwebsocket LICENSE.txt" "micro_flac LICENSE"
-		"noise_c LICENSE" "sendspin LICENSE" "mdns LICENSE")
+		"noise_c LICENSE" "sendspin LICENSE")
 	separate_arguments(entry)
 	list(GET entry 0 name)
 	list(GET entry 1 file)

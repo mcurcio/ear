@@ -26,6 +26,7 @@ const labels: Record<string, string> = {
   "card-playback": "card out",
   "card-capture": "card in",
   "rtp-receiver": "rtp",
+  "pipe-receiver": "pipe",
   sink: "sink",
   source: "source",
 };

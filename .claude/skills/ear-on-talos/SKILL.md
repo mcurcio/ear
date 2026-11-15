@@ -1,6 +1,6 @@
 ---
 name: ear-on-talos
-description: Running EAR's run image on a Talos Linux Kubernetes node with a USB sound card (the owner's MOTU 24Ao): the usb-audio-drivers extension and loading snd_usb_audio, Pod Security and SYS_NICE, /dev/snd and containerd's device ownership, CAP_SYS_NICE for realtime priority, the writable graph file volume and seeding ear.conf, setting the MOTU's rate and channel count, its Linux quirks (quirk flags, the playback channels rotated by 8, freezes), finding the card id, the checks to run on the hardware, getting FPP's RTP audio into the pod (a UDP Service for unicast, hostNetwork for multicast, PipeWire's module-rtp-sink as the sender), and a sendspin node in the pod (its key file under fsGroup, dialling, listening and mDNS). Use when deploying EAR to the cluster, when a card node fails on the hardware, when graph.get says "realtime": false in the pod, when an rtp node in the pod is silent, stays starting (configuring) or fails "never ran", or when a sendspin node in the pod is not found or loses its pairing, or when upgrading the volume's ear.conf past the graph { } and rate-unit change (the pod runs no nodes, or exits on --graph-frequency).
+description: Running EAR's run image on a Talos Linux Kubernetes node with a USB sound card (the owner's MOTU 24Ao): the usb-audio-drivers extension and loading snd_usb_audio, Pod Security and SYS_NICE, /dev/snd and containerd's device ownership, CAP_SYS_NICE for realtime priority, the writable graph file volume and seeding ear.conf, setting the MOTU's rate and channel count, its Linux quirks (quirk flags, the playback channels rotated by 8, freezes), finding the card id, the checks to run on the hardware, getting FPP's RTP audio into the pod (a UDP Service for unicast, hostNetwork for multicast, PipeWire's module-rtp-sink as the sender), a sendspin node in the pod (its key file under fsGroup, dialling, listening and mDNS), and an airplay node in the pod (hostNetwork, and for AirPlay 2 an nqptp container sharing a memory emptyDir at /dev/shm with NET_BIND_SERVICE). Use when deploying EAR to the cluster, when a card node fails on the hardware, when graph.get says "realtime": false in the pod, when an rtp node in the pod is silent, stays starting (configuring) or fails "never ran", or when a sendspin node in the pod is not found or loses its pairing, or when upgrading the volume's ear.conf past the graph { } and rate-unit change (the pod runs no nodes, or exits on --graph-frequency).
 ---
 
 # EAR on Talos with a MOTU 24Ao
@@ -194,6 +194,12 @@ machine:
   check `kubectl logs --previous` after a restart if an edit seems lost.
 - Recordings: `file` nodes write only beneath `/var/lib/ear/recordings` (their `path` is relative
   to it); mount a volume there writable by uid 10001 (for example `fsGroup: 10001`) to keep them.
+- The runtime folder: at every start, whatever the graph holds, ear makes a fresh `ear-XXXXXX` (mode
+  0700) for programs' and pipe receivers' files (an `airplay` node's FIFO, feed and config) inside
+  `$TMPDIR`, else `/tmp`, or the folder `--runtime-dir` names (`docs/architecture.md#boot-and-stop`).
+  With `readOnlyRootFilesystem: true` mount a writable `emptyDir` at `/tmp` (or give `--runtime-dir` one),
+  or ear exits 1 at boot: `runtime folder /tmp/ear-XXXXXX: Read-only file system`. The path may hold only
+  letters, digits and `_ . / -`.
 
 ### Upgrading past the `graph { }` change
 
@@ -434,3 +440,37 @@ Music Assistant's audio (`sendspin` skill). All **[check]**: not run in a pod ye
 - **Pod termination** (ear stopping on SIGTERM, not `node.stop`, which keeps the connection). The node's goodbye
   runs on its own thread and is short, but an inbound half-open socket can take up to 3 s; it all has to fit
   `terminationGracePeriodSeconds` with the last `ear.conf` write.
+
+## 8. An airplay node in the pod
+
+Phones' and Macs' AirPlay into the graph (`docs/node-types.md#airplay`). All **[check]**: not run in a
+pod yet. ear knows nothing of the cluster; what follows is how the host terms of
+`docs/node-types.md#airplay-2-and-nqptp` map onto a pod.
+
+- **Discovery needs `hostNetwork: true`** **[check]**, already needed for multicast RTP (section 6) and a
+  listening `sendspin` node (section 7): senders find the speaker by mDNS on their own network segment,
+  and shairport-sync's audio, control and timing ports are UDP ports the kernel picks, which no Service
+  can name. Each `airplay` node also holds a TCP port ear picks for its RTSP. Use the `Recreate`
+  strategy, as for `sendspin`.
+- **AirPlay 1** (no `airplay2` setting) needs nothing more: shairport-sync is in the image.
+- **AirPlay 2** (`airplay2 true`) needs nqptp beside ear, which ear never starts and the run image does
+  not hold:
+  - **An `nqptp` container in ear's pod** **[check]**, its image built from nqptp at the commit
+    `docker/Dockerfile`'s `nqptp` stage pins (`NQPTP_COMMIT`), the way that stage builds it
+    (`autoreconf -fi`, `./configure`, `make`; `nqptp -V` says `smi11`). A sidecar shares the pod's
+    network namespace (with `hostNetwork`, the node's), so shairport-sync reaches its localhost UDP 9000.
+  - **One `/dev/shm` for both** **[check]**: an `emptyDir` with `medium: Memory`, mounted at `/dev/shm`
+    in the ear container and the nqptp container. Containers do not share `/dev/shm` otherwise, and the
+    channels nqptp makes (`/dev/shm/ear-<node>`) must be ear's to see.
+  - **Ports 319 and 320** **[check]**: nqptp binds them (PTP), below 1024, so its container needs
+    `NET_BIND_SERVICE` (`securityContext.capabilities.add`), or to run as root; the policy of section 4
+    must allow it. With `hostNetwork` they are the node's own, so nothing else on the node may hold them.
+  - **Start order** **[check]**: nqptp must be up before ear starts an AirPlay 2 node, or the node fails
+    `start-failed` (`The NQPTP service can not be found`). A native sidecar (an init container with
+    `restartPolicy: Always`) starts first; otherwise `node.restart` the AirPlay 2 nodes once it runs.
+  - **nqptp's container restarting** fails every AirPlay 2 node `lost` (`shared memory /ear-<node>, which
+    it needs, was removed`); `node.restart` each until recovery (slice 8) is built. A container killed by
+    `SIGKILL` (an OOM kill, the grace period running out) leaves its channels in the `emptyDir`, which ear
+    cannot see: its AirPlay 2 nodes stay `running` and silent until restarted.
+  - **At most 16 AirPlay 2 node names per nqptp run**; restart the nqptp container (then the nodes) to
+    free them.

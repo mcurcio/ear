@@ -368,6 +368,23 @@ TEST_CASE("An old file's graph_frequency and block_size are refused with what to
 	}
 }
 
+TEST_CASE("A boolean setting is read as knobly's boolean, bare or through a variable, into JSON true or false",
+          "[graph_file_model]") {
+	const Fixture f;
+	const auto model = f.load(formatLines + "@set $v false;\nnode lamp a { x true; }\nnode lamp b { x $v; }\n");
+	CHECK(model.read().diagnostics.empty());
+	REQUIRE(model.read().wanted.has_value());
+	const auto& nodes = model.read().wanted->nodes;
+	CHECK(nodes[0].settings == json{{"x", true}});
+	CHECK(nodes[0].settings["x"].is_boolean());
+	CHECK(nodes[1].settings == json{{"x", false}});
+	SECTION("a quoted word is knobly's wrong kind, and nothing is read") {
+		const auto quoted = f.load(formatLines + "node lamp a { x \"true\"; }\n");
+		CHECK_FALSE(quoted.read().diagnostics.empty());
+		CHECK_FALSE(quoted.read().wanted.has_value());
+	}
+}
+
 TEST_CASE("A rate setting is read with its unit into a JSON number of Hz, and its range is the plan's",
           "[graph_file_model][graph-block]") {
 	const Fixture f;

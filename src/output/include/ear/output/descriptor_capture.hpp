@@ -10,7 +10,8 @@
 // SIGABRT, SIGSEGV, SIGBUS, SIGFPE and SIGILL writes what the pipes still hold, as raw bytes, to the real descriptors,
 // puts them back on 1 and 2, and lets the crash go on as it would have (the handler and dispositions found at install).
 // std::terminate also runs onCrash's hook first (the output thread's queue). A child process must get its own standard
-// error, never inherit descriptor 2 (docs/design/programs.md): an inherited pipe end would outlive the capture.
+// error, never inherit descriptor 2 (docs/writing-a-node-type.md#programs: a program's lines are its own pipes'): an
+// inherited pipe end would outlive the capture.
 #pragma once
 #include <cstddef>
 #include <expected>

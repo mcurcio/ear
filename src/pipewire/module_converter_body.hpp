@@ -3,7 +3,7 @@
 // one engine-companion lifecycle (engine_companions.hpp) links it once it runs and tears it down. A module says only
 // what is its own (converter_modules.hpp). Private to ear_pipewire: its sources and tests include it by this path; no
 // public header does. A shape's adapter instantiates ModuleConverters<Shape> in the source that defines its
-// ModuleRun<Shape> (RtpReceivers: rtp_receivers.cpp).
+// ModuleRun<Shape> (RtpReceivers: rtp_receivers.cpp; PipeReceivers: pipe_receivers.cpp).
 #pragma once
 
 #include <cerrno>
@@ -185,8 +185,7 @@ ModuleConverters<Shape>::make(const CompanionTarget& target, const Shape& shape,
 	                                         .blockPorts = target.blockPorts},
 	                           events, [&](CompanionBodyEvents& body) -> std::unique_ptr<CompanionBody> {
 								   return std::make_unique<ModuleConverterBody<Shape>>(
-									   engine_, target.engineNode,
-									   Run::arguments(target.engineNode, shape, target.blockPorts.size()), body);
+									   engine_, target.engineNode, Run::arguments(target, shape), body);
 							   });
 }
 

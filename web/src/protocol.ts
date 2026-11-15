@@ -67,8 +67,18 @@ export interface NodeCause {
 
 /** What a node still waits for, once its phase has lasted 2 s. */
 export interface WaitingFor {
-  kind: "older-node" | "block" | "companion" | "consumer" | "loop" | "store" | "recording" | "claim" | (string & {});
-  /** older-node, companion, loop, store, recording (its path) and claim (its key: "udp:5004"). */
+  kind:
+    | "older-node"
+    | "block"
+    | "companion"
+    | "consumer"
+    | "loop"
+    | "store"
+    | "recording"
+    | "claim"
+    | "program"
+    | (string & {});
+  /** older-node, companion, loop, store, recording (its path), claim (its key: "udp:5004") and program (its name). */
   name?: string;
 }
 
@@ -136,7 +146,14 @@ export interface NodeCounters extends Counters {
 }
 
 /** A companion's kind (feature companions): an open set, so one this editor does not know is drawn by its own text. */
-export type CompanionKind = "card-playback" | "card-capture" | "rtp-receiver" | "sink" | "source" | (string & {});
+export type CompanionKind =
+  | "card-playback"
+  | "card-capture"
+  | "rtp-receiver"
+  | "pipe-receiver"
+  | "sink"
+  | "source"
+  | (string & {});
 
 /**
  * One of a node's hidden helpers (feature companions, docs/control-port.md#companions): never a node, never routed,

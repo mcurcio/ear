@@ -14,6 +14,7 @@
 #   pipewire/engine.cpp                     default.clock.rate and allowed-rates;
 #   pipewire/sound_cards.cpp                a card's audio.rate and its SPA format's rate;
 #   pipewire/rtp_receivers.cpp              the RTP receiver's audio.rate, the sender's own rate;
+#   pipewire/pipe_receivers.cpp             the pipe receiver's audio.rate, the program's own rate;
 #   nodes/file/file.cpp                     libsndfile's samplerate;
 #   nodes/sendspin/worker.cpp               sendspin-cpp's formats, its source's sample_rate and the says notes;
 #   nodes/sendspin/worker.hpp               the stream's byte rate the feed's undrained bound is derived from;
@@ -35,6 +36,7 @@ if(NOT DEFINED ALLOWED)
 		pipewire/engine.cpp
 		pipewire/sound_cards.cpp
 		pipewire/rtp_receivers.cpp
+		pipewire/pipe_receivers.cpp
 		nodes/file/file.cpp
 		nodes/sendspin/worker.cpp
 		nodes/sendspin/worker.hpp

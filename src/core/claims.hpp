@@ -61,6 +61,9 @@ public:
 	std::vector<ClaimDecided> release(std::uint64_t generation);
 	/// Whether `generation` holds any claim.
 	bool holds(std::uint64_t generation) const noexcept;
+	/// Whether any configuration, live, going or leaked, holds the claim of this key ("tcp:49152"): an AnyTcp grant
+	/// skips it.
+	bool held(const std::string& key) const noexcept { return held_.contains(key); }
 
 private:
 	enum class State { live, going, leaked, wedged }; // wedged: leaked for good, never closing

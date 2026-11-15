@@ -205,18 +205,45 @@ std::string_view engineSuffix(const SoundCardShape&, Direction bank) noexcept {
 	return bank == Direction::output ? "playback" : "capture";
 }
 std::string_view engineSuffix(const RtpReceiverShape&, Direction) noexcept { return "rtp"; }
+std::string_view engineSuffix(const PipeReceiverShape&, Direction) noexcept { return "pipe"; }
 
 /// An engine companion's kind: a card's by its bank's direction.
 CompanionKind engineKind(const SoundCardShape&, Direction bank) noexcept {
 	return bank == Direction::output ? CompanionKind::cardPlayback : CompanionKind::cardCapture;
 }
 CompanionKind engineKind(const RtpReceiverShape&, Direction) noexcept { return CompanionKind::rtpReceiver; }
+CompanionKind engineKind(const PipeReceiverShape&, Direction) noexcept { return CompanionKind::pipeReceiver; }
+
+/// What a host with no adapter of the kind is said to have none of: "no <kind> in this host".
+std::string_view engineKindWords(const SoundCardShape&) noexcept { return "sound cards"; }
+std::string_view engineKindWords(const RtpReceiverShape&) noexcept { return "RTP receivers"; }
+std::string_view engineKindWords(const PipeReceiverShape&) noexcept { return "pipe receivers"; }
+
+/// The adapter call that made an engine companion, as an adapter's bug names it.
+std::string_view engineMaker(const SoundCardShape&) noexcept { return "SoundCardCompanions::make"; }
+std::string_view engineMaker(const RtpReceiverShape&) noexcept { return "RtpReceiverCompanions::make"; }
+std::string_view engineMaker(const PipeReceiverShape&) noexcept { return "PipeReceiverCompanions::make"; }
 
 /// Why an engine companion that missed its readiness deadline failed its node (engine-refused,
 /// docs/engine.md#readiness-deadlines).
 std::string neverReady(const SoundCardShape& shape) { return "the card never started: " + shape.card.text(); }
 std::string neverReady(const RtpReceiverShape& shape) {
 	return "the RTP receiver never ran (UDP port " + std::to_string(shape.port) + " held?)";
+}
+std::string neverReady(const PipeReceiverShape&) { return "the pipe receiver never ran"; }
+
+/// How many times an AnyTcp claim asks the probe for a free port before it is refused: the kernel may offer a port
+/// another configuration holds (docs/writing-a-node-type.md#claims).
+constexpr int anyTcpTries = 8;
+
+/// The most runtime files one program may have (ProgramShape::files).
+constexpr std::size_t maxProgramFiles = 8;
+
+/// A program's file name: 1 to 32 of [a-z0-9.-], never "feed" (the feed's own runtime path).
+bool plainFileName(std::string_view name) noexcept {
+	if (name.empty() || name.size() > 32 || name == "feed") return false;
+	return std::ranges::all_of(
+		name, [](char c) { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '-'; });
 }
 
 /// The inside bank of this direction a companion joins; std::logic_error (a type bug) otherwise.
@@ -263,6 +290,8 @@ std::string_view waitingKindName(WaitingFor::Kind kind) noexcept {
 		return "recording";
 	case WaitingFor::Kind::claim:
 		return "claim";
+	case WaitingFor::Kind::program:
+		return "program";
 	}
 	return "unknown";
 }
@@ -443,8 +472,7 @@ struct NodeHost::Impl {
 			fail(internalErrorDetail(callback, what));
 		}
 		static std::string_view companionMaker(const EngineCompanionShape& shape) noexcept {
-			return std::holds_alternative<SoundCardShape>(shape) ? "SoundCardCompanions::make"
-			                                                     : "RtpReceiverCompanions::make";
+			return std::visit([](const auto& kind) { return engineMaker(kind); }, shape);
 		}
 		/// The block lost for good, an input of its own: engine-refused, or lost for its own bug.
 		void blockGone(std::string detail, FailureCode code) {
@@ -572,6 +600,84 @@ struct NodeHost::Impl {
 				requireConfiguring("rtpReceiver");
 				askEngineCompanion(std::move(shape),
 				                   insideBank(ports_, std::string(bank), Direction::input, "an RTP receiver"));
+			});
+		}
+		/// A pipe receiver (docs/writing-a-node-type.md#engine-companions): an engine companion whose FIFO is the
+		/// configuration's runtime path "<bank>.fifo"; a host with no adapter or no runtime folder refuses it.
+		void pipeReceiver(std::string_view bank, PipeReceiverShape shape) override {
+			guarded([&] {
+				requireConfiguring("pipeReceiver");
+				askEngineCompanion(std::move(shape),
+				                   insideBank(ports_, std::string(bank), Direction::input, "a pipe receiver"));
+			});
+		}
+		/// An AnyTcp claim (docs/writing-a-node-type.md#claims): recorded now, its port picked at readiness step
+		/// `claims`; its handle is its index among the configuration's claims.
+		GrantedPort claimAnyTcp() override {
+			return guarded([&] {
+				requireConfiguring("claim");
+				const GrantedPort granted(config_->claims.size());
+				config_->claims.push_back(ClaimSlot{Claim{Claim::Kind::tcp, {}}, detail::noReadiness, {}, true});
+				return granted;
+			});
+		}
+		/// The configuration's program (docs/writing-a-node-type.md#programs): every rule its shape can break here is a
+		/// std::logic_error; a FIFO it names is checked at configure's return, once every pipe receiver was asked for.
+		void program(ProgramShape shape, std::optional<ProgramFeedTo> feed) override {
+			guarded([&] {
+				requireConfiguring("program");
+				if (host_.resources.programs() == nullptr) throw std::logic_error("no programs in this host");
+				if (host_.resources.runtimeFolder().empty()) throw std::logic_error("no runtime folder in this host");
+				Configuration& c = *config_;
+				if (c.program) throw std::logic_error("a second program: one per configuration");
+				const std::string name(shape.executable.name());
+				if (shape.files.size() > maxProgramFiles)
+					throw std::logic_error("program " + name + ": more than " + std::to_string(maxProgramFiles) +
+					                       " files");
+				for (std::size_t i = 0; i < shape.files.size(); ++i) {
+					const std::string& file = shape.files[i].name;
+					const bool twice =
+						std::ranges::any_of(shape.files.begin(), shape.files.begin() + i,
+					                        [&](const ProgramFile& other) { return other.name == file; });
+					if (!plainFileName(file) || twice)
+						throw std::logic_error("program " + name + ": bad file name " + file);
+				}
+				if (shape.needs.size() > maxProgramNeeds)
+					throw std::logic_error("program " + name + ": more than " + std::to_string(maxProgramNeeds) +
+					                       " needs");
+				for (std::size_t i = 0; i < shape.needs.size(); ++i)
+					if (std::ranges::find(shape.needs.begin(), shape.needs.begin() + i, shape.needs[i]) !=
+					    shape.needs.begin() + i)
+						throw std::logic_error("program " + name + " needs " + shape.needs[i].text() + " twice");
+				const auto check = [&](const ProgramPart& piece) {
+					std::visit(Overloaded{
+								   [](const part::Text&) {},
+								   [](const part::Fifo&) {}, // checked at configure's return
+								   [&](const part::Feed&) {
+									   if (!feed)
+										   throw std::logic_error("program " + name + " names its feed but has none");
+								   },
+								   [&](const part::File& file) {
+									   if (std::ranges::none_of(shape.files, [&](const ProgramFile& own) {
+											   return own.name == file.name;
+										   }))
+										   throw std::logic_error("program " + name + " names no file " + file.name);
+								   },
+								   [&](const part::Port& port) {
+									   const std::size_t index = port.port.claim();
+									   if (index >= c.claims.size() || !c.claims[index].anyTcp)
+										   throw std::logic_error("program " + name +
+							                                      " names a port this configuration was not granted");
+								   },
+							   },
+					           piece);
+				};
+				for (const ProgramArg& arg : shape.args)
+					for (const ProgramPart& piece : arg.parts) check(piece);
+				for (const ProgramFile& file : shape.files)
+					for (const ProgramPart& piece : file.text) check(piece);
+				if (feed) static_cast<void>(loopSlot("program", feed->loop)); // a loop the configuration declares
+				c.program.emplace(ProgramSlot{std::move(shape), std::move(feed)});
 			});
 		}
 		/// A recording (docs/writing-a-node-type.md#recordings): nothing opened here. Its path is claimed at readiness
@@ -721,7 +827,9 @@ struct NodeHost::Impl {
 				itemReady(generation, found->item);
 				break;
 			case detail::ClaimJudged::Outcome::probe:
-				probeClaim(generation, index, judged.leaked);
+				// An AnyTcp port was picked free by the probe, or by the host's own count: never probed again.
+				if (found->anyTcp) itemReady(generation, found->item);
+				else probeClaim(generation, index, judged.leaked);
 				break;
 			case detail::ClaimJudged::Outcome::refused:
 				refuseClaim(generation, index, judged.why, judged.leaked);
@@ -981,6 +1089,40 @@ struct NodeHost::Impl {
 					if (Node* node = self->attachedNode()) node->loopClosedHeard(node->config_->generation, index);
 					else if (LeakedRecord* record = self->record_) record->loopClosed(index);
 				};
+			}
+			/// What the configuration's program tells (ProgramEvents, on the adapter's thread), crossing to the main loop as
+			/// a close does: started, ready, refused and exited land on the node while attached, refused and exited on the
+			/// leaked record once re-pointed (a program reaped is one of the closes its late close waits for).
+			void programStarted() {
+				mainLoop_.post([self = shared_from_this()] {
+					if (Node* node = self->attachedNode()) node->programStarted(node->config_->generation);
+				});
+			}
+			void programReady() {
+				mainLoop_.post([self = shared_from_this()] {
+					if (Node* node = self->attachedNode()) node->programReady(node->config_->generation);
+				});
+			}
+			void programRefused(std::string why) {
+				mainLoop_.post([self = shared_from_this(), why = std::move(why)]() mutable {
+					if (Node* node = self->attachedNode())
+						node->programRefused(node->config_->generation, std::move(why));
+					else if (LeakedRecord* record = self->record_) record->programEnded();
+				});
+			}
+			void programExited(ProgramExit exit) {
+				mainLoop_.post([self = shared_from_this(), exit = std::move(exit)]() mutable {
+					if (Node* node = self->attachedNode())
+						node->programExited(node->config_->generation, std::move(exit));
+					else if (LeakedRecord* record = self->record_) record->programEnded();
+				});
+			}
+			/// Its report feed's bytes: dropped once the configuration ended, as every report of its threads is.
+			void programFed(std::string bytes) {
+				completions_->post([self = shared_from_this(), bytes = std::move(bytes)]() mutable {
+					if (Node* node = self->attachedNode())
+						node->programFed(node->config_->generation, std::move(bytes));
+				});
 			}
 			/// The `closed` the run object gets: from any thread, later or inside close().
 			std::move_only_function<void()> closedCall() {
@@ -1295,6 +1437,20 @@ struct NodeHost::Impl {
 				channel_->threw("loop " + std::string(declared.name) + "'s handler threw: " + std::move(what));
 			}
 
+			/// Main thread: work from outside the node with the loop's state (a program's report feed), staged as the node's
+			/// own until the node is configured, then the adapter's outside work, which teardown step 1 refuses
+			/// (NodeLoop::closeToOthers).
+			void postOutsideState(std::move_only_function<void(void*)> work) {
+				std::move_only_function<void()> wrapped = [this, work = std::move(work)]() mutable {
+					if (!stateGone_) work(state.get());
+				};
+				const std::scoped_lock lock(mutex_);
+				if (!released_) {
+					staged_.push_back(Staged{.work = std::move(wrapped)});
+					return;
+				}
+				if (made) made->postFromOutside(std::move(wrapped));
+			}
 			/// Main thread, at readiness step `loops`: the adapter makes the loop; it tells ready or failed later.
 			void start(LoopAdapter& adapter, const NodeName& node) {
 				auto loop = adapter.make(node, declared.name, declared.kind, *this);
@@ -1426,6 +1582,40 @@ struct NodeHost::Impl {
 			NodeLoop* real_ = nullptr;  // mutex_: made's, once made
 			bool stateGone_ = false;    // the loop's thread only, once started: its state was destroyed
 			std::shared_ptr<std::atomic<std::size_t>> live_ = std::make_shared<std::atomic<std::size_t>>(0);
+		};
+
+		/// The ProgramEvents a configuration's program tells, on the adapter's thread: each crosses through the
+		/// configuration's Channel (docs/architecture.md#teardown-by-dependency), so nothing reaches a newer
+		/// configuration. A line it says goes to the log sinks at once, as NodeHandle::log does. Owned by its
+		/// ProgramSlot, so it outlives the RunningProgram the adapter tells it about.
+		class ProgramLink final : public ProgramEvents {
+		public:
+			explicit ProgramLink(std::shared_ptr<Channel> channel) noexcept : channel_(std::move(channel)) {}
+			void started() override { channel_->programStarted(); }
+			void ready() override { channel_->programReady(); }
+			void refused(std::string why) override { channel_->programRefused(std::move(why)); }
+			void fed(std::string bytes) override { channel_->programFed(std::move(bytes)); }
+			void said(LogEntry entry) override { channel_->log(std::move(entry)); }
+			void exited(ProgramExit exit) override { channel_->programExited(std::move(exit)); }
+
+		private:
+			std::shared_ptr<Channel> channel_;
+		};
+
+		/// The configuration's one program (docs/writing-a-node-type.md#programs): what configure asked, its readiness
+		/// item, and once launched its process and what it told.
+		struct ProgramSlot {
+			ProgramShape shape;
+			std::optional<ProgramFeedTo> feed;
+			std::size_t item = detail::noReadiness; // ready once it is (ProgramEvents::ready)
+			std::unique_ptr<ProgramLink> events{};  // made at its launch; outlives `running`
+			std::unique_ptr<RunningProgram> running{};
+			bool started = false;
+			bool ended = false; // told refused or exited: nothing of it runs
+			bool stopped = false;
+			/// Launched and not yet reaped: teardown step 3 waits for it.
+			bool open() const noexcept { return running && !ended; }
+			std::string name() const { return std::string(shape.executable.name()); }
 		};
 
 		/// What a store's jobs carry back to the main loop: the configuration's Completions, and where the node is
@@ -1676,6 +1866,7 @@ struct NodeHost::Impl {
 			Claim claim;
 			std::size_t item = detail::noReadiness; // its readiness item: ready once granted (and probed, for a port)
 			std::string waitingOn{};                // the node whose closing configuration it waits for
+			bool anyTcp = false;                    // an AnyTcp claim: its port (claim.value) picked at step claims
 		};
 
 		/// One engine companion a configuration asked for, until its block is ready: its shape, and where it goes, the
@@ -1735,13 +1926,16 @@ struct NodeHost::Impl {
 			std::vector<std::unique_ptr<Handoff>> handoffs;
 			std::vector<EngineAsk> engineAsks; // in request order
 			std::vector<std::unique_ptr<Companion>> engineCompanions;
+			// Its one program: destroyed after the instance and before the claims are released (teardown step 5), so a
+			// port it held is released only once it was reaped.
+			std::optional<ProgramSlot> program;
 			std::vector<ClaimSlot> claims;   // every claim, judged at readiness step `claims`; released at step 5
 			detail::ReadinessList readiness; // every engine ask's item, then every sink's, from configure's return
 			std::vector<Asked> requestOrder; // every companion, as asked: the companions' list's order
 			/// Whose each readiness item is, by item: a claim's, a store's, a recording's, a loop's, an engine companion's or a sink
 			/// consumer's, and its index.
 			struct ItemOwner {
-				enum class Family { claim, store, recording, loop, engine, consumer } family;
+				enum class Family { claim, store, recording, loop, engine, consumer, program } family;
 				std::size_t index;
 			};
 			std::vector<ItemOwner> itemOwners;
@@ -1808,6 +2002,14 @@ struct NodeHost::Impl {
 					if (loopClosedIn(host_, name_, *config_, index)) carryOn();
 				});
 			}
+			/// Its program was reaped (or refused): one of the closes its late close waits for.
+			void programEnded() {
+				host_.input([this] {
+					if (!config_->program || config_->program->ended) return;
+					config_->program->ended = true;
+					carryOn();
+				});
+			}
 			void runClosed() {
 				host_.input([this] {
 					if (!runClosing_) return;
@@ -1823,7 +2025,8 @@ struct NodeHost::Impl {
 			/// As closeRunObject: once every sink and handoff closed, the loops; once they closed, the run object.
 			void carryOn() {
 				Configuration& c = *config_;
-				if (closed_ || runClosing_ || c.handoffsClosed != c.handoffs.size() || c.sinksClosed != c.sinks.size())
+				if (closed_ || runClosing_ || c.handoffsClosed != c.handoffs.size() ||
+				    c.sinksClosed != c.sinks.size() || (c.program && c.program->open()))
 					return;
 				if (c.loopsStep == Configuration::LoopsStep::open) finishLoopsOf(c);
 				if (c.loopsStep != Configuration::LoopsStep::closed) return;
@@ -1884,6 +2087,7 @@ struct NodeHost::Impl {
 				c.sources.clear();
 				c.stores.clear();
 				c.recordings.clear();
+				c.program.reset(); // reaped; its claims were released when it closed late
 				config_.reset();
 			}
 
@@ -2141,8 +2345,15 @@ struct NodeHost::Impl {
 
 		/// Records an engine companion to make once the block is ready, under its one name, on a bank of its own.
 		template <class Shape> void askEngineCompanion(Shape shape, const Ports::Bank& bank) {
-			given(host_.resources.adapterFor(shape),
-			      std::is_same_v<Shape, SoundCardShape> ? "sound cards" : "RTP receivers");
+			given(host_.resources.adapterFor(shape), engineKindWords(shape));
+			// A pipe receiver's FIFO is a runtime file of the configuration's (runtimePath), so it needs the folder.
+			std::string fifo;
+			if constexpr (std::is_same_v<Shape, PipeReceiverShape>) {
+				if (host_.resources.runtimeFolder().empty())
+					adapter("ResourceRegistry",
+					        []() -> void { throw std::runtime_error("no runtime folder in this host"); });
+				fifo = runtimePath(host_.resources.runtimeFolder(), name_, config_->generation, bank.name + ".fifo");
+			}
 			const NodeName engineNode = name_ + "." + std::string(engineSuffix(shape, bank.direction));
 			requireOneName(engineNode);
 			requireFreeBank(bank);
@@ -2153,7 +2364,8 @@ struct NodeHost::Impl {
 			                                                                          .bank = bank.direction,
 			                                                                          .blockPorts = bank.ports,
 			                                                                          .format = host_.format,
-			                                                                          .insideBank = bank.name}});
+			                                                                          .insideBank = bank.name,
+			                                                                          .fifo = std::move(fifo)}});
 			config_->requestOrder.push_back({Asked::Family::engine, config_->engineAsks.size() - 1});
 		}
 
@@ -2363,6 +2575,12 @@ struct NodeHost::Impl {
 				if (!slot->given)
 					return failConfigure(lc::Fact::configureFailed,
 					                     "configure gave sink " + slot->bank + " no consumer");
+			// A FIFO the program names is a pipe receiver's of this configuration (each was asked for by now).
+			if (c.program)
+				if (std::optional<std::string> bank = fifoWithoutReceiver(*c.program))
+					return failConfigure(lc::Fact::configureFailed, "configure gave program " + c.program->name() +
+					                                                    " the FIFO of bank " + *bank +
+					                                                    ", which has no pipe receiver");
 			// A declared path must exist: a pass-through copies only its pairs, so a delay declared on any other path
 			// would lie on audio that never flows there.
 			if (!c.pairs.empty())
@@ -2423,7 +2641,7 @@ struct NodeHost::Impl {
 				ClaimSlot& slot = c.claims[i];
 				slot.item = c.readiness.add(detail::ReadinessItem{
 					.kind = WaitingFor::Kind::claim,
-					.name = claimKey(slot.claim),
+					.name = slot.anyTcp ? std::string("tcp:any") : claimKey(slot.claim),
 					.step = detail::ReadinessStep::claims,
 					.bound = claimWaitBound,
 					.fact = lc::Fact::configureFailed,
@@ -2499,6 +2717,20 @@ struct NodeHost::Impl {
 				});
 				c.itemOwners.push_back({Family::consumer, i});
 			}
+			// The program at step `programs`, once every engine companion and consumer is ready, bounded from its asking
+			// until it is ready.
+			if (c.program) {
+				c.program->item = c.readiness.add(detail::ReadinessItem{
+					.kind = WaitingFor::Kind::program,
+					.name = c.program->name(),
+					.step = detail::ReadinessStep::programs,
+					.bound = programReadinessBound,
+					.fact = lc::Fact::configureFailed,
+					.overdue = [text =
+				                    programOverdueDetail(c.program->name(), c.program->shape.needs)] { return text; },
+				});
+				c.itemOwners.push_back({Family::program, 0});
+			}
 		}
 
 		/// Readiness item `item`'s step was asked: its owner starts it. A loop is made by the adapter (an adapter's own
@@ -2510,6 +2742,7 @@ struct NodeHost::Impl {
 			const Configuration::ItemOwner owner = c.itemOwners.at(item);
 			switch (owner.family) {
 			case Family::claim: {
+				if (c.claims[owner.index].anyTcp && !grantAnyTcp(owner.index)) break;
 				// Judged now, so a claimant judged after it in this turn finds it held; the node hears it as an input.
 				const Claim& claim = c.claims[owner.index].claim;
 				host_.claimsDecided({detail::ClaimDecided{detail::ClaimHolder{c.generation, serial_, name_}, claim,
@@ -2548,7 +2781,171 @@ struct NodeHost::Impl {
 				// Queued in the flush once the block is ready; a ready step behind a later input asks it then.
 				host_.inputFor(serial_, [](Node& node) { node.askResources(); });
 				break;
+			case Family::program:
+				launchProgram();
+				break;
 			}
+		}
+
+		/// AnyTcp claim `index`, at step claims: a port no claim in the host holds, the kernel's free one through the
+		/// probe (tried up to anyTcpTries times), else the lowest from anyTcpFirstPort up. Picked, it is claimed as a
+		/// TcpListen of that port and not probed again (freeTcp was its probe); refused, the node fails start-failed
+		/// "cannot find a free TCP port: <why>" as an input of its own. False when refused.
+		bool grantAnyTcp(std::size_t index) {
+			Configuration& c = *config_;
+			std::optional<std::uint16_t> picked;
+			std::string why;
+			if (PortProbe* probe = host_.resources.ports()) {
+				why = "every port the kernel offered is held by a node";
+				for (int tries = 0; tries < anyTcpTries && !picked; ++tries) {
+					const std::expected<std::uint16_t, std::string> offered = probe->freeTcp();
+					if (!offered) {
+						why = offered.error();
+						break;
+					}
+					if (!host_.claims.held(claimKey(claim::of(claim::TcpListen(*offered))))) picked = *offered;
+				}
+			} else {
+				for (std::uint32_t port = anyTcpFirstPort; port <= 65535 && !picked; ++port)
+					if (!host_.claims.held("tcp:" + std::to_string(port))) picked = static_cast<std::uint16_t>(port);
+				why = "every port from " + std::to_string(anyTcpFirstPort) + " up is held by a node";
+			}
+			if (picked) {
+				c.claims[index].claim = claim::of(claim::TcpListen(*picked));
+				return true;
+			}
+			host_.inputFor(serial_, [generation = c.generation, index,
+			                         text = "cannot find a free TCP port: " + why](Node& node) mutable {
+				if (!node.stillReadying(generation)) return;
+				if (auto failure = node.config_->readiness.failed(node.config_->claims[index].item, std::move(text)))
+					node.feed(node.aggregate_.fault(failure->fact, std::move(failure->detail)));
+			});
+			return false;
+		}
+
+		/// The bank of the first FIFO the program names that has no pipe receiver in this configuration, or none.
+		std::optional<std::string> fifoWithoutReceiver(const ProgramSlot& program) const {
+			const auto unjoined = [&](const ProgramPart& piece) -> std::optional<std::string> {
+				const auto* fifo = std::get_if<part::Fifo>(&piece);
+				if (fifo == nullptr || pipeReceiverOn(fifo->bank) != nullptr) return std::nullopt;
+				return fifo->bank;
+			};
+			for (const ProgramArg& arg : program.shape.args)
+				for (const ProgramPart& piece : arg.parts)
+					if (auto bank = unjoined(piece)) return bank;
+			for (const ProgramFile& file : program.shape.files)
+				for (const ProgramPart& piece : file.text)
+					if (auto bank = unjoined(piece)) return bank;
+			return std::nullopt;
+		}
+		/// The pipe receiver this configuration asked for on inside bank `bank`, or null.
+		const EngineAsk* pipeReceiverOn(const std::string& bank) const {
+			for (const EngineAsk& asked : config_->engineAsks)
+				if (std::holds_alternative<PipeReceiverShape>(asked.shape) && asked.target.insideBank == bank)
+					return &asked;
+			return nullptr;
+		}
+
+		/// At step programs: every part resolved to text (docs/writing-a-node-type.md#programs), then the adapter
+		/// launches it; it tells started or refused later. An adapter's own bug fails the node lost
+		/// (docs/architecture.md#faults-by-owner).
+		void launchProgram() {
+			Configuration& c = *config_;
+			ProgramSlot& program = *c.program;
+			const std::string& folder = host_.resources.runtimeFolder();
+			const auto pathOf = [&](std::string_view what) { return runtimePath(folder, name_, c.generation, what); };
+			const auto text = [&](const std::vector<ProgramPart>& parts) {
+				std::string joined;
+				for (const ProgramPart& piece : parts)
+					joined += std::visit(
+						Overloaded{
+							[](const part::Text& given) { return given.text; },
+							[&](const part::Port& port) { return c.claims.at(port.port.claim()).claim.value; },
+							[&](const part::Fifo& fifo) { return pipeReceiverOn(fifo.bank)->target.fifo; },
+							[&](const part::Feed&) { return pathOf("feed"); },
+							[&](const part::File& file) { return pathOf(file.name); },
+						},
+						piece);
+				return joined;
+			};
+			ProgramLaunch launch{.node = name_,
+			                     .executable = std::string(program.shape.executable.path()),
+			                     .argv = {program.name()},
+			                     .folder = folder};
+			for (const ProgramArg& arg : program.shape.args) launch.argv.push_back(text(arg.parts));
+			for (const ProgramFile& file : program.shape.files)
+				launch.files.emplace_back(pathOf(file.name), text(file.text));
+			if (program.feed) launch.feed = pathOf("feed");
+			for (const SharedMemoryName& need : program.shape.needs) launch.needs.push_back(need.text());
+			program.events = std::make_unique<ProgramLink>(c.channel);
+			try {
+				program.running = host_.resources.programs()->launch(std::move(launch), *program.events);
+				if (!program.running)
+					throw std::logic_error("the program adapter launched no program " + program.name());
+			} catch (...) {
+				program.ended = true; // nothing of it runs: nothing to wait for
+				adapterFaulted("ProgramAdapter::launch", [this, generation = c.generation](std::string detail) {
+					host_.inputFor(serial_, [generation, detail = std::move(detail)](Node& node) mutable {
+						if (node.current(generation))
+							node.feed(node.aggregate_.fault(lc::Fact::adapterFaulted, std::move(detail)));
+					});
+				});
+			}
+		}
+
+		/// The program started. Its readiness waits for ready: a program that needs shared memory runs only once that
+		/// exists (docs/writing-a-node-type.md#programs).
+		void programStarted(std::uint64_t generation) {
+			host_.inputFor(serial_, [generation](Node& node) {
+				if (!node.current(generation) || !node.config_->program) return;
+				node.config_->program->started = true;
+			});
+		}
+		/// The program is ready (started, and every shared-memory name it needs exists): its readiness item is ready.
+		void programReady(std::uint64_t generation) {
+			host_.inputFor(serial_, [generation](Node& node) {
+				if (!node.current(generation) || !node.config_->program) return;
+				if (node.stillReadying(generation)) node.itemReady(generation, node.config_->program->item);
+			});
+		}
+		/// The program cannot run: the node fails start-failed "cannot start <name>: <why>"; nothing of it is left to wait
+		/// for.
+		void programRefused(std::uint64_t generation, std::string why) {
+			host_.inputFor(serial_, [generation, why = std::move(why)](Node& node) mutable {
+				if (!node.current(generation) || !node.config_->program) return;
+				ProgramSlot& program = *node.config_->program;
+				program.ended = true;
+				if (node.stillReadying(generation)) {
+					if (auto failure =
+					        node.config_->readiness.failed(program.item, "cannot start " + program.name() + ": " + why))
+						node.feed(node.aggregate_.fault(failure->fact, std::move(failure->detail)));
+				}
+				node.closeRunObject();
+			});
+		}
+		/// The program was reaped. During a teardown (from its step 1) that is the end the teardown waits for; otherwise
+		/// the node fails with its words (start-failed before it first rested, lost after: Fact::nodeLost).
+		void programExited(std::uint64_t generation, ProgramExit exit) {
+			host_.inputFor(serial_, [generation, exit = std::move(exit)](Node& node) mutable {
+				if (!node.current(generation) || !node.config_->program) return;
+				ProgramSlot& program = *node.config_->program;
+				program.ended = true;
+				if (node.config_->ending) return node.closeRunObject();
+				node.feed(node.aggregate_.fault(lc::Fact::nodeLost, programExitDetail(program.name(), exit)));
+			});
+		}
+		/// Bytes of the program's report feed: to its loop's state, staged until the node is configured; none from
+		/// teardown step 1, when the loops refuse outside work.
+		void programFed(std::uint64_t generation, std::string bytes) {
+			host_.inputFor(serial_, [generation, bytes = std::move(bytes)](Node& node) mutable {
+				if (!node.current(generation) || !node.config_->program || node.config_->ending) return;
+				ProgramFeedTo* feed = node.config_->program->feed ? &*node.config_->program->feed : nullptr;
+				if (feed == nullptr) return;
+				node.config_->loops.at(feed->loop)
+					->postOutsideState([deliver = &feed->deliver, bytes = std::move(bytes)](void* state) {
+						(*deliver)(state, bytes);
+					});
+			});
 		}
 
 		/// One claim, once each in a configuration (a store's file, named by the framework, is held once).
@@ -2935,9 +3332,12 @@ struct NodeHost::Impl {
 			// Its claims are going: a claimant waits for step 5 rather than being refused; its own waits leave.
 			host_.claims.going(config_->generation);
 			for (SourceSlot& slot : config_->sources) slot.source->close();
-			// Its loops refuse outside work from here (slice 5's actions), keeping the node's own.
+			// Its loops refuse outside work from here (slice 5's actions, a program's feed), keeping the node's own.
 			for (const auto& slot : config_->loops)
 				if (slot->made) slot->made->closeToOthers();
+			// Its program is told to end; teardown step 3 waits for its reaping.
+			if (config_->program && config_->program->open() && !std::exchange(config_->program->stopped, true))
+				config_->program->running->stop();
 		}
 
 	public:
@@ -3201,7 +3601,8 @@ struct NodeHost::Impl {
 		/// is destroyed while that loop is still calling it. The rest goes once the run object says it has closed.
 		void closeRunObject() {
 			if (!config_ || !config_->tearing || closingHandoffs_ || runClosing_ ||
-			    config_->handoffsClosed != config_->handoffs.size() || config_->sinksClosed != config_->sinks.size())
+			    config_->handoffsClosed != config_->handoffs.size() || config_->sinksClosed != config_->sinks.size() ||
+			    (config_->program && config_->program->open()))
 				return;
 			if (config_->loopsStep == Configuration::LoopsStep::open) finishLoops();
 			if (config_->loopsStep != Configuration::LoopsStep::closed) return;
@@ -3336,6 +3737,7 @@ struct NodeHost::Impl {
 			c.sources.clear(); // after the instance, whose threads may hold a writer
 			c.stores.clear();  // after every state and consumer that may hold one; a job still queued holds its state
 			c.recordings.clear();
+			c.program.reset(); // reaped (step 3 waited for it), and before its claims go: a port it held is free now
 			const std::uint64_t generation = c.generation;
 			config_.reset();
 			// Last: its claims released, each waiter judged again in arrival order.
@@ -3349,12 +3751,14 @@ struct NodeHost::Impl {
 			const std::size_t sinksOpen = runClosing_ ? 0 : config_->sinks.size() - config_->sinksClosed;
 			const auto loopsOpen = static_cast<std::size_t>(
 				std::ranges::count_if(config_->loops, [](const auto& slot) { return slot->made && !slot->closed; }));
+			const std::size_t programsOpen = config_->program && config_->program->open() ? 1 : 0;
 			host_.diagnosed(name_, "ear.close-overdue",
 			                "the run did not close within " + std::to_string(host_.closeDeadline.count()) +
 			                    " ms and is left running (" + std::to_string(handoffsOpen) + " handoffs open, " +
 			                    (sinksOpen > 0 ? std::to_string(sinksOpen) + " sinks open, " : std::string()) +
-			                    (loopsOpen > 0 ? std::to_string(loopsOpen) + " loops open, " : std::string()) + "run " +
-			                    (runClosing_ ? "closing" : "not yet told to close") + ")",
+			                    (loopsOpen > 0 ? std::to_string(loopsOpen) + " loops open, " : std::string()) +
+			                    (programsOpen > 0 ? std::to_string(programsOpen) + " programs open, " : std::string()) +
+			                    "run " + (runClosing_ ? "closing" : "not yet told to close") + ")",
 			                {});
 		}
 

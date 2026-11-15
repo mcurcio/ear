@@ -3,8 +3,8 @@
 // static_asserts, property<home>() and the PropertyKey<home> type, which compile_fail/engine_properties_bad.cpp shows
 // refusing an unlisted key and a key of another home. The live
 // check makes one of every object ear sets properties on (the context, the internal clock, two port blocks and their
-// ports, a route link, a sound card from the test ALSA configuration with the test seam's clock.name, an RTP receiver
-// and both companions' links) and reads each object's properties as PipeWire holds them, through the context's own
+// ports, a route link, a sound card from the test ALSA configuration with the test seam's clock.name, an RTP receiver,
+// a pipe receiver and the card's and RTP receiver's links) and reads each object's properties as PipeWire holds them, through the context's own
 // objects (impl API), not what ear asked for. Every wait is event-gated; the deadline only fails the test.
 #include <algorithm>
 #include <cctype>
@@ -32,6 +32,7 @@
 #include "catch2/catch.hpp"
 #include "ear/pipewire/engine.hpp"
 #include "ear/pipewire/links.hpp"
+#include "ear/pipewire/pipe_receivers.hpp"
 #include "ear/pipewire/port_blocks.hpp"
 #include "ear/pipewire/rtp_receivers.hpp"
 #include "ear/pipewire/sound_cards.hpp"
@@ -362,6 +363,8 @@ TEST_CASE("Every property ear sets is held by PipeWire as the property table say
 	FilterPortBlocks blocks(*engine, bell);
 	AlsaSoundCards cards(*engine, clocklessCardProperties());
 	RtpReceivers receivers(*engine);
+	PipeReceivers pipes(*engine);
+	ear::test::TempFolder runtime{"properties-runtime"};
 	Links links(*engine);
 	LinkLog linkLog(waiter);
 	links.subscribe(linkLog);
@@ -369,6 +372,8 @@ TEST_CASE("Every property ear sets is held by PipeWire as the property table say
 	Silence fppCode;
 	BlockEvents cardEvents(waiter);
 	BlockEvents fppEvents(waiter);
+	Silence pipeCode;
+	BlockEvents pipeEvents(waiter);
 	auto cardBlock = blocks.make("card",
 	                             Ports{{{Direction::input, "play", {"1", "2"}},
 	                                    {Direction::output, "to_card", {"1", "2"}, PortBank::Reach::inside}}},
@@ -377,9 +382,14 @@ TEST_CASE("Every property ear sets is held by PipeWire as the property table say
 	                            Ports{{{Direction::output, "stream", {"1", "2"}},
 	                                   {Direction::input, "from_rtp", {"1", "2"}, PortBank::Reach::inside}}},
 	                            kFormat, fppEvents);
+	auto pipeBlock = blocks.make("air",
+	                             Ports{{{Direction::output, "stream", {"1", "2"}},
+	                                    {Direction::input, "from_pipe", {"1", "2"}, PortBank::Reach::inside}}},
+	                             kFormat, pipeEvents);
 	REQUIRE(ear::testing::driveNow(*cardBlock, &cardCode));
 	REQUIRE(ear::testing::driveNow(*fppBlock, &fppCode));
-	REQUIRE(waiter.until([&] { return cardEvents.isReady && fppEvents.isReady; }));
+	REQUIRE(ear::testing::driveNow(*pipeBlock, &pipeCode));
+	REQUIRE(waiter.until([&] { return cardEvents.isReady && fppEvents.isReady && pipeEvents.isReady; }));
 	const std::uint32_t cardId = cardBlock->blockId();
 	const std::uint32_t fppId = fppBlock->blockId();
 
@@ -402,9 +412,21 @@ TEST_CASE("Every property ear sets is held by PipeWire as the property table say
 		RtpReceiverShape{*RtpAddress::parse("0.0.0.0"), udpPort, RtpEncoding::l24, ear::SampleRate::fixed<kRate>(),
 	                     100},
 		receiverLog);
-	REQUIRE(waiter.until([&] { return cardLog.settled() && receiverLog.settled(); }, 15s));
+	CompanionLog pipeLog(waiter);
+	const std::string fifo = (runtime.path() / "air.1.from_pipe.fifo").string();
+	auto pipe = pipes.make(CompanionTarget{.engineNode = "air.pipe",
+	                                       .blockNode = "air",
+	                                       .bank = Direction::input,
+	                                       .blockPorts = {"from_pipe.1", "from_pipe.2"},
+	                                       .format = kFormat,
+	                                       .blockId = pipeBlock->blockId(),
+	                                       .insideBank = "from_pipe",
+	                                       .fifo = fifo},
+	                       PipeReceiverShape{PipeFormat::s32le, *SampleRate::of(44100)}, pipeLog);
+	REQUIRE(waiter.until([&] { return cardLog.settled() && receiverLog.settled() && pipeLog.settled(); }, 15s));
 	REQUIRE(cardLog.lostDetail.value_or("") == "");
 	REQUIRE(receiverLog.lostDetail.value_or("") == "");
+	REQUIRE(pipeLog.lostDetail.value_or("") == "");
 
 	const auto cardNode = nodeHeld(*engine, "card.playback");
 	const auto receiverNode = nodeHeld(*engine, "fpp.rtp");
@@ -437,6 +459,13 @@ TEST_CASE("Every property ear sets is held by PipeWire as the property table say
 	CHECK(portNamesOf(*engine, receiverNodeId) == std::set<std::string>{"receive_AUX0", "receive_AUX1"});
 	const auto rtpArguments = moduleArgumentsHeld(*engine, "libpipewire-module-rtp-source");
 	REQUIRE(rtpArguments);
+	const auto pipeNode = nodeHeld(*engine, "air.pipe");
+	REQUIRE(pipeNode);
+	const std::uint32_t pipeNodeId = static_cast<std::uint32_t>(std::stoul(pipeNode->at(PW_KEY_OBJECT_ID)));
+	// adapter.auto-port-config's effect on the pipe receiver too: one capture_AUX<n> per channel and nothing else.
+	CHECK(portNamesOf(*engine, pipeNodeId) == std::set<std::string>{"capture_AUX0", "capture_AUX1"});
+	const auto pipeArguments = moduleArgumentsHeld(*engine, "libpipewire-module-pipe-tunnel");
+	REQUIRE(pipeArguments);
 
 	const std::string rate = std::to_string(kRate);
 	const std::string block = std::to_string(kBlock);
@@ -499,6 +528,23 @@ TEST_CASE("Every property ear sets is held by PipeWire as the property table say
 	instances[Home::rtpStream].push_back(
 		{"rtp-source's stream.props", parsed(rtpArguments->at("stream.props")), {}, {}});
 	instances[Home::rtpStream].push_back({"fpp.rtp", *receiverNode, {}, {"adapter.auto-port-config"}});
+	Held pipeStreamRows;
+	for (const PropertyRow& row : engineProperties)
+		if (row.home == Home::pipeStream) pipeStreamRows[std::string(row.key)] = row.value;
+	const Held pipeExpected{
+		{"pipe.filename", fifo},         {"audio.format", "S32LE"},           {"audio.rate", "44100"},
+		{"audio.channels", "2"},         {"audio.position", "[ AUX0 AUX1 ]"}, {"node.name", "air.pipe"},
+		{"node.description", "air.pipe"}};
+	// The pipe module copies its stream's keys to its node (module-pipe-tunnel.c, copy_props); remote.name (its
+	// connection), tunnel.mode and tunnel.may-pause (its own) and stream.props only its arguments hold.
+	instances[Home::pipeReceiver].push_back(
+		{"air.pipe", *pipeNode, pipeExpected, {"remote.name", "tunnel.mode", "tunnel.may-pause", "stream.props"}});
+	instances[Home::pipeReceiver].push_back({"pipe-tunnel's arguments", *pipeArguments, pipeExpected});
+	CHECK(keysOf(*pipeArguments) == tableKeys(Home::pipeReceiver));
+	const Held pipeStreamExpected{{"media.name", "air.pipe"}};
+	instances[Home::pipeStream].push_back(
+		{"pipe-tunnel's stream.props", parsed(pipeArguments->at("stream.props")), pipeStreamExpected});
+	instances[Home::pipeStream].push_back({"air.pipe", *pipeNode, pipeStreamExpected, {"adapter.auto-port-config"}});
 	// Links are selected by their nodes' ids; each port row is the name of the port PipeWire's held id is on that node.
 	instances[Home::link].push_back(
 		{"the route link", routeLinks[0], {{"link.output.port", "stream.1"}, {"link.input.port", "play.1"}}});
@@ -542,6 +588,11 @@ TEST_CASE("Every property ear sets is held by PipeWire as the property table say
 			if (found == instance.props.end()) continue;
 			if (row.home == Home::rtpReceiver && row.key == "stream.props") {
 				CHECK(parsed(found->second) == streamRows);
+			} else if (row.home == Home::pipeReceiver && row.key == "stream.props") {
+				CHECK(parsed(found->second) ==
+				      Held{{"media.name", "air.pipe"},
+				           {"node.always-process", "true"},
+				           {"adapter.auto-port-config", std::string(pipeStreamRows.at("adapter.auto-port-config"))}});
 			} else {
 				CHECK(found->second == want);
 			}
@@ -558,8 +609,10 @@ TEST_CASE("Every property ear sets is held by PipeWire as the property table say
 		}
 	}
 
+	pipe.reset();
 	receiver.reset();
 	card.reset();
+	ear::testing::silenceOrAbort(*pipeBlock);
 	ear::testing::silenceOrAbort(*cardBlock);
 	ear::testing::silenceOrAbort(*fppBlock);
 }

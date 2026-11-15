@@ -9,6 +9,7 @@
 #include <string>
 #include <utility>
 
+#include "advertiser.hpp"
 #include "notes.hpp"
 #include "pcm.hpp"
 
@@ -188,12 +189,18 @@ std::unique_ptr<::sendspin::SendspinClient> Worker::makeClient(NodeKeyStore& key
 void Worker::startListening(std::string_view clientId) {
 	std::string instance = advertisedInstance(handle_.node(), clientId);
 	handle_.say(notes::listening(settings_.port, instance));
-	auto advertiser = Advertiser::open(std::move(instance), settings_.name, settings_.port);
+	auto advertiser =
+		ear::mdns::Advertiser::open(ear::mdns::Listing{.service = "_sendspin._tcp",
+	                                                   .instance = instance,
+	                                                   .host = ear::mdns::hostLabelOf(instance),
+	                                                   .port = settings_.port,
+	                                                   .txt = {"path=/sendspin", "name=" + settings_.name}});
 	if (!advertiser) {
 		handle_.say(notes::advertiseFailed(advertiser.error()));
 		return;
 	}
 	advertiser_ = std::move(*advertiser);
+	askedInstance_ = std::move(instance);
 }
 
 /// One turn: the library's callbacks, then the watch's reading of what it says, then any question on the network.
@@ -213,7 +220,15 @@ void Worker::turn() {
 		if (!std::exchange(saidDialling_, true)) handle_.say(notes::dialling(settings_.server->text()));
 		client.connect_to(settings_.server->text());
 	}
-	if (advertiser_ != nullptr) advertiser_->answer();
+	if (advertiser_ == nullptr) return;
+	// Probed, then announced (docs/node-types.md#mdns): a rename only if another responder held its instance.
+	auto mdns = advertiser_->turn();
+	if (mdns.announced && mdns.announced->instance != askedInstance_)
+		handle_.say(notes::renamed(askedInstance_, mdns.announced->instance));
+	if (mdns.failed) {
+		handle_.say(notes::advertiseFailed(*mdns.failed));
+		advertiser_.reset();
+	}
 }
 
 // PlayerRoleListener. The library's sync thread; up to 20 ms. A partial write is whole frames.

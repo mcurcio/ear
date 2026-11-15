@@ -9,7 +9,7 @@ docs in `docs/` do.
 EAR ("Einstein Audio Router") is a C++23 program for Linux that runs PipeWire's audio engine inside
 its own process and builds an audio graph from its graph file, `ear.conf` (written in the knobly
 language, mcurcio/knobly). It starts the nodes the file names (`white`, `file`, `card`, `rtp`,
-`sendspin`), links their ports as the file's routes say, prints a JSON record for every change, and
+`sendspin`, `airplay`), links their ports as the file's routes say, prints a JSON record for every change, and
 keeps the file live: edits made through its control port (7777: a graph editor and JSON-RPC) are
 applied and written back into `ear.conf`, and hand edits are applied and shown in the editor. It
 ships as a container image published from GitHub Actions.
@@ -20,8 +20,8 @@ ships as a container image published from GitHub Actions.
 |---|---|
 | How ear works, as built: architecture, the graph file, node types, writing a node type, the control port, standard output's records, the engine, the editor, testing | `docs/` ([`docs/README.md`](docs/README.md) is the index and reading order) |
 | The timing model: one tick at one graph rate, clocks and rate conversion only in edge nodes | [`docs/architecture.md#the-timing-model`](docs/architecture.md#the-timing-model) (as built, and where the code still departs); its unbuilt part is [`docs/design/timing-model.md`](docs/design/timing-model.md) |
-| Designs for work not built yet (slices 3c, 3d, 5, 6, 8, 9, cards and the clock, the root classes behind slice 3's fix clusters) | [`docs/design/`](docs/design/README.md) |
-| Working guides for specific jobs | The skills in `.claude/skills/`: `pipewire-engine` (changing `src/pipewire/` or `engine.conf`, engine traps), `control-port` (talking to port 7777), `sendspin` (pairing and operating a `sendspin` node, the protocol library), `ear-on-talos` (the image on Talos with the MOTU 24Ao, FPP's RTP stream, `sendspin` in a pod) |
+| Designs for work not built yet (slices 3c, 3d, 5, 6, 8, cards and the clock, the root classes behind slice 3's fix clusters) | [`docs/design/`](docs/design/README.md) |
+| Working guides for specific jobs | The skills in `.claude/skills/`: `pipewire-engine` (changing `src/pipewire/` or `engine.conf`, engine traps), `control-port` (talking to port 7777), `sendspin` (pairing and operating a `sendspin` node, the protocol library), `ear-on-talos` (the image on Talos with the MOTU 24Ao, FPP's RTP stream, `sendspin` and `airplay` nodes in a pod) |
 | Research notes | `docs/research/` (`motu-24ao-drivers/`: MOTU's macOS driver against `snd-usb-motu`, and the 24Ao's USB descriptors) |
 
 Rules for the docs:
@@ -63,6 +63,7 @@ scripts/dev.sh out/src/nodes/white/ear_node_white_tests "[white]"          # one
 
 ./out/ear                                                  # ./config/ear.conf; file nodes write into ./recordings
 ./out/ear --config-dir ~/ear-config --web-root web/dist    # another graph file folder; the editor built by make web
+./out/ear --runtime-dir /run/ear                           # programs' and pipe receivers' FIFOs and files in your folder
 node scripts/rpc-call.mjs ws://127.0.0.1:7777/rpc graph.get   # one control-port call from a script
 ```
 
@@ -109,11 +110,26 @@ Toolchain notes:
   commit or by SHA-256: sendspin-cpp (with `cmake/sendspin-listener.patch`,
   `sendspin-starved-floor.patch` and `sendspin-late-chunk.patch`; a failed apply, or a tree without
   one, stops configure), ArduinoJson, IXWebSocket (likewise,
-  `cmake/ixwebsocket-limits.patch`), micro-flac, noise-c and mjansson/mdns (one header). Each is
-  kept in `.cache/deps/` as Boost's is, and `ear_node_sendspin` is the only library that sees
-  them. Configure copies their licences to `out/licenses/`. With `BUILD_TESTS=ON` configure stops
-  naming `EAR_SENDSPIN_SERVER_PYTHON` when the image's `/opt/sendspin-server/bin/python` (the real
-  Sendspin server the tests run against, `test/sendspin/requirements.txt`) is missing.
+  `cmake/ixwebsocket-limits.patch`), micro-flac and noise-c. Each is kept in `.cache/deps/` as
+  Boost's is, and `ear_node_sendspin` is the only library that sees them. mjansson/mdns (one
+  header) is `ear_mdns`'s, in `cmake/MdnsDeps.cmake` by SHA-256 and kept the same way, and only
+  `ear_mdns` sees it. Configure copies all their licences to `out/licenses/`. With
+  `BUILD_TESTS=ON` configure stops naming `EAR_SENDSPIN_SERVER_PYTHON` when the image's
+  `/opt/sendspin-server/bin/python` (the real Sendspin server the tests run against,
+  `test/sendspin/requirements.txt`) is missing.
+- The `airplay` node runs shairport-sync, which no Debian release carries at the version it needs:
+  `docker/Dockerfile`'s throwaway `shairport-sync` stage builds it from source at
+  `SHAIRPORT_SYNC_COMMIT` (the pin's one home; its comment says how to bump it, with the same
+  `build(deps)` message), and the `dev` and `run` images copy in its binary as
+  `/usr/local/bin/shairport-sync` (built with AirPlay 2), with its run-time libraries (and in `run`,
+  its licences under `/opt/ear/licenses/shairport-sync/`). The throwaway `nqptp` stage builds nqptp at
+  `NQPTP_COMMIT` (the pin's one home; bump it with shairport-sync, to a tag speaking the shared-memory
+  version that shairport-sync reads), and only `dev` copies it in, as `/usr/local/bin/nqptp`, for the
+  AirPlay 2 tests. The `dev` image also holds `/opt/airplay-sender`, the
+  scripted AirPlay 1 sender's venv (`test/airplay/requirements.txt`, pinned by hash for both
+  architectures, wheels only; `test/airplay/requirements.in` and its header say how to regenerate
+  it). With `BUILD_TESTS=ON` configure stops naming `EAR_AIRPLAY_SENDER_PYTHON`,
+  `EAR_SHAIRPORT_SYNC` or `EAR_NQPTP` when one is missing.
 - ccache is the image's compiler launcher; `scripts/dev.sh` points `CCACHE_DIR` at the main
   checkout's `.cache/ccache`, shared by every worktree.
 - The graph editor (`web/`) builds with the image's Node.js 24 (`web/.nvmrc`);
@@ -127,7 +143,7 @@ Toolchain notes:
 
 | Path | Holds |
 |---|---|
-| `src/<package>/` | One C++ package each (`core`, `runtime`, `folder`, `pipewire`, `output`, `control`, `config`, `server`, `all_node_types`), with its own `CMakeLists.txt`, public headers in `include/ear/<package>/` and tests in `tests/` |
+| `src/<package>/` | One C++ package each (`core`, `runtime`, `folder`, `pipewire`, `output`, `mdns`, `control`, `config`, `server`, `all_node_types`), with its own `CMakeLists.txt`, public headers in `include/ear/<package>/` and tests in `tests/` |
 | `src/nodes/<type>/` | One node type each, its own library; a folder here registers its type and nothing else names it ([`docs/writing-a-node-type.md`](docs/writing-a-node-type.md) is how to add or remove one) |
 | `src/main.cpp` | The composition root: wiring, boot and stop order, glue |
 | `web/` | The graph editor; shares no code with the C++, only the wire format and `test/protocol/` |
@@ -184,7 +200,9 @@ appears in a public header.
 - **The images.** `docker/Dockerfile` has three targets, `dev` (the build and test image),
   `build` (`make release` and the editor's build) and `run` (what ships:
   [`docs/architecture.md#the-container-image`](docs/architecture.md#the-container-image)), and a
-  throwaway stage, `knobly`. To check the run image locally:
+  throwaway stages, `shairport-sync` and `nqptp` (AirPlay 2's timing service, which the operator runs
+  beside ear: copied into `dev` alone, for the tests, so `build` inherits it and `run` never has it).
+  To check the run image locally:
 
   ```bash
   docker build --target run --tag ear:local --file docker/Dockerfile .
@@ -202,7 +220,7 @@ never enter ear's history, so the release notes get only the merge commit's mess
 Dependencies line and a patch release); the squash commit's own message is not a Conventional
 Commit, so it is ignored. Bumps of the fetched dependencies (Boost's `boost_url` and
 `boost_sha256`, knobly's `cmake/knobly.json` through `scripts/knobly-pin.mjs`, those in
-`cmake/SendspinDeps.cmake`) use the same message: `build(deps): upgrade knobly to <x>`. The
+`cmake/SendspinDeps.cmake` and `cmake/MdnsDeps.cmake`, and `SHAIRPORT_SYNC_COMMIT` in `docker/Dockerfile`) use the same message: `build(deps): upgrade knobly to <x>`. The
 subtrees were first added without `--squash`, so their upstream histories are in ear's history;
 the baseline tag `v0.0.0` on cb6d71f64c (the last `git subtree add`, 2020-05-27) ends them, since
 semantic-release reads only the commits after the last `v*` tag. PipeWire, alsa-lib and libsndfile

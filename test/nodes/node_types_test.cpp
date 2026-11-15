@@ -54,6 +54,8 @@ TEST_CASE("Each built-in type declares every key once, and a value of each decla
 	}
 	using enum ear::SettingKind;
 	CHECK(declared["white"].empty());
+	CHECK(declared["airplay"] ==
+	      std::vector<std::pair<std::string, ear::SettingKind>>{{"name", text}, {"airplay2", boolean}});
 	CHECK(declared["file"] == std::vector<std::pair<std::string, ear::SettingKind>>{{"path", text}});
 	CHECK(declared["card"] == std::vector<std::pair<std::string, ear::SettingKind>>{
 								  {"card", text}, {"playback", wholeNumber}, {"capture", wholeNumber}});

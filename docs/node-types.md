@@ -1,6 +1,6 @@
 # Node types
 
-ear has five built-in node types. Each is its own library in `src/nodes/<type>/`, declared by one
+ear has six built-in node types. Each is its own library in `src/nodes/<type>/`, declared by one
 settings table and one list of port banks ([writing-a-node-type.md](writing-a-node-type.md)).
 Settings are written in a node's braces in `ear.conf` ([graph-file.md](graph-file.md)) or sent as
 JSON on the control port; the refusal texts below are exactly what `invalid-settings` carries.
@@ -16,6 +16,7 @@ How every node starts, stops, fails and restarts is the framework's, the same fo
 | `card` | `play.1`..`play.N` (audio going to the card) | `capture.1`..`capture.M` | `to_card`, `from_card` |
 | `rtp` | none | `stream.1`..`stream.N` | `from_rtp` |
 | `sendspin` | `to.left`, `to.right` | `from.left`, `from.right` | none |
+| `airplay` | none | `out.1`, `out.2` | `from_airplay` |
 
 **How settings are checked.** The table checks a settings object in a fixed order, so the first
 problem a refusal names is stable: not an object; then an undeclared key (the first in sorted
@@ -285,6 +286,7 @@ many were held back, before the next that passes.
 | `sending-stopped` | Sending stopped |
 | `key-write-failed <detail>` | The pairing holds for this run only: fix the folder and pair again |
 | `advertise-failed <detail>` | Listening but not advertising: give the server `ws://<address>:<port>/sendspin` |
+| `renamed <asked> to <published>` | Another responder held its instance, so it is listed as the second ([its listing](#its-listing)) |
 | `notes-dropped <n>` | Notes held back by the rate |
 
 ### Failures
@@ -331,19 +333,17 @@ After a `node.update` or `node.restart` the goodbye is `shutdown`, and a server 
 (`aiosendspin`'s `connect_to_client`) did not redial within 30 s in tests, though the spec has a
 server reconnect on that reason; one browsing mDNS comes back by itself.
 
-### mDNS
+### Its listing
 
-- One socket per node on port 5353 (shared with `SO_REUSEPORT`), one interface: the one the kernel
-  routes 224.0.0.251 through, its address read once at the node's start. A pod on an overlay network
-  cannot advertise.
-- Answers go by multicast whatever a question's unicast bit; only a querier on another port than
-  5353 gets a unicast answer. *Why:* the kernel hands a unicast datagram to one socket of a shared
-  port, so it could reach a neighbour's.
-- Limits, so it reflects nothing: queries only (responses ignored), from this link only, each answer
-  once per datagram, by multicast at most once a second, by unicast at most 16 a second. A querier
-  that asks again within the second is answered the next time it asks.
-- The instance name is `ear-<first 50 bytes of node>-<first 8 of client id>`, a DNS label's 63 bytes
-  at most, stable and unique without probing. Music Assistant shows `name`, from the hello.
+A listening node's listing is `_sendspin._tcp` on its port, its TXT `path=/sendspin` and `name=<name>`, kept
+by `ear_mdns`'s `Advertiser` in the worker's state, which turns it on its 10 ms turn ([the advertiser's
+rules](#mdns)): probed first, then announced.
+
+- The instance name is `ear-<first 50 bytes of node>-<first 8 of client id>`, a DNS label's 63 bytes at
+  most, stable, and unique wherever client ids are; its host label is the same made a DNS host label
+  (`mdns::hostLabelOf`: each `_` a `-`, no `-` at either end). Should another responder hold it,
+  probing renames it and the node says `renamed <asked> to <published>` (the instance's `(2)`, `(3)`, ...);
+  a renamed host label is not said. Music Assistant shows `name`, from the hello.
 - A goodbye goes out when the worker's state goes (a restart, a disable or a removal, never a
   stop); a crash leaves the record until its TTL.
 
@@ -643,3 +643,232 @@ the clock; realtime scheduling; a pod with a CPU limit (the library's unprioriti
 a 43 ms ring); a real `fsGroup` mount; an off-link mDNS query from a real other subnet.
 Operating it is also the `sendspin` skill's (`.claude/skills/sendspin/SKILL.md`), and running it in
 a pod the `ear-on-talos` skill's.
+
+## `airplay`
+
+An AirPlay 1 or AirPlay 2 speaker: phones and Macs on ear's network list it and play to it, and its
+outputs carry what they play. Each node runs its own shairport-sync (5.6.3, built from source with
+AirPlay 2 in the images: `docker/Dockerfile`'s `shairport-sync` stage, its pin's one home; no Avahi, no
+D-Bus, no ALSA). AirPlay 2 also needs nqptp, which the operator runs beside ear
+([AirPlay 2 and nqptp](#airplay-2-and-nqptp)).
+
+```conf
+node airplay kitchen { name "Kitchen"; }
+node airplay den { name "Den"; airplay2 true; }
+route kitchen:out.1 desk:play.1;
+route kitchen:out.2 desk:play.2;
+```
+
+| Key | Kind | Rule | Default | Refused with |
+|---|---|---|---|---|
+| `name` | text | The speaker name a sender's list shows: 1 to 50 bytes of UTF-8, no control character, no `%` (shairport-sync expands `%h`, `%H`, `%v` and `%V` in a name), no `@` (a RAOP instance is `<device id>@<name>`) and no `.` (the advertiser's instance rule, [below](#mdns)) | the node's name, cut to its first 50 bytes | `name: must be a speaker name: 1 to 50 bytes, no control characters, no %, @ or dot` |
+| `airplay2` | boolean | AirPlay 2 instead of AirPlay 1, set outright in shairport-sync's config (its `auto`, which falls back to AirPlay 1 silently whenever nqptp is not running, is never written); needs nqptp on ear's machine | `false` | `airplay2: must be true or false` |
+
+- Outputs `out.1` (left) and `out.2` (right); no inputs. The node is three things the framework
+  makes and a type only asks for ([writing-a-node-type.md](writing-a-node-type.md#programs)): a pipe
+  receiver, `<node>.pipe`, on the inside bank `from_airplay`, passed straight through to `out`; a TCP
+  port nobody types (`claim::AnyTcp`), shairport-sync's RTSP port; and shairport-sync itself, the
+  configuration's program, its config file naming the receiver's FIFO and its report feed (and in
+  AirPlay 2 its device id and nqptp channel).
+- **The audio** is AirPlay 1's, 16-bit at 44.1 kHz, or with `airplay2` AirPlay 2's, 32-bit at 48 kHz,
+  pinned in shairport-sync's config and in the receiver's shape (never shairport-sync's defaults),
+  resampled to the graph frequency by the receiver when the two differ
+  ([engine.md](engine.md#pipe-receivers)). Its clock is the sender's, kept by shairport-sync (in
+  AirPlay 2 with nqptp's timing); two `airplay` nodes keep independent clocks and are never aligned
+  with each other.
+- **Delay:** about 0.19 s from the pipe module's fixed buffer (8192 frames at 44.1 kHz; about 0.17 s
+  at AirPlay 2's 48 kHz), carried to `out` as latency beyond `from_airplay`, on top of AirPlay's own
+  (about 2 s between a sender and what shairport-sync writes, which the sender allows for). Not
+  compensated.
+- **The sender's volume** is ignored (shairport-sync's `ignore_volume_control`): a phone's slider moves
+  nothing in the graph, which hears the audio at the level it was sent. *Why:* a level applied inside
+  shairport-sync would be a second owner of the node's level that ear can neither see nor report; it
+  stays ignored until nodes get a level of their own.
+- **Health is shairport-sync alive.** The node is `running` once the pipe receiver is ready and
+  shairport-sync has started (in AirPlay 2, and its nqptp channel exists). Its end fails the node with
+  its words, `start-failed` before the node first rested and `lost` after: `node kitchen failed lost:
+  shairport-sync exited with status 1: <its last line on standard error>`. In AirPlay 2 the channel's
+  removal ends it too (shairport-sync never notices nqptp leaving: it would read the dead channel and
+  stay silent): `node den failed lost: shairport-sync was ended: shared memory /ear-den, which it
+  needs, was removed` ([writing-a-node-type.md](writing-a-node-type.md#programs)). Its standard output
+  and error lines are the node's `log` records, source `shairport-sync`.
+- **A stop keeps it running and listed**: a stopped node's speaker is still in senders' lists, and
+  what a sender plays to it is not heard until `node.start`. A restart, a change of settings, a
+  disable or a removal stops shairport-sync (`SIGTERM`, `SIGKILL` 3 s later), reaps it, removes its
+  FIFO, feed and config from ear's runtime folder (`--runtime-dir`), withdraws its listing and
+  releases its port.
+- **ear must be on the senders' network**, the same link, for its listing to reach them (and port
+  7777, which has no login, is then on it too).
+- **Ports outside ear's claims:** shairport-sync's audio, control and timing ports, UDP, each picked
+  by the kernel (its `udp_port_base` is 0), so many `airplay` nodes never collide and none takes a
+  port an `rtp` node named; and nqptp's UDP 319, 320 and 9000, which are the operator's (an `rtp`
+  node on one of them fails to start).
+- **Identity.** In AirPlay 1 the RAOP instance is shairport-sync's own, `<device id>@<name>`, the
+  device id an MD5 of the speaker name and the host's first MAC address: stable across restarts, and
+  the same for two nodes of one speaker name on one host, which probing tells apart by renaming one
+  (`<device id>@<name> (2)`, [below](#mdns)). In AirPlay 2 the node sets it: the device id is FNV-1a
+  64 of `<host name>/<node>` (the host name `gethostname` gives, read at each start), its low 48 bits
+  made locally administered and unicast, so it stays the same across restarts while both names do,
+  differs between two nodes, and is unique on the network wherever host names are; its nqptp channel
+  is `/ear-<node>` (for a node name over 58 bytes, `/ear-<its first 41 bytes>-<16 hex digits of
+  FNV-1a 64 of it>`), so no two nodes share one. shairport-sync writes no file of its own for either
+  (its pairing keys come from the device id).
+
+**Notes** (`node <n> says <text>`, never a state; the texts are `src/nodes/airplay/notes.hpp`'s):
+
+| Note | Means |
+|---|---|
+| `renamed <device id>@<name> to <device id>@<name> (<n>)` | Another responder holds the instance shairport-sync named, so the listing goes by the second; said just before its `listed` |
+| `listed <instance> on port <port>` | A listing is on the network, once probing found its names free (about 0.5 to 1 s after shairport-sync reported it): the instance it holds, on its RTSP port. Said once per service: in AirPlay 2 twice, `<device id>@<name>` (`_raop._tcp`) and `<name>` (`_airplay._tcp`) |
+| `advertise-failed <detail>` | The listing could not be announced (the mDNS socket's or the listing's words): senders cannot find the speaker, though one given its address can still play |
+| `playing` | A sender began playing (shairport-sync's `pbeg`) |
+| `idle` | It stopped (`pend`) |
+
+**Failures:**
+
+| What | The node | What to do |
+|---|---|---|
+| shairport-sync ends | `failed start-failed:` or `lost: shairport-sync exited with status <n>[: <line>]` (or `was killed by signal <n> (SIG<abbrev>)`) | Read its `log` lines; `node.restart` |
+| shairport-sync cannot start (missing, not executable) | `failed start-failed: cannot start shairport-sync: <why>` | Run the image ear ships in |
+| AirPlay 2 with no nqptp running | `failed start-failed: shairport-sync exited with status 1: fatal error: The NQPTP service can not be found. NQPTP must be installed and running to provide AirPlay 2 service.` | Start nqptp ([below](#airplay-2-and-nqptp)), then `node.restart` |
+| AirPlay 2, nqptp stopped or restarted while the node runs | `failed lost: shairport-sync was ended: shared memory /ear-<node>, which it needs, was removed` | Start nqptp, then `node.restart` |
+| AirPlay 2, shairport-sync up but its channel never appears | `failed start-failed: shairport-sync did not start, or find /ear-<node>, within 5 s` | Check that nqptp shares ear's `/dev/shm` |
+| The pipe receiver never runs | `failed engine-refused: ...` ([engine.md](engine.md#readiness-deadlines)) | `node.restart` |
+| No free TCP port | `failed start-failed: cannot find a free TCP port: <why>` | Free some |
+| The mDNS socket cannot open | `running`; `says advertise-failed` | A sender must be given the address |
+
+**mDNS.** shairport-sync advertises nothing itself: its `metadata` mDNS backend (new in 5.6.3) hands
+each listing to the report feed as an `ssnc`/`svrg` item (lines `service=`, `name=`, `port=`, then
+`txt=` per record), and the node's report loop announces it with `ear_mdns`
+([the advertiser's rules](#mdns): one socket per listing on port 5353, one
+interface, probed and renamed on a clash, answers by multicast, a goodbye at teardown). AirPlay 1 lists
+`_raop._tcp`, the instance shairport-sync's `<device id>@<name>`; AirPlay 2 lists that and
+`_airplay._tcp`, the instance the speaker name alone, its TXT `deviceid` the device id with colons. The
+report loop keeps one listing, with its own advertiser, per service. The host is `ear-<node>` made a host label
+(`mdns::hostLabelOf`: each `_` a `-`, at most 63 bytes, no `-` at its end). A later listing of a
+service's instance shairport-sync asked for (its busy flag in `sf` as a session starts and ends), whatever probing renamed it to, updates its TXT records; one of
+another instance of the service withdraws the first, then is probed and announced anew. The
+listings are withdrawn after shairport-sync was reaped, when the report loop's state goes. The feed's
+items are read incrementally: one past 64 KiB or one that does not parse is dropped up
+to the next item. Cover art is never asked for (`include_cover_art = "no"`): nothing reads it, and a
+sender's images would only cross the feed to be dropped.
+
+### AirPlay 2 and nqptp
+
+AirPlay 2 times its audio with nqptp, a service that keeps a PTP clock for the senders and hands
+each speaker its timing through a shared-memory channel. ear never starts nqptp, and the image it
+ships in does not hold it: you run it beside ear.
+
+- **Which nqptp:** the commit `docker/Dockerfile`'s `nqptp` stage pins (its `NQPTP_COMMIT`; tag 1.2.9,
+  shared-memory version 11, the one the pinned shairport-sync reads). Build it the way that stage does
+  (`autoreconf -fi`, `./configure`, `make`); `nqptp -V` must say `smi11`.
+- **Where:** on ear's machine, sharing ear's `/dev/shm` (where its channels are) and its network
+  namespace (it talks to shairport-sync over localhost).
+- **What it needs:** UDP ports 319 and 320 on the senders' network, which are below 1024, so root or
+  `CAP_NET_BIND_SERVICE`; and localhost UDP 9000, its control port. No `rtp` node may name any of them.
+- **Start it before ear.** An AirPlay 2 node started without it fails `start-failed` in
+  shairport-sync's words: `shairport-sync exited with status 1: fatal error: The NQPTP service can not
+  be found. NQPTP must be installed and running to provide AirPlay 2 service.`
+- **Restarting or stopping nqptp** removes every channel it made, which fails every AirPlay 2 node
+  `lost`: `shairport-sync was ended: shared memory /ear-<node>, which it needs, was removed`. Each
+  needs `node.restart` once nqptp runs again, until recovery's retries are built.
+- **An nqptp killed by `SIGKILL`** leaves its channels in `/dev/shm`. ear cannot see that: its AirPlay
+  2 nodes stay `running` and silent. Start nqptp again and `node.restart` each.
+- **At most 16 AirPlay 2 node names per nqptp run:** nqptp keeps a channel until it exits, so renaming
+  and removing nodes uses up its 16 places; restart nqptp (and then the nodes) to free them.
+
+Tested end to end in `ear_system_tests` ([testing.md](testing.md#the-airplay-sender)): a scripted
+AirPlay 1 sender finds the speaker by a multicast browse, plays a tone a `file` node records at its
+own level whatever the sender's volume, and sees the listing go when the node is removed; two nodes
+of one speaker name are told apart (one renamed), each found by its own name, and play at once into
+their own `file` nodes. With `airplay2` and a test-run nqptp ([testing.md](testing.md#nqptp)): both
+listings under one device id, the same after a restart, found by an `_airplay._tcp` browse; nqptp
+missing fails `start-failed`, nqptp stopping fails `lost`. AirPlay 2's sound from a real sender is
+checked by hand ([testing.md](testing.md#what-ci-does-not-prove)).
+
+**Why it is built this way** (the owner's answers of 2026-11-14, all general guidance, not requirements):
+
+- *Independent clocks.* "different Airplay nodes in ear have no requirement to align with one another.
+  they will maintain their own independent clocks, as all nodes do". So the receiver keeps its own
+  clock and nothing aligns two `airplay` nodes.
+- *Pure subprocess.* "ear shouldnt know anything about kubernetes. So if there are aspects that cant
+  be handled as pure subprocess, then ear cant do it." Hence shairport-sync runs as ear's own
+  subprocess, and nqptp, which cannot be one (it is one per machine, shared by every room, and needs
+  low ports), is the operator's, run from the written instructions above; ear only reads whether its
+  channel exists. AirPlay 2 is therefore a setting on the same node, not a second type.
+- *The join is PipeWire's pipe module* (the owner picked it over ear's own tracked converter): ear
+  already tests it, and it keeps the receiver's clock tracking. It costs a fixed delay, about 0.19 s
+  a speaker ([above](#airplay)), uncompensated and adjustable only by a converter of ear's own, which
+  waits for another first user ([timing-model.md](design/timing-model.md), T5).
+- *AirPlay 2 ships with its sound checked by hand*, no scripted AirPlay 2 sender being known: an
+  exception to testing.md's rule that audio is verified in tests, for that one path
+  ([testing.md](testing.md#what-ci-does-not-prove)).
+- Several speakers on one machine ("i will want multiple shairport instances", 2026-10-29) is why each
+  node runs its own program, with its own ports, identity and listing; a node that fails fails alone
+  (recovery's "does not effect the graph globally", 2026-11-08).
+
+**Costs.** A young upstream: shairport-sync's `metadata` mDNS hand-off is first in 5.6.3 (2026-11-10),
+in no Debian release, so ear builds it from source, and the images are bigger. A listing puts ear on
+the senders' network. Each node is a process and its ports (UDP picked by the kernel; nqptp's
+319, 320 and 9000 outside ear's claims). nqptp keeps at most 16 AirPlay 2 node names a run.
+
+**Prior art.** shairport-sync is the one maintained Linux receiver with AirPlay 2 and many
+instances; nqptp is its timing service; PipeWire's pipe module is the join. pyatv is the test sender
+([testing.md](testing.md#the-airplay-sender)). Rejected: UxPlay (screen mirroring), RPiPlay and
+shairplay (AirPlay 1 only, unmaintained), an in-process receiver, a container per speaker, and ear
+starting nqptp.
+
+**Not built:** a node level (the sender's volume), passwords, track information, Home app pairing,
+remote control, 96 and 192 kHz, multichannel, arm64, a lip-sync offset, recovery's retries (a room
+lost with nqptp returns only on `node.restart`); a test pinning the pipe module's 8192 frames; ear's
+probe of the RTSP port racing shairport-sync's bind (another process may take the port between the
+two, failing the node).
+
+## mDNS
+
+A node type that waits for senders to find it lists itself on the network with `ear_mdns`'s `Advertiser`
+(`src/mdns`, [architecture.md](architecture.md#packages)): `sendspin` ([its listing](#its-listing)) and
+`airplay` ([its mDNS](#airplay)). The type makes the listing and keeps the advertiser in the state of one
+of its loops, which turns it whenever its descriptor is readable: the advertiser starts no thread and arms
+none of the loop's timers. Its descriptor is an epoll over its socket and a timerfd of its own
+(`CLOCK_MONOTONIC`), which holds probing's and announcing's waits. *Why a timer:* those waits are RFC 6762's
+protocol time; no event says "nobody objected".
+
+- One socket per node on port 5353 (shared with `SO_REUSEPORT`), one interface: the one the kernel
+  routes 224.0.0.251 through, its address read once at the node's start. A container on an overlay network
+  cannot advertise.
+- Answers go by multicast whatever a question's unicast bit; only a querier on another port than
+  5353 gets a unicast answer. *Why:* the kernel hands a unicast datagram to one socket of a shared
+  port, so it could reach a neighbour's.
+- Limits, so it reflects nothing: queries only (a response is only ever heard for a clash), from this link only, each answer
+  once per datagram, by multicast at most once a second, by unicast at most 16 a second. A querier
+  that asks again within the second is answered the next time it asks.
+- **Probing** (RFC 6762 section 8): before anything is announced, the unique records (the SRV and TXT
+  at `<instance>.<service>.local.`, the A at `<host>.local.`; the PTR is shared and never probed) are
+  probed: a random wait of 0 to 250 ms, three probes 250 ms apart, 250 ms more, then the announcement
+  (the cache-flush bit on all but the PTR) and a second one a second later. A probe is a query asking
+  both names, type ANY, the unicast bit never set, its authority section the proposed records. Nothing
+  is answered while probing.
+- **A clash renames.** A response from this link holding a record of a name it probes, of the same
+  type and class with other rdata, renames that name: the instance to `<asked> (2)`, `(3)`, ... (cut on
+  a UTF-8 character's boundary to 63 bytes), the host to `<asked>-2`, `-3`, ...; then it probes again.
+  More than 15 clashes in 10 s and each further round waits 5 s first. Identical rdata is never a clash
+  (its own probes and announcements heard back, two listings sharing a host label and address), nor is a
+  goodbye, nor a TXT it sent itself before an update. Its owner says the instance's rename
+  ([sendspin](#its-listing), [airplay](#airplay)).
+- **Two probing at once** (section 8.2): when another host's probe names a name it probes, each side's
+  records at that name are sorted and compared, class, type, then rdata byte by byte; the later set
+  wins, and the loser waits a second, then probes the same names again (and so hears the winner's
+  answer, and renames).
+- **Once announced**, a probe for a name it holds is answered by multicast at once (at most every
+  250 ms per record set, beside the once-a-second rule), and a response holding one of its names with
+  other rdata sends it back to probing under the same names (section 9); if it then loses, it says a
+  goodbye for what it announced and renames.
+- **Instance names** are 1 to 63 bytes of UTF-8 with no control character and no `.`: mjansson/mdns
+  splits names at dots, so a dot would go out as two labels.
+- **Host labels** are a DNS host name's label (RFC 1123): 1 to 63 of letters, digits and `-`, not
+  starting or ending with `-`; `_` belongs to service and instance names only. `mdns::hostLabelOf`
+  makes one from any text (each other character a `-`), the one place a type's host label is made.
+- A listing's TXT strings can be replaced: while probing they go into the later probes and the
+  announcement, once announced they are announced at once. A goodbye (every record again with TTL 0)
+  goes out when the advertiser is destroyed, only if it announced, under the names it holds.

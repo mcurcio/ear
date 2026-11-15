@@ -58,4 +58,8 @@ inline std::string sending(std::uint32_t rate, std::uint32_t channels, std::uint
 inline std::string sendingStopped() { return "sending-stopped"; }
 inline std::string keyWriteFailed(std::string_view detail) { return std::format("key-write-failed {}", detail); }
 inline std::string advertiseFailed(std::string_view detail) { return std::format("advertise-failed {}", detail); }
+/// Another responder held the instance it asked for, so its listing goes by `published` (docs/node-types.md#mdns).
+inline std::string renamed(std::string_view asked, std::string_view published) {
+	return std::format("renamed {} to {}", asked, published);
+}
 } // namespace ear::nodes::sendspin::notes

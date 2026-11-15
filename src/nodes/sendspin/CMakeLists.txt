@@ -4,7 +4,6 @@
 # loop: the node's two loops (the worker and the notifier) call it, and the audio crosses through the source, its clock and the sink.
 ear_node_type(
 	SOURCES
-		advertiser.cpp
 		connection_watch.cpp
 		key_store.cpp
 		sendspin.cpp
@@ -24,21 +23,21 @@ ear_node_type(
 		tests/transport_test.cpp
 		tests/type_test.cpp
 		tests/watch_test.cpp)
-target_link_libraries(ear_node_sendspin PRIVATE sendspin)
-target_include_directories(ear_node_sendspin SYSTEM PRIVATE "${mdns_SOURCE_DIR}")   # one header, advertiser.cpp's alone
+target_link_libraries(ear_node_sendspin PRIVATE sendspin ear_mdns) # ear_mdns: its listing (docs/node-types.md#mdns)
 
 if(BUILD_TESTS)
 	# Its private headers by path; the engine and the test card for the clock's tests, which share the engine tests'
 	# harness, and ear_runtime's loops, on which they run the worker's and notifier's states on real threads; the real
 	# server through ear_sendspin_server; the library for the key store's provider base; IXWebSocket for the transport's
-	# share per address (ixwebsocket-limits.patch); ear_inducers for the clock tests' cycle ledger
-	# (docs/testing.md#making-the-rare-event), ear_cycle_judge for the one judge of their cycles
+	# share per address (ixwebsocket-limits.patch); ear_mdns for the worker's header; ear_inducers for the clock tests'
+	# cycle ledger (docs/testing.md#making-the-rare-event), ear_cycle_judge for the one judge of their cycles
 	# (docs/testing.md#the-cycle-judge) and ear_standard_error_lines for the library's own word
 	# (docs/testing.md#the-librarys-own-word).
 	target_include_directories(ear_node_sendspin_tests PRIVATE
 		"${CMAKE_CURRENT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/src/pipewire/tests")
 	target_link_libraries(ear_node_sendspin_tests PRIVATE ear_folder ear_pipewire ear_runtime PkgConfig::PIPEWIRE
-		ear_sendspin_server ear_temp_folder ear_inducers ear_cycle_judge ear_standard_error_lines sendspin ixwebsocket)
+		ear_sendspin_server ear_temp_folder ear_inducers ear_cycle_judge ear_standard_error_lines sendspin ixwebsocket
+		ear_mdns)
 	target_compile_definitions(ear_node_sendspin_tests PRIVATE
 		EAR_ENGINE_CONF="${PROJECT_SOURCE_DIR}/src/pipewire/engine.conf"
 		EAR_ALSA_TEST_DIR="${PROJECT_SOURCE_DIR}/src/pipewire/tests/alsa"

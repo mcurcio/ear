@@ -94,6 +94,9 @@ std::expected<CheckedSettings, std::string> AnySettingsTable::walk(const NodeSet
 				                       " (on the control port, a whole number of Hz)");
 			}
 			slot = *read;
+		} else if (std::holds_alternative<BooleanRule>(row->rule)) {
+			if (!value->is_boolean()) return std::unexpected(std::string(row->key) + ": must be true or false");
+			slot = value->get<bool>();
 		} else {
 			const TextRule& text = std::get<TextRule>(row->rule);
 			if (value->is_string()) slot = text.read(value->get_ref<const std::string&>());

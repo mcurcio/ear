@@ -907,7 +907,21 @@ struct TestProbe final : PortProbe {
 		groups.emplace_back(group);
 		return answer("udp:" + std::to_string(port));
 	}
+	/// The next of `offered`, logged ("free tcp 50000"); the last again once they run out; `freeRefused` instead when
+	/// set.
+	std::expected<std::uint16_t, std::string> freeTcp() override {
+		if (freeRefused) {
+			log.push_back("free tcp refused");
+			return std::unexpected(*freeRefused);
+		}
+		const std::uint16_t port = offered.at(std::min(nextOffered++, offered.size() - 1));
+		log.push_back("free tcp " + std::to_string(port));
+		return port;
+	}
 	std::vector<std::string> groups; // each UDP probe's group, in order ("" for every address)
+	std::vector<std::uint16_t> offered{50'000};
+	std::size_t nextOffered = 0;
+	std::optional<std::string> freeRefused;
 };
 
 /// The recordings' disk as a test drives it (docs/writing-a-node-type.md#recordings), on the stores' I/O executor: each
@@ -7425,6 +7439,106 @@ TEST_CASE("A store a configuration leaked at the close deadline keeps refuses th
 	CHECK(healthOf(f, "porch").state == NodeState::running);
 	CHECK(std::ranges::count(f.listener.phases("porch"), std::string("configuring (retry)")) == 1);
 	CHECK(f.host.leaked() == 0);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+namespace {
+
+/// A class of its own that asks for a port nobody holds (claim::AnyTcp), or, given `port`, claims that one.
+std::shared_ptr<LoopProbeConfig> anyPort(Log& log, std::optional<std::uint16_t> port = std::nullopt) {
+	auto config = std::make_shared<LoopProbeConfig>(log, std::vector<LoopDeclaration>{});
+	config->onConfigure = [&log, port](CreateContext& cx) {
+		if (port) cx.claim(claim::of(claim::TcpListen(*port)));
+		else static_cast<void>(cx.claimAnyTcp());
+		cx.use(std::make_unique<TestAudioCode>(log));
+		return Configured::applied();
+	};
+	return config;
+}
+
+/// Node `name` added and its block ready.
+void addReady(Fixture& f, const NodeName& name, std::shared_ptr<const NodeConfig> config) {
+	const std::size_t blocks = f.blocks.events.size();
+	f.add(name, std::move(config));
+	f.blocks.events.at(blocks)->ready();
+	f.settle();
+}
+
+} // namespace
+
+TEST_CASE("AnyTcp grants each node a port no claim holds: from 49152 up in a host with no probe, held as a TcpListen "
+          "of it",
+          "[node_host][claims]") {
+	Fixture f;
+	addReady(f, "a", anyPort(f.log));
+	addReady(f, "b", anyPort(f.log));
+	CHECK(healthOf(f, "a").state == NodeState::running);
+	CHECK(healthOf(f, "b").state == NodeState::running);
+	addReady(f, "c", anyPort(f.log, 49152));
+	addReady(f, "d", anyPort(f.log, 49153));
+	CHECK(failureOf(f, "c") == "start-failed: cannot listen on port 49152: held by node a");
+	CHECK(failureOf(f, "d") == "start-failed: cannot listen on port 49153: held by node b");
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("AnyTcp through the probe: the kernel's free port granted, unprobed, one a node holds skipped, refused "
+          "after 8 tries, or with the probe's own reason",
+          "[node_host][claims]") {
+	Fixture f(HostShape{.probing = true});
+	SECTION("granted, a held port skipped") {
+		f.probe.offered = {50'000, 50'000, 50'001};
+		addReady(f, "a", anyPort(f.log));
+		addReady(f, "b", anyPort(f.log));
+		CHECK(healthOf(f, "a").state == NodeState::running);
+		CHECK(healthOf(f, "b").state == NodeState::running);
+		CHECK(std::ranges::count(f.log, std::string("free tcp 50000")) == 2);
+		CHECK(std::ranges::count(f.log, std::string("free tcp 50001")) == 1);
+		CHECK(std::ranges::count(f.log, std::string("probe tcp:50000")) == 0); // freeTcp was its probe
+		addReady(f, "c", anyPort(f.log, 50'001));
+		CHECK(failureOf(f, "c") == "start-failed: cannot listen on port 50001: held by node b");
+	}
+	SECTION("refused after 8 tries") {
+		addReady(f, "a", anyPort(f.log));
+		addReady(f, "b", anyPort(f.log));
+		CHECK(std::ranges::count(f.log, std::string("free tcp 50000")) == 1 + 8);
+		CHECK(failureOf(f, "b") ==
+		      "start-failed: cannot find a free TCP port: every port the kernel offered is held by a node");
+	}
+	SECTION("refused with the probe's reason") {
+		f.probe.freeRefused = "Too many open files";
+		addReady(f, "a", anyPort(f.log));
+		CHECK(failureOf(f, "a") == "start-failed: cannot find a free TCP port: Too many open files");
+	}
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A host with no pipe receivers' or programs' adapter refuses them at the call", "[node_host][program]") {
+	Fixture f;
+	auto config = std::make_shared<LoopProbeConfig>(f.log, std::vector<LoopDeclaration>{});
+	SECTION("a pipe receiver") {
+		config->onConfigure = [&f](CreateContext& cx) {
+			cx.pipeReceiver("cap", PipeReceiverShape{PipeFormat::s16le, SampleRate::fixed<44100>()});
+			cx.use(std::make_unique<TestAudioCode>(f.log));
+			return Configured::applied();
+		};
+		f.add("a", config);
+		CHECK(failureOf(f, "a") == "start-failed: configure threw: no pipe receivers in this host");
+	}
+	SECTION("a program") {
+		config->onConfigure = [&f](CreateContext& cx) {
+			cx.program(ProgramShape{.executable = "/usr/bin/true"}, std::nullopt);
+			cx.use(std::make_unique<TestAudioCode>(f.log));
+			return Configured::applied();
+		};
+		f.add("a", config);
+		CHECK(failureOf(f, "a") == "start-failed: configure threw: no programs in this host");
+	}
 	f.stopAll();
 	f.settle();
 	CHECK(f.allGone == 1);

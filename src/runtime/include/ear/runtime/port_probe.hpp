@@ -16,5 +16,7 @@ public:
 	/// PipeWire's RTP receiver (which sets SO_REUSEADDR) among them. A multicast group: `<group>:<port>` with
 	/// SO_REUSEADDR, as that receiver binds it, so a socket sharing the port by SO_REUSEADDR passes.
 	std::expected<void, std::string> udp(std::uint16_t port, std::string_view group) override;
+	/// IPv4, all addresses, SO_REUSEADDR set, port 0: the port the kernel picked, read back, the socket closed.
+	std::expected<std::uint16_t, std::string> freeTcp() override;
 };
 } // namespace ear::runtime

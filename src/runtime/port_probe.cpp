@@ -37,6 +37,24 @@ std::expected<void, std::string> KernelPortProbe::tcpListen(std::uint16_t port) 
 	return bindOnce(SOCK_STREAM, port, true, htonl(INADDR_ANY));
 }
 
+std::expected<std::uint16_t, std::string> KernelPortProbe::freeTcp() {
+	const int probe = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+	if (probe < 0) return std::unexpected(std::system_category().message(errno));
+	const int enable = 1;
+	sockaddr_in address{};
+	address.sin_family = AF_INET;
+	address.sin_addr.s_addr = htonl(INADDR_ANY);
+	address.sin_port = 0; // the kernel picks one free on every address
+	socklen_t length = sizeof address;
+	const bool read = ::setsockopt(probe, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof enable) == 0 &&
+	                  ::bind(probe, reinterpret_cast<const sockaddr*>(&address), sizeof address) == 0 &&
+	                  ::getsockname(probe, reinterpret_cast<sockaddr*>(&address), &length) == 0;
+	const int why = errno;
+	::close(probe);
+	if (!read) return std::unexpected(std::system_category().message(why));
+	return ntohs(address.sin_port);
+}
+
 std::expected<void, std::string> KernelPortProbe::udp(std::uint16_t port, std::string_view group) {
 	if (group.empty()) return bindOnce(SOCK_DGRAM, port, false, htonl(INADDR_ANY));
 	in_addr parsed{};

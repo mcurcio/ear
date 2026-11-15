@@ -12,7 +12,10 @@
 #    /var/lib/ear/recordings is writable; then ear --help, which
 #    also proves its shared libraries load. ear carries CAP_SYS_NICE as a permitted-only file
 #    capability, so it starts where the capability is not allowed (a marked-effective one would
-#    fail here with EPERM).
+#    fail here with EPERM). Before that, the shairport-sync the airplay node runs: /usr/local/bin/shairport-sync -V
+#    runs (its libraries load) and names the pipe backend, the metadata feed and AirPlay 2, its licences are in
+#    /opt/ear/licenses/shairport-sync, and /usr/bin/setpriv is there; nqptp is not (the operator runs it beside ear,
+#    docs/node-types.md#airplay: only the dev image has it, for tests).
 # 2. With --cap-add SYS_NICE: ear --help again.
 # Then ear itself, twice, on a sample graph file (ear.conf: white noise into a file node writing
 # rec.wav in the image's recordings folder, /var/lib/ear/recordings, which must be the ear user's),
@@ -45,6 +48,10 @@ docker run --rm --entrypoint /bin/sh "$image" -euc '
 		echo "image-smoke: runs as uid $uid, not 10001" >&2
 		exit 1
 	fi
+	if found=$(command -v nqptp) || [ -e /usr/local/bin/nqptp ]; then
+		echo "image-smoke: the run image has nqptp, which the operator runs beside ear: ${found:-/usr/local/bin/nqptp}" >&2
+		exit 1
+	fi
 	for tool in cc c++ g++ gcc cmake; do
 		if found=$(command -v "$tool"); then
 			echo "image-smoke: the run image has a compiler or build tool: $found" >&2
@@ -53,12 +60,31 @@ docker run --rm --entrypoint /bin/sh "$image" -euc '
 	done
 	for file in /opt/ear/engine.conf /opt/ear/web/index.html \
 		/opt/ear/licenses/knobly-LICENSE /opt/ear/licenses/arduinojson-LICENSE /opt/ear/licenses/ixwebsocket-LICENSE /opt/ear/licenses/micro_flac-LICENSE \
-		/opt/ear/licenses/noise_c-LICENSE /opt/ear/licenses/sendspin-LICENSE /opt/ear/licenses/mdns-LICENSE; do
+		/opt/ear/licenses/noise_c-LICENSE /opt/ear/licenses/sendspin-LICENSE /opt/ear/licenses/mdns-LICENSE \
+		/opt/ear/licenses/shairport-sync/LICENSES /usr/bin/setpriv; do
 		if [ ! -f "$file" ]; then
 			echo "image-smoke: $file is missing" >&2
 			exit 1
 		fi
 	done
+	if ! version=$(/usr/local/bin/shairport-sync -V 2>&1); then
+		echo "image-smoke: /usr/local/bin/shairport-sync -V failed: $version" >&2
+		exit 1
+	fi
+	case $version in
+	*pipe*metadata* | *metadata*pipe*) ;;
+	*)
+		echo "image-smoke: shairport-sync -V does not name pipe and metadata: $version" >&2
+		exit 1
+		;;
+	esac
+	case $version in
+	*AirPlay2*) ;;
+	*)
+		echo "image-smoke: shairport-sync -V does not name AirPlay2: $version" >&2
+		exit 1
+		;;
+	esac
 	if [ ! -w /var/lib/ear/recordings ]; then
 		echo "image-smoke: /var/lib/ear/recordings is not writable by uid 10001" >&2
 		exit 1

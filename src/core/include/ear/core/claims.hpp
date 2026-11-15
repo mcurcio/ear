@@ -8,6 +8,7 @@
 // Pure: nothing but the standard library.
 #pragma once
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <string>
@@ -47,9 +48,32 @@ struct Udp {
 	explicit Udp(std::int64_t port);
 	std::uint16_t port;
 };
+/// A listening TCP port the framework picks for the configuration at the claims step, one nobody holds: no other
+/// claim in ear and, through the probe, nothing in the kernel (PortProbe::freeTcp). For a port a program binds, whose
+/// number nobody types (CreateOf::claim returns its GrantedPort). Granted, it is held as `tcp:<port>` like a
+/// TcpListen, until teardown step 5.
+struct AnyTcp {};
 Claim of(TcpListen port);
 Claim of(Udp port);
 } // namespace claim
+
+/// The port an AnyTcp claim was granted, as a type names it before it is picked: in a program's arguments or files
+/// (program::Port, program.hpp). Valid for the configuration whose CreateOf::claim made it; the framework refuses one
+/// of another configuration, or one that names no AnyTcp claim, as a broken rule.
+class GrantedPort {
+public:
+	/// CreateOf::claim's: `claim` is its index among the configuration's claims, in asking order.
+	explicit constexpr GrantedPort(std::size_t claim) noexcept : claim_(claim) {}
+	constexpr std::size_t claim() const noexcept { return claim_; }
+	friend bool operator==(const GrantedPort&, const GrantedPort&) = default;
+
+private:
+	std::size_t claim_;
+};
+
+/// The lowest port a host with no probe grants an AnyTcp claim from (a test's host): the first nobody in the host
+/// holds, counting up, so a harness's grants are known in advance. IANA's first dynamic port.
+inline constexpr std::uint16_t anyTcpFirstPort = 49'152;
 
 /// How long a claim waits for a holder that is closing (between its teardown's first and last steps) before the node
 /// fails start-failed "... held by node <n>, which did not let go within 15 s". The holder's close deadline (10 s)
@@ -69,6 +93,9 @@ public:
 	/// shares the port by SO_REUSEADDR (a monitor listening to the group) still passes, and one that holds it alone
 	/// refuses.
 	virtual std::expected<void, std::string> udp(std::uint16_t port, std::string_view group) = 0;
+	/// A TCP port free now on every IPv4 address, for an AnyTcp claim: a socket bound to port 0 with SO_REUSEADDR, read
+	/// back and closed. Main thread, never blocks.
+	virtual std::expected<std::uint16_t, std::string> freeTcp() = 0;
 
 protected:
 	~PortProbe() = default;

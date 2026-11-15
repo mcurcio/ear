@@ -45,12 +45,17 @@ struct TextRule {
 	std::string_view mustBe;
 	std::any (*read)(std::string_view text);
 };
+/// One boolean rule. A good value is JSON true or false (not a string, a number or null); in ear.conf it is the bare word
+/// true or false. Otherwise "<key>: must be true or false".
+struct BooleanRule {};
+/// Any one rule, as a row holds it.
+using SettingRule = std::variant<WholeNumberRule, TextRule, RateRule, BooleanRule>;
 /// One row as the walk reads it. A key given with any value, null included, is given. Anyone can fill one in, but a table
 /// lists only typed rows, and a typed row gives its SettingRow to read, never to change.
 struct SettingRow {
 	std::string_view key;
 	bool required; // absent: "<key>: missing"
-	std::variant<WholeNumberRule, TextRule, RateRule> rule;
+	SettingRule rule;
 	std::optional<std::uint32_t> byDefault = {}; // what the row reads when absent
 	std::string_view onlyWithout = {};           // Row::onlyWithout's
 };
@@ -73,25 +78,29 @@ consteval Rule<std::uint32_t> number(std::uint32_t low, std::uint32_t high, std:
 /// A rate, read as SampleRate: written with its unit in ear.conf, a whole number of hertz on the control port. Low above
 /// high does not compile.
 consteval Rule<SampleRate> rate(SampleRate low, SampleRate high);
+/// JSON true or false, read as bool: the bare word true or false in ear.conf.
+consteval Rule<bool> boolean();
 /// Parse: std::optional<T>(std::string_view), T not a view. T is what the row reads. An empty mustBe does not compile.
 template <auto Parse>
 	requires TextParser<Parse>
 consteval Rule<ParsedBy<Parse>> text(std::string_view mustBe);
 
-/// A checked rule whose value reads as T. Only number, rate and text make one, so T is always what the rule's reader gives.
+/// A checked rule whose value reads as T. Only number, rate, boolean and text make one, so T is always what the rule's
+/// reader gives.
 template <class T> class Rule {
 public:
 	using Value = T;
-	constexpr const std::variant<WholeNumberRule, TextRule, RateRule>& held() const noexcept { return rule_; }
+	constexpr const SettingRule& held() const noexcept { return rule_; }
 
 private:
-	consteval explicit Rule(std::variant<WholeNumberRule, TextRule, RateRule> rule) : rule_(rule) {}
+	consteval explicit Rule(SettingRule rule) : rule_(rule) {}
 	friend consteval Rule<std::uint32_t> number(std::uint32_t low, std::uint32_t high, std::string_view unit);
 	friend consteval Rule<SampleRate> rate(SampleRate low, SampleRate high);
+	friend consteval Rule<bool> boolean();
 	template <auto Parse>
 		requires TextParser<Parse>
 	friend consteval Rule<ParsedBy<Parse>> text(std::string_view mustBe);
-	std::variant<WholeNumberRule, TextRule, RateRule> rule_;
+	SettingRule rule_;
 };
 
 /// A row a type reads: required and defaulted rows read as T, an optional row as std::optional<T>. Reads are copies, so
@@ -114,7 +123,7 @@ public:
 
 private:
 	// A throw in a consteval function is what stops the compile; the text is what the compiler shows.
-	consteval Row(std::string_view key, bool required, std::variant<WholeNumberRule, TextRule, RateRule> rule,
+	consteval Row(std::string_view key, bool required, SettingRule rule,
 	              std::optional<std::uint32_t> byDefault = std::nullopt)
 		: row_{key, required, rule, byDefault} {
 		if (key.empty()) throw "a setting's key is empty";
@@ -146,6 +155,7 @@ consteval Rule<SampleRate> rate(SampleRate low, SampleRate high) {
 	if (low > high) throw "a rate's low is above its high";
 	return Rule<SampleRate>(RateRule{low, high});
 }
+consteval Rule<bool> boolean() { return Rule<bool>(BooleanRule{}); }
 template <auto Parse>
 	requires TextParser<Parse>
 consteval Rule<ParsedBy<Parse>> text(std::string_view mustBe) {
@@ -167,6 +177,7 @@ consteval Row<std::uint32_t, true> defaulted(std::string_view key, Rule<std::uin
 constexpr SettingDeclaration declarationOf(const SettingRow& row) {
 	if (std::holds_alternative<TextRule>(row.rule)) return {row.key, SettingKind::text};
 	if (std::holds_alternative<RateRule>(row.rule)) return {row.key, SettingKind::rate};
+	if (std::holds_alternative<BooleanRule>(row.rule)) return {row.key, SettingKind::boolean};
 	return {row.key, SettingKind::wholeNumber};
 }
 } // namespace setting

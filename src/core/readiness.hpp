@@ -19,8 +19,9 @@ namespace ear::detail {
 
 /// When an item is asked: only once every item of every earlier step is ready, so a later item may rely on what an
 /// earlier one made. The order is the lifecycle's (docs/architecture.md#the-node-lifecycle); today `loops` has a
-/// configuration's loops and `companions` its engine companions and sinks' consumers.
-enum class ReadinessStep : unsigned { claims, opens, loops, companions };
+/// configuration's loops, `companions` its engine companions and sinks' consumers, and `programs` its program, which
+/// starts once everything it may name (a pipe receiver's FIFO, a granted port) exists.
+enum class ReadinessStep : unsigned { claims, opens, loops, companions, programs };
 
 /// The index of an item not added yet: never ready.
 inline constexpr std::size_t noReadiness = static_cast<std::size_t>(-1);

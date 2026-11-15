@@ -32,6 +32,8 @@ enum class Home {
 	cardSeam,      // what AlsaSoundCards' test seam adds to a card: clocklessCardProperties() alone
 	rtpReceiver,   // libpipewire-module-rtp-source's arguments (rtp_receivers.cpp)
 	rtpStream,     // the receiver's stream.props argument: its node's own properties
+	pipeReceiver,  // libpipewire-module-pipe-tunnel's arguments (pipe_receivers.cpp)
+	pipeStream,    // the pipe receiver's stream.props argument: its node's own properties
 	link,          // a route link (links.cpp)
 	companionLink, // an engine companion's link to its block (engine_companions.cpp)
 };
@@ -57,6 +59,10 @@ constexpr std::string_view homeName(Home home) noexcept {
 		return "RTP receiver";
 	case Home::rtpStream:
 		return "RTP stream";
+	case Home::pipeReceiver:
+		return "pipe receiver";
+	case Home::pipeStream:
+		return "pipe stream";
 	case Home::link:
 		return "route link";
 	case Home::companionLink:
@@ -65,9 +71,10 @@ constexpr std::string_view homeName(Home home) noexcept {
 	return {};
 }
 
-inline constexpr std::array allHomes{Home::engineConf, Home::context, Home::internalClock, Home::block,
-                                     Home::blockPort,  Home::card,    Home::cardSeam,      Home::rtpReceiver,
-                                     Home::rtpStream,  Home::link,    Home::companionLink};
+inline constexpr std::array allHomes{Home::engineConf,   Home::context,      Home::internalClock, Home::block,
+                                     Home::blockPort,    Home::card,         Home::cardSeam,      Home::rtpReceiver,
+                                     Home::rtpStream,    Home::pipeReceiver, Home::pipeStream,    Home::link,
+                                     Home::companionLink};
 
 struct PropertyRow {
 	Home home;
@@ -122,6 +129,19 @@ inline constexpr std::string_view receiverSsrc = "A sender that restarts with a 
 inline constexpr std::string_view receiverBuffer =
 	"A real receiver's buffer beyond from_rtp reaches stream whole: the told capture latency's least and most are "
 	"both the buffer once the receiver is linked and reports its own";
+inline constexpr std::string_view pipeReady =
+	"A pipe receiver is ready once its module's node runs, every channel linked by the node's and the block's ids, and "
+	"channel n of its FIFO reaches the bank's port n";
+inline constexpr std::string_view pipeStale =
+	"A pipe receiver made while another node of its name is still going binds and links its own node, never the stale "
+	"one";
+inline constexpr std::string_view pipeFifo =
+	"A pipe receiver's FIFO is at its target's path once it is ready, open to every writer, and gone once it is "
+	"destroyed";
+inline constexpr std::string_view pipeTone =
+	"S16LE stereo written at 44.1 kHz reaches the 48 kHz block resampled: 1 kHz on from_pipe.1, 1.5 kHz on from_pipe.2";
+inline constexpr std::string_view pipeSilent =
+	"A pipe receiver whose writer stops stays ready and its channels go silent";
 } // namespace pinned
 
 /// One row per key ear sets. The reasons are docs/engine.md's (its table of these rows, and the heading each names).
@@ -187,6 +207,22 @@ inline constexpr std::array engineProperties = std::to_array<PropertyRow>({
 	{Home::rtpStream, "node.always-process", "true", "rtp-receivers", pinned::receiverReady},
 	{Home::rtpStream, "adapter.auto-port-config", "{ mode = dsp monitor = false control = false position = preserve }",
      "rtp-receivers", pinned::receiverChannels},
+	// A pipe receiver's module arguments.
+	{Home::pipeReceiver, "remote.name", "internal", "pipe-receivers", pinned::pipeReady},
+	{Home::pipeReceiver, "tunnel.mode", "source", "pipe-receivers", pinned::pipeReady},
+	{Home::pipeReceiver, "tunnel.may-pause", "false", "pipe-receivers", pinned::pipeSilent},
+	{Home::pipeReceiver, "pipe.filename", "the receiver's FIFO", "pipe-receivers", pinned::pipeFifo},
+	{Home::pipeReceiver, "audio.format", "S16LE or S32LE", "pipe-receivers", pinned::pipeTone},
+	{Home::pipeReceiver, "audio.rate", "the writer's rate", "pipe-receivers", pinned::pipeTone},
+	{Home::pipeReceiver, "audio.channels", "the bank's channel count", "pipe-receivers", pinned::pipeReady},
+	{Home::pipeReceiver, "audio.position", "[ AUX0 AUX1 ... ]", "pipe-receivers", pinned::pipeReady},
+	{Home::pipeReceiver, "node.name", "<node>.pipe", "pipe-receivers", pinned::pipeReady},
+	{Home::pipeReceiver, "node.description", "<node>.pipe", "pipe-receivers", pinned::pipeStale},
+	{Home::pipeReceiver, "stream.props", "the pipe stream rows", "pipe-receivers", pinned::pipeReady},
+	{Home::pipeStream, "media.name", "<node>.pipe", "pipe-receivers", pinned::live},
+	{Home::pipeStream, "node.always-process", "true", "pipe-receivers", pinned::pipeReady},
+	{Home::pipeStream, "adapter.auto-port-config", "{ mode = dsp monitor = false control = false position = preserve }",
+     "pipe-receivers", pinned::pipeReady},
 	// Links.
 	{Home::link, "link.output.port", "the output port's global id", "no-session-manager", pinned::linkCarries},
 	{Home::link, "link.input.port", "the input port's global id", "no-session-manager", pinned::linkCarries},
@@ -202,8 +238,8 @@ inline constexpr std::array engineProperties = std::to_array<PropertyRow>({
 inline constexpr auto forbidden = [] {
 	constexpr std::array clockForcing{std::string_view("node.force-quantum"), std::string_view("node.force-rate"),
 	                                  std::string_view("node.lock-quantum"), std::string_view("node.lock-rate")};
-	constexpr std::array nodes{Home::internalClock, Home::block,       Home::card,
-	                           Home::cardSeam,      Home::rtpReceiver, Home::rtpStream};
+	constexpr std::array nodes{Home::internalClock, Home::block,     Home::card,         Home::cardSeam,
+	                           Home::rtpReceiver,   Home::rtpStream, Home::pipeReceiver, Home::pipeStream};
 	std::array<std::pair<Home, std::string_view>, clockForcing.size() * nodes.size() + 6> all{};
 	std::size_t at = 0;
 	for (const Home home : nodes)

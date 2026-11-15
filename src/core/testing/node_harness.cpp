@@ -221,9 +221,10 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			CompanionKind kind = CompanionKind::rtpReceiver;
 			if constexpr (std::is_same_v<Shape, SoundCardShape>)
 				kind = target.bank == Direction::output ? CompanionKind::cardPlayback : CompanionKind::cardCapture;
+			if constexpr (std::is_same_v<Shape, PipeReceiverShape>) kind = CompanionKind::pipeReceiver;
 			if (target.insideBank.empty()) throw std::logic_error("an engine companion asked for on no inside bank");
 			harness.companionList.push_back(
-				CompanionFake{kind, target.insideBank, target.engineNode, shape, true, false, false, {}});
+				CompanionFake{kind, target.insideBank, target.engineNode, shape, true, false, false, {}, target.fifo});
 			harness.engineEvents.push_back(&events);
 			return std::make_unique<FakeEngineCompanion>(harness, harness.companionList.size() - 1);
 		}
@@ -606,6 +607,40 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		Impl& harness;
 	};
 
+	/// A program the framework launched: its RunningProgram marks its fake stopped (and, unless holdPrograms, exited at
+	/// once, killed by SIGTERM as the real one is) and destroyed.
+	struct FakeRunning final : RunningProgram {
+		FakeRunning(Impl& h, std::size_t i) : harness(h), index(i) {}
+		~FakeRunning() override { harness.programList.at(index).destroyed = true; }
+		void stop() override {
+			ProgramFake& fake = harness.programList.at(index);
+			if (fake.stopped || fake.ended) return;
+			fake.stopped = true;
+			if (harness.options.holdPrograms) return;
+			fake.ended = true;
+			harness.programEvents.at(index)->exited(ProgramExit{ProgramExit::How::killed, 15, {}});
+		}
+		Impl& harness;
+		std::size_t index;
+	};
+	/// The programs' adapter: each launch recorded as a ProgramFake, told started and ready at once unless holdPrograms.
+	struct FakePrograms final : ProgramAdapter {
+		explicit FakePrograms(Impl& h) : harness(h) {}
+		std::unique_ptr<RunningProgram> launch(ProgramLaunch launch, ProgramEvents& events) override {
+			harness.programList.push_back(ProgramFake{std::move(launch)});
+			harness.programEvents.push_back(&events);
+			const std::size_t index = harness.programList.size() - 1;
+			if (!harness.options.holdPrograms) {
+				harness.programList.back().started = true;
+				harness.programList.back().ready = true;
+				events.started();
+				events.ready();
+			}
+			return std::make_unique<FakeRunning>(harness, index);
+		}
+		Impl& harness;
+	};
+
 	/// The I/O thread on the test's thread: jobs queued, run as each call settles (with holdIo, only at runIo()), each
 	/// one's name recorded as it runs.
 	struct FakeIo final : IoExecutor {
@@ -828,6 +863,13 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		}
 		Store& store(std::size_t store) override { return create.store(store); }
 		void claim(Claim claim) override { create.claim(std::move(claim)); }
+		void pipeReceiver(std::string_view bank, PipeReceiverShape shape) override {
+			create.pipeReceiver(bank, std::move(shape));
+		}
+		GrantedPort claimAnyTcp() override { return create.claimAnyTcp(); }
+		void program(ProgramShape shape, std::optional<ProgramFeedTo> feed) override {
+			create.program(std::move(shape), std::move(feed));
+		}
 		NodeHandle& events() override { return legacy.events(); }
 		void declareLatency(const std::string& bank, Latency internal) override {
 			legacy.declareLatency(bank, internal);
@@ -881,8 +923,8 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	};
 
 	Impl(const NodeType& t, Options o)
-		: type(t), options(std::move(o)), clock(executor), blocks(*this), cards(*this), receivers(*this),
-		  handoffs(*this), sinks(*this), sources(*this), loops(*this),
+		: type(t), options(std::move(o)), clock(executor), blocks(*this), cards(*this), receivers(*this), pipes(*this),
+		  handoffs(*this), sinks(*this), sources(*this), loops(*this), programs(*this),
 		  registry(ResourceAdapters{.cards = &cards,
 	                                .receivers = &receivers,
 	                                .handoffs = &handoffs,
@@ -890,7 +932,10 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	                                .sources = &sources,
 	                                .recordings = options.noRecordingsFolder ? nullptr : &recordings,
 	                                .loops = &loops,
-	                                .stores = &stores}),
+	                                .stores = &stores,
+	                                .pipeReceivers = &pipes,
+	                                .programs = &programs,
+	                                .runtimeFolder = options.runtimeFolder}),
 		  graph(catalogue), fade(options.format.rate), account(FrameClock(options.format.rate), &cuts),
 		  host(std::make_unique<NodeHost>(options.format, blocks, registry, executor, clock)) {
 		host->subscribe(*this);
@@ -1078,12 +1123,14 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	FakeBlocks blocks;
 	FakeEngineCompanions<SoundCardShape> cards;
 	FakeEngineCompanions<RtpReceiverShape> receivers;
+	FakeEngineCompanions<PipeReceiverShape> pipes;
 	FakeHandoffs handoffs;
 	FakeSinks sinks;
 	FakeSources sources;
 	FakeLoops loops;
 	FakeStores stores;
 	FakeRecordings recordings{stores.fakeIo};
+	FakePrograms programs;
 	ResourceRegistry registry;
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph; // only for close(), the proof stopAll takes
@@ -1127,6 +1174,8 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	std::vector<FakeLoop*> loopFakes;                           // by loopList's index; null once freed
 	std::vector<std::pair<std::size_t, LoopEvents*>> heldLoops; // holdLoops: by loopList's index, told at loopsReady()
 	std::vector<std::string> sourcesLeft;                       // ear.loop-source-left said since the last settle
+	std::vector<ProgramFake> programList;                       // every program launched, in order
+	std::vector<ProgramEvents*> programEvents;                  // by programList's index: what NodeHost gave its launch
 
 	std::optional<NodeHealth> told;
 	bool wentAway = false;
@@ -1514,10 +1563,89 @@ std::size_t NodeHarness::armed(std::string_view loop) const {
 	return 0;
 }
 
+std::vector<int> NodeHarness::watchedDescriptors(std::string_view loop) const {
+	std::vector<int> watched;
+	for (std::size_t i = impl_->loopList.size(); i-- > 0;) {
+		if (impl_->loopList[i].name != loop) continue;
+		const Impl::FakeLoop* fake = impl_->loopFakes.at(i);
+		if (fake == nullptr) return watched;
+		for (const auto& source : fake->sources)
+			if (source->kind == Impl::FakeLoop::Source::Kind::readable && !source->cancelled)
+				watched.push_back(source->fd);
+		return watched;
+	}
+	return watched;
+}
+
 std::vector<NodeHarness::SeenLoop> NodeHarness::loops() const { return impl_->loopList; }
 
 void NodeHarness::runIo() {
 	while (impl_->stores.fakeIo.runOne()) impl_->executor.pump();
+	impl_->settle();
+}
+
+const std::vector<ProgramFake>& NodeHarness::programs() const noexcept { return impl_->programList; }
+
+/// The program of `index`, which must not have ended (nothing is told after refused or exited).
+static ProgramFake& liveProgram(std::vector<ProgramFake>& list, std::size_t index, std::string_view call) {
+	if (index >= list.size()) throw std::logic_error(std::string(call) + ": no program " + std::to_string(index));
+	ProgramFake& fake = list[index];
+	if (fake.ended) throw std::logic_error(std::string(call) + ": program " + std::to_string(index) + " has ended");
+	return fake;
+}
+
+void NodeHarness::programStarted(std::size_t index) {
+	ProgramFake& fake = liveProgram(impl_->programList, index, "programStarted");
+	if (fake.started) throw std::logic_error("programStarted: program " + std::to_string(index) + " was told already");
+	fake.started = true;
+	impl_->programEvents.at(index)->started();
+	if (fake.launch.needs.empty()) {
+		fake.ready = true;
+		impl_->programEvents.at(index)->ready();
+	}
+	impl_->settle();
+}
+
+void NodeHarness::programReady(std::size_t index) {
+	ProgramFake& fake = liveProgram(impl_->programList, index, "programReady");
+	if (!fake.started) throw std::logic_error("programReady: program " + std::to_string(index) + " has not started");
+	if (fake.ready) throw std::logic_error("programReady: program " + std::to_string(index) + " is ready already");
+	fake.ready = true;
+	impl_->programEvents.at(index)->ready();
+	impl_->settle();
+}
+
+void NodeHarness::programRefused(std::size_t index, std::string why) {
+	ProgramFake& fake = liveProgram(impl_->programList, index, "programRefused");
+	if (fake.started) throw std::logic_error("programRefused: program " + std::to_string(index) + " started");
+	fake.ended = true;
+	impl_->programEvents.at(index)->refused(std::move(why));
+	impl_->settle();
+}
+
+void NodeHarness::feedProgram(std::size_t index, std::string bytes) {
+	ProgramFake& fake = liveProgram(impl_->programList, index, "feedProgram");
+	if (!fake.started) throw std::logic_error("feedProgram: program " + std::to_string(index) + " has not started");
+	if (bytes.size() > programFeedChunkBytes)
+		throw std::logic_error("feedProgram: more than programFeedChunkBytes in one delivery");
+	impl_->programEvents.at(index)->fed(std::move(bytes));
+	impl_->settle();
+}
+
+void NodeHarness::programSays(std::size_t index, LogLevel level, std::string line) {
+	ProgramFake& fake = liveProgram(impl_->programList, index, "programSays");
+	if (!fake.started) throw std::logic_error("programSays: program " + std::to_string(index) + " has not started");
+	const std::string name = fake.launch.argv.at(0);
+	const bool error = level != LogLevel::info;
+	impl_->programEvents.at(index)->said(
+		LogEntry{level, name, std::move(line), error ? "stderr" : "stdout", fake.launch.node});
+	impl_->settle();
+}
+
+void NodeHarness::programExited(std::size_t index, ProgramExit exit) {
+	ProgramFake& fake = liveProgram(impl_->programList, index, "programExited");
+	fake.ended = true;
+	impl_->programEvents.at(index)->exited(std::move(exit));
 	impl_->settle();
 }
 

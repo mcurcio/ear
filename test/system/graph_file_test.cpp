@@ -483,6 +483,46 @@ TEST_CASE("T8: a graph file or recordings folder that is or is inside the web ro
 	}
 }
 
+TEST_CASE("A runtime folder whose path holds a character outside [A-Za-z0-9_./-] exits 1 saying which may",
+          "[system][graph-file]") {
+	TempDirectory directory;
+	const auto runtime = directory.path() / "run time";
+	std::filesystem::create_directories(runtime);
+	ChildProcess ear(EAR_BINARY, earArguments(directory, {"--runtime-dir", runtime.string()}));
+	const auto exitStatus = ear.waitForExit(deadline);
+	INFO("ear printed:\n" << ear.output());
+	CHECK(exitStatus == 1);
+	CHECK(ear.output().find("runtime folder " + runtime.string() +
+	                        ": its path may hold only letters, digits and _ . "
+	                        "/ -") != std::string::npos);
+	CHECK(std::filesystem::is_empty(runtime));
+}
+
+TEST_CASE("ear makes its runtime folder afresh inside the one given, mode 0700, and removes it at stop, leaving what "
+          "the given folder held",
+          "[system][graph-file]") {
+	TempDirectory directory;
+	writeGraphFile(directory, noiseToRec());
+	const auto given = directory.path() / "runtime";
+	std::filesystem::create_directories(given);
+	// A file of the same name a crashed run's node would have left: never one of this run's.
+	const auto stale = given / "kitchen.1.config";
+	std::ofstream(stale) << "left by a crashed run";
+	std::filesystem::permissions(given, std::filesystem::perms::all); // open to every user, as /tmp is
+	Ear ear(directory, firstOffer, {"--runtime-dir", given.string()});
+	INFO("ear printed:\n" << ear.process().output());
+	std::vector<std::filesystem::path> made;
+	for (const auto& entry : std::filesystem::directory_iterator(given))
+		if (entry.path() != stale) made.push_back(entry.path());
+	REQUIRE(made.size() == 1);
+	CHECK(made[0].filename().string().starts_with("ear-"));
+	CHECK(std::filesystem::is_directory(made[0]));
+	CHECK(std::filesystem::status(made[0]).permissions() == std::filesystem::perms::owner_all);
+	CHECK(ear.stop() == 0);
+	CHECK_FALSE(std::filesystem::exists(made[0]));
+	CHECK(std::filesystem::exists(stale));
+}
+
 TEST_CASE("A --rate ear.conf would refuse, or a --block-size that is not a whole number above 0, exits 1 saying why",
           "[system][graph-file]") {
 	TempDirectory directory;

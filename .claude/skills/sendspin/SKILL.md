@@ -104,11 +104,12 @@ client is the configuration's. What that means to an operator (the owner's answe
   D-Bus. One socket per node, all sharing port 5353 with `SO_REUSEPORT`.
 - **Answers go by multicast**, whatever the question's unicast bit: the kernel hands a unicast datagram to one socket of a
   shared port, so it could reach a neighbour's. Only a querier on another port than 5353 gets a unicast answer.
-- **Limits, so it reflects nothing:** queries only (a response is ignored), from this link only, each answer once per datagram,
+- **Limits, so it reflects nothing:** queries only (a response is heard only for a clash), from this link only, each answer once per datagram,
   by multicast once a second and by unicast at most 16 a second. A querier that asks again within the second is answered next
   time it asks.
-- The instance is `ear-<first 50 bytes of node>-<first 8 of client id>`, a DNS label's 63 at most, stable and unique with no
-  probing. Music Assistant shows `name`, from the hello.
+- The instance is `ear-<first 50 bytes of node>-<first 8 of client id>`, a DNS label's 63 at most, stable, and unique wherever
+  client ids are. It is probed before it is announced (about 0.5 to 1 s after `listening`), and renamed if another responder
+  holds it (`says renamed <asked> to <published>`; docs/node-types.md#mdns). Music Assistant shows `name`, from the hello.
 - One interface, the one the kernel routes 224.0.0.251 through, and its address is read once at the node's start. A pod on an
   overlay network cannot advertise (`ear-on-talos`).
 - Goodbye goes out when the worker's state is destroyed (a restart, a disable, a removal; never a stop). A crash leaves

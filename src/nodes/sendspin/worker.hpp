@@ -12,13 +12,13 @@
 #include <optional>
 #include <string>
 #include <vector>
-#include "advertiser.hpp"
 #include "connection_watch.hpp"
 #include "ear/core/loop.hpp"
 #include "ear/core/node_handle.hpp"
 #include "ear/core/node_type.hpp"
 #include "ear/core/source.hpp"
 #include "ear/core/store.hpp"
+#include "ear/mdns/advertiser.hpp"
 #include "key_store.hpp"
 #include "sendspin/client.h"
 #include "sendspin/player_role.h"
@@ -149,13 +149,14 @@ private:
 	Loop& self_;
 	SendspinSettings settings_;
 	AudioFormat format_;
-	std::vector<float> scratch_;           // the sync thread's; a ring's worth of floats
-	std::atomic<bool> streamAsked_{false}; // the stream's format is the one the node listed
-	bool streaming_ = false;               // worker only
-	bool saidDialling_ = false;            // worker only
-	std::unique_ptr<Timer> tick_;          // worker only
-	std::optional<ConnectionWatch> watch_; // worker only, once the client started
-	std::unique_ptr<Advertiser> advertiser_;
+	std::vector<float> scratch_;                        // the sync thread's; a ring's worth of floats
+	std::atomic<bool> streamAsked_{false};              // the stream's format is the one the node listed
+	bool streaming_ = false;                            // worker only
+	bool saidDialling_ = false;                         // worker only
+	std::unique_ptr<Timer> tick_;                       // worker only
+	std::optional<ConnectionWatch> watch_;              // worker only, once the client started
+	std::unique_ptr<ear::mdns::Advertiser> advertiser_; // worker only
+	std::string askedInstance_;                         // worker only: the instance its advertiser was opened with
 	std::unique_ptr<NodeKeyStore> keyStore_;
 	::sendspin::PlayerRole* playerRole_ = nullptr; // set before the client starts
 	::sendspin::SourceRole* source_ = nullptr;     // set before the client starts, and outlives every consume()

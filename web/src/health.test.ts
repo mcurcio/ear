@@ -61,6 +61,8 @@ describe("describeHealth", () => {
     expect(describeHealth(recording, at).line).toBe("waiting for its recording take1.wav");
     const claim = node({ phase: "configuring", waitingFor: [{ kind: "claim", name: "udp:5004" }] });
     expect(describeHealth(claim, at).line).toBe("waiting for its claim udp:5004");
+    const program = node({ phase: "configuring", waitingFor: [{ kind: "program", name: "shairport-sync" }] });
+    expect(describeHealth(program, at).line).toBe("waiting for its program shairport-sync");
     expect(describeHealth(node({ phase: "configuring" }), long).line).toBe("configuring");
     expect(describeHealth(node({ phase: "configuring", cause: { kind: "enabling" } }), long).line).toBe(
       "configuring: enabled",

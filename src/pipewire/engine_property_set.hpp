@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <initializer_list>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -63,6 +64,14 @@ template <Home H> pw_proxy* createObject(pw_core* core, const char* factory, con
 	return static_cast<pw_proxy*>(pw_core_create_object(core, factory, type, version, &properties.raw_->dict, 0));
 }
 
+/// The home of the stream.props a receiver module's arguments nest (its stream node's own properties); none for any
+/// other home.
+constexpr std::optional<Home> nestedStream(Home home) noexcept {
+	if (home == Home::rtpReceiver) return Home::rtpStream;
+	if (home == Home::pipeReceiver) return Home::pipeStream;
+	return std::nullopt;
+}
+
 /// A module's arguments for an object of home H: an object of that home's keys, each value as PipeWire's parser reads
 /// it (a quoted string, a number, a word, an array or a nested object, already formatted by the caller). A value that
 /// would open another key (unquoted whitespace outside an array or object, or nothing at all) is refused with
@@ -74,11 +83,11 @@ public:
 		values_.emplace_back(key, std::move(value));
 		return *this;
 	}
-	/// The receiver's stream.props: the RTP stream's own arguments, nested.
-	ModuleArguments& add(PropertyKey<Home::rtpReceiver> key, const ModuleArguments<Home::rtpStream>& stream)
-		requires(H == Home::rtpReceiver)
-	{
-		if (key.view() != "stream.props") throw std::logic_error("only stream.props holds the RTP stream's arguments");
+	/// A receiver's stream.props: its stream's own arguments (nestedStream(H)), nested.
+	template <Home Stream>
+		requires(nestedStream(H) == Stream)
+	ModuleArguments& add(PropertyKey<H> key, const ModuleArguments<Stream>& stream) {
+		if (key.view() != "stream.props") throw std::logic_error("only stream.props holds a stream's arguments");
 		return add(key, stream.text());
 	}
 	/// "{ key = value ... }".
@@ -92,7 +101,9 @@ private:
 	std::vector<PropertyValue<H>> values_;
 };
 
-/// pw_context_load_module with an RTP receiver's arguments; null, with errno set, when it does not load.
+/// pw_context_load_module with a receiver's arguments (an RTP receiver's, a pipe receiver's); null, with errno set,
+/// when it does not load.
 pw_impl_module* loadModule(pw_context* context, const char* name, const ModuleArguments<Home::rtpReceiver>& arguments);
+pw_impl_module* loadModule(pw_context* context, const char* name, const ModuleArguments<Home::pipeReceiver>& arguments);
 
 } // namespace ear::pipewire

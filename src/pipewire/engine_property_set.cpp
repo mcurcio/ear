@@ -1,4 +1,4 @@
-// The module half of engine_property_set.hpp: a value checked to be one value, and the one module load with arguments
+// The module half of engine_property_set.hpp: a value checked to be one value, and the module loads with arguments
 // (docs/engine.md#properties-ear-sets).
 #include "engine_property_set.hpp"
 
@@ -31,6 +31,11 @@ void requireOneValue(const std::string& value) {
 }
 
 pw_impl_module* loadModule(pw_context* context, const char* name, const ModuleArguments<Home::rtpReceiver>& arguments) {
+	return pw_context_load_module(context, name, arguments.text().c_str(), nullptr);
+}
+
+pw_impl_module* loadModule(pw_context* context, const char* name,
+                           const ModuleArguments<Home::pipeReceiver>& arguments) {
 	return pw_context_load_module(context, name, arguments.text().c_str(), nullptr);
 }
 

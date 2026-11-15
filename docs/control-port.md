@@ -148,7 +148,7 @@ The meaning of each phase and state is [architecture.md](architecture.md#the-nod
 | `wanted` | yes | `running`, `stopped` (a stop held in memory) or `disabled` (in `ear.conf`) |
 | `blockLost` | yes | The node's block is gone for good; it cannot restart until removed and added, or ear restarts |
 | `cause` | `stopping`; `configuring` after a restart, retry or enable | `{"kind"}`: `stop`, `disabling`, `removing`, `restarting` (with `restart: {"kind"}`, the restart's own kind: `settings` with its `keys`, or `action` for `node.restart`), and for `configuring`: `settings` (with `keys`), `action`, `retry`, `enabling` |
-| `waitingFor` | once the phase has lasted 2 s | What the node still waits for: a list of `{"kind", "name"?}`, kind `older-node` (a removed or renamed node of its name still closing), `block` (the engine), `companion` (an engine companion, by engine name: `fpp.rtp`), `consumer` (a sink's consumer), `loop` (one of the node's loops not yet running, by its name: `sendspin`), `store` (one of the node's stores not yet opened, by its file's name: `sendspin-kitchen.key`), `recording` (one of the node's recordings not yet opened, by its path: `take1.wav`), `claim` (one of the node's claims not yet granted, by its key: `udp:5004`, while its holder closes). Changed at most once a second |
+| `waitingFor` | once the phase has lasted 2 s | What the node still waits for: a list of `{"kind", "name"?}`, kind `older-node` (a removed or renamed node of its name still closing), `block` (the engine), `companion` (an engine companion, by engine name: `fpp.rtp`), `consumer` (a sink's consumer), `loop` (one of the node's loops not yet running, by its name: `sendspin`), `store` (one of the node's stores not yet opened, by its file's name: `sendspin-kitchen.key`), `recording` (one of the node's recordings not yet opened, by its path: `take1.wav`), `claim` (one of the node's claims not yet granted, by its key: `udp:5004`, while its holder closes), `program` (the node's program not yet started, by the program's name: its executable's last component). Changed at most once a second |
 | `reason` | `failed` | `{"code", "detail"}`, code `engine-refused`, `start-failed` or `lost` |
 
 A `node.state` is sent whenever any member changes, never coalesced, and replaces every health
@@ -429,7 +429,7 @@ state, the graph's and each node's, which never step back and are never reset
 
 With the feature `companions`, each node lists its **companions**: the hidden helpers that carry its
 audio to and from non-realtime code, a sound card's playback and capture, an RTP receiver, a
-sink, a source ([engine.md](engine.md#companions-in-a-nodes-list) says what each is and when
+pipe receiver, a sink, a source ([engine.md](engine.md#companions-in-a-nodes-list) says what each is and when
 it is ready). A companion is never a node: never in `nodes`, never routed (its name has a `.`,
 which no node's has), never metered. `test/protocol/companions.json` shows a list's whole life.
 
@@ -443,10 +443,10 @@ which no node's has), never metered. `test/protocol/companions.json` shows a lis
 
 | Member | What |
 |---|---|
-| `name` | `<node>.playback`, `<node>.capture`, `<node>.rtp` (the engine node's name, as `waitingFor` names it); a sink's or source's `<node>.<bank>` |
-| `kind` | `card-playback`, `card-capture`, `rtp-receiver`, `sink`, `source`; an open set |
+| `name` | `<node>.playback`, `<node>.capture`, `<node>.rtp`, `<node>.pipe` (the engine node's name, as `waitingFor` names it); a sink's or source's `<node>.<bank>` |
+| `kind` | `card-playback`, `card-capture`, `rtp-receiver`, `pipe-receiver`, `sink`, `source`; an open set |
 | `bank` | The node's inside bank it joins |
-| `ready` | A card or receiver once linked and running, a sink once its consumer began, a source always |
+| `ready` | A card or an RTP or pipe receiver once linked and running, a sink once its consumer began, a source always |
 | `dropped` | A sink only: frames its ring had no room for since this configuration made it |
 | `shortfall` | A source only: frames played as zeros while its writer was not idle, since this configuration made it |
 

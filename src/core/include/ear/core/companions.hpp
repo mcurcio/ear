@@ -47,8 +47,20 @@ struct RtpReceiverShape {
 	std::uint32_t latencyMs; // the receive buffer, 1-1000; declared upstream of the bank by the framework
 };
 
+/// The samples a pipe receiver reads from its FIFO: signed, interleaved, little-endian, one closed choice per program
+/// mode, never PipeWire's "auto" (docs/engine.md#pipe-receivers).
+enum class PipeFormat { s16le, s32le };
+
+/// A pipe receiver on an inside input bank, one channel per port of the bank: PipeWire's pipe module in source mode
+/// reading a FIFO the framework names (CompanionTarget::fifo, CreateOf::fifoOf) and a program writes. Every member is a
+/// closed value of the type's own; the framework passes none of them on unparsed.
+struct PipeReceiverShape {
+	PipeFormat format;
+	SampleRate rate; // the writer's own rate, not the graph's: resampled to the graph frequency when it differs
+};
+
 /// An engine companion's shape, as NodeHost keeps it until the block is ready.
-using EngineCompanionShape = std::variant<SoundCardShape, RtpReceiverShape>;
+using EngineCompanionShape = std::variant<SoundCardShape, RtpReceiverShape, PipeReceiverShape>;
 
 // ---- Module-run converters (docs/engine.md#module-run-converters) ----
 
@@ -57,13 +69,19 @@ using EngineCompanionShape = std::variant<SoundCardShape, RtpReceiverShape>;
 /// NodeHost's latency plan enters as `beyond` the bank (docs/engine.md#latency-per-bank-pair). A module-run shape is
 /// one this has an overload for; RtpReceiverShape's is its latencyMs, in whole frames through `graph`.
 Delay moduleRunDelay(const RtpReceiverShape& shape, FrameClock graph) noexcept;
+/// What PipeWire 1.4.2's pipe module buffers before it plays: a fixed target of this many frames at the writer's rate
+/// (module-pipe-tunnel.c, `target_buffer = 8192 * frame_size`), which no argument changes. Its one home.
+inline constexpr std::uint32_t pipeReceiverBufferFrames = 8'192;
+/// A pipe receiver's: pipeReceiverBufferFrames at `shape.rate`, in whole graph frames through `graph`, least and most
+/// alike.
+Delay moduleRunDelay(const PipeReceiverShape& shape, FrameClock graph) noexcept;
 /// A shape whose engine companion is a module-run converter: it says what its module buffers. A card is not one: it
 /// reports its own latency through its links.
 template <class Shape>
 concept ModuleRunShape = requires(const Shape& shape, FrameClock graph) {
 	{ moduleRunDelay(shape, graph) } -> std::same_as<Delay>;
 };
-static_assert(ModuleRunShape<RtpReceiverShape> && !ModuleRunShape<SoundCardShape>);
+static_assert(ModuleRunShape<RtpReceiverShape> && ModuleRunShape<PipeReceiverShape> && !ModuleRunShape<SoundCardShape>);
 
 // ---- Claims (docs/writing-a-node-type.md#claims) ----
 
@@ -75,18 +93,22 @@ static_assert(ModuleRunShape<RtpReceiverShape> && !ModuleRunShape<SoundCardShape
 std::vector<Claim> claimsOf(const RtpReceiverShape& shape);
 /// None: whether a card's device needs one waits on a check on the hardware (docs/design/node-primitives.md 0.2 C).
 std::vector<Claim> claimsOf(const SoundCardShape& shape);
+/// None: its FIFO's path is unique to its configuration (runtimePath, program.hpp), so no other holder can name it.
+std::vector<Claim> claimsOf(const PipeReceiverShape& shape);
 
 // ---- The kinds ----
 
 /// The closed list (docs/architecture.md#companions: a kind changes what the framework promises). Engine kinds are
 /// PipeWire nodes joined to the block by links; ring kinds are played or tapped by the block itself, in its own cycle.
-enum class CompanionKind { cardPlayback, cardCapture, rtpReceiver, sink, source };
-/// "card-playback" | "card-capture" | "rtp-receiver" | "sink" | "source": the wire's `kind`, the one home of these.
+enum class CompanionKind { cardPlayback, cardCapture, rtpReceiver, pipeReceiver, sink, source };
+/// "card-playback" | "card-capture" | "rtp-receiver" | "pipe-receiver" | "sink" | "source": the wire's `kind`, the one
+/// home of these.
 std::string_view companionKindName(CompanionKind kind) noexcept;
-/// Whether the kind is an engine node of its own (cards, the RTP receiver) rather than a ring the block serves.
+/// Whether the kind is an engine node of its own (cards, the RTP receiver, the pipe receiver) rather than a ring the
+/// block serves.
 constexpr bool isEngineKind(CompanionKind kind) noexcept {
 	return kind == CompanionKind::cardPlayback || kind == CompanionKind::cardCapture ||
-	       kind == CompanionKind::rtpReceiver;
+	       kind == CompanionKind::rtpReceiver || kind == CompanionKind::pipeReceiver;
 }
 
 /// How long a companion may take to become ready, from its request, so a node never waits for good on something that
@@ -95,6 +117,9 @@ constexpr bool isEngineKind(CompanionKind kind) noexcept {
 /// fails. A source is ready when made and has none.
 inline constexpr std::chrono::milliseconds cardReadinessBound{10'000};
 inline constexpr std::chrono::milliseconds rtpReceiverReadinessBound{5'000};
+/// A pipe receiver's node running and linked: its module makes the FIFO and reads it at load, so only an engine that
+/// refuses the module misses it.
+inline constexpr std::chrono::milliseconds pipeReceiverReadinessBound{5'000};
 inline constexpr std::chrono::milliseconds sinkReadinessBound{5'000};
 /// The bound for `kind`; std::nullopt for a source.
 std::optional<std::chrono::milliseconds> readinessBound(CompanionKind kind) noexcept;
@@ -109,7 +134,8 @@ inline constexpr std::chrono::milliseconds companionDropDiagnosticPace{10'000};
 /// One entry of a node's companion list (docs/engine.md#companions-in-a-nodes-list; on the wire, the feature
 /// `companions`: docs/control-port.md#companions).
 struct CompanionView {
-	/// An engine kind's engine node ("<node>.playback", "<node>.capture", "<node>.rtp"); a ring kind's "<node>.<bank>".
+	/// An engine kind's engine node ("<node>.playback", "<node>.capture", "<node>.rtp", "<node>.pipe"); a ring kind's
+	/// "<node>.<bank>".
 	NodeName name;
 	CompanionKind kind;
 	std::string bank; // the inside bank it joins: inside banks appear nowhere else on the wire
@@ -167,13 +193,16 @@ protected:
 /// channel i to blockPorts[i], and the inside bank's name, which NodeHost keeps for the companion it asked for (an
 /// adapter in the engine reads its ports; the type harness's fake reads the name, so it never works a bank out again).
 struct CompanionTarget {
-	NodeName engineNode;              // "<node>.playback" | "<node>.capture" | "<node>.rtp"
+	NodeName engineNode;              // "<node>.playback" | "<node>.capture" | "<node>.rtp" | "<node>.pipe"
 	NodeName blockNode;               // the node's name, its block's
 	Direction bank;                   // the inside bank's: output (the companion reads the block), input (it feeds it)
 	std::vector<PortName> blockPorts; // the bank's ports
 	AudioFormat format;
 	std::uint32_t blockId = 0xFFFFFFFFU; // PortBlock::blockId; no id: the join cannot link and the companion is lost
 	std::string insideBank{};            // the inside bank's name: one engine companion per bank
+	/// A pipe receiver's FIFO: runtimePath(<runtime folder>, node, configuration, "<bank>.fifo"), which does not exist
+	/// yet (its module makes it, and removes it when destroyed). Empty for every other kind.
+	std::string fifo{};
 };
 
 /// One engine kind's adapter. Each strips nothing it did not set: it never sets node.force-quantum, node.force-rate,
@@ -199,5 +228,10 @@ protected:
 };
 using SoundCardCompanions = EngineCompanionAdapter<SoundCardShape>;
 using RtpReceiverCompanions = EngineCompanionAdapter<RtpReceiverShape>;
+/// PipeReceiverShape: one libpipewire-module-pipe-tunnel node in source mode reading the FIFO at CompanionTarget::fifo
+/// (which it makes, and removes when it is destroyed), with blockPorts.size() channels of `shape.format` at
+/// `shape.rate`. It follows the graph's clock and never drives it, and never pauses; a writer that stops or never comes
+/// changes nothing: it stays ready and its channels are silent (docs/engine.md#pipe-receivers).
+using PipeReceiverCompanions = EngineCompanionAdapter<PipeReceiverShape>;
 
 } // namespace ear

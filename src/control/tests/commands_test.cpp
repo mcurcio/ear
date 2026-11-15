@@ -131,6 +131,7 @@ TEST_CASE("A snapshot's node carries its companion list in request order, each c
 	     {},
 	     {{.name = "x.playback", .kind = ear::CompanionKind::cardPlayback, .bank = "to_card", .ready = true},
 	      {.name = "x.rtp", .kind = ear::CompanionKind::rtpReceiver, .bank = "from_rtp"},
+	      {.name = "x.pipe", .kind = ear::CompanionKind::pipeReceiver, .bank = "from_pipe", .ready = true},
 	      {.name = "x.out", .kind = ear::CompanionKind::sink, .bank = "out", .ready = true, .dropped = 4096},
 	      {.name = "x.in", .kind = ear::CompanionKind::source, .bank = "in", .ready = true, .shortfall = 7}}});
 	const json graph = encodeGraph(view);
@@ -138,6 +139,7 @@ TEST_CASE("A snapshot's node carries its companion list in request order, each c
 	CHECK(graph["nodes"][1].value("companions", json()) == json::parse(R"([
 		{"name": "x.playback", "kind": "card-playback", "bank": "to_card", "ready": true},
 		{"name": "x.rtp", "kind": "rtp-receiver", "bank": "from_rtp", "ready": false},
+		{"name": "x.pipe", "kind": "pipe-receiver", "bank": "from_pipe", "ready": true},
 		{"name": "x.out", "kind": "sink", "bank": "out", "ready": true, "dropped": 4096},
 		{"name": "x.in", "kind": "source", "bank": "in", "ready": true, "shortfall": 7}])"));
 }

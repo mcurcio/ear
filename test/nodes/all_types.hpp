@@ -21,6 +21,7 @@ inline std::vector<std::unique_ptr<const NodeType>> allTypes() { return nodes::a
 inline const std::vector<NodeSettings>& validSettings(std::string_view type) {
 	static const std::map<std::string, std::vector<NodeSettings>, std::less<>> valid{
 		{"white", {NodeSettings::object()}},
+		{"airplay", {{{"name", "Kitchen"}, {"airplay2", true}}}},
 		{"file", {{{"path", "a.wav"}}}},
 		{"card", {{{"card", "Pro24"}, {"playback", 2}, {"capture", 2}}}},
 		{"rtp",

@@ -21,6 +21,7 @@
 #include "ear/core/log.hpp"
 #include "ear/core/loop.hpp"
 #include "ear/core/node_lifecycle.hpp"
+#include "ear/core/program.hpp"
 #include "ear/core/recording.hpp"
 #include "ear/core/sink.hpp"
 #include "ear/core/source.hpp"
@@ -32,14 +33,15 @@ namespace ear {
 /// engine name, `<node>.<suffix>`), a sink's consumer (`consumer`), one of its loops to start (`loop`, `name` the
 /// loop's), one of its stores to open (`store`, `name` its file's), one of its recordings to open (`recording`, `name`
 /// its path, as asked), one of its claims to be granted (`claim`, `name` its key: "udp:5004";
-/// docs/writing-a-node-type.md#claims).
+/// docs/writing-a-node-type.md#claims), its program to start (`program`, `name` the program's: ProgramPath::name();
+/// docs/writing-a-node-type.md#programs).
 struct WaitingFor {
-	enum class Kind { olderNode, block, companion, consumer, loop, store, recording, claim };
+	enum class Kind { olderNode, block, companion, consumer, loop, store, recording, claim, program };
 	Kind kind;
-	std::string name{}; // olderNode, companion, loop, store, recording and claim only
+	std::string name{}; // olderNode, companion, loop, store, recording, claim and program only
 	friend bool operator==(const WaitingFor&, const WaitingFor&) = default;
 };
-/// "older-node" | "block" | "companion" | "consumer" | "loop" | "store" | "recording" | "claim"
+/// "older-node" | "block" | "companion" | "consumer" | "loop" | "store" | "recording" | "claim" | "program"
 std::string_view waitingKindName(WaitingFor::Kind kind) noexcept;
 /// A node's health, the framework's judgement alone (docs/architecture.md#the-node-lifecycle; on the wire:
 /// docs/control-port.md#node-health): its state (the phase's
@@ -251,6 +253,14 @@ struct ResourceAdapters {
 	/// The ports' probe (docs/writing-a-node-type.md#claims); null: a port claim is judged between the host's nodes
 	/// only, never against the kernel (a test's host).
 	PortProbe* ports = nullptr;
+	/// The pipe receivers' adapter (docs/engine.md#pipe-receivers); null: the host has none.
+	PipeReceiverCompanions* pipeReceivers = nullptr;
+	/// The programs' adapter (docs/writing-a-node-type.md#programs); null: the host has none.
+	ProgramAdapter* programs = nullptr;
+	/// Where every configuration's runtime files go (runtimePath: a pipe receiver's FIFO, a program's feed and files):
+	/// ear's runtime folder, main.cpp's (docs/architecture.md#boot-and-stop). Empty: the host has none, and a pipe
+	/// receiver or a program is refused at its call, "no runtime folder in this host".
+	std::string runtimeFolder{};
 };
 /// The resource registry (docs/writing-a-node-type.md#configure-and-createof): one adapter per kind of companion and
 /// of ResourceRequest, so a new kind is one adapter here and nothing more in NodeHost's constructor. A kind the host
@@ -285,6 +295,11 @@ public:
 	StoreAdapter* stores() const noexcept { return adapters_.stores; }
 	/// The ports' probe (claims); null: the host probes no port.
 	PortProbe* ports() const noexcept { return adapters_.ports; }
+	PipeReceiverCompanions* adapterFor(const PipeReceiverShape&) const noexcept { return adapters_.pipeReceivers; }
+	/// The programs' adapter (CreateOf::program; docs/writing-a-node-type.md#programs); null: the host has none.
+	ProgramAdapter* programs() const noexcept { return adapters_.programs; }
+	/// ear's runtime folder; empty: the host has none.
+	const std::string& runtimeFolder() const noexcept { return adapters_.runtimeFolder; }
 
 private:
 	ResourceAdapters adapters_;

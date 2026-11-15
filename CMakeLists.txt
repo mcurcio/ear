@@ -174,8 +174,9 @@ if(missing_packages)
 		"(scripts/dev.sh make test), whose docker/Dockerfile installs them.")
 endif()
 
-# The sendspin node's protocol library and what it needs, at pinned commits.
+# The sendspin node's protocol library and what it needs, at pinned commits; mjansson/mdns, ear_mdns's.
 include(cmake/SendspinDeps.cmake)
+include(cmake/MdnsDeps.cmake)
 
 # The real server the sendspin node's tests run against (docs/node-types.md#library-facts-and-carried-patches): a venv
 # the image builds from test/sendspin/requirements.txt.
@@ -186,6 +187,30 @@ if(BUILD_TESTS)
 		message(FATAL_ERROR "the sendspin test server's Python is not at ${EAR_SENDSPIN_SERVER_PYTHON} "
 			"(EAR_SENDSPIN_SERVER_PYTHON): build in the image (scripts/dev.sh make test), whose docker/Dockerfile "
 			"puts it there")
+	endif()
+	# The airplay node's system test (test/system/airplay_test.cpp): the scripted AirPlay 1 sender's Python, a venv the
+	# image builds from test/airplay/requirements.txt, and the shairport-sync the node runs, built in the image's
+	# shairport-sync stage.
+	set(EAR_AIRPLAY_SENDER_PYTHON "/opt/airplay-sender/bin/python" CACHE FILEPATH
+		"Python of a venv holding test/airplay/requirements.txt (docker/Dockerfile, target dev)")
+	if(NOT EXISTS "${EAR_AIRPLAY_SENDER_PYTHON}")
+		message(FATAL_ERROR "the AirPlay test sender's Python is not at ${EAR_AIRPLAY_SENDER_PYTHON} "
+			"(EAR_AIRPLAY_SENDER_PYTHON): build in the image (scripts/dev.sh make test), whose docker/Dockerfile "
+			"puts it there")
+	endif()
+	set(EAR_SHAIRPORT_SYNC "/usr/local/bin/shairport-sync" CACHE FILEPATH
+		"The shairport-sync the airplay node runs (docker/Dockerfile's shairport-sync stage)")
+	if(NOT EXISTS "${EAR_SHAIRPORT_SYNC}")
+		message(FATAL_ERROR "shairport-sync is not at ${EAR_SHAIRPORT_SYNC} (EAR_SHAIRPORT_SYNC): build in the image "
+			"(scripts/dev.sh make test), whose docker/Dockerfile puts it there")
+	endif()
+	# The nqptp the airplay node's AirPlay 2 tests start (test/system/nqptp.hpp): the operator runs one beside ear
+	# (docs/node-types.md#airplay), and only the dev image has one, built in docker/Dockerfile's nqptp stage.
+	set(EAR_NQPTP "/usr/local/bin/nqptp" CACHE FILEPATH
+		"The nqptp the airplay node's tests start (docker/Dockerfile's nqptp stage)")
+	if(NOT EXISTS "${EAR_NQPTP}")
+		message(FATAL_ERROR "nqptp is not at ${EAR_NQPTP} (EAR_NQPTP): build in the image (scripts/dev.sh make test), "
+			"whose docker/Dockerfile puts it there")
 	endif()
 endif()
 
