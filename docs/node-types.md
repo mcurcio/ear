@@ -332,23 +332,14 @@ After a `node.update` or `node.restart` the goodbye is `shutdown`, and a server 
 (`aiosendspin`'s `connect_to_client`) did not redial within 30 s in tests, though the spec has a
 server reconnect on that reason; one browsing mDNS comes back by itself.
 
-### mDNS
+### Its listing
 
-A listening node's listing is `ear_mdns`'s (`src/mdns`, [architecture.md](architecture.md#packages)):
-`_sendspin._tcp` on its port, its TXT `path=/sendspin` and `name=<name>`, under the instance name
-below, which is its host label too. The worker keeps the advertiser and answers on its 10 ms turn.
+A listening node's listing is `_sendspin._tcp` on its port, its TXT `path=/sendspin` and `name=<name>`, kept
+by `ear_mdns`'s `Advertiser` in the worker's state, which answers on its 10 ms turn ([the advertiser's
+rules](#mdns)).
 
-- One socket per node on port 5353 (shared with `SO_REUSEPORT`), one interface: the one the kernel
-  routes 224.0.0.251 through, its address read once at the node's start. A pod on an overlay network
-  cannot advertise.
-- Answers go by multicast whatever a question's unicast bit; only a querier on another port than
-  5353 gets a unicast answer. *Why:* the kernel hands a unicast datagram to one socket of a shared
-  port, so it could reach a neighbour's.
-- Limits, so it reflects nothing: queries only (responses ignored), from this link only, each answer
-  once per datagram, by multicast at most once a second, by unicast at most 16 a second. A querier
-  that asks again within the second is answered the next time it asks.
-- The instance name is `ear-<first 50 bytes of node>-<first 8 of client id>`, a DNS label's 63 bytes
-  at most, stable and unique without probing. Music Assistant shows `name`, from the hello.
+- The instance name, which is its host label too, is `ear-<first 50 bytes of node>-<first 8 of client id>`, a
+  DNS label's 63 bytes at most, stable and unique without probing. Music Assistant shows `name`, from the hello.
 - A goodbye goes out when the worker's state goes (a restart, a disable or a removal, never a
   stop); a crash leaves the record until its TTL.
 
@@ -718,7 +709,7 @@ route kitchen:out.2 desk:play.2;
 **mDNS.** shairport-sync advertises nothing itself: its `metadata` mDNS backend (new in 5.6.3) hands
 its listing to the report feed as an `ssnc`/`svrg` item (lines `service=`, `name=`, `port=`, then
 `txt=` per record), and the node's report loop announces it with `ear_mdns`
-([sendspin's mDNS](#mdns) gives the advertiser's rules: one socket per node on port 5353, one
+([the advertiser's rules](#mdns): one socket per node on port 5353, one
 interface, answers by multicast, a goodbye at teardown). The service is `_raop._tcp`, the instance
 shairport-sync's `<device id>@<name>`, the host `ear-<node>` (each `_` a `-`, at most 63 bytes). A
 later listing of the same instance (shairport-sync's busy flag in `sf` as a session starts and ends)
@@ -734,3 +725,23 @@ sees the listing go when the node is removed. Not built: AirPlay 2 (a setting, w
 the operator), many speakers (names probed and renamed on a clash, distinct UDP ranges, identity
 from the node), sender volume as a node level, passwords, track information, recovery's retries;
 see [design/airplay.md](design/airplay.md).
+
+## mDNS
+
+A node type that waits for senders to find it lists itself on the network with `ear_mdns`'s `Advertiser`
+(`src/mdns`, [architecture.md](architecture.md#packages)): `sendspin` ([its listing](#its-listing)) and
+`airplay` ([its mDNS](#airplay)). The type makes the listing and keeps its names unique (nothing is
+probed), and keeps the advertiser in the state of one of its loops, which paces it: the advertiser starts
+no thread and arms no timer.
+
+- One socket per node on port 5353 (shared with `SO_REUSEPORT`), one interface: the one the kernel
+  routes 224.0.0.251 through, its address read once at the node's start. A container on an overlay network
+  cannot advertise.
+- Answers go by multicast whatever a question's unicast bit; only a querier on another port than
+  5353 gets a unicast answer. *Why:* the kernel hands a unicast datagram to one socket of a shared
+  port, so it could reach a neighbour's.
+- Limits, so it reflects nothing: queries only (responses ignored), from this link only, each answer
+  once per datagram, by multicast at most once a second, by unicast at most 16 a second. A querier
+  that asks again within the second is answered the next time it asks.
+- A listing's TXT strings can be replaced and are announced at once; a goodbye (every record again
+  with TTL 0) goes out when the advertiser is destroyed.

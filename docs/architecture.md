@@ -355,7 +355,7 @@ engine refused the link. A wire never depends on a node's state.
    node's name, with one 32-bit float mono port per declared port, public and inside alike. Every
    block is in the graph group and always processes.
 3. **A configuration.** The node's type makes an instance whose `configure` acquires resources
-   (sound cards, RTP receivers, recordings, sinks, sources) and gives the code that will run. Once every
+   (sound cards, RTP and pipe receivers, recordings, sinks, sources, a program) and gives the code that will run. Once every
    resource is ready and the block is ready, the framework drives the block with that code
    ([the node lifecycle](#the-node-lifecycle)).
 4. **Each cycle**, on the realtime thread, the block calls the code with one span per port and a
@@ -364,8 +364,8 @@ engine refused the link. A wire never depends on a node's state.
    each output), so no type reads a clock ([engine.md](engine.md#graphcycle)).
 5. **Routes.** `LiveGraph` reports ports as the engine's registry announces them; the
    `Reconciler` links wanted routes between live ports. An unlinked input reads zeros.
-6. **Engine companions.** A `card` or `rtp` node's block has inside banks no route can name; the
-   framework joins an ALSA adapter node or an RTP receiver to them, and its pass-through copies
+6. **Engine companions.** A `card`, `rtp` or `airplay` node's block has inside banks no route can name; the
+   framework joins an ALSA adapter node, an RTP receiver or a pipe receiver to them, and its pass-through copies
    between inside and public banks ([engine.md](engine.md#engine-companions)).
 7. **Off the realtime thread.** A `file` node's block writes each cycle into a sink's lock-free
    ring, read by the sink's own thread ([engine.md](engine.md#sinks)); a source's ring, written by
@@ -803,7 +803,7 @@ of the process: the record, not the process's end, says when ear's stop is done.
 These are designed or wanted but not in the code: routes naming a whole bank; changing a node's
 settings in place without a restart (a type's change version of `configure` compiles but is
 never called); recovery of failed nodes; sound cards opened off the main loop; an internal
-clock anchored to one card; serving PipeWire's socket; many `airplay` speakers and its AirPlay 2 setting
+clock anchored to one card; serving PipeWire's socket (for a program that can only be a PipeWire client; its nodes would be engine companions, marked by the socket's peer credentials); many `airplay` speakers and its AirPlay 2 setting
 ([design/airplay.md](design/airplay.md)); a login on port 7777; automatic card retry and hotplug; `@include`; undo; changing the graph
 frequency or block size while ear runs; arm64 images; a fault caught at the callback boundary
 failing only the node that owns it (today it ends the process); a source whose clock is a type's own on any shipped type,

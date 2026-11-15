@@ -1092,7 +1092,7 @@ class IoExecutor : public Executor { protected: ~IoExecutor() = default; };   //
 ```
 
 - Types never see it. In 3c it opens stores and recordings (readiness step 2) and runs every store write; slice 8's
-  `/proc` reads and slice 9's runtime files will use it.
+  `/proc` reads will use it (a program's runtime files are written by `Programs`' own thread, [writing-a-node-type.md](../writing-a-node-type.md#programs)).
 - **Jobs hold shared state.** Every job holds a `shared_ptr` to the state it fills (the store's text and mode, the
   recording's descriptor), never a `NodeStore`, `NodeRecording` or `ReadyEvents` pointer. Its completion is posted to
   the main loop and checked there against the configuration's generation and liveness: a completion for a
