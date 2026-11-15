@@ -138,7 +138,7 @@ TEST_CASE("node.companionsChanged and node.added's companions encode as companio
 	CHECK(encoded(NodeAdded{{"take", "file", {{"path", "take.wav"}}},
 	                        ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
 	                        ear::NodeHealth{"take"},
-	                        ear::control::testing::reading(4)}) == m[1]);
+	                        ear::control::testing::reading(5)}) == m[1]); // after the snapshot's five nodes
 	CHECK(encoded(NodeCompanionsChanged{"take", {sink("take", false, 0)}}) == m[3]);
 	CHECK(encoded(NodeCompanionsChanged{"rec", {sink("rec", true, 4096)}}) == m[9]);
 	CHECK(encoded(NodeCompanionsChanged{"rec", {}}) == m[17]);

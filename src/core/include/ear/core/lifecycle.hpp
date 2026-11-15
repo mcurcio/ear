@@ -134,6 +134,13 @@ protected:
 	~SinkRequest() = default;
 };
 
+/// Where a program's report feed goes (CreateOf::program's feed form): declared loop `loop`'s state, `deliver` called on
+/// the loop's thread with the state and each chunk read, in order.
+struct ProgramFeedTo {
+	std::size_t loop;
+	std::move_only_function<void(void*, std::string_view)> deliver;
+};
+
 /// What creation's configure acquires through: the erased side of CreateOf<Spec>. NodeHost implements it on the node,
 /// valid only inside the configure it is handed to; any call outside it throws std::logic_error. Banks arrive by name,
 /// already checked against the spec at compile time; NodeHost re-checks each bank's reach and direction (a
@@ -195,6 +202,18 @@ public:
 	/// claims at the first readiness step, before anything is opened, held until teardown step 5. A claim of another
 	/// kind (a store's or a recording's, which the framework claims itself) is a std::logic_error.
 	virtual void claim(Claim claim) = 0;
+	/// A pipe receiver on an inside input bank (docs/writing-a-node-type.md#engine-companions), `<node>.pipe`, an engine
+	/// companion made once the block is ready, as a sound card is; never faded. It reads the FIFO
+	/// runtimePath(<runtime folder>, node, <configuration>, "<bank>.fifo"), and its module's fixed buffer is latency
+	/// beyond the bank (moduleRunDelay). A host with no pipe receivers' adapter or no runtime folder refuses it; a second
+	/// companion on the bank is a std::logic_error.
+	virtual void pipeReceiver(std::string_view bank, PipeReceiverShape shape) = 0;
+	/// A listening TCP port the framework picks at the first readiness step (docs/writing-a-node-type.md#claims), held as
+	/// a TcpListen of it once granted: its handle, the claim's index among the configuration's claims, in asking order.
+	virtual GrantedPort claimAnyTcp() = 0;
+	/// The configuration's one program (docs/writing-a-node-type.md#programs), started at the last readiness step;
+	/// `feed`, when given, where its report feed goes. A rule the shape breaks is a std::logic_error at the call.
+	virtual void program(ProgramShape shape, std::optional<ProgramFeedTo> feed) = 0;
 	/// A rule CreateOf finds broken before it reaches a call above (a code written against another type's spec): records
 	/// it on the configuration, so the node fails with it whatever configure does next, and throws std::logic_error(rule).
 	[[noreturn]] virtual void refuse(std::string rule) = 0;
@@ -402,25 +421,43 @@ public:
 	void claim(claim::Udp port) { context_->claim(claim::of(port)); }
 	/// A listening TCP port nobody holds, picked by the framework at the first readiness step (claim::AnyTcp): its
 	/// handle, which names the port in a program's arguments or files (part::Port) before it is picked.
-	GrantedPort claim(claim::AnyTcp port);
+	GrantedPort claim(claim::AnyTcp) { return context_->claimAnyTcp(); }
 
 	/// A pipe receiver on an inside input bank (docs/writing-a-node-type.md#engine-companions): an engine companion,
 	/// `<node>.pipe`, reading a FIFO the framework names, which a program of the configuration writes (fifoOf). Its
 	/// module's fixed buffer is latency beyond the bank (moduleRunDelay); never faded.
-	template <class Bank> void pipeReceiver(Bank, PipeReceiverShape shape);
+	template <class Bank> void pipeReceiver(Bank, PipeReceiverShape shape) {
+		static_assert(ownBank<Bank>, "a context takes only its spec's banks");
+		static_assert(Bank::reach == PortBank::Reach::inside && Bank::direction == Direction::input,
+		              "a pipe receiver joins an inside input bank of the spec");
+		context_->pipeReceiver(Bank::name, std::move(shape));
+	}
 	/// The FIFO of the pipe receiver this configuration asked for on `Bank`, as a part of a program's argument or file.
 	/// A bank the spec lacks, or one that is not an inside input bank, does not compile; one with no pipe receiver by
 	/// configure's return fails the node start-failed "configure gave program <name> the FIFO of bank <bank>, which has
 	/// no pipe receiver".
-	template <class Bank> part::Fifo fifoOf(Bank) const;
+	template <class Bank> part::Fifo fifoOf(Bank) const {
+		static_assert(ownBank<Bank>, "a context takes only its spec's banks");
+		static_assert(Bank::reach == PortBank::Reach::inside && Bank::direction == Direction::input,
+		              "fifoOf names an inside input bank of the spec");
+		return part::Fifo{std::string(Bank::name)};
+	}
 
 	/// A program (docs/writing-a-node-type.md#programs), started once every companion is ready, with no report feed.
-	void program(ProgramShape shape);
+	void program(ProgramShape shape) { context_->program(std::move(shape), std::nullopt); }
 	/// A program whose report feed (part::Feed in its arguments or files) reaches loop `Handle`'s state: `onFeed`
 	/// called on the loop's thread with each chunk read, in order, from the node's configuring on (staged until the
 	/// node is configured, as every post is). A loop the spec lacks, or one declared without a state, does not compile.
 	template <class Handle>
-	void program(ProgramShape shape, Handle, void (Handle::State::*onFeed)(std::string_view bytes));
+	void program(ProgramShape shape, Handle, void (Handle::State::*onFeed)(std::string_view bytes)) {
+		static_assert(ownLoop<Handle>, "a context takes only its spec's loops");
+		static_assert(Handle::stateful, "a program's feed reaches a loop declared with a state");
+		using State = typename Handle::State;
+		context_->program(std::move(shape), ProgramFeedTo{LoopsOf<Spec>::template indexOf<Handle>,
+		                                                  [onFeed](void* state, std::string_view bytes) {
+															  (static_cast<State*>(state)->*onFeed)(bytes);
+														  }});
+	}
 
 private:
 	template <const auto&, class> friend class spec_detail::SpecInstance;

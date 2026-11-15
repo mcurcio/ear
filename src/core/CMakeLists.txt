@@ -23,6 +23,7 @@ add_library(ear_core STATIC
 	node_lifecycle.cpp
 	note_gate.cpp
 	pass_through.cpp
+	program.cpp
 	rate_text.cpp
 	ports.cpp
 	readiness.cpp
@@ -122,6 +123,7 @@ if(BUILD_TESTS)
 		tests/node_lifecycle_test.cpp
 		tests/note_gate_test.cpp
 		tests/ports_test.cpp
+		tests/program_test.cpp
 		tests/rate_text_test.cpp
 		tests/readiness_test.cpp
 		tests/reconciler_test.cpp
@@ -286,6 +288,10 @@ if(BUILD_TESTS)
 	ear_type_spec_compile_fail(declare-latency-bank-the-spec-lacks "declareLatency takes its spec's banks")
 	ear_type_spec_compile_fail(declare-latency-backwards "declareLatency names a pair: an input bank, then an output bank")
 	ear_type_spec_compile_fail(context-bank-the-spec-lacks "a context takes only its spec's banks")
+	ear_type_spec_compile_fail(program-path-relative "a program's executable is an absolute path")
+	ear_type_spec_compile_fail(pipe-receiver-on-output-bank "a pipe receiver joins an inside input bank of the spec")
+	ear_type_spec_compile_fail(fifo-of-routable-bank "fifoOf names an inside input bank of the spec")
+	ear_type_spec_compile_fail(program-feed-stateless-loop "a program's feed reaches a loop declared with a state")
 	# Loops (docs/writing-a-node-type.md#loops): a loop named wrongly or twice, a state where none is declared, a loop the
 	# spec lacks, and a post of a function of another loop's state.
 	ear_type_spec_compile_fail(loop-name-invalid "a loop's name is 1 to 8 of")

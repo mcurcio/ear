@@ -67,8 +67,9 @@ does; it carries the `phase` beside the state.
 
 `<why>` and the configuring cause read `settings changed: <keys>`, `restart invoked` (for
 `node.restart`), `retry` or `enabling`. `<what>` names `the previous <name>` (an older node of its
-name), `the engine` (its block), an engine companion's engine name (`fpp.rtp`), `its consumer`, or
-`its loop <name>` (one of the node's loops not yet running).
+name), `the engine` (its block), an engine companion's engine name (`fpp.rtp`), `its consumer`,
+`its loop <name>` (one of the node's loops not yet running), `its store <file>`, `its recording <path>`, `its claim
+<key>`, or `its program <name>` (its program not yet started).
 `configuring`, `configured` and `starting` after the first add write nothing of their own (they
 share the colour `starting`). The `cause` field is `{"kind"}`, with `restart: {"kind", "keys"?}`
 for a restart, as on the wire ([control-port.md](control-port.md#node-health)).
@@ -111,8 +112,10 @@ write's failure as ear exits, which reaches nowhere else.
 ### `log`
 
 Free text from a source: `stdout` and `stderr` (captured, below), `pipewire` (with its `topic`),
-`alsa-lib`, `ear` (a type's hook or consumer that threw during a teardown), or a type's name (the boot sweep's report
-of a store's file it could not narrow, such as a `sendspin` key file). `level` is `debug`, `info`, `warn` or `error`; captured `stderr`
+`alsa-lib`, `ear` (a type's hook or consumer that threw during a teardown), a type's name (the boot sweep's report
+of a store's file it could not narrow, such as a `sendspin` key file), or a node's program's name: each line its
+[program](writing-a-node-type.md#programs) writes, with `topic` `stdout` (level `info`) or `stderr` (`warn`) and
+`node` set, cut at 1024 bytes. `level` is `debug`, `info`, `warn` or `error`; captured `stderr`
 is `warn`, `stdout` `info`. A line longer than its bound (4096 bytes) is cut and marked `cut`.
 
 **Pacing.** Log records are paced per node, or per source when unattributed: 32 at once, then one a

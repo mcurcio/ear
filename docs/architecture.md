@@ -392,14 +392,14 @@ new one is a change of the framework, never a type's own.
 
 | Family | Kinds | What it is | How it works |
 |---|---|---|---|
-| Engine companion | a sound card's playback, its capture; an RTP receiver | A PipeWire node of its own, joined channel for channel to the bank's ports by links | [engine.md](engine.md#engine-companions) |
+| Engine companion | a sound card's playback, its capture; an RTP receiver; a pipe receiver | A PipeWire node of its own, joined channel for channel to the bank's ports by links | [engine.md](engine.md#engine-companions) |
 | Ring companion | a sink, a source | A lock-free ring between the block and an ordinary thread, served by the block itself in its own cycle: it plays a source into its bank before the code and taps a sink's bank after it | [engine.md](engine.md#sinks), [engine.md](engine.md#sources) |
 
 - **Hidden, not secret.** A companion is never in the desired graph, never named by a route and
   never metered (only public ports are); the control port lists it under its node
   ([control-port.md](control-port.md#companions)) and the editor draws it as a badge in the node's
   box ([editor.md](editor.md#companions)). An engine companion is named by its kind
-  (`<node>.playback`, `<node>.capture`, `<node>.rtp`), a ring companion by its bank
+  (`<node>.playback`, `<node>.capture`, `<node>.rtp`, `<node>.pipe`), a ring companion by its bank
   (`<node>.<bank>`); a node's name has no `.`, so a companion's never equals a node's.
 - **One per inside bank,** of any kind. *Why:* the block sizes its storage for bindings when it is
   made (one source per inside input bank, one sink per inside output bank), so nothing allocates on
@@ -412,8 +412,8 @@ new one is a change of the framework, never a type's own.
 
 **Why a sink or a source is served by its block, not an engine node of its own.** Asked whether a
 sink or a source should be its own hidden PipeWire node or a helper its node's block serves in its
-own cycle, the owner answered "Served by the node". Cards and RTP receivers stay engine nodes: the
-device and the module's socket are PipeWire's. The reasons:
+own cycle, the owner answered "Served by the node". Cards and RTP and pipe receivers stay engine nodes:
+the device, the module's socket and the module's FIFO are PipeWire's. The reasons:
 
 - **It is exact by construction.** A ring companion is bound and unbound by the drive's own invoke
   with the code ([engine.md](engine.md#drive-and-fade)), so the source, the code and the sinks run
@@ -545,9 +545,9 @@ or its removal). Recovery that retries by itself is not built yet.
 
 | Code | When |
 |---|---|
-| `engine-refused` | The engine refused or lost the block or an engine companion (a card that cannot open or is unplugged, an RTP receiver lost), an engine companion was not ready by its deadline (a card that never started, an RTP receiver on a held UDP port), or the data loop is wedged |
-| `start-failed` | Before the node first rested `running` or `stopped`: its `configure` failed or broke a rule, a sink's consumer could not begin or did not begin within 5 s, its insides said `lost`, or the type's code threw (a hook, its code's `prepare`, a sink's consumer: [writing-a-node-type.md](writing-a-node-type.md#rules-the-framework-enforces)) |
-| `lost` | After that: its insides said `lost`, or the type's code threw. At any phase: ear's own bug in one of its adapters, `internal error in <callback>: <what>` ([faults by owner](#faults-by-owner)) |
+| `engine-refused` | The engine refused or lost the block or an engine companion (a card that cannot open or is unplugged, an RTP receiver lost), an engine companion was not ready by its deadline (a card that never started, an RTP receiver on a held UDP port, a pipe receiver that never ran), or the data loop is wedged |
+| `start-failed` | Before the node first rested `running` or `stopped`: its `configure` failed or broke a rule, a claim was refused, a sink's consumer could not begin or did not begin within 5 s, its program could not start or did not start within 5 s, its insides said `lost`, its program ended, or the type's code threw (a hook, its code's `prepare`, a sink's consumer: [writing-a-node-type.md](writing-a-node-type.md#rules-the-framework-enforces)) |
+| `lost` | After that: its insides said `lost`, its program ended ([writing-a-node-type.md](writing-a-node-type.md#programs)), or the type's code threw. At any phase: ear's own bug in one of its adapters, `internal error in <callback>: <what>` ([faults by owner](#faults-by-owner)) |
 
 A lost **block** is final (`blockLost: true`): the node cannot be restarted (`not-restartable`,
 reason `block-lost`) until it is removed and added again or ear restarts.
@@ -568,10 +568,12 @@ Every wait the framework makes on another thread has a bound, so no node can hol
 |---|---|---|
 | A fade-out's acknowledgement | 100 ms | `ear.fade-unacknowledged`; the silence is taken unfaded |
 | A drive or silence on the data loop | 5 s (judged after a grace when the whole process stalled) | `ear.barrier-overdue`, then, once, `ear.data-loop-wedged` |
-| A configuration's teardown (sinks drained, loops finished and closed, threads stopped) | 10 s | `ear.close-overdue` (counting what is still open); the configuration is leaked, never freed, and the node moves on; if it closes later, `ear.close-late` ([teardown](#teardown-by-dependency)) |
+| A configuration's teardown (sinks drained, its program reaped, loops finished and closed, threads stopped) | 10 s | `ear.close-overdue` (counting what is still open); the configuration is leaked, never freed, and the node moves on; if it closes later, `ear.close-late` ([teardown](#teardown-by-dependency)) |
 | A hook (`configure`, `start()`, `stop()`) on the main loop | 20 ms | `ear.hook-slow`, once per node and hook (a report only) |
-| A phase that lasts | 2 s | The node says what it waits for (`waitingFor`: `older-node`, `block`, `companion`, `consumer`, `loop`) |
-| An engine companion's or a sink's consumer's readiness, from its asking (once the node's loops run) | a card 10 s, an RTP receiver 5 s, a sink's consumer 5 s | The node fails: `engine-refused` for a card or receiver, `start-failed` for a consumer ([engine.md](engine.md#readiness-deadlines)) |
+| A phase that lasts | 2 s | The node says what it waits for (`waitingFor`: `older-node`, `block`, `companion`, `consumer`, `loop`, `store`, `recording`, `claim`, `program`) |
+| An engine companion's or a sink's consumer's readiness, from its asking (once the node's loops run) | a card 10 s, an RTP or pipe receiver 5 s, a sink's consumer 5 s | The node fails: `engine-refused` for a card or receiver, `start-failed` for a consumer ([engine.md](engine.md#readiness-deadlines)) |
+| A program's start, from its asking (once every companion is ready) | 5 s | The node fails `start-failed: <name> did not start within 5 s` ([writing-a-node-type.md](writing-a-node-type.md#programs)) |
+| A program's end after its teardown's `SIGTERM` | 3 s | `SIGKILL` to its process group; inside the close deadline, so it is reaped before the configuration would be leaked |
 | A strand's handler | 100 ms; 1 s | `ear.loop-slow`, once per loop and configuration (a report only); past 1 s the pool starts a replacement thread, so other strands keep running |
 
 **A wedged data loop.** Once ear judges the data loop wedged it makes no PipeWire call that could
@@ -609,12 +611,14 @@ the main loop never joins a thread:
 
 1. Every source's writer closed (a write waiting returns at once); every loop closed to work from
    outside the node; its [claims](writing-a-node-type.md#claims) going (a claimant waits for step 5
-   rather than being refused) and its own claim waits dropped; the type's `stop()` if its `start()` ran (it posts its goodbye to its loops);
+   rather than being refused) and its own claim waits dropped; its [program](writing-a-node-type.md#programs) told to
+   stop, right after the loops close to outside work; the type's `stop()` if its `start()` ran (it posts its goodbye to its loops);
    the fade; the barrier, a drive of no code (after it completes, no `process` of the code runs,
    so nothing the realtime thread can reach is freed while it can reach it); the code's `release`.
    What was sent to a loop before the node was configured is destroyed unrun.
 2. Engine companions destroyed (and, for a removal, the block, only after the barrier).
-3. Sinks and handoffs drained and finished, each on its own thread.
+3. Sinks and handoffs drained and finished, each on its own thread, and its program reaped (its end now is no
+   failure, but the end this step waits for).
 4. Each loop finishes: it runs the work already posted (the goodbye), then destroys its state on
    its own thread; once every loop has, each closes, cancelling any source its state left armed
    (`ear.loop-source-left`); a `sendspin` node's worker state says goodbye as it is destroyed, on
@@ -625,8 +629,9 @@ the main loop never joins a thread:
    dedicated loop's thread has already returned), then its sources (whose writers the instance's threads may hold), then its stores (which a
    state, a consumer or the instance may hold; an open or write still queued holds only the store's
    state), then its recordings (each closed by a job on the I/O thread, posted before its claim is
-   released, so a next open of its path comes after the close) and its config freed; last, its claims
-   released, each claimant that waited for one judged again in arrival order.
+   released, so a next open of its path comes after the close), then its program (reaped in step 3, so a
+   port it held is released only after its reaping) and its config freed; last, its claims released, each
+   claimant that waited for one judged again in arrival order.
 
 Steps 3 and 4 have the close deadline ([bounds](#bounds-the-wedged-data-loop-and-the-watchdog)).
 A restart or retry completes the teardown before the
@@ -648,7 +653,7 @@ node moves on (its next configuration may begin). Its channel is not detached bu
 record ear keeps for it, so nothing it tells reaches the node or a newer configuration:
 
 - **Still heard, on the record, in order:** each close the teardown was waiting for (a sink's or
-  handoff's, a loop's finished and closed, a run object's closed), and the teardown carries on
+  handoff's, its program's reaping, a loop's finished and closed, a run object's closed), and the teardown carries on
   from where it stopped (a configuration leaked while a sink drained has its loops finished and
   closed once that sink reports, then its run object closed). A consumer's or loop handler's throw
   is a `log` record (`source` `ear`, `error`, naming the node), never a fact.

@@ -1,5 +1,5 @@
 {
-  "description": "The feature companions (docs/control-port.md#companions): each node of the snapshot carries its companion list (a card's playback and capture, an RTP receiver, a file's sink with its dropped frames; none for white). A file node's life: node.added with [], configuring, its sink listed not ready, then ready before the configured its readiness allowed. A counter moving: the whole list again. A stop and a start keep the list. A restart: the empty list after the node.state that began its teardown, then the next configuration's list from zero. A failure past a readiness deadline: failed, then the empty list. A removal: nothing about the removed node's companions after node.removed. Each list replaces the node's whole list; the same list is never sent twice.",
+  "description": "The feature companions (docs/control-port.md#companions): each node of the snapshot carries its companion list (a card's playback and capture, an RTP receiver, a file's sink with its dropped frames, an airplay node's pipe receiver; none for white), so every engine kind is shown. A file node's life: node.added with [], configuring, its sink listed not ready, then ready before the configured its readiness allowed. A counter moving: the whole list again. A stop and a start keep the list. A restart: the empty list after the node.state that began its teardown, then the next configuration's list from zero. A failure past a readiness deadline: failed, then the empty list. A removal: nothing about the removed node's companions after node.removed. Each list replaces the node's whole list; the same list is never sent twice.",
   "requests": [
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"node.add\",\"params\":{\"name\":\"take\",\"type\":\"file\",\"settings\":{\"path\":\"take.wav\"}}}",
@@ -26,6 +26,7 @@
         "realtime": false,
         "scheduling": "SCHED_OTHER",
         "types": [
+          "airplay",
           "card",
           "file",
           "rtp",
@@ -160,6 +161,35 @@
                 "dropped": 0
               }
             ]
+          },
+          {
+            "name": "kitchen",
+            "type": "airplay",
+            "settings": {},
+            "inputs": [],
+            "outputs": [
+              "out.left",
+              "out.right"
+            ],
+            "state": "running",
+            "phase": "running",
+            "since": "2026-11-09T10:00:00.040000Z",
+            "wanted": "running",
+            "blockLost": false,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": [
+              {
+                "name": "kitchen.pipe",
+                "kind": "pipe-receiver",
+                "bank": "from_airplay",
+                "ready": true
+              }
+            ]
           }
         ],
         "routes": [],
@@ -187,7 +217,7 @@
         "outputs": [],
         "state": "starting",
         "phase": "added",
-        "since": "2026-11-09T10:00:00.040000Z",
+        "since": "2026-11-09T10:00:00.050000Z",
         "wanted": "running",
         "blockLost": false,
         "counters": {
@@ -206,7 +236,7 @@
         "name": "take",
         "state": "starting",
         "phase": "configuring",
-        "since": "2026-11-09T10:00:00.050000Z",
+        "since": "2026-11-09T10:00:00.060000Z",
         "wanted": "running",
         "blockLost": false
       }
@@ -255,7 +285,7 @@
         "name": "take",
         "state": "starting",
         "phase": "configured",
-        "since": "2026-11-09T10:00:00.060000Z",
+        "since": "2026-11-09T10:00:00.070000Z",
         "wanted": "running",
         "blockLost": false
       }
@@ -267,7 +297,7 @@
         "name": "take",
         "state": "starting",
         "phase": "starting",
-        "since": "2026-11-09T10:00:00.070000Z",
+        "since": "2026-11-09T10:00:00.080000Z",
         "wanted": "running",
         "blockLost": false
       }
@@ -279,7 +309,7 @@
         "name": "take",
         "state": "running",
         "phase": "running",
-        "since": "2026-11-09T10:00:00.080000Z",
+        "since": "2026-11-09T10:00:00.090000Z",
         "wanted": "running",
         "blockLost": false
       }
@@ -307,7 +337,7 @@
         "name": "rec",
         "state": "stopping",
         "phase": "stopping",
-        "since": "2026-11-09T10:00:00.090000Z",
+        "since": "2026-11-09T10:00:00.100000Z",
         "wanted": "stopped",
         "blockLost": false,
         "cause": {
@@ -329,7 +359,7 @@
         "name": "rec",
         "state": "stopped",
         "phase": "stopped",
-        "since": "2026-11-09T10:00:00.100000Z",
+        "since": "2026-11-09T10:00:00.110000Z",
         "wanted": "stopped",
         "blockLost": false
       }
@@ -341,7 +371,7 @@
         "name": "rec",
         "state": "starting",
         "phase": "starting",
-        "since": "2026-11-09T10:00:00.110000Z",
+        "since": "2026-11-09T10:00:00.120000Z",
         "wanted": "running",
         "blockLost": false
       }
@@ -360,7 +390,7 @@
         "name": "rec",
         "state": "running",
         "phase": "running",
-        "since": "2026-11-09T10:00:00.120000Z",
+        "since": "2026-11-09T10:00:00.130000Z",
         "wanted": "running",
         "blockLost": false
       }
@@ -372,7 +402,7 @@
         "name": "rec",
         "state": "stopping",
         "phase": "stopping",
-        "since": "2026-11-09T10:00:00.130000Z",
+        "since": "2026-11-09T10:00:00.140000Z",
         "wanted": "running",
         "blockLost": false,
         "cause": {
@@ -405,7 +435,7 @@
         "name": "rec",
         "state": "starting",
         "phase": "configuring",
-        "since": "2026-11-09T10:00:00.140000Z",
+        "since": "2026-11-09T10:00:00.150000Z",
         "wanted": "running",
         "blockLost": false,
         "cause": {
@@ -452,7 +482,7 @@
         "name": "rec",
         "state": "starting",
         "phase": "configured",
-        "since": "2026-11-09T10:00:00.150000Z",
+        "since": "2026-11-09T10:00:00.160000Z",
         "wanted": "running",
         "blockLost": false
       }
@@ -464,7 +494,7 @@
         "name": "rec",
         "state": "starting",
         "phase": "starting",
-        "since": "2026-11-09T10:00:00.160000Z",
+        "since": "2026-11-09T10:00:00.170000Z",
         "wanted": "running",
         "blockLost": false
       }
@@ -476,7 +506,7 @@
         "name": "rec",
         "state": "running",
         "phase": "running",
-        "since": "2026-11-09T10:00:00.170000Z",
+        "since": "2026-11-09T10:00:00.180000Z",
         "wanted": "running",
         "blockLost": false
       }
@@ -488,7 +518,7 @@
         "name": "fpp",
         "state": "stopping",
         "phase": "stopping",
-        "since": "2026-11-09T10:00:00.180000Z",
+        "since": "2026-11-09T10:00:00.190000Z",
         "wanted": "running",
         "blockLost": false,
         "cause": {
@@ -521,7 +551,7 @@
         "name": "fpp",
         "state": "starting",
         "phase": "configuring",
-        "since": "2026-11-09T10:00:00.190000Z",
+        "since": "2026-11-09T10:00:00.200000Z",
         "wanted": "running",
         "blockLost": false,
         "cause": {
@@ -551,7 +581,7 @@
         "name": "fpp",
         "state": "failed",
         "phase": "failed",
-        "since": "2026-11-09T10:00:00.200000Z",
+        "since": "2026-11-09T10:00:00.210000Z",
         "wanted": "running",
         "blockLost": false,
         "reason": {
@@ -582,7 +612,7 @@
         "name": "take",
         "state": "stopping",
         "phase": "stopping",
-        "since": "2026-11-09T10:00:00.210000Z",
+        "since": "2026-11-09T10:00:00.220000Z",
         "wanted": "running",
         "blockLost": false,
         "cause": {
@@ -609,6 +639,7 @@
     "realtime": false,
     "scheduling": "SCHED_OTHER",
     "types": [
+      "airplay",
       "card",
       "file",
       "rtp",
@@ -673,7 +704,7 @@
         ],
         "state": "failed",
         "phase": "failed",
-        "since": "2026-11-09T10:00:00.200000Z",
+        "since": "2026-11-09T10:00:00.210000Z",
         "wanted": "running",
         "blockLost": false,
         "counters": {
@@ -687,6 +718,35 @@
           "code": "engine-refused",
           "detail": "the RTP receiver never ran (UDP port 5004 held?)"
         }
+      },
+      {
+        "name": "kitchen",
+        "type": "airplay",
+        "settings": {},
+        "inputs": [],
+        "outputs": [
+          "out.left",
+          "out.right"
+        ],
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.040000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": [
+          {
+            "name": "kitchen.pipe",
+            "kind": "pipe-receiver",
+            "bank": "from_airplay",
+            "ready": true
+          }
+        ]
       },
       {
         "name": "noise",
@@ -722,7 +782,7 @@
         "outputs": [],
         "state": "running",
         "phase": "running",
-        "since": "2026-11-09T10:00:00.170000Z",
+        "since": "2026-11-09T10:00:00.180000Z",
         "wanted": "running",
         "blockLost": false,
         "counters": {

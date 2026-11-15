@@ -93,6 +93,9 @@ public:
 	/// shares the port by SO_REUSEADDR (a monitor listening to the group) still passes, and one that holds it alone
 	/// refuses.
 	virtual std::expected<void, std::string> udp(std::uint16_t port, std::string_view group) = 0;
+	/// A TCP port free now on every IPv4 address, for an AnyTcp claim: a socket bound to port 0 with SO_REUSEADDR, read
+	/// back and closed. Main thread, never blocks.
+	virtual std::expected<std::uint16_t, std::string> freeTcp() = 0;
 
 protected:
 	~PortProbe() = default;

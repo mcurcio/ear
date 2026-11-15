@@ -97,6 +97,8 @@ function waitingWords(waits: WaitingFor[]): string {
         return `its recording ${wait.name ?? ""}`.trimEnd();
       case "claim":
         return `its claim ${wait.name ?? ""}`.trimEnd();
+      case "program":
+        return `its program ${wait.name ?? ""}`.trimEnd();
       default:
         return wait.name !== undefined ? `${wait.kind} ${wait.name}` : wait.kind;
     }

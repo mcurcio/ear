@@ -2,7 +2,8 @@
 // holds refuses with the kernel's reason, the UDP probe for every address refuses a holder that set SO_REUSEADDR (as
 // PipeWire's RTP receiver does) while the probe for a multicast group shares the port with one, as that receiver
 // binds it, and the TCP probe refuses a live listener. Real sockets on
-// 127.0.0.1's stack; each port is one the kernel picked free a moment before.
+// 127.0.0.1's stack; each port is one the kernel picked free a moment before. freeTcp gives a port a listener may
+// take, never one a live listener holds.
 #include <cstdint>
 #include <string>
 
@@ -99,5 +100,19 @@ TEST_CASE(
 		const auto refused = probe.udp(alone.port(), "239.255.0.1");
 		REQUIRE_FALSE(refused);
 		CHECK(refused.error() == "Address already in use");
+	}
+}
+
+TEST_CASE("freeTcp gives a port a listener may then take, and never one a live listener holds", "[runtime][claims]") {
+	KernelPortProbe probe;
+	const auto offered = probe.freeTcp();
+	REQUIRE(offered);
+	CHECK(*offered != 0);
+	CHECK(probe.tcpListen(*offered));
+	Held listener(SOCK_STREAM, true);
+	for (int i = 0; i < 100; ++i) {
+		const auto again = probe.freeTcp();
+		REQUIRE(again);
+		CHECK(*again != listener.port());
 	}
 }

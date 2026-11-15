@@ -67,10 +67,13 @@ function drawn(badges: CompanionBadge[]): string[] {
 
 describe("companionLabel", () => {
   it("gives each known kind its short word", () => {
-    expect(["card-playback", "card-capture", "rtp-receiver", "sink", "source"].map(companionLabel)).toEqual([
+    expect(
+      ["card-playback", "card-capture", "rtp-receiver", "pipe-receiver", "sink", "source"].map(companionLabel),
+    ).toEqual([
       "card out",
       "card in",
       "rtp",
+      "pipe",
       "sink",
       "source",
     ]);
@@ -305,6 +308,7 @@ describe("the fixtures, replayed through the reducer into the badges drawn", () 
       fpp: ["rtp ●"],
       noise: [],
       rec: ["sink ●"],
+      kitchen: ["pipe ●"],
     });
   });
 
@@ -343,7 +347,13 @@ describe("the fixtures, replayed through the reducer into the badges drawn", () 
 
   it("draws nothing for a removed node, and the fixture's final graph as its strips", () => {
     const final = strips[strips.length - 1]!;
-    expect(final).toEqual({ desk: ["card out ●", "card in ●"], fpp: [], noise: [], rec: ["sink ●"] });
+    expect(final).toEqual({
+      desk: ["card out ●", "card in ●"],
+      fpp: [],
+      noise: [],
+      rec: ["sink ●"],
+      kitchen: ["pipe ●"],
+    });
     const moves = new CompanionMoves();
     moves.note(fixtures.companions.graph, 0);
     expect(Object.fromEntries(fixtures.companions.graph.nodes.map((n) => [n.name, drawn(companionBadges(n, moves, 0))]))).toEqual(final);

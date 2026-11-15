@@ -109,6 +109,12 @@ Configured configure(CreateOf<spec>& cx, const Checked&) {
 		                                           .rate = ear::SampleRate::fixed<48000>(),
 		                                           .latencyMs = 100});
 #endif
+#ifdef EAR_CASE_pipe_receiver_on_output_bank
+		cx.pipeReceiver(insideOut, PipeReceiverShape{PipeFormat::s16le, ear::SampleRate::fixed<48000>()});
+#endif
+#ifdef EAR_CASE_fifo_of_routable_bank
+		static_cast<void>(cx.fifoOf(in));
+#endif
 #ifdef EAR_CASE_sink_on_input_bank
 		static_cast<void>(cx.sink(in, SinkShape{.frames = 64}));
 #endif
@@ -289,6 +295,9 @@ public:
 #ifdef EAR_CASE_state_to_stateless_loop
 		cx.loop(helper, std::make_unique<NoState>());
 #endif
+#ifdef EAR_CASE_program_feed_stateless_loop
+		cx.program(ProgramShape{.executable = "/bin/true"}, helper, nullptr);
+#endif
 #ifdef EAR_CASE_executor_loop_the_spec_lacks
 		static_cast<void>(cx.executor(otherLoop));
 #endif
@@ -365,6 +374,11 @@ struct Stored {
 	testing::TypeHarness<storeSpec, Stored> harness;
 	static_cast<void>(harness.storeText(otherFile));
 }
+#endif
+
+// A program's executable is a constant absolute path (ProgramPath's consteval constructor).
+#ifdef EAR_CASE_program_path_relative
+[[maybe_unused]] constexpr ProgramPath relativePath{"relative"};
 #endif
 
 } // namespace type_spec_bad

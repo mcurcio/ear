@@ -59,12 +59,14 @@ struct SeenChunk {
 struct CompanionFake {
 	CompanionKind kind;
 	std::string bank;
-	NodeName name; // "<node>.playback", "<node>.capture", "<node>.rtp"; a sink's or source's "<node>.<bank>"
-	std::variant<SoundCardShape, RtpReceiverShape, SinkShape, SourceShape> shape;
+	NodeName
+		name; // "<node>.playback", "<node>.capture", "<node>.rtp", "<node>.pipe"; a sink's or source's "<node>.<bank>"
+	std::variant<SoundCardShape, RtpReceiverShape, PipeReceiverShape, SinkShape, SourceShape> shape;
 	bool made = false;      // an engine companion: the flush made it (the block was ready); a sink, a source: at once
 	bool ready = false;     // an engine companion: ready(bank) told it; a sink: its consumer began; a source: at once
 	bool destroyed = false; // an engine companion destroyed, a sink closed (its consumer finished), a source freed
 	std::vector<SeenChunk> chunks; // a sink's, in order
+	std::string fifo{};            // a pipe receiver's CompanionTarget::fifo
 };
 
 /// One framework diagnostic the node got (NodeDiagnosticListener), in order.

@@ -763,6 +763,10 @@ TEST_CASE("lifecycle.json: a node's whole life, each health change one node.stat
 								  return Applied{AppliedKind::stop};
 							  }});
 	w.receive(session, requests[25]);
+	// Its companion ready, it waits for its program (named by the program), the last of its readiness steps.
+	w.onMain([&] {
+		w.told(waiting(at("fpp", NodePhase::configuring, Wanted::stopped), ear::WaitingFor::Kind::program, "helper"));
+	});
 	w.onMain([&] {
 		w.told(at("fpp", NodePhase::configured, Wanted::stopped));
 		w.told(at("fpp", NodePhase::stopped, Wanted::stopped));
@@ -1244,8 +1248,12 @@ TEST_CASE("companions.json: each node's list in the snapshot, node.added's [], e
 	const auto list = [&](const std::string& node, std::vector<CompanionView> companions) {
 		w.gateway.companionsChanged(node, companions);
 	};
-	w.graph.view = ear::GraphView{
-		{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {"card", "file", "rtp", "white"}, {}, {}};
+	const CompanionView pipe{
+		.name = "kitchen.pipe", .kind = CompanionKind::pipeReceiver, .bank = "from_airplay", .ready = true};
+	w.graph.view = ear::GraphView{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"},
+	                              {"airplay", "card", "file", "rtp", "white"},
+	                              {},
+	                              {}};
 	w.graph.view.nodes.push_back(
 		{{"desk", "card", {{"card", "MOTU"}, {"playback", 2}, {"capture", 2}}},
 	     deskPorts,
@@ -1269,13 +1277,20 @@ TEST_CASE("companions.json: each node's list in the snapshot, node.added's [], e
 	                              std::nullopt,
 	                              {},
 	                              {sink("rec", true)}});
+	w.graph.view.nodes.push_back({{"kitchen", "airplay", json::object()},
+	                              ear::Ports{{{ear::Direction::output, "out", {"left", "right"}}}},
+	                              at("kitchen", NodePhase::running),
+	                              std::nullopt,
+	                              {},
+	                              {pipe}});
 	w.onMain([&] { // added at boot and running before the client subscribes, their lists told as NodeHost told them
 		for (const ear::NodeView& node : w.graph.view.nodes) w.nodeAdded(node.spec, node.ports);
 		w.clockReadings = 0; // the boot's readings are no client's: the snapshot's since count from here
-		for (const char* name : {"desk", "fpp", "noise", "rec"}) w.told(at(name, NodePhase::running));
+		for (const char* name : {"desk", "fpp", "noise", "rec", "kitchen"}) w.told(at(name, NodePhase::running));
 		list("desk", w.graph.view.nodes[0].companions);
 		list("fpp", {rtp(true)});
 		list("rec", {sink("rec", true)});
+		list("kitchen", {pipe});
 	});
 	RecordingOutbox out;
 	ControlSession session(*w.hub, out);

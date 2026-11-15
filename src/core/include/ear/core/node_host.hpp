@@ -33,14 +33,15 @@ namespace ear {
 /// engine name, `<node>.<suffix>`), a sink's consumer (`consumer`), one of its loops to start (`loop`, `name` the
 /// loop's), one of its stores to open (`store`, `name` its file's), one of its recordings to open (`recording`, `name`
 /// its path, as asked), one of its claims to be granted (`claim`, `name` its key: "udp:5004";
-/// docs/writing-a-node-type.md#claims).
+/// docs/writing-a-node-type.md#claims), its program to start (`program`, `name` the program's: ProgramPath::name();
+/// docs/writing-a-node-type.md#programs).
 struct WaitingFor {
-	enum class Kind { olderNode, block, companion, consumer, loop, store, recording, claim };
+	enum class Kind { olderNode, block, companion, consumer, loop, store, recording, claim, program };
 	Kind kind;
-	std::string name{}; // olderNode, companion, loop, store, recording and claim only
+	std::string name{}; // olderNode, companion, loop, store, recording, claim and program only
 	friend bool operator==(const WaitingFor&, const WaitingFor&) = default;
 };
-/// "older-node" | "block" | "companion" | "consumer" | "loop" | "store" | "recording" | "claim"
+/// "older-node" | "block" | "companion" | "consumer" | "loop" | "store" | "recording" | "claim" | "program"
 std::string_view waitingKindName(WaitingFor::Kind kind) noexcept;
 /// A node's health, the framework's judgement alone (docs/architecture.md#the-node-lifecycle; on the wire:
 /// docs/control-port.md#node-health): its state (the phase's

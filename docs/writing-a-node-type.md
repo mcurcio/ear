@@ -148,6 +148,10 @@ optional row read as a plain value does not compile.
 | `cx.post(handle, [](State& s) { ... })` | Work on the loop with its state (`[] { ... }` for a loop with none), staged | A function of another loop's state does not compile |
 | `Store& s = cx.store(handle)` | A [store](#stores), for a loop's state or a consumer to keep | Valid until the configuration is freed; readable once the node is configured; a store the spec lacks does not compile |
 | `cx.claim(claim::TcpListen(p))`, `cx.claim(claim::Udp(p))` | A port the type's own thread binds, a [claim](#claims): judged at the first readiness step and probed, so a port another node or program holds fails the node before anything is opened | 1 to 65535; held until teardown step 5 |
+| `GrantedPort p = cx.claim(claim::AnyTcp{})` | A listening TCP port the framework picks at the first readiness step, one nobody holds ([claims](#claims)); `p` names it in a [program](#programs)'s arguments or files (`part::Port{p}`) before it is picked | Never waits; held as a `TcpListen` of the port until teardown step 5 |
+| `cx.pipeReceiver(bank, PipeReceiverShape{.format, .rate})` | A pipe receiver, an [engine companion](#engine-companions) on an inside input bank, `<node>.pipe`, reading a FIFO a program of the configuration writes; its module's fixed buffer is latency beyond the bank | Inside input banks only (compile time); one companion per bank |
+| `part::Fifo f = cx.fifoOf(bank)` | The FIFO of the bank's pipe receiver, as a part of a program's argument or file | Inside input banks only (compile time); a bank with no pipe receiver by configure's return fails the node |
+| `cx.program(ProgramShape{...})`, `cx.program(shape, loop, &State::onFeed)` | The configuration's [program](#programs), started last; the second form's report feed reaches the loop's state | One per configuration; the rules in [programs](#programs) |
 
 Then answer `Configured::applied()`, or `Configured::failed(detail)` for what only the type can see
 (the node fails `start-failed: <detail>`). A `CreateOf` is valid only inside the `configure` it is
@@ -156,9 +160,11 @@ handed to. What a type needs from outside it acquires here; a type's factory tak
 Each call is served by the host's adapter of its kind (`ResourceAdapters`, one member per kind,
 `node_host.hpp`). ear's host has every kind; a host without one (a test's) refuses the call as an
 adapter's refusal is: the node fails `start-failed: configure threw: no <kind> in this host`
-(`sinks`, `sources`, `sound cards`, `RTP receivers`, `loops`, `stores`); a recording fails it
-`start-failed: cannot open <path>: no recordings folder`. A host with no port probe judges a port
-[claim](#claims) between its nodes only.
+(`sinks`, `sources`, `sound cards`, `RTP receivers`, `pipe receivers`, `programs`, `loops`, `stores`), and a
+host with no runtime folder refuses a pipe receiver or a program the same way (`no runtime folder in this host`); a
+recording fails it `start-failed: cannot open <path>: no recordings folder`. A host with no port probe judges a port
+[claim](#claims) between its nodes only. ear's own host refuses pipe receivers and programs until main.cpp gives it
+their adapters.
 
 ### The node handle
 
@@ -219,10 +225,10 @@ struct MyCode {
 ## Engine companions
 
 An engine companion is an engine node of its own that a configuration asks for on one of its
-inside banks: a sound card (`cx.soundCard`) or an RTP receiver (`cx.rtpReceiver`). The type gives
-the bank's handle and a shape (`ear/core/companions.hpp`), never a direction or a port: a card on
-an inside output bank plays it, one on an inside input bank captures into it, and a receiver feeds
-an inside input bank, one channel per port of the bank. Every member of a shape is checked by the
+inside banks: a sound card (`cx.soundCard`), an RTP receiver (`cx.rtpReceiver`) or a pipe receiver
+(`cx.pipeReceiver`). The type gives the bank's handle and a shape (`ear/core/companions.hpp`), never
+a direction or a port: a card on an inside output bank plays it, one on an inside input bank
+captures into it, and a receiver feeds an inside input bank, one channel per port of the bank. Every member of a shape is checked by the
 type's settings table first (a `CardId`, an `RtpAddress`, closed enums, ranged numbers), so nothing
 unparsed reaches the engine.
 
@@ -237,14 +243,23 @@ cx.use(passThrough({bankPair(play, toCard), bankPair(fromRtp, stream)}));
   channels to the bank's ports ([engine.md](engine.md#engine-companions)). The node is `running`
   only once every companion is ready; one that is lost, before or after, fails the node
   `engine-refused: <detail>`, and the teardown removes it after the code's silence. One not ready
-  within its kind's deadline (a card 10 s, a receiver 5 s, from the request) fails it too, with the
-  kind's text ([engine.md](engine.md#readiness-deadlines)); a type writes nothing for it.
-- A playback card's bank fades with the public outputs; a capture card's or receiver's input is
+  within its kind's deadline (a card 10 s, an RTP or pipe receiver 5 s, from the request) fails it
+  too, with the kind's text ([engine.md](engine.md#readiness-deadlines)); a type writes nothing for
+  it.
+- A playback card's bank fades with the public outputs; a capture card's or a receiver's input is
   never faded.
+- A pipe receiver (`<node>.pipe`, kind `pipe-receiver`) reads a FIFO the framework names, the
+  configuration's runtime path `<bank>.fifo` beneath ear's runtime folder (`runtimePath`,
+  `ear/core/program.hpp`), which a [program](#programs) of the configuration writes: the type hands
+  it across as `cx.fifoOf(bank)` and never names a path. Its shape is the samples' format
+  (`PipeFormat::s16le` or `s32le`) and the writer's rate; it claims nothing, since its path is its
+  configuration's alone. A host with no runtime folder refuses it at the call.
 - An inside bank has at most one companion of any kind (an engine companion, a sink, a source);
   a second is a broken rule (`a second companion on bank <bank>`).
-- A receiver's `latencyMs` is latency beyond its bank, which the framework adds to the latency
-  plan ([latency](#latency)); a type declares none for it. A card's latency arrives through its
+- A receiver's buffer is latency beyond its bank, which the framework adds to the latency plan
+  ([latency](#latency)); a type declares none for it: an RTP receiver's `latencyMs`, and a pipe
+  receiver's module's fixed 8192 frames at the writer's rate, in graph frames rounded half up
+  (`moduleRunDelay`: 8916 for 44.1 kHz into a 48 kHz graph). A card's latency arrives through its
   links.
 
 ## Sinks
@@ -636,8 +651,9 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
 
 ## Claims
 
-A claim is something ear-wide that one configuration at a time may hold: a listening TCP port, a
-UDP port, a store's file, and a [recording](#recordings)'s path (`ear/core/claims.hpp`). Each is
+A claim is something ear-wide that one configuration at a time may hold: a listening TCP port (one the type names, or
+one the framework picks for it), a UDP port, a store's file, and a [recording](#recordings)'s path
+(`ear/core/claims.hpp`). Each is
 keyed by its kind and value (`tcp:8928`, `udp:5004`, `store:sendspin-kitchen.key`,
 `recording:take1.wav`), and a key has one holder across every type.
 
@@ -650,9 +666,10 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
 
 - **Where claims come from.** A type claims only the ports its own threads bind: `cx.claim(claim::TcpListen(p))` or
   `cx.claim(claim::Udp(p))`, each taking a row's checked number (outside 1 to 65535 is the type's bug, a
-  `std::logic_error`). The framework claims the rest: every store the spec declares (its file), every recording
+  `std::logic_error`), or `GrantedPort p = cx.claim(claim::AnyTcp{})` for a port nobody types (below). The framework
+  claims the rest: every store the spec declares (its file), every recording
   (its path), and what each engine companion holds by its shape (`claimsOf`, beside `moduleRunDelay` in `companions.hpp`): an RTP receiver its UDP
-  port, a sound card nothing yet. So no shape's field is named outside its shape's rule.
+  port, a sound card and a pipe receiver nothing. So no shape's field is named outside its shape's rule.
 - **Judged first.** Every claim of a configuration is an item of its readiness list at step `claims`, before any
   store is opened, loop started or companion made ([engine.md](engine.md#readiness-deadlines)). Against the key's
   holder:
@@ -682,6 +699,16 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
   so a `TIME_WAIT` passes. The probe runs behind the turn's flush, so an engine companion a teardown has just queued
   for destruction (a restarted `rtp` node's own receiver) has let go of the port first. A program taking the port just
   after the probe is not caught. A host with no probe (a test's) judges ports between its nodes only.
+- **A port the framework picks** (`claim::AnyTcp`): for a port a [program](#programs) binds, found by mDNS, which no
+  operator types. `cx.claim(claim::AnyTcp{})` records the claim and returns its `GrantedPort` (its index among the
+  configuration's claims, in asking order), which a program's arguments or files name as `part::Port{p}`. At step
+  `claims`, in order with the others, the framework picks the port: through the probe, the kernel's free one
+  (`PortProbe::freeTcp`: a socket bound to port 0 with `SO_REUSEADDR`, read back and closed), asked up to 8 times
+  until it offers one no claim in ear holds; with no probe (a test's host), the lowest from 49152 up that no claim
+  holds, so a test's grants are known. Picked, it is held exactly as a `TcpListen` of that port (`tcp:<port>`, every
+  rule above unchanged) and not probed again, since `freeTcp` was its probe. It never waits. Refused, the node fails
+  `start-failed: cannot find a free TCP port: <why>`, the probe's error or `every port the kernel offered is held by a
+  node` after 8 tries.
 - **Held, then released.** A stop and a start keep every claim. Teardown step 1 marks them going; step 5 releases them
   last, and whoever waited is judged again in arrival order (the first granted, the next refused by it); a waiter
   torn down before its grant leaves the queue at once.
@@ -696,6 +723,73 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
   before the old node closed it).
 
 `sendspin` claims its listening port with `cx.claim(claim::TcpListen(port))`, and a dialling node claims nothing.
+
+## Programs
+
+A program is a process a configuration runs beside its node (`ear/core/program.hpp`): the framework starts it last,
+once everything it may name exists, writes its standard output and error into the node's log, reads its report feed
+for the type's loop, takes its end as the node's failure, and tears it down with the configuration. It knows no
+program's protocol: the type composes its command line and files from parts the framework resolves.
+
+```cpp
+constexpr ProgramPath player{"/usr/local/bin/player"}; // a constant: nothing read at run time names it
+
+Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
+	cx.pipeReceiver(fromPlayer, PipeReceiverShape{PipeFormat::s16le, SampleRate::fixed<44100>()});
+	const GrantedPort port = cx.claim(claim::AnyTcp{});
+	cx.loop(sessions, std::make_unique<Sessions>());
+	cx.program(ProgramShape{.executable = player,
+	                        .args = {"-c", {part::File{"config"}}, {part::Text{"--port="}, part::Port{port}}},
+	                        .files = {ProgramFile{"config", {part::Text{"pipe = \""}, cx.fifoOf(fromPlayer),
+	                                                         part::Text{"\";\nreports = \""}, part::Feed{},
+	                                                         part::Text{"\";\n"}}}}},
+	           sessions, &Sessions::onReport);
+	cx.use(passThrough({bankPair(fromPlayer, out)}));
+	return Configured::applied();
+}
+```
+
+- **What a type writes.** `ProgramPath` is the executable, an absolute path of plain components (`[A-Za-z0-9._+-]`),
+  checked at compile time by its `consteval` constructor, so no setting or peer's text can name what ear executes;
+  its last component is the program's name (its `argv[0]`, its log lines' source and its failures' subject). An
+  argument (`ProgramArg`) is a string, one part, or a braced list of parts joined into one argument; a runtime file
+  (`ProgramFile`) is a name and its parts. The parts: `part::Text` as given (an argument is never read by a shell, so
+  nothing needs escaping in one; escaping text into a file's syntax is the type's), `part::Port{p}` the granted
+  port's number, `cx.fifoOf(bank)` the bank's pipe receiver's FIFO, `part::Feed{}` the report feed's path, and
+  `part::File{name}` a runtime file's path. Its environment is `PATH` alone, its working folder ear's runtime folder,
+  its standard input `/dev/null`.
+- **Broken rules at the call**, each a `std::logic_error`, so the node fails `start-failed: configure threw: <text>`:
+  `no programs in this host`; `no runtime folder in this host`; `a second program: one per configuration`;
+  `program <name>: bad file name <n>` (not 1 to 32 of `[a-z0-9.-]`, or `feed`, or a duplicate); `program <name>:
+  more than 8 files`; `program <name> names its feed but has none`; `program <name> names no file <n>`; and `program
+  <name> names a port this configuration was not granted` (a `GrantedPort` that is not an AnyTcp claim of this
+  configuration). At an applied configure's return, a `cx.fifoOf` of a bank with no pipe receiver fails the node
+  `start-failed: configure gave program <name> the FIFO of bank <bank>, which has no pipe receiver`.
+- **Started last.** The program is one readiness item, waitingFor kind `program` named by the program, at step
+  `programs`: after every engine companion and every sink's consumer is ready ([engine.md](engine.md#readiness-deadlines)).
+  Then every part is resolved to text: a port to its number in decimal, a FIFO to its pipe receiver's path, the feed
+  and each file to the configuration's runtime paths (`runtimePath(folder, node, configuration, what)`:
+  `<folder>/<node>.<configuration>.<what>`, `what` being `feed` or the file's name, so no two configurations, a
+  leaked one and its successor among them, share a path). The adapter (ear_runtime's) writes the files (mode 0600),
+  makes the feed and holds it open for reading, then spawns the process. Its start makes the item ready; one not
+  started within 5 s fails the node `start-failed: <name> did not start within 5 s`; one that cannot start fails it
+  `start-failed: cannot start <name>: <why>`, the kernel's words.
+- **What it tells**, each crossing through the configuration's own channel, so nothing reaches a newer configuration:
+  each line of its standard output (level `info`, topic `stdout`) or error (`warn`, `stderr`) is a log entry with its
+  name as source and the node set ([output-records.md](output-records.md#log)), dropped once the configuration ended;
+  each chunk of its report feed (at most 4096 bytes) is posted to the named loop's state, in order, staged until the
+  node is configured as every post is, and dropped from teardown step 1, when the loops refuse outside work.
+- **Its end.** A program that ends while no teardown is under way fails the node with its words (`programExitDetail`):
+  `<name> exited with status <n>` or `<name> was killed by signal <n> (SIG<abbrev>)`, then `: <its last line on
+  standard error>` when it has one; `start-failed` before the node first rested running or stopped, `lost` after (so
+  `lost` while stopped too). A stop and a start keep it running.
+- **Torn down with the configuration** ([architecture.md](architecture.md#teardown-by-dependency)): at step 1, right
+  after the loops close to outside work, it is told to stop (`SIGTERM` to its process group, `SIGKILL` 3 s later
+  unless it was reaped); step 3 waits for its reaping beside the sinks' drain, under the close deadline, and its end
+  then is no failure; at step 5 it is freed after the instance and before the claims are released, so a port it held
+  is released only once it was reaped. A program still unreaped at the close deadline counts open in
+  `ear.close-overdue` and the configuration is leaked; its reaping is one of the closes the leaked configuration's
+  late close waits for. A program that could not start has nothing to wait for.
 
 ## Latency
 
@@ -724,8 +818,9 @@ lacks or a misspelt one in `Io`, `ports()` or a context, a write into an input, 
 pass-through, a bad or doubled bank name, a `process` that may throw, a class that is final or has
 no `ports` or `configure`, a member of the wrong signature (`configure`, `start`, `stop`, `check`,
 `prepare`, `release`, the change version), a private or overloaded one, a static `start` (the old
-interface), a call `CreateOf` does not offer, a sound card, RTP receiver, sink or source on the wrong
-bank, a loop's name that is not 1 to 8 of `[a-z0-9-]` or names two loops, a state given to a loop
+interface), a call `CreateOf` does not offer, a sound card, RTP receiver, pipe receiver, sink or source on the wrong
+bank, a `fifoOf` of a bank that is not an inside input, a program's executable that is not an absolute path of plain
+components, a program's feed into a loop declared without a state, a loop's name that is not 1 to 8 of `[a-z0-9-]` or names two loops, a state given to a loop
 declared without one, a loop the spec lacks (in a context, a post or the harness), a post of a
 function of another loop's state, a store whose rule has no `maxBytes`, more than 1 MiB or a mode
 beyond `0777`, a store's suffix that is not 1 to 16 of `[a-z0-9-]` or names two stores, a store
@@ -754,6 +849,9 @@ when the type catches the throw; none takes ear down:
 | A store read or written before its open completed (in `configure`) | `configure threw: store <file> was read before it was opened` (`... was written ...`) |
 | A store's blocking `replace` on the main loop (a hook) | `<hook> threw: store <file>: replace waits, so never on the main loop: a hook uses replaceLater` |
 | A store that cannot be opened, or whose text its `distrust` refuses | `<file>: <why>` ([stores](#stores)) |
+| A program's shape that breaks a rule at the call | `configure threw: <rule>` ([programs](#programs)) |
+| A program naming the FIFO of a bank with no pipe receiver | `configure gave program <name> the FIFO of bank <bank>, which has no pipe receiver` |
+| A program that ends while no teardown is under way | `<name> exited with status <n>[: <line>]`, `<name> was killed by signal <n> (SIG<abbrev>)[: <line>]` (`start-failed`, or `lost` once rested) |
 | A `CreateOf` call after `configure` returned | `<call> outside configure` |
 | `Configured::failed("")` | `configure answered failed with no detail` |
 | `configure` throws | `configure threw: <what>` |
@@ -794,7 +892,7 @@ fakes allow. Banks are named by the spec's handles.
 
 | Call | What |
 |---|---|
-| `TypeHarness h({.format = {48000, 256}, .node = "x"})` | Options: format, node name, `noRecordingsFolder` (a host with none: every recording refused), `autoComplete` (off: each fade-out and barrier waits for the test, or a fade-out for a cycle that ends it at zero, and a drive cancels a fade-out still waiting, as the real block does), `holdSinks` (each sink's consumer begins only at `h.ready(bank)`, not at configure's return), and `sinkRingFrames` (each sink's ring in frames instead of the size the type asked for, rounded up to a power of two as the engine's is: cycles that do not divide it make the sink split chunks at its end); for loops `holdLoops`, `refuseLoops` and `allowSourcesLeft`, and for stores and recordings `holdIo` (below) |
+| `TypeHarness h({.format = {48000, 256}, .node = "x"})` | Options: format, node name, `noRecordingsFolder` (a host with none: every recording refused), `autoComplete` (off: each fade-out and barrier waits for the test, or a fade-out for a cycle that ends it at zero, and a drive cancels a fade-out still waiting, as the real block does), `holdSinks` (each sink's consumer begins only at `h.ready(bank)`, not at configure's return), and `sinkRingFrames` (each sink's ring in frames instead of the size the type asked for, rounded up to a power of two as the engine's is: cycles that do not divide it make the sink split chunks at its end); for loops `holdLoops`, `refuseLoops` and `allowSourcesLeft`, for stores and recordings `holdIo` (below), and for programs `holdPrograms` and `runtimeFolder` (below) |
 | `h.parse(settings)` | The type's parse: nothing, or the refusal's text |
 | `h.add()`, `h.add({.disabled = true})` | Adds the node and configures it |
 | `h.blockReady()` | The block becomes ready: the code drives, the node runs |
@@ -808,10 +906,11 @@ fakes allow. Banks are named by the spec's handles.
 | `h.stop()`, `h.start()`, `h.restart()`, `h.change(settings)`, `h.disable()`, `h.enable()`, `h.remove()` | The operations |
 | `h.phase()`, `h.health()`, `h.gone()`, `h.droppedFrames()`, `h.companionList()` | What the node shows; its companion list as a client will see it ([engine.md](engine.md#companions-in-a-nodes-list)), read now |
 | `h->unwritten()`, `h->notes()`, `h->logs()`, `h->diagnostics()`, `h->latencyPlan()`, `h->ports()` | Through `->`, the underlying `NodeHarness`; `notes()` as the main loop heard them (after the [note rate](#the-node-handle)), `logs()` every log entry attributed to the node |
-| `h.companion(bank)` | What was made on a bank (an engine companion's bank as `NodeHost` named it): its `kind` (`CompanionKind`: a card's by its bank's direction), `name`, `shape`, `made`, `ready`, `destroyed`, and a sink's `chunks` as its consumer got them, one per call (a chunk split at the ring's end is two) |
+| `h.companion(bank)` | What was made on a bank (an engine companion's bank as `NodeHost` named it): its `kind` (`CompanionKind`: a card's by its bank's direction), `name`, `shape`, `made`, `ready`, `destroyed`, a pipe receiver's `fifo`, and a sink's `chunks` as its consumer got them, one per call (a chunk split at the ring's end is two) |
 | `h.recordingRequests()`, `h.recordingBytes(path)`, `h.presetRecording(path, bytes)`, `h.failRecordingOpen(path, why)`, `h.pipeRecording(path)`, `h.openRecordings()`, `h->breakRecordings(what)` | The [recordings](#recordings): every one asked for; each an in-memory file by path (`./a.wav` is `a.wav`) with a real, seekable descriptor (a `memfd`), so libsndfile writes it as a file; what it holds now (nothing: never made), or before the node opens (and truncates) it; every open refused with `why` (`cannot open <path>: <why>`), or given a pipe's write end (made, but no WAV can be written to it); how many descriptors are open now; every open throwing, an adapter's bug. Each open and close is a job on the harness's I/O executor (`open recording <path>`, `close recording <path>`, `release recording <path>` for a dropped open's file, in `ioJobs()`), held by `holdIo` as a store's are |
 | `h.runLoops()`, `h->advance(ms)`, `h.armed(loop)`, `h.readable(fd)`, `h.loopsReady()`, `h->loops()` | The loops ([loops](#loops)), on the test's thread with their kind kept: `runLoops()` runs what was posted and each watch rung (a source's clock wake rung by `process()`, a descriptor marked `readable(fd)`) until all are idle, never a timer; `advance` fires their timers in time order with the framework's (an `every` once per period passed: a handler takes no time); `armed(loop)` counts the sources armed on it whose handles live. Loops start when the framework asks (with `holdLoops`, at `loopsReady()`; with `refuseLoops = "<why>"`, never); a teardown turns each loop until it finished and closed; a source a state left armed fails the call that tore it down unless `allowSourcesLeft` (then only `ear.loop-source-left` in `diagnostics()`). `loops()` lists each loop made: its name, kind, and whether it closed to others, finished and closed |
 | `h.presetStore(store, text, mode)`, `h.storeText(store)`, `h.storeMode(store)`, `h.failStoreOpen(store, why)`, `h.failNextWrite(store, why)`, `h.runIo()`, `h->ioJobs()`, `h->storeCalls()`, `h->breakStores(what)` | The [stores](#stores), by the spec's handle, on an in-memory disk under the framework's own store rules: a file put there before the node opens it, what it holds and its mode now, every open's read refused or the next write refused with `<file>: <why>`. Each open and write is a job on the harness's I/O executor, run as each call settles (with the option `holdIo`, only at `runIo()`); a blocking `replace` runs its job inside the call. `ioJobs()` names every job run (`open store <file>`, `write store <file>`, and `release store <file>` for a dropped open's handle), `storeCalls()` every disk call in order (`readNarrowed`, `read`, `narrow`, `replace`), `breakStores(what)` makes every disk call throw, an adapter's bug, and `overdueNextWrite(ran)` makes the next `replace`'s wait give up, after its job ran (`unconfirmed`, and it landed) or before it began (`refused`) |
+| `h.programs()`, `h.programStarted(i)`, `h.programRefused(i, why)`, `h.feedProgram(i, bytes)`, `h.programSays(i, level, line)`, `h.programExited(i, exit)` | The [programs](#programs), on a fake adapter: every launch in order over every configuration (`ProgramFake`: the `ProgramLaunch` NodeHost resolved, and whether it was told started, stopped, ended and its `RunningProgram` destroyed). Each is told started at its launch, and a stopped one exited at once (killed by `SIGTERM`), unless `holdPrograms`, when the test tells each; the test's calls feed its report feed, write a line on its standard output (`info`) or error (`warn`), refuse it or end it. Every runtime path begins with `runtimeFolder` (`/ear-runtime`; empty: none, and pipe receivers and programs are refused). The harness has no probe, so `claim::AnyTcp` grants 49152, 49153 and so on |
 | `h->internalErrors()` | Every adapter bug told about the node (the `ear.internal-error` record's callback, node, where and what), in order |
 
 The harness does not see a class's `start()` and `stop()`; their pairing is tested in

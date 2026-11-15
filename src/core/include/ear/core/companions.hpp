@@ -60,7 +60,7 @@ struct PipeReceiverShape {
 };
 
 /// An engine companion's shape, as NodeHost keeps it until the block is ready.
-using EngineCompanionShape = std::variant<SoundCardShape, RtpReceiverShape>;
+using EngineCompanionShape = std::variant<SoundCardShape, RtpReceiverShape, PipeReceiverShape>;
 
 // ---- Module-run converters (docs/engine.md#module-run-converters) ----
 
@@ -100,13 +100,15 @@ std::vector<Claim> claimsOf(const PipeReceiverShape& shape);
 
 /// The closed list (docs/architecture.md#companions: a kind changes what the framework promises). Engine kinds are
 /// PipeWire nodes joined to the block by links; ring kinds are played or tapped by the block itself, in its own cycle.
-enum class CompanionKind { cardPlayback, cardCapture, rtpReceiver, sink, source };
-/// "card-playback" | "card-capture" | "rtp-receiver" | "sink" | "source": the wire's `kind`, the one home of these.
+enum class CompanionKind { cardPlayback, cardCapture, rtpReceiver, pipeReceiver, sink, source };
+/// "card-playback" | "card-capture" | "rtp-receiver" | "pipe-receiver" | "sink" | "source": the wire's `kind`, the one
+/// home of these.
 std::string_view companionKindName(CompanionKind kind) noexcept;
-/// Whether the kind is an engine node of its own (cards, the RTP receiver) rather than a ring the block serves.
+/// Whether the kind is an engine node of its own (cards, the RTP receiver, the pipe receiver) rather than a ring the
+/// block serves.
 constexpr bool isEngineKind(CompanionKind kind) noexcept {
 	return kind == CompanionKind::cardPlayback || kind == CompanionKind::cardCapture ||
-	       kind == CompanionKind::rtpReceiver;
+	       kind == CompanionKind::rtpReceiver || kind == CompanionKind::pipeReceiver;
 }
 
 /// How long a companion may take to become ready, from its request, so a node never waits for good on something that
@@ -132,7 +134,8 @@ inline constexpr std::chrono::milliseconds companionDropDiagnosticPace{10'000};
 /// One entry of a node's companion list (docs/engine.md#companions-in-a-nodes-list; on the wire, the feature
 /// `companions`: docs/control-port.md#companions).
 struct CompanionView {
-	/// An engine kind's engine node ("<node>.playback", "<node>.capture", "<node>.rtp"); a ring kind's "<node>.<bank>".
+	/// An engine kind's engine node ("<node>.playback", "<node>.capture", "<node>.rtp", "<node>.pipe"); a ring kind's
+	/// "<node>.<bank>".
 	NodeName name;
 	CompanionKind kind;
 	std::string bank; // the inside bank it joins: inside banks appear nowhere else on the wire
@@ -190,7 +193,7 @@ protected:
 /// channel i to blockPorts[i], and the inside bank's name, which NodeHost keeps for the companion it asked for (an
 /// adapter in the engine reads its ports; the type harness's fake reads the name, so it never works a bank out again).
 struct CompanionTarget {
-	NodeName engineNode;              // "<node>.playback" | "<node>.capture" | "<node>.rtp"
+	NodeName engineNode;              // "<node>.playback" | "<node>.capture" | "<node>.rtp" | "<node>.pipe"
 	NodeName blockNode;               // the node's name, its block's
 	Direction bank;                   // the inside bank's: output (the companion reads the block), input (it feeds it)
 	std::vector<PortName> blockPorts; // the bank's ports
