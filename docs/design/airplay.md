@@ -1,397 +1,193 @@
 # AirPlay into ear: the `airplay` node type
 
-**Status:** revision 2 for the owner's gate, 2026-11-14. This was a read-only run, so no files were changed.
-**Layer:** Domain · **System (this page: the domain concepts it adds, plus its parts and their public interfaces)** · Service (skipped: ear is one process) · Module · Interfaces · Implementation
-**What you are asked:** agree the shape, then answer the three questions below. The recommended shape is: each room plays on the sender's time, fed through a pipe.
+**Status:** revision 3 for the owner's gate, 2026-11-14 (read-only run: no repo file changed).
+**Layer:** Domain · **System (this page: the concepts it adds, its parts, their public interfaces)** · Service (skipped: one process) · Module · Interfaces · Implementation
+**What you are asked:** agree the shape, then answer two questions. The shape: each `airplay` node runs its own shairport-sync as a subprocess. AirPlay 1 is built in and tested end to end. AirPlay 2 is a setting on the same node, with nqptp run by you.
 
 | # | Question | Kind | Where |
 |---|---|---|---|
-| Q1 | Must every ear AirPlay room play within N ms of the moment the sender meant, so grouped rooms (ear's and Apple's) line up? | absolute requirement | §4 |
-| Q2 | On Talos, may ear's pod join the node's own network, with AirPlay 2's timing helper running as a second container in that pod? | general guidance | §5 |
-| Q3 | Should AirPlay 2 be in this plan, after a first version on the original AirPlay, or come later? | general guidance | §8 |
+| Q1 | Should a node's audio join through PipeWire's pipe module (ear already tests it; fixed ~0.18 s delay) or ear's own tracked converter (not built; adjustable)? | general guidance | §3 |
+| Q2 | May the AirPlay 2 setting ship with its sound checked by hand, since no scripted AirPlay 2 sender is known? | general guidance | §8 |
 
 ## What changed since your last look
-
-- **Alignment.** v1 said a pipe could only be lined up by hand. That was wrong.
-  - shairport-sync releases each frame a fixed **lead** before its play time, and it times that on the same raw clock ear ticks on.
-  - So ear can hold exactly that lead and play **on time**. Grouped ear rooms and Apple speakers then line up as a consequence.
-  - The part that holds the lead is the tracked converter, which TM8 already plans for AirPlay.
-  - PipeWire's pipe module is dropped: its buffer is fixed at about 170 ms and cannot be steered.
-- **mDNS.** shairport-sync's guide says one host has one announcer, and per-program announcers collide.
-  - Each shairport-sync now hands its records to ear, and ear's one **announcer** (sendspin's, moved into the framework) publishes them.
-  - Debian's package can only announce through Avahi, so the image builds shairport-sync from source for both AirPlay versions.
-- **Timing helper.** It is no longer a program the nodes share inside ear. The recommendation is a second container in the pod (Q2).
-- **Interfaces.**
-  - The type makes one join call.
-  - ear assigns each room's ports and claims speaker names.
-  - Session events come from shairport-sync's metadata feed, not from log lines.
-  - The identity store is deleted, because shairport-sync derives a speaker's identity from its name.
-- **Questions.** v1's Q3 (volume slider, a second iPhone, a stopped node) became recommended defaults. `hostNetwork` moved into Q2.
-
----
+Your answers of 2026-11-14, all guidance: **A1** "different Airplay nodes in ear have no requirement to align with one another. they will maintain their own independent clocks, as all nodes do". **A2** "ear shouldnt know anything about kubernetes. So if there are aspects that cant be handled as pure subprocess, then ear cant do it. What about having an airplay1 node built in and also having instructions for how to configure an airplay2 node?" **A3** (follow-up): you picked "ear node, host runs nqptp" (worded by the agent): an AirPlay 2 setting, nqptp run by you from written instructions, ear only checking that nqptp is reachable. Q3: no preference.
+- **Deleted:** holding the lead, the on-time target, slice 0's spike, shape B (its reason was alignment), every pod, `hostNetwork` and sidecar item, the speaker-name and UDP-range claims, nqptp in the shipped image.
+- **The join got simpler:** v2 rejected PipeWire's pipe module only because it cannot follow the sender's clock; now it fits as it is (Q1).
+- **How "reachable" is read (§5), correct me if wrong:** shairport-sync's own check at start, and ear hearing nqptp remove a room's channel while running. Both are events; ear never speaks nqptp's protocol.
 
 ## 1. Today
-
-```mermaid
-flowchart LR
-  P[iPhone / Mac] -. mDNS + AirPlay .-> X((nothing listens))
-  subgraph ear pod
-    G[graph: card, rtp, sendspin...]
-  end
-  X -.-> G
-  classDef miss fill:#fdd,stroke:#c00
-  class X miss
+```
+iPhone / Mac ──mDNS + AirPlay──▶ [missing] nothing in ear answers
+ear: card · rtp · sendspin · file   [missing] a way for a node to run a program (node code may not fork)
+                                    [missing] mDNS publishing any type can use (it lives inside sendspin)
 ```
 
-Missing today:
-- AirPlay software in the image.
-- A way for a node to run an outside program. Node code may not fork.
-- A path for that program's audio into a bank.
-- A shared announcer: mDNS lives inside `sendspin` today.
-- The `airplay` type itself.
-- A pod the iPhone can find, which needs the node's own network.
-
-## 2. What the owner has said (no absolute requirement binds AirPlay yet)
-
-Everything below is **guidance** under the 2026-11-06 rule.
-
-| # | Your words | Date, source | Kind |
+## 2. What the owner has said (no absolute requirement binds AirPlay)
+| # | Your words (guidance) | Date | Used for |
 |---|---|---|---|
-| G1 | "i will want multiple shairport instances" | 2026-10-29, memory | guidance |
-| G2 | "an "airplay node" could launch the subprocess and wire everything up magically. but if thats untenable, then we would just have seperate containers pre-existing" | 2026-10-29, memory | guidance, with your own fallback |
-| G3 | "the core will be "built into ear"" | 2026-10-29, programs.md R4 | guidance |
-| G4 | "Pipe into a feed first" | 2026-11-07, programs.md Q7 | a pick, worded by the agent |
-| G5 | "Nodes should not have direct access to stdout or stderr." | 2026-11-07, R9 | guidance (built) |
-| G6 | Outputs on different devices sample-aligned: "yes"; its purpose: "seperate zones" | 2026-10-29, memory | guidance; Q1 asks whether it binds AirPlay |
-| G7 | "under 10ms is obviously idea[l]" | 2026-10-29, memory | guidance |
-| G8 | "Backoff, never gives up"; "Some node stopping/reconfiguring/failing does not effect the graph globally" | 2026-11-07 / 11-08, recovery.md | guidance |
-| G9 | "ear will likely run on linux, inside a container, in my talos kubernetes cluster" | 2026-10-29, memory | guidance |
-| G10 | rtp with no packets stays running and silent: "Agreed" | 2026-10-30, memory | guidance |
-| G11 | AirPlay 1 vs 2: "irrelevant at this point; it can be decided later" | 2026-10-29, memory | a deferral, now due (Q3) |
+| G1 | "i will want multiple shairport instances" | 2026-10-29 | many nodes, one program each |
+| G2 | "an "airplay node" could launch the subprocess and wire everything up magically" | 2026-10-29 | the program resource |
+| G3 | "Pipe into a feed first" (a pick, worded by the agent) | 2026-11-07 | audio through a FIFO |
+| G4 | "Nodes should not have direct access to stdout or stderr." | 2026-11-07 | program output into the node's log |
+| G5 | "Backoff, never gives up"; a node failing "does not effect the graph globally" | 2026-11-07/08 | an exit fails its own node only |
 
-TM8 ("AirPlay for tracked") is the brief's wording of your 2026-11-13 answer, not a quote, and this page keeps it as written.
-
-**New terms**
-
-| Term | Meaning | Not this | Could be |
-|---|---|---|---|
-| sender | The Apple device or app playing to ear | Music Assistant | the rtp docs' "sender" |
-| speaker | How one `airplay` node shows in a sender's list, under its `name` | the engine name | the node |
-| session | One sender playing to one speaker, from start to stop | the node's state | programs.md's "session started" |
-| on time | A node plays each frame at the moment its sender stamped for it | low delay | "in sync" |
-| lead | How far ahead of a frame's play time the program hands it to ear | ear's delay | shairport-sync's "desired buffer length" |
-| join | The path a program's audio takes into the node's inside bank | a route | a converter companion |
-| program | An outside process a node runs (shairport-sync) | a node | programs.md's term, kept |
-| announcer | ear's one mDNS responder, which publishes records for every type | a program's own Avahi | sendspin's Advertiser, promoted |
-| host helper | A per-machine program that no node owns: nqptp, the **timing helper** AirPlay 2 needs | a program | none |
-| zone alignment | One source played on time across devices with different latencies | on time | cards-and-clock R7 |
-
-## 3. The proposed shape (recommended: A, a pipe held on time)
-
-One node runs one supervised shairport-sync.
-- **Audio:** it goes through a pipe into a tracked converter, which holds the lead minus ear's own downstream latency, so each frame reaches the speaker at its stamped time.
-- **Reports and records:** they arrive on a second pipe. The type turns them into session notes and into records for the announcer.
-
-```mermaid
-flowchart LR
-  S[sender] -- AirPlay --> SP[shairport-sync]
-  subgraph ear process
-    subgraph node airplay kitchen
-      PR[program resource<br/>supervised]
-      J[join: tracked converter<br/>holds lead − latency]
-      B[inside bank] --> O[out bank]
-      T[type: session notes]
-    end
-    AN[[announcer<br/>one per host]]
-  end
-  PR -. starts/stops/judges .-> SP
-  SP -- audio pipe --> J --> B
-  SP -- report pipe --> T -- service records --> AN -- mDNS --> S
-  H[[timing helper container<br/>AirPlay 2, Q2]] -. shared memory .- SP
-  O --> R[routes to cards, sendspin...]
-```
-
-How a frame stays on time:
-
-```
-frame stamped to play at T
-shairport-sync hands it over at T − lead ─▶ held in the join for (lead − L) ─▶ ear's downstream latency L ─▶ speaker at T
-```
-
-| Part | Owns | Never does |
+| New term | Meaning | Could be |
 |---|---|---|
-| `airplay` type | Settings, the program's config, parsing its reports into sessions and service records | Parses AirPlay audio; names a pipe or port |
-| Program resource (framework) | Start, stop, health (the process is alive), the pipes, stderr into the node's log | Judges sessions |
-| Join (framework; T5's tracked converter) | Holding the lead, following the sender's pace, the latency it adds | Knows it is AirPlay |
-| Announcer (framework) | mDNS on 5353 for every type | Belongs to a node |
-| shairport-sync | The protocol, pairing, decoding, the lead | Sees ear's graph |
-| Timing helper (outside ear, Q2) | UDP 319/320 for the machine | Belongs to ear or a node |
+| speaker | how one `airplay` node shows in a sender's list, under its speaker name | the node |
+| listing | the mDNS entries that make a speaker findable (not ear's standard-output records) | — |
+| advertiser | a node's mDNS publisher: probes its name, announces, withdraws | sendspin's `Advertiser`, moved |
+| FIFO; report feed | a named pipe (one program writes, another reads); the one shairport-sync writes reports into | "Pipe into a feed first" |
+| pipe receiver | the join: PipeWire's pipe module reading the audio FIFO into the node's inside bank | a module-run converter, like RTP's |
+| session | a sender playing to the speaker (idle ⇄ playing), reported as notes, never the node's state | — |
+| nqptp; channel | AirPlay 2's timing service, one per machine, yours; the shared-memory file it keeps per room | — |
 
-## 4. Design it twice: pipe held on time (A) vs program stream (B)
+## 3. The proposed shape
+```
+ sender ─AirPlay─▶ shairport-sync (one per node) ─ ─ channel (shared memory) ─ ─ nqptp (yours; AirPlay 2 only)
+                     ▲ start/stop, exit  │ audio FIFO        │ report feed
+ ear ┌─ node ────────┼──────────────────┼───────────────────┼─────────────────────┐
+     │  program resource                ▼                   ▼                     │
+     │                    pipe receiver (PipeWire)     airplay type: parses reports: sessions → notes,
+     │                     └▶ inside bank ▶ out ─┐      listing → advertiser ─mDNS─▶ senders find "Kitchen"
+     └───────────────────────────────────────────┼────────────────────────────────┘
+        routes ▶ card · sendspin · file ◀────────┘
+```
+**Each node is a source with its own clock** (TM2, TM3): the sender's pace meets ear's tick in the node's converter (TM5), as `rtp`'s does. Rooms never line up and need not (A1).
 
-Both shapes share the program resource, the type, the announcer and the image. Only the join differs.
-
-| | **A: pipe into the tracked converter** | **B: shairport-sync as a stream in ear's engine** |
-|---|---|---|
-| On time | yes, if ear holds the lead (above) | yes: shairport-sync reads the stream's delay and corrects itself ("full audio synchronisation") |
-| Evidence | Read from source (`player.c` releases at timestamp − lead, on CLOCK_MONOTONIC_RAW). Upstream calls pipe output fit "where timing is not crucial", so **slice 0 must prove it** | upstream's supported mode [U: does ear's latency plan reach the delay it reads?] |
-| Delay ear adds beyond the stamped time | none (target) | none (target) |
-| Isolation (G8) | the program is outside ear's realtime cycle; its crash is its node's alone | the program runs inside ear's graph cycle [U: a late program delays every node] |
-| What it breaks | nothing | ear's engine has no socket, and it names its nodes "safe only while no other client can connect" (engine.md). B serves one connection per program |
-| Image | source build: pipe and metadata | source build plus PipeWire output |
-| Fits | G4; TM5 and TM8 as written | programs.md §4 (undesigned) |
-
-**Recommendation: A, with B as the fallback if slice 0 misses Q1's bound.** Switching to B changes three things:
-- the join's kind, and the program's output arguments, in the type (a few lines);
-- the engine, which would serve one connection per program;
-- the build, which would add PipeWire output.
-
-> **Q1. Must every ear AirPlay room play within N ms of the moment its sender meant it to?** *Absolute requirement*
+> **Q1. Which join should a node's audio take?** *General guidance: which way should this lean?*
 > <details><summary>Background</summary>
 >
-> ```
-> iPhone ──┬──▶ HomePod (living room)       all three play the frame stamped T at T,
->          ├──▶ ear "kitchen" ──▶ card A     so they line up with each other
->          └──▶ ear "porch"   ──▶ card B
-> ```
-> Each ear room has its own shairport-sync and its own join, so ear's graph does not line them up: each room must be on time by itself. Shape A is designed to do this, and B does it by upstream design. One room feeding two cards of different latency is a separate problem, zone alignment (cards-and-clock R7, not this page).
->
-> | Answer | What follows | Cost |
+> | | **A: PipeWire's pipe module (recommended)** | B: ear's tracked converter (T5) |
 > |---|---|---|
-> | **Yes, N = 10 ms (recommended: your "yes" to aligned zones, and "under 10 ms ideal")** | slice 0 must meet N with A, or B replaces A's join | if A misses, B's engine change |
-> | No (guidance) | ship what slice 0 measures | rooms may drift apart by an unbounded, unmeasured amount |
+> | Gives | Built and tested: ear's module-run test loads it as a source; PipeWire follows the pace, as for `rtp` | a buffer ear sizes, tens of ms [U]; ear counts dropouts |
+> | Costs | fixed 8192-frame buffer in PipeWire 1.4.2 (0.19 s at 44.1 kHz, 0.17 s at 48 kHz); dropouts only in PipeWire's log; a new companion kind on the wire | T5 built for it: an ear-made stream, a FIFO reader, a fill loop, tests |
+> | You would see | ~0.15 s more delay than B; senders play ~2 s behind [U for AirPlay 2], so mainly video lip sync shows it | less delay |
+> | Timing model | departs from TM8, the brief's wording of your 2026-11-13 answer ("AirPlay for tracked"): tracked waits for another first user | TM8 as written |
 >
-> The sentence that would bind: "Every `airplay` node plays each frame within N ms of the time its sender stamped for it." It rules out any join that cannot be steered, and it sets slice 0's pass mark.
+> Your answer changes only how slice 1 builds the pipe receiver. Your words that bear on it: "under 10ms is obviously idea[l]" (2026-10-29); for `rtp`, "If 100ms is the best rep can do, then so be it" (2026-10-30).
 > </details>
 
-## 5. Canonical shape
+## 4. Canonical shape
+**Domain.** `airplay` is a **source** (TM2) with no inputs. Health means "the program is alive"; sessions are the type's reports. A stopped node keeps its configuration (`docs/architecture.md#stopped-versus-disabled`), so its speaker stays listed and plays nowhere. The framework gains:
+- **Program resource** (G2; A2's "pure subprocess"), generic: it knows no program's protocol. The type names its executable as a constant in its code, never from the graph file.
+- **An advertiser per node,** moved out of `sendspin` with `sendspin` onto it. Node types may not link each other, so a second consumer needs a shared home (altitude tree, step 2). One per node, as `sendspin` already shares port 5353 per node, so a failure stays its node's (G5). It gains probing and renaming: speaker names are human and can clash on the network.
+- **Pipe receiver:** a new companion kind, so a wire change and rows in the engine's property table.
+- **`anyTcp` claim:** ear picks a free port; many nodes need distinct ports nobody types (G1), found by mDNS.
+- **Identity from the node:** the type gives shairport-sync its nqptp channel and device id, made from the node's name (unique in ear), so two rooms never share a channel.
 
-**Domain.** The proposal adds:
-- `airplay`, a **source** (TM2) with no inputs.
-- Framework concepts:
-  - the **program resource**;
-  - the **announcer**, promoted from `sendspin`, with sendspin moved onto it in the same change;
-  - **claims ear assigns**: a free TCP port, a UDP range, and a speaker name that is one per name across ear.
-- The join, built as T5's **tracked converter**. No companion kind is added beyond T5's own.
-- One type-local lifecycle, the **session**, kept apart from the node's states.
+**Patterns:** supervisor (Erlang/OTP one-for-one, slice 8's backoff); one process per instance; adapter (the converter companion); mDNS probe and rename (RFC 6762 §8-9); fail fast, judged by the consumer (§5). **Rejected:** shairport-sync's own responder (deprecated upstream "for security reasons"); Avahi (a second per-machine daemon, against A2).
 
-No session event changes the node's state. No sender means the node is running and silent (G10). The timing helper sits outside ear's domain.
+The rest is recommended as shown: sender volume ignored until slice 6 gives nodes a level; a second sender takes over; a renamed speaker is new to senders.
 
-```mermaid
-stateDiagram-v2
-  [*] --> idle
-  idle --> playing: sender starts
-  playing --> idle: stopped / gone / taken over / no timing
-  note right of idle: the node stays running; a program exit is the node's 'lost'
+## 5. nqptp: "reachable", as events
 ```
+configure ▶ claims ▶ pipe receiver running ▶ report feed open ▶ program starts ─┬ nqptp found ▶ listing ▶ announced ▶ running
+                                                                                └ missing: exits ▶ start-failed "The NQPTP service can not be found. ..."
+running ── nqptp exits, removing the room's channel ▶ file event ▶ program ended ▶ lost ▶ slice 8 retries
+```
+- **At start, the check is shairport-sync's own:** it asks nqptp for its channel before listing anything, and exits with that line if none comes.
+- **While running, shairport-sync never notices** nqptp leaving: it reads the dead channel and stays silent. So a program can name files it needs (`needs`, §7), and their removal ends it; the type names its channel.
+- **AirPlay 2 is set outright,** never shairport-sync's `auto`, which falls back to AirPlay 1 silently.
 
-**Patterns:**
-- **Supervisor:** Erlang/OTP one-for-one, with its backoff coming from slice 8.
-- **Sidecar process:** each room's program, run under its node.
-- **Sidecar container:** the per-machine timing helper (Kubernetes pod pattern; Q2).
-- **Adapter:** the converter companion, as the RTP receiver already is.
-- **Single responder per host:** mDNS (RFC 6762 practice; shairport-sync's `mdns_backend = "metadata"`, in release 5.6.3).
-
-The rest of this section is recommended as shown:
-- The iPhone's volume slider is ignored until slice 6 gives the node a level.
-- A second sender takes over: classic AirPlay needs `allow_session_interruption` switched on, and AirPlay 2 behaves this way itself [U].
-- A stopped node stays announced and silent.
-- Renaming a node shows iPhones a new speaker.
-
-> **Q2. On Talos, may ear's pod run on the node's own network, with AirPlay 2's timing helper as a second container in that pod?** *General guidance*
-> <details><summary>Background</summary>
->
-> ```
-> Talos node's network (where iPhones are)
->  └─ ear pod (hostNetwork)
->      ├─ ear container ........ 7777 editor, 5353 mDNS, each room's AirPlay ports
->      └─ helper container ..... 319/320 (AirPlay 2 only), allowed to bind low ports
-> ```
-> iPhones find speakers only by mDNS on the local network. A pod on the cluster network cannot be found.
->
-> | Option | Gives | Costs | You would see |
-> |---|---|---|---|
-> | **hostNetwork + helper container (recommended)** | iPhones find ear. Only the helper may bind low ports. Kubernetes restarts the helper | 7777 (no login) on the node's network; a policy exception, as for multicast rtp. While the helper is down, AirPlay 2 rooms show running but sessions end "no timing" | ear and a small helper in one pod |
-> | hostNetwork, ear starts the helper itself | one container, G2's "magically" | ear itself gains the low-port capability and supervises a program no node owns | one container |
-> | no hostNetwork | nothing new exposed | iPhones cannot find ear at all | no AirPlay |
->
-> Your answer sets the pod shape in slices 5 and 6.
-> </details>
+| Home | What the instructions must say |
+|---|---|
+| `docs/node-types.md#airplay` (host terms) | ear must be on the senders' network. For AirPlay 2: run nqptp at the commit `docker/Dockerfile` pins, on ear's machine, sharing its `/dev/shm`, with UDP 319/320 (low-port permission) and localhost UDP 9000; restarting nqptp restarts every AirPlay 2 room; the failure line |
+| `ear-on-talos` skill (cluster terms) | the same beside ear's pod; cluster words live only here |
 
 ## 6. Design rules (design choices, not requirements)
-
-1. **The program owns AirPlay; ear owns the graph and the time.** Health means the process is alive. Sessions are reports, never health. Being on time is the join's job.
-2. **One join per node, from one value.** The type makes one call. Its format, rate and lead feed both the program's config and the converter. The type never names a pipe.
-3. **Per-host things have one owner.** There is one announcer. Ports and speaker names are claimed and assigned across ear. The timing helper belongs to no node.
+1. **The program owns AirPlay; ear owns the graph.** Health is the process alive; sessions and the listing are reports the type reads.
+2. **One request, one job.** The type composes a program, a pipe receiver and an advertiser, and names no FIFO or port: the framework hands each across. The one name it makes is its nqptp channel, from the node's name.
+3. **Per-host things have one owner.** Ports: ear's claims. Speaker names: the network, by probing. nqptp: you.
 
 ## 7. Public interfaces (sketch)
-
 ```ts
-// ---- The airplay type: a source ----
-interface AirplaySettings {
-  name?: string;                   // the speaker name; default: the node's name; restarts the node
+interface AirplaySettings {   // banks: out (public), fromAirplay (inside, the join's), as rtp's
+  name?: string;              // speaker name; default: the node's name; renamed on a clash, reported as a note
+  airplay2?: boolean;         // default false; true needs nqptp on the host
 }
-interface AirplayBanks {
-  out: Output<2>;                  // public, graph rate
-  fromAirplay: InsideInput<2>;     // the join delivers here; passed through to out
-}
-
-// ---- What configure asks for ----
 interface CreateOf {
-  program(shape: ProgramShape): ProgramHandle;   // new (slice 9)
-  advertise(): Advertisement;                    // the announcer, shared with sendspin
-  claim(c: Claim): Granted;                      // built; gains the kinds below
+  pipeReceiver(shape: PipeReceiverShape): PipeReceiver; // new companion kind
+  program(shape: ProgramShape): void;                   // new; starts once the node's companions are ready
+  advertiser(): Advertiser;                             // new; one per node, withdrawn at teardown
+  claim(c: BuiltClaim | { kind: "anyTcp" }): Granted;   // built; anyTcp granted at the claims step
 }
-
-type Claim =
-  | BuiltClaim                                   // TcpListen, Udp (one port each)
-  | { kind: "anyTcp" }                           // ear picks a free port and grants it
-  | { kind: "udpRange"; count: number }          // ear picks a free run (classic AirPlay)
-  | { kind: "speakerName"; name: string };       // one speaker per name across ear
-
-interface ProgramShape {
-  executable: ProgramId;           // closed list the image ships: "shairport-sync"; never a path
-  args: ProgramArg[];
-  config: RuntimeFile;             // generated beneath the config folder; removed with the configuration
-  audio: Join;                     // where its audio goes
-}
-type ProgramArg =
-  | { text: CheckedText }                        // from a checked setting
-  | { port: Granted }                            // a port ear granted
-  | { path: "config" | "audio" | "reports" };    // files the framework makes; the type never names them
-
-interface Join {
+interface PipeReceiverShape {  // its fixed delay enters the latency plan once
   into: InsideInput<2>;
-  pcm: {
-    format: "s16le" | "s32le";     // pinned, never "auto"
-    rate: Hz;                      // 44100 (classic) or 48000 (AirPlay 2)
-    channels: 2;
-  };
-  leadMs: number;                  // the program hands frames over this early; the join holds lead − downstream latency
+  format: "s16le" | "s32le";   // pinned per mode, never "auto"
+  rate: Hz;                    // 44100 (AirPlay 1) or 48000 (AirPlay 2)
 }
-
-/** Invariants:
- *  - starts with signals unblocked, descriptors above 2 closed, stdin null, stderr into the node's log only (R9)
- *  - dies with ear (parent-death signal); ear as PID 1 reaps it
- *  - stop: a signal, then a kill within the close deadline
- *  - its claims are released only after it is reaped
- *  - reports arrive on the node's loop, never after teardown */
-interface ProgramHandle {
-  onReport(handler: (text: string) => void): void;  // the report pipe (shairport-sync's metadata feed); the type parses it
+/** stdin null; stdout and stderr into the node's log only (G4); dies with ear and reaped by it; torn down
+ *  with the configuration (a signal, then a kill at the close deadline), so node.stop leaves it running;
+ *  claims released after reaping; no callback after teardown. */
+interface ProgramShape {
+  executable: string;          // a constant in the type's code; never from the graph file
+  args: ProgramArg[];          // checked text | a Granted port | a receiver's FIFO | a runtime file
+  config: RuntimeFile;         // beneath the config folder; removed with the configuration
+  feed?: { onBytes(chunk: Bytes): void }; // the report feed: open before the program starts; on the node's loop
+  needs?: SharedMemoryName[];  // removing one ends the program: the node fails "lost"
 }
-
-interface Advertisement {
-  publish(records: ServiceRecord[]): void;   // from the program's 'svrg' reports
-  withdraw(): void;
+interface Advertiser {
+  publish(listing: Listing): void; // probes the name, then announces; on a clash, renames ("Kitchen (2)")
+  update(listing: Listing): void;  // new TXT entries, same name
+  onAnnounced(handler: (publishedName: string) => void): void; // the type reports ready here
 }
-
-// ---- Session (type-local, reported as notes) ----
-type SessionEvent =
-  | { kind: "started"; sender?: string }
-  | { kind: "ended"; reason: "stopped" | "gone" | "taken-over" | "no-timing" };
-
-// ---- How a node fails (existing codes) ----
-type AirplayFailure =
-  | { code: "start-failed"; detail: string }   // a claim refused (name taken), exec failed, a file not written, never announced
-  | { code: "engine-refused"; detail: string } // the join never became ready
-  | { code: "lost"; detail: string };          // the program exited; slice 8 retries with backoff
+interface Listing {
+  service: string;             // e.g. "_raop._tcp"
+  name: string;
+  port: Granted;
+  txt: Record<string, string>;
+}
+type AirplayFailure =                            // existing codes only
+  | { code: "start-failed"; detail: string }     // claim refused; exec failed; exited before announced (its last
+                                                 // line); readiness deadline missed (a deadline only fails)
+  | { code: "engine-refused"; detail: string }   // the pipe receiver never ran
+  | { code: "lost"; detail: string };            // exited after announced; a needed file removed
 ```
 
-A name collision is refused before the program starts, so it can no longer become a crash loop. A speaker that never announces fails `start-failed`; it never sits running while invisible.
+## 8. What happens next
+**Tracer bullet = slice 1:** one `airplay` node on AirPlay 1 in the dev image; a scripted sender (pyatv in a venv, as the sendspin server's tests run [U]) plays a tone. It proves an mDNS browse finds the speaker, a `file` node records the tone, and removing the node withdraws the listing and leaves no process or FIFO. Non-goals: AirPlay 2, clashes, Talos, an iPhone, volume, recovery.
 
-## 8. Tracer bullet, slices, AirPlay 2
-
-**Tracer bullet.** One `airplay` node on classic AirPlay, running a source-built shairport-sync in the dev image. A system test plays a tone from a scripted classic sender (PipeWire's `raop-sink` or pyatv [U]).
-
-What it proves:
-- an mDNS browse finds the speaker, published by ear's announcer;
-- the recording holds the tone;
-- its offset from the stamped time is within N;
-- a stop leaves nothing behind.
-
-Non-goals: AirPlay 2, the helper, Talos, an iPhone, volume, recovery.
-
-| # | Slice | Needs | Delivers |
+| # | Slice (vertical, each lands green) | Needs | Delivers |
 |---|---|---|---|
-| 0 | Spike, in three parts: (a) a pipe held at lead − latency, its offset measured against the sender's stamps on two receivers, pass mark Q1's N; (b) records over the metadata feed published by ear's announcer; (c) if Q3 is yes, one multi-client nqptp in a second container serving two instances | nothing | A or B; the announcer path |
-| 1 | Program resource and supervisor, with assigned and name claims (wire, fixtures and editor in one commit) | slice 3c (built) | G2's "launch the subprocess" |
-| 2 | Announcer moved out of `sendspin` into the framework, sendspin moved onto it | nothing | one responder (rule 3) |
-| 3 | Join: T5's tracked converter fed from the program's pipe, its target following the latency plan | 1, 0, T4 (built) | on time |
-| 4 | `airplay` type v1 (classic): settings, config, reports, sessions. **Tracer ends here** | 1-3 | G1 (N rooms, each found and on time) |
-| 5 | Image and Talos: a source-build stage (as knobly's), `hostNetwork`, the image smoke check, the ear-on-talos skill | 4, Q2 | G9 |
-| 6 | AirPlay 2: the build flag, the timing helper (Q2), an AirPlay 2 test sender | 5, Q3 | iPhone grouping |
+| 1 | Program resource; pipe receiver (wire, fixtures, editor in one commit); `anyTcp`; advertiser moved, `sendspin` onto it; `airplay` on AirPlay 1; shairport-sync from source in the image. **Tracer** | 3c (built), Q1 | A2's "airplay1 node built in", tested end to end |
+| 2 | Many speakers: identity from the node, probing and renaming; two nodes and a clash tested | 1 | G1 |
+| 3 | The AirPlay 2 setting, `needs`, nqptp in the dev image for tests only, both instruction homes | 2, slice 8, Q2 | A2's "instructions for how to configure an airplay2 node"; A3 |
 
-Slice 8 (recovery) must land before slice 5 ships; until then a crashed program needs a `node.restart`. Compared with v1, the scope gains one slice (the announcer) and loses the identity store.
-
-> **Q3. Should AirPlay 2 be in this plan, after the classic-AirPlay first version, or come later?** *General guidance*
+> **Q2. May the AirPlay 2 setting ship with its sound checked by hand?** *General guidance: which way should this lean?*
 > <details><summary>Background</summary>
 >
-> | | **In this plan, after classic (recommended)** | Later |
+> | | **Ship it, sound checked by hand (recommended)** | Hold it for a scripted sender |
 > |---|---|---|
-> | iPhone | picks several ear rooms and HomePods at once | plays to one ear room at a time; a Mac's Music app can still group classic speakers |
-> | Pod | adds the timing helper (Q2), on 319/320 | nothing more |
-> | Tests | no scripted AirPlay 2 sender is known [U: OwnTone]; without one, its audio is proven only on hardware, against the repo's testing rule | classic is testable |
-> | Size | slice 6 | slices 0-5 |
+> | Proven in CI | AirPlay 1 end to end; for AirPlay 2 the config, the listing (test-run nqptp [U: low ports in the dev container]), nqptp missing, channel removed, the same join at 48 kHz | all that, plus a sender's audio |
+> | Costs | departs from `docs/testing.md`'s "Audio is verified here, never on real hardware" for this path | iPhone grouping waits; a spike on OwnTone [U] |
 >
-> Your answer sets whether slice 6 is in this plan.
+> Your answer sets whether slice 3 ships before a scripted AirPlay 2 sender exists.
 > </details>
 
-## 9. Costs and deferrals
+## 9. Costs, deferrals, prior art
+- **Spawning traps:** SIGTERM is blocked in ear's threads and children inherit that; ear holds descriptors; ear is PID 1 and reaps.
+- **About 0.18 s per room** with Q1's A, plus ear's downstream latency, uncompensated.
+- **Ports outside ear's claims:** shairport-sync's AirPlay 1 UDP range; nqptp's 319, 320, 9000. An `rtp` node on one fails to start.
+- **nqptp limits:** 16 AirPlay 2 node names per nqptp run; a room returns up to 60 s after nqptp does (recovery's start-failed wait); an nqptp killed without cleanup leaves its channel, undetected [U].
+- **Young upstream, bigger image, open network:** shairport-sync's `metadata` mDNS hand-off landed 2026-11-01 (first in 5.6.3, 2026-11-10), in no Debian release, so ear builds from source. Discovery puts ear and port 7777 (no login) on the senders' network.
 
-**Costs:**
-- **A new framework slice for spawning.** Process spawning has traps: SIGTERM is blocked in every thread and a child inherits that; ear holds descriptors; ear runs as PID 1 and must reap.
-- **The announcer leaves `sendspin`.** It moves into the framework, and its mDNS library moves with it.
-- **Source builds.** shairport-sync (and nqptp, if ear starts it) are built from source, which grows the image.
-- **`hostNetwork` (Q2).** 7777, which has no login, lands on the node's network, and anyone on the LAN can play.
-- **Unproven timing.** Upstream does not promise pipe timing; a miss costs B's engine change. Also, until R7, a room feeding devices of different latency is on time on its slowest path only.
+**Deferred:** track information, sender volume (slice 6), passwords, Home app pairing, remote control, 96/192 kHz, multichannel, arm64, lip-sync offset. **Not planned:** an in-process receiver; a container per room; ear starting nqptp. **Prior art:** shairport-sync 5.6.3 (used: the only maintained Linux receiver with AirPlay 2 and many instances); nqptp, PipeWire's pipe module (used); pyatv, PipeWire's raop-sink, OwnTone (test senders [U]); UxPlay, RPiPlay, shairplay (rejected: mirroring only, AirPlay 1 only, unmaintained).
 
-**Deferred:** track information, ear sending AirPlay, passwords, Home app pairing, remote control, 96/192 kHz, multichannel, arm64.
-
-**Not planned:**
-- an in-process receiver (no maintained library; it would share ear's crash domain);
-- a container per room (rooms stay ear's programs, as in G2's first preference);
-- PipeWire's pipe-tunnel (fixed 8192 frames, about 170 ms, cannot be steered to stay on time).
-
-## 10. Prior art considered
-
-| Candidate | Verdict |
-|---|---|
-| shairport-sync 5.6.3 | used: the only Linux receiver with AirPlay 2 and multi-room; its `metadata` mDNS backend hands records to a host responder |
-| nqptp | the per-machine timing helper; upstream's multi-instance guide calls it multi-client [U: which release] |
-| Debian shairport-sync 4.3.7 | rejected: built with Avahi only, no AirPlay 2, depends on avahi-daemon |
-| PipeWire module-pipe-tunnel | rejected: fixed target, cannot hold a lead |
-| PipeWire raop-sink, pyatv, OwnTone | test senders [U] |
-| UxPlay, RPiPlay, shairplay, libraop | mirroring only, AirPlay 1 only, unmaintained, or senders |
-
-## 11. Reconcile with existing code
-
+## 10. Reconcile with existing code
 | Where | Change | Cost |
 |---|---|---|
-| `programs.md` | 2.2's paced source becomes the tracked join; 2.4's `advertise` resource is chosen; §3's "loses multi-room alignment" is wrong; line 5's "runtime files from slice 3c" is wrong | doc edits at slice 9 |
-| `timing-model.md` T5 | `targetFrames` follows the latency plan, not a fixed value; TM8 kept | T5 gains a moving target |
-| `claims.hpp`, writing-a-node-type#claims | claims that assign (TCP, UDP range) and a speaker-name kind; today a claim only grants or refuses | a new claim behaviour |
-| `companions.hpp` `ResourceAdapters` | program and advertise adapters; readiness gains "announced" | wire, `test/protocol/`, `web/src/protocol.ts` in one commit |
-| `sendspin` Advertiser, `cmake/SendspinDeps.cmake` | the responder and its library move to the framework; AGENTS.md's "only `ear_node_sendspin` sees them" changes | a move, with sendspin's tests unchanged |
-| `docker/Dockerfile` | a source stage for shairport-sync (and nqptp); no Avahi or D-Bus | image size |
+| `companions.hpp`, `docs/control-port.md`, `test/protocol/`, `web/src/protocol.ts`, property table | `pipeReceiver` kind on the wire; the test's pipe-module shape becomes it, loaded through `loadModule` | a wire change, one commit |
+| `ear_core` (interfaces), `ear_runtime` (spawning), a new mDNS package | program resource and advertiser behind core's interfaces; `Advertiser` and mjansson/mdns leave `sendspin` | a move, plus probing |
+| `claims.hpp`, `KernelPortProbe` | a claim that assigns (`anyTcp`) | new claim behaviour |
+| `programs.md`, `timing-model.md` TM8/T5, `docs/design/README.md` | 2.2 becomes the pipe receiver, 2.4 picks `advertise`; with A, T5 waits; README row rewritten | doc edits |
+| `docker/Dockerfile`, `docs/node-types.md`, `ear-on-talos` | shairport-sync from source (no Avahi, D-Bus); nqptp pinned, dev image only; the instructions | image size, docs |
 
-## For the code architects (parked)
-
-- The lead's value; the pipe's kernel buffer and write granularity against the hold; who opens the pipe first.
-- Whether shairport-sync stuffs or drops with no `delay()`, and so what drift the converter tracks; TM9's jump on a sender stall.
-- The assigned-port race between ear's probe and the program's bind; mDNS name conflicts with other hosts on the LAN.
-- Parsing the metadata feed, which item codes carry sessions and `svrg`, and detecting "no timing".
-- AirPlay 2 pairing state files kept by shairport-sync, against one source of truth.
-- B: a socketpair handed over through `pw_context_connect_fd` instead of a listening socket [U].
-- Spawning: a pidfd on a loop, an environment allowlist, the working directory.
-
-Not run: no spike, build or test. shairport-sync, nqptp and PipeWire behaviour was read from their source and docs only, and iPhone behaviour is unverified [U].
+**For the code architects (parked):** a test pinning the pipe module's 8192 frames; the module never driving the graph (TM6), and its resync on bursts; who makes the report FIFO, and a reader that drains apart from the node loop (shairport-sync writes blocking); ear's port probe racing the program's bind; node names over 62 characters mapped one-to-one to channels; a device id unique on the network and kept across restarts; AirPlay 2 pairing files; `sendspin`'s goodbye timing on the moved advertiser; pidfd, environment allowlist, working directory, grandchildren.
 
 ## Review answered
+- Accepted and changed: generic program and feed (§7); the claim key (identity from the node, §4); companion kind (§10); the advertiser's reason and alternatives (§4); `udpRange` dropped; stop (§4; the tracer now removes); tracer first (§8); nqptp out of the shipped image; mid-run nqptp loss (§5); port 9000; terms; the README row.
+- "A shared library, not a framework resource": kept a resource, still one per node, so teardown withdraws by construction.
+- "A readiness deadline is a timer": the event (announced) drives readiness; the deadline only fails a node that never announces, as companions' do.
+- "48 kHz s32le makes shairport-sync resample": not shown harmful; the pin keeps both ends agreed; parked.
 
-- *Premises suspicion (b), "metadata backend only on master":* release 5.6.3's `scripts/shairport-sync.conf` line 39 lists `"metadata"`.
-- *Fit 3, "DaemonSet" as the helper's home:* a DaemonSet pod does not share ear's IPC namespace, which nqptp's shared memory needs (upstream's multi-instance guide, "Shared memory / IPC"); a container in the same pod does. So only the pod sidecar is offered.
-- *Completeness 7, the rtp 100 ms precedent as slice 0's bar:* being on time adds no delay beyond the stamped time, so the bar is an offset (Q1's N), not a delay.
-- *Fit 5, "no interface carries the path between packages that do not see each other":* that wiring is `main.cpp`'s, as for every adapter (architecture.md#packages); the contract is the one `Join` value, and the path is a framework-made `ProgramArg`.
-- *Fit 1, "separate container asserted unworkable without evidence":* per-room programs stay ear's (G2's first preference); only the per-machine helper is offered as a container (Q2).
-
-*History: v1 2026-11-14; v2 the same day, after the premises, fit and completeness reviews: on-time join, one announcer, timing helper outside ear, identity store deleted.*
+*Not run: no build, spike or test. PipeWire 1.4.2's pipe module, shairport-sync master and nqptp 1.2.9 read from source; iPhone behaviour unverified [U].* *History: v1, v2 2026-11-14 (on-time join, pod helper); v3 the same day after your answers, revised after two reviews.*
