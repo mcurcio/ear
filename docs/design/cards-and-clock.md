@@ -105,6 +105,10 @@ on the node handle, carried by the framework on the next cycle, as an in-place c
 - [U] What `/proc/asound/.../status` shows for a wedged USB card (3.1); whether a USB unplug reaches the adapter's ERROR
   state without udev in the container; whether `snd_pcm_open`, `snd_pcm_drop` or `snd_pcm_close` can block on a wedged
   card (decides 3.3).
+- [U] Whether a capture's chunks in a catch-up's burst are dated truly by their cycle's start on the driver's time
+  less the card's capture latency, as `sendspin` dates what it sends (`docs/node-types.md#clock`): a card capturing
+  through a stall of the data thread, a known sound sent to a Sendspin server, and the server's dates read across the
+  burst. If they trail, the chunk's stamp gains the tick's `overdueNs`.
 - [U] Following a host clock slewed at chrony's worst case (83,333 ppm) through the dummy's 1 ms-a-cycle clamp.
 - A pause of the data thread of tens of seconds or more still slews the graph off the raw clock for minutes (built
   `resync.ms` covers stalls of a few seconds); the fix is upstream's (PipeWire's `node-driver.c` would have to re-arm

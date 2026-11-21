@@ -382,10 +382,14 @@ instead, or filter both, if that matters. What a peer can and cannot do:
 - The finish it tells is where the library's next frame plays, the end of the telling cycle: the
   library puts its next audio at the finish plus what it still holds, and a cycle the source left
   short played zeros to its end.
-- The audio sent to the server (`to`) is dated by when its cycle started, each piece from its own
-  chunk's cycle start by its frames ([engine.md](engine.md#dating)). The capture latency upstream
-  of `to` is not counted yet, so a card's capture reaches the server dated late by the card's
-  buffer, though the sink's chunks carry it (`Chunk::upstreamFrames`).
+- The audio sent to the server (`to`) is dated by when it entered the graph: each piece from its
+  own chunk's cycle start by its frames, less the capture latency upstream of `to` that the sink's
+  chunk carries (`Chunk::upstreamFrames`, [engine.md](engine.md#dating)), so a card's capture is
+  dated by when the card took it, its buffer counted. A chunk of a catch-up's burst is dated the
+  same way, from its cycle's start on the driver's time and never from when the burst ran it:
+  the frames waited in the card's buffer through the stall, so the driver's time is when they were
+  taken. *Not measured:* no test has a card whose buffer holds audio through a stall; the check on
+  the MOTU is owed ([cards-and-clock.md](design/cards-and-clock.md)).
 - **The node's clock is an honest sink with a local skip** ([the timing model](architecture.md#the-timing-model),
   rule 3): it plays every frame the library wrote, in order, and tells the library what played and
   when, true when told. It keeps no debt and no model of the library: what it could not skip of lost

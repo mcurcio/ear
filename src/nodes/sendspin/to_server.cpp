@@ -24,10 +24,11 @@ void ToServer::consume(const Chunk& chunk) {
 		const std::uint32_t piece = std::min(chunk.frames - done, pieceFrames_);
 		pcm::fromFloat(chunk.interleaved.data() + std::size_t{done} * nodeChannels, std::size_t{piece} * nodeChannels,
 		               sourceBits / 8, scratch_.data());
-		// The piece's first frame, `done` into the chunk, from the chunk's cycle start. No upstream latency is counted
-		// yet, so a card's capture is dated by when its cycle ran, not when it entered (docs/node-types.md#clock;
-		// Chunk::upstreamFrames carries what is missing).
-		const std::int64_t capturedNs = clock_.enteredRawNs(chunk.startRawNs, done, Latency{});
+		// The piece's first frame, `done` into the chunk, entered the graph the chunk's upstream before its place in
+		// the cycle, so a card's capture is dated by when the card took it, not when its cycle ran
+		// (docs/engine.md#dating, docs/node-types.md#clock).
+		const std::int64_t capturedNs =
+			clock_.enteredRawNs(chunk.startRawNs, done, Latency{.minFrames = 0, .maxFrames = chunk.upstreamFrames});
 		sink_.writeAudio(scratch_.data(), std::size_t{piece} * bytesPerFrame, capturedNs / 1000);
 		done += piece;
 	}

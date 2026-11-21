@@ -1,5 +1,5 @@
 // The source role's audio (docs/node-types.md#threads): the sink on `to_server` hands it what reached the inputs, and
-// while the server wants it it goes on, each piece dated from its own chunk's cycle start. While nobody does it is
+// while the server wants it it goes on, each piece dated by when it entered the graph. While nobody does it is
 // dropped here, so a server decides when the source streams and the sink's ring never fills.
 #pragma once
 #include <atomic>
@@ -28,8 +28,8 @@ public:
 	/// The server's commands: whether anyone wants the audio. Any thread.
 	void streaming(bool wanted) noexcept { streaming_.store(wanted, std::memory_order_release); }
 	/// Pieces of at most 100 ms: one write must fit 5/8 of the 500 ms capture buffer. Each is dated from the chunk's
-	/// cycle start by its offset in the chunk, so when this thread woke does not move a stamp. No upstream latency is
-	/// counted yet (docs/node-types.md#clock).
+	/// cycle start by its offset in the chunk, less the capture latency upstream of the chunk (Chunk::upstreamFrames),
+	/// so when this thread woke does not move a stamp (docs/node-types.md#clock).
 	void consume(const Chunk& chunk) override;
 	void finish() override {}
 

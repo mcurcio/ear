@@ -215,8 +215,8 @@ model, none a count the sink keeps across ticks. The rule this page adds, for th
 skips, pads or re-dates audio; a consumer whose destination has a clock (sendspin's `to`, a later RTP sender)
 reconciles in its consumer from the chunk's facts** (writing silence for `lostFrames`, dating by `enteredRawNs`).
 `Chunk` and `ChunkStamp` do not change. Whether a capture's chunks in a catch-up's burst want `overdueNs` too is not
-known [U: measured in S3c.6d, after `to` becomes a sink in S3c.6b; captured audio waits in the card's buffer through a stall, so the
-driver's nominal start may date it better than when the tick ran, the reverse of playback].
+measured [U: `cards-and-clock.md` 4; S3c.6d dates them by the driver's nominal start, since captured audio waits in the
+card's buffer through a stall, the reverse of playback (`docs/node-types.md#clock`)].
 
 ### 4.6 Found building T3
 

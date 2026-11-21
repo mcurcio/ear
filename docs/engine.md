@@ -779,9 +779,7 @@ it is read ([graph-file.md](graph-file.md#rates)).
 - **`enteredRawNs(startRawNs, offset, upstream)`**: that frame entered the graph its upstream's most
   before. `offset` may be negative, a frame taken before the cycle's first. A sink's chunk entered
   at `enteredRawNs(startRawNs, 0, {0, upstreamFrames})` ([above](#sinks)); `sendspin`'s capture is
-  dated from its chunk's start with no upstream yet (the chunk carries `upstreamFrames`, which the
-  node does not read yet, so the capture latency a card adds is not counted:
-  [node-types.md](node-types.md#clock)).
+  dated so, each piece by its place in its chunk ([node-types.md](node-types.md#clock)).
 
 The rule is a type, not a guard: since a rate has no operator, using one as an operand of `*`, `/`,
 `%` or `+` does not compile, nor does making a rate from a number, a `FrameClock`, a format or a
