@@ -13,7 +13,6 @@ add_library(ear_core STATIC
 	desired_graph.cpp
 	graph_status.cpp
 	latency.cpp
-	legacy_instance.cpp
 	levels.cpp
 	log.cpp
 	loop.cpp
@@ -173,8 +172,6 @@ if(BUILD_TESTS)
 	ear_settings_table_compile_fail(override-parse "parse.*marked 'override'")
 	ear_settings_table_compile_fail(override-setting-kinds "settingKinds.*marked 'override'")
 	ear_settings_table_compile_fail(override-name "name.*marked 'override'")
-	ear_settings_table_compile_fail(make-takes-raw-settings "make.*marked 'override'")
-	ear_settings_table_compile_fail(override-make-config "overriding final function")
 	ear_settings_table_compile_fail(derive-without-table "private within this context")
 	ear_settings_table_compile_fail(derive-by-copy "use of deleted function")
 	ear_settings_table_compile_fail(forged-checked-settings "private within this context")
@@ -187,7 +184,6 @@ if(BUILD_TESTS)
 	ear_settings_table_compile_fail(row-read-only "discards qualifiers")
 	ear_settings_table_compile_fail(only-without-on-required "a required row cannot be onlyWithout")
 	ear_settings_table_compile_fail(only-without-a-required "cannot name a required row")
-	ear_settings_table_compile_fail(table-not-named-for-folder "a type's table is named for its folder")
 
 	# What must not compile about the latency model (docs/engine.md#latency-per-bank-pair): a delay is in series, never
 	# a path of its own; tests/compile_fail/latency_bad.cpp says what each case is.
@@ -266,7 +262,6 @@ if(BUILD_TESTS)
 	ear_type_spec_compile_fail(start-wrong-signature "a type's start is void start\\(\\)")
 	ear_type_spec_compile_fail(stop-wrong-signature "a type's stop is void stop\\(\\)")
 	ear_type_spec_compile_fail(constructor-neither "a type's class is constructed from NodeOf<spec>& or from nothing")
-	ear_type_spec_compile_fail(legacy-start-on-spec-type "writes configure, not a static start")
 	# The change version compiles in 3a (the owner's answer to Q1: the control writes one); of the wrong shape, not.
 	ear_type_spec_compile_fail(change-version-wrong-signature "a type's change version is Changed configure")
 	ear_type_spec_compile_fail(change-version-wrong-context "a type's change version is Changed configure")

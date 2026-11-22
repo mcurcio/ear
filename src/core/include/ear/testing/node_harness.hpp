@@ -1,6 +1,6 @@
 // Running a node type without PipeWire (docs/writing-a-node-type.md#testing-a-type): one real NodeHost over in-memory
 // fakes, so a type's tests and NodeHost cannot disagree on any rule. NodeHarness takes any NodeType by names (the
-// all-type tests get theirs from the generated list, typeless; the legacy types run through the legacy adapter);
+// all-type tests get theirs from the generated list, typeless);
 // TypeHarness (type_harness.hpp) adds the spec's bank handles. The test's thread stands in for the main loop and the
 // realtime thread both: every call pumps the harness's manual executor until nothing is queued, so each returns with
 // the transition it asked for applied as far as the fakes allow. The harness does not observe a class's start() and
@@ -84,13 +84,6 @@ struct SeenInternalError {
 	std::string what;
 };
 
-/// One legacy handoff a configuration made (its request's bank and capacity, the channels the framework gave it).
-struct SeenHandoff {
-	std::string bank;
-	std::uint32_t channels;
-	std::uint32_t capacityFrames;
-};
-
 /// One program a configuration launched (ProgramAdapter::launch on the harness's fake), in order, over every
 /// configuration: what NodeHost resolved for it, and what happened to it.
 struct ProgramFake {
@@ -150,7 +143,7 @@ public:
 	/// `type` outlives the harness.
 	explicit NodeHarness(const NodeType& type, Options options = {});
 	/// Removes a node left in the graph and runs its teardown to the end (completing what autoComplete left), so no
-	/// thread of a sink or a legacy run outlives the harness.
+	/// thread of a sink outlives the harness.
 	~NodeHarness();
 	NodeHarness(const NodeHarness&) = delete;
 	NodeHarness& operator=(const NodeHarness&) = delete;
@@ -335,12 +328,7 @@ public:
 	std::uint32_t feed(std::string_view bank, std::span<const float> interleaved);
 	SourcePlayed lastPlayed(std::string_view bank) const;
 	std::uint64_t shortfall(std::string_view bank) const;
-	/// Legacy only: frames handed through handoff `index` to its consumer, and the run object its recipe built.
-	std::uint64_t handoffFrames(std::size_t index) const;
-	RunObject* runObject() const noexcept;
-	/// Every legacy handoff made, in order, over every configuration; and every recording asked for (CreateOf's
-	/// recording), in order, whether or not the folder opened it.
-	const std::vector<SeenHandoff>& handoffs() const noexcept;
+	/// Every recording asked for (CreateOf's recording), in order, whether or not the folder opened it.
 	const std::vector<RecordingRequest>& recordingRequests() const noexcept;
 
 	// Programs (docs/writing-a-node-type.md#programs), on a fake adapter: launched when the framework asks, each told

@@ -5,9 +5,8 @@
 //
 // The port block is made when the node is added and goes only once it is removed; configurations come and go
 // behind it, one at a time. Each configuration has its instance (docs/writing-a-node-type.md),
-// made by its config: the type's class (lifecycle.hpp's SpecInstance), or the legacy adapter over the old SPI's start
-// (legacy_instance.hpp). Its configure acquires only, through CreateContext (the class) or StartContext (the
-// legacy start), both implemented here on one set of internals, and gives the code; a rule it breaks at a call or at
+// made by its config: the type's class (lifecycle.hpp's SpecInstance). Its configure acquires only, through
+// CreateContext, implemented here, and gives the code; a rule it breaks at a call or at
 // the return, and a configure that throws, fail the node start-failed. Its claims (docs/writing-a-node-type.md#claims)
 // are judged first against every other configuration's in the claim registry (claims.hpp), a granted port then probed
 // behind the turn's flush, and released last at teardown step 5. Its stores (docs/writing-a-node-type.md#stores) and
@@ -18,21 +17,20 @@
 // readiness list (readiness.hpp), a companion's and a consumer's with its kind's deadline from its asking, past which
 // the node fails
 // (docs/engine.md#readiness-deadlines), and every companion is in the node's list a client
-// sees (companionsOf; docs/engine.md#companions-in-a-nodes-list); once every resource is ready a legacy recipe
-// builds the run object (T3), the code is prepared, and once the block is ready it is driven by an asynchronous
+// sees (companionsOf; docs/engine.md#companions-in-a-nodes-list); once every resource is ready (T3) the code is
+// prepared, and once the block is ready it is driven by an asynchronous
 // drive (T5), whose completion the block
 // posts and NodeHost checks against the node's serial, its configuration's generation and the barrier number
 // before the machine hears it; then the instance's start() runs. Its stop() runs once before each silence that follows
 // a start() that returned. Each hook is timed (ear.hook-slow, once per node and hook). Every call into a type's code
-// (its configure, start() and stop(), its code's prepare, a legacy recipe and close, and a sink's or handoff's consumer
-// on that one's own thread) goes through one catch (callType, ConsumerCalls), so a type's throw is a fact about its
+// (its configure, start() and stop(), its code's prepare, and a sink's consumer on that one's own thread) goes
+// through one catch (callType, ConsumerCalls), so a type's throw is a fact about its
 // node (docs/writing-a-node-type.md#rules-the-framework-enforces). ear's own bugs are split by owner
 // (docs/architecture.md#faults-by-owner): an adapter's that NodeHost caught where it called it (inside a context call,
 // or a factory in the flush) is told as ear.internal-error and fails only its node, lost; what NodeHost throws itself
 // leaves for the callback boundary, which ends the process. A configuration is silenced the
-// same way, then torn down by dependency: release(); engine companions; handoffs closed, each on its own thread; its
-// loops finished (their states destroyed on their own threads) and closed, then the instance closed (a legacy run object,
-// on its own threads); then, on the main loop, the code, the sinks, the instance, the loops, the stores, the recordings
+// same way, then torn down by dependency: release(); engine companions; sinks closed, each on its own thread; its
+// loops finished (their states destroyed on their own threads) and closed; then, on the main loop, the code, the sinks, the instance, the loops, the stores, the recordings
 // (closed on the I/O thread) and the config. What
 // is sent to a loop before the node is configured is staged on the main loop, released at configured, and destroyed
 // unrun by a teardown before it. Steps 3 and 4 have the close deadline: past it the configuration is leaked, never
@@ -112,11 +110,6 @@ template <typename... Kinds> struct Overloaded : Kinds... {
 	using Kinds::operator()...;
 };
 
-/// The fact a type's own failure is: an engine refusal when the type says so (none does today), else `fact`.
-lc::Fact factOf(const FailureReason& reason, lc::Fact fact) noexcept {
-	return reason.code == FailureReason::Code::engineRefused ? lc::Fact::engine : fact;
-}
-
 using detail::caughtFrom;
 using detail::whatOf;
 
@@ -134,8 +127,6 @@ inline constexpr TypeHook configure{"configure", "configure", true}; // the inst
 inline constexpr TypeHook start{"start", "start", true};
 inline constexpr TypeHook stop{"stop", "stop", true};
 inline constexpr TypeHook prepare{"prepare", "prepare", false}; // the code's
-inline constexpr TypeHook recipe{"recipe", "recipe", false};    // a legacy recipe
-inline constexpr TypeHook close{"close", "close run", false};   // a legacy run object's close
 } // namespace hooks
 
 /// What a call into a type's code ended with instead of returning (callType): its own throw, the first rule a context
@@ -308,7 +299,7 @@ struct NodeHost::Impl {
 
 	/// One wanted node: its aggregate, its port block and its configuration. Members are declared in reverse teardown
 	/// order, so destroying a node that never stopped still removes its port block first.
-	class Node final : public PortBlockEvents, public StartContext, public Ready, public CreateContext {
+	class Node final : public PortBlockEvents, public CreateContext {
 	public:
 		Node(Impl& host, NodeName name, std::string type, std::uint64_t serial)
 			: host_(host), name_(std::move(name)), type_(std::move(type)), serial_(serial), span_(serial) {}
@@ -564,19 +555,12 @@ struct NodeHost::Impl {
 		void lost(std::string detail) override { blockGone(std::move(detail), FailureCode::engineRefused); }
 		void faulted(std::string detail) override { blockGone(std::move(detail), FailureCode::lost); }
 
-		// The contexts (docs/writing-a-node-type.md#configure-and-createof): CreateContext for the class, StartContext
-		// for the legacy start, Ready for its recipe, on one set of internals. Each call is valid only inside its
+		// CreateContext (docs/writing-a-node-type.md#configure-and-createof). Each call is valid only inside its
 		// configure (else a std::logic_error naming the call). Every rule a call finds broken is also recorded
 		// (guarded), so the node fails with it even when the type catches the throw.
 		AudioFormat format() const override { return host_.format; }
 		const NodeName& node() const override { return name_; }
 		const Ports& ports() const override { return ports_; }
-		NodeHandle& events() override {
-			return guarded([&]() -> NodeHandle& {
-				if (!configuring_ && !building_) throw std::logic_error("events outside configure and its recipe");
-				return *config_->channel;
-			});
-		}
 		void use(NodeCode code) override {
 			guarded([&] {
 				requireConfiguring("use");
@@ -765,12 +749,6 @@ struct NodeHost::Impl {
 				recordLatency(output.name, latency, input.name);
 			});
 		}
-		void declareLatency(const std::string& bank, Latency internal) override {
-			guarded([&] {
-				requireConfiguring("declareLatency");
-				recordLatency(ports_.bank(bank).name, internal); // throws for a bank the node lacks
-			});
-		}
 		[[noreturn]] void refuse(std::string rule) override {
 			if (!brokenRule_) brokenRule_ = rule;
 			throw std::logic_error(rule);
@@ -851,41 +829,11 @@ struct NodeHost::Impl {
 			static_cast<void>(operate(&lc::NodeAggregate::restart, none));
 		}
 
-	protected:
-		Acquired acquireResource(const ResourceRequest& request) override {
-			return guarded([&]() -> Acquired {
-				requireConfiguring("acquire");
-				return std::visit(
-					Overloaded{
-						[&](const HandoffRequest& handoff) -> Acquired {
-							const Ports::Bank& bank = ports_.bank(handoff.bank);
-							if (bank.direction != Direction::input || handoff.consumer == nullptr)
-								throw std::logic_error("a handoff takes an input bank and a consumer, not \"" +
-						                               handoff.bank + "\"");
-							// The handoff calls the type's consumer through its catch, which outlives the handoff.
-							auto& caught =
-								*config_->handoffConsumers.emplace_back(std::make_unique<GuardedHandoffConsumer>(
-									*handoff.consumer, config_->channel, bank.name));
-							HandoffAdapter& handoffs = given(host_.resources.adapterFor(handoff), "handoffs");
-							auto& made = config_->handoffs.emplace_back(adapter("HandoffAdapter::make", [&] {
-								auto made = handoffs.make(name_, static_cast<std::uint32_t>(bank.ports.size()),
-						                                  handoff.capacityFrames, caught);
-								if (!made) throw std::logic_error("the handoff adapter made no handoff");
-								return made;
-							}));
-							return &made->writer();
-						},
-					},
-					request);
-			});
-		}
-
 		/// Runs a context call, telling apart by owner what it throws (docs/architecture.md#faults-by-owner), each
 		/// recorded, the first only, before it is thrown on to the type: a std::logic_error NodeHost's checks threw is a
 		/// rule the type broke; std::bad_alloc is resource exhaustion, not a bug, and fails the node as a refusal does;
-		/// an adapter's refusal or bug was recorded by adapter() and passes as it is, through any guarded() it is
-		/// nested in (a legacy acquire): the refusal is known by its identity, which nothing clears until
-		/// the type's call ends; anything else thrown by NodeHost's own code is NodeHost's bug, thrown on as an EarFault
+		/// an adapter's refusal or bug was recorded by adapter() and passes as it is: the refusal is known by its
+		/// identity, which nothing clears until the type's call ends; anything else thrown by NodeHost's own code is NodeHost's bug, thrown on as an EarFault
 		/// NodeHost owns, which callType rethrows as itself for the callback boundary.
 		template <typename Call> std::invoke_result_t<Call> guarded(Call&& call) {
 			try {
@@ -981,8 +929,8 @@ struct NodeHost::Impl {
 		/// that ends it (it closed, it failed to start, or it was leaked), before the next one can start: that is the
 		/// configuration's generation, so no write of an old configuration lands on a new one. A configuration leaked at
 		/// the close deadline is re-pointed instead (docs/architecture.md#teardown-by-dependency): its handle's notes,
-		/// losses and log entries and its I/O completions are dropped as after a detach, while its closes (each sink's,
-		/// handoff's and loop's, and the run object's) and its consumers' throws land on its LeakedRecord, never on the
+		/// losses and log entries and its I/O completions are dropped as after a detach, while its closes (each sink's
+		/// and loop's) and its consumers' throws land on its LeakedRecord, never on the
 		/// node. Whatever is still queued holds this object, not the node, so it may outlive the node. Its note rate is
 		/// its own, so it is per node and lasts as long as the configuration: a stop and a start keep it, a restart
 		/// begins a fresh one.
@@ -1053,14 +1001,6 @@ struct NodeHost::Impl {
 				detach();
 				record_ = &record;
 			}
-			/// The `closed` a handoff of this configuration gets: on the main thread, later.
-			std::move_only_function<void(std::uint64_t)> handoffClosedCall() {
-				return [self = shared_from_this()](std::uint64_t droppedFrames) {
-					if (Node* node = self->attachedNode())
-						node->handoffClosed(node->config_->generation, droppedFrames);
-					else if (LeakedRecord* record = self->record_) record->handoffClosed();
-				};
-			}
 			/// The `begun` sink `index` of this configuration gets: on the main thread, later, behind any lost() its
 			/// consumer said inside begin() (the same FIFO).
 			std::move_only_function<void()> sinkBegunCall(std::size_t index) {
@@ -1124,34 +1064,6 @@ struct NodeHost::Impl {
 						node->programFed(node->config_->generation, std::move(bytes));
 				});
 			}
-			/// The `closed` the run object gets: from any thread, later or inside close().
-			std::move_only_function<void()> closedCall() {
-				return [self = shared_from_this(), main = std::this_thread::get_id()] {
-					// Only the main thread reads insideClose_. A run object that holds no threads finishes inside
-					// close(), so a restart or removal of a plain node takes no loop turn.
-					if (std::this_thread::get_id() == main && self->insideClose_) {
-						self->closedInside_ = true;
-						return;
-					}
-					self->mainLoop_.post([self] {
-						if (Node* node = self->attachedNode()) node->runClosed();
-						else if (LeakedRecord* record = self->record_) record->runClosed();
-					});
-				};
-			}
-			/// Main thread: close() on `instance` (a legacy run object's close, or `closed` at once). True if it called
-			/// `closed` before it returned.
-			bool close(ErasedInstance& instance) {
-				insideClose_ = true;
-				try {
-					instance.close(closedCall());
-				} catch (...) {
-					insideClose_ = false;
-					throw;
-				}
-				insideClose_ = false;
-				return closedInside_;
-			}
 
 		private:
 			/// Main thread: the node, while this configuration is attached.
@@ -1169,10 +1081,8 @@ struct NodeHost::Impl {
 			const std::string type_; // a log entry's source when the type gave none
 			const std::vector<LogSink*> sinks_;
 			std::mutex sayMutex_;
-			detail::NoteGate gate_;     // sayMutex_
-			bool closing_ = false;      // main thread only
-			bool insideClose_ = false;  // main thread only
-			bool closedInside_ = false; // main thread only
+			detail::NoteGate gate_; // sayMutex_
+			bool closing_ = false;  // main thread only
 		};
 
 		class LoopSlot;
@@ -1198,8 +1108,7 @@ struct NodeHost::Impl {
 			std::vector<std::unique_ptr<LoopSlot>>& loops_; // the configuration's, which outlive the instance
 		};
 
-		/// The catch a type's consumer is called through, on the one thread that calls it (its sink's or its legacy
-		/// handoff's): each call through caughtFrom, so what it throws is told as its configuration's fact
+		/// The catch a type's consumer is called through, on the one thread that calls it (its sink's): each call through caughtFrom, so what it throws is told as its configuration's fact
 		/// (Channel::threw, "<consumer> threw in <call>: <what>") and never reaches that thread's callback.
 		class ConsumerCalls {
 		public:
@@ -1244,24 +1153,6 @@ struct NodeHost::Impl {
 			std::unique_ptr<SinkConsumer> type_;
 			ConsumerCalls calls_;
 			bool began_ = false; // its sink's thread's only
-		};
-
-		/// A legacy handoff's consumer as its handoff calls it (docs/writing-a-node-type.md#the-old-interface): after a
-		/// consume that threw no more consume; finish still runs once, after the last.
-		class GuardedHandoffConsumer final : public HandoffConsumer {
-		public:
-			GuardedHandoffConsumer(HandoffConsumer& type, std::shared_ptr<Channel> channel, const std::string& bank)
-				: type_(type), calls_(std::move(channel), "the handoff " + bank + "'s consumer") {}
-			void consume(std::span<const float> interleaved, std::uint32_t frames) override {
-				if (!calls_.threw()) calls_("consume", [&] { type_.consume(interleaved, frames); });
-			}
-			void finish() override {
-				calls_("finish", [&] { type_.finish(); });
-			}
-
-		private:
-			HandoffConsumer& type_; // the type's, which outlives the handoff (HandoffRequest)
-			ConsumerCalls calls_;
 		};
 
 		/// One cx.sink call (docs/writing-a-node-type.md#sinks): the sink, its one consumer until Sink::begin takes it,
@@ -1884,10 +1775,9 @@ struct NodeHost::Impl {
 			std::size_t index;
 		};
 
-		/// One declareLatency: the bank it is declared on and, for a typed declaration, the input bank its path
-		/// starts at.
+		/// One declareLatency: the input bank its path starts at and the output bank it ends at.
 		struct DeclaredLatency {
-			std::optional<std::string> from;
+			std::string from;
 			std::string bank;
 			Latency latency;
 		};
@@ -1919,11 +1809,8 @@ struct NodeHost::Impl {
 			// Each declared loop, its state and its adapter's loop: a state may hold a source's writer, so they go first;
 			// the instance only posts to them, so they go after it.
 			std::vector<std::unique_ptr<LoopSlot>> loops;
-			std::unique_ptr<ErasedInstance> instance; // the legacy recipe and run object inside it
-			std::unique_ptr<AudioCode> code;          // may read the instance, so goes first
-			// Each handoff's catch around the type's consumer: outlives the handoff that calls it.
-			std::vector<std::unique_ptr<GuardedHandoffConsumer>> handoffConsumers;
-			std::vector<std::unique_ptr<Handoff>> handoffs;
+			std::unique_ptr<ErasedInstance> instance;
+			std::unique_ptr<AudioCode> code;   // may read the instance, so goes first
 			std::vector<EngineAsk> engineAsks; // in request order
 			std::vector<std::unique_ptr<Companion>> engineCompanions;
 			// Its one program: destroyed after the instance and before the claims are released (teardown step 5), so a
@@ -1948,35 +1835,34 @@ struct NodeHost::Impl {
 			std::unique_ptr<bool[]> faded;
 			std::size_t fadedCount = 0;
 			std::vector<BankPair> pairs;          // the pass-through's pairs, for the latency plan
-			std::vector<DeclaredLatency> latency; // what configure declared, one per bank
+			std::vector<DeclaredLatency> latency; // what configure declared, one per path
 			LatencyPlan plan;                     // worked out at configure's return; carried with each drive
 			bool codeGiven = false;               // use() was called
 			bool startFailed = false;     // configure failed, threw or broke a rule: nothing to make, prepare or drive
 			bool companionsAsked = false; // its engine companions' making is queued
-			bool recipeRan = false;       // T3 ran (or there was no recipe)
+			bool readyTold = false;       // T3: the machine was told every resource is ready
 			bool prepared = false;
 			bool tearing = false;       // teardown step 3 began
 			bool ending = false;        // teardown step 1 began: its companions' list is empty from here
 			bool loopsReleased = false; // configured: what was staged on its loops was released
-			/// Teardown step 4's loops: every loop made is finished, then closed, then the run object.
+			/// Teardown step 4's loops: every loop made is finished, then closed.
 			enum class LoopsStep { open, finishing, closing, closed } loopsStep = LoopsStep::open;
-			std::size_t handoffsClosed = 0;
+			bool closedTold = false; // step 4 is done: the machine was told closed
 			std::size_t sinksClosed = 0;
 		};
 
 		/// A configuration leaked at the close deadline (docs/architecture.md#teardown-by-dependency): not freed while its
 		/// threads may still touch any of it, and still listening. Its Channel is re-pointed here, so every close it
-		/// still reports (a sink's, a handoff's, a loop's finish and close, the run object's) lands here in order on the
-		/// main loop, and the teardown carries on from where it stopped: once the sinks and handoffs closed, the loops
-		/// finish and close, then a legacy run object closes. Once everything reported, ear.close-late is said, the
+		/// still reports (a sink's, a loop's finish and close) lands here in order on the
+		/// main loop, and the teardown carries on from where it stopped: once the sinks closed, the loops
+		/// finish and close. Once everything reported, ear.close-late is said, the
 		/// Channel is detached, the configuration no longer counts in leaked(), and a later turn frees it. A consumer's throw is an `ear` log
 		/// record naming the node, never a fact: nothing here reaches the node or a newer configuration. Until then
 		/// NodeHost reaches it by the configuration's Channel alone (the Impl outlives it but on an exit through _Exit).
 		class LeakedRecord {
 		public:
-			LeakedRecord(Impl& host, NodeName name, std::unique_ptr<Configuration> config, bool runClosing)
-				: host_(host), name_(std::move(name)), generation_(config->generation), config_(std::move(config)),
-				  runClosing_(runClosing) {}
+			LeakedRecord(Impl& host, NodeName name, std::unique_ptr<Configuration> config)
+				: host_(host), name_(std::move(name)), generation_(config->generation), config_(std::move(config)) {}
 			/// Main thread, once, as it is leaked: its closes land here from now on.
 			void repoint() noexcept { config_->channel->repoint(*this); }
 			void sinkClosed(std::size_t index) {
@@ -1985,12 +1871,6 @@ struct NodeHost::Impl {
 					if (index >= c.sinks.size() || c.sinks[index]->closed) return;
 					c.sinks[index]->closed = true;
 					++c.sinksClosed;
-					carryOn();
-				});
-			}
-			void handoffClosed() {
-				host_.input([this] {
-					++config_->handoffsClosed;
 					carryOn();
 				});
 			}
@@ -2010,38 +1890,19 @@ struct NodeHost::Impl {
 					carryOn();
 				});
 			}
-			void runClosed() {
-				host_.input([this] {
-					if (!runClosing_) return;
-					runClosing_ = false;
-					closedLate();
-				});
-			}
 			void threw(std::string detail) {
 				host_.logged(LogEntry{LogLevel::error, "ear", std::move(detail), {}, name_});
 			}
 
 		private:
-			/// As closeRunObject: once every sink and handoff closed, the loops; once they closed, the run object.
+			/// As closeLoops: once every sink closed and the program was reaped, the loops; once they closed, it has
+			/// closed.
 			void carryOn() {
 				Configuration& c = *config_;
-				if (closed_ || runClosing_ || c.handoffsClosed != c.handoffs.size() ||
-				    c.sinksClosed != c.sinks.size() || (c.program && c.program->open()))
-					return;
+				if (closed_ || c.sinksClosed != c.sinks.size() || (c.program && c.program->open())) return;
 				if (c.loopsStep == Configuration::LoopsStep::open) finishLoopsOf(c);
 				if (c.loopsStep != Configuration::LoopsStep::closed) return;
-				runClosing_ = true;
-				bool closedInside = true;
-				if (c.instance) {
-					const MainLoopActivity::Scope activity(hooks::close.activity, name_);
-					auto closed = detail::caughtFrom([&] { return c.channel->close(*c.instance); });
-					if (closed) closedInside = *closed;
-					else host_.logged(LogEntry{LogLevel::error, "ear", "close threw: " + closed.error(), {}, name_});
-				}
-				if (closedInside) {
-					runClosing_ = false;
-					closedLate();
-				}
+				closedLate();
 			}
 			/// Everything it held reported: its recordings' closes posted to the I/O thread first, so they come
 			/// before any open of their paths that releasing its claims allows; its claims released and said, no
@@ -2095,7 +1956,6 @@ struct NodeHost::Impl {
 			const NodeName name_;            // a copy: the node may be gone
 			const std::uint64_t generation_; // its claims' holder
 			std::unique_ptr<Configuration> config_;
-			bool runClosing_; // the run object was told to close and has not said it closed
 			bool closed_ = false;
 		};
 
@@ -2189,7 +2049,7 @@ struct NodeHost::Impl {
 		}
 
 		/// Carries out what the aggregate returned, in order. An input an action causes (a
-		/// resource ready at once, a run object closed inside close()) is queued behind them, never handled inside.
+		/// resource ready at once) is queued behind them, never handled inside.
 		void feed(lc::Actions actions) {
 			// A removal that ends in its own input (nothing was configured, or its configuration was already gone) is
 			// told gone without a stopping before it; every removal says stopping first.
@@ -2284,8 +2144,6 @@ struct NodeHost::Impl {
 			case Kind::configure:
 				configure();
 				break;
-			case Kind::runRecipe:
-				break; // ran before every resource was told ready (checkReady), so a failed recipe is a fault in readying
 			case Kind::prepare:
 				prepare();
 				break;
@@ -2393,23 +2251,21 @@ struct NodeHost::Impl {
 			if (taken) throw std::logic_error("a second companion on bank " + bank.name);
 		}
 
-		/// A typed declaration (`from` given) is keyed by its path, so a code with several inputs into one output (a
-		/// mixer) declares each path once; a legacy declaration on one bank is keyed by its bank, once.
-		void recordLatency(const std::string& bank, Latency latency, std::optional<std::string> from = std::nullopt) {
+		/// A declaration is keyed by its path, so a code with several inputs into one output (a mixer) declares each
+		/// path once.
+		void recordLatency(const std::string& bank, Latency latency, std::string from) {
 			if (std::ranges::any_of(config_->latency, [&](const DeclaredLatency& declared) {
 					return declared.bank == bank && declared.from == from;
 				}))
-				throw std::logic_error(from ? "latency declared twice for the path " + *from + " to " + bank
-				                            : "latency declared twice for bank " + bank);
+				throw std::logic_error("latency declared twice for the path " + from + " to " + bank);
 			config_->latency.push_back(DeclaredLatency{std::move(from), bank, latency});
 		}
 
 		/// The configuration's latency plan, by role (docs/engine.md#latency-per-bank-pair). What each source's ring
 		/// may hold is latency beyond its bank: the most its frames wait before they play; and a module-run
-		/// converter's buffer (moduleRunDelay), which its ports report as zero. A typed declaration (from, to) is a
+		/// converter's buffer (moduleRunDelay), which its ports report as zero. A declaration (from, to) is a
 		/// path of its own: its pair is carried (added for a code of the type's own; a pass-through must already copy
-		/// it, checked at configure's return) with the delay on it, both ways. A legacy declaration on one bank is the
-		/// delay on the pass-through's pair that ends at the bank, or, on a bank no pair ends at, that bank's alone.
+		/// it, checked at configure's return) with the delay on it, both ways.
 		LatencyPlan latencyPlan(const Configuration& c) const {
 			LatencyPlan plan{.pairs = c.pairs};
 			for (const SourceSlot& slot : c.sources)
@@ -2423,19 +2279,9 @@ struct NodeHost::Impl {
 					},
 					asked.shape);
 			for (const DeclaredLatency& declared : c.latency) {
-				if (declared.from) {
-					const BankPair pair{*declared.from, declared.bank};
-					if (std::ranges::find(plan.pairs, pair) == plan.pairs.end()) plan.pairs.push_back(pair);
-					plan.onPair.emplace_back(pair, Delay{declared.latency});
-					continue;
-				}
-				bool paired = false;
-				for (const BankPair& pair : c.pairs)
-					if (pair.to == declared.bank) {
-						plan.onPair.emplace_back(pair, Delay{declared.latency});
-						paired = true;
-					}
-				if (!paired) plan.onBank.emplace_back(declared.bank, Delay{declared.latency});
+				const BankPair pair{declared.from, declared.bank};
+				if (std::ranges::find(plan.pairs, pair) == plan.pairs.end()) plan.pairs.push_back(pair);
+				plan.onPair.emplace_back(pair, Delay{declared.latency});
 			}
 			return plan;
 		}
@@ -2529,8 +2375,7 @@ struct NodeHost::Impl {
 						                                         kept[i].rule),
 							StoreLink{&host_, serial_, c.generation, i, c.channel->completions(), c.storesWritable}));
 				}
-				InstanceContexts contexts{*this, *this};
-				return c.instance->configure(contexts);
+				return c.instance->configure(*this);
 			});
 			configuring_ = false;
 			// A rule a call found broken fails the node whatever configure did next: caught, answered or thrown. Only
@@ -2541,8 +2386,7 @@ struct NodeHost::Impl {
 			if (answer->isFailed()) {
 				if (answer->detail().empty())
 					return failConfigure(lc::Fact::configureFailed, "configure answered failed with no detail");
-				return failConfigure(c.instance->engineRefused() ? lc::Fact::engine : lc::Fact::configureFailed,
-				                     answer->detail());
+				return failConfigure(lc::Fact::configureFailed, answer->detail());
 			}
 			// The return checks, on an applied answer only.
 			if (!c.codeGiven) return failConfigure(lc::Fact::configureFailed, "configure gave no code");
@@ -2585,10 +2429,9 @@ struct NodeHost::Impl {
 			// would lie on audio that never flows there.
 			if (!c.pairs.empty())
 				for (const DeclaredLatency& declared : c.latency)
-					if (declared.from &&
-					    std::ranges::find(c.pairs, BankPair{*declared.from, declared.bank}) == c.pairs.end())
+					if (std::ranges::find(c.pairs, BankPair{declared.from, declared.bank}) == c.pairs.end())
 						return failConfigure(lc::Fact::configureFailed, "configure declared latency on " +
-						                                                    *declared.from + " to " + declared.bank +
+						                                                    declared.from + " to " + declared.bank +
 						                                                    ", a path its pass-through does not copy");
 			// The latency plan fits the ports, worked out here as the block will (with no peer yet), so a misfit fails
 			// the node now with its reason and every drive carries a plan that fits.
@@ -2920,7 +2763,7 @@ struct NodeHost::Impl {
 					        node.config_->readiness.failed(program.item, "cannot start " + program.name() + ": " + why))
 						node.feed(node.aggregate_.fault(failure->fact, std::move(failure->detail)));
 				}
-				node.closeRunObject();
+				node.closeLoops();
 			});
 		}
 		/// The program was reaped. During a teardown (from its step 1) that is the end the teardown waits for; otherwise
@@ -2930,7 +2773,7 @@ struct NodeHost::Impl {
 				if (!node.current(generation) || !node.config_->program) return;
 				ProgramSlot& program = *node.config_->program;
 				program.ended = true;
-				if (node.config_->ending) return node.closeRunObject();
+				if (node.config_->ending) return node.closeLoops();
 				node.feed(node.aggregate_.fault(lc::Fact::nodeLost, programExitDetail(program.name(), exit)));
 			});
 		}
@@ -3109,7 +2952,7 @@ struct NodeHost::Impl {
 
 		/// The configuration of `generation` is the current one and still waits for its resources.
 		bool stillReadying(std::uint64_t generation) const {
-			return current(generation) && !config_->startFailed && !config_->tearing && !config_->recipeRan &&
+			return current(generation) && !config_->startFailed && !config_->tearing && !config_->readyTold &&
 			       aggregate_.configuration().state() == lc::ConfigState::readying;
 		}
 
@@ -3163,17 +3006,15 @@ struct NodeHost::Impl {
 				node.config_->sinks[index]->closed = true;
 				node.dropped_ += droppedFrames;
 				++node.config_->sinksClosed;
-				node.closeRunObject();
+				node.closeLoops();
 			});
 		}
 
-		/// configure failed, threw or broke a rule: nothing was driven by its code, so the handoffs may go now (their
-		/// consumers may have gone with a legacy start's result), and so may the sinks, none begun (a consumer given is
-		/// freed unbegun, with nothing to finish); no engine companion was made. The recordings and the instance stay
+		/// configure failed, threw or broke a rule: nothing was driven by its code, so the sinks may go now, none
+		/// begun (a consumer given is freed unbegun, with nothing to finish); no engine companion was made. The recordings and the instance stay
 		/// until step 5 frees them, the instance first. The fault is an input of its own.
 		void failConfigure(lc::Fact fact, std::string detail) {
 			Configuration& c = *config_;
-			c.handoffs.clear();
 			c.sinks.clear();
 			closeSources(); // freed at step 5, after the instance that may hold their writers
 			c.engineAsks.clear();
@@ -3226,7 +3067,7 @@ struct NodeHost::Impl {
 		/// own input). An adapter that tells ready() inside make() is heard after that item, and every ready is judged
 		/// against every engine companion made.
 		void askResources() {
-			if (!config_ || config_->startFailed || config_->recipeRan ||
+			if (!config_ || config_->startFailed || config_->readyTold ||
 			    aggregate_.configuration().state() != lc::ConfigState::readying)
 				return;
 			Configuration& c = *config_;
@@ -3247,31 +3088,15 @@ struct NodeHost::Impl {
 							});
 		}
 
-		/// Every resource ready: T3. The recipe builds the run object first, so a failed recipe is a fault in
-		/// readying, before anything is prepared or driven; then the machine hears it.
+		/// Every resource ready: T3, which the machine hears.
 		void checkReady(std::uint64_t generation) {
-			if (!current(generation) || config_->startFailed || config_->recipeRan ||
+			if (!current(generation) || config_->startFailed || config_->readyTold ||
 			    aggregate_.configuration().state() != lc::ConfigState::readying)
 				return;
 			Configuration& c = *config_;
 			// An engine companion's item is ready only once it was made, so a done list holds every one made.
 			if (!c.readiness.done()) return;
-			c.recipeRan = true;
-			if (c.instance->hasRecipe()) {
-				building_ = true;
-				auto built = callType(hooks::recipe, [&] { return c.instance->ready(*this); });
-				building_ = false;
-				// A recipe that throws, or breaks a rule, is a type bug that fails its node like a failed recipe.
-				if (!built) {
-					feed(aggregate_.fault(lc::Fact::recipeFailed, std::move(built.error().detail)));
-					return;
-				}
-				if (auto& made = *built; !made) {
-					feed(
-						aggregate_.fault(factOf(made.error(), lc::Fact::recipeFailed), std::move(made.error().detail)));
-					return;
-				}
-			}
+			c.readyTold = true;
 			feed(aggregate_.resourcesReady());
 		}
 
@@ -3549,8 +3374,8 @@ struct NodeHost::Impl {
 			config_->prepared = false;
 		}
 
-		/// teardown steps 1's rest to 3: the engine companions; the handoffs closed, each on its own thread. Steps 3
-		/// and 4 have the close deadline. The rest goes once every handoff has closed.
+		/// teardown steps 1's rest to 3: the engine companions; the sinks closed, each on its own thread. Steps 3
+		/// and 4 have the close deadline. The rest goes once every sink has closed.
 		void teardown() {
 			Configuration& c = *config_;
 			c.channel->closing();
@@ -3578,52 +3403,32 @@ struct NodeHost::Impl {
 				});
 			c.tearing = true;
 			c.closeBegan = host_.timers.now();
-			c.handoffsClosed = 0;
 			c.sinksClosed = 0;
-			closingHandoffs_ = true;
-			// A sink drains what its ring holds and finishes a consumer that began; a legacy handoff likewise.
+			closingSinks_ = true;
+			// A sink drains what its ring holds and finishes a consumer that began.
 			for (std::size_t i = 0; i < c.sinks.size(); ++i) c.sinks[i]->sink->close(c.channel->sinkClosedCall(i));
-			for (auto& handoff : c.handoffs) handoff->close(c.channel->handoffClosedCall());
-			closingHandoffs_ = false;
-			closeRunObject();
+			closingSinks_ = false;
+			closeLoops();
 		}
 
-		void handoffClosed(std::uint64_t generation, std::uint64_t droppedFrames) {
-			host_.inputFor(serial_, [generation, droppedFrames](Node& node) {
-				if (!node.current(generation)) return;
-				node.dropped_ += droppedFrames;
-				++node.config_->handoffsClosed;
-				node.closeRunObject();
-			});
-		}
-
-		/// teardown step 4, once every sink and handoff reported closed, and never inside a close() call, so no handoff
-		/// is destroyed while that loop is still calling it. The rest goes once the run object says it has closed.
-		void closeRunObject() {
-			if (!config_ || !config_->tearing || closingHandoffs_ || runClosing_ ||
-			    config_->handoffsClosed != config_->handoffs.size() || config_->sinksClosed != config_->sinks.size() ||
-			    (config_->program && config_->program->open()))
+		/// teardown step 4, once every sink reported closed and the program was reaped, and never inside a sink's
+		/// close() call: the loops finish and close, and once they have the machine hears closed, once.
+		void closeLoops() {
+			if (!config_ || !config_->tearing || closingSinks_ || config_->closedTold ||
+			    config_->sinksClosed != config_->sinks.size() || (config_->program && config_->program->open()))
 				return;
 			if (config_->loopsStep == Configuration::LoopsStep::open) finishLoops();
 			if (config_->loopsStep != Configuration::LoopsStep::closed) return;
-			config_->handoffs.clear();
-			runClosing_ = true;
-			const bool closedInside = [&] {
-				if (!config_->instance) return true;
-				auto closed = callType(hooks::close, [&] { return config_->channel->close(*config_->instance); });
-				if (closed) return *closed;
-				// A legacy RunObject::close that throws: written, and the configuration taken as closed (facts are
-				// dropped once a teardown began), so the teardown goes on.
-				host_.logged(LogEntry{LogLevel::error, "ear", std::move(closed.error().detail), {}, name_});
-				return true;
-			}();
-			if (closedInside) runClosed();
+			config_->closedTold = true;
+			host_.inputFor(serial_, [generation = config_->generation](Node& node) {
+				if (node.current(generation)) node.feed(node.aggregate_.closed());
+			});
 		}
 
-		/// Teardown step 4's loops, once every sink and handoff closed: each loop that was made (and did not fail to
+		/// Teardown step 4's loops, once every sink closed: each loop that was made (and did not fail to
 		/// start) runs what was posted and destroys its state on its own thread; once all have, each closes, cancelling
-		/// the sources left armed; once all have, what each left is said (ear.loop-source-left) and the run object
-		/// closes. A loop never made has nothing to close: its state goes with the configuration (step 5).
+		/// the sources left armed; once all have, what each left is said (ear.loop-source-left) and the configuration
+		/// has closed. A loop never made has nothing to close: its state goes with the configuration (step 5).
 		void finishLoops() { finishLoopsOf(*config_); }
 
 		/// The steps of finishLoops, on a configuration the node holds or its leaked record does: each loop's finished
@@ -3679,16 +3484,7 @@ struct NodeHost::Impl {
 		void loopClosedHeard(std::uint64_t generation, std::size_t index) {
 			host_.inputFor(serial_, [generation, index](Node& node) {
 				if (node.current(generation) && loopClosedIn(node.host_, node.name_, *node.config_, index))
-					node.closeRunObject();
-			});
-		}
-
-		/// The run object's threads are gone: every sink and handoff closed, then the run object (the machine's closed).
-		void runClosed() {
-			if (!runClosing_) return;
-			runClosing_ = false;
-			host_.inputFor(serial_, [generation = config_->generation](Node& node) {
-				if (node.current(generation)) node.feed(node.aggregate_.closed());
+					node.closeLoops();
 			});
 		}
 
@@ -3719,7 +3515,7 @@ struct NodeHost::Impl {
 		/// teardown step 5, on the main loop: the code (released and unreachable since the barrier; it may hold
 		/// references into the instance, never the reverse), then the sinks (each closed, so its consumer, which may
 		/// hold a reference into the instance, is idle), then the states of loops that never started (which may read
-		/// the instance too), then the instance (a legacy run object and recipe in it), the loops, the sources, the
+		/// the instance too), then the instance, the loops, the sources, the
 		/// stores, the recordings, and last its context, channel and config.
 		void freeConfiguration() {
 			const MainLoopActivity::Scope activity("free configuration", name_);
@@ -3746,19 +3542,22 @@ struct NodeHost::Impl {
 
 		/// The close deadline passed with step 3 or 4 unfinished: said, then leaked.
 		void closeOverdue() {
-			// Once every handoff closed they are cleared and the run object is closing.
-			const std::size_t handoffsOpen = runClosing_ ? 0 : config_->handoffs.size() - config_->handoffsClosed;
-			const std::size_t sinksOpen = runClosing_ ? 0 : config_->sinks.size() - config_->sinksClosed;
+			const std::size_t sinksOpen = config_->sinks.size() - config_->sinksClosed;
 			const auto loopsOpen = static_cast<std::size_t>(
 				std::ranges::count_if(config_->loops, [](const auto& slot) { return slot->made && !slot->closed; }));
 			const std::size_t programsOpen = config_->program && config_->program->open() ? 1 : 0;
+			std::string open;
+			const auto count = [&](std::size_t n, std::string_view what) {
+				if (n == 0) return;
+				if (!open.empty()) open += ", ";
+				open += std::to_string(n) + " " + std::string(what) + " open";
+			};
+			count(sinksOpen, "sinks");
+			count(loopsOpen, "loops");
+			count(programsOpen, "programs");
 			host_.diagnosed(name_, "ear.close-overdue",
-			                "the run did not close within " + std::to_string(host_.closeDeadline.count()) +
-			                    " ms and is left running (" + std::to_string(handoffsOpen) + " handoffs open, " +
-			                    (sinksOpen > 0 ? std::to_string(sinksOpen) + " sinks open, " : std::string()) +
-			                    (loopsOpen > 0 ? std::to_string(loopsOpen) + " loops open, " : std::string()) +
-			                    (programsOpen > 0 ? std::to_string(programsOpen) + " programs open, " : std::string()) +
-			                    "run " + (runClosing_ ? "closing" : "not yet told to close") + ")",
+			                "the configuration did not close within " + std::to_string(host_.closeDeadline.count()) +
+			                    " ms and is left running (" + open + ")",
 			                {});
 		}
 
@@ -3781,10 +3580,9 @@ struct NodeHost::Impl {
 			host_.claimsDecided(host_.claims.leaked(c.generation, listening));
 			// Not deleted here: the configuration's threads may still touch any of it. A listening record deletes
 			// itself once they all reported closed (LeakedRecord::closedLate); any other is never deleted.
-			auto* record = new LeakedRecord(host_, name_, std::move(config_), runClosing_);
+			auto* record = new LeakedRecord(host_, name_, std::move(config_));
 			if (listening) record->repoint();
 			++host_.leaked;
-			runClosing_ = false;
 		}
 
 		Impl& host_;
@@ -3808,7 +3606,6 @@ struct NodeHost::Impl {
 		std::unique_ptr<Configuration> config_;     // the current configuration (at most one)
 		std::unique_ptr<PortBlock> block_;
 		bool configuring_ = false;         // inside the instance's making and configure: the contexts' calls are valid
-		bool building_ = false;            // inside a legacy recipe: events() is valid
 		std::optional<EarFault> earFault_; // the first fault of ear's own in the hook running (guarded)
 		std::exception_ptr refused_;       // an adapter's refusal, thrown on through guarded as itself
 		std::optional<std::string> brokenRule_;   // the first rule a context call found broken in the hook running
@@ -3816,8 +3613,7 @@ struct NodeHost::Impl {
 		std::optional<std::string> startThrew_;   // a start() that threw, likewise
 		std::optional<std::string> stopThrew_;    // a stop() that threw during a stop, likewise
 		std::set<std::string_view, std::less<>> hooksReportedSlow_; // ear.hook-slow said, for the node's life
-		bool closingHandoffs_ = false;
-		bool runClosing_ = false;
+		bool closingSinks_ = false;        // inside the sinks' close() calls of teardown step 3
 		bool makePending_ = false;         // the block's making is queued in the flush
 		bool destroyPending_ = false;      // the block's destruction is queued in the flush
 		bool goneHeld_ = false;            // removed: told gone once its block and its predecessor are gone

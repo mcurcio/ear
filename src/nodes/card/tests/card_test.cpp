@@ -134,7 +134,6 @@ TEST_CASE("Card's configure asks for one sound card per direction, each joined t
 	CHECK(harness.phase() == "configuring");
 	harness.ready(card::fromCard);
 	CHECK(harness.phase() == "running");
-	CHECK(harness->runObject() == nullptr);
 	harness.lose(card::fromCard, "card lost");
 	CHECK(harness.phase() == "failed");
 	REQUIRE(harness->health().reason);

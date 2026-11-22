@@ -9,6 +9,7 @@
 
 #include "catch2/catch.hpp"
 #include "ear/control/gateway.hpp"
+#include "ear/core/lifecycle.hpp"
 
 using namespace ear::control;
 using nlohmann::json;
@@ -49,8 +50,12 @@ class Config final : public ear::NodeConfig {
 public:
 	explicit Config(ear::Ports ports) : ports_(std::move(ports)) {}
 	const ear::Ports& ports() const override { return ports_; }
-	ear::StartResult start(ear::StartContext&) const override {
-		return std::unexpected(ear::FailureReason{ear::FailureReason::Code::startFailed, "test config"});
+	/// Never configured in these tests: the gateway only carries the config.
+	std::unique_ptr<ear::ErasedInstance> make(ear::NodeContext&) const override {
+		struct Instance final : ear::ErasedInstance {
+			ear::Configured configure(ear::CreateContext&) override { return ear::Configured::failed("test config"); }
+		};
+		return std::make_unique<Instance>();
 	}
 
 private:

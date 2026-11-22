@@ -58,13 +58,13 @@
 #include "ear/pipewire/engine.hpp"
 #include "ear/pipewire/engine_log.hpp"
 #include "ear/pipewire/faults.hpp"
-#include "ear/pipewire/handoffs.hpp"
 #include "ear/pipewire/links.hpp"
 #include "ear/pipewire/live_graph.hpp"
 #include "ear/pipewire/main_loop_executor.hpp"
 #include "ear/pipewire/pipe_receivers.hpp"
 #include "ear/pipewire/port_blocks.hpp"
 #include "ear/pipewire/rtp_receivers.hpp"
+#include "ear/pipewire/sinks.hpp"
 #include "ear/pipewire/sound_cards.hpp"
 #include "ear/pipewire/sources.hpp"
 #include "ear/runtime/io_thread.hpp"
@@ -394,7 +394,6 @@ int main(int argc, char** argv) {
 	ear::server::LevelBell bell;
 
 	ear::pipewire::FilterPortBlocks blocks(*engine, bell);
-	ear::pipewire::ThreadHandoffs handoffs(engine->mainLoop());
 	ear::pipewire::ThreadSinks sinks(mainLoop); // a sink's begun and closed post where the nodes' events do
 	ear::pipewire::EventSources sources;
 	// The nodes' loops (docs/writing-a-node-type.md#loops): no thread until a node asks for one; its events post where the
@@ -418,7 +417,6 @@ int main(int argc, char** argv) {
 		std::make_shared<const ear::folder::ConfinedFolder>(std::move(*recordings)), io);
 	ear::ResourceRegistry resources(ear::ResourceAdapters{.cards = &cards,
 	                                                      .receivers = &receivers,
-	                                                      .handoffs = &handoffs,
 	                                                      .sinks = &sinks,
 	                                                      .sources = &sources,
 	                                                      .recordings = &recordingFiles,

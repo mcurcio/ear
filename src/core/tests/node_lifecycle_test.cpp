@@ -503,7 +503,7 @@ TEST_CASE("Every event in every configuration state moves the configuration mach
 	      same}},
 		{At::readying,
 	     {same,
-	      {prepared, {K::runRecipe, K::prepare}},
+	      {prepared, {K::prepare}},
 	      same,
 	      same,
 	      toTearing,
@@ -768,7 +768,6 @@ TEST_CASE("The failure code is chosen by the fact: engine-refused always for the
 		{Fact::engine, engineRefused, engineRefused},
 		{Fact::configureFailed, startFailed, startFailed},
 		{Fact::consumerNeverBegan, startFailed, startFailed},
-		{Fact::recipeFailed, startFailed, startFailed},
 		{Fact::nodeLost, startFailed, lost},
 		{Fact::hookThrew, startFailed, lost},
 		{Fact::adapterFaulted, lost, lost}, // ear's own adapter's bug: lost at any phase
@@ -1201,7 +1200,7 @@ TEST_CASE("A normal start tells added, configuring, configured, starting, runnin
 	p.settle();
 	CHECK(names(p.phases()) ==
 	      std::vector<std::string_view>{"added", "configuring", "configured", "starting", "running"});
-	CHECK(p.asked == std::vector<K>{K::configure, K::runRecipe, K::prepare, K::drive, K::start});
+	CHECK(p.asked == std::vector<K>{K::configure, K::prepare, K::drive, K::start});
 }
 
 TEST_CASE("Every configure enters readying, so configuring is derived even with nothing pending",

@@ -161,9 +161,6 @@ void start() {}
 #elif !defined(EAR_CASE_private_stop)
 	void stop() noexcept {}
 #endif
-#ifdef EAR_CASE_legacy_start_on_spec_type
-	static StartResult start(StartContext&, const Checked&) { return Copy{}; }
-#endif
 
 private:
 #ifdef EAR_CASE_private_start

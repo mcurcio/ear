@@ -279,8 +279,7 @@ template <class Process> struct ProcessOf {
 template <class Code, const auto& S> struct ProcessOf<void (Code::*)(Io<S>, const GraphCycle&) noexcept> {
 	static constexpr const auto& spec = S;
 };
-/// A code whose layout the type's config hands over: CreateOf::use binds it to the node's ports (and the legacy
-/// config, after its start).
+/// A code whose layout the type's config hands over: CreateOf::use binds it to the node's ports.
 class BankBoundCode : public AudioCode {
 public:
 	virtual void bindPorts(const Ports& ports) noexcept = 0;

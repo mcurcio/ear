@@ -27,6 +27,7 @@
 
 #include "../callback_boundary.hpp"
 #include "catch2/catch.hpp"
+#include "ear/core/lifecycle.hpp"
 #include "ear/core/main_loop_activity.hpp"
 #include "ear/core/node_host.hpp"
 #include "ear/pipewire/engine.hpp"
@@ -206,8 +207,8 @@ TEST_CASE("A rethrown exception keeps the place it was first thrown from", "[bou
 	MainLoopActivity::Saved at;
 	std::exception_ptr kept;
 	try {
-		const MainLoopActivity::Scope scope("recipe", "attic");
-		throw std::runtime_error("recipe threw");
+		const MainLoopActivity::Scope scope("configure", "attic");
+		throw std::runtime_error("configure threw");
 	} catch (...) {
 		kept = std::current_exception();
 		at = *MainLoopActivity::takeThrown();
@@ -220,7 +221,7 @@ TEST_CASE("A rethrown exception keeps the place it was first thrown from", "[bou
 	} catch (...) {
 		const auto place = MainLoopActivity::takeThrown();
 		REQUIRE(place);
-		CHECK(MainLoopActivity::describe(*place) == "recipe attic");
+		CHECK(MainLoopActivity::describe(*place) == "configure attic");
 	}
 }
 
@@ -484,11 +485,6 @@ struct NoReceivers final : RtpReceiverCompanions {
 		return nullptr;
 	}
 };
-struct NoHandoffs final : HandoffAdapter {
-	std::unique_ptr<Handoff> make(const NodeName&, std::uint32_t, std::uint32_t, HandoffConsumer&) override {
-		return nullptr;
-	}
-};
 struct NoSinks final : SinkAdapter {
 	std::unique_ptr<Sink> make(const NodeName&, std::string_view, std::uint32_t, std::uint32_t, SampleRate) override {
 		return nullptr;
@@ -512,7 +508,15 @@ public:
 class SilentConfig final : public NodeConfig {
 public:
 	const Ports& ports() const override { return ports_; }
-	StartResult start(StartContext&) const override { return std::make_unique<SilentCode>(); }
+	std::unique_ptr<ErasedInstance> make(NodeContext&) const override {
+		struct Instance final : ErasedInstance {
+			Configured configure(CreateContext& cx) override {
+				cx.use(std::make_unique<SilentCode>());
+				return Configured::applied();
+			}
+		};
+		return std::make_unique<Instance>();
+	}
 
 private:
 	Ports ports_{{{Direction::output, "out", {"mono"}}}};
@@ -540,10 +544,9 @@ TEST_CASE("A std::logic_error of NodeHost's own, out of a block's callback, ends
 		TellingBlocks blocks;
 		NoCards cards;
 		NoReceivers receivers;
-		NoHandoffs handoffs;
 		NoSinks sinks;
 		NoSources sources;
-		ResourceRegistry resources(cards, receivers, handoffs, sinks, sources);
+		ResourceRegistry resources(cards, receivers, sinks, sources);
 		NodeHost host(AudioFormat{ear::SampleRate::fixed<48000>(), 256}, blocks, resources, loop, loop);
 		host.nodeAdded(NodeSpec{"amp", "silent", {}}, std::make_shared<SilentConfig>());
 		loop.runPosted(); // the flush makes the block

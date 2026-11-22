@@ -471,13 +471,6 @@ template <const auto& Spec> class ChangeOf;
 
 // ---- The erased instance ----
 
-/// Both contexts NodeHost implements on one set of internals, for the one call that needs either
-/// (docs/writing-a-node-type.md#rules-the-framework-enforces). Valid only during configure.
-struct InstanceContexts {
-	CreateContext& create; // what SpecInstance hands the type, as CreateOf<Spec>
-	StartContext& legacy;  // what LegacyInstance hands NodeConfig::start; interim until slice 3c
-};
-
 /// One configuration's instance, as NodeHost drives it (docs/writing-a-node-type.md#rules-the-framework-enforces): made
 /// by NodeConfig::make at T2, freed at teardown step 5 after the code. Main thread for every call. A type's exception
 /// passes through every call: NodeHost catches it at the call and fails the node (`<hook> threw: <what>`, its code by
@@ -485,30 +478,17 @@ struct InstanceContexts {
 class ErasedInstance {
 public:
 	virtual ~ErasedInstance() = default;
-	/// The spec's loops, in declaration order (docs/writing-a-node-type.md#loops); none for a legacy instance.
+	/// The spec's loops, in declaration order (docs/writing-a-node-type.md#loops).
 	virtual std::span<const LoopDeclaration> loops() const noexcept { return {}; }
-	/// The spec's stores, in declaration order (docs/writing-a-node-type.md#stores); none for a legacy instance.
+	/// The spec's stores, in declaration order (docs/writing-a-node-type.md#stores).
 	virtual std::span<const StoreDeclaration> stores() const noexcept { return {}; }
-	/// T2: creation's configure (or the legacy start). Called once, timed as the hook `configure`.
-	virtual Configured configure(InstanceContexts& cx) = 0;
-	/// Legacy only: whether its start returned a recipe.
-	virtual bool hasRecipe() const noexcept { return false; }
-	/// Legacy only: configure answered failed because the old SPI's start said engineRefused (its fact is kept: the node
-	/// fails engine-refused, not start-failed).
-	virtual bool engineRefused() const noexcept { return false; }
-	/// Legacy only, T3 (every resource ready, before the machine hears it): the recipe builds the run object; its
-	/// failure is the fault `start-failed`.
-	virtual std::expected<void, FailureReason> ready(Ready& ready) {
-		static_cast<void>(ready);
-		return {};
-	}
+	/// T2: creation's configure, through `cx` (valid only during the call; SpecInstance hands it to the type as
+	/// CreateOf<Spec>). Called once, timed as the hook `configure`.
+	virtual Configured configure(CreateContext& cx) = 0;
 	/// T5 and T8, once the drive completed; timed as `start`.
 	virtual void start() {}
 	/// Once after every start() that returned (docs/writing-a-node-type.md#the-class pairing); timed as `stop`.
 	virtual void stop() {}
-	/// teardown step 4, after the loops closed. Legacy only: RunObject::close (off the main loop for a run with
-	/// threads); a class's loops are the framework's to close. `closed` from any thread, once.
-	virtual void close(std::move_only_function<void()> closed) { closed(); }
 };
 
 namespace spec_detail {
@@ -551,9 +531,6 @@ template <const auto& Spec, class Type> class SpecInstance final : public Erased
 		requires(const Checked& settings) {
 			{ Type::ports(settings) } -> std::same_as<Members<Spec>>;
 		}, "a type's class has static Members<spec> ports(const CheckedOf<spec>&)");
-	static_assert(
-		!requires(StartContext& context, const Checked& settings) { Type::start(context, settings); },
-		"a type on makeNodeType writes configure, not a static start");
 	static_assert(std::constructible_from<Type, NodeOf<Spec>&> || std::default_initializable<Type>,
 	              "a type's class is constructed from NodeOf<spec>& or from nothing");
 	static_assert(
@@ -593,8 +570,8 @@ public:
 	SpecInstance(NodeContext& node, const Checked& settings) : node_(node), settings_(settings), type_(make(node_)) {}
 	std::span<const LoopDeclaration> loops() const noexcept override { return LoopsOf<Spec>::declared; }
 	std::span<const StoreDeclaration> stores() const noexcept override { return StoresOf<Spec>::declared; }
-	Configured configure(InstanceContexts& cx) override {
-		CreateOf<Spec> create(cx.create);
+	Configured configure(CreateContext& cx) override {
+		CreateOf<Spec> create(cx);
 		return type_.configure(create, settings_);
 	}
 	void start() override {
@@ -631,10 +608,10 @@ private:
 	Ports ports_;
 };
 
-/// The type makeNodeType makes. It derives from NodeType itself, handing it the spec's table at run time, not from
-/// NodeTypeOf<Spec.settings>: GCC 14 gives a template argument that names a subobject (or a variable template's
+/// The type makeNodeType makes. It hands NodeType the spec's table at run time, never as a template argument
+/// (`Spec.settings`): GCC 14 gives a template argument that names a subobject (or a variable template's
 /// specialization) external linkage whatever its object's, so two types' `spec.settings`, each in its own file's
-/// unnamed namespace, became one symbol and the linker kept one type's table for both.
+/// unnamed namespace, would become one symbol and the linker keep one type's table for both.
 template <const auto& Spec, class Type> class SpecNodeType final : public NodeType {
 	static_assert(linkage::named<Spec>, "a spec is declared in a named namespace, never an unnamed one");
 #ifdef EAR_NODE_TYPE_NAME // ear_node_type() (cmake/NodeType.cmake) gives a type's library its folder's name

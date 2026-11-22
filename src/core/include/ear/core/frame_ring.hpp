@@ -7,8 +7,8 @@
 #include <span>
 #include <vector>
 namespace ear {
-/// A lock-free ring of interleaved float frames between one writing thread and one reading thread: the one ring of
-/// the handoff (realtime writer), of the sendspin node's feed and of every source (SourceRing; realtime reader). Its size is a power of two, at
+/// A lock-free ring of interleaved float frames between one writing thread and one reading thread: the ring of
+/// every source (SourceRing; realtime reader). Its size is a power of two, at
 /// least the capacity asked for, because its positions count frames and wrap at 2^32. Nothing here locks, allocates
 /// or waits, but the constructor; what a writer or a reader does with no room or nothing to read is its own.
 class FrameRing {

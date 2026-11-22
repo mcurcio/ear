@@ -840,8 +840,7 @@ twice, a table not named for its folder, a spec or row in an unnamed namespace, 
 lacks or a misspelt one in `Io`, `ports()` or a context, a write into an input, a backwards
 pass-through, a bad or doubled bank name, a `process` that may throw, a class that is final or has
 no `ports` or `configure`, a member of the wrong signature (`configure`, `start`, `stop`, `check`,
-`prepare`, `release`, the change version), a private or overloaded one, a static `start` (the old
-interface), a call `CreateOf` does not offer, a sound card, RTP receiver, pipe receiver, sink or source on the wrong
+`prepare`, `release`, the change version), a private or overloaded one, a call `CreateOf` does not offer, a sound card, RTP receiver, pipe receiver, sink or source on the wrong
 bank, a `fifoOf` of a bank that is not an inside input, a program's executable that is not an absolute path of plain
 components, a program's feed into a loop declared without a state, a loop's name that is not 1 to 8 of `[a-z0-9-]` or names two loops, a state given to a loop
 declared without one, a loop the spec lacks (in a context, a post or the harness), a post of a
@@ -860,7 +859,7 @@ when the type catches the throw; none takes ear down:
 | No `use` by an applied answer | `configure gave no code` |
 | A pass-through the ports refuse | `configure gave a pass-through: <why>` |
 | A sink with no consumer, or a consumer twice | `configure gave sink <bank> no consumer`; `configure threw: consumedBy called twice on sink <bank>` |
-| Latency declared twice for one path (`declareLatency(from, to, ...)`), or twice for one bank (the legacy `declareLatency(bank, ...)`) | `configure threw: latency declared twice for the path <from> to <to>`; `configure threw: latency declared twice for bank <bank>` |
+| Latency declared twice for one path (`declareLatency(from, to, ...)`) | `configure threw: latency declared twice for the path <from> to <to>` |
 | Latency declared on a path the pass-through does not copy | `configure declared latency on <from> to <to>, a path its pass-through does not copy` |
 | A latency plan that does not fit the ports (only a framework bug makes one: each declaration is checked at its call) | `configure gave a latency plan that does not fit: <why>` |
 | A second companion on an inside bank | `configure threw: a second companion on bank <bank>` |
@@ -882,12 +881,11 @@ when the type catches the throw; none takes ear down:
 | `stop()` throws during a stop | `stop threw: <what>`; during another teardown it is a `log` record |
 | The code's `prepare` throws | `prepare threw: <what>` (`start-failed`, or `lost` once rested); that code is never run again, nor released |
 | A sink's consumer throws | `the sink <bank>'s consumer threw in <begin\|consume>: <what>` (`start-failed`, or `lost` once rested); in `finish()`, during a restart's, disable's or removal's fade, a second fault during a stop, or once the teardown began, a `log` record |
-| A legacy recipe, or a legacy handoff's consumer, throws | `recipe threw: <what>` (`start-failed`); `the handoff <bank>'s consumer threw in consume: <what>` (`start-failed`, or `lost` once rested; its `finish`, or once the teardown began, a `log` record); a run object's `close` that throws is a `log` record |
-| A type's code throws at parse (a text row's parse function, `check`, `ports`, a legacy type's config) | the edit is refused, `invalid-settings` with `<type> threw: <what>`, as any invalid setting is |
+| A type's code throws at parse (a text row's parse function, `check`, `ports`) | the edit is refused, `invalid-settings` with `<type> threw: <what>`, as any invalid setting is |
 
-**One catch.** Every call the framework makes into a type's code goes through one catch: the hooks,
-the code's `prepare` and a legacy recipe and close on the main loop (each named in the main loop's
-activity while it runs, so a stall inside one is placed), a sink's or legacy handoff's consumer on
+**One catch.** Every call the framework makes into a type's code goes through one catch: the hooks
+and the code's `prepare` on the main loop (each named in the main loop's
+activity while it runs, so a stall inside one is placed), a sink's consumer on
 that one's own thread, a loop's handlers on its thread, and the type's code run at parse. So nothing a type throws reaches PipeWire's
 callbacks ([architecture.md](architecture.md#the-callback-boundary)); a rule broken while one runs
 fails it first, even when the type caught the throw. A type's own `std::logic_error` is its bug like
@@ -1006,15 +1004,6 @@ harness's own record, its cycles, cut cycles and stalls.
 Delete its folder and its entry in `validSettings`, its cases in
 `settings_refusals_test.cpp` (a case left there fails naming the type) and its name in
 `test/nodes/node_types_test.cpp`.
-
-## The old interface
-
-No shipped type is written on the old type interface any more (a `NodeTypeOf<table>` whose
-config's `start(StartContext&)` returns a `StartResult` with a recipe that builds a `RunObject`,
-its inputs going through a legacy handoff), but the framework's legacy adapter
-(`src/core/legacy_instance.hpp`) and its names remain, for some of core's, `ear_config`'s,
-`ear_control`'s and `ear_pipewire`'s tests, until it is removed. Do not use it; a new type uses the
-class above.
 
 ## Worked example: `tone`
 

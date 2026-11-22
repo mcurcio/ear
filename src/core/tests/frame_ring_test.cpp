@@ -1,5 +1,5 @@
-// The ring of the handoff and the feed: its own arithmetic. The handoff's tests (real threads, real writer) and the
-// feed's cover it across threads.
+// The ring every source plays from (SourceRing): its own arithmetic. The sources' tests (real threads, a real writer)
+// cover it across threads.
 #include <array>
 #include <cstdint>
 #include <span>

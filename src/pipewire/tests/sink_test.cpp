@@ -27,7 +27,7 @@
 
 #include "allocation_count.hpp"
 #include "catch2/catch.hpp"
-#include "ear/pipewire/handoffs.hpp"
+#include "ear/pipewire/sinks.hpp"
 #include "ear/pipewire/links.hpp"
 #include "ear/pipewire/live_graph.hpp"
 #include "ear/pipewire/main_loop_executor.hpp"

@@ -29,7 +29,7 @@ changing this code.
 | Module-run converters | `module_converter_body.hpp`, `converter_modules.hpp`, `module_converters.hpp` | The engine companion a PipeWire module runs: loaded, found by name, linked, its latency carried, its life judged ([below](#module-run-converters)) |
 | RTP receivers | `rtp_receivers.cpp` | The first module-run converter: `libpipewire-module-rtp-source`, one per `rtp` node |
 | Pipe receivers | `pipe_receivers.cpp` | The second: `libpipewire-module-pipe-tunnel` in source mode, reading a FIFO a node's program writes ([below](#pipe-receivers)) |
-| Sinks and handoffs | `handoffs.cpp` | `ThreadSinks` (the sinks: a ring the block taps and a thread that drains it, [below](#sinks)) and `ThreadHandoffs` (the legacy handoff, which no shipped type uses any more) |
+| Sinks | `sinks.cpp` | `ThreadSinks`: a ring the block taps and a thread that drains it ([below](#sinks)) |
 | Sources | `sources.cpp` | `EventSources`: core's `SourceRing` with the writer's wait and the clock wake's eventfd ([below](#sources)) |
 | The engine's log | `engine_log.cpp` | ear's own `pw_log` and alsa-lib's error handler ([output-records.md](output-records.md#how-output-is-written)), both `noexcept` and registered through the callback boundary as realtime functions |
 | The wedge mark | `data_loop_wedge.hpp` | Once the data loop is judged wedged, the adapters stop calling into it |
@@ -698,8 +698,8 @@ the delay counts both ways on it (as PipeWire adds a node's process latency to b
 tells and in what `from` tells. For a code of the type's own the pair is added to `pairs`; a
 pass-through must already copy it, or the node fails at configure's return (a declared path must
 exist). Typed declarations are keyed by their path, so a mixer declares each input's path into one
-output. A legacy declaration on one bank is `onPair` on the
-pass-through's pair that ends at the bank or, on a bank no pair ends at, `onBank`. NodeHost works
+output. Every declaration is a path, so no configuration's plan has an `onBank` entry today; the
+model and the block carry one all the same. NodeHost works
 the plan out with no peer before configure's return is accepted, so a plan that does not fit the
 ports fails the node `start-failed` (`configure gave a latency plan that does not fit: <why>`)
 instead of reaching a drive.

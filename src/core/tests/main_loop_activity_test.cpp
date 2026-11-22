@@ -96,13 +96,13 @@ TEST_CASE("A scope that begins forgets the place a handled throw left, and one t
 	CHECK_FALSE(MainLoopActivity::takeThrown());
 	MainLoopActivity::Saved put = MainLoopActivity::save();
 	{
-		const MainLoopActivity::Scope scope("recipe", "attic");
+		const MainLoopActivity::Scope scope("configure", "attic");
 		put = MainLoopActivity::save();
 	}
 	MainLoopActivity::putThrown(put);
 	const auto at = MainLoopActivity::takeThrown();
 	REQUIRE(at);
-	CHECK(MainLoopActivity::describe(*at) == "recipe attic");
+	CHECK(MainLoopActivity::describe(*at) == "configure attic");
 	CHECK(MainLoopActivity::describe(MainLoopActivity::Saved{}).empty());
 }
 

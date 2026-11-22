@@ -6,68 +6,66 @@
 #include <string>
 #include <string_view>
 
-#include "ear/core/settings_table.hpp"
+#include "ear/core/lifecycle.hpp"
 
 namespace ear::config::test {
 // Named, never unnamed: every table, row and spec a template is keyed on (settings_table.hpp, linkage).
 namespace tables {
 
-class FixedConfig final : public NodeConfig {
-public:
-	explicit FixedConfig(Ports ports) : ports_(std::move(ports)) {}
-	const Ports& ports() const override { return ports_; }
-	StartResult start(StartContext&) const override {
-		return std::unexpected(FailureReason{FailureReason::Code::startFailed, "not started in these tests"});
+/// What every type here answers at configure: these tests read, plan and parse, and never configure a node.
+struct NeverStarted {
+	template <class Create, class Checked> static Configured never(Create&, const Checked&) {
+		return Configured::failed("not started in these tests");
 	}
-
-private:
-	Ports ports_;
 };
 
 /// Any text at all.
 std::optional<std::string> anyText(std::string_view text) { return std::string(text); }
 
-constexpr SettingsTable<> whiteTable{"white"};
+constexpr auto noise = bank::output<"noise">;
+constexpr auto record = bank::input<"record">;
+constexpr auto play = bank::input<"play">;
+constexpr auto capture = bank::output<"capture">;
+constexpr auto stream = bank::output<"stream">;
+
+constexpr TypeSpec whiteSpec{.settings = SettingsTable<>{"white"}, .banks = Banks<noise>{}};
+struct WhiteType : NeverStarted {
+	static Members<whiteSpec> ports(const CheckedOf<whiteSpec>&) { return {noise(members("mono"))}; }
+	Configured configure(CreateOf<whiteSpec>& cx, const CheckedOf<whiteSpec>& s) { return never(cx, s); }
+};
+
 constexpr auto pathRow = setting::required("path", setting::text<anyText>("text"));
-constexpr SettingsTable<pathRow> fileTable{"file"};
+constexpr TypeSpec fileSpec{.settings = SettingsTable<pathRow>{"file"}, .banks = Banks<record>{}};
+struct FileType : NeverStarted {
+	static Members<fileSpec> ports(const CheckedOf<fileSpec>&) { return {record(members("left", "right"))}; }
+	Configured configure(CreateOf<fileSpec>& cx, const CheckedOf<fileSpec>& s) { return never(cx, s); }
+};
+
 constexpr auto cardRow = setting::optional("card", setting::text<anyText>("text"));
 constexpr auto playbackRow = setting::defaulted("playback", setting::number(0, 64), 0);
 constexpr auto captureRow = setting::defaulted("capture", setting::number(0, 64), 0);
-constexpr SettingsTable<cardRow, playbackRow, captureRow> cardTable{"card"};
+constexpr TypeSpec cardSpec{.settings = SettingsTable<cardRow, playbackRow, captureRow>{"card"},
+                            .banks = Banks<play, capture>{}};
+struct CardType : NeverStarted {
+	static Members<cardSpec> ports(const CheckedOf<cardSpec>& settings) {
+		return {play(members(settings.get<playbackRow>())), capture(members(settings.get<captureRow>()))};
+	}
+	Configured configure(CreateOf<cardSpec>& cx, const CheckedOf<cardSpec>& s) { return never(cx, s); }
+};
+
 constexpr auto rateRow =
 	setting::optional("rate", setting::rate(SampleRate::fixed<8'000>(), SampleRate::fixed<192'000>()));
-constexpr SettingsTable<rateRow> rtpTable{"rtp"};
+constexpr TypeSpec rtpSpec{.settings = SettingsTable<rateRow>{"rtp"}, .banks = Banks<stream>{}};
+struct RtpType : NeverStarted {
+	static Members<rtpSpec> ports(const CheckedOf<rtpSpec>&) { return {stream(members(1))}; }
+	Configured configure(CreateOf<rtpSpec>& cx, const CheckedOf<rtpSpec>& s) { return never(cx, s); }
+};
+
 constexpr auto xRow = setting::optional("x", setting::boolean());
-constexpr SettingsTable<xRow> lampTable{"lamp"};
-
-class WhiteType final : public NodeTypeOf<whiteTable> {
-	MadeConfig make(const NodeName&, const Checked&) const override {
-		return std::make_unique<FixedConfig>(Ports{{{Direction::output, "noise", {"mono"}}}});
-	}
-};
-
-class FileType final : public NodeTypeOf<fileTable> {
-	MadeConfig make(const NodeName&, const Checked&) const override {
-		return std::make_unique<FixedConfig>(Ports{{{Direction::input, "record", {"left", "right"}}}});
-	}
-};
-
-class CardType final : public NodeTypeOf<cardTable> {
-	MadeConfig make(const NodeName&, const Checked& settings) const override {
-		return std::make_unique<FixedConfig>(
-			Ports{{{Direction::input, "play", numbered(settings.get<playbackRow>())},
-		           {Direction::output, "capture", numbered(settings.get<captureRow>())}}});
-	}
-};
-
-class RtpType final : public NodeTypeOf<rtpTable> {
-	MadeConfig make(const NodeName&, const Checked&) const override {
-		return std::make_unique<FixedConfig>(Ports{{{Direction::output, "stream", {"1"}}}});
-	}
-};
-
-class LampType final : public NodeTypeOf<lampTable> {
-	MadeConfig make(const NodeName&, const Checked&) const override { return std::make_unique<FixedConfig>(Ports{}); }
+constexpr TypeSpec lampSpec{.settings = SettingsTable<xRow>{"lamp"}, .banks = Banks<>{}};
+struct LampType : NeverStarted {
+	static Members<lampSpec> ports(const CheckedOf<lampSpec>&) { return {}; }
+	Configured configure(CreateOf<lampSpec>& cx, const CheckedOf<lampSpec>& s) { return never(cx, s); }
 };
 
 } // namespace tables
@@ -75,11 +73,11 @@ using namespace tables;
 
 std::vector<std::unique_ptr<const NodeType>> testTypes() {
 	std::vector<std::unique_ptr<const NodeType>> types;
-	types.push_back(std::make_unique<WhiteType>());
-	types.push_back(std::make_unique<FileType>());
-	types.push_back(std::make_unique<CardType>());
-	types.push_back(std::make_unique<RtpType>());
-	types.push_back(std::make_unique<LampType>());
+	types.push_back(makeNodeType<whiteSpec, WhiteType>());
+	types.push_back(makeNodeType<fileSpec, FileType>());
+	types.push_back(makeNodeType<cardSpec, CardType>());
+	types.push_back(makeNodeType<rtpSpec, RtpType>());
+	types.push_back(makeNodeType<lampSpec, LampType>());
 	return types;
 }
 

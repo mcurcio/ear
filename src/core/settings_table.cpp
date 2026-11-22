@@ -116,7 +116,7 @@ std::span<const SettingDeclaration> NodeType::settingKinds() const noexcept { re
 
 std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings> NodeType::parse(const NodeName& node,
                                                                                   const NodeSettings& settings) const {
-	// The type's own code (a text row's parse, its check, its ports, a legacy type's config) runs here, on the main loop
+	// The type's own code (a text row's parse, its check, its ports) runs here, on the main loop
 	// as an edit is planned: what it throws refuses the edit as an invalid setting would, never reaching the callback
 	// boundary (docs/writing-a-node-type.md#rules-the-framework-enforces).
 	auto made = detail::caughtFrom([&]() -> MadeConfig {

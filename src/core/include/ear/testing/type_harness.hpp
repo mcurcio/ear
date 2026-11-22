@@ -46,7 +46,6 @@ public:
 	std::vector<CompanionView> companionList() const { return node_->companionList(); }
 	std::size_t unwritten() const { return node_->unwritten(); }
 	const std::vector<CompanionFake>& companions() const noexcept { return node_->companions(); }
-	const std::vector<SeenHandoff>& handoffs() const noexcept { return node_->handoffs(); }
 	const std::vector<RecordingRequest>& recordingRequests() const noexcept { return node_->recordingRequests(); }
 	/// The recordings on the harness's in-memory disk, by path (NodeHarness's recording calls).
 	std::optional<std::string> recordingBytes(std::string_view path) const { return node_->recordingBytes(path); }

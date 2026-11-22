@@ -187,7 +187,7 @@ TEST_CASE("FrameClock: a duration as whole frames at the graph's rate", "[latenc
 		{"a fade at a rate of 1: none, which its callers raise to one frame", 1, milliseconds{5}, 0},
 		{"sendspin's feed floor: 40 ms at 44.1 kHz", 44100, milliseconds{40}, 1764},
 		{"sendspin's pieces to the server: 100 ms at 44.1 kHz", 44100, milliseconds{100}, 4410},
-		{"sendspin's handoff: 500 ms at 44.1 kHz", 44100, milliseconds{500}, 22050},
+		{"sendspin's capture buffer: 500 ms at 44.1 kHz", 44100, milliseconds{500}, 22050},
 		{"file's sink ring: 2 s at 48 kHz", 48000, std::chrono::seconds{2}, 96000},
 		{"an RTP receiver's buffer: 3 ms at 44.1 kHz, 132.3 truncated", 44100, milliseconds{3}, 132},
 		{"an RTP receiver's buffer: its most, 1000 ms at 96 kHz", 96000, milliseconds{1000}, 96000},

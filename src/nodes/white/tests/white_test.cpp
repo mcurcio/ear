@@ -47,7 +47,6 @@ TEST_CASE("White runs once its block is ready, with nothing to acquire", "[white
 	harness.blockReady();
 	CHECK(harness.phase() == "running");
 	CHECK(harness->companions().empty());
-	CHECK(harness->runObject() == nullptr); // no run object: white has no threads
 	CHECK(harness->notes().empty());
 	harness.remove();
 	CHECK(harness->gone());

@@ -489,7 +489,7 @@ using OwnedProxy = std::unique_ptr<pw_proxy, ProxyDestroy>;
 using OwnedRegistry = std::unique_ptr<pw_registry, ProxyDestroy>;
 
 // The only registrations ear makes. Sources (events, timers, signals) live on loops that may run anything (the main
-// loop, a sink's or handoff's thread loop) and take only guarded<>; the data loop takes only realtime<>. Each fills the
+// loop, a sink's thread loop) and take only guarded<>; the data loop takes only realtime<>. Each fills the
 // owner's LoopSource or Listener in place.
 
 /// An event source on `loop`: the member takes the count of signals since it last ran.

@@ -243,7 +243,6 @@ TEST_CASE("A code reads and writes by bank through Io, bound by use to the node'
 	harness.add();
 	harness.blockReady();
 	REQUIRE(harness.phase() == "running");
-	CHECK(harness->runObject() == nullptr);
 	harness.process(); // the drive's 5 ms fade-in (240 frames)
 	harness.process();
 	harness.process();

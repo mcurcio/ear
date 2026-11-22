@@ -132,7 +132,7 @@ inline std::vector<LatencyRow> latencyRows() {
 	     {Latency{5, 5}},
 	     {{55, 55}, {5, 5}, {20, 60}},
 	     {{5, 5}}},
-		// A delay declared on one output bank alone (the legacy one-bank declaration).
+		// A delay on one output bank alone (LatencyPlan::onBank).
 		{"a bank's own delay is on what it tells, not on its downstream",
 	     {{Direction::input, "to", numbered(2)}, {Direction::output, "from", numbered(2)}},
 	     {.onBank = {{"from", Delay{{0, 9600}}}}},
