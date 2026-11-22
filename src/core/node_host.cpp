@@ -3409,10 +3409,13 @@ struct NodeHost::Impl {
 			c.readiness.disarm();
 			// What its loops were sent before it was configured never runs: destroyed here, unrun.
 			for (const auto& slot : c.loops) slot->dropStaged();
+			// The deadline judges only a close still under way. One that completed has its `closed` queued for the
+			// machine already (closeLoops), perhaps behind this input: it is heard next, and nothing is overdue.
 			c.deadline =
 				host_.timers.after(host_.closeDeadline, [&host = host_, serial = serial_, generation = c.generation] {
 					host.inputFor(serial, [generation](Node& node) {
-						if (node.current(generation) && node.config_->tearing) node.feed(node.aggregate_.closeBound());
+						if (node.current(generation) && node.config_->tearing && !node.config_->closedTold)
+							node.feed(node.aggregate_.closeBound());
 					});
 				});
 			c.tearing = true;
@@ -3564,9 +3567,6 @@ struct NodeHost::Impl {
 			count(sinksOpen, "sinks");
 			count(loopsOpen, "loops");
 			count(programsOpen, "programs");
-			// Everything had reported closed and the machine was about to hear it, the deadline's input ahead of that
-			// one in the queue: nothing is left to count, and an empty list would say less than that.
-			if (open.empty()) open = "nothing left open: its close was under way when the deadline was heard";
 			host_.diagnosed(name_, "ear.close-overdue",
 			                "the configuration did not close within " + std::to_string(host_.closeDeadline.count()) +
 			                    " ms and is left running (" + open + ")",

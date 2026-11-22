@@ -638,6 +638,9 @@ the main loop never joins a thread:
    claimant that waited for one judged again in arrival order.
 
 Steps 3 and 4 have the close deadline ([bounds](#bounds-the-wedged-data-loop-and-the-watchdog)).
+It judges only a close still under way: once the last sink, loop and program reported, the
+configuration has closed, and a deadline heard after that, even ahead of the node's own hearing of
+it, leaks nothing and says nothing.
 A restart or retry completes the teardown before the
 next `configure`, so a node has one configuration at a time and never waits on its own old one.
 Anything a configuration's threads tell lands only on that configuration, never on the next: each

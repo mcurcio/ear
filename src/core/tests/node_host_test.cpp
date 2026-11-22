@@ -6543,25 +6543,26 @@ TEST_CASE("A loop that never started is not counted open at the close deadline: 
 	CHECK(f.allGone == 1);
 }
 
-TEST_CASE("A close deadline heard just ahead of the configuration's own close says nothing was left open, never an "
-          "empty list",
+TEST_CASE("A close that completed is never judged overdue: a close deadline heard just ahead of the configuration's "
+          "own close leaks nothing and says nothing",
           "[node_host][loops]") {
 	Fixture f;
 	auto config = std::make_shared<LoopProbeConfig>(f.log, std::vector{plainWorker});
 	config->onConfigure = [&f](CreateContext& cx) { return Erased::applied(std::make_unique<TestAudioCode>(f.log)); };
 	addRunning(f, "porch", config);
 	// The loop's close reports inside the turn that asked for it, and the deadline's timer fires in that same turn: the
-	// close is heard first and queues the machine's `closed` behind the deadline, which then finds nothing open.
+	// close is heard first and queues the machine's `closed` behind the deadline's input, which finds every step done.
 	f.loops.closedInTurn = [&f] { f.timers.advance(closeDeadline); };
 	f.host.nodeRemoved("porch");
 	f.settle();
-	REQUIRE(countOf(f.log, "diagnostic porch ear.close-overdue") == 1);
-	CHECK(f.diagnostics.details.back() ==
-	      "the configuration did not close within 10000 ms and is left running (nothing left open: its close was "
-	      "under way when the deadline was heard)");
 	f.loops.closedInTurn = nullptr;
+	CHECK(countOf(f.log, "diagnostic porch ear.close-overdue") == 0);
+	CHECK(f.host.leaked() == 0);
+	CHECK(countOf(f.log, "instance destroyed") == 1); // freed, as any configuration that closed
+	CHECK(countOf(f.log, "node porch gone dropped=0") == 1);
 	f.stopAll();
 	f.settle();
+	CHECK(f.allGone == 1);
 }
 
 // The leaked configuration (docs/architecture.md#teardown-by-dependency): its Channel re-pointed at its record, which
