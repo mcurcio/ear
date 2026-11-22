@@ -452,7 +452,9 @@ Recorded in `docs/engine.md#the-one-data-loop-and-invokes` with PipeWire's sourc
   `filter->port_list` on the main loop with no invoke while the data loop walks it
   (`filter.c:343`, `1386`, `1021`). It holds on x86-64 by the order of the append's stores and,
   for a remove, by the blocking invoke `pw_impl_port_remove` makes before the port is freed
-  (`impl-port.c:1391`); on arm64 the add must be made with the data loop held (S4's second case).
+  (`impl-port.c:1391`); on arm64 the plain add is not safe, and ear never holds the data loop for it
+  (S4's second case measured that: the realtime thread waits on an ordinary one), so arm64 waits on
+  the append being made on the data loop (`docs/engine.md#the-one-data-loop-and-invokes`).
   Nothing of ear's may touch a port's handle once `pw_filter_remove_port` was called on it: swap
   it out of what `process` reads behind a blocking invoke first. A new link's first cycles may
   bring no buffer or silence. No code of ear's adds or removes a port on a connected filter yet

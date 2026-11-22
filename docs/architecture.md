@@ -810,7 +810,7 @@ These are designed or wanted but not in the code: routes naming a whole bank; ch
 settings in place without a restart (a type's change version of `configure` compiles but is
 never called); recovery of failed nodes; sound cards opened off the main loop; an internal
 clock anchored to one card; serving PipeWire's socket (for a program that can only be a PipeWire client; its nodes would be engine companions, marked by the socket's peer credentials); a login on port 7777; automatic card retry and hotplug; `@include`; undo; changing the graph
-frequency or block size while ear runs; arm64 images; a fault caught at the callback boundary
+frequency or block size while ear runs; arm64 images (which wait on a port added to a running block on the data loop: [engine.md](engine.md#the-one-data-loop-and-invokes)); a fault caught at the callback boundary
 failing only the node that owns it (today it ends the process); the `sendspin` library's log lines attributed to their node;
 and the converter companion's set and tracked modes ([the timing model](#the-timing-model)). The design pages for the unbuilt slices
 remain in `docs/design/`.

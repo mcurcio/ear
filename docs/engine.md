@@ -1199,8 +1199,10 @@ Verified by `spikes_test.cpp` (S1 to S4, and S5's part B) against 1.4.2's `loop.
   threads on x86-64 (total store order) and is not on arm64, where a walker could meet the new
   element before its `next` is there. Holding the data loop while the port is added (an invoke that
   parks until the main thread is done) closes that on any architecture and passed the same 500
-  rounds; the loop stood still for 50 to 300 us in most runs and for 2.1 ms in one, an ordinary
-  thread holding the realtime one. A filter's own `process` must have stopped using a port's handle
+  rounds, but ear does not do it: the loop stood still for 50 to 300 us in most runs and for 2.1 ms
+  in one, the realtime thread waiting on an ordinary one with no bound. So an arm64 build waits on
+  the append being made on the data loop, by PipeWire or by a port block that owns its own port
+  list. A filter's own `process` must have stopped using a port's handle
   before `pw_filter_remove_port` returns: the handle is the port's memory.
 - After a 2 s data-loop stall the driver catches up as [above](#the-internal-clock); the bounds treat
   it as no wedge while the loop answers invokes.

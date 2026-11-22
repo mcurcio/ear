@@ -446,10 +446,14 @@ stores, and for a remove on any architecture. So **the fallback is not taken, an
 
 - **A vanishing port leaves the block's layout behind a barrier before `pw_filter_remove_port`**, as 7.3 already
   orders it: the handle is the port's memory, freed when the call returns.
-- **The add is made plain on x86-64**, the only architecture ear builds (decided unless the owner objects). On an
-  architecture without total store order (arm64, not built: `docs/architecture.md#not-built-yet`) the add is made
-  with the data loop held, the variant the spike also ran 500 rounds of. It is not the default because it lets an
-  ordinary thread hold the realtime one: 50 to 300 us in most runs, 2.1 ms in one.
+- **The add is made plain, never with the data loop held** (the owner, 2026-11-22, binding: the graph is changed
+  without interrupting it). It is safe on x86-64, the only architecture ear builds. The held add the spike also ran is
+  not built: it makes the realtime thread wait on an ordinary one, a priority inversion with no bound (50 to 300 us
+  in most runs, 2.1 ms in one).
+- **An arm64 image waits on this.** Without total store order the plain add is not safe, so arm64
+  (`docs/architecture.md#not-built-yet`) needs the append made on the data loop: by PipeWire (an upstream change to
+  `alloc_port`, not yet reported), or by ear owning its node's port list instead of using `pw_filter` (a port block
+  written on the node interface, its list swapped by the invoke ear already has; not scoped).
 - **A new port's first cycles after its link is active may bring no buffer, or silence.** The transitional layout
   (7.3) already ignores a new input; a test of an in-place reshape waits for the audio, never counts cycles from
   `linkActive`.
@@ -601,7 +605,7 @@ the code and before metering.
 2. `ChangeOf`, `Changed`, staged posts, holds and their acknowledgement, the commit point, the deadline, supersession,
    the fallback, with a test type; `rtp` in place.
 3. The primitives in a change: claims swapped, `whenReady`, `ConfigureDone`, the sink's pause, the same-port rule.
-4. `PortBlock::reshape` (or, if S4 fails, the replace kept), layouts, levels.
+4. `PortBlock::reshape` on the plain add (7.4), the 32-port question of section 13 settled first; layouts, levels.
 5. The wire and the editor (features `node.set`, `reshape`, `dryRun`).
 6. `sendspin` in place (skipped if U11 or U12 fails).
 7. Words: AGENTS.md and the library docs; this page deleted.
@@ -642,8 +646,10 @@ Each is the designer's (R24); the owner can overturn any.
   `filter.c:342`), which moves its storage. The data loop looks a port up by id only in `impl_port_reuse_buffer`
   (`filter.c:964`), reached from the port's tee (`impl-port.c:282`); whether a DSP link ever calls it is not
   established. Settled by reading `impl-link.c`'s buffer negotiation for a 32-bit float mono port, or by S4 run with
-  40 inputs; if it can be called, a reshape that crosses a multiple of 32 holds the data loop for its add (7.4).
-- **[U] S4 on arm64**, when an arm64 image is built: the held add is the variant there (7.4).
+  40 inputs, **before `PortBlock::reshape` is built** (section 11, step 4). If it can be called, the data loop is
+  never held for it (7.4): a reshape that would cross a multiple of 32 ports in one direction is a replace, until
+  the append is made on the data loop.
+- **arm64** is not open here: it waits on the append being made on the data loop (7.4).
 - **[U] Two sources into one inside input** are mixed while a replacement is made before the old one goes; `engine.conf`
   maps no `audio.mixer*` library, so this relies on the port mixer for DSP client-node ports loading through its
   `library.name` fallback.
