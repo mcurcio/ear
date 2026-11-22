@@ -128,7 +128,7 @@ protected:
 	~NodeDiagnosticListener() = default;
 };
 /// A framework diagnostic that names no node (docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog;
-/// docs/output-records.md#diagnostic): in 3a "ear.data-loop-wedged", once, when a barrier's invoke has not run within 5
+/// docs/output-records.md#diagnostic): "ear.data-loop-wedged", once, when a barrier's invoke has not run within 5
 /// s (its detail names the node whose barrier tripped it; `ms` the time it waited).
 struct EngineDiagnostic {
 	std::string_view code;

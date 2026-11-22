@@ -295,7 +295,8 @@ TEST_CASE("A server cannot change the depth of a running stream: asked for 16 bi
 	// Two and a half seconds of the ramp in one run, exact, after the ask: the depth stayed. What it is judged on is
 	// the frames, every one exact or a blend; the steps between runs are the library's own re-alignment, which under
 	// load it can make while aligning and so logs nothing ear can read (a drop of 4666 frames after 7229 of silence,
-	// once, under the clock tests' load): until its log reaches ear (slice 3c), a step is no evidence here.
+	// once, under the clock tests' load): until its log reaches ear (docs/design/slice-3c-remainder.md), a step is no
+	// evidence here.
 	REQUIRE_SEEN(ear, waitForRamp(directory.recordings() / "rec.wav",
 	                              [](const RampSoFar& ramp) { return ramp.lastRunFrames >= graphFrequency * 5 / 2; }));
 	REQUIRE_SEEN(ear, endStream(ear, server));

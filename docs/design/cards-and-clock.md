@@ -105,10 +105,16 @@ on the node handle, carried by the framework on the next cycle, as an in-place c
 - [U] What `/proc/asound/.../status` shows for a wedged USB card (3.1); whether a USB unplug reaches the adapter's ERROR
   state without udev in the container; whether `snd_pcm_open`, `snd_pcm_drop` or `snd_pcm_close` can block on a wedged
   card (decides 3.3).
-- [U] Whether a capture's chunks in a catch-up's burst are dated truly by their cycle's start on the driver's time
-  less the card's capture latency, as `sendspin` dates what it sends (`docs/node-types.md#clock`): a card capturing
-  through a stall of the data thread, a known sound sent to a Sendspin server, and the server's dates read across the
-  burst. If they trail, the chunk's stamp gains the tick's `overdueNs`.
+- [U] How a card's capture is dated through a catch-up's burst. `sendspin` dates what it sends from each chunk's
+  cycle start on the driver's time less the capture latency (`docs/node-types.md#clock`), in a burst as on time. For
+  a card that is suspected wrong: after a stall the follower resyncs and drops what its buffer gathered (or the device
+  overruns), so the burst's cycles would carry fresh audio or silence stamped up to the stall's length early. To
+  measure: a card capturing a known sound (a click train) through stalls of the data thread shorter and longer than the
+  follower's tolerance and than the device's buffer, sent to a Sendspin server, and the server's dates of each click
+  read against when it was made. If confirmed, the remedy is the tick's overdue time carried in the chunk's stamp
+  (`GraphCycle::overdueNs` into `ChunkStamp` and `Chunk`), so a consumer dates an overdue chunk from when its cycle
+  ran, or holds what it sends until the first cycle on time; the same measurement behind an RTP receiver says whether
+  the rule must then differ by what lies upstream.
 - [U] Whether a card node renamed in one plan opens its device before the old node closed it. The test card's file
   PCM is not exclusive, so only the hardware shows it. If it does, a card's device becomes a claim its shape holds
   (`claimsOf(SoundCardShape)`, `docs/writing-a-node-type.md#claims`), so the new node waits for the old one's last

@@ -91,8 +91,10 @@ proof: without the patch, the two-node attribution test fails.
 - [U] That every `SS_LOG*` line `sendspin`'s tests provoke runs inside a scope: the step's system test counts
   unattributed `sendspin-cpp` records over the pairing and connection tests; each one found is a missed entry point.
 - [U] That the library calls the persistence provider only on threads in the client's scope (`client.cpp:1648-1741`,
-  `player_role.cpp:751-778`, `record_store.cpp:43` [V] are the call sites; their threads are not traced). Nothing
-  asserts yet that `save_blob` runs on a dedicated loop or a library thread.
+  `player_role.cpp:751-778`, `record_store.cpp:43` [V] are the call sites; their threads are not traced). The store's
+  `replace`, which `save_blob` calls, already refuses a strand (asserted in debug builds) and the main loop (a
+  `std::logic_error`): [`docs/writing-a-node-type.md#stores`](../writing-a-node-type.md#stores). What stays unverified
+  is only that every thread it runs on is inside the library's log scope.
 - [U] That the source writer's closing contract ([`docs/writing-a-node-type.md#sources`](../writing-a-node-type.md#sources))
   keeps the library's sync thread asleep between calls from teardown step 1 to step 4: the ring's own tests prove it
   on the ring; the real sync thread across a teardown held 2 s by a slow consumer is not measured.

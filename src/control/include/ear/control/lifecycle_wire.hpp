@@ -53,7 +53,7 @@ std::string_view verbName(LifecycleVerb verb) noexcept;
 /// One `action` record (docs/output-records.md#action): an operator's request that edits nothing, answered.
 struct ActionRecord {
 	NodeName node;
-	std::string action; // verbName in 3a; slice 5 adds a type's action names
+	std::string action; // verbName: a lifecycle verb (a type's own action names are not built yet)
 	std::string result; // "ok", or the refusal's code ("node-disabled", "not-restartable", "unknown-node",
 						// "stopping")
 	std::optional<std::string> detail; // not-restartable's reason; slice 5: an action's refusal text

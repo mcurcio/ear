@@ -6,8 +6,9 @@ and what is still open. How ear works today is in the library docs (`docs/archit
 `docs/writing-a-node-type.md`, `docs/node-types.md`, `docs/graph-file.md`, `docs/control-port.md`,
 `docs/output-records.md`, `docs/editor.md`), which these pages cite rather than repeat. When a slice is built, its page is deleted in
 the same change, and whatever of it lasts (how the thing works, why it was built that way) moves into the library docs.
-The owner's words keep the R, Q and G numbers of the register the framework's design used, so one page's citation of
-another's still resolves; commits cite them too, and git keeps the pages they were on.
+The owner's words keep the R, Q and G numbers of the register the framework's design used. A page cites only a number
+its own tables define; what a retired page defined is said in place or pointed at in the library docs. Commits cite
+the numbers too, and git keeps the pages they were on.
 
 The slices are built in this order (decided: each later slice hooks into the earlier one's states, and companions,
 built in slice 3b ([architecture.md](../architecture.md#companions)), removed primitives slice 3c would otherwise have built): 3c, 3d, then

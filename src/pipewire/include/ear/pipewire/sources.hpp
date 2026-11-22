@@ -1,7 +1,7 @@
 // The sources (docs/engine.md#sources): ear_core's SourceAdapter over core's SourceRing per source, an eventfd the
 // writer waits on for room, and one for the clock wake. A source has no thread of its own: its writer is the type's
-// thread and its reader the port block's process (SourceTap::play, with the source's clock). The eventfd wake moves to
-// ear_runtime's EventWake in slice 3c.
+// thread and its reader the port block's process (SourceTap::play, with the source's clock). The clock wake is core's
+// interface (Wake, ear/core/source.hpp), implemented here on that eventfd.
 #pragma once
 #include <chrono>
 #include <cstdint>

@@ -385,11 +385,22 @@ instead, or filter both, if that matters. What a peer can and cannot do:
 - The audio sent to the server (`to`) is dated by when it entered the graph: each piece from its
   own chunk's cycle start by its frames, less the capture latency upstream of `to` that the sink's
   chunk carries (`Chunk::upstreamFrames`, [engine.md](engine.md#dating)), so a card's capture is
-  dated by when the card took it, its buffer counted. A chunk of a catch-up's burst is dated the
-  same way, from its cycle's start on the driver's time and never from when the burst ran it:
-  the frames waited in the card's buffer through the stall, so the driver's time is when they were
-  taken. *Not measured:* no test has a card whose buffer holds audio through a stall; the check on
-  the MOTU is owed ([cards-and-clock.md](design/cards-and-clock.md)).
+  dated by when the card took it, its buffer counted.
+  - The stamp follows the latency the block was last told. A card routed into a node that is
+    already streaming is counted only once its latency is told, so the stamps step back by the
+    card's latency at that point.
+  - A bank fed by paths of different latency is dated by the most of them: one stamp dates the
+    whole chunk.
+  - **A chunk of a catch-up's burst is dated the same way**, from its cycle's start on the
+    driver's time, never from when the burst ran it (the chunk's stamp carries no other time).
+    Whether that is true depends on what lies upstream, and none of it is measured. Behind an RTP
+    receiver it holds while the socket's buffer holds the stall, and behind a pipe receiver roughly
+    (its writer blocks). Behind a card it is suspected wrong once a stall outlasts what the
+    follower tolerates: the follower resyncs and drops the backlog, or the device overruns, so the
+    burst's cycles carry fresh audio or silence stamped up to the stall's length early. That is a
+    short passage misplaced inside the stall's gap, not a lasting offset: stamps are true again
+    once the burst ends. The check on the MOTU, and the likely remedy, are in
+    [cards-and-clock.md](design/cards-and-clock.md).
 - **The node's clock is an honest sink with a local skip** ([the timing model](architecture.md#the-timing-model),
   rule 3): it plays every frame the library wrote, in order, and tells the library what played and
   when, true when told. It keeps no debt and no model of the library: what it could not skip of lost

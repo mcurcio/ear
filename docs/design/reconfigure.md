@@ -18,7 +18,7 @@ The R numbers are the register the node framework's design used.
 | R16 | "I like the basic shape of the state machine proposal. And most importantly: it should be per-node. Some node stopping/reconfiguring/failing does not effect the graph globally" | 2026-11-08 | An in-place change, its holds and its swap touch only its node's block and companions |
 | R17 | "I want the node to control whether settings can be changed in place, with the framework supporting it. For example, changing a network port on a node is something that a node can handle on its own — even if it must output null audio frames for a few seconds. But if reconfiguring changes the shape of the input/output bus, then that might not be fully transparent" | 2026-11-08 | The type declares what it can change in place and its change version of `configure` decides; the framework holds outputs silent, readies new resources before releasing old ones, swaps claims and enforces a deadline (sections 3 to 6); a change of ports is a reshape with its own rules (section 7) |
 | R21 | "I meant “asynchronously”" (operations are asynchronous and ordered) | 2026-11-08 | An edit's reply comes at its commit with `applied`; it never waits for the change to finish |
-| R24 | "too technical for me to properly answer" (where reconfigure lives and how it reaches a type's threads) | 2026-11-08 | Hooks run on the main loop and reach a node's threads only by typed posts (D-A4); the rest of this page's choices are the designer's (section 12) |
+| R24 | "too technical for me to properly answer" (where reconfigure lives and how it reaches a type's threads) | 2026-11-08 | Hooks run on the main loop and reach a node's threads only by typed posts (built: [`docs/writing-a-node-type.md#loops`](../writing-a-node-type.md#loops), "Why loops"); the rest of this page's choices are the designer's (section 12) |
 | R30 (gate W3) | "I would like each port to show meter levels so I can see audio traversing the graph" | 2026-11-08 | A hold is seen as silence on the meters (no "held" marks); a reshape's new ports are metered from their first window (8.4) |
 | R33 | Asked "Should configure come in two versions, each offering only its legal calls, so a wrong call won't compile?": "Two versions" | 2026-11-08 | `Changed configure(ChangeOf<spec>&, const Checked& old, const Checked& now)`, optional; absent, every change restarts (section 4) |
 | X2 | Asked what happens to a change that removes ports that are wired: "(a)", as recommended: the editor lists the wires that would go before applying; Apply removes them and changes the setting in one step (one save of `ear.conf`) or neither; a script must ask (`dropRoutes: true`), else it is refused naming the wires | 2026-11-08 | 7.1, 8.3 |
@@ -32,7 +32,7 @@ As built (3a, [V]): the change version's signature is checked at compile time an
 (`settings`, with the changed keys) and then `configuring`. A change of ports is a replace: the desired graph tells
 `nodeReplacing` then `nodeReplaced` with `NodeChange::portCaused`, and `NodeHost` carries the node's stop, its dropped
 frames and one health stream into the successor, so a client sees `node.removed` and `node.added` and one `stopping`
-(`restarting`) (D-L5, D-L36). `PortBlock` has `drive`, `fadeOut`, `settle`, `takenAt`, `blockId` and `carryLatency`;
+(`restarting`). `PortBlock` has `drive`, `fadeOut`, `settle`, `takenAt`, `blockId` and `carryLatency`;
 no per-bank hold, no reshape. The fade of every output the code writes before every planned silence, and the fade-in
 at every drive, are built.
 
@@ -167,7 +167,8 @@ posted, after the continuation's `done()` (if any), and destroyed unrun if the c
 (T11), as an unposted `whenReady` continuation is. So nothing a superseded or fallen-back change asked of the node's
 threads has run, and supersession leaves the applied configuration as it was.
 
-**`whenReady`** joins "act once the new acquisitions are ready" and "act on the node's own thread" (I11, I14), so a
+**`whenReady`** joins "act once the new acquisitions are ready" and "act on the node's own thread" (a hook holds no reference to a loop's state, so a post typed by the loop's handle is
+its only way there: [`docs/writing-a-node-type.md#loops`](../writing-a-node-type.md#loops)), so a
 type writes neither a poll nor a second hook (G20):
 
 - if an acquisition is refused or lost, or the deadline passes before the post, `work` is destroyed unrun on the main
@@ -342,7 +343,9 @@ Changed Sendspin::configure(ChangeOf<spec>& cx, const Checked& old, const Checke
 (`client.h:337`, `362` [V]):
 
 1. posts to the notifier, which destroys its `onWake` source (no `notify_audio_played` reaches the old client), and back;
-2. `toServer_.pause(worker_, ...)`: the sink's thread finishes any `consume` in flight and discards until `resume`, so
+2. `toServerSink_.pause(worker_, ...)`, on the `SinkControl&` that attaching the sink returned and the worker's state
+   keeps (given to `cx.state` after the attach): the sink's thread finishes any `consume` in flight and discards until
+   `resume`, so
    `write_audio` never reaches a client being destroyed (this replaces the worker's `clientMutex_`);
 3. says goodbye on mDNS, then `client->stop()`: goodbye to the server, the library's threads joined, `on_stream_end`
    delivered (which clears the source, which fades out); the client destroyed; the old sync thread, the source's
@@ -395,7 +398,7 @@ route names a port that vanishes. Wanted routes may name ports that appear; they
   the rest, and their companions are made afresh by the new `configure`.
 - **On a disabled node** (no configuration): the block alone is reshaped at the commit, with no hook called; the
   outcome is `stored`, with its `ports`; an enable later configures it with the ports the block already has. (Built: a
-  replace told as `node.removed` and `node.added`, `applied: "stored"`, D-R23.)
+  replace told as `node.removed` and `node.added`, `applied: "stored"`.)
 - **In place**, when every changed key is `.inPlace()` or `.live`: a reconfigure. The framework adds the new ports to
   the engine first, calls the change version, which must swap the code (its `Io` layout changed; a hook that does not
   fails the node with the rule's text), and removes the vanished ports after the swap's barrier. A type whose channel

@@ -1949,7 +1949,7 @@ struct NodeHost::Impl {
 			                  superseded_};
 		}
 
-		/// What the node waits for now, unpaced (3a's kinds): an older node of its name; its engine companions
+		/// What the node waits for now, unpaced: an older node of its name; its engine companions
 		/// while configuring (the block first, since they are made only once it is ready); the block while starting.
 		std::vector<WaitingFor> waitingNow() const {
 			std::vector<WaitingFor> waits;
@@ -3056,7 +3056,7 @@ struct NodeHost::Impl {
 				for (const auto& slot : config_->loops) slot->release();
 		}
 
-		/// Readiness, as far as slice 3a has it: the engine companions, made in the flush in request order once the
+		/// Readiness's companions step: the engine companions, made in the flush in request order once the
 		/// block is ready (their ports exist); with none pending, every resource is ready at once (in this turn, as its
 		/// own input). An adapter that tells ready() inside make() is heard after that item, and every ready is judged
 		/// against every engine companion made.

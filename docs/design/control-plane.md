@@ -926,7 +926,8 @@ and its owner, drops a stale `seq`, stops for a keep-alive, checks the value aga
 | teardown step 5 | the channels are freed, after the code and the loops' states |
 
 No channel is allocated, freed or resized on the realtime thread or while the code that uses it can run. One node's
-transition never touches another's channels (R16). A companion writes no status, events or records.
+transition never touches another's channels (the owner, 2026-11-08: "it should be per-node. Some node
+stopping/reconfiguring/failing does not effect the graph globally"). A companion writes no status, events or records.
 
 ## 7. The keeper path
 
@@ -1360,7 +1361,7 @@ formulas and their inverses; Backspace on a focused knob sends no `node.remove`.
 | JSON Schema as the type schema | a small closed vocabulary reads better and checks in tests |
 | A hash per type | types are compiled in and change together |
 | Clamping out-of-range ticks | a script sending a wrong value should learn it |
-| A base class with virtual `onParam`, `onAction` (JUCE, VST3) | nothing to override: a type declares (R1) |
+| A base class with virtual `onParam`, `onAction` (JUCE, VST3) | nothing to override: a type declares, so it writes only what is its own (the owner, 2026-11-07: "what are the core primitives that ear should host so that new nodes can be added simply and only require defining the truly custom bits that its node type demands") |
 | Every save aborting every gesture | the owner: "Only a related save" (R31) |
 | A dropped tab's gesture returning to the file's value | the owner: "Keep last value" (R32) |
 | Gestures on `.inPlace()` rows | a drag would chop the audio into holds (X5) |

@@ -125,7 +125,7 @@ public:
 	/// Any thread: the ring's capacity in frames (at least SourceShape::frames).
 	virtual std::uint32_t capacityFrames() const noexcept = 0;
 	/// Rung when the source's clock asks after a tick (SourceClock::played returned true), at most once until answered.
-	/// One watcher (a loop's onWake, slice 3c). Never rung for a source with no clock.
+	/// One watcher (a loop's onWake). Never rung for a source with no clock.
 	virtual Wake& clockWake() noexcept = 0;
 
 protected:

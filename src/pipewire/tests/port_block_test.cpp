@@ -1605,7 +1605,7 @@ TEST_CASE("process() runs with denormals flushed to zero (FTZ and DAZ), and the 
 #endif
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Slice 3a's PortBlock (docs/engine.md#drive-and-fade): the asynchronous drive, applied inside
+// The PortBlock's requests (docs/engine.md#drive-and-fade): the asynchronous drive, applied inside
 // its invoke between two cycles; fadeOut; settle(); one invoke in flight per block; takenAt; blockId.
 
 namespace {

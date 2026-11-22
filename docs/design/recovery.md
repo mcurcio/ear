@@ -21,7 +21,7 @@ are described in `docs/architecture.md` and `docs/control-port.md`.
 
 As built (slice 3a): a failure (`engine-refused`, `start-failed`, `lost`) tears the node's configuration down at once,
 keeping its block and wires; the node stays `failed` and is configured again **only when asked**: `node.start` (a
-retry), `node.restart`, or a committed settings change (D-L31: rule 1 never configures a failed node by itself, "slice
+retry), `node.restart`, or a committed settings change (the lifecycle's rule 1 never configures a failed node by itself, "slice
 8's recovery does that"). A lost block is final. So today a `sendspin` library that dies after an hour, or a USB card
 unplugged and plugged back, stays failed until an operator acts or ear restarts.
 
@@ -114,7 +114,7 @@ Slice 5 defines `writer::companion`; this slice builds its first users:
 | Built piece | Change |
 |---|---|
 | `NodePhase`, `NodeState`, the aggregate (`node_lifecycle.hpp`) | `recovering`; T16 and its end; the attempt count and last failure per node |
-| `NodeHost` | a recovery timer per node; D-L31's rule changes: a failed node is configured again when the timer fires, as well as when asked |
+| `NodeHost` | a recovery timer per node; that rule changes: a failed node is configured again when the timer fires, as well as when asked |
 | `NodeHealth` | `attempt`, `retryInMs`, `lastFailure` |
 | `Lifecycle` (3d) | `recovery` |
 | `ear_control` | feature `recovery`; the members; the `recovering` record and `recovery` cause |

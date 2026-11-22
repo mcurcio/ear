@@ -140,7 +140,7 @@ constexpr TypeSpec otherSpec{.settings = SettingsTable<>{"other"}, .banks = Bank
 static_assert(std::same_as<decltype(otherOut), decltype(out)>);
 static_assert(requires(Io<spec> io) { io[otherOut]; });
 
-/// A class that writes the change version: it compiles, and 3a never calls it.
+/// A class that writes the change version: it compiles, and nothing calls it yet (docs/design/reconfigure.md).
 struct Changing {
 	static Members<spec> ports(const Checked&) {
 		return {in(members(1)), out(members(1)), toDevice(members(1)), fromDevice(members(1))};
@@ -478,7 +478,7 @@ TEST_CASE("Members are numbered or named, each once", "[type-spec]") {
 	CHECK_THROWS_AS(twice.ports(), std::logic_error);
 }
 
-TEST_CASE("A class that writes the change version compiles, and every change restarts the node in 3a", "[type-spec]") {
+TEST_CASE("A class that writes the change version compiles, and every change restarts the node", "[type-spec]") {
 	calls.clear();
 	testing::TypeHarness<spec, Changing> harness;
 	REQUIRE_FALSE(harness.parse({{"channels", 1}}));
