@@ -73,6 +73,13 @@ format-check:
 	${CXX_FILES} | xargs -0 clang-format --dry-run --Werror
 .PHONY: format-check
 
+# Every link into the docs resolves (scripts/check-doc-links.py says what it checks): Markdown
+# links and anchors in the docs and skills, and the docs/<page>.md#<anchor> citations in comments.
+# CI's format job runs it.
+docs-check:
+	python3 scripts/check-doc-links.py
+.PHONY: docs-check
+
 cmake_debug: ${BUILDDIR}
 	$(call configure,Debug,OFF)
 .PHONY: cmake_debug

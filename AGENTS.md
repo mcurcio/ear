@@ -56,6 +56,7 @@ scripts/dev.sh make web           # npm ci, then build the graph editor into web
 scripts/dev.sh make web-test      # npm ci, typecheck, vitest, build
 scripts/dev.sh make format        # clang-format -i over the tracked C++ under src/ and test/
 scripts/dev.sh make format-check  # the same, failing on any file it would change (CI's format job)
+scripts/dev.sh make docs-check    # every link into the docs resolves (CI's format job; needs only python3 and git)
 scripts/dev.sh bash               # a shell in the image
 
 scripts/dev.sh ctest --test-dir out -R "lands on left" --output-on-failure   # one test, by name regex
@@ -66,6 +67,14 @@ scripts/dev.sh out/src/nodes/white/ear_node_white_tests "[white]"          # one
 ./out/ear --runtime-dir /run/ear                           # programs' and pipe receivers' FIFOs and files in your folder
 node scripts/rpc-call.mjs ws://127.0.0.1:7777/rpc graph.get   # one control-port call from a script
 ```
+
+**In a Claude Code cloud session** use `scripts/cloud-dev.sh` wherever this page says
+`scripts/dev.sh` (`scripts/cloud-dev.sh make test`). The session reaches the network only through
+an HTTPS proxy with its own CA, so plain `scripts/dev.sh` cannot build the image, and configure
+cannot download one dependency's archive; the script's header says what it does about each (it
+starts the Docker daemon, builds `ear-dev` from a copy of the Dockerfile that trusts the proxy,
+and fetches mdns by git). The first run builds the image and fetches every dependency, about 15
+minutes; `make test` then takes about 15 more on the session's four cores.
 
 `ear --help` lists the flags; [`docs/architecture.md#boot-and-stop`](docs/architecture.md#boot-and-stop)
 says what each does and how ear boots and stops. `ear` reads `engine.conf` from beside its own
@@ -167,6 +176,9 @@ appears in a public header.
   fails naming why. Verify audio in the tests, never on real hardware. A timing test that fails on
   a loaded host is rerun alone before the code is suspected. The rules and what each suite proves:
   [`docs/testing.md`](docs/testing.md).
+- **Links.** `make docs-check` (`scripts/check-doc-links.py`) fails on a Markdown link, an anchor
+  or a comment's `docs/<page>.md#<anchor>` citation whose page or heading is gone. Run it after
+  renaming a heading or deleting a page; CI's `format` job runs it.
 - **Comments** say why, and cite the library doc that holds the rule (by heading anchor), never a
   review record, a step or a decision id.
 
@@ -190,7 +202,7 @@ appears in a public header.
   `ubuntu-24.04` jobs in parallel: `test` (builds the dev image with buildx, layers in GitHub's
   cache, restores the fetched trees and ccache, runs `scripts/dev.sh make test` with
   `EAR_DEV_IMAGE=ear-dev`, and uploads ctest's logs as `ctest-output` on failure), `web` (`make
-  web-test`), `format` (`make format-check`) and `image` (checks `scripts/version-tags.sh`, builds
+  web-test`), `format` (`make format-check` and `make docs-check`) and `image` (checks `scripts/version-tags.sh`, builds
   the run image and runs `scripts/image-smoke.sh` on it). On a push to `master`, once all four
   pass, `release` and then `publish` run: `publish` pushes the run image to
   `ghcr.io/mcurcio/ear`, built from the release's tag (else the merged commit) and tagged

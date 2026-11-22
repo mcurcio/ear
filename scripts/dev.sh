@@ -28,6 +28,9 @@
 #
 # Ports: EAR_DEV_PUBLISH, when set, is passed to docker run as --publish (for example 5173:5173
 # for the editor's dev server, or 7777:7777 for ear's control port).
+#
+# More docker run arguments: EAR_DEV_DOCKER_ARGS, when set, is split on spaces and passed to docker
+# run before the image (scripts/cloud-dev.sh passes the host's network and a proxy this way).
 set -euo pipefail
 
 if [[ $# -eq 0 ]]; then
@@ -61,8 +64,14 @@ if [[ -n ${EAR_DEV_PUBLISH:-} ]]; then
 	publish=(--publish "$EAR_DEV_PUBLISH")
 fi
 
+more=()
+if [[ -n ${EAR_DEV_DOCKER_ARGS:-} ]]; then
+	read -r -a more <<<"$EAR_DEV_DOCKER_ARGS"
+fi
+
 mkdir -p "$main_checkout/.cache/ccache" "$main_checkout/.cache/npm"
 exec docker run --rm ${tty[@]+"${tty[@]}"} ${publish[@]+"${publish[@]}"} "${mounts[@]}" \
+	${more[@]+"${more[@]}"} \
 	--user "$(id -u):$(id -g)" \
 	--env HOME=/tmp \
 	--env CCACHE_DIR="$main_checkout/.cache/ccache" \
