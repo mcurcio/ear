@@ -1,6 +1,6 @@
 # What `configure` asks and answers: a smaller, stricter `CreateOf`
 
-Status: design, not built; for the owner's gate. It follows slice 3c (one author interface is left, the class:
+Status: designed, not built; approved by the owner (2026-11-22: Q-C1 to Q-C3, section 10). It follows slice 3c (one author interface is left, the class:
 `docs/writing-a-node-type.md#the-class`) and comes before slice 3d (`reconfigure.md`), which adds the change version
 of `configure` on the same surface. It changes how a type's `configure` is written and nothing an operator sees: no
 setting, state, record or wire member changes.
@@ -240,16 +240,19 @@ Each step builds and passes alone; each is a `refactor(core)` commit and makes n
 
 ## 10. Questions for the owner
 
-**Q-C1. One verb for every companion, or only for the engine kinds?** *Recommendation: one verb, `attach`, for all
+**Q-C1. One verb for every companion, or only for the engine kinds?** **Answered (the owner, 2026-11-22, binding):
+one verb, `attach`, for all five.** *Recommendation: one verb, `attach`, for all
 five* (4.2). The alternative keeps `cx.sink(bank, shape, consumer)` and `cx.source(bank, shape, clock)` under their
 own names and uses `attach` for sound cards, RTP receivers and pipe receivers only: two more names to learn, and the
 calls read a little more like prose.
 
-**Q-C2. Is `cx.applied(code, states...)` the right spelling of the answer?** *Recommendation: yes.* It keeps the word
+**Q-C2. Is `cx.applied(code, states...)` the right spelling of the answer?** **Answered (the owner, 2026-11-22,
+binding): yes.** *Recommendation: yes.* It keeps the word
 the answer has today and reads as what it is. The alternative names the code's verb, `cx.run(code, states...)`, which
 reads well for creation and badly for slice 3d's change (`cx.run()` to mean "keep the code").
 
-**Q-C3. Before slice 3d, as section 7 has it?** *Recommendation: yes*, for the reason in section 9's last row. It
+**Q-C3. Before slice 3d, as section 7 has it?** **Answered (the owner, 2026-11-22, binding): yes, before slice 3d.**
+*Recommendation: yes*, for the reason in section 9's last row. It
 delays slice 3d's spike by the four steps above.
 
 ## 11. Not in this page
