@@ -57,8 +57,7 @@ struct Rtp {
 		                                    .encoding = s.get<formatRow>(),
 		                                    .rate = sender.value_or(cx.format().rate),
 		                                    .latencyMs = s.get<latencyRow>()});
-		cx.use(passThrough({bankPair(fromRtp, stream)}));
-		return Configured::applied();
+		return cx.applied(passThrough(bankPair(fromRtp, stream)));
 	}
 };
 

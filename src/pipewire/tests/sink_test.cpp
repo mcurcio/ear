@@ -502,9 +502,8 @@ struct Recorder {
 	static Members<spec> ports(const Checked&) { return {record(members(2)), writer(members(2))}; }
 	Configured configure(CreateOf<spec>& cx, const Checked&) {
 		cx.attach(writer, SinkShape{.frames = 4096}, std::make_unique<TestConsumer>(*recorded));
-		cx.use(passThrough({bankPair(record, writer)}));
 		cx.declareLatency(record, writer, kDeclared);
-		return Configured::applied();
+		return cx.applied(passThrough(bankPair(record, writer)));
 	}
 };
 

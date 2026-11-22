@@ -561,18 +561,6 @@ struct NodeHost::Impl {
 		AudioFormat format() const override { return host_.format; }
 		const NodeName& node() const override { return name_; }
 		const Ports& ports() const override { return ports_; }
-		void use(NodeCode code) override {
-			guarded([&] {
-				requireConfiguring("use");
-				Configuration& c = *config_;
-				if (c.codeGiven) throw std::logic_error("use called twice");
-				if (!code.own() && code.pairs().empty())
-					throw std::logic_error("use given no code: a null code or a pass-through of no pair");
-				c.codeGiven = true;
-				c.pairs = code.pairs();
-				c.code = std::move(code.own());
-			});
-		}
 		/// An engine companion (docs/writing-a-node-type.md#engine-companions), its bank's rule its shape's: a sound
 		/// card on an inside bank of either direction, an RTP receiver or a pipe receiver on an inside input bank. A
 		/// pipe receiver's FIFO is the configuration's runtime path "<bank>.fifo", named in what this returns; a host
@@ -762,23 +750,6 @@ struct NodeHost::Impl {
 				if (input.direction != Direction::input || output.direction != Direction::output)
 					throw std::logic_error("declareLatency names a pair: an input bank, then an output bank");
 				recordLatency(output.name, latency, input.name);
-			});
-		}
-		[[noreturn]] void refuse(std::string rule) override {
-			if (!brokenRule_) brokenRule_ = rule;
-			throw std::logic_error(rule);
-		}
-		/// A loop's state (docs/writing-a-node-type.md#loops), once per loop declared with a state type.
-		void loopState(std::size_t loop, std::unique_ptr<void, void (*)(void*)> state) override {
-			guarded([&] {
-				LoopSlot& slot = loopSlot("loop", loop);
-				if (!slot.declared.stateful)
-					throw std::logic_error("loop " + std::string(slot.declared.name) + " takes no state");
-				if (slot.stateGiven)
-					throw std::logic_error("loop " + std::string(slot.declared.name) + " given a state twice");
-				if (!state) throw std::logic_error("loop " + std::string(slot.declared.name) + " given no state");
-				slot.stateGiven = true;
-				slot.state = std::move(state);
 			});
 		}
 		Loop& loopExecutor(std::size_t loop) override {
@@ -1398,7 +1369,6 @@ struct NodeHost::Impl {
 			const LoopDeclaration declared;
 			std::unique_ptr<void, void (*)(void*)> state{nullptr,
 			                                             [](void*) {}}; // the type's, until its loop destroys it
-			bool stateGiven = false;
 			std::size_t item = detail::noReadiness; // its readiness item: ready once the adapter says it runs
 			bool failedHeard = false;               // the adapter said it cannot start: nothing to finish or close
 			bool finished = false;
@@ -1834,7 +1804,6 @@ struct NodeHost::Impl {
 			std::vector<BankPair> pairs;          // the pass-through's pairs, for the latency plan
 			std::vector<DeclaredLatency> latency; // what configure declared, one per path
 			LatencyPlan plan;                     // worked out at configure's return; carried with each drive
-			bool codeGiven = false;               // use() was called
 			bool startFailed = false;     // configure failed, threw or broke a rule: nothing to make, prepare or drive
 			bool companionsAsked = false; // its engine companions' making is queued
 			bool readyTold = false;       // T3: the machine was told every resource is ready
@@ -2337,6 +2306,29 @@ struct NodeHost::Impl {
 			else return std::move(*result);
 		}
 
+		/// What is wrong with an applied answer, if anything: no code, or states that are not exactly those of the
+		/// loops declared with one (docs/writing-a-node-type.md#rules-the-framework-enforces).
+		static std::optional<std::string> wrongAnswer(const Configuration& c, Configured& answer) {
+			if (!answer.code().own() && answer.code().pairs().empty())
+				return "the answer holds no code: a null code or a pass-through of no pair";
+			std::vector<bool> given(c.loops.size(), false);
+			for (const ErasedLoopState& state : answer.states()) {
+				if (state.loop >= c.loops.size())
+					return "the answer holds a state for loop " + std::to_string(state.loop) +
+					       ", which is not declared";
+				const std::string name(c.loops[state.loop]->declared.name);
+				if (!c.loops[state.loop]->declared.stateful)
+					return "the answer holds a state for loop " + name + ", which takes none";
+				if (given[state.loop]) return "the answer holds two states for loop " + name;
+				if (!state.state) return "the answer holds a null state for loop " + name;
+				given[state.loop] = true;
+			}
+			for (std::size_t loop = 0; loop < c.loops.size(); ++loop)
+				if (c.loops[loop]->declared.stateful && !given[loop])
+					return "the answer holds no state for loop " + std::string(c.loops[loop]->declared.name);
+			return std::nullopt;
+		}
+
 		/// T2 (docs/writing-a-node-type.md#configure-and-createof): a new generation and its context; the instance made
 		/// and its configure called, timed together as the hook `configure`; then its answer and the return checks. A
 		/// throw, a failed answer or a broken rule is a fault in readying (start-failed); else the code is kept,
@@ -2385,8 +2377,21 @@ struct NodeHost::Impl {
 					return failConfigure(lc::Fact::configureFailed, "configure answered failed with no detail");
 				return failConfigure(lc::Fact::configureFailed, answer->detail());
 			}
+			// An applied answer holds the code and exactly its loops' states: a type's class cannot answer otherwise
+			// (CreateOf::applied), so one that does is its instance's maker's bug, told as ear's own.
+			if (std::optional<std::string> wrong = wrongAnswer(c, *answer)) {
+				const MainLoopActivity::Scope activity(hooks::configure.activity, name_);
+				host_.internalError(InternalError{.callback = "ErasedInstance::configure",
+				                                  .node = name_,
+				                                  .where = MainLoopActivity::describe(MainLoopActivity::save()),
+				                                  .what = *wrong});
+				return failConfigure(lc::Fact::adapterFaulted,
+				                     internalErrorDetail("ErasedInstance::configure", *wrong));
+			}
+			c.pairs = answer->code().pairs();
+			c.code = std::move(answer->code().own());
+			for (ErasedLoopState& given : answer->states()) c.loops[given.loop]->state = std::move(given.state);
 			// The return checks, on an applied answer only.
-			if (!c.codeGiven) return failConfigure(lc::Fact::configureFailed, "configure gave no code");
 			if (!c.code) {
 				try {
 					c.code = makePassThrough(ports_, c.pairs);
@@ -2407,10 +2412,6 @@ struct NodeHost::Impl {
 			if (!c.recordings.empty() && host_.resources.recordings() == nullptr)
 				return failConfigure(lc::Fact::configureFailed,
 				                     "cannot open " + c.recordings.front()->path() + ": no recordings folder");
-			for (const auto& slot : c.loops)
-				if (slot->declared.stateful && !slot->stateGiven)
-					return failConfigure(lc::Fact::configureFailed,
-					                     "configure gave loop " + std::string(slot->declared.name) + " no state");
 			// A FIFO the program names is a pipe receiver's of this configuration: attaching one is the only way to its
 			// FIFO, so only one kept from another configuration fails here.
 			if (c.program)

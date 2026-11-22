@@ -106,8 +106,7 @@ public:
 			break;
 		case Broken::feedWithoutFeed:
 			cx.program(std::move(shape));
-			cx.use(Copy{});
-			return Configured::applied();
+			return cx.applied(Copy{}, cx.state(reports));
 		case Broken::unknownFile:
 			shape.args.push_back({part::File{"missing"}});
 			break;
@@ -123,11 +122,9 @@ public:
 			shape.needs.push_back(*SharedMemoryName::parse("/x"));
 			break;
 		}
-		cx.loop(reports, std::make_unique<Reports>());
 		cx.program(shape, reports, &Reports::onFeed);
 		if (behaviour.broken == Broken::secondProgram) cx.program(ProgramShape{.executable = player});
-		cx.use(Copy{});
-		return Configured::applied();
+		return cx.applied(Copy{}, cx.state(reports));
 	}
 };
 

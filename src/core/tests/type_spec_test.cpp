@@ -104,29 +104,24 @@ public:
 		const auto mode = settings.get<modeRow>();
 		if (mode == "card") {
 			cx.attach(toDevice, SoundCardShape{.card = *CardId::parse("Probe")});
-			cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
-			return Configured::applied();
+			return cx.applied(passThrough(bankPair(in, toDevice), bankPair(fromDevice, out)));
 		}
 		if (mode == "sink") {
 			cx.attach(toDevice, SinkShape{.frames = 1024}, std::make_unique<Upstreams>());
-			cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
 			cx.declareLatency(in, toDevice, Latency{30, 40});
-			return Configured::applied();
+			return cx.applied(passThrough(bankPair(in, toDevice), bankPair(fromDevice, out)));
 		}
 		if (mode == "source") {
 			cx.attach(fromDevice, SourceShape{.frames = 1000});
-			cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
-			return Configured::applied();
+			return cx.applied(passThrough(bankPair(in, toDevice), bankPair(fromDevice, out)));
 		}
 		if (mode == "clocked") {
 			cx.attach(fromDevice, SourceShape{.frames = 1000}, std::make_unique<JumpClock>());
-			cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
-			return Configured::applied();
+			return cx.applied(passThrough(bankPair(in, toDevice), bankPair(fromDevice, out)));
 		}
 		if (mode == "fail") return Configured::failed("asked to");
 		if (mode == "say") node_.handle().say("configured at " + std::to_string(cx.format().rate.hz()));
-		cx.use(Doubler{&prepares});
-		return Configured::applied();
+		return cx.applied(Doubler{&prepares});
 	}
 	void start() { calls.emplace_back("start"); }
 	void stop() { calls.emplace_back("stop"); }
@@ -145,21 +140,6 @@ constexpr TypeSpec otherSpec{.settings = SettingsTable<>{"other"}, .banks = Bank
 static_assert(std::same_as<decltype(otherOut), decltype(out)>);
 static_assert(requires(Io<spec> io) { io[otherOut]; });
 
-/// A code written against the other spec.
-struct OtherCode {
-	void process(Io<otherSpec>, const GraphCycle&) noexcept {}
-};
-/// A class of this spec whose configure gives the other spec's code; constructed from nothing.
-struct Mixed {
-	static Members<spec> ports(const Checked&) {
-		return {in(members(1)), out(members(1)), toDevice(members(1)), fromDevice(members(1))};
-	}
-	Configured configure(CreateOf<spec>& cx, const Checked&) {
-		cx.use(OtherCode{});
-		return Configured::applied();
-	}
-};
-
 /// A class that writes the change version: it compiles, and 3a never calls it.
 struct Changing {
 	static Members<spec> ports(const Checked&) {
@@ -167,8 +147,7 @@ struct Changing {
 	}
 	Configured configure(CreateOf<spec>& cx, const Checked&) {
 		calls.emplace_back("configure");
-		cx.use(Doubler{&prepares});
-		return Configured::applied();
+		return cx.applied(Doubler{&prepares});
 	}
 	Changed configure(ChangeOf<spec>&, const Checked&, const Checked&) { return Changed::applied(); }
 };
@@ -497,16 +476,6 @@ TEST_CASE("Members are numbered or named, each once", "[type-spec]") {
 	CHECK(members("left", "right").names == std::vector<std::string>{"left", "right"});
 	const Members<spec> twice{in(members("a", "a")), out(members(1)), toDevice(members(1)), fromDevice(members(1))};
 	CHECK_THROWS_AS(twice.ports(), std::logic_error);
-}
-
-TEST_CASE("A configure that uses a code written against another type's spec fails the node at use", "[type-spec]") {
-	testing::TypeHarness<spec, Mixed> harness;
-	REQUIRE_FALSE(harness.parse({{"channels", 1}}));
-	harness.add();
-	CHECK(harness.phase() == "failed");
-	CHECK(harness->health().reason ==
-	      FailureReason{FailureReason::Code::startFailed,
-	                    "configure threw: a type's configure gave a code written against another type's spec"});
 }
 
 TEST_CASE("A class that writes the change version compiles, and every change restarts the node in 3a", "[type-spec]") {

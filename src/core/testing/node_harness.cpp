@@ -797,7 +797,6 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		AudioFormat format() const override { return create.format(); }
 		const NodeName& node() const override { return create.node(); }
 		const Ports& ports() const override { return create.ports(); }
-		void use(NodeCode code) override { create.use(std::move(code)); }
 		std::optional<part::Fifo> attachEngine(std::string_view bank, EngineCompanionShape shape) override {
 			return create.attachEngine(bank, std::move(shape));
 		}
@@ -813,13 +812,6 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		}
 		void declareLatency(std::string_view from, std::string_view to, Latency latency) override {
 			create.declareLatency(from, to, latency);
-		}
-		[[noreturn]] void refuse(std::string rule) override {
-			create.refuse(rule);
-			throw std::logic_error(rule); // never reached: refuse throws
-		}
-		void loopState(std::size_t loop, std::unique_ptr<void, void (*)(void*)> state) override {
-			create.loopState(loop, std::move(state));
 		}
 		Loop& loopExecutor(std::size_t loop) override { return create.loopExecutor(loop); }
 		void postToLoop(std::size_t loop, std::move_only_function<void(void*)> work) override {

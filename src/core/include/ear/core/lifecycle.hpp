@@ -9,10 +9,7 @@
 //   inline constexpr TypeSpec spec{.settings = SettingsTable<>{"white"}, .banks = Banks<noise>{}};
 //   struct White {
 //   	static Members<spec> ports(const CheckedOf<spec>&) { return {noise(members("mono"))}; }
-//   	Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>&) {
-//   		cx.use(WhiteCode{});
-//   		return Configured::applied();
-//   	}
+//   	Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>&) { return cx.applied(WhiteCode{}); }
 //   };
 //   }
 //
@@ -47,6 +44,7 @@
 #include <type_traits>
 #include <utility>
 #include <variant>
+#include <vector>
 #include "ear/core/companions.hpp"
 #include "ear/core/loop.hpp"
 #include "ear/core/node_type.hpp"
@@ -60,26 +58,59 @@ namespace ear {
 
 // ---- Answers ----
 
-/// What creation's configure answers (docs/writing-a-node-type.md#the-class). It has no restart: that is the change
-/// version's answer.
+/// One loop's state as an answer carries it: declared loop `loop` (its index in the spec's Loops) and its state, owned
+/// from the answer on by the framework, which destroys it on the loop's thread at teardown step 4 (on the main loop if
+/// the loop never started).
+struct ErasedLoopState {
+	std::size_t loop;
+	std::unique_ptr<void, void (*)(void*)> state;
+	template <class State> static ErasedLoopState of(std::size_t loop, std::unique_ptr<State> state) {
+		return {loop, std::unique_ptr<void, void (*)(void*)>(state.release(),
+		                                                     [](void* given) { delete static_cast<State*>(given); })};
+	}
+};
+
+/// What creation's configure answers (docs/writing-a-node-type.md#the-class): a failure, or the code and the state of
+/// every loop the spec declares with one. A type makes the applied answer only through its context
+/// (`return cx.applied(code, states...)`), which holds it to its spec at compile time, so the code and each state are
+/// given exactly once. It has no restart: that is the change version's answer.
 class Configured {
 public:
-	/// The framework still waits for every resource the configure asked for (readiness 3' and 4').
-	static Configured applied() noexcept { return Configured(std::nullopt); }
 	/// A failure only the type can see: the node fails `start-failed: <detail>`, its configuration torn down.
-	static Configured failed(std::string detail) { return Configured(std::move(detail)); }
+	static Configured failed(std::string detail) {
+		Configured answer;
+		answer.failure_ = std::move(detail);
+		return answer;
+	}
+	/// The applied answer as an ErasedInstance written by hand makes it (the framework's own tests); a type's class
+	/// answers `cx.applied(...)`. The code, and one state for each loop the instance declares with one, by index.
+	/// NodeHost holds what it is given to the instance's loops: a null code, a state missing, given twice or for a loop
+	/// declared without one is the instance's maker's bug, told as ear's own (docs/architecture.md#faults-by-owner).
+	/// The framework still waits for every resource the configure asked for (readiness 3' and 4').
+	template <std::same_as<ErasedLoopState>... States> static Configured erased(NodeCode code, States... states) {
+		Configured answer;
+		answer.code_.emplace(std::move(code));
+		answer.states_.reserve(sizeof...(States));
+		(answer.states_.push_back(std::move(states)), ...);
+		return answer;
+	}
 	/// For the framework.
 	bool isFailed() const noexcept { return failure_.has_value(); }
 	/// For the framework; empty unless isFailed().
 	const std::string& detail() const noexcept { return failure_ ? *failure_ : empty(); }
+	/// For the framework, on an applied answer: its code and its states, each taken once.
+	NodeCode& code() noexcept { return *code_; }
+	std::vector<ErasedLoopState>& states() noexcept { return states_; }
 
 private:
-	explicit Configured(std::optional<std::string> failure) noexcept : failure_(std::move(failure)) {}
+	Configured() = default;
 	static const std::string& empty() noexcept {
 		static const std::string none;
 		return none;
 	}
 	std::optional<std::string> failure_;
+	std::optional<NodeCode> code_; // set unless failed
+	std::vector<ErasedLoopState> states_;
 };
 
 /// What the change version of configure answers (docs/writing-a-node-type.md#the-class; slice 3d). Declared in 3a only
@@ -146,9 +177,6 @@ public:
 	virtual const NodeName& node() const = 0;
 	/// The node's ports (its config's), to bind a code written against the spec.
 	virtual const Ports& ports() const = 0;
-	/// The code (prepared at T3, driven at T5). Exactly once: a second call is a std::logic_error at the call; none by an
-	/// applied configure's return, one at the return.
-	virtual void use(NodeCode code) = 0;
 	/// An engine companion on an inside bank (docs/writing-a-node-type.md#engine-companions), its kind its shape's: a
 	/// sound card (playback on an inside output bank, `<node>.playback`, capture on an inside input bank,
 	/// `<node>.capture`: the bank's direction is the card's, and a playback card's bank is faded with the public
@@ -184,10 +212,6 @@ public:
 	/// same path is a std::logic_error. With a pass-through as the code, the path must be one of its pairs, or the
 	/// node fails at configure's return.
 	virtual void declareLatency(std::string_view from, std::string_view to, Latency latency) = 0;
-	/// Declared loop `loop`'s state (docs/writing-a-node-type.md#loops), owned from now on by the framework, which
-	/// destroys it on the loop's thread at teardown step 4 (on the main loop if the loop never started). Exactly once
-	/// for a loop declared with a state type, by an applied configure's return; never for one declared without.
-	virtual void loopState(std::size_t loop, std::unique_ptr<void, void (*)(void*)> state) = 0;
 	/// Declared loop `loop` as an executor, for a state to post to and arm on; valid until the configuration is freed
 	/// (teardown step 5). What is sent to it before the node is configured is staged.
 	virtual Loop& loopExecutor(std::size_t loop) = 0;
@@ -206,9 +230,6 @@ public:
 	/// The configuration's one program (docs/writing-a-node-type.md#programs), started at the last readiness step;
 	/// `feed`, when given, where its report feed goes. A rule the shape breaks is a std::logic_error at the call.
 	virtual void program(ProgramShape shape, std::optional<ProgramFeedTo> feed) = 0;
-	/// A rule CreateOf finds broken before it reaches a call above (a code written against another type's spec): records
-	/// it on the configuration, so the node fails with it whatever configure does next, and throws std::logic_error(rule).
-	[[noreturn]] virtual void refuse(std::string rule) = 0;
 
 protected:
 	~CreateContext() = default;
@@ -302,9 +323,45 @@ private:
 	NodeContext* context_;
 };
 
-/// configure on creation (T2): acquire and construct (docs/writing-a-node-type.md#the-class; slice 3a's members, its
-/// interim calls among them). Only the spec's banks, of the right direction and reach, compile. It has no holds,
-/// whenReady or unclaim (the change version's), so a call the mode does not offer does not compile.
+/// A loop's state on its way into configure's answer (docs/writing-a-node-type.md#loops): made only by
+/// `cx.state(loop, args...)`, which constructs it, and given to `cx.applied`. Move-only; tagged with its loop, so the
+/// answer's check is on types alone.
+template <class Handle> class LoopState {
+public:
+	using Loop = Handle;
+	LoopState(LoopState&&) noexcept = default;
+	LoopState& operator=(LoopState&&) = delete;
+
+private:
+	template <const auto&> friend class CreateOf;
+	explicit LoopState(std::unique_ptr<typename Handle::State> state) noexcept : state_(std::move(state)) {}
+	std::unique_ptr<typename Handle::State> state_;
+};
+template <class T> inline constexpr bool isLoopState = false;
+template <class Handle> inline constexpr bool isLoopState<LoopState<Handle>> = true;
+
+namespace spec_detail {
+/// How many of the loops `Given` is `Handle`.
+template <class Handle, class... Given> inline constexpr std::size_t statesFor =
+	(std::size_t{0} + ... + std::size_t{std::same_as<Handle, Given>});
+/// One check for each loop of a spec, so the compiler's error names the loop (its instantiation's `Handle`).
+template <class Handle, class... Given> constexpr void stateGivenOnce() noexcept {
+	static_assert(!Handle::stateful || statesFor<Handle, Given...> >= 1,
+	              "configure's answer gives the state of every loop its spec declares with one: "
+	              "cx.applied(code, cx.state(loop, ...))");
+	static_assert(statesFor<Handle, Given...> <= 1, "configure's answer gives a loop's state once");
+}
+template <class List, class... Given> struct StatesGiven;
+template <auto... Handles, class... Given> struct StatesGiven<Loops<Handles...>, Given...> {
+	static constexpr void check() noexcept {
+		(stateGivenOnce<std::remove_cvref_t<decltype(Handles)>, Given...>(), ...);
+	}
+};
+} // namespace spec_detail
+
+/// configure on creation (T2): acquire, construct and answer (docs/writing-a-node-type.md#the-class). Only the spec's
+/// banks, of the right direction and reach, compile. It has no holds, whenReady or unclaim (the change version's), so a
+/// call the mode does not offer does not compile.
 template <const auto& Spec> class CreateOf {
 	static_assert(linkage::named<Spec>, "a spec is declared in a named namespace, never an unnamed one");
 	using List = BanksOf<Spec>;
@@ -319,15 +376,41 @@ public:
 	AudioFormat format() const { return context_->format(); }
 	const NodeName& node() const { return context_->node(); }
 
-	/// The code, once. A code written against a spec is bound to the node's ports here; one written against another
-	/// type's spec is a std::logic_error (it would read this node's ports by that spec's banks).
-	void use(NodeCode code) {
-		if (auto* bound = dynamic_cast<spec_detail::BankBoundCode*>(code.own().get())) {
-			if (bound->spec() != &Spec)
-				context_->refuse("a type's configure gave a code written against another type's spec");
-			bound->bindPorts(context_->ports());
+	// ---- The answer ----
+
+	/// The applied answer (docs/writing-a-node-type.md#configure-and-createof): the code, by value (a struct with
+	/// process, or passThrough(...)), and the state of every loop the spec declares with one, each made by state() and
+	/// given once, in any order. A state missing, a second for one loop, a code given as a pointer or one written
+	/// against another type's spec (it would read this node's ports by that spec's banks) does not compile. A code
+	/// written against the spec is bound to the node's ports here.
+	template <class Code, class... States> Configured applied(Code code, States... states) {
+		static_assert(SpecCode<Code> || std::same_as<Code, PassThroughPairs>,
+		              "configure answers with its code by value: a struct with process, or passThrough(...)");
+		static_assert((isLoopState<States> && ...),
+		              "configure's answer is its code, then its loops' states, each made by cx.state(loop, ...)");
+		if constexpr ((isLoopState<States> && ...)) {
+			spec_detail::StatesGiven<LoopsOf<Spec>, typename States::Loop...>::check();
+			NodeCode erased(std::move(code));
+			if constexpr (SpecCode<Code>) {
+				static_assert(static_cast<const void*>(&spec_detail::ProcessOf<decltype(&Code::process)>::spec) ==
+				                  static_cast<const void*>(&Spec),
+				              "configure answers with a code written against its own type's spec");
+				static_cast<spec_detail::BankBoundCode&>(*erased.own()).bindPorts(context_->ports());
+			}
+			return Configured::erased(std::move(erased),
+			                          ErasedLoopState::of(LoopsOf<Spec>::template indexOf<typename States::Loop>,
+			                                              std::move(states.state_))...);
+		} else {
+			return Configured::failed({});
 		}
-		context_->use(std::move(code));
+	}
+	/// Loop `Handle`'s state (docs/writing-a-node-type.md#loops), constructed here from `args` on the main loop with
+	/// no I/O and no threads, for the answer: once the answer is given the framework owns it, and the instance reaches
+	/// it only by a post. A loop the spec lacks, or one declared without a state, does not compile.
+	template <class Handle, class... Args> LoopState<Handle> state(Handle, Args&&... args) {
+		static_assert(ownLoop<Handle>, "a context takes only its spec's loops");
+		static_assert(Handle::stateful, "a loop declared without a state takes none");
+		return LoopState<Handle>(std::make_unique<typename Handle::State>(std::forward<Args>(args)...));
 	}
 
 	// ---- Companions: one per inside bank, attached by its shape (CompanionBank states each shape's bank) ----
@@ -419,17 +502,6 @@ public:
 		context_->declareLatency(From::name, To::name, latency);
 	}
 
-	/// Loop `Handle`'s state (docs/writing-a-node-type.md#loops), constructed here on the main loop with no I/O and no
-	/// threads; from now on the framework owns it, and the instance reaches it only by a post. Exactly once for a loop
-	/// declared with a state type; a loop declared without one takes none (it does not compile).
-	template <class Handle> void loop(Handle, std::unique_ptr<typename Handle::State> state) {
-		static_assert(ownLoop<Handle>, "a context takes only its spec's loops");
-		static_assert(Handle::stateful, "a loop declared without a state takes none");
-		using State = typename Handle::State;
-		context_->loopState(LoopsOf<Spec>::template indexOf<Handle>,
-		                    std::unique_ptr<void, void (*)(void*)>(
-								state.release(), [](void* given) { delete static_cast<State*>(given); }));
-	}
 	/// Loop `Handle` as an executor (post, timers, watches) for a state to keep: valid until the configuration is freed;
 	/// what is sent to it before the node is configured is staged.
 	template <class Handle> Loop& executor(Handle) {

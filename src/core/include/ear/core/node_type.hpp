@@ -139,6 +139,34 @@ public:
 template <class Code>
 concept SpecCode = requires { &Code::process; } && !std::derived_from<Code, AudioCode> && std::move_constructible<Code>;
 template <SpecCode Code> std::unique_ptr<AudioCode> eraseSpecCode(Code code);
+/// The framework's pass-through between banks as a type names it: made only by passThrough(first, rest...), so it
+/// names at least one pair.
+class PassThroughPairs {
+public:
+	const std::vector<BankPair>& pairs() const noexcept { return pairs_; }
+
+private:
+	friend class NodeCode;
+	template <std::same_as<BankPair>... Rest> friend PassThroughPairs passThrough(BankPair first, Rest... rest);
+	explicit PassThroughPairs(std::vector<BankPair> pairs) noexcept : pairs_(std::move(pairs)) {}
+	std::vector<BankPair> pairs_;
+};
+/// The framework's pass-through between banks, one pair or more (`bankPair(from, to)` each): `card` and `rtp` write no
+/// audio code.
+template <std::same_as<BankPair>... Rest> PassThroughPairs passThrough(BankPair first, Rest... rest) {
+	std::vector<BankPair> pairs;
+	pairs.reserve(1 + sizeof...(Rest));
+	pairs.push_back(std::move(first));
+	(pairs.push_back(std::move(rest)), ...);
+	return PassThroughPairs(std::move(pairs));
+}
+/// A pass-through of no pair does not compile: it would play silence on every output.
+template <class... None>
+	requires(sizeof...(None) == 0)
+PassThroughPairs passThrough(None...) {
+	static_assert(sizeof...(None) != 0, "a pass-through names at least one pair of banks");
+	return passThrough(BankPair{});
+}
 /// What runs on the realtime thread for one configuration (docs/writing-a-node-type.md#the-code): a type's own code
 /// (an AudioCode, or a code written against its spec), or the framework's pass-through between banks (outputs no pair
 /// names are silent). The pass-through is resolved against the node's ports when configure returns; a pair naming a
@@ -148,7 +176,9 @@ public:
 	template <std::derived_from<AudioCode> Code> NodeCode(std::unique_ptr<Code> code) noexcept
 		: code_(std::move(code)) {} // NOLINT: implicit on purpose
 	template <SpecCode Code> NodeCode(Code code)
-		: code_(eraseSpecCode(std::move(code))) {} // NOLINT: implicit on purpose
+		: code_(eraseSpecCode(std::move(code))) {}                                 // NOLINT: implicit on purpose
+	NodeCode(PassThroughPairs pairs) noexcept : pairs_(std::move(pairs.pairs_)) {} // NOLINT: implicit on purpose
+	/// A pass-through of pairs known only at run time (the framework's own tests).
 	static NodeCode passThrough(std::vector<BankPair> pairs);
 	/// The type's own code; null for a pass-through.
 	std::unique_ptr<AudioCode>& own() noexcept { return code_; }
@@ -159,8 +189,6 @@ private:
 	std::unique_ptr<AudioCode> code_;
 	std::vector<BankPair> pairs_;
 };
-/// The framework's pass-through between banks, one pair or more: `card` and `rtp` write no audio code.
-inline NodeCode passThrough(std::vector<BankPair> pairs) { return NodeCode::passThrough(std::move(pairs)); }
 class ErasedInstance; // lifecycle.hpp
 class NodeContext;    // lifecycle.hpp
 /// One node's checked settings; made only by its type's parse().

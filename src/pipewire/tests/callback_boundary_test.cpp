@@ -511,8 +511,7 @@ public:
 	std::unique_ptr<ErasedInstance> make(NodeContext&) const override {
 		struct Instance final : ErasedInstance {
 			Configured configure(CreateContext& cx) override {
-				cx.use(std::make_unique<SilentCode>());
-				return Configured::applied();
+				return Configured::erased(std::make_unique<SilentCode>());
 			}
 		};
 		return std::make_unique<Instance>();

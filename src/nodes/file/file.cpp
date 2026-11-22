@@ -80,8 +80,7 @@ Configured File::configure(CreateOf<spec>& cx, const Checked& s) {
 	const Recording& recording = cx.recording(RecordingRequest{s.get<pathRow>()});
 	cx.attach(writer, SinkShape{.frames = static_cast<std::uint32_t>(FrameClock(cx.format().rate).frames(ringLength))},
 	          std::make_unique<WavWriter>(recording, cx.format(), node_.handle()));
-	cx.use(passThrough({bankPair(record, writer)}));
-	return Configured::applied();
+	return cx.applied(passThrough(bankPair(record, writer)));
 }
 
 } // namespace ear::nodes::file

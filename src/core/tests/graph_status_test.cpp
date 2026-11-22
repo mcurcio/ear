@@ -44,8 +44,7 @@ constexpr TypeSpec sourceSpec{.settings = SettingsTable<seedRow>{"source"}, .ban
 struct SourceType {
 	static Members<sourceSpec> ports(const CheckedOf<sourceSpec>&) { return {noise(members("mono"))}; }
 	Configured configure(CreateOf<sourceSpec>& cx, const CheckedOf<sourceSpec>&) {
-		cx.use(std::make_unique<SilentCode>());
-		return Configured::applied();
+		return Configured::erased(std::make_unique<SilentCode>());
 	}
 };
 
@@ -58,8 +57,7 @@ struct RecorderType {
 	}
 	Configured configure(CreateOf<recorderSpec>& cx, const CheckedOf<recorderSpec>&) {
 		cx.attach(tap, SinkShape{.frames = 64}, std::make_unique<NullConsumer>());
-		cx.use(std::make_unique<SilentCode>());
-		return Configured::applied();
+		return Configured::erased(std::make_unique<SilentCode>());
 	}
 };
 
@@ -71,8 +69,7 @@ struct CardType {
 		return {play(members(1)), capture(members(1)), fromCard(members(1)), toCard(members(1))};
 	}
 	Configured configure(CreateOf<cardSpec>& cx, const CheckedOf<cardSpec>&) {
-		cx.use(std::make_unique<SilentCode>());
-		return Configured::applied();
+		return Configured::erased(std::make_unique<SilentCode>());
 	}
 };
 

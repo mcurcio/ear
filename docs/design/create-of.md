@@ -206,7 +206,7 @@ Each step builds and passes alone; each is a `refactor(core)` commit and makes n
 |---|---|---|
 | C1 (done) | A sink's consumer as an argument; `SinkOf`, `SinkRequest`, `consumedBy` go | The smallest; no new name |
 | C2 (done) | `attach` for the five kinds; a pipe receiver's FIFO returned; `fifoOf` and the per-kind calls go; `attachEngine` | Renames C1's call once more, but keeps C1 reviewable alone |
-| C3 | The answer: `cx.applied(code, states...)`, `cx.state`, `passThrough(first, rest...)`; `use`, `loop`, `Configured::applied()` go; the erased answer | The widest (every `configure`), last so it lands on the final names |
+| C3 (done) | The answer: `cx.applied(code, states...)`, `cx.state`, `passThrough(first, rest...)`; `use`, `loop`, `Configured::applied()` go; the erased answer | The widest (every `configure`), last so it lands on the final names |
 | C4 | `reconfigure.md` 4 rewritten on this surface; this page deleted, what lasts moved to `docs/writing-a-node-type.md` | With C3 |
 
 *Found building C1:* a sink given no consumer is its own overload with a `static_assert`, so the error names the rule
@@ -230,6 +230,27 @@ so a null one starts no thread. The erased call takes one argument for the three
   unreachable by any `configure` that uses only what its own context returned; its row in
   `#rules-the-framework-enforces` says so, and its test makes the part with `fifoOn`.
 - **`<call> outside configure` says `attach`** for all five kinds.
+
+*Found building C3:*
+- **[U1] settled: a code is given by value.** No shipped type and no type's test gave its code as a pointer, so
+  `cx.applied` takes a struct with `process` or what `passThrough(...)` returns (`PassThroughPairs`, made only by it,
+  so never empty) and refuses anything else with the rule's text. The erased layer keeps `NodeCode` and its
+  `std::unique_ptr` form.
+- **A code written against another type's spec is refused at compile time too**: `cx.applied` knows both specs, so
+  the run-time rule, `CreateContext::refuse` and `BankBoundCode::spec()` went, and the row became a compile-fail case.
+- **[U2] settled by a check per loop**: a missing state fails `stateGivenOnce<Handle, Given...>`, whose instantiation
+  names the loop (`with Handle = ear::LoopHandle<LoopName<8>{"reports"}, ...>`) under the rule's text.
+- **[U3] settled: in-place construction suits both.** `cx.state(loop, args...)` is `std::make_unique<State>(args...)`,
+  which C++20 lets initialise an aggregate; `sendspin`'s `WorkerParts` and `airplay`'s `Reports` needed no change.
+- **The erased answer is `Configured::erased(code, ErasedLoopState...)`**, the one maker `cx.applied` and a
+  hand-written `ErasedInstance` share. `NodeHost` checks it once at `configure`'s return (a code, and exactly the
+  declared stateful loops' states, none null), and a wrong one is ear's bug: `lost`, `internal error in
+  ErasedInstance::configure: <what>`, with its record. A null code or a pass-through of no pair can now come only
+  from the erased layer, so they are that check's too, no longer a type's `start-failed`.
+- **States are taken into their loops before the other return checks**, so an answer that fails one (a pass-through
+  the ports refuse) still has its states destroyed by the teardown, before the instance, as before.
+- **A moved-from `LoopState` is null.** Giving one compiles; the erased check catches it, as ear's bug by its wording
+  though the type's by cause. Not worth a second mechanism.
 
 ## 8. Unverified
 

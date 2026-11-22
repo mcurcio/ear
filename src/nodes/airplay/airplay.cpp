@@ -130,7 +130,7 @@ Configured Airplay::configure(CreateOf<spec>& cx, const Checked& s) {
 	// (docs/writing-a-node-type.md#engine-companions): nothing to declare.
 	const part::Fifo fifo = cx.attach(fromAirplay, pipeShapeOf(protocol));
 	const GrantedPort rtsp = cx.claim(claim::AnyTcp{});
-	cx.loop(reports, std::make_unique<Reports>(node_.handle(), cx.executor(reports), hostLabelOf(cx.node())));
+	auto reporting = cx.state(reports, node_.handle(), cx.executor(reports), hostLabelOf(cx.node()));
 	const SpeakerName name = s.get<nameRow>().value_or(SpeakerName::defaultFor(cx.node()));
 	cx.program(ProgramShape{.executable = shairportSync,
 	                        .args = {"-c", {part::File{"config"}}, "--name", name.text(), "--port", {part::Port{rtsp}}},
@@ -141,8 +141,7 @@ Configured Airplay::configure(CreateOf<spec>& cx, const Checked& s) {
 	                                     ? std::vector<SharedMemoryName>{std::get<Airplay2>(protocol).channel}
 	                                     : std::vector<SharedMemoryName>{}},
 	           reports, &Reports::onFeed);
-	cx.use(passThrough({bankPair(fromAirplay, out)}));
-	return Configured::applied();
+	return cx.applied(passThrough(bankPair(fromAirplay, out)), std::move(reporting));
 }
 
 } // namespace airplay

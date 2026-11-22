@@ -26,11 +26,9 @@ using namespace std::chrono_literals;
 std::vector<std::string> events;
 /// What each test asks of the type.
 struct Behaviour {
-	bool giveNoState = false;    // configure gives the worker no state
-	bool giveStateTwice = false; // configure gives it two
-	bool failConfigure = false;  // configure answers failed after posting
-	bool leaveSource = false;    // begin() leaves a timer armed past the state, in `left`
-	bool throwInBegin = false;   // begin() throws
+	bool failConfigure = false; // configure answers failed after posting
+	bool leaveSource = false;   // begin() leaves a timer armed past the state, in `left`
+	bool throwInBegin = false;  // begin() throws
 };
 Behaviour behaviour;
 /// Where a careless state leaves a source.
@@ -113,16 +111,12 @@ public:
 	Configured configure(CreateOf<spec>& cx, const Checked&) {
 		said("configure");
 		SourceWriter& played = cx.attach(feed, SourceShape{.frames = 256}, std::make_unique<AskingClock>());
-		if (!behaviour.giveNoState)
-			cx.loop(worker, std::make_unique<Worker>(cx.executor(worker), cx.executor(helper), played));
-		if (behaviour.giveStateTwice)
-			cx.loop(worker, std::make_unique<Worker>(cx.executor(worker), cx.executor(helper), played));
+		auto working = cx.state(worker, cx.executor(worker), cx.executor(helper), played);
 		cx.post(worker, [](Worker&) { said("staged post"); });
 		cx.post(helper, [] { said("staged helper post"); });
 		cx.attach(tap, SinkShape{.frames = 1024}, std::make_unique<Tap>());
-		cx.use(Silence{});
 		if (behaviour.failConfigure) return Configured::failed("nope");
-		return Configured::applied();
+		return cx.applied(Silence{}, std::move(working));
 	}
 	void start() {
 		node_.post(worker, [](Worker& w) { w.begin(); });
@@ -317,19 +311,6 @@ TEST_CASE("A strand's handlers run with onStrand() true, a dedicated loop's with
 	CHECK_FALSE(onStrand());
 }
 
-TEST_CASE("Configure's loop rules: a loop declared with a state is given exactly one", "[loops]") {
-	SECTION("none") {
-		auto h = fresh({}, {.giveNoState = true});
-		h->add();
-		CHECK(failure(*h) == "start-failed: configure gave loop worker no state");
-	}
-	SECTION("two") {
-		auto h = fresh({}, {.giveStateTwice = true});
-		h->add();
-		CHECK(failure(*h) == "start-failed: configure threw: loop worker given a state twice");
-	}
-}
-
 TEST_CASE("A loop not yet running is what the node waits for, after 2 s, by name", "[loops]") {
 	auto h = fresh({.holdLoops = true});
 	h->add();
@@ -393,12 +374,9 @@ using Checked = CheckedOf<spec>;
 struct Member {
 	static Members<spec> ports(const Checked&) { return {in(members(1)), tap(members(1)), tap2(members(1))}; }
 	Configured configure(CreateOf<spec>& cx, const Checked&) {
-		cx.loop(keeper, std::make_unique<Keeper>());
-		cx.loop(whole, std::make_unique<Whole>());
 		cx.attach(tap, SinkShape{.frames = 1024}, keeper, &Keeper::recorder);
 		cx.attach(tap2, SinkShape{.frames = 1024}, whole);
-		cx.use(passThrough({bankPair(in, tap), bankPair(in, tap2)}));
-		return Configured::applied();
+		return cx.applied(passThrough(bankPair(in, tap), bankPair(in, tap2)), cx.state(whole), cx.state(keeper));
 	}
 };
 

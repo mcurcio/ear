@@ -123,8 +123,7 @@ struct TestInstance final : ErasedInstance {
 		if (config.fail) return Configured::failed("cannot open /nope");
 		for (const auto& card : config.cards) create.attachEngine(card.bank, card.shape);
 		for (const auto& receiver : config.receivers) create.attachEngine(receiver.bank, receiver.shape);
-		create.use(std::make_unique<TestAudioCode>(config.log));
-		return Configured::applied();
+		return Configured::erased(std::make_unique<TestAudioCode>(config.log));
 	}
 };
 
@@ -1644,10 +1643,7 @@ struct PassConfig final : NodeConfig {
 	struct Instance final : ErasedInstance {
 		std::vector<BankPair> pairs;
 		explicit Instance(std::vector<BankPair> p) : pairs(std::move(p)) {}
-		Configured configure(CreateContext& cx) override {
-			cx.use(passThrough(pairs));
-			return Configured::applied();
-		}
+		Configured configure(CreateContext& cx) override { return Configured::erased(NodeCode::passThrough(pairs)); }
 	};
 	Ports ports_{{{Direction::input, "play", numbered(2)},
 	              {Direction::output, "capture", numbered(1)},
@@ -1695,17 +1691,14 @@ TEST_CASE("A pass-through between banks of different sizes, the wrong way or of 
 		{{"play", "capture"}},             // 2 ports to 1
 		{{"capture", "play"}},             // an output to an input
 		{{"play", "nope"}},                // no such bank
-		{},                                // no pair at all
 		{{"play", "out"}, {"play", "out"}} // one output bank written twice
 	};
-	const auto which = GENERATE(range(0, 5));
+	const auto which = GENERATE(range(0, 4));
 	Fixture f;
 	auto config = std::make_shared<PassConfig>();
 	config->pairs = bad.at(static_cast<std::size_t>(which));
-	f.add("card", config); // checked at configure's return, never thrown out
-	// A pass-through of no pair is refused at use; the rest at the return, against the node's ports.
-	CHECK(failureOf(f, "card").starts_with(which == 3 ? "start-failed: configure threw: use given no code"
-	                                                  : "start-failed: configure gave a pass-through: "));
+	f.add("card", config); // checked at configure's return, against the node's ports, never thrown out
+	CHECK(failureOf(f, "card").starts_with("start-failed: configure gave a pass-through: "));
 	f.blocks.events.at(0)->ready();
 	CHECK(f.blocks.driven.at(0) == nullptr);
 	f.stopAll();
@@ -1842,8 +1835,7 @@ struct WorkerInstance final : ErasedInstance {
 	std::span<const LoopDeclaration> loops() const noexcept override { return {&workerLoop, 1}; }
 	Configured configure(CreateContext& cx) override {
 		if (config.sinks > 0) cx.sink("tap1", SinkShape{.frames = 1024}, std::make_unique<QuietConsumer>());
-		cx.use(std::make_unique<TestAudioCode>(config.log));
-		return Configured::applied();
+		return Configured::erased(std::make_unique<TestAudioCode>(config.log));
 	}
 };
 
@@ -2250,8 +2242,7 @@ struct BlockedConfig final : NodeConfig {
 		Configured configure(CreateContext& cx) override {
 			cx.sink("tap1", SinkShape{.frames = 1024},
 			        std::make_unique<BlockedConsumer>(config.entered, config.release));
-			cx.use(std::make_unique<TestAudioCode>(config.log));
-			return Configured::applied();
+			return Configured::erased(std::make_unique<TestAudioCode>(config.log));
 		}
 	};
 	Log& log;
@@ -2629,8 +2620,7 @@ struct ReadingConfig final : NodeConfig {
 		explicit Instance(Log& l) : log(l) {}
 		~Instance() override { log.push_back("instance destroyed"); }
 		Configured configure(CreateContext& cx) override {
-			cx.use(std::make_unique<ReadingCode>(log));
-			return Configured::applied();
+			return Configured::erased(std::make_unique<ReadingCode>(log));
 		}
 	};
 	Log& log;
@@ -2685,8 +2675,7 @@ struct RecordingConfig final : NodeConfig {
 		Configured configure(CreateContext& cx) override {
 			const Recording& recording = cx.recording(RecordingRequest{config.path});
 			cx.sink("tap1", SinkShape{.frames = 1024}, std::make_unique<DescriptorConsumer>(config.log, recording));
-			cx.use(std::make_unique<TestAudioCode>(config.log));
-			return Configured::applied();
+			return Configured::erased(std::make_unique<TestAudioCode>(config.log));
 		}
 	};
 	Log& log;
@@ -3190,8 +3179,7 @@ struct ActivityConfig final : NodeConfig {
 		explicit Instance(Log& l) : log(l) {}
 		Configured configure(CreateContext& cx) override {
 			log.push_back("configure in " + MainLoopActivity::current());
-			cx.use(std::make_unique<TestAudioCode>(log));
-			return Configured::applied();
+			return Configured::erased(std::make_unique<TestAudioCode>(log));
 		}
 	};
 	Log& log;
@@ -3264,8 +3252,7 @@ struct OutputConfig final : NodeConfig {
 		Log& log;
 		explicit Instance(Log& l) : log(l) {}
 		Configured configure(CreateContext& cx) override {
-			cx.use(std::make_unique<TestAudioCode>(log));
-			return Configured::applied();
+			return Configured::erased(std::make_unique<TestAudioCode>(log));
 		}
 	};
 	Log& log;
@@ -4233,8 +4220,7 @@ struct ProbeInstance final : ErasedInstance {
 		log.push_back("configure");
 		*kept = &cx;
 		if (onConfigure) return onConfigure(cx);
-		cx.use(std::make_unique<TestAudioCode>(log));
-		return Configured::applied();
+		return Configured::erased(std::make_unique<TestAudioCode>(log));
 	}
 	void start() override {
 		log.push_back("start()");
@@ -4326,8 +4312,7 @@ TEST_CASE("stop() pairs only with a start() that returned: a failure stops a sta
 		auto config = std::make_shared<ProbeConfig>(f.log);
 		config->onConfigure = [&](CreateContext& cx) {
 			cx.attachEngine("pb", motuOut.shape);
-			cx.use(std::make_unique<TestAudioCode>(f.log));
-			return Configured::applied();
+			return Configured::erased(std::make_unique<TestAudioCode>(f.log));
 		};
 		addRunning(f, "probe", config);
 		f.log.clear();
@@ -4395,8 +4380,7 @@ TEST_CASE("A hook past 20 ms on the main loop is ear.hook-slow, naming the hook,
 	auto config = std::make_shared<ProbeConfig>(f.log);
 	config->onConfigure = [&](CreateContext& cx) {
 		f.timers.advance(std::chrono::milliseconds(31)); // the hook takes 31 ms of the main loop's clock
-		cx.use(std::make_unique<TestAudioCode>(f.log));
-		return Configured::applied();
+		return Configured::erased(std::make_unique<TestAudioCode>(f.log));
 	};
 	config->onStart = [&] { f.timers.advance(std::chrono::milliseconds(20)); }; // at the bound: not slow
 	addRunning(f, "rec", config);
@@ -4426,13 +4410,6 @@ TEST_CASE("Every rule a type breaks at a call or at configure's return fails its
 	using Configure = std::function<Configured(CreateContext&)>;
 	Log codes; // the codes' own log, apart from f.log's order
 	const std::vector<std::pair<Configure, std::string>> cases{
-		{[&](CreateContext& cx) {
-			 cx.use(std::make_unique<TestAudioCode>(codes));
-			 cx.use(std::make_unique<TestAudioCode>(codes));
-			 return Configured::applied();
-		 },
-	     "start-failed: configure threw: use called twice"},
-		{[](CreateContext&) { return Configured::applied(); }, "start-failed: configure gave no code"},
 		{[](CreateContext&) { return Configured::failed("cannot open /nope"); }, "start-failed: cannot open /nope"},
 		{[](CreateContext&) -> Configured { throw std::runtime_error("bad state"); },
 	     "start-failed: configure threw: bad state"},
@@ -4441,46 +4418,39 @@ TEST_CASE("Every rule a type breaks at a call or at configure's return fails its
 	     "std::exception"},
 		{[&](CreateContext& cx) {
 			 cx.attachEngine("record", motuIn.shape);
-			 cx.use(std::make_unique<TestAudioCode>(codes));
-			 return Configured::applied();
+			 return Configured::erased(std::make_unique<TestAudioCode>(codes));
 		 },
 	     "start-failed: configure threw: a sound card joins an inside bank, not \"record\""},
 		{[&](CreateContext& cx) {
 			 cx.sink("pb", SinkShape{.frames = 64}, std::make_unique<TestSinkConsumer>(codes));
 			 cx.attachEngine("pb", motuOut.shape);
-			 cx.use(std::make_unique<TestAudioCode>(codes));
-			 return Configured::applied();
+			 return Configured::erased(std::make_unique<TestAudioCode>(codes));
 		 },
 	     "start-failed: configure threw: a second companion on bank pb"},
 		{[&](CreateContext& cx) {
 			 cx.attachEngine("pb", motuOut.shape);
 			 cx.sink("pb", SinkShape{.frames = 64}, std::make_unique<TestSinkConsumer>(codes));
-			 cx.use(std::make_unique<TestAudioCode>(codes));
-			 return Configured::applied();
+			 return Configured::erased(std::make_unique<TestAudioCode>(codes));
 		 },
 	     "start-failed: configure threw: a second companion on bank pb"},
 		{[&](CreateContext& cx) {
 			 cx.declareLatency("record", "pb", Latency{1, 1});
 			 cx.declareLatency("record", "pb", Latency{2, 2});
-			 cx.use(std::make_unique<TestAudioCode>(codes));
-			 return Configured::applied();
+			 return Configured::erased(std::make_unique<TestAudioCode>(codes));
 		 },
 	     "start-failed: configure threw: latency declared twice for the path record to pb"},
 		{[&](CreateContext& cx) {
 			 cx.declareLatency("cap", "pb", Latency{2, 2});
-			 cx.use(passThrough({{"record", "pb"}}));
-			 return Configured::applied();
+			 return Configured::erased(NodeCode::passThrough({{"record", "pb"}}));
 		 },
 	     "start-failed: configure declared latency on cap to pb, a path its pass-through does not copy"},
 		{[&](CreateContext& cx) {
 			 cx.declareLatency("pb", "record", Latency{1, 1});
-			 cx.use(std::make_unique<TestAudioCode>(codes));
-			 return Configured::applied();
+			 return Configured::erased(std::make_unique<TestAudioCode>(codes));
 		 },
 	     "start-failed: configure threw: declareLatency names a pair: an input bank, then an output bank"},
 		{[](CreateContext& cx) {
-			 cx.use(passThrough({{"record", "pb"}, {"record", "pb"}}));
-			 return Configured::applied();
+			 return Configured::erased(NodeCode::passThrough({{"record", "pb"}, {"record", "pb"}}));
 		 },
 	     "start-failed: configure gave a pass-through: "},
 	};
@@ -4516,9 +4486,8 @@ TEST_CASE("A typed declareLatency is a latency path: carried as a pair with its 
 		auto config = std::make_shared<ProbeConfig>(f.log);
 		config->onConfigure = [&](CreateContext& cx) {
 			cx.declareLatency("record", "pb", Latency{3, 5});
-			if (own) cx.use(std::make_unique<TestAudioCode>(codes));
-			else cx.use(passThrough({{"record", "pb"}}));
-			return Configured::applied();
+			if (own) return Configured::erased(std::make_unique<TestAudioCode>(codes));
+			return Configured::erased(NodeCode::passThrough({{"record", "pb"}}));
 		};
 		f.add("probe", config);
 		f.blocks.events.at(0)->ready();
@@ -4550,8 +4519,7 @@ TEST_CASE("A code with two inputs into one output declares each path's delay, ea
 	config->onConfigure = [&](CreateContext& cx) {
 		cx.declareLatency("record", "pb", Latency{3, 5});
 		cx.declareLatency("cap", "pb", Latency{7, 7});
-		cx.use(std::make_unique<TestAudioCode>(codes));
-		return Configured::applied();
+		return Configured::erased(std::make_unique<TestAudioCode>(codes));
 	};
 	f.add("probe", config);
 	f.blocks.events.at(0)->ready();
@@ -4577,7 +4545,7 @@ TEST_CASE("A context kept past its configure is refused at the call: from start(
           "[node_host][class]") {
 	Fixture f;
 	auto config = std::make_shared<ProbeConfig>(f.log);
-	config->onStart = [&] { config->kept->use(std::make_unique<TestAudioCode>(f.log)); };
+	config->onStart = [&] { config->kept->declareLatency("record", "pb", Latency{1, 1}); };
 	f.add("probe", config);
 	REQUIRE(config->kept != nullptr);
 	CHECK_THROWS_WITH(config->kept->recording(RecordingRequest{"x.wav"}), "recording outside configure");
@@ -4585,7 +4553,7 @@ TEST_CASE("A context kept past its configure is refused at the call: from start(
 	CHECK_THROWS_WITH(config->kept->attachEngine("cap", fppStream), "attach outside configure");
 	f.blocks.events.at(0)->ready();
 	f.settle();
-	CHECK(failureOf(f, "probe") == "start-failed: start threw: use outside configure");
+	CHECK(failureOf(f, "probe") == "start-failed: start threw: declareLatency outside configure");
 	CHECK(f.cards.events.empty());
 	CHECK(f.receivers.events.empty());
 	f.stopAll();
@@ -4601,10 +4569,7 @@ TEST_CASE("One companion per inside bank, whatever the kinds: a card and a sink 
 		cx.sink("pb", SinkShape{.frames = 64}, std::make_unique<TestSinkConsumer>(codes));
 	};
 	const auto source = [](CreateContext& cx) { static_cast<void>(cx.source("cap", SourceShape{64}, nullptr)); };
-	const auto then = [&](CreateContext& cx) {
-		cx.use(std::make_unique<TestAudioCode>(codes));
-		return Configured::applied();
-	};
+	const auto then = [&](CreateContext& cx) { return Configured::erased(std::make_unique<TestAudioCode>(codes)); };
 	const std::vector<std::pair<Configure, std::string>> cases{
 		{[&](CreateContext& cx) {
 			 cx.attachEngine("pb", motuOut.shape);
@@ -4683,8 +4648,7 @@ TEST_CASE("A recording path that is absolute or has a .. component fails its nod
 		auto config = std::make_shared<ProbeConfig>(f.log);
 		config->onConfigure = [&](CreateContext& cx) -> Configured {
 			static_cast<void>(cx.recording(RecordingRequest{path}));
-			cx.use(std::make_unique<TestAudioCode>(f.log));
-			return Configured::applied();
+			return Configured::erased(std::make_unique<TestAudioCode>(f.log));
 		};
 		f.add("rec", config);
 		f.settle();
@@ -4711,8 +4675,7 @@ TEST_CASE("One path asked for twice in one configuration is the type's bug, howe
 	config->onConfigure = [&](CreateContext& cx) -> Configured {
 		static_cast<void>(cx.recording(RecordingRequest{"take/1.wav"}));
 		static_cast<void>(cx.recording(RecordingRequest{"./take//1.wav"}));
-		cx.use(std::make_unique<TestAudioCode>(f.log));
-		return Configured::applied();
+		return Configured::erased(std::make_unique<TestAudioCode>(f.log));
 	};
 	f.add("rec", config);
 	f.settle();
@@ -4726,13 +4689,12 @@ TEST_CASE("A broken rule the type catches still fails its node with the rule's t
 	Fixture f;
 	auto config = std::make_shared<ProbeConfig>(f.log);
 	config->onConfigure = [&](CreateContext& cx) {
-		cx.use(std::make_unique<TestAudioCode>(f.log));
 		try {
 			cx.attachEngine("record", motuIn.shape);
 		} catch (const std::exception&) {
 			// swallowed: the type goes on half-acquired
 		}
-		return Configured::applied();
+		return Configured::erased(std::make_unique<TestAudioCode>(f.log));
 	};
 	f.add("probe", config);
 	CHECK(failureOf(f, "probe") == "start-failed: configure threw: a sound card joins an inside bank, not \"record\"");
@@ -4748,34 +4710,26 @@ TEST_CASE("A context call caught inside start() still fails the node", "[node_ho
 	auto config = std::make_shared<ProbeConfig>(f.log);
 	config->onStart = [&] {
 		try {
-			config->kept->use(std::make_unique<TestAudioCode>(f.log));
+			config->kept->declareLatency("record", "pb", Latency{1, 1});
 		} catch (const std::logic_error&) {
 		}
 	};
 	f.add("probe", config);
 	f.blocks.events.at(0)->ready();
 	f.settle();
-	CHECK(failureOf(f, "probe") == "start-failed: start threw: use outside configure");
+	CHECK(failureOf(f, "probe") == "start-failed: start threw: declareLatency outside configure");
 	f.stopAll();
 	f.settle();
 }
 
-TEST_CASE("use with no code and failed with no detail are refused with rule texts", "[node_host][class]") {
-	for (const bool nullCode : {true, false}) {
-		Fixture f;
-		auto config = std::make_shared<ProbeConfig>(f.log);
-		config->onConfigure = [&](CreateContext& cx) {
-			if (!nullCode) return Configured::failed("");
-			cx.use(std::unique_ptr<TestAudioCode>());
-			return Configured::applied();
-		};
-		f.add("probe", config);
-		CHECK(failureOf(f, "probe") ==
-		      (nullCode ? "start-failed: configure threw: use given no code: a null code or a pass-through of no pair"
-		                : "start-failed: configure answered failed with no detail"));
-		f.stopAll();
-		f.settle();
-	}
+TEST_CASE("A failed answer with no detail is refused with the rule's text", "[node_host][class]") {
+	Fixture f;
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	config->onConfigure = [](CreateContext&) { return Configured::failed(""); };
+	f.add("probe", config);
+	CHECK(failureOf(f, "probe") == "start-failed: configure answered failed with no detail");
+	f.stopAll();
+	f.settle();
 }
 
 TEST_CASE("A stop() that throws during a disable or a failure is a log record, and the teardown goes on",
@@ -4789,8 +4743,7 @@ TEST_CASE("A stop() that throws during a disable or a failure is a log record, a
 		config->onStop = [] { throw std::runtime_error("stuck"); };
 		config->onConfigure = [&](CreateContext& cx) {
 			cx.attachEngine("pb", motuOut.shape);
-			cx.use(std::make_unique<TestAudioCode>(f.log));
-			return Configured::applied();
+			return Configured::erased(std::make_unique<TestAudioCode>(f.log));
 		};
 		addRunning(f, "probe", config);
 		if (disable) f.host.nodeChanged(NodeSpec{"probe", "test", {}, true}, config, {NodeOutcome::disable, {}});
@@ -4842,8 +4795,7 @@ std::function<Configured(CreateContext&)> withSink(Log& log, const ProbeConfig* 
 		cx.sink(
 			"pb", SinkShape{.frames = 1024},
 			std::make_unique<TestSinkConsumer>(log, loseInBegin != nullptr ? &loseInBegin->node->handle() : nullptr));
-		cx.use(std::make_unique<TestAudioCode>(log));
-		return Configured::applied();
+		return Configured::erased(std::make_unique<TestAudioCode>(log));
 	};
 }
 
@@ -4940,21 +4892,18 @@ TEST_CASE("A sink given no consumer, on a bank that is no inside output, beside 
 	const std::vector<Case> cases{
 		{[&](CreateContext& cx) {
 			 sink(cx, "pb", nullptr);
-			 cx.use(std::make_unique<TestAudioCode>(codes));
-			 return Configured::applied();
+			 return Configured::erased(std::make_unique<TestAudioCode>(codes));
 		 },
 	     "start-failed: configure threw: sink pb given no consumer"},
 		{[&](CreateContext& cx) {
 			 sink(cx, "record", std::make_unique<TestSinkConsumer>(codes));
-			 cx.use(std::make_unique<TestAudioCode>(codes));
-			 return Configured::applied();
+			 return Configured::erased(std::make_unique<TestAudioCode>(codes));
 		 },
 	     "start-failed: configure threw: a sink joins an inside output bank, not \"record\""},
 		{[&](CreateContext& cx) {
 			 sink(cx, "pb", std::make_unique<TestSinkConsumer>(codes));
 			 sink(cx, "pb", std::make_unique<TestSinkConsumer>(codes));
-			 cx.use(std::make_unique<TestAudioCode>(codes));
-			 return Configured::applied();
+			 return Configured::erased(std::make_unique<TestAudioCode>(codes));
 		 },
 	     "start-failed: configure threw: a second resource named rec.pb in one configuration"},
 		{[&](CreateContext& cx) -> Configured {
@@ -4964,8 +4913,7 @@ TEST_CASE("A sink given no consumer, on a bank that is no inside output, beside 
 	     "start-failed: configure threw: after the sink"},
 		{[&](CreateContext& cx) {
 			 sink(cx, "pb", std::make_unique<TestSinkConsumer>(codes));
-			 cx.use(std::make_unique<TestAudioCode>(codes));
-			 return Configured::applied();
+			 return Configured::erased(std::make_unique<TestAudioCode>(codes));
 		 },
 	     "start-failed: configure threw: no thread for rec", true},
 		{[&](CreateContext& cx) {
@@ -4974,8 +4922,7 @@ TEST_CASE("A sink given no consumer, on a bank that is no inside output, beside 
 			 } catch (const std::exception&) {
 				 // swallowed: the type goes on with no sink
 			 }
-			 cx.use(std::make_unique<TestAudioCode>(codes));
-			 return Configured::applied();
+			 return Configured::erased(std::make_unique<TestAudioCode>(codes));
 		 },
 	     "start-failed: configure threw: no thread for rec", true},
 	};
@@ -5030,8 +4977,7 @@ TEST_CASE("A kind the host has no adapter for fails the node that asks for it st
 		auto config = std::make_shared<ProbeConfig>(log);
 		config->onConfigure = [&](CreateContext& cx) {
 			asked.ask(cx);
-			cx.use(std::make_unique<TestAudioCode>(codes));
-			return Configured::applied();
+			return Configured::erased(std::make_unique<TestAudioCode>(codes));
 		};
 		host.nodeAdded(NodeSpec{"n", "test", {}}, config);
 		mainLoop.runPosted();
@@ -5056,8 +5002,7 @@ TEST_CASE("A sink's engine name is one of its configuration's: a sink on bank pl
 	config->onConfigure = [&](CreateContext& cx) {
 		cx.attachEngine("pb", motuOut.shape);
 		cx.sink("playback", SinkShape{.frames = 1024}, std::make_unique<TestSinkConsumer>(f.log));
-		cx.use(std::make_unique<TestAudioCode>(f.log));
-		return Configured::applied();
+		return Configured::erased(std::make_unique<TestAudioCode>(f.log));
 	};
 	f.add("rec", config);
 	CHECK(failureOf(f, "rec") == "start-failed: configure threw: a second resource named rec.playback in one "
@@ -5090,8 +5035,7 @@ struct InstanceReadingConfig final : NodeConfig {
 		Configured configure(CreateContext& cx) override {
 			config.instanceGone = false;
 			cx.sink("pb", SinkShape{.frames = 1024}, std::make_unique<Consumer>(config.log, config.instanceGone));
-			cx.use(std::make_unique<TestAudioCode>(config.log));
-			return Configured::applied();
+			return Configured::erased(std::make_unique<TestAudioCode>(config.log));
 		}
 	};
 	Log& log;
@@ -5248,8 +5192,7 @@ struct LoggedClock final : SourceClock {
 std::function<Configured(CreateContext&)> withSource(Log& log, SourceWriter** writer) {
 	return [&log, writer](CreateContext& cx) {
 		*writer = &cx.source("cap", SourceShape{.frames = 1000}, std::make_unique<LoggedClock>(log));
-		cx.use(std::make_unique<TestAudioCode>(log));
-		return Configured::applied();
+		return Configured::erased(std::make_unique<TestAudioCode>(log));
 	};
 }
 
@@ -5351,10 +5294,7 @@ TEST_CASE("A source on a bank that is no inside input, a second companion on its
 		std::string failure;
 		bool throwInMake = false;
 	};
-	const auto then = [&](CreateContext& cx) {
-		cx.use(std::make_unique<TestAudioCode>(codes));
-		return Configured::applied();
-	};
+	const auto then = [&](CreateContext& cx) { return Configured::erased(std::make_unique<TestAudioCode>(codes)); };
 	const std::vector<Case> cases{
 		{[&](CreateContext& cx) {
 			 source(cx, "record");
@@ -5592,8 +5532,7 @@ TEST_CASE("A sink's consumer that began in time cancels its deadline, and a sour
 	config->onConfigure = [&log = f.log](CreateContext& cx) {
 		cx.sink("pb", SinkShape{.frames = 1024}, std::make_unique<TestSinkConsumer>(log));
 		static_cast<void>(cx.source("cap", SourceShape{.frames = 64}, nullptr));
-		cx.use(std::make_unique<TestAudioCode>(log));
-		return Configured::applied();
+		return Configured::erased(std::make_unique<TestAudioCode>(log));
 	};
 	f.add("rec", config);
 	f.blocks.events.at(0)->ready();
@@ -5690,8 +5629,7 @@ struct PrepareFails final : AudioCode {
 std::function<Configured(CreateContext&)> withThrowingSink(Log& log, std::string call) {
 	return [&log, call = std::move(call)](CreateContext& cx) {
 		cx.sink("pb", SinkShape{.frames = 1024}, std::make_unique<TestSinkConsumer>(log, nullptr, call));
-		cx.use(std::make_unique<TestAudioCode>(log));
-		return Configured::applied();
+		return Configured::erased(std::make_unique<TestAudioCode>(log));
 	};
 }
 
@@ -5705,8 +5643,7 @@ TEST_CASE("A code whose prepare throws fails its node, is never run, and the res
 	auto config = std::make_shared<ProbeConfig>(f.log);
 	config->onConfigure = [&](CreateContext& cx) {
 		cx.attachEngine("pb", motuOut.shape); // ready only after the block: the drive comes in prepare's batch
-		cx.use(std::make_unique<PrepareFails>(f.log, failing));
-		return Configured::applied();
+		return Configured::erased(std::make_unique<PrepareFails>(f.log, failing));
 	};
 	SECTION("its first prepare: start-failed, and the drive of its batch runs no code") {
 		f.log.clear();
@@ -5953,7 +5890,7 @@ TEST_CASE("An adapter's own std::logic_error inside a context call is told as ea
 			try {
 				return configure(cx);
 			} catch (const std::exception&) {
-				return Configured::applied(); // swallowed: the type goes on with no sink
+				return Configured::erased(std::make_unique<TestAudioCode>(f.log)); // swallowed: it goes on with no sink
 			}
 		};
 		f.add("rec", config); // nothing thrown out of NodeHost
@@ -6059,8 +5996,7 @@ std::function<Configured(CreateContext&)> withCardAndSource(Log& log) {
 	return [&log](CreateContext& cx) {
 		cx.attachEngine("pb", SoundCardShape{*CardId::parse("Pro24")});
 		static_cast<void>(cx.source("cap", SourceShape{.frames = 1000}, nullptr));
-		cx.use(std::make_unique<TestAudioCode>(log));
-		return Configured::applied();
+		return Configured::erased(std::make_unique<TestAudioCode>(log));
 	};
 }
 
@@ -6069,8 +6005,7 @@ std::function<Configured(CreateContext&)> withSourceAndSink(Log& log) {
 	return [&log](CreateContext& cx) {
 		static_cast<void>(cx.source("cap", SourceShape{.frames = 1000}, nullptr));
 		cx.sink("pb", SinkShape{.frames = 1024}, std::make_unique<TestSinkConsumer>(log, nullptr));
-		cx.use(std::make_unique<TestAudioCode>(log));
-		return Configured::applied();
+		return Configured::erased(std::make_unique<TestAudioCode>(log));
 	};
 }
 
@@ -6287,8 +6222,7 @@ TEST_CASE(
 	auto config = std::make_shared<LoopProbeConfig>(f.log, std::vector{plainWorker});
 	config->onConfigure = [&f](CreateContext& cx) {
 		cx.attachEngine("cap", fppStream);
-		cx.use(std::make_unique<TestAudioCode>(f.log));
-		return Configured::applied();
+		return Configured::erased(std::make_unique<TestAudioCode>(f.log));
 	};
 	f.add("fpp", config);
 	f.blocks.events.at(0)->ready();
@@ -6317,7 +6251,7 @@ TEST_CASE(
 namespace {
 
 /// A class whose one loop's state reads its instance: the instance's destructor sets a flag the test owns, and the
-/// state's destructor says whether the instance was still there. Its configure fails after giving the state when told.
+/// state's destructor says whether the instance was still there. Its answer fails at configure's return when told.
 /// It declares one store, so its loop is made only once the store opened (the loops' step comes after the opens').
 struct StateReadingConfig final : NodeConfig {
 	struct State {
@@ -6335,17 +6269,17 @@ struct StateReadingConfig final : NodeConfig {
 		std::span<const StoreDeclaration> stores() const noexcept override { return {&config.store, 1}; }
 		Configured configure(CreateContext& cx) override {
 			config.instanceGone = false;
-			cx.loopState(
-				0, std::unique_ptr<void, void (*)(void*)>(new State{config.log, config.instanceGone},
-			                                              [](void* state) { delete static_cast<State*>(state); }));
-			if (config.failAfterState) return Configured::failed("the device is gone");
-			cx.use(std::make_unique<TestAudioCode>(config.log));
-			return Configured::applied();
+			ErasedLoopState state = ErasedLoopState::of(0, std::make_unique<State>(config.log, config.instanceGone));
+			// A pass-through the ports refuse fails the node at configure's return, the state already the framework's.
+			if (config.failAtReturn)
+				return Configured::erased(NodeCode::passThrough({{"record", "pb"}, {"record", "pb"}}),
+				                          std::move(state));
+			return Configured::erased(std::make_unique<TestAudioCode>(config.log), std::move(state));
 		}
 	};
 	Log& log;
 	Ports ports_ = testPorts();
-	bool failAfterState = false;
+	bool failAtReturn = false;
 	mutable bool instanceGone = false;
 	StoreDeclaration store{
 		"key",
@@ -6361,11 +6295,11 @@ TEST_CASE("A loop state whose loop never started is destroyed at step 5 before t
           "[node_host][loops][teardown]") {
 	Fixture f;
 	auto config = std::make_shared<StateReadingConfig>(f.log);
-	SECTION("configure failed after it gave the state") {
-		config->failAfterState = true;
+	SECTION("its answer, state and all, failed at configure's return") {
+		config->failAtReturn = true;
 		f.add("porch", config);
 		f.settle();
-		CHECK(failureOf(f, "porch") == "start-failed: the device is gone");
+		CHECK(failureOf(f, "porch").starts_with("start-failed: configure gave a pass-through: "));
 	}
 	SECTION("removed while readying, its store still opening, so its loop never made") {
 		f.stores.hold = true;
@@ -6385,6 +6319,62 @@ TEST_CASE("A loop state whose loop never started is destroyed at step 5 before t
 	CHECK(f.allGone == 1);
 }
 
+// A type's class cannot make these answers (CreateOf::applied holds the answer to its spec at compile time), so one
+// that arrives is the bug of whoever made the instance: ear's own, the node's alone.
+TEST_CASE("An applied answer that does not hold a code and exactly its loops' states fails its node lost, told as "
+          "ear's own bug",
+          "[node_host][class][loops]") {
+	using Answer = std::function<Configured(Log&)>;
+	const auto state = [](std::size_t loop, Log& log) {
+		return ErasedLoopState::of(loop, std::make_unique<LoggedState>(log));
+	};
+	const std::vector<std::pair<Answer, std::string>> cases{
+		{[&](Log&) {
+			 return Configured::erased(std::unique_ptr<TestAudioCode>(), ErasedLoopState{0, {nullptr, nullptr}});
+		 },
+	     "the answer holds no code: a null code or a pass-through of no pair"},
+		{[&](Log&) { return Configured::erased(NodeCode::passThrough({})); },
+	     "the answer holds no code: a null code or a pass-through of no pair"},
+		{[&](Log& log) { return Configured::erased(std::make_unique<TestAudioCode>(log)); },
+	     "the answer holds no state for loop worker"},
+		{[&](Log& log) {
+			 return Configured::erased(std::make_unique<TestAudioCode>(log), state(0, log), state(0, log));
+		 },
+	     "the answer holds two states for loop worker"},
+		{[&](Log& log) {
+			 return Configured::erased(std::make_unique<TestAudioCode>(log), state(0, log), state(1, log));
+		 },
+	     "the answer holds a state for loop helper, which takes none"},
+		{[&](Log& log) {
+			 return Configured::erased(std::make_unique<TestAudioCode>(log), state(0, log), state(2, log));
+		 },
+	     "the answer holds a state for loop 2, which is not declared"},
+		{[&](Log& log) {
+			 return Configured::erased(std::make_unique<TestAudioCode>(log),
+		                               ErasedLoopState{0, {nullptr, [](void*) {}}});
+		 },
+	     "the answer holds a null state for loop worker"},
+	};
+	for (std::size_t which = 0; which < cases.size(); ++which) {
+		INFO("case " << which);
+		Fixture f;
+		addRunning(f, "ok", std::make_shared<OutputConfig>(f.log));
+		auto config = std::make_shared<LoopProbeConfig>(
+			f.log, std::vector{statefulWorker, LoopDeclaration{"helper", LoopKind::strand, false}});
+		config->onConfigure = [&](CreateContext&) { return cases[which].first(f.log); };
+		f.add("porch", config); // nothing thrown out of NodeHost
+		CHECK_FALSE(MainLoopActivity::takeThrown());
+		CHECK(failureOf(f, "porch") == "lost: internal error in ErasedInstance::configure: " + cases[which].second);
+		CHECK(f.internalErrors.told ==
+		      std::vector<std::string>{"ErasedInstance::configure|porch|configure porch|" + cases[which].second});
+		CHECK(countOf(f.log, "loop porch.worker made") == 0);
+		CHECK(f.host.health().at(0).state == NodeState::running); // the rest of the graph runs on
+		f.stopAll();
+		f.settle();
+		CHECK(f.allGone == 1);
+	}
+}
+
 TEST_CASE(
 	"A loop that cannot start fails its node start-failed naming it, nothing is finished or closed, and its state "
 	"is destroyed on the main loop",
@@ -6393,10 +6383,8 @@ TEST_CASE(
 	f.loops.autoReady = false;
 	auto config = std::make_shared<LoopProbeConfig>(f.log, std::vector{statefulWorker});
 	config->onConfigure = [&f](CreateContext& cx) {
-		cx.loopState(0, std::unique_ptr<void, void (*)(void*)>(
-							new LoggedState(f.log), [](void* state) { delete static_cast<LoggedState*>(state); }));
-		cx.use(std::make_unique<TestAudioCode>(f.log));
-		return Configured::applied();
+		return Configured::erased(std::make_unique<TestAudioCode>(f.log),
+		                          ErasedLoopState::of(0, std::make_unique<LoggedState>(f.log)));
 	};
 	f.add("porch", config);
 	REQUIRE(f.loops.told.size() == 1);
@@ -6418,10 +6406,8 @@ TEST_CASE("Teardown: loops closed to others at step 1, at step 4 each finishes (
 	Fixture f;
 	auto config = std::make_shared<LoopProbeConfig>(f.log, std::vector{statefulWorker});
 	config->onConfigure = [&f](CreateContext& cx) {
-		cx.loopState(0, std::unique_ptr<void, void (*)(void*)>(
-							new LoggedState(f.log), [](void* state) { delete static_cast<LoggedState*>(state); }));
-		cx.use(std::make_unique<TestAudioCode>(f.log));
-		return Configured::applied();
+		return Configured::erased(std::make_unique<TestAudioCode>(f.log),
+		                          ErasedLoopState::of(0, std::make_unique<LoggedState>(f.log)));
 	};
 	config->onStop = [&f](NodeContext& node) {
 		node.postToLoop(0, [&f](void* state) {
@@ -6459,8 +6445,7 @@ TEST_CASE("A loop that never finishes is leaked at the close deadline, the diagn
 	f.loops.autoClose = false;
 	auto config = std::make_shared<LoopProbeConfig>(f.log, std::vector{plainWorker});
 	config->onConfigure = [&f](CreateContext& cx) {
-		cx.use(std::make_unique<TestAudioCode>(f.log));
-		return Configured::applied();
+		return Configured::erased(std::make_unique<TestAudioCode>(f.log));
 	};
 	addRunning(f, "porch", config);
 	f.host.nodeRemoved("porch");
@@ -6487,8 +6472,7 @@ TEST_CASE("A configuration leaked at the close deadline is said ear.close-late o
 	f.loops.holdFinish = true;
 	auto config = std::make_shared<LoopProbeConfig>(f.log, std::vector{plainWorker});
 	config->onConfigure = [&f](CreateContext& cx) {
-		cx.use(std::make_unique<TestAudioCode>(f.log));
-		return Configured::applied();
+		return Configured::erased(std::make_unique<TestAudioCode>(f.log));
 	};
 	addRunning(f, "porch", config);
 	f.host.nodeRemoved("porch");
@@ -6526,8 +6510,7 @@ TEST_CASE(
 	auto config = std::make_shared<LoopProbeConfig>(f.log, std::vector{plainWorker});
 	config->onConfigure = [&f](CreateContext& cx) {
 		cx.sink("pb", SinkShape{.frames = 1024}, std::make_unique<TestSinkConsumer>(f.log, nullptr, "finish"));
-		cx.use(std::make_unique<TestAudioCode>(f.log));
-		return Configured::applied();
+		return Configured::erased(std::make_unique<TestAudioCode>(f.log));
 	};
 	addRunning(f, "porch", config);
 	REQUIRE(f.host.restart("porch"));
@@ -6582,8 +6565,7 @@ TEST_CASE(
 	std::vector<std::pair<Store*, Loop*>> made;
 	config->onConfigure = [&f, &made](CreateContext& cx) {
 		made.emplace_back(&cx.store(0), &cx.loopExecutor(0));
-		cx.use(std::make_unique<TestAudioCode>(f.log));
-		return Configured::applied();
+		return Configured::erased(std::make_unique<TestAudioCode>(f.log));
 	};
 	NodeHandle* oldHandle = nullptr;
 	config->onStop = [&f, &made, &oldHandle](NodeContext& node) {
@@ -6645,8 +6627,7 @@ TEST_CASE("A loop's events: a slow strand handler is ear.loop-slow, a handler's 
 	auto config =
 		std::make_shared<LoopProbeConfig>(f.log, std::vector{LoopDeclaration{"helper", LoopKind::strand, false}});
 	config->onConfigure = [&f](CreateContext& cx) {
-		cx.use(std::make_unique<TestAudioCode>(f.log));
-		return Configured::applied();
+		return Configured::erased(std::make_unique<TestAudioCode>(f.log));
 	};
 	addRunning(f, "porch", config);
 	REQUIRE(f.loops.told.size() == 1);
@@ -6681,12 +6662,10 @@ TEST_CASE("A timer a state left armed never runs its handler once the state is g
 	std::unique_ptr<Timer> left; // held past the state, as a careless type might: the source left armed
 	auto config = std::make_shared<LoopProbeConfig>(f.log, std::vector{statefulWorker});
 	config->onConfigure = [&f, &left](CreateContext& cx) {
-		auto* state = new Touched;
-		cx.loopState(
-			0, std::unique_ptr<void, void (*)(void*)>(state, [](void* given) { delete static_cast<Touched*>(given); }));
+		auto owned = std::make_unique<Touched>();
+		Touched* state = owned.get();
 		left = cx.loopExecutor(0).every(std::chrono::milliseconds(1), [state] { state->touch(); });
-		cx.use(std::make_unique<TestAudioCode>(f.log));
-		return Configured::applied();
+		return Configured::erased(std::make_unique<TestAudioCode>(f.log), ErasedLoopState::of(0, std::move(owned)));
 	};
 	addRunning(f, "porch", config);
 	REQUIRE(f.loops.made.size() == 1);
@@ -6748,8 +6727,7 @@ std::shared_ptr<LoopProbeConfig> claiming(Log& log, Claim port) {
 	auto config = std::make_shared<LoopProbeConfig>(log, std::vector<LoopDeclaration>{});
 	config->onConfigure = [&log, port](CreateContext& cx) {
 		cx.claim(port);
-		cx.use(std::make_unique<TestAudioCode>(log));
-		return Configured::applied();
+		return Configured::erased(std::make_unique<TestAudioCode>(log));
 	};
 	return config;
 }
@@ -6801,8 +6779,7 @@ TEST_CASE("A port the kernel refuses fails the node at once with the kernel's re
 		                                                std::vector{StoreDeclaration{"key", rule}});
 		config->onConfigure = [&f](CreateContext& cx) {
 			cx.claim(claim::of(claim::TcpListen(8928)));
-			cx.use(std::make_unique<TestAudioCode>(f.log));
-			return Configured::applied();
+			return Configured::erased(std::make_unique<TestAudioCode>(f.log));
 		};
 		f.add("ma", config);
 		f.blocks.events.at(0)->ready();
@@ -6825,8 +6802,7 @@ TEST_CASE("A port claimed twice in one configuration is the type's bug: the node
 		config->onConfigure = [&f](CreateContext& cx) {
 			cx.claim(claim::of(claim::TcpListen(8928)));
 			cx.claim(claim::of(claim::TcpListen(8928)));
-			cx.use(std::make_unique<TestAudioCode>(f.log));
-			return Configured::applied();
+			return Configured::erased(std::make_unique<TestAudioCode>(f.log));
 		};
 		f.add("ma", config);
 		CHECK(failureOf(f, "ma") == "start-failed: configure threw: tcp:8928 claimed twice");
@@ -6838,8 +6814,7 @@ TEST_CASE("A port claimed twice in one configuration is the type's bug: the node
 				cx.attachEngine("cap", fppStream);
 			} catch (const std::logic_error&) {
 			}
-			cx.use(std::make_unique<TestAudioCode>(f.log));
-			return Configured::applied();
+			return Configured::erased(std::make_unique<TestAudioCode>(f.log));
 		};
 		f.add("ma", config);
 		CHECK(failureOf(f, "ma") == "start-failed: configure threw: udp:5004 claimed twice");
@@ -7002,8 +6977,7 @@ TEST_CASE("A store a configuration leaked at the close deadline keeps refuses th
 	auto config =
 		std::make_shared<LoopProbeConfig>(f.log, std::vector{plainWorker}, std::vector{StoreDeclaration{"key", rule}});
 	config->onConfigure = [&f](CreateContext& cx) {
-		cx.use(std::make_unique<TestAudioCode>(f.log));
-		return Configured::applied();
+		return Configured::erased(std::make_unique<TestAudioCode>(f.log));
 	};
 	addRunning(f, "porch", config);
 	REQUIRE(f.host.restart("porch"));
@@ -7044,8 +7018,7 @@ std::shared_ptr<LoopProbeConfig> anyPort(Log& log, std::optional<std::uint16_t> 
 	config->onConfigure = [&log, port](CreateContext& cx) {
 		if (port) cx.claim(claim::of(claim::TcpListen(*port)));
 		else static_cast<void>(cx.claimAnyTcp());
-		cx.use(std::make_unique<TestAudioCode>(log));
-		return Configured::applied();
+		return Configured::erased(std::make_unique<TestAudioCode>(log));
 	};
 	return config;
 }
@@ -7116,8 +7089,7 @@ TEST_CASE("A host with no pipe receivers' or programs' adapter refuses them at t
 	SECTION("a pipe receiver") {
 		config->onConfigure = [&f](CreateContext& cx) {
 			cx.attachEngine("cap", PipeReceiverShape{PipeFormat::s16le, SampleRate::fixed<44100>()});
-			cx.use(std::make_unique<TestAudioCode>(f.log));
-			return Configured::applied();
+			return Configured::erased(std::make_unique<TestAudioCode>(f.log));
 		};
 		f.add("a", config);
 		CHECK(failureOf(f, "a") == "start-failed: configure threw: no pipe receivers in this host");
@@ -7125,8 +7097,7 @@ TEST_CASE("A host with no pipe receivers' or programs' adapter refuses them at t
 	SECTION("a program") {
 		config->onConfigure = [&f](CreateContext& cx) {
 			cx.program(ProgramShape{.executable = "/usr/bin/true"}, std::nullopt);
-			cx.use(std::make_unique<TestAudioCode>(f.log));
-			return Configured::applied();
+			return Configured::erased(std::make_unique<TestAudioCode>(f.log));
 		};
 		f.add("a", config);
 		CHECK(failureOf(f, "a") == "start-failed: configure threw: no programs in this host");

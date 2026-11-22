@@ -97,10 +97,8 @@ public:
 		Store& store = cx.store(key);
 		store_ = &store;
 		if (behaviour.readInConfigure) said(store.text());
-		cx.loop(worker, std::make_unique<Worker>(node_.handle(), store, cx.executor(worker)));
 		cx.post(worker, [](Worker& w) { w.begin(); }); // staged: runs once configured, so the store is trusted
-		cx.use(Silence{});
-		return Configured::applied();
+		return cx.applied(Silence{}, cx.state(worker, node_.handle(), store, cx.executor(worker)));
 	}
 	void start() {
 		if (behaviour.replaceInStart) static_cast<void>(store_->replace("key 2"));

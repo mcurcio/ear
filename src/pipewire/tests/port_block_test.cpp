@@ -1367,10 +1367,9 @@ struct Conform {
 	Configured configure(CreateOf<spec>& cx, const Checked&) {
 		cx.attach(toDevice, SinkShape{.frames = 1024}, std::make_unique<Discard>());
 		cx.attach(fromDevice, SourceShape{.frames = 1000}, std::make_unique<PlaybackClock>());
-		cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
 		cx.declareLatency(in, toDevice, Latency{30, 40});
 		cx.declareLatency(fromDevice, out, Latency{7, 9});
-		return Configured::applied();
+		return cx.applied(passThrough(bankPair(in, toDevice), bankPair(fromDevice, out)));
 	}
 };
 
@@ -1424,8 +1423,7 @@ struct Scripted {
 		scripted = clock.get();
 		SourceWriter& writer = cx.attach(fromDevice, SourceShape{.frames = 1000}, std::move(clock));
 		scripted->writer = &writer;
-		cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
-		return Configured::applied();
+		return cx.applied(passThrough(bankPair(in, toDevice), bankPair(fromDevice, out)));
 	}
 };
 

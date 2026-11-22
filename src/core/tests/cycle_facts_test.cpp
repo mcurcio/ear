@@ -38,10 +38,7 @@ struct Keeper {
 
 struct Cycles {
 	static Members<spec> ports(const CheckedOf<spec>&) { return {out(members(1))}; }
-	Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>&) {
-		cx.use(Keeper{});
-		return Configured::applied();
-	}
+	Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>&) { return cx.applied(Keeper{}); }
 };
 
 /// A row's steps as the ticks a driver gives, over a cut record told as the driver tells it: what both table runners

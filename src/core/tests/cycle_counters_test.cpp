@@ -43,10 +43,7 @@ struct Staller {
 
 struct Counted {
 	static Members<spec> ports(const CheckedOf<spec>&) { return {out(members(1))}; }
-	Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>&) {
-		cx.use(Staller{});
-		return Configured::applied();
-	}
+	Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>&) { return cx.applied(Staller{}); }
 };
 
 /// A running harness of the counted type at `format`, its first cycle run.

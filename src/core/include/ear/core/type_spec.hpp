@@ -10,10 +10,7 @@
 //   struct WhiteCode { void process(Io<spec> io, const GraphCycle&) noexcept { for (auto ch : io[noise]) ...; } };
 //   struct White {
 //   	static Members<spec> ports(const CheckedOf<spec>&) { return {noise(members("mono"))}; }
-//   	Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>&) {
-//   		cx.use(WhiteCode{});
-//   		return Configured::applied();
-//   	}
+//   	Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>&) { return cx.applied(WhiteCode{}); }
 //   };
 //   }
 //   std::unique_ptr<const NodeType> makeWhiteNodeType() { return makeNodeType<white::spec, white::White>(); }
@@ -22,8 +19,8 @@
 // std::span<float> members, an input bank std::span<const float> members, so a bank the spec lacks, a misspelt bank or
 // a write into an input does not compile. A bank handle is its name, direction and reach, nothing more: another type's
 // bank with the same three is the same handle, and Io resolves it by name against this node's ports, so it is sound. A
-// code written against another type's spec compiles but is refused at `use` (the node fails). A prepare or release is
-// found by its name and must then have exactly that signature. Every spec, row and bank list is declared in a named
+// code written against another type's spec is refused where configure answers with it (CreateOf::applied: it does not
+// compile). A prepare or release is found by its name and must then have exactly that signature. Every spec, row and bank list is declared in a named
 // namespace (see TypeSpec).
 //
 // Pure: nothing but the standard library and ear_core.
@@ -279,12 +276,10 @@ template <class Process> struct ProcessOf {
 template <class Code, const auto& S> struct ProcessOf<void (Code::*)(Io<S>, const GraphCycle&) noexcept> {
 	static constexpr const auto& spec = S;
 };
-/// A code whose layout the type's config hands over: CreateOf::use binds it to the node's ports.
+/// A code whose layout the type's config hands over: CreateOf::applied binds it to the node's ports.
 class BankBoundCode : public AudioCode {
 public:
 	virtual void bindPorts(const Ports& ports) noexcept = 0;
-	/// The spec the code was written against, to check it is its type's.
-	virtual const void* spec() const noexcept = 0;
 };
 template <const auto& Spec, class Code> class ErasedSpecCode final : public BankBoundCode {
 	// Found by name, then held to its exact signature, so a misspelt signature is refused rather than never called.
@@ -306,7 +301,6 @@ template <const auto& Spec, class Code> class ErasedSpecCode final : public Bank
 public:
 	explicit ErasedSpecCode(Code code) : code_(std::move(code)) {}
 	void bindPorts(const Ports& ports) noexcept override { ports_ = &ports; }
-	const void* spec() const noexcept override { return &Spec; }
 	void prepare(const AudioFormat& format) override {
 		if (ports_ == nullptr)
 			throw std::logic_error("a code written against a spec runs only in a type made by makeNodeType");
