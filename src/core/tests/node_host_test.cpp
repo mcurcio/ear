@@ -6728,7 +6728,7 @@ TEST_CASE("A timer a state left armed never runs its handler once the state is g
 
 // Claims (docs/writing-a-node-type.md#claims): judged at readiness step `claims`, before anything of a configuration is
 // opened, made or started; held until teardown step 5; a closing holder waited for; a leaked holder's ports abandoned
-// and its stores kept, its late close starting the nodes they refused (R15).
+// and its stores kept, its late close starting the nodes they refused.
 
 namespace {
 
@@ -6988,7 +6988,7 @@ TEST_CASE("A port a configuration leaked at the close deadline held is abandoned
 		      "the configuration leaked at the close deadline closed 10000 ms after its close began");
 		CHECK(healthOf(f, "b").state == NodeState::running);
 	}
-	SECTION("the probe refuses (G27): the late close starts it") {
+	SECTION("the probe refuses: the late close starts it") {
 		f.probe.refused["udp:5004"] = "Address already in use"; // the leaked receiver still bound, say
 		f.timers.advance(closeDeadline);
 		f.settle();

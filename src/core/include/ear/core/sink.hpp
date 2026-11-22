@@ -1,6 +1,5 @@
-// The interim sink of slice 3a (docs/writing-a-node-type.md#sinks, the home of these declarations; docs/engine.md#sinks
-// its rules; docs/engine.md#sinks the chunk's contract; docs/design/node-primitives.md#65-a-sinks-consumer the
-// consumer's in slice 3c). One home for the sink: what a type writes against (Chunk, SinkConsumer, SinkShape) and what
+// The sink (docs/writing-a-node-type.md#sinks what a type writes against; docs/engine.md#sinks its rules and the
+// chunk's contract). One home for the sink: what a type writes against (Chunk, SinkConsumer, SinkShape) and what
 // the framework runs it with (ChunkStamp, SinkTap, SinkBinding, Sink, SinkAdapter). NodeHost implements CreateOf::sink
 // on it, ResourceRegistry takes a SinkAdapter, DriveRequest carries SinkBindings, ear_pipewire implements SinkAdapter
 // as ThreadSinks, and `file` consumes one. Pure: nothing but the standard library and ear_core.
@@ -47,8 +46,8 @@ struct Chunk {
 	constexpr bool discontinuity() const noexcept { return !causes.empty(); }
 };
 
-/// A sink's consumer (slice 3c's design: docs/design/node-primitives.md#65-a-sinks-consumer). It has a public virtual
-/// destructor, since a consumer given whole is owned and deleted by the sink). Every call is on the sink's own thread,
+/// A sink's consumer (docs/writing-a-node-type.md#sinks). It has a public virtual destructor, since a consumer given
+/// whole is owned and deleted by the sink. Every call is on the sink's own thread,
 /// never the main loop or the realtime thread, one at a time, in this order: begin once, consume in chunk order, finish
 /// once after the last consume. finish runs only if begin returned (a sink closed before it began calls neither). A
 /// call that throws is a type bug the framework catches on the sink's thread: it fails the node, and after it no more

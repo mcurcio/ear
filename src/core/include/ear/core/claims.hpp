@@ -18,8 +18,8 @@ namespace ear {
 /// is the kind and value alone ("tcp:8928", "udp:5004", "store:sendspin-ma.key", "recording:take1.wav"), so two
 /// claims of one port are one key whatever their groups; a key has one holder ear-wide, across types.
 struct Claim {
-	/// recording: S3c.5b's file paths, not claimed yet. A sound card's device is not a kind until a card renamed in one
-	/// plan is shown to open its device before the old node closed it (docs/design/node-primitives.md 0.2 C).
+	/// A sound card's device is not a kind until a card renamed in one plan is shown on the hardware to open its device
+	/// before the old node closed it (docs/writing-a-node-type.md#claims, "Not claimed").
 	enum class Kind { tcp, udp, store, recording };
 	Kind kind;
 	std::string value;

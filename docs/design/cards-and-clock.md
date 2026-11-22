@@ -6,7 +6,7 @@ Status: partly designed, not built, no slice number yet. The internal clock (the
 watchdog for a frozen card (designed, 3.1), what ear does with a wedged card (designed, 3.2), sound cards opened off the
 main loop (constrained, not designed, 3.3), an internal clock anchored to one card (sketched, 3.4), latency a node
 reports while it runs (3.5), and the checks still owed on real hardware (4). It builds on cards as engine companions
-(built, `docs/engine.md#engine-companions`) and needs slice 3c (the I/O executor, `node-primitives.md`).
+(built, `docs/engine.md#engine-companions`) and needs slice 3c's I/O executor (built: `docs/architecture.md#threads`).
 
 [V] = verified, [U] = unverified, each with what settles it.
 
@@ -109,6 +109,12 @@ on the node handle, carried by the framework on the next cycle, as an in-place c
   less the card's capture latency, as `sendspin` dates what it sends (`docs/node-types.md#clock`): a card capturing
   through a stall of the data thread, a known sound sent to a Sendspin server, and the server's dates read across the
   burst. If they trail, the chunk's stamp gains the tick's `overdueNs`.
+- [U] Whether a card node renamed in one plan opens its device before the old node closed it. The test card's file
+  PCM is not exclusive, so only the hardware shows it. If it does, a card's device becomes a claim its shape holds
+  (`claimsOf(SoundCardShape)`, `docs/writing-a-node-type.md#claims`), so the new node waits for the old one's last
+  step.
+- [U] The strand pool's sizes (`docs/architecture.md#threads`) on the Talos nodes' CPU. Nothing shipped runs on a
+  strand yet.
 - [U] Following a host clock slewed at chrony's worst case (83,333 ppm) through the dummy's 1 ms-a-cycle clamp.
 - A pause of the data thread of tens of seconds or more still slews the graph off the raw clock for minutes (built
   `resync.ms` covers stalls of a few seconds); the fix is upstream's (PipeWire's `node-driver.c` would have to re-arm

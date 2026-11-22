@@ -485,7 +485,8 @@ keeps it as a member), or on the main loop while the node is not yet configured.
   run on their loops in the order sent, ahead of anything sent later; a staged timer counts from
   there. If the configuration is torn down first, they are destroyed unrun. So no handler runs
   before every resource the node asked for is ready. Work that must wait for the code to drive is
-  posted by `start()`.
+  posted by `start()`. *Why released at configured, not at `start()`:* work that needs only its
+  resources (a state reading its store) would otherwise wait on the engine.
 - **When loops start.** Each loop is an item of the configuration's readiness list, at the step
   before its companions ([engine.md](engine.md#readiness-deadlines)): the framework starts every
   loop once configure answered applied, and makes the engine companions and begins the sinks'
@@ -512,6 +513,16 @@ keeps it as a member), or on the main loop while the node is not yet configured.
 - **A throw.** A handler that throws is caught by its loop: the node fails as a hook that throws
   does, `loop <name>'s handler threw: <what>` (`start-failed`, or `lost` once rested; during a
   teardown a `log` record), and the loop runs on.
+
+*Why loops, declared in the spec and reached only by posts.* Without them each threaded type writes
+its own stop flag, wake and poll, as `sendspin` did. A loop declared as a handle is checked at
+compile time, where one asked for in `configure` by a name would be checked only at run time. A hook
+runs on the main loop and holds no reference to a loop's state, so a hook cannot race the node's own
+thread, and a post typed for another loop's state does not compile. There is no close hook: a state
+destroyed on its own loop, after the work already posted ran, needs none, and its join stays off the
+main loop, inside the close deadline. And the loops are not PipeWire's (`pw_thread_loop`): a loop
+has nothing to do with the engine, strands need a pool, and every threaded type's tests would start
+PipeWire's loop library.
 
 ## Stores
 
@@ -557,7 +568,8 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>&) {
   narrows it to the mode on the same descriptor, **before** its text is judged (a file refused for
   its text may still hold a secret, and a file renamed over the name meanwhile is never the one
   judged while another is narrowed), then judges it by `distrust`; a missing file is created with `initial()` at exactly
-  the mode. So a store that fails starts no loop. It fails the node `start-failed: <file>: <why>`
+  the mode. So a store that fails starts no loop. *Why the framework opens it:* opened by `configure` it would be
+  I/O on the main loop, and opened by a loop's state it would be read before it is trusted. It fails the node `start-failed: <file>: <why>`
   (`distrust`'s reason, or the disk's: `rtpsend-porch.ssrc: malformed: not eight hex digits`), the file left as it
   was: a distrusted or unreadable file is never replaced by a new one. An open past 5 s fails it
   `start-failed: <file>: not opened within 5 s`; one not yet open is `waitingFor` `store`, by its
@@ -574,7 +586,8 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>&) {
   `unconfirmed` one was under way on the I/O thread when `replace`'s 5 s passed: it may still land,
   so it is **never** "not written"; compare `text()`, which shows it once it landed, or write with
   `replaceLater`, whose outcome is exact. A failed write fails nothing: telling it (a note) is the
-  type's.
+  type's. *Why a blocking write at all:* a library's persistence callback answers at once on its own
+  thread (sendspin-cpp's `save_blob` returns a `bool`), so `replace` waits there for the I/O thread.
 - **Its life.** A stop and a start keep it; a restart, a change of settings or a failure opens it
   again in the next configuration. It is usable until teardown step 4 and freed at step 5. An open
   or a write still on the I/O thread when its configuration ended tells nothing, and what it held
@@ -684,6 +697,10 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
   | a configuration leaked at the close deadline: a store or recording | refused, owed to the leaked configuration | `<file>: held by node porch's earlier configuration, which did not close; it starts when that closes` |
   | a configuration leaked on an overdue barrier (the data loop wedged), which never closes: a port | abandoned, probed afresh, owed to nobody | the kernel's reason |
   | the same: a store or recording | refused, owed to nobody | `<file>: held by node porch's earlier configuration, which the wedged data loop keeps; it starts once ear restarts` |
+
+  *Why before any open:* a store's open reads, narrows or creates the very file a leaked configuration may still
+  hold. *Why a registry and a probe:* a port is ear-wide whatever type asks for it, and the probe alone would lose
+  `held by node <n>` and refuse a removal and an addition of one port in one edit, which the registry lets wait.
 
   A disabled node holds nothing (it has no configuration). A node never waits on its own old configuration, whose
   step 5 comes before its next configure; two nodes whose restarts swap ports both run. A port claimed twice in one

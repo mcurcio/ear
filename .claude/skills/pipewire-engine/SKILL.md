@@ -401,7 +401,7 @@ on uses `ear::testing::driveNow` (`ear/testing/drive_now.hpp`).
 - **One invoke in flight per block is a requirement** (S1 below): an unbounded producer of
   invokes wedges the data loop. Never post invokes to the data loop in a loop of your own.
 
-## What the spikes proved (S1 to S3 in slice 3a, S5 in 3b, S7 in 3c's T4; `spikes_test.cpp`)
+## What the spikes proved (S1 to S3 in slice 3a, S5 in 3b, S7 in 3c; `spikes_test.cpp`)
 
 Recorded in `docs/engine.md#the-one-data-loop-and-invokes` with PipeWire's sources (`loop.c`, `context.c`,
 `filter.c`):

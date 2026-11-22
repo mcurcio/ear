@@ -803,7 +803,7 @@ checked by hand ([testing.md](testing.md#what-ci-does-not-prove)).
 - *The join is PipeWire's pipe module* (the owner picked it over ear's own tracked converter): ear
   already tests it, and it keeps the receiver's clock tracking. It costs a fixed delay, about 0.19 s
   a speaker ([above](#airplay)), uncompensated and adjustable only by a converter of ear's own, which
-  waits for another first user ([timing-model.md](design/timing-model.md), T5).
+  waits for another first user ([design/slice-3c-remainder.md](design/slice-3c-remainder.md)).
 - *AirPlay 2 ships with its sound checked by hand*, no scripted AirPlay 2 sender being known: an
   exception to testing.md's rule that audio is verified in tests, for that one path
   ([testing.md](testing.md#what-ci-does-not-prove)).

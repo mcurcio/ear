@@ -75,7 +75,7 @@ gives its two dedicated loops their states (`Worker`, `Notifier`, nothing armed)
 node is configured), names the worker's `ToServer` as the consumer of the sink on `to_server`
 (`consumedBy(worker, &Worker::toServer)`) and uses the framework's pass-through (`from_server` to `from`, `to` to
 `to_server`). It has no `start()` or `stop()`: the
-client is the configuration's. What that means to an operator (the owner's answer, Q-3c1):
+client is the configuration's. What that means to an operator (the owner's answer: a stopped node stays connected):
 
 - **A stop keeps the connection.** `node.stop` fades and silences the node's code, and nothing else: the worker, the
   connection, the pairing and the library keep running, so Music Assistant still lists the player with its roles. Its
@@ -122,7 +122,7 @@ client is the configuration's. What that means to an operator (the owner's answe
   writes through, a sink (audio to network), and the source's clock wake the notifier loop watches.
 - **One owner of the played timeline** (`SendspinClock`, `docs/node-types.md#clock`): the tick advances it while the
   graph drains the source, the library's own writes past the bound; a hand-over is one compare-and-swap of an owner
-  word, never two tellers merged. The feed, `SendspinCode` and `PlayedTeller` it replaced (S3c.6b) kept them apart and
+  word, never two tellers merged. The feed, `SendspinCode` and `PlayedTeller` it replaced kept them apart and
   reconciled them after the fact, and three review rounds found hand-over and timeline bugs between them. **A pacer a
   block behind now makes the library hunt**: it hard-syncs at 5 ms, so a reach 5.3 ms behind now made it drop and add
   silence each chunk while paced; the reach is now, and a tick back from the pacer tells only once its finish,
@@ -201,8 +201,8 @@ Thrown away; its numbers are in `docs/node-types.md#library-facts-and-carried-pa
 - The library has no log hook: on a host build `SS_LOG*` is a bare `fprintf(stderr, ...)` with one process-wide level
   (`src/platform/logging.h`). Its lines (and IXWebSocket's) reach standard output as unattributed `log` records from
   `stderr` at `warn`, paced with every other line from `stderr`, never as the node's own. Naming the node needs a
-  carried patch that routes `SS_LOG*` through a settable callback carrying the client (slice 3c,
-  `docs/design/node-primitives.md`); none is carried yet.
+  carried patch that routes `SS_LOG*` through a settable callback carrying the client (designed:
+  `docs/design/slice-3c-remainder.md`); none is carried yet.
 - A correction is one frame per chunk at most, -0.084% over 150 ms against the spec's ±0.5%.
 
 ## The pin and the patches
@@ -232,7 +232,7 @@ Thrown away; its numbers are in `docs/node-types.md#library-facts-and-carried-pa
   burst the library keeps its playtime open loop (the last finish plus what it wrote since), behind now by the graph's
   lag. Floored mid-catch-up, the library took the next chunk for 37 to 67 ms late or early and corrected twice. The
   patch floors only when nothing is buffered, the spec's underrun recovery ("Large errors and startup"). Dropping it is
-  a separate step, gated on evidence from both burst shapes without it (`docs/design/timing-model.md` 6.5).
+  a separate step, gated on evidence from both burst shapes without it (`docs/design/slice-3c-remainder.md`).
 - `cmake/sendspin-late-chunk.patch` is carried (same decision): `decode_chunk` skipped a chunk whenever its start was over
   5 ms late, so a catch-up of 154 ms skipped two 96 ms chunks, overshot by 37 ms and filled that with silence: two steps.
   The patch decodes first and skips only a chunk whose last frame is late (`SyncTask::chunk_too_late`); the hard sync
@@ -278,7 +278,7 @@ Thrown away; its numbers are in `docs/node-types.md#library-facts-and-carried-pa
 
   The real scenario, a port scan's two connects held open and then a real server, is ear's system test `A server gets
   in beside two bare sockets held open from its own address` (`aiosendspin` sends no `Origin`).
-- **Each rule of the clock has a revert proof** (2026-11-13, at T2): the skip taken out (nothing skipped) fails six code
+- **Each rule of the clock has a revert proof** (2026-11-13): the skip taken out (nothing skipped) fails six code
   rows, the hiccup clock test (the library corrects the block it was told late, twice) and the steady dummy-driver test;
   the deferral taken out (overdue cycles told, dated by their run time) fails the burst, overdue, bound and clamp-idle
   rows; the bound taken out (never told from an overdue cycle) fails the bound's row; the clamp made unconditional fails

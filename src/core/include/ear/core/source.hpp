@@ -85,9 +85,9 @@ public:
 	virtual bool played(const SourceTick& tick, const SourcePlayed& played) noexcept = 0;
 };
 
-/// A "look now" from any thread, the realtime one included, to one watcher
-/// (docs/design/node-primitives.md#62-wakes-the-frameworks-for-now; slice 3c's EventWake implements it in ear_runtime
-/// and Loop::onWake watches it). Rung at most once until answered.
+/// A "look now" from any thread, the realtime one included, to one watcher (docs/writing-a-node-type.md#loops:
+/// Loop::onWake watches it; ear_pipewire's EventSources implements a source's on an eventfd). Rung at most once until
+/// answered. The framework's only: a type gets a source's clock wake and rings none of its own.
 class Wake {
 public:
 	/// Any thread: if not pending, marks it pending and writes its eventfd. Never blocks, locks or allocates.

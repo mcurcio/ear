@@ -256,7 +256,8 @@ excused exactly as far as they say, never further, and counted. A line is stampe
 not where its audio plays, so it is matched within a reach (`kLogReach`: the feed and a chunk of
 cycles from where it was read, give or take `kLogLag`, 32 cycles of reading lag) and a loss of sync
 covers the cycles from its line less that lag to its end plus it: interim, until the library's log
-reaches ear through a callback stamped with the feed's write position (slice 3c's carried patch),
+reaches ear through a callback stamped with the frames written to the source (a carried patch, designed:
+[design/slice-3c-remainder.md](design/slice-3c-remainder.md)),
 and used for the library's own lines and nothing else. The system tests read what ear
 prints (its warnings, as log records): each `Lost sync (<n>us off)` accounts for one forward step of
 whole chunks (skipped as too late) and a drop of at most `|n|` us in whole frames, as the library

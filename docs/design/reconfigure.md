@@ -1,7 +1,7 @@
 # Changes in place and reshape: slice 3d of the node framework
 
-Status: design, not built. Slice 3d follows slice 3c (`node-primitives.md`: it swaps claims and posts to loops, both
-3c's) and comes before slice 6 (`control-plane.md`: a retune is one of the outcomes this slice makes). It starts with a
+Status: design, not built. Slice 3d follows slice 3c (built: it swaps claims and posts to loops, both
+3c's, `docs/writing-a-node-type.md#claims`, `#loops`) and comes before slice 6 (`control-plane.md`: a retune is one of the outcomes this slice makes). It starts with a
 PipeWire spike (S4, 9.3). It changes the audio path: holds, code swaps and reshapes. The built lifecycle (states,
 operations, teardown, fades, barriers and their bounds) is described in `docs/architecture.md` and
 `docs/writing-a-node-type.md`; the built wire in `docs/control-port.md`; this page cites them and says only what 3d adds.
@@ -111,7 +111,7 @@ public:
 	static Changed applied();                         // the commit point comes once every replacement is ready
 	static Changed restart(std::string reason);       // the type cannot take this change in place after all (T11)
 };
-/// The spec's lifecycle settings (TypeSpec's `.lifecycle`, node-primitives.md 6.11). Refused at compile time below 1 s
+/// The spec's lifecycle settings (TypeSpec's `.lifecycle`, after `.stores` and `.loops`). Refused at compile time below 1 s
 /// or above 60 s. The type schema carries it as `reconfigureMs`.
 struct Lifecycle { std::chrono::milliseconds reconfigureDeadline = std::chrono::seconds(10); };
 
@@ -223,7 +223,7 @@ cursors) or anything the old code's `process` reads (D-R13).
    after (D-A8).
 7. **Two nodes swapping ports in one edit** (`a` from 8928 to 8929, `b` the other way) cannot each hold both: each new
    claim is held by the other node's current configuration, so it is refused, and both fall back to restarts; each
-   restart's claim then finds the other's old configuration going and waits for it (`node-primitives.md` 6.8). Both
+   restart's claim then finds the other's old configuration going and waits for it (`docs/writing-a-node-type.md#claims`). Both
    come back on their new ports, after a restart each.
 
 **Break before make**, for a thing that cannot be held twice (one ALSA device opened twice; an RTP receiver on a port
@@ -340,7 +340,7 @@ Changed Sendspin::configure(ChangeOf<spec>& cx, const Checked& old, const Checke
    `write_audio` never reaches a client being destroyed (this replaces the worker's `clientMutex_`);
 3. says goodbye on mDNS, then `client->stop()`: goodbye to the server, the library's threads joined, `on_stream_end`
    delivered (which clears the source, which fades out); the client destroyed; the old sync thread, the source's
-   writer, joined, so the new one may write (`node-primitives.md` 6.4);
+   writer, joined, so the new one may write (one writing thread at a time: `docs/writing-a-node-type.md#sources`);
 4. makes the new client over the same key store, so the identity and pairings stay (U11), with `log_context` the same
    node handle; `start()`; on `false`, `done.fail("the Sendspin client did not start")`;
 5. re-arms the notifier's `onWake`, `toServer_.resume()`, opens the advertiser on the new port, and calls `done.done()`.
@@ -524,7 +524,7 @@ the code and before metering.
 | `DesiredGraph::plan` | reads each changed key's mark; a dry run is `plan` without `commit` (as built) |
 | `ConfigurationMachine`, `NodeAggregate` (`node_lifecycle.hpp`) | a `changing` state; T9, T10, T11, T18; `NodePhase` and `NodeState` gain `reconfiguring` |
 | `lifecycle.hpp` | `ChangeOf` defined; `Changed` with real bodies; `ConfigureDone`; `Lifecycle`; `SinkControl` |
-| `NodeHost` | the in-place path: holds and their acknowledgement, retiring resources, the commit point, the deadline, supersession, the fallback; the block's reshape between teardown and `configure`; claims swapped (`node-primitives.md`'s registry) |
+| `NodeHost` | the in-place path: holds and their acknowledgement, retiring resources, the commit point, the deadline, supersession, the fallback; the block's reshape between teardown and `configure`; claims swapped (the claim registry, `docs/writing-a-node-type.md#claims`) |
 | `PortBlock`, `FilterPortBlocks` | `hold(banks)`, `release(banks)` with acknowledgement; `reshape(next)` with layouts swapped whole; levels re-registered |
 | The sink companion | `pause` and `resume` on its thread |
 | `rtp`, `sendspin` | rows marked `.inPlace()`; their change versions |

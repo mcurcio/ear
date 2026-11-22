@@ -67,7 +67,7 @@ another's.
 The default is the framework's (3.2) for every type. A type may declare `recovery::none` or a cap on attempts, after
 which the node stays `failed` until `node.start`, `node.restart` or a settings change. Decided here: the policy is a
 member of the spec's `Lifecycle` struct (`reconfigure.md` 4: `Lifecycle{.reconfigureDeadline = ..., .recovery =
-recovery::attempts(5)}`), so `TypeSpec`'s member order (`node-primitives.md` 6.11) does not change. The type schema
+recovery::attempts(5)}`), so `TypeSpec`'s member order (`docs/writing-a-node-type.md#stores`: `.stores`, then `.loops`) does not change. The type schema
 (slice 5) carries it as `recovery` on the type. No built-in type declares one.
 
 ### 3.4 Visible, not silent
@@ -141,7 +141,7 @@ Slice 5 defines `writer::companion`; this slice builds its first users:
 | — | A disabled node never recovers; a disable cancels the wait | `disabled` releases everything and is the operator's word in the file |
 | — | `node.start`, `node.restart` and a settings change skip the wait | The operator's intent wins at once |
 | W2 | `reason` kept with its built meaning; `lastFailure` beside it | Additive within protocol 1 |
-| new | A type's recovery policy is a member of `Lifecycle` | `TypeSpec`'s member order stays as `node-primitives.md` 6.11 gives it |
+| new | A type's recovery policy is a member of `Lifecycle` | `TypeSpec`'s member order stays as built (`docs/writing-a-node-type.md#stores`) |
 
 ## 7. Open questions and risks
 

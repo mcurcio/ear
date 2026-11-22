@@ -2,10 +2,8 @@
 // text at a level, from a source, attributed to a node or not. The one encoder (ear_control's status_log.cpp) turns
 // each entry into a `log` record on standard output.
 //
-// The seam for slice 3c's node-facing log (docs/design/node-primitives.md): a node handle's
-// `debug`/`info`/`warn`/`error` fill an entry with its node and give it to a LogSink (no record carries a run or a
-// generation); `rtlog` and its coded ring are drained into entries the same way. Neither exists yet: both need the run
-// handle.
+// A node's handle fills an entry with its node and gives it to the LogSinks subscribed to NodeHost
+// (docs/writing-a-node-type.md#the-node-handle); no record carries a configuration or a generation.
 #pragma once
 #include <cstdint>
 #include <optional>

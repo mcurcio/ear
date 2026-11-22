@@ -91,7 +91,7 @@ static_assert(ModuleRunShape<RtpReceiverShape> && ModuleRunShape<PipeReceiverSha
 /// until a multicast test exists (docs/node-types.md#rtp). A receiver on a group carries it, so the port is probed as
 /// the receiver binds it (PortProbe::udp).
 std::vector<Claim> claimsOf(const RtpReceiverShape& shape);
-/// None: whether a card's device needs one waits on a check on the hardware (docs/design/node-primitives.md 0.2 C).
+/// None: whether a card's device needs one waits on a check on the hardware (docs/writing-a-node-type.md#claims).
 std::vector<Claim> claimsOf(const SoundCardShape& shape);
 /// None: its FIFO's path is unique to its configuration (runtimePath, program.hpp), so no other holder can name it.
 std::vector<Claim> claimsOf(const PipeReceiverShape& shape);

@@ -102,7 +102,7 @@ the main loop by posting.
 | PipeWire's main loop (the main thread) | Every piece of graph state: the engine, desired graph, node framework, reconciler, adapters, the gateway's graph side, the keeper's main-loop side; `ear.conf`'s first read at boot |
 | The control thread | Port 7777: sockets, JSON-RPC, sessions, queues. It holds only the gateway, which sends every request whole to the keeper and gets replies and events back in order from the main loop |
 | The keeper thread | The graph file keeper: every request, disk check and write, one step at a time; the working copy (knobly's object, which never leaves this thread); the inotify watch. It waits in `poll()` with no timeout |
-| The I/O thread (`ear-io`) | The framework's blocking work, off the main loop and every node's threads, one job at a time in post order (`IoThread`, `ear_runtime`). A node's stores are opened and written there ([writing-a-node-type.md](writing-a-node-type.md#stores)), and its recordings opened and closed ([writing-a-node-type.md](writing-a-node-type.md#recordings)). A job holds by `shared_ptr` what it fills and reports through its configuration's channel ([teardown](#teardown-by-dependency)), on the main loop, so one whose configuration ended reports nothing and the handle to what it opened goes back to this thread to be released, never closed on the main loop |
+| The I/O thread (`ear-io`) | The framework's blocking work, off the main loop and every node's threads, one job at a time in post order (`IoThread`, `ear_runtime`). A node's stores are opened and written there ([writing-a-node-type.md](writing-a-node-type.md#stores)), and its recordings opened and closed ([writing-a-node-type.md](writing-a-node-type.md#recordings)). A job holds by `shared_ptr` what it fills and reports through its configuration's channel ([teardown](#teardown-by-dependency)), on the main loop, so one whose configuration ended reports nothing and the handle to what it opened goes back to this thread to be released, never closed on the main loop. It is one thread for all of ear: a hung disk stalls every open and every store write, which the 5 s bounds on each make visible as the nodes' failures |
 | A node's loops ([writing-a-node-type.md](writing-a-node-type.md#loops)) | A type's work off the realtime thread and the main loop, each loop with its state, one handler at a time per loop (`Loops`, `ear_runtime`). A dedicated loop has a thread of its own, `ear-<name> <node>` cut to 15 bytes, and may block; strands share a pool started with the first strand: `min(4, hardware threads)` workers (`ear-strand`), one more for a handler stuck past 1 s (at most 16 in all), and one reactor thread (`ear-strands`) that turns the strands' timers and watches into work and watches the workers. Timers on `CLOCK_MONOTONIC`, watches on epoll; each loop's events reach the main loop by posting. A `sendspin` node has two dedicated loops, `ear-sendspin <node>` (its worker) and `ear-notify <node>` (its notifier) |
 | The programs' thread (`ear-programs`) | Every node's program (`Programs`, `ear_runtime`), started by the first launch: it writes a program's files and makes its feed, spawns it, tells its output's lines, its feed's bytes and its end, stops it (SIGTERM to its group, SIGKILL past 3 s) and reaps every child ear has, a program or an orphan re-parented to ear ([boot](#boot)). It waits in epoll on each program's pidfd, pipes and feed and on a signalfd for SIGCHLD; its one timer is the SIGKILL a stop owes, a timerfd. What it tells crosses to the main loop through the configuration's channel ([writing-a-node-type.md](writing-a-node-type.md#programs)) |
 | Sink threads | A `file` node's sink (its WAV writer); a `sendspin` node's sink to the server (`write_audio`) |
@@ -482,13 +482,13 @@ count that kept it is deleted, and a source with a clock of its own keeps its ti
 6. **The internal clock drives.** Cards follow it and adapt to the graph, never the reverse
    ([engine.md](engine.md#the-internal-clock)).
 
-**Where the code still departs**, each removed by
-[`design/timing-model.md`](design/timing-model.md):
+**Where the code still departs**, removed by
+[`design/slice-3c-remainder.md`](design/slice-3c-remainder.md):
 
 - The converter companion has only its module-run mode
-  ([engine.md](engine.md#module-run-converters)), whose one user is the RTP receiver: there is no
-  set or tracked converter yet for a ring whose clock is a type's own, so only cards and RTP
-  receivers convert.
+  ([engine.md](engine.md#module-run-converters)), whose users are the RTP receiver and the pipe
+  receiver: there is no set or tracked converter yet for a ring whose clock is a type's own, so only
+  cards and those receivers convert.
 
 ## The node lifecycle
 
@@ -808,6 +808,6 @@ settings in place without a restart (a type's change version of `configure` comp
 never called); recovery of failed nodes; sound cards opened off the main loop; an internal
 clock anchored to one card; serving PipeWire's socket (for a program that can only be a PipeWire client; its nodes would be engine companions, marked by the socket's peer credentials); a login on port 7777; automatic card retry and hotplug; `@include`; undo; changing the graph
 frequency or block size while ear runs; arm64 images; a fault caught at the callback boundary
-failing only the node that owns it (today it ends the process); a source whose clock is a type's own on any shipped type,
+failing only the node that owns it (today it ends the process); the `sendspin` library's log lines attributed to their node;
 and the converter companion's set and tracked modes ([the timing model](#the-timing-model)). The design pages for the unbuilt slices
 remain in `docs/design/`.

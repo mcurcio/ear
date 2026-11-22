@@ -173,9 +173,9 @@ struct Changing {
 	Changed configure(ChangeOf<spec>&, const Checked&, const Checked&) { return Changed::applied(); }
 };
 
-// U1 (docs/design/node-primitives.md 18): every subset of the members after the banks, given in declaration order,
-// deduces the rest on GCC 14; out of order does not compile (compile_fail/type_spec_bad.cpp, stores-after-loops). A
-// store, a loop and a bank may share a name.
+// The spec's spellings (docs/writing-a-node-type.md#stores): every subset of the members after the banks, given in
+// declaration order, deduces the rest on GCC 14; out of order does not compile (compile_fail/type_spec_bad.cpp,
+// stores-after-loops). A store, a loop and a bank may share a name.
 constexpr auto u1 = store::file<"out">({.maxBytes = 8});
 constexpr auto u1Loop = loop::strand<"out">;
 constexpr TypeSpec bare{.settings = SettingsTable<>{"u1"}, .banks = Banks<out>{}};

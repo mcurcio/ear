@@ -324,7 +324,7 @@ private:
 
 // Stores (docs/writing-a-node-type.md#stores): the control declares a store and a loop and takes the store in
 // configure; the cases break a store's rule, name one twice or wrongly, take one the spec lacks, or give the spec's
-// members out of order. Every subset spelling compiles (type_spec_test.cpp, U1).
+// members out of order. Every subset spelling compiles (type_spec_test.cpp).
 constexpr auto keyFile = store::file<"key">({.mode = 0600, .maxBytes = 64});
 constexpr auto otherFile = store::file<"other">({.maxBytes = 8});
 #ifdef EAR_CASE_store_suffix_invalid

@@ -820,7 +820,7 @@ struct NodeHost::Impl {
 			}
 		}
 
-		/// A leaked configuration that refused this node's configuration of `generation` closed late (R15): the node is
+		/// A leaked configuration that refused this node's configuration of `generation` closed late: the node is
 		/// started again, once, as node.restart would, if that refusal is still what it rests failed on.
 		void restartRefused(std::uint64_t generation) {
 			if (refusedGeneration_ != generation || aggregate_.health().state != NodeState::failed) return;
@@ -1906,7 +1906,7 @@ struct NodeHost::Impl {
 			}
 			/// Everything it held reported: its recordings' closes posted to the I/O thread first, so they come
 			/// before any open of their paths that releasing its claims allows; its claims released and said, no
-			/// longer counted, and each node its claims refused started again, once (R15); then freed in a turn of its
+			/// longer counted, and each node its claims refused started again, once; then freed in a turn of its
 			/// own (never inside the close that called this), as teardown step 5 frees a configuration that closed in
 			/// time.
 			void closedLate() {
@@ -2810,7 +2810,7 @@ struct NodeHost::Impl {
 		/// Claim `index` is a port the registry granted: probed against the kernel (a host with no probe grants it). The
 		/// probe runs behind the turn's flush, so an engine companion a teardown just queued for destruction (a restarted
 		/// rtp node's own receiver) has let go of its port first (docs/writing-a-node-type.md#claims). `leaked`: the
-		/// leaked configuration whose abandoned port it is, to which a refusal is owed (R15).
+		/// leaked configuration whose abandoned port it is, to which a refusal is owed.
 		void probeClaim(std::uint64_t generation, std::size_t index, std::uint64_t leaked) {
 			PortProbe* probe = host_.resources.ports();
 			if (probe == nullptr) return itemReady(generation, config_->claims[index].item);
@@ -2851,7 +2851,7 @@ struct NodeHost::Impl {
 		}
 
 		/// Claim `index` refused (`why` after its words): the node fails start-failed. A refusal on a leaked
-		/// configuration's account is listed on it, so its late close starts this node again (R15).
+		/// configuration's account is listed on it, so its late close starts this node again.
 		void refuseClaim(std::uint64_t generation, std::size_t index, const std::string& why, std::uint64_t leaked) {
 			if (leaked != 0)
 				if (const auto record = host_.refusedByLeaked.find(leaked); record != host_.refusedByLeaked.end()) {
@@ -3575,7 +3575,7 @@ struct NodeHost::Impl {
 			c.storesWritable->store(false, std::memory_order_release); // a write not begun is dropped
 			if (!listening) c.channel->detach();
 			// Its ports abandoned, its stores and recordings kept: what waited for them is judged now. One that listens
-			// lists the nodes its claims refuse, which its late close starts again (R15).
+			// lists the nodes its claims refuse, which its late close starts again.
 			if (listening) host_.refusedByLeaked.try_emplace(c.generation);
 			host_.claimsDecided(host_.claims.leaked(c.generation, listening));
 			// Not deleted here: the configuration's threads may still touch any of it. A listening record deletes
@@ -3624,7 +3624,7 @@ struct NodeHost::Impl {
 		std::int64_t judgedMs_ = 0;        // how long the judged request waited, for its diagnostics
 		std::uint64_t dropped_ = 0;
 		std::uint64_t refusedGeneration_ =
-			0;                    // its configuration a leaked configuration's claim refused (R15), until the next
+			0;                    // its configuration a leaked configuration's claim refused, until the next
 		std::uint64_t span_;      // its span of counts: its serial, or its port-caused older node's
 		NodeCounts blockCounted_; // what its block counted, once the block went
 		NodeCounts carried_;      // what the older node of its port-caused replace counted, once that one is gone
@@ -3657,7 +3657,7 @@ struct NodeHost::Impl {
 	std::size_t leaked = 0;                   // configurations, blocks and engine companions never freed
 	detail::ClaimRegistry claims;             // every claim ear-wide (docs/writing-a-node-type.md#claims)
 	/// By the generation of each configuration leaked at the close deadline and still open: the nodes its claims refused,
-	/// each with its configuration refused, started again when it closes late (R15).
+	/// each with its configuration refused, started again when it closes late.
 	std::map<std::uint64_t, std::map<std::uint64_t, std::uint64_t>> refusedByLeaked;
 	bool stopRequested = false;
 	std::move_only_function<void()> allGone;
