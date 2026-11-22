@@ -1,8 +1,8 @@
 # Changes in place and reshape: slice 3d of the node framework
 
 Status: design, not built. Slice 3d follows slice 3c (built: it swaps claims and posts to loops, both
-3c's, `docs/writing-a-node-type.md#claims`, `#loops`) and comes before slice 6 (`control-plane.md`: a retune is one of the outcomes this slice makes). It starts with a
-PipeWire spike (S4, 9.3). It changes the audio path: holds, code swaps and reshapes. The built lifecycle (states,
+3c's, `docs/writing-a-node-type.md#claims`, `#loops`) and comes before slice 6 (`control-plane.md`: a retune is one of the outcomes this slice makes). Its PipeWire
+spike (S4) is run: a reshape goes ahead as designed (7.4). It changes the audio path: holds, code swaps and reshapes. The built lifecycle (states,
 operations, teardown, fades, barriers and their bounds) is described in `docs/architecture.md` and
 `docs/writing-a-node-type.md`; the built wire in `docs/control-port.md`; this page cites them and says only what 3d adds.
 
@@ -435,6 +435,27 @@ invoke on the data loop or before the port is visible to it, cited in the test's
 criterion: the image's libpipewire is not instrumented. **Fallback** (D-B5): a reshape stays the built port-caused
 replace, and only the UX claim (surviving links stay) is lost.
 
+**S4, run (2026-11-22; `spikes_test.cpp`, tag `[s4]`; what it found of PipeWire is
+`docs/engine.md#the-one-data-loop-and-invokes`).** Every functional criterion passed, in 19 runs of 500 rounds of each of its two cases, six
+of them beside the whole suite: the ramp beside lost nothing, the new port appeared, linked and carried audio, a removed
+port's link went, and a port linked throughout kept its link and its audio. **The code reading did not pass as the
+criterion is written:** `filter.c` appends to and unlinks from the port list its data loop walks on the main loop,
+with no invoke. It is safe in practice for the reasons that page gives: on x86-64 by the order of the append's two
+stores, and for a remove on any architecture. So **the fallback is not taken, and `PortBlock::reshape` is built on
+`pw_filter_add_port` and `pw_filter_remove_port`**, on these terms:
+
+- **A vanishing port leaves the block's layout behind a barrier before `pw_filter_remove_port`**, as 7.3 already
+  orders it: the handle is the port's memory, freed when the call returns.
+- **The add is made plain on x86-64**, the only architecture ear builds (decided unless the owner objects). On an
+  architecture without total store order (arm64, not built: `docs/architecture.md#not-built-yet`) the add is made
+  with the data loop held, the variant the spike also ran 500 rounds of. It is not the default because it lets an
+  ordinary thread hold the realtime one: 50 to 300 us in most runs, 2.1 ms in one.
+- **A new port's first cycles after its link is active may bring no buffer, or silence.** The transitional layout
+  (7.3) already ignores a new input; a test of an in-place reshape waits for the audio, never counts cycles from
+  `linkActive`.
+- **The safety rests on PipeWire 1.4.2's code, not on a contract of `pw_filter`.** A PipeWire bump reads `alloc_port`,
+  `free_port` and `pw_impl_port_remove` again (the `pipewire-engine` skill's bump steps), and S4 runs on every build.
+
 ## 8. On the wire and in the editor
 
 The wire's frame (protocol 1, `features`, open enums) and the lifecycle's wire are built (`docs/control-port.md`). This
@@ -551,7 +572,7 @@ the code and before metering.
   (channels 1 and 2 keep playing); claims swapped make-before-break (both held, the old released last), a refused new
   claim destroying the continuation and restarting, two nodes swapping ports both restarting and running, a same-key
   replacement granted without a probe and made break-first; `keys` and `next` on `node.state`.
-- **`ear_pipewire_tests`**: S4; reshape (a port added and removed beside a running ramp, links of surviving ports kept,
+- **`ear_pipewire_tests`**: S4 (built: 7.4); reshape (a port added and removed beside a running ramp, links of surviving ports kept,
   the layout swapped whole, the transitional layout zero-filling new outputs); holds (the fade, then zeros, then the
   fade in); a reshape's new port metered from its first window; two sources into one inside input mixed (the port
   mixer loads).
@@ -576,7 +597,7 @@ the code and before metering.
 
 ## 11. Order of work
 
-1. S4, the spike, and the pure machines' new states and transitions (tables).
+1. S4, the spike (run: 7.4), and the pure machines' new states and transitions (tables).
 2. `ChangeOf`, `Changed`, staged posts, holds and their acknowledgement, the commit point, the deadline, supersession,
    the fallback, with a test type; `rtp` in place.
 3. The primitives in a change: claims swapped, `whenReady`, `ConfigureDone`, the sink's pause, the same-port rule.
@@ -616,7 +637,13 @@ Each is the designer's (R24); the owner can overturn any.
 
 ## 13. Open questions and risks
 
-- **S4** (7.4): whether PipeWire 1.4.2 adds and removes ports on a connected realtime filter safely. Fallback: replace.
+- **[U] A block with more than 32 ports of one direction.** `pw_filter` keeps each direction's ports in a map that
+  grows 32 slots at a time (`filter.c:1247`), and `alloc_port` grows it on the main loop (`pw_map_insert_new`,
+  `filter.c:342`), which moves its storage. The data loop looks a port up by id only in `impl_port_reuse_buffer`
+  (`filter.c:964`), reached from the port's tee (`impl-port.c:282`); whether a DSP link ever calls it is not
+  established. Settled by reading `impl-link.c`'s buffer negotiation for a 32-bit float mono port, or by S4 run with
+  40 inputs; if it can be called, a reshape that crosses a multiple of 32 holds the data loop for its add (7.4).
+- **[U] S4 on arm64**, when an arm64 image is built: the held add is the variant there (7.4).
 - **[U] Two sources into one inside input** are mixed while a replacement is made before the old one goes; `engine.conf`
   maps no `audio.mixer*` library, so this relies on the port mixer for DSP client-node ports loading through its
   `library.name` fallback.

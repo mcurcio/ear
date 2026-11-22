@@ -401,7 +401,7 @@ on uses `ear::testing::driveNow` (`ear/testing/drive_now.hpp`).
 - **One invoke in flight per block is a requirement** (S1 below): an unbounded producer of
   invokes wedges the data loop. Never post invokes to the data loop in a loop of your own.
 
-## What the spikes proved (S1 to S3 in slice 3a, S5 in 3b, S7 in 3c; `spikes_test.cpp`)
+## What the spikes proved (S1 to S3 in slice 3a, S5 in 3b, S7 in 3c, S4 for 3d; `spikes_test.cpp`)
 
 Recorded in `docs/engine.md#the-one-data-loop-and-invokes` with PipeWire's sources (`loop.c`, `context.c`,
 `filter.c`):
@@ -446,6 +446,17 @@ Recorded in `docs/engine.md#the-one-data-loop-and-invokes` with PipeWire's sourc
   stops only when it drives no node; an inactive node misses uncut cycles instead). A follower can
   read no mark of the recovery (`XRUN_RECOVER` is cleared before followers run). A listener must not
   read the driver's clock through a filter's mapping once that filter is gone (it crashed).
+- **S4 (tag `[s4]`): ports added to and removed from a streaming filter.** It works: a new port
+  links and carries audio, a removed one takes its link with it, kept ports and other nodes lose
+  nothing, over 500 rounds. But `pw_filter_add_port` and `pw_filter_remove_port` change
+  `filter->port_list` on the main loop with no invoke while the data loop walks it
+  (`filter.c:343`, `1386`, `1021`). It holds on x86-64 by the order of the append's stores and,
+  for a remove, by the blocking invoke `pw_impl_port_remove` makes before the port is freed
+  (`impl-port.c:1391`); on arm64 the add must be made with the data loop held (S4's second case).
+  Nothing of ear's may touch a port's handle once `pw_filter_remove_port` was called on it: swap
+  it out of what `process` reads behind a blocking invoke first. A new link's first cycles may
+  bring no buffer or silence. No code of ear's adds or removes a port on a connected filter yet
+  (`docs/design/reconfigure.md`).
 - After a 2 s data-loop stall the dummy driver resyncs (an error of about -96,000 frames) and then
   resets about 70 times within 7 ms; the bounds treat it as no wedge while the loop answers invokes.
 
@@ -608,7 +619,9 @@ pins the base image by digest, not the packages. To move to another PipeWire:
    always-process nodes and of node groups (from 1.7.0, load `libpipewire-module-scheduler-v1`
    in `engine.conf`, and re-check how a card joins the group's clock), renamed clock keys,
    whether `context.properties` still overwrite `pw_context_new`'s properties, `pw_filter` and
-   `link-factory` behaviour (link by name and by id), the adapter's port configuration (whether
+   `link-factory` behaviour (link by name and by id), `filter.c`'s `alloc_port` and `free_port` and
+   `impl-port.c`'s `pw_impl_port_remove` (what S4's safety rests on: the append's order of stores,
+   and the blocking invoke before a removed port is freed), the adapter's port configuration (whether
    `adapter.auto-port-config` now works), `node.driver-id` events, the registry's key
    whitelist, and module-rtp-source: its arguments, whether a failed bind is now reported, the
    SSRC lock, the resync on a sequence mismatch, and the `rtp.receiving` property. And

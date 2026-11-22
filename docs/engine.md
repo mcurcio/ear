@@ -1137,7 +1137,7 @@ logged by PipeWire:
 
 ## The one data loop and invokes
 
-Verified by `spikes_test.cpp` (S1 to S3, and S5's part B) against 1.4.2's `loop.c`, `context.c` and `filter.c`:
+Verified by `spikes_test.cpp` (S1 to S4, and S5's part B) against 1.4.2's `loop.c`, `context.c` and `filter.c`:
 
 - **Asynchronous `pw_loop_invoke` from the main loop** runs on the data thread in posting order,
   never inside any `process`, and the post returns the async code, never the function's result. A
@@ -1174,6 +1174,34 @@ Verified by `spikes_test.cpp` (S1 to S3, and S5's part B) against 1.4.2's `loop.
 - **One data loop.** `context.num-data-loops` reads 1, the process has one `data-loop.0` thread, and
   a filter's `pw_filter_get_data_loop` is that loop. Adapters and the RTP module name `data-loop.0`
   in their info; `pw_filter`s name no loop.
+- **Ports can be added to and removed from a streaming filter** (S4), which no code of ear's does
+  yet. On a connected `RT_PROCESS` filter made as a block's, `pw_filter_add_port` gives a port that
+  appears in the registry, links, and carries its peer's audio sample for sample;
+  `pw_filter_remove_port` of a linked port takes its port and its link out of the registry. Over 500
+  rounds of both (three cycles a round), a port linked throughout kept its link and read every cycle
+  right, a ramp between two other nodes lost nothing (every cycle its listener ran was the ramp's,
+  and none went missing but ones the driver cut), the filter never left `STREAMING` and the core
+  reported no error; so in 19 runs, six of them beside the whole suite. The registry gives a removed
+  port's id to the next one. A new link's first cycles are not yet its audio: after the link is
+  told active the port may have no buffer for a cycle, or a buffer of silence for one, each seen
+  about once in several thousand links.
+  **But `filter.c` changes its port list with no invoke and no lock.** `pw_filter_add_port` appends
+  the port to `filter->port_list` on the main loop (`alloc_port`, `filter.c:343`) and
+  `pw_filter_remove_port` unlinks it there (`free_port`, `filter.c:1386`), while the data loop's
+  `impl_node_process` walks that list twice a cycle (`filter.c:1021`, `1051`). Only the node's own
+  realtime port list is changed inside invokes (`impl-port.c` `do_add_port`, `do_remove_port`).
+  What makes it hold: an append stores the new element's `next` before the store that links it in
+  (`spa_list_insert`), and the walk reads only `next` and skips a port with no `io`, which a new port
+  has until it is linked; a remove is one store that the walk sees whole, it leaves the removed
+  element's own pointers alone, and the port is freed (`filter.c:1392`) only after the blocking
+  invoke that takes it off the node's realtime list (`pw_impl_port_remove`, `impl-port.c:1391`), so
+  every walk that could have reached it has ended. The append's order of stores is kept between
+  threads on x86-64 (total store order) and is not on arm64, where a walker could meet the new
+  element before its `next` is there. Holding the data loop while the port is added (an invoke that
+  parks until the main thread is done) closes that on any architecture and passed the same 500
+  rounds; the loop stood still for 50 to 300 us in most runs and for 2.1 ms in one, an ordinary
+  thread holding the realtime one. A filter's own `process` must have stopped using a port's handle
+  before `pw_filter_remove_port` returns: the handle is the port's memory.
 - After a 2 s data-loop stall the driver catches up as [above](#the-internal-clock); the bounds treat
   it as no wedge while the loop answers invokes.
 - **The driver reports every cycle a node misses** (S6). Every follower is a target of the driver,
