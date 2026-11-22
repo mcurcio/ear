@@ -20,7 +20,7 @@ ships as a container image published from GitHub Actions.
 |---|---|
 | How ear works, as built: architecture, the graph file, node types, writing a node type, the control port, standard output's records, the engine, the editor, testing | `docs/` ([`docs/README.md`](docs/README.md) is the index and reading order) |
 | The timing model: one tick at one graph rate, clocks and rate conversion only in edge nodes | [`docs/architecture.md#the-timing-model`](docs/architecture.md#the-timing-model) (as built, and where the code still departs); its unbuilt part, the converter's set and tracked modes, is in [`docs/design/slice-3c-remainder.md`](docs/design/slice-3c-remainder.md) |
-| Designs for work not built yet (what slice 3c left, a stricter `CreateOf`, slices 3d, 5, 6, 8, cards and the clock) | [`docs/design/`](docs/design/README.md) |
+| Designs for work not built yet (what slice 3c left, slices 3d, 5, 6, 8, cards and the clock) | [`docs/design/`](docs/design/README.md) |
 | Working guides for specific jobs | The skills in `.claude/skills/`: `pipewire-engine` (changing `src/pipewire/` or `engine.conf`, engine traps), `control-port` (talking to port 7777), `sendspin` (pairing and operating a `sendspin` node, the protocol library), `ear-on-talos` (the image on Talos with the MOTU 24Ao, FPP's RTP stream, `sendspin` and `airplay` nodes in a pod) |
 | Research notes | `docs/research/` (`motu-24ao-drivers/`: MOTU's macOS driver against `snd-usb-motu`, and the 24Ao's USB descriptors) |
 

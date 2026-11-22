@@ -766,8 +766,7 @@ public:
 		return {in(members(s.get<channelsRow>())), out(members(s.get<channelsRow>()))};
 	}
 	Configured configure(CreateOf<spec>& cx, const Checked&) {
-		cx.use(GainCode{});   // no change version: its live rows retune, `channels` restarts
-		return Configured::applied();
+		return cx.applied(GainCode{});   // no change version: its live rows retune, `channels` restarts
 	}
 };
 }

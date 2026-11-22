@@ -104,11 +104,11 @@ public:
 	void done() &&;
 	void fail(std::string detail) &&;
 };
-/// What configure answers for a change. A "later" answer is made only by whenReady, so a token and a later answer
-/// cannot disagree. (Built with trivial bodies in 3a.)
+/// What configure answers for a change. The applied answer is made only by the context (cx.applied, below), as
+/// creation's is, and a "later" answer only by whenReady, so a token and a later answer cannot disagree. (Built with
+/// trivial bodies today, `Changed::applied()` among them, which this slice replaces by cx.applied.)
 class Changed {
 public:
-	static Changed applied();                         // the commit point comes once every replacement is ready
 	static Changed restart(std::string reason);       // the type cannot take this change in place after all (T11)
 };
 /// The spec's lifecycle settings (TypeSpec's `.lifecycle`, after `.stores` and `.loops`). Refused at compile time below 1 s
@@ -121,16 +121,20 @@ template <const auto& Spec> class ChangeOf {
 public:
 	AudioFormat format() const;
 	const NodeName& node() const;
-	/// The code: always a swap, installed with its layout at the commit point. Optional, except in an in-place
-	/// reshape, where the Io layout changed.
-	void use(NodeCode code);
+	/// The answer (as creation's cx.applied, docs/writing-a-node-type.md#configure-and-createof): the commit point
+	/// comes once every replacement is ready. With no code the node's code stays; with one it is always a swap,
+	/// installed with its layout at the commit point, and an in-place reshape, where the Io layout changed, must give
+	/// one. It takes no loop's state: a loop's state lives across a change (6.3).
+	Changed applied();
+	template <class Code> Changed applied(Code code);
 	/// Staged until the commit point; destroyed unrun on supersession (T18) or a fallback (T11).
 	template <class Loop> void post(Loop, std::move_only_function<void(typename Loop::State&)> work);
-	// Replacements: each replaces what the node holds for the same bank or key, make before break (5.3).
-	template <class Bank> void soundCard(Bank, SoundCardShape, Order = Order::makeFirst);
-	template <class Bank> void rtpReceiver(Bank, RtpReceiverShape);    // the same port: break-first, by the framework
-	template <class Bank> SourceWriter& source(Bank, SourceShape);
-	template <class Bank> SinkRequest& sink(Bank, SinkShape);
+	// Replacements, attached as on creation (one call, the kind its shape's): each replaces what the node holds for
+	// the same bank or key, make before break (5.3).
+	template <class Bank> void attach(Bank, SoundCardShape, Order = Order::makeFirst);
+	template <class Bank> void attach(Bank, RtpReceiverShape);         // the same port: break-first, by the framework
+	template <class Bank> SourceWriter& attach(Bank, SourceShape);
+	template <class Bank> SinkControl& attach(Bank, SinkShape, /* its consumer, in creation's three forms */);   // 6.4
 	void claim(claim::TcpListen);   void claim(claim::Udp);            // judged when the hook returns (6.1)
 	void unclaim(claim::TcpListen); void unclaim(claim::Udp);          // released at the commit point, last
 	int recording(RecordingRequest);                                   // a replacement, made before break
@@ -148,13 +152,14 @@ public:
 
 The type's class gains, optionally, `Changed configure(ChangeOf<spec>&, const CheckedOf<spec>& old, const
 CheckedOf<spec>& now)` (its signature already checked, as built). **A call the mode does not offer does not compile**
-(R33): `CreateOf` has no holds, no `whenReady` and no `unclaim` (built), `ChangeOf` has no `loop`, `store` or
-`executor` (a loop's state already holds them), and `Configured` has no `restart` nor `Changed` a `failed`.
+(R33): `CreateOf` has no holds, no `whenReady` and no `unclaim` (built), `ChangeOf` has no `state`, `store` or
+`executor` (a loop's state lives across a change and already holds them), and `Configured` has no `restart` nor
+`Changed` a `failed`.
 
 **The rules a compiler cannot check**, each failing the node with the rule's text, as every built context rule does
 (the built framework records the broken rule on the node and fails it at the hook's return, even when the type caught
-the throw): a change gives the code at most once, and must give it when the ports changed; `unclaim` names a key the
-node holds; `whenReady` is called at most once, and its `Changed` is what `configure` returns; a context is used only
+the throw): a change must give the code in its answer when the ports changed (at most once is the answer's shape, as
+on creation); `unclaim` names a key the node holds; `whenReady` is called at most once, and its `Changed` is what `configure` returns; a context is used only
 inside its `configure`. A type bug found in a change fails the node `lost` (it had rested), never takes ear down.
 
 **Staged posts** (D-R17). Work posted with `cx.post` is staged until the commit point: released there, in the order
@@ -175,8 +180,8 @@ type writes neither a poll nor a second hook (G20):
   its `done` is then ignored;
 - a continuation may not swap the code or hold banks: those are `cx` calls, applied at the commit point.
 
-**`use` is always a swap** (D-R18): the framework never compares codes, so a type whose code keeps state carries it into
-the new code or does not call `use`. A code swap without holds is a discontinuity unless the type carries its state;
+**A code in the answer is always a swap** (D-R18): the framework never compares codes, so a type whose code keeps state
+carries it into the new code or answers `cx.applied()` with none. A code swap without holds is a discontinuity unless the type carries its state;
 the framework adds no crossfade. The new code's `prepare` runs on the main loop while the old code still runs: it may
 allocate and build the new code's own state, and may not touch the framework's realtime state (slots, ramps, ring
 cursors) or anything the old code's `process` reads (D-R13).
@@ -271,7 +276,7 @@ needs a moment when no `consume` runs. Without it every such type writes a lock 
 with it the framework owns the one hand-over (G21).
 
 ```cpp
-class SinkControl {                                    // cx.sink(...).control(): a loop's state keeps it
+class SinkControl {                                    // what attaching a sink returns: a loop's state keeps it
 public:
 	/// Any of the node's loops. The sink's thread finishes a consume in flight, then discards chunks (counted as paused
 	/// frames, not drops) until resume(); `paused` is posted to `loop` once no consume can run. Until resume(), the
@@ -286,7 +291,8 @@ protected:
 };
 ```
 
-`SinkRequest` gains `SinkControl& control()`. Paused audio is discarded, not queued: a swap is a break in what the node
+Attaching a sink returns its `SinkControl&` (`cx.attach(bank, SinkShape{...}, consumer)`, on creation and in a change;
+on creation it returns nothing today). Paused audio is discarded, not queued: a swap is a break in what the node
 sends, and the chunks' positions say where. A paused sink at teardown is drained by discarding, then `finish` is called;
 a consumer's `finish` must cope with a pause it never saw resumed. A replaced sink drains to its own consumer and
 finishes at the commit point; its replacement's `begin` runs as it becomes ready, before the commit point. Slice 5
@@ -300,10 +306,10 @@ restart-only).
 ```cpp
 Changed Rtp::configure(ChangeOf<spec>& cx, const Checked&, const Checked& now) {
 	cx.hold(stream);                                         // null audio until the new receiver runs
-	cx.rtpReceiver(fromRtp, receiverFor(now, cx.format()));  // replaces it: a new port make-before-break (claims the new
+	cx.attach(fromRtp, receiverFor(now, cx.format()));       // replaces it: a new port make-before-break (claims the new
 	                                                         // UDP port, releases the old at the end); the same port
 	                                                         // break-first, by the framework; it declares latencyMs
-	return Changed::applied();                               // no use: the pass-through stays, nothing is swapped
+	return cx.applied();                                     // no code: the pass-through stays, nothing is swapped
 }
 ```
 
@@ -322,7 +328,7 @@ Changed Sendspin::configure(ChangeOf<spec>& cx, const Checked& old, const Checke
 	SendspinSettings next = settingsFrom(cx.node(), now);
 	if (old.get<rows::server>() && now.get<rows::server>() && settingsFrom(cx.node(), old).name == next.name) {
 		cx.post(worker, [url = *next.server](Worker& w) { w.redial(url); });   // staged until the commit point
-		return Changed::applied();
+		return cx.applied();
 	}
 	if (!old.get<rows::server>()) cx.unclaim(claim::TcpListen{old.get<rows::port>()});   // released at the end
 	if (!now.get<rows::server>()) cx.claim(claim::TcpListen{now.get<rows::port>()});     // judged now
@@ -593,7 +599,7 @@ Each is the designer's (R24); the owner can overturn any.
 | D-R5 | An in-place reshape swaps whole layout objects (old, transitional, new) built on the main loop, one pointer each in a barrier invoke | Every array the data thread reads is fixed-size; resizing any in place is a use-after-free |
 | D-R13 | The new code's `prepare` may not touch the framework's realtime state or anything the old code's `process` reads | It runs while the old code still runs |
 | D-R17 | In place, `cx.post` work is staged until the commit point and destroyed unrun on supersession or fallback | Else work could run for a change that never commits |
-| D-R18 | In place, `cx.use` is always a swap; the framework never compares codes | One rule; comparing would silently skip or add a swap |
+| D-R18 | In place, a code given in the answer (`cx.applied(code)`) is always a swap; the framework never compares codes | One rule; comparing would silently skip or add a swap |
 | D-R24 | An in-place reshape is proved with a test type; no built-in type reshapes in place | No built-in type needs it yet |
 | D-L43 | S4's criterion is functional checks plus a cited code reading of `filter.c`, not ThreadSanitizer | TSan cannot see inside the uninstrumented libpipewire |
 | G19 | `sendspin`'s `name`, `port` and `server` change in place, the listen/dial switch included | R17 names a port change as the case a node handles itself; the operator hears the same drop either way |

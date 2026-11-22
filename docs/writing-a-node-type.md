@@ -167,6 +167,15 @@ pointer, so it is never null and carries its loop in its type. Nothing in `confi
 before the answer: a post is staged, and a sink's consumer and a program's feed name a loop and a
 member, never the state itself.
 
+*Why one call for every companion:* the rule (one companion per bank) and the checks (the spec's
+bank, its reach, its direction) are the same for all five kinds, and a type author need not tell an
+engine companion from a sink or a source to write `configure`. Each shape states its bank once, so
+a new kind is a shape, not a call. *Why companions are not declared in the spec:* whether a type
+has one, and its shape, depend on settings (`card`'s directions, `rtp`'s address), and the spec is
+fixed at compile time. *Why no builder, and no context that changes type with each call:* a builder
+keeps the same counts the framework kept, and a chain of contexts cannot stop a moved-from one
+compiling, so neither refuses anything earlier; an argument needs no count.
+
 A `CreateOf` is valid only inside the `configure` it is handed to. What a type needs from outside
 it acquires here; a type's factory takes no arguments.
 
@@ -928,7 +937,8 @@ any other throw. A bug of ear's own adapter inside a context call (a sink adapte
 or not the type caught it; an adapter's refusal (no thread, no eventfd) stays the node's
 `start-failed` ([architecture.md](architecture.md#faults-by-owner)). An applied answer that does not hold a code and exactly its loops' states is ear's bug too
 (`internal error in ErasedInstance::configure: <what>`): `cx.applied` holds a type's class to that at compile time, so only an instance
-made by hand, as the framework's own tests make them, can give one. A throw the node cannot take as its failure (a restart, disable or removal under
+made by hand, as the framework's own tests make them, can give one (the instance interface answers
+as a type does, so no check, text or test stays for a rule no type can break). A throw the node cannot take as its failure (a restart, disable or removal under
 way, or a stop's fault already held) is an `ear` `log` record instead, so none goes unrecorded. A
 code's `release` and `process`, and every destructor, are `noexcept`: a throw there is
 `std::terminate`.

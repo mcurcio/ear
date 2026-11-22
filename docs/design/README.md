@@ -11,13 +11,12 @@ another's still resolves; commits cite them too, and git keeps the pages they we
 
 The slices are built in this order (decided: each later slice hooks into the earlier one's states, and companions,
 built in slice 3b ([architecture.md](../architecture.md#companions)), removed primitives slice 3c would otherwise have built): 3c, 3d, then
-5, 6, 8. `create-of.md` is built before 3d (decided: 3d's `ChangeOf` is built on its surface).
+5, 6, 8.
 Slice 3c is built but for the three pieces `slice-3c-remainder.md` keeps, none of which a later slice waits for.
 
 | Page | Slice | What it designs | Status |
 |---|---|---|---|
 | [`slice-3c-remainder.md`](slice-3c-remainder.md) | 3c | What slice 3c left unbuilt: the `sendspin` library's log lines attributed to their node by a carried patch (S3c.7), the converter companion's set and tracked modes (T5), and dropping the carried starved-floor patch | designed; S3c.7 waits on priorities, T5 on a first user, the patch's drop on evidence from both burst shapes; the rest of slice 3c is built and in the library docs |
-| [`create-of.md`](create-of.md) | before 3d | A smaller, stricter `CreateOf`: `configure` answers with the code and its loops' states (`cx.applied(code, states...)`), one `attach` call for every companion, a sink's consumer as an argument, so six run-time rules become compile-time refusals; slice 3d's `ChangeOf` is then built on the same surface | designed; approved by the owner (Q-C1 to Q-C3 answered); steps C1 to C4 to build |
 | [`reconfigure.md`](reconfigure.md) | 3d | Changes in place (`.inPlace()` rows, the change version of `configure`, holds, make-before-break, the commit point, supersession, the fallback), reshape (`PortBlock::reshape`), `rtp` and `sendspin` in place, `node.set`, `dryRun` and `dropRoutes` | designed; its first step is a PipeWire spike (S4) |
 | [`control-plane.md`](control-plane.md) | 5, 6 | The type schema on the wire, status, events, node diagnostics, actions and the realtime coded ring (5); decimal, indexed and live rows, parameter slots and ramps, retunes, gestures, the `gain` type and the editor's faders (6) | designed |
 | [`recovery.md`](recovery.md) | 8 | Failed nodes trying again by themselves with a backoff; `recovering` on the wire; status a companion writes | designed |
@@ -25,6 +24,9 @@ Slice 3c is built but for the three pieces `slice-3c-remainder.md` keeps, none o
 
 Not built and not designed anywhere yet: routes naming a whole bank, a login on the control port, automatic card
 retry beyond slice 8 and hotplug, arm64 images, `@include` and undo in the graph file, and changing the graph frequency
-or block size while ear runs ([architecture.md](../architecture.md#not-built-yet) keeps the list); the remaining `rtp`
+or block size while ear runs ([architecture.md](../architecture.md#not-built-yet) keeps the list); in the framework
+itself, `node_host.cpp`'s size (about 4,100 lines) and whether each kind of resource should own its part of it behind
+the readiness list, which wants its own page after reading the file whole, and whether `ear_node_type()` should
+generate a type's one-function public header; the remaining `rtp`
 items (a "receiving" status is slice 8's) and `sendspin` items are on their types' pages
 ([node-types.md](../node-types.md#rtp), [node-types.md](../node-types.md#sendspin)).
