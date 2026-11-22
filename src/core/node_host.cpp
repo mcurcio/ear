@@ -1815,6 +1815,37 @@ struct NodeHost::Impl {
 			enum class LoopsStep { open, finishing, closing, closed } loopsStep = LoopsStep::open;
 			bool closedTold = false; // step 4 is done: the machine was told closed
 			std::size_t sinksClosed = 0;
+
+			Configuration() = default;
+			Configuration(const Configuration&) = delete;
+			Configuration& operator=(const Configuration&) = delete;
+			~Configuration() { freeInOrder(); }
+			/// Teardown step 5's order, its one statement (docs/architecture.md#teardown-by-dependency): the code
+			/// (released and unreachable since the barrier; it may hold references into the instance, never the
+			/// reverse), then the sinks (each closed, so its consumer, which may hold a reference into the instance or
+			/// be part of a loop's state, is idle), then the states of loops that never started (which may read the
+			/// instance too), every state before any loop, since one may hold another's executor, then the instance,
+			/// the loops, the sources (after the instance, whose threads may hold a writer), the stores (after every
+			/// state and consumer that may hold one; a job still queued holds its state), the recordings and the
+			/// program (reaped at step 3, and before its claims go). The rest goes with the config. Again is nothing.
+			///
+			/// Every thread of it has closed by then, but for a configuration freed with its node: a host destroyed
+			/// while the node was still configured, which only a test does (~NodeHost wants stopAll completed). That
+			/// one was never torn down, so each loop still up is destroyed, which ends its thread, before any state
+			/// that thread may be in; its sinks' threads end where the sinks stand in the order, before the states.
+			void freeInOrder() noexcept {
+				code.reset();
+				sinks.clear();
+				if (loopsStep != LoopsStep::closed)
+					for (const auto& slot : loops) slot->made.reset();
+				for (const auto& slot : loops) slot->state.reset();
+				instance.reset();
+				loops.clear();
+				sources.clear();
+				stores.clear();
+				recordings.clear();
+				program.reset();
+			}
 		};
 
 		/// A configuration leaked at the close deadline (docs/architecture.md#teardown-by-dependency): not freed while its
@@ -1899,22 +1930,11 @@ struct NodeHost::Impl {
 					delete record;
 				});
 			}
-			/// Teardown step 5's order (freeConfiguration): every thread of it has reported closed, so nothing reaches
-			/// what goes here. The code, the sinks, the loops' states, the instance, the loops (a dedicated one's
-			/// thread has returned), the sources, the stores, the recordings, then the rest with the config; its
-			/// Channel may outlive it, held by a type's thread, detached.
+			/// Teardown step 5 (Configuration::freeInOrder): every thread of it has reported closed, so nothing reaches
+			/// what goes here (a dedicated loop's thread has returned; its program was reaped, its claims released
+			/// when it closed late). Its Channel may outlive it, held by a type's thread, detached.
 			void free() {
 				const MainLoopActivity::Scope activity("free configuration", name_);
-				Configuration& c = *config_;
-				c.code.reset();
-				c.sinks.clear();
-				for (const auto& slot : c.loops) slot->state.reset();
-				c.instance.reset();
-				c.loops.clear();
-				c.sources.clear();
-				c.stores.clear();
-				c.recordings.clear();
-				c.program.reset(); // reaped; its claims were released when it closed late
 				config_.reset();
 			}
 
@@ -3506,28 +3526,17 @@ struct NodeHost::Impl {
 			host_.logged(LogEntry{LogLevel::error, "ear", dropped.detail, {}, name_});
 		}
 
-		/// teardown step 5, on the main loop: the code (released and unreachable since the barrier; it may hold
-		/// references into the instance, never the reverse), then the sinks (each closed, so its consumer, which may
-		/// hold a reference into the instance, is idle), then the states of loops that never started (which may read
-		/// the instance too), then the instance, the loops, the sources, the
-		/// stores, the recordings, and last its context, channel and config.
+		/// teardown step 5, on the main loop: every sink and loop closed (a dedicated loop's thread already returned)
+		/// or never begun, the program reaped. What the configuration holds goes in its order
+		/// (Configuration::freeInOrder) while the node still holds it, then the rest with its context, channel and
+		/// config, and last its claims.
 		void freeConfiguration() {
 			const MainLoopActivity::Scope activity("free configuration", name_);
 			Configuration& c = *config_;
 			c.deadline.reset();
 			c.channel->detach();
 			companionsEnded(); // closed (no tap or play since the barrier), so their counts are final
-			c.code.reset();
-			c.sinks.clear(); // each closed (its thread idle) or never begun; a consumer may read the instance
-			// Each loop closed (a dedicated thread already returned), or never started: a state left goes here, before
-			// the instance it may read, and every state before any loop, since one may hold another's executor.
-			for (const auto& slot : c.loops) slot->state.reset();
-			c.instance.reset();
-			c.loops.clear();
-			c.sources.clear(); // after the instance, whose threads may hold a writer
-			c.stores.clear();  // after every state and consumer that may hold one; a job still queued holds its state
-			c.recordings.clear();
-			c.program.reset(); // reaped (step 3 waited for it), and before its claims go: a port it held is free now
+			c.freeInOrder();
 			const std::uint64_t generation = c.generation;
 			config_.reset();
 			// Last: its claims released, each waiter judged again in arrival order.

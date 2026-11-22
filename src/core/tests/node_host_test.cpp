@@ -6275,6 +6275,7 @@ namespace {
 /// A class whose one loop's state reads its instance: the instance's destructor sets a flag the test owns, and the
 /// state's destructor says whether the instance was still there. Its answer fails at configure's return when told.
 /// It declares one store, so its loop is made only once the store opened (the loops' step comes after the opens').
+/// With `sink`, a sink on pb whose consumer says the same of the instance as it goes.
 struct StateReadingConfig final : NodeConfig {
 	struct State {
 		Log& log;
@@ -6282,6 +6283,17 @@ struct StateReadingConfig final : NodeConfig {
 		~State() {
 			log.push_back(instanceGone ? "state destroyed after its instance" : "state destroyed, instance alive");
 		}
+	};
+	struct Consumer final : SinkConsumer {
+		Log& log;
+		const bool& instanceGone;
+		Consumer(Log& l, const bool& gone) : log(l), instanceGone(gone) {}
+		~Consumer() override {
+			log.push_back(instanceGone ? "consumer destroyed after its instance"
+			                           : "consumer destroyed, instance alive");
+		}
+		void consume(const Chunk&) override {}
+		void finish() override {}
 	};
 	struct Instance final : ErasedInstance {
 		const StateReadingConfig& config;
@@ -6291,6 +6303,8 @@ struct StateReadingConfig final : NodeConfig {
 		std::span<const StoreDeclaration> stores() const noexcept override { return {&config.store, 1}; }
 		Configured configure(CreateContext& cx) override {
 			config.instanceGone = false;
+			if (config.sink)
+				cx.sink("pb", SinkShape{.frames = 1024}, std::make_unique<Consumer>(config.log, config.instanceGone));
 			ErasedLoopState state = ErasedLoopState::of(0, std::make_unique<State>(config.log, config.instanceGone));
 			// A pass-through the ports refuse fails the node at configure's return, the state already the framework's.
 			if (config.failAtReturn)
@@ -6301,6 +6315,7 @@ struct StateReadingConfig final : NodeConfig {
 	Log& log;
 	Ports ports_ = testPorts();
 	bool failAtReturn = false;
+	bool sink = false;
 	mutable bool instanceGone = false;
 	StoreDeclaration store{
 		"key",
@@ -6338,6 +6353,27 @@ TEST_CASE("A loop state whose loop never started is destroyed at step 5 before t
 	f.stopAll();
 	f.settle();
 	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A configuration freed with its node, its host destroyed while the node still ran, goes in teardown step "
+          "5's order",
+          "[node_host][loops][teardown]") {
+	// Only a test destroys a host whose nodes it did not stop (~NodeHost wants stopAll completed). The order holds all
+	// the same: the sink before the state, the state before the instance it may read.
+	Log order; // outlives the host
+	const auto config = std::make_shared<StateReadingConfig>(order);
+	config->sink = true;
+	{
+		Fixture f;
+		addRunning(f, "porch", config);
+		REQUIRE(countOf(f.log, "loop porch.worker made") == 1);
+		REQUIRE(countOf(f.log, "loop porch.worker finish") == 0); // never torn down
+	}
+	REQUIRE(countOf(order, "consumer destroyed, instance alive") == 1);
+	REQUIRE(countOf(order, "state destroyed, instance alive") == 1);
+	CHECK(countOf(order, "consumer destroyed after its instance") == 0);
+	CHECK(countOf(order, "state destroyed after its instance") == 0);
+	CHECK(indexOf(order, "consumer destroyed, instance alive") < indexOf(order, "state destroyed, instance alive"));
 }
 
 // A type's class cannot make these answers (CreateOf::applied holds the answer to its spec at compile time), so one
