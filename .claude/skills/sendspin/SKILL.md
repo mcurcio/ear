@@ -73,7 +73,7 @@ Its `configure` claims a listening node's port (`claim::TcpListen`, judged acros
 opens), takes the key store, makes the source on `from_server` with its clock (`SendspinClock`, which the source owns),
 gives its two dedicated loops their states (`Worker`, `Notifier`, nothing armed), posts their `begin()` (staged until the
 node is configured), names the worker's `ToServer` as the consumer of the sink on `to_server`
-(`consumedBy(worker, &Worker::toServer)`) and uses the framework's pass-through (`from_server` to `from`, `to` to
+(`cx.sink(toServer, shape, worker, &Worker::toServer)`) and uses the framework's pass-through (`from_server` to `from`, `to` to
 `to_server`). It has no `start()` or `stop()`: the
 client is the configuration's. What that means to an operator (the owner's answer: a stopped node stays connected):
 

@@ -837,7 +837,7 @@ class ThrowingSinkInstance final : public ErasedInstance {
 public:
 	explicit ThrowingSinkInstance(std::shared_ptr<std::atomic<bool>> armed) : armed_(std::move(armed)) {}
 	Configured configure(CreateContext& cx) override {
-		cx.sink("tap", SinkShape{.frames = 4096}).consumedBy(std::make_unique<ThrowingConsumer>(armed_));
+		cx.sink("tap", SinkShape{.frames = 4096}, std::make_unique<ThrowingConsumer>(armed_));
 		cx.use(std::make_unique<LevelCode>());
 		return Configured::applied();
 	}
@@ -954,7 +954,7 @@ public:
 	~LateInstance() override { freed_(); }
 	std::span<const LoopDeclaration> loops() const noexcept override { return lateLoops; }
 	Configured configure(CreateContext& cx) override {
-		cx.sink("tap", SinkShape{.frames = 4096}).consumedBy(std::make_unique<LateConsumer>(sinkGate_));
+		cx.sink("tap", SinkShape{.frames = 4096}, std::make_unique<LateConsumer>(sinkGate_));
 		cx.loopState(0, std::unique_ptr<void, void (*)(void*)>(
 							new LateState{stateGate_}, [](void* state) { delete static_cast<LateState*>(state); }));
 		cx.use(std::make_unique<LevelCode>());

@@ -806,7 +806,9 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			harness.recordingList.push_back(request);
 			return create.recording(request);
 		}
-		SinkRequest& sink(std::string_view bank, SinkShape shape) override { return create.sink(bank, shape); }
+		void sink(std::string_view bank, SinkShape shape, SinkConsumerFrom consumer) override {
+			create.sink(bank, shape, std::move(consumer));
+		}
 		SourceWriter& source(std::string_view bank, SourceShape shape, std::unique_ptr<SourceClock> clock) override {
 			return create.source(bank, shape, std::move(clock));
 		}

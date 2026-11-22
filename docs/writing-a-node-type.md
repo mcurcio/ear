@@ -141,7 +141,7 @@ optional row read as a plain value does not compile.
 | `cx.soundCard(bank, SoundCardShape{.card})` | A sound card, an [engine companion](#engine-companions) on an inside bank: playback on an inside output, capture on an inside input (the bank's direction is the card's). Named `<node>.playback` or `<node>.capture`; made once the block is ready | Inside banks only (compile time); one companion per bank |
 | `cx.rtpReceiver(bank, RtpReceiverShape{...})` | An RTP receiver, an [engine companion](#engine-companions) on an inside input bank, `<node>.rtp`; its `latencyMs` is latency beyond the bank | Inside input banks only (compile time); one companion per bank |
 | `const Recording& r = cx.recording(RecordingRequest{path})` | A [recording](#recordings): a file beneath the recordings folder, claimed, then created or truncated off the main loop; give it to the sink's consumer, which reads `r.descriptor()` from `begin()` on | Nothing to answer: a refusal fails the node at its readiness step; one path asked for twice (however spelled) fails it `start-failed` |
-| `cx.sink(bank, SinkShape{.frames = n}).consumedBy(std::make_unique<Consumer>(...))` | A sink on an inside output bank ([sinks](#sinks)); or `.consumedBy(loop, &State::member)` / `.consumedBy(loop)`, a consumer that is part of a [loop](#loops)'s state | Inside output banks only; exactly one consumer (a loop's form: a loop of the spec, declared with a state, at compile time); one companion per bank |
+| `cx.sink(bank, SinkShape{.frames = n}, std::make_unique<Consumer>(...))` | A sink on an inside output bank with its one consumer ([sinks](#sinks)); or `cx.sink(bank, shape, loop, &State::member)` / `cx.sink(bank, shape, loop)`, a consumer that is part of a [loop](#loops)'s state | Inside output banks only; a loop's form names a loop of the spec, declared with a state (each at compile time); a null consumer fails the node; one companion per bank |
 | `SourceWriter& w = cx.source(bank, SourceShape{.frames = n}, clock)` | A source on an inside input bank ([sources](#sources)): what the type's own thread writes, played into the bank before the code; `clock`, a `std::unique_ptr<SourceClock>`, its own clock ([a source's clock](#a-sources-clock)), left out for a source with none | Inside input banks only (compile time); `0 < n <= maxSourceFrames` (2^24); one companion per bank |
 | `cx.declareLatency(from, to, Latency{min, max})` | The code's own latency on the path from an input bank to an output bank, in frames: carried as a path through the block, so it counts in both banks' told latency ([latency](#latency)) | Once per path (a mixer declares each of its inputs' paths into one output); with a pass-through, one of its pairs; a plan that does not fit the ports fails the node `start-failed` |
 | `cx.loop(handle, std::make_unique<State>(...))` | A [loop](#loops)'s state, constructed here with no I/O and no threads, owned by the framework from now on | Exactly once for a loop declared with a state type (compile time: never for one declared without) |
@@ -265,11 +265,12 @@ cx.use(passThrough({bankPair(play, toCard), bankPair(fromRtp, stream)}));
 
 ## Sinks
 
-A sink takes audio off the realtime thread. The type asks for one on an inside output bank:
+A sink takes audio off the realtime thread. The type asks for one on an inside output bank, with
+its one consumer:
 
 ```cpp
-cx.sink(writer, SinkShape{.frames = static_cast<std::uint32_t>(FrameClock(cx.format().rate).frames(2s))})
-	.consumedBy(std::make_unique<WavWriter>(...));
+cx.sink(writer, SinkShape{.frames = static_cast<std::uint32_t>(FrameClock(cx.format().rate).frames(2s))},
+        std::make_unique<WavWriter>(...));
 cx.use(passThrough({bankPair(record, writer)}));
 ```
 
@@ -314,8 +315,9 @@ cx.use(passThrough({bankPair(record, writer)}));
 - The consumer is owned by its sink and freed at teardown step 5 after the code and before the
   instance, so it may keep a reference into the instance (or what the instance owns) and use it in
   `finish()` and its destructor ([architecture.md](architecture.md#teardown-by-dependency)).
-- **A consumer that is part of a loop's state**: `consumedBy(worker, &Worker::toServer)` names a
-  member of loop `worker`'s state, `consumedBy(worker)` the state itself (a `SinkConsumer`). The
+- **A consumer that is part of a loop's state**: `cx.sink(bank, shape, worker, &Worker::toServer)`
+  names a member of loop `worker`'s state, `cx.sink(bank, shape, worker)` the state itself (a
+  `SinkConsumer`). The
   state owns it; the sink calls it, still on the sink's own thread, from its `begin()`, which comes
   only once the loop runs (loops are the readiness step before), until its `finish()` at teardown
   step 3, before the state is destroyed at step 4. So the consumer may use the rest of the state
@@ -613,7 +615,7 @@ writes, through its sink's consumer (`ear/core/recording.hpp`). `file` is its us
 ```cpp
 Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
 	const Recording& recording = cx.recording(RecordingRequest{s.get<pathRow>()});
-	cx.sink(writer, SinkShape{.frames = ...}).consumedBy(std::make_unique<WavWriter>(recording, ...));
+	cx.sink(writer, SinkShape{.frames = ...}, std::make_unique<WavWriter>(recording, ...));
 	...
 }
 ```
@@ -857,7 +859,7 @@ twice, a table not named for its folder, a spec or row in an unnamed namespace, 
 lacks or a misspelt one in `Io`, `ports()` or a context, a write into an input, a backwards
 pass-through, a bad or doubled bank name, a `process` that may throw, a class that is final or has
 no `ports` or `configure`, a member of the wrong signature (`configure`, `start`, `stop`, `check`,
-`prepare`, `release`, the change version), a private or overloaded one, a call `CreateOf` does not offer, a sound card, RTP receiver, pipe receiver, sink or source on the wrong
+`prepare`, `release`, the change version), a private or overloaded one, a call `CreateOf` does not offer, a sink given no consumer, a sound card, RTP receiver, pipe receiver, sink or source on the wrong
 bank, a `fifoOf` of a bank that is not an inside input, a program's executable that is not an absolute path of plain
 components, a program's feed into a loop declared without a state, a loop's name that is not 1 to 8 of `[a-z0-9-]` or names two loops, a state given to a loop
 declared without one, a loop the spec lacks (in a context, a post or the harness), a post of a
@@ -875,7 +877,7 @@ when the type catches the throw; none takes ear down:
 | `use` with a null code or an empty pass-through | `configure threw: use given no code: ...` |
 | No `use` by an applied answer | `configure gave no code` |
 | A pass-through the ports refuse | `configure gave a pass-through: <why>` |
-| A sink with no consumer, or a consumer twice | `configure gave sink <bank> no consumer`; `configure threw: consumedBy called twice on sink <bank>` |
+| A sink given a null consumer | `configure threw: sink <bank> given no consumer`; no sink is made |
 | Latency declared twice for one path (`declareLatency(from, to, ...)`) | `configure threw: latency declared twice for the path <from> to <to>` |
 | Latency declared on a path the pass-through does not copy | `configure declared latency on <from> to <to>, a path its pass-through does not copy` |
 | A latency plan that does not fit the ports (only a framework bug makes one: each declaration is checked at its call) | `configure gave a latency plan that does not fit: <why>` |

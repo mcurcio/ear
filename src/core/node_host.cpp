@@ -682,16 +682,26 @@ struct NodeHost::Impl {
 					std::make_unique<RecordingSlot>(request.path, host_.resources.recordings(), name_));
 			});
 		}
-		/// A sink (docs/writing-a-node-type.md#sinks): made at once on the inside output bank, its thread
-		/// started; its bank is never faded. An adapter that cannot make it (no thread) fails the node through
-		/// configure, recorded so a type that catches it still fails; an adapter's own bug fails it lost (adapter()).
-		SinkRequest& sink(std::string_view bank, SinkShape shape) override {
-			return guarded([&]() -> SinkRequest& {
+		/// A sink (docs/writing-a-node-type.md#sinks): made at once on the inside output bank with its one consumer, its
+		/// thread started; its bank is never faded. A consumer it cannot take (null, or in the state of a loop declared
+		/// without one) is the type's broken rule, found before the sink is made. An adapter that cannot make it (no
+		/// thread) fails the node through configure, recorded so a type that catches it still fails; an adapter's own
+		/// bug fails it lost (adapter()).
+		void sink(std::string_view bank, SinkShape shape, SinkConsumerFrom consumer) override {
+			guarded([&] {
 				requireConfiguring("sink");
 				const std::string name(bank);
 				const Ports::Bank& found = insideBank(ports_, name, Direction::output, "a sink");
 				requireOneName(name_ + "." + found.name);
 				requireFreeBank(found);
+				if (auto* own = std::get_if<std::unique_ptr<SinkConsumer>>(&consumer)) {
+					if (!*own) throw std::logic_error("sink " + found.name + " given no consumer");
+				} else {
+					const LoopSlot& slot = loopSlot("sink", std::get<StateSinkConsumer>(consumer).loop);
+					if (!slot.declared.stateful)
+						throw std::logic_error("sink " + found.name + " is consumed by loop " +
+						                       std::string(slot.declared.name) + ", which has no state");
+				}
 				Configuration& c = *config_;
 				SinkAdapter& sinks = given(host_.resources.sinks(), "sinks");
 				std::unique_ptr<Sink> made = adapter("SinkAdapter::make", [&] {
@@ -700,13 +710,12 @@ struct NodeHost::Impl {
 					if (!sink) throw std::logic_error("the sink adapter made no sink for bank " + found.name);
 					return sink;
 				});
-				auto& slot = *c.sinks.emplace_back(std::make_unique<SinkSlot>(*this, found.name));
+				auto& slot = *c.sinks.emplace_back(std::make_unique<SinkSlot>(found.name, std::move(consumer)));
 				slot.sink = std::move(made);
 				slot.binding = SinkBinding{&slot.sink->tap(), found.first, found.ports.size()};
 				c.requestOrder.push_back({Asked::Family::sink, c.sinks.size() - 1});
 				for (std::size_t i = found.first; i < found.first + found.ports.size() && i < c.fadedCount; ++i)
 					c.faded[i] = false;
-				return slot;
 			});
 		}
 		/// A source (docs/writing-a-node-type.md#sources): made at once on the inside input bank, ready at once, bound
@@ -1156,33 +1165,17 @@ struct NodeHost::Impl {
 		};
 
 		/// One cx.sink call (docs/writing-a-node-type.md#sinks): the sink, its one consumer until Sink::begin takes it,
-		/// and what a drive binds. By pointer in the configuration, so a SinkRequest& the type holds survives a later
-		/// sink.
-		class SinkSlot final : public SinkRequest {
+		/// and what a drive binds.
+		class SinkSlot {
 		public:
-			SinkSlot(Node& node, std::string name) : bank(std::move(name)), node_(&node) {}
-			/// Once, not null, inside configure; a broken rule is recorded as every context call's is.
-			void consumedBy(std::unique_ptr<SinkConsumer> consumer) override {
-				node_->guarded([&] {
-					node_->requireConfiguring("consumedBy");
-					if (given) throw std::logic_error("consumedBy called twice on sink " + bank);
-					if (!consumer) throw std::logic_error("consumedBy given no consumer on sink " + bank);
-					given = true;
-					consumer_ = std::move(consumer);
-				});
-			}
-			/// Once, inside configure: the consumer is part of a loop's state, found in it when the consumer begins.
-			void consumedByState(std::size_t loop, std::move_only_function<SinkConsumer&(void*)> member) override {
-				node_->guarded([&] {
-					const LoopSlot& slot = node_->loopSlot("consumedBy", loop);
-					if (given) throw std::logic_error("consumedBy called twice on sink " + bank);
-					if (!slot.declared.stateful)
-						throw std::logic_error("sink " + bank + " is consumed by loop " +
-						                       std::string(slot.declared.name) + ", which has no state");
-					given = true;
-					stateLoop = loop;
-					member_ = std::move(member);
-				});
+			SinkSlot(std::string name, SinkConsumerFrom consumer) : bank(std::move(name)) {
+				if (auto* own = std::get_if<std::unique_ptr<SinkConsumer>>(&consumer)) {
+					consumer_ = std::move(*own);
+				} else {
+					auto& state = std::get<StateSinkConsumer>(consumer);
+					stateLoop = state.loop;
+					member_ = std::move(state.member);
+				}
 			}
 			/// Main thread, at configure's applied return: the consumer handed to the sink, called through its catch.
 			/// `state`: the state of loop `stateLoop` when the consumer is part of it (it lives until teardown step 4,
@@ -1197,10 +1190,9 @@ struct NodeHost::Impl {
 			std::string bank;
 			std::unique_ptr<Sink> sink;
 			SinkBinding binding{};
-			bool given = false;                     // consumedBy was called
 			bool closed = false;                    // its close reported
 			std::size_t item = detail::noReadiness; // its consumer's readiness item: ready once it began
-			std::optional<std::size_t> stateLoop;   // the loop whose state holds the consumer (consumedByState)
+			std::optional<std::size_t> stateLoop;   // the loop whose state holds the consumer
 
 		private:
 			/// A consumer a loop's state owns, called through: the sink owns only this.
@@ -1215,9 +1207,8 @@ struct NodeHost::Impl {
 				SinkConsumer& owned_;
 			};
 
-			Node* node_;
 			std::unique_ptr<SinkConsumer> consumer_;               // until Sink::begin takes it
-			std::move_only_function<SinkConsumer&(void*)> member_; // finds a state's consumer (consumedByState)
+			std::move_only_function<SinkConsumer&(void*)> member_; // finds a state's consumer
 		};
 
 		/// One cx.source call (docs/writing-a-node-type.md#sources): the source, its bank, and what a drive binds.
@@ -2414,11 +2405,6 @@ struct NodeHost::Impl {
 				if (slot->declared.stateful && !slot->stateGiven)
 					return failConfigure(lc::Fact::configureFailed,
 					                     "configure gave loop " + std::string(slot->declared.name) + " no state");
-			// Each sink has exactly one consumer.
-			for (const auto& slot : c.sinks)
-				if (!slot->given)
-					return failConfigure(lc::Fact::configureFailed,
-					                     "configure gave sink " + slot->bank + " no consumer");
 			// A FIFO the program names is a pipe receiver's of this configuration (each was asked for by now).
 			if (c.program)
 				if (std::optional<std::string> bank = fifoWithoutReceiver(*c.program))

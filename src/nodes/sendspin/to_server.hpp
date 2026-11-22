@@ -19,7 +19,7 @@ protected:
 	~SourceSink() = default;
 };
 inline constexpr std::uint32_t sourceBits = 24;
-/// The sink's consumer, a member of the worker's state (consumedBy(worker, &Worker::toServer)): every call on the sink's
+/// The sink's consumer, a member of the worker's state (cx.sink(toServer, shape, worker, &Worker::toServer)): every call on the sink's
 /// own thread.
 class ToServer final : public SinkConsumer {
 public:

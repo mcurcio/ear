@@ -119,8 +119,7 @@ struct TestInstance final : ErasedInstance {
 		config.log.push_back("configure " + std::to_string(create.format().rate.hz()) +
 		                     (config.tag.empty() ? "" : " " + config.tag));
 		for (int i = 1; i <= config.sinks; ++i)
-			create.sink("tap" + std::to_string(i), SinkShape{.frames = 1024})
-				.consumedBy(std::make_unique<QuietConsumer>());
+			create.sink("tap" + std::to_string(i), SinkShape{.frames = 1024}, std::make_unique<QuietConsumer>());
 		if (config.fail) return Configured::failed("cannot open /nope");
 		for (const auto& card : config.cards) create.soundCard(card.bank, card.shape);
 		for (const auto& receiver : config.receivers) create.rtpReceiver(receiver.bank, receiver.shape);
@@ -1842,7 +1841,7 @@ struct WorkerInstance final : ErasedInstance {
 	~WorkerInstance() override { config.log.push_back("instance destroyed"); }
 	std::span<const LoopDeclaration> loops() const noexcept override { return {&workerLoop, 1}; }
 	Configured configure(CreateContext& cx) override {
-		if (config.sinks > 0) cx.sink("tap1", SinkShape{.frames = 1024}).consumedBy(std::make_unique<QuietConsumer>());
+		if (config.sinks > 0) cx.sink("tap1", SinkShape{.frames = 1024}, std::make_unique<QuietConsumer>());
 		cx.use(std::make_unique<TestAudioCode>(config.log));
 		return Configured::applied();
 	}
@@ -2249,8 +2248,8 @@ struct BlockedConfig final : NodeConfig {
 		explicit Instance(const BlockedConfig& c) : config(c) {}
 		~Instance() override { config.log.push_back("instance destroyed"); }
 		Configured configure(CreateContext& cx) override {
-			cx.sink("tap1", SinkShape{.frames = 1024})
-				.consumedBy(std::make_unique<BlockedConsumer>(config.entered, config.release));
+			cx.sink("tap1", SinkShape{.frames = 1024},
+			        std::make_unique<BlockedConsumer>(config.entered, config.release));
 			cx.use(std::make_unique<TestAudioCode>(config.log));
 			return Configured::applied();
 		}
@@ -2685,8 +2684,7 @@ struct RecordingConfig final : NodeConfig {
 		~Instance() override { config.log.push_back("instance destroyed"); }
 		Configured configure(CreateContext& cx) override {
 			const Recording& recording = cx.recording(RecordingRequest{config.path});
-			cx.sink("tap1", SinkShape{.frames = 1024})
-				.consumedBy(std::make_unique<DescriptorConsumer>(config.log, recording));
+			cx.sink("tap1", SinkShape{.frames = 1024}, std::make_unique<DescriptorConsumer>(config.log, recording));
 			cx.use(std::make_unique<TestAudioCode>(config.log));
 			return Configured::applied();
 		}
@@ -4448,7 +4446,7 @@ TEST_CASE("Every rule a type breaks at a call or at configure's return fails its
 		 },
 	     "start-failed: configure threw: a sound card joins an inside bank, not \"record\""},
 		{[&](CreateContext& cx) {
-			 cx.sink("pb", SinkShape{.frames = 64}).consumedBy(std::make_unique<TestSinkConsumer>(codes));
+			 cx.sink("pb", SinkShape{.frames = 64}, std::make_unique<TestSinkConsumer>(codes));
 			 cx.soundCard("pb", motuOut.shape);
 			 cx.use(std::make_unique<TestAudioCode>(codes));
 			 return Configured::applied();
@@ -4456,7 +4454,7 @@ TEST_CASE("Every rule a type breaks at a call or at configure's return fails its
 	     "start-failed: configure threw: a second companion on bank pb"},
 		{[&](CreateContext& cx) {
 			 cx.soundCard("pb", motuOut.shape);
-			 cx.sink("pb", SinkShape{.frames = 64}).consumedBy(std::make_unique<TestSinkConsumer>(codes));
+			 cx.sink("pb", SinkShape{.frames = 64}, std::make_unique<TestSinkConsumer>(codes));
 			 cx.use(std::make_unique<TestAudioCode>(codes));
 			 return Configured::applied();
 		 },
@@ -4600,7 +4598,7 @@ TEST_CASE("One companion per inside bank, whatever the kinds: a card and a sink 
 	using Configure = std::function<Configured(CreateContext&)>;
 	Log codes;
 	const auto sink = [&](CreateContext& cx) {
-		cx.sink("pb", SinkShape{.frames = 64}).consumedBy(std::make_unique<TestSinkConsumer>(codes));
+		cx.sink("pb", SinkShape{.frames = 64}, std::make_unique<TestSinkConsumer>(codes));
 	};
 	const auto source = [](CreateContext& cx) { static_cast<void>(cx.source("cap", SourceShape{64}, nullptr)); };
 	const auto then = [&](CreateContext& cx) {
@@ -4841,9 +4839,9 @@ namespace {
 /// lost in begin through the handle of the probe's NodeContext when given its config), and a code.
 std::function<Configured(CreateContext&)> withSink(Log& log, const ProbeConfig* loseInBegin = nullptr) {
 	return [&log, loseInBegin](CreateContext& cx) {
-		cx.sink("pb", SinkShape{.frames = 1024})
-			.consumedBy(std::make_unique<TestSinkConsumer>(log, loseInBegin != nullptr ? &loseInBegin->node->handle()
-		                                                                               : nullptr));
+		cx.sink(
+			"pb", SinkShape{.frames = 1024},
+			std::make_unique<TestSinkConsumer>(log, loseInBegin != nullptr ? &loseInBegin->node->handle() : nullptr));
 		cx.use(std::make_unique<TestAudioCode>(log));
 		return Configured::applied();
 	};
@@ -4926,13 +4924,13 @@ TEST_CASE("A lost said in a sink consumer's begin fails the node start-failed be
 	CHECK(f.allGone == 1);
 }
 
-TEST_CASE("A sink with no consumer or two, on a bank that is no inside output, beside a resource of its name, or with "
-          "no thread fails the node start-failed, and a sink never begun is freed without a close",
+TEST_CASE("A sink given no consumer, on a bank that is no inside output, beside a resource of its name, or with no "
+          "thread fails the node start-failed, and a sink never begun is freed without a close",
           "[node_host][sink]") {
 	using Configure = std::function<Configured(CreateContext&)>;
 	Log codes;
-	const auto sink = [](CreateContext& cx, const char* bank) -> SinkRequest& {
-		return cx.sink(bank, SinkShape{.frames = 1024});
+	const auto sink = [](CreateContext& cx, const char* bank, std::unique_ptr<SinkConsumer> consumer) {
+		cx.sink(bank, SinkShape{.frames = 1024}, std::move(consumer));
 	};
 	struct Case {
 		Configure configure;
@@ -4941,52 +4939,38 @@ TEST_CASE("A sink with no consumer or two, on a bank that is no inside output, b
 	};
 	const std::vector<Case> cases{
 		{[&](CreateContext& cx) {
-			 sink(cx, "pb");
+			 sink(cx, "pb", nullptr);
 			 cx.use(std::make_unique<TestAudioCode>(codes));
 			 return Configured::applied();
 		 },
-	     "start-failed: configure gave sink pb no consumer"},
+	     "start-failed: configure threw: sink pb given no consumer"},
 		{[&](CreateContext& cx) {
-			 SinkRequest& request = sink(cx, "pb");
-			 request.consumedBy(std::make_unique<TestSinkConsumer>(codes));
-			 request.consumedBy(std::make_unique<TestSinkConsumer>(codes));
-			 cx.use(std::make_unique<TestAudioCode>(codes));
-			 return Configured::applied();
-		 },
-	     "start-failed: configure threw: consumedBy called twice on sink pb"},
-		{[&](CreateContext& cx) {
-			 sink(cx, "pb").consumedBy(nullptr);
-			 cx.use(std::make_unique<TestAudioCode>(codes));
-			 return Configured::applied();
-		 },
-	     "start-failed: configure threw: consumedBy given no consumer on sink pb"},
-		{[&](CreateContext& cx) {
-			 sink(cx, "record").consumedBy(std::make_unique<TestSinkConsumer>(codes));
+			 sink(cx, "record", std::make_unique<TestSinkConsumer>(codes));
 			 cx.use(std::make_unique<TestAudioCode>(codes));
 			 return Configured::applied();
 		 },
 	     "start-failed: configure threw: a sink joins an inside output bank, not \"record\""},
 		{[&](CreateContext& cx) {
-			 sink(cx, "pb").consumedBy(std::make_unique<TestSinkConsumer>(codes));
-			 sink(cx, "pb").consumedBy(std::make_unique<TestSinkConsumer>(codes));
+			 sink(cx, "pb", std::make_unique<TestSinkConsumer>(codes));
+			 sink(cx, "pb", std::make_unique<TestSinkConsumer>(codes));
 			 cx.use(std::make_unique<TestAudioCode>(codes));
 			 return Configured::applied();
 		 },
 	     "start-failed: configure threw: a second resource named rec.pb in one configuration"},
 		{[&](CreateContext& cx) -> Configured {
-			 sink(cx, "pb").consumedBy(std::make_unique<TestSinkConsumer>(codes));
+			 sink(cx, "pb", std::make_unique<TestSinkConsumer>(codes));
 			 throw std::runtime_error("after the sink");
 		 },
 	     "start-failed: configure threw: after the sink"},
 		{[&](CreateContext& cx) {
-			 sink(cx, "pb").consumedBy(std::make_unique<TestSinkConsumer>(codes));
+			 sink(cx, "pb", std::make_unique<TestSinkConsumer>(codes));
 			 cx.use(std::make_unique<TestAudioCode>(codes));
 			 return Configured::applied();
 		 },
 	     "start-failed: configure threw: no thread for rec", true},
 		{[&](CreateContext& cx) {
 			 try {
-				 sink(cx, "pb").consumedBy(std::make_unique<TestSinkConsumer>(codes));
+				 sink(cx, "pb", std::make_unique<TestSinkConsumer>(codes));
 			 } catch (const std::exception&) {
 				 // swallowed: the type goes on with no sink
 			 }
@@ -5027,9 +5011,7 @@ TEST_CASE("A kind the host has no adapter for fails the node that asks for it st
 	};
 	const std::vector<Case> cases{
 		{"sinks",
-	     [&](CreateContext& cx) {
-			 cx.sink("pb", SinkShape{.frames = 64}).consumedBy(std::make_unique<TestSinkConsumer>(codes));
-		 }},
+	     [&](CreateContext& cx) { cx.sink("pb", SinkShape{.frames = 64}, std::make_unique<TestSinkConsumer>(codes)); }},
 		{"sources", [](CreateContext& cx) { static_cast<void>(cx.source("cap", SourceShape{.frames = 64}, nullptr)); }},
 		{"sound cards", [](CreateContext& cx) { cx.soundCard("pb", motuOut.shape); }},
 		{"RTP receivers", [](CreateContext& cx) { cx.rtpReceiver("cap", fppStream); }},
@@ -5073,7 +5055,7 @@ TEST_CASE("A sink's engine name is one of its configuration's: a sink on bank pl
 	                        {Direction::output, "pb", {"1"}, PortBank::Reach::inside}}};
 	config->onConfigure = [&](CreateContext& cx) {
 		cx.soundCard("pb", motuOut.shape);
-		cx.sink("playback", SinkShape{.frames = 1024}).consumedBy(std::make_unique<TestSinkConsumer>(f.log));
+		cx.sink("playback", SinkShape{.frames = 1024}, std::make_unique<TestSinkConsumer>(f.log));
 		cx.use(std::make_unique<TestAudioCode>(f.log));
 		return Configured::applied();
 	};
@@ -5107,8 +5089,7 @@ struct InstanceReadingConfig final : NodeConfig {
 		~Instance() override { config.instanceGone = true; }
 		Configured configure(CreateContext& cx) override {
 			config.instanceGone = false;
-			cx.sink("pb", SinkShape{.frames = 1024})
-				.consumedBy(std::make_unique<Consumer>(config.log, config.instanceGone));
+			cx.sink("pb", SinkShape{.frames = 1024}, std::make_unique<Consumer>(config.log, config.instanceGone));
 			cx.use(std::make_unique<TestAudioCode>(config.log));
 			return Configured::applied();
 		}
@@ -5609,7 +5590,7 @@ TEST_CASE("A sink's consumer that began in time cancels its deadline, and a sour
 	f.sinks.holdBegin = true;
 	auto config = std::make_shared<ProbeConfig>(f.log);
 	config->onConfigure = [&log = f.log](CreateContext& cx) {
-		cx.sink("pb", SinkShape{.frames = 1024}).consumedBy(std::make_unique<TestSinkConsumer>(log));
+		cx.sink("pb", SinkShape{.frames = 1024}, std::make_unique<TestSinkConsumer>(log));
 		static_cast<void>(cx.source("cap", SourceShape{.frames = 64}, nullptr));
 		cx.use(std::make_unique<TestAudioCode>(log));
 		return Configured::applied();
@@ -5708,7 +5689,7 @@ struct PrepareFails final : AudioCode {
 /// configure on the probe: a sink on "pb" whose consumer throws in `call`, and a code.
 std::function<Configured(CreateContext&)> withThrowingSink(Log& log, std::string call) {
 	return [&log, call = std::move(call)](CreateContext& cx) {
-		cx.sink("pb", SinkShape{.frames = 1024}).consumedBy(std::make_unique<TestSinkConsumer>(log, nullptr, call));
+		cx.sink("pb", SinkShape{.frames = 1024}, std::make_unique<TestSinkConsumer>(log, nullptr, call));
 		cx.use(std::make_unique<TestAudioCode>(log));
 		return Configured::applied();
 	};
@@ -6087,7 +6068,7 @@ std::function<Configured(CreateContext&)> withCardAndSource(Log& log) {
 std::function<Configured(CreateContext&)> withSourceAndSink(Log& log) {
 	return [&log](CreateContext& cx) {
 		static_cast<void>(cx.source("cap", SourceShape{.frames = 1000}, nullptr));
-		cx.sink("pb", SinkShape{.frames = 1024}).consumedBy(std::make_unique<TestSinkConsumer>(log, nullptr));
+		cx.sink("pb", SinkShape{.frames = 1024}, std::make_unique<TestSinkConsumer>(log, nullptr));
 		cx.use(std::make_unique<TestAudioCode>(log));
 		return Configured::applied();
 	};
@@ -6544,8 +6525,7 @@ TEST_CASE(
 	f.sinks.holdClose = true; // every sink drains on its thread until the test says
 	auto config = std::make_shared<LoopProbeConfig>(f.log, std::vector{plainWorker});
 	config->onConfigure = [&f](CreateContext& cx) {
-		cx.sink("pb", SinkShape{.frames = 1024})
-			.consumedBy(std::make_unique<TestSinkConsumer>(f.log, nullptr, "finish"));
+		cx.sink("pb", SinkShape{.frames = 1024}, std::make_unique<TestSinkConsumer>(f.log, nullptr, "finish"));
 		cx.use(std::make_unique<TestAudioCode>(f.log));
 		return Configured::applied();
 	};

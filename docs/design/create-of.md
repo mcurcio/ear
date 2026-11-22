@@ -203,7 +203,7 @@ Each step builds and passes alone; each is a `refactor(core)` commit and makes n
 
 | Step | What | Why this order |
 |---|---|---|
-| C1 | A sink's consumer as an argument; `SinkOf`, `SinkRequest`, `consumedBy` go | The smallest; no new name |
+| C1 (done) | A sink's consumer as an argument; `SinkOf`, `SinkRequest`, `consumedBy` go | The smallest; no new name |
 | C2 | `attach` for the five kinds; a pipe receiver's FIFO returned; `fifoOf` and the per-kind calls go; `attachEngine` | Renames C1's call once more, but keeps C1 reviewable alone |
 | C3 | The answer: `cx.applied(code, states...)`, `cx.state`, `passThrough(first, rest...)`; `use`, `loop`, `Configured::applied()` go; the erased answer | The widest (every `configure`), last so it lands on the final names |
 | C4 | `reconfigure.md` 4 rewritten on this surface; this page deleted, what lasts moved to `docs/writing-a-node-type.md` | With C3 |

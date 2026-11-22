@@ -57,7 +57,7 @@ struct RecorderType {
 		return {record(members("left", "right")), tap(members("left", "right"))};
 	}
 	Configured configure(CreateOf<recorderSpec>& cx, const CheckedOf<recorderSpec>&) {
-		cx.sink(tap, SinkShape{.frames = 64}).consumedBy(std::make_unique<NullConsumer>());
+		cx.sink(tap, SinkShape{.frames = 64}, std::make_unique<NullConsumer>());
 		cx.use(std::make_unique<SilentCode>());
 		return Configured::applied();
 	}

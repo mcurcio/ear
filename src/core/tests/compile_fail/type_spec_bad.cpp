@@ -116,7 +116,10 @@ Configured configure(CreateOf<spec>& cx, const Checked&) {
 		static_cast<void>(cx.fifoOf(in));
 #endif
 #ifdef EAR_CASE_sink_on_input_bank
-		static_cast<void>(cx.sink(in, SinkShape{.frames = 64}));
+		cx.sink(in, SinkShape{.frames = 64}, std::unique_ptr<SinkConsumer>{});
+#endif
+#ifdef EAR_CASE_sink_without_consumer
+		cx.sink(insideOut, SinkShape{.frames = 64});
 #endif
 #ifdef EAR_CASE_source_on_output_bank
 		static_cast<void>(cx.source(insideOut, SourceShape{.frames = 64}));
@@ -131,7 +134,7 @@ Configured configure(CreateOf<spec>& cx, const Checked&) {
 		cx.declareLatency(out, in, Latency{});
 #endif
 #ifdef EAR_CASE_context_bank_the_spec_lacks
-		static_cast<void>(cx.sink(otherInsideOut, SinkShape{.frames = 64}));
+		cx.sink(otherInsideOut, SinkShape{.frames = 64}, std::unique_ptr<SinkConsumer>{});
 #endif
 #ifdef EAR_CASE_pass_through_backwards
 		cx.use(passThrough({bankPair(out, in)}));

@@ -108,7 +108,7 @@ public:
 			return Configured::applied();
 		}
 		if (mode == "sink") {
-			cx.sink(toDevice, SinkShape{.frames = 1024}).consumedBy(std::make_unique<Upstreams>());
+			cx.sink(toDevice, SinkShape{.frames = 1024}, std::make_unique<Upstreams>());
 			cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
 			cx.declareLatency(in, toDevice, Latency{30, 40});
 			return Configured::applied();

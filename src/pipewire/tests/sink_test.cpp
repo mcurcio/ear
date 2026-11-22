@@ -501,7 +501,7 @@ inline constexpr Latency kDeclared{30, 40};
 struct Recorder {
 	static Members<spec> ports(const Checked&) { return {record(members(2)), writer(members(2))}; }
 	Configured configure(CreateOf<spec>& cx, const Checked&) {
-		cx.sink(writer, SinkShape{.frames = 4096}).consumedBy(std::make_unique<TestConsumer>(*recorded));
+		cx.sink(writer, SinkShape{.frames = 4096}, std::make_unique<TestConsumer>(*recorded));
 		cx.use(passThrough({bankPair(record, writer)}));
 		cx.declareLatency(record, writer, kDeclared);
 		return Configured::applied();
