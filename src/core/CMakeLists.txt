@@ -286,7 +286,8 @@ if(BUILD_TESTS)
 	ear_type_spec_compile_fail(context-bank-the-spec-lacks "a context takes only its spec's banks")
 	ear_type_spec_compile_fail(program-path-relative "a program's executable is an absolute path")
 	ear_type_spec_compile_fail(pipe-receiver-on-output-bank "a pipe receiver joins an inside input bank of the spec")
-	ear_type_spec_compile_fail(fifo-of-routable-bank "fifoOf names an inside input bank of the spec")
+	ear_type_spec_compile_fail(attach-no-companion-shape "attach takes a companion's shape")
+	ear_type_spec_compile_fail(fifo-made-by-hand "is private within this context")
 	ear_type_spec_compile_fail(program-feed-stateless-loop "a program's feed reaches a loop declared with a state")
 	# Loops (docs/writing-a-node-type.md#loops): a loop named wrongly or twice, a state where none is declared, a loop the
 	# spec lacks, and a post of a function of another loop's state.

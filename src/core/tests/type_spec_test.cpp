@@ -103,23 +103,23 @@ public:
 		calls.emplace_back("configure");
 		const auto mode = settings.get<modeRow>();
 		if (mode == "card") {
-			cx.soundCard(toDevice, SoundCardShape{.card = *CardId::parse("Probe")});
+			cx.attach(toDevice, SoundCardShape{.card = *CardId::parse("Probe")});
 			cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
 			return Configured::applied();
 		}
 		if (mode == "sink") {
-			cx.sink(toDevice, SinkShape{.frames = 1024}, std::make_unique<Upstreams>());
+			cx.attach(toDevice, SinkShape{.frames = 1024}, std::make_unique<Upstreams>());
 			cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
 			cx.declareLatency(in, toDevice, Latency{30, 40});
 			return Configured::applied();
 		}
 		if (mode == "source") {
-			cx.source(fromDevice, SourceShape{.frames = 1000});
+			cx.attach(fromDevice, SourceShape{.frames = 1000});
 			cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
 			return Configured::applied();
 		}
 		if (mode == "clocked") {
-			cx.source(fromDevice, SourceShape{.frames = 1000}, std::make_unique<JumpClock>());
+			cx.attach(fromDevice, SourceShape{.frames = 1000}, std::make_unique<JumpClock>());
 			cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
 			return Configured::applied();
 		}

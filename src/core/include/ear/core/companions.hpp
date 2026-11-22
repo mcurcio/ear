@@ -28,7 +28,7 @@
 #include "ear/core/sound_card.hpp"
 namespace ear {
 
-// ---- What a type asks for (CreateOf::soundCard, CreateOf::rtpReceiver) ----
+// ---- What a type asks for (CreateOf::attach) ----
 
 /// A sound card on an inside bank: playback on an inside output bank, capture on an inside input bank (the direction is
 /// the bank's, checked at compile time), one channel per port of the bank, opened at the graph frequency.
@@ -52,7 +52,7 @@ struct RtpReceiverShape {
 enum class PipeFormat { s16le, s32le };
 
 /// A pipe receiver on an inside input bank, one channel per port of the bank: PipeWire's pipe module in source mode
-/// reading a FIFO the framework names (CompanionTarget::fifo, CreateOf::fifoOf) and a program writes. Every member is a
+/// reading a FIFO the framework names (CompanionTarget::fifo; CreateOf::attach returns it as a program's part) and a program writes. Every member is a
 /// closed value of the type's own; the framework passes none of them on unparsed.
 struct PipeReceiverShape {
 	PipeFormat format;

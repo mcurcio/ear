@@ -52,11 +52,11 @@ struct Rtp {
 		// latencyMs beyond from_rtp (docs/writing-a-node-type.md#engine-companions). The sender's rate is its own (the
 		// row reads a rate), the graph's when the file gives none.
 		const std::optional<SampleRate> sender = s.get<rateRow>();
-		cx.rtpReceiver(fromRtp, RtpReceiverShape{.address = s.get<addressRow>(),
-		                                         .port = static_cast<std::uint16_t>(s.get<portRow>()),
-		                                         .encoding = s.get<formatRow>(),
-		                                         .rate = sender.value_or(cx.format().rate),
-		                                         .latencyMs = s.get<latencyRow>()});
+		cx.attach(fromRtp, RtpReceiverShape{.address = s.get<addressRow>(),
+		                                    .port = static_cast<std::uint16_t>(s.get<portRow>()),
+		                                    .encoding = s.get<formatRow>(),
+		                                    .rate = sender.value_or(cx.format().rate),
+		                                    .latencyMs = s.get<latencyRow>()});
 		cx.use(passThrough({bankPair(fromRtp, stream)}));
 		return Configured::applied();
 	}

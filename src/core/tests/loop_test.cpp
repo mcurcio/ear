@@ -112,14 +112,14 @@ public:
 	static Members<spec> ports(const Checked&) { return {out(members(1)), tap(members(1)), feed(members(1))}; }
 	Configured configure(CreateOf<spec>& cx, const Checked&) {
 		said("configure");
-		SourceWriter& played = cx.source(feed, {.frames = 256}, std::make_unique<AskingClock>());
+		SourceWriter& played = cx.attach(feed, SourceShape{.frames = 256}, std::make_unique<AskingClock>());
 		if (!behaviour.giveNoState)
 			cx.loop(worker, std::make_unique<Worker>(cx.executor(worker), cx.executor(helper), played));
 		if (behaviour.giveStateTwice)
 			cx.loop(worker, std::make_unique<Worker>(cx.executor(worker), cx.executor(helper), played));
 		cx.post(worker, [](Worker&) { said("staged post"); });
 		cx.post(helper, [] { said("staged helper post"); });
-		cx.sink(tap, {.frames = 1024}, std::make_unique<Tap>());
+		cx.attach(tap, SinkShape{.frames = 1024}, std::make_unique<Tap>());
 		cx.use(Silence{});
 		if (behaviour.failConfigure) return Configured::failed("nope");
 		return Configured::applied();
@@ -346,7 +346,7 @@ TEST_CASE("A loop handler's throw fails the node as a hook's does", "[loops]") {
 	CHECK(failure(*h) == "lost: loop worker's handler threw: no server");
 }
 
-// A sink whose consumer is part of a loop's state (CreateOf::sink's loop forms: loop, &State::member and loop alone).
+// A sink whose consumer is part of a loop's state (CreateOf::attach's loop forms: loop, &State::member and loop alone).
 namespace loop_member_test {
 
 using namespace ear;
@@ -395,8 +395,8 @@ struct Member {
 	Configured configure(CreateOf<spec>& cx, const Checked&) {
 		cx.loop(keeper, std::make_unique<Keeper>());
 		cx.loop(whole, std::make_unique<Whole>());
-		cx.sink(tap, {.frames = 1024}, keeper, &Keeper::recorder);
-		cx.sink(tap2, {.frames = 1024}, whole);
+		cx.attach(tap, SinkShape{.frames = 1024}, keeper, &Keeper::recorder);
+		cx.attach(tap2, SinkShape{.frames = 1024}, whole);
 		cx.use(passThrough({bankPair(in, tap), bankPair(in, tap2)}));
 		return Configured::applied();
 	}

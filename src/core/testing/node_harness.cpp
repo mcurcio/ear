@@ -140,6 +140,8 @@ struct PendingRequest {
 
 } // namespace
 
+part::Fifo fifoOn(std::string bank) { return part::Fifo(std::move(bank)); }
+
 struct NodeHarness::Impl final : NodeHealthListener,
 								 NodeNoteListener,
 								 NodeDiagnosticListener,
@@ -796,11 +798,8 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		const NodeName& node() const override { return create.node(); }
 		const Ports& ports() const override { return create.ports(); }
 		void use(NodeCode code) override { create.use(std::move(code)); }
-		void soundCard(std::string_view bank, SoundCardShape shape) override {
-			create.soundCard(bank, std::move(shape));
-		}
-		void rtpReceiver(std::string_view bank, RtpReceiverShape shape) override {
-			create.rtpReceiver(bank, std::move(shape));
+		std::optional<part::Fifo> attachEngine(std::string_view bank, EngineCompanionShape shape) override {
+			return create.attachEngine(bank, std::move(shape));
 		}
 		Recording& recording(const RecordingRequest& request) override {
 			harness.recordingList.push_back(request);
@@ -828,9 +827,6 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		}
 		Store& store(std::size_t store) override { return create.store(store); }
 		void claim(Claim claim) override { create.claim(std::move(claim)); }
-		void pipeReceiver(std::string_view bank, PipeReceiverShape shape) override {
-			create.pipeReceiver(bank, std::move(shape));
-		}
 		GrantedPort claimAnyTcp() override { return create.claimAnyTcp(); }
 		void program(ProgramShape shape, std::optional<ProgramFeedTo> feed) override {
 			create.program(std::move(shape), std::move(feed));

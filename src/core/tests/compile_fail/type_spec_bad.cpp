@@ -100,32 +100,35 @@ Configured configure(CreateOf<spec>& cx, const Checked&) {
 		return Configured::restart("x");
 #endif
 #ifdef EAR_CASE_sound_card_on_public_bank
-		cx.soundCard(out, SoundCardShape{.card = *CardId::parse("C")});
+		cx.attach(out, SoundCardShape{.card = *CardId::parse("C")});
 #endif
 #ifdef EAR_CASE_rtp_receiver_on_output_bank
-		cx.rtpReceiver(insideOut, RtpReceiverShape{.address = *RtpAddress::parse("0.0.0.0"),
-		                                           .port = 5004,
-		                                           .encoding = RtpEncoding::l24,
-		                                           .rate = ear::SampleRate::fixed<48000>(),
-		                                           .latencyMs = 100});
+		cx.attach(insideOut, RtpReceiverShape{.address = *RtpAddress::parse("0.0.0.0"),
+		                                      .port = 5004,
+		                                      .encoding = RtpEncoding::l24,
+		                                      .rate = ear::SampleRate::fixed<48000>(),
+		                                      .latencyMs = 100});
 #endif
 #ifdef EAR_CASE_pipe_receiver_on_output_bank
-		cx.pipeReceiver(insideOut, PipeReceiverShape{PipeFormat::s16le, ear::SampleRate::fixed<48000>()});
+		cx.attach(insideOut, PipeReceiverShape{PipeFormat::s16le, ear::SampleRate::fixed<48000>()});
 #endif
-#ifdef EAR_CASE_fifo_of_routable_bank
-		static_cast<void>(cx.fifoOf(in));
+#ifdef EAR_CASE_attach_no_companion_shape
+		cx.attach(insideOut, 64);
+#endif
+#ifdef EAR_CASE_fifo_made_by_hand
+		static_cast<void>(part::Fifo("inside_in"));
 #endif
 #ifdef EAR_CASE_sink_on_input_bank
-		cx.sink(in, SinkShape{.frames = 64}, std::unique_ptr<SinkConsumer>{});
+		cx.attach(in, SinkShape{.frames = 64}, std::unique_ptr<SinkConsumer>{});
 #endif
 #ifdef EAR_CASE_sink_without_consumer
-		cx.sink(insideOut, SinkShape{.frames = 64});
+		cx.attach(insideOut, SinkShape{.frames = 64});
 #endif
 #ifdef EAR_CASE_source_on_output_bank
-		static_cast<void>(cx.source(insideOut, SourceShape{.frames = 64}));
+		static_cast<void>(cx.attach(insideOut, SourceShape{.frames = 64}));
 #endif
 #ifdef EAR_CASE_source_on_routable_bank
-		static_cast<void>(cx.source(in, SourceShape{.frames = 64}));
+		static_cast<void>(cx.attach(in, SourceShape{.frames = 64}));
 #endif
 #ifdef EAR_CASE_declare_latency_bank_the_spec_lacks
 		cx.declareLatency(in, otherOut, Latency{});
@@ -134,7 +137,7 @@ Configured configure(CreateOf<spec>& cx, const Checked&) {
 		cx.declareLatency(out, in, Latency{});
 #endif
 #ifdef EAR_CASE_context_bank_the_spec_lacks
-		cx.sink(otherInsideOut, SinkShape{.frames = 64}, std::unique_ptr<SinkConsumer>{});
+		cx.attach(otherInsideOut, SinkShape{.frames = 64}, std::unique_ptr<SinkConsumer>{});
 #endif
 #ifdef EAR_CASE_pass_through_backwards
 		cx.use(passThrough({bankPair(out, in)}));

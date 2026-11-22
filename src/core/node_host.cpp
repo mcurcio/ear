@@ -573,26 +573,32 @@ struct NodeHost::Impl {
 				c.code = std::move(code.own());
 			});
 		}
-		void soundCard(std::string_view bank, SoundCardShape shape) override {
-			guarded([&] {
-				requireConfiguring("soundCard");
-				askEngineCompanion(std::move(shape), cardBank(ports_, std::string(bank)));
-			});
-		}
-		void rtpReceiver(std::string_view bank, RtpReceiverShape shape) override {
-			guarded([&] {
-				requireConfiguring("rtpReceiver");
-				askEngineCompanion(std::move(shape),
-				                   insideBank(ports_, std::string(bank), Direction::input, "an RTP receiver"));
-			});
-		}
-		/// A pipe receiver (docs/writing-a-node-type.md#engine-companions): an engine companion whose FIFO is the
-		/// configuration's runtime path "<bank>.fifo"; a host with no adapter or no runtime folder refuses it.
-		void pipeReceiver(std::string_view bank, PipeReceiverShape shape) override {
-			guarded([&] {
-				requireConfiguring("pipeReceiver");
-				askEngineCompanion(std::move(shape),
-				                   insideBank(ports_, std::string(bank), Direction::input, "a pipe receiver"));
+		/// An engine companion (docs/writing-a-node-type.md#engine-companions), its bank's rule its shape's: a sound
+		/// card on an inside bank of either direction, an RTP receiver or a pipe receiver on an inside input bank. A
+		/// pipe receiver's FIFO is the configuration's runtime path "<bank>.fifo", named in what this returns; a host
+		/// with no adapter of the kind, or no runtime folder for a pipe receiver, refuses it.
+		std::optional<part::Fifo> attachEngine(std::string_view bank, EngineCompanionShape shape) override {
+			return guarded([&]() -> std::optional<part::Fifo> {
+				requireConfiguring("attach");
+				const std::string name(bank);
+				return std::visit(
+					Overloaded{
+						[&](SoundCardShape& card) -> std::optional<part::Fifo> {
+							askEngineCompanion(std::move(card), cardBank(ports_, name));
+							return std::nullopt;
+						},
+						[&](RtpReceiverShape& receiver) -> std::optional<part::Fifo> {
+							askEngineCompanion(std::move(receiver),
+					                           insideBank(ports_, name, Direction::input, "an RTP receiver"));
+							return std::nullopt;
+						},
+						[&](PipeReceiverShape& pipe) -> std::optional<part::Fifo> {
+							const Ports::Bank& found = insideBank(ports_, name, Direction::input, "a pipe receiver");
+							askEngineCompanion(std::move(pipe), found);
+							return fifoOf(found.name);
+						},
+					},
+					shape);
 			});
 		}
 		/// An AnyTcp claim (docs/writing-a-node-type.md#claims): recorded now, its port picked at readiness step
@@ -689,7 +695,7 @@ struct NodeHost::Impl {
 		/// bug fails it lost (adapter()).
 		void sink(std::string_view bank, SinkShape shape, SinkConsumerFrom consumer) override {
 			guarded([&] {
-				requireConfiguring("sink");
+				requireConfiguring("attach");
 				const std::string name(bank);
 				const Ports::Bank& found = insideBank(ports_, name, Direction::output, "a sink");
 				requireOneName(name_ + "." + found.name);
@@ -725,7 +731,7 @@ struct NodeHost::Impl {
 		/// own bug fails it lost (adapter()).
 		SourceWriter& source(std::string_view bank, SourceShape shape, std::unique_ptr<SourceClock> clock) override {
 			return guarded([&]() -> SourceWriter& {
-				requireConfiguring("source");
+				requireConfiguring("attach");
 				const std::string name(bank);
 				const Ports::Bank& found = insideBank(ports_, name, Direction::input, "a source");
 				if (shape.frames == 0) throw std::logic_error("a source on bank " + found.name + " holds no frames");
@@ -1164,7 +1170,7 @@ struct NodeHost::Impl {
 			bool began_ = false; // its sink's thread's only
 		};
 
-		/// One cx.sink call (docs/writing-a-node-type.md#sinks): the sink, its one consumer until Sink::begin takes it,
+		/// One attached sink (docs/writing-a-node-type.md#sinks): the sink, its one consumer until Sink::begin takes it,
 		/// and what a drive binds.
 		class SinkSlot {
 		public:
@@ -1211,7 +1217,7 @@ struct NodeHost::Impl {
 			std::move_only_function<SinkConsumer&(void*)> member_; // finds a state's consumer
 		};
 
-		/// One cx.source call (docs/writing-a-node-type.md#sources): the source, its bank, and what a drive binds.
+		/// One attached source (docs/writing-a-node-type.md#sources): the source, its bank, and what a drive binds.
 		struct SourceSlot {
 			std::string bank;
 			std::unique_ptr<Source> source;
@@ -2405,7 +2411,8 @@ struct NodeHost::Impl {
 				if (slot->declared.stateful && !slot->stateGiven)
 					return failConfigure(lc::Fact::configureFailed,
 					                     "configure gave loop " + std::string(slot->declared.name) + " no state");
-			// A FIFO the program names is a pipe receiver's of this configuration (each was asked for by now).
+			// A FIFO the program names is a pipe receiver's of this configuration: attaching one is the only way to its
+			// FIFO, so only one kept from another configuration fails here.
 			if (c.program)
 				if (std::optional<std::string> bank = fifoWithoutReceiver(*c.program))
 					return failConfigure(lc::Fact::configureFailed, "configure gave program " + c.program->name() +
@@ -2656,8 +2663,8 @@ struct NodeHost::Impl {
 		std::optional<std::string> fifoWithoutReceiver(const ProgramSlot& program) const {
 			const auto unjoined = [&](const ProgramPart& piece) -> std::optional<std::string> {
 				const auto* fifo = std::get_if<part::Fifo>(&piece);
-				if (fifo == nullptr || pipeReceiverOn(fifo->bank) != nullptr) return std::nullopt;
-				return fifo->bank;
+				if (fifo == nullptr || pipeReceiverOn(fifo->bank()) != nullptr) return std::nullopt;
+				return fifo->bank();
 			};
 			for (const ProgramArg& arg : program.shape.args)
 				for (const ProgramPart& piece : arg.parts)
@@ -2690,7 +2697,7 @@ struct NodeHost::Impl {
 						Overloaded{
 							[](const part::Text& given) { return given.text; },
 							[&](const part::Port& port) { return c.claims.at(port.port.claim()).claim.value; },
-							[&](const part::Fifo& fifo) { return pipeReceiverOn(fifo.bank)->target.fifo; },
+							[&](const part::Fifo& fifo) { return pipeReceiverOn(fifo.bank())->target.fifo; },
 							[&](const part::Feed&) { return pathOf("feed"); },
 							[&](const part::File& file) { return pathOf(file.name); },
 						},

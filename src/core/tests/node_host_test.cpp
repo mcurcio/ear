@@ -121,8 +121,8 @@ struct TestInstance final : ErasedInstance {
 		for (int i = 1; i <= config.sinks; ++i)
 			create.sink("tap" + std::to_string(i), SinkShape{.frames = 1024}, std::make_unique<QuietConsumer>());
 		if (config.fail) return Configured::failed("cannot open /nope");
-		for (const auto& card : config.cards) create.soundCard(card.bank, card.shape);
-		for (const auto& receiver : config.receivers) create.rtpReceiver(receiver.bank, receiver.shape);
+		for (const auto& card : config.cards) create.attachEngine(card.bank, card.shape);
+		for (const auto& receiver : config.receivers) create.attachEngine(receiver.bank, receiver.shape);
 		create.use(std::make_unique<TestAudioCode>(config.log));
 		return Configured::applied();
 	}
@@ -4325,7 +4325,7 @@ TEST_CASE("stop() pairs only with a start() that returned: a failure stops a sta
 		Fixture f;
 		auto config = std::make_shared<ProbeConfig>(f.log);
 		config->onConfigure = [&](CreateContext& cx) {
-			cx.soundCard("pb", motuOut.shape);
+			cx.attachEngine("pb", motuOut.shape);
 			cx.use(std::make_unique<TestAudioCode>(f.log));
 			return Configured::applied();
 		};
@@ -4440,20 +4440,20 @@ TEST_CASE("Every rule a type breaks at a call or at configure's return fails its
 	     "start-failed: configure threw: an exception that is no "
 	     "std::exception"},
 		{[&](CreateContext& cx) {
-			 cx.soundCard("record", motuIn.shape);
+			 cx.attachEngine("record", motuIn.shape);
 			 cx.use(std::make_unique<TestAudioCode>(codes));
 			 return Configured::applied();
 		 },
 	     "start-failed: configure threw: a sound card joins an inside bank, not \"record\""},
 		{[&](CreateContext& cx) {
 			 cx.sink("pb", SinkShape{.frames = 64}, std::make_unique<TestSinkConsumer>(codes));
-			 cx.soundCard("pb", motuOut.shape);
+			 cx.attachEngine("pb", motuOut.shape);
 			 cx.use(std::make_unique<TestAudioCode>(codes));
 			 return Configured::applied();
 		 },
 	     "start-failed: configure threw: a second companion on bank pb"},
 		{[&](CreateContext& cx) {
-			 cx.soundCard("pb", motuOut.shape);
+			 cx.attachEngine("pb", motuOut.shape);
 			 cx.sink("pb", SinkShape{.frames = 64}, std::make_unique<TestSinkConsumer>(codes));
 			 cx.use(std::make_unique<TestAudioCode>(codes));
 			 return Configured::applied();
@@ -4581,8 +4581,8 @@ TEST_CASE("A context kept past its configure is refused at the call: from start(
 	f.add("probe", config);
 	REQUIRE(config->kept != nullptr);
 	CHECK_THROWS_WITH(config->kept->recording(RecordingRequest{"x.wav"}), "recording outside configure");
-	CHECK_THROWS_WITH(config->kept->soundCard("pb", motuOut.shape), "soundCard outside configure");
-	CHECK_THROWS_WITH(config->kept->rtpReceiver("cap", fppStream), "rtpReceiver outside configure");
+	CHECK_THROWS_WITH(config->kept->attachEngine("pb", motuOut.shape), "attach outside configure");
+	CHECK_THROWS_WITH(config->kept->attachEngine("cap", fppStream), "attach outside configure");
 	f.blocks.events.at(0)->ready();
 	f.settle();
 	CHECK(failureOf(f, "probe") == "start-failed: start threw: use outside configure");
@@ -4607,25 +4607,25 @@ TEST_CASE("One companion per inside bank, whatever the kinds: a card and a sink 
 	};
 	const std::vector<std::pair<Configure, std::string>> cases{
 		{[&](CreateContext& cx) {
-			 cx.soundCard("pb", motuOut.shape);
+			 cx.attachEngine("pb", motuOut.shape);
 			 sink(cx);
 			 return then(cx);
 		 },
 	     "pb"},
 		{[&](CreateContext& cx) {
 			 sink(cx);
-			 cx.soundCard("pb", motuOut.shape);
+			 cx.attachEngine("pb", motuOut.shape);
 			 return then(cx);
 		 },
 	     "pb"},
 		{[&](CreateContext& cx) {
 			 source(cx);
-			 cx.rtpReceiver("cap", fppStream);
+			 cx.attachEngine("cap", fppStream);
 			 return then(cx);
 		 },
 	     "cap"},
 		{[&](CreateContext& cx) {
-			 cx.rtpReceiver("cap", fppStream);
+			 cx.attachEngine("cap", fppStream);
 			 source(cx);
 			 return then(cx);
 		 },
@@ -4728,7 +4728,7 @@ TEST_CASE("A broken rule the type catches still fails its node with the rule's t
 	config->onConfigure = [&](CreateContext& cx) {
 		cx.use(std::make_unique<TestAudioCode>(f.log));
 		try {
-			cx.soundCard("record", motuIn.shape);
+			cx.attachEngine("record", motuIn.shape);
 		} catch (const std::exception&) {
 			// swallowed: the type goes on half-acquired
 		}
@@ -4788,7 +4788,7 @@ TEST_CASE("A stop() that throws during a disable or a failure is a log record, a
 		auto config = std::make_shared<ProbeConfig>(f.log);
 		config->onStop = [] { throw std::runtime_error("stuck"); };
 		config->onConfigure = [&](CreateContext& cx) {
-			cx.soundCard("pb", motuOut.shape);
+			cx.attachEngine("pb", motuOut.shape);
 			cx.use(std::make_unique<TestAudioCode>(f.log));
 			return Configured::applied();
 		};
@@ -5013,8 +5013,8 @@ TEST_CASE("A kind the host has no adapter for fails the node that asks for it st
 		{"sinks",
 	     [&](CreateContext& cx) { cx.sink("pb", SinkShape{.frames = 64}, std::make_unique<TestSinkConsumer>(codes)); }},
 		{"sources", [](CreateContext& cx) { static_cast<void>(cx.source("cap", SourceShape{.frames = 64}, nullptr)); }},
-		{"sound cards", [](CreateContext& cx) { cx.soundCard("pb", motuOut.shape); }},
-		{"RTP receivers", [](CreateContext& cx) { cx.rtpReceiver("cap", fppStream); }},
+		{"sound cards", [](CreateContext& cx) { cx.attachEngine("pb", motuOut.shape); }},
+		{"RTP receivers", [](CreateContext& cx) { cx.attachEngine("cap", fppStream); }},
 	};
 	for (const Case& asked : cases) {
 		INFO(asked.kind);
@@ -5054,7 +5054,7 @@ TEST_CASE("A sink's engine name is one of its configuration's: a sink on bank pl
 	config->ports_ = Ports{{{Direction::output, "playback", {"1"}, PortBank::Reach::inside},
 	                        {Direction::output, "pb", {"1"}, PortBank::Reach::inside}}};
 	config->onConfigure = [&](CreateContext& cx) {
-		cx.soundCard("pb", motuOut.shape);
+		cx.attachEngine("pb", motuOut.shape);
 		cx.sink("playback", SinkShape{.frames = 1024}, std::make_unique<TestSinkConsumer>(f.log));
 		cx.use(std::make_unique<TestAudioCode>(f.log));
 		return Configured::applied();
@@ -5383,14 +5383,14 @@ TEST_CASE("A source on a bank that is no inside input, a second companion on its
 		 },
 	     "start-failed: configure threw: a second resource named rx.cap in one configuration"},
 		{[&](CreateContext& cx) {
-			 cx.rtpReceiver("cap", fppStream);
+			 cx.attachEngine("cap", fppStream);
 			 source(cx, "cap");
 			 return then(cx);
 		 },
 	     "start-failed: configure threw: a second companion on bank cap"},
 		{[&](CreateContext& cx) {
 			 source(cx, "cap");
-			 cx.rtpReceiver("cap", fppStream);
+			 cx.attachEngine("cap", fppStream);
 			 return then(cx);
 		 },
 	     "start-failed: configure threw: a second companion on bank cap"},
@@ -5704,7 +5704,7 @@ TEST_CASE("A code whose prepare throws fails its node, is never run, and the res
 	bool failing = true;
 	auto config = std::make_shared<ProbeConfig>(f.log);
 	config->onConfigure = [&](CreateContext& cx) {
-		cx.soundCard("pb", motuOut.shape); // ready only after the block: the drive comes in prepare's batch
+		cx.attachEngine("pb", motuOut.shape); // ready only after the block: the drive comes in prepare's batch
 		cx.use(std::make_unique<PrepareFails>(f.log, failing));
 		return Configured::applied();
 	};
@@ -6057,7 +6057,7 @@ struct EndedCompanions final : NodeCountsListener {
 /// configure on the probe: a playback card on "pb", then a source on "cap" with no clock, and a code.
 std::function<Configured(CreateContext&)> withCardAndSource(Log& log) {
 	return [&log](CreateContext& cx) {
-		cx.soundCard("pb", SoundCardShape{*CardId::parse("Pro24")});
+		cx.attachEngine("pb", SoundCardShape{*CardId::parse("Pro24")});
 		static_cast<void>(cx.source("cap", SourceShape{.frames = 1000}, nullptr));
 		cx.use(std::make_unique<TestAudioCode>(log));
 		return Configured::applied();
@@ -6286,7 +6286,7 @@ TEST_CASE(
 	f.loops.autoReady = false;
 	auto config = std::make_shared<LoopProbeConfig>(f.log, std::vector{plainWorker});
 	config->onConfigure = [&f](CreateContext& cx) {
-		cx.rtpReceiver("cap", fppStream);
+		cx.attachEngine("cap", fppStream);
 		cx.use(std::make_unique<TestAudioCode>(f.log));
 		return Configured::applied();
 	};
@@ -6835,7 +6835,7 @@ TEST_CASE("A port claimed twice in one configuration is the type's bug: the node
 		config->onConfigure = [&f](CreateContext& cx) {
 			cx.claim(claim::of(claim::Udp(5004)));
 			try {
-				cx.rtpReceiver("cap", fppStream);
+				cx.attachEngine("cap", fppStream);
 			} catch (const std::logic_error&) {
 			}
 			cx.use(std::make_unique<TestAudioCode>(f.log));
@@ -7115,7 +7115,7 @@ TEST_CASE("A host with no pipe receivers' or programs' adapter refuses them at t
 	auto config = std::make_shared<LoopProbeConfig>(f.log, std::vector<LoopDeclaration>{});
 	SECTION("a pipe receiver") {
 		config->onConfigure = [&f](CreateContext& cx) {
-			cx.pipeReceiver("cap", PipeReceiverShape{PipeFormat::s16le, SampleRate::fixed<44100>()});
+			cx.attachEngine("cap", PipeReceiverShape{PipeFormat::s16le, SampleRate::fixed<44100>()});
 			cx.use(std::make_unique<TestAudioCode>(f.log));
 			return Configured::applied();
 		};

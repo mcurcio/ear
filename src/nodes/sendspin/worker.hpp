@@ -109,7 +109,7 @@ public:
 	/// The worker loop, once: arms the tick, whose first run reads the key record and makes, starts and (listening)
 	/// advertises the client, and whose every later run turns the library, reads the connection and answers mDNS.
 	void begin();
-	/// The sink on `to_server`'s consumer (given to cx.sink as worker, &Worker::toServer): its calls are the sink's thread's.
+	/// The sink on `to_server`'s consumer (attached as worker, &Worker::toServer): its calls are the sink's thread's.
 	ToServer toServer;
 	/// Any thread: the library's time filter, for the tests; 0 before the client is made.
 	std::int64_t clientTimeOf(std::int64_t serverUs) const;

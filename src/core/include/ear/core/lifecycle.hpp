@@ -118,7 +118,7 @@ protected:
 	~NodeContext() = default;
 };
 
-/// A sink's consumer that is part of a loop's state (CreateOf::sink's loop forms): declared loop `loop` (its index in
+/// A sink's consumer that is part of a loop's state (CreateOf::attach's loop forms for a sink): declared loop `loop` (its index in
 /// the spec's Loops), `member` finding the consumer in the state when the consumer begins. The state owns it: the sink
 /// closes (teardown step 3) before the state is destroyed (step 4), and a sink whose loop never ran never begins.
 struct StateSinkConsumer {
@@ -149,15 +149,17 @@ public:
 	/// The code (prepared at T3, driven at T5). Exactly once: a second call is a std::logic_error at the call; none by an
 	/// applied configure's return, one at the return.
 	virtual void use(NodeCode code) = 0;
-	/// A sound card, an engine companion (docs/writing-a-node-type.md#engine-companions): playback on an inside
-	/// output bank, `<node>.playback`, capture on an inside input bank, `<node>.capture` (the bank's direction is the
-	/// card's; a routable bank is a std::logic_error naming it); a playback card's bank is faded with the public
-	/// outputs. Made once the block is ready, in the turn's flush. A second companion on the bank is a
-	/// std::logic_error.
-	virtual void soundCard(std::string_view bank, SoundCardShape shape) = 0;
-	/// An RTP receiver on an inside input bank, `<node>.rtp`, likewise; never faded. Its `latencyMs` is latency beyond
-	/// the bank (LatencyPlan::beyond).
-	virtual void rtpReceiver(std::string_view bank, RtpReceiverShape shape) = 0;
+	/// An engine companion on an inside bank (docs/writing-a-node-type.md#engine-companions), its kind its shape's: a
+	/// sound card (playback on an inside output bank, `<node>.playback`, capture on an inside input bank,
+	/// `<node>.capture`: the bank's direction is the card's, and a playback card's bank is faded with the public
+	/// outputs), an RTP receiver on an inside input bank (`<node>.rtp`, never faded, its `latencyMs` latency beyond the
+	/// bank: LatencyPlan::beyond) or a pipe receiver on an inside input bank (`<node>.pipe`, never faded, reading the
+	/// FIFO runtimePath(<runtime folder>, node, <configuration>, "<bank>.fifo"), its module's fixed buffer latency
+	/// beyond the bank: moduleRunDelay). Made once the block is ready, in the turn's flush. A bank of the wrong reach
+	/// or direction, or a second companion on the bank, is a std::logic_error naming it; a host with no adapter of the
+	/// kind (or, for a pipe receiver, no runtime folder) refuses it. Returns a pipe receiver's FIFO, as a part of a
+	/// program's argument or file; nothing for the other kinds.
+	virtual std::optional<part::Fifo> attachEngine(std::string_view bank, EngineCompanionShape shape) = 0;
 	/// A recording file beneath the recordings folder (docs/writing-a-node-type.md#recordings): claimed
 	/// ("recording:<path>") at the first readiness step, created or truncated on the I/O thread at step `opens`, its
 	/// descriptor valid from the sink consumer's begin() until the configuration is freed (teardown step 5), when it is
@@ -198,12 +200,6 @@ public:
 	/// claims at the first readiness step, before anything is opened, held until teardown step 5. A claim of another
 	/// kind (a store's or a recording's, which the framework claims itself) is a std::logic_error.
 	virtual void claim(Claim claim) = 0;
-	/// A pipe receiver on an inside input bank (docs/writing-a-node-type.md#engine-companions), `<node>.pipe`, an engine
-	/// companion made once the block is ready, as a sound card is; never faded. It reads the FIFO
-	/// runtimePath(<runtime folder>, node, <configuration>, "<bank>.fifo"), and its module's fixed buffer is latency
-	/// beyond the bank (moduleRunDelay). A host with no pipe receivers' adapter or no runtime folder refuses it; a second
-	/// companion on the bank is a std::logic_error.
-	virtual void pipeReceiver(std::string_view bank, PipeReceiverShape shape) = 0;
 	/// A listening TCP port the framework picks at the first readiness step (docs/writing-a-node-type.md#claims), held as
 	/// a TcpListen of it once granted: its handle, the claim's index among the configuration's claims, in asking order.
 	virtual GrantedPort claimAnyTcp() = 0;
@@ -216,7 +212,47 @@ public:
 
 protected:
 	~CreateContext() = default;
+	/// The FIFO of the pipe receiver on `bank`: what attachEngine returns for one, and nothing else makes.
+	static part::Fifo fifoOf(std::string bank) { return part::Fifo(std::move(bank)); }
 };
+
+// ---- A companion's bank ----
+
+/// The bank a companion of each shape joins (docs/writing-a-node-type.md#engine-companions, #sinks, #sources): the
+/// shape's one rule, checked at compile time by the context's attach. A shape with no rule is no companion's.
+template <class Shape> struct CompanionBank;
+template <> struct CompanionBank<SoundCardShape> {
+	template <class Bank> static constexpr void check() noexcept {
+		static_assert(Bank::reach == PortBank::Reach::inside, "a sound card joins an inside bank of the spec");
+	}
+};
+template <> struct CompanionBank<RtpReceiverShape> {
+	template <class Bank> static constexpr void check() noexcept {
+		static_assert(Bank::reach == PortBank::Reach::inside && Bank::direction == Direction::input,
+		              "an RTP receiver joins an inside input bank of the spec");
+	}
+};
+template <> struct CompanionBank<PipeReceiverShape> {
+	template <class Bank> static constexpr void check() noexcept {
+		static_assert(Bank::reach == PortBank::Reach::inside && Bank::direction == Direction::input,
+		              "a pipe receiver joins an inside input bank of the spec");
+	}
+};
+template <> struct CompanionBank<SourceShape> {
+	template <class Bank> static constexpr void check() noexcept {
+		static_assert(Bank::reach == PortBank::Reach::inside && Bank::direction == Direction::input,
+		              "a source plays into an inside input bank of the spec");
+	}
+};
+template <> struct CompanionBank<SinkShape> {
+	template <class Bank> static constexpr void check() noexcept {
+		static_assert(Bank::reach == PortBank::Reach::inside && Bank::direction == Direction::output,
+		              "a sink reads an inside output bank of the spec");
+	}
+};
+/// Whether `Shape` is a companion's: it states its bank.
+template <class Shape>
+concept CompanionShape = requires { sizeof(CompanionBank<Shape>); };
 
 // ---- The type's views of them ----
 
@@ -294,41 +330,52 @@ public:
 		context_->use(std::move(code));
 	}
 
-	/// A sound card on an inside bank: playback on an output bank, capture on an input bank (the bank's direction is
-	/// the card's, so the shape names none).
-	template <class Bank> void soundCard(Bank, SoundCardShape shape) {
-		static_assert(ownBank<Bank>, "a context takes only its spec's banks");
-		static_assert(Bank::reach == PortBank::Reach::inside, "a sound card joins an inside bank of the spec");
-		context_->soundCard(Bank::name, std::move(shape));
+	// ---- Companions: one per inside bank, attached by its shape (CompanionBank states each shape's bank) ----
+
+	/// A sound card on an inside bank (docs/writing-a-node-type.md#engine-companions): playback on an output bank,
+	/// capture on an input bank (the bank's direction is the card's, so the shape names none).
+	template <class Bank> void attach(Bank, SoundCardShape shape) {
+		checkCompanion<Bank, SoundCardShape>();
+		context_->attachEngine(Bank::name, std::move(shape));
 	}
 	/// An RTP receiver on an inside input bank.
-	template <class Bank> void rtpReceiver(Bank, RtpReceiverShape shape) {
-		static_assert(ownBank<Bank>, "a context takes only its spec's banks");
-		static_assert(Bank::reach == PortBank::Reach::inside && Bank::direction == Direction::input,
-		              "an RTP receiver joins an inside input bank of the spec");
-		context_->rtpReceiver(Bank::name, std::move(shape));
+	template <class Bank> void attach(Bank, RtpReceiverShape shape) {
+		checkCompanion<Bank, RtpReceiverShape>();
+		context_->attachEngine(Bank::name, std::move(shape));
 	}
-	/// A recording file beneath the recordings folder (docs/writing-a-node-type.md#recordings): give it to the sink's
-	/// consumer, which reads its descriptor from begin() on. Its refusal is the framework's: the node fails, and
-	/// configure answers nothing for it.
-	Recording& recording(RecordingRequest request) { return context_->recording(request); }
+	/// A pipe receiver on an inside input bank: an engine companion, `<node>.pipe`, reading a FIFO the framework
+	/// names, which a program of the configuration writes. Its module's fixed buffer is latency beyond the bank
+	/// (moduleRunDelay); never faded. Returns that FIFO, as a part of a program's argument or file
+	/// (docs/writing-a-node-type.md#programs): attaching the receiver is the only way to one.
+	template <class Bank> part::Fifo attach(Bank, PipeReceiverShape shape) {
+		checkCompanion<Bank, PipeReceiverShape>();
+		return *context_->attachEngine(Bank::name, std::move(shape));
+	}
+	/// A source on an inside input bank (docs/writing-a-node-type.md#sources): what the type's ordinary thread writes,
+	/// played into the bank by the block before the code; `clock` its own clock, null for a source with no clock
+	/// (docs/writing-a-node-type.md#a-sources-clock).
+	template <class Bank> SourceWriter& attach(Bank, SourceShape shape, std::unique_ptr<SourceClock> clock = nullptr) {
+		checkCompanion<Bank, SourceShape>();
+		return context_->source(Bank::name, shape, std::move(clock));
+	}
 	/// A sink on an inside output bank with its one consumer (docs/writing-a-node-type.md#sinks): here a consumer of
 	/// the type's own, given whole and owned by the sink (file's WavWriter).
-	template <class Bank> void sink(Bank, SinkShape shape, std::unique_ptr<SinkConsumer> consumer) {
-		checkSinkBank<Bank>();
+	template <class Bank> void attach(Bank, SinkShape shape, std::unique_ptr<SinkConsumer> consumer) {
+		checkCompanion<Bank, SinkShape>();
 		context_->sink(Bank::name, shape, std::move(consumer));
 	}
 	/// A sink with no consumer does not compile: nothing would ever read it.
-	template <class Bank> void sink(Bank, SinkShape) {
-		static_assert(sizeof(Bank) == 0, "a sink is given its one consumer: cx.sink(bank, shape, consumer)");
+	template <class Bank> void attach(Bank, SinkShape) {
+		static_assert(sizeof(Bank) == 0, "a sink is given its one consumer: cx.attach(bank, shape, consumer)");
 	}
-	/// The consumer is `member` of loop `Handle`'s state (`cx.sink(bank, shape, worker, &Worker::toServer)`): it lives
-	/// as long as the state, which outlives the sink's last call. Its calls still run on the sink's own thread, never
-	/// the loop's. A loop the spec lacks, a loop without a state, or a member that is no SinkConsumer does not compile.
+	/// The sink's consumer is `member` of loop `Handle`'s state (`cx.attach(bank, shape, worker, &Worker::toServer)`):
+	/// it lives as long as the state, which outlives the sink's last call. Its calls still run on the sink's own
+	/// thread, never the loop's. A loop the spec lacks, a loop without a state, or a member that is no SinkConsumer
+	/// does not compile.
 	template <class Bank, class Handle, class State, class Member>
 		requires isLoopHandle<Handle>
-	void sink(Bank, SinkShape shape, Handle, Member State::* member) {
-		checkSinkBank<Bank>();
+	void attach(Bank, SinkShape shape, Handle, Member State::* member) {
+		checkCompanion<Bank, SinkShape>();
 		static_assert(ownLoop<Handle>, "a sink is consumed by one of its spec's loops");
 		static_assert(Handle::stateful && std::same_as<State, typename Handle::State>,
 		              "a sink's consumer is a member of that loop's state");
@@ -338,11 +385,11 @@ public:
 			StateSinkConsumer{LoopsOf<Spec>::template indexOf<Handle>,
 		                      [member](void* state) -> SinkConsumer& { return static_cast<State*>(state)->*member; }});
 	}
-	/// The consumer is loop `Handle`'s state itself.
+	/// The sink's consumer is loop `Handle`'s state itself.
 	template <class Bank, class Handle>
 		requires isLoopHandle<Handle>
-	void sink(Bank, SinkShape shape, Handle) {
-		checkSinkBank<Bank>();
+	void attach(Bank, SinkShape shape, Handle) {
+		checkCompanion<Bank, SinkShape>();
 		static_assert(ownLoop<Handle>, "a sink is consumed by one of its spec's loops");
 		using State = typename Handle::State;
 		static_assert(Handle::stateful && std::derived_from<State, SinkConsumer>,
@@ -351,15 +398,19 @@ public:
 		               StateSinkConsumer{LoopsOf<Spec>::template indexOf<Handle>,
 		                                 [](void* state) -> SinkConsumer& { return *static_cast<State*>(state); }});
 	}
-	/// A source on an inside input bank (docs/writing-a-node-type.md#sources): what the type's ordinary thread writes,
-	/// played into the bank by the block before the code; `clock` its own clock, null for a source with no clock
-	/// (docs/writing-a-node-type.md#a-sources-clock).
-	template <class Bank> SourceWriter& source(Bank, SourceShape shape, std::unique_ptr<SourceClock> clock = nullptr) {
-		static_assert(ownBank<Bank>, "a context takes only its spec's banks");
-		static_assert(Bank::reach == PortBank::Reach::inside && Bank::direction == Direction::input,
-		              "a source plays into an inside input bank of the spec");
-		return context_->source(Bank::name, shape, std::move(clock));
+	/// What is no companion's shape does not compile.
+	template <class Bank, class Shape, class... Rest>
+		requires(!CompanionShape<std::remove_cvref_t<Shape>>)
+	void attach(Bank, Shape&&, Rest&&...) {
+		static_assert(CompanionShape<std::remove_cvref_t<Shape>>,
+		              "attach takes a companion's shape: a sound card's, an RTP receiver's, a pipe receiver's, a "
+		              "source's or a sink's");
 	}
+
+	/// A recording file beneath the recordings folder (docs/writing-a-node-type.md#recordings): give it to the sink's
+	/// consumer, which reads its descriptor from begin() on. Its refusal is the framework's: the node fails, and
+	/// configure answers nothing for it.
+	Recording& recording(RecordingRequest request) { return context_->recording(request); }
 	/// The type's own code's latency, from an input bank to an output bank (it lands on `To`).
 	template <class From, class To> void declareLatency(From, To, Latency latency) {
 		static_assert(ownBank<From> && ownBank<To>, "declareLatency takes its spec's banks");
@@ -409,26 +460,6 @@ public:
 	/// handle, which names the port in a program's arguments or files (part::Port) before it is picked.
 	GrantedPort claim(claim::AnyTcp) { return context_->claimAnyTcp(); }
 
-	/// A pipe receiver on an inside input bank (docs/writing-a-node-type.md#engine-companions): an engine companion,
-	/// `<node>.pipe`, reading a FIFO the framework names, which a program of the configuration writes (fifoOf). Its
-	/// module's fixed buffer is latency beyond the bank (moduleRunDelay); never faded.
-	template <class Bank> void pipeReceiver(Bank, PipeReceiverShape shape) {
-		static_assert(ownBank<Bank>, "a context takes only its spec's banks");
-		static_assert(Bank::reach == PortBank::Reach::inside && Bank::direction == Direction::input,
-		              "a pipe receiver joins an inside input bank of the spec");
-		context_->pipeReceiver(Bank::name, std::move(shape));
-	}
-	/// The FIFO of the pipe receiver this configuration asked for on `Bank`, as a part of a program's argument or file.
-	/// A bank the spec lacks, or one that is not an inside input bank, does not compile; one with no pipe receiver by
-	/// configure's return fails the node start-failed "configure gave program <name> the FIFO of bank <bank>, which has
-	/// no pipe receiver".
-	template <class Bank> part::Fifo fifoOf(Bank) const {
-		static_assert(ownBank<Bank>, "a context takes only its spec's banks");
-		static_assert(Bank::reach == PortBank::Reach::inside && Bank::direction == Direction::input,
-		              "fifoOf names an inside input bank of the spec");
-		return part::Fifo{std::string(Bank::name)};
-	}
-
 	/// A program (docs/writing-a-node-type.md#programs), started once every companion is ready, with no report feed.
 	void program(ProgramShape shape) { context_->program(std::move(shape), std::nullopt); }
 	/// A program whose report feed (part::Feed in its arguments or files) reaches loop `Handle`'s state: `onFeed`
@@ -448,10 +479,9 @@ public:
 private:
 	template <const auto&, class> friend class spec_detail::SpecInstance;
 	explicit CreateOf(CreateContext& context) noexcept : context_(&context) {}
-	template <class Bank> static constexpr void checkSinkBank() noexcept {
+	template <class Bank, class Shape> static constexpr void checkCompanion() noexcept {
 		static_assert(ownBank<Bank>, "a context takes only its spec's banks");
-		static_assert(Bank::reach == PortBank::Reach::inside && Bank::direction == Direction::output,
-		              "a sink reads an inside output bank of the spec");
+		CompanionBank<Shape>::template check<Bank>();
 	}
 	CreateContext* context_;
 };

@@ -264,9 +264,9 @@ public:
 	/// The recordings' adapter (CreateOf::recording; docs/writing-a-node-type.md#recordings); null: the host has none,
 	/// and every recording is refused "no recordings folder".
 	RecordingAdapter* recordings() const noexcept { return adapters_.recordings; }
-	/// The sinks' adapter (CreateOf::sink; docs/writing-a-node-type.md#sinks); null: the host has none.
+	/// The sinks' adapter (CreateOf::attach; docs/writing-a-node-type.md#sinks); null: the host has none.
 	SinkAdapter* sinks() const noexcept { return adapters_.sinks; }
-	/// The sources' adapter (CreateOf::source; docs/writing-a-node-type.md#sources); null: the host has none.
+	/// The sources' adapter (CreateOf::attach; docs/writing-a-node-type.md#sources); null: the host has none.
 	SourceAdapter* sources() const noexcept { return adapters_.sources; }
 	/// The loops' adapter (a spec's loops; docs/writing-a-node-type.md#loops); null: the host has none.
 	LoopAdapter* loops() const noexcept { return adapters_.loops; }

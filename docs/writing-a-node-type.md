@@ -138,11 +138,13 @@ optional row read as a plain value does not compile.
 |---|---|---|
 | `cx.format()`, `cx.node()` | The graph's rate (a `SampleRate`: frames and time convert through `FrameClock`, and its number, `hz()`, is for a library's edge, [engine.md](engine.md#dating)) and block size; the node's name | |
 | `cx.use(code)` | The code: a struct with `process`, or `passThrough({bankPair(in, out), ...})` | Exactly once |
-| `cx.soundCard(bank, SoundCardShape{.card})` | A sound card, an [engine companion](#engine-companions) on an inside bank: playback on an inside output, capture on an inside input (the bank's direction is the card's). Named `<node>.playback` or `<node>.capture`; made once the block is ready | Inside banks only (compile time); one companion per bank |
-| `cx.rtpReceiver(bank, RtpReceiverShape{...})` | An RTP receiver, an [engine companion](#engine-companions) on an inside input bank, `<node>.rtp`; its `latencyMs` is latency beyond the bank | Inside input banks only (compile time); one companion per bank |
+| `cx.attach(bank, shape, ...)` | A companion on an inside bank, its kind its shape's (the five rows below). **One companion per bank**: a second on a bank fails the node | Only the spec's banks, of the reach and direction the shape's rule names (`CompanionBank<Shape>`, compile time); what is no companion's shape does not compile |
+| `cx.attach(bank, SoundCardShape{.card})` | A sound card, an [engine companion](#engine-companions): playback on an inside output, capture on an inside input (the bank's direction is the card's). Named `<node>.playback` or `<node>.capture`; made once the block is ready | Inside banks only |
+| `cx.attach(bank, RtpReceiverShape{...})` | An RTP receiver, an [engine companion](#engine-companions), `<node>.rtp`; its `latencyMs` is latency beyond the bank | Inside input banks only |
+| `part::Fifo f = cx.attach(bank, PipeReceiverShape{.format, .rate})` | A pipe receiver, an [engine companion](#engine-companions), `<node>.pipe`, reading a FIFO a program of the configuration writes; its module's fixed buffer is latency beyond the bank. It returns that FIFO, as a part of a [program](#programs)'s argument or file: attaching the receiver is the only way to one | Inside input banks only |
+| `SourceWriter& w = cx.attach(bank, SourceShape{.frames = n}, clock)` | A source ([sources](#sources)): what the type's own thread writes, played into the bank before the code; `clock`, a `std::unique_ptr<SourceClock>`, its own clock ([a source's clock](#a-sources-clock)), left out for a source with none | Inside input banks only; `0 < n <= maxSourceFrames` (2^24) |
+| `cx.attach(bank, SinkShape{.frames = n}, std::make_unique<Consumer>(...))` | A sink with its one consumer ([sinks](#sinks)); or `cx.attach(bank, shape, loop, &State::member)` / `cx.attach(bank, shape, loop)`, a consumer that is part of a [loop](#loops)'s state | Inside output banks only; a loop's form names a loop of the spec, declared with a state; a sink given no consumer does not compile (each at compile time); a null consumer fails the node |
 | `const Recording& r = cx.recording(RecordingRequest{path})` | A [recording](#recordings): a file beneath the recordings folder, claimed, then created or truncated off the main loop; give it to the sink's consumer, which reads `r.descriptor()` from `begin()` on | Nothing to answer: a refusal fails the node at its readiness step; one path asked for twice (however spelled) fails it `start-failed` |
-| `cx.sink(bank, SinkShape{.frames = n}, std::make_unique<Consumer>(...))` | A sink on an inside output bank with its one consumer ([sinks](#sinks)); or `cx.sink(bank, shape, loop, &State::member)` / `cx.sink(bank, shape, loop)`, a consumer that is part of a [loop](#loops)'s state | Inside output banks only; a loop's form names a loop of the spec, declared with a state (each at compile time); a null consumer fails the node; one companion per bank |
-| `SourceWriter& w = cx.source(bank, SourceShape{.frames = n}, clock)` | A source on an inside input bank ([sources](#sources)): what the type's own thread writes, played into the bank before the code; `clock`, a `std::unique_ptr<SourceClock>`, its own clock ([a source's clock](#a-sources-clock)), left out for a source with none | Inside input banks only (compile time); `0 < n <= maxSourceFrames` (2^24); one companion per bank |
 | `cx.declareLatency(from, to, Latency{min, max})` | The code's own latency on the path from an input bank to an output bank, in frames: carried as a path through the block, so it counts in both banks' told latency ([latency](#latency)) | Once per path (a mixer declares each of its inputs' paths into one output); with a pass-through, one of its pairs; a plan that does not fit the ports fails the node `start-failed` |
 | `cx.loop(handle, std::make_unique<State>(...))` | A [loop](#loops)'s state, constructed here with no I/O and no threads, owned by the framework from now on | Exactly once for a loop declared with a state type (compile time: never for one declared without) |
 | `Loop& l = cx.executor(handle)` | A loop as an executor, for a state to keep: `post`, timers and watches | Valid until the configuration is freed; what it is sent before the node is configured is staged |
@@ -150,8 +152,6 @@ optional row read as a plain value does not compile.
 | `Store& s = cx.store(handle)` | A [store](#stores), for a loop's state or a consumer to keep | Valid until the configuration is freed; readable once the node is configured; a store the spec lacks does not compile |
 | `cx.claim(claim::TcpListen(p))`, `cx.claim(claim::Udp(p))` | A port the type's own thread binds, a [claim](#claims): judged at the first readiness step and probed, so a port another node or program holds fails the node before anything is opened | 1 to 65535; held until teardown step 5 |
 | `GrantedPort p = cx.claim(claim::AnyTcp{})` | A listening TCP port the framework picks at the first readiness step, one nobody holds ([claims](#claims)); `p` names it in a [program](#programs)'s arguments or files (`part::Port{p}`) before it is picked | Never waits; held as a `TcpListen` of the port until teardown step 5 |
-| `cx.pipeReceiver(bank, PipeReceiverShape{.format, .rate})` | A pipe receiver, an [engine companion](#engine-companions) on an inside input bank, `<node>.pipe`, reading a FIFO a program of the configuration writes; its module's fixed buffer is latency beyond the bank | Inside input banks only (compile time); one companion per bank |
-| `part::Fifo f = cx.fifoOf(bank)` | The FIFO of the bank's pipe receiver, as a part of a program's argument or file | Inside input banks only (compile time); a bank with no pipe receiver by configure's return fails the node |
 | `cx.program(ProgramShape{...})`, `cx.program(shape, loop, &State::onFeed)` | The configuration's [program](#programs), started last; the second form's report feed reaches the loop's state | One per configuration; the rules in [programs](#programs) |
 
 Then answer `Configured::applied()`, or `Configured::failed(detail)` for what only the type can see
@@ -226,17 +226,17 @@ struct MyCode {
 ## Engine companions
 
 An engine companion is an engine node of its own that a configuration asks for on one of its
-inside banks: a sound card (`cx.soundCard`), an RTP receiver (`cx.rtpReceiver`) or a pipe receiver
-(`cx.pipeReceiver`). The type gives the bank's handle and a shape (`ear/core/companions.hpp`), never
+inside banks: a sound card, an RTP receiver or a pipe receiver, each attached by its shape
+(`cx.attach(bank, shape)`). The type gives the bank's handle and a shape (`ear/core/companions.hpp`), never
 a direction or a port: a card on an inside output bank plays it, one on an inside input bank
 captures into it, and a receiver feeds an inside input bank, one channel per port of the bank. Every member of a shape is checked by the
 type's settings table first (a `CardId`, an `RtpAddress`, closed enums, ranged numbers), so nothing
 unparsed reaches the engine.
 
 ```cpp
-cx.soundCard(toCard, SoundCardShape{.card = s.get<cardRow>()});    // playback: to_card is an inside output
-cx.rtpReceiver(fromRtp, RtpReceiverShape{.address = s.get<addressRow>(), /* port, encoding, rate, */
-                                         .latencyMs = s.get<latencyRow>()});
+cx.attach(toCard, SoundCardShape{.card = s.get<cardRow>()});    // playback: to_card is an inside output
+cx.attach(fromRtp, RtpReceiverShape{.address = s.get<addressRow>(), /* port, encoding, rate, */
+                                    .latencyMs = s.get<latencyRow>()});
 cx.use(passThrough({bankPair(play, toCard), bankPair(fromRtp, stream)}));
 ```
 
@@ -251,12 +251,15 @@ cx.use(passThrough({bankPair(play, toCard), bankPair(fromRtp, stream)}));
   never faded.
 - A pipe receiver (`<node>.pipe`, kind `pipe-receiver`) reads a FIFO the framework names, the
   configuration's runtime path `<bank>.fifo` beneath ear's runtime folder (`runtimePath`,
-  `ear/core/program.hpp`), which a [program](#programs) of the configuration writes: the type hands
-  it across as `cx.fifoOf(bank)` and never names a path. Its shape is the samples' format
+  `ear/core/program.hpp`), which a [program](#programs) of the configuration writes: attaching the
+  receiver returns it (a `part::Fifo`), the type hands that across and never names a path. Its shape is the samples' format
   (`PipeFormat::s16le` or `s32le`) and the writer's rate; it claims nothing, since its path is its
   configuration's alone. A host with no runtime folder refuses it at the call.
-- An inside bank has at most one companion of any kind (an engine companion, a sink, a source);
-  a second is a broken rule (`a second companion on bank <bank>`).
+- An inside bank has at most one companion of any kind (an engine companion, a sink, a source), all
+  attached by the one call, `cx.attach(bank, shape, ...)`, whose shape says the kind and states
+  its bank's rule once (`CompanionBank<Shape>`, `ear/core/lifecycle.hpp`); a second on a bank is a
+  broken rule (`a second companion on bank <bank>`), found at run time since which banks a type
+  attaches to may depend on its settings (`card`'s directions).
 - A receiver's buffer is latency beyond its bank, which the framework adds to the latency plan
   ([latency](#latency)); a type declares none for it: an RTP receiver's `latencyMs`, and a pipe
   receiver's module's fixed 8192 frames at the writer's rate, in graph frames rounded half up
@@ -269,8 +272,8 @@ A sink takes audio off the realtime thread. The type asks for one on an inside o
 its one consumer:
 
 ```cpp
-cx.sink(writer, SinkShape{.frames = static_cast<std::uint32_t>(FrameClock(cx.format().rate).frames(2s))},
-        std::make_unique<WavWriter>(...));
+cx.attach(writer, SinkShape{.frames = static_cast<std::uint32_t>(FrameClock(cx.format().rate).frames(2s))},
+          std::make_unique<WavWriter>(...));
 cx.use(passThrough({bankPair(record, writer)}));
 ```
 
@@ -315,8 +318,8 @@ cx.use(passThrough({bankPair(record, writer)}));
 - The consumer is owned by its sink and freed at teardown step 5 after the code and before the
   instance, so it may keep a reference into the instance (or what the instance owns) and use it in
   `finish()` and its destructor ([architecture.md](architecture.md#teardown-by-dependency)).
-- **A consumer that is part of a loop's state**: `cx.sink(bank, shape, worker, &Worker::toServer)`
-  names a member of loop `worker`'s state, `cx.sink(bank, shape, worker)` the state itself (a
+- **A consumer that is part of a loop's state**: `cx.attach(bank, shape, worker, &Worker::toServer)`
+  names a member of loop `worker`'s state, `cx.attach(bank, shape, worker)` the state itself (a
   `SinkConsumer`). The
   state owns it; the sink calls it, still on the sink's own thread, from its `begin()`, which comes
   only once the loop runs (loops are the readiness step before), until its `finish()` at teardown
@@ -331,7 +334,7 @@ A source brings audio onto the realtime thread from an ordinary one (a decoder, 
 thread). The type asks for one on an inside input bank and passes it on:
 
 ```cpp
-SourceWriter& writer = cx.source(fromServer, SourceShape{.frames = 2048});
+SourceWriter& writer = cx.attach(fromServer, SourceShape{.frames = 2048});
 cx.use(passThrough({bankPair(fromServer, from)}));
 // the type's thread, later: writer.write(interleaved, frames, 20ms); writer.idle(20ms); writer.clear();
 ```
@@ -394,7 +397,7 @@ the node ([the timing model](architecture.md#the-timing-model), rule 3), through
 ```cpp
 auto clock = std::make_unique<ServerClock>(/* what it reports to */);
 ServerClock& mine = *clock; // kept: the source frees it after the instance and its threads
-SourceWriter& writer = cx.source(fromServer, SourceShape{.frames = 2048}, std::move(clock));
+SourceWriter& writer = cx.attach(fromServer, SourceShape{.frames = 2048}, std::move(clock));
 ```
 
 Each tick, the one play rule (`SourceRing::play(bank, tick, clock)`, the same code in the block and
@@ -440,7 +443,7 @@ Both calls run on the realtime thread, never concurrently: a clock never blocks,
 or makes a system call. It reports to its type's threads in a lock-free mailbox it owns, and they
 read it through the reference the type kept; the source owns the clock and frees it with itself at
 teardown step 5, after the instance and every thread it owns, so that reference never dangles. A
-source with no clock (`cx.source(bank, shape)`) skips nothing and is never asked.
+source with no clock (`cx.attach(bank, shape)`) skips nothing and is never asked.
 
 ## Loops
 
@@ -615,7 +618,7 @@ writes, through its sink's consumer (`ear/core/recording.hpp`). `file` is its us
 ```cpp
 Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
 	const Recording& recording = cx.recording(RecordingRequest{s.get<pathRow>()});
-	cx.sink(writer, SinkShape{.frames = ...}, std::make_unique<WavWriter>(recording, ...));
+	cx.attach(writer, SinkShape{.frames = ...}, std::make_unique<WavWriter>(recording, ...));
 	...
 }
 ```
@@ -755,12 +758,13 @@ program's protocol: the type composes its command line and files from parts the 
 constexpr ProgramPath player{"/usr/local/bin/player"}; // a constant: nothing read at run time names it
 
 Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
-	cx.pipeReceiver(fromPlayer, PipeReceiverShape{PipeFormat::s16le, SampleRate::fixed<44100>()});
+	const part::Fifo fifo =
+		cx.attach(fromPlayer, PipeReceiverShape{PipeFormat::s16le, SampleRate::fixed<44100>()});
 	const GrantedPort port = cx.claim(claim::AnyTcp{});
 	cx.loop(sessions, std::make_unique<Sessions>());
 	cx.program(ProgramShape{.executable = player,
 	                        .args = {"-c", {part::File{"config"}}, {part::Text{"--port="}, part::Port{port}}},
-	                        .files = {ProgramFile{"config", {part::Text{"pipe = \""}, cx.fifoOf(fromPlayer),
+	                        .files = {ProgramFile{"config", {part::Text{"pipe = \""}, fifo,
 	                                                         part::Text{"\";\nreports = \""}, part::Feed{},
 	                                                         part::Text{"\";\n"}}}}},
 	           sessions, &Sessions::onReport);
@@ -776,7 +780,7 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
   argument (`ProgramArg`) is a string, one part, or a braced list of parts joined into one argument; a runtime file
   (`ProgramFile`) is a name and its parts. The parts: `part::Text` as given (an argument is never read by a shell, so
   nothing needs escaping in one; escaping text into a file's syntax is the type's), `part::Port{p}` the granted
-  port's number, `cx.fifoOf(bank)` the bank's pipe receiver's FIFO, `part::Feed{}` the report feed's path, and
+  port's number, the `part::Fifo` that attaching the bank's pipe receiver returned its FIFO's path, `part::Feed{}` the report feed's path, and
   `part::File{name}` a runtime file's path. Its environment is `PATH` alone, its working folder ear's runtime folder,
   its standard input `/dev/null`. It runs under `setpriv --pdeathsig KILL --nnp`: it dies with ear, and with
   `no_new_privs` set it gains no privilege by executing a setuid file (a program that needs one cannot be run as a
@@ -796,7 +800,8 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
   more than 8 files`; `program <name>: more than 4 needs`; `program <name> needs <text> twice`; `program <name> names
   its feed but has none`; `program <name> names no file <n>`; and `program
   <name> names a port this configuration was not granted` (a `GrantedPort` that is not an AnyTcp claim of this
-  configuration). At an applied configure's return, a `cx.fifoOf` of a bank with no pipe receiver fails the node
+  configuration). A program cannot name the FIFO of a bank with no pipe receiver: only attaching the receiver makes
+  the part. One kept from another configuration fails the node at an applied configure's return,
   `start-failed: configure gave program <name> the FIFO of bank <bank>, which has no pipe receiver`.
 - **Started last.** The program is one readiness item, waitingFor kind `program` named by the program, at step
   `programs`: after every engine companion and every sink's consumer is ready ([engine.md](engine.md#readiness-deadlines)).
@@ -860,7 +865,7 @@ lacks or a misspelt one in `Io`, `ports()` or a context, a write into an input, 
 pass-through, a bad or doubled bank name, a `process` that may throw, a class that is final or has
 no `ports` or `configure`, a member of the wrong signature (`configure`, `start`, `stop`, `check`,
 `prepare`, `release`, the change version), a private or overloaded one, a call `CreateOf` does not offer, a sink given no consumer, a sound card, RTP receiver, pipe receiver, sink or source on the wrong
-bank, a `fifoOf` of a bank that is not an inside input, a program's executable that is not an absolute path of plain
+bank, a shape that is no companion's given to `attach`, a `part::Fifo` made by hand, a program's executable that is not an absolute path of plain
 components, a program's feed into a loop declared without a state, a loop's name that is not 1 to 8 of `[a-z0-9-]` or names two loops, a state given to a loop
 declared without one, a loop the spec lacks (in a context, a post or the harness), a post of a
 function of another loop's state, a store whose rule has no `maxBytes`, more than 1 MiB or a mode
@@ -891,9 +896,9 @@ when the type catches the throw; none takes ear down:
 | A store's blocking `replace` on the main loop (a hook) | `<hook> threw: store <file>: replace waits, so never on the main loop: a hook uses replaceLater` |
 | A store that cannot be opened, or whose text its `distrust` refuses | `<file>: <why>` ([stores](#stores)) |
 | A program's shape that breaks a rule at the call | `configure threw: <rule>` ([programs](#programs)) |
-| A program naming the FIFO of a bank with no pipe receiver | `configure gave program <name> the FIFO of bank <bank>, which has no pipe receiver` |
+| A program naming a FIFO that is not this configuration's (a `part::Fifo` kept from another; attaching a pipe receiver is the only way to one) | `configure gave program <name> the FIFO of bank <bank>, which has no pipe receiver` |
 | A program that ends while no teardown is under way | `<name> exited with status <n>[: <line>]`, `<name> was killed by signal <n> (SIG<abbrev>)[: <line>]` (`start-failed`, or `lost` once rested) |
-| A `CreateOf` call after `configure` returned | `<call> outside configure` |
+| A `CreateOf` call after `configure` returned | `<call> outside configure` (`attach` for any companion) |
 | `Configured::failed("")` | `configure answered failed with no detail` |
 | `configure` throws | `configure threw: <what>` |
 | `start()` throws | `start threw: <what>` (then `start-failed`, or `lost` once rested) |

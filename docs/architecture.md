@@ -433,7 +433,7 @@ the device, the module's socket and the module's FIFO are PipeWire's. The reason
   frames): no engine node, eventfd wake or graph recalculation per crossing, so a `file` node is
   one engine node.
 - **Nobody outside ear's code sees the difference.** ear runs PipeWire in-process with no outside
-  tools; the type's calls (`cx.sink`, `cx.source`), the wire's entries and the editor's badges
+  tools; the type's call (`cx.attach`), the wire's entries and the editor's badges
   are the same either way, and the owner's aim holds: the type's code reads and writes only its
   banks, and the crossing is the framework's.
 

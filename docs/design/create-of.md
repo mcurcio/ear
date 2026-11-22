@@ -141,8 +141,9 @@ and `stop` are untouched.
 | `Configured::applied()`, `Configured::failed(detail)` | `cx.applied(code, states...)`, `Configured::failed(detail)` |
 
 Run-time rules that leave `docs/writing-a-node-type.md#rules-the-framework-enforces`: `use` twice; no `use`; a sink
-with no consumer or two; a loop given no state or two; a program naming the FIFO of a bank with no pipe receiver; an
-empty pass-through. Six rows become compile-time refusals, each with a case in `type_spec_bad.cpp`.
+with no consumer or two; a loop given no state or two; a program naming the FIFO of a bank with no pipe receiver (kept
+as a guard: section 7's note on C2); an empty pass-through. Six rows become compile-time refusals, each with a case in
+`type_spec_bad.cpp`.
 
 ### 4.5 The erased layer
 
@@ -204,9 +205,31 @@ Each step builds and passes alone; each is a `refactor(core)` commit and makes n
 | Step | What | Why this order |
 |---|---|---|
 | C1 (done) | A sink's consumer as an argument; `SinkOf`, `SinkRequest`, `consumedBy` go | The smallest; no new name |
-| C2 | `attach` for the five kinds; a pipe receiver's FIFO returned; `fifoOf` and the per-kind calls go; `attachEngine` | Renames C1's call once more, but keeps C1 reviewable alone |
+| C2 (done) | `attach` for the five kinds; a pipe receiver's FIFO returned; `fifoOf` and the per-kind calls go; `attachEngine` | Renames C1's call once more, but keeps C1 reviewable alone |
 | C3 | The answer: `cx.applied(code, states...)`, `cx.state`, `passThrough(first, rest...)`; `use`, `loop`, `Configured::applied()` go; the erased answer | The widest (every `configure`), last so it lands on the final names |
 | C4 | `reconfigure.md` 4 rewritten on this surface; this page deleted, what lasts moved to `docs/writing-a-node-type.md` | With C3 |
+
+*Found building C1:* a sink given no consumer is its own overload with a `static_assert`, so the error names the rule
+("a sink is given its one consumer") rather than a missing overload. The consumer is judged before the sink is made,
+so a null one starts no thread. The erased call takes one argument for the three forms, a variant
+(`SinkConsumerFrom`: the type's own consumer, or a loop and the member that finds it in the state).
+
+*Found building C2:*
+- **A shape's bank rule is a struct, not a constant** (`CompanionBank<Shape>`, with a `check<Bank>()`): a
+  `static_assert`'s text must be a literal in C++23, so each rule carries its own text. All five are in
+  `ear/core/lifecycle.hpp`, beside the contexts, since they need `PortBank` and `Direction` and three headers hold the
+  shapes. `attach` is one overload per shape (their results and extra arguments differ), each checking through it,
+  and one more, constrained to what is no companion's shape, that refuses with the rule's text.
+- **The erased engine call returns a pipe receiver's FIFO**: `std::optional<part::Fifo> attachEngine(bank,
+  EngineCompanionShape)`, none for a card or an RTP receiver. The variant is the one `companions.hpp` already had.
+- **`part::Fifo` can no longer be made by a type**: its constructor is private, reached by `CreateContext` alone (and
+  by `ear::testing::fifoOn`, the harness library's, for tests that build parts outside a configure). A new
+  compile-fail case holds it.
+- **The FIFO check at `configure`'s return stays**, against 4.4: a `part::Fifo` kept from one configuration and given
+  to another's program still names a bank with no receiver there, and resolving it would read a null. It is now
+  unreachable by any `configure` that uses only what its own context returned; its row in
+  `#rules-the-framework-enforces` says so, and its test makes the part with `fifoOn`.
+- **`<call> outside configure` says `attach`** for all five kinds.
 
 ## 8. Unverified
 

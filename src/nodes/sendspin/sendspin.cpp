@@ -24,7 +24,7 @@ Configured Sendspin::configure(CreateOf<spec>& cx, const Checked& s) {
 	auto owned = std::make_unique<SendspinClock>(
 		SendspinClock::Config{.rate = format.rate, .undrainedBound = undrainedBoundFor(format.rate, sourceFrames)});
 	SendspinClock& clock = *owned;
-	SourceWriter& writer = cx.source(fromServer, SourceShape{.frames = sourceFrames}, std::move(owned));
+	SourceWriter& writer = cx.attach(fromServer, SourceShape{.frames = sourceFrames}, std::move(owned));
 	clock.attach(writer);
 
 	cx.loop(worker, std::make_unique<Worker>(WorkerParts{.handle = node_.handle(),
@@ -43,7 +43,7 @@ Configured Sendspin::configure(CreateOf<spec>& cx, const Checked& s) {
 
 	// The sink to the server holds half a second.
 	const auto half = static_cast<std::uint32_t>(FrameClock(format.rate).frames(std::chrono::milliseconds{500}));
-	cx.sink(toServer, SinkShape{.frames = half}, worker, &Worker::toServer);
+	cx.attach(toServer, SinkShape{.frames = half}, worker, &Worker::toServer);
 	// The source declares its ring as latency beyond its bank (docs/writing-a-node-type.md#sources), which `from`
 	// tells through the pair; `to` reaches the sink with nothing added, its path carried so a chunk knows what lies
 	// upstream of it.

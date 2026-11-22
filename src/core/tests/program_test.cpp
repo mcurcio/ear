@@ -74,14 +74,17 @@ class Piped {
 public:
 	static Members<spec> ports(const Checked&) { return {out(members(2)), fromPipe(members(2))}; }
 	Configured configure(CreateOf<spec>& cx, const Checked&) {
-		if (behaviour.pipe) cx.pipeReceiver(fromPipe, {PipeFormat::s16le, SampleRate::fixed<44100>()});
+		// Attaching the receiver is the only way to its FIFO; without one, the part is one no context of this
+		// configuration handed out (as one kept from another configuration would be).
+		const part::Fifo fifo =
+			behaviour.pipe ? cx.attach(fromPipe, PipeReceiverShape{PipeFormat::s16le, SampleRate::fixed<44100>()})
+						   : ear::testing::fifoOn("from_pipe");
 		const GrantedPort port = cx.claim(claim::AnyTcp{});
 		ProgramShape shape{
 			.executable = player,
 			.args = {"--port", {part::Port{port}}, {part::Text{"--config="}, part::File{"config"}}},
 			.files = {ProgramFile{
-				"config",
-				{part::Text{"pipe = "}, cx.fifoOf(fromPipe), part::Text{"\nfeed = "}, part::Feed{}, part::Text{"\n"}}}},
+				"config", {part::Text{"pipe = "}, fifo, part::Text{"\nfeed = "}, part::Feed{}, part::Text{"\n"}}}},
 		};
 		for (const std::string& need : behaviour.needs) shape.needs.push_back(*SharedMemoryName::parse(need));
 		switch (behaviour.broken) {
@@ -196,8 +199,8 @@ TEST_CASE("A program's words: its runtime paths, its end, its arguments and its 
 	CHECK(ProgramArg("a").parts == std::vector<ProgramPart>{part::Text{"a"}});
 	CHECK(ProgramArg(std::string("b")).parts == std::vector<ProgramPart>{part::Text{"b"}});
 	CHECK(ProgramArg(ProgramPart{part::Feed{}}).parts == std::vector<ProgramPart>{part::Feed{}});
-	CHECK(ProgramArg({part::Text{"--fifo="}, part::Fifo{"in"}}).parts ==
-	      std::vector<ProgramPart>{part::Text{"--fifo="}, part::Fifo{"in"}});
+	CHECK(ProgramArg({part::Text{"--fifo="}, ear::testing::fifoOn("in")}).parts ==
+	      std::vector<ProgramPart>{part::Text{"--fifo="}, ear::testing::fifoOn("in")});
 	CHECK(ProgramPath{"/usr/local/bin/x"}.name() == "x");
 	CHECK(ProgramPath{"/usr/local/bin/x"}.path() == "/usr/local/bin/x");
 }

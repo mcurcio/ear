@@ -1,6 +1,6 @@
 // The sink (docs/writing-a-node-type.md#sinks what a type writes against; docs/engine.md#sinks its rules and the
 // chunk's contract). One home for the sink: what a type writes against (Chunk, SinkConsumer, SinkShape) and what
-// the framework runs it with (ChunkStamp, SinkTap, SinkBinding, Sink, SinkAdapter). NodeHost implements CreateOf::sink
+// the framework runs it with (ChunkStamp, SinkTap, SinkBinding, Sink, SinkAdapter). NodeHost implements CreateOf::attach
 // on it, ResourceRegistry takes a SinkAdapter, DriveRequest carries SinkBindings, ear_pipewire implements SinkAdapter
 // as ThreadSinks, and `file` consumes one. Pure: nothing but the standard library and ear_core.
 #pragma once
@@ -139,7 +139,7 @@ struct SinkBinding {
 };
 
 /// One interim sink: a ring, its stamp ring and its own thread (docs/engine.md#sinks). Made inside configure by
-/// CreateOf::sink, for the configuration's life. Main thread for every call; `begun` and `closed` run on the main loop
+/// CreateOf::attach, for the configuration's life. Main thread for every call; `begun` and `closed` run on the main loop
 /// through the adapter's Executor, the FIFO the node's handle posts through, so a lost() said inside begin()
 /// always lands before `begun`.
 class Sink {

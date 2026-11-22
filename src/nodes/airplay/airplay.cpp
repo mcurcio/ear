@@ -128,13 +128,13 @@ Configured Airplay::configure(CreateOf<spec>& cx, const Checked& s) {
 	                              : Protocol{Airplay1{}};
 	// The pipe module's fixed buffer is latency beyond from_airplay, which the framework adds
 	// (docs/writing-a-node-type.md#engine-companions): nothing to declare.
-	cx.pipeReceiver(fromAirplay, pipeShapeOf(protocol));
+	const part::Fifo fifo = cx.attach(fromAirplay, pipeShapeOf(protocol));
 	const GrantedPort rtsp = cx.claim(claim::AnyTcp{});
 	cx.loop(reports, std::make_unique<Reports>(node_.handle(), cx.executor(reports), hostLabelOf(cx.node())));
 	const SpeakerName name = s.get<nameRow>().value_or(SpeakerName::defaultFor(cx.node()));
 	cx.program(ProgramShape{.executable = shairportSync,
 	                        .args = {"-c", {part::File{"config"}}, "--name", name.text(), "--port", {part::Port{rtsp}}},
-	                        .files = {{"config", configText(cx.fifoOf(fromAirplay), protocol)}},
+	                        .files = {{"config", configText(fifo, protocol)}},
 	                        // shairport-sync never notices nqptp leaving, so ear ends it when its channel goes
 	                        // (docs/writing-a-node-type.md#programs).
 	                        .needs = std::holds_alternative<Airplay2>(protocol)
