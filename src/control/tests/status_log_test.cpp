@@ -221,7 +221,7 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 		[](StatusLog& log, Lines&) { log.mainLoopStalled(612, "pw_filter_destroy desk"); },
 		[](StatusLog& log, Lines&) { log.mainLoopStalled(503, ""); },
 		[](StatusLog& log, Lines&) { log.mainLoopResumed(1840); },
-		// The lifecycle's records (docs/output-records.md#node), one per row 3a has and per cause.kind: a record when
+		// The lifecycle's records (docs/output-records.md#node), one per row of the lifecycle and per cause.kind: a record when
 		// the state changes, `starting: <cause>` for configuring after a restart, a retry or an enable, and none for
 		// the colour's other phases (configured, starting) or a change of the other members alone.
 		[](StatusLog& log, Lines&) {

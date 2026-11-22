@@ -70,20 +70,14 @@ struct Silence {
 };
 struct Kept {
 	static Members<keptSpec> ports(const CheckedOf<keptSpec>&) { return {out(members(1))}; }
-	Configured configure(CreateOf<keptSpec>& cx, const CheckedOf<keptSpec>&) {
-		cx.use(Silence{});
-		return Configured::applied();
-	}
+	Configured configure(CreateOf<keptSpec>& cx, const CheckedOf<keptSpec>&) { return cx.applied(Silence{}); }
 };
 struct HeldSilence {
 	void process(Io<heldSpec>, const GraphCycle&) noexcept {}
 };
 struct Held {
 	static Members<heldSpec> ports(const CheckedOf<heldSpec>&) { return {out(members(1))}; }
-	Configured configure(CreateOf<heldSpec>& cx, const CheckedOf<heldSpec>&) {
-		cx.use(HeldSilence{});
-		return Configured::applied();
-	}
+	Configured configure(CreateOf<heldSpec>& cx, const CheckedOf<heldSpec>&) { return cx.applied(HeldSilence{}); }
 };
 
 } // namespace stores_test

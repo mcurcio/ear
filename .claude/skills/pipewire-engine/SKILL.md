@@ -1,6 +1,6 @@
 ---
 name: pipewire-engine
-description: How EAR runs PipeWire's engine inside its own process (no daemon, no session manager, no socket), the property table of every PipeWire property ear sets (engine.conf and code) and its four checks, the internal clock (the dummy driver, which always drives and tracks the raw clock) and the sound cards that follow it, the graph group, GraphCycle's clock facts, latency carried per bank pair, denormals, engine companions (sound cards, and the module-run converters: RTP receivers loaded from module-rtp-source), the asynchronous drive() and fadeOut() with their bounds and the wedged data loop, the ring companions the block serves in its own cycle (sinks' taps, sources' plays), what the slice 3a spikes proved about invokes and the one data loop, level metering, realtime priority (CAP_SYS_NICE), the traps found while building it, telling xruns under host load from bugs, and how to bump the PipeWire version. Use when changing src/pipewire/ (engine, port blocks, links, live ports, handoffs, engine companions, sound cards, module-run converters, RTP receivers, the main-loop executor) or engine.conf, when adding or changing a PipeWire property, when a port block never processes, a link never goes active, a card never follows or never becomes ready, latency never arrives, an rtp node stays configuring, fails "the RTP receiver never ran" or is silent, a card fails "never started", a node never reaches running or a fade or barrier is overdue, ear says the data loop is wedged, a sink drops or misses cycles, a source plays short, levels stop, engine or RTP tests fail only on a loaded host, the data thread is not realtime, a stop signal kills the process, or the block size is not the one asked for, and before bumping the build image's PipeWire.
+description: How EAR runs PipeWire's engine inside its own process (no daemon, no session manager, no socket), the property table of every PipeWire property ear sets (engine.conf and code) and its four checks, the internal clock (the dummy driver, which always drives and tracks the raw clock) and the sound cards that follow it, the graph group, GraphCycle's clock facts, latency carried per bank pair, denormals, engine companions (sound cards, and the module-run converters: RTP receivers loaded from module-rtp-source), the asynchronous drive() and fadeOut() with their bounds and the wedged data loop, the ring companions the block serves in its own cycle (sinks' taps, sources' plays), what the slice 3a spikes proved about invokes and the one data loop, level metering, realtime priority (CAP_SYS_NICE), the traps found while building it, telling xruns under host load from bugs, and how to bump the PipeWire version. Use when changing src/pipewire/ (engine, port blocks, links, live ports, sinks, engine companions, sound cards, module-run converters, RTP receivers, the main-loop executor) or engine.conf, when adding or changing a PipeWire property, when a port block never processes, a link never goes active, a card never follows or never becomes ready, latency never arrives, an rtp node stays configuring, fails "the RTP receiver never ran" or is silent, a card fails "never started", a node never reaches running or a fade or barrier is overdue, ear says the data loop is wedged, a sink drops or misses cycles, a source plays short, levels stop, engine or RTP tests fail only on a loaded host, the data thread is not realtime, a stop signal kills the process, or the block size is not the one asked for, and before bumping the build image's PipeWire.
 ---
 
 # Running PipeWire's engine inside EAR
@@ -28,7 +28,7 @@ Debian 13 (trixie) ships in the build image (`docker/Dockerfile`).
 | Sound cards | `sound_cards.cpp` | One kind of engine companion: one ALSA adapter node per card and direction |
 | Module-run converters | `module_converter_body.hpp`, `converter_modules.hpp`, `module_converters.hpp` | The shared body of every engine companion a PipeWire module runs: load, find by name, link, latency (`moduleRunDelay`), life |
 | RTP receivers | `rtp_receivers.cpp` | The other kind, the first module-run converter: `libpipewire-module-rtp-source` loaded into the context, one per `rtp` node |
-| Sinks and handoffs | `handoffs.cpp` | Realtime thread to an ordinary thread: `ThreadSinks` (the sinks, ring companions: a frame ring and a stamp ring, written by the block's taps, and one `pw_thread_loop` handing chunks to its consumer) and `ThreadHandoffs` (the legacy handoff `sendspin` alone uses until slice 3c): `spa_ringbuffer` plus one `pw_thread_loop` each |
+| Sinks | `sinks.cpp` | Realtime thread to an ordinary thread: `ThreadSinks` (the sinks, ring companions: a frame ring and a stamp ring, written by the block's taps, and one `pw_thread_loop` handing chunks to its consumer) |
 | Sources | `sources.cpp` | `EventSources`: core's `SourceRing` (every source rule) plus the writer's wait (`poll` on an eventfd) and the clock wake's eventfd |
 | The wedge mark | `data_loop_wedge.hpp` | Once ear says the data loop is wedged, `main.cpp` marks the engine and the adapters stop calling into it (section "drive()") |
 | Main-loop executor | `main_loop_executor.cpp` | Work posted from any thread (the control port's graph calls) runs on the main loop: a mutex-guarded queue plus a `pw_loop` event source |
@@ -401,7 +401,7 @@ on uses `ear::testing::driveNow` (`ear/testing/drive_now.hpp`).
 - **One invoke in flight per block is a requirement** (S1 below): an unbounded producer of
   invokes wedges the data loop. Never post invokes to the data loop in a loop of your own.
 
-## What the spikes proved (S1 to S3 in slice 3a, S5 in 3b, S7 in 3c's T4; `spikes_test.cpp`)
+## What the spikes proved (S1 to S3 in slice 3a, S5 in 3b, S7 in 3c, S4 for 3d; `spikes_test.cpp`)
 
 Recorded in `docs/engine.md#the-one-data-loop-and-invokes` with PipeWire's sources (`loop.c`, `context.c`,
 `filter.c`):
@@ -446,6 +446,19 @@ Recorded in `docs/engine.md#the-one-data-loop-and-invokes` with PipeWire's sourc
   stops only when it drives no node; an inactive node misses uncut cycles instead). A follower can
   read no mark of the recovery (`XRUN_RECOVER` is cleared before followers run). A listener must not
   read the driver's clock through a filter's mapping once that filter is gone (it crashed).
+- **S4 (tag `[s4]`): ports added to and removed from a streaming filter.** It works: a new port
+  links and carries audio, a removed one takes its link with it, kept ports and other nodes lose
+  nothing, over 500 rounds. But `pw_filter_add_port` and `pw_filter_remove_port` change
+  `filter->port_list` on the main loop with no invoke while the data loop walks it
+  (`filter.c:343`, `1386`, `1021`). It holds on x86-64 by the order of the append's stores and,
+  for a remove, by the blocking invoke `pw_impl_port_remove` makes before the port is freed
+  (`impl-port.c:1391`); on arm64 the plain add is not safe, and ear never holds the data loop for it
+  (S4's second case measured that: the realtime thread waits on an ordinary one), so arm64 waits on
+  the append being made on the data loop (`docs/engine.md#the-one-data-loop-and-invokes`).
+  Nothing of ear's may touch a port's handle once `pw_filter_remove_port` was called on it: swap
+  it out of what `process` reads behind a blocking invoke first. A new link's first cycles may
+  bring no buffer or silence. No code of ear's adds or removes a port on a connected filter yet
+  (`docs/design/reconfigure.md`).
 - After a 2 s data-loop stall the dummy driver resyncs (an error of about -96,000 frames) and then
   resets about 70 times within 7 ms; the bounds treat it as no wedge while the loop answers invokes.
 
@@ -571,8 +584,8 @@ Nothing like WirePlumber runs. Two things make that work:
   (`docs/architecture.md#the-callback-boundary`).
 - **Threads started later inherit the signal mask.** The control port's thread is started after
   `Engine::create`, so it too blocks SIGINT and SIGTERM.
-- **Waking from the realtime thread.** The sink's tap and the handoff writer wake their thread with
-  `pw_loop_signal_event` (an eventfd write). The S4 test checks it allocates nothing; the
+- **Waking from the realtime thread.** The sink's tap wakes its thread with
+  `pw_loop_signal_event` (an eventfd write). `sink_test.cpp` checks it allocates nothing; the
   design page lists its realtime safety as otherwise unverified.
 - **Xruns on a loaded host are not bugs.** When the host is busy (other containers in Docker's
   VM, a load average far above the CPU count) PipeWire's data thread can stall for tens to
@@ -608,7 +621,9 @@ pins the base image by digest, not the packages. To move to another PipeWire:
    always-process nodes and of node groups (from 1.7.0, load `libpipewire-module-scheduler-v1`
    in `engine.conf`, and re-check how a card joins the group's clock), renamed clock keys,
    whether `context.properties` still overwrite `pw_context_new`'s properties, `pw_filter` and
-   `link-factory` behaviour (link by name and by id), the adapter's port configuration (whether
+   `link-factory` behaviour (link by name and by id), `filter.c`'s `alloc_port` and `free_port` and
+   `impl-port.c`'s `pw_impl_port_remove` (what S4's safety rests on: the append's order of stores,
+   and the blocking invoke before a removed port is freed), the adapter's port configuration (whether
    `adapter.auto-port-config` now works), `node.driver-id` events, the registry's key
    whitelist, and module-rtp-source: its arguments, whether a failed bind is now reported, the
    SSRC lock, the resync on a sequence mismatch, and the `rtp.receiving` property. And

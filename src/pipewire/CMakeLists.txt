@@ -1,5 +1,5 @@
 # ear_pipewire: PipeWire's engine inside EAR, and the adapters that implement ear_core's
-# interfaces with it: port blocks (with their levels), links, live ports, handoffs, sound cards,
+# interfaces with it: port blocks (with their levels), links, live ports, sound cards,
 # module-run converters (RTP receivers, pipe receivers) and the main-loop executor (docs/architecture.md#packages,
 # docs/node-types.md#rtp).
 # engine_names.hpp, link_proxy.hpp, engine_companions.hpp, converter_modules.hpp, module_converter_body.hpp,
@@ -16,13 +16,13 @@ add_library(ear_pipewire STATIC
 	engine_companions.cpp
 	engine_log.cpp
 	engine_property_set.cpp
-	handoffs.cpp
 	links.cpp
 	live_graph.cpp
 	main_loop_executor.cpp
 	pipe_receivers.cpp
 	port_blocks.cpp
 	rtp_receivers.cpp
+	sinks.cpp
 	sound_cards.cpp
 	sources.cpp)
 # Header set and its standalone compile check: see src/core/CMakeLists.txt. The headers
@@ -32,7 +32,6 @@ target_sources(ear_pipewire PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/pipewire/engine.hpp
 	include/ear/pipewire/engine_log.hpp
 	include/ear/pipewire/faults.hpp
-	include/ear/pipewire/handoffs.hpp
 	include/ear/pipewire/links.hpp
 	include/ear/pipewire/live_graph.hpp
 	include/ear/pipewire/main_loop_executor.hpp
@@ -40,6 +39,7 @@ target_sources(ear_pipewire PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/pipewire/pipe_receivers.hpp
 	include/ear/pipewire/port_blocks.hpp
 	include/ear/pipewire/rtp_receivers.hpp
+	include/ear/pipewire/sinks.hpp
 	include/ear/pipewire/sound_cards.hpp
 	include/ear/pipewire/sources.hpp)
 set_target_properties(ear_pipewire PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)
@@ -66,7 +66,6 @@ if(BUILD_TESTS)
 		tests/engine_log_test.cpp
 		tests/engine_properties_test.cpp
 		tests/engine_test.cpp
-		tests/handoff_test.cpp
 		tests/latency_spa_test.cpp
 		tests/main_loop_executor_test.cpp
 		tests/module_converter_test.cpp

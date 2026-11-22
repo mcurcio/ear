@@ -1,6 +1,6 @@
 // One configuration's way back to the main loop from its other threads (docs/architecture.md#teardown-by-dependency):
-// its handle's notes and losses, its consumers' throws, its run object's close, and (from slice 3c's stores and
-// recordings) its I/O jobs' completions. Work posted here lands on the main loop in post order and runs only while the
+// its handle's notes and losses, its consumers' throws and its I/O jobs' completions
+// (its stores' and recordings'). Work posted here lands on the main loop in post order and runs only while the
 // configuration is attached; once it ended, what lands is destroyed unrun, so nothing of an old configuration reaches a
 // newer one. An I/O job's completion carries what the job filled as a small handle (postHolding): dropped, the handle
 // goes back to the I/O executor and is released there, never on the main loop, since closing a file after writing can

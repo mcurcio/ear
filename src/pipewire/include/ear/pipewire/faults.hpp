@@ -12,7 +12,7 @@
 namespace ear::pipewire {
 class Faults {
 public:
-	/// Called on the thread the callback ran on (the main loop, or a sink's or legacy handoff's thread), inside the
+	/// Called on the thread the callback ran on (the main loop, or a sink's thread), inside the
 	/// handler of the exception it caught, so a std::terminate() here still says what was thrown. `callback` names the
 	/// member PipeWire called ("FilterPortBlock::onStateChanged"), or the posted item or timer for the main-loop
 	/// executor's own; `where` is what the main loop was in when the exception was thrown (MainLoopActivity's "<call>

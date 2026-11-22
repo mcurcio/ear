@@ -95,7 +95,7 @@ enum class ConfigEvent {
 	silencedForStop, // the silence's completion, the intent a stop
 	silenced,        // the silence's completion, any other intent
 	barrierBound,    // 5 s, after settle() found the silence's invoke had not run
-	closed,          // every sink and handoff closed, then the legacy run object
+	closed,          // every sink closed, then every loop
 	closeBound,      // 10 s
 	blockLost,       // the block lost (T13)
 	startThrew,      // start() threw: it never set started, so no stop() pairs with it
@@ -108,7 +108,6 @@ struct ConfigInput {
 struct ConfigAction {
 	enum class Kind {
 		configure,          // new generation; make the instance; creation's configure; ask the resources
-		runRecipe,          // legacy only: run the recipe
 		prepare,            // prepare the code
 		drive,              // carry the latency plan; post drive(code, faded, sinks)
 		start,              // call start()
@@ -117,7 +116,7 @@ struct ConfigAction {
 		silence,            // post a silence (5 s timer)
 		fadeUnacknowledged, // ear.fade-unacknowledged
 		release,            // clear the latency plan; release the code
-		teardown,           // queue the engine companions' destruction; close sinks and legacy handoffs; 10 s timer
+		teardown,           // queue the engine companions' destruction; close sinks; 10 s timer
 		free,               // on the main loop: the code, the instance, the recordings, in that order
 		barrierOverdue,     // ear.barrier-overdue
 		markWedged,         // the data loop is wedged
@@ -170,7 +169,6 @@ enum class Fact {
 	engine,             // a sound card or RTP receiver refused or lost; the block refused or lost; the loop wedged
 	configureFailed,    // configure answered failed(d)
 	consumerNeverBegan, // a sink's consumer did not begin within its readiness deadline
-	recipeFailed,       // a legacy recipe failed
 	nodeLost,           // lost(detail) from the node's handle
 	hookThrew,          // a type's code threw: a hook, its code's prepare, or a consumer
 	adapterFaulted,     // ear's own bug in one of the node's adapters: lost whatever the phase

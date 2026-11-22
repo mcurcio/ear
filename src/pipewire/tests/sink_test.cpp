@@ -27,7 +27,7 @@
 
 #include "allocation_count.hpp"
 #include "catch2/catch.hpp"
-#include "ear/pipewire/handoffs.hpp"
+#include "ear/pipewire/sinks.hpp"
 #include "ear/pipewire/links.hpp"
 #include "ear/pipewire/live_graph.hpp"
 #include "ear/pipewire/main_loop_executor.hpp"
@@ -501,10 +501,9 @@ inline constexpr Latency kDeclared{30, 40};
 struct Recorder {
 	static Members<spec> ports(const Checked&) { return {record(members(2)), writer(members(2))}; }
 	Configured configure(CreateOf<spec>& cx, const Checked&) {
-		cx.sink(writer, SinkShape{.frames = 4096}).consumedBy(std::make_unique<TestConsumer>(*recorded));
-		cx.use(passThrough({bankPair(record, writer)}));
+		cx.attach(writer, SinkShape{.frames = 4096}, std::make_unique<TestConsumer>(*recorded));
 		cx.declareLatency(record, writer, kDeclared);
-		return Configured::applied();
+		return cx.applied(passThrough(bankPair(record, writer)));
 	}
 };
 

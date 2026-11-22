@@ -10,10 +10,6 @@
 #include <string_view>
 #include <vector>
 
-// As ear_node_type() gives a type's library: a table's name must be its folder's.
-#ifdef EAR_CASE_table_not_named_for_folder
-#define EAR_NODE_TYPE_NAME "folder"
-#endif
 #include "ear/core/settings_table.hpp"
 
 // Named, never unnamed: every table, row and spec a template is keyed on (settings_table.hpp, linkage).
@@ -32,14 +28,12 @@ constexpr SettingsTable<otherRow> otherTable{"o"};
 
 using Checked = decltype(table)::Checked;
 
-// The control: a type written the only way there is, reading each row as what it is.
-class GoodType final : public NodeTypeOf<table> {
-	MadeConfig make(const NodeName&, const Checked& settings) const override {
-		const std::uint32_t number = settings.get<numberRow>();
-		const std::optional<std::string> text = settings.get<textRow>();
-		return std::unexpected(std::string(text.value_or("none")) + std::to_string(number));
-	}
-};
+// The control: checked settings read the only way there is, each row as what it is.
+std::string good(const Checked& settings) {
+	const std::uint32_t number = settings.get<numberRow>();
+	const std::optional<std::string> text = settings.get<textRow>();
+	return std::string(text.value_or("none")) + std::to_string(number);
+}
 
 #ifdef EAR_CASE_key_empty
 constexpr auto bad = setting::required("", setting::number(1, 2));
@@ -140,10 +134,11 @@ std::uint32_t bad(const Checked& settings) {
 }
 #endif
 
-// A type whose parse skips its table.
+// A type whose parse skips its table: NodeType's parse, kinds and name are not virtual, so nothing derived can answer
+// for them (and nothing but makeNodeType's type can be constructed: derive_without_table).
 #ifdef EAR_CASE_override_parse
-class Bad final : public NodeTypeOf<table> {
-	MadeConfig make(const NodeName&, const Checked&) const override;
+class Bad final : public NodeType {
+	MadeConfig makeConfig(const NodeName&, CheckedSettings) const override;
 	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings> parse(const NodeName&,
 	                                                                        const NodeSettings&) const override;
 };
@@ -151,29 +146,16 @@ class Bad final : public NodeTypeOf<table> {
 
 // A type whose kinds are another table's.
 #ifdef EAR_CASE_override_setting_kinds
-class Bad final : public NodeTypeOf<table> {
-	MadeConfig make(const NodeName&, const Checked&) const override;
+class Bad final : public NodeType {
+	MadeConfig makeConfig(const NodeName&, CheckedSettings) const override;
 	std::span<const SettingDeclaration> settingKinds() const noexcept override { return otherTable.kinds(); }
 };
 #endif
 
 #ifdef EAR_CASE_override_name
-class Bad final : public NodeTypeOf<table> {
-	MadeConfig make(const NodeName&, const Checked&) const override;
-	std::string_view name() const noexcept override { return "other"; }
-};
-#endif
-
-#ifdef EAR_CASE_make_takes_raw_settings
-class Bad final : public NodeTypeOf<table> {
-	MadeConfig make(const NodeName&, const NodeSettings&) const override;
-};
-#endif
-
-#ifdef EAR_CASE_override_make_config
-class Bad final : public NodeTypeOf<table> {
-	MadeConfig make(const NodeName&, const Checked&) const override;
+class Bad final : public NodeType {
 	MadeConfig makeConfig(const NodeName&, CheckedSettings) const override;
+	std::string_view name() const noexcept override { return "other"; }
 };
 #endif
 

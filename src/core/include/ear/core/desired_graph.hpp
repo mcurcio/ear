@@ -13,7 +13,7 @@ struct WantedNode {
 };
 /// What an edit asks of a node it keeps by name (docs/architecture.md#restarts-and-changes-of-settings).
 /// Decided by `disabled` alone, before and after: false to true `disable`, true to false `enable`, true to true
-/// `stored`, false to false `restart` (3a has no in-place rows).
+/// `stored`, false to false `restart` (no row changes in place yet: docs/design/reconfigure.md).
 enum class NodeOutcome { restart, disable, enable, stored };
 /// A node kept with the same type and ports, told by nodeChanged; or a replaced node (another type or other ports),
 /// told by nodeReplacing and nodeReplaced, whose outcome is its `disabled` change's.

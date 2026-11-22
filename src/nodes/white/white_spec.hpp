@@ -34,10 +34,7 @@ struct WhiteCode {
 
 struct White {
 	static Members<spec> ports(const Checked&) { return {noise(members("mono"))}; }
-	Configured configure(CreateOf<spec>& cx, const Checked&) {
-		cx.use(WhiteCode{});
-		return Configured::applied();
-	}
+	Configured configure(CreateOf<spec>& cx, const Checked&) { return cx.applied(WhiteCode{}); }
 };
 
 } // namespace ear::nodes::white

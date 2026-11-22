@@ -6,7 +6,7 @@ Status: partly designed, not built, no slice number yet. The internal clock (the
 watchdog for a frozen card (designed, 3.1), what ear does with a wedged card (designed, 3.2), sound cards opened off the
 main loop (constrained, not designed, 3.3), an internal clock anchored to one card (sketched, 3.4), latency a node
 reports while it runs (3.5), and the checks still owed on real hardware (4). It builds on cards as engine companions
-(built, `docs/engine.md#engine-companions`) and needs slice 3c (the I/O executor, `node-primitives.md`).
+(built, `docs/engine.md#engine-companions`) and needs slice 3c's I/O executor (built: `docs/architecture.md#threads`).
 
 [V] = verified, [U] = unverified, each with what settles it.
 
@@ -105,6 +105,22 @@ on the node handle, carried by the framework on the next cycle, as an in-place c
 - [U] What `/proc/asound/.../status` shows for a wedged USB card (3.1); whether a USB unplug reaches the adapter's ERROR
   state without udev in the container; whether `snd_pcm_open`, `snd_pcm_drop` or `snd_pcm_close` can block on a wedged
   card (decides 3.3).
+- [U] How a card's capture is dated through a catch-up's burst. `sendspin` dates what it sends from each chunk's
+  cycle start on the driver's time less the capture latency (`docs/node-types.md#clock`), in a burst as on time. For
+  a card that is suspected wrong: after a stall the follower resyncs and drops what its buffer gathered (or the device
+  overruns), so the burst's cycles would carry fresh audio or silence stamped up to the stall's length early. To
+  measure: a card capturing a known sound (a click train) through stalls of the data thread shorter and longer than the
+  follower's tolerance and than the device's buffer, sent to a Sendspin server, and the server's dates of each click
+  read against when it was made. If confirmed, the remedy is the tick's overdue time carried in the chunk's stamp
+  (`GraphCycle::overdueNs` into `ChunkStamp` and `Chunk`), so a consumer dates an overdue chunk from when its cycle
+  ran, or holds what it sends until the first cycle on time; the same measurement behind an RTP receiver says whether
+  the rule must then differ by what lies upstream.
+- [U] Whether a card node renamed in one plan opens its device before the old node closed it. The test card's file
+  PCM is not exclusive, so only the hardware shows it. If it does, a card's device becomes a claim its shape holds
+  (`claimsOf(SoundCardShape)`, `docs/writing-a-node-type.md#claims`), so the new node waits for the old one's last
+  step.
+- [U] The strand pool's sizes (`docs/architecture.md#threads`) on the Talos nodes' CPU. Nothing shipped runs on a
+  strand yet.
 - [U] Following a host clock slewed at chrony's worst case (83,333 ppm) through the dummy's 1 ms-a-cycle clamp.
 - A pause of the data thread of tens of seconds or more still slews the graph off the raw clock for minutes (built
   `resync.ms` covers stalls of a few seconds); the fix is upstream's (PipeWire's `node-driver.c` would have to re-arm

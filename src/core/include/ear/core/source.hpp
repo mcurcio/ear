@@ -2,7 +2,7 @@
 // audio a type's ordinary thread writes, played into one of the node's inside input banks by the port block in its own
 // cycle, before the code. One home for the source: what a type writes against (SourceShape, Wake, SourceWriter, and a
 // source's own clock: SourceClock, told SourceTick, SourceHeld and SourcePlayed) and what the framework runs a source
-// with (SourceTap, SourceBinding, Source, SourceAdapter). NodeHost implements CreateOf::source on it, ResourceRegistry
+// with (SourceTap, SourceBinding, Source, SourceAdapter). NodeHost implements CreateOf::attach on it, ResourceRegistry
 // takes a SourceAdapter, DriveRequest carries SourceBindings, core's SourceRing holds every rule, and ear_pipewire
 // implements SourceAdapter as EventSources (ear/pipewire/sources.hpp). Pure: nothing but the standard library and
 // ear_core.
@@ -85,9 +85,9 @@ public:
 	virtual bool played(const SourceTick& tick, const SourcePlayed& played) noexcept = 0;
 };
 
-/// A "look now" from any thread, the realtime one included, to one watcher
-/// (docs/design/node-primitives.md#62-wakes-the-frameworks-for-now; slice 3c's EventWake implements it in ear_runtime
-/// and Loop::onWake watches it). Rung at most once until answered.
+/// A "look now" from any thread, the realtime one included, to one watcher (docs/writing-a-node-type.md#loops:
+/// Loop::onWake watches it; ear_pipewire's EventSources implements a source's on an eventfd). Rung at most once until
+/// answered. The framework's only: a type gets a source's clock wake and rings none of its own.
 class Wake {
 public:
 	/// Any thread: if not pending, marks it pending and writes its eventfd. Never blocks, locks or allocates.
@@ -125,7 +125,7 @@ public:
 	/// Any thread: the ring's capacity in frames (at least SourceShape::frames).
 	virtual std::uint32_t capacityFrames() const noexcept = 0;
 	/// Rung when the source's clock asks after a tick (SourceClock::played returned true), at most once until answered.
-	/// One watcher (a loop's onWake, slice 3c). Never rung for a source with no clock.
+	/// One watcher (a loop's onWake). Never rung for a source with no clock.
 	virtual Wake& clockWake() noexcept = 0;
 
 protected:
@@ -157,7 +157,7 @@ struct SourceBinding {
 };
 
 /// One source: its ring, its clock (if it has one), its writer's room and clock wakes, its counters. Made inside
-/// configure by CreateOf::source, for the configuration's life. Main thread for every call but the counters.
+/// configure by CreateOf::attach, for the configuration's life. Main thread for every call but the counters.
 class Source {
 public:
 	/// Main thread, at teardown step 5, after the instance (whose threads may hold the writer or the clock) is freed:

@@ -34,15 +34,16 @@
 #include "ear/core/desired_graph.hpp"
 #include "ear/core/lifecycle.hpp"
 #include "ear/core/node_catalogue.hpp"
+#include "ear/testing/erased.hpp"
 #include "ear/core/node_host.hpp"
 #include "ear/pipewire/data_loop_wedge.hpp"
 #include "ear/pipewire/engine.hpp"
-#include "ear/pipewire/handoffs.hpp"
 #include "ear/pipewire/links.hpp"
 #include "ear/pipewire/live_graph.hpp"
 #include "ear/pipewire/main_loop_executor.hpp"
 #include "ear/pipewire/port_blocks.hpp"
 #include "ear/pipewire/rtp_receivers.hpp"
+#include "ear/pipewire/sinks.hpp"
 #include "ear/pipewire/sound_cards.hpp"
 #include "ear/pipewire/sources.hpp"
 #include "ear/runtime/loops.hpp"
@@ -55,6 +56,7 @@
 namespace {
 using namespace ear;
 using namespace ear::pipewire;
+using ear::testing::Erased;
 using namespace std::chrono_literals;
 
 constexpr std::uint32_t kRate = 44100;
@@ -744,7 +746,12 @@ public:
 class LevelConfig final : public NodeConfig {
 public:
 	const Ports& ports() const override { return ports_; }
-	StartResult start(StartContext&) const override { return std::make_unique<LevelCode>(); }
+	std::unique_ptr<ErasedInstance> make(NodeContext&) const override {
+		struct Instance final : ErasedInstance {
+			Configured configure(CreateContext& cx) override { return Erased::applied(std::make_unique<LevelCode>()); }
+		};
+		return std::make_unique<Instance>();
+	}
 
 private:
 	Ports ports_{{{Direction::output, "out", {"left", "right"}}}};
@@ -771,13 +778,12 @@ TEST_CASE("Stopping 16 nodes costs about one fade, one cycle and one batch of de
 	Waiter waiter(*engine);
 	NoLevelWake wake;
 	FilterPortBlocks blocks(*engine, wake);
-	ThreadHandoffs handoffs(engine->mainLoop());
 	AlsaSoundCards cards(*engine);
 	RtpReceivers receivers(*engine);
 	MainLoopExecutor mainLoop(*engine);
 	ThreadSinks sinks(mainLoop);
 	EventSources sources;
-	ResourceRegistry resources(cards, receivers, handoffs, sinks, sources);
+	ResourceRegistry resources(cards, receivers, sinks, sources);
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph(catalogue);
 	HealthWake health(waiter);
@@ -829,10 +835,9 @@ private:
 class ThrowingSinkInstance final : public ErasedInstance {
 public:
 	explicit ThrowingSinkInstance(std::shared_ptr<std::atomic<bool>> armed) : armed_(std::move(armed)) {}
-	Configured configure(InstanceContexts& cx) override {
-		cx.create.sink("tap", SinkShape{.frames = 4096}).consumedBy(std::make_unique<ThrowingConsumer>(armed_));
-		cx.create.use(std::make_unique<LevelCode>());
-		return Configured::applied();
+	Configured configure(CreateContext& cx) override {
+		cx.sink("tap", SinkShape{.frames = 4096}, std::make_unique<ThrowingConsumer>(armed_));
+		return Erased::applied(std::make_unique<LevelCode>());
 	}
 
 private:
@@ -869,13 +874,12 @@ TEST_CASE("A sink consumer that throws on its real sink thread fails only its no
 	Waiter waiter(*engine);
 	NoLevelWake wake;
 	FilterPortBlocks blocks(*engine, wake);
-	ThreadHandoffs handoffs(engine->mainLoop());
 	AlsaSoundCards cards(*engine);
 	RtpReceivers receivers(*engine);
 	MainLoopExecutor mainLoop(*engine);
 	ThreadSinks sinks(mainLoop);
 	EventSources sources;
-	ResourceRegistry resources(cards, receivers, handoffs, sinks, sources);
+	ResourceRegistry resources(cards, receivers, sinks, sources);
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph(catalogue);
 	HealthWake health(waiter);
@@ -947,13 +951,10 @@ public:
 		: sinkGate_(std::move(sinkGate)), stateGate_(std::move(stateGate)), freed_(std::move(freed)) {}
 	~LateInstance() override { freed_(); }
 	std::span<const LoopDeclaration> loops() const noexcept override { return lateLoops; }
-	Configured configure(InstanceContexts& cx) override {
-		cx.create.sink("tap", SinkShape{.frames = 4096}).consumedBy(std::make_unique<LateConsumer>(sinkGate_));
-		cx.create.loopState(0, std::unique_ptr<void, void (*)(void*)>(new LateState{stateGate_}, [](void* state) {
-								delete static_cast<LateState*>(state);
-							}));
-		cx.create.use(std::make_unique<LevelCode>());
-		return Configured::applied();
+	Configured configure(CreateContext& cx) override {
+		cx.sink("tap", SinkShape{.frames = 4096}, std::make_unique<LateConsumer>(sinkGate_));
+		return Erased::applied(std::make_unique<LevelCode>(),
+		                       ErasedLoopState::of(0, std::make_unique<LateState>(stateGate_)));
 	}
 
 private:
@@ -1005,19 +1006,14 @@ TEST_CASE("A configuration leaked at the close deadline that closes late is free
 	Waiter waiter(*engine);
 	NoLevelWake wake;
 	FilterPortBlocks blocks(*engine, wake);
-	ThreadHandoffs handoffs(engine->mainLoop());
 	AlsaSoundCards cards(*engine);
 	RtpReceivers receivers(*engine);
 	MainLoopExecutor mainLoop(*engine);
 	ThreadSinks sinks(mainLoop);
 	EventSources sources;
 	runtime::Loops loops(mainLoop);
-	ResourceRegistry resources(ResourceAdapters{.cards = &cards,
-	                                            .receivers = &receivers,
-	                                            .handoffs = &handoffs,
-	                                            .sinks = &sinks,
-	                                            .sources = &sources,
-	                                            .loops = &loops});
+	ResourceRegistry resources(ResourceAdapters{
+		.cards = &cards, .receivers = &receivers, .sinks = &sinks, .sources = &sources, .loops = &loops});
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph(catalogue);
 	HealthWake health(waiter);

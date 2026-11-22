@@ -67,8 +67,7 @@ struct NodeHealth {
 class NodeHealthListener {
 public:
 	virtual void nodeChanged(const NodeHealth& health) = 0;
-	/// Everything the node made is gone (its `removed`). droppedFrames: frames its sinks and legacy handoffs refused
-	/// (ring full).
+	/// Everything the node made is gone (its `removed`). droppedFrames: frames its sinks refused (ring full).
 	virtual void nodeGone(const NodeName& node, std::uint64_t droppedFrames) = 0;
 	/// Whether this listener hears a superseded node: an older node of a name still closing once a newer node of that
 	/// name was added (another type, or a name added back by a later commit). The wire keys health by name and holds
@@ -129,7 +128,7 @@ protected:
 	~NodeDiagnosticListener() = default;
 };
 /// A framework diagnostic that names no node (docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog;
-/// docs/output-records.md#diagnostic): in 3a "ear.data-loop-wedged", once, when a barrier's invoke has not run within 5
+/// docs/output-records.md#diagnostic): "ear.data-loop-wedged", once, when a barrier's invoke has not run within 5
 /// s (its detail names the node whose barrier tripped it; `ms` the time it waited).
 struct EngineDiagnostic {
 	std::string_view code;
@@ -219,32 +218,13 @@ public:
 protected:
 	~PortBlockFactory() = default;
 };
-class Handoff {
-public:
-	virtual ~Handoff() = default; // main thread; only after `closed` ran, or before any write
-	virtual RtWriter& writer() noexcept = 0;
-	/// Main thread, once, after the writing port block can no longer run the code that writes: drains the rest to the
-	/// consumer, calls consumer.finish() on the handoff thread, then `closed` on the main thread.
-	virtual void close(std::move_only_function<void(std::uint64_t droppedFrames)> closed) = 0;
-};
-/// The handoff kind's adapter.
-class HandoffAdapter {
-public:
-	/// Main thread; starts the handoff's own ordinary thread.
-	virtual std::unique_ptr<Handoff> make(const NodeName& node, std::uint32_t channels, std::uint32_t capacityFrames,
-	                                      HandoffConsumer& consumer) = 0;
-
-protected:
-	~HandoffAdapter() = default;
-};
-/// The adapter of each kind of companion and of ResourceRequest a host has
+/// The adapter of each kind of companion and resource a host has
 /// (docs/writing-a-node-type.md#configure-and-createof): one member per kind, each null where the host has none, so a
 /// new kind is one member here and a host that does not need it (a test's) leaves it out. All given outlive the
 /// registry.
 struct ResourceAdapters {
 	SoundCardCompanions* cards = nullptr;
 	RtpReceiverCompanions* receivers = nullptr;
-	HandoffAdapter* handoffs = nullptr;
 	SinkAdapter* sinks = nullptr;
 	SourceAdapter* sources = nullptr;
 	RecordingAdapter* recordings = nullptr;
@@ -263,7 +243,7 @@ struct ResourceAdapters {
 	std::string runtimeFolder{};
 };
 /// The resource registry (docs/writing-a-node-type.md#configure-and-createof): one adapter per kind of companion and
-/// of ResourceRequest, so a new kind is one adapter here and nothing more in NodeHost's constructor. A kind the host
+/// resource, so a new kind is one adapter here and nothing more in NodeHost's constructor. A kind the host
 /// has no adapter for is refused at the context call that asks for it, as an adapter's refusal is: the node fails
 /// start-failed "no <kind> in this host" (a recording: "cannot open <path>: no recordings folder", as a recordings
 /// adapter tells why a path cannot be opened).
@@ -271,23 +251,22 @@ class ResourceRegistry {
 public:
 	explicit ResourceRegistry(const ResourceAdapters& adapters) noexcept : adapters_(adapters) {}
 	/// Every kind given.
-	ResourceRegistry(SoundCardCompanions& cards, RtpReceiverCompanions& receivers, HandoffAdapter& handoffs,
-	                 SinkAdapter& sinks, SourceAdapter& sources, RecordingAdapter& recordings) noexcept
-		: ResourceRegistry(ResourceAdapters{&cards, &receivers, &handoffs, &sinks, &sources, &recordings}) {}
+	ResourceRegistry(SoundCardCompanions& cards, RtpReceiverCompanions& receivers, SinkAdapter& sinks,
+	                 SourceAdapter& sources, RecordingAdapter& recordings) noexcept
+		: ResourceRegistry(ResourceAdapters{&cards, &receivers, &sinks, &sources, &recordings}) {}
 	/// Every kind but recordings, for hosts that run no "file" node (tests).
-	ResourceRegistry(SoundCardCompanions& cards, RtpReceiverCompanions& receivers, HandoffAdapter& handoffs,
-	                 SinkAdapter& sinks, SourceAdapter& sources) noexcept
-		: ResourceRegistry(ResourceAdapters{&cards, &receivers, &handoffs, &sinks, &sources, nullptr}) {}
+	ResourceRegistry(SoundCardCompanions& cards, RtpReceiverCompanions& receivers, SinkAdapter& sinks,
+	                 SourceAdapter& sources) noexcept
+		: ResourceRegistry(ResourceAdapters{&cards, &receivers, &sinks, &sources, nullptr}) {}
 	/// The engine companions' adapters (docs/engine.md#engine-companions); null: the host has none.
 	SoundCardCompanions* adapterFor(const SoundCardShape&) const noexcept { return adapters_.cards; }
 	RtpReceiverCompanions* adapterFor(const RtpReceiverShape&) const noexcept { return adapters_.receivers; }
-	HandoffAdapter* adapterFor(const HandoffRequest&) const noexcept { return adapters_.handoffs; }
 	/// The recordings' adapter (CreateOf::recording; docs/writing-a-node-type.md#recordings); null: the host has none,
 	/// and every recording is refused "no recordings folder".
 	RecordingAdapter* recordings() const noexcept { return adapters_.recordings; }
-	/// The sinks' adapter (CreateOf::sink; docs/writing-a-node-type.md#sinks); null: the host has none.
+	/// The sinks' adapter (CreateOf::attach; docs/writing-a-node-type.md#sinks); null: the host has none.
 	SinkAdapter* sinks() const noexcept { return adapters_.sinks; }
-	/// The sources' adapter (CreateOf::source; docs/writing-a-node-type.md#sources); null: the host has none.
+	/// The sources' adapter (CreateOf::attach; docs/writing-a-node-type.md#sources); null: the host has none.
 	SourceAdapter* sources() const noexcept { return adapters_.sources; }
 	/// The loops' adapter (a spec's loops; docs/writing-a-node-type.md#loops); null: the host has none.
 	LoopAdapter* loops() const noexcept { return adapters_.loops; }
@@ -323,7 +302,7 @@ inline constexpr std::chrono::milliseconds hookSlowBound{20};
 class NodeHost final : public DesiredNodeListener, public NodeOperations, public NodeCounterSource {
 public:
 	/// All outlive it. `mainLoop` runs on the thread that calls everything below; a run reaches it through there (its
-	/// events, its handoffs' and run object's `closed`). `timers` run there too. Made on that thread, which it marks as
+	/// events, its sinks' and loops' `closed`). `timers` run there too. Made on that thread, which it marks as
 	/// the main loop's (onMainLoop, loop.hpp).
 	NodeHost(AudioFormat format, PortBlockFactory& blocks, ResourceRegistry& resources, Executor& mainLoop,
 	         Timers& timers, std::chrono::milliseconds closeDeadline = defaultCloseDeadline);
@@ -351,19 +330,19 @@ public:
 	/// with.
 	void subscribeLog(LogSink& sink);
 	/// Where a bug of an adapter's that NodeHost caught is told, before its node fails lost
-	/// (docs/architecture.md#faults-by-owner): a sink, source or handoff adapter's std::logic_error inside a context
+	/// (docs/architecture.md#faults-by-owner): a sink or source adapter's std::logic_error inside a context
 	/// call, a port block factory's or engine companion adapter's throw in the flush, a store adapter's throw in one of a
 	/// store's I/O jobs and a recording adapter's std::logic_error (or no file) in a recording's open, each told once
 	/// its completion lands. Main thread.
 	void subscribeInternalErrors(InternalErrorListener& listener);
 	/// starting; port block made (in the turn's flush, once no older block of the name exists); then a configuration
 	/// (docs/architecture.md#the-node-lifecycle; docs/writing-a-node-type.md#configure-and-createof):
-	/// config.make(context) makes its instance (the type's class, or the legacy adapter over config.start), whose
-	/// configure acquires only, through CreateContext or StartContext on one set of internals, and gives the code
-	/// (every rule the type breaks, caught by it or not, and a configure or recipe that throws, fail the node
+	/// config.make(context) makes its instance (the type's class), whose
+	/// configure acquires only, through CreateContext, and gives the code
+	/// (every rule the type breaks, caught by it or not, and a configure that throws, fail the node
 	/// start-failed); the engine companions it asked for are made once the block is
 	/// ready, in request order, named "<node>.<suffix>" ("playback" / "capture" for cards, "rtp" for the receiver);
-	/// once every resource is ready a legacy recipe builds the run object and the code is prepared; once the block is
+	/// once every resource is ready the code is prepared; once the block is
 	/// ready the code drives it (PortBlock's asynchronous drive, fading in every output the code writes: public outputs
 	/// and inside outputs, which feed a card), and the node is running once that drive completed, when the instance's
 	/// start() is called; its stop() is called once before each silence that follows a start() that returned
@@ -382,8 +361,8 @@ public:
 	/// phase has lasted 2 s and then at most once a second. A node added disabled keeps its block, silent, and is
 	/// never configured (T19).
 	void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
-	/// Restart: the barrier (a drive with no code, once it completed), release(); engine companions destroyed; handoffs
-	/// closed; the run object closed; then, on the main loop, the code destroyed, then the run object, the recipe, the
+	/// Restart: the barrier (a drive with no code, once it completed), release(); engine companions destroyed; sinks
+	/// closed; loops finished and closed; then, on the main loop, the code destroyed, then the instance, the
 	/// recordings and the config; then a new configuration from `config` as in nodeAdded. The port block and routes
 	/// stay. An update arriving during a restart replaces the config to start; one on a failed node configures it again
 	/// once its failed configuration is gone. If the block was lost: nothing starts, the node stays failed.

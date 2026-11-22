@@ -46,8 +46,7 @@ public:
 	Configured configure(CreateOf<spec>& cx, const Checked&) {
 		handle = &node_.handle();
 		++configured;
-		cx.use(passThrough({bankPair(in, out)}));
-		return Configured::applied();
+		return cx.applied(passThrough(bankPair(in, out)));
 	}
 	void stop() { node_.handle().say("goodbye"); }
 

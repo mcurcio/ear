@@ -1,7 +1,7 @@
 // One node type's settings, each key declared once, as typed rows in one table. The table checks the settings object in
 // one fixed order and makes every refusal's text from the row; NodeType's name(), settingKinds() and parse() all answer
-// from it and cannot be overridden, so the graph file's reader cannot disagree with parse. What a type overrides is
-// NodeTypeOf's make, which gets typed values, never the raw object, and holds any rule about them.
+// from it and cannot be overridden, so the graph file's reader cannot disagree with parse. A type's class gets typed
+// values (CheckedOf<spec>, lifecycle.hpp), never the raw object, and its `check` holds any rule about them.
 // Pure: nlohmann/json only.
 #pragma once
 #include <algorithm>
@@ -185,13 +185,12 @@ constexpr SettingDeclaration declarationOf(const SettingRow& row) {
 template <const auto&... Rows>
 	requires(setting::isRow<std::remove_cvref_t<decltype(Rows)>> && ...)
 class SettingsTable;
-template <const auto& Table> class NodeTypeOf;
 
 namespace linkage {
 template <const auto& Object> consteval std::string_view spelling() { return __PRETTY_FUNCTION__; }
 /// Whether `Object` is declared outside any unnamed namespace (docs/writing-a-node-type.md#the-spec). GCC 14
 /// gives a template specialised on a reference to an object external linkage even when the object is in an unnamed
-/// namespace, so two files' `(anonymous namespace)::pathRow` name one SettingsTable, one Io or one NodeTypeOf, and the
+/// namespace, so two files' `(anonymous namespace)::pathRow` name one SettingsTable or one Io, and the
 /// linker keeps one file's instantiation for both, silently. Every object a table, a type or a spec is keyed on is
 /// therefore declared in a named namespace (a type's own: ear::nodes::<type>); this refuses one that is not. It reads
 /// the compiler's own spelling of the argument, GCC's "{anonymous}" or Clang's "(anonymous namespace)".
@@ -283,7 +282,6 @@ public:
 	private:
 		explicit Checked(CheckedSettings settings) noexcept : settings_(std::move(settings)) {}
 		friend SettingsTable;
-		template <const auto& Table> friend class NodeTypeOf;
 		template <const auto& Spec, class Type> friend class spec_detail::SpecNodeType;
 		CheckedSettings settings_;
 	};
@@ -297,26 +295,5 @@ public:
 private:
 	static constexpr std::array<const SettingRow*, sizeof...(Rows)> rows_{&Rows.row()...};
 	static constexpr std::array<SettingDeclaration, sizeof...(Rows)> kinds_{setting::declarationOf(Rows.row())...};
-};
-
-/// What a node type derives from. The base class names the table once; there is nowhere to name a second.
-template <const auto& Table> class NodeTypeOf : public NodeType {
-	static_assert(linkage::named<Table>,
-	              "a type's table is declared in a named namespace, never an unnamed one: GCC 14 "
-	              "would give two files' same-named tables one type");
-#ifdef EAR_NODE_TYPE_NAME // ear_node_type() (cmake/NodeType.cmake) gives a type's library its folder's name
-	static_assert(Table.name() == EAR_NODE_TYPE_NAME, "a type's table is named for its folder");
-#endif
-
-protected:
-	using Checked = typename std::remove_cvref_t<decltype(Table)>::Checked;
-	NodeTypeOf() noexcept : NodeType(Table) {}
-
-private:
-	/// What the type makes of checked settings. It never sees the raw object. A rule about values lives here.
-	virtual MadeConfig make(const NodeName& node, const Checked& settings) const = 0;
-	MadeConfig makeConfig(const NodeName& node, CheckedSettings settings) const final {
-		return make(node, Checked(std::move(settings)));
-	}
 };
 } // namespace ear

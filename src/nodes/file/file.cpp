@@ -78,10 +78,9 @@ Configured File::configure(CreateOf<spec>& cx, const Checked& s) {
 	// The framework claims the path, then creates or truncates the file beneath the recordings folder before the sink's
 	// consumer begins; libsndfile only writes to it.
 	const Recording& recording = cx.recording(RecordingRequest{s.get<pathRow>()});
-	cx.sink(writer, SinkShape{.frames = static_cast<std::uint32_t>(FrameClock(cx.format().rate).frames(ringLength))})
-		.consumedBy(std::make_unique<WavWriter>(recording, cx.format(), node_.handle()));
-	cx.use(passThrough({bankPair(record, writer)}));
-	return Configured::applied();
+	cx.attach(writer, SinkShape{.frames = static_cast<std::uint32_t>(FrameClock(cx.format().rate).frames(ringLength))},
+	          std::make_unique<WavWriter>(recording, cx.format(), node_.handle()));
+	return cx.applied(passThrough(bankPair(record, writer)));
 }
 
 } // namespace ear::nodes::file

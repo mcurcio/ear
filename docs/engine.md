@@ -29,7 +29,7 @@ changing this code.
 | Module-run converters | `module_converter_body.hpp`, `converter_modules.hpp`, `module_converters.hpp` | The engine companion a PipeWire module runs: loaded, found by name, linked, its latency carried, its life judged ([below](#module-run-converters)) |
 | RTP receivers | `rtp_receivers.cpp` | The first module-run converter: `libpipewire-module-rtp-source`, one per `rtp` node |
 | Pipe receivers | `pipe_receivers.cpp` | The second: `libpipewire-module-pipe-tunnel` in source mode, reading a FIFO a node's program writes ([below](#pipe-receivers)) |
-| Sinks and handoffs | `handoffs.cpp` | `ThreadSinks` (the sinks: a ring the block taps and a thread that drains it, [below](#sinks)) and `ThreadHandoffs` (the legacy handoff, which no shipped type uses any more) |
+| Sinks | `sinks.cpp` | `ThreadSinks`: a ring the block taps and a thread that drains it ([below](#sinks)) |
 | Sources | `sources.cpp` | `EventSources`: core's `SourceRing` with the writer's wait and the clock wake's eventfd ([below](#sources)) |
 | The engine's log | `engine_log.cpp` | ear's own `pw_log` and alsa-lib's error handler ([output-records.md](output-records.md#how-output-is-written)), both `noexcept` and registered through the callback boundary as realtime functions |
 | The wedge mark | `data_loop_wedge.hpp` | Once the data loop is judged wedged, the adapters stop calling into it |
@@ -698,8 +698,8 @@ the delay counts both ways on it (as PipeWire adds a node's process latency to b
 tells and in what `from` tells. For a code of the type's own the pair is added to `pairs`; a
 pass-through must already copy it, or the node fails at configure's return (a declared path must
 exist). Typed declarations are keyed by their path, so a mixer declares each input's path into one
-output. A legacy declaration on one bank is `onPair` on the
-pass-through's pair that ends at the bank or, on a bank no pair ends at, `onBank`. NodeHost works
+output. Every declaration is a path, so no configuration's plan has an `onBank` entry today; the
+model and the block carry one all the same. NodeHost works
 the plan out with no peer before configure's return is accepted, so a plan that does not fit the
 ports fails the node `start-failed` (`configure gave a latency plan that does not fit: <why>`)
 instead of reaching a drive.
@@ -779,9 +779,7 @@ it is read ([graph-file.md](graph-file.md#rates)).
 - **`enteredRawNs(startRawNs, offset, upstream)`**: that frame entered the graph its upstream's most
   before. `offset` may be negative, a frame taken before the cycle's first. A sink's chunk entered
   at `enteredRawNs(startRawNs, 0, {0, upstreamFrames})` ([above](#sinks)); `sendspin`'s capture is
-  dated from its chunk's start with no upstream yet (the chunk carries `upstreamFrames`, which the
-  node does not read yet, so the capture latency a card adds is not counted:
-  [node-types.md](node-types.md#clock)).
+  dated so, each piece by its place in its chunk ([node-types.md](node-types.md#clock)).
 
 The rule is a type, not a guard: since a rate has no operator, using one as an operand of `*`, `/`,
 `%` or `+` does not compile, nor does making a rate from a number, a `FrameClock`, a format or a
@@ -1139,7 +1137,7 @@ logged by PipeWire:
 
 ## The one data loop and invokes
 
-Verified by `spikes_test.cpp` (S1 to S3, and S5's part B) against 1.4.2's `loop.c`, `context.c` and `filter.c`:
+Verified by `spikes_test.cpp` (S1 to S4, and S5's part B) against 1.4.2's `loop.c`, `context.c` and `filter.c`:
 
 - **Asynchronous `pw_loop_invoke` from the main loop** runs on the data thread in posting order,
   never inside any `process`, and the post returns the async code, never the function's result. A
@@ -1176,6 +1174,36 @@ Verified by `spikes_test.cpp` (S1 to S3, and S5's part B) against 1.4.2's `loop.
 - **One data loop.** `context.num-data-loops` reads 1, the process has one `data-loop.0` thread, and
   a filter's `pw_filter_get_data_loop` is that loop. Adapters and the RTP module name `data-loop.0`
   in their info; `pw_filter`s name no loop.
+- **Ports can be added to and removed from a streaming filter** (S4), which no code of ear's does
+  yet. On a connected `RT_PROCESS` filter made as a block's, `pw_filter_add_port` gives a port that
+  appears in the registry, links, and carries its peer's audio sample for sample;
+  `pw_filter_remove_port` of a linked port takes its port and its link out of the registry. Over 500
+  rounds of both (three cycles a round), a port linked throughout kept its link and read every cycle
+  right, a ramp between two other nodes lost nothing (every cycle its listener ran was the ramp's,
+  and none went missing but ones the driver cut), the filter never left `STREAMING` and the core
+  reported no error; so in 19 runs, six of them beside the whole suite. The registry gives a removed
+  port's id to the next one. A new link's first cycles are not yet its audio: after the link is
+  told active the port may have no buffer for a cycle, or a buffer of silence for one, each seen
+  about once in several thousand links.
+  **But `filter.c` changes its port list with no invoke and no lock.** `pw_filter_add_port` appends
+  the port to `filter->port_list` on the main loop (`alloc_port`, `filter.c:343`) and
+  `pw_filter_remove_port` unlinks it there (`free_port`, `filter.c:1386`), while the data loop's
+  `impl_node_process` walks that list twice a cycle (`filter.c:1021`, `1051`). Only the node's own
+  realtime port list is changed inside invokes (`impl-port.c` `do_add_port`, `do_remove_port`).
+  What makes it hold: an append stores the new element's `next` before the store that links it in
+  (`spa_list_insert`), and the walk reads only `next` and skips a port with no `io`, which a new port
+  has until it is linked; a remove is one store that the walk sees whole, it leaves the removed
+  element's own pointers alone, and the port is freed (`filter.c:1392`) only after the blocking
+  invoke that takes it off the node's realtime list (`pw_impl_port_remove`, `impl-port.c:1391`), so
+  every walk that could have reached it has ended. The append's order of stores is kept between
+  threads on x86-64 (total store order) and is not on arm64, where a walker could meet the new
+  element before its `next` is there. Holding the data loop while the port is added (an invoke that
+  parks until the main thread is done) closes that on any architecture and passed the same 500
+  rounds, but ear does not do it: the loop stood still for 50 to 300 us in most runs and for 2.1 ms
+  in one, the realtime thread waiting on an ordinary one with no bound. So an arm64 build waits on
+  the append being made on the data loop, by PipeWire or by a port block that owns its own port
+  list. A filter's own `process` must have stopped using a port's handle
+  before `pw_filter_remove_port` returns: the handle is the port's memory.
 - After a 2 s data-loop stall the driver catches up as [above](#the-internal-clock); the bounds treat
   it as no wedge while the loop answers invokes.
 - **The driver reports every cycle a node misses** (S6). Every follower is a target of the driver,

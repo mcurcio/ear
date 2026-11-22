@@ -1,8 +1,8 @@
 # The control plane and parameters: slices 5 and 6 of the node framework
 
 Status: design, not built. Slice 5 (the control plane: the type schema on the wire, status, events, node diagnostics on
-the wire, actions, the realtime coded ring, sendspin's notes split) follows slice 3c (`node-primitives.md`: the node
-handle and loops). Slice 6 (parameters: decimal, indexed and live rows, parameter slots and their ramps, retunes,
+the wire, actions, the realtime coded ring, sendspin's notes split) follows slice 3c (built: the node
+handle and loops, `docs/writing-a-node-type.md#the-node-handle`, `#loops`). Slice 6 (parameters: decimal, indexed and live rows, parameter slots and their ramps, retunes,
 gestures, the `gain` type, the editor's faders) follows slice 3d (`reconfigure.md`: the plan's outcomes and `node.set`)
 and slice 5. The two are designed together because they share one type schema, one write path for what lasts (the graph
 file keeper), one wire vocabulary, one family of realtime channels and one editor model.
@@ -466,7 +466,7 @@ only (a stalled main loop cannot answer the wire in time).
 | `ear.close-overdue` | — | `detail` | built; 3c adds counts |
 | `ear.fade-unacknowledged`, `ear.barrier-overdue` | — | `ms` | built |
 | `ear.hook-slow` | the hook | `ms` | built |
-| `ear.loop-slow`, `ear.loop-source-left`, `ear.claim-wait`, `ear.close-late` | the loop, the claim | `ms`, `sources`, `holder`/`waitedMs`, `detail` | 3c (`node-primitives.md`) |
+| `ear.loop-slow`, `ear.loop-source-left`, `ear.claim-wait`, `ear.close-late` | the loop, the claim | `ms`, `sources`, `holder`/`waitedMs`, `detail` | 3c (built: `docs/output-records.md`) |
 | `ear.sink-dropped`, `ear.source-shortfall` | the companion | `companion`, `frames`, `totalFrames` | built as records (`docs/output-records.md#diagnostic`); on the wire with `node.diagnostic` |
 | `ear.reconfigure-fell-back`, `ear.reconfigure-superseded`, `ear.retiring-lost` | —, —, the companion | as `reconfigure.md` 8.2 | 3d |
 | `ear.status-flapping` | the field | `transitions`, `windowMs` | here: active once a field changes more than its `flapsAbove` within the window; inactive once a whole window passes at or below it; at most once per window while active |
@@ -548,7 +548,7 @@ enum class Display { panel, box, callout };   // callout: a banner while not at 
 namespace writer {
 struct Writer { enum class Kind { rt, loop, companion } kind; LoopName loop = {}; };
 inline constexpr Writer rt{Writer::Kind::rt};               // the node's code, through Io
-template <class Handle> consteval Writer loop(Handle);      // a loop of the spec (node-primitives.md 6.3)
+template <class Handle> consteval Writer loop(Handle);      // a loop of the spec (docs/writing-a-node-type.md#loops)
 inline constexpr Writer companion{Writer::Kind::companion}; // a companion kind's adapter (slice 8: rtp's receiving)
 }
 namespace status {
@@ -608,7 +608,7 @@ private:
 ```
 
 - `TypeSpec` gains `.status`, `.events`, `.actions` and `.logCodes`, in that order after 3d's `.lifecycle`
-  (`node-primitives.md` 6.11), each defaulting to an empty list.
+  (after `.stores` and `.loops`, `docs/writing-a-node-type.md#stores`), each defaulting to an empty list.
 - A choice argument off the realtime thread takes a `std::string_view`, checked at run time (a value not among them is a
   type bug: the node fails with the rule's text); from `process` a consteval-made index only.
 - `Report` carries its writes in the same per-node channel as `NodeHandle::lost`, so a status write, an event and a
@@ -766,8 +766,7 @@ public:
 		return {in(members(s.get<channelsRow>())), out(members(s.get<channelsRow>()))};
 	}
 	Configured configure(CreateOf<spec>& cx, const Checked&) {
-		cx.use(GainCode{});   // no change version: its live rows retune, `channels` restarts
-		return Configured::applied();
+		return cx.applied(GainCode{});   // no change version: its live rows retune, `channels` restarts
 	}
 };
 }
@@ -927,7 +926,8 @@ and its owner, drops a stale `seq`, stops for a keep-alive, checks the value aga
 | teardown step 5 | the channels are freed, after the code and the loops' states |
 
 No channel is allocated, freed or resized on the realtime thread or while the code that uses it can run. One node's
-transition never touches another's channels (R16). A companion writes no status, events or records.
+transition never touches another's channels (the owner, 2026-11-08: "it should be per-node. Some node
+stopping/reconfiguring/failing does not effect the graph globally"). A companion writes no status, events or records.
 
 ## 7. The keeper path
 
@@ -1325,8 +1325,9 @@ formulas and their inverses; Backspace on a focused knob sends no `node.remove`.
 - **Rounding at the end** can differ from the last live value by half a step (0.05 dB at one decimal).
 - **Ticks run the type's `check`** on the main loop, once per gesture per turn at most.
 - **Triggers are lossy by design**: several invokes in one block are one; an action that must count is a call.
-- [U] Aggregate deduction of `TypeSpec` with designated initialisers and defaulted parameters on GCC 14
-  (`node-primitives.md` U1); fallback a consteval `makeSpec`.
+- [U] Aggregate deduction of `TypeSpec` with designated initialisers and defaulted parameters on GCC 14: it holds for
+  `.stores` and `.loops` (every subset spelling compiles, `type_spec_test.cpp`) and is still to check for this page's
+  members; fallback a consteval `makeSpec` with the same members in the same order.
 - [U] knobly reads `-3.5` as one number word in a setting's place, and a directive name may hold `.`; fallback `trimDb-1`.
 - [U] `std::atomic<double>` lock-free on arm64.
 - [U] Browsers' pointer capture on touch screens (`lostpointercapture` after a cancelled touch), checked by hand in 6.5.
@@ -1360,7 +1361,7 @@ formulas and their inverses; Backspace on a focused knob sends no `node.remove`.
 | JSON Schema as the type schema | a small closed vocabulary reads better and checks in tests |
 | A hash per type | types are compiled in and change together |
 | Clamping out-of-range ticks | a script sending a wrong value should learn it |
-| A base class with virtual `onParam`, `onAction` (JUCE, VST3) | nothing to override: a type declares (R1) |
+| A base class with virtual `onParam`, `onAction` (JUCE, VST3) | nothing to override: a type declares, so it writes only what is its own (the owner, 2026-11-07: "what are the core primitives that ear should host so that new nodes can be added simply and only require defining the truly custom bits that its node type demands") |
 | Every save aborting every gesture | the owner: "Only a related save" (R31) |
 | A dropped tab's gesture returning to the file's value | the owner: "Keep last value" (R32) |
 | Gestures on `.inPlace()` rows | a drag would chop the audio into holds (X5) |

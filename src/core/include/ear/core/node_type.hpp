@@ -134,96 +134,39 @@ public:
 	/// Main thread, after the last process() returned.
 	virtual void release() noexcept = 0;
 };
-/// Realtime end of a handoff. Valid until the run's teardown closed the handoff.
-class RtWriter {
-public:
-	/// Realtime thread only. Interleaves `frames` frames of planar `channels` (size == the
-	/// handoff's channel count, each span >= frames) into the ring. Never blocks, locks or
-	/// allocates. Returns frames accepted; the rest are dropped and counted by the framework.
-	virtual std::uint32_t write(std::span<const std::span<const float>> channels, std::uint32_t frames) noexcept = 0;
-
-protected:
-	~RtWriter() = default;
-};
-/// Ordinary-thread end of a handoff, implemented by the node type. A call that throws is caught on the handoff's
-/// thread: it fails the node, and no more consume follows (docs/writing-a-node-type.md#sinks says the same of a sink).
-class HandoffConsumer {
-public:
-	virtual ~HandoffConsumer() = default;
-	/// The handoff's own thread (never realtime or main). May block on I/O. In write order;
-	/// interleaved.size() == frames * channels.
-	virtual void consume(std::span<const float> interleaved, std::uint32_t frames) = 0;
-	/// Same thread, exactly once, after the last consume().
-	virtual void finish() = 0;
-};
-/// A handoff from one input bank (routable or inside) of the node: one channel per port of the bank, `capacityFrames`
-/// of ring. `consumer` must live until the run is destroyed (in the run object, or in what its recipe holds).
-struct HandoffRequest {
-	std::string bank;
-	std::uint32_t capacityFrames;
-	HandoffConsumer* consumer;
-};
-/// Every kind of resource a legacy run can acquire: a closed list, on purpose, since a kind changes what the framework
-/// promises (docs/writing-a-node-type.md#configure-and-createof). Each kind has one adapter (node_host.hpp). Sound
-/// cards and RTP receivers are engine companions a class asks for (CreateOf::soundCard, CreateOf::rtpReceiver).
-using ResourceRequest = std::variant<HandoffRequest>;
-/// What `start` sees (docs/writing-a-node-type.md#the-class): the format, the node's name, and the acquire calls. Main
-/// thread, inside start() only: any call outside it throws std::logic_error. Everything acquired belongs to the run and
-/// is torn down by the framework by dependency: handoffs, then the run object.
-class StartContext {
-public:
-	virtual AudioFormat format() const = 0; // the value prepare() will get
-	virtual const NodeName& node() const = 0;
-	/// A handoff (HandoffRequest); its writer for the run's code. Ready at once.
-	RtWriter& acquire(const HandoffRequest& request) { return *std::get<RtWriter*>(acquireResource(request)); }
-	/// The run's handle (node_handle.hpp), the configuration's; may be kept by the run's threads. (Kept on the start
-	/// context until sendspin builds its run in the recipe, slice 3.)
-	virtual NodeHandle& events() = 0;
-	/// The run's own latency on `bank`, for the whole run (docs/engine.md#latency-per-bank-pair): on an output bank,
-	/// how long its audio was held inside the node before it leaves (rtp's receive buffer, sendspin's feed); on an
-	/// input bank, how long what it takes is held inside before it leaves the node. The framework adds it to the
-	/// latency it carries through the bank, and tells the sum to the ports linked to it. At most once per bank; a bank
-	/// the node lacks, or a second declaration for one, throws std::logic_error (a type bug). Ignored by a context that
-	/// carries no latency (a type's own test's).
-	virtual void declareLatency(const std::string& bank, Latency internal) {
-		static_cast<void>(bank);
-		static_cast<void>(internal);
-	}
-
-protected:
-	~StartContext() = default;
-	/// What an acquire hands back: nothing, or a handoff's writer.
-	using Acquired = std::variant<std::monostate, RtWriter*>;
-	/// Every engine object one run makes is named "<node>.<suffix>"; a second request with a suffix already taken in
-	/// this run, a bank the node does not have or one of the wrong reach or direction throws std::logic_error (a type
-	/// bug): one configuration names each engine object once.
-	virtual Acquired acquireResource(const ResourceRequest& request) = 0;
-};
-/// What the run object's recipe is handed once every resource of the run is ready
-/// (docs/writing-a-node-type.md#the-class). Main thread, inside the recipe only.
-class Ready {
-public:
-	virtual AudioFormat format() const = 0;
-	virtual NodeHandle& events() = 0; // as StartContext::events
-protected:
-	~Ready() = default;
-};
-/// The type's own object for one run, with the threads it owns. Built by the recipe on the main loop, closed by the
-/// framework at teardown (teardown step 4) and destroyed on the main loop after `closed`.
-class RunObject {
-public:
-	virtual ~RunObject() = default;
-	/// Main thread, once, after every engine companion of the run is gone and every handoff closed. A run object with
-	/// threads stops them (off the main loop: the main loop never joins a thread) and calls `closed`, last, from any
-	/// thread; one without calls it at once. A run that has not called it within the close deadline is leaked, never
-	/// destroyed.
-	virtual void close(std::move_only_function<void()> closed) { closed(); }
-};
 /// A type's code written against its spec (type_spec.hpp: `void process(Io<spec>, const GraphCycle&) noexcept`), not
 /// an AudioCode: erased once, by eraseSpecCode, which type_spec.hpp defines (a type that names its code includes it).
 template <class Code>
 concept SpecCode = requires { &Code::process; } && !std::derived_from<Code, AudioCode> && std::move_constructible<Code>;
 template <SpecCode Code> std::unique_ptr<AudioCode> eraseSpecCode(Code code);
+/// The framework's pass-through between banks as a type names it: made only by passThrough(first, rest...), so it
+/// names at least one pair.
+class PassThroughPairs {
+public:
+	const std::vector<BankPair>& pairs() const noexcept { return pairs_; }
+
+private:
+	friend class NodeCode;
+	template <std::same_as<BankPair>... Rest> friend PassThroughPairs passThrough(BankPair first, Rest... rest);
+	explicit PassThroughPairs(std::vector<BankPair> pairs) noexcept : pairs_(std::move(pairs)) {}
+	std::vector<BankPair> pairs_;
+};
+/// The framework's pass-through between banks, one pair or more (`bankPair(from, to)` each): `card` and `rtp` write no
+/// audio code.
+template <std::same_as<BankPair>... Rest> PassThroughPairs passThrough(BankPair first, Rest... rest) {
+	std::vector<BankPair> pairs;
+	pairs.reserve(1 + sizeof...(Rest));
+	pairs.push_back(std::move(first));
+	(pairs.push_back(std::move(rest)), ...);
+	return PassThroughPairs(std::move(pairs));
+}
+/// A pass-through of no pair does not compile: it would play silence on every output.
+template <class... None>
+	requires(sizeof...(None) == 0)
+PassThroughPairs passThrough(None...) {
+	static_assert(sizeof...(None) != 0, "a pass-through names at least one pair of banks");
+	return passThrough(BankPair{});
+}
 /// What runs on the realtime thread for one configuration (docs/writing-a-node-type.md#the-code): a type's own code
 /// (an AudioCode, or a code written against its spec), or the framework's pass-through between banks (outputs no pair
 /// names are silent). The pass-through is resolved against the node's ports when configure returns; a pair naming a
@@ -233,7 +176,9 @@ public:
 	template <std::derived_from<AudioCode> Code> NodeCode(std::unique_ptr<Code> code) noexcept
 		: code_(std::move(code)) {} // NOLINT: implicit on purpose
 	template <SpecCode Code> NodeCode(Code code)
-		: code_(eraseSpecCode(std::move(code))) {} // NOLINT: implicit on purpose
+		: code_(eraseSpecCode(std::move(code))) {}                                 // NOLINT: implicit on purpose
+	NodeCode(PassThroughPairs pairs) noexcept : pairs_(std::move(pairs.pairs_)) {} // NOLINT: implicit on purpose
+	/// A pass-through of pairs known only at run time (the framework's own tests).
 	static NodeCode passThrough(std::vector<BankPair> pairs);
 	/// The type's own code; null for a pass-through.
 	std::unique_ptr<AudioCode>& own() noexcept { return code_; }
@@ -244,39 +189,6 @@ private:
 	std::unique_ptr<AudioCode> code_;
 	std::vector<BankPair> pairs_;
 };
-/// The old SPI's name for it, kept for sendspin's legacy start until slice 3c.
-using RunCode = NodeCode;
-/// The framework's pass-through between banks, one pair or more: `card` and `rtp` write no audio code.
-inline NodeCode passThrough(std::vector<BankPair> pairs) { return NodeCode::passThrough(std::move(pairs)); }
-/// Builds the run object once every resource is ready, or fails the node (startFailed).
-using RunRecipe = std::move_only_function<std::expected<std::unique_ptr<RunObject>, FailureReason>(Ready&)>;
-/// What `start` returns (docs/writing-a-node-type.md#the-class): a failure (the node fails startFailed with its
-/// detail), or the run's code, which drives the block at once, and optionally the recipe of its run object, called once
-/// every resource is ready; the node is running once it returned.
-class StartResult {
-public:
-	StartResult(NodeCode code, RunRecipe recipe = nullptr) // NOLINT: implicit on purpose
-		: started_(Started{std::move(code), std::move(recipe)}) {}
-	template <std::derived_from<AudioCode> Code>
-	StartResult(std::unique_ptr<Code> code, RunRecipe recipe = nullptr) // NOLINT: implicit on purpose
-		: StartResult(NodeCode(std::move(code)), std::move(recipe)) {}
-	template <SpecCode Code> StartResult(Code code, RunRecipe recipe = nullptr) // NOLINT: implicit on purpose
-		: StartResult(NodeCode(std::move(code)), std::move(recipe)) {}
-	StartResult(std::unexpected<FailureReason> failure) : started_(std::move(failure)) {} // NOLINT: implicit on purpose
-	bool failed() const noexcept { return !started_.has_value(); }
-	/// Only when failed().
-	FailureReason& failure() { return started_.error(); }
-	/// Only when not failed().
-	NodeCode& code() { return started_->code; }
-	RunRecipe& recipe() { return started_->recipe; }
-
-private:
-	struct Started {
-		NodeCode code;
-		RunRecipe recipe;
-	};
-	std::expected<Started, FailureReason> started_;
-};
 class ErasedInstance; // lifecycle.hpp
 class NodeContext;    // lifecycle.hpp
 /// One node's checked settings; made only by its type's parse().
@@ -284,15 +196,9 @@ class NodeConfig {
 public:
 	virtual ~NodeConfig() = default;
 	virtual const Ports& ports() const = 0; // pure; the only place this node's ports are declared
-	/// The old SPI (docs/writing-a-node-type.md#the-old-interface): main thread; acquires only
-	/// (docs/writing-a-node-type.md#the-class). Error: the node becomes failed with this reason (startFailed). The
-	/// default throws std::logic_error ("a type on the new SPI has no start"): a type made by makeNodeType writes
-	/// configure instead.
-	virtual StartResult start(StartContext& context) const;
-	/// Main thread, at T2: one configuration's instance, which NodeHost drives (lifecycle.hpp); `node` outlives it. The
-	/// default is the legacy adapter over start() (docs/writing-a-node-type.md#the-old-interface), for sendspin's
-	/// NodeTypeOf and hand-made configs until slice 3c; makeNodeType's config makes the type's class instead.
-	virtual std::unique_ptr<ErasedInstance> make(NodeContext& node) const;
+	/// Main thread, at T2: one configuration's instance, which NodeHost drives (lifecycle.hpp); `node` outlives it.
+	/// makeNodeType's config makes the type's class.
+	virtual std::unique_ptr<ErasedInstance> make(NodeContext& node) const = 0;
 };
 /// How one setting is written in the graph file: the keeper reads it with knobly's reader of this
 /// kind and writes a JSON value of this kind back. The one home of each key's kind.
@@ -319,8 +225,8 @@ template <const auto& Spec, class Type> class SpecNodeType; // lifecycle.hpp
 class CheckedSettings; // settings_table.hpp
 /// What a type makes of one node's checked settings: its config, or the whole text of a refusal. parse names the node.
 using MadeConfig = std::expected<std::unique_ptr<const NodeConfig>, std::string>;
-/// One node type. Its name, its settings' kinds and their checking all answer from the one table NodeTypeOf
-/// (settings_table.hpp) bound it to; none can be overridden, so they cannot disagree.
+/// One node type. Its name, its settings' kinds and their checking all answer from the one table makeNodeType
+/// (lifecycle.hpp) bound it to, its spec's; none can be overridden, so they cannot disagree.
 class NodeType {
 public:
 	virtual ~NodeType() = default;
@@ -334,16 +240,15 @@ public:
 	/// Every key parse() accepts, each once, with its kind, in row order; the same span every call; pure.
 	std::span<const SettingDeclaration> settingKinds() const noexcept;
 	/// The stores every node of the type has (docs/writing-a-node-type.md#stores), from its spec, in declaration
-	/// order: the boot sweep reads them before any node exists. None for a type on the old interface.
+	/// order: the boot sweep reads them before any node exists.
 	std::span<const StoreDeclaration> stores() const noexcept { return stores_; }
 
 private:
-	template <const auto& Table> friend class NodeTypeOf; // nothing else can derive, but makeNodeType's type
-	template <const auto& Spec, class Type> friend class spec_detail::SpecNodeType;
+	template <const auto& Spec, class Type> friend class spec_detail::SpecNodeType; // nothing else can derive
 	explicit NodeType(const AnySettingsTable& table, std::span<const StoreDeclaration> stores = {}) noexcept;
 	/// The one customisation point. Called only with what the table's walk made.
 	virtual MadeConfig makeConfig(const NodeName& node, CheckedSettings settings) const = 0;
-	const AnySettingsTable* table_;            // static storage, because NodeTypeOf takes it as a template argument
+	const AnySettingsTable* table_;            // static storage: the spec's table
 	std::span<const StoreDeclaration> stores_; // static storage: the spec's Stores::declared
 };
 } // namespace ear

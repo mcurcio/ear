@@ -23,6 +23,9 @@
 //  - S7: what a module-run converter relies on (docs/engine.md#module-run-converters): the module's node finishes its
 //    cycle before the block it feeds wakes, in every cycle PipeWire's own profiler records, and its ports tell no
 //    latency of their own, resampling or not, so its module's buffer enters the plan once, by moduleRunDelay.
+//  - S4: ports added to and removed from a streaming filter, 500 times, beside a judged ramp: they link, carry audio
+//    and take their links with them, and nothing else is disturbed; and where filter.c changes the port list its data
+//    loop walks (the header above the test).
 // Everything here is test-only: the probes are bare pw_filters (probes.hpp, shared with port_block_test.cpp), S2's
 // take-up block implements a deferred take-up itself (FilterPortBlock applies its drive in its invoke instead,
 // docs/engine.md#drive-and-fade), and S5's source keeps its ring itself. Every wait is event-gated: the main loop runs
@@ -40,9 +43,12 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <optional>
 #include <random>
+#include <semaphore>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -2424,4 +2430,563 @@ TEST_CASE("S7: a module-run converter's ports tell no latency of their own, resa
 		CHECK(receiverPort.told() == Latency{0, 0});
 		CHECK(stream.told() == delay.latency);
 	}
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// S4: ports added to and removed from a connected, streaming RT_PROCESS filter: what a port block's reshape would do
+// (not built: docs/design/reconfigure.md). What it found is docs/engine.md#the-one-data-loop-and-invokes.
+//
+// The code reading, PipeWire 1.4.2 (src/pipewire/filter.c unless named):
+//  - pw_filter_add_port (1802) runs on the main loop (ensure_loop, 1813) and calls alloc_port (328), which puts the
+//    port in the direction's id map (pw_map_insert_new, 342: ids are given again) and appends it to
+//    filter->port_list (spa_list_append, 343) there and then: no invoke, no lock. emit_port_info (1865) then tells
+//    the filter's own pw_impl_node (impl-node.c node_port_info, 1856), which makes a pw_impl_port; that one joins the
+//    node's realtime list only inside an invoke on the data loop (impl-port.c do_add_port, 975, posted at 1946).
+//  - pw_filter_remove_port (1879) runs on the main loop too and calls free_port (1384): spa_list_remove from
+//    port_list (1386), again with no invoke; then spa_node_emit_port_info(NULL) (1387), which reaches
+//    pw_impl_port_destroy (impl-port.c 1415): the port's links are destroyed (pw_impl_port_unlink, 1425) and the port
+//    leaves the node's realtime list in a blocking invoke on the data loop (pw_impl_port_remove, 1391); only after
+//    that returns does free_port clear the buffers and free the port (1389 to 1392).
+//  - The data loop's impl_node_process (1010) walks filter->port_list twice a cycle (1021, 1051), around the
+//    process callback, reading each port's io and buffers.
+// So the list the data loop walks is changed on the main thread with no invoke and no lock. By the letter that is a
+// data race: the list is NOT changed only inside an invoke on the data loop, nor only before the port is visible to
+// it. What makes it hold in practice, on the one data loop ear runs (S3):
+//  - an append (spa/utils/list.h spa_list_insert, 51) stores the new element's next before the store that links it
+//    in, and the walk reads only next pointers, so a walker sees the list without the port or with it, whole; the new
+//    port's io is null until it is linked, and the walk skips a port with no io (1024, 1054). That order of stores is
+//    kept between threads on x86-64 (total store order) and is not on arm64;
+//  - a remove (spa_list_remove, 69) is one store the walk sees whole and leaves the removed element's own pointers
+//    alone, so a walker standing on it walks on; and the blocking invoke of pw_impl_port_remove sits between the
+//    unlink and the free, so every walk that could have reached the port has ended before its memory goes.
+// The barrier before the free is a side effect of impl-port.c, not a contract of filter.c. A filter's own process
+// must have stopped using a port's handle before pw_filter_remove_port returns: the test swaps its layout in a
+// blocking invoke on the data loop first, as a reshape would behind a barrier.
+//
+// The test: a filter made as port_blocks.cpp makes a block's (the same node and port properties, RT_PROCESS and
+// CUSTOM_LATENCY), with input banks a and b and an inside output bank; beside it a ramp by position from one probe
+// to another, judged by the cycle judge (docs/testing.md#the-cycle-judge), its upstream making the judge's stalls.
+// Then 500 times: a.3 is added between a.2 and b.1 of the filter's own layout, appears in the registry, is linked
+// from a second ramp and carries it; then it is removed while linked, and its port and link leave the registry. b.1
+// stays linked to the same ramp throughout. A second case makes each add with the data loop held (an invoke that
+// parks until the main thread is done), which orders the append for any architecture. Printed by each: how long a
+// round took and the data loop was held, the cycles the new port had no buffer or a buffer of silence after its link
+// was active (a link starting: neither is a failure), port ids the registry gave again, state changes and core
+// errors, and what the judge excused.
+namespace {
+
+constexpr std::size_t kS4Rounds = 500;
+constexpr std::size_t kS4Log = std::size_t{1} << 18; // cycles the listener keeps: 23 minutes at 256 frames
+
+float s4Beside(std::uint64_t frame) noexcept { return static_cast<float>(frame & 0xFFFFU); }
+float s4Fed(std::uint64_t frame) noexcept { return static_cast<float>((frame * 3U + 1U) & 0xFFFFU); }
+
+/// A ramp by position on out.1, `value(position + i)`; ranAt() is the position of the cycle it last wrote, for a node
+/// after it in the same cycle. With `stalls`, it makes the judge's stalls, counted from its first cycle.
+class S4Ramp final : public ProbeCode {
+public:
+	S4Ramp(float (*value)(std::uint64_t) noexcept, Stalls* stalls) : value_(value), stalls_(stalls) {}
+	std::uint64_t ranAt() const noexcept { return ranAt_.load(std::memory_order_relaxed); }
+	std::uint64_t cycles() const noexcept { return cycles_.load(std::memory_order_acquire); }
+	void cycle(const spa_io_clock& clock, std::span<const float* const>, std::span<float* const> outputs,
+	           std::uint32_t frames) noexcept override {
+		for (std::uint32_t i = 0; i < frames; ++i) outputs[0][i] = value_(clock.position + i);
+		ranAt_.store(clock.position, std::memory_order_relaxed);
+		const std::uint64_t n = cycles_.fetch_add(1, std::memory_order_release);
+		if (stalls_ != nullptr) (*stalls_)(n, clock.duration, ear::SampleRate::fixed<kRate>());
+	}
+
+private:
+	float (*value_)(std::uint64_t) noexcept;
+	Stalls* stalls_;
+	std::atomic<std::uint64_t> ranAt_{~std::uint64_t{0}};
+	std::atomic<std::uint64_t> cycles_{0};
+};
+
+/// The ramp's listener: per cycle, the facts it states by the rule a block runs (CycleAccount over the engine's cut
+/// record, as S5's B), and whether every frame was the ramp's at this position.
+class S4Hear final : public ProbeCode {
+public:
+	enum Heard : std::uint8_t { exact, wrong, upstreamAbsent };
+	S4Hear(const S4Ramp& ramp, Waiter& waiter, const Engine& engine)
+		: ramp_(ramp), waiter_(waiter), internalClock_(engine.internalClockId()), cuts_(engine.cuts()),
+		  account_(FrameClock(ear::SampleRate::fixed<kRate>()), &engine.cuts()), facts(kS4Log), frames(kS4Log),
+		  heard(kS4Log) {}
+	std::size_t count() const noexcept { return count_.load(std::memory_order_acquire); }
+	bool full() const noexcept { return full_.load(std::memory_order_acquire); }
+	void cycle(const spa_io_clock& clock, std::span<const float* const> inputs, std::span<float* const>,
+	           std::uint32_t n) noexcept override {
+		const CycleFacts stated = account_.next(driverTick(clock, internalClock_, cuts_).tick, 8192).facts;
+		const std::size_t at = count_.load(std::memory_order_relaxed);
+		if (at >= facts.size()) {
+			full_.store(true, std::memory_order_release);
+			return;
+		}
+		Heard verdict = ramp_.ranAt() == clock.position ? exact : upstreamAbsent;
+		for (std::uint32_t i = 0; i < n && verdict == exact; ++i) {
+			if (inputs[0][i] != s4Beside(clock.position + i)) verdict = wrong;
+		}
+		facts[at] = stated;
+		frames[at] = n;
+		heard[at] = verdict;
+		count_.store(at + 1, std::memory_order_release);
+		waiter_.wake();
+	}
+
+private:
+	const S4Ramp& ramp_;
+	Waiter& waiter_;
+	const std::uint32_t internalClock_;
+	const CutRecord& cuts_;
+	CycleAccount account_; // data thread only
+	std::atomic<std::size_t> count_{0};
+	std::atomic<bool> full_{false};
+
+public:
+	std::vector<CycleFacts> facts;
+	std::vector<std::uint32_t> frames;
+	std::vector<std::uint8_t> heard;
+};
+
+/// The ports the registry holds now, by ear's own live graph, and every id it ever gave.
+class S4Ports final : public LivePortListener {
+public:
+	explicit S4Ports(Waiter& waiter) : waiter_(waiter) {}
+	void portAppeared(const LivePort& port) override {
+		if (!everSeen_.insert(port.id).second) ++idsGivenAgain;
+		now_.push_back(port);
+		waiter_.wake();
+	}
+	void portGone(EnginePortId id) override {
+		std::erase_if(now_, [id](const LivePort& port) { return port.id == id; });
+		waiter_.wake();
+	}
+	std::optional<EnginePortId> find(const NodeName& node, const PortName& port) const {
+		for (const LivePort& live : now_) {
+			if (live.port.node == node && live.port.port == port) return live.id;
+		}
+		return std::nullopt;
+	}
+	std::size_t idsGivenAgain = 0;
+
+private:
+	Waiter& waiter_;
+	std::vector<LivePort> now_;
+	std::set<EnginePortId> everSeen_;
+};
+
+/// Each link's last word.
+class S4Links final : public LinkListener {
+public:
+	explicit S4Links(Waiter& waiter) : waiter_(waiter) {}
+	void linkActive(LinkId link) override {
+		active.insert(link);
+		waiter_.wake();
+	}
+	void linkFailed(LinkId link, std::string detail) override {
+		failed.emplace(link, std::move(detail));
+		waiter_.wake();
+	}
+	void linkGone(LinkId link) override {
+		gone.insert(link);
+		waiter_.wake();
+	}
+	std::set<LinkId> active;
+	std::set<LinkId> gone;
+	std::map<LinkId, std::string> failed;
+
+private:
+	Waiter& waiter_;
+};
+
+/// The filter under test: a pw_filter made as FilterPortBlock makes its own (port_blocks.cpp), whose process reads
+/// every input of its current layout and judges two of them against the fed ramp: `kept` (b.1, linked throughout) and
+/// `added` (the port of the round, null between rounds). The layout is the main thread's until a blocking invoke on
+/// the data loop hands it over; the one it replaces is the main thread's again once that invoke returned.
+class S4Shape {
+public:
+	struct Layout {
+		std::vector<void*> inputs;
+		std::vector<void*> outputs;
+		void* kept = nullptr;
+		void* added = nullptr;
+	};
+	/// What process saw of one judged port since its counts were last reset.
+	struct Seen {
+		std::atomic<std::uint64_t> exact{0}, wrong{0}, noBuffer{0}, upstreamAbsent{0};
+		/// Cycles a port had a buffer of zeros before its first cycle of the ramp: a link starting (below).
+		std::atomic<std::uint64_t> zerosFirst{0};
+		/// Of the wrong cycles: all zeros (once the ramp had arrived), the fed ramp one cycle back, and anything else
+		/// (never reset).
+		std::atomic<std::uint64_t> wrongZeros{0}, wrongStale{0}, wrongOther{0};
+		bool arrived = false; // the data loop's: a cycle of the ramp was read since the reset
+		/// The data loop's, between two cycles; `carrying` for a port whose link already carries the ramp.
+		void reset(bool carrying) noexcept {
+			for (auto* count : {&exact, &wrong, &noBuffer, &upstreamAbsent, &zerosFirst})
+				count->store(0, std::memory_order_relaxed);
+			arrived = carrying;
+		}
+	};
+
+	S4Shape(Engine& engine, Waiter& waiter, const S4Ramp& fed)
+		: waiter_(waiter), fed_(fed), loop_(contextDataLoop(engine)), scratch_(8192, 0.0F) {
+		filter_ = pw_filter_new(engine.core(), "s4-shape",
+		                        pw_properties_new(PW_KEY_NODE_NAME, "s4-shape", PW_KEY_MEDIA_NAME, "s4-shape",
+		                                          PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_NODE_GROUP, "ear.graph",
+		                                          PW_KEY_NODE_ALWAYS_PROCESS, "true", nullptr));
+		REQUIRE(filter_ != nullptr);
+		pw_filter_add_listener(filter_, &listener_, &events(), this);
+		auto first = std::make_unique<Layout>();
+		for (const char* name : {"a.1", "a.2", "b.1", "b.2"}) first->inputs.push_back(addInput(name));
+		first->outputs.push_back(addPort(PW_DIRECTION_OUTPUT, "out.1"));
+		first->outputs.push_back(addPort(PW_DIRECTION_OUTPUT, "to_inside.1"));
+		first->kept = first->inputs[2];
+		layout_ = first.get();
+		owned_ = std::move(first);
+		REQUIRE(pw_filter_connect(
+					filter_, static_cast<pw_filter_flags>(PW_FILTER_FLAG_RT_PROCESS | PW_FILTER_FLAG_CUSTOM_LATENCY),
+					nullptr, 0) >= 0);
+	}
+	~S4Shape() {
+		spa_hook_remove(&listener_);
+		pw_filter_destroy(filter_);
+	}
+	S4Shape(const S4Shape&) = delete;
+	S4Shape& operator=(const S4Shape&) = delete;
+
+	bool streaming() const noexcept { return state_ == PW_FILTER_STATE_STREAMING; }
+	std::uint32_t nodeId() const { return pw_filter_get_node_id(filter_); }
+	std::uint64_t cycles() const noexcept { return cycles_.load(std::memory_order_acquire); }
+	void* addInput(const char* name) { return addPort(PW_DIRECTION_INPUT, name); }
+	/// As addInput, with the data loop held between two cycles while pw_filter_add_port runs: an invoke on it parks
+	/// until the main thread is done, so nothing walks the filter's port list while the port is appended to it, and
+	/// the semaphores order the two threads' memory. `heldNs` is how long the data loop stood still.
+	void* addInputHeld(const char* name, std::int64_t& heldNs) {
+		pw_loop_invoke(loop_, &S4Shape::onHold, 0, nullptr, 0, false, this);
+		held_.acquire();
+		const auto began = std::chrono::steady_clock::now();
+		void* handle = addPort(PW_DIRECTION_INPUT, name);
+		heldNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - began).count();
+		resume_.release();
+		return handle;
+	}
+	int removePort(void* handle) { return pw_filter_remove_port(handle); }
+
+	/// The round's port joins the layout between a.2 and b.1 (`handle`), or leaves it (null): handed to the data loop
+	/// in a blocking invoke, so no cycle runs with a layout half made, and none uses the old one once this returned.
+	void relayout(void* handle) {
+		auto next = std::make_unique<Layout>(*owned_);
+		if (next->added != nullptr) std::erase(next->inputs, next->added);
+		if (handle != nullptr) next->inputs.insert(next->inputs.begin() + 2, handle);
+		next->added = handle;
+		pending_ = next.get();
+		pw_loop_invoke(loop_, &S4Shape::onSwap, 0, nullptr, 0, true, this);
+		owned_ = std::move(next);
+	}
+
+	/// The kept port's counts start again, between two cycles: what it saw before its link carried audio is not judged.
+	void rest() { pw_loop_invoke(loop_, &S4Shape::onRest, 0, nullptr, 0, true, this); }
+
+	Seen kept;
+	Seen added;
+	std::size_t leftStreaming = 0; // state changes away from STREAMING once it streamed
+	std::string lastError;
+	std::atomic<std::uint64_t> mostInputs{0}; // the most inputs one cycle read
+
+private:
+	void* addPort(pw_direction direction, const char* name) {
+		void* handle = pw_filter_add_port(
+			filter_, direction, PW_FILTER_PORT_FLAG_MAP_BUFFERS, 0,
+			pw_properties_new(PW_KEY_FORMAT_DSP, "32 bit float mono audio", PW_KEY_PORT_NAME, name, nullptr), nullptr,
+			0);
+		REQUIRE(handle != nullptr);
+		return handle;
+	}
+	static const pw_filter_events& events() {
+		static const pw_filter_events table = [] {
+			pw_filter_events made{};
+			made.version = PW_VERSION_FILTER_EVENTS;
+			made.state_changed = &S4Shape::onStateChanged;
+			made.process = &S4Shape::onProcess;
+			return made;
+		}();
+		return table;
+	}
+	static int onSwap(spa_loop*, bool, std::uint32_t, const void*, std::size_t, void* data) {
+		auto* self = static_cast<S4Shape*>(data);
+		self->layout_ = self->pending_;
+		self->added.reset(false);
+		return 0;
+	}
+	static int onHold(spa_loop*, bool, std::uint32_t, const void*, std::size_t, void* data) {
+		auto* self = static_cast<S4Shape*>(data);
+		self->held_.release();
+		self->resume_.acquire();
+		return 0;
+	}
+	static int onRest(spa_loop*, bool, std::uint32_t, const void*, std::size_t, void* data) {
+		static_cast<S4Shape*>(data)->kept.reset(true);
+		return 0;
+	}
+	static void onStateChanged(void* data, pw_filter_state old, pw_filter_state state, const char* error) {
+		auto* self = static_cast<S4Shape*>(data);
+		if (old == PW_FILTER_STATE_STREAMING && state != PW_FILTER_STATE_STREAMING) ++self->leftStreaming;
+		if (error != nullptr) self->lastError = error;
+		self->state_ = state;
+		self->waiter_.wake();
+	}
+	void judge(void* handle, const float* buffer, std::uint64_t position, std::uint32_t frames, Seen& seen) noexcept {
+		if (handle == nullptr) return;
+		if (buffer == nullptr) {
+			seen.noBuffer.fetch_add(1, std::memory_order_relaxed);
+			return;
+		}
+		if (fed_.ranAt() != position) {
+			seen.upstreamAbsent.fetch_add(1, std::memory_order_relaxed);
+			return;
+		}
+		bool right = true, zeros = true, stale = true;
+		for (std::uint32_t i = 0; i < frames; ++i) {
+			right = right && buffer[i] == s4Fed(position + i);
+			zeros = zeros && buffer[i] == 0.0F;
+			stale = stale && buffer[i] == s4Fed(position - frames + i);
+		}
+		if (right) {
+			seen.arrived = true;
+			seen.exact.fetch_add(1, std::memory_order_relaxed);
+			return;
+		}
+		// A link's first cycles: PipeWire may hand the port a buffer of silence before its peer's audio is mixed in.
+		if (zeros && !seen.arrived) {
+			seen.zerosFirst.fetch_add(1, std::memory_order_relaxed);
+			return;
+		}
+		seen.wrong.fetch_add(1, std::memory_order_relaxed);
+		(zeros ? seen.wrongZeros : stale ? seen.wrongStale : seen.wrongOther).fetch_add(1, std::memory_order_relaxed);
+	}
+	static void onProcess(void* data, spa_io_position* position) {
+		auto* self = static_cast<S4Shape*>(data);
+		const auto frames = static_cast<std::uint32_t>(position->clock.duration);
+		if (frames > self->scratch_.size()) return;
+		const Layout& layout = *self->layout_;
+		for (void* input : layout.inputs) {
+			const auto* buffer = static_cast<const float*>(pw_filter_get_dsp_buffer(input, frames));
+			if (input == layout.kept) self->judge(input, buffer, position->clock.position, frames, self->kept);
+			if (input == layout.added) self->judge(input, buffer, position->clock.position, frames, self->added);
+		}
+		for (void* output : layout.outputs) {
+			auto* buffer = static_cast<float*>(pw_filter_get_dsp_buffer(output, frames));
+			std::fill_n(buffer != nullptr ? buffer : self->scratch_.data(), frames, 0.0F);
+		}
+		if (layout.inputs.size() > self->mostInputs.load(std::memory_order_relaxed))
+			self->mostInputs.store(layout.inputs.size(), std::memory_order_relaxed);
+		self->cycles_.fetch_add(1, std::memory_order_release);
+		self->waiter_.wake();
+	}
+
+	Waiter& waiter_;
+	const S4Ramp& fed_;
+	pw_loop* loop_;
+	std::vector<float> scratch_;
+	pw_filter* filter_ = nullptr;
+	spa_hook listener_{};
+	pw_filter_state state_ = PW_FILTER_STATE_UNCONNECTED;
+	std::unique_ptr<Layout> owned_;  // the main thread's: what the data loop reads now
+	const Layout* layout_ = nullptr; // the data loop's
+	const Layout* pending_ = nullptr;
+	std::binary_semaphore held_{0};   // the data loop: parked
+	std::binary_semaphore resume_{0}; // the main thread: carry on
+	std::atomic<std::uint64_t> cycles_{0};
+};
+
+/// Errors the core reports to this connection while the test runs.
+class S4CoreErrors {
+public:
+	explicit S4CoreErrors(Engine& engine) {
+		static const pw_core_events table = [] {
+			pw_core_events made{};
+			made.version = PW_VERSION_CORE_EVENTS;
+			made.error = [](void* data, std::uint32_t id, int, int res, const char* message) {
+				auto* self = static_cast<S4CoreErrors*>(data);
+				++self->count;
+				self->last = "object " + std::to_string(id) + ": " + spa_strerror(res) + ": " +
+				             (message != nullptr ? message : "");
+			};
+			return made;
+		}();
+		pw_core_add_listener(engine.core(), &hook_, &table, this);
+	}
+	~S4CoreErrors() { spa_hook_remove(&hook_); }
+	S4CoreErrors(const S4CoreErrors&) = delete;
+	S4CoreErrors& operator=(const S4CoreErrors&) = delete;
+	std::size_t count = 0;
+	std::string last;
+
+private:
+	spa_hook hook_{};
+};
+
+} // namespace
+
+namespace {
+
+/// S4's run: `rounds` of add, link, carry, remove. With `held`, each add is made with the data loop held (addInputHeld).
+void s4Run(std::size_t rounds, bool held) {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Registry registry(*engine, waiter);
+	S4CoreErrors coreErrors(*engine);
+	LiveGraph live(*engine);
+	Links links(*engine);
+	S4Ports ports(waiter);
+	S4Links linkLog(waiter);
+	live.subscribe(ports);
+	links.subscribe(linkLog);
+
+	// The ramp beside, its listener the judged node: every cycle it runs is whole, or follows cycles the driver cut
+	// (a stall of the host's, or one of the four the ramp makes for the judge), and nothing else.
+	ear::test::CycleJudge judge(ear::test::JudgePlan{.judged = 1000}, FrameClock(ear::SampleRate::fixed<kRate>()),
+	                            &engine->cuts());
+	S4Ramp besideCode(&s4Beside, &judge.stalls());
+	S4Hear hearCode(besideCode, waiter, *engine);
+	S4Ramp fedCode(&s4Fed, nullptr);
+	Probe beside(*engine, waiter, "s4-ramp", 0, 1, besideCode);
+	Probe hear(*engine, waiter, "s4-hear", 1, 0, hearCode);
+	Probe feed(*engine, waiter, "s4-feed", 0, 1, fedCode);
+	S4Shape shape(*engine, waiter, fedCode);
+	REQUIRE(
+		waiter.until([&] { return beside.streaming() && hear.streaming() && feed.streaming() && shape.streaming(); }));
+
+	LinkId nextLink = 1;
+	const auto link = [&](const PortRef& from, const PortRef& to) {
+		REQUIRE(waiter.until([&] { return ports.find(from.node, from.port) && ports.find(to.node, to.port); }));
+		const LinkId id = nextLink++;
+		links.createLink(id, *ports.find(from.node, from.port), *ports.find(to.node, to.port));
+		REQUIRE(waiter.until([&] { return linkLog.active.contains(id) || linkLog.failed.contains(id); }));
+		INFO("link " << id << ": " << (linkLog.failed.contains(id) ? linkLog.failed.at(id) : std::string("active")));
+		REQUIRE(linkLog.active.contains(id));
+		return id;
+	};
+	link({"s4-ramp", "out.1"}, {"s4-hear", "in.1"});
+	const LinkId keptLink = link({"s4-feed", "out.1"}, {"s4-shape", "b.1"});
+	REQUIRE(waiter.until([&] { return shape.kept.exact.load() >= 4; }));
+	const std::size_t linksAtRest = registry.linksOf(shape.nodeId()).size();
+	REQUIRE(linksAtRest == 1);
+	// At rest: both ramps arrive. What came before (a cycle run while a link was being made) is setup, counted apart.
+	shape.rest();
+	const std::size_t linkedAt = hearCode.count();
+	REQUIRE(waiter.until([&] { return hearCode.count() >= linkedAt + 4; }));
+	const std::size_t atRest = hearCode.count();
+	for (std::size_t n = linkedAt; n < atRest; ++n) REQUIRE(hearCode.heard[n] == S4Hear::exact);
+
+	std::uint64_t noBufferCycles = 0, mostNoBuffer = 0; // cycles the linked new port had no buffer, in all and at most
+	std::uint64_t zerosFirstCycles = 0, mostZerosFirst = 0; // and a buffer of silence before the ramp, likewise
+	std::uint64_t addedExact = 0;
+	double slowestMs = 0;
+	std::int64_t longestHeldNs = 0;
+	const auto began = std::chrono::steady_clock::now();
+	for (std::size_t round = 0; round < rounds; ++round) {
+		INFO("round " << round << "; core errors " << coreErrors.count << " (" << coreErrors.last << "); state changes "
+		              << "away from streaming " << shape.leftStreaming << " (" << shape.lastError << ")"
+		              << (held ? "; the data loop held for the add" : ""));
+		const auto roundBegan = std::chrono::steady_clock::now();
+		// Added on the streaming filter, then put into the layout the process reads, between a.2 and b.1.
+		std::int64_t heldNs = 0;
+		void* handle = held ? shape.addInputHeld("a.3", heldNs) : shape.addInput("a.3");
+		longestHeldNs = std::max(longestHeldNs, heldNs);
+		shape.relayout(handle);
+		// It appears in the registry and links.
+		REQUIRE(waiter.until([&] { return ports.find("s4-shape", "a.3").has_value(); }));
+		const LinkId added = link({"s4-feed", "out.1"}, {"s4-shape", "a.3"});
+		// It carries the fed ramp, sample for sample, while b.1 goes on doing so.
+		REQUIRE(waiter.until([&] { return shape.added.exact.load() >= 3; }));
+		{
+			INFO("the added port's wrong cycles: "
+			     << shape.added.wrongZeros.load() << " all zeros, " << shape.added.wrongStale.load()
+			     << " the cycle before's, " << shape.added.wrongOther.load() << " other; exact "
+			     << shape.added.exact.load() << ", no buffer " << shape.added.noBuffer.load() << ", zeros first "
+			     << shape.added.zerosFirst.load());
+			// Once the ramp arrived, every cycle was the ramp's; before it, a buffer of anything but silence is wrong.
+			CHECK(shape.added.wrong.load() == 0);
+		}
+		zerosFirstCycles += shape.added.zerosFirst.load();
+		mostZerosFirst = std::max(mostZerosFirst, shape.added.zerosFirst.load());
+		noBufferCycles += shape.added.noBuffer.load();
+		mostNoBuffer = std::max(mostNoBuffer, shape.added.noBuffer.load());
+		addedExact += shape.added.exact.load();
+		// Out of the layout behind a barrier, then removed while linked: its port and its link leave the registry.
+		shape.relayout(nullptr);
+		REQUIRE(shape.removePort(handle) == 0);
+		REQUIRE(waiter.until(
+			[&] { return !ports.find("s4-shape", "a.3") && registry.linksOf(shape.nodeId()).size() == linksAtRest; }));
+		REQUIRE(waiter.until([&] { return linkLog.gone.contains(added) || linkLog.failed.contains(added); }));
+		links.destroyLink(added);
+		CHECK_FALSE(linkLog.gone.contains(keptLink));
+		REQUIRE(shape.streaming());
+		slowestMs = std::max(slowestMs, millisecondsSince(roundBegan));
+	}
+	const double tookMs = millisecondsSince(began);
+	// The judge's four stalls were made while ports came and went, or are made now; then every cycle is judged.
+	REQUIRE(waiter.until([&] { return judge.stalls().made() >= judge.stalls().plan().size(); }, 20s));
+	const std::size_t settled = hearCode.count();
+	REQUIRE(waiter.until([&] { return hearCode.count() >= settled + 8; }));
+	REQUIRE_FALSE(hearCode.full());
+
+	const std::size_t heard = hearCode.count();
+	std::size_t wrong = 0, upstreamAbsent = 0, beforeRest = 0;
+	for (std::size_t n = 0; n < heard; ++n) {
+		judge.at(hearCode.facts[n], hearCode.frames[n]);
+		if (n < linkedAt) {
+			beforeRest += hearCode.heard[n] != S4Hear::exact ? 1 : 0;
+			continue;
+		}
+		wrong += hearCode.heard[n] == S4Hear::wrong ? 1 : 0;
+		upstreamAbsent += hearCode.heard[n] == S4Hear::upstreamAbsent ? 1 : 0;
+	}
+	const ear::test::JudgeReport report = judge.report();
+	std::printf(
+		"S4%s: %zu rounds in %.0f ms (the slowest %.1f ms; the data loop held %.0f us at most); the ramp beside: %zu "
+		"cycles heard, %zu of them before its link "
+		"carried it (%zu not the ramp's), then %zu wrong and %zu with its upstream absent; the kept port: %" PRIu64
+		" cycles exact, %" PRIu64 " wrong, %" PRIu64 " with no buffer, %" PRIu64
+		" with its upstream absent; the added port: %" PRIu64 " cycles exact, with no buffer after it linked %" PRIu64
+		" in all and %" PRIu64 " at most in a round, with a buffer of silence before the ramp %" PRIu64
+		" in all and %" PRIu64
+		" at most; port ids the registry gave again %zu; state changes away from streaming %zu; core "
+		"errors %zu; the most inputs a cycle read %" PRIu64 "; the judge excused %zu cut cycles in %zu verdicts "
+		"(4 are its own stalls) and failed %zu\n",
+		held ? ", the data loop held for each add" : "", rounds, tookMs, slowestMs,
+		static_cast<double>(longestHeldNs) / 1000.0, heard, linkedAt, beforeRest, wrong, upstreamAbsent,
+		shape.kept.exact.load(), shape.kept.wrong.load(), shape.kept.noBuffer.load(), shape.kept.upstreamAbsent.load(),
+		addedExact, noBufferCycles, mostNoBuffer, zerosFirstCycles, mostZerosFirst, ports.idsGivenAgain,
+		shape.leftStreaming, coreErrors.count, shape.mostInputs.load(), report.excusedCycles, report.excusedEvents,
+		report.failed);
+	INFO("the judge: " << report);
+	// The ramp beside never lost a sample: every cycle its listener ran was the ramp's own at that position, and no
+	// cycle went missing but one the driver cut.
+	CHECK(wrong == 0);
+	CHECK(upstreamAbsent == 0);
+	CHECK(report.ok());
+	// The kept port kept its link and its audio through every round.
+	CHECK(shape.kept.wrong.load() == 0);
+	CHECK(shape.kept.noBuffer.load() == 0);
+	CHECK(registry.linksOf(shape.nodeId()).size() == linksAtRest);
+	CHECK(shape.mostInputs.load() == 5);
+	// The filter never left the graph, and the core refused nothing.
+	CHECK(shape.leftStreaming == 0);
+	CHECK(coreErrors.count == 0);
+}
+
+} // namespace
+
+TEST_CASE("S4: a port added to and removed from a streaming filter 500 times links, carries audio and takes its link "
+          "with it, a kept port keeps its link, and a ramp beside it loses no sample",
+          "[spike][s4]") {
+	s4Run(kS4Rounds, false);
+}
+
+TEST_CASE("S4: the same with the data loop held while each port is added, so the filter's port list is never walked "
+          "while it grows",
+          "[spike][s4]") {
+	s4Run(kS4Rounds, true);
 }

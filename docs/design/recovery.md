@@ -21,7 +21,7 @@ are described in `docs/architecture.md` and `docs/control-port.md`.
 
 As built (slice 3a): a failure (`engine-refused`, `start-failed`, `lost`) tears the node's configuration down at once,
 keeping its block and wires; the node stays `failed` and is configured again **only when asked**: `node.start` (a
-retry), `node.restart`, or a committed settings change (D-L31: rule 1 never configures a failed node by itself, "slice
+retry), `node.restart`, or a committed settings change (the lifecycle's rule 1 never configures a failed node by itself, "slice
 8's recovery does that"). A lost block is final. So today a `sendspin` library that dies after an hour, or a USB card
 unplugged and plugged back, stays failed until an operator acts or ear restarts.
 
@@ -67,7 +67,7 @@ another's.
 The default is the framework's (3.2) for every type. A type may declare `recovery::none` or a cap on attempts, after
 which the node stays `failed` until `node.start`, `node.restart` or a settings change. Decided here: the policy is a
 member of the spec's `Lifecycle` struct (`reconfigure.md` 4: `Lifecycle{.reconfigureDeadline = ..., .recovery =
-recovery::attempts(5)}`), so `TypeSpec`'s member order (`node-primitives.md` 6.11) does not change. The type schema
+recovery::attempts(5)}`), so `TypeSpec`'s member order (`docs/writing-a-node-type.md#stores`: `.stores`, then `.loops`) does not change. The type schema
 (slice 5) carries it as `recovery` on the type. No built-in type declares one.
 
 ### 3.4 Visible, not silent
@@ -114,7 +114,7 @@ Slice 5 defines `writer::companion`; this slice builds its first users:
 | Built piece | Change |
 |---|---|
 | `NodePhase`, `NodeState`, the aggregate (`node_lifecycle.hpp`) | `recovering`; T16 and its end; the attempt count and last failure per node |
-| `NodeHost` | a recovery timer per node; D-L31's rule changes: a failed node is configured again when the timer fires, as well as when asked |
+| `NodeHost` | a recovery timer per node; that rule changes: a failed node is configured again when the timer fires, as well as when asked |
 | `NodeHealth` | `attempt`, `retryInMs`, `lastFailure` |
 | `Lifecycle` (3d) | `recovery` |
 | `ear_control` | feature `recovery`; the members; the `recovering` record and `recovery` cause |
@@ -141,7 +141,7 @@ Slice 5 defines `writer::companion`; this slice builds its first users:
 | — | A disabled node never recovers; a disable cancels the wait | `disabled` releases everything and is the operator's word in the file |
 | — | `node.start`, `node.restart` and a settings change skip the wait | The operator's intent wins at once |
 | W2 | `reason` kept with its built meaning; `lastFailure` beside it | Additive within protocol 1 |
-| new | A type's recovery policy is a member of `Lifecycle` | `TypeSpec`'s member order stays as `node-primitives.md` 6.11 gives it |
+| new | A type's recovery policy is a member of `Lifecycle` | `TypeSpec`'s member order stays as built (`docs/writing-a-node-type.md#stores`) |
 
 ## 7. Open questions and risks
 

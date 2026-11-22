@@ -1,8 +1,8 @@
 # Changes in place and reshape: slice 3d of the node framework
 
-Status: design, not built. Slice 3d follows slice 3c (`node-primitives.md`: it swaps claims and posts to loops, both
-3c's) and comes before slice 6 (`control-plane.md`: a retune is one of the outcomes this slice makes). It starts with a
-PipeWire spike (S4, 9.3). It changes the audio path: holds, code swaps and reshapes. The built lifecycle (states,
+Status: design, not built. Slice 3d follows slice 3c (built: it swaps claims and posts to loops, both
+3c's, `docs/writing-a-node-type.md#claims`, `#loops`) and comes before slice 6 (`control-plane.md`: a retune is one of the outcomes this slice makes). Its PipeWire
+spike (S4) is run: a reshape goes ahead as designed (7.4). It changes the audio path: holds, code swaps and reshapes. The built lifecycle (states,
 operations, teardown, fades, barriers and their bounds) is described in `docs/architecture.md` and
 `docs/writing-a-node-type.md`; the built wire in `docs/control-port.md`; this page cites them and says only what 3d adds.
 
@@ -18,7 +18,7 @@ The R numbers are the register the node framework's design used.
 | R16 | "I like the basic shape of the state machine proposal. And most importantly: it should be per-node. Some node stopping/reconfiguring/failing does not effect the graph globally" | 2026-11-08 | An in-place change, its holds and its swap touch only its node's block and companions |
 | R17 | "I want the node to control whether settings can be changed in place, with the framework supporting it. For example, changing a network port on a node is something that a node can handle on its own — even if it must output null audio frames for a few seconds. But if reconfiguring changes the shape of the input/output bus, then that might not be fully transparent" | 2026-11-08 | The type declares what it can change in place and its change version of `configure` decides; the framework holds outputs silent, readies new resources before releasing old ones, swaps claims and enforces a deadline (sections 3 to 6); a change of ports is a reshape with its own rules (section 7) |
 | R21 | "I meant “asynchronously”" (operations are asynchronous and ordered) | 2026-11-08 | An edit's reply comes at its commit with `applied`; it never waits for the change to finish |
-| R24 | "too technical for me to properly answer" (where reconfigure lives and how it reaches a type's threads) | 2026-11-08 | Hooks run on the main loop and reach a node's threads only by typed posts (D-A4); the rest of this page's choices are the designer's (section 12) |
+| R24 | "too technical for me to properly answer" (where reconfigure lives and how it reaches a type's threads) | 2026-11-08 | Hooks run on the main loop and reach a node's threads only by typed posts (built: [`docs/writing-a-node-type.md#loops`](../writing-a-node-type.md#loops), "Why loops"); the rest of this page's choices are the designer's (section 12) |
 | R30 (gate W3) | "I would like each port to show meter levels so I can see audio traversing the graph" | 2026-11-08 | A hold is seen as silence on the meters (no "held" marks); a reshape's new ports are metered from their first window (8.4) |
 | R33 | Asked "Should configure come in two versions, each offering only its legal calls, so a wrong call won't compile?": "Two versions" | 2026-11-08 | `Changed configure(ChangeOf<spec>&, const Checked& old, const Checked& now)`, optional; absent, every change restarts (section 4) |
 | X2 | Asked what happens to a change that removes ports that are wired: "(a)", as recommended: the editor lists the wires that would go before applying; Apply removes them and changes the setting in one step (one save of `ear.conf`) or neither; a script must ask (`dropRoutes: true`), else it is refused naming the wires | 2026-11-08 | 7.1, 8.3 |
@@ -32,7 +32,7 @@ As built (3a, [V]): the change version's signature is checked at compile time an
 (`settings`, with the changed keys) and then `configuring`. A change of ports is a replace: the desired graph tells
 `nodeReplacing` then `nodeReplaced` with `NodeChange::portCaused`, and `NodeHost` carries the node's stop, its dropped
 frames and one health stream into the successor, so a client sees `node.removed` and `node.added` and one `stopping`
-(`restarting`) (D-L5, D-L36). `PortBlock` has `drive`, `fadeOut`, `settle`, `takenAt`, `blockId` and `carryLatency`;
+(`restarting`). `PortBlock` has `drive`, `fadeOut`, `settle`, `takenAt`, `blockId` and `carryLatency`;
 no per-bank hold, no reshape. The fade of every output the code writes before every planned silence, and the fade-in
 at every drive, are built.
 
@@ -104,14 +104,14 @@ public:
 	void done() &&;
 	void fail(std::string detail) &&;
 };
-/// What configure answers for a change. A "later" answer is made only by whenReady, so a token and a later answer
-/// cannot disagree. (Built with trivial bodies in 3a.)
+/// What configure answers for a change. The applied answer is made only by the context (cx.applied, below), as
+/// creation's is, and a "later" answer only by whenReady, so a token and a later answer cannot disagree. (Built with
+/// trivial bodies today, `Changed::applied()` among them, which this slice replaces by cx.applied.)
 class Changed {
 public:
-	static Changed applied();                         // the commit point comes once every replacement is ready
 	static Changed restart(std::string reason);       // the type cannot take this change in place after all (T11)
 };
-/// The spec's lifecycle settings (TypeSpec's `.lifecycle`, node-primitives.md 6.11). Refused at compile time below 1 s
+/// The spec's lifecycle settings (TypeSpec's `.lifecycle`, after `.stores` and `.loops`). Refused at compile time below 1 s
 /// or above 60 s. The type schema carries it as `reconfigureMs`.
 struct Lifecycle { std::chrono::milliseconds reconfigureDeadline = std::chrono::seconds(10); };
 
@@ -121,16 +121,20 @@ template <const auto& Spec> class ChangeOf {
 public:
 	AudioFormat format() const;
 	const NodeName& node() const;
-	/// The code: always a swap, installed with its layout at the commit point. Optional, except in an in-place
-	/// reshape, where the Io layout changed.
-	void use(NodeCode code);
+	/// The answer (as creation's cx.applied, docs/writing-a-node-type.md#configure-and-createof): the commit point
+	/// comes once every replacement is ready. With no code the node's code stays; with one it is always a swap,
+	/// installed with its layout at the commit point, and an in-place reshape, where the Io layout changed, must give
+	/// one. It takes no loop's state: a loop's state lives across a change (6.3).
+	Changed applied();
+	template <class Code> Changed applied(Code code);
 	/// Staged until the commit point; destroyed unrun on supersession (T18) or a fallback (T11).
 	template <class Loop> void post(Loop, std::move_only_function<void(typename Loop::State&)> work);
-	// Replacements: each replaces what the node holds for the same bank or key, make before break (5.3).
-	template <class Bank> void soundCard(Bank, SoundCardShape, Order = Order::makeFirst);
-	template <class Bank> void rtpReceiver(Bank, RtpReceiverShape);    // the same port: break-first, by the framework
-	template <class Bank> SourceWriter& source(Bank, SourceShape);
-	template <class Bank> SinkRequest& sink(Bank, SinkShape);
+	// Replacements, attached as on creation (one call, the kind its shape's): each replaces what the node holds for
+	// the same bank or key, make before break (5.3).
+	template <class Bank> void attach(Bank, SoundCardShape, Order = Order::makeFirst);
+	template <class Bank> void attach(Bank, RtpReceiverShape);         // the same port: break-first, by the framework
+	template <class Bank> SourceWriter& attach(Bank, SourceShape);
+	template <class Bank> SinkControl& attach(Bank, SinkShape, /* its consumer, in creation's three forms */);   // 6.4
 	void claim(claim::TcpListen);   void claim(claim::Udp);            // judged when the hook returns (6.1)
 	void unclaim(claim::TcpListen); void unclaim(claim::Udp);          // released at the commit point, last
 	int recording(RecordingRequest);                                   // a replacement, made before break
@@ -148,13 +152,14 @@ public:
 
 The type's class gains, optionally, `Changed configure(ChangeOf<spec>&, const CheckedOf<spec>& old, const
 CheckedOf<spec>& now)` (its signature already checked, as built). **A call the mode does not offer does not compile**
-(R33): `CreateOf` has no holds, no `whenReady` and no `unclaim` (built), `ChangeOf` has no `loop`, `store` or
-`executor` (a loop's state already holds them), and `Configured` has no `restart` nor `Changed` a `failed`.
+(R33): `CreateOf` has no holds, no `whenReady` and no `unclaim` (built), `ChangeOf` has no `state`, `store` or
+`executor` (a loop's state lives across a change and already holds them), and `Configured` has no `restart` nor
+`Changed` a `failed`.
 
 **The rules a compiler cannot check**, each failing the node with the rule's text, as every built context rule does
 (the built framework records the broken rule on the node and fails it at the hook's return, even when the type caught
-the throw): a change gives the code at most once, and must give it when the ports changed; `unclaim` names a key the
-node holds; `whenReady` is called at most once, and its `Changed` is what `configure` returns; a context is used only
+the throw): a change must give the code in its answer when the ports changed (at most once is the answer's shape, as
+on creation); `unclaim` names a key the node holds; `whenReady` is called at most once, and its `Changed` is what `configure` returns; a context is used only
 inside its `configure`. A type bug found in a change fails the node `lost` (it had rested), never takes ear down.
 
 **Staged posts** (D-R17). Work posted with `cx.post` is staged until the commit point: released there, in the order
@@ -162,7 +167,8 @@ posted, after the continuation's `done()` (if any), and destroyed unrun if the c
 (T11), as an unposted `whenReady` continuation is. So nothing a superseded or fallen-back change asked of the node's
 threads has run, and supersession leaves the applied configuration as it was.
 
-**`whenReady`** joins "act once the new acquisitions are ready" and "act on the node's own thread" (I11, I14), so a
+**`whenReady`** joins "act once the new acquisitions are ready" and "act on the node's own thread" (a hook holds no reference to a loop's state, so a post typed by the loop's handle is
+its only way there: [`docs/writing-a-node-type.md#loops`](../writing-a-node-type.md#loops)), so a
 type writes neither a poll nor a second hook (G20):
 
 - if an acquisition is refused or lost, or the deadline passes before the post, `work` is destroyed unrun on the main
@@ -175,8 +181,8 @@ type writes neither a poll nor a second hook (G20):
   its `done` is then ignored;
 - a continuation may not swap the code or hold banks: those are `cx` calls, applied at the commit point.
 
-**`use` is always a swap** (D-R18): the framework never compares codes, so a type whose code keeps state carries it into
-the new code or does not call `use`. A code swap without holds is a discontinuity unless the type carries its state;
+**A code in the answer is always a swap** (D-R18): the framework never compares codes, so a type whose code keeps state
+carries it into the new code or answers `cx.applied()` with none. A code swap without holds is a discontinuity unless the type carries its state;
 the framework adds no crossfade. The new code's `prepare` runs on the main loop while the old code still runs: it may
 allocate and build the new code's own state, and may not touch the framework's realtime state (slots, ramps, ring
 cursors) or anything the old code's `process` reads (D-R13).
@@ -223,7 +229,7 @@ cursors) or anything the old code's `process` reads (D-R13).
    after (D-A8).
 7. **Two nodes swapping ports in one edit** (`a` from 8928 to 8929, `b` the other way) cannot each hold both: each new
    claim is held by the other node's current configuration, so it is refused, and both fall back to restarts; each
-   restart's claim then finds the other's old configuration going and waits for it (`node-primitives.md` 6.8). Both
+   restart's claim then finds the other's old configuration going and waits for it (`docs/writing-a-node-type.md#claims`). Both
    come back on their new ports, after a restart each.
 
 **Break before make**, for a thing that cannot be held twice (one ALSA device opened twice; an RTP receiver on a port
@@ -271,7 +277,7 @@ needs a moment when no `consume` runs. Without it every such type writes a lock 
 with it the framework owns the one hand-over (G21).
 
 ```cpp
-class SinkControl {                                    // cx.sink(...).control(): a loop's state keeps it
+class SinkControl {                                    // what attaching a sink returns: a loop's state keeps it
 public:
 	/// Any of the node's loops. The sink's thread finishes a consume in flight, then discards chunks (counted as paused
 	/// frames, not drops) until resume(); `paused` is posted to `loop` once no consume can run. Until resume(), the
@@ -286,7 +292,8 @@ protected:
 };
 ```
 
-`SinkRequest` gains `SinkControl& control()`. Paused audio is discarded, not queued: a swap is a break in what the node
+Attaching a sink returns its `SinkControl&` (`cx.attach(bank, SinkShape{...}, consumer)`, on creation and in a change;
+on creation it returns nothing today). Paused audio is discarded, not queued: a swap is a break in what the node
 sends, and the chunks' positions say where. A paused sink at teardown is drained by discarding, then `finish` is called;
 a consumer's `finish` must cope with a pause it never saw resumed. A replaced sink drains to its own consumer and
 finishes at the commit point; its replacement's `begin` runs as it becomes ready, before the commit point. Slice 5
@@ -300,10 +307,10 @@ restart-only).
 ```cpp
 Changed Rtp::configure(ChangeOf<spec>& cx, const Checked&, const Checked& now) {
 	cx.hold(stream);                                         // null audio until the new receiver runs
-	cx.rtpReceiver(fromRtp, receiverFor(now, cx.format()));  // replaces it: a new port make-before-break (claims the new
+	cx.attach(fromRtp, receiverFor(now, cx.format()));       // replaces it: a new port make-before-break (claims the new
 	                                                         // UDP port, releases the old at the end); the same port
 	                                                         // break-first, by the framework; it declares latencyMs
-	return Changed::applied();                               // no use: the pass-through stays, nothing is swapped
+	return cx.applied();                                     // no code: the pass-through stays, nothing is swapped
 }
 ```
 
@@ -322,7 +329,7 @@ Changed Sendspin::configure(ChangeOf<spec>& cx, const Checked& old, const Checke
 	SendspinSettings next = settingsFrom(cx.node(), now);
 	if (old.get<rows::server>() && now.get<rows::server>() && settingsFrom(cx.node(), old).name == next.name) {
 		cx.post(worker, [url = *next.server](Worker& w) { w.redial(url); });   // staged until the commit point
-		return Changed::applied();
+		return cx.applied();
 	}
 	if (!old.get<rows::server>()) cx.unclaim(claim::TcpListen{old.get<rows::port>()});   // released at the end
 	if (!now.get<rows::server>()) cx.claim(claim::TcpListen{now.get<rows::port>()});     // judged now
@@ -336,11 +343,13 @@ Changed Sendspin::configure(ChangeOf<spec>& cx, const Checked& old, const Checke
 (`client.h:337`, `362` [V]):
 
 1. posts to the notifier, which destroys its `onWake` source (no `notify_audio_played` reaches the old client), and back;
-2. `toServer_.pause(worker_, ...)`: the sink's thread finishes any `consume` in flight and discards until `resume`, so
+2. `toServerSink_.pause(worker_, ...)`, on the `SinkControl&` that attaching the sink returned and the worker's state
+   keeps (given to `cx.state` after the attach): the sink's thread finishes any `consume` in flight and discards until
+   `resume`, so
    `write_audio` never reaches a client being destroyed (this replaces the worker's `clientMutex_`);
 3. says goodbye on mDNS, then `client->stop()`: goodbye to the server, the library's threads joined, `on_stream_end`
    delivered (which clears the source, which fades out); the client destroyed; the old sync thread, the source's
-   writer, joined, so the new one may write (`node-primitives.md` 6.4);
+   writer, joined, so the new one may write (one writing thread at a time: `docs/writing-a-node-type.md#sources`);
 4. makes the new client over the same key store, so the identity and pairings stay (U11), with `log_context` the same
    node handle; `start()`; on `false`, `done.fail("the Sendspin client did not start")`;
 5. re-arms the notifier's `onWake`, `toServer_.resume()`, opens the advertiser on the new port, and calls `done.done()`.
@@ -389,7 +398,7 @@ route names a port that vanishes. Wanted routes may name ports that appear; they
   the rest, and their companions are made afresh by the new `configure`.
 - **On a disabled node** (no configuration): the block alone is reshaped at the commit, with no hook called; the
   outcome is `stored`, with its `ports`; an enable later configures it with the ports the block already has. (Built: a
-  replace told as `node.removed` and `node.added`, `applied: "stored"`, D-R23.)
+  replace told as `node.removed` and `node.added`, `applied: "stored"`.)
 - **In place**, when every changed key is `.inPlace()` or `.live`: a reconfigure. The framework adds the new ports to
   the engine first, calls the change version, which must swap the code (its `Io` layout changed; a hook that does not
   fails the node with the rule's text), and removes the vanished ports after the swap's barrier. A type whose channel
@@ -425,6 +434,31 @@ loop's `impl_node_process` walks, and how each change reaches the data loop) sho
 invoke on the data loop or before the port is visible to it, cited in the test's header. ThreadSanitizer is not a
 criterion: the image's libpipewire is not instrumented. **Fallback** (D-B5): a reshape stays the built port-caused
 replace, and only the UX claim (surviving links stay) is lost.
+
+**S4, run (2026-11-22; `spikes_test.cpp`, tag `[s4]`; what it found of PipeWire is
+`docs/engine.md#the-one-data-loop-and-invokes`).** Every functional criterion passed, in 19 runs of 500 rounds of each of its two cases, six
+of them beside the whole suite: the ramp beside lost nothing, the new port appeared, linked and carried audio, a removed
+port's link went, and a port linked throughout kept its link and its audio. **The code reading did not pass as the
+criterion is written:** `filter.c` appends to and unlinks from the port list its data loop walks on the main loop,
+with no invoke. It is safe in practice for the reasons that page gives: on x86-64 by the order of the append's two
+stores, and for a remove on any architecture. So **the fallback is not taken, and `PortBlock::reshape` is built on
+`pw_filter_add_port` and `pw_filter_remove_port`**, on these terms:
+
+- **A vanishing port leaves the block's layout behind a barrier before `pw_filter_remove_port`**, as 7.3 already
+  orders it: the handle is the port's memory, freed when the call returns.
+- **The add is made plain, never with the data loop held** (the owner, 2026-11-22, binding: the graph is changed
+  without interrupting it). It is safe on x86-64, the only architecture ear builds. The held add the spike also ran is
+  not built: it makes the realtime thread wait on an ordinary one, a priority inversion with no bound (50 to 300 us
+  in most runs, 2.1 ms in one).
+- **An arm64 image waits on this.** Without total store order the plain add is not safe, so arm64
+  (`docs/architecture.md#not-built-yet`) needs the append made on the data loop: by PipeWire (an upstream change to
+  `alloc_port`, not yet reported), or by ear owning its node's port list instead of using `pw_filter` (a port block
+  written on the node interface, its list swapped by the invoke ear already has; not scoped).
+- **A new port's first cycles after its link is active may bring no buffer, or silence.** The transitional layout
+  (7.3) already ignores a new input; a test of an in-place reshape waits for the audio, never counts cycles from
+  `linkActive`.
+- **The safety rests on PipeWire 1.4.2's code, not on a contract of `pw_filter`.** A PipeWire bump reads `alloc_port`,
+  `free_port` and `pw_impl_port_remove` again (the `pipewire-engine` skill's bump steps), and S4 runs on every build.
 
 ## 8. On the wire and in the editor
 
@@ -524,7 +558,7 @@ the code and before metering.
 | `DesiredGraph::plan` | reads each changed key's mark; a dry run is `plan` without `commit` (as built) |
 | `ConfigurationMachine`, `NodeAggregate` (`node_lifecycle.hpp`) | a `changing` state; T9, T10, T11, T18; `NodePhase` and `NodeState` gain `reconfiguring` |
 | `lifecycle.hpp` | `ChangeOf` defined; `Changed` with real bodies; `ConfigureDone`; `Lifecycle`; `SinkControl` |
-| `NodeHost` | the in-place path: holds and their acknowledgement, retiring resources, the commit point, the deadline, supersession, the fallback; the block's reshape between teardown and `configure`; claims swapped (`node-primitives.md`'s registry) |
+| `NodeHost` | the in-place path: holds and their acknowledgement, retiring resources, the commit point, the deadline, supersession, the fallback; the block's reshape between teardown and `configure`; claims swapped (the claim registry, `docs/writing-a-node-type.md#claims`) |
 | `PortBlock`, `FilterPortBlocks` | `hold(banks)`, `release(banks)` with acknowledgement; `reshape(next)` with layouts swapped whole; levels re-registered |
 | The sink companion | `pause` and `resume` on its thread |
 | `rtp`, `sendspin` | rows marked `.inPlace()`; their change versions |
@@ -542,7 +576,7 @@ the code and before metering.
   (channels 1 and 2 keep playing); claims swapped make-before-break (both held, the old released last), a refused new
   claim destroying the continuation and restarting, two nodes swapping ports both restarting and running, a same-key
   replacement granted without a probe and made break-first; `keys` and `next` on `node.state`.
-- **`ear_pipewire_tests`**: S4; reshape (a port added and removed beside a running ramp, links of surviving ports kept,
+- **`ear_pipewire_tests`**: S4 (built: 7.4); reshape (a port added and removed beside a running ramp, links of surviving ports kept,
   the layout swapped whole, the transitional layout zero-filling new outputs); holds (the fade, then zeros, then the
   fade in); a reshape's new port metered from its first window; two sources into one inside input mixed (the port
   mixer loads).
@@ -567,11 +601,11 @@ the code and before metering.
 
 ## 11. Order of work
 
-1. S4, the spike, and the pure machines' new states and transitions (tables).
+1. S4, the spike (run: 7.4), and the pure machines' new states and transitions (tables).
 2. `ChangeOf`, `Changed`, staged posts, holds and their acknowledgement, the commit point, the deadline, supersession,
    the fallback, with a test type; `rtp` in place.
 3. The primitives in a change: claims swapped, `whenReady`, `ConfigureDone`, the sink's pause, the same-port rule.
-4. `PortBlock::reshape` (or, if S4 fails, the replace kept), layouts, levels.
+4. `PortBlock::reshape` on the plain add (7.4), the 32-port question of section 13 settled first; layouts, levels.
 5. The wire and the editor (features `node.set`, `reshape`, `dryRun`).
 6. `sendspin` in place (skipped if U11 or U12 fails).
 7. Words: AGENTS.md and the library docs; this page deleted.
@@ -593,7 +627,7 @@ Each is the designer's (R24); the owner can overturn any.
 | D-R5 | An in-place reshape swaps whole layout objects (old, transitional, new) built on the main loop, one pointer each in a barrier invoke | Every array the data thread reads is fixed-size; resizing any in place is a use-after-free |
 | D-R13 | The new code's `prepare` may not touch the framework's realtime state or anything the old code's `process` reads | It runs while the old code still runs |
 | D-R17 | In place, `cx.post` work is staged until the commit point and destroyed unrun on supersession or fallback | Else work could run for a change that never commits |
-| D-R18 | In place, `cx.use` is always a swap; the framework never compares codes | One rule; comparing would silently skip or add a swap |
+| D-R18 | In place, a code given in the answer (`cx.applied(code)`) is always a swap; the framework never compares codes | One rule; comparing would silently skip or add a swap |
 | D-R24 | An in-place reshape is proved with a test type; no built-in type reshapes in place | No built-in type needs it yet |
 | D-L43 | S4's criterion is functional checks plus a cited code reading of `filter.c`, not ThreadSanitizer | TSan cannot see inside the uninstrumented libpipewire |
 | G19 | `sendspin`'s `name`, `port` and `server` change in place, the listen/dial switch included | R17 names a port change as the case a node handles itself; the operator hears the same drop either way |
@@ -607,7 +641,15 @@ Each is the designer's (R24); the owner can overturn any.
 
 ## 13. Open questions and risks
 
-- **S4** (7.4): whether PipeWire 1.4.2 adds and removes ports on a connected realtime filter safely. Fallback: replace.
+- **[U] A block with more than 32 ports of one direction.** `pw_filter` keeps each direction's ports in a map that
+  grows 32 slots at a time (`filter.c:1247`), and `alloc_port` grows it on the main loop (`pw_map_insert_new`,
+  `filter.c:342`), which moves its storage. The data loop looks a port up by id only in `impl_port_reuse_buffer`
+  (`filter.c:964`), reached from the port's tee (`impl-port.c:282`); whether a DSP link ever calls it is not
+  established. Settled by reading `impl-link.c`'s buffer negotiation for a 32-bit float mono port, or by S4 run with
+  40 inputs, **before `PortBlock::reshape` is built** (section 11, step 4). If it can be called, the data loop is
+  never held for it (7.4): a reshape that would cross a multiple of 32 ports in one direction is a replace, until
+  the append is made on the data loop.
+- **arm64** is not open here: it waits on the append being made on the data loop (7.4).
 - **[U] Two sources into one inside input** are mixed while a replacement is made before the old one goes; `engine.conf`
   maps no `audio.mixer*` library, so this relies on the port mixer for DSP client-node ports loading through its
   `library.name` fallback.

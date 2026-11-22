@@ -28,7 +28,7 @@
 #include "ear/core/sound_card.hpp"
 namespace ear {
 
-// ---- What a type asks for (CreateOf::soundCard, CreateOf::rtpReceiver) ----
+// ---- What a type asks for (CreateOf::attach) ----
 
 /// A sound card on an inside bank: playback on an inside output bank, capture on an inside input bank (the direction is
 /// the bank's, checked at compile time), one channel per port of the bank, opened at the graph frequency.
@@ -52,7 +52,7 @@ struct RtpReceiverShape {
 enum class PipeFormat { s16le, s32le };
 
 /// A pipe receiver on an inside input bank, one channel per port of the bank: PipeWire's pipe module in source mode
-/// reading a FIFO the framework names (CompanionTarget::fifo, CreateOf::fifoOf) and a program writes. Every member is a
+/// reading a FIFO the framework names (CompanionTarget::fifo; CreateOf::attach returns it as a program's part) and a program writes. Every member is a
 /// closed value of the type's own; the framework passes none of them on unparsed.
 struct PipeReceiverShape {
 	PipeFormat format;
@@ -91,7 +91,7 @@ static_assert(ModuleRunShape<RtpReceiverShape> && ModuleRunShape<PipeReceiverSha
 /// until a multicast test exists (docs/node-types.md#rtp). A receiver on a group carries it, so the port is probed as
 /// the receiver binds it (PortProbe::udp).
 std::vector<Claim> claimsOf(const RtpReceiverShape& shape);
-/// None: whether a card's device needs one waits on a check on the hardware (docs/design/node-primitives.md 0.2 C).
+/// None: whether a card's device needs one waits on a check on the hardware (docs/writing-a-node-type.md#claims).
 std::vector<Claim> claimsOf(const SoundCardShape& shape);
 /// None: its FIFO's path is unique to its configuration (runtimePath, program.hpp), so no other holder can name it.
 std::vector<Claim> claimsOf(const PipeReceiverShape& shape);

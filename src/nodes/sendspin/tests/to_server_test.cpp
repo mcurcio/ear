@@ -1,5 +1,5 @@
 // The source role's audio on its way to the library (docs/node-types.md#threads): each piece's stamp comes from its own
-// chunk's cycle start, however late the sink's thread woke.
+// chunk's cycle start and the capture latency upstream of it, however late the sink's thread woke.
 #include <array>
 #include <cstdint>
 #include <vector>
@@ -28,14 +28,15 @@ public:
 
 struct Rig {
 	Rig() : toServer(ear::SampleRate::fixed<rate>(), sink), samples(std::size_t{rate} * 2, 0.0F) {}
-	/// A chunk of `frames` whose cycle started at `startRawNs`, as the sink hands it.
-	void consume(std::uint32_t frames, std::int64_t startRawNs) {
+	/// A chunk of `frames` whose cycle started at `startRawNs`, with `upstreamFrames` of capture latency before it, as
+	/// the sink hands it.
+	void consume(std::uint32_t frames, std::int64_t startRawNs, std::uint32_t upstreamFrames = 0) {
 		toServer.consume(ear::Chunk{.interleaved = std::span<const float>(samples).first(std::size_t{frames} * 2),
 		                            .frames = frames,
 		                            .position = 0,
 		                            .startNs = startRawNs - 7, // another clock: the consumer must not read it
 		                            .startRawNs = startRawNs,
-		                            .upstreamFrames = 0,
+		                            .upstreamFrames = upstreamFrames,
 		                            .causes = {},
 		                            .lostFrames = 0});
 	}
@@ -71,6 +72,21 @@ TEST_CASE("A long chunk goes in pieces of 100 ms, each dated from where it start
 	CHECK(rig.sink.pieces[2].stampUs == 1'200'000);
 	CHECK(rig.sink.pieces[0].bytes == rate / 10 * 6);
 	CHECK(rig.sink.pieces[2].bytes == rate / 20 * 6);
+}
+
+TEST_CASE("A chunk with capture latency upstream is dated that much before its cycle's start",
+          "[sendspin][to_server]") {
+	Rig rig;
+	rig.toServer.streaming(true);
+	// 480 frames at 48 kHz: a card that took the frames 10 ms before the cycle that carries them.
+	rig.consume(240, 5'000'000'000, 480);
+	// Each piece of a long chunk keeps its place in the chunk, the same upstream before it.
+	rig.consume(rate / 4, 6'000'000'000, 480);
+	REQUIRE(rig.sink.pieces.size() == 4);
+	CHECK(rig.sink.pieces[0].stampUs == 4'990'000);
+	CHECK(rig.sink.pieces[1].stampUs == 5'990'000);
+	CHECK(rig.sink.pieces[2].stampUs == 6'090'000);
+	CHECK(rig.sink.pieces[3].stampUs == 6'190'000);
 }
 
 TEST_CASE("While nobody wants the audio it is dropped, and the next chunk wanted is dated by its own start",

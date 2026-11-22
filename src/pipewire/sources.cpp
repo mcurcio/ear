@@ -1,8 +1,8 @@
 // The source companions (ear/pipewire/sources.hpp; docs/writing-a-node-type.md#sources): core's SourceRing, which holds
 // every rule, wrapped with what only a thread can do: the writer's wait for room (poll on an eventfd that play()
 // writes only while a writer waits, and close() writes once) and the clock wake's eventfd; and the source's clock,
-// owned with its ring and handed to SourceRing::play each tick. The eventfd wake moves to ear_runtime's EventWake in
-// slice 3c.
+// owned with its ring and handed to SourceRing::play each tick. The wake is core's interface (Wake, ear/core/source.hpp),
+// so a loop watches it without seeing the eventfd that implements it here.
 #include "ear/pipewire/sources.hpp"
 
 #include <algorithm>

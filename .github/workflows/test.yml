@@ -5,7 +5,8 @@
 #   developer's machine.
 # - web: in the same image, the graph editor's checks (make web-test: knobly's pin agrees with
 #   web/'s, npm ci, typecheck, vitest, build).
-# - format: in the same image, clang-format's check of every C++ file (make format-check).
+# - format: in the same image, clang-format's check of every C++ file (make format-check) and the
+#   check that every link into the docs resolves (make docs-check).
 # - image: builds the run image (target run, what publish pushes) and checks it with
 #   scripts/image-smoke.sh; first, scripts/version-tags.sh's own check.
 # Then, on a push to master only, once all four pass (AGENTS.md#commits-ci-and-releases):
@@ -139,7 +140,8 @@ jobs:
           EAR_DEV_IMAGE: ear-dev
 
   # One C++ style, enforced: make format-check runs the image's clang-format over the tracked
-  # C++ under src/ and test/ and fails on any file .clang-format would change.
+  # C++ under src/ and test/ and fails on any file .clang-format would change. And the docs' links:
+  # make docs-check fails on a link or a comment's citation whose page or heading is gone.
   format:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -159,6 +161,10 @@ jobs:
           cache-to: type=gha,scope=dev,mode=max
 
       - run: scripts/dev.sh make format-check
+        env:
+          EAR_DEV_IMAGE: ear-dev
+
+      - run: scripts/dev.sh make docs-check
         env:
           EAR_DEV_IMAGE: ear-dev
 

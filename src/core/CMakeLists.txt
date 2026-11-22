@@ -13,7 +13,6 @@ add_library(ear_core STATIC
 	desired_graph.cpp
 	graph_status.cpp
 	latency.cpp
-	legacy_instance.cpp
 	levels.cpp
 	log.cpp
 	loop.cpp
@@ -93,6 +92,7 @@ if(BUILD_TESTS)
 	add_library(ear_type_harness STATIC testing/node_harness.cpp)
 	target_sources(ear_type_harness PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 		include/ear/testing/drive_now.hpp
+		include/ear/testing/erased.hpp
 		include/ear/testing/harness_cuts.hpp
 		include/ear/testing/node_harness.hpp
 		include/ear/testing/type_harness.hpp)
@@ -173,8 +173,6 @@ if(BUILD_TESTS)
 	ear_settings_table_compile_fail(override-parse "parse.*marked 'override'")
 	ear_settings_table_compile_fail(override-setting-kinds "settingKinds.*marked 'override'")
 	ear_settings_table_compile_fail(override-name "name.*marked 'override'")
-	ear_settings_table_compile_fail(make-takes-raw-settings "make.*marked 'override'")
-	ear_settings_table_compile_fail(override-make-config "overriding final function")
 	ear_settings_table_compile_fail(derive-without-table "private within this context")
 	ear_settings_table_compile_fail(derive-by-copy "use of deleted function")
 	ear_settings_table_compile_fail(forged-checked-settings "private within this context")
@@ -187,7 +185,6 @@ if(BUILD_TESTS)
 	ear_settings_table_compile_fail(row-read-only "discards qualifiers")
 	ear_settings_table_compile_fail(only-without-on-required "a required row cannot be onlyWithout")
 	ear_settings_table_compile_fail(only-without-a-required "cannot name a required row")
-	ear_settings_table_compile_fail(table-not-named-for-folder "a type's table is named for its folder")
 
 	# What must not compile about the latency model (docs/engine.md#latency-per-bank-pair): a delay is in series, never
 	# a path of its own; tests/compile_fail/latency_bad.cpp says what each case is.
@@ -246,6 +243,12 @@ if(BUILD_TESTS)
 	ear_type_spec_compile_fail(ports-bank-left-out "ports\\(\\) gives every bank of its spec, each once")
 	ear_type_spec_compile_fail(ports-bank-twice "ports\\(\\) gives every bank of its spec, each once")
 	ear_type_spec_compile_fail(pass-through-backwards "a pass-through copies an input bank to an output bank")
+	ear_type_spec_compile_fail(pass-through-no-pair "a pass-through names at least one pair of banks")
+	ear_type_spec_compile_fail(code-given-as-pointer "configure answers with its code by value")
+	ear_type_spec_compile_fail(pass-through-pairs-made-by-hand "PassThroughPairs::PassThroughPairs\\(.*is private within this context")
+	# The erased layer's answer is not a type's to make (docs/writing-a-node-type.md#configure-and-createof).
+	ear_type_spec_compile_fail(answer-through-configured "Configured::erased\\(.*is private within this context")
+	ear_type_spec_compile_fail(answer-through-the-erased-instance "ErasedInstance::applied\\(.*is protected within this context")
 	ear_type_spec_compile_fail(bank-name-invalid "a bank's name is 1 or more of")
 	ear_type_spec_compile_fail(banks-named-twice "a type's banks have unique names")
 	ear_type_spec_compile_fail(process-may-throw "a code's process is void process")
@@ -266,8 +269,8 @@ if(BUILD_TESTS)
 	ear_type_spec_compile_fail(start-wrong-signature "a type's start is void start\\(\\)")
 	ear_type_spec_compile_fail(stop-wrong-signature "a type's stop is void stop\\(\\)")
 	ear_type_spec_compile_fail(constructor-neither "a type's class is constructed from NodeOf<spec>& or from nothing")
-	ear_type_spec_compile_fail(legacy-start-on-spec-type "writes configure, not a static start")
-	# The change version compiles in 3a (the owner's answer to Q1: the control writes one); of the wrong shape, not.
+	# The change version compiles though nothing calls it yet (the control writes one; docs/design/reconfigure.md); of
+	# the wrong shape, not.
 	ear_type_spec_compile_fail(change-version-wrong-signature "a type's change version is Changed configure")
 	ear_type_spec_compile_fail(change-version-wrong-context "a type's change version is Changed configure")
 	# A member found by name whatever its access or overloads: refused, never silently not called.
@@ -282,21 +285,43 @@ if(BUILD_TESTS)
 	ear_type_spec_compile_fail(configured-has-no-restart "'restart' is not a member of 'ear::Configured'")
 	ear_type_spec_compile_fail(sound-card-on-public-bank "a sound card joins an inside bank of the spec")
 	ear_type_spec_compile_fail(rtp-receiver-on-output-bank "an RTP receiver joins an inside input bank of the spec")
+	ear_type_spec_compile_fail(rtp-receiver-on-routable-bank "an RTP receiver joins an inside input bank of the spec")
 	ear_type_spec_compile_fail(sink-on-input-bank "a sink reads an inside output bank of the spec")
+	ear_type_spec_compile_fail(sink-on-routable-bank "a sink reads an inside output bank of the spec")
+	ear_type_spec_compile_fail(sink-without-consumer "a sink is given its one consumer")
 	ear_type_spec_compile_fail(source-on-output-bank "a source plays into an inside input bank of the spec")
 	ear_type_spec_compile_fail(source-on-routable-bank "a source plays into an inside input bank of the spec")
 	ear_type_spec_compile_fail(declare-latency-bank-the-spec-lacks "declareLatency takes its spec's banks")
 	ear_type_spec_compile_fail(declare-latency-backwards "declareLatency names a pair: an input bank, then an output bank")
 	ear_type_spec_compile_fail(context-bank-the-spec-lacks "a context takes only its spec's banks")
+	ear_type_spec_compile_fail(engine-companion-bank-the-spec-lacks "a context takes only its spec's banks")
 	ear_type_spec_compile_fail(program-path-relative "a program's executable is an absolute path")
+	ear_type_spec_compile_fail(program-path-not-plain "a program's executable is an absolute path of plain components")
 	ear_type_spec_compile_fail(pipe-receiver-on-output-bank "a pipe receiver joins an inside input bank of the spec")
-	ear_type_spec_compile_fail(fifo-of-routable-bank "fifoOf names an inside input bank of the spec")
+	ear_type_spec_compile_fail(pipe-receiver-on-routable-bank "a pipe receiver joins an inside input bank of the spec")
+	ear_type_spec_compile_fail(attach-no-companion-shape "attach takes a companion's shape")
+	ear_type_spec_compile_fail(fifo-made-by-hand "Fifo::Fifo\\(.*is private within this context")
 	ear_type_spec_compile_fail(program-feed-stateless-loop "a program's feed reaches a loop declared with a state")
+	ear_type_spec_compile_fail(program-feed-loop-the-spec-lacks "a context takes only its spec's loops")
+	# A sink's consumer named in a loop's state (docs/writing-a-node-type.md#sinks): a loop of the spec, declared with
+	# a state, and a member of that state (or the state itself) that is a SinkConsumer.
+	ear_type_spec_compile_fail(sink-loop-the-spec-lacks "a sink is consumed by one of its spec's loops")
+	ear_type_spec_compile_fail(sink-member-of-another-state "a sink's consumer is a member of that loop's state")
+	ear_type_spec_compile_fail(sink-member-for-stateless-loop "a sink's consumer is a member of that loop's state")
+	ear_type_spec_compile_fail(sink-member-not-a-consumer "a sink's consumer is a SinkConsumer")
+	ear_type_spec_compile_fail(sink-state-not-a-consumer "a loop's state that consumes a sink is a SinkConsumer")
 	# Loops (docs/writing-a-node-type.md#loops): a loop named wrongly or twice, a state where none is declared, a loop the
 	# spec lacks, and a post of a function of another loop's state.
 	ear_type_spec_compile_fail(loop-name-invalid "a loop's name is 1 to 8 of")
 	ear_type_spec_compile_fail(loops-named-twice "a type's loops have unique names")
 	ear_type_spec_compile_fail(state-to-stateless-loop "a loop declared without a state takes none")
+	ear_type_spec_compile_fail(state-missing "configure's answer gives the state of every loop its spec declares with one")
+	ear_type_spec_compile_fail(state-given-twice "configure's answer gives a loop's state once")
+	ear_type_spec_compile_fail(state-loop-the-spec-lacks "a context takes only its spec's loops")
+	ear_type_spec_compile_fail(state-made-by-hand "LoopState<.*>::LoopState\\(.*is private within this context")
+	ear_type_spec_compile_fail(state-given-as-lvalue "use of deleted function .*LoopState")
+	ear_type_spec_compile_fail(answer-given-a-state-by-pointer "configure's answer is its code, then its loops' states")
+	ear_type_spec_compile_fail(code-of-another-spec "configure answers with a code written against its own type's spec")
 	ear_type_spec_compile_fail(executor-loop-the-spec-lacks "a context takes only its spec's loops")
 	ear_type_spec_compile_fail(post-loop-the-spec-lacks "a post names one of its spec's loops")
 	ear_type_spec_compile_fail(post-other-loop-state "a post to a loop takes a function of that loop's state")

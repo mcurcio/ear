@@ -29,7 +29,7 @@ bool validName(const NodeName& name) {
 	});
 }
 
-/// What a change of `disabled` asks (docs/architecture.md#restarts-and-changes-of-settings): 3a's outcomes, decided by
+/// What a change of `disabled` asks (docs/architecture.md#restarts-and-changes-of-settings): its outcomes, decided by
 /// it alone.
 NodeOutcome outcomeOf(bool wasDisabled, bool isDisabled) {
 	if (wasDisabled) return isDisabled ? NodeOutcome::stored : NodeOutcome::enable;

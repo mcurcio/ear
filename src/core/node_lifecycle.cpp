@@ -224,8 +224,6 @@ std::string_view configActionName(ConfigAction::Kind kind) noexcept {
 	switch (kind) {
 	case configure:
 		return "configure";
-	case runRecipe:
-		return "run recipe";
 	case prepare:
 		return "prepare";
 	case drive:
@@ -393,7 +391,7 @@ std::vector<ConfigAction> ConfigurationMachine::on(const ConfigInput& input) {
 	case readying:
 		if (event == ConfigEvent::resourcesReady) {
 			state_ = prepared;
-			return {{Kind::runRecipe}, {Kind::prepare}};
+			return {{Kind::prepare}};
 		}
 		if (event == ConfigEvent::teardownAsked || event == ConfigEvent::blockLost) return beginTeardown();
 		return {};
@@ -501,7 +499,6 @@ FailureCode failureCodeFor(Fact fact, bool rested) noexcept {
 		return FailureCode::engineRefused;
 	case Fact::configureFailed:
 	case Fact::consumerNeverBegan:
-	case Fact::recipeFailed:
 		return FailureCode::startFailed;
 	case Fact::nodeLost:
 	case Fact::hookThrew:

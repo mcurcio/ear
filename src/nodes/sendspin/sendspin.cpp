@@ -24,18 +24,18 @@ Configured Sendspin::configure(CreateOf<spec>& cx, const Checked& s) {
 	auto owned = std::make_unique<SendspinClock>(
 		SendspinClock::Config{.rate = format.rate, .undrainedBound = undrainedBoundFor(format.rate, sourceFrames)});
 	SendspinClock& clock = *owned;
-	SourceWriter& writer = cx.source(fromServer, SourceShape{.frames = sourceFrames}, std::move(owned));
+	SourceWriter& writer = cx.attach(fromServer, SourceShape{.frames = sourceFrames}, std::move(owned));
 	clock.attach(writer);
 
-	cx.loop(worker, std::make_unique<Worker>(WorkerParts{.handle = node_.handle(),
-	                                                     .keys = cx.store(keyFile),
-	                                                     .clock = clock,
-	                                                     .writer = writer,
-	                                                     .player = player_,
-	                                                     .self = cx.executor(worker),
-	                                                     .settings = std::move(settings),
-	                                                     .format = format}));
-	cx.loop(notifier, std::make_unique<Notifier>(cx.executor(notifier), clock, player_));
+	auto working = cx.state(worker, WorkerParts{.handle = node_.handle(),
+	                                            .keys = cx.store(keyFile),
+	                                            .clock = clock,
+	                                            .writer = writer,
+	                                            .player = player_,
+	                                            .self = cx.executor(worker),
+	                                            .settings = std::move(settings),
+	                                            .format = format});
+	auto notifying = cx.state(notifier, cx.executor(notifier), clock, player_);
 	// Staged until the node is configured: so the key store is open and trusted, and the sink's consumer began, before
 	// the worker's first tick makes the client.
 	cx.post(worker, [](Worker& state) { state.begin(); });
@@ -43,12 +43,12 @@ Configured Sendspin::configure(CreateOf<spec>& cx, const Checked& s) {
 
 	// The sink to the server holds half a second.
 	const auto half = static_cast<std::uint32_t>(FrameClock(format.rate).frames(std::chrono::milliseconds{500}));
-	cx.sink(toServer, SinkShape{.frames = half}).consumedBy(worker, &Worker::toServer);
+	cx.attach(toServer, SinkShape{.frames = half}, worker, &Worker::toServer);
 	// The source declares its ring as latency beyond its bank (docs/writing-a-node-type.md#sources), which `from`
 	// tells through the pair; `to` reaches the sink with nothing added, its path carried so a chunk knows what lies
 	// upstream of it.
-	cx.use(passThrough({bankPair(fromServer, from), bankPair(to, toServer)}));
-	return Configured::applied();
+	return cx.applied(passThrough(bankPair(fromServer, from), bankPair(to, toServer)), std::move(working),
+	                  std::move(notifying));
 }
 
 } // namespace ear::nodes::sendspin

@@ -1,5 +1,5 @@
 // A configuration's way back to the main loop (completions.hpp): what each configuration's channel posts through, its
-// handle's notes and losses today and its I/O jobs' completions from slice 3c's stores and recordings. Through a real
+// handle's notes and losses and its I/O jobs' completions (stores, recordings). Through a real
 // NodeHost, an old configuration's late note dropped, is node_handle_test.cpp's.
 #include <deque>
 #include <functional>

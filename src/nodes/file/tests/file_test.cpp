@@ -163,7 +163,6 @@ TEST_CASE("File records record.left and record.right through its sink as a 32-bi
 	CHECK(sink.name == "rec.writer");
 	CHECK(std::get<ear::SinkShape>(sink.shape).frames == 2 * format.rate.hz()); // 2 s ring
 	CHECK(sink.ready);                                                          // its consumer began: the WAV is open
-	CHECK(harness->handoffs().empty());
 
 	std::vector<float> left;
 	std::vector<float> right;

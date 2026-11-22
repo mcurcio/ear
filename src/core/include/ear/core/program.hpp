@@ -26,6 +26,13 @@
 #include "ear/core/graph_spec.hpp"
 #include "ear/core/log.hpp"
 namespace ear {
+class CreateContext; // lifecycle.hpp
+namespace part {
+class Fifo;
+} // namespace part
+namespace testing {
+struct FifoMaker; // ear/testing/node_harness.hpp: a test's own FIFO part, made by the type harness's library
+} // namespace testing
 
 // ---- What a type asks for (CreateOf::program) ----
 
@@ -81,11 +88,19 @@ struct Port {
 	GrantedPort port;
 	friend bool operator==(const Port&, const Port&) = default;
 };
-/// The path of the FIFO of the pipe receiver this configuration asked for on inside bank `bank` (CreateOf::fifoOf makes
-/// one, checked against the spec). A bank with no pipe receiver is a broken rule.
-struct Fifo {
-	std::string bank;
+/// The path of the FIFO of the pipe receiver this configuration attached on inside bank `bank()`. Only attaching the
+/// receiver makes one (CreateOf::attach returns it), so a program names no FIFO of a bank without a receiver; one kept
+/// from another configuration is a broken rule.
+class Fifo {
+public:
+	const std::string& bank() const noexcept { return bank_; }
 	friend bool operator==(const Fifo&, const Fifo&) = default;
+
+private:
+	friend class ear::CreateContext;
+	friend struct ear::testing::FifoMaker;
+	explicit Fifo(std::string bank) noexcept : bank_(std::move(bank)) {}
+	std::string bank_;
 };
 /// The path of the program's report feed: a FIFO the framework makes and holds open for reading before the program
 /// starts, whose bytes reach the loop CreateOf::program names. A program asked for with no feed is a broken rule.

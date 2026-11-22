@@ -9,10 +9,7 @@
 //   inline constexpr TypeSpec spec{.settings = SettingsTable<>{"white"}, .banks = Banks<noise>{}};
 //   struct White {
 //   	static Members<spec> ports(const CheckedOf<spec>&) { return {noise(members("mono"))}; }
-//   	Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>&) {
-//   		cx.use(WhiteCode{});
-//   		return Configured::applied();
-//   	}
+//   	Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>&) { return cx.applied(WhiteCode{}); }
 //   };
 //   }
 //
@@ -21,11 +18,11 @@
 //   static std::expected<void, std::string> check(const CheckedOf<spec>&);               optional, at parse
 //   explicit Type(NodeOf<spec>&);  or  Type();                                           one of the two
 //   Configured configure(CreateOf<spec>&, const CheckedOf<spec>&);                       required
-//   Changed configure(ChangeOf<spec>&, const CheckedOf<spec>&, const CheckedOf<spec>&);  optional; slice 3d's
+//   Changed configure(ChangeOf<spec>&, const CheckedOf<spec>&, const CheckedOf<spec>&);  optional; not called yet
 //   void start();  void stop();                                                          optional
 //
-// The change version compiles (its signature checked) but slice 3a never calls it: every change of settings restarts
-// the node.
+// The change version compiles (its signature checked) but nothing calls it yet: every change of settings restarts the
+// node (changes in place are designed, not built: docs/design/reconfigure.md).
 //
 // Every call here is on the main loop. CreateOf is valid only inside the configure it is handed to (a call after it
 // returned is a std::logic_error naming the call, "<call> outside configure", thrown by NodeHost); NodeOf is valid for
@@ -46,6 +43,8 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <variant>
+#include <vector>
 #include "ear/core/companions.hpp"
 #include "ear/core/loop.hpp"
 #include "ear/core/node_type.hpp"
@@ -59,34 +58,69 @@ namespace ear {
 
 // ---- Answers ----
 
-/// What creation's configure answers (docs/writing-a-node-type.md#the-class). It has no restart: that is the change
-/// version's answer.
+class ErasedInstance;
+template <const auto& Spec> class CreateOf;
+
+/// One loop's state as an answer carries it: declared loop `loop` (its index in the spec's Loops) and its state, owned
+/// from the answer on by the framework, which destroys it on the loop's thread at teardown step 4 (on the main loop if
+/// the loop never started).
+struct ErasedLoopState {
+	std::size_t loop;
+	std::unique_ptr<void, void (*)(void*)> state;
+	template <class State> static ErasedLoopState of(std::size_t loop, std::unique_ptr<State> state) {
+		return {loop, std::unique_ptr<void, void (*)(void*)>(state.release(),
+		                                                     [](void* given) { delete static_cast<State*>(given); })};
+	}
+};
+
+/// What creation's configure answers (docs/writing-a-node-type.md#the-class): a failure, or the code and the state of
+/// every loop the spec declares with one. A type makes the applied answer only through its context
+/// (`return cx.applied(code, states...)`), which holds it to its spec at compile time, so the code and each state are
+/// given exactly once; an instance written by hand makes it through ErasedInstance::applied, and nothing else can. It
+/// has no restart: that is the change version's answer.
 class Configured {
 public:
-	/// The framework still waits for every resource the configure asked for (readiness 3' and 4').
-	static Configured applied() noexcept { return Configured(std::nullopt); }
 	/// A failure only the type can see: the node fails `start-failed: <detail>`, its configuration torn down.
-	static Configured failed(std::string detail) { return Configured(std::move(detail)); }
+	static Configured failed(std::string detail) {
+		Configured answer;
+		answer.failure_ = std::move(detail);
+		return answer;
+	}
 	/// For the framework.
 	bool isFailed() const noexcept { return failure_.has_value(); }
 	/// For the framework; empty unless isFailed().
 	const std::string& detail() const noexcept { return failure_ ? *failure_ : empty(); }
+	/// For the framework, on an applied answer: its code and its states, each taken once.
+	NodeCode& code() noexcept { return *code_; }
+	std::vector<ErasedLoopState>& states() noexcept { return states_; }
 
 private:
-	explicit Configured(std::optional<std::string> failure) noexcept : failure_(std::move(failure)) {}
+	friend class ErasedInstance;
+	template <const auto&> friend class CreateOf;
+	Configured() = default;
+	/// The applied answer: the code, and one state for each loop the instance declares with one, by index.
+	template <std::same_as<ErasedLoopState>... States> static Configured erased(NodeCode code, States... states) {
+		Configured answer;
+		answer.code_.emplace(std::move(code));
+		answer.states_.reserve(sizeof...(States));
+		(answer.states_.push_back(std::move(states)), ...);
+		return answer;
+	}
 	static const std::string& empty() noexcept {
 		static const std::string none;
 		return none;
 	}
 	std::optional<std::string> failure_;
+	std::optional<NodeCode> code_; // set unless failed
+	std::vector<ErasedLoopState> states_;
 };
 
-/// What the change version of configure answers (docs/writing-a-node-type.md#the-class; slice 3d). Declared in 3a only
-/// so that neither answer type can stand for the other; slice 3d defines the rest (and a later answer, made by
-/// whenReady).
+/// What the change version of configure answers (docs/writing-a-node-type.md#the-class). Declared only so that neither
+/// answer type can stand for the other: changes in place are not built yet (docs/design/reconfigure.md), which will
+/// define the rest.
 class Changed {
 public:
-	/// 3a never calls the change version, so these only let one compile and link; slice 3d gives them their meaning.
+	/// Nothing calls the change version yet, so these only let one compile and link.
 	static Changed applied() noexcept { return Changed(); }
 	static Changed restart(std::string reason) {
 		static_cast<void>(reason);
@@ -117,22 +151,16 @@ protected:
 	~NodeContext() = default;
 };
 
-/// What `cx.sink(...)` names the sink's one consumer through (CreateOf's SinkOf<Spec> wraps it). Main thread, inside
-/// configure only. Exactly one consumer per sink, in either form: a second call, a null consumer or none by configure's
-/// return (when it answered applied) is a std::logic_error naming the node and the sink's bank.
-class SinkRequest {
-public:
-	/// A consumer of the type's own, given whole and owned by the sink (file's WavWriter).
-	virtual void consumedBy(std::unique_ptr<SinkConsumer> consumer) = 0;
-	/// A consumer that is part of declared loop `loop`'s state (its index in the spec's Loops), found in the state by
-	/// `member` when the consumer begins, and owned by the state: the sink closes (teardown step 3) before the state is
-	/// destroyed (step 4), and a sink whose loop never ran never begins. A loop declared without a state is a
-	/// std::logic_error.
-	virtual void consumedByState(std::size_t loop, std::move_only_function<SinkConsumer&(void*)> member) = 0;
-
-protected:
-	~SinkRequest() = default;
+/// A sink's consumer that is part of a loop's state (CreateOf::attach's loop forms for a sink): declared loop `loop` (its index in
+/// the spec's Loops), `member` finding the consumer in the state when the consumer begins. The state owns it: the sink
+/// closes (teardown step 3) before the state is destroyed (step 4), and a sink whose loop never ran never begins.
+struct StateSinkConsumer {
+	std::size_t loop;
+	std::move_only_function<SinkConsumer&(void*)> member;
 };
+/// A sink's one consumer, as CreateContext::sink takes it: the type's own, given whole and owned by the sink (file's
+/// WavWriter), or a part of a loop's state.
+using SinkConsumerFrom = std::variant<std::unique_ptr<SinkConsumer>, StateSinkConsumer>;
 
 /// Where a program's report feed goes (CreateOf::program's feed form): declared loop `loop`'s state, `deliver` called on
 /// the loop's thread with the state and each chunk read, in order.
@@ -151,27 +179,27 @@ public:
 	virtual const NodeName& node() const = 0;
 	/// The node's ports (its config's), to bind a code written against the spec.
 	virtual const Ports& ports() const = 0;
-	/// The code (prepared at T3, driven at T5). Exactly once: a second call is a std::logic_error at the call; none by an
-	/// applied configure's return, one at the return.
-	virtual void use(NodeCode code) = 0;
-	/// A sound card, an engine companion (docs/writing-a-node-type.md#engine-companions): playback on an inside
-	/// output bank, `<node>.playback`, capture on an inside input bank, `<node>.capture` (the bank's direction is the
-	/// card's; a routable bank is a std::logic_error naming it); a playback card's bank is faded with the public
-	/// outputs. Made once the block is ready, in the turn's flush. A second companion on the bank is a
-	/// std::logic_error.
-	virtual void soundCard(std::string_view bank, SoundCardShape shape) = 0;
-	/// An RTP receiver on an inside input bank, `<node>.rtp`, likewise; never faded. Its `latencyMs` is latency beyond
-	/// the bank (LatencyPlan::beyond).
-	virtual void rtpReceiver(std::string_view bank, RtpReceiverShape shape) = 0;
+	/// An engine companion on an inside bank (docs/writing-a-node-type.md#engine-companions), its kind its shape's: a
+	/// sound card (playback on an inside output bank, `<node>.playback`, capture on an inside input bank,
+	/// `<node>.capture`: the bank's direction is the card's, and a playback card's bank is faded with the public
+	/// outputs), an RTP receiver on an inside input bank (`<node>.rtp`, never faded, its `latencyMs` latency beyond the
+	/// bank: LatencyPlan::beyond) or a pipe receiver on an inside input bank (`<node>.pipe`, never faded, reading the
+	/// FIFO runtimePath(<runtime folder>, node, <configuration>, "<bank>.fifo"), its module's fixed buffer latency
+	/// beyond the bank: moduleRunDelay). Made once the block is ready, in the turn's flush. A bank of the wrong reach
+	/// or direction, or a second companion on the bank, is a std::logic_error naming it; a host with no adapter of the
+	/// kind (or, for a pipe receiver, no runtime folder) refuses it. Returns a pipe receiver's FIFO, as a part of a
+	/// program's argument or file; nothing for the other kinds.
+	virtual std::optional<part::Fifo> attachEngine(std::string_view bank, EngineCompanionShape shape) = 0;
 	/// A recording file beneath the recordings folder (docs/writing-a-node-type.md#recordings): claimed
 	/// ("recording:<path>") at the first readiness step, created or truncated on the I/O thread at step `opens`, its
 	/// descriptor valid from the sink consumer's begin() until the configuration is freed (teardown step 5), when it is
 	/// closed on the I/O thread. A refusal fails the node start-failed "cannot open <path>: <why>" at its step; one path
 	/// asked for twice in one configuration is a std::logic_error.
 	virtual Recording& recording(const RecordingRequest& request) = 0;
-	/// A sink on an inside output bank (docs/engine.md#sinks): made at once (its thread starts); its
-	/// consumer begins once configure answered applied (readiness 4').
-	virtual SinkRequest& sink(std::string_view bank, SinkShape shape) = 0;
+	/// A sink on an inside output bank (docs/engine.md#sinks), with its one consumer: made at once (its thread starts);
+	/// its consumer begins once configure answered applied (readiness 4'). A null consumer, or one in the state of a
+	/// loop declared without a state, is a std::logic_error naming the sink's bank, and no sink is made.
+	virtual void sink(std::string_view bank, SinkShape shape, SinkConsumerFrom consumer) = 0;
 	/// A source on an inside input bank (docs/writing-a-node-type.md#sources): made at once and ready at once; the block
 	/// plays it into the bank before the code every cycle the code runs; its ring's capacity is declared beyond the bank
 	/// (LatencyPlan::beyond, Latency{0, capacity}). A second companion on the bank, `shape.frames == 0` or a call outside
@@ -186,10 +214,6 @@ public:
 	/// same path is a std::logic_error. With a pass-through as the code, the path must be one of its pairs, or the
 	/// node fails at configure's return.
 	virtual void declareLatency(std::string_view from, std::string_view to, Latency latency) = 0;
-	/// Declared loop `loop`'s state (docs/writing-a-node-type.md#loops), owned from now on by the framework, which
-	/// destroys it on the loop's thread at teardown step 4 (on the main loop if the loop never started). Exactly once
-	/// for a loop declared with a state type, by an applied configure's return; never for one declared without.
-	virtual void loopState(std::size_t loop, std::unique_ptr<void, void (*)(void*)> state) = 0;
 	/// Declared loop `loop` as an executor, for a state to post to and arm on; valid until the configuration is freed
 	/// (teardown step 5). What is sent to it before the node is configured is staged.
 	virtual Loop& loopExecutor(std::size_t loop) = 0;
@@ -202,25 +226,56 @@ public:
 	/// claims at the first readiness step, before anything is opened, held until teardown step 5. A claim of another
 	/// kind (a store's or a recording's, which the framework claims itself) is a std::logic_error.
 	virtual void claim(Claim claim) = 0;
-	/// A pipe receiver on an inside input bank (docs/writing-a-node-type.md#engine-companions), `<node>.pipe`, an engine
-	/// companion made once the block is ready, as a sound card is; never faded. It reads the FIFO
-	/// runtimePath(<runtime folder>, node, <configuration>, "<bank>.fifo"), and its module's fixed buffer is latency
-	/// beyond the bank (moduleRunDelay). A host with no pipe receivers' adapter or no runtime folder refuses it; a second
-	/// companion on the bank is a std::logic_error.
-	virtual void pipeReceiver(std::string_view bank, PipeReceiverShape shape) = 0;
 	/// A listening TCP port the framework picks at the first readiness step (docs/writing-a-node-type.md#claims), held as
 	/// a TcpListen of it once granted: its handle, the claim's index among the configuration's claims, in asking order.
 	virtual GrantedPort claimAnyTcp() = 0;
 	/// The configuration's one program (docs/writing-a-node-type.md#programs), started at the last readiness step;
 	/// `feed`, when given, where its report feed goes. A rule the shape breaks is a std::logic_error at the call.
 	virtual void program(ProgramShape shape, std::optional<ProgramFeedTo> feed) = 0;
-	/// A rule CreateOf finds broken before it reaches a call above (a code written against another type's spec): records
-	/// it on the configuration, so the node fails with it whatever configure does next, and throws std::logic_error(rule).
-	[[noreturn]] virtual void refuse(std::string rule) = 0;
 
 protected:
 	~CreateContext() = default;
+	/// The FIFO of the pipe receiver on `bank`: what attachEngine returns for one, and nothing else makes.
+	static part::Fifo fifoOf(std::string bank) { return part::Fifo(std::move(bank)); }
 };
+
+// ---- A companion's bank ----
+
+/// The bank a companion of each shape joins (docs/writing-a-node-type.md#engine-companions, #sinks, #sources): the
+/// shape's one rule, checked at compile time by the context's attach. A shape with no rule is no companion's.
+template <class Shape> struct CompanionBank;
+template <> struct CompanionBank<SoundCardShape> {
+	template <class Bank> static constexpr void check() noexcept {
+		static_assert(Bank::reach == PortBank::Reach::inside, "a sound card joins an inside bank of the spec");
+	}
+};
+template <> struct CompanionBank<RtpReceiverShape> {
+	template <class Bank> static constexpr void check() noexcept {
+		static_assert(Bank::reach == PortBank::Reach::inside && Bank::direction == Direction::input,
+		              "an RTP receiver joins an inside input bank of the spec");
+	}
+};
+template <> struct CompanionBank<PipeReceiverShape> {
+	template <class Bank> static constexpr void check() noexcept {
+		static_assert(Bank::reach == PortBank::Reach::inside && Bank::direction == Direction::input,
+		              "a pipe receiver joins an inside input bank of the spec");
+	}
+};
+template <> struct CompanionBank<SourceShape> {
+	template <class Bank> static constexpr void check() noexcept {
+		static_assert(Bank::reach == PortBank::Reach::inside && Bank::direction == Direction::input,
+		              "a source plays into an inside input bank of the spec");
+	}
+};
+template <> struct CompanionBank<SinkShape> {
+	template <class Bank> static constexpr void check() noexcept {
+		static_assert(Bank::reach == PortBank::Reach::inside && Bank::direction == Direction::output,
+		              "a sink reads an inside output bank of the spec");
+	}
+};
+/// Whether `Shape` is a companion's: it states its bank.
+template <class Shape>
+concept CompanionShape = requires { sizeof(CompanionBank<Shape>); };
 
 // ---- The type's views of them ----
 
@@ -241,49 +296,8 @@ template <class Handle, class Work> std::move_only_function<void(void*)> loopWor
 }
 } // namespace spec_detail
 
-/// What `cx.sink(...)` returns (docs/writing-a-node-type.md#sinks): names the sink's one consumer, given whole or as a
-/// part of one of the spec's loops' states. A loop the spec lacks, a loop without a state, or a member that is no
-/// SinkConsumer does not compile.
-template <const auto& Spec> class CreateOf;
-template <const auto& Spec> class SinkOf {
-	template <class Handle> static constexpr bool ownLoop = isLoopHandle<Handle> && LoopsOf<Spec>::template has<Handle>;
-
-public:
-	/// A consumer of the type's own, owned by the sink (file's WavWriter).
-	void consumedBy(std::unique_ptr<SinkConsumer> consumer) { request_->consumedBy(std::move(consumer)); }
-	/// The consumer is `member` of loop `Handle`'s state (`consumedBy(worker, &Worker::toServer)`): it lives as long as
-	/// the state, which outlives the sink's last call. Its calls still run on the sink's own thread, never the loop's.
-	template <class Handle, class State, class Member>
-		requires isLoopHandle<Handle>
-	void consumedBy(Handle, Member State::* member) {
-		static_assert(ownLoop<Handle>, "a sink is consumed by one of its spec's loops");
-		static_assert(Handle::stateful && std::same_as<State, typename Handle::State>,
-		              "a sink's consumer is a member of that loop's state");
-		static_assert(std::derived_from<Member, SinkConsumer>, "a sink's consumer is a SinkConsumer");
-		request_->consumedByState(LoopsOf<Spec>::template indexOf<Handle>, [member](void* state) -> SinkConsumer& {
-			return static_cast<State*>(state)->*member;
-		});
-	}
-	/// The consumer is loop `Handle`'s state itself.
-	template <class Handle>
-		requires isLoopHandle<Handle>
-	void consumedBy(Handle) {
-		static_assert(ownLoop<Handle>, "a sink is consumed by one of its spec's loops");
-		using State = typename Handle::State;
-		static_assert(Handle::stateful && std::derived_from<State, SinkConsumer>,
-		              "a loop's state that consumes a sink is a SinkConsumer");
-		request_->consumedByState(LoopsOf<Spec>::template indexOf<Handle>,
-		                          [](void* state) -> SinkConsumer& { return *static_cast<State*>(state); });
-	}
-
-private:
-	template <const auto&> friend class CreateOf;
-	explicit SinkOf(SinkRequest& request) noexcept : request_(&request) {}
-	SinkRequest* request_;
-};
-
 /// What the instance keeps: the node's own, for the instance's life, main loop only (handle() excepted, as
-/// NodeContext's). Slice 3c adds post(), slice 5 report() (docs/writing-a-node-type.md#the-class).
+/// NodeContext's): docs/writing-a-node-type.md#the-class.
 template <const auto& Spec> class NodeOf {
 	static_assert(linkage::named<Spec>, "a spec is declared in a named namespace, never an unnamed one");
 
@@ -311,9 +325,45 @@ private:
 	NodeContext* context_;
 };
 
-/// configure on creation (T2): acquire and construct (docs/writing-a-node-type.md#the-class; slice 3a's members, its
-/// interim calls among them). Only the spec's banks, of the right direction and reach, compile. It has no holds,
-/// whenReady or unclaim (the change version's), so a call the mode does not offer does not compile.
+/// A loop's state on its way into configure's answer (docs/writing-a-node-type.md#loops): made only by
+/// `cx.state(loop, args...)`, which constructs it, and given to `cx.applied`. Move-only; tagged with its loop, so the
+/// answer's check is on types alone.
+template <class Handle> class LoopState {
+public:
+	using Loop = Handle;
+	LoopState(LoopState&&) noexcept = default;
+	LoopState& operator=(LoopState&&) = delete;
+
+private:
+	template <const auto&> friend class CreateOf;
+	explicit LoopState(std::unique_ptr<typename Handle::State> state) noexcept : state_(std::move(state)) {}
+	std::unique_ptr<typename Handle::State> state_;
+};
+template <class T> inline constexpr bool isLoopState = false;
+template <class Handle> inline constexpr bool isLoopState<LoopState<Handle>> = true;
+
+namespace spec_detail {
+/// How many of the loops `Given` is `Handle`.
+template <class Handle, class... Given> inline constexpr std::size_t statesFor =
+	(std::size_t{0} + ... + std::size_t{std::same_as<Handle, Given>});
+/// One check for each loop of a spec, so the compiler's error names the loop (its instantiation's `Handle`).
+template <class Handle, class... Given> constexpr void stateGivenOnce() noexcept {
+	static_assert(!Handle::stateful || statesFor<Handle, Given...> >= 1,
+	              "configure's answer gives the state of every loop its spec declares with one: "
+	              "cx.applied(code, cx.state(loop, ...))");
+	static_assert(statesFor<Handle, Given...> <= 1, "configure's answer gives a loop's state once");
+}
+template <class List, class... Given> struct StatesGiven;
+template <auto... Handles, class... Given> struct StatesGiven<Loops<Handles...>, Given...> {
+	static constexpr void check() noexcept {
+		(stateGivenOnce<std::remove_cvref_t<decltype(Handles)>, Given...>(), ...);
+	}
+};
+} // namespace spec_detail
+
+/// configure on creation (T2): acquire, construct and answer (docs/writing-a-node-type.md#the-class). Only the spec's
+/// banks, of the right direction and reach, compile. It has no holds, whenReady or unclaim (the change version's), so a
+/// call the mode does not offer does not compile.
 template <const auto& Spec> class CreateOf {
 	static_assert(linkage::named<Spec>, "a spec is declared in a named namespace, never an unnamed one");
 	using List = BanksOf<Spec>;
@@ -328,52 +378,145 @@ public:
 	AudioFormat format() const { return context_->format(); }
 	const NodeName& node() const { return context_->node(); }
 
-	/// The code, once. A code written against a spec is bound to the node's ports here; one written against another
-	/// type's spec is a std::logic_error (it would read this node's ports by that spec's banks).
-	void use(NodeCode code) {
-		if (auto* bound = dynamic_cast<spec_detail::BankBoundCode*>(code.own().get())) {
-			if (bound->spec() != &Spec)
-				context_->refuse("a type's configure gave a code written against another type's spec");
-			bound->bindPorts(context_->ports());
+	// ---- The answer ----
+
+	/// The applied answer (docs/writing-a-node-type.md#configure-and-createof): the code, by value (a struct with
+	/// process, or passThrough(...)), and the state of every loop the spec declares with one, each made by state() and
+	/// given once, in any order. A state missing, a second for one loop, a code given as a pointer or one written
+	/// against another type's spec (it would read this node's ports by that spec's banks) does not compile. A code
+	/// written against the spec is bound to the node's ports here.
+	template <class Code, class... States> Configured applied(Code code, States... states) {
+		static_assert(SpecCode<Code> || std::same_as<Code, PassThroughPairs>,
+		              "configure answers with its code by value: a struct with process, or passThrough(...)");
+		static_assert((isLoopState<States> && ...),
+		              "configure's answer is its code, then its loops' states, each made by cx.state(loop, ...)");
+		if constexpr ((isLoopState<States> && ...)) {
+			spec_detail::StatesGiven<LoopsOf<Spec>, typename States::Loop...>::check();
+			// What only a moved-from token can hold, and so only at run time: the type's bug, thrown inside its
+			// configure so the node fails with it (docs/writing-a-node-type.md#rules-the-framework-enforces).
+			if constexpr (std::same_as<Code, PassThroughPairs>) {
+				if (code.pairs().empty()) throw std::logic_error("applied given a pass-through that was moved from");
+			}
+			const auto given = [](std::string_view loop, bool held) {
+				if (!held)
+					throw std::logic_error("applied given a state of loop " + std::string(loop) +
+					                       " that was moved from");
+			};
+			(given(States::Loop::name, states.state_ != nullptr), ...);
+			NodeCode erased(std::move(code));
+			if constexpr (SpecCode<Code>) {
+				static_assert(static_cast<const void*>(&spec_detail::ProcessOf<decltype(&Code::process)>::spec) ==
+				                  static_cast<const void*>(&Spec),
+				              "configure answers with a code written against its own type's spec");
+				static_cast<spec_detail::BankBoundCode&>(*erased.own()).bindPorts(context_->ports());
+			}
+			return Configured::erased(std::move(erased),
+			                          ErasedLoopState::of(LoopsOf<Spec>::template indexOf<typename States::Loop>,
+			                                              std::move(states.state_))...);
+		} else {
+			return Configured::failed({});
 		}
-		context_->use(std::move(code));
+	}
+	/// Loop `Handle`'s state (docs/writing-a-node-type.md#loops), constructed here from `args` on the main loop with
+	/// no I/O and no threads, for the answer: once the answer is given the framework owns it, and the instance reaches
+	/// it only by a post. A loop the spec lacks, or one declared without a state, does not compile.
+	template <class Handle, class... Args> LoopState<Handle> state(Handle, Args&&... args) {
+		static_assert(ownLoop<Handle>, "a context takes only its spec's loops");
+		static_assert(Handle::stateful, "a loop declared without a state takes none");
+		return LoopState<Handle>(std::make_unique<typename Handle::State>(std::forward<Args>(args)...));
 	}
 
-	/// A sound card on an inside bank: playback on an output bank, capture on an input bank (the bank's direction is
-	/// the card's, so the shape names none).
-	template <class Bank> void soundCard(Bank, SoundCardShape shape) {
-		static_assert(ownBank<Bank>, "a context takes only its spec's banks");
-		static_assert(Bank::reach == PortBank::Reach::inside, "a sound card joins an inside bank of the spec");
-		context_->soundCard(Bank::name, std::move(shape));
+	// ---- Companions: one per inside bank, attached by its shape (CompanionBank states each shape's bank) ----
+
+	/// A sound card on an inside bank (docs/writing-a-node-type.md#engine-companions): playback on an output bank,
+	/// capture on an input bank (the bank's direction is the card's, so the shape names none).
+	template <class Bank> void attach(Bank, SoundCardShape shape) {
+		checkCompanion<Bank, SoundCardShape>();
+		context_->attachEngine(Bank::name, std::move(shape));
 	}
 	/// An RTP receiver on an inside input bank.
-	template <class Bank> void rtpReceiver(Bank, RtpReceiverShape shape) {
-		static_assert(ownBank<Bank>, "a context takes only its spec's banks");
-		static_assert(Bank::reach == PortBank::Reach::inside && Bank::direction == Direction::input,
-		              "an RTP receiver joins an inside input bank of the spec");
-		context_->rtpReceiver(Bank::name, std::move(shape));
+	template <class Bank> void attach(Bank, RtpReceiverShape shape) {
+		checkCompanion<Bank, RtpReceiverShape>();
+		context_->attachEngine(Bank::name, std::move(shape));
 	}
-	/// A recording file beneath the recordings folder (docs/writing-a-node-type.md#recordings): give it to the sink's
-	/// consumer, which reads its descriptor from begin() on. Its refusal is the framework's: the node fails, and
-	/// configure answers nothing for it.
-	Recording& recording(RecordingRequest request) { return context_->recording(request); }
-	/// A sink on an inside output bank, the same call (docs/writing-a-node-type.md#sinks); its consumer is named on what
-	/// it returns.
-	template <class Bank> SinkOf<Spec> sink(Bank, SinkShape shape) {
-		static_assert(ownBank<Bank>, "a context takes only its spec's banks");
-		static_assert(Bank::reach == PortBank::Reach::inside && Bank::direction == Direction::output,
-		              "a sink reads an inside output bank of the spec");
-		return SinkOf<Spec>(context_->sink(Bank::name, shape));
+	/// A pipe receiver on an inside input bank: an engine companion, `<node>.pipe`, reading a FIFO the framework
+	/// names, which a program of the configuration writes. Its module's fixed buffer is latency beyond the bank
+	/// (moduleRunDelay); never faded. Returns that FIFO, as a part of a program's argument or file
+	/// (docs/writing-a-node-type.md#programs): attaching the receiver is the only way to one.
+	template <class Bank> part::Fifo attach(Bank, PipeReceiverShape shape) {
+		checkCompanion<Bank, PipeReceiverShape>();
+		return context_->attachEngine(Bank::name, std::move(shape)).value();
 	}
 	/// A source on an inside input bank (docs/writing-a-node-type.md#sources): what the type's ordinary thread writes,
 	/// played into the bank by the block before the code; `clock` its own clock, null for a source with no clock
 	/// (docs/writing-a-node-type.md#a-sources-clock).
-	template <class Bank> SourceWriter& source(Bank, SourceShape shape, std::unique_ptr<SourceClock> clock = nullptr) {
-		static_assert(ownBank<Bank>, "a context takes only its spec's banks");
-		static_assert(Bank::reach == PortBank::Reach::inside && Bank::direction == Direction::input,
-		              "a source plays into an inside input bank of the spec");
+	template <class Bank> SourceWriter& attach(Bank, SourceShape shape, std::unique_ptr<SourceClock> clock = nullptr) {
+		checkCompanion<Bank, SourceShape>();
 		return context_->source(Bank::name, shape, std::move(clock));
 	}
+	/// A sink on an inside output bank with its one consumer (docs/writing-a-node-type.md#sinks): here a consumer of
+	/// the type's own, given whole and owned by the sink (file's WavWriter). Its shape is named (deduced), so a braced
+	/// shape with a null third argument is a source with no clock, never a sink with no consumer.
+	template <class Bank, std::same_as<SinkShape> Shape>
+	void attach(Bank, Shape shape, std::unique_ptr<SinkConsumer> consumer) {
+		checkCompanion<Bank, SinkShape>();
+		context_->sink(Bank::name, shape, std::move(consumer));
+	}
+	/// A sink with no consumer does not compile: nothing would ever read it. Its shape is deduced, so a braced shape
+	/// (`cx.attach(bank, {.frames = n})`, a source's) never selects this refusal.
+	template <class Bank, std::same_as<SinkShape> Shape> void attach(Bank, Shape) {
+		static_assert(sizeof(Bank) == 0, "a sink is given its one consumer: cx.attach(bank, shape, consumer)");
+	}
+	/// The sink's consumer is `member` of loop `Handle`'s state (`cx.attach(bank, shape, worker, &Worker::toServer)`):
+	/// it lives as long as the state, which outlives the sink's last call. Its calls still run on the sink's own
+	/// thread, never the loop's. A loop the spec lacks, a loop without a state, or a member that is no SinkConsumer
+	/// does not compile.
+	template <class Bank, class Handle, class State, class Member>
+		requires isLoopHandle<Handle>
+	void attach(Bank, SinkShape shape, Handle, Member State::* member) {
+		checkCompanion<Bank, SinkShape>();
+		static_assert(ownLoop<Handle>, "a sink is consumed by one of its spec's loops");
+		// The member may be one the state inherits (`&Worker::toServer` then names its base), so the state is cast to
+		// its own type first.
+		static_assert(Handle::stateful && std::derived_from<typename Handle::State, State>,
+		              "a sink's consumer is a member of that loop's state");
+		static_assert(std::derived_from<Member, SinkConsumer>, "a sink's consumer is a SinkConsumer");
+		if constexpr (Handle::stateful && std::derived_from<typename Handle::State, State> &&
+		              std::derived_from<Member, SinkConsumer>) {
+			using Own = typename Handle::State;
+			context_->sink(
+				Bank::name, shape,
+				StateSinkConsumer{LoopsOf<Spec>::template indexOf<Handle>, [member](void* state) -> SinkConsumer& {
+									  return static_cast<Own*>(state)->*member;
+								  }});
+		}
+	}
+	/// The sink's consumer is loop `Handle`'s state itself.
+	template <class Bank, class Handle>
+		requires isLoopHandle<Handle>
+	void attach(Bank, SinkShape shape, Handle) {
+		checkCompanion<Bank, SinkShape>();
+		static_assert(ownLoop<Handle>, "a sink is consumed by one of its spec's loops");
+		using State = typename Handle::State;
+		static_assert(Handle::stateful && std::derived_from<State, SinkConsumer>,
+		              "a loop's state that consumes a sink is a SinkConsumer");
+		context_->sink(Bank::name, shape,
+		               StateSinkConsumer{LoopsOf<Spec>::template indexOf<Handle>,
+		                                 [](void* state) -> SinkConsumer& { return *static_cast<State*>(state); }});
+	}
+	/// What is no companion's shape does not compile.
+	template <class Bank, class Shape, class... Rest>
+		requires(!CompanionShape<std::remove_cvref_t<Shape>>)
+	void attach(Bank, Shape&&, Rest&&...) {
+		static_assert(CompanionShape<std::remove_cvref_t<Shape>>,
+		              "attach takes a companion's shape: a sound card's, an RTP receiver's, a pipe receiver's, a "
+		              "source's or a sink's");
+	}
+
+	/// A recording file beneath the recordings folder (docs/writing-a-node-type.md#recordings): give it to the sink's
+	/// consumer, which reads its descriptor from begin() on. Its refusal is the framework's: the node fails, and
+	/// configure answers nothing for it.
+	Recording& recording(RecordingRequest request) { return context_->recording(request); }
 	/// The type's own code's latency, from an input bank to an output bank (it lands on `To`).
 	template <class From, class To> void declareLatency(From, To, Latency latency) {
 		static_assert(ownBank<From> && ownBank<To>, "declareLatency takes its spec's banks");
@@ -382,17 +525,6 @@ public:
 		context_->declareLatency(From::name, To::name, latency);
 	}
 
-	/// Loop `Handle`'s state (docs/writing-a-node-type.md#loops), constructed here on the main loop with no I/O and no
-	/// threads; from now on the framework owns it, and the instance reaches it only by a post. Exactly once for a loop
-	/// declared with a state type; a loop declared without one takes none (it does not compile).
-	template <class Handle> void loop(Handle, std::unique_ptr<typename Handle::State> state) {
-		static_assert(ownLoop<Handle>, "a context takes only its spec's loops");
-		static_assert(Handle::stateful, "a loop declared without a state takes none");
-		using State = typename Handle::State;
-		context_->loopState(LoopsOf<Spec>::template indexOf<Handle>,
-		                    std::unique_ptr<void, void (*)(void*)>(
-								state.release(), [](void* given) { delete static_cast<State*>(given); }));
-	}
 	/// Loop `Handle` as an executor (post, timers, watches) for a state to keep: valid until the configuration is freed;
 	/// what is sent to it before the node is configured is staged.
 	template <class Handle> Loop& executor(Handle) {
@@ -423,26 +555,6 @@ public:
 	/// handle, which names the port in a program's arguments or files (part::Port) before it is picked.
 	GrantedPort claim(claim::AnyTcp) { return context_->claimAnyTcp(); }
 
-	/// A pipe receiver on an inside input bank (docs/writing-a-node-type.md#engine-companions): an engine companion,
-	/// `<node>.pipe`, reading a FIFO the framework names, which a program of the configuration writes (fifoOf). Its
-	/// module's fixed buffer is latency beyond the bank (moduleRunDelay); never faded.
-	template <class Bank> void pipeReceiver(Bank, PipeReceiverShape shape) {
-		static_assert(ownBank<Bank>, "a context takes only its spec's banks");
-		static_assert(Bank::reach == PortBank::Reach::inside && Bank::direction == Direction::input,
-		              "a pipe receiver joins an inside input bank of the spec");
-		context_->pipeReceiver(Bank::name, std::move(shape));
-	}
-	/// The FIFO of the pipe receiver this configuration asked for on `Bank`, as a part of a program's argument or file.
-	/// A bank the spec lacks, or one that is not an inside input bank, does not compile; one with no pipe receiver by
-	/// configure's return fails the node start-failed "configure gave program <name> the FIFO of bank <bank>, which has
-	/// no pipe receiver".
-	template <class Bank> part::Fifo fifoOf(Bank) const {
-		static_assert(ownBank<Bank>, "a context takes only its spec's banks");
-		static_assert(Bank::reach == PortBank::Reach::inside && Bank::direction == Direction::input,
-		              "fifoOf names an inside input bank of the spec");
-		return part::Fifo{std::string(Bank::name)};
-	}
-
 	/// A program (docs/writing-a-node-type.md#programs), started once every companion is ready, with no report feed.
 	void program(ProgramShape shape) { context_->program(std::move(shape), std::nullopt); }
 	/// A program whose report feed (part::Feed in its arguments or files) reaches loop `Handle`'s state: `onFeed`
@@ -462,21 +574,19 @@ public:
 private:
 	template <const auto&, class> friend class spec_detail::SpecInstance;
 	explicit CreateOf(CreateContext& context) noexcept : context_(&context) {}
+	template <class Bank, class Shape> static constexpr void checkCompanion() noexcept {
+		static_assert(ownBank<Bank>, "a context takes only its spec's banks");
+		CompanionBank<Shape>::template check<Bank>();
+	}
 	CreateContext* context_;
 };
 
-/// configure for a change (T9; docs/writing-a-node-type.md#the-class). Slice 3d defines it. In 3a a class may write the
-/// change version (its signature is checked), and it is never called: every change restarts the node.
+/// configure for a change (T9; docs/writing-a-node-type.md#the-class): declared, not defined, until changes in place
+/// are built (docs/design/reconfigure.md). A class may write the change version (its signature is checked), and it is
+/// never called: every change restarts the node.
 template <const auto& Spec> class ChangeOf;
 
 // ---- The erased instance ----
-
-/// Both contexts NodeHost implements on one set of internals, for the one call that needs either
-/// (docs/writing-a-node-type.md#rules-the-framework-enforces). Valid only during configure.
-struct InstanceContexts {
-	CreateContext& create; // what SpecInstance hands the type, as CreateOf<Spec>
-	StartContext& legacy;  // what LegacyInstance hands NodeConfig::start; interim until slice 3c
-};
 
 /// One configuration's instance, as NodeHost drives it (docs/writing-a-node-type.md#rules-the-framework-enforces): made
 /// by NodeConfig::make at T2, freed at teardown step 5 after the code. Main thread for every call. A type's exception
@@ -485,30 +595,28 @@ struct InstanceContexts {
 class ErasedInstance {
 public:
 	virtual ~ErasedInstance() = default;
-	/// The spec's loops, in declaration order (docs/writing-a-node-type.md#loops); none for a legacy instance.
+	/// The spec's loops, in declaration order (docs/writing-a-node-type.md#loops).
 	virtual std::span<const LoopDeclaration> loops() const noexcept { return {}; }
-	/// The spec's stores, in declaration order (docs/writing-a-node-type.md#stores); none for a legacy instance.
+	/// The spec's stores, in declaration order (docs/writing-a-node-type.md#stores).
 	virtual std::span<const StoreDeclaration> stores() const noexcept { return {}; }
-	/// T2: creation's configure (or the legacy start). Called once, timed as the hook `configure`.
-	virtual Configured configure(InstanceContexts& cx) = 0;
-	/// Legacy only: whether its start returned a recipe.
-	virtual bool hasRecipe() const noexcept { return false; }
-	/// Legacy only: configure answered failed because the old SPI's start said engineRefused (its fact is kept: the node
-	/// fails engine-refused, not start-failed).
-	virtual bool engineRefused() const noexcept { return false; }
-	/// Legacy only, T3 (every resource ready, before the machine hears it): the recipe builds the run object; its
-	/// failure is the fault `start-failed`.
-	virtual std::expected<void, FailureReason> ready(Ready& ready) {
-		static_cast<void>(ready);
-		return {};
-	}
+	/// T2: creation's configure, through `cx` (valid only during the call; SpecInstance hands it to the type as
+	/// CreateOf<Spec>). Called once, timed as the hook `configure`.
+	virtual Configured configure(CreateContext& cx) = 0;
 	/// T5 and T8, once the drive completed; timed as `start`.
 	virtual void start() {}
 	/// Once after every start() that returned (docs/writing-a-node-type.md#the-class pairing); timed as `stop`.
 	virtual void stop() {}
-	/// teardown step 4, after the loops closed. Legacy only: RunObject::close (off the main loop for a run with
-	/// threads); a class's loops are the framework's to close. `closed` from any thread, once.
-	virtual void close(std::move_only_function<void()> closed) { closed(); }
+
+protected:
+	/// The applied answer as the erased layer makes it: an instance written by hand (the framework's own tests) answers
+	/// with it, and a type's class with `cx.applied(...)`, which is held to its spec. The code, and one state for each
+	/// loop the instance declares with one, by index. NodeHost holds what it is given to the instance's loops: a null
+	/// code, a state missing, given twice or for a loop declared without one is the instance's maker's bug, told as
+	/// ear's own (docs/architecture.md#faults-by-owner). The framework still waits for every resource the configure
+	/// asked for.
+	template <std::same_as<ErasedLoopState>... States> static Configured applied(NodeCode code, States... states) {
+		return Configured::erased(std::move(code), std::move(states)...);
+	}
 };
 
 namespace spec_detail {
@@ -551,15 +659,12 @@ template <const auto& Spec, class Type> class SpecInstance final : public Erased
 		requires(const Checked& settings) {
 			{ Type::ports(settings) } -> std::same_as<Members<Spec>>;
 		}, "a type's class has static Members<spec> ports(const CheckedOf<spec>&)");
-	static_assert(
-		!requires(StartContext& context, const Checked& settings) { Type::start(context, settings); },
-		"a type on makeNodeType writes configure, not a static start");
 	static_assert(std::constructible_from<Type, NodeOf<Spec>&> || std::default_initializable<Type>,
 	              "a type's class is constructed from NodeOf<spec>& or from nothing");
 	static_assert(
 		requires { static_cast<Configured (Type::*)(CreateOf<Spec>&, const Checked&)>(&Type::configure); },
 		"a type's class has Configured configure(CreateOf<spec>&, const CheckedOf<spec>&)");
-	// The change version: optional, never called in 3a; once any configure of three parameters is callable (with
+	// The change version: optional and not called yet; once any configure of three parameters is callable (with
 	// a ChangeOf, or with any context), its signature is exactly this.
 	static constexpr bool hasChange = requires(Type& type, ChangeOf<Spec>& change, const Checked& settings) {
 		type.configure(change, settings, settings);
@@ -593,8 +698,8 @@ public:
 	SpecInstance(NodeContext& node, const Checked& settings) : node_(node), settings_(settings), type_(make(node_)) {}
 	std::span<const LoopDeclaration> loops() const noexcept override { return LoopsOf<Spec>::declared; }
 	std::span<const StoreDeclaration> stores() const noexcept override { return StoresOf<Spec>::declared; }
-	Configured configure(InstanceContexts& cx) override {
-		CreateOf<Spec> create(cx.create);
+	Configured configure(CreateContext& cx) override {
+		CreateOf<Spec> create(cx);
 		return type_.configure(create, settings_);
 	}
 	void start() override {
@@ -631,10 +736,10 @@ private:
 	Ports ports_;
 };
 
-/// The type makeNodeType makes. It derives from NodeType itself, handing it the spec's table at run time, not from
-/// NodeTypeOf<Spec.settings>: GCC 14 gives a template argument that names a subobject (or a variable template's
+/// The type makeNodeType makes. It hands NodeType the spec's table at run time, never as a template argument
+/// (`Spec.settings`): GCC 14 gives a template argument that names a subobject (or a variable template's
 /// specialization) external linkage whatever its object's, so two types' `spec.settings`, each in its own file's
-/// unnamed namespace, became one symbol and the linker kept one type's table for both.
+/// unnamed namespace, would become one symbol and the linker keep one type's table for both.
 template <const auto& Spec, class Type> class SpecNodeType final : public NodeType {
 	static_assert(linkage::named<Spec>, "a spec is declared in a named namespace, never an unnamed one");
 #ifdef EAR_NODE_TYPE_NAME // ear_node_type() (cmake/NodeType.cmake) gives a type's library its folder's name

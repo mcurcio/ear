@@ -18,11 +18,9 @@ using namespace ear;
 // Named, never unnamed: every table, row and spec a template is keyed on (settings_table.hpp, linkage).
 namespace graph_status_test {
 
-struct SilentCode final : AudioCode {
-	void prepare(const AudioFormat&) override {}
-	void process(std::span<const std::span<const float>>, std::span<const std::span<float>>, std::uint32_t,
-	             const GraphCycle&) noexcept override {}
-	void release() noexcept override {}
+/// A code that writes nothing, against any of the specs below (the engine is faked: nothing plays it).
+template <const auto& Spec> struct SilentCode {
+	void process(Io<Spec>, const GraphCycle&) noexcept {}
 };
 
 struct NullConsumer final : SinkConsumer {
@@ -44,8 +42,7 @@ constexpr TypeSpec sourceSpec{.settings = SettingsTable<seedRow>{"source"}, .ban
 struct SourceType {
 	static Members<sourceSpec> ports(const CheckedOf<sourceSpec>&) { return {noise(members("mono"))}; }
 	Configured configure(CreateOf<sourceSpec>& cx, const CheckedOf<sourceSpec>&) {
-		cx.use(std::make_unique<SilentCode>());
-		return Configured::applied();
+		return cx.applied(SilentCode<sourceSpec>{});
 	}
 };
 
@@ -57,9 +54,8 @@ struct RecorderType {
 		return {record(members("left", "right")), tap(members("left", "right"))};
 	}
 	Configured configure(CreateOf<recorderSpec>& cx, const CheckedOf<recorderSpec>&) {
-		cx.sink(tap, SinkShape{.frames = 64}).consumedBy(std::make_unique<NullConsumer>());
-		cx.use(std::make_unique<SilentCode>());
-		return Configured::applied();
+		cx.attach(tap, SinkShape{.frames = 64}, std::make_unique<NullConsumer>());
+		return cx.applied(SilentCode<recorderSpec>{});
 	}
 };
 
@@ -71,8 +67,7 @@ struct CardType {
 		return {play(members(1)), capture(members(1)), fromCard(members(1)), toCard(members(1))};
 	}
 	Configured configure(CreateOf<cardSpec>& cx, const CheckedOf<cardSpec>&) {
-		cx.use(std::make_unique<SilentCode>());
-		return Configured::applied();
+		return cx.applied(SilentCode<cardSpec>{});
 	}
 };
 

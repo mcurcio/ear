@@ -26,11 +26,11 @@ using namespace std::chrono_literals;
 std::vector<std::string> events;
 /// What each test asks of the type.
 struct Behaviour {
-	bool giveNoState = false;    // configure gives the worker no state
-	bool giveStateTwice = false; // configure gives it two
-	bool failConfigure = false;  // configure answers failed after posting
-	bool leaveSource = false;    // begin() leaves a timer armed past the state, in `left`
-	bool throwInBegin = false;   // begin() throws
+	bool failConfigure = false; // configure answers failed after posting
+	bool leaveSource = false;   // begin() leaves a timer armed past the state, in `left`
+	bool throwInBegin = false;  // begin() throws
+	bool movedState = false;    // configure answers with a state it already moved from
+	bool movedPairs = false;    // configure answers with a pass-through it already moved from
 };
 Behaviour behaviour;
 /// Where a careless state leaves a source.
@@ -112,17 +112,22 @@ public:
 	static Members<spec> ports(const Checked&) { return {out(members(1)), tap(members(1)), feed(members(1))}; }
 	Configured configure(CreateOf<spec>& cx, const Checked&) {
 		said("configure");
-		SourceWriter& played = cx.source(feed, {.frames = 256}, std::make_unique<AskingClock>());
-		if (!behaviour.giveNoState)
-			cx.loop(worker, std::make_unique<Worker>(cx.executor(worker), cx.executor(helper), played));
-		if (behaviour.giveStateTwice)
-			cx.loop(worker, std::make_unique<Worker>(cx.executor(worker), cx.executor(helper), played));
+		SourceWriter& played = cx.attach(feed, SourceShape{.frames = 256}, std::make_unique<AskingClock>());
+		auto working = cx.state(worker, cx.executor(worker), cx.executor(helper), played);
 		cx.post(worker, [](Worker&) { said("staged post"); });
 		cx.post(helper, [] { said("staged helper post"); });
-		cx.sink(tap, {.frames = 1024}).consumedBy(std::make_unique<Tap>());
-		cx.use(Silence{});
+		cx.attach(tap, SinkShape{.frames = 1024}, std::make_unique<Tap>());
 		if (behaviour.failConfigure) return Configured::failed("nope");
-		return Configured::applied();
+		if (behaviour.movedState) {
+			auto taken = std::move(working);
+			return cx.applied(Silence{}, std::move(working)); // NOLINT(bugprone-use-after-move): the type's bug
+		}
+		if (behaviour.movedPairs) {
+			auto pairs = passThrough(bankPair(feed, out));
+			auto taken = std::move(pairs);
+			return cx.applied(std::move(pairs), std::move(working)); // NOLINT(bugprone-use-after-move): likewise
+		}
+		return cx.applied(Silence{}, std::move(working));
 	}
 	void start() {
 		node_.post(worker, [](Worker& w) { w.begin(); });
@@ -201,8 +206,12 @@ TEST_CASE("Staged work never runs after a configuration that failed first, and a
 		h->add();
 		CHECK(h->phase() == "failed");
 		CHECK(failure(*h) == "start-failed: cannot start loop worker: Resource temporarily unavailable");
+		// The framework held the state by then: it frees it on the main loop, before the instance it may read.
+		CHECK(count("worker destroyed on the main loop") == 1);
+		CHECK(at("worker destroyed on the main loop") < at("instance destroyed"));
 	}
 	SECTION("configure answered failed after it posted") {
+		// The state never left configure (a failed answer carries none), so only the staged work is the framework's.
 		auto h = fresh({}, {.failConfigure = true});
 		h->add();
 		CHECK(h->phase() == "failed");
@@ -211,8 +220,24 @@ TEST_CASE("Staged work never runs after a configuration that failed first, and a
 	}
 	CHECK(count("staged post") == 0);
 	CHECK(count("staged helper post") == 0);
-	CHECK(count("worker destroyed on the main loop") == 1);
-	CHECK(at("worker destroyed on the main loop") < at("instance destroyed")); // a state may read the instance
+}
+
+TEST_CASE("An answer given a state or a pass-through that was moved from fails the node start-failed, as the type's "
+          "bug, never as ear's own",
+          "[loops]") {
+	SECTION("a state") {
+		auto h = fresh({}, {.movedState = true});
+		h->add();
+		CHECK(h->phase() == "failed");
+		CHECK(failure(*h) == "start-failed: configure threw: applied given a state of loop worker that was moved from");
+	}
+	SECTION("a pass-through") {
+		auto h = fresh({}, {.movedPairs = true});
+		h->add();
+		CHECK(h->phase() == "failed");
+		CHECK(failure(*h) == "start-failed: configure threw: applied given a pass-through that was moved from");
+	}
+	CHECK(count("staged post") == 0);
 }
 
 TEST_CASE("start() and stop() post to the state on its loop, a stop and a start keep it, a restart runs the goodbye, "
@@ -317,19 +342,6 @@ TEST_CASE("A strand's handlers run with onStrand() true, a dedicated loop's with
 	CHECK_FALSE(onStrand());
 }
 
-TEST_CASE("Configure's loop rules: a loop declared with a state is given exactly one", "[loops]") {
-	SECTION("none") {
-		auto h = fresh({}, {.giveNoState = true});
-		h->add();
-		CHECK(failure(*h) == "start-failed: configure gave loop worker no state");
-	}
-	SECTION("two") {
-		auto h = fresh({}, {.giveStateTwice = true});
-		h->add();
-		CHECK(failure(*h) == "start-failed: configure threw: loop worker given a state twice");
-	}
-}
-
 TEST_CASE("A loop not yet running is what the node waits for, after 2 s, by name", "[loops]") {
 	auto h = fresh({.holdLoops = true});
 	h->add();
@@ -346,7 +358,7 @@ TEST_CASE("A loop handler's throw fails the node as a hook's does", "[loops]") {
 	CHECK(failure(*h) == "lost: loop worker's handler threw: no server");
 }
 
-// A sink whose consumer is part of a loop's state (SinkOf::consumedBy(loop, &State::member) and consumedBy(loop)).
+// A sink whose consumer is part of a loop's state (CreateOf::attach's loop forms: loop, &State::member and loop alone).
 namespace loop_member_test {
 
 using namespace ear;
@@ -372,6 +384,17 @@ struct Keeper {
 	~Keeper() { events.push_back("keeper destroyed"); }
 	Recorder recorder{"member"};
 };
+/// A state whose consumer is a member it inherits, from a base that does not come first: `&Heir::recorder` names the
+/// base, so the framework must reach the state as itself before the member.
+struct Padding {
+	std::uint64_t pad = 7;
+};
+struct HeirBase {
+	Recorder recorder{"inherited"};
+};
+struct Heir : Padding, HeirBase {
+	~Heir() { events.push_back("heir destroyed"); }
+};
 /// A state that is the consumer itself.
 struct Whole final : SinkConsumer {
 	~Whole() override { events.push_back("whole destroyed"); }
@@ -385,27 +408,31 @@ constexpr SettingsTable<> table{"member"};
 constexpr auto in = bank::input<"in">;
 constexpr auto tap = bank::insideOutput<"tap">;
 constexpr auto tap2 = bank::insideOutput<"tap2">;
+constexpr auto tap3 = bank::insideOutput<"tap3">;
 constexpr auto keeper = loop::dedicated<"keeper", Keeper>;
 constexpr auto whole = loop::strand<"whole", Whole>;
-constexpr TypeSpec spec{.settings = table, .banks = Banks<in, tap, tap2>{}, .loops = Loops<keeper, whole>{}};
+constexpr auto heir = loop::strand<"heir", Heir>;
+constexpr TypeSpec spec{
+	.settings = table, .banks = Banks<in, tap, tap2, tap3>{}, .loops = Loops<keeper, whole, heir>{}};
 using Checked = CheckedOf<spec>;
 
 struct Member {
-	static Members<spec> ports(const Checked&) { return {in(members(1)), tap(members(1)), tap2(members(1))}; }
+	static Members<spec> ports(const Checked&) {
+		return {in(members(1)), tap(members(1)), tap2(members(1)), tap3(members(1))};
+	}
 	Configured configure(CreateOf<spec>& cx, const Checked&) {
-		cx.loop(keeper, std::make_unique<Keeper>());
-		cx.loop(whole, std::make_unique<Whole>());
-		cx.sink(tap, {.frames = 1024}).consumedBy(keeper, &Keeper::recorder);
-		cx.sink(tap2, {.frames = 1024}).consumedBy(whole);
-		cx.use(passThrough({bankPair(in, tap), bankPair(in, tap2)}));
-		return Configured::applied();
+		cx.attach(tap, SinkShape{.frames = 1024}, keeper, &Keeper::recorder);
+		cx.attach(tap2, SinkShape{.frames = 1024}, whole);
+		cx.attach(tap3, SinkShape{.frames = 1024}, heir, &Heir::recorder);
+		return cx.applied(passThrough(bankPair(in, tap), bankPair(in, tap2), bankPair(in, tap3)), cx.state(whole),
+		                  cx.state(keeper), cx.state(heir));
 	}
 };
 
 } // namespace loop_member_test
 
-TEST_CASE("A sink consumed by a loop's state, or a member of it, begins once the loop runs and finishes before the "
-          "state goes",
+TEST_CASE("A sink consumed by a loop's state, or a member of it (its own or one it inherits), begins once the loop "
+          "runs and finishes before the state goes",
           "[loops][sinks]") {
 	namespace lm = loop_member_test;
 	lm::events.clear();
@@ -414,7 +441,7 @@ TEST_CASE("A sink consumed by a loop's state, or a member of it, begins once the
 	h.add();
 	CHECK(lm::events.empty()); // its loops do not run yet, so neither consumer begins
 	h.loopsReady();
-	CHECK(lm::events == std::vector<std::string>{"member began", "whole began"});
+	CHECK(lm::events == std::vector<std::string>{"member began", "whole began", "inherited began"});
 	h.blockReady();
 	REQUIRE(h.phase() == "running");
 	std::ranges::fill(h.input(lm::in, 0), 0.5F);
@@ -422,9 +449,12 @@ TEST_CASE("A sink consumed by a loop's state, or a member of it, begins once the
 	const auto seen = [](const std::string& what) { return lm::at(what) < std::ssize(lm::events); };
 	CHECK(seen("member consumed 64 of 0.500000"));
 	CHECK(seen("whole consumed 64 of 0.500000"));
+	CHECK(seen("inherited consumed 64 of 0.500000"));
 	h.remove();
 	REQUIRE(seen("keeper destroyed"));
 	REQUIRE(seen("whole destroyed"));
+	REQUIRE(seen("heir destroyed"));
+	CHECK(lm::at("inherited finished") < lm::at("heir destroyed"));
 	CHECK(lm::at("member finished") < lm::at("keeper destroyed"));
 	CHECK(lm::at("whole finished") < lm::at("whole destroyed"));
 }

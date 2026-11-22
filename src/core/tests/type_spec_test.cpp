@@ -103,30 +103,25 @@ public:
 		calls.emplace_back("configure");
 		const auto mode = settings.get<modeRow>();
 		if (mode == "card") {
-			cx.soundCard(toDevice, SoundCardShape{.card = *CardId::parse("Probe")});
-			cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
-			return Configured::applied();
+			cx.attach(toDevice, SoundCardShape{.card = *CardId::parse("Probe")});
+			return cx.applied(passThrough(bankPair(in, toDevice), bankPair(fromDevice, out)));
 		}
 		if (mode == "sink") {
-			cx.sink(toDevice, SinkShape{.frames = 1024}).consumedBy(std::make_unique<Upstreams>());
-			cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
+			cx.attach(toDevice, SinkShape{.frames = 1024}, std::make_unique<Upstreams>());
 			cx.declareLatency(in, toDevice, Latency{30, 40});
-			return Configured::applied();
+			return cx.applied(passThrough(bankPair(in, toDevice), bankPair(fromDevice, out)));
 		}
 		if (mode == "source") {
-			cx.source(fromDevice, SourceShape{.frames = 1000});
-			cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
-			return Configured::applied();
+			cx.attach(fromDevice, SourceShape{.frames = 1000});
+			return cx.applied(passThrough(bankPair(in, toDevice), bankPair(fromDevice, out)));
 		}
 		if (mode == "clocked") {
-			cx.source(fromDevice, SourceShape{.frames = 1000}, std::make_unique<JumpClock>());
-			cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
-			return Configured::applied();
+			cx.attach(fromDevice, SourceShape{.frames = 1000}, std::make_unique<JumpClock>());
+			return cx.applied(passThrough(bankPair(in, toDevice), bankPair(fromDevice, out)));
 		}
 		if (mode == "fail") return Configured::failed("asked to");
 		if (mode == "say") node_.handle().say("configured at " + std::to_string(cx.format().rate.hz()));
-		cx.use(Doubler{&prepares});
-		return Configured::applied();
+		return cx.applied(Doubler{&prepares});
 	}
 	void start() { calls.emplace_back("start"); }
 	void stop() { calls.emplace_back("stop"); }
@@ -145,37 +140,21 @@ constexpr TypeSpec otherSpec{.settings = SettingsTable<>{"other"}, .banks = Bank
 static_assert(std::same_as<decltype(otherOut), decltype(out)>);
 static_assert(requires(Io<spec> io) { io[otherOut]; });
 
-/// A code written against the other spec.
-struct OtherCode {
-	void process(Io<otherSpec>, const GraphCycle&) noexcept {}
-};
-/// A class of this spec whose configure gives the other spec's code; constructed from nothing.
-struct Mixed {
-	static Members<spec> ports(const Checked&) {
-		return {in(members(1)), out(members(1)), toDevice(members(1)), fromDevice(members(1))};
-	}
-	Configured configure(CreateOf<spec>& cx, const Checked&) {
-		cx.use(OtherCode{});
-		return Configured::applied();
-	}
-};
-
-/// A class that writes the change version: it compiles, and 3a never calls it.
+/// A class that writes the change version: it compiles, and nothing calls it yet (docs/design/reconfigure.md).
 struct Changing {
 	static Members<spec> ports(const Checked&) {
 		return {in(members(1)), out(members(1)), toDevice(members(1)), fromDevice(members(1))};
 	}
 	Configured configure(CreateOf<spec>& cx, const Checked&) {
 		calls.emplace_back("configure");
-		cx.use(Doubler{&prepares});
-		return Configured::applied();
+		return cx.applied(Doubler{&prepares});
 	}
 	Changed configure(ChangeOf<spec>&, const Checked&, const Checked&) { return Changed::applied(); }
 };
 
-// U1 (docs/design/node-primitives.md 18): every subset of the members after the banks, given in declaration order,
-// deduces the rest on GCC 14; out of order does not compile (compile_fail/type_spec_bad.cpp, stores-after-loops). A
-// store, a loop and a bank may share a name.
+// The spec's spellings (docs/writing-a-node-type.md#stores): every subset of the members after the banks, given in
+// declaration order, deduces the rest on GCC 14; out of order does not compile (compile_fail/type_spec_bad.cpp,
+// stores-after-loops). A store, a loop and a bank may share a name.
 constexpr auto u1 = store::file<"out">({.maxBytes = 8});
 constexpr auto u1Loop = loop::strand<"out">;
 constexpr TypeSpec bare{.settings = SettingsTable<>{"u1"}, .banks = Banks<out>{}};
@@ -243,7 +222,6 @@ TEST_CASE("A code reads and writes by bank through Io, bound by use to the node'
 	harness.add();
 	harness.blockReady();
 	REQUIRE(harness.phase() == "running");
-	CHECK(harness->runObject() == nullptr);
 	harness.process(); // the drive's 5 ms fade-in (240 frames)
 	harness.process();
 	harness.process();
@@ -500,17 +478,7 @@ TEST_CASE("Members are numbered or named, each once", "[type-spec]") {
 	CHECK_THROWS_AS(twice.ports(), std::logic_error);
 }
 
-TEST_CASE("A configure that uses a code written against another type's spec fails the node at use", "[type-spec]") {
-	testing::TypeHarness<spec, Mixed> harness;
-	REQUIRE_FALSE(harness.parse({{"channels", 1}}));
-	harness.add();
-	CHECK(harness.phase() == "failed");
-	CHECK(harness->health().reason ==
-	      FailureReason{FailureReason::Code::startFailed,
-	                    "configure threw: a type's configure gave a code written against another type's spec"});
-}
-
-TEST_CASE("A class that writes the change version compiles, and every change restarts the node in 3a", "[type-spec]") {
+TEST_CASE("A class that writes the change version compiles, and every change restarts the node", "[type-spec]") {
 	calls.clear();
 	testing::TypeHarness<spec, Changing> harness;
 	REQUIRE_FALSE(harness.parse({{"channels", 1}}));

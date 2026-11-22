@@ -28,7 +28,6 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#include "../legacy_instance.hpp"
 #include "ear/core/block_rules.hpp"
 #include "ear/core/cycle_counters.hpp"
 #include "ear/core/cycle_facts.hpp"
@@ -140,6 +139,8 @@ struct PendingRequest {
 };
 
 } // namespace
+
+part::Fifo FifoMaker::on(std::string bank) { return part::Fifo(std::move(bank)); }
 
 struct NodeHarness::Impl final : NodeHealthListener,
 								 NodeNoteListener,
@@ -377,41 +378,6 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			                                         capacityFrames, rate, std::move(clock));
 			harness.sourceList.push_back(made.get());
 			return made;
-		}
-		Impl& harness;
-	};
-
-	/// A legacy handoff whose writes go straight to its consumer, on the writing thread (the test's).
-	struct FakeHandoff final : Handoff, RtWriter {
-		FakeHandoff(Impl& h, std::size_t i, HandoffConsumer& c, std::size_t n)
-			: harness(h), index(i), consumer(c), channels(n) {}
-		RtWriter& writer() noexcept override { return *this; }
-		std::uint32_t write(std::span<const std::span<const float>> planar, std::uint32_t count) noexcept override {
-			interleaved.assign(static_cast<std::size_t>(count) * channels, 0.0F);
-			for (std::size_t channel = 0; channel < channels && channel < planar.size(); ++channel)
-				for (std::uint32_t frame = 0; frame < count; ++frame)
-					interleaved[frame * channels + channel] = planar[channel][frame];
-			consumer.consume(interleaved, count);
-			harness.handoffCounts.at(index) += count;
-			return count;
-		}
-		void close(std::move_only_function<void(std::uint64_t)> closed) override {
-			consumer.finish();
-			harness.executor.post([closed = std::move(closed)]() mutable { closed(0); });
-		}
-		Impl& harness;
-		std::size_t index;
-		HandoffConsumer& consumer;
-		std::size_t channels;
-		std::vector<float> interleaved;
-	};
-	struct FakeHandoffs final : HandoffAdapter {
-		explicit FakeHandoffs(Impl& h) : harness(h) {}
-		std::unique_ptr<Handoff> make(const NodeName&, std::uint32_t channels, std::uint32_t,
-		                              HandoffConsumer& consumer) override {
-			harness.handoffCounts.push_back(0);
-			if (!harness.handoffList.empty()) harness.handoffList.back().channels = channels;
-			return std::make_unique<FakeHandoff>(harness, harness.handoffCounts.size() - 1, consumer, channels);
 		}
 		Impl& harness;
 	};
@@ -823,39 +789,29 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			std::make_shared<std::atomic<std::size_t>>(0); // made, not closed
 	};
 
-	/// Every config the type parses, wrapped so the harness sees the instance each configuration makes (a legacy run
-	/// object, for runObject()) and when it goes.
-	/// Both contexts, forwarded to NodeHost's, recording the requests the harness shows (handoffs, recordings). Lives
-	/// only during configure, as the contexts it forwards to are valid only then.
-	struct SeenContexts final : CreateContext, StartContext {
-		SeenContexts(Impl& h, InstanceContexts& real) : harness(h), create(real.create), legacy(real.legacy) {}
+	/// Every config the type parses, wrapped so the harness sees what each configuration asks for.
+	/// NodeHost's context, forwarded to, recording the requests the harness shows (recordings). Lives
+	/// only during configure, as the context it forwards to is valid only then.
+	struct SeenContext final : CreateContext {
+		SeenContext(Impl& h, CreateContext& real) : harness(h), create(real) {}
 		AudioFormat format() const override { return create.format(); }
 		const NodeName& node() const override { return create.node(); }
 		const Ports& ports() const override { return create.ports(); }
-		void use(NodeCode code) override { create.use(std::move(code)); }
-		void soundCard(std::string_view bank, SoundCardShape shape) override {
-			create.soundCard(bank, std::move(shape));
-		}
-		void rtpReceiver(std::string_view bank, RtpReceiverShape shape) override {
-			create.rtpReceiver(bank, std::move(shape));
+		std::optional<part::Fifo> attachEngine(std::string_view bank, EngineCompanionShape shape) override {
+			return create.attachEngine(bank, std::move(shape));
 		}
 		Recording& recording(const RecordingRequest& request) override {
 			harness.recordingList.push_back(request);
 			return create.recording(request);
 		}
-		SinkRequest& sink(std::string_view bank, SinkShape shape) override { return create.sink(bank, shape); }
+		void sink(std::string_view bank, SinkShape shape, SinkConsumerFrom consumer) override {
+			create.sink(bank, shape, std::move(consumer));
+		}
 		SourceWriter& source(std::string_view bank, SourceShape shape, std::unique_ptr<SourceClock> clock) override {
 			return create.source(bank, shape, std::move(clock));
 		}
 		void declareLatency(std::string_view from, std::string_view to, Latency latency) override {
 			create.declareLatency(from, to, latency);
-		}
-		[[noreturn]] void refuse(std::string rule) override {
-			create.refuse(rule);
-			throw std::logic_error(rule); // never reached: refuse throws
-		}
-		void loopState(std::size_t loop, std::unique_ptr<void, void (*)(void*)> state) override {
-			create.loopState(loop, std::move(state));
 		}
 		Loop& loopExecutor(std::size_t loop) override { return create.loopExecutor(loop); }
 		void postToLoop(std::size_t loop, std::move_only_function<void(void*)> work) override {
@@ -863,58 +819,30 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		}
 		Store& store(std::size_t store) override { return create.store(store); }
 		void claim(Claim claim) override { create.claim(std::move(claim)); }
-		void pipeReceiver(std::string_view bank, PipeReceiverShape shape) override {
-			create.pipeReceiver(bank, std::move(shape));
-		}
 		GrantedPort claimAnyTcp() override { return create.claimAnyTcp(); }
 		void program(ProgramShape shape, std::optional<ProgramFeedTo> feed) override {
 			create.program(std::move(shape), std::move(feed));
 		}
-		NodeHandle& events() override { return legacy.events(); }
-		void declareLatency(const std::string& bank, Latency internal) override {
-			legacy.declareLatency(bank, internal);
-		}
-
-	protected:
-		Acquired acquireResource(const ResourceRequest& request) override {
-			const auto& handoff = std::get<HandoffRequest>(request);
-			harness.handoffList.push_back(SeenHandoff{handoff.bank, 0, handoff.capacityFrames});
-			return &legacy.acquire(handoff);
-		}
-
-	public:
 		Impl& harness;
 		CreateContext& create;
-		StartContext& legacy;
 	};
 
 	struct SeenInstance final : ErasedInstance {
-		SeenInstance(Impl& h, std::unique_ptr<ErasedInstance> i) : harness(h), inner(std::move(i)) {
-			harness.instance = this;
-		}
-		~SeenInstance() override {
-			if (harness.instance == this) harness.instance = nullptr;
-		}
-		Configured configure(InstanceContexts& cx) override {
-			SeenContexts seen(harness, cx);
-			InstanceContexts contexts{seen, seen};
-			return inner->configure(contexts);
+		SeenInstance(Impl& h, std::unique_ptr<ErasedInstance> i) : harness(h), inner(std::move(i)) {}
+		Configured configure(CreateContext& cx) override {
+			SeenContext seen(harness, cx);
+			return inner->configure(seen);
 		}
 		std::span<const LoopDeclaration> loops() const noexcept override { return inner->loops(); }
 		std::span<const StoreDeclaration> stores() const noexcept override { return inner->stores(); }
-		bool hasRecipe() const noexcept override { return inner->hasRecipe(); }
-		bool engineRefused() const noexcept override { return inner->engineRefused(); }
-		std::expected<void, FailureReason> ready(Ready& ready) override { return inner->ready(ready); }
 		void start() override { inner->start(); }
 		void stop() override { inner->stop(); }
-		void close(std::move_only_function<void()> closed) override { inner->close(std::move(closed)); }
 		Impl& harness;
 		std::unique_ptr<ErasedInstance> inner;
 	};
 	struct SeenConfig final : NodeConfig {
 		SeenConfig(Impl& h, std::unique_ptr<const NodeConfig> c) : harness(h), inner(std::move(c)) {}
 		const Ports& ports() const override { return inner->ports(); }
-		StartResult start(StartContext& context) const override { return inner->start(context); }
 		std::unique_ptr<ErasedInstance> make(NodeContext& node) const override {
 			return std::make_unique<SeenInstance>(harness, inner->make(node));
 		}
@@ -924,10 +852,9 @@ struct NodeHarness::Impl final : NodeHealthListener,
 
 	Impl(const NodeType& t, Options o)
 		: type(t), options(std::move(o)), clock(executor), blocks(*this), cards(*this), receivers(*this), pipes(*this),
-		  handoffs(*this), sinks(*this), sources(*this), loops(*this), programs(*this),
+		  sinks(*this), sources(*this), loops(*this), programs(*this),
 		  registry(ResourceAdapters{.cards = &cards,
 	                                .receivers = &receivers,
-	                                .handoffs = &handoffs,
 	                                .sinks = &sinks,
 	                                .sources = &sources,
 	                                .recordings = options.noRecordingsFolder ? nullptr : &recordings,
@@ -1113,7 +1040,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			executor.post(std::move(done));
 			settle();
 		}
-		clock.advance(defaultCloseDeadline); // a legacy run past its close deadline is leaked, never waited for
+		clock.advance(defaultCloseDeadline); // a configuration past its close deadline is leaked, never waited for
 	}
 
 	const NodeType& type;
@@ -1124,7 +1051,6 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	FakeEngineCompanions<SoundCardShape> cards;
 	FakeEngineCompanions<RtpReceiverShape> receivers;
 	FakeEngineCompanions<PipeReceiverShape> pipes;
-	FakeHandoffs handoffs;
 	FakeSinks sinks;
 	FakeSources sources;
 	FakeLoops loops;
@@ -1140,7 +1066,6 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	bool added = false;
 	bool disabled = false;
 	bool stopped = false;
-	SeenInstance* instance = nullptr;
 
 	FakeBlock* block = nullptr;
 	PortBlockEvents* blockEvents = nullptr;
@@ -1167,8 +1092,6 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	std::vector<EngineCompanionEvents*> engineEvents; // per companion; null once destroyed (or none)
 	std::vector<FakeSource*> sourceList;              // every source made, in order (a freed one dangles: unused)
 	std::map<std::size_t, FakeSink*> sinkFakes;       // each sink alive, by its companion's index
-	std::vector<std::uint64_t> handoffCounts;
-	std::vector<SeenHandoff> handoffList;
 	std::vector<RecordingRequest> recordingList;
 	std::vector<NodeHarness::SeenLoop> loopList;                // every loop made, in order
 	std::vector<FakeLoop*> loopFakes;                           // by loopList's index; null once freed
@@ -1525,10 +1448,6 @@ SourcePlayed NodeHarness::lastPlayed(std::string_view bank) const { return impl_
 
 std::uint64_t NodeHarness::shortfall(std::string_view bank) const { return impl_->sourceOn(bank).shortfallFrames(); }
 
-std::uint64_t NodeHarness::handoffFrames(std::size_t index) const { return impl_->handoffCounts.at(index); }
-
-const std::vector<SeenHandoff>& NodeHarness::handoffs() const noexcept { return impl_->handoffList; }
-
 const std::vector<RecordingRequest>& NodeHarness::recordingRequests() const noexcept { return impl_->recordingList; }
 
 void NodeHarness::runLoops() {
@@ -1704,11 +1623,5 @@ std::size_t NodeHarness::openRecordings() const { return *impl_->recordings.open
 void NodeHarness::overdueNextWrite(bool ran) { impl_->stores.overdueNext = ran; }
 
 const std::vector<std::string>& NodeHarness::storeCalls() const noexcept { return impl_->stores.calls; }
-
-RunObject* NodeHarness::runObject() const noexcept {
-	if (impl_->instance == nullptr) return nullptr;
-	const auto* legacy = dynamic_cast<const detail::LegacyInstance*>(impl_->instance->inner.get());
-	return legacy != nullptr ? legacy->runObject() : nullptr;
-}
 
 } // namespace ear::testing

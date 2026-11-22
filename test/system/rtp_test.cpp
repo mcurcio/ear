@@ -1,7 +1,7 @@
 // The owner's end-to-end tests of the rtp node (docs/node-types.md#rtp): the real out/ear runs a graph file
 // with an rtp node routed into a file node; the tests' own sender plays
 // a tone to it over 127.0.0.1 and the WAV file must hold that tone, channel for channel. With no
-// sender the node still runs and its meters show silence (gate answer Q1). Every wait is for an
+// sender the node still runs and its meters show silence. Every wait is for an
 // event (a line ear prints, the sender's last packet, a levels message, ear's exit); a deadline
 // only fails a test.
 #include <sndfile.h>
