@@ -42,9 +42,18 @@
 #include "ear/core/loop.hpp"
 #include "ear/core/node_host.hpp"
 #include "ear/core/node_lifecycle.hpp"
+#include "ear/core/program.hpp"
 #include "ear/core/sink.hpp"
 #include "ear/core/source.hpp"
 namespace ear::testing {
+
+/// A test's own FIFO part for the pipe receiver on `bank`: outside a configure, where no context hands one out. The
+/// one maker beside the context's attach (part::Fifo's constructor is private), defined in this library, which no
+/// node type links.
+struct FifoMaker {
+	static part::Fifo on(std::string bank);
+};
+inline part::Fifo fifoOn(std::string bank) { return FifoMaker::on(std::move(bank)); }
 
 /// One call a sink's fake made of its consumer's consume (on the test's thread, at once), copied, with the stamp it
 /// carried: a chunk split at the ring's end is two, the second's stamp advanced (docs/engine.md#sinks).

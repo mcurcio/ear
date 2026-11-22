@@ -140,7 +140,7 @@ struct PendingRequest {
 
 } // namespace
 
-part::Fifo fifoOn(std::string bank) { return part::Fifo(std::move(bank)); }
+part::Fifo FifoMaker::on(std::string bank) { return part::Fifo(std::move(bank)); }
 
 struct NodeHarness::Impl final : NodeHealthListener,
 								 NodeNoteListener,

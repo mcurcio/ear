@@ -1,7 +1,7 @@
 # Writing a node type
 
 A node type is what a `node <type> <name> { ... }` line in `ear.conf` names: `white`, `file`,
-`card`, `rtp` and `sendspin` are the built-in ones ([node-types.md](node-types.md)). This page is
+`card`, `rtp`, `sendspin` and `airplay` are the built-in ones ([node-types.md](node-types.md)). This page is
 the type API as a library: how a type is laid out and registered, what it declares, the class the
 framework makes once per configuration, the rules the framework holds it to, and how it is tested.
 It ends with a complete worked example, a `tone` type.
@@ -52,6 +52,13 @@ src/nodes/<type>/
   `tests` folder) that names `std::thread`, `std::jthread` or `std::async`, or calls
   `pthread_create` or `fork`. A type's own work runs on its [loops](#loops); a library it links
   may start threads of its own, which its loop's state joins.
+- **No type reaches the erased layer** beneath its context: a CTest test refuses any file under
+  `src/nodes/` (but those in a `tests` folder) that names `ErasedInstance`, `ErasedLoopState`,
+  `CreateContext`, `Configured::erased`, `NodeCode::passThrough`, the tests' FIFO maker (`fifoOn`,
+  `FifoMaker`) or a header of `ear/testing/`. A type answers its `configure` through
+  [`cx.applied`](#configure-and-createof), which holds it to its spec; the erased layer checks
+  nothing at compile time. The compiler refuses most of these already (below); the guard refuses
+  the ways round it.
 
 ## The spec
 
@@ -137,12 +144,12 @@ optional row read as a plain value does not compile.
 | Call | What | Rules |
 |---|---|---|
 | `cx.format()`, `cx.node()` | The graph's rate (a `SampleRate`: frames and time convert through `FrameClock`, and its number, `hz()`, is for a library's edge, [engine.md](engine.md#dating)) and block size; the node's name | |
-| `cx.attach(bank, shape, ...)` | A companion on an inside bank, its kind its shape's (the five rows below). **One companion per bank**: a second on a bank fails the node | Only the spec's banks, of the reach and direction the shape's rule names (`CompanionBank<Shape>`, compile time); what is no companion's shape does not compile |
+| `cx.attach(bank, shape, ...)` | A companion on an inside bank, its kind its shape's (the five rows below). **One companion per bank, and one of each name per configuration** ([engine companions](#engine-companions)): a second fails the node | Only the spec's banks, of the reach and direction the shape's rule names (`CompanionBank<Shape>`, compile time); what is no companion's shape does not compile |
 | `cx.attach(bank, SoundCardShape{.card})` | A sound card, an [engine companion](#engine-companions): playback on an inside output, capture on an inside input (the bank's direction is the card's). Named `<node>.playback` or `<node>.capture`; made once the block is ready | Inside banks only |
 | `cx.attach(bank, RtpReceiverShape{...})` | An RTP receiver, an [engine companion](#engine-companions), `<node>.rtp`; its `latencyMs` is latency beyond the bank | Inside input banks only |
 | `part::Fifo f = cx.attach(bank, PipeReceiverShape{.format, .rate})` | A pipe receiver, an [engine companion](#engine-companions), `<node>.pipe`, reading a FIFO a program of the configuration writes; its module's fixed buffer is latency beyond the bank. It returns that FIFO, as a part of a [program](#programs)'s argument or file: attaching the receiver is the only way to one | Inside input banks only |
 | `SourceWriter& w = cx.attach(bank, SourceShape{.frames = n}, clock)` | A source ([sources](#sources)): what the type's own thread writes, played into the bank before the code; `clock`, a `std::unique_ptr<SourceClock>`, its own clock ([a source's clock](#a-sources-clock)), left out for a source with none | Inside input banks only; `0 < n <= maxSourceFrames` (2^24) |
-| `cx.attach(bank, SinkShape{.frames = n}, std::make_unique<Consumer>(...))` | A sink with its one consumer ([sinks](#sinks)); or `cx.attach(bank, shape, loop, &State::member)` / `cx.attach(bank, shape, loop)`, a consumer that is part of a [loop](#loops)'s state | Inside output banks only; a loop's form names a loop of the spec, declared with a state; a sink given no consumer does not compile (each at compile time); a null consumer fails the node |
+| `cx.attach(bank, SinkShape{.frames = n}, std::make_unique<Consumer>(...))` | A sink with its one consumer ([sinks](#sinks)); or `cx.attach(bank, shape, loop, &State::member)` / `cx.attach(bank, shape, loop)`, a consumer that is part of a [loop](#loops)'s state | Inside output banks only; a loop's form names a loop of the spec, declared with a state; the member is the state's own or one it inherits, and a `SinkConsumer`; a sink given no consumer does not compile (each at compile time); a null consumer fails the node |
 | `const Recording& r = cx.recording(RecordingRequest{path})` | A [recording](#recordings): a file beneath the recordings folder, claimed, then created or truncated off the main loop; give it to the sink's consumer, which reads `r.descriptor()` from `begin()` on | Nothing to answer: a refusal fails the node at its readiness step; one path asked for twice (however spelled) fails it `start-failed` |
 | `cx.declareLatency(from, to, Latency{min, max})` | The code's own latency on the path from an input bank to an output bank, in frames: carried as a path through the block, so it counts in both banks' told latency ([latency](#latency)) | Once per path (a mixer declares each of its inputs' paths into one output); with a pass-through, one of its pairs; a plan that does not fit the ports fails the node `start-failed` |
 | `auto st = cx.state(handle, args...)` | A [loop](#loops)'s state, constructed here from `args` with no I/O and no threads, for the answer (a `LoopState`, move-only) | Only a loop of the spec declared with a state type (compile time) |
@@ -157,13 +164,14 @@ Then answer:
 
 | Answer | What | Rules |
 |---|---|---|
-| `return cx.applied(code, states...)` | The configuration's code, by value (a struct with `process`, or `passThrough(bankPair(in, out), ...)`), and the state of every loop the spec declares with one, each made by `cx.state` and moved in, in any order. From the answer on the framework owns the states | Each at compile time: a state missing (the error names the loop), a second for one loop, a code given as a pointer, a code written against another type's spec, a pass-through of no pair |
+| `return cx.applied(code, states...)` | The configuration's code, by value (a struct with `process`, or `passThrough(bankPair(in, out), ...)`), and the state of every loop the spec declares with one, each made by `cx.state` and moved in, in any order. From the answer on the framework owns the states | Each at compile time: a state missing (the error names the loop), a second for one loop, a code given as a pointer, a code written against another type's spec, a pass-through of no pair. At run time: a state or a pass-through that was moved from fails the node |
 | `return Configured::failed(detail)` | What only the type can see: the node fails `start-failed: <detail>` | A detail, not empty |
 
 *Why the answer carries them:* the code and each state are given exactly once, and an argument is
 exactly that, so the compiler holds the rule and the framework keeps no count. The context makes
 the answer because the check needs the spec. A state is made by `cx.state`, never passed as a
-pointer, so it is never null and carries its loop in its type. Nothing in `configure` needs a state
+pointer, so it carries its loop in its type and is null only once moved from (a rule broken at run
+time, below). Nothing in `configure` needs a state
 before the answer: a post is staged, and a sink's consumer and a program's feed name a loop and a
 member, never the state itself.
 
@@ -185,8 +193,7 @@ adapter's refusal is: the node fails `start-failed: configure threw: no <kind> i
 (`sinks`, `sources`, `sound cards`, `RTP receivers`, `pipe receivers`, `programs`, `loops`, `stores`), and a
 host with no runtime folder refuses a pipe receiver or a program the same way (`no runtime folder in this host`); a
 recording fails it `start-failed: cannot open <path>: no recordings folder`. A host with no port probe judges a port
-[claim](#claims) between its nodes only. ear's own host refuses pipe receivers and programs until main.cpp gives it
-their adapters.
+[claim](#claims) between its nodes only.
 
 ### The node handle
 
@@ -279,8 +286,17 @@ return cx.applied(passThrough(bankPair(play, toCard), bankPair(fromRtp, stream))
 - An inside bank has at most one companion of any kind (an engine companion, a sink, a source), all
   attached by the one call, `cx.attach(bank, shape, ...)`, whose shape says the kind and states
   its bank's rule once (`CompanionBank<Shape>`, `ear/core/lifecycle.hpp`); a second on a bank is a
-  broken rule (`a second companion on bank <bank>`), found at run time since which banks a type
-  attaches to may depend on its settings (`card`'s directions).
+  broken rule, found at run time since which banks a type attaches to may depend on its settings
+  (`card`'s directions).
+- **One of each name per configuration.** Every companion is an engine object named for its node:
+  an engine companion by its kind (`<node>.playback`, `<node>.capture`, `<node>.rtp`,
+  `<node>.pipe`), a sink or a source by its bank (`<node>.<bank>`). So a configuration has at most
+  one playback card, one capture card, one RTP receiver and one pipe receiver, on whatever banks,
+  and no sink's or source's bank is named `playback`, `capture`, `rtp` or `pipe` beside that kind.
+  The name is judged before the bank, so it is the rule most second companions break:
+  `a second resource named <node>.<name> in one configuration` for two sinks or two sources on one
+  bank, or two engine companions of one kind on any banks; `a second companion on bank <bank>` only
+  for two of different kinds on one bank.
 - A receiver's buffer is latency beyond its bank, which the framework adds to the latency plan
   ([latency](#latency)); a type declares none for it: an RTP receiver's `latencyMs`, and a pipe
   receiver's module's fixed 8192 frames at the writer's rate, in graph frames rounded half up
@@ -346,8 +362,9 @@ return cx.applied(passThrough(bankPair(record, writer)));
   only once the loop runs (loops are the readiness step before), until its `finish()` at teardown
   step 3, before the state is destroyed at step 4. So the consumer may use the rest of the state
   (`sendspin`'s `ToServer` hands its pieces to the library's client the state owns), with whatever
-  lock or atomic the two threads need. A loop the spec lacks, one declared without a state, or a
-  member that is not a `SinkConsumer` does not compile.
+  lock or atomic the two threads need. The member may be one the state inherits. A loop the spec
+  lacks, one declared without a state, a member of another class or one that is not a
+  `SinkConsumer` does not compile.
 
 ## Sources
 
@@ -403,8 +420,11 @@ engine and the harness both run, so a type's tests and the engine never disagree
   configuration's plan, added in series to what the bank's peers report (none, for a source's bank)
   ([engine.md](engine.md#latency-per-bank-pair)), so the public bank paired with it tells it upstream.
 - One companion per inside bank: a source on a bank that has a receiver or another source is a
-  rule broken (`start-failed`), and so is `frames == 0` or a source on any other bank (which does
-  not compile).
+  rule broken (`start-failed`, [engine companions](#engine-companions)), and so is a ring of no
+  frames or of more than `maxSourceFrames`; a source on any other bank does not compile.
+- **A skip is no drop.** What a source's clock skips ([below](#a-sources-clock)) is told to the
+  clock and counted nowhere else: the node's `dropped=` and the source's `dropped` counter hold only
+  what a clear or a stop dropped.
 
 `sendspin` plays the server's audio through one, with its own clock
 ([node-types.md](node-types.md#clock)).
@@ -578,7 +598,7 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>&) {
 |---|---|
 | `mode` | The most the file's mode may be (default `0600`): a wider file is narrowed, never refused |
 | `maxBytes` | Required, at most 1 MiB: a larger file is neither read nor written |
-| `initial` | The text a missing file is created with; left out, a missing file stays missing (`text()` is empty) |
+| `initial` | The text a missing file is created with; left out, a missing file stays missing (`text()` is empty). It runs on the I/O thread, in the open's job, so it may read a clock or a random source and nothing of the node's |
 | `distrust` | Why a file's text is not trusted, or nothing; left out, any text is. It runs on the I/O thread, so it reads nothing but its argument |
 
 | On a `Store&` | What |
@@ -886,9 +906,9 @@ twice, a table not named for its folder, a spec or row in an unnamed namespace, 
 lacks or a misspelt one in `Io`, `ports()` or a context, a write into an input, a backwards
 pass-through or one of no pair, a bad or doubled bank name, a `process` that may throw, a class that is final or has
 no `ports` or `configure`, a member of the wrong signature (`configure`, `start`, `stop`, `check`,
-`prepare`, `release`, the change version), a private or overloaded one, a call `CreateOf` does not offer, an answer that lacks a loop's state or gives one twice, a code given as a pointer or written against another type's spec, a sink given no consumer, a sound card, RTP receiver, pipe receiver, sink or source on the wrong
-bank, a shape that is no companion's given to `attach`, a `part::Fifo` made by hand, a program's executable that is not an absolute path of plain
-components, a program's feed into a loop declared without a state, a loop's name that is not 1 to 8 of `[a-z0-9-]` or names two loops, a state given to a loop
+`prepare`, `release`, the change version), a private or overloaded one, a call `CreateOf` does not offer, an answer that lacks a loop's state, gives one twice, copies one or is given anything else in a state's place, an answer made through the erased layer (`Configured::erased`, `ErasedInstance::applied`), a `LoopState` or a pass-through's pairs made by hand, a code given as a pointer or written against another type's spec, a sink given no consumer, a sink consumed by a loop the spec lacks, by a member of another state or of a loop declared without one, or by a member or a state that is no `SinkConsumer`, a sound card, RTP receiver, pipe receiver, sink or source on the wrong
+bank (its reach or its direction), a shape that is no companion's given to `attach`, a `part::Fifo` made by hand, a program's executable that is not an absolute path of plain
+components, a program's feed into a loop the spec lacks or one declared without a state, a loop's name that is not 1 to 8 of `[a-z0-9-]` or names two loops, a state given to a loop
 declared without one, a loop the spec lacks (in a context, a post or the harness), a post of a
 function of another loop's state, a store whose rule has no `maxBytes`, more than 1 MiB or a mode
 beyond `0777`, a store's suffix that is not 1 to 16 of `[a-z0-9-]` or names two stores, a store
@@ -902,10 +922,15 @@ when the type catches the throw; none takes ear down:
 |---|---|
 | A pass-through the ports refuse | `configure gave a pass-through: <why>` |
 | A sink given a null consumer | `configure threw: sink <bank> given no consumer`; no sink is made |
+| An answer given a state, or a pass-through, that was moved from | `configure threw: applied given a state of loop <name> that was moved from`; `configure threw: applied given a pass-through that was moved from` |
 | Latency declared twice for one path (`declareLatency(from, to, ...)`) | `configure threw: latency declared twice for the path <from> to <to>` |
 | Latency declared on a path the pass-through does not copy | `configure declared latency on <from> to <to>, a path its pass-through does not copy` |
 | A latency plan that does not fit the ports (only a framework bug makes one: each declaration is checked at its call) | `configure gave a latency plan that does not fit: <why>` |
-| A second companion on an inside bank | `configure threw: a second companion on bank <bank>` |
+| A second companion of one name in a configuration: two sinks or two sources on one bank, two engine companions of one kind ([engine companions](#engine-companions)) | `configure threw: a second resource named <node>.<name> in one configuration` |
+| A second companion, of another kind, on an inside bank | `configure threw: a second companion on bank <bank>` |
+| A source whose ring holds no frames, or more than `maxSourceFrames` | `configure threw: a source on bank <bank> holds no frames`; `... holds more than 16777216 frames` |
+| A port claimed twice in one configuration, or a recording path asked for twice | `configure threw: <key> claimed twice` (`udp:5004`, `recording:<path>`; [claims](#claims), [recordings](#recordings)) |
+| A recording path that cannot be opened | `cannot open <path>: <why>`, at its readiness step ([recordings](#recordings)) |
 | Loops declared on a host with no loops adapter | `no loops in this host` (`configure threw: no loops in this host` at a loop call) |
 | A loop that cannot start | `cannot start loop <name>: <why>` |
 | A loop's handler throws | `loop <name>'s handler threw: <what>` (`start-failed`, or `lost` once rested; once the teardown began, a `log` record) |
@@ -936,9 +961,10 @@ any other throw. A bug of ear's own adapter inside a context call (a sink adapte
 `internal error in <adapter call>: <what>`, said first in an `ear.internal-error` record, whether
 or not the type caught it; an adapter's refusal (no thread, no eventfd) stays the node's
 `start-failed` ([architecture.md](architecture.md#faults-by-owner)). An applied answer that does not hold a code and exactly its loops' states is ear's bug too
-(`internal error in ErasedInstance::configure: <what>`): `cx.applied` holds a type's class to that at compile time, so only an instance
+(`internal error in ErasedInstance::configure: <what>`): `cx.applied` holds a type's class to that at compile time, and the erased
+answer is `ErasedInstance`'s alone to make, so only an instance
 made by hand, as the framework's own tests make them, can give one (the instance interface answers
-as a type does, so no check, text or test stays for a rule no type can break). A throw the node cannot take as its failure (a restart, disable or removal under
+as a type does, so no check, text or test stays for a rule no type can break). What a type can still get wrong there, a state or a pass-through it moved from, `cx.applied` throws inside `configure`, so the node fails with it as the type's. A throw the node cannot take as its failure (a restart, disable or removal under
 way, or a stop's fault already held) is an `ear` `log` record instead, so none goes unrecorded. A
 code's `release` and `process`, and every destructor, are `noexcept`: a throw there is
 `std::terminate`.
@@ -1227,7 +1253,7 @@ TEST_CASE("Tone's refusals, in order", "[nodes][settings]") {
 }
 ```
 
-Configure now prints `Node types: card, file, rtp, sendspin, tone, white`, and `ear.conf` takes:
+Configure now prints `Node types: airplay, card, file, rtp, sendspin, tone, white`, and `ear.conf` takes:
 
 ```conf
 node tone beep { frequency 1000; channels 2; }

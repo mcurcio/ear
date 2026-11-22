@@ -109,8 +109,21 @@ Configured configure(CreateOf<spec>& cx, const Checked&) {
 		                                      .rate = ear::SampleRate::fixed<48000>(),
 		                                      .latencyMs = 100});
 #endif
+#ifdef EAR_CASE_rtp_receiver_on_routable_bank
+		cx.attach(in, RtpReceiverShape{.address = *RtpAddress::parse("0.0.0.0"),
+		                               .port = 5004,
+		                               .encoding = RtpEncoding::l24,
+		                               .rate = ear::SampleRate::fixed<48000>(),
+		                               .latencyMs = 100});
+#endif
 #ifdef EAR_CASE_pipe_receiver_on_output_bank
 		cx.attach(insideOut, PipeReceiverShape{PipeFormat::s16le, ear::SampleRate::fixed<48000>()});
+#endif
+#ifdef EAR_CASE_pipe_receiver_on_routable_bank
+		static_cast<void>(cx.attach(in, PipeReceiverShape{PipeFormat::s16le, ear::SampleRate::fixed<48000>()}));
+#endif
+#ifdef EAR_CASE_engine_companion_bank_the_spec_lacks
+		cx.attach(otherInsideOut, SoundCardShape{.card = *CardId::parse("C")});
 #endif
 #ifdef EAR_CASE_attach_no_companion_shape
 		cx.attach(insideOut, 64);
@@ -121,9 +134,16 @@ Configured configure(CreateOf<spec>& cx, const Checked&) {
 #ifdef EAR_CASE_sink_on_input_bank
 		cx.attach(in, SinkShape{.frames = 64}, std::unique_ptr<SinkConsumer>{});
 #endif
+#ifdef EAR_CASE_sink_on_routable_bank
+		cx.attach(out, SinkShape{.frames = 64}, std::unique_ptr<SinkConsumer>{});
+#endif
 #ifdef EAR_CASE_sink_without_consumer
 		cx.attach(insideOut, SinkShape{.frames = 64});
 #endif
+		// A braced shape is a source's: the refusal of a sink with no consumer takes its shape by name only, so neither
+		// form is ambiguous (compiled, never run).
+		static_cast<void>(cx.attach(insideIn, {.frames = 64}));
+		static_cast<void>(cx.attach(insideIn, {.frames = 64}, nullptr));
 #ifdef EAR_CASE_source_on_output_bank
 		static_cast<void>(cx.attach(insideOut, SourceShape{.frames = 64}));
 #endif
@@ -145,11 +165,17 @@ Configured configure(CreateOf<spec>& cx, const Checked&) {
 		return cx.applied(passThrough());
 #elif defined(EAR_CASE_code_given_as_pointer)
 	return cx.applied(std::make_unique<Copy>());
+#elif defined(EAR_CASE_pass_through_pairs_made_by_hand)
+return cx.applied(PassThroughPairs(std::vector<BankPair>{}));
+#elif defined(EAR_CASE_answer_through_configured)
+return Configured::erased(NodeCode(Copy{}));
+#elif defined(EAR_CASE_answer_through_the_erased_instance)
+return ErasedInstance::applied(NodeCode(Copy{}));
 #else
 return cx.applied(Copy{});
 #endif
 	}
-	// The change version: optional, never called in 3a; of exactly its shape when given.
+	// The change version: optional and not called yet (docs/design/reconfigure.md); of exactly its shape when given.
 #ifdef EAR_CASE_change_version_wrong_signature
 	Changed configure(ChangeOf<spec>&, Checked, Checked) { return Changed::applied(); }
 #elif defined(EAR_CASE_change_version_wrong_context)
@@ -266,20 +292,34 @@ struct ThrowingRelease : Copy {
 // Loops (docs/writing-a-node-type.md#loops): the control declares a stateful dedicated loop and a strand without a
 // state, gives the one its state, posts to each and keeps an executor; the cases name a loop wrongly, give a state where
 // none is declared, or post a function of another state.
-struct WorkerState {
-	void work() {}
+struct Quiet final : SinkConsumer {
+	void consume(const Chunk&) override {}
+	void finish() override {}
 };
-struct OtherState {};
+struct WorkerBase {
+	Quiet inherited;
+};
+struct WorkerState : WorkerBase {
+	void work() {}
+	Quiet consumer;
+	int number = 0;
+};
+struct OtherState {
+	void onFeed(std::string_view) {}
+	Quiet consumer;
+};
 constexpr auto worker = loop::dedicated<"worker", WorkerState>;
 constexpr auto helper = loop::strand<"helper">;
 constexpr auto otherLoop = loop::strand<"other">;
+constexpr auto otherWorker = loop::dedicated<"others", OtherState>;
 #ifdef EAR_CASE_loop_name_invalid
 [[maybe_unused]] constexpr auto badLoop = loop::strand<"Bad_Name">;
 #endif
 #ifdef EAR_CASE_loops_named_twice
 [[maybe_unused]] constexpr Loops<helper, loop::dedicated<"helper">> twice{};
 #endif
-constexpr TypeSpec loopSpec{.settings = SettingsTable<>{"t"}, .banks = Banks<out>{}, .loops = Loops<worker, helper>{}};
+constexpr TypeSpec loopSpec{
+	.settings = SettingsTable<>{"t"}, .banks = Banks<out, insideOut>{}, .loops = Loops<worker, helper>{}};
 struct Zeros {
 	void process(Io<loopSpec> io, const GraphCycle&) noexcept {
 		for (auto member : io[out])
@@ -289,12 +329,39 @@ struct Zeros {
 class Looped {
 public:
 	explicit Looped(NodeOf<loopSpec>& node) : node_(node) {}
-	static Members<loopSpec> ports(const CheckedOf<loopSpec>&) { return {out(members(1))}; }
+	static Members<loopSpec> ports(const CheckedOf<loopSpec>&) { return {out(members(1)), insideOut(members(1))}; }
 	Configured configure(CreateOf<loopSpec>& cx, const CheckedOf<loopSpec>&) {
 		[[maybe_unused]] auto working = cx.state(worker);
 		cx.post(worker, [](WorkerState& state) { state.work(); });
 		cx.post(helper, [] {});
 		static_cast<void>(cx.executor(helper));
+		// A sink consumed by a member of the loop's state, its own or one it inherits (compiled, never run).
+		cx.attach(insideOut, SinkShape{.frames = 64}, worker, &WorkerState::consumer);
+		cx.attach(insideOut, SinkShape{.frames = 64}, worker, &WorkerState::inherited);
+#ifdef EAR_CASE_sink_loop_the_spec_lacks
+		cx.attach(insideOut, SinkShape{.frames = 64}, otherWorker, &OtherState::consumer);
+#endif
+#ifdef EAR_CASE_sink_member_of_another_state
+		cx.attach(insideOut, SinkShape{.frames = 64}, worker, &OtherState::consumer);
+#endif
+#ifdef EAR_CASE_sink_member_for_stateless_loop
+		cx.attach(insideOut, SinkShape{.frames = 64}, helper, &WorkerState::consumer);
+#endif
+#ifdef EAR_CASE_sink_member_not_a_consumer
+		cx.attach(insideOut, SinkShape{.frames = 64}, worker, &WorkerState::number);
+#endif
+#ifdef EAR_CASE_sink_state_not_a_consumer
+		cx.attach(insideOut, SinkShape{.frames = 64}, worker);
+#endif
+#ifdef EAR_CASE_state_loop_the_spec_lacks
+		static_cast<void>(cx.state(otherWorker));
+#endif
+#ifdef EAR_CASE_state_made_by_hand
+		static_cast<void>(LoopState<std::remove_cvref_t<decltype(worker)>>(std::make_unique<WorkerState>()));
+#endif
+#ifdef EAR_CASE_program_feed_loop_the_spec_lacks
+		cx.program(ProgramShape{.executable = "/bin/true"}, otherWorker, &OtherState::onFeed);
+#endif
 #ifdef EAR_CASE_state_to_stateless_loop
 		static_cast<void>(cx.state(helper));
 #endif
@@ -310,6 +377,10 @@ public:
 		return cx.applied(Zeros{}, std::move(working), cx.state(worker));
 #elif defined(EAR_CASE_code_of_another_spec)
 		return cx.applied(Copy{}, std::move(working));
+#elif defined(EAR_CASE_state_given_as_lvalue)
+		return cx.applied(Zeros{}, working);
+#elif defined(EAR_CASE_answer_given_a_state_by_pointer)
+		return cx.applied(Zeros{}, std::make_unique<WorkerState>());
 #else
 		return cx.applied(Zeros{}, std::move(working));
 #endif
@@ -388,6 +459,9 @@ struct Stored {
 // A program's executable is a constant absolute path (ProgramPath's consteval constructor).
 #ifdef EAR_CASE_program_path_relative
 [[maybe_unused]] constexpr ProgramPath relativePath{"relative"};
+#endif
+#ifdef EAR_CASE_program_path_not_plain
+[[maybe_unused]] constexpr ProgramPath climbingPath{"/usr/../bin/true"};
 #endif
 
 } // namespace type_spec_bad

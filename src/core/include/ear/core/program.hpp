@@ -31,9 +31,7 @@ namespace part {
 class Fifo;
 } // namespace part
 namespace testing {
-/// A test's own FIFO part for the pipe receiver on `bank` (the type harness's library defines it): outside a
-/// configure, where no context hands one out.
-part::Fifo fifoOn(std::string bank);
+struct FifoMaker; // ear/testing/node_harness.hpp: a test's own FIFO part, made by the type harness's library
 } // namespace testing
 
 // ---- What a type asks for (CreateOf::program) ----
@@ -100,7 +98,7 @@ public:
 
 private:
 	friend class ear::CreateContext;
-	friend Fifo ear::testing::fifoOn(std::string bank);
+	friend struct ear::testing::FifoMaker;
 	explicit Fifo(std::string bank) noexcept : bank_(std::move(bank)) {}
 	std::string bank_;
 };

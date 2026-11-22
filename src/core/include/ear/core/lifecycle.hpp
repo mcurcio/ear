@@ -18,11 +18,11 @@
 //   static std::expected<void, std::string> check(const CheckedOf<spec>&);               optional, at parse
 //   explicit Type(NodeOf<spec>&);  or  Type();                                           one of the two
 //   Configured configure(CreateOf<spec>&, const CheckedOf<spec>&);                       required
-//   Changed configure(ChangeOf<spec>&, const CheckedOf<spec>&, const CheckedOf<spec>&);  optional; slice 3d's
+//   Changed configure(ChangeOf<spec>&, const CheckedOf<spec>&, const CheckedOf<spec>&);  optional; not called yet
 //   void start();  void stop();                                                          optional
 //
-// The change version compiles (its signature checked) but slice 3a never calls it: every change of settings restarts
-// the node.
+// The change version compiles (its signature checked) but nothing calls it yet: every change of settings restarts the
+// node (changes in place are designed, not built: docs/design/reconfigure.md).
 //
 // Every call here is on the main loop. CreateOf is valid only inside the configure it is handed to (a call after it
 // returned is a std::logic_error naming the call, "<call> outside configure", thrown by NodeHost); NodeOf is valid for
@@ -58,6 +58,9 @@ namespace ear {
 
 // ---- Answers ----
 
+class ErasedInstance;
+template <const auto& Spec> class CreateOf;
+
 /// One loop's state as an answer carries it: declared loop `loop` (its index in the spec's Loops) and its state, owned
 /// from the answer on by the framework, which destroys it on the loop's thread at teardown step 4 (on the main loop if
 /// the loop never started).
@@ -73,25 +76,14 @@ struct ErasedLoopState {
 /// What creation's configure answers (docs/writing-a-node-type.md#the-class): a failure, or the code and the state of
 /// every loop the spec declares with one. A type makes the applied answer only through its context
 /// (`return cx.applied(code, states...)`), which holds it to its spec at compile time, so the code and each state are
-/// given exactly once. It has no restart: that is the change version's answer.
+/// given exactly once; an instance written by hand makes it through ErasedInstance::applied, and nothing else can. It
+/// has no restart: that is the change version's answer.
 class Configured {
 public:
 	/// A failure only the type can see: the node fails `start-failed: <detail>`, its configuration torn down.
 	static Configured failed(std::string detail) {
 		Configured answer;
 		answer.failure_ = std::move(detail);
-		return answer;
-	}
-	/// The applied answer as an ErasedInstance written by hand makes it (the framework's own tests); a type's class
-	/// answers `cx.applied(...)`. The code, and one state for each loop the instance declares with one, by index.
-	/// NodeHost holds what it is given to the instance's loops: a null code, a state missing, given twice or for a loop
-	/// declared without one is the instance's maker's bug, told as ear's own (docs/architecture.md#faults-by-owner).
-	/// The framework still waits for every resource the configure asked for (readiness 3' and 4').
-	template <std::same_as<ErasedLoopState>... States> static Configured erased(NodeCode code, States... states) {
-		Configured answer;
-		answer.code_.emplace(std::move(code));
-		answer.states_.reserve(sizeof...(States));
-		(answer.states_.push_back(std::move(states)), ...);
 		return answer;
 	}
 	/// For the framework.
@@ -103,7 +95,17 @@ public:
 	std::vector<ErasedLoopState>& states() noexcept { return states_; }
 
 private:
+	friend class ErasedInstance;
+	template <const auto&> friend class CreateOf;
 	Configured() = default;
+	/// The applied answer: the code, and one state for each loop the instance declares with one, by index.
+	template <std::same_as<ErasedLoopState>... States> static Configured erased(NodeCode code, States... states) {
+		Configured answer;
+		answer.code_.emplace(std::move(code));
+		answer.states_.reserve(sizeof...(States));
+		(answer.states_.push_back(std::move(states)), ...);
+		return answer;
+	}
 	static const std::string& empty() noexcept {
 		static const std::string none;
 		return none;
@@ -113,12 +115,12 @@ private:
 	std::vector<ErasedLoopState> states_;
 };
 
-/// What the change version of configure answers (docs/writing-a-node-type.md#the-class; slice 3d). Declared in 3a only
-/// so that neither answer type can stand for the other; slice 3d defines the rest (and a later answer, made by
-/// whenReady).
+/// What the change version of configure answers (docs/writing-a-node-type.md#the-class). Declared only so that neither
+/// answer type can stand for the other: changes in place are not built yet (docs/design/reconfigure.md), which will
+/// define the rest.
 class Changed {
 public:
-	/// 3a never calls the change version, so these only let one compile and link; slice 3d gives them their meaning.
+	/// Nothing calls the change version yet, so these only let one compile and link.
 	static Changed applied() noexcept { return Changed(); }
 	static Changed restart(std::string reason) {
 		static_cast<void>(reason);
@@ -295,7 +297,7 @@ template <class Handle, class Work> std::move_only_function<void(void*)> loopWor
 } // namespace spec_detail
 
 /// What the instance keeps: the node's own, for the instance's life, main loop only (handle() excepted, as
-/// NodeContext's). Slice 3c adds post(), slice 5 report() (docs/writing-a-node-type.md#the-class).
+/// NodeContext's): docs/writing-a-node-type.md#the-class.
 template <const auto& Spec> class NodeOf {
 	static_assert(linkage::named<Spec>, "a spec is declared in a named namespace, never an unnamed one");
 
@@ -390,6 +392,17 @@ public:
 		              "configure's answer is its code, then its loops' states, each made by cx.state(loop, ...)");
 		if constexpr ((isLoopState<States> && ...)) {
 			spec_detail::StatesGiven<LoopsOf<Spec>, typename States::Loop...>::check();
+			// What only a moved-from token can hold, and so only at run time: the type's bug, thrown inside its
+			// configure so the node fails with it (docs/writing-a-node-type.md#rules-the-framework-enforces).
+			if constexpr (std::same_as<Code, PassThroughPairs>) {
+				if (code.pairs().empty()) throw std::logic_error("applied given a pass-through that was moved from");
+			}
+			const auto given = [](std::string_view loop, bool held) {
+				if (!held)
+					throw std::logic_error("applied given a state of loop " + std::string(loop) +
+					                       " that was moved from");
+			};
+			(given(States::Loop::name, states.state_ != nullptr), ...);
 			NodeCode erased(std::move(code));
 			if constexpr (SpecCode<Code>) {
 				static_assert(static_cast<const void*>(&spec_detail::ProcessOf<decltype(&Code::process)>::spec) ==
@@ -432,7 +445,7 @@ public:
 	/// (docs/writing-a-node-type.md#programs): attaching the receiver is the only way to one.
 	template <class Bank> part::Fifo attach(Bank, PipeReceiverShape shape) {
 		checkCompanion<Bank, PipeReceiverShape>();
-		return *context_->attachEngine(Bank::name, std::move(shape));
+		return context_->attachEngine(Bank::name, std::move(shape)).value();
 	}
 	/// A source on an inside input bank (docs/writing-a-node-type.md#sources): what the type's ordinary thread writes,
 	/// played into the bank by the block before the code; `clock` its own clock, null for a source with no clock
@@ -442,13 +455,16 @@ public:
 		return context_->source(Bank::name, shape, std::move(clock));
 	}
 	/// A sink on an inside output bank with its one consumer (docs/writing-a-node-type.md#sinks): here a consumer of
-	/// the type's own, given whole and owned by the sink (file's WavWriter).
-	template <class Bank> void attach(Bank, SinkShape shape, std::unique_ptr<SinkConsumer> consumer) {
+	/// the type's own, given whole and owned by the sink (file's WavWriter). Its shape is named (deduced), so a braced
+	/// shape with a null third argument is a source with no clock, never a sink with no consumer.
+	template <class Bank, std::same_as<SinkShape> Shape>
+	void attach(Bank, Shape shape, std::unique_ptr<SinkConsumer> consumer) {
 		checkCompanion<Bank, SinkShape>();
 		context_->sink(Bank::name, shape, std::move(consumer));
 	}
-	/// A sink with no consumer does not compile: nothing would ever read it.
-	template <class Bank> void attach(Bank, SinkShape) {
+	/// A sink with no consumer does not compile: nothing would ever read it. Its shape is deduced, so a braced shape
+	/// (`cx.attach(bank, {.frames = n})`, a source's) never selects this refusal.
+	template <class Bank, std::same_as<SinkShape> Shape> void attach(Bank, Shape) {
 		static_assert(sizeof(Bank) == 0, "a sink is given its one consumer: cx.attach(bank, shape, consumer)");
 	}
 	/// The sink's consumer is `member` of loop `Handle`'s state (`cx.attach(bank, shape, worker, &Worker::toServer)`):
@@ -460,13 +476,20 @@ public:
 	void attach(Bank, SinkShape shape, Handle, Member State::* member) {
 		checkCompanion<Bank, SinkShape>();
 		static_assert(ownLoop<Handle>, "a sink is consumed by one of its spec's loops");
-		static_assert(Handle::stateful && std::same_as<State, typename Handle::State>,
+		// The member may be one the state inherits (`&Worker::toServer` then names its base), so the state is cast to
+		// its own type first.
+		static_assert(Handle::stateful && std::derived_from<typename Handle::State, State>,
 		              "a sink's consumer is a member of that loop's state");
 		static_assert(std::derived_from<Member, SinkConsumer>, "a sink's consumer is a SinkConsumer");
-		context_->sink(
-			Bank::name, shape,
-			StateSinkConsumer{LoopsOf<Spec>::template indexOf<Handle>,
-		                      [member](void* state) -> SinkConsumer& { return static_cast<State*>(state)->*member; }});
+		if constexpr (Handle::stateful && std::derived_from<typename Handle::State, State> &&
+		              std::derived_from<Member, SinkConsumer>) {
+			using Own = typename Handle::State;
+			context_->sink(
+				Bank::name, shape,
+				StateSinkConsumer{LoopsOf<Spec>::template indexOf<Handle>, [member](void* state) -> SinkConsumer& {
+									  return static_cast<Own*>(state)->*member;
+								  }});
+		}
 	}
 	/// The sink's consumer is loop `Handle`'s state itself.
 	template <class Bank, class Handle>
@@ -558,8 +581,9 @@ private:
 	CreateContext* context_;
 };
 
-/// configure for a change (T9; docs/writing-a-node-type.md#the-class). Slice 3d defines it. In 3a a class may write the
-/// change version (its signature is checked), and it is never called: every change restarts the node.
+/// configure for a change (T9; docs/writing-a-node-type.md#the-class): declared, not defined, until changes in place
+/// are built (docs/design/reconfigure.md). A class may write the change version (its signature is checked), and it is
+/// never called: every change restarts the node.
 template <const auto& Spec> class ChangeOf;
 
 // ---- The erased instance ----
@@ -582,6 +606,17 @@ public:
 	virtual void start() {}
 	/// Once after every start() that returned (docs/writing-a-node-type.md#the-class pairing); timed as `stop`.
 	virtual void stop() {}
+
+protected:
+	/// The applied answer as the erased layer makes it: an instance written by hand (the framework's own tests) answers
+	/// with it, and a type's class with `cx.applied(...)`, which is held to its spec. The code, and one state for each
+	/// loop the instance declares with one, by index. NodeHost holds what it is given to the instance's loops: a null
+	/// code, a state missing, given twice or for a loop declared without one is the instance's maker's bug, told as
+	/// ear's own (docs/architecture.md#faults-by-owner). The framework still waits for every resource the configure
+	/// asked for.
+	template <std::same_as<ErasedLoopState>... States> static Configured applied(NodeCode code, States... states) {
+		return Configured::erased(std::move(code), std::move(states)...);
+	}
 };
 
 namespace spec_detail {
@@ -629,7 +664,7 @@ template <const auto& Spec, class Type> class SpecInstance final : public Erased
 	static_assert(
 		requires { static_cast<Configured (Type::*)(CreateOf<Spec>&, const Checked&)>(&Type::configure); },
 		"a type's class has Configured configure(CreateOf<spec>&, const CheckedOf<spec>&)");
-	// The change version: optional, never called in 3a; once any configure of three parameters is callable (with
+	// The change version: optional and not called yet; once any configure of three parameters is callable (with
 	// a ChangeOf, or with any context), its signature is exactly this.
 	static constexpr bool hasChange = requires(Type& type, ChangeOf<Spec>& change, const Checked& settings) {
 		type.configure(change, settings, settings);

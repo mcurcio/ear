@@ -34,6 +34,7 @@
 #include "ear/core/desired_graph.hpp"
 #include "ear/core/lifecycle.hpp"
 #include "ear/core/node_catalogue.hpp"
+#include "ear/testing/erased.hpp"
 #include "ear/core/node_host.hpp"
 #include "ear/pipewire/data_loop_wedge.hpp"
 #include "ear/pipewire/engine.hpp"
@@ -55,6 +56,7 @@
 namespace {
 using namespace ear;
 using namespace ear::pipewire;
+using ear::testing::Erased;
 using namespace std::chrono_literals;
 
 constexpr std::uint32_t kRate = 44100;
@@ -746,9 +748,7 @@ public:
 	const Ports& ports() const override { return ports_; }
 	std::unique_ptr<ErasedInstance> make(NodeContext&) const override {
 		struct Instance final : ErasedInstance {
-			Configured configure(CreateContext& cx) override {
-				return Configured::erased(std::make_unique<LevelCode>());
-			}
+			Configured configure(CreateContext& cx) override { return Erased::applied(std::make_unique<LevelCode>()); }
 		};
 		return std::make_unique<Instance>();
 	}
@@ -837,7 +837,7 @@ public:
 	explicit ThrowingSinkInstance(std::shared_ptr<std::atomic<bool>> armed) : armed_(std::move(armed)) {}
 	Configured configure(CreateContext& cx) override {
 		cx.sink("tap", SinkShape{.frames = 4096}, std::make_unique<ThrowingConsumer>(armed_));
-		return Configured::erased(std::make_unique<LevelCode>());
+		return Erased::applied(std::make_unique<LevelCode>());
 	}
 
 private:
@@ -953,8 +953,8 @@ public:
 	std::span<const LoopDeclaration> loops() const noexcept override { return lateLoops; }
 	Configured configure(CreateContext& cx) override {
 		cx.sink("tap", SinkShape{.frames = 4096}, std::make_unique<LateConsumer>(sinkGate_));
-		return Configured::erased(std::make_unique<LevelCode>(),
-		                          ErasedLoopState::of(0, std::make_unique<LateState>(stateGate_)));
+		return Erased::applied(std::make_unique<LevelCode>(),
+		                       ErasedLoopState::of(0, std::make_unique<LateState>(stateGate_)));
 	}
 
 private:

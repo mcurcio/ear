@@ -97,3 +97,32 @@ add_test(NAME ear_thread_guard_refuses_checking_nothing
 		-P "${ear_thread_guard}")
 set_tests_properties(ear_thread_guard_refuses_checking_nothing PROPERTIES
 	PASS_REGULAR_EXPRESSION "the guard would check nothing")
+
+# No node type's own code reaches the erased layer beneath its context (docs/writing-a-node-type.md#configure-and-createof):
+# the guard over src/nodes/, its tests left out, and the guard itself refusing each spelling it knows
+# (erased_layer_guard/<spelling>.snippet), letting through what a type does write (allowed.snippet), and leaving out a
+# file in a tests folder (excluded/).
+set(ear_erased_layer_guard "${CMAKE_CURRENT_SOURCE_DIR}/erased_layer_guard.cmake")
+add_test(NAME ear_nodes_never_reach_the_erased_layer
+	COMMAND "${CMAKE_COMMAND}" "-DROOT=${PROJECT_SOURCE_DIR}/src/nodes" -P "${ear_erased_layer_guard}")
+foreach(spelling erased_instance erased_loop_state create_context configured_erased node_code_pass_through fifo_on
+		fifo_maker testing_header)
+	add_test(NAME ear_erased_layer_guard_refuses_${spelling}
+		COMMAND "${CMAKE_COMMAND}" "-DROOT=${CMAKE_CURRENT_SOURCE_DIR}/erased_layer_guard" "-DGLOB=${spelling}.snippet"
+			-P "${ear_erased_layer_guard}")
+	set_tests_properties(ear_erased_layer_guard_refuses_${spelling} PROPERTIES
+		PASS_REGULAR_EXPRESSION "${spelling}\\.snippet:1: reaches the erased layer")
+endforeach()
+add_test(NAME ear_erased_layer_guard_allows_lookalikes
+	COMMAND "${CMAKE_COMMAND}" "-DROOT=${CMAKE_CURRENT_SOURCE_DIR}/erased_layer_guard" "-DGLOB=allowed.snippet"
+		-P "${ear_erased_layer_guard}")
+add_test(NAME ear_erased_layer_guard_leaves_out_tests
+	COMMAND "${CMAKE_COMMAND}" "-DROOT=${CMAKE_CURRENT_SOURCE_DIR}/erased_layer_guard/excluded" "-DGLOB=*.snippet"
+		-P "${ear_erased_layer_guard}")
+set_tests_properties(ear_erased_layer_guard_leaves_out_tests PROPERTIES
+	PASS_REGULAR_EXPRESSION "erased_layer_guard: 1 files under .*, none reaches the erased layer")
+add_test(NAME ear_erased_layer_guard_refuses_checking_nothing
+	COMMAND "${CMAKE_COMMAND}" "-DROOT=${CMAKE_CURRENT_SOURCE_DIR}/erased_layer_guard" "-DGLOB=no-such-file.snippet"
+		-P "${ear_erased_layer_guard}")
+set_tests_properties(ear_erased_layer_guard_refuses_checking_nothing PROPERTIES
+	PASS_REGULAR_EXPRESSION "the guard would check nothing")

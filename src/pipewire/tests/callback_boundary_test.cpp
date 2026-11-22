@@ -30,6 +30,7 @@
 #include "ear/core/lifecycle.hpp"
 #include "ear/core/main_loop_activity.hpp"
 #include "ear/core/node_host.hpp"
+#include "ear/testing/erased.hpp"
 #include "ear/pipewire/engine.hpp"
 #include "ear/pipewire/faults.hpp"
 #include "ear/pipewire/main_loop_executor.hpp"
@@ -37,6 +38,7 @@
 namespace {
 using namespace ear;
 using namespace ear::pipewire;
+using ear::testing::Erased;
 
 /// What the boundary reported, in order, with whatever an owner was told among it.
 struct Report {
@@ -510,9 +512,7 @@ public:
 	const Ports& ports() const override { return ports_; }
 	std::unique_ptr<ErasedInstance> make(NodeContext&) const override {
 		struct Instance final : ErasedInstance {
-			Configured configure(CreateContext& cx) override {
-				return Configured::erased(std::make_unique<SilentCode>());
-			}
+			Configured configure(CreateContext& cx) override { return Erased::applied(std::make_unique<SilentCode>()); }
 		};
 		return std::make_unique<Instance>();
 	}
