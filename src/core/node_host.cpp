@@ -3549,6 +3549,9 @@ struct NodeHost::Impl {
 			count(sinksOpen, "sinks");
 			count(loopsOpen, "loops");
 			count(programsOpen, "programs");
+			// Everything had reported closed and the machine was about to hear it, the deadline's input ahead of that
+			// one in the queue: nothing is left to count, and an empty list would say less than that.
+			if (open.empty()) open = "nothing left open: its close was under way when the deadline was heard";
 			host_.diagnosed(name_, "ear.close-overdue",
 			                "the configuration did not close within " + std::to_string(host_.closeDeadline.count()) +
 			                    " ms and is left running (" + open + ")",

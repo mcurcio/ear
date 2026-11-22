@@ -708,6 +708,11 @@ struct TestLoops final : LoopAdapter {
 		std::move_only_function<void()> heldFinished;
 		void close(std::move_only_function<void()> closed) override {
 			owner.log.push_back("loop " + name + " close");
+			if (owner.closedInTurn) {
+				closed(); // inside the turn that asked: its report waits behind this turn's input
+				owner.closedInTurn();
+				return;
+			}
 			if (owner.holdClose) {
 				heldClose = std::move(closed);
 				return;
@@ -739,7 +744,9 @@ struct TestLoops final : LoopAdapter {
 	QueueExecutor& mainLoop;
 	bool autoReady = true;
 	bool autoClose = true;
-	bool holdClose = false;        // a finished loop's close waits for One::closeNow()
+	bool holdClose = false; // a finished loop's close waits for One::closeNow()
+	/// Set: a loop's close reports inside the turn that asked for it, and then this runs, still inside that turn.
+	std::function<void()> closedInTurn;
 	bool holdFinish = false;       // a loop's finish waits for One::finishNow() (its close then runs as autoClose says)
 	std::vector<One*> made;        // each loop made, in order; valid while its configuration lives
 	std::vector<LoopEvents*> told; // each loop's, in making order; valid while its configuration lives
@@ -6471,6 +6478,27 @@ TEST_CASE("A loop that never finishes is leaked at the close deadline, the diagn
 	f.stopAll();
 	f.settle();
 	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A close deadline heard just ahead of the configuration's own close says nothing was left open, never an "
+          "empty list",
+          "[node_host][loops]") {
+	Fixture f;
+	auto config = std::make_shared<LoopProbeConfig>(f.log, std::vector{plainWorker});
+	config->onConfigure = [&f](CreateContext& cx) { return Erased::applied(std::make_unique<TestAudioCode>(f.log)); };
+	addRunning(f, "porch", config);
+	// The loop's close reports inside the turn that asked for it, and the deadline's timer fires in that same turn: the
+	// close is heard first and queues the machine's `closed` behind the deadline, which then finds nothing open.
+	f.loops.closedInTurn = [&f] { f.timers.advance(closeDeadline); };
+	f.host.nodeRemoved("porch");
+	f.settle();
+	REQUIRE(countOf(f.log, "diagnostic porch ear.close-overdue") == 1);
+	CHECK(f.diagnostics.details.back() ==
+	      "the configuration did not close within 10000 ms and is left running (nothing left open: its close was "
+	      "under way when the deadline was heard)");
+	f.loops.closedInTurn = nullptr;
+	f.stopAll();
+	f.settle();
 }
 
 // The leaked configuration (docs/architecture.md#teardown-by-dependency): its Channel re-pointed at its record, which
