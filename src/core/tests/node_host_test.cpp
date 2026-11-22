@@ -6516,6 +6516,33 @@ TEST_CASE("A loop that never finishes is leaked at the close deadline, the diagn
 	CHECK(f.allGone == 1);
 }
 
+TEST_CASE("A loop that never started is not counted open at the close deadline: only what still has to close is",
+          "[node_host][loops]") {
+	Fixture f;
+	f.loops.autoReady = false;
+	f.sinks.holdClose = true; // its sink never reports closed
+	auto config = std::make_shared<LoopProbeConfig>(f.log, std::vector{plainWorker});
+	config->onConfigure = [&f](CreateContext& cx) {
+		cx.sink("pb", SinkShape{.frames = 1024}, std::make_unique<QuietConsumer>());
+		return Erased::applied(std::make_unique<TestAudioCode>(f.log));
+	};
+	f.add("porch", config);
+	REQUIRE(f.loops.told.size() == 1);
+	f.loops.told[0]->failed("Resource temporarily unavailable");
+	f.settle();
+	REQUIRE(failureOf(f, "porch") == "start-failed: cannot start loop worker: Resource temporarily unavailable");
+	f.timers.advance(closeDeadline);
+	f.settle();
+	REQUIRE(countOf(f.log, "diagnostic porch ear.close-overdue") == 1);
+	// The loop was made and could not start, so nothing of it runs or will be asked to close: the sink alone is open.
+	CHECK(f.diagnostics.details.back() ==
+	      "the configuration did not close within 10000 ms and is left running (1 sinks open)");
+	CHECK(f.host.leaked() == 1);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
 TEST_CASE("A close deadline heard just ahead of the configuration's own close says nothing was left open, never an "
           "empty list",
           "[node_host][loops]") {

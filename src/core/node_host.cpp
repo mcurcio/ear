@@ -3546,8 +3546,14 @@ struct NodeHost::Impl {
 		/// The close deadline passed with step 3 or 4 unfinished: said, then leaked.
 		void closeOverdue() {
 			const std::size_t sinksOpen = config_->sinks.size() - config_->sinksClosed;
-			const auto loopsOpen = static_cast<std::size_t>(
-				std::ranges::count_if(config_->loops, [](const auto& slot) { return slot->made && !slot->closed; }));
+			// What step 4 waits for (finishLoopsOf). Before it began: every loop it will ask, one still up, since it
+			// has to close before the configuration can go; never one that could not start, which runs nothing and is
+			// never asked. Once it began: every loop asked that has not closed (the rest were marked closed there).
+			const bool asked = config_->loopsStep != Configuration::LoopsStep::open;
+			const auto loopsOpen =
+				static_cast<std::size_t>(std::ranges::count_if(config_->loops, [asked](const auto& slot) {
+					return slot->made && !slot->closed && (asked || !slot->failedHeard);
+				}));
 			const std::size_t programsOpen = config_->program && config_->program->open() ? 1 : 0;
 			std::string open;
 			const auto count = [&](std::size_t n, std::string_view what) {
