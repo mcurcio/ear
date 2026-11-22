@@ -1,3 +1,13 @@
+## [4.1.1](https://github.com/mcurcio/ear/compare/v4.1.0...v4.1.1) (2026-11-22)
+
+### Bug Fixes
+
+* **core:** a close that completed is never judged overdue ([e35a683](https://github.com/mcurcio/ear/commit/e35a6836516c884f9d47ade8af923144e10ddbd9))
+* **core:** a configuration freed with its node is freed in teardown's order ([c9adf16](https://github.com/mcurcio/ear/commit/c9adf16d9a499a08dfe71e9ef4d03e149bb8e853))
+* **core:** ear.close-overdue no longer counts a loop that never started as open ([d99d143](https://github.com/mcurcio/ear/commit/d99d143b4e35c8eab967d55a387766eb80eafab3))
+* **core:** ear.close-overdue says its close was under way when nothing is left open (review) ([623ccc9](https://github.com/mcurcio/ear/commit/623ccc927fab7b8b33dddd80854c727e489f1898))
+* **sendspin:** what is sent to the server is dated by the capture latency upstream (slice 3c) ([b0c4ddd](https://github.com/mcurcio/ear/commit/b0c4dddb4ebf44c2fe48485385107862e1565f0e))
+
 ## [4.1.0](https://github.com/mcurcio/ear/compare/v4.0.0...v4.1.0) (2026-11-15)
 
 ### Features
