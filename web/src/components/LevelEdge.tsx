@@ -1,35 +1,50 @@
-// A route's wire: coloured by its status (linked, pending, refused) and drawn by its level, which
-// is its from port's (docs/control-port.md): louder is thicker and brighter. The colours are
-// theme.css's state tokens (docs/editor.md#tokens-and-themes).
-import { BaseEdge, getBezierPath, type Edge, type EdgeProps } from "@xyflow/react";
-import { meterFraction, wirePort } from "../levels";
+// A route's wire (docs/editor.md#wires): the stroke in its status's class, sized and brightened by its from port's
+// level; a flow over it while a linked wire carries signal; a hit path whose tooltip names the two ends; and the
+// status in words at the midpoint where colour is not enough. Its rules are wires.ts's; its colours are editor.css's
+// wire classes over theme.css's tokens (docs/editor.md#tokens-and-themes). The visible path keeps React Flow's
+// react-flow__edge-path class and the hit path its react-flow__edge-interaction, so selection and Delete work as
+// before.
+import { EdgeLabelRenderer, getBezierPath, type Edge, type EdgeProps } from "@xyflow/react";
+import type { CSSProperties } from "react";
+import { wirePort } from "../levels";
 import type { GraphRoute } from "../protocol";
+import { wireView } from "../wires";
 import { useLevel } from "./hooks";
 
 export type LevelEdgeData = { route: GraphRoute };
 export type LevelFlowEdge = Edge<LevelEdgeData, "level">;
-
-const statusColour = { linked: "var(--ok)", pending: "var(--warn)", refused: "var(--err)" } as const;
 
 export function LevelEdge(props: EdgeProps<LevelFlowEdge>) {
   const { sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition, data, selected } = props;
   const route = data!.route;
   const port = wirePort(route);
   const [, rms] = useLevel(port.node, port.port);
-  const level = meterFraction(rms);
-  const [path] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
+  const view = wireView(route, rms, selected ?? false);
+  const [path, labelX, labelY] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
+  const width = { "--wire-width": `${view.width}px` } as CSSProperties;
   return (
-    <BaseEdge
-      id={props.id}
-      path={path}
-      interactionWidth={16}
-      style={{
-        // A status this editor does not know is drawn as pending: neutral (docs/control-port.md#protocol-and-features).
-        stroke: statusColour[route.status as keyof typeof statusColour] ?? statusColour.pending,
-        strokeWidth: 1.5 + 5 * level + (selected ? 1.5 : 0),
-        strokeOpacity: 0.45 + 0.55 * level,
-        strokeDasharray: route.status === "linked" ? undefined : "6 4",
-      }}
-    />
+    <>
+      <path
+        id={props.id}
+        d={path}
+        fill="none"
+        className={`react-flow__edge-path ear-wire ${view.statusClass}${view.dashed ? " ear-wire-dashed" : ""}`}
+        style={{ ...width, strokeOpacity: view.opacity }}
+      />
+      {view.flowing && <path d={path} fill="none" className={`ear-wire-flow ${view.statusClass}`} style={width} />}
+      <path d={path} fill="none" className="react-flow__edge-interaction" strokeOpacity={0} strokeWidth={16}>
+        <title>{view.title}</title>
+      </path>
+      {view.label !== undefined && (
+        <EdgeLabelRenderer>
+          <div
+            className={`wire-label ${view.statusClass}`}
+            style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
+          >
+            {view.label}
+          </div>
+        </EdgeLabelRenderer>
+      )}
+    </>
   );
 }

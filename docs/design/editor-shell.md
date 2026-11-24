@@ -91,54 +91,15 @@ sheet over the canvas's right edge, closed by Escape or a click on the canvas, a
 ### 3.2 Tokens and the dark theme
 
 Built (step 1): [`editor.md`](../editor.md#tokens-and-themes). What remains here: the switch moves to the top bar
-(3.1), the choice is kept per browser (3.8), and the palette's `Theme:` commands (3.6). `--meter-mid` and `--meter-hot`
-exist and are drawn in step 2 (3.4); numbers' `tabular-nums` and monospace port names come with the node box (3.3).
+(3.1), the choice is kept per browser (3.8), and the palette's `Theme:` commands (3.6).
 
 ### 3.3 The node box
 
-```text
-╭──────────────────────────────╮
-│▌ desk                 card   │   name bold; type as a small label, right
-│▌ ● running  !                │   the state pill: dot and word; the counters' mark after it
-│▌ waiting for fpp.rtp         │   the health line, muted, one line, full text on hover
-├──────────────────────────────┤
-│◉ play.1  ▮▮▮▮▮▯▯▯▯ │          │   inputs left, outputs right, each a meter
-│◉ play.2  ▮▮▯▯▯▯▯▯▯ │          │
-├──────────────────────────────┤
-│ card out ●   card in ○       │   the companion strip, as built
-╰──────────────────────────────╯
-```
-
-- **The state is a stripe and a pill.** A 4 px stripe down the box's left edge and a pill (a dot and the word) take the
-  state's token: `--ok` running, `--warn` starting and stopping, `--err` failed, `--quiet` stopped, `--off` disabled, and
-  `--warn` for a state this editor does not know (as today, [`editor.md`](../editor.md#a-nodes-health)). The word is
-  always there, so the state is never colour alone; at a glance across the canvas the stripe answers P6. A failed box
-  also gets a 1 px `--err` border; a disabled one a dashed border and its stripe hatched, its text at full contrast.
-  `configuring` pulses the pill's dot only, never the text.
-- **The type label** is the type's own word, unstyled by type: nothing in `web/` names a node type
-  ([`control-plane.md`](control-plane.md#81-stores)), so there are no per-type icons or colours.
-- **Width 220 px** (from 200), so `waiting for the previous desk to stop` fits more often; `layout.ts`'s `nodeWidth`
-  and `headerHeight` follow, and its tests.
-- **Handles** grow to a 10 px dot with a 20 px hit area. While a wire is being drawn from an output, every input handle
-  that `isValidConnection` allows is ringed in `--accent` and every other is dimmed; the handle under the pointer grows.
-  Today a drag to an invalid place is already refused before ear; this shows where it can go before the drop.
-- **Selection** is a 2 px `--accent` ring outside the border and a lifted shadow; hover lifts the shadow alone.
+Built (step 2): [`editor.md`](../editor.md#the-node-box).
 
 ### 3.4 Wires and meters
 
-- **Wires** keep their meaning ([`editor.md`](../editor.md#what-it-shows-and-does): colour by status, thickness and
-  brightness by the from port's level) and take the tokens (`--ok`, `--warn`, `--err`). Three additions:
-  - a linked wire whose level is above the floor shows a slow flow (a dash moving along it, its speed fixed, so it
-    says "signal" and not how loud); none under reduced motion, and none on `pending` or `refused`, which stay dashed
-    and still;
-  - a `refused` wire carries a small `refused` label at its midpoint (React Flow's `EdgeLabelRenderer`), so the
-    status is in words on the canvas, not colour alone;
-  - a hovered wire thickens by 1 px and shows its two ends as `from → to` in a tooltip.
-- **Meters** keep their scale (rms bar and peak tick, dBFS down to -60, `levels.ts`) and draw the rms bar in three
-  zones: `--meter-low` below -18 dBFS, `--meter-mid` to -6, `--meter-hot` above. The peak tick holds its highest value
-  for 1.5 s, then falls at 20 dB/s; the hold is the meter component's own state, outside React state like the levels
-  ([`editor.md`](../editor.md#its-rules)), and resets when the connection closes. A peak at or over 0 dBFS lights the
-  meter's right end for 2 s (a clip lamp), with "clipped" in its tooltip.
+Built (step 2): [`editor.md`](../editor.md#wires) and [`editor.md`](../editor.md#meters).
 
 ### 3.5 Feedback: in flight, toasts and where errors land
 
@@ -236,7 +197,7 @@ each.
 
 1. **Tokens and themes** (3.2) (built): `theme.css`, the dark set, the knobly dark tokens, the contrast test, the theme switch.
    Nothing moves yet.
-2. **The node box, wires and meters** (3.3, 3.4).
+2. **The node box, wires and meters** (3.3, 3.4) (built).
 3. **The shell** (3.1): top bar, inspector, drawer and its header chip, the narrow-window sheet.
 4. **Feedback** (3.5): `requests.ts`, `notices.ts`, the ghost wire, toasts, the gutter.
 5. **Keyboard** (3.6) and **canvas adding** (3.7, without kept places).
@@ -252,7 +213,7 @@ ranking); `prefs.test.ts` (storage that throws, values of the wrong shape, the 3
 
 | [U] | Settled by |
 |---|---|
-| A moving dash on every linked wire costs too little to notice at 30 level messages a second, on a graph of 20 wires | step 2, measured in the browser's performance panel on the system test's graph; if it costs, the flow is drawn only on the selected and hovered wires |
+| A moving dash on every linked wire costs too little to notice at 30 level messages a second, on a graph of 20 wires | owed: measured in the browser's performance panel on the system test's graph (step 2 built it without that check, as no browser runs here); if it costs, the flow is drawn only on the selected and hovered wires (`wires.ts`'s `flowing`) |
 | The bundle grows by under 15 KB | step 5's build output, against today's |
 | React Flow 12 lets the canvas's single-key shortcuts and its own Delete handling coexist with focus in the inspector's text | step 5, by eye; `control-plane.md`'s same [U] for knobs (its 8.3) is settled by the same check |
 

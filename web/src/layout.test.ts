@@ -2,10 +2,39 @@
 // user placed keeps its position.
 import { describe, expect, it } from "vitest";
 import { reduce, type GraphState } from "./graph";
-import { Places, nodeWidth, placeNodes, type Position } from "./layout";
+import editorCss from "./editor.css?raw";
+import { Places, headerHeight, nodeSize, nodeWidth, placeNodes, portHeight, type Position } from "./layout";
+import type { GraphNode } from "./protocol";
 import { fixtures, messagesOf } from "./testFixtures";
 
 const graph = fixtures.snapshot.graph;
+
+describe("a box's size", () => {
+  const node = (inputs: number, outputs: number): GraphNode => ({
+    ...graph.nodes[0]!,
+    inputs: Array.from({ length: inputs }, (_, i) => `in.${i + 1}`),
+    outputs: Array.from({ length: outputs }, (_, i) => `out.${i + 1}`),
+  });
+
+  it("is 220 px wide, one row per port on its longer side", () => {
+    expect(nodeWidth).toBe(220);
+    expect(nodeSize(node(4, 1))).toStrictEqual({ width: 220, height: headerHeight + 4 * portHeight });
+    expect(nodeSize(node(0, 0))).toStrictEqual({ width: 220, height: headerHeight + portHeight });
+  });
+
+  it("is the box's CSS", () => {
+    const css = editorCss.replace(/\/\*[\s\S]*?\*\//g, "");
+    const declaration = (selector: string, property: string): string => {
+      const rule = new RegExp(`(?:^|\\})\\s*${selector.replace(/[.]/g, "\\.")}\\s*\\{([^}]*)\\}`).exec(css);
+      if (rule === null) throw new Error(`editor.css has no ${selector} rule`);
+      const value = new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;]+)`).exec(rule[1]!);
+      if (value === null) throw new Error(`editor.css's ${selector} rule has no ${property}`);
+      return value[1]!.trim();
+    };
+    expect(declaration(".ear-node", "width")).toBe(`${nodeWidth}px`);
+    expect(declaration(".port", "height")).toBe(`${portHeight}px`);
+  });
+});
 
 describe("the first layout", () => {
   it("places every node, each source left of the nodes it feeds", () => {

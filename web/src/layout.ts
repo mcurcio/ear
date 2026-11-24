@@ -10,9 +10,15 @@ export interface Position {
   y: number;
 }
 
-export const nodeWidth = 200;
-const headerHeight = 56;
-const portHeight = 22;
+/** A box's width: editor.css's .ear-node width, which layout.test.ts holds equal (docs/editor.md#the-node-box). */
+export const nodeWidth = 220;
+/**
+ * The header's three rows (the title 18, the state pill 20, the health line 16, its padding 12 and border 1), rounded
+ * up: dagre needs only an estimate, while the width is exact.
+ */
+export const headerHeight = 68;
+/** A port row's height: editor.css's .port height, which layout.test.ts holds equal. */
+export const portHeight = 22;
 
 /** A node box's size on the canvas: one row per port on its longer side. */
 export function nodeSize(node: GraphNode): { width: number; height: number } {

@@ -44,6 +44,8 @@
   --radius-pill: 999px;
   --motion-fast: 120ms;
   --motion-slow: 180ms;
+  --motion-pulse: 2s;
+  --motion-flow: 1s;
 }
 
 /* The system's dark, while no theme is chosen or dark is. */
@@ -118,7 +120,8 @@
   --knobly-error: #ff6b6b;
 }
 
-/* No motion for those who ask for none; editor.css also stops the configuring pulse. */
+/* No motion for those who ask for none. The pulse and the flow keep their durations: editor.css stops those two
+   infinite animations instead, since a 0 s infinite animation would churn rather than stop. */
 @media (prefers-reduced-motion: reduce) {
   :root {
     --motion-fast: 0ms;

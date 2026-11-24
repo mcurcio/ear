@@ -1,5 +1,6 @@
-/* The graph editor's styles: a full-window canvas with a side panel. Colours, radii, shadows and durations are
-   theme.css's tokens only (docs/editor.md#tokens-and-themes), which theme.test.ts checks. */
+/* The graph editor's styles: a full-window canvas with a side panel, the node boxes, wires and meters
+   (docs/editor.md#the-node-box-wires-and-meters). Colours, radii, shadows and durations are theme.css's tokens only
+   (docs/editor.md#tokens-and-themes), which theme.test.ts checks. */
 html,
 body,
 #root {
@@ -150,94 +151,148 @@ body,
   font-weight: 600;
 }
 
+/* The node box (docs/editor.md#the-node-box): a stripe down its left edge and a pill in the state's token (--state),
+   the word always beside the colour. Its width is layout.ts's nodeWidth, which layout.test.ts holds equal. */
 .ear-node {
-  width: 200px;
+  --state: var(--warn);
+  position: relative;
+  width: 220px;
   background: var(--raised);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-box);
   box-shadow: var(--shadow);
+  font-variant-numeric: tabular-nums;
   transition:
     box-shadow var(--motion-fast),
     border-color var(--motion-fast);
 }
 
+.ear-node::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--state);
+  border-radius: calc(var(--radius-box) - 1px) 0 0 calc(var(--radius-box) - 1px);
+  pointer-events: none;
+}
+
+.ear-node:hover {
+  box-shadow: var(--shadow-lifted);
+}
+
+/* The ring sits outside the border, so a failed box keeps its --err border while selected. */
 .ear-node.selected {
-  border-color: var(--accent);
   box-shadow:
-    0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent),
+    0 0 0 2px var(--accent),
     var(--shadow-lifted);
 }
 
-.ear-node-header {
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--line);
-}
-
-.ear-node-type {
-  color: var(--muted);
-  font-weight: normal;
-}
-
-.ear-node-state {
-  font-size: 11px;
-}
-
-.state-running .ear-node-state {
-  color: var(--ok);
-}
-
-.state-starting .ear-node-state,
-.state-stopping .ear-node-state {
-  color: var(--warn);
-}
-
-.state-failed {
-  border-color: var(--err);
-}
-
-.state-failed .ear-node-state {
-  color: var(--err);
-}
-
-/* Silence the operator asked for is quiet, never a fault (docs/editor.md#a-nodes-health); stopped and disabled apart. */
-.state-stopped .ear-node-state {
-  color: var(--quiet);
-}
-
-.state-disabled {
-  border-style: dashed;
-}
-
-.state-disabled .ear-node-state {
-  color: var(--off);
+.state-running {
+  --state: var(--ok);
 }
 
 /* A state this editor does not know: neutral, as starting's. */
-.state-unknown .ear-node-state {
-  color: var(--warn);
+.state-starting,
+.state-stopping,
+.state-unknown {
+  --state: var(--warn);
 }
 
-.phase-configuring .ear-node-state {
-  animation: pulse 2s ease-in-out infinite;
+.state-failed {
+  --state: var(--err);
+  border-color: var(--err);
+}
+
+/* Silence the operator asked for is quiet, never a fault (docs/editor.md#a-nodes-health); stopped and disabled apart.
+   A disabled box is never dimmed: its text keeps full contrast. */
+.state-stopped {
+  --state: var(--quiet);
+}
+
+.state-disabled {
+  --state: var(--off);
+  border-style: dashed;
+}
+
+.state-disabled::before {
+  background: repeating-linear-gradient(135deg, var(--off) 0 3px, transparent 3px 6px);
+}
+
+.ear-node-header {
+  padding: 6px 8px 6px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.ear-node-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.ear-node-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ear-node-type {
+  font-size: 10px;
+  color: var(--muted);
+  font-weight: normal;
+  white-space: nowrap;
+}
+
+.ear-node-status {
+  display: flex;
+  align-items: center;
+  margin: 3px 0 2px;
+}
+
+.ear-node-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 7px 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--sunken);
+  color: var(--state);
+  font-size: 11px;
+  line-height: 18px;
+  font-weight: 600;
+}
+
+.ear-node-pill-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-pill);
+  background: var(--state);
+}
+
+.ear-node-reason {
+  font-family: ui-monospace, monospace;
+  font-weight: normal;
+}
+
+/* configuring pulses the dot only, never the word. */
+.phase-configuring .ear-node-pill-dot {
+  animation: pulse var(--motion-pulse) ease-in-out infinite;
 }
 
 @keyframes pulse {
   50% {
-    opacity: 0.5;
-  }
-}
-
-/* The durations are already 0 under reduced motion (theme.css); the pulse is an animation, so it stops here. */
-@media (prefers-reduced-motion: reduce) {
-  .phase-configuring .ear-node-state {
-    animation: none;
+    opacity: 0.4;
   }
 }
 
 .ear-node-line {
   font-size: 11px;
   color: var(--muted);
-  max-width: 220px;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -262,6 +317,7 @@ body,
   width: 50%;
 }
 
+/* A port row's height is layout.ts's portHeight, which layout.test.ts holds equal. */
 .port {
   position: relative;
   height: 22px;
@@ -276,7 +332,50 @@ body,
   flex-direction: row-reverse;
 }
 
+.port-name {
+  font-family: ui-monospace, monospace;
+}
+
+/* Handles: a 10 px dot with a 20 px hit area (its ::before is part of the handle's pointer target). While a wire is
+   drawn, connect.ts's handleCue rings every handle a drop on would make a route and dims the rest; the ringed one under
+   the pointer grows, by size alone, so React Flow's own translate keeps it centred on the edge. */
+.ear-node .react-flow__handle {
+  box-sizing: border-box;
+  width: 10px;
+  height: 10px;
+  background: var(--text);
+  border: 2px solid var(--raised);
+  transition:
+    width var(--motion-fast),
+    height var(--motion-fast),
+    opacity var(--motion-fast);
+}
+
+.ear-node .react-flow__handle::before {
+  content: "";
+  position: absolute;
+  inset: -7px;
+  border-radius: var(--radius-pill);
+}
+
+.ear-node .react-flow__handle.handle-target {
+  box-shadow: 0 0 0 3px var(--accent);
+}
+
+.ear-node .react-flow__handle.handle-dimmed {
+  opacity: 0.3;
+}
+
+.ear-node .react-flow__handle.handle-target.connectingto {
+  width: 14px;
+  height: 14px;
+}
+
+/* A meter (docs/editor.md#meters): the zones are fixed on the scale and the rms bar uncovers them; the tick and the
+   lamp follow the fractions Meter.tsx paints (--meter-rms-at, --meter-peak-at; not --meter-peak, the tick's colour). */
 .meter {
+  --meter-rms-at: 0;
+  --meter-peak-at: 0;
   position: relative;
   flex: 1;
   height: 6px;
@@ -286,17 +385,127 @@ body,
 }
 
 .meter-rms {
-  height: 100%;
-  background: var(--meter-low);
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to right,
+    var(--meter-low) var(--meter-mid-at),
+    var(--meter-mid) var(--meter-mid-at) var(--meter-hot-at),
+    var(--meter-hot) var(--meter-hot-at)
+  );
+  clip-path: inset(0 calc(100% - var(--meter-rms-at) * 100%) 0 0);
 }
 
 .meter-peak {
   position: absolute;
   top: 0;
+  left: calc(var(--meter-peak-at) * 100%);
   width: 2px;
   height: 100%;
   margin-left: -2px;
   background: var(--meter-peak);
+}
+
+.meter-clip {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 4px;
+  height: 100%;
+  background: transparent;
+}
+
+.meter[data-clipped] .meter-clip {
+  background: var(--meter-hot);
+}
+
+/* Wires (docs/editor.md#wires): the colour is the status class's, the width and brightness the level's (set inline as
+   --wire-width and stroke-opacity). The selector outweighs React Flow's selected-edge stroke, so a selected wire keeps
+   its status colour and shows selection by its width. */
+.ear-wire.wire-linked,
+.ear-wire-flow.wire-linked {
+  --wire-colour: var(--ok);
+}
+
+.wire-pending,
+.wire-unknown {
+  --wire-colour: var(--warn);
+}
+
+.wire-refused {
+  --wire-colour: var(--err);
+}
+
+.react-flow .react-flow__edge .react-flow__edge-path.ear-wire {
+  stroke: var(--wire-colour);
+  stroke-width: var(--wire-width);
+  transition: stroke-width var(--motion-fast);
+}
+
+.react-flow .react-flow__edge .ear-wire-dashed {
+  stroke-dasharray: 6 4;
+}
+
+.react-flow .react-flow__edge:hover .react-flow__edge-path.ear-wire {
+  stroke-width: calc(var(--wire-width) + 1px);
+}
+
+/* The flow: a dash moving from the output toward the input at a fixed speed (16 px a period), saying "signal", not how
+   loud. */
+.ear-wire-flow {
+  stroke: var(--raised);
+  stroke-opacity: 0.75;
+  stroke-width: max(1px, calc(var(--wire-width) * 0.4));
+  stroke-dasharray: 3 13;
+  stroke-linecap: round;
+  pointer-events: none;
+  animation: wire-flow var(--motion-flow) linear infinite;
+}
+
+@keyframes wire-flow {
+  to {
+    stroke-dashoffset: -16;
+  }
+}
+
+.wire-label {
+  position: absolute;
+  pointer-events: none;
+  padding: 0 6px;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-pill);
+  background: var(--raised);
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 600;
+}
+
+.wire-label.wire-refused {
+  color: var(--err);
+}
+
+.wire-label.wire-unknown {
+  color: var(--muted);
+}
+
+/* The durations are already 0 under reduced motion (theme.css); the configuring pulse and the wires' flow are
+   infinite animations, which a 0 s duration would churn rather than stop, so they stop here. The peak tick's fall is
+   data, not decoration, and stays. */
+@media (prefers-reduced-motion: reduce) {
+  .phase-configuring .ear-node-pill-dot {
+    animation: none;
+  }
+
+  .ear-wire-flow {
+    display: none;
+  }
+}
+
+/* Forced colours (Windows high contrast): the stripe stays visible in the system's text colour. */
+@media (forced-colors: active) {
+  .ear-node::before {
+    background: CanvasText;
+  }
 }
 
 /* The ear.conf pane: the text unwrapped (lines and columns match the diagnostics), and its

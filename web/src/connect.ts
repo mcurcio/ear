@@ -1,7 +1,9 @@
 // The connection rules between the canvas (@xyflow/react) and the wire format
 // (docs/editor.md): a drag from an output port to an input port is route.add's
 // params; any other drag is refused before it reaches the server. Each port is one React Flow
-// handle whose id says its direction, so the rule needs nothing but the handles.
+// handle whose id says its direction, so the rule needs nothing but the handles. While a wire is drawn, the ring on the
+// handles it can be dropped on follows the same rule (handleCue, docs/editor.md#the-node-box), so the ring never
+// promises what the drop refuses.
 import type { PortRef, RouteEnds } from "./protocol";
 
 export type Direction = "in" | "out";
@@ -47,4 +49,25 @@ export function isValidConnection(connection: HandlePair): boolean {
 /** The canvas id of a route's wire: one per route, the same for the same ends. */
 export function edgeId(route: RouteEnds): string {
   return JSON.stringify([route.from.node, route.from.port, route.to.node, route.to.port]);
+}
+
+/** The end a drag in progress started from: React Flow's fromHandle (its node and handle id). */
+export interface DragStart {
+  nodeId: string;
+  id?: string | null;
+}
+
+export type HandleCue = "idle" | "origin" | "target" | "dimmed";
+
+/**
+ * How a handle is drawn while a wire is drawn from `from`: idle with no drag; origin for the handle the drag started
+ * at; target for every handle a drop on would make a route (isValidConnection: from an output every input, from an
+ * input every output); dimmed for every other.
+ */
+export function handleCue(from: DragStart | null, node: string, handle: string): HandleCue {
+  if (from === null) return "idle";
+  if (from.nodeId === node && from.id === handle) return "origin";
+  return isValidConnection({ source: from.nodeId, sourceHandle: from.id, target: node, targetHandle: handle })
+    ? "target"
+    : "dimmed";
 }

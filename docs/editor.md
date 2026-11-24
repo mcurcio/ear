@@ -7,15 +7,19 @@ Vitest); it shares no code with the C++, only the wire format and the fixtures i
 
 ## What it shows and does
 
-- **Nodes** are boxes with one row per port, inputs on the left and outputs on the right, each
-  with its handle and a live level meter. Under the node's name and type is its state word and a
-  line that says why it is silent or what it waits for ([below](#a-nodes-health)), and beside
-  the word a warning mark while the node lost cycles in the last minute ([below](#counters)).
-  Along its bottom edge, a badge per companion ([below](#companions)).
+- **Nodes** are 220 px boxes ([below](#the-node-box)): a stripe down the left edge and a pill (a
+  dot and the word) in the state's colour, the type as a small label beside the name, the line
+  that says why the node is silent or what it waits for ([below](#a-nodes-health)), and beside the
+  pill a warning mark while the node lost cycles in the last minute ([below](#counters)). Then one
+  row per port, inputs on the left and outputs on the right, each with its handle and a live level
+  meter ([below](#meters)), and along the bottom edge a badge per companion ([below](#companions)).
 - **Routes** are wires coloured by status (`linked`, `pending`, `refused`) and drawn by their
-  from port's level: louder is thicker and brighter.
+  from port's level: louder is thicker and brighter. A linked wire carrying signal shows a slow
+  flow, a refused one says `refused` at its midpoint, and hovering a wire names its two ends
+  ([below](#wires)).
 - **Editing:** a drag from an output to an input adds a route (any other drag is refused before
-  it reaches ear); the delete key removes the selected wire or node; a side panel adds nodes from
+  it reaches ear); while a wire is drawn, every handle it can be dropped on is ringed and the rest
+  dimmed ([below](#the-node-box)); the delete key removes the selected wire or node; a side panel adds nodes from
   a statement in knobly ([below](#adding-a-node)), edits the selected node's own text in knobly
   ([below](#the-node-panels-text)), both as JSON settings from an ear without `node-text`, and
   offers Start, Stop, Restart,
@@ -61,7 +65,9 @@ Vitest); it shares no code with the C++, only the wire format and the fixtures i
   How they are drawn: [below](#companions).
 - **Levels stay outside React state.** Each `levels` notification replaces a store with
   listeners per port, so at 30 messages a second only the meters and wires whose port changed
-  re-render. A closed connection makes every meter read silent until new levels arrive.
+  re-render. A meter reads the store itself and paints through refs, and keeps its peak hold in
+  its own object, so neither is React state ([below](#meters)). A closed connection makes every
+  meter read silent and forgets every hold until new levels arrive.
 - **A lost socket reconnects** after a growing wait (1 s doubling to 30 s), failing the calls in
   flight, and the new socket subscribes again (graph, graph file, levels), so the editor starts
   over from a fresh snapshot.
@@ -161,7 +167,7 @@ so with one version on both sides it matches what ear's reader parses.
 
 `web/src/theme.css` holds every colour, radius, shadow and duration the editor draws with, as
 custom properties on `:root`, and is loaded before `editor.css`. `editor.css`, the components (the
-wires' status colours in `LevelEdge.tsx`) and the knobly tokens use only these, and React Flow's
+wires' status colours are `editor.css`'s wire classes) and the knobly tokens use only these, and React Flow's
 own variables (`--xy-*`) are pointed at them, so its canvas, dot grid and controls follow the theme
 without its `colorMode` prop (which would fight `data-theme`). The values live in `theme.css`
 alone; the groups:
@@ -179,8 +185,11 @@ alone; the groups:
   meters' (`--meter-low`, `--meter-mid`, `--meter-hot`, `--meter-peak`), the shadows (`--shadow`,
   `--shadow-lifted`) and the knobly tokens ([above](#highlighting)).
 - **Corners and motion:** 8 px on boxes, 6 px on controls and text boxes, pills fully round; 120 ms
-  for hover and selection, 180 ms for what slides. Both durations are 0 under
-  `prefers-reduced-motion: reduce`, which also stops the configuring pulse.
+  for hover and selection, 180 ms for what slides, `--motion-pulse` (2 s, the configuring dot) and
+  `--motion-flow` (1 s, the wires' flow). The first two are 0 under
+  `prefers-reduced-motion: reduce`, which also stops the configuring pulse and the wires' flow
+  (`editor.css`: an infinite animation at 0 s would churn rather than stop), and leaves the peak
+  tick's fall, which is data, not decoration.
 
 **The theme.** It is `system` by default, following `prefers-color-scheme`. *Why:* the owner chose
 that the editor follows the system until the person chooses. The switch cycles system, light and
@@ -199,10 +208,69 @@ stylesheets by default, so `vite.config.ts` lets it read these two as text.
 
 Forced colours keep the system's colours, as [Highlighting](#highlighting) says.
 
+## The node box, wires and meters
+
+### The node box
+
+`components/EarNode.tsx` draws it; the handles' rule is `web/src/connect.ts`'s `handleCue`.
+
+- **The state is a stripe and a pill.** A 4 px stripe down the box's left edge and a pill (a dot
+  and the word, with a failure's code in monospace) take the state's token: `--ok` running,
+  `--warn` starting, stopping and an unknown state, `--err` failed, `--quiet` stopped, `--off`
+  disabled. The word is always there, so the state is never colour alone. A failed box also has an
+  `--err` border. A disabled one has a dashed border and a hatched stripe, and its text stays at
+  full contrast. `configuring` pulses the dot only, never the text, and not at all under reduced
+  motion.
+- **The type label** is the type's word as sent, in `--muted`. Nothing in `web/` names a node type,
+  so there are no per-type icons or colours.
+- **220 px wide.** `layout.ts`'s `nodeWidth` and `portHeight` are the box's CSS width and port-row
+  height, which `layout.test.ts` holds equal. `headerHeight` is dagre's estimate of the three
+  header rows. Port names are monospace and numbers use tabular figures.
+- **Handles** are a 10 px dot with a 20 px hit area. While a wire is drawn, `handleCue` rings in
+  `--accent` every handle a drop on would make a route and dims every other: from an output, every
+  input; from an input, every output (the editor accepts a drag from either end). It is
+  `isValidConnection`'s own rule, so the ring never promises what the drop refuses. The ringed
+  handle under the pointer grows.
+- **Selection** is a 2 px `--accent` ring outside the border with the lifted shadow. Hover lifts
+  the shadow alone.
+
+### Wires
+
+`web/src/wires.ts` holds the rules (`wires.test.ts`); `components/LevelEdge.tsx` draws them.
+
+- **Colour by status, size by level.** Colour comes from the status class over `--ok`, `--warn`
+  and `--err`; an unknown status is drawn as pending. Width is 1.5 px plus 5 px at full scale, and
+  1.5 px more when selected. Opacity is 0.45 plus 0.55 at full scale. Every status but `linked` is
+  dashed and still.
+- **The flow.** A linked wire whose from port's rms is above the -60 dBFS floor shows a dash moving
+  from the output to the input at a fixed speed (`--motion-flow`). It means "signal", not how
+  loud. There is none under reduced motion, and none on pending, refused or an unknown status.
+- **The status in words.** A refused wire carries `refused` at its midpoint (React Flow's
+  `EdgeLabelRenderer`). A status this editor does not know carries its own word, in `--muted`.
+- **Hover** thickens the wire by 1 px. Its tooltip names the two ends
+  (`noise:noise.mono → rec:record.right`) and, for a refused route, ear's detail.
+
+### Meters
+
+`web/src/meters.ts` holds the rules (`meters.test.ts`); `components/Meter.tsx` paints them.
+
+- **The scale is unchanged:** an rms bar and a peak tick, dBFS down to -60 (`levels.ts`).
+- **Three zones.** The bar uncovers three fixed zones on that scale: `--meter-low` below -18 dBFS,
+  `--meter-mid` from -18 to -6, `--meter-hot` above.
+- **Peak hold.** The tick holds its highest peak for 1.5 s, then falls at 20 dB/s, never below the
+  live peak and never below the floor.
+- **Clip lamp.** A peak at or over 0 dBFS (linear 1) lights the meter's right end for 2 s, and the
+  tooltip says "clipped".
+- **Outside React.** The meter subscribes to the level store, keeps its `PeakHold` in a ref, and
+  paints the bar, the tick, the lamp and the tooltip through refs. It animates on animation frames
+  only while the tick is above the live peak or the lamp is lit. A closed connection resets the
+  hold.
+- **Times** are taken on the browser's monotonic clock, as [Recent marks](#recent-marks) does.
+
 ## A node's health
 
 `web/src/health.ts` is the one place that turns a node's health members
-([control-port.md](control-port.md#node-health)) into the box's word, style, line and enabled
+([control-port.md](control-port.md#node-health)) into the box's pill word, stripe style, line and enabled
 buttons; its tests cover every phase. The rules it follows:
 
 - **Silence the operator asked for is never drawn as a fault.** `stopped` ("stopped until Start or
@@ -332,7 +400,7 @@ port. Node.js comes from `web/.nvmrc` and the packages from `web/package-lock.js
 The tests cover the reducer against every `test/protocol` fixture, the graph file's state and the
 pane's logic (drafts, stale files, Save, refusals), the node panel's knobly box (`nodeText.ts`), the add-node
 form (`addText.ts`), the highlighting (`highlight.ts`, and that it never changes the text sent), the reconnecting client with a fake socket,
-the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, and the theme (`theme.ts`, and the contrast of every pair in both themes in `theme.test.ts`). There is no browser test runner:
+the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (the hold, the fall, the lamp and the reset on a fake clock), the handles' cue (`connect.ts`), the box's sizes against `editor.css` (`layout.test.ts`), and the theme (`theme.ts`, and the contrast of every pair in both themes in `theme.test.ts`). There is no browser test runner:
 rendering is checked by eye. *Why:* a Playwright leg costs about 150 MB of browsers and a minute
 or two a CI run, while the logic sits in the reducer, client and rules, which Vitest covers
 against the same fixtures the server is tested with.

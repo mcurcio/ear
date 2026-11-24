@@ -1,7 +1,8 @@
 // An output → input drag gives route.add's params; input → input (and
 // output → output) is refused.
 import { describe, expect, it } from "vitest";
-import { edgeId, handleId, isValidConnection, parseHandleId, routeFromConnection } from "./connect";
+import { edgeId, handleCue, handleId, isValidConnection, parseHandleId, routeFromConnection } from "./connect";
+import { fixtures } from "./testFixtures";
 
 const out = (port: string) => handleId("out", port);
 const inp = (port: string) => handleId("in", port);
@@ -60,5 +61,47 @@ describe("the connection rules", () => {
     const route = { from: { node: "noise", port: "noise.mono" }, to: { node: "rec", port: "record.left" } };
     expect(edgeId(route)).toBe(edgeId(structuredClone(route)));
     expect(edgeId(route)).not.toBe(edgeId({ ...route, to: { node: "rec", port: "record.right" } }));
+  });
+});
+
+describe("the cue while a wire is drawn", () => {
+  const handles = fixtures.snapshot.graph.nodes.flatMap((node) => [
+    ...node.inputs.map((port) => ({ node: node.name, id: inp(port) })),
+    ...node.outputs.map((port) => ({ node: node.name, id: out(port) })),
+  ]);
+
+  it("leaves every handle idle with no drag", () => {
+    for (const handle of handles) expect(handleCue(null, handle.node, handle.id)).toBe("idle");
+  });
+
+  it("marks the drag's own handle, rings where a drop makes a route and dims the rest", () => {
+    const fromNoise = { nodeId: "noise", id: out("noise.mono") };
+    expect(handleCue(fromNoise, "noise", out("noise.mono"))).toBe("origin");
+    expect(handleCue(fromNoise, "rec", inp("record.left"))).toBe("target");
+    expect(handleCue(fromNoise, "quiet", out("noise.mono"))).toBe("dimmed");
+    expect(handleCue(fromNoise, "noise", out("other"))).toBe("dimmed");
+
+    const fromRec = { nodeId: "rec", id: inp("record.left") };
+    expect(handleCue(fromRec, "noise", out("noise.mono"))).toBe("target");
+    expect(handleCue(fromRec, "tape", inp("record.right"))).toBe("dimmed");
+    expect(handleCue(fromRec, "rec", inp("record.right"))).toBe("dimmed");
+  });
+
+  it("is the drop rule for every pair of the snapshot's handles", () => {
+    expect(handles.length).toBeGreaterThan(4);
+    for (const from of handles) {
+      for (const to of handles) {
+        if (from.node === to.node && from.id === to.id) continue;
+        const pair = { source: from.node, sourceHandle: from.id, target: to.node, targetHandle: to.id };
+        const valid = isValidConnection(pair);
+        expect(handleCue({ nodeId: from.node, id: from.id }, to.node, to.id) === "target").toBe(valid);
+      }
+    }
+  });
+
+  it("keeps dotted and colon names whole", () => {
+    const from = { nodeId: "kitchen", id: out("from.left") };
+    expect(handleCue(from, "desk", inp("odd:port.1"))).toBe("target");
+    expect(handleCue({ nodeId: "desk", id: inp("odd:port.1") }, "desk", inp("odd:port.1"))).toBe("origin");
   });
 });
