@@ -13,8 +13,13 @@ this page designs the frame they land in, so that section 8 of that page changes
 | # | The owner's words | Date | What it means here |
 |---|---|---|---|
 | E1 | "design a slicker UI experience" | 2026-11-24 | This page: the editor's layout, look, feedback and keyboard, within every rule `editor.md` holds |
+| E2 | "ideally", asked whether node places are kept across reloads in the browser's `localStorage`, per ear | 2026-11-24 | Places are kept (3.7, 3.8) |
+| E3 | "ok", to not asking for a route when a wire dropped on empty canvas adds a node | 2026-11-24 | The node is placed at the drop and the person draws the wire (3.7) |
+| E4 | "ok", to `ear.conf` in a bottom drawer rather than a third column | 2026-11-24 | The drawer (3.1) |
+| E5 | "yes", to the ghost wire while a route request is in flight | 2026-11-24 | The ghost wire (3.5) |
+| E6 | "yes", to the theme following the system by default | 2026-11-24 | `system` by default (3.2) |
 
-The decisions this page still needs are in section 7, each with a recommendation.
+Section 7 lists these as decisions; no question is open.
 
 ## 2. What is built, and what is wrong with it
 
@@ -220,11 +225,12 @@ act only while the canvas has focus; inside any textarea or input every key is t
   template, as `Add <type>` does; ear still judges the text, and the node still appears only on `node.added`. The
   pointer's place is kept as a **placement hint** for the template's name: when `node.added` brings that name,
   `Places` puts it there instead of asking dagre. A hint the person's edit made stale (they renamed the node) is
-  dropped, and the node is laid out as today. Whether a wire dropped on empty canvas also asks for the route once the
-  node arrives is section 7's Q2.
+  dropped, and the node is laid out as today. A wire dropped on empty canvas asks for no route once the node arrives
+  (E3): it would be a second request the person did not see, and a type's first input is not always the one they
+  mean.
 - **Tidy** lays out every node with dagre again (today's first placement, `layout.ts`) and animates them there over
   180 ms; moves are the browser's, so nothing is sent.
-- **Places kept** (P8), if section 7's Q1 is taken: `Places` reads and writes the browser's `localStorage` under a
+- **Places kept** (P8, E2): `Places` reads and writes the browser's `localStorage` under a
   key per ear (the page's `location.host`), each write in `try`, so a private window or blocked storage keeps today's
   behaviour. A name not in the graph keeps its place there for 30 days, so a node removed and added back finds it. They
   are still never sent to ear ([`editor.md`](../editor.md#its-rules)).
@@ -232,7 +238,7 @@ act only while the canvas has focus; inside any textarea or input every key is t
 ### 3.8 What the browser keeps
 
 Per ear (`location.host`), in `localStorage`, every read and write in `try` and every value checked on read: node
-places (Q1), the inspector's width, the drawer's height and whether it is open, the minimap, and the theme (per
+places (E2), the inspector's width, the drawer's height and whether it is open, the minimap, and the theme (per
 browser, not per ear). A new module, `prefs.ts`, owns the keys and their checks; nothing else touches storage.
 
 ## 4. What it changes in the built system
@@ -243,7 +249,7 @@ browser, not per ear). A new module, `prefs.ts`, owns the keys and their checks;
 | `web/src/components/` | new `TopBar`, `Inspector`, `Drawer`, `Toasts`, `Palette`, `ShortcutSheet`, `CanvasTools`, `QuickAdd`; `EarNode`, `LevelEdge`, `Meter`, `Panels`, `TextPane`, `KnoblyText` (the gutter) restyled and split as above |
 | `web/src/theme.css` (new), `editor.css` | the tokens, both themes; `editor.css` uses tokens only |
 | `web/src/requests.ts`, `notices.ts`, `palette.ts`, `prefs.ts` (new) | pure, each with its vitest |
-| `web/src/layout.ts` | 220 px boxes; placement hints; `Places` over `prefs.ts` (Q1) |
+| `web/src/layout.ts` | 220 px boxes; placement hints; `Places` over `prefs.ts` (E2) |
 | `docs/editor.md` | rewritten where it describes the layout and look; new sections for feedback, the palette and what the browser keeps; the knobly tokens' dark set |
 | `control-plane.md` section 8 | its panel becomes the inspector's Node subject, its notices this page's queue (3.5); nothing else |
 | packages | none added: the palette, toasts, splitters and gutter are hand-written; `MiniMap` and `EdgeLabelRenderer` are in `@xyflow/react` already |
@@ -261,8 +267,8 @@ each.
 2. **The node box, wires and meters** (3.3, 3.4).
 3. **The shell** (3.1): top bar, inspector, drawer and its header chip, the narrow-window sheet.
 4. **Feedback** (3.5): `requests.ts`, `notices.ts`, the ghost wire, toasts, the gutter.
-5. **Keyboard** (3.6) and **canvas adding** (3.7, without Q1).
-6. **What the browser keeps** (3.8, Q1).
+5. **Keyboard** (3.6) and **canvas adding** (3.7, without kept places).
+6. **What the browser keeps** (3.8, E2).
 
 Tests ([`editor.md`](../editor.md#developing-it): no browser runner, rendering checked by eye): `theme.test.ts` (every
 contrast pair, both themes); `requests.test.ts` (in flight until reply or connection lost, a ghost per route request);
@@ -280,12 +286,14 @@ ranking); `prefs.test.ts` (storage that throws, values of the wrong shape, the 3
 | The bundle grows by under 15 KB | step 5's build output, against today's |
 | React Flow 12 lets the canvas's single-key shortcuts and its own Delete handling coexist with focus in the inspector's text | step 5, by eye; `control-plane.md`'s same [U] for knobs (its 8.3) is settled by the same check |
 
-## 7. Open questions
+## 7. Decisions taken
 
-| # | Question | Recommendation |
-|---|---|---|
-| Q1 | Keep node places across reloads, in the browser's `localStorage`, per ear? Today they last for the page's life. | Yes: still the browser's own, never sent, and a reload no longer scatters a hand-placed graph |
-| Q2 | A wire dropped on empty canvas: once the new node arrives, ask ear for a route from that output to the node's first input? | No, for now: it is a second request the person did not see, and a type's first input is not always the one they mean; the node is placed at the drop and the person draws the wire |
-| Q3 | Where does `ear.conf` live: the bottom drawer, or a third column left of the canvas? | The drawer: full width answers P2, and the canvas keeps its width for a left-to-right graph |
-| Q4 | Should the ghost wire (3.5) show at all, given that the editor draws only what ear announced? | Yes: it is drawn as a request, never as a route (no status, no meter, not selectable), and is gone on the reply |
-| Q5 | Theme by default: follow the system, or light until chosen? | Follow the system |
+| # | Decision | Owner's words | Why |
+|---|---|---|---|
+| D1 | Node places are kept across reloads in the browser's `localStorage`, per ear, never sent to ear | E2 | A reload no longer scatters a hand-placed graph, and places stay the browser's own |
+| D2 | A wire dropped on empty canvas places the new node at the drop and asks for no route | E3 | It would be a second request the person did not see, and a type's first input is not always the one they mean |
+| D3 | `ear.conf` lives in a full-width bottom drawer | E4 | Full width answers P2, and the canvas keeps its width for a left-to-right graph |
+| D4 | A route request in flight shows a ghost wire | E5 | It is drawn as a request, never as a route (no status, no meter, not selectable), and is gone on the reply |
+| D5 | The theme follows the system until the person chooses | E6 | |
+
+No question is open.
