@@ -1,5 +1,6 @@
 // A route's wire: coloured by its status (linked, pending, refused) and drawn by its level, which
-// is its from port's (docs/control-port.md): louder is thicker and brighter.
+// is its from port's (docs/control-port.md): louder is thicker and brighter. The colours are
+// theme.css's state tokens (docs/editor.md#tokens-and-themes).
 import { BaseEdge, getBezierPath, type Edge, type EdgeProps } from "@xyflow/react";
 import { meterFraction, wirePort } from "../levels";
 import type { GraphRoute } from "../protocol";
@@ -8,7 +9,7 @@ import { useLevel } from "./hooks";
 export type LevelEdgeData = { route: GraphRoute };
 export type LevelFlowEdge = Edge<LevelEdgeData, "level">;
 
-const statusColour = { linked: "#2f9e44", pending: "#e8a317", refused: "#e03131" } as const;
+const statusColour = { linked: "var(--ok)", pending: "var(--warn)", refused: "var(--err)" } as const;
 
 export function LevelEdge(props: EdgeProps<LevelFlowEdge>) {
   const { sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition, data, selected } = props;

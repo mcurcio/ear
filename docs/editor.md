@@ -27,6 +27,8 @@ Vitest); it shares no code with the C++, only the wire format and the fixtures i
   (a click puts the caret there) and saves it with Save (`graphFile.set`, based on the version the draft started from). Banners say
   when the graph refused the file, a write failed, editor edits were dropped by a hand edit, or a
   setting applies only at restart (the graph rate or block size, as `pendingRestart` names them).
+- **The theme** is light, dark or the system's (the default), switched by the button beside the
+  title, which cycles system, light and dark ([below](#tokens-and-themes)).
 
 ## Its rules
 
@@ -108,7 +110,7 @@ only that statement. The rules:
   `file-changed`, the box goes stale ("rec changed in ear.conf; reload") and keeps the draft until
   the person reloads.
 - **Read-only when it cannot be replaced.** A node written in a snippet (`shared`) shows that
-  statement on a grey surface, its label saying "(read-only)", with where it is and that the pane
+  statement on the sunken surface, its label saying "(read-only)", with where it is and that the pane
   edits it; while `ear.conf` has errors there are no `nodeTexts` and the box says to fix them in
   the pane. Neither offers Save. The text keeps its full contrast: it is never dimmed.
 
@@ -132,9 +134,9 @@ the browser's knobly never accepts, refuses or diagnoses a text. The rules:
   box's Save and Add get the caller's text unchanged, CRLF and non-ASCII text included.
 - **knobly's classes, the editor's palette.** Each token is drawn by knobly's highlight class
   (`directive`, `keyword`, `word`, `variable`, `number`, `string`, `comment`, `punctuation`,
-  `space`, `error`), each a CSS token (`--knobly-directive`, ...) on `.knobly-text` taken from the
-  editor's colours, each shade at 4.5:1 or better on the white and the read-only grey surface. The
-  tokens are light only: a dark set waits for an editor-wide dark theme. A class this
+  `space`, `error`), each a token (`--knobly-directive`, ...) in `theme.css`, light and dark
+  ([below](#tokens-and-themes)), each shade at 4.5:1 or better on the box's surface and on the
+  read-only one in both themes, which `theme.test.ts` checks. A class this
   editor does not know is drawn plainly. An `error` span is a token that does not lex (a stray
   character, an unterminated string), never a diagnostic: those are ear's, listed under the box.
 
@@ -154,6 +156,48 @@ That URL and SHA-512 are copies of knobly's one pin, `cmake/knobly.json`, which 
 built from too: one version for both, checked and moved as
 [AGENTS.md](../AGENTS.md#build-run-and-test) says. The highlighter tokenises by knobly's grammar,
 so with one version on both sides it matches what ear's reader parses.
+
+## Tokens and themes
+
+`web/src/theme.css` holds every colour, radius, shadow and duration the editor draws with, as
+custom properties on `:root`, and is loaded before `editor.css`. `editor.css`, the components (the
+wires' status colours in `LevelEdge.tsx`) and the knobly tokens use only these, and React Flow's
+own variables (`--xy-*`) are pointed at them, so its canvas, dot grid and controls follow the theme
+without its `colorMode` prop (which would fight `data-theme`). The values live in `theme.css`
+alone; the groups:
+
+- **Surfaces:** `--surface` the canvas, `--raised` boxes, panels and controls, `--sunken` meter
+  tracks, badges and read-only text; `--line` and `--line-strong` the borders and the dot grid.
+- **Text:** `--text`, `--muted` (type labels, the health line, counter labels), `--accent`
+  (selection, focus) and `--on-strong` (text on a filled chip: the "not realtime" badge, the
+  warning mark).
+- **States:** `--ok` running, linked and ready; `--warn` starting, stopping, pending, an unknown
+  state and the warning mark; `--err` failed, refused and the diagnostics' errors; `--quiet`
+  stopped; `--off` disabled and a companion not ready. Asked-for silence is never `--err`
+  ([above](#a-nodes-health)).
+- **Soft surfaces** under banners and the dropouts badge (`--warn-soft`, `--err-soft`), the
+  meters' (`--meter-low`, `--meter-mid`, `--meter-hot`, `--meter-peak`), the shadows (`--shadow`,
+  `--shadow-lifted`) and the knobly tokens ([above](#highlighting)).
+- **Corners and motion:** 8 px on boxes, 6 px on controls and text boxes, pills fully round; 120 ms
+  for hover and selection, 180 ms for what slides. Both durations are 0 under
+  `prefers-reduced-motion: reduce`, which also stops the configuring pulse.
+
+**The theme.** It is `system` by default, following `prefers-color-scheme`. *Why:* the owner chose
+that the editor follows the system until the person chooses. The switch cycles system, light and
+dark and writes `data-theme="light"` or `"dark"` on `<html>`; system removes the attribute.
+`web/src/theme.ts` is its logic, and `index.html`'s `color-scheme` meta lets the first paint follow
+the system before the styles arrive. For now the switch sits beside the title and the choice lasts
+only as long as the page: a reload returns to the system's.
+
+**Contrast is a test.** `theme.test.ts` reads `theme.css` and fails naming the theme and the pair
+when any text, state, on-strong or knobly token falls below 4.5:1 on a surface it is drawn on, in
+either theme. It also fails when the two copies of the dark set (the system's and the chosen one)
+differ, when a colour lacks its dark value, or when `editor.css` or a component holds a colour of
+its own. A failing pair changes the value, not the rule. The dark set is written twice rather than
+with `light-dark()`, because the build's CSS minifier may rewrite that function. Vitest blanks
+stylesheets by default, so `vite.config.ts` lets it read these two as text.
+
+Forced colours keep the system's colours, as [Highlighting](#highlighting) says.
 
 ## A node's health
 
@@ -288,7 +332,7 @@ port. Node.js comes from `web/.nvmrc` and the packages from `web/package-lock.js
 The tests cover the reducer against every `test/protocol` fixture, the graph file's state and the
 pane's logic (drafts, stale files, Save, refusals), the node panel's knobly box (`nodeText.ts`), the add-node
 form (`addText.ts`), the highlighting (`highlight.ts`, and that it never changes the text sent), the reconnecting client with a fake socket,
-the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`. There is no browser test runner:
+the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, and the theme (`theme.ts`, and the contrast of every pair in both themes in `theme.test.ts`). There is no browser test runner:
 rendering is checked by eye. *Why:* a Playwright leg costs about 150 MB of browsers and a minute
 or two a CI run, while the logic sits in the reducer, client and rules, which Vitest covers
 against the same fixtures the server is tested with.

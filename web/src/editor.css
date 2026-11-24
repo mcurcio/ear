@@ -1,4 +1,5 @@
-/* The graph editor's styles: a full-window canvas with a side panel. */
+/* The graph editor's styles: a full-window canvas with a side panel. Colours, radii, shadows and durations are
+   theme.css's tokens only (docs/editor.md#tokens-and-themes), which theme.test.ts checks. */
 html,
 body,
 #root {
@@ -6,6 +7,8 @@ body,
   height: 100%;
   font-family: system-ui, sans-serif;
   font-size: 13px;
+  background: var(--surface);
+  color: var(--text);
 }
 
 .app {
@@ -17,12 +20,47 @@ body,
   flex: 1;
 }
 
+/* React Flow's own variables point at the tokens, so its canvas, background and controls follow the theme; its
+   colorMode prop is not used, as it would fight data-theme. */
+.react-flow {
+  --xy-background-color: var(--surface);
+  --xy-background-pattern-color: var(--line);
+  --xy-node-color: var(--text);
+  --xy-edge-stroke: var(--muted);
+  --xy-connectionline-stroke: var(--muted);
+  --xy-handle-background-color: var(--text);
+  --xy-handle-border-color: var(--raised);
+  --xy-controls-button-background-color: var(--raised);
+  --xy-controls-button-background-color-hover: var(--sunken);
+  --xy-controls-button-color: var(--text);
+  --xy-controls-button-color-hover: var(--text);
+  --xy-controls-button-border-color: var(--line);
+  --xy-controls-box-shadow: var(--shadow);
+  --xy-selection-background-color: color-mix(in srgb, var(--accent) 8%, transparent);
+  --xy-selection-border: 1px dotted var(--accent);
+  --xy-attribution-background-color: color-mix(in srgb, var(--raised) 60%, transparent);
+}
+
+.react-flow__attribution a {
+  color: var(--muted);
+}
+
 .panel {
   width: 360px;
   overflow-y: auto;
   padding: 8px 12px;
-  border-left: 1px solid #ddd;
-  background: #fafafa;
+  border-left: 1px solid var(--line);
+  background: var(--raised);
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.theme-switch {
+  white-space: nowrap;
 }
 
 .panel h1 {
@@ -37,7 +75,7 @@ body,
 
 .panel-section {
   padding: 8px 0;
-  border-top: 1px solid #e5e5e5;
+  border-top: 1px solid var(--line);
 }
 
 .panel label {
@@ -53,49 +91,90 @@ body,
   font-family: ui-monospace, monospace;
 }
 
+.panel button {
+  font: inherit;
+  color: var(--text);
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  padding: 2px 8px;
+  transition: background-color var(--motion-fast);
+}
+
+.panel button:hover:not(:disabled) {
+  background: var(--sunken);
+}
+
+.panel button:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.panel input,
+.panel select,
+.panel textarea:not(.knobly-text-input) {
+  color: var(--text);
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .banner {
   padding: 6px 8px;
   margin-bottom: 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-control);
 }
 
-.banner-connection {
-  background: #fff3bf;
+.banner-connection,
+.banner-protocol {
+  background: var(--warn-soft);
+  color: var(--text);
 }
 
 .banner-error {
-  background: #ffe3e3;
-  color: #a61e1e;
+  background: var(--err-soft);
+  color: var(--err);
 }
 
 .badge-not-realtime {
   display: inline-block;
   padding: 1px 6px;
-  border-radius: 8px;
-  background: #e03131;
-  color: white;
+  border-radius: var(--radius-pill);
+  background: var(--err);
+  color: var(--on-strong);
   font-weight: 600;
 }
 
 .ear-node {
   width: 200px;
-  background: white;
-  border: 1px solid #999;
-  border-radius: 6px;
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-box);
+  box-shadow: var(--shadow);
+  transition:
+    box-shadow var(--motion-fast),
+    border-color var(--motion-fast);
 }
 
 .ear-node.selected {
-  border-color: #1c7ed6;
-  box-shadow: 0 0 0 2px #a5d8ff;
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent),
+    var(--shadow-lifted);
 }
 
 .ear-node-header {
   padding: 6px 8px;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid var(--line);
 }
 
 .ear-node-type {
-  color: #777;
+  color: var(--muted);
   font-weight: normal;
 }
 
@@ -104,25 +183,25 @@ body,
 }
 
 .state-running .ear-node-state {
-  color: #2f9e44;
+  color: var(--ok);
 }
 
 .state-starting .ear-node-state,
 .state-stopping .ear-node-state {
-  color: #e8a317;
+  color: var(--warn);
 }
 
 .state-failed {
-  border-color: #e03131;
+  border-color: var(--err);
 }
 
 .state-failed .ear-node-state {
-  color: #e03131;
+  color: var(--err);
 }
 
 /* Silence the operator asked for is quiet, never a fault (docs/editor.md#a-nodes-health); stopped and disabled apart. */
 .state-stopped .ear-node-state {
-  color: #5c7cfa;
+  color: var(--quiet);
 }
 
 .state-disabled {
@@ -130,12 +209,12 @@ body,
 }
 
 .state-disabled .ear-node-state {
-  color: #868e96;
+  color: var(--off);
 }
 
 /* A state this editor does not know: neutral, as starting's. */
 .state-unknown .ear-node-state {
-  color: #e8a317;
+  color: var(--warn);
 }
 
 .phase-configuring .ear-node-state {
@@ -148,9 +227,16 @@ body,
   }
 }
 
+/* The durations are already 0 under reduced motion (theme.css); the pulse is an animation, so it stops here. */
+@media (prefers-reduced-motion: reduce) {
+  .phase-configuring .ear-node-state {
+    animation: none;
+  }
+}
+
 .ear-node-line {
   font-size: 11px;
-  color: #555;
+  color: var(--muted);
   max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -194,14 +280,14 @@ body,
   position: relative;
   flex: 1;
   height: 6px;
-  background: #eee;
-  border-radius: 2px;
+  background: var(--sunken);
+  border-radius: var(--radius-pill);
   overflow: hidden;
 }
 
 .meter-rms {
   height: 100%;
-  background: #40c057;
+  background: var(--meter-low);
 }
 
 .meter-peak {
@@ -210,7 +296,7 @@ body,
   width: 2px;
   height: 100%;
   margin-left: -2px;
-  background: #2b8a3e;
+  background: var(--meter-peak);
 }
 
 /* The ear.conf pane: the text unwrapped (lines and columns match the diagnostics), and its
@@ -238,11 +324,11 @@ body,
 }
 
 .diagnostic-error button {
-  color: #a61e1e;
+  color: var(--err);
 }
 
 .diagnostic-warning button {
-  color: #8a6100;
+  color: var(--warn);
 }
 
 /* A node's companions (docs/editor.md#companions): small badges along the box's bottom edge, a known kind and an
@@ -254,7 +340,7 @@ body,
   margin: 0;
   padding: 4px 8px 6px;
   list-style: none;
-  border-top: 1px solid #eee;
+  border-top: 1px solid var(--line);
 }
 
 .companion-badge {
@@ -262,25 +348,25 @@ body,
   align-items: center;
   gap: 3px;
   padding: 0 6px;
-  border: 1px solid #ced4da;
-  border-radius: 8px;
-  background: #f8f9fa;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  background: var(--sunken);
   font-size: 10px;
   line-height: 16px;
-  color: #343a40;
+  color: var(--text);
 }
 
 .companion-dot {
-  color: #2f9e44;
+  color: var(--ok);
 }
 
 .companion-not-ready {
-  color: #868e96;
+  color: var(--off);
   border-style: dashed;
 }
 
 .companion-not-ready .companion-dot {
-  color: #868e96;
+  color: var(--off);
 }
 
 /* The warning mark: something moved in the last minute (a companion's counter). */
@@ -289,9 +375,9 @@ body,
   width: 12px;
   height: 12px;
   margin-left: 2px;
-  border-radius: 50%;
-  background: #f08c00;
-  color: white;
+  border-radius: var(--radius-pill);
+  background: var(--warn);
+  color: var(--on-strong);
   font-size: 9px;
   font-weight: 700;
   line-height: 12px;
@@ -330,10 +416,10 @@ body,
 .badge-dropouts {
   display: inline-block;
   padding: 0 6px 0 3px;
-  border: 1px solid #f08c00;
-  border-radius: 8px;
-  background: #fff4e6;
-  color: #a35200;
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-pill);
+  background: var(--warn-soft);
+  color: var(--warn);
   font-weight: 600;
 }
 
@@ -355,7 +441,7 @@ body,
   padding: 0 12px 0 0;
   font-weight: normal;
   text-align: left;
-  color: #555;
+  color: var(--muted);
 }
 
 .counter-table td {
@@ -365,7 +451,7 @@ body,
 }
 
 .counter-recent {
-  color: #a35200;
+  color: var(--warn);
 }
 
 .counter-unknown th {
@@ -373,7 +459,7 @@ body,
 }
 
 /* The node panel's knobly box (docs/editor.md#the-node-panels-text): the pane's text style; a read-only one (a
-   snippet's node, a file with errors) is on a grey surface at full contrast, its label saying "(read-only)" and the
+   snippet's node, a file with errors) is on the sunken surface at full contrast, its label saying "(read-only)" and the
    note why. */
 .node-text {
   margin: 8px 0 4px;
@@ -385,40 +471,27 @@ body,
 
 .node-text-note {
   font-size: 12px;
-  color: #495057;
+  color: var(--muted);
   margin-bottom: 4px;
 }
 
 /* knobly's highlighting (docs/editor.md#highlighting), display only: the textarea on top holds the text, caret and
    selection with its glyphs transparent; the highlighted copy behind it draws them. Both boxes share every metric
-   (font, size, line height, padding, border, tabs, no wrapping), so each glyph lies under its caret position. The
-   colours are tokens from the editor's palette (its blue, the warnings' amber and brown, the meters' green, the
-   errors' red), each a shade at 4.5:1 or better on both the white and the read-only grey surface. */
+   (font, size, line height, padding, border, corners, tabs, no wrapping), so each glyph lies under its caret
+   position. The colours are theme.css's knobly tokens, light and dark, each at 4.5:1 or better on both the box's
+   surface and the read-only one, which theme.test.ts checks. */
 .knobly-text {
-  --knobly-surface: #fff;
-  --knobly-surface-readonly: #f1f3f5;
-  --knobly-border: #adb5bd;
-  --knobly-text: #212529;
-  --knobly-directive: #1864ab;
-  --knobly-keyword: #a35200;
-  --knobly-variable: #8a6100;
-  --knobly-number: #2b7a3a;
-  --knobly-string: #a61e1e;
-  --knobly-comment: #666;
-  --knobly-punctuation: #495057;
-  --knobly-error: #c92a2a;
-  --knobly-error-surface: #ffe3e3;
   position: relative;
   background: var(--knobly-surface);
-  border-radius: 2px;
+  border-radius: var(--radius-control);
 }
-
 
 .knobly-text-shown,
 .panel .knobly-text-input {
   margin: 0;
   padding: 4px;
   border: 1px solid var(--knobly-border);
+  border-radius: var(--radius-control);
   font-family: ui-monospace, monospace;
   font-size: 12px;
   line-height: 1.4;

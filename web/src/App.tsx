@@ -1,8 +1,8 @@
 // The graph editor (docs/editor.md): a React Flow canvas of ear's graph and the
 // ear.conf pane. Nodes and wires are exactly what ear announced; dragging a wire between ports,
 // the panels, the pane's Save and the delete key send requests, and the canvas changes when ear's
-// events arrive. Node positions
-// and selection are the browser's own.
+// events arrive. Node positions, selection and the theme (docs/editor.md#tokens-and-themes) are
+// the browser's own.
 import {
   Background,
   Controls,
@@ -23,6 +23,8 @@ import { useConnection, useEditor, useGraph, useGraphFile } from "./components/h
 import { LevelEdge, type LevelFlowEdge } from "./components/LevelEdge";
 import { AddNodePanel, EngineFacts, NodePanel } from "./components/Panels";
 import { TextPane } from "./components/TextPane";
+import { ThemeSwitch } from "./components/ThemeSwitch";
+import { applyTheme, defaultTheme, type ThemeChoice } from "./theme";
 
 const nodeTypes = { ear: EarNode };
 const edgeTypes = { level: LevelEdge };
@@ -58,6 +60,8 @@ export function App() {
   const [selectedEdges, setSelectedEdges] = useState<ReadonlySet<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const showError = useCallback((caught: unknown) => setError(describe(caught)), []);
+  const [theme, setTheme] = useState<ThemeChoice>(defaultTheme);
+  useEffect(() => applyTheme(document.documentElement, theme), [theme]);
 
   const [places] = useState(() => new Places());
   useEffect(() => setNodes((previous) => syncNodes(previous, graph, places)), [graph, places]);
@@ -143,7 +147,10 @@ export function App() {
         <Controls />
       </ReactFlow>
       <aside className="panel">
-        <h1>EAR</h1>
+        <header className="panel-header">
+          <h1>EAR</h1>
+          <ThemeSwitch choice={theme} onChoose={setTheme} />
+        </header>
         {connection !== "open" && (
           <div className="banner banner-connection">
             {connection === "connecting" ? "Connecting to ear…" : "Lost the connection to ear; retrying."}

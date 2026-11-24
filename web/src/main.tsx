@@ -1,6 +1,8 @@
 // The graph editor's entry point (docs/editor.md): one editor session on the
 // page's own host (ear serves the page and its control socket on the same port), then the canvas.
+// React Flow's styles first, then the tokens (theme.css), then the styles that use them.
 import "@xyflow/react/dist/style.css";
+import "./theme.css";
 import "./editor.css";
 import { ReactFlowProvider } from "@xyflow/react";
 import { StrictMode } from "react";

@@ -90,37 +90,9 @@ sheet over the canvas's right edge, closed by Escape or a click on the canvas, a
 
 ### 3.2 Tokens and the dark theme
 
-Every colour, radius, shadow and duration becomes a CSS custom property on `:root` in a new `web/src/theme.css`,
-imported before `editor.css`; `editor.css`, `LevelEdge.tsx` and the knobly tokens use only these. The set, light and
-dark:
-
-| Token | Light | Dark | Used for |
-|---|---|---|---|
-| `--surface` | `#f6f7f9` | `#0f1115` | the canvas |
-| `--raised` | `#ffffff` | `#181b21` | boxes, inspector, drawer, top bar |
-| `--sunken` | `#eef0f3` | `#12151a` | meter tracks, read-only text, inputs |
-| `--line` | `#d9dde3` | `#2a2f38` | borders, the dot grid |
-| `--text` | `#16181d` | `#e6e8ec` | body text |
-| `--muted` | `#5b6270` | `#9aa2b1` | type labels, the health line, counter labels |
-| `--accent` | `#3b5bdb` | `#7c94ff` | selection ring, focus, primary buttons |
-| `--ok` | `#2b8a3e` | `#51cf66` | running, linked, ready |
-| `--warn` | `#b35c00` | `#ffa94d` | starting, pending, the warning mark |
-| `--err` | `#c92a2a` | `#ff6b6b` | failed, refused, diagnostics' errors |
-| `--quiet` | `#4c6ef5` | `#91a7ff` | stopped (asked-for silence, never a fault) |
-| `--off` | `#868e96` | `#7b8494` | disabled |
-| `--meter-low`, `--meter-mid`, `--meter-hot` | green, amber, red | the same, lifted | the meter's three zones (3.4) |
-
-The theme is `system` by default (`prefers-color-scheme`), and the top bar's switch cycles `system`, `light`, `dark`,
-written to `data-theme` on `<html>` and kept per browser (3.8). The knobly tokens get their dark set here
-([`editor.md`](../editor.md#highlighting) says it waits for this), each shade still 4.5:1 on its surfaces. A vitest
-(`theme.test.ts`) reads `theme.css`, and fails naming the pair when any text token, state token or knobly token falls
-below 4.5:1 on the surfaces it is drawn on, in either theme; the values above are the starting point that test
-settles [U].
-
-Type stays `system-ui` at 13 px; numbers (counters, rates, dB) take `font-variant-numeric: tabular-nums`; code and
-port names take `ui-monospace`. Corners are 8 px on boxes and panels, 6 px on controls, 999 px on pills. Motion is
-120 ms for hover and selection, 180 ms for the drawer, inspector sheet and toasts, and none of it under
-`prefers-reduced-motion: reduce` (wires' flow and the configuring pulse stop too).
+Built (step 1): [`editor.md`](../editor.md#tokens-and-themes). What remains here: the switch moves to the top bar
+(3.1), the choice is kept per browser (3.8), and the palette's `Theme:` commands (3.6). `--meter-mid` and `--meter-hot`
+exist and are drawn in step 2 (3.4); numbers' `tabular-nums` and monospace port names come with the node box (3.3).
 
 ### 3.3 The node box
 
@@ -247,7 +219,7 @@ browser, not per ear). A new module, `prefs.ts`, owns the keys and their checks;
 |---|---|
 | `web/src/App.tsx` | the shell: top bar, canvas, inspector, drawer, toasts; selection-driven inspector subject; shortcuts |
 | `web/src/components/` | new `TopBar`, `Inspector`, `Drawer`, `Toasts`, `Palette`, `ShortcutSheet`, `CanvasTools`, `QuickAdd`; `EarNode`, `LevelEdge`, `Meter`, `Panels`, `TextPane`, `KnoblyText` (the gutter) restyled and split as above |
-| `web/src/theme.css` (new), `editor.css` | the tokens, both themes; `editor.css` uses tokens only |
+| `web/src/theme.css` (new), `editor.css` | built (step 1): the tokens, both themes; `editor.css` uses tokens only |
 | `web/src/requests.ts`, `notices.ts`, `palette.ts`, `prefs.ts` (new) | pure, each with its vitest |
 | `web/src/layout.ts` | 220 px boxes; placement hints; `Places` over `prefs.ts` (E2) |
 | `docs/editor.md` | rewritten where it describes the layout and look; new sections for feedback, the palette and what the browser keeps; the knobly tokens' dark set |
@@ -262,7 +234,7 @@ The bundle should grow by under 15 KB (5 KB gzipped) [U].
 Each step is its own pull request, a `feat(web)` commit, and leaves the editor whole; `docs/editor.md` changes with
 each.
 
-1. **Tokens and themes** (3.2): `theme.css`, the dark set, the knobly dark tokens, the contrast test, the theme switch.
+1. **Tokens and themes** (3.2) (built): `theme.css`, the dark set, the knobly dark tokens, the contrast test, the theme switch.
    Nothing moves yet.
 2. **The node box, wires and meters** (3.3, 3.4).
 3. **The shell** (3.1): top bar, inspector, drawer and its header chip, the narrow-window sheet.
@@ -270,8 +242,7 @@ each.
 5. **Keyboard** (3.6) and **canvas adding** (3.7, without kept places).
 6. **What the browser keeps** (3.8, E2).
 
-Tests ([`editor.md`](../editor.md#developing-it): no browser runner, rendering checked by eye): `theme.test.ts` (every
-contrast pair, both themes); `requests.test.ts` (in flight until reply or connection lost, a ghost per route request);
+Tests ([`editor.md`](../editor.md#developing-it): no browser runner, rendering checked by eye): `requests.test.ts` (in flight until reply or connection lost, a ghost per route request);
 `notices.test.ts` (coalescing, the cap, expiry on a fake monotonic clock, a reconnect clears nothing the person has not
 seen); `palette.test.ts` (commands per feature set and phase, replaying the `lifecycle` and `unknown-values` fixtures,
 ranking); `prefs.test.ts` (storage that throws, values of the wrong shape, the 30-day expiry); `layout.test.ts`
@@ -281,7 +252,6 @@ ranking); `prefs.test.ts` (storage that throws, values of the wrong shape, the 3
 
 | [U] | Settled by |
 |---|---|
-| The token values meet 4.5:1 in both themes | `theme.test.ts`, step 1; a failing pair changes the value, not the rule |
 | A moving dash on every linked wire costs too little to notice at 30 level messages a second, on a graph of 20 wires | step 2, measured in the browser's performance panel on the system test's graph; if it costs, the flow is drawn only on the selected and hovered wires |
 | The bundle grows by under 15 KB | step 5's build output, against today's |
 | React Flow 12 lets the canvas's single-key shortcuts and its own Delete handling coexist with focus in the inspector's text | step 5, by eye; `control-plane.md`'s same [U] for knobs (its 8.3) is settled by the same check |
