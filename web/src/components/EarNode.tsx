@@ -15,6 +15,7 @@ import { CompanionStrip } from "./CompanionStrip";
 import { NodeCounterMark } from "./Counters";
 import { useCompanionBadges, useNodeCounters } from "./hooks";
 import { Meter } from "./Meter";
+import { StatePill } from "./StatePill";
 
 /**
  * How long this box has shown the node in its phase, on the browser's clock from when the phase (or a new since,
@@ -73,11 +74,7 @@ export function EarNode({ data: { node }, selected }: NodeProps<EarFlowNode>) {
           <span className="ear-node-type">{node.type}</span>
         </div>
         <div className="ear-node-status">
-          <span className="ear-node-pill" title={node.reason?.detail}>
-            <span className="ear-node-pill-dot" aria-hidden="true" />
-            {health.word}
-            {node.reason !== undefined && <code className="ear-node-reason">{node.reason.code}</code>}
-          </span>
+          <StatePill node={node} health={health} />
           <NodeCounterMark mark={mark} />
         </div>
         {health.line !== "" && (

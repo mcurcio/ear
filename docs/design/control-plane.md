@@ -1072,6 +1072,9 @@ live value; a gesture on it is allowed as on a failed node.
 
 ## 8. The editor
 
+The node panel this section names is the inspector's Node subject
+([editor.md](../editor.md#the-inspector)); its settings form and status list go there, under the lifecycle bar.
+
 ### 8.1 Stores
 
 | Module | Holds | Tested by |

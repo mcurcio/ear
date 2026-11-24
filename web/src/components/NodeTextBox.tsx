@@ -59,7 +59,7 @@ export function NodeTextBox({
         Its text in ear.conf{box.base.text.kind !== "own" && " (read-only)"}
       </label>
       {box.stale && (
-        <div className="banner banner-connection" role="status">
+        <div className="banner banner-warn" role="status">
           {node} changed in ear.conf; reload{" "}
           <button type="button" onClick={() => dispatch({ kind: "reload" })}>
             Reload

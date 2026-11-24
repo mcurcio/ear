@@ -60,7 +60,7 @@ export function AddNodeText({
   const lines = Math.min(12, Math.max(3, form.text.split("\n").length + 1));
 
   return (
-    <section className="panel-section node-text">
+    <section className="inspector-section node-text">
       <h2>Add a node</h2>
       <label>
         Type{" "}
@@ -72,7 +72,7 @@ export function AddNodeText({
       </label>
       <label htmlFor="add-node-text">Its text in ear.conf</label>
       {form.raced && (
-        <div className="banner banner-connection" role="status">
+        <div className="banner banner-warn" role="status">
           ear.conf changed while adding; press Add again
         </div>
       )}

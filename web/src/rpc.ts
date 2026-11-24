@@ -1,8 +1,8 @@
 // The control port's client: JSON-RPC 2.0 over one WebSocket (docs/control-port.md). It numbers requests, matches each
 // reply to its request, hands every server text to onMessage in arrival order, and when the socket opens it subscribes
 // to the graph, to the graph file and to the levels. When the socket closes it fails the calls in flight and opens a
-// new socket after a growing wait (1 s doubling to 30 s): a stated retry rate, not a schedule. The new socket
-// subscribes again, so the client starts over from a fresh snapshot (list, then watch).
+// new socket after a growing wait (1 s doubling to 30 s), which it tells onRetry: a stated retry rate, not a schedule.
+// The new socket subscribes again, so the client starts over from a fresh snapshot (list, then watch).
 import type { MethodName, Methods, RpcErrorObject, ServerMessage } from "./protocol";
 
 /** One open socket, as the client uses it. */
@@ -39,6 +39,8 @@ export interface RpcClientOptions {
   openSocket?: (url: string, events: SocketEvents) => SocketLike;
   /** Runs `retry` once after `ms` milliseconds (the reconnect wait). */
   schedule?: (retry: () => void, ms: number) => void;
+  /** The wait before the next socket, each time one is scheduled after a close. */
+  onRetry?: (ms: number) => void;
 }
 
 export const firstRetryMs = 1000;
@@ -85,6 +87,7 @@ export class RpcClient {
   constructor(options: RpcClientOptions) {
     this.options = {
       onStatus: () => {},
+      onRetry: () => {},
       openSocket: openWebSocket,
       schedule: (retry, ms) => void setTimeout(retry, ms),
       ...options,
@@ -140,6 +143,7 @@ export class RpcClient {
         if (this.stopped) return;
         const wait = this.retryMs;
         this.retryMs = Math.min(this.retryMs * 2, longestRetryMs);
+        this.options.onRetry(wait);
         this.options.schedule(() => {
           if (!this.stopped && this.socket === null) this.connect();
         }, wait);

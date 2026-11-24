@@ -7,6 +7,9 @@ Vitest); it shares no code with the C++, only the wire format and the fixtures i
 
 ## What it shows and does
 
+The page is a top bar, the canvas with an inspector on its right, and a full-width `ear.conf` drawer
+along the bottom ([below](#the-shell)).
+
 - **Nodes** are 220 px boxes ([below](#the-node-box)): a stripe down the left edge and a pill (a
   dot and the word) in the state's colour, the type as a small label beside the name, the line
   that says why the node is silent or what it waits for ([below](#a-nodes-health)), and beside the
@@ -19,20 +22,21 @@ Vitest); it shares no code with the C++, only the wire format and the fixtures i
   ([below](#wires)).
 - **Editing:** a drag from an output to an input adds a route (any other drag is refused before
   it reaches ear); while a wire is drawn, every handle it can be dropped on is ringed and the rest
-  dimmed ([below](#the-node-box)); the delete key removes the selected wire or node; a side panel adds nodes from
-  a statement in knobly ([below](#adding-a-node)), edits the selected node's own text in knobly
-  ([below](#the-node-panels-text)), both as JSON settings from an ear without `node-text`, and
-  offers Start, Stop, Restart,
-  Disable and Enable when ear has the `lifecycle` feature. The engine facts give the graph's rate
-  and block size ("48 kHz, 256 frames", from `graphFrequency` in hertz). A "not realtime" badge shows when the
-  audio thread is not realtime, and a dropouts badge while the host cut cycles in the last minute;
-  the panel holds the graph's counters and the selected node's ([below](#counters)).
-- **The text pane** shows `ear.conf`, highlighted ([below](#highlighting)), with its diagnostics
-  (a click puts the caret there) and saves it with Save (`graphFile.set`, based on the version the draft started from). Banners say
+  dimmed ([below](#the-node-box)); the delete key removes the selected wire or node; the inspector
+  adds nodes from a statement in knobly (its Graph subject, [below](#adding-a-node)), edits the
+  selected node's own text in knobly (its Node subject, [below](#the-node-panels-text)), both as
+  JSON settings from an ear without `node-text`, and offers Start, Stop, Restart, Disable and
+  Enable in the inspector when ear has the `lifecycle` feature. The top bar gives the graph's rate
+  and block size ("48 kHz · 256 frames", from `graphFrequency` in hertz) and realtime, or a "not
+  realtime" badge, and a dropouts badge while the host cut cycles in the last minute; the inspector
+  holds the graph's counters and the selected node's ([below](#counters)).
+- **The ear.conf drawer** holds the pane: `ear.conf`, highlighted ([below](#highlighting)), with
+  its diagnostics (a click puts the caret there) and Save (`graphFile.set`, based on the version
+  the draft started from). Banners say
   when the graph refused the file, a write failed, editor edits were dropped by a hand edit, or a
   setting applies only at restart (the graph rate or block size, as `pendingRestart` names them).
-- **The theme** is light, dark or the system's (the default), switched by the button beside the
-  title, which cycles system, light and dark ([below](#tokens-and-themes)).
+- **The theme** is light, dark or the system's (the default), switched by the button in the top
+  bar, which cycles system, light and dark ([below](#tokens-and-themes)).
 
 ## Its rules
 
@@ -42,18 +46,18 @@ Vitest); it shares no code with the C++, only the wire format and the fixtures i
   highlighting only colours the text ([below](#highlighting)).
 - **Every enum is open.** A value or member this editor does not know is drawn by its word,
   neutrally, or ignored, never a failure ([control-port.md](control-port.md#protocol-and-features)).
-  A newer protocol than the editor knows shows a banner.
+  A newer protocol than the editor knows shows a chip in the top bar ([below](#the-top-bar)).
 - **A person edits knobly; JSON is the machine API.** What a person types about a node is its
-  statement as `ear.conf` has it, in the add-node form, the node panel's box or the pane; JSON
-  settings are for scripts (`node.add`, `node.update`), and the panel shows them only to an ear
+  statement as `ear.conf` has it, in the add-node form, the node panel's box or the drawer's pane;
+  JSON settings are for scripts (`node.add`, `node.update`), and the inspector shows them only to an ear
   without the `node-text` feature.
-- **A draft is never overwritten.** A new `ear.conf` arriving while the pane has unsaved changes
-  makes the pane stale ("ear.conf changed; reload") until the person reloads; ear refuses a Save
+- **A draft is never overwritten.** A new `ear.conf` arriving while the drawer's pane has unsaved
+  changes makes the pane stale ("ear.conf changed; reload") until the person reloads; ear refuses a Save
   over a file that changed meanwhile (`file-changed`). The node panel's box does the same for its
   node's text.
 - **Node positions live in the browser.** Unplaced nodes are laid out with dagre (sources left,
   sinks right, following the routes); a place the user dragged a node to is kept in the browser
-  only, never sent to ear.
+  only, never sent to ear. Tidy lays every node out again, in the browser only.
 - **The counters are kept as sent.** With the `counters` feature the graph store keeps the
   graph's counters and each node's whole, from the snapshot and `node.added`, and replaces those a
   `counters.changed` names ([control-port.md](control-port.md#counters)); an unknown counter is
@@ -72,11 +76,88 @@ Vitest); it shares no code with the C++, only the wire format and the fixtures i
   flight, and the new socket subscribes again (graph, graph file, levels), so the editor starts
   over from a fresh snapshot.
 
+## The shell
+
+`App.tsx` composes it: `TopBar`, `Canvas` (with `CanvasTools`), `Inspector` and `Drawer`, with the
+canvas's state in `useCanvas` and the drawer's in `useDrawer`, so the top bar and the drawer's
+header read one status.
+
+### The top bar
+
+44 px across the top, holding what is about the whole graph and never about a selection, from left
+to right:
+
+- the wordmark (hidden below 600 px);
+- the connection pill: `live`, `connecting…` or `lost: retrying in 4 s`, a word beside its dot,
+  the seconds counted down to the client's next socket, as `rpc.ts` tells the editor (`onRetry`);
+- the engine chip: the rate and block size, then `realtime` or the "not realtime" badge, its
+  tooltip the scheduling;
+- the dropouts badge ([Counters](#counters));
+- a `protocol N` chip while ear speaks a newer protocol than this editor's, its tooltip saying
+  some of it is not shown;
+- on the right, the theme switch and the `ear.conf` toggle with the drawer's status words as a
+  chip;
+- below 900 px, an Inspector button ([below](#narrow-windows)).
+
+`shell.ts` holds the words (`shell.test.ts`).
+
+### The canvas
+
+It fills the rest, a quiet dot grid in the theme's colours. React Flow's `Controls` give way to one
+floating tool group, bottom left: zoom out, zoom in, fit, tidy and the minimap toggle. Tidy lays
+every node out again with dagre, as on first placement, and they slide there over
+`--motion-slow`; moves are the browser's, so nothing is sent (`layout.ts`'s `relayout`). The
+minimap is React Flow's `MiniMap`, off by default, its boxes in their state's token. A refused
+request shows one banner at the canvas's bottom right until dismissed.
+
+### The inspector
+
+On the right, 320 px, dragged by its left edge (or, focused, its separator with the arrow keys,
+Home and End) between 280 and 560 px. It shows one subject, chosen by the selection
+(`selection.ts`, `selection.test.ts`):
+
+- nothing selected: **Graph**: the engine facts in full, the graph's counters and the add-node
+  form;
+- one node: **Node**: its name and type, its state pill as the box draws it, its line, the
+  lifecycle bar, its knobly box (or JSON settings), its counters, its companions and Delete;
+- one route: **Route**: from and to as `node:port` buttons that select that node, its status in
+  words, its level meter and Remove;
+- several: a count ("3 nodes, 2 routes") and Delete for them all.
+
+A name or route the graph does not hold is ignored, so the inspector shows only what ear announced.
+Delete asks `node.remove` for each node and `route.remove` only for routes between kept nodes, as
+the delete key does. The add-node form lives only in the Graph subject, so selecting something
+drops a half-typed statement; a new template is written when it shows again. Slice 5's settings
+form and status list are designed to land in the Node subject, under the lifecycle bar
+([control-plane.md](design/control-plane.md#8-the-editor)).
+
+### The drawer
+
+Full width along the bottom, holding the pane whole. Its 32 px header stays when the drawer is
+closed and says in words what the file needs, most urgent first: `refused`, `write failed`,
+`stale: reload`, `unsaved`, `n errors` or `applies at restart` (`drawer.ts`, `drawer.test.ts`),
+with Save beside them. The header's toggle, and the top bar's, opens and closes it. It opens by
+itself only when ear refuses the file or a write fails, each newly (the same refusal sent again
+does not reopen it), or when a Save is refused; never on a hand edit. *Why a drawer:* the owner
+chose a full-width bottom drawer over a third column, so lines need not scroll sideways and the
+canvas keeps its width for a left-to-right graph. Its body is dragged by its top edge between
+120 px and 70 % of the window. Closing it hides the body but keeps it, with the draft, the caret
+and the scroll. The inspector and the drawer never move each other's content.
+
+### Narrow windows
+
+Below 900 px the inspector is a sheet over the canvas's right edge. It opens when something is
+selected or from the top bar's Inspector button, and closes on Escape or a click on the canvas.
+The drawer keeps its place. `sizes.ts` holds the bounds and the breakpoint, and `sizes.test.ts`
+holds `editor.css` to them.
+
+The sizes, the drawer's open state and the minimap last as long as the page.
+
 ## Adding a node
 
 `web/src/addText.ts` is the add-node form's logic (`addText.test.ts` replays `node-text.json`'s
 refusals through it); `components/AddNodeText.tsx` draws it. With the `node-text` feature the form
-takes a whole statement, `node <type> <name> { ... }`, in the pane's textarea style, and Add sends
+takes a whole statement, `node <type> <name> { ... }`, in the drawer's textarea style, and Add sends
 `node.addText` ([control-port.md](control-port.md#a-nodes-own-text)): ear appends it where
 `node.add` would, reads it with the whole file (so `$ch` and `@use card_out MOTU;` work as by
 hand), and places its diagnostics in the form's text. The rules:
@@ -94,10 +175,11 @@ hand), and places its diagnostics in the form's text. The rules:
 ## The node panel's text
 
 `web/src/nodeText.ts` is the box's logic (`nodeText.test.ts` replays `test/protocol/node-text.json`
-through it); `components/NodeTextBox.tsx` draws it. With the `node-text` feature
-([control-port.md](control-port.md#a-nodes-own-text)) the selected node's panel holds its
+through it); `components/NodeTextBox.tsx` draws it. The node panel is the inspector's Node subject
+([above](#the-inspector)). With the `node-text` feature
+([control-port.md](control-port.md#a-nodes-own-text)) the inspector's Node subject holds its
 statement as `ear.conf` has it, units, `@use` lines, `$variables` and the comments it owns included
-(`# the take` above `node file rec { path "take1.wav"; }`), in the pane's textarea style, with Save
+(`# the take` above `node file rec { path "take1.wav"; }`), in the drawer's textarea style, with Save
 and its diagnostics under it. *Why:* asked why the box was raw JSON when knobly is the canonical raw
 language, the owner chose the node's own knobly statement, checked by ear's reader and replacing
 only that statement. The rules:
@@ -168,7 +250,7 @@ so with one version on both sides it matches what ear's reader parses.
 `web/src/theme.css` holds every colour, radius, shadow and duration the editor draws with, as
 custom properties on `:root`, and is loaded before `editor.css`. `editor.css`, the components (the
 wires' status colours are `editor.css`'s wire classes) and the knobly tokens use only these, and React Flow's
-own variables (`--xy-*`) are pointed at them, so its canvas, dot grid and controls follow the theme
+own variables (`--xy-*`) are pointed at them, so its canvas, dot grid and minimap follow the theme
 without its `colorMode` prop (which would fight `data-theme`). The values live in `theme.css`
 alone; the groups:
 
@@ -184,6 +266,8 @@ alone; the groups:
 - **Soft surfaces** under banners and the dropouts badge (`--warn-soft`, `--err-soft`), the
   meters' (`--meter-low`, `--meter-mid`, `--meter-hot`, `--meter-peak`), the shadows (`--shadow`,
   `--shadow-lifted`) and the knobly tokens ([above](#highlighting)).
+- **Tones:** the classes `tone-ok`, `tone-warn`, `tone-err` and `tone-muted` colour the
+  connection pill's dot, the top bar's chips and the drawer's status words from the state tokens.
 - **Corners and motion:** 8 px on boxes, 6 px on controls and text boxes, pills fully round; 120 ms
   for hover and selection, 180 ms for what slides, `--motion-pulse` (2 s, the configuring dot) and
   `--motion-flow` (1 s, the wires' flow). The first two are 0 under
@@ -195,8 +279,8 @@ alone; the groups:
 that the editor follows the system until the person chooses. The switch cycles system, light and
 dark and writes `data-theme="light"` or `"dark"` on `<html>`; system removes the attribute.
 `web/src/theme.ts` is its logic, and `index.html`'s `color-scheme` meta lets the first paint follow
-the system before the styles arrive. For now the switch sits beside the title and the choice lasts
-only as long as the page: a reload returns to the system's.
+the system before the styles arrive. The switch sits in the top bar ([above](#the-top-bar)); the
+choice lasts only as long as the page: a reload returns to the system's.
 
 **Contrast is a test.** `theme.test.ts` reads `theme.css` and fails naming the theme and the pair
 when any text, state, on-strong or knobly token falls below 4.5:1 on a surface it is drawn on, in
@@ -331,16 +415,17 @@ for ready, its drop count on hover; never boxes or handles of their own. The rul
 ## Counters
 
 `web/src/counters.ts` is the one place that turns the diagnostics counters
-([control-port.md](control-port.md#counters)) into the panel's totals, a node box's mark and the
+([control-port.md](control-port.md#counters)) into the inspector's totals, a node box's mark and the
 graph's dropouts badge; `counters.test.ts` covers its rules and replays the `counters-changed` and
 `unknown-values` fixtures through the reducer into what is drawn. *Why this way:* asked whether the
 editor shows dropouts and a node's missed cycles unasked, the owner answered "panel plus recent":
-the totals always in the side panel, and the canvas's marks and badge only while something
+the totals always in the inspector, and the canvas's marks and badge only while something
 happened in the last minute. The rules:
 
-- **The panel always holds the totals.** Under the engine facts, "Since ear started": `cycles`,
-  "dropouts" (`cutCycles`), `stalls` and "time lost" (`lostMs`, in ms). In the node panel,
-  "Counters since it was added": "missed cycles", "overruns", "repositions", "driver changes".
+- **The inspector always holds the totals.** In its Graph subject, under the engine facts, "Since
+  ear started": `cycles`, "dropouts" (`cutCycles`), `stalls` and "time lost" (`lostMs`, in ms). In
+  its Node subject, "Counters since it was added": "missed cycles", "overruns", "repositions",
+  "driver changes".
   Every counter is shown, zeros included, each label's tooltip saying what it counts. A counter
   this editor does not know follows, in the order sent, by its own name (in monospace) and number,
   its tooltip "a counter this editor does not know". A row whose counter rose in the last minute
@@ -355,7 +440,7 @@ happened in the last minute. The rules:
   tooltip gives the last minute's and the totals in words ("In the last minute: overran 1 time.
   Since it was added: missed 33 cycles, overran 3 times."). The graph's cuts never mark a node:
   they are the host's, on every output at once.
-- **The dropouts badge** sits beside "not realtime" in the engine facts while `cutCycles` rose in
+- **The dropouts badge** sits in the top bar after the engine chip while `cutCycles` rose in
   the last minute, with the last minute's count ("5 dropouts"), which falls as each rise leaves its
   minute; its tooltip says the host held up the audio thread and gives the totals ("44 dropouts
   (234 ms) in 2 stalls since ear started").
@@ -383,7 +468,7 @@ and rises. The mark is an "!" in a circle (`WarnMark`).
   minute's.
 - **The minute** is timed on the browser's monotonic clock (`performance.now()`, so a step of the
   wall clock never stretches or cuts it), from the message that brought the rise; a count of the
-  last minute is the sum of the rises still in it. A box or panel redraws when a shown mark's
+  last minute is the sum of the rises still in it. A box or the inspector redraws when a shown mark's
   minute ends or a count falls.
 - **Noted before anything draws:** the moves are the graph store's first listeners, outside the
   reducer (which holds only what ear sent), so a box drawn for a new graph reads that graph's
@@ -400,7 +485,7 @@ port. Node.js comes from `web/.nvmrc` and the packages from `web/package-lock.js
 The tests cover the reducer against every `test/protocol` fixture, the graph file's state and the
 pane's logic (drafts, stale files, Save, refusals), the node panel's knobly box (`nodeText.ts`), the add-node
 form (`addText.ts`), the highlighting (`highlight.ts`, and that it never changes the text sent), the reconnecting client with a fake socket,
-the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (the hold, the fall, the lamp and the reset on a fake clock), the handles' cue (`connect.ts`), the box's sizes against `editor.css` (`layout.test.ts`), and the theme (`theme.ts`, and the contrast of every pair in both themes in `theme.test.ts`). There is no browser test runner:
+the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (the hold, the fall, the lamp and the reset on a fake clock), the handles' cue (`connect.ts`), the box's sizes against `editor.css` (`layout.test.ts`), and the theme (`theme.ts`, and the contrast of every pair in both themes in `theme.test.ts`), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the sizes and the breakpoint against `editor.css` (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), and the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`). There is no browser test runner:
 rendering is checked by eye. *Why:* a Playwright leg costs about 150 MB of browsers and a minute
 or two a CI run, while the logic sits in the reducer, client and rules, which Vitest covers
 against the same fixtures the server is tested with.

@@ -77,4 +77,17 @@ describe("places", () => {
     expect(state!.nodes.find((node) => node.name === "desk")!.inputs).toHaveLength(4);
     expect(current.get("desk")).toStrictEqual(dragged);
   });
+
+  it("lays every node out again on tidy, forgetting a dragged place", () => {
+    const places = new Places();
+    const first = places.place(graph, new Map());
+    const dragged = new Map(first);
+    dragged.set("rec", { x: 4321, y: 99 });
+    dragged.set("gone", { x: 1, y: 2 });
+    places.place(graph, dragged);
+    const tidied = places.relayout(graph);
+    expect(tidied).toStrictEqual(placeNodes(graph, new Map()));
+    expect(tidied.get("rec")).not.toStrictEqual({ x: 4321, y: 99 });
+    expect(places.place(graph, new Map())).toStrictEqual(tidied);
+  });
 });

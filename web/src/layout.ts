@@ -70,4 +70,15 @@ export class Places {
     for (const [name, position] of positions) this.known.set(name, position);
     return positions;
   }
+
+  /**
+   * Tidy (docs/editor.md#the-canvas): every node laid out again as on first placement, every known place forgotten;
+   * moves are the browser's, nothing is sent.
+   */
+  relayout(graph: Graph): Map<string, Position> {
+    this.known.clear();
+    const positions = placeNodes(graph, new Map());
+    for (const [name, position] of positions) this.known.set(name, position);
+    return positions;
+  }
 }

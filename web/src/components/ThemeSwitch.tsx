@@ -1,5 +1,6 @@
 // The theme switch (docs/editor.md#tokens-and-themes): one button that cycles system, light and dark, its word always
-// shown so it is never just a glyph. The choice is held by App.
+// shown so it is never just a glyph. The choice is held by App and the switch sits in the top bar
+// (docs/editor.md#the-top-bar).
 import { nextTheme, themeTitle, type ThemeChoice } from "../theme";
 
 export function ThemeSwitch({ choice, onChoose }: { choice: ThemeChoice; onChoose: (next: ThemeChoice) => void }) {

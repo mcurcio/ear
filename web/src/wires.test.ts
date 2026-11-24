@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { reduce, type GraphState } from "./graph";
 import type { GraphRoute } from "./protocol";
 import { fixtures, messagesOf } from "./testFixtures";
-import { wireEnds, wireView } from "./wires";
+import { wireEnds, wireStatusWords, wireView } from "./wires";
 
 function routesAfter(fixture: { messages: Parameters<typeof messagesOf>[0] }): GraphRoute[] {
   let state: GraphState = null;
@@ -67,5 +67,14 @@ describe("a wire", () => {
     expect(wireEnds({ from: { node: "kitchen", port: "from.left" }, to: { node: "desk", port: "play.1" } })).toBe(
       "kitchen:from.left → desk:play.1",
     );
+  });
+
+  it("says its status in words for the inspector", () => {
+    expect(wireStatusWords(linked)).toBe("linked");
+    expect(wireStatusWords(pending)).toBe("pending: ear has not linked it yet");
+    expect(wireStatusWords(refused)).toBe(`refused: ${refused.detail}`);
+    const { detail: _detail, ...bare } = refused;
+    expect(wireStatusWords(bare)).toBe("refused");
+    expect(wireStatusWords(held)).toBe("held");
   });
 });

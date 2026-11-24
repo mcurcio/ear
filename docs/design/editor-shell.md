@@ -45,48 +45,10 @@ does with it:
 
 ### 3.1 The layout
 
-```text
-┌──────────────────────────────────────────────────────────────────────────────────┐
-│ EAR   ● live   48 kHz · 256 frames · realtime   ⚠ 5 dropouts      ⌘K  ◐  ▤ ear.conf │  top bar, 44 px
-├───────────────────────────────────────────────────────────────┬──────────────────┤
-│                                                               │ Inspector        │
-│                         canvas                                │  (graph, node    │
-│                                                               │   or route)      │
-│  ┌──────────┐                                                 │                  │
-│  │ − + ⤢ ⊞ ▦│  floating tools                       toasts ▸  │                  │
-├──┴──────────┴─────────────────────────────────────────────────┴──────────────────┤
-│ ear.conf ● unsaved · 2 errors                                        Save ⌘S   ▾ │  drawer header, 32 px
-│  1 graph { rate 48khz; block_size 256; }                                         │
-│  2 node white noise;                                                             │  drawer, resizable
-└──────────────────────────────────────────────────────────────────────────────────┘
-```
-
-- **The top bar** holds what is about the whole graph and never about a selection: the wordmark; the connection pill
-  (`live`, `connecting…`, `lost: retrying in 4 s`, each a word beside its dot); the engine facts as one chip
-  (`rateLabel` and the block size, then `realtime` or a `not realtime` badge); the dropouts badge as built
-  ([`editor.md`](../editor.md#counters)); the newer-protocol banner as a chip whose tooltip says what is not shown; and
-  on the right the palette button (3.6), the theme switch (3.2) and the `ear.conf` toggle with the drawer's status chip.
-- **The canvas** fills the rest. React Flow's `Controls` give way to one floating tool group, bottom left: zoom out,
-  zoom in, fit (`F`), tidy (`L`: lay every node out again with dagre, 3.7) and the minimap toggle (`M`, React Flow's
-  `MiniMap`, off by default). The background is a quiet dot grid in the theme's colours.
-- **The inspector**, on the right (320 px, dragged between 280 and 560), shows one subject, chosen by the selection:
-  - nothing selected: **Graph**: the engine facts in full, the graph's counters (`CounterTable`, as built) and the
-    add-node form;
-  - one node: **Node** (3.3's header, the lifecycle bar, its knobly box, counters, companions, Delete);
-  - one route: **Route**: from and to as `node:port` buttons that select that node, its status in words, its level
-    meter, Remove;
-  - several: a count ("3 nodes, 2 routes") and Delete for them all.
-
-  The inspector is where slice 5's settings form and status list go
-  ([`control-plane.md`](control-plane.md#82-how-each-row-kind-renders)); nothing in this page decides their content.
-- **The `ear.conf` drawer**, along the bottom, full width, holds today's pane whole ([`editor.md`](../editor.md#what-it-shows-and-does):
-  its banners, `KnoblyText`, diagnostics and Save), with a line-number gutter (3.5). Its 32 px header stays when the
-  drawer is closed and says, in words, what the file needs: `unsaved`, `stale: reload`, `refused`, `n errors`,
-  `write failed`, `applies at restart`, or nothing. `⌘E` (`Ctrl+E` off macOS) opens and closes it; it opens by itself
-  only on a refusal or a write failure, never on a hand edit. Dragged between 120 px and 70 % of the window.
-
-The inspector and the drawer never move each other's content: P1 and P2 go. Below 900 px wide the inspector becomes a
-sheet over the canvas's right edge, closed by Escape or a click on the canvas, and the drawer keeps its place.
+Built (step 3): [`editor.md`](../editor.md#the-shell). What remains here: the palette button (3.6), `⌘E` and `⌘S`
+(3.6), and `F`, `L` and `M` on the canvas's tools (3.6), the toasts in the canvas's bottom right in place of its one
+error banner (3.5), `Saving…` in the drawer header (3.5), the drawer's line-number gutter (3.5), and keeping the
+inspector's width, the drawer's height and open state and the minimap (3.8).
 
 ### 3.2 Tokens and the dark theme
 
@@ -198,7 +160,7 @@ each.
 1. **Tokens and themes** (3.2) (built): `theme.css`, the dark set, the knobly dark tokens, the contrast test, the theme switch.
    Nothing moves yet.
 2. **The node box, wires and meters** (3.3, 3.4) (built).
-3. **The shell** (3.1): top bar, inspector, drawer and its header chip, the narrow-window sheet.
+3. **The shell** (3.1) (built): top bar, inspector, drawer and its header chip, the narrow-window sheet.
 4. **Feedback** (3.5): `requests.ts`, `notices.ts`, the ghost wire, toasts, the gutter.
 5. **Keyboard** (3.6) and **canvas adding** (3.7, without kept places).
 6. **What the browser keeps** (3.8, E2).

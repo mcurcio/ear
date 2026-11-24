@@ -1,17 +1,15 @@
-// The ear.conf pane (docs/editor.md): the file's text, editable,
-// its diagnostics (a click puts the caret there), Save, and banners for what a person must know:
-// the file changed under the draft, the graph refused the file, a write failed, editor edits were
-// dropped, a setting applies only at restart. The logic is pane.ts; ear judges every text.
-import { useEffect, useReducer, useRef, useState } from "react";
-import type { FileNotice, GraphFileState } from "../graphFile";
-import { dirty, offsetOf, paneFrom, paneReduce, saveRequest, shownDiagnostics } from "../pane";
-import type { FormatKey, RpcErrorCode } from "../protocol";
-import { RpcError } from "../rpc";
+// The ear.conf drawer's body (docs/editor.md#the-drawer): banners for what a person must know (the file changed under
+// the draft, the graph refused the file, a write failed, editor edits were dropped, a setting applies only at
+// restart), the file's text, editable, and its diagnostics (a click puts the caret there). The pane's state and Save
+// are useDrawer's, so the drawer's header and the top bar read the same status; the logic is pane.ts and drawer.ts,
+// and ear judges every text.
+import { useRef } from "react";
+import { formatNames } from "../drawer";
+import type { FileNotice } from "../graphFile";
+import { offsetOf, shownDiagnostics } from "../pane";
 import { useEditor } from "./hooks";
 import { KnoblyText } from "./KnoblyText";
-
-// The wire's keys named as ear.conf's graph block writes them (graph { rate ...; block_size ...; }).
-const formatNames: { [K in FormatKey]: string } = { graphFrequency: "graph rate", blockSize: "block size" };
+import type { DrawerModel } from "./useDrawer";
 
 function place(line: number, column: number): string {
   return `${line}:${column}`;
@@ -22,31 +20,11 @@ function noticeText(notice: FileNotice): string {
   return `${edits} not saved: ear.conf changed on disk`;
 }
 
-export function TextPane({ state, onError }: { state: GraphFileState; onError: (error: unknown) => void }) {
-  const { client, file: store } = useEditor();
+export function TextPane({ drawer }: { drawer: DrawerModel }) {
+  const { file: store } = useEditor();
+  const { state, pane, dispatch } = drawer;
   const { file, notices } = state;
-  const [pane, dispatch] = useReducer(paneReduce, file, paneFrom);
-  const [saving, setSaving] = useState(false);
   const text = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => dispatch({ kind: "file", file }), [file]);
-
-  const save = () => {
-    setSaving(true);
-    client
-      .call("graphFile.set", saveRequest(pane))
-      .catch((error: unknown) => {
-        if (error instanceof RpcError) {
-          const refused = { code: error.code as RpcErrorCode, message: error.message, data: error.data };
-          dispatch({ kind: "refused", error: refused });
-          // The pane shows these itself (stale, the diagnostics); any other goes to the error banner.
-          const code = error.data?.code;
-          if (code === "file-changed" || code === "invalid-text") return;
-        }
-        onError(error);
-      })
-      .finally(() => setSaving(false));
-  };
 
   const goTo = (line: number, column: number) => {
     const area = text.current;
@@ -60,10 +38,9 @@ export function TextPane({ state, onError }: { state: GraphFileState; onError: (
   const pending = file.pendingRestart.map((key) => formatNames[key]);
 
   return (
-    <section className="panel-section text-pane">
-      <h2>ear.conf</h2>
+    <div className="text-pane">
       {pane.stale && (
-        <div className="banner banner-connection" role="status">
+        <div className="banner banner-warn" role="status">
           ear.conf changed; reload{" "}
           <button type="button" onClick={() => dispatch({ kind: "reload" })}>
             Reload
@@ -92,7 +69,7 @@ export function TextPane({ state, onError }: { state: GraphFileState; onError: (
         </div>
       ))}
       {pending.length > 0 && (
-        <div className="banner banner-connection" role="status">
+        <div className="banner banner-warn" role="status">
           {pending.join(" and ")} change applies at restart
         </div>
       )}
@@ -113,9 +90,6 @@ export function TextPane({ state, onError }: { state: GraphFileState; onError: (
           ))}
         </ul>
       )}
-      <button type="button" disabled={saving || pane.stale || !dirty(pane)} onClick={save}>
-        Save
-      </button>
-    </section>
+    </div>
   );
 }
