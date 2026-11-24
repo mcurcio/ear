@@ -210,13 +210,120 @@ body,
   color: var(--accent);
 }
 
-.canvas-error {
+/* The toasts at the canvas's bottom right (docs/editor.md#toasts): the newest four, each edged in its severity's
+   token, its code in monospace and its count in tabular figures. */
+.toasts {
   max-width: 420px;
+  margin: 12px;
 }
 
-.canvas-error .banner {
-  margin-bottom: 0;
-  box-shadow: var(--shadow);
+.toast-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.toast {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 8px 10px;
+  background: var(--raised);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--toast-tone);
+  border-radius: var(--radius-box);
+  box-shadow: var(--shadow-lifted);
+  animation: toast-in var(--motion-slow) ease-out;
+}
+
+.toast-error {
+  --toast-tone: var(--err);
+}
+
+.toast-warning {
+  --toast-tone: var(--warn);
+}
+
+.toast-info {
+  --toast-tone: var(--muted);
+}
+
+.toast-text {
+  margin: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+.toast-code {
+  font-family: ui-monospace, monospace;
+}
+
+.toast-count {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.toast-actions {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+
+.toast-more {
+  margin: 0 0 6px;
+  color: var(--muted);
+  text-align: right;
+}
+
+/* A 0 ms duration under reduced motion is harmless here: the animation is finite. */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+/* A route request's ghost wire (docs/editor.md#requests-in-flight): thin, dashed and muted, plainly not a route; never
+   under the pointer, so it cannot be hovered or clicked; the error colour for its second when ear refuses it. */
+.react-flow__edge.ear-ghost-edge {
+  pointer-events: none;
+}
+
+.ear-ghost {
+  stroke: var(--muted);
+  stroke-width: 1.5px;
+  stroke-dasharray: 4 4;
+  fill: none;
+  transition: stroke var(--motion-fast);
+}
+
+.ear-ghost-refused {
+  stroke: var(--err);
+}
+
+/* The busy mark on a button whose request is on its way (docs/editor.md#requests-in-flight): an open ring that turns
+   over --motion-spin; under reduced motion it stands still (below). */
+.spinner {
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  margin-right: 4px;
+  vertical-align: -0.1em;
+  box-sizing: border-box;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: var(--radius-pill);
+  animation: spin var(--motion-spin) linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* The inspector (docs/editor.md#the-inspector): one subject, resized by its left edge between sizes.ts's bounds, which
@@ -431,9 +538,15 @@ body,
   min-height: 0;
 }
 
-.text-pane .knobly-text {
+/* The drawer's text is its gutter beside the box (docs/editor.md#the-drawers-gutter), filling the body. */
+.text-pane .knobly-text-row {
   flex: 1;
   min-height: 80px;
+}
+
+.text-pane .knobly-text-row .knobly-text {
+  flex: 1;
+  min-width: 0;
 }
 
 .app .text-pane .knobly-text-input {
@@ -673,6 +786,16 @@ body,
   margin-right: 4px;
 }
 
+/* A lifecycle refusal under the bar, beside the button that asked (docs/editor.md#where-a-refusal-lands). */
+.lifecycle-refusal {
+  margin: 4px 0 0;
+  color: var(--err);
+}
+
+.lifecycle-refusal code {
+  font-family: ui-monospace, monospace;
+}
+
 .ear-node-ports {
   display: flex;
   justify-content: space-between;
@@ -855,8 +978,9 @@ body,
   color: var(--muted);
 }
 
-/* The durations are already 0 under reduced motion (theme.css); the configuring pulse and the wires' flow are
-   infinite animations, which a 0 s duration would churn rather than stop, so they stop here. The peak tick's fall is
+/* The durations are already 0 under reduced motion (theme.css); the configuring pulse, the wires' flow and the busy
+   spinner are infinite animations, which a 0 s duration would churn rather than stop, so they stop here (the
+   spinner keeps its open ring as the busy mark). The peak tick's fall is
    data, not decoration, and stays. */
 @media (prefers-reduced-motion: reduce) {
   .phase-configuring .ear-node-pill-dot {
@@ -866,11 +990,19 @@ body,
   .ear-wire-flow {
     display: none;
   }
+
+  .spinner {
+    animation: none;
+  }
 }
 
 /* Forced colours (Windows high contrast): the stripe stays visible in the system's text colour. */
 @media (forced-colors: active) {
   .ear-node::before {
+    background: CanvasText;
+  }
+
+  .gutter-dot {
     background: CanvasText;
   }
 }
@@ -1143,6 +1275,67 @@ body,
 .hl-error {
   color: var(--knobly-error);
   background: var(--knobly-error-surface);
+}
+
+/* The drawer's gutter (docs/editor.md#the-drawers-gutter): a second pre beside the box, never inside it, with the
+   box's font, size and line height and a top inset of the textarea's border and padding, so row n lies beside line
+   n; it follows the textarea's vertical scroll, and its bottom room lets it scroll as far. Only the dots take the
+   pointer. */
+.knobly-text-row {
+  display: flex;
+  min-height: 0;
+}
+
+.knobly-gutter {
+  margin: 0;
+  flex: none;
+  box-sizing: border-box;
+  width: calc(var(--gutter-digits) * 1ch + 22px);
+  padding: 5px 6px 0 4px;
+  overflow: hidden;
+  pointer-events: none;
+  text-align: right;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: pre;
+  color: var(--muted);
+  background: var(--sunken);
+  border-radius: var(--radius-control) 0 0 var(--radius-control);
+  font-variant-numeric: tabular-nums;
+}
+
+.knobly-gutter code {
+  display: inline-block;
+  padding-bottom: 32px;
+  font: inherit;
+}
+
+.gutter-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 4px;
+  border-radius: var(--radius-pill);
+  vertical-align: 0.05em;
+}
+
+.gutter-dot-error {
+  background: var(--err);
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.gutter-dot-warning {
+  background: var(--warn);
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.gutter-dot-other {
+  background: var(--muted);
+  pointer-events: auto;
+  cursor: pointer;
 }
 
 /* Forced colours (Windows high contrast): the plain textarea in the system's colours, no copy behind it. */

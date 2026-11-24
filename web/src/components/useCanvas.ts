@@ -1,23 +1,31 @@
 // The canvas's browser-side state (docs/editor.md#the-canvas): the flow nodes and their places, the wires as ear
 // announced them, the selection the inspector follows (docs/editor.md#the-inspector), and Tidy. Moves and selection
-// are the browser's; adding and removing wait for ear's events (docs/editor.md#its-rules).
+// are the browser's; adding and removing wait for ear's events (docs/editor.md#its-rules). Beside the routes, the ghost
+// wires of route requests on their way (requests.ts, docs/editor.md#requests-in-flight): requests, never routes, so
+// they cannot be selected, focused or deleted.
 import { applyNodeChanges, type EdgeChange, type NodeChange } from "@xyflow/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { edgeId, handleId } from "../connect";
 import type { GraphState } from "../graph";
 import { Places, type Position } from "../layout";
+import { ghostWires } from "../requests";
 import { selectionKey, selectionOf, withSelected, type Selection } from "../selection";
 import type { EarFlowNode } from "./EarNode";
+import type { GhostFlowEdge } from "./GhostEdge";
+import { useEditor, useExpiry, useRequests } from "./hooks";
 import type { LevelFlowEdge } from "./LevelEdge";
 
 /** How long Tidy's slide lasts: theme.css's --motion-slow (0 under reduced motion, where the CSS does not slide). */
 const tidyMs = 180;
 
+/** A route's wire, or a route request's ghost. */
+export type CanvasEdge = LevelFlowEdge | GhostFlowEdge;
+
 export interface CanvasModel {
   nodes: EarFlowNode[];
-  edges: LevelFlowEdge[];
+  edges: CanvasEdge[];
   onNodesChange: (changes: NodeChange<EarFlowNode>[]) => void;
-  onEdgesChange: (changes: EdgeChange<LevelFlowEdge>[]) => void;
+  onEdgesChange: (changes: EdgeChange<CanvasEdge>[]) => void;
   /** Its identity changes only with the selection. */
   selection: Selection;
   select: (selection: Selection) => void;
@@ -49,34 +57,55 @@ export function useCanvas(graph: GraphState): CanvasModel {
   const [places] = useState(() => new Places());
   const [tidying, setTidying] = useState(false);
   const tidyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const { requests } = useEditor();
+  const asked = useRequests();
+  const expireGhosts = useCallback(() => requests.expire(), [requests]);
+  useExpiry(requests.nextChange(), expireGhosts);
 
   useEffect(() => setNodes((previous) => syncNodes(previous, graph, places)), [graph, places]);
   useEffect(() => () => clearTimeout(tidyTimer.current), []);
 
-  const edges = useMemo<LevelFlowEdge[]>(
-    () =>
-      (graph?.routes ?? []).map((route) => {
-        const id = edgeId(route);
-        return {
-          id,
-          type: "level",
-          source: route.from.node,
-          sourceHandle: handleId("out", route.from.port),
-          target: route.to.node,
-          targetHandle: handleId("in", route.to.port),
-          selected: selectedEdges.has(id),
-          data: { route },
-        };
+  const edges = useMemo<CanvasEdge[]>(() => {
+    const routes = graph?.routes ?? [];
+    const wires = routes.map((route): LevelFlowEdge => {
+      const id = edgeId(route);
+      return {
+        id,
+        type: "level",
+        source: route.from.node,
+        sourceHandle: handleId("out", route.from.port),
+        target: route.to.node,
+        targetHandle: handleId("in", route.to.port),
+        selected: selectedEdges.has(id),
+        data: { route },
+      };
+    });
+    const ghosts = ghostWires(asked, routes).map(
+      ({ id, ends, refused }): GhostFlowEdge => ({
+        id,
+        type: "ghost",
+        source: ends.from.node,
+        sourceHandle: handleId("out", ends.from.port),
+        target: ends.to.node,
+        targetHandle: handleId("in", ends.to.port),
+        selectable: false,
+        focusable: false,
+        deletable: false,
+        interactionWidth: 0,
+        className: "ear-ghost-edge",
+        data: { refused },
       }),
-    [graph, selectedEdges],
-  );
+    );
+    return [...wires, ...ghosts];
+  }, [graph, selectedEdges, asked]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange<EarFlowNode>[]) =>
       setNodes((current) => applyNodeChanges(changes.filter((c) => c.type !== "remove" && c.type !== "add"), current)),
     [],
   );
-  const onEdgesChange = useCallback((changes: EdgeChange<LevelFlowEdge>[]) => {
+  // A ghost cannot be selected, so no select change names one.
+  const onEdgesChange = useCallback((changes: EdgeChange<CanvasEdge>[]) => {
     setSelectedEdges((current) => {
       const next = new Set(current);
       for (const change of changes) {

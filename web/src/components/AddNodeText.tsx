@@ -1,52 +1,41 @@
 // The add-node form in knobly (docs/editor.md#adding-a-node): a type list that writes a template, the statement in the
 // pane's textarea style, its diagnostics under it (a click puts the caret there) and Add (node.addText). The logic is
-// addText.ts; ear judges every text.
+// addText.ts; ear judges every text. Add says Adding… while its request is on its way
+// (docs/editor.md#requests-in-flight).
 import { useEffect, useReducer, useRef, useState } from "react";
 import { addFrom, addReduce, addRequest, canAdd } from "../addText";
+import { placedRefusal } from "../notices";
 import { offsetOf } from "../pane";
 import type { GraphFile, RpcErrorCode } from "../protocol";
+import { isAsking } from "../requests";
 import { RpcError } from "../rpc";
-import { useEditor } from "./hooks";
+import { useEditor, useRequests } from "./hooks";
 import { KnoblyText } from "./KnoblyText";
+import { Spinner } from "./Spinner";
 
-export function AddNodeText({
-  types,
-  names,
-  file,
-  onError,
-}: {
-  types: string[];
-  names: string[];
-  file: GraphFile;
-  onError: (error: unknown) => void;
-}) {
-  const { client } = useEditor();
+export function AddNodeText({ types, names, file }: { types: string[]; names: string[]; file: GraphFile }) {
+  const editor = useEditor();
   const [type, setType] = useState("");
   const chosenType = types.includes(type) ? type : (types[0] ?? "");
   const [form, dispatch] = useReducer(addReduce, undefined, () => addFrom(chosenType, names));
-  const [adding, setAdding] = useState(false);
+  const adding = isAsking(useRequests(), "node.addText");
   const text = useRef<HTMLTextAreaElement>(null);
   const namesKey = names.join("\n");
 
   // A type chosen, or the nodes changed (a name taken): the template follows while it is untouched.
   useEffect(() => dispatch({ kind: "type", type: chosenType, names }), [chosenType, namesKey]);
 
+  // The form shows file-changed and invalid-text itself (the diagnostics, Add again); any other is a toast
+  // (docs/editor.md#toasts).
   const add = () => {
-    setAdding(true);
-    client
-      .call("node.addText", addRequest(form, file))
+    editor
+      .ask("node.addText", addRequest(form, file), { placed: placedRefusal })
       .then(() => dispatch({ kind: "added", type: chosenType, names }))
       .catch((error: unknown) => {
-        if (error instanceof RpcError) {
-          const refused = { code: error.code as RpcErrorCode, message: error.message, data: error.data };
-          dispatch({ kind: "refused", error: refused });
-          // The form shows these itself (the diagnostics, Add again); any other goes to the error banner.
-          const code = error.data?.code;
-          if (code === "file-changed" || code === "invalid-text") return;
-        }
-        onError(error);
-      })
-      .finally(() => setAdding(false));
+        if (!(error instanceof RpcError)) return;
+        const refused = { code: error.code as RpcErrorCode, message: error.message, data: error.data };
+        dispatch({ kind: "refused", error: refused });
+      });
   };
 
   const goTo = (line: number, column: number) => {
@@ -94,8 +83,9 @@ export function AddNodeText({
           ))}
         </ul>
       )}
-      <button type="button" disabled={adding || !canAdd(form)} onClick={add}>
-        Add
+      <button type="button" disabled={adding || !canAdd(form)} aria-busy={adding || undefined} onClick={add}>
+        {adding && <Spinner />}
+        {adding ? "Adding…" : "Add"}
       </button>
     </section>
   );

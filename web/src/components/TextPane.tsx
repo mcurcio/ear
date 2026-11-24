@@ -1,11 +1,13 @@
 // The ear.conf drawer's body (docs/editor.md#the-drawer): banners for what a person must know (the file changed under
 // the draft, the graph refused the file, a write failed, editor edits were dropped, a setting applies only at
-// restart), the file's text, editable, and its diagnostics (a click puts the caret there). The pane's state and Save
+// restart), the file's text, editable, with a gutter of line numbers and a dot on each line a diagnostic names
+// (docs/editor.md#the-drawers-gutter), and its diagnostics (a click puts the caret there). The pane's state and Save
 // are useDrawer's, so the drawer's header and the top bar read the same status; the logic is pane.ts and drawer.ts,
 // and ear judges every text.
-import { useRef } from "react";
+import { useMemo, useRef } from "react";
 import { formatNames } from "../drawer";
 import type { FileNotice } from "../graphFile";
+import { gutterLines } from "../gutter";
 import { offsetOf, shownDiagnostics } from "../pane";
 import { useEditor } from "./hooks";
 import { KnoblyText } from "./KnoblyText";
@@ -35,6 +37,8 @@ export function TextPane({ drawer }: { drawer: DrawerModel }) {
   };
 
   const diagnostics = shownDiagnostics(pane);
+  // The list under the text stays the keyboard's and screen readers' way in; the gutter is hidden from them.
+  const lines = useMemo(() => gutterLines(pane.draft, diagnostics), [pane.draft, diagnostics]);
   const pending = file.pendingRestart.map((key) => formatNames[key]);
 
   return (
@@ -78,6 +82,8 @@ export function TextPane({ drawer }: { drawer: DrawerModel }) {
         rows={20}
         value={pane.draft}
         onEdit={(draft) => dispatch({ kind: "edit", text: draft })}
+        gutter={lines}
+        onGutterGo={goTo}
       />
       {diagnostics.length > 0 && (
         <ul className="diagnostics">

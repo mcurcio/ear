@@ -29,9 +29,12 @@ along the bottom ([below](#the-shell)).
   Enable in the inspector when ear has the `lifecycle` feature. The top bar gives the graph's rate
   and block size ("48 kHz · 256 frames", from `graphFrequency` in hertz) and realtime, or a "not
   realtime" badge, and a dropouts badge while the host cut cycles in the last minute; the inspector
-  holds the graph's counters and the selected node's ([below](#counters)).
-- **The ear.conf drawer** holds the pane: `ear.conf`, highlighted ([below](#highlighting)), with
-  its diagnostics (a click puts the caret there) and Save (`graphFile.set`, based on the version
+  holds the graph's counters and the selected node's ([below](#counters)). A request on its way shows while it is
+  (a dashed ghost wire, a spinner on its button, `Saving…` and `Adding…`), and a refusal becomes a toast at the
+  canvas's bottom right, or lands where it was asked ([below](#feedback)).
+- **The ear.conf drawer** holds the pane: `ear.conf`, highlighted ([below](#highlighting)), with a gutter with
+  line numbers and a dot on each line a diagnostic names ([below](#the-drawers-gutter)), its diagnostics (a click
+  puts the caret there) and Save (`graphFile.set`, based on the version
   the draft started from). Banners say
   when the graph refused the file, a write failed, editor edits were dropped by a hand edit, or a
   setting applies only at restart (the graph rate or block size, as `pendingRestart` names them).
@@ -43,7 +46,8 @@ along the bottom ([below](#the-shell)).
 - **ear is the one source of truth.** The editor draws only what ear announced: a node or wire
   appears on its notification, never on the request that asked for it, and an event naming a node
   or route it does not know changes nothing. It never parses knobly; ear judges every text. Its
-  highlighting only colours the text ([below](#highlighting)).
+  highlighting only colours the text ([below](#highlighting)). A request on its way is drawn as a request (a ghost
+  wire, a spinner), never as what it asks for, and is gone on its reply ([below](#requests-in-flight)).
 - **Every enum is open.** A value or member this editor does not know is drawn by its word,
   neutrally, or ignored, never a failure ([control-port.md](control-port.md#protocol-and-features)).
   A newer protocol than the editor knows shows a chip in the top bar ([below](#the-top-bar)).
@@ -73,7 +77,7 @@ along the bottom ([below](#the-shell)).
   its own object, so neither is React state ([below](#meters)). A closed connection makes every
   meter read silent and forgets every hold until new levels arrive.
 - **A lost socket reconnects** after a growing wait (1 s doubling to 30 s), failing the calls in
-  flight, and the new socket subscribes again (graph, graph file, levels), so the editor starts
+  flight (the requests in flight are forgotten with it; the toasts are kept), and the new socket subscribes again (graph, graph file, levels), so the editor starts
   over from a fresh snapshot.
 
 ## The shell
@@ -107,8 +111,8 @@ It fills the rest, a quiet dot grid in the theme's colours. React Flow's `Contro
 floating tool group, bottom left: zoom out, zoom in, fit, tidy and the minimap toggle. Tidy lays
 every node out again with dagre, as on first placement, and they slide there over
 `--motion-slow`; moves are the browser's, so nothing is sent (`layout.ts`'s `relayout`). The
-minimap is React Flow's `MiniMap`, off by default, its boxes in their state's token. A refused
-request shows one banner at the canvas's bottom right until dismissed.
+minimap is React Flow's `MiniMap`, off by default, its boxes in their state's token. Toasts sit at its bottom right
+([below](#toasts)), and a route request on its way is a ghost wire ([below](#requests-in-flight)).
 
 ### The inspector
 
@@ -119,7 +123,7 @@ Home and End) between 280 and 560 px. It shows one subject, chosen by the select
 - nothing selected: **Graph**: the engine facts in full, the graph's counters and the add-node
   form;
 - one node: **Node**: its name and type, its state pill as the box draws it, its line, the
-  lifecycle bar, its knobly box (or JSON settings), its counters, its companions and Delete;
+  lifecycle bar (a refusal shown under it as well as in a toast), its knobly box (or JSON settings), its counters, its companions and Delete;
 - one route: **Route**: from and to as `node:port` buttons that select that node, its status in
   words, its level meter and Remove;
 - several: a count ("3 nodes, 2 routes") and Delete for them all.
@@ -128,7 +132,7 @@ A name or route the graph does not hold is ignored, so the inspector shows only 
 Delete asks `node.remove` for each node and `route.remove` only for routes between kept nodes, as
 the delete key does. The add-node form lives only in the Graph subject, so selecting something
 drops a half-typed statement; a new template is written when it shows again. Slice 5's settings
-form and status list are designed to land in the Node subject, under the lifecycle bar
+form and status list are designed to land in the Node subject, under the lifecycle bar and its refusal line
 ([control-plane.md](design/control-plane.md#8-the-editor)).
 
 ### The drawer
@@ -136,12 +140,12 @@ form and status list are designed to land in the Node subject, under the lifecyc
 Full width along the bottom, holding the pane whole. Its 32 px header stays when the drawer is
 closed and says in words what the file needs, most urgent first: `refused`, `write failed`,
 `stale: reload`, `unsaved`, `n errors` or `applies at restart` (`drawer.ts`, `drawer.test.ts`),
-with Save beside them. The header's toggle, and the top bar's, opens and closes it. It opens by
+with Save beside them, which says `Saving…` while its request is on its way. The header's toggle, and the top bar's, opens and closes it. It opens by
 itself only when ear refuses the file or a write fails, each newly (the same refusal sent again
 does not reopen it), or when a Save is refused; never on a hand edit. *Why a drawer:* the owner
 chose a full-width bottom drawer over a third column, so lines need not scroll sideways and the
 canvas keeps its width for a left-to-right graph. Its body is dragged by its top edge between
-120 px and 70 % of the window. Closing it hides the body but keeps it, with the draft, the caret
+120 px and 70 % of the window. The text has a gutter ([below](#the-drawers-gutter)). Closing it hides the body but keeps it, with the draft, the caret
 and the scroll. The inspector and the drawer never move each other's content.
 
 ### Narrow windows
@@ -152,6 +156,64 @@ The drawer keeps its place. `sizes.ts` holds the bounds and the breakpoint, and 
 holds `editor.css` to them.
 
 The sizes, the drawer's open state and the minimap last as long as the page.
+
+## Feedback
+
+The editor still draws only what ear announced ([above](#its-rules)); what this adds is that a request is visible
+while on its way, and its refusal lands where it was asked. Every request the editor makes goes through the
+session's `ask` (`web/src/editor.ts`), which keeps it in flight and makes a toast of any refusal its caller does not
+show in place.
+
+### Requests in flight
+
+`web/src/requests.ts` (`requests.test.ts`) keeps each request this editor sent and ear has not answered yet, with
+what asked for it: a route's two ends, a node's name and the button, or the drawer or form. A reply clears it, and so
+does a closed connection, at once.
+
+- **The ghost wire.** While a route request is on its way, a ghost wire joins the two handles
+  (`components/GhostEdge.tsx`): a thin dashed `--muted` line, with no status colour, no meter and no tooltip, which
+  cannot be selected, focused or deleted (Delete never sends `route.remove` for it). It is hidden once
+  `route.added` draws the route, and goes on the reply. A refused one turns `--err` for 1 s (timed on the monotonic
+  clock) before it goes. *Why:* the owner chose a ghost while a route request is in flight, drawn as a request and
+  never as a route.
+- **Buttons.** A lifecycle button shows a spinner and is disabled while its own request is on its way; the others
+  stay as `health.ts` says. Save in the drawer and in the node box say `Saving…`, and Add in the form says
+  `Adding…`. The spinner stops turning under reduced motion and keeps its open ring.
+
+### Toasts
+
+`web/src/notices.ts` (`notices.test.ts`) is the queue and `components/Toasts.tsx` draws it in the canvas's bottom
+right; they replace the one error banner.
+
+- **What a toast says.** A refusal says what was asked and why, with the code in monospace
+  (`route noise:noise.mono → rec:FX refused: unknown-port rec:FX`). A call the closed connection left unanswered says
+  `had no answer: not-connected`, one toast for all of them. JSON settings that do not parse say `not sent:
+  invalid-json` with the parse's words, a code of the editor's own that ear never sends.
+- **How long.** A toast lasts 8 s on the monotonic clock, and none expires while the toasts are hovered or focused;
+  Dismiss, or Escape on a focused toast, closes one.
+- **How many.** At most four show; older ones fold into "and n more". The same code for the same subject within 5 s
+  counts up ("×3") instead of stacking.
+- **Announced.** A refusal is a `role="alert"` toast, anything else `role="status"`.
+- **Show.** A toast for a node or route ear holds has Show, which selects it and pans to it.
+- **Kept.** A closed connection clears none, so a reconnect drops nothing the person has not seen.
+
+Slice 5's node events are designed to feed this queue
+([control-plane.md](design/control-plane.md#84-status-events-diagnostics-and-actions)).
+
+### Where a refusal lands
+
+`file-changed` and `invalid-text` stay in the drawer, the node box and the add form as built, with no toast. A
+refused route shows on its ghost and in a toast. A lifecycle refusal shows under the inspector's lifecycle bar and in
+a toast. Everything else is a toast. A refused Save still opens the drawer.
+
+### The drawer's gutter
+
+`web/src/gutter.ts` (`gutter.test.ts`) gives each line the textarea shows its number, and a dot on each line a
+diagnostic names: `--err`, else `--warn`, and neutral for a severity this editor does not know. A line past the end
+marks the last line. Hovering a dot shows its messages, and a click puts the caret there, as the list under the text
+does; the list stays the keyboard's and screen readers' way in, as the gutter is hidden from them. The gutter is a
+second `pre` beside the box, never inside it, following the textarea's vertical scroll with the same font, size,
+line height and top inset, so [Highlighting](#highlighting)'s rules are untouched. Only the drawer has one.
 
 ## Adding a node
 
@@ -214,7 +276,8 @@ the browser's knobly never accepts, refuses or diagnoses a text. The rules:
   stale and dirty logic and what Save and Add send are as above. Its glyphs are transparent; a
   highlighted copy of what it shows is drawn behind it (a `pre`, hidden from screen readers) with
   the same font, size, line height, padding, border and tabs and no wrapping, and follows its
-  scroll. No editor library is added. Under forced colours (Windows high contrast) the copy is
+  scroll. No editor library is added. The drawer's gutter sits beside the box, not in it
+  ([above](#the-drawers-gutter)). Under forced colours (Windows high contrast) the copy is
   hidden and the textarea draws its text in the system's colours.
 - **The copy is what the textarea shows.** A textarea holds `\n` only, so the copy is the value
   with each `\r\n` and lone `\r` as `\n`; the value itself is never changed. `highlight.test.tsx`
@@ -269,9 +332,9 @@ alone; the groups:
 - **Tones:** the classes `tone-ok`, `tone-warn`, `tone-err` and `tone-muted` colour the
   connection pill's dot, the top bar's chips and the drawer's status words from the state tokens.
 - **Corners and motion:** 8 px on boxes, 6 px on controls and text boxes, pills fully round; 120 ms
-  for hover and selection, 180 ms for what slides, `--motion-pulse` (2 s, the configuring dot) and
-  `--motion-flow` (1 s, the wires' flow). The first two are 0 under
-  `prefers-reduced-motion: reduce`, which also stops the configuring pulse and the wires' flow
+  for hover and selection, 180 ms for what slides, `--motion-pulse` (2 s, the configuring dot),
+  `--motion-flow` (1 s, the wires' flow) and `--motion-spin` (0.8 s, the busy spinner). The first two are 0 under
+  `prefers-reduced-motion: reduce`, which also stops the configuring pulse, the wires' flow and the spinner
   (`editor.css`: an infinite animation at 0 s would churn rather than stop), and leaves the peak
   tick's fall, which is data, not decoration.
 
@@ -485,7 +548,7 @@ port. Node.js comes from `web/.nvmrc` and the packages from `web/package-lock.js
 The tests cover the reducer against every `test/protocol` fixture, the graph file's state and the
 pane's logic (drafts, stale files, Save, refusals), the node panel's knobly box (`nodeText.ts`), the add-node
 form (`addText.ts`), the highlighting (`highlight.ts`, and that it never changes the text sent), the reconnecting client with a fake socket,
-the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (the hold, the fall, the lamp and the reset on a fake clock), the handles' cue (`connect.ts`), the box's sizes against `editor.css` (`layout.test.ts`), and the theme (`theme.ts`, and the contrast of every pair in both themes in `theme.test.ts`), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the sizes and the breakpoint against `editor.css` (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), and the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`). There is no browser test runner:
+the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (the hold, the fall, the lamp and the reset on a fake clock), the handles' cue (`connect.ts`), the box's sizes against `editor.css` (`layout.test.ts`), and the theme (`theme.ts`, and the contrast of every pair in both themes in `theme.test.ts`), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the sizes and the breakpoint against `editor.css` (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight and the ghosts (`requests.ts`), the toast queue and a refusal's words (`notices.ts`, replaying `errors.json`), the gutter (`gutter.ts`), and the session's `ask` on a fake socket (`editor.test.ts`). There is no browser test runner:
 rendering is checked by eye. *Why:* a Playwright leg costs about 150 MB of browsers and a minute
 or two a CI run, while the logic sits in the reducer, client and rules, which Vitest covers
 against the same fixtures the server is tested with.

@@ -18,13 +18,11 @@ function Subject({
   subject,
   onSelect,
   onRemove,
-  onError,
 }: {
   graph: Graph;
   subject: InspectorSubject;
   onSelect: (selection: Selection) => void;
   onRemove: (nodes: readonly string[], routes: readonly RouteEnds[]) => void;
-  onError: (error: unknown) => void;
 }) {
   switch (subject.kind) {
     case "graph":
@@ -36,7 +34,6 @@ function Subject({
             types={graph.types}
             names={graph.nodes.map((node) => node.name)}
             features={graph.features ?? []}
-            onError={onError}
           />
         </>
       );
@@ -47,7 +44,6 @@ function Subject({
           node={subject.node}
           features={graph.features ?? []}
           onRemove={(name) => onRemove([name], [])}
-          onError={onError}
         />
       );
     case "route":
@@ -98,7 +94,6 @@ export function Inspector({
   onResize,
   onSelect,
   onRemove,
-  onError,
 }: {
   graph: Graph;
   subject: InspectorSubject;
@@ -106,7 +101,6 @@ export function Inspector({
   onResize: (px: number) => void;
   onSelect: (selection: Selection) => void;
   onRemove: (nodes: readonly string[], routes: readonly RouteEnds[]) => void;
-  onError: (error: unknown) => void;
 }) {
   return (
     <aside
@@ -124,7 +118,7 @@ export function Inspector({
         onChange={onResize}
       />
       <div className="inspector-body">
-        <Subject graph={graph} subject={subject} onSelect={onSelect} onRemove={onRemove} onError={onError} />
+        <Subject graph={graph} subject={subject} onSelect={onSelect} onRemove={onRemove} />
       </div>
     </aside>
   );

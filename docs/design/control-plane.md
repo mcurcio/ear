@@ -1174,8 +1174,9 @@ A value is shown and sent rounded to `decimals`; `minIsSilence` shows the minimu
   flag as yes or no, `null` as "unknown"); `callout` fields as a banner on the box and in the panel while not initial,
   with a copy button for text. Box and callout fields show only while the node is `running`, `reconfiguring` or
   `stopped` and the value is not `null`.
-- **Events**: the node's activity list (since this page connected); `warn` and `error` also as a notice, coalesced per
-  node and code ("pairing failed ×3"), at most one new notice per node per 5 s.
+- **Events**: the node's activity list (since this page connected); `warn` and `error` also as a notice in the editor's
+  toast queue ([`editor.md`](../editor.md#toasts)), coalesced per node and code by its rule ("pairing failed ×3"), at
+  most one new notice per node per 5 s.
 - **Diagnostics**: a badge on the box for each active entry ("flapping: connection"), its tooltip giving the count and,
   for flapping, `flapsAbove`; the panel lists every entry. An unknown code is shown by its `msg`.
 - **Actions**: one button per type action after the built lifecycle buttons; a call with arguments opens a small form;

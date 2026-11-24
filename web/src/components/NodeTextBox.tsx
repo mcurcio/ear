@@ -1,45 +1,34 @@
 // The node panel's knobly box (docs/editor.md#the-node-panels-text): the node's own statement as ear.conf has it,
 // editable, in the pane's textarea style with its diagnostics under it (a click puts the caret there) and Save
-// (node.setText). The logic is nodeText.ts; ear judges every text.
-import { useEffect, useReducer, useRef, useState } from "react";
+// (node.setText), which says Saving… while its request is on its way (docs/editor.md#requests-in-flight). The logic is
+// nodeText.ts; ear judges every text.
+import { useEffect, useReducer, useRef } from "react";
+import { placedRefusal } from "../notices";
 import { boxFrom, boxNote, boxReduce, canSave, saveRequest } from "../nodeText";
 import { offsetOf } from "../pane";
 import type { GraphFile, RpcErrorCode } from "../protocol";
+import { isAsking } from "../requests";
 import { RpcError } from "../rpc";
-import { useEditor } from "./hooks";
+import { useEditor, useRequests } from "./hooks";
 import { KnoblyText } from "./KnoblyText";
+import { Spinner } from "./Spinner";
 
-export function NodeTextBox({
-  node,
-  file,
-  onError,
-}: {
-  node: string;
-  file: GraphFile;
-  onError: (error: unknown) => void;
-}) {
-  const { client } = useEditor();
+export function NodeTextBox({ node, file }: { node: string; file: GraphFile }) {
+  const editor = useEditor();
   const [box, dispatch] = useReducer(boxReduce, undefined, () => boxFrom(file, node));
-  const [saving, setSaving] = useState(false);
+  const saving = isAsking(useRequests(), "node.setText", node);
   const text = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => dispatch({ kind: "file", file }), [file]);
 
+  // The box shows file-changed and invalid-text itself (stale, the diagnostics); any other is a toast
+  // (docs/editor.md#where-a-refusal-lands).
   const save = () => {
-    setSaving(true);
-    client
-      .call("node.setText", saveRequest(box))
-      .catch((error: unknown) => {
-        if (error instanceof RpcError) {
-          const refused = { code: error.code as RpcErrorCode, message: error.message, data: error.data };
-          dispatch({ kind: "refused", error: refused });
-          // The box shows these itself (stale, the diagnostics); any other goes to the error banner.
-          const code = error.data?.code;
-          if (code === "file-changed" || code === "invalid-text") return;
-        }
-        onError(error);
-      })
-      .finally(() => setSaving(false));
+    editor.ask("node.setText", saveRequest(box), { placed: placedRefusal }).catch((error: unknown) => {
+      if (!(error instanceof RpcError)) return;
+      const refused = { code: error.code as RpcErrorCode, message: error.message, data: error.data };
+      dispatch({ kind: "refused", error: refused });
+    });
   };
 
   const goTo = (line: number, column: number) => {
@@ -86,8 +75,9 @@ export function NodeTextBox({
           ))}
         </ul>
       )}
-      <button type="button" disabled={saving || !canSave(box)} onClick={save}>
-        Save
+      <button type="button" disabled={saving || !canSave(box)} aria-busy={saving || undefined} onClick={save}>
+        {saving && <Spinner />}
+        {saving ? "Saving…" : "Save"}
       </button>
     </div>
   );

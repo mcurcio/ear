@@ -1,12 +1,12 @@
 // The canvas (docs/editor.md#the-canvas): ear's nodes and wires exactly as ear announced them (useCanvas), a drag
 // from an output to an input as a route request, the delete key as removal requests that delete nothing themselves,
-// a quiet dot grid, the floating tools, the minimap when shown (its boxes in their state's token, editor.css), and the
-// one banner a refused request shows until dismissed.
+// the ghost wires of route requests on their way (docs/editor.md#requests-in-flight), a quiet dot grid, the floating
+// tools, the minimap when shown (its boxes in their state's token, editor.css), and the toasts at its bottom right
+// (docs/editor.md#toasts).
 import {
   Background,
   BackgroundVariant,
   MiniMap,
-  Panel,
   ReactFlow,
   type Connection,
   type OnBeforeDelete,
@@ -15,13 +15,16 @@ import { memo, useCallback } from "react";
 import { isValidConnection } from "../connect";
 import { describeHealth } from "../health";
 import type { RouteEnds } from "../protocol";
+import type { Selection } from "../selection";
 import { CanvasTools } from "./CanvasTools";
 import { EarNode, type EarFlowNode } from "./EarNode";
+import { GhostEdge } from "./GhostEdge";
 import { LevelEdge, type LevelFlowEdge } from "./LevelEdge";
-import type { CanvasModel } from "./useCanvas";
+import { Toasts } from "./Toasts";
+import type { CanvasEdge, CanvasModel } from "./useCanvas";
 
 const nodeTypes = { ear: EarNode };
-const edgeTypes = { level: LevelEdge };
+const edgeTypes = { level: LevelEdge, ghost: GhostEdge };
 
 /** A minimap box takes its node's state class, so editor.css colours it from --state. */
 const minimapClass = (node: EarFlowNode) => describeHealth(node.data.node).styleClass;
@@ -34,8 +37,7 @@ export const Canvas = memo(function Canvas({
   onPaneClick,
   minimap,
   onToggleMinimap,
-  error,
-  onDismissError,
+  onShow,
 }: {
   canvas: CanvasModel;
   onConnect: (connection: Connection) => void;
@@ -43,15 +45,15 @@ export const Canvas = memo(function Canvas({
   onPaneClick: () => void;
   minimap: boolean;
   onToggleMinimap: () => void;
-  error: string | null;
-  onDismissError: () => void;
+  /** A toast's Show: select its node or route. */
+  onShow: (selection: Selection) => void;
 }) {
-  // The delete key asks ear to remove the selection and deletes nothing itself.
-  const onBeforeDelete = useCallback<OnBeforeDelete<EarFlowNode, LevelFlowEdge>>(
+  // The delete key asks ear to remove the selection and deletes nothing itself; a ghost is a request, never a route.
+  const onBeforeDelete = useCallback<OnBeforeDelete<EarFlowNode, CanvasEdge>>(
     async ({ nodes, edges }) => {
       onRemove(
         nodes.map((node) => node.id),
-        edges.map((edge) => edge.data!.route),
+        edges.filter((edge): edge is LevelFlowEdge => edge.type === "level").map((edge) => edge.data!.route),
       );
       return false;
     },
@@ -59,7 +61,7 @@ export const Canvas = memo(function Canvas({
   );
 
   return (
-    <ReactFlow<EarFlowNode, LevelFlowEdge>
+    <ReactFlow<EarFlowNode, CanvasEdge>
       className={canvas.tidying ? "tidying" : undefined}
       nodes={canvas.nodes}
       edges={canvas.edges}
@@ -79,16 +81,7 @@ export const Canvas = memo(function Canvas({
       {minimap && (
         <MiniMap<EarFlowNode> position="top-right" pannable zoomable ariaLabel="Minimap" nodeClassName={minimapClass} />
       )}
-      {error !== null && (
-        <Panel position="bottom-right" className="canvas-error">
-          <div className="banner banner-error" role="alert">
-            {error}{" "}
-            <button type="button" onClick={onDismissError}>
-              Dismiss
-            </button>
-          </div>
-        </Panel>
-      )}
+      <Toasts onShow={onShow} />
     </ReactFlow>
   );
 });

@@ -2,49 +2,52 @@
 // draws it and its line (health.ts, docs/editor.md#a-nodes-health), the lifecycle bar (Start, Stop, Restart, Disable
 // and Enable when ear has the lifecycle feature, each enabled by health.ts), its text in knobly (with the node-text
 // feature, docs/editor.md#the-node-panels-text; else its settings as JSON), its counters, its companions in words and
-// Delete. Every change is a request to ear; the canvas changes only when ear announces it.
+// Delete. Every change is a request to ear; the canvas changes only when ear announces it. A lifecycle button spins
+// while its own request is on its way, and a refusal shows under the bar as well as in a toast
+// (docs/editor.md#where-a-refusal-lands).
 import { useEffect, useState } from "react";
 import { describeHealth, type ActionAvailability, type HealthView } from "../health";
+import { refusalParts, type RefusalParts } from "../notices";
 import { lifecycleFeature, nodeTextFeature, type GraphNode } from "../protocol";
+import { lifecycleAsked, lifecycleLabels, type LifecycleMethod } from "../requests";
 import { parseSettings } from "../settings";
 import { CompanionList } from "./CompanionStrip";
 import { CounterTable } from "./Counters";
-import { useCompanionBadges, useEditor, useGraphFile, useNodeCounters } from "./hooks";
+import { useCompanionBadges, useEditor, useGraphFile, useNodeCounters, useRequests } from "./hooks";
 import { NodeTextBox } from "./NodeTextBox";
+import { Spinner } from "./Spinner";
 import { StatePill } from "./StatePill";
 
-type LifecycleMethod = "node.start" | "node.stop" | "node.restart" | "node.disable" | "node.enable";
-
 /** The lifecycle bar's buttons, in order, each enabled by its action in health.ts. */
-const lifecycleButtons: { label: string; method: LifecycleMethod; action: keyof HealthView["actions"] }[] = [
-  { label: "Start", method: "node.start", action: "start" },
-  { label: "Stop", method: "node.stop", action: "stop" },
-  { label: "Restart", method: "node.restart", action: "restart" },
-  { label: "Disable", method: "node.disable", action: "disable" },
-  { label: "Enable", method: "node.enable", action: "enable" },
+const lifecycleButtons: { method: LifecycleMethod; action: keyof HealthView["actions"] }[] = [
+  { method: "node.start", action: "start" },
+  { method: "node.stop", action: "stop" },
+  { method: "node.restart", action: "restart" },
+  { method: "node.disable", action: "disable" },
+  { method: "node.enable", action: "enable" },
 ];
 
 function LifecycleButton({
   label,
-  method,
-  node,
   availability,
-  onError,
+  busy,
+  onClick,
 }: {
   label: string;
-  method: LifecycleMethod;
-  node: string;
   availability: ActionAvailability;
-  onError: (error: unknown) => void;
+  /** Its own request is on its way. */
+  busy: boolean;
+  onClick: () => void;
 }) {
-  const { client } = useEditor();
   return (
     <button
       type="button"
-      disabled={!availability.enabled}
+      disabled={!availability.enabled || busy}
+      aria-busy={busy || undefined}
       title={availability.why}
-      onClick={() => client.call(method, { name: node }).catch(onError)}
+      onClick={onClick}
     >
+      {busy && <Spinner />}
       {label}
     </button>
   );
@@ -54,14 +57,15 @@ export function NodePanel({
   node,
   features,
   onRemove,
-  onError,
 }: {
   node: GraphNode;
   features: string[];
   onRemove: (name: string) => void;
-  onError: (error: unknown) => void;
 }) {
-  const { client } = useEditor();
+  const editor = useEditor();
+  const asked = lifecycleAsked(useRequests(), node.name);
+  // The panel is keyed by the node's name, so another node starts with no refusal shown.
+  const [refusal, setRefusal] = useState<{ label: string; parts: RefusalParts } | null>(null);
   const health = describeHealth(node);
   const companions = useCompanionBadges(node);
   const counters = useNodeCounters(node);
@@ -76,8 +80,16 @@ export function NodePanel({
 
   const save = () => {
     const parsed = parseSettings(settings);
-    if (typeof parsed === "string") return onError(new Error(parsed));
-    client.call("node.update", { name: node.name, settings: parsed }).catch(onError);
+    if (typeof parsed === "string") return editor.report({ method: "node.update", node: node.name }, new Error(parsed));
+    editor.send("node.update", { name: node.name, settings: parsed });
+  };
+
+  const ask = (method: LifecycleMethod) => {
+    setRefusal(null);
+    // The toast comes from ask itself; the line under the bar keeps the refusal beside the button that asked.
+    editor
+      .ask(method, { name: node.name })
+      .catch((error: unknown) => setRefusal({ label: lifecycleLabels[method], parts: refusalParts(error) }));
   };
 
   return (
@@ -92,21 +104,28 @@ export function NodePanel({
       </header>
       {lifecycle && (
         <div className="lifecycle-buttons" role="group" aria-label="lifecycle">
-          {lifecycleButtons.map(({ label, method, action }) => (
+          {lifecycleButtons.map(({ method, action }) => (
             <LifecycleButton
               key={method}
-              label={label}
-              method={method}
-              node={node.name}
+              label={lifecycleLabels[method]}
               availability={health.actions[action]}
-              onError={onError}
+              busy={asked.has(method)}
+              onClick={() => ask(method)}
             />
           ))}
         </div>
       )}
-      {/* Slice 5's settings form and status list go here, under the lifecycle bar (docs/editor.md#the-inspector). */}
+      {lifecycle && refusal !== null && (
+        // No live role: the toast announces it.
+        <p className="lifecycle-refusal">
+          {refusal.label} {refusal.parts.verb}: <code>{refusal.parts.code}</code>
+          {refusal.parts.detail !== "" && ` ${refusal.parts.detail}`}
+        </p>
+      )}
+      {/* Slice 5's settings form and status list go here, under the lifecycle bar and its refusal line
+          (docs/editor.md#the-inspector). */}
       {knobly ? (
-        <NodeTextBox key={node.name} node={node.name} file={file.file} onError={onError} />
+        <NodeTextBox key={node.name} node={node.name} file={file.file} />
       ) : (
         <>
           <label>

@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { addFrom, addReduce, addRequest } from "./addText";
 import { KnoblyText } from "./components/KnoblyText";
+import { gutterLines } from "./gutter";
 import { segments, shownText } from "./highlight";
 import { boxFrom, boxReduce, saveRequest as boxSave } from "./nodeText";
 import { paneFrom, paneReduce, saveRequest as paneSave } from "./pane";
@@ -58,6 +59,29 @@ describe("knobly highlighting", () => {
       // React writes a textarea's value as its content, after one leading "\n" a parser drops.
       expect(unescape(area![1]).replace(/^\n/, "")).toBe(text);
     }
+  });
+
+  it("keeps the textarea the caller's with the drawer's gutter beside the box", () => {
+    for (const text of texts) {
+      const gutter = gutterLines(text, [{ severity: "error", code: "E1", message: "bad", line: 1, column: 1 }]);
+      const html = renderToStaticMarkup(
+        <KnoblyText rows={3} value={text} onEdit={() => {}} gutter={gutter} onGutterGo={() => {}} />,
+      );
+      const area = /<textarea[^>]*>([\s\S]*)<\/textarea>/.exec(html);
+      expect(area).not.toBeNull();
+      expect(unescape(area![1]).replace(/^\n/, "")).toBe(text);
+      // The gutter is a second pre, hidden from screen readers, before the box and outside it.
+      const row = '<div class="knobly-text-row"><pre class="knobly-gutter" aria-hidden="true"';
+      expect(html.startsWith(row)).toBe(true);
+      const pre = /<pre class="knobly-gutter"[^>]*><code>([\s\S]*?)<\/code><\/pre><div class="knobly-text">/.exec(html);
+      expect(pre).not.toBeNull();
+      const rows = pre![1].split("\n").slice(0, -1);
+      expect(rows).toHaveLength(shownText(text).split("\n").length);
+      expect(rows[0]).toMatch(/^1<span class="gutter-dot gutter-dot-error"/);
+    }
+    // Without a gutter, the markup is the box alone.
+    const alone = renderToStaticMarkup(<KnoblyText rows={3} value="a" onEdit={() => {}} />);
+    expect(alone).toMatch(/^<div class="knobly-text">/);
   });
 
   it("never changes what the pane, the node box or the add form send", () => {

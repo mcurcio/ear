@@ -46,6 +46,9 @@
   --motion-slow: 180ms;
   --motion-pulse: 2s;
   --motion-flow: 1s;
+  /* The busy spinner's turn: an infinite animation, which editor.css stops under reduced motion as it does the pulse
+     and the flow. */
+  --motion-spin: 0.8s;
 }
 
 /* The system's dark, while no theme is chosen or dark is. */
@@ -120,8 +123,8 @@
   --knobly-error: #ff6b6b;
 }
 
-/* No motion for those who ask for none. The pulse and the flow keep their durations: editor.css stops those two
-   infinite animations instead, since a 0 s infinite animation would churn rather than stop. */
+/* No motion for those who ask for none. The pulse, the flow and the spin keep their durations: editor.css stops those
+   three infinite animations instead, since a 0 s infinite animation would churn rather than stop. */
 @media (prefers-reduced-motion: reduce) {
   :root {
     --motion-fast: 0ms;

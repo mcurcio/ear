@@ -46,9 +46,8 @@ does with it:
 ### 3.1 The layout
 
 Built (step 3): [`editor.md`](../editor.md#the-shell). What remains here: the palette button (3.6), `⌘E` and `⌘S`
-(3.6), and `F`, `L` and `M` on the canvas's tools (3.6), the toasts in the canvas's bottom right in place of its one
-error banner (3.5), `Saving…` in the drawer header (3.5), the drawer's line-number gutter (3.5), and keeping the
-inspector's width, the drawer's height and open state and the minimap (3.8).
+(3.6), and `F`, `L` and `M` on the canvas's tools (3.6), and keeping the inspector's width, the drawer's height and
+open state and the minimap (3.8).
 
 ### 3.2 Tokens and the dark theme
 
@@ -65,32 +64,7 @@ Built (step 2): [`editor.md`](../editor.md#wires) and [`editor.md`](../editor.md
 
 ### 3.5 Feedback: in flight, toasts and where errors land
 
-The editor still draws only what ear announced ([`editor.md`](../editor.md#its-rules)). What changes is that a request
-is visible while it is on its way, and its refusal lands where it was asked.
-
-- **In flight** (P4). A new pure module, `requests.ts`, keeps the requests this editor sent and not yet answered, each
-  with what asked for it (a route's two ends, a node's name and the button). While one is in flight:
-  - a wire drawn shows a ghost: a thin dashed `--muted` line between the two handles, plainly not a route (no status
-    colour, no meter, not selectable), gone on the reply; the route is drawn when `route.added` arrives, as today;
-  - a lifecycle button shows a spinner and is disabled; the others stay as `health.ts` says;
-  - Save in the drawer and Add in the form say `Saving…` and `Adding…`.
-- **Toasts** (P3) replace the panel's single error banner. A refusal becomes a toast in the canvas's bottom right,
-  saying what was asked and why it was refused (`route rec:FX → desk:play.1 refused: unknown-port rec:FX`), with the code in monospace. A toast stays 8 s, or until dismissed while hovered or focused; at most
-  four show, older ones folding into "and 3 more"; the same code for the same subject within 5 s counts up ("×3")
-  instead of stacking. Toasts are a polite live region; a refusal is assertive. A toast for a node or route has a Show
-  button that selects it and pans to it.
-- **Where errors land.** A refusal that has a place keeps it: `invalid-text` and `file-changed` in the drawer and the
-  node box as built; a refused route on the ghost, which turns `--err` for 1 s before it goes; a lifecycle refusal
-  under the inspector's lifecycle bar as well as in a toast.
-- **The drawer's gutter** gives each line its number and a dot on each line a diagnostic names (`--err`, `--warn`);
-  hovering the dot shows its messages, a click puts the caret there, as the list under the text does. The gutter is a
-  second `pre` beside the textarea, so `KnoblyText`'s rule that the textarea holds everything
-  ([`editor.md`](../editor.md#highlighting)) is untouched.
-
-`requests.ts` and `notices.ts` (the toast queue: add, coalesce, expire on the monotonic clock, as `marks.ts` does) are
-pure and tested; the components only draw them. Slice 5's notices
-([`control-plane.md`](control-plane.md#84-status-events-diagnostics-and-actions)) are fed into the same queue, so its
-"coalesced per node and code" rule is this one.
+Built (step 4): [`editor.md`](../editor.md#feedback).
 
 ### 3.6 Keyboard and the command palette
 
@@ -161,13 +135,11 @@ each.
    Nothing moves yet.
 2. **The node box, wires and meters** (3.3, 3.4) (built).
 3. **The shell** (3.1) (built): top bar, inspector, drawer and its header chip, the narrow-window sheet.
-4. **Feedback** (3.5): `requests.ts`, `notices.ts`, the ghost wire, toasts, the gutter.
+4. **Feedback** (3.5) (built).
 5. **Keyboard** (3.6) and **canvas adding** (3.7, without kept places).
 6. **What the browser keeps** (3.8, E2).
 
-Tests ([`editor.md`](../editor.md#developing-it): no browser runner, rendering checked by eye): `requests.test.ts` (in flight until reply or connection lost, a ghost per route request);
-`notices.test.ts` (coalescing, the cap, expiry on a fake monotonic clock, a reconnect clears nothing the person has not
-seen); `palette.test.ts` (commands per feature set and phase, replaying the `lifecycle` and `unknown-values` fixtures,
+Tests ([`editor.md`](../editor.md#developing-it): no browser runner, rendering checked by eye): `palette.test.ts` (commands per feature set and phase, replaying the `lifecycle` and `unknown-values` fixtures,
 ranking); `prefs.test.ts` (storage that throws, values of the wrong shape, the 30-day expiry); `layout.test.ts`
 (placement hints taken, a stale hint dropped).
 
