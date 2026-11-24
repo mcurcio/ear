@@ -1,5 +1,6 @@
 // The top bar (docs/editor.md#the-top-bar): what is about the whole graph and never about a selection. The wordmark and
-// the connection pill; the engine chip, the dropouts badge and the newer-protocol chip; then the theme switch, the
+// the connection pill; the engine chip, the dropouts badge and the newer-protocol chip; then the palette button with
+// its key (docs/editor.md#the-palette), the theme switch, the
 // ear.conf toggle with the drawer's status words, and below the narrow width the inspector's button. The words are
 // shell.ts's and drawer.ts's.
 import { drawerChip, type DrawerWord } from "../drawer";
@@ -32,6 +33,7 @@ export function TopBar({
   sheetOpen,
   onToggleSheet,
   onPalette,
+  paletteLabel = "⌘K",
 }: {
   graph: Graph | null;
   theme: ThemeChoice;
@@ -43,6 +45,8 @@ export function TopBar({
   onToggleSheet: () => void;
   /** The command palette's button is drawn only when given. */
   onPalette?: () => void;
+  /** The palette's key as the platform writes it: "⌘K" or "Ctrl+K". */
+  paletteLabel?: string;
 }) {
   const chip = drawer === null ? undefined : drawerChip(drawer.status);
   return (
@@ -54,8 +58,15 @@ export function TopBar({
       <div className="topbar-facts">{graph !== null && <GraphChips graph={graph} />}</div>
       <div className="topbar-end">
         {onPalette !== undefined && (
-          <button type="button" className="topbar-palette" aria-label="Command palette" onClick={onPalette}>
-            ⌘K
+          <button
+            type="button"
+            className="topbar-palette"
+            aria-label="Command palette"
+            title={`Command palette (${paletteLabel})`}
+            aria-keyshortcuts={paletteLabel.startsWith("⌘") ? "Meta+K" : "Control+K"}
+            onClick={onPalette}
+          >
+            {paletteLabel}
           </button>
         )}
         <ThemeSwitch choice={theme} onChoose={onTheme} />

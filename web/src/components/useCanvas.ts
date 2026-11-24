@@ -2,12 +2,13 @@
 // announced them, the selection the inspector follows (docs/editor.md#the-inspector), and Tidy. Moves and selection
 // are the browser's; adding and removing wait for ear's events (docs/editor.md#its-rules). Beside the routes, the ghost
 // wires of route requests on their way (requests.ts, docs/editor.md#requests-in-flight): requests, never routes, so
-// they cannot be selected, focused or deleted.
+// they cannot be selected, focused or deleted. Places are kept per ear in the browser through the keeper App gives
+// (prefs.ts, docs/editor.md#what-the-browser-keeps): a drag's end, new nodes' places and Tidy are saved.
 import { applyNodeChanges, type EdgeChange, type NodeChange } from "@xyflow/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { edgeId, handleId } from "../connect";
 import type { GraphState } from "../graph";
-import { Places, type Position } from "../layout";
+import { Places, type PlaceHint, type PlaceKeeper, type Position } from "../layout";
 import { ghostWires } from "../requests";
 import { selectionKey, selectionOf, withSelected, type Selection } from "../selection";
 import type { EarFlowNode } from "./EarNode";
@@ -33,6 +34,8 @@ export interface CanvasModel {
   tidy: () => void;
   /** While Tidy's nodes slide to their new places. */
   tidying: boolean;
+  /** Quick add's placement hint (docs/editor.md#adding-on-the-canvas); null drops it. */
+  hint: (hint: PlaceHint | null) => void;
 }
 
 /**
@@ -51,10 +54,10 @@ function syncNodes(previous: EarFlowNode[], graph: GraphState, places: Places): 
   });
 }
 
-export function useCanvas(graph: GraphState): CanvasModel {
+export function useCanvas(graph: GraphState, keeper?: PlaceKeeper): CanvasModel {
   const [nodes, setNodes] = useState<EarFlowNode[]>([]);
   const [selectedEdges, setSelectedEdges] = useState<ReadonlySet<string>>(new Set());
-  const [places] = useState(() => new Places());
+  const [places] = useState(() => new Places(keeper));
   const [tidying, setTidying] = useState(false);
   const tidyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const { requests } = useEditor();
@@ -100,9 +103,17 @@ export function useCanvas(graph: GraphState): CanvasModel {
   }, [graph, selectedEdges, asked]);
 
   const onNodesChange = useCallback(
-    (changes: NodeChange<EarFlowNode>[]) =>
-      setNodes((current) => applyNodeChanges(changes.filter((c) => c.type !== "remove" && c.type !== "add"), current)),
-    [],
+    (changes: NodeChange<EarFlowNode>[]) => {
+      setNodes((current) => applyNodeChanges(changes.filter((c) => c.type !== "remove" && c.type !== "add"), current));
+      // A drag's end, or React Flow's keyboard move of a selected node: the place is kept.
+      const moved = new Map<string, Position>();
+      for (const change of changes) {
+        if (change.type === "position" && change.dragging === false && change.position !== undefined)
+          moved.set(change.id, change.position);
+      }
+      places.move(moved);
+    },
+    [places],
   );
   // A ghost cannot be selected, so no select change names one.
   const onEdgesChange = useCallback((changes: EdgeChange<CanvasEdge>[]) => {
@@ -139,8 +150,10 @@ export function useCanvas(graph: GraphState): CanvasModel {
     tidyTimer.current = setTimeout(() => setTidying(false), tidyMs);
   }, [places]);
 
+  const hint = useCallback((next: PlaceHint | null) => places.hint(next), [places]);
+
   return useMemo(
-    () => ({ nodes, edges, onNodesChange, onEdgesChange, selection, select, tidy, tidying }),
-    [nodes, edges, onNodesChange, onEdgesChange, selection, select, tidy, tidying],
+    () => ({ nodes, edges, onNodesChange, onEdgesChange, selection, select, tidy, tidying, hint }),
+    [nodes, edges, onNodesChange, onEdgesChange, selection, select, tidy, tidying, hint],
   );
 }

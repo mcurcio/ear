@@ -32,6 +32,13 @@ along the bottom ([below](#the-shell)).
   holds the graph's counters and the selected node's ([below](#counters)). A request on its way shows while it is
   (a dashed ghost wire, a spinner on its button, `Saving…` and `Adding…`), and a refusal becomes a toast at the
   canvas's bottom right, or lands where it was asked ([below](#feedback)).
+- **Keyboard and palette:** Cmd+K (Ctrl+K off macOS) opens a command palette for going to a node, adding, the
+  lifecycle calls, removing, `ear.conf`'s actions, the view and the theme; `?` lists the shortcuts
+  ([below](#the-palette-and-the-keyboard)).
+- **Adding on the canvas:** a double-click on empty canvas, or an output's wire dropped there, opens a type list at
+  the pointer, and the new node lands where it was asked for ([below](#adding-on-the-canvas)).
+- **Kept in the browser:** node places, the inspector's width, the drawer's height and open state, the minimap and
+  the theme survive a reload ([below](#what-the-browser-keeps)).
 - **The ear.conf drawer** holds the pane: `ear.conf`, highlighted ([below](#highlighting)), with a gutter with
   line numbers and a dot on each line a diagnostic names ([below](#the-drawers-gutter)), its diagnostics (a click
   puts the caret there) and Save (`graphFile.set`, based on the version
@@ -60,8 +67,11 @@ along the bottom ([below](#the-shell)).
   over a file that changed meanwhile (`file-changed`). The node panel's box does the same for its
   node's text.
 - **Node positions live in the browser.** Unplaced nodes are laid out with dagre (sources left,
-  sinks right, following the routes); a place the user dragged a node to is kept in the browser
-  only, never sent to ear. Tidy lays every node out again, in the browser only.
+  sinks right, following the routes). A place the person dragged a node to, and where a quick add
+  put it, is kept in the browser's `localStorage` per ear and never sent to ear
+  ([below](#what-the-browser-keeps)). Tidy lays every node out again, in the browser only.
+- **Shortcuts never take a text field's keys.** Inside an input, textarea or select every single
+  key is the text's ([below](#shortcuts)).
 - **The counters are kept as sent.** With the `counters` feature the graph store keeps the
   graph's counters and each node's whole, from the snapshot and `node.added`, and replaces those a
   `counters.changed` names ([control-port.md](control-port.md#counters)); an unknown counter is
@@ -99,7 +109,8 @@ to right:
 - the dropouts badge ([Counters](#counters));
 - a `protocol N` chip while ear speaks a newer protocol than this editor's, its tooltip saying
   some of it is not shown;
-- on the right, the theme switch and the `ear.conf` toggle with the drawer's status words as a
+- on the right, the palette button, its key (`⌘K` or `Ctrl+K`) as its text
+  ([below](#the-palette)), the theme switch and the `ear.conf` toggle with the drawer's status words as a
   chip;
 - below 900 px, an Inspector button ([below](#narrow-windows)).
 
@@ -110,8 +121,11 @@ to right:
 It fills the rest, a quiet dot grid in the theme's colours. React Flow's `Controls` give way to one
 floating tool group, bottom left: zoom out, zoom in, fit, tidy and the minimap toggle. Tidy lays
 every node out again with dagre, as on first placement, and they slide there over
-`--motion-slow`; moves are the browser's, so nothing is sent (`layout.ts`'s `relayout`). The
-minimap is React Flow's `MiniMap`, off by default, its boxes in their state's token. Toasts sit at its bottom right
+`--motion-slow` (180 ms); moves are the browser's, so nothing is sent (`layout.ts`'s `relayout`), and the new
+places are kept ([below](#what-the-browser-keeps)). The minimap is React Flow's `MiniMap`, off by default, its boxes
+in their state's token. Fit, tidy and the minimap are also `F`, `L` and `M` ([below](#shortcuts)), which the tools'
+titles carry, and the palette's `Fit view`, `Tidy layout` and `Show minimap`. A double-click on empty canvas opens
+quick add instead of zooming ([below](#adding-on-the-canvas)). Toasts sit at its bottom right
 ([below](#toasts)), and a route request on its way is a ghost wire ([below](#requests-in-flight)).
 
 ### The inspector
@@ -151,11 +165,12 @@ and the scroll. The inspector and the drawer never move each other's content.
 ### Narrow windows
 
 Below 900 px the inspector is a sheet over the canvas's right edge. It opens when something is
-selected or from the top bar's Inspector button, and closes on Escape or a click on the canvas.
+selected or from the top bar's Inspector button, and closes on Escape (after the palette and the shortcut sheet,
+before the selection: [Shortcuts](#shortcuts)) or a click on the canvas.
 The drawer keeps its place. `sizes.ts` holds the bounds and the breakpoint, and `sizes.test.ts`
 holds `editor.css` to them.
 
-The sizes, the drawer's open state and the minimap last as long as the page.
+The sizes, the drawer's open state and the minimap are kept per ear ([What the browser keeps](#what-the-browser-keeps)).
 
 ## Feedback
 
@@ -215,6 +230,65 @@ does; the list stays the keyboard's and screen readers' way in, as the gutter is
 second `pre` beside the box, never inside it, following the textarea's vertical scroll with the same font, size,
 line height and top inset, so [Highlighting](#highlighting)'s rules are untouched. Only the drawer has one.
 
+## The palette and the keyboard
+
+### The palette
+
+`web/src/palette.ts` (`palette.test.ts`) builds the palette's commands from the graph, the selection, the features
+and the shell's state, so a command ear cannot take is never offered; `components/Palette.tsx` draws it and
+`components/useCommands.ts` turns each into its request or its change of view. Cmd+K (Ctrl+K off macOS) or the top
+bar's button opens it, centred near the top of the window. Its commands:
+
+| Command | Does |
+|---|---|
+| `Go to <node>` | selects it and pans to it, as a toast's Show does |
+| `Add <type>` | opens the inspector's add-node form with that type's template ([below](#adding-a-node)): the knobly form with `node-text`, the JSON one without |
+| `Start`, `Stop`, `Restart`, `Disable`, `Enable <node>` | the lifecycle call, only with the `lifecycle` feature and only as `health.ts` allows ([below](#a-nodes-health)), its why as the hint; a refusal is a toast and the inspector's spinner shows it on its way |
+| `Remove <node>`, `Remove route <from> → <to>` | as the Delete key, for any route whatever its status |
+| `Open ear.conf` or `Close ear.conf`, `Save ear.conf`, `Reload ear.conf` | the drawer's actions: Save only while the draft can be saved, Reload only while it is stale; none from an ear that sent no graph file |
+| `Fit view`, `Tidy layout`, `Show minimap` or `Hide minimap` | as their tools ([above](#the-canvas)) |
+| `Theme: system`, `Theme: light`, `Theme: dark` | the two choices that are not the current one |
+| `Keyboard shortcuts` | the shortcut sheet ([below](#shortcuts)) |
+
+With nothing typed, the selection's commands come first (each selected node's lifecycle calls and Remove, then each
+selected route's Remove), then Go to, Add, `ear.conf`'s, the view's, and every other node's and route's. An option
+shows its group, its hint and, where it has one, its key.
+
+- **Ranking.** A subsequence match on the label: every typed character, case-insensitive and ignoring spaces, must
+  appear in order. A character at a word start scores most and one right after the previous match next; a gap
+  between two matches costs a little. Ties go to the shorter label, then the list's order; at most 50 are shown.
+- **A combobox.** It is a WAI-ARIA combobox over a listbox in a modal dialog: the arrows move (wrapping), Page Up and
+  Page Down move by 8, Enter or a click runs one, Escape, Tab or a click outside closes it, and the matched letters
+  are marked. The keys it handles never reach the editor's shortcuts, and focus goes back where it was when it closes.
+  Hand-written, no package.
+- **Nothing of its own.** Everything it does is a request ear judges, drawn when ear announces it
+  ([above](#its-rules)), or a change of the browser's own view.
+
+### Shortcuts
+
+`web/src/keys.ts` (`keys.test.ts`) maps a key to a shortcut, by the platform and by whether the focus is in a text
+field; `components/useShortcuts.ts` is the one listener, and `components/ShortcutSheet.tsx` the sheet `?` opens.
+
+| Key | Does |
+|---|---|
+| `⌘K` (`Ctrl+K` off macOS) | opens or closes the palette |
+| `⌘E` | shows or hides the `ear.conf` drawer |
+| `⌘S` | saves the drawer's draft, only while it can be saved; the browser's Save page never opens |
+| `F`, `L`, `M` | fit the view, tidy the layout, show or hide the minimap |
+| `A` | the palette, with only its `Add` commands; the node is then laid out as any other |
+| `?` | the shortcut sheet |
+| Escape | closes the palette, else the shortcut sheet, else the narrow inspector's sheet, else clears the selection |
+| Delete, Backspace | React Flow's: removes the selection, asking ear ([above](#the-inspector)) |
+
+Single keys and Escape act only when the focus is not in a text field (an input of a text kind, a textarea, a select
+or contenteditable) and with no modifier but Shift (which `?` needs on most layouts). The three chords act
+everywhere, since they type nothing, so `⌘S` saves the drawer's draft while typing in it; it saves only that draft,
+even with the focus in the node panel's box. While the palette or the sheet is open, only `⌘K` and Escape act.
+*Why that filter:* React Flow 12.12.0 skips input, select, textarea, contenteditable and anything inside `.nokey`
+for Delete by the same rule (its `isInputDOMNode`, checked in the pinned package), so its keys and the editor's
+coexist with the focus in the inspector's text. Slice 6's knobs are designed to carry `nodrag`, `nowheel`, `nopan`
+and `nokey` ([control-plane.md](design/control-plane.md#83-gestures-from-pointer-and-keyboard)).
+
 ## Adding a node
 
 `web/src/addText.ts` is the add-node form's logic (`addText.test.ts` replays `node-text.json`'s
@@ -233,6 +307,24 @@ hand), and places its diagnostics in the form's text. The rules:
   while the request was on its way; the form keeps the text and says to press Add again.
 - **A node added gives a fresh template.** The node appears when ear announces it; the form's
   diagnostics are listed under it as the pane's, and a click puts the caret there.
+
+## Adding on the canvas
+
+- **Quick add.** A double-click on empty canvas (in place of React Flow's zoom), or a wire from an output dropped on
+  empty canvas (`connect.ts`'s `droppedOnPane`), opens the palette's `Add` commands at the pointer, kept inside the
+  window. Choosing a type opens the inspector's add-node form with its template, as `Add <type>` does; ear still
+  judges the text, and the node still appears only on `node.added`.
+- **Placement hints.** The pointer's place is kept for the template's name (with no template, the JSON form, for
+  the next node added). When `node.added` brings that name, `Places` puts it there (`layout.ts`'s `quickPlace`: the
+  box centred on a double-click with its header at the pointer, its left edge at a wire's drop) instead of asking
+  dagre, even over a kept place. A node arriving under another name (the person renamed it) drops the hint, as does
+  selecting something (which drops the form, [above](#the-inspector)), and that node is laid out as before. A
+  typed draft is never overwritten by the template ([above](#adding-a-node)).
+- **No route is asked.** A wire dropped on empty canvas places the node at the drop, and the person draws the wire.
+  *Why:* the owner chose that a wire dropped there asks for no route: it would be a second request the person did
+  not see, and a type's first input is not always the one they mean.
+
+Tidy is `L` and the palette's `Tidy layout` ([The canvas](#the-canvas)).
 
 ## The node panel's text
 
@@ -342,8 +434,9 @@ alone; the groups:
 that the editor follows the system until the person chooses. The switch cycles system, light and
 dark and writes `data-theme="light"` or `"dark"` on `<html>`; system removes the attribute.
 `web/src/theme.ts` is its logic, and `index.html`'s `color-scheme` meta lets the first paint follow
-the system before the styles arrive. The switch sits in the top bar ([above](#the-top-bar)); the
-choice lasts only as long as the page: a reload returns to the system's.
+the system before the styles arrive. The switch sits in the top bar ([above](#the-top-bar)), and
+the palette has a `Theme:` command for each other choice ([above](#the-palette)); the choice is kept per browser
+([What the browser keeps](#what-the-browser-keeps)) and applied before the first render.
 
 **Contrast is a test.** `theme.test.ts` reads `theme.css` and fails naming the theme and the pair
 when any text, state, on-strong or knobly token falls below 4.5:1 on a surface it is drawn on, in
@@ -354,6 +447,25 @@ with `light-dark()`, because the build's CSS minifier may rewrite that function.
 stylesheets by default, so `vite.config.ts` lets it read these two as text.
 
 Forced colours keep the system's colours, as [Highlighting](#highlighting) says.
+
+## What the browser keeps
+
+`web/src/prefs.ts` (`prefs.test.ts`) is the only module that touches the browser's storage. It uses `localStorage`,
+every read and write in `try` (so a private window, blocked storage or a full one keeps an editor that remembers for
+the page's life), and checks every value on read, ignoring a bad one. `main.tsx` makes one for the page.
+
+- **Per ear**, keyed by the page's `location.host` (`ear-editor/1/<host>/…`): node places, the inspector's width
+  (clamped to its bounds), the drawer's height (clamped to the window) and whether it is open, and the minimap.
+- **Per browser** (`ear-editor/1/theme`): the theme, applied before the first render, so a kept dark choice never
+  flashes light.
+- **Places** are written when a drag ends (or a keyboard move), when new nodes are placed and on Tidy (which forgets
+  the absent ones too), never on a state change. A name not in the graph keeps its place for 30 days from when it
+  was last seen, timed on the wall clock (it outlives the page; every other editor clock is monotonic), so a node
+  removed and added back finds it; at most 500 are kept, the most recently seen. They are never sent to ear
+  ([above](#its-rules)). *Why:* the owner wanted node places kept across reloads in the browser, per ear, so a
+  reload no longer scatters a hand-placed graph and places stay the browser's own.
+
+Slice 5's type-schema cache is designed to use this module too ([control-plane.md](design/control-plane.md#81-stores)).
 
 ## The node box, wires and meters
 
@@ -392,6 +504,9 @@ Forced colours keep the system's colours, as [Highlighting](#highlighting) says.
 - **The flow.** A linked wire whose from port's rms is above the -60 dBFS floor shows a dash moving
   from the output to the input at a fixed speed (`--motion-flow`). It means "signal", not how
   loud. There is none under reduced motion, and none on pending, refused or an unknown status.
+  Not measured yet: the moving dash's cost at 30 level messages a second on a 20-wire graph. It
+  is owed in a browser's performance panel on the system test's graph; if it costs, the flow is
+  drawn only on the selected and hovered wires (`wires.ts`'s `flowing`).
 - **The status in words.** A refused wire carries `refused` at its midpoint (React Flow's
   `EdgeLabelRenderer`). A status this editor does not know carries its own word, in `--muted`.
 - **Hover** thickens the wire by 1 px. Its tooltip names the two ends
@@ -548,10 +663,16 @@ port. Node.js comes from `web/.nvmrc` and the packages from `web/package-lock.js
 The tests cover the reducer against every `test/protocol` fixture, the graph file's state and the
 pane's logic (drafts, stale files, Save, refusals), the node panel's knobly box (`nodeText.ts`), the add-node
 form (`addText.ts`), the highlighting (`highlight.ts`, and that it never changes the text sent), the reconnecting client with a fake socket,
-the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (the hold, the fall, the lamp and the reset on a fake clock), the handles' cue (`connect.ts`), the box's sizes against `editor.css` (`layout.test.ts`), and the theme (`theme.ts`, and the contrast of every pair in both themes in `theme.test.ts`), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the sizes and the breakpoint against `editor.css` (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight and the ghosts (`requests.ts`), the toast queue and a refusal's words (`notices.ts`, replaying `errors.json`), the gutter (`gutter.ts`), and the session's `ask` on a fake socket (`editor.test.ts`). There is no browser test runner:
+the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (the hold, the fall, the lamp and the reset on a fake clock), the handles' cue (`connect.ts`), the box's sizes against `editor.css` (`layout.test.ts`), and the theme (`theme.ts`, and the contrast of every pair in both themes in `theme.test.ts`), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the sizes and the breakpoint against `editor.css` (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight and the ghosts (`requests.ts`), the toast queue and a refusal's words (`notices.ts`, replaying `errors.json`), the gutter (`gutter.ts`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands and ranking, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the shortcuts (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), and the wire dropped on the pane (`connect.ts`). There is no browser test runner:
 rendering is checked by eye. *Why:* a Playwright leg costs about 150 MB of browsers and a minute
 or two a CI run, while the logic sits in the reducer, client and rules, which Vitest covers
 against the same fixtures the server is tested with.
+
+**The bundle.** The palette, the shortcuts, quick add and what the browser keeps grew the editor's script by 16.4 KB
+(515.17 KB to 531.61 KB; 5.4 KB gzipped, 164.28 KB to 169.68 KB) and its styles by 2.0 KB (35.59 KB to 37.57 KB),
+measured by the build before and after; the shell's design estimated under 15 KB (5 KB gzipped), so it is slightly
+over. The whole shell, from tokens to this, grew the script from 486.58 KB to 531.61 KB (155.24 KB to 169.68 KB
+gzipped) and the styles from 21.25 KB to 37.57 KB. No package was added for any of it.
 
 React Flow (`@xyflow/react`) was chosen over Rete.js (its own editor framework) and LiteGraph
 (drawn on a canvas, which makes per-port meters custom work).

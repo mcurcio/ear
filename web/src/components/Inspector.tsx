@@ -1,7 +1,8 @@
 // The inspector (docs/editor.md#the-inspector): one subject, chosen by the selection (selection.ts): the Graph (the
 // engine facts in full, the graph's counters, the add-node form), one Node, one Route, or several with Delete for them
 // all. Resized by its left edge; below the narrow width it is a sheet over the canvas (docs/editor.md#narrow-windows,
-// editor.css). Every change is a request to ear.
+// editor.css). Every change is a request to ear. An Add command (docs/editor.md#the-palette) reaches the add-node form
+// as an intent: its type chosen and the form focused.
 import type { CSSProperties } from "react";
 import type { Graph, RouteEnds } from "../protocol";
 import { subjectTitle, type InspectorSubject, type Selection } from "../selection";
@@ -13,14 +14,22 @@ import { NodePanel } from "./NodePanel";
 import { RoutePanel } from "./RoutePanel";
 import { Splitter } from "./Splitter";
 
+/** An Add command's type for the add-node form; a new nonce each time, so the same type asked twice acts twice. */
+export interface AddIntent {
+  type: string;
+  nonce: number;
+}
+
 function Subject({
   graph,
   subject,
   onSelect,
   onRemove,
+  addIntent,
 }: {
   graph: Graph;
   subject: InspectorSubject;
+  addIntent: AddIntent | null;
   onSelect: (selection: Selection) => void;
   onRemove: (nodes: readonly string[], routes: readonly RouteEnds[]) => void;
 }) {
@@ -34,6 +43,7 @@ function Subject({
             types={graph.types}
             names={graph.nodes.map((node) => node.name)}
             features={graph.features ?? []}
+            intent={addIntent}
           />
         </>
       );
@@ -94,9 +104,11 @@ export function Inspector({
   onResize,
   onSelect,
   onRemove,
+  addIntent,
 }: {
   graph: Graph;
   subject: InspectorSubject;
+  addIntent: AddIntent | null;
   width: number;
   onResize: (px: number) => void;
   onSelect: (selection: Selection) => void;
@@ -118,7 +130,7 @@ export function Inspector({
         onChange={onResize}
       />
       <div className="inspector-body">
-        <Subject graph={graph} subject={subject} onSelect={onSelect} onRemove={onRemove} />
+        <Subject graph={graph} subject={subject} onSelect={onSelect} onRemove={onRemove} addIntent={addIntent} />
       </div>
     </aside>
   );

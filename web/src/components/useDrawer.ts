@@ -1,7 +1,8 @@
 // The ear.conf drawer's state (docs/editor.md#the-drawer), held by App so the top bar's toggle and the drawer's
 // header read one status: the pane (pane.ts, over null until the first file), whether the drawer is open, its body's
 // height, Save (saving while its request is on its way, docs/editor.md#requests-in-flight), and opening by itself only
-// on a refusal or a write failure the person has not been shown (drawer.ts).
+// on a refusal or a write failure the person has not been shown (drawer.ts). Whether it is open and its height are
+// kept per ear (prefs.ts, docs/editor.md#what-the-browser-keeps).
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type Dispatch } from "react";
 import { drawerOpens, drawerReduce, drawerStatus, type DrawerWord } from "../drawer";
 import type { GraphFileState } from "../graphFile";
@@ -11,6 +12,7 @@ import type { GraphFile, RpcErrorCode } from "../protocol";
 import { isAsking } from "../requests";
 import { RpcError } from "../rpc";
 import { clamp, drawerBounds, drawerHeight } from "../sizes";
+import type { Prefs } from "../prefs";
 import { useEditor, useRequests } from "./hooks";
 
 export interface DrawerModel {
@@ -31,15 +33,19 @@ export interface DrawerModel {
 }
 
 /** The drawer's state; null until ear has sent a graph file (an ear without one shows no drawer). */
-export function useDrawer(state: GraphFileState | null): DrawerModel | null {
+export function useDrawer(state: GraphFileState | null, prefs?: Prefs): DrawerModel | null {
   const editor = useEditor();
   const saving = isAsking(useRequests(), "graphFile.set");
   const file = state?.file ?? null;
   const [pane, dispatch] = useReducer(drawerReduce, file, (first: GraphFile | null) =>
     first === null ? null : paneFrom(first),
   );
-  const [open, setOpen] = useState(false);
-  const [height, setRawHeight] = useState<number>(drawerHeight.initial);
+  const [kept] = useState(() => prefs?.drawer());
+  const [open, setOpen] = useState(kept?.open ?? false);
+  const [height, setRawHeight] = useState<number>(() =>
+    clamp(kept?.height ?? drawerHeight.initial, drawerBounds(window.innerHeight)),
+  );
+  useEffect(() => prefs?.setDrawer({ open, height }), [prefs, open, height]);
   const previous = useRef<GraphFile | null>(null);
 
   useEffect(() => {

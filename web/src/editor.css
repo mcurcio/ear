@@ -287,6 +287,157 @@ body,
   }
 }
 
+/* The command palette and the shortcut sheet (docs/editor.md#the-palette-and-the-keyboard): a raised frame over the
+   canvas, centred near the top, or at the pointer for quick add. The backdrop catches a pointer outside and has no
+   colour, so no scrim token is needed. */
+.palette-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+}
+
+.palette,
+.shortcut-sheet {
+  position: fixed;
+  top: 12vh;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(560px, calc(100vw - 32px));
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--raised);
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-box);
+  box-shadow: var(--shadow-lifted);
+  animation: palette-in var(--motion-fast) ease-out;
+}
+
+/* Its size is Palette.tsx's anchoredBox, which keeps it inside the window. */
+.palette[data-anchored] {
+  transform: none;
+  width: 320px;
+  max-height: 360px;
+}
+
+.palette-input {
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: var(--radius-box) var(--radius-box) 0 0;
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 15px;
+  background: transparent;
+  color: inherit;
+}
+
+.palette-input:focus {
+  outline: none;
+}
+
+.palette-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+}
+
+.palette-option {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 8px;
+  align-items: baseline;
+  padding: 6px 8px;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+
+.palette-option[aria-selected="true"] {
+  background: var(--sunken);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.palette-label {
+  overflow-wrap: anywhere;
+}
+
+/* Overrides the browser's own mark colours. */
+.palette-label mark {
+  background: none;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.palette-meta {
+  display: flex;
+  gap: 8px;
+}
+
+.palette-group,
+.palette-hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.palette-empty {
+  margin: 0;
+  padding: 12px;
+  color: var(--muted);
+}
+
+.shortcut-sheet {
+  width: min(440px, calc(100vw - 32px));
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.shortcut-sheet h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.shortcut-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 12px 0;
+}
+
+.shortcut-row {
+  display: contents;
+}
+
+.shortcut-list dd {
+  margin: 0;
+}
+
+.shortcut-note {
+  margin: 0 0 12px;
+  color: var(--muted);
+}
+
+.shortcut-sheet button {
+  align-self: flex-end;
+}
+
+.app kbd {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  padding: 1px 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--sunken);
+  color: var(--text);
+}
+
+/* A 0 ms duration under reduced motion is harmless here: the animation is finite. */
+@keyframes palette-in {
+  from {
+    opacity: 0;
+  }
+}
+
 /* A route request's ghost wire (docs/editor.md#requests-in-flight): thin, dashed and muted, plainly not a route; never
    under the pointer, so it cannot be hovered or clicked; the error colour for its second when ear refuses it. */
 .react-flow__edge.ear-ghost-edge {
@@ -1375,5 +1526,17 @@ body,
 @media (max-width: 599px) {
   .topbar .wordmark {
     display: none;
+  }
+
+  .palette,
+  .shortcut-sheet {
+    top: 8px;
+  }
+}
+
+/* Forced colours: the palette's active option by the system's highlight, as its background is not drawn. */
+@media (forced-colors: active) {
+  .palette-option[aria-selected="true"] {
+    outline: 2px solid Highlight;
   }
 }

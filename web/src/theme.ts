@@ -1,6 +1,6 @@
 // The theme (docs/editor.md#tokens-and-themes): system, light or dark, written to data-theme on <html>. System removes
 // the attribute, so theme.css's prefers-color-scheme rule decides. The switch sits in the top bar
-// (docs/editor.md#the-top-bar). The choice is not stored yet: a reload returns to the system's.
+// (docs/editor.md#the-top-bar). The choice is kept per browser by prefs.ts (docs/editor.md#what-the-browser-keeps).
 
 export type ThemeChoice = "system" | "light" | "dark";
 

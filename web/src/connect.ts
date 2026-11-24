@@ -71,3 +71,19 @@ export function handleCue(from: DragStart | null, node: string, handle: string):
     ? "target"
     : "dimmed";
 }
+
+/** What droppedOnPane reads of React Flow's onConnectEnd state (its FinalConnectionState). */
+export interface DragEnd {
+  isValid: boolean | null;
+  toNode: unknown | null;
+  fromHandle: { id?: string | null } | null;
+}
+
+/**
+ * A wire dropped on empty canvas (docs/editor.md#adding-on-the-canvas): a drag from an output that ended on no node and
+ * no valid handle. A drag from an input is not one: quick add follows an output's wire.
+ */
+export function droppedOnPane(state: DragEnd): boolean {
+  if (state.isValid === true || state.toNode !== null || state.fromHandle === null) return false;
+  return parseHandleId(state.fromHandle.id)?.direction === "out";
+}

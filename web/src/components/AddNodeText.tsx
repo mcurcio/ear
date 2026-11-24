@@ -10,12 +10,24 @@ import type { GraphFile, RpcErrorCode } from "../protocol";
 import { isAsking } from "../requests";
 import { RpcError } from "../rpc";
 import { useEditor, useRequests } from "./hooks";
+import type { AddIntent } from "./Inspector";
 import { KnoblyText } from "./KnoblyText";
 import { Spinner } from "./Spinner";
 
-export function AddNodeText({ types, names, file }: { types: string[]; names: string[]; file: GraphFile }) {
+export function AddNodeText({
+  types,
+  names,
+  file,
+  intent,
+}: {
+  types: string[];
+  names: string[];
+  file: GraphFile;
+  /** An Add command's type (docs/editor.md#the-palette): chosen, so its template follows, and the text focused. */
+  intent: AddIntent | null;
+}) {
   const editor = useEditor();
-  const [type, setType] = useState("");
+  const [type, setType] = useState(intent?.type ?? "");
   const chosenType = types.includes(type) ? type : (types[0] ?? "");
   const [form, dispatch] = useReducer(addReduce, undefined, () => addFrom(chosenType, names));
   const adding = isAsking(useRequests(), "node.addText");
@@ -24,6 +36,24 @@ export function AddNodeText({ types, names, file }: { types: string[]; names: st
 
   // A type chosen, or the nodes changed (a name taken): the template follows while it is untouched.
   useEffect(() => dispatch({ kind: "type", type: chosenType, names }), [chosenType, namesKey]);
+
+  // An Add command: its type chosen (the template follows only while the text is untouched, so a typed draft is kept),
+  // then, once that text is drawn, the caret at the end of the first line, where the name is.
+  const [focusFor, setFocusFor] = useState<number | null>(null);
+  useEffect(() => {
+    if (intent === null) return;
+    setType(intent.type);
+    dispatch({ kind: "type", type: intent.type, names });
+    setFocusFor(intent.nonce);
+  }, [intent?.nonce]);
+  useEffect(() => {
+    const area = text.current;
+    if (focusFor === null || area === null) return;
+    area.focus();
+    const end = area.value.indexOf("\n");
+    const at = end < 0 ? area.value.length : end;
+    area.setSelectionRange(at, at);
+  }, [focusFor]);
 
   // The form shows file-changed and invalid-text itself (the diagnostics, Add again); any other is a toast
   // (docs/editor.md#toasts).

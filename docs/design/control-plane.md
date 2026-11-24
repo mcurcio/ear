@@ -1081,7 +1081,7 @@ The node panel this section names is the inspector's Node subject
 |---|---|---|
 | `protocol.ts` | the wire types of section 4; `ControlErrorCode`; `NodeDiagnostic`, `EventSeverity` | typecheck |
 | `graph.ts` | each node's `status`, `gestures`, `diagnostics`; handlers for the new notifications | vitest, every fixture |
-| `types.ts` (new) | the type schemas by hash; `types.get` with `ifNoneMatch`; cached in `localStorage` (in `try`) | vitest |
+| `types.ts` (new) | the type schemas by hash; `types.get` with `ifNoneMatch`; cached in `localStorage` through `prefs.ts`, its keys per ear ([editor.md](../editor.md#what-the-browser-keeps)) | vitest |
 | `gesture.ts` (new, pure) | the session's own gestures as a state machine; what to send for each input; the control mapping | vitest, a fake client |
 | `form.ts` (new, pure) | the settings form's per-field drafts; the Apply flow (3d's dry run) | vitest |
 | `activity.ts` (new) | per node, the last 100 events and diagnostics since connecting; notices, coalesced per node and code | vitest |
@@ -1159,7 +1159,8 @@ A value is shown and sent rounded to `decimals`; `minIsSilence` shows the minimu
 
 - **The canvas does not see a control's input**: every control on a box carries React Flow's `nodrag`, `nowheel`,
   `nopan` and `nokey` classes and stops the propagation of every key it handles, so Backspace on a focused knob never
-  deletes the node [U: React Flow 12's class names and key filter, checked against the pinned package].
+  deletes the node. React Flow 12.12.0's own classes are `nodrag`, `nowheel` and `nopan`, and its key filter skips
+  input, select, textarea, contenteditable and anything inside `.nokey` ([editor.md](../editor.md#shortcuts)).
 - Another session's gesture: the control moves, is disabled, and says "held by another editor".
 - Notices for its own gesture's abort: `hand-edit` "ear.conf was edited by hand and changed amp gainDb while you held
   it; it now says -10." [Set -3.5 again]; `file-saved` the same from the text pane; `node-removed` "amp was removed or

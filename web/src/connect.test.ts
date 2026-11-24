@@ -1,7 +1,15 @@
 // An output → input drag gives route.add's params; input → input (and
 // output → output) is refused.
 import { describe, expect, it } from "vitest";
-import { edgeId, handleCue, handleId, isValidConnection, parseHandleId, routeFromConnection } from "./connect";
+import {
+  droppedOnPane,
+  edgeId,
+  handleCue,
+  handleId,
+  isValidConnection,
+  parseHandleId,
+  routeFromConnection,
+} from "./connect";
 import { fixtures } from "./testFixtures";
 
 const out = (port: string) => handleId("out", port);
@@ -103,5 +111,18 @@ describe("the cue while a wire is drawn", () => {
     const from = { nodeId: "kitchen", id: out("from.left") };
     expect(handleCue(from, "desk", inp("odd:port.1"))).toBe("target");
     expect(handleCue({ nodeId: "desk", id: inp("odd:port.1") }, "desk", inp("odd:port.1"))).toBe("origin");
+  });
+});
+
+// Quick add from a wire (docs/editor.md#adding-on-the-canvas): an output's drag that ended on empty canvas.
+describe("droppedOnPane", () => {
+  it("is a drag from an output that ended on no node and no valid handle", () => {
+    const from = { id: out("noise.mono") };
+    expect(droppedOnPane({ isValid: null, toNode: null, fromHandle: from })).toBe(true);
+    expect(droppedOnPane({ isValid: false, toNode: null, fromHandle: from })).toBe(true);
+    expect(droppedOnPane({ isValid: false, toNode: { id: "rec" }, fromHandle: from })).toBe(false);
+    expect(droppedOnPane({ isValid: true, toNode: null, fromHandle: from })).toBe(false);
+    expect(droppedOnPane({ isValid: null, toNode: null, fromHandle: { id: inp("record.left") } })).toBe(false);
+    expect(droppedOnPane({ isValid: null, toNode: null, fromHandle: null })).toBe(false);
   });
 });
