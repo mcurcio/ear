@@ -20,6 +20,7 @@ import { inspectorWidth, narrowQuery } from "./sizes";
 import { applyTheme, defaultTheme, type ThemeChoice } from "./theme";
 import { Canvas } from "./components/Canvas";
 import { fitPadding } from "./components/CanvasTools";
+import { AutoFit } from "./fit";
 import { Drawer } from "./components/Drawer";
 import { useEditor, useGraph, useGraphFile, useMediaQuery } from "./components/hooks";
 import { Inspector, type AddIntent } from "./components/Inspector";
@@ -110,14 +111,20 @@ export function App({ prefs }: { prefs: Prefs }) {
     canvas.hint(null);
   }, [onGraph, canvas.hint]);
 
-  const fit = useCallback(() => void flow.fitView({ padding: fitPadding }), [flow]);
+  // The view fits by itself until the person moves it (fit.ts); Fit lets it go again, a jump to a node holds it.
+  const [autoFit] = useState(() => new AutoFit());
+  const fit = useCallback(() => {
+    autoFit.release();
+    void flow.fitView({ padding: fitPadding });
+  }, [autoFit, flow]);
   // As a toast's Show does.
   const goTo = useCallback(
     (name: string) => {
       canvas.select({ nodes: [name], routes: [] });
+      autoFit.hold();
       void flow.fitView({ nodes: [{ id: name }], padding: 0.4, duration: 180 });
     },
-    [canvas.select, flow],
+    [autoFit, canvas.select, flow],
   );
 
   // An Add command: the Graph subject's form with that type's template; quick add's place is kept as a hint for the
@@ -221,6 +228,8 @@ export function App({ prefs }: { prefs: Prefs }) {
           onToggleMinimap={toggleMinimap}
           onShow={canvas.select}
           onQuickAdd={onQuickAdd}
+          autoFit={autoFit}
+          onFit={fit}
         />
         {graph !== null && subject !== null && (
           <Inspector

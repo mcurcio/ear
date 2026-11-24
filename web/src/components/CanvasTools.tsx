@@ -11,12 +11,15 @@ export function CanvasTools({
   minimap,
   onToggleMinimap,
   onTidy,
+  onFit,
 }: {
   minimap: boolean;
   onToggleMinimap: () => void;
   onTidy: () => void;
+  /** Fit, as F and the palette's Fit view (App's, which lets the view fit by itself again). */
+  onFit: () => void;
 }) {
-  const { zoomIn, zoomOut, fitView } = useReactFlow();
+  const { zoomIn, zoomOut } = useReactFlow();
   return (
     <Panel position="bottom-left" className="canvas-tools">
       <div role="toolbar" aria-label="Canvas" aria-orientation="horizontal">
@@ -31,7 +34,7 @@ export function CanvasTools({
           aria-label="Fit view"
           title="Fit view (F)"
           aria-keyshortcuts="f"
-          onClick={() => void fitView({ padding: fitPadding })}
+          onClick={onFit}
         >
           <span aria-hidden="true">⤢</span>
         </button>

@@ -155,7 +155,14 @@ body,
 }
 
 .theme-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   white-space: nowrap;
+}
+
+.theme-icon {
+  flex: none;
 }
 
 .topbar-drawer .chip {
@@ -343,9 +350,10 @@ body,
   overflow-y: auto;
 }
 
+/* The label keeps its width; a long hint gives way, cut short, its whole text in its tooltip. */
 .palette-option {
   display: grid;
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 8px;
   align-items: baseline;
   padding: 6px 8px;
@@ -371,13 +379,26 @@ body,
 
 .palette-meta {
   display: flex;
+  justify-content: flex-end;
   gap: 8px;
+  min-width: 0;
 }
 
 .palette-group,
 .palette-hint {
   color: var(--muted);
   font-size: 12px;
+  white-space: nowrap;
+}
+
+.palette-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.palette-group {
+  flex: none;
 }
 
 .palette-empty {
@@ -929,12 +950,31 @@ body,
   white-space: nowrap;
 }
 
+/* The lifecycle bar: one segmented row the inspector's width, its buttons sharing borders
+   (docs/editor.md#the-inspector). */
 .lifecycle-buttons {
+  display: flex;
   margin: 6px 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  overflow: hidden;
 }
 
 .lifecycle-buttons button {
-  margin-right: 4px;
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0;
+  padding: 0 4px;
+  height: 30px;
+  border: 0;
+  border-radius: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lifecycle-buttons button + button {
+  border-left: 1px solid var(--line);
 }
 
 /* A lifecycle refusal under the bar, beside the button that asked (docs/editor.md#where-a-refusal-lands). */
@@ -1525,6 +1565,22 @@ body,
 
 @media (max-width: 599px) {
   .topbar .wordmark {
+    display: none;
+  }
+
+  /* At phone width the top bar's buttons fit beside the pill: the theme switch keeps its icon (its label says the
+     choice), the drawer toggle its words and chip. */
+  .topbar {
+    gap: 6px;
+    padding: 0 8px;
+  }
+
+  .topbar-end {
+    gap: 6px;
+  }
+
+  .theme-word,
+  .topbar-drawer-glyph {
     display: none;
   }
 

@@ -79,7 +79,10 @@ export function TopBar({
             title={drawer.open ? "Hide ear.conf" : "Show ear.conf"}
             onClick={drawer.onToggle}
           >
-            <span aria-hidden="true">▤</span> ear.conf
+            <span className="topbar-drawer-glyph" aria-hidden="true">
+              ▤
+            </span>{" "}
+            ear.conf
             {chip !== undefined && <span className={`chip tone-${chip.tone}`}>{chip.text}</span>}
           </button>
         )}

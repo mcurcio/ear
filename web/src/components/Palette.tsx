@@ -163,7 +163,9 @@ export function Palette({
             >
               <span className="palette-label">{marked(command.label, match.marks)}</span>
               <span className="palette-meta">
-                {command.hint !== undefined && <span className="palette-hint">{command.hint}</span>}
+                {command.hint !== undefined && <span className="palette-hint" title={command.hint}>
+                    {command.hint}
+                  </span>}
                 <span className="palette-group">{command.group}</span>
               </span>
               {command.shortcut !== undefined ? <kbd>{keyLabel(command.shortcut, mac)}</kbd> : <span />}

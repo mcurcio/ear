@@ -125,7 +125,11 @@ every node out again with dagre, as on first placement, and they slide there ove
 places are kept ([below](#what-the-browser-keeps)). The minimap is React Flow's `MiniMap`, off by default, its boxes
 in their state's token. Fit, tidy and the minimap are also `F`, `L` and `M` ([below](#shortcuts)), which the tools'
 titles carry, and the palette's `Fit view`, `Tidy layout` and `Show minimap`. A double-click on empty canvas opens
-quick add instead of zooming ([below](#adding-on-the-canvas)). Toasts sit at its bottom right
+quick add instead of zooming ([below](#adding-on-the-canvas)). The view fits itself (`fit.ts`, `fit.test.ts`) once the
+boxes are measured, and again whenever the nodes on the canvas or its size change (a node added, the drawer opened),
+until the person pans, zooms or jumps to a node (a palette `Go to` or a toast's Show); Fit lets it fit itself again.
+*Why:* a single fit at React Flow's first measurement fitted boxes not yet laid out and clipped the graph, and a view
+that follows the graph is what a person expects until they move it themselves. Toasts sit at its bottom right
 ([below](#toasts)), and a route request on its way is a ghost wire ([below](#requests-in-flight)).
 
 ### The inspector
@@ -137,7 +141,7 @@ Home and End) between 280 and 560 px. It shows one subject, chosen by the select
 - nothing selected: **Graph**: the engine facts in full, the graph's counters and the add-node
   form;
 - one node: **Node**: its name and type, its state pill as the box draws it, its line, the
-  lifecycle bar (a refusal shown under it as well as in a toast), its knobly box (or JSON settings), its counters, its companions and Delete;
+  lifecycle bar (one segmented row; a refusal shown under it as well as in a toast), its knobly box (or JSON settings), its counters, its companions and Delete;
 - one route: **Route**: from and to as `node:port` buttons that select that node, its status in
   words, its level meter and Remove;
 - several: a count ("3 nodes, 2 routes") and Delete for them all.
@@ -167,7 +171,9 @@ and the scroll. The inspector and the drawer never move each other's content.
 Below 900 px the inspector is a sheet over the canvas's right edge. It opens when something is
 selected or from the top bar's Inspector button, and closes on Escape (after the palette and the shortcut sheet,
 before the selection: [Shortcuts](#shortcuts)) or a click on the canvas.
-The drawer keeps its place. `sizes.ts` holds the bounds and the breakpoint, and `sizes.test.ts`
+The drawer keeps its place. Below 600 px the top bar drops the wordmark, the theme switch shows only its icon (its
+label still names the choice) and the `ear.conf` toggle its glyph, so its buttons fit beside the connection pill at
+phone width. `sizes.ts` holds the bounds and the breakpoint, and `sizes.test.ts`
 holds `editor.css` to them.
 
 The sizes, the drawer's open state and the minimap are kept per ear ([What the browser keeps](#what-the-browser-keeps)).
@@ -252,7 +258,8 @@ bar's button opens it, centred near the top of the window. Its commands:
 
 With nothing typed, the selection's commands come first (each selected node's lifecycle calls and Remove, then each
 selected route's Remove), then Go to, Add, `ear.conf`'s, the view's, and every other node's and route's. An option
-shows its group, its hint and, where it has one, its key.
+shows its group, its hint and, where it has one, its key. A long hint is cut short, its whole text in its tooltip,
+so the command's own words always keep their width.
 
 - **Ranking.** A subsequence match on the label: every typed character, case-insensitive and ignoring spaces, must
   appear in order. A character at a word start scores most and one right after the previous match next; a gap
@@ -663,7 +670,7 @@ port. Node.js comes from `web/.nvmrc` and the packages from `web/package-lock.js
 The tests cover the reducer against every `test/protocol` fixture, the graph file's state and the
 pane's logic (drafts, stale files, Save, refusals), the node panel's knobly box (`nodeText.ts`), the add-node
 form (`addText.ts`), the highlighting (`highlight.ts`, and that it never changes the text sent), the reconnecting client with a fake socket,
-the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (the hold, the fall, the lamp and the reset on a fake clock), the handles' cue (`connect.ts`), the box's sizes against `editor.css` (`layout.test.ts`), and the theme (`theme.ts`, and the contrast of every pair in both themes in `theme.test.ts`), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the sizes and the breakpoint against `editor.css` (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight and the ghosts (`requests.ts`), the toast queue and a refusal's words (`notices.ts`, replaying `errors.json`), the gutter (`gutter.ts`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands and ranking, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the shortcuts (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), and the wire dropped on the pane (`connect.ts`). There is no browser test runner:
+the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (the hold, the fall, the lamp and the reset on a fake clock), the handles' cue (`connect.ts`), the box's sizes against `editor.css` (`layout.test.ts`), and the theme (`theme.ts`, and the contrast of every pair in both themes in `theme.test.ts`), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the sizes and the breakpoint against `editor.css` (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight and the ghosts (`requests.ts`), the toast queue and a refusal's words (`notices.ts`, replaying `errors.json`), the gutter (`gutter.ts`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands and ranking, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the shortcuts (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), the wire dropped on the pane (`connect.ts`), and when the view fits itself (`fit.ts`). There is no browser test runner:
 rendering is checked by eye. *Why:* a Playwright leg costs about 150 MB of browsers and a minute
 or two a CI run, while the logic sits in the reducer, client and rules, which Vitest covers
 against the same fixtures the server is tested with.
@@ -672,7 +679,9 @@ against the same fixtures the server is tested with.
 (515.17 KB to 531.61 KB; 5.4 KB gzipped, 164.28 KB to 169.68 KB) and its styles by 2.0 KB (35.59 KB to 37.57 KB),
 measured by the build before and after; the shell's design estimated under 15 KB (5 KB gzipped), so it is slightly
 over. The whole shell, from tokens to this, grew the script from 486.58 KB to 531.61 KB (155.24 KB to 169.68 KB
-gzipped) and the styles from 21.25 KB to 37.57 KB. No package was added for any of it.
+gzipped) and the styles from 21.25 KB to 37.57 KB; the view's own fit, the segmented lifecycle bar and the theme
+icon, then the palette's and the narrow top bar's fixes, brought them to 532.73 KB (170.15 KB gzipped) and
+38.18 KB. No package was added for any of it.
 
 React Flow (`@xyflow/react`) was chosen over Rete.js (its own editor framework) and LiteGraph
 (drawn on a canvas, which makes per-port meters custom work).

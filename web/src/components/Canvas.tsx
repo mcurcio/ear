@@ -10,18 +10,21 @@ import {
   BackgroundVariant,
   MiniMap,
   ReactFlow,
+  useNodesInitialized,
   useReactFlow,
+  useStore,
   type Connection,
   type OnBeforeDelete,
   type OnConnectEnd,
 } from "@xyflow/react";
-import { memo, useCallback, type MouseEvent } from "react";
+import { memo, useCallback, useEffect, type MouseEvent } from "react";
 import { droppedOnPane, isValidConnection } from "../connect";
+import { fitKey, type AutoFit } from "../fit";
 import { describeHealth } from "../health";
 import { quickPlace, type Position } from "../layout";
 import type { RouteEnds } from "../protocol";
 import type { Selection } from "../selection";
-import { CanvasTools } from "./CanvasTools";
+import { CanvasTools, fitPadding } from "./CanvasTools";
 import { EarNode, type EarFlowNode } from "./EarNode";
 import { GhostEdge } from "./GhostEdge";
 import { LevelEdge, type LevelFlowEdge } from "./LevelEdge";
@@ -34,6 +37,20 @@ const edgeTypes = { level: LevelEdge, ghost: GhostEdge };
 /** A minimap box takes its node's state class, so editor.css colours it from --state. */
 const minimapClass = (node: EarFlowNode) => describeHealth(node.data.node).styleClass;
 
+/**
+ * Fits the view by itself while the person has not moved it (fit.ts, docs/editor.md#the-canvas): once the boxes are
+ * measured, and whenever the nodes on the canvas or its size change.
+ */
+function AutoFitter({ autoFit }: { autoFit: AutoFit }) {
+  const { fitView } = useReactFlow();
+  const measured = useNodesInitialized();
+  const key = useStore((state) => fitKey(state.width, state.height, state.nodes.map((node) => node.id)));
+  useEffect(() => {
+    if (measured && autoFit.due(key)) void fitView({ padding: fitPadding });
+  }, [measured, key, autoFit, fitView]);
+  return null;
+}
+
 // Memoised: App draws again on every keystroke in the drawer, and the boxes need not.
 export const Canvas = memo(function Canvas({
   canvas,
@@ -44,6 +61,8 @@ export const Canvas = memo(function Canvas({
   onToggleMinimap,
   onShow,
   onQuickAdd,
+  autoFit,
+  onFit,
 }: {
   canvas: CanvasModel;
   onConnect: (connection: Connection) => void;
@@ -55,6 +74,10 @@ export const Canvas = memo(function Canvas({
   onShow: (selection: Selection) => void;
   /** Quick add: the screen point to open the Add list at, and where on the flow the node should land. */
   onQuickAdd: (at: { x: number; y: number }, place: Position) => void;
+  /** When the view fits by itself (fit.ts); a move by the person holds it. */
+  autoFit: AutoFit;
+  /** Fit, asked for by the person. */
+  onFit: () => void;
 }) {
   const { screenToFlowPosition } = useReactFlow();
   const onDoubleClick = useCallback(
@@ -106,14 +129,24 @@ export const Canvas = memo(function Canvas({
       onDoubleClick={onDoubleClick}
       zoomOnDoubleClick={false}
       deleteKeyCode={["Delete", "Backspace"]}
-      fitView
+      onMoveStart={(event) => {
+        // A move with an event is the person's (a pan, a zoom); a fit's own move has none.
+        if (event !== null) autoFit.hold();
+      }}
     >
+      <AutoFitter autoFit={autoFit} />
       <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
-      <CanvasTools minimap={minimap} onToggleMinimap={onToggleMinimap} onTidy={canvas.tidy} />
+      <CanvasTools minimap={minimap} onToggleMinimap={onToggleMinimap} onTidy={canvas.tidy} onFit={onFit} />
       {minimap && (
         <MiniMap<EarFlowNode> position="top-right" pannable zoomable ariaLabel="Minimap" nodeClassName={minimapClass} />
       )}
-      <Toasts onShow={onShow} />
+      <Toasts
+        onShow={(selection) => {
+          // Show moves the view to the toast's subject: the person's own move.
+          autoFit.hold();
+          onShow(selection);
+        }}
+      />
     </ReactFlow>
   );
 });
