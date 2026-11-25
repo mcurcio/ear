@@ -14,7 +14,7 @@ swap: `docs/writing-a-node-type.md#reporting-from-the-code`, `docs/architecture.
 state, `NodeActions::invoke` with its refusals and its 10 s deadline, the harness's `trigger` and `invoke`:
 `docs/writing-a-node-type.md#actions`; the feature `actions` with `node.invoke`, its six codes, the schema's `actions`,
 the batch reply held for its actions and the `action` record for type actions: `docs/control-port.md#actions`,
-`docs/output-records.md#action`); the rest not built. Slice 5 (the
+`docs/output-records.md#action`; the editor's action buttons: `docs/editor.md#actions`); the rest not built. Slice 5 (the
 control plane: status, events, node diagnostics on the wire, actions, the realtime coded ring, sendspin's notes split)
 follows slice 3c (built: the node
 handle and loops, `docs/writing-a-node-type.md#the-node-handle`, `#loops`). Slice 6 (parameters: decimal, indexed and live rows, parameter slots and their ramps, retunes,
@@ -982,8 +982,7 @@ A value is shown and sent rounded to `decimals`; `minIsSilence` shows the minimu
 ### 8.4 Status, events, diagnostics and actions
 
 - Status, events and diagnostics are built ([editor.md](../editor.md#status-events-and-diagnostics)).
-- **Actions**: one button per type action after the built lifecycle buttons; a call with arguments opens a small form;
-  disabled while in flight and when the node has no configuration.
+- Actions are built ([editor.md](../editor.md#actions)).
 
 ### 8.5 Accessibility
 
@@ -1060,9 +1059,9 @@ system test of ten chatty nodes and a slowly reading client.
 **5.3 The realtime ring** is built ([architecture.md](../architecture.md#the-realtime-channels),
 [writing-a-node-type.md](../writing-a-node-type.md#reporting-from-the-code), [engine.md](../engine.md#the-realtime-bell)).
 
-**5.4 Actions.** Built but for the editor's buttons and sendspin's first call
-([writing-a-node-type.md](../writing-a-node-type.md#actions), [control-port.md](../control-port.md#actions)). Left:
-the editor's buttons (8.4); sendspin's `forget-pairing` as the first call, which the pinned sendspin-cpp cannot serve
+**5.4 Actions.** Built but for sendspin's first call ([writing-a-node-type.md](../writing-a-node-type.md#actions),
+[control-port.md](../control-port.md#actions), [editor.md](../editor.md#actions)). Left: sendspin's `forget-pairing`
+as the first call, which the pinned sendspin-cpp cannot serve
 (it has no way to forget one server's pairing): the owner chooses a carried patch, `open-pairing-window` (which opens
 pairing without the device gesture to any control-port client), or no sendspin action yet.
 

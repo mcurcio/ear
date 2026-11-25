@@ -141,7 +141,8 @@ Home and End) between 280 and 560 px. It shows one subject, chosen by the select
 - nothing selected: **Graph**: the engine facts in full, the graph's counters and the add-node
   form;
 - one node: **Node**: its name and type, its state pill as the box draws it, its line, the
-  lifecycle bar (one segmented row; a refusal shown under it as well as in a toast), its settings form
+  lifecycle bar (one segmented row; a refusal shown under it as well as in a toast), its type's
+  actions ([below](#actions)), its settings form
   ([below](#the-settings-form)) or, by the Form/Text toggle, its knobly box (or JSON settings), its counters, its
   companions and Delete;
 - one route: **Route**: from and to as `node:port` buttons that select that node, its status in
@@ -706,6 +707,24 @@ a diagnostic is drawn by its own words.
 - **Toasts.** A `warn` or `error` event is also a notice in the toast queue ([toasts](#toasts)),
   `<node> says: <code> <sentence>`, coalesced by node and code as every notice is, and at most one
   new notice per node per 5 s; the toast queue's own live region announces it.
+
+## Actions
+
+With the feature `actions` and the node's type schema held, the Node subject draws one button per
+type action after the lifecycle bar ([control-port.md](control-port.md#actions)), labelled by its
+name in words (`reset-clip`: "Reset clip"), its tooltip the action's `help`. `web/src/actions.ts`
+holds the rules, `actions.test.ts` tests them; `components/ActionBar.tsx` draws them.
+
+- **Enabled by the phase**, as ear judges it: a trigger only while the code drives (`running`,
+  `reconfiguring`), a call while the node has a configuration that is configured and not tearing
+  down (`configured`, `starting`, `running`, `stopped`, `reconfiguring`); otherwise disabled, its
+  tooltip saying why. ear stays the judge: `not-running` is still shown as a refusal.
+- **A trigger** is sent at once. **A call with arguments** opens a small form under the bar, each
+  argument drawn and checked as the settings form draws a field ([the settings form](#the-settings-form)): a
+  problem disables the send, an empty optional argument is left out, and Cancel closes it.
+- **While in flight** its button spins and is disabled; its answer can take up to 10 s.
+- **A refusal** shows under the bar as well as in a toast, as a lifecycle refusal does
+  ([where a refusal lands](#where-a-refusal-lands)).
 
 ## Counters
 

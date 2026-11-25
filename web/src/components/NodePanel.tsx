@@ -1,6 +1,7 @@
 // The inspector's Node subject (docs/editor.md#the-inspector): the node's name and type, its state pill as the box
 // draws it and its line (health.ts, docs/editor.md#a-nodes-health), the lifecycle bar (Start, Stop, Restart, Disable
-// and Enable when ear has the lifecycle feature, each enabled by health.ts), its settings form (with the types and
+// and Enable when ear has the lifecycle feature, each enabled by health.ts), its type's actions after it (with the
+// actions feature and the type's schema held: ActionBar, docs/editor.md#actions), its settings form (with the types and
 // node.set features and the type's schema held, docs/editor.md#the-settings-form) or, by the Form/Text toggle, its text
 // in knobly (with the node-text feature, docs/editor.md#the-node-panels-text; else its settings as JSON), its counters,
 // its companions in words and Delete. Every change is a request to ear; the canvas changes only when ear announces it. A lifecycle button spins
@@ -9,9 +10,18 @@
 import { useEffect, useState } from "react";
 import { describeHealth, type ActionAvailability, type HealthView } from "../health";
 import { refusalParts, type RefusalParts } from "../notices";
-import { dryRunFeature, lifecycleFeature, nodeSetFeature, nodeTextFeature, type GraphNode, type TypeSchema } from "../protocol";
+import {
+  actionsFeature,
+  dryRunFeature,
+  lifecycleFeature,
+  nodeSetFeature,
+  nodeTextFeature,
+  type GraphNode,
+  type TypeSchema,
+} from "../protocol";
 import { lifecycleAsked, lifecycleLabels, type LifecycleMethod } from "../requests";
 import { parseSettings } from "../settings";
+import { ActionBar } from "./ActionBar";
 import { CompanionList } from "./CompanionStrip";
 import { NodeActivity, NodeDiagnostics, NodeStatus } from "./NodeActivity";
 import { CounterTable } from "./Counters";
@@ -130,6 +140,9 @@ export function NodePanel({
           {refusal.label} {refusal.parts.verb}: <code>{refusal.parts.code}</code>
           {refusal.parts.detail !== "" && ` ${refusal.parts.detail}`}
         </p>
+      )}
+      {features.includes(actionsFeature) && schema?.actions !== undefined && (
+        <ActionBar node={node} actions={schema.actions} />
       )}
       {formable && (
         <div className="settings-toggle" role="group" aria-label="settings as">

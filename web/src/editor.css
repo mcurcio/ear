@@ -1000,6 +1000,30 @@ body,
   border-left: 1px solid var(--line);
 }
 
+/* A node's type actions after the lifecycle bar: buttons that wrap, and a call's small form under them
+   (docs/editor.md#actions). */
+.action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 6px 0;
+}
+
+.action-buttons button {
+  height: 30px;
+}
+
+.action-args {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0 6px;
+}
+
+.action-args .field-problem {
+  color: var(--err);
+}
+
 /* A lifecycle refusal under the bar, beside the button that asked (docs/editor.md#where-a-refusal-lands). */
 .lifecycle-refusal {
   margin: 4px 0 0;
@@ -1716,7 +1740,8 @@ body,
     height: 40px;
   }
 
-  .lifecycle-buttons button {
+  .lifecycle-buttons button,
+  .action-buttons button {
     height: 40px;
   }
 
