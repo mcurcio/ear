@@ -1,7 +1,6 @@
 # Changes in place and reshape: slice 3d of the node framework
 
-Status: design; steps 1 and 2 of section 11 built, and of step 3 claims in a change, make-before-break for an RTP
-receiver, `whenReady` and `ConfigureDone`, and the sink's pause (section 2 says what and where). Slice 3d follows slice 3c (built: it swaps claims and posts to loops, both
+Status: design; steps 1 to 3 of section 11 built (section 2 says what and where). Slice 3d follows slice 3c (built: it swaps claims and posts to loops, both
 3c's, `docs/writing-a-node-type.md#claims`, `#loops`) and comes before slice 6 (`control-plane.md`: a retune is one of the outcomes this slice makes). Its PipeWire
 spike (S4) is run: a reshape goes ahead as designed (7.4). It changes the audio path: holds, code swaps and reshapes. The built lifecycle (states,
 operations, teardown, fades, barriers and their bounds) is described in `docs/architecture.md` and
@@ -53,6 +52,12 @@ Built (steps 1 and 2 of section 11), described where they live and not repeated 
 - `SinkControl::pause`, `resume` and `pausedFrames`, attaching a sink returning its `SinkControl&`, and the harness's
   `paused` and `pausedFrames` ([`docs/writing-a-node-type.md#pausing-a-sink`](../writing-a-node-type.md#pausing-a-sink));
   U15 is settled there (the tap never reads the pause);
+- the other kinds' replacements: a sound card made before break or, by `Order::breakFirst`, break-first behind a hold
+  on what its bank carries ([`docs/writing-a-node-type.md#make-before-break`](../writing-a-node-type.md#make-before-break));
+  sinks and sources made beside the old ones and swapped in the commit's invoke, splitting the cycles exactly
+  ([`docs/writing-a-node-type.md#sinks-and-sources-in-a-change`](../writing-a-node-type.md#sinks-and-sources-in-a-change));
+  a recording opened beside the old one, which closes once the sinks the change replaced finished
+  ([`docs/writing-a-node-type.md#recordings-in-a-change`](../writing-a-node-type.md#recordings-in-a-change));
 - on the wire: `reconfiguring` with `keys` and `next`, the `fell-back` cause, `applied: "reconfigure"`, the
   standard-output records and the three diagnostics ([`docs/control-port.md#node-health`](../control-port.md#node-health),
   [`docs/output-records.md#node`](../output-records.md#node)).
@@ -60,8 +65,6 @@ Built (steps 1 and 2 of section 11), described where they live and not repeated 
 This page still designs:
 
 - the plan's outcomes `reshape` and `unchanged`, and a change of ports with the same type no longer a replace (3, 7);
-- recordings, sinks, sources and cards replaced in a change (4, 6);
-- make-before-break for the other kinds, and `Order::breakFirst` (5);
 - `PortBlock::reshape` (7);
 - `sendspin` in place (6.6);
 - on the wire: features `node.set`, `reshape` and `dryRun`, `dropRoutes`, `ports-in-use`, and the editor (8).
@@ -104,25 +107,7 @@ graph though the same file boots fine, against "hand edits win".
 
 ## 4. The change version of `configure`
 
-Built: `ChangeOf`'s `format`, `node`, `applied()`, `applied(code)`, `post` (staged), `attach(bank, RtpReceiverShape)`
-(break-first), `declareLatency`, `hold`, `holdAll` and `release`; `Changed::restart`; `Lifecycle`; the rules a compiler
-cannot check, each failing the node `lost`; the new code's `prepare` beside the old code
-([`docs/writing-a-node-type.md#the-change-version`](../writing-a-node-type.md#the-change-version)). Still designed, added
-to `ChangeOf`:
-
-```cpp
-template <const auto& Spec> class ChangeOf {
-public:
-	// Replacements of the other kinds, made before break (5.3).
-	template <class Bank> void attach(Bank, SoundCardShape, Order = Order::makeFirst);
-	template <class Bank> SourceWriter& attach(Bank, SourceShape);
-	template <class Bank> SinkControl& attach(Bank, SinkShape, /* its consumer, in creation's three forms */);   // 6.4
-	int recording(RecordingRequest);                                   // a replacement, made before break
-};
-```
-
-Built: `whenReady` and `ConfigureDone`
-([`docs/writing-a-node-type.md#whenready-and-configuredone`](../writing-a-node-type.md#whenready-and-configuredone)).
+Built, every call of it ([`docs/writing-a-node-type.md#the-change-version`](../writing-a-node-type.md#the-change-version)).
 
 **A code in the answer is always a swap** (D-R18): the framework never compares codes, so a type whose code keeps state
 carries it into the new code or answers `cx.applied()` with none. A code swap without holds is a discontinuity unless the type carries its state;
@@ -132,24 +117,9 @@ cursors) or anything the old code's `process` reads (D-R13).
 
 ## 5. What the framework does, in order
 
-Built: the order (the change version, holds, the commit point, the deadline, supersession and what arrives
-mid-change: [`docs/architecture.md#changes-in-place`](../architecture.md#changes-in-place)). Still designed:
-
-- **New acquisitions readied beside the old ones**, in readiness order: claims first, then files, then companions, each
-  old resource marked retiring at once. A replacement engine companion linked to the same inside bank as the one it
-  replaces; two capture cards into one inside input mix for a moment, which a hold covers [U: the port mixer loads,
-  13]. A replacement ring companion (a sink or a source) served by the block itself and swapped in the commit point's
-  invoke (`docs/architecture.md#companions`), so two never play into one bank, a replaced sink taking the cycles before
-  the swap and its replacement those from it.
-- **At the commit point**, the retiring resources released by the teardown's order for those resources only (a
-  replaced source's writer closed; replaced companions destroyed; replaced sinks drained to their own consumers and
-  finished; replaced recordings closed; `unclaim`ed claims released, last), after the continuation's `done`.
-
-**Make-before-break** is built for an RTP receiver, and break-first on its same port
-([`docs/writing-a-node-type.md#make-before-break`](../writing-a-node-type.md#make-before-break)); still designed: a type
-asking for it with `Order::breakFirst` where only it can know (a card: one ALSA device opened twice), holding the inside
-output bank that feeds the companion being destroyed (a card's `to_card`), and every other replacement made before
-break.
+Built, the replacements of every kind included ([`docs/architecture.md#changes-in-place`](../architecture.md#changes-in-place)).
+Two capture cards, or two receivers, into one inside input mix for a moment while one is made before break; a hold
+covers it, but it relies on the port mixer loading [U: section 13].
 
 ## 6. The primitives in a change
 
@@ -163,8 +133,9 @@ framework replaces such a companion break-first without the type asking (5, "Bre
 
 ### 6.2 Recordings
 
-`cx.recording({newPath})` in a change is claimed and opened beside the old one; the old is closed at the commit point.
-No built type uses it (`file`'s `path` stays restart-only; a gapless switch is possible later).
+Built ([`docs/writing-a-node-type.md#recordings-in-a-change`](../writing-a-node-type.md#recordings-in-a-change)): a
+replacement names the recording it replaces. No built type uses it (`file`'s `path` stays restart-only; a gapless
+switch is possible later).
 
 ### 6.3 Loops and their states
 
@@ -173,9 +144,9 @@ continue on it (`whenReady`). Slice 5's action calls keep running on the node's 
 
 ### 6.4 A sink paused while the type swaps what it writes into
 
-Built ([`docs/writing-a-node-type.md#pausing-a-sink`](../writing-a-node-type.md#pausing-a-sink)). Still designed: a
-replaced sink drains to its own consumer and finishes at the commit point; its replacement's `begin` runs as it becomes
-ready, before the commit point (6.2's kinds, section 5). Slice 5 samples `pausedFrames` beside the companion's drops.
+Built ([`docs/writing-a-node-type.md#pausing-a-sink`](../writing-a-node-type.md#pausing-a-sink), and a sink replaced
+in a change: [`#sinks-and-sources-in-a-change`](../writing-a-node-type.md#sinks-and-sources-in-a-change)). Slice 5
+samples `pausedFrames` beside the companion's drops.
 
 ### 6.5 `rtp` in place
 
@@ -418,13 +389,12 @@ the code and before metering.
 
 ## 9. What it changes in the built system
 
-What steps 1 and 2 changed is built (section 2). What is left:
+What steps 1 to 3 changed is built (section 2). What is left:
 
 | Built piece | Change |
 |---|---|
 | `NodeOutcome`, `NodeChange`, `DesiredNodeListener` (`desired_graph.hpp`) | outcomes `reshape`, `unchanged`; `NodeChange` gains the old and new ports and `inPlace`; a change of ports with the same type is told by `nodeChanged`, not as a replace; `portCaused` goes |
-| `lifecycle.hpp` | the other kinds' replacements |
-| `NodeHost` | make-before-break for the other kinds; the block's reshape between teardown and `configure` |
+| `NodeHost` | the block's reshape between teardown and `configure` |
 | `PortBlock`, `FilterPortBlocks` | `reshape(next)` with layouts swapped whole; levels re-registered |
 | `sendspin` | rows marked `.inPlace()`; its change version |
 | `ear_config` | `node.set`'s merge; `dropRoutes` and `ports-in-use` in the candidate; dry runs posted and dropped |
@@ -434,8 +404,7 @@ What steps 1 and 2 changed is built (section 2). What is left:
 
 Built: what `docs/testing.md` lists for changes in place. Still to write with what they test:
 
-- **`ear_core_tests`**: the code swap with a sink and its replacement splitting the cycles exactly, a reshape in place by
-  a test type (channels 1 and 2 keep playing).
+- **`ear_core_tests`**: a reshape in place by a test type (channels 1 and 2 keep playing).
 - **`ear_pipewire_tests`**: S4 (built: 7.4); reshape (a port added and removed beside a running ramp, links of surviving
   ports kept, the layout swapped whole, the transitional layout zero-filling new outputs); a reshape's new port metered
   from its first window; two sources into one inside input mixed (the port mixer loads).
@@ -460,10 +429,8 @@ Built: what `docs/testing.md` lists for changes in place. Still to write with wh
 2. `ChangeOf`, `Changed`, staged posts, holds and their acknowledgement, the commit point, the deadline, supersession,
    the fallback, with a test type; `rtp` in place (built, section 2: with an RTP receiver replaced always break-first,
    the part of step 3 `rtp` needed).
-3. The primitives in a change: claims swapped make-before-break, `whenReady`, `ConfigureDone`, the sink's pause,
-   make-before-break for an RTP receiver and `rtp` on a new port (built, section 2); the other kinds' replacements
-   (cards with `Order`, sources, sinks with the cycles split at the commit's invoke, recordings: sections 4, 5, 6.2,
-   6.4) still to build.
+3. The primitives in a change: claims swapped make-before-break, `whenReady`, `ConfigureDone`, the sink's pause, and
+   every kind's replacement (built, section 2).
 4. `PortBlock::reshape` on the plain add (7.4), the 32-port question of section 13 settled first; layouts, levels.
 5. The wire and the editor (features `node.set`, `reshape`, `dryRun`).
 6. `sendspin` in place (skipped if U11 or U12 fails).

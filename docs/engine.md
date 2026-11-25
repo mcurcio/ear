@@ -603,7 +603,10 @@ in order with drives and fades:
 - **`swap(request, done)`** is a drive that keeps the fade and the holds: the new code, its sinks
   and its sources take the cycles from the next one, at the gains the old code had, with no
   fade-in. `done` runs as a drive's. A drive ends every hold at full gain (its own fade-in covers
-  the faded outputs).
+  the faded outputs). A change that replaces a sink or a source swaps with its replacement's
+  binding (and the same code, when it gives none), so the old sink takes the cycles up to the
+  invoke and its replacement those from it
+  ([writing-a-node-type.md](writing-a-node-type.md#sinks-and-sources-in-a-change)).
 
 The holds' ramp and rule are core's `HoldRamp` (`ear/core/block_rules.hpp`), which the type
 harness's block runs too. They are asked only while no fade-out waits (a change runs from
@@ -918,7 +921,9 @@ consumer began, a source always), and its counter: a sink's `dropped` (`Sink::dr
 source's `shortfall` (`Source::shortfallFrames`), each counted from its configuration's making.
 A companion a change in place replaces is not ready until its replacement is; one replaced
 make-before-break is listed `retiring` just before its replacement, which shares its name, until
-the commit point destroys it ([writing-a-node-type.md](writing-a-node-type.md#make-before-break)).
+the commit point destroys it ([writing-a-node-type.md](writing-a-node-type.md#make-before-break)),
+and so is a sink or a source a change replaces, until the commit point moves its bank to its
+replacement ([writing-a-node-type.md](writing-a-node-type.md#sinks-and-sources-in-a-change)).
 `NodeHost::companionsOf(name)` reads the list of the newest node of the name, in request order, the
 counters read then; it is empty before configure returned applied, after it failed, and from
 teardown step 1.

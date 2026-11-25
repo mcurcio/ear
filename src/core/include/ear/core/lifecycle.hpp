@@ -315,6 +315,11 @@ protected:
 	static part::Fifo fifoOf(std::string bank) { return part::Fifo(std::move(bank)); }
 };
 
+/// Which goes first when a change replaces an engine companion (docs/writing-a-node-type.md#make-before-break): the new
+/// one made beside the old one (makeFirst), or the old one destroyed and the new one made in one flush (breakFirst:
+/// one ALSA device opened twice, say).
+enum class Order { makeFirst, breakFirst };
+
 /// What the change version of configure works through: the erased side of ChangeOf<Spec>
 /// (docs/writing-a-node-type.md#the-change-version). NodeHost implements it for one change, valid only inside the
 /// configure it is handed to; a call outside it throws std::logic_error. Banks arrive by name, already checked against
@@ -327,9 +332,21 @@ public:
 	virtual const Ports& ports() const = 0;
 	/// Work for declared loop `loop`, staged until the commit point and destroyed unrun if the change ends any other way.
 	virtual void postToLoop(std::size_t loop, std::move_only_function<void(void*)> work) = 0;
-	/// A replacement for the engine companion on `bank` (an RTP receiver), made break-first behind a hold the framework
-	/// takes (docs/writing-a-node-type.md#engine-companions).
-	virtual void attachEngine(std::string_view bank, EngineCompanionShape shape) = 0;
+	/// A replacement for the engine companion on `bank` (an RTP receiver or a sound card), behind a hold the framework
+	/// takes, made before break unless `order` says break-first (an RTP receiver on the same port is break-first
+	/// whatever it says): docs/writing-a-node-type.md#make-before-break.
+	virtual void attachEngine(std::string_view bank, EngineCompanionShape shape, Order order) = 0;
+	/// A replacement for the sink on `bank`, made at once beside it, its consumer begun before the commit point; the
+	/// block's tap moves to it in the commit's invoke, and the old one drains to its own consumer and finishes after it
+	/// (docs/writing-a-node-type.md#sinks-and-sources-in-a-change). Its rules are CreateContext::sink's.
+	virtual SinkControl& sink(std::string_view bank, SinkShape shape, SinkConsumerFrom consumer) = 0;
+	/// A replacement for the source on `bank`, made at once (its writer valid at once) and played from the commit's
+	/// invoke; the old one's writer is closed at the commit point. Its rules are CreateContext::source's.
+	virtual SourceWriter& source(std::string_view bank, SourceShape shape, std::unique_ptr<SourceClock> clock) = 0;
+	/// A replacement for `replaced`, a recording the configuration holds: claimed and opened beside it, before the
+	/// change's companions; the old one closed once the commit point completed and every sink the change replaced
+	/// finished (docs/writing-a-node-type.md#recordings-in-a-change).
+	virtual Recording& recording(const Recording& replaced, const RecordingRequest& request) = 0;
 	/// Routable output banks to hold silent from the next cycle, after a fade, until the commit point (or release).
 	virtual void hold(std::span<const std::string_view> banks) = 0;
 	virtual void holdAll() = 0;
@@ -695,8 +712,8 @@ private:
 	CreateContext* context_;
 };
 
-/// configure for a change in place (docs/writing-a-node-type.md#the-change-version): holds, a replacement companion,
-/// claims and unclaims, staged posts, the latency and the answer. It has no state, store, executor or program (a loop's
+/// configure for a change in place (docs/writing-a-node-type.md#the-change-version): holds, replacement companions and
+/// recordings, claims and unclaims, staged posts, the latency and the answer. It has no state, store, executor or program (a loop's
 /// state lives across a change and already holds what it needs), so a call the mode does not offer does not compile.
 template <const auto& Spec> class ChangeOf {
 	static_assert(linkage::named<Spec>, "a spec is declared in a named namespace, never an unnamed one");
@@ -738,12 +755,79 @@ public:
 		context_->postToLoop(LoopsOf<Spec>::template indexOf<Handle>,
 		                     spec_detail::loopWork<Handle>(std::forward<Work>(work)));
 	}
-	/// A new RTP receiver for the one on this inside input bank, replacing it break-first behind a hold the framework
-	/// takes on the outputs the bank feeds (docs/writing-a-node-type.md#engine-companions).
+	/// A new RTP receiver for the one on this inside input bank, behind a hold the framework takes on the outputs the
+	/// bank feeds: made before break on a new port, break-first on the same one
+	/// (docs/writing-a-node-type.md#make-before-break).
 	template <class Bank> void attach(Bank, RtpReceiverShape shape) {
-		static_assert(ownBank<Bank>, "a context takes only its spec's banks");
-		CompanionBank<RtpReceiverShape>::template check<Bank>();
-		context_->attachEngine(Bank::name, std::move(shape));
+		checkCompanion<Bank, RtpReceiverShape>();
+		context_->attachEngine(Bank::name, std::move(shape), Order::makeFirst);
+	}
+	/// A new sound card for the one on this inside bank, behind a hold the framework takes on what the bank carries;
+	/// made before break, or break-first when `order` says so (one ALSA device opened twice).
+	template <class Bank> void attach(Bank, SoundCardShape shape, Order order = Order::makeFirst) {
+		checkCompanion<Bank, SoundCardShape>();
+		context_->attachEngine(Bank::name, std::move(shape), order);
+	}
+	/// A new source for the one on this inside input bank (docs/writing-a-node-type.md#sinks-and-sources-in-a-change):
+	/// its writer valid at once, played by the block from the commit's invoke on, when the old one's writer is closed.
+	template <class Bank> SourceWriter& attach(Bank, SourceShape shape, std::unique_ptr<SourceClock> clock = nullptr) {
+		checkCompanion<Bank, SourceShape>();
+		return context_->source(Bank::name, shape, std::move(clock));
+	}
+	/// A new sink for the one on this inside output bank, with its own consumer, in creation's three forms: begun before
+	/// the commit point, tapped from the commit's invoke on, the old one draining to its own consumer after it.
+	template <class Bank, std::same_as<SinkShape> Shape>
+	SinkControl& attach(Bank, Shape shape, std::unique_ptr<SinkConsumer> consumer) {
+		checkCompanion<Bank, SinkShape>();
+		return context_->sink(Bank::name, shape, std::move(consumer));
+	}
+	template <class Bank, std::same_as<SinkShape> Shape> void attach(Bank, Shape) {
+		static_assert(sizeof(Bank) == 0, "a sink is given its one consumer: cx.attach(bank, shape, consumer)");
+	}
+	template <class Bank, class Handle, class State, class Member>
+		requires isLoopHandle<Handle>
+	SinkControl& attach(Bank, SinkShape shape, Handle, Member State::* member) {
+		checkCompanion<Bank, SinkShape>();
+		static_assert(ownLoop<Handle>, "a sink is consumed by one of its spec's loops");
+		static_assert(Handle::stateful && std::derived_from<typename Handle::State, State>,
+		              "a sink's consumer is a member of that loop's state");
+		static_assert(std::derived_from<Member, SinkConsumer>, "a sink's consumer is a SinkConsumer");
+		if constexpr (Handle::stateful && std::derived_from<typename Handle::State, State> &&
+		              std::derived_from<Member, SinkConsumer>) {
+			using Own = typename Handle::State;
+			return context_->sink(
+				Bank::name, shape,
+				StateSinkConsumer{LoopsOf<Spec>::template indexOf<Handle>, [member](void* state) -> SinkConsumer& {
+									  return static_cast<Own*>(state)->*member;
+								  }});
+		}
+	}
+	template <class Bank, class Handle>
+		requires isLoopHandle<Handle>
+	SinkControl& attach(Bank, SinkShape shape, Handle) {
+		checkCompanion<Bank, SinkShape>();
+		static_assert(ownLoop<Handle>, "a sink is consumed by one of its spec's loops");
+		using State = typename Handle::State;
+		static_assert(Handle::stateful && std::derived_from<State, SinkConsumer>,
+		              "a loop's state that consumes a sink is a SinkConsumer");
+		return context_->sink(
+			Bank::name, shape,
+			StateSinkConsumer{LoopsOf<Spec>::template indexOf<Handle>,
+		                      [](void* state) -> SinkConsumer& { return *static_cast<State*>(state); }});
+	}
+	/// A pipe receiver is never replaced in a change (its FIFO is its program's), nor is anything that is no companion.
+	template <class Bank, class Shape, class... Rest>
+		requires(!CompanionShape<std::remove_cvref_t<Shape>> ||
+	             std::same_as<std::remove_cvref_t<Shape>, PipeReceiverShape>)
+	void attach(Bank, Shape&&, Rest&&...) {
+		static_assert(sizeof(Bank) == 0, "a change attaches a replacement for a sound card, an RTP receiver, a source "
+		                                 "or a sink");
+	}
+	/// A new recording for `replaced`, one the configuration holds (docs/writing-a-node-type.md#recordings-in-a-change):
+	/// claimed and opened beside it before the change's companions; the old one is closed once the commit point
+	/// completed and every sink the change replaced finished, so a consumer may write it until then.
+	Recording& recording(const Recording& replaced, RecordingRequest request) {
+		return context_->recording(replaced, request);
 	}
 	/// A port the type's own thread binds once the change is made (docs/writing-a-node-type.md#claims-in-a-change):
 	/// judged when this call returns, before any other new acquisition; a refusal falls the change back
@@ -802,6 +886,10 @@ public:
 private:
 	template <const auto&, class> friend class spec_detail::SpecInstance;
 	explicit ChangeOf(ChangeContext& context) noexcept : context_(&context) {}
+	template <class Bank, class Shape> static constexpr void checkCompanion() noexcept {
+		static_assert(ownBank<Bank>, "a context takes only its spec's banks");
+		CompanionBank<Shape>::template check<Bank>();
+	}
 	ChangeContext* context_;
 };
 

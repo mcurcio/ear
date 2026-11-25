@@ -6,11 +6,14 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include <unistd.h>
 
 #include "catch2/catch.hpp"
 #include "ear/core/lifecycle.hpp"
@@ -912,5 +915,474 @@ TEST_CASE("A sink paused from a loop posts paused, discards and counts what the 
 		h.remove();
 		CHECK(tapFinished);
 		pausedDone.reset(); // its change ended: the answer lands nowhere
+	}
+}
+
+// ---- Sinks and sources replaced in a change (docs/writing-a-node-type.md#sinks-and-sources-in-a-change) ----
+
+namespace reconfigure_test {
+constexpr auto ringRow = setting::defaulted("ring", setting::number(1, 99), 1).inPlace();
+constexpr auto fromSource = bank::insideInput<"from_source">;
+constexpr TypeSpec ringSpec{.settings = SettingsTable<ringRow>{"rings"}, .banks = Banks<in, out, tap, fromSource>{}};
+
+/// What each consumer saw, by the ring setting it was made for: owned by its sink, so read here once it is gone.
+std::map<int, std::vector<std::uint64_t>> tapped;
+std::map<int, bool> began;
+std::map<int, bool> finished;
+/// Each source's writer, by the ring setting it was made for.
+std::map<int, SourceWriter*> writers;
+
+struct Positions final : SinkConsumer {
+	explicit Positions(int r) : ring(r) {}
+	int ring;
+	void begin() override { began[ring] = true; }
+	void consume(const Chunk& chunk) override { tapped[ring].push_back(chunk.position); }
+	void finish() override { finished[ring] = true; }
+};
+
+/// What the change version replaces, set by each test.
+struct RingScript {
+	bool sink = true;
+	bool source = false;
+	bool restart = false;
+	bool hold = false;
+};
+RingScript ringScript;
+
+struct Rings {
+	using Checked = CheckedOf<ringSpec>;
+	static Members<ringSpec> ports(const Checked&) {
+		return {in(members(1)), out(members(1)), tap(members(1)), fromSource(members(1))};
+	}
+	static int ringOf(const Checked& s) { return static_cast<int>(s.get<ringRow>()); }
+	Configured configure(CreateOf<ringSpec>& cx, const Checked& s) {
+		cx.attach(tap, SinkShape{.frames = 4096}, std::make_unique<Positions>(ringOf(s)));
+		writers[ringOf(s)] = &cx.attach(fromSource, SourceShape{.frames = 1024});
+		return cx.applied(passThrough(bankPair(in, tap), bankPair(fromSource, out)));
+	}
+	Changed configure(ChangeOf<ringSpec>& cx, const Checked&, const Checked& now) {
+		if (ringScript.sink) cx.attach(tap, SinkShape{.frames = 4096}, std::make_unique<Positions>(ringOf(now)));
+		if (ringScript.source) writers[ringOf(now)] = &cx.attach(fromSource, SourceShape{.frames = 1024});
+		if (ringScript.hold) cx.holdAll();
+		if (ringScript.restart) return Changed::restart("cannot take it");
+		return cx.applied();
+	}
+};
+using Ringed = testing::TypeHarness<ringSpec, Rings>;
+
+void resetRings(RingScript asked = {}) {
+	ringScript = asked;
+	tapped.clear();
+	began.clear();
+	finished.clear();
+	writers.clear();
+}
+
+/// A ringed node running, its sink begun.
+std::unique_ptr<Ringed> ringed(testing::HarnessOptions options = {}) {
+	auto h = std::make_unique<Ringed>(std::move(options));
+	REQUIRE_FALSE(h->parse(NodeSettings::object()));
+	h->add();
+	h->blockReady();
+	if ((*h)->companion("tap").ready == false) (*h)->ready("tap");
+	if (h->phase() != "running") (*h)->completeBarrier();
+	REQUIRE(h->phase() == "running");
+	return h;
+}
+
+std::vector<float> filled(std::size_t frames, float value) { return std::vector<float>(frames, value); }
+} // namespace reconfigure_test
+
+TEST_CASE("A sink replaced in a change takes the cycles from the commit's invoke on, the old one those before it, "
+          "exactly, and the old one drains to its own consumer and finishes after the swap",
+          "[reconfigure][rings]") {
+	resetRings();
+	auto owned = ringed(manual());
+	auto& h = *owned;
+	h->process();
+	h->process();
+	h.change({{"ring", 2}});
+	CHECK(began[2]);                     // its consumer began beside the old one's
+	CHECK(h->swaps() == 1);              // the commit's invoke, with the same code: the tap moves in it
+	CHECK(h.phase() == "reconfiguring"); // until the invoke completes
+	h->process();
+	h->process();
+	CHECK_FALSE(finished[1]); // the old one still draining: nothing finishes it before the swap completed
+	h->completeBarrier();
+	CHECK(finished[1]);
+	CHECK(h.phase() == "running");
+	h->process();
+	CHECK(tapped[1] == std::vector<std::uint64_t>{0, 256});
+	CHECK(tapped[2] == std::vector<std::uint64_t>{512, 768, 1024});
+	CHECK_FALSE(finished[2]);
+	REQUIRE(h->companionList().size() == 2); // the sink and the source, each once
+	CHECK_FALSE(h->companionList()[0].retiring);
+}
+
+TEST_CASE("A teardown after a sink was replaced closes the replacement alone and ends, the old sink counted nowhere",
+          "[reconfigure][rings]") {
+	resetRings();
+	auto owned = ringed();
+	auto& h = *owned;
+	h.change({{"ring", 2}});
+	h.change({{"ring", 3}});
+	REQUIRE(h.phase() == "running");
+	CHECK(finished[1]);
+	CHECK(finished[2]);
+	CHECK_FALSE(finished[3]);
+	h.remove();
+	CHECK(finished[3]);
+	CHECK(h.gone());
+}
+
+TEST_CASE("A sink replaced in a change from stopped is swapped at once, the old one finished at the commit point",
+          "[reconfigure][rings]") {
+	resetRings();
+	auto owned = ringed();
+	auto& h = *owned;
+	h.stop();
+	REQUIRE(h.phase() == "stopped");
+	h.change({{"ring", 2}});
+	CHECK(h.phase() == "stopped");
+	CHECK(finished[1]);
+	CHECK(h->swaps() == 0);
+	h.start();
+	REQUIRE(h.phase() == "running");
+	h->process();
+	CHECK(tapped[1].empty());
+	CHECK(tapped[2].size() == 1);
+}
+
+TEST_CASE("A replacement sink is listed beside the one it replaces, which is retiring, until its consumer began and "
+          "the commit swapped them",
+          "[reconfigure][rings]") {
+	resetRings();
+	auto owned = ringed({.holdSinks = true});
+	auto& h = *owned;
+	h.change({{"ring", 2}});
+	REQUIRE(h.phase() == "reconfiguring"); // the commit waits for the replacement's consumer
+	std::vector<CompanionView> list = h->companionList();
+	REQUIRE(list.size() == 3);
+	CHECK(list[0].kind == CompanionKind::sink);
+	CHECK(list[0].retiring);
+	CHECK(list[0].ready);
+	CHECK(list[1].name == list[0].name);
+	CHECK_FALSE(list[1].retiring);
+	CHECK_FALSE(list[1].ready);
+	h->ready("tap");
+	CHECK(h.phase() == "running");
+	list = h->companionList();
+	REQUIRE(list.size() == 2);
+	CHECK_FALSE(list[0].retiring);
+	CHECK(list[0].ready);
+	CHECK(finished[1]);
+}
+
+TEST_CASE("A replacement sink of a change that ends uncommitted is closed, never tapped, and the old one taps on",
+          "[reconfigure][rings]") {
+	SECTION("superseded before its consumer began: closed with nothing to finish") {
+		resetRings();
+		auto owned = ringed({.holdSinks = true});
+		auto& h = *owned;
+		h.change({{"ring", 2}});
+		REQUIRE(h.phase() == "reconfiguring");
+		h.change({{"ring", 3}});
+		CHECK(h->companions()[2].destroyed); // ring 2's sink
+		CHECK_FALSE(began[2]);
+		h->ready("tap");
+		CHECK(h.phase() == "running");
+		h->process();
+		CHECK(tapped[3].size() == 1);
+		CHECK(tapped[2].empty());
+		CHECK(finished[1]);
+	}
+	SECTION("superseded after its consumer began: finished, never tapped") {
+		resetRings({.hold = true});
+		auto owned = ringed(manual());
+		auto& h = *owned;
+		h.change({{"ring", 2}});
+		REQUIRE(h.phase() == "reconfiguring"); // the hold not yet acknowledged
+		CHECK(began[2]);
+		h.change({{"ring", 3}});
+		CHECK(finished[2]);
+		CHECK_FALSE(finished[1]);
+		h->acknowledgeHolds();
+		h->completeBarrier();
+		CHECK(h.phase() == "running");
+		CHECK(finished[1]);
+		h->process();
+		CHECK(tapped[2].empty());
+		CHECK(tapped[3].size() == 1);
+	}
+	SECTION("fallen back: closed unbegun, and the restart's own sink takes the cycles") {
+		resetRings({.restart = true});
+		auto owned = ringed();
+		auto& h = *owned;
+		h->process();
+		h.change({{"ring", 2}});
+		REQUIRE(h->companions().size() >= 3);
+		CHECK(h->companions()[2].kind == CompanionKind::sink); // the replacement, closed when the change fell back
+		CHECK(h->companions()[2].destroyed);
+		CHECK(h->companions()[2].chunks.empty());
+		CHECK(finished[1]);
+		CHECK(h.phase() == "running"); // restarted with ring 2: its configure's own sink
+		h->process();
+		CHECK(tapped[1] == std::vector<std::uint64_t>{0});
+		CHECK(tapped[2].size() == 1); // the restart's sink, ring 2's too
+	}
+}
+
+TEST_CASE("A source replaced in a change plays from the commit's invoke on, the old one's writer closed at the commit "
+          "point, so two never play into one bank",
+          "[reconfigure][rings]") {
+	resetRings({.sink = false, .source = true});
+	auto owned = ringed();
+	auto& h = *owned;
+	REQUIRE(h->feed("from_source", filled(1024, 1.0F)) == 1024);
+	h->process();
+	CHECK(h.output(out, 0).back() == 1.0F);
+	SourceWriter* old = writers[1];
+	h.change({{"ring", 2}});
+	REQUIRE(h.phase() == "running");
+	CHECK(old->closed());
+	CHECK_FALSE(writers[2]->closed());
+	REQUIRE(h->feed("from_source", filled(1024, 0.5F)) == 1024);
+	h->process();
+	CHECK(h.output(out, 0).back() == 0.5F); // the old one's ring still held 768 frames of 1.0: never played
+	CHECK(h->swaps() == 1);
+}
+
+namespace reconfigure_test {
+/// A loop's state with two consumers: the change may hand the sink's replacement the other one, never the same one.
+struct TwoTaps {
+	Tap a;
+	Tap b;
+};
+constexpr auto taps = loop::strand<"taps", TwoTaps>;
+constexpr TypeSpec twoTapSpec{
+	.settings = SettingsTable<ringRow>{"two_taps"}, .banks = Banks<in, tap>{}, .loops = Loops<taps>{}};
+struct TwoTapping {
+	using Checked = CheckedOf<twoTapSpec>;
+	static Members<twoTapSpec> ports(const Checked&) { return {in(members(1)), tap(members(1))}; }
+	Configured configure(CreateOf<twoTapSpec>& cx, const Checked&) {
+		cx.attach(tap, SinkShape{.frames = 4096}, taps, &TwoTaps::a);
+		return cx.applied(passThrough(bankPair(in, tap)), cx.state(taps));
+	}
+	Changed configure(ChangeOf<twoTapSpec>& cx, const Checked&, const Checked& now) {
+		if (now.get<ringRow>() == 2) cx.attach(tap, SinkShape{.frames = 4096}, taps, &TwoTaps::b);
+		else cx.attach(tap, SinkShape{.frames = 4096}, taps, &TwoTaps::a);
+		return cx.applied();
+	}
+};
+using TwoTapped = testing::TypeHarness<twoTapSpec, TwoTapping>;
+} // namespace reconfigure_test
+
+TEST_CASE("A replacement sink consumed by a loop's state takes another consumer of it, never the one it replaces",
+          "[reconfigure][rings]") {
+	TwoTapped h;
+	REQUIRE_FALSE(h.parse(NodeSettings::object()));
+	h.add();
+	h.blockReady();
+	h->runLoops();
+	REQUIRE(h.phase() == "running");
+	SECTION("another member: swapped") {
+		h.change({{"ring", 2}});
+		CHECK(h.phase() == "running");
+		CHECK(h->swaps() == 1);
+	}
+	SECTION("the same member: a broken rule, the node lost") {
+		h.change({{"ring", 3}});
+		CHECK(h.phase() == "failed");
+		REQUIRE(h.health().reason);
+		CHECK(h.health().reason->code == FailureReason::Code::lost);
+		CHECK(h.health().reason->detail.find("is consumed by the consumer it replaces") != std::string::npos);
+	}
+}
+
+// ---- Sound cards replaced in a change, made before break or break-first (docs/writing-a-node-type.md#make-before-break)
+
+namespace reconfigure_test {
+constexpr auto cardRow = setting::required("card", setting::text<CardId::parse>("an ALSA card id")).inPlace();
+constexpr auto toCard = bank::insideOutput<"to_card">;
+constexpr auto fromCard = bank::insideInput<"from_card">;
+constexpr TypeSpec cardSpec{.settings = SettingsTable<cardRow>{"cards"}, .banks = Banks<in, out, toCard, fromCard>{}};
+
+/// How the change orders the playback card's replacement, set by each test.
+Order cardOrder = Order::makeFirst;
+
+struct Cards {
+	using Checked = CheckedOf<cardSpec>;
+	static Members<cardSpec> ports(const Checked&) {
+		return {in(members(1)), out(members(1)), toCard(members(1)), fromCard(members(1))};
+	}
+	static SoundCardShape cardOf(const Checked& s) { return SoundCardShape{s.get<cardRow>()}; }
+	Configured configure(CreateOf<cardSpec>& cx, const Checked& s) {
+		cx.attach(toCard, cardOf(s));
+		cx.attach(fromCard, cardOf(s));
+		return cx.applied(passThrough(bankPair(in, toCard), bankPair(fromCard, out)));
+	}
+	Changed configure(ChangeOf<cardSpec>& cx, const Checked&, const Checked& now) {
+		cx.attach(toCard, cardOf(now), cardOrder);
+		return cx.applied();
+	}
+};
+using Carded = testing::TypeHarness<cardSpec, Cards>;
+
+std::unique_ptr<Carded> carded() {
+	auto h = std::make_unique<Carded>(manual());
+	REQUIRE_FALSE(h->parse({{"card", "Pro24"}}));
+	h->add();
+	h->blockReady();
+	h->ready(toCard);
+	h->ready(fromCard);
+	if (h->phase() != "running") (*h)->completeBarrier();
+	REQUIRE(h->phase() == "running");
+	return h;
+}
+
+std::size_t playbacksMade(const testing::NodeHarness& h) {
+	return static_cast<std::size_t>(std::ranges::count_if(h.companions(), [](const testing::CompanionFake& one) {
+		return one.kind == CompanionKind::cardPlayback && one.made;
+	}));
+}
+} // namespace reconfigure_test
+
+TEST_CASE("A playback card replaced in a change holds its own bank, and is made before break unless the type orders "
+          "break-first",
+          "[reconfigure][replacement][card]") {
+	SECTION("made before break: the new card beside the old one, which is retiring until the commit point") {
+		cardOrder = Order::makeFirst;
+		auto owned = carded();
+		auto& h = *owned;
+		h.change({{"card", "Other"}});
+		REQUIRE(h.phase() == "reconfiguring");
+		CHECK(h.held(toCard)); // what the card plays, held so neither card clicks
+		CHECK_FALSE(h.held(out));
+		CHECK(playbacksMade(h.node()) == 1);
+		h->acknowledgeHolds();
+		REQUIRE(playbacksMade(h.node()) == 2);
+		CHECK_FALSE(h->companions()[0].destroyed);
+		std::vector<CompanionView> list = h->companionList();
+		REQUIRE(list.size() == 3);
+		CHECK(list[0].retiring);
+		CHECK(list[0].kind == CompanionKind::cardPlayback);
+		CHECK_FALSE(list[1].retiring);
+		CHECK_FALSE(list[1].ready);
+		h->ready("to_card");
+		CHECK(h.phase() == "running");
+		CHECK(h->companions()[0].destroyed);
+		CHECK(h->companionList().size() == 2);
+		CHECK_FALSE(h.held(toCard));
+	}
+	SECTION("break-first: the old card destroyed and the new one made in one flush, once the hold is acknowledged") {
+		cardOrder = Order::breakFirst;
+		auto owned = carded();
+		auto& h = *owned;
+		h.change({{"card", "Pro24b"}});
+		REQUIRE(h.phase() == "reconfiguring");
+		CHECK(h.held(toCard));
+		CHECK(playbacksMade(h.node()) == 1);
+		h->acknowledgeHolds();
+		REQUIRE(playbacksMade(h.node()) == 2);
+		CHECK(h->companions()[0].destroyed);
+		REQUIRE(h->companionList().size() == 2);
+		CHECK_FALSE(h->companionList()[0].retiring);
+		h->ready("to_card");
+		CHECK(h.phase() == "running");
+		CHECK_FALSE(h.held(toCard));
+		CHECK_FALSE(toldPhase(h.node(), NodePhase::stopping));
+	}
+	cardOrder = Order::makeFirst;
+}
+
+// ---- A recording replaced in a change (docs/writing-a-node-type.md#recordings-in-a-change) ----
+
+namespace reconfigure_test {
+inline std::optional<std::string> anyPath(std::string_view value) { return std::string(value); }
+constexpr auto pathRow = setting::required("path", setting::text<anyPath>("a recording's path")).inPlace();
+constexpr TypeSpec recordingSpec{.settings = SettingsTable<pathRow>{"recorded"}, .banks = Banks<in, tap>{}};
+
+/// Writes one byte per chunk into its recording.
+struct Bytes final : SinkConsumer {
+	explicit Bytes(Recording& r) : recording(r) {}
+	Recording& recording;
+	void consume(const Chunk&) override { static_cast<void>(::write(recording.descriptor(), "x", 1)); }
+	void finish() override {}
+};
+
+struct Recorded {
+	using Checked = CheckedOf<recordingSpec>;
+	static Members<recordingSpec> ports(const Checked&) { return {in(members(1)), tap(members(1))}; }
+	Configured configure(CreateOf<recordingSpec>& cx, const Checked& s) {
+		recording = &cx.recording({s.get<pathRow>()});
+		cx.attach(tap, SinkShape{.frames = 4096}, std::make_unique<Bytes>(*recording));
+		return cx.applied(passThrough(bankPair(in, tap)));
+	}
+	Changed configure(ChangeOf<recordingSpec>& cx, const Checked&, const Checked& now) {
+		Recording& next = cx.recording(*recording, {now.get<pathRow>()});
+		cx.attach(tap, SinkShape{.frames = 4096}, std::make_unique<Bytes>(next));
+		recording = &next; // read only by the next change
+		return cx.applied();
+	}
+	Recording* recording = nullptr;
+};
+using Recorder = testing::TypeHarness<recordingSpec, Recorded>;
+
+std::unique_ptr<Recorder> recorder(testing::HarnessOptions options = {}) {
+	auto h = std::make_unique<Recorder>(std::move(options));
+	REQUIRE_FALSE(h->parse({{"path", "a.wav"}}));
+	h->add();
+	h->blockReady();
+	h->runIo();
+	REQUIRE(h->phase() == "running");
+	return h;
+}
+
+std::size_t indexIn(const std::vector<std::string>& jobs, std::string_view job) {
+	return static_cast<std::size_t>(std::ranges::find(jobs, job) - jobs.begin());
+}
+} // namespace reconfigure_test
+
+TEST_CASE("A recording replaced in a change is opened beside the old one before the replacement sink begins, and the "
+          "old one is closed once the old sink finished",
+          "[reconfigure][recording]") {
+	auto owned = recorder({.holdIo = true});
+	auto& h = *owned;
+	h.process();
+	h.process();
+	h.change({{"path", "b.wav"}});
+	REQUIRE(h.phase() == "reconfiguring"); // its open waits on the I/O executor
+	CHECK(h.openRecordings() == 1);
+	h.runIo();
+	CHECK(h.phase() == "running");
+	h.runIo(); // the old one's close, posted once its sink finished
+	CHECK(h.openRecordings() == 1);
+	const std::vector<std::string>& jobs = h->ioJobs();
+	CHECK(indexIn(jobs, "open recording b.wav") < indexIn(jobs, "close recording a.wav"));
+	CHECK(indexIn(jobs, "close recording a.wav") < jobs.size());
+	h.process();
+	CHECK(h.recordingBytes("a.wav") == "xx");
+	CHECK(h.recordingBytes("b.wav") == "x");
+}
+
+TEST_CASE("A recording a change cannot open falls the change back (resource-refused), and one replaced by its own "
+          "path is a broken rule",
+          "[reconfigure][recording]") {
+	SECTION("refused") {
+		auto owned = recorder();
+		auto& h = *owned;
+		h.failRecordingOpen("b.wav", "no room");
+		h.change({{"path", "b.wav"}});
+		CHECK(fellBackReason(h.node()) == NodeCause::FellBack::resourceRefused);
+		CHECK(h.phase() == "failed"); // the restart cannot open it either
+		CHECK(h.openRecordings() == 0);
+	}
+	SECTION("its own path") {
+		auto owned = recorder();
+		auto& h = *owned;
+		h.change({{"path", "./a.wav"}});
+		CHECK(h.phase() == "failed");
+		REQUIRE(h.health().reason);
+		CHECK(h.health().reason->code == FailureReason::Code::lost);
 	}
 }

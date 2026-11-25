@@ -452,7 +452,7 @@ which no node's has), never metered. `test/protocol/companions.json` shows a lis
 | `kind` | `card-playback`, `card-capture`, `rtp-receiver`, `pipe-receiver`, `sink`, `source`; an open set |
 | `bank` | The node's inside bank it joins |
 | `ready` | A card or an RTP or pipe receiver once linked and running, a sink once its consumer began, a source always; a companion a change in place is replacing, until its replacement is |
-| `retiring` | `true` on a companion a change in place replaces make-before-break, until the commit point destroys it ([writing-a-node-type.md](writing-a-node-type.md#make-before-break)): listed just before its replacement, which shares its name for a moment; absent otherwise |
+| `retiring` | `true` on a companion a change in place replaces make-before-break (an engine companion, a sink or a source), until the commit point destroys it or moves its bank to its replacement ([writing-a-node-type.md](writing-a-node-type.md#make-before-break), [#sinks-and-sources-in-a-change](writing-a-node-type.md#sinks-and-sources-in-a-change)): listed just before its replacement, which shares its name for a moment; absent otherwise |
 | `dropped` | A sink only: frames its ring had no room for since this configuration made it |
 | `shortfall` | A source only: frames played as zeros while its writer was not idle, since this configuration made it |
 

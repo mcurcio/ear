@@ -577,26 +577,33 @@ What NodeHost does, in order:
    waits for its `done()`; a `fail(detail)`, or its token dropped, falls back (`failed`).
 5. **The commit point.** The instance adopts the new settings and the configuration holds them;
    the staged posts are released to their loops, in the order posted; the plan is carried; a new
-   code is swapped in one invoke, its completion the commit's (from `prepared`, or with no new
-   code, the commit completes in its own turn); the old code is released once its swap completed;
+   code, or a replaced sink's or source's binding, is swapped in one invoke, its completion the
+   commit's (from `prepared`, or with neither, the commit completes in its own turn); the old code is released once its swap completed;
    then the holds fade back in; last, the ports the configuration no longer asks are released.
    The loops and their states go on: nothing is torn down.
 6. **The deadline**, 10 s from the change version's call (a type declares 1 s to 60 s: its spec's
    `.lifecycle`): past it the change falls back, reason `deadline`.
 
-A **replacement** (an RTP receiver on the same bank,
-[writing-a-node-type.md](writing-a-node-type.md#engine-companions)) is judged once the change
-version answered: its new claims first, with the change's own (a refusal falls back,
-`resource-refused`, before anything breaks), then, behind a hold the framework takes on what its
-bank feeds, made beside the old one ([make-before-break](writing-a-node-type.md#make-before-break):
-an RTP receiver on a new port), or break-first, the old one destroyed and the new one made in one
-flush (an RTP receiver on the same port); the commit point waits for it to be ready (its loss
-first falls back, `resource-lost`), destroys the old one if it still runs, and releases the ports
-the old one held that the new one does not, last. The old one is retiring meanwhile (listed
-`retiring`): its loss is `ear.retiring-lost`.
+A **replacement** (an RTP receiver or a sound card on the same bank, a sink or a source on it, or
+a recording: [writing-a-node-type.md](writing-a-node-type.md#make-before-break),
+[#sinks-and-sources-in-a-change](writing-a-node-type.md#sinks-and-sources-in-a-change),
+[#recordings-in-a-change](writing-a-node-type.md#recordings-in-a-change)) is readied beside the old
+one, in readiness order, once the change version answered: the change's new claims first, its
+recordings' among them (a refusal falls back, `resource-refused`, before anything breaks), then
+its recordings opened, then its companions: each replacement sink's consumer begun, and, behind a
+hold the framework takes on what its bank carries, each engine companion made beside the old one
+(an RTP receiver on a new port, a sound card), or break-first, the old one destroyed and the new
+one made in one flush (an RTP receiver on the same port, a card the type orders so). The commit
+point waits for every one to be ready (an engine companion's loss first falls back,
+`resource-lost`); then it destroys an old engine companion that still runs, moves each sink's and
+source's bank to its replacement in its invoke (the old sink finishing once that completed, the
+old source's writer closed), closes a replaced recording once every replaced sink finished, and
+releases the ports the old ones held that the new ones do not, last. An old one is retiring
+meanwhile (listed `retiring`): an engine companion's loss is `ear.retiring-lost`.
 
 A change that ends without committing (superseded, stopped, failed or fallen back) destroys its
-staged posts unrun and releases its new code and the ports it was granted (a replacement made
+staged posts unrun and releases its new code and the ports it was granted, closes its
+replacement sinks, sources and recordings (a replacement made
 break-first stays the bank's companion, its ports the configuration's; one broken but not yet
 made, its flush still to run, is made only if no newer change broke the same bank first: the
 newest break's replacement is the one made; one made before break is destroyed, and the one it
@@ -739,7 +746,8 @@ the main loop never joins a thread:
    so nothing the realtime thread can reach is freed while it can reach it); the code's `release`.
    What was sent to a loop before the node was configured is destroyed unrun.
 2. Engine companions destroyed (and, for a removal, the block, only after the barrier).
-3. Sinks drained and finished, each on its own thread, and its program reaped (its end now is no
+3. Sinks drained and finished, each on its own thread (a sink a change replaced that is still
+   draining is waited for too, counted apart), and its program reaped (its end now is no
    failure, but the end this step waits for).
 4. Each loop finishes: it runs the work already posted (the goodbye), then destroys its state on
    its own thread; once every loop has, each closes, cancelling any source its state left armed
