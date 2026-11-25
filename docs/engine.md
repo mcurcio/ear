@@ -1331,6 +1331,21 @@ most once per window; only the realtime side remembers which window it rang for,
 without reading never silences later windows. `latestLevels()` returns one window for every block
 that has one, the oldest latest window, since blocks publish one after another within a cycle.
 
+## The realtime bell
+
+A node's code that reports from `process` ([architecture.md](architecture.md#the-realtime-channels))
+rings core's `RealtimeBell` after a cycle it wrote in, at most once until its channels are next
+drained. ear_pipewire's is `MainLoopRealtimeBell` (`realtime_bell.hpp`): one `pw_loop` event source
+on the main loop, made before `NodeHost` and freed after it. A ring is `pw_loop_signal_event`, one
+eventfd write, safe from the data loop (a block's fade completion and a sink's tap wake their loops
+the same way), so it allocates nothing and never waits; several rings before the main loop wakes
+are one dispatch. The dispatch calls `NodeHost::realtimeRung`, which arms the status tick, and the
+tick drains every node's channels with its queue. The level bell is the control port's and rings
+once per level window for every block together; this one is per configuration and gated by its
+drain, so a code that writes every cycle rings it once per tick, at most 30 times a second
+(`ear_pipewire_tests`: an idle block's code rings nothing; a field set and an event raised on the
+real data loop reach a status listener).
+
 ## Realtime priority
 
 `libpipewire-module-rt` raises the data thread to SCHED_FIFO only if the process may. The run image

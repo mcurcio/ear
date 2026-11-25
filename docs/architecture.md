@@ -450,7 +450,7 @@ never touches a queue, a lock or a clock of its own.
 |---|---|---|---|
 | An `rt` status field | one `std::atomic<std::uint64_t>` per field (a flag 0 or 1, a number or decimal its bits, a choice its index) and an `std::atomic<std::uint32_t>` transition counter beside it, both stored by the code, sampled by the drain | 64 `rt` fields per type | none: the word always holds the last value |
 | The ring | single producer (the code), single consumer (the drain), fixed 48-byte records: kind, index, count, the cycle's `startNs`, up to four 8-byte values | 256 records per configuration; a log record is refused once 192 are in use, so status and events keep the last quarter | dropped, counted per kind: `ear.records-dropped`, subject `realtime` (`count`, `status`, `events`, `logs`) |
-| The bell | `RealtimeBell::ring()`, gated by one atomic exchange per configuration: rung after a `process` that wrote anything, unless it was rung since the last drain | at most once per drain, and the drain is the tick's, so at most 30 a second per node | — |
+| The bell | `RealtimeBell::ring()` (ear_pipewire's: [engine.md](engine.md#the-realtime-bell)), gated by one atomic exchange per configuration: rung after a `process` that wrote anything, unless it was rung since the last drain | at most once per drain, and the drain is the tick's, so at most 30 a second per node | — |
 | A broken value | the first value outside its declaration, kept once | one | the node fails `lost` with the rule |
 
 `io.set` stores the word and, when the value differs from the last one the code wrote (its

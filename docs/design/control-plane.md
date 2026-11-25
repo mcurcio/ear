@@ -9,8 +9,8 @@ editor's status list, badges and activity: `docs/writing-a-node-type.md#status-a
 `docs/architecture.md#status-and-events`, `docs/output-records.md#status`, `docs/control-port.md#status`,
 `docs/editor.md#status-events-and-diagnostics`), step 5.3's realtime channels built (`rt` fields, `io.set`, `io.raise`,
 `io.log`, the ring with its log budget, cycle stamps and the gated bell, bound when the code is prepared and rebound at a
-swap: `docs/writing-a-node-type.md#reporting-from-the-code`, `docs/architecture.md#the-realtime-channels`; left of it:
-the bell on the main loop in `ear_pipewire`); the rest not built. Slice 5 (the
+swap: `docs/writing-a-node-type.md#reporting-from-the-code`, `docs/architecture.md#the-realtime-channels`,
+`docs/engine.md#the-realtime-bell`); the rest not built. Slice 5 (the
 control plane: status, events, node diagnostics on the wire, actions, the realtime coded ring, sendspin's notes split)
 follows slice 3c (built: the node
 handle and loops, `docs/writing-a-node-type.md#the-node-handle`, `#loops`). Slice 6 (parameters: decimal, indexed and live rows, parameter slots and their ramps, retunes,
@@ -430,8 +430,8 @@ All -32000 with `data.code`; every new code is a case in `test/protocol/errors.j
 ### 4.6 Node diagnostics on the wire
 
 Built ([control-port.md](../control-port.md#node-diagnostics), [output-records.md](../output-records.md#diagnostic)):
-`node.diagnostic`, kept per code and subject with `active` and `count`, and `detail` beside `msg`. Left:
-`ear.records-dropped` gains subject `realtime` (5.3), and `ear.realtime-overrun` (`codeUs`, `cycleUs`) stays reserved.
+`node.diagnostic`, kept per code and subject with `active` and `count`, and `detail` beside `msg`, and
+`ear.records-dropped`'s subject `realtime`. `ear.realtime-overrun` (`codeUs`, `cycleUs`) stays reserved.
 Slice 8 adds `ear.health-flapping`, `ear.recovery-attempt` and `ear.readiness-missed` in the same shape
 (`recovery.md`).
 
@@ -592,9 +592,8 @@ template <auto... Actions> struct ActionTable {};
 - **Erased for the rest of ear**: `NodeType::schema()` returns a plain `TypeSchema` (core, nlohmann only), encoded once
   by `ear_control`. `NodeConfig::liveValues()` gives each live key's checked value, for retunes.
   `NodeType::checkLive(config, key, value)` runs the row's rule then the type's `check` with that value in place.
-- **New core interfaces**, implemented outside core: `RealtimeBell` (built in core,
-  [architecture.md](../architecture.md#the-realtime-channels); left: its `ear_pipewire` side, a `pw_loop` event on the
-  main loop), `NodeStatusListener` (`statusChanged`, `statusReset`, `eventRaised`), `NodeDiagnosticListener`
+- **New core interfaces**, implemented outside core: `RealtimeBell` (built:
+  [engine.md](../engine.md#the-realtime-bell)), `NodeStatusListener` (`statusChanged`, `statusReset`, `eventRaised`), `NodeDiagnosticListener`
   (built, gaining subject, `active`, `count`), and `GestureListener` (carrying the owning session so the gateway can
   leave out own echoes), implemented by the gateway and `StatusLog`.
 
@@ -1108,10 +1107,8 @@ stop and a start, the queue's bound, flapping and settling on the harness's cloc
 record within 1 s and matching the view); `status.json`, `diagnostics.json`; the editor's status list and badges; a
 system test of ten chatty nodes and a slowly reading client.
 
-**5.3 The realtime ring** is built in core ([architecture.md](../architecture.md#the-realtime-channels),
-[writing-a-node-type.md](../writing-a-node-type.md#reporting-from-the-code)). Left: the bell in `ear_pipewire`, a
-`pw_loop` event on the main loop that tells NodeHost, and `main.cpp`'s wiring. Tests: `ear_pipewire_tests` (a test
-block's code sets a field and raises an event, and both are drained; an idle block rings nothing).
+**5.3 The realtime ring** is built ([architecture.md](../architecture.md#the-realtime-channels),
+[writing-a-node-type.md](../writing-a-node-type.md#reporting-from-the-code), [engine.md](../engine.md#the-realtime-bell)).
 
 **5.4 Actions.** `ActionTable`, triggers, calls on a loop of the spec, `node.invoke` through the keeper, `not-running`,
 deferred batch replies with their deadline, the `action` record for type actions, the editor's buttons; sendspin's

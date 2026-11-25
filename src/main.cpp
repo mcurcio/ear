@@ -64,6 +64,7 @@
 #include "ear/pipewire/main_loop_executor.hpp"
 #include "ear/pipewire/pipe_receivers.hpp"
 #include "ear/pipewire/port_blocks.hpp"
+#include "ear/pipewire/realtime_bell.hpp"
 #include "ear/pipewire/rtp_receivers.hpp"
 #include "ear/pipewire/sinks.hpp"
 #include "ear/pipewire/sound_cards.hpp"
@@ -427,7 +428,15 @@ int main(int argc, char** argv) {
 	                                                      .pipeReceivers = &pipeReceivers,
 	                                                      .programs = &programs,
 	                                                      .runtimeFolder = runtime->path.string()});
+	// The realtime bell (docs/engine.md#the-realtime-bell): a node's code rings it from the data loop after a cycle it
+	// wrote in, and its dispatch arms NodeHost's tick. Made before NodeHost and freed after it, once no code runs.
+	ear::NodeHost* ringing = nullptr;
+	ear::pipewire::MainLoopRealtimeBell realtimeBell(*engine, [&ringing] {
+		if (ringing != nullptr) ringing->realtimeRung();
+	});
 	ear::NodeHost nodes(format, blocks, resources, mainLoop, mainLoop);
+	nodes.ringWith(realtimeBell);
+	ringing = &nodes;
 	const ear::GraphStatus status({format, scheduling.realtime, scheduling.detail}, catalogue, graph, nodes, reconciler,
 	                              engine.get());
 

@@ -1,6 +1,6 @@
 # ear_pipewire: PipeWire's engine inside EAR, and the adapters that implement ear_core's
 # interfaces with it: port blocks (with their levels), links, live ports, sound cards,
-# module-run converters (RTP receivers, pipe receivers) and the main-loop executor (docs/architecture.md#packages,
+# module-run converters (RTP receivers, pipe receivers), the main-loop executor and the realtime bell (docs/architecture.md#packages,
 # docs/node-types.md#rtp).
 # engine_names.hpp, link_proxy.hpp, engine_companions.hpp, converter_modules.hpp, module_converter_body.hpp,
 # latency_spa.hpp, engine_properties.hpp (every PipeWire
@@ -21,6 +21,7 @@ add_library(ear_pipewire STATIC
 	main_loop_executor.cpp
 	pipe_receivers.cpp
 	port_blocks.cpp
+	realtime_bell.cpp
 	rtp_receivers.cpp
 	sinks.cpp
 	sound_cards.cpp
@@ -38,6 +39,7 @@ target_sources(ear_pipewire PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/pipewire/module_converters.hpp
 	include/ear/pipewire/pipe_receivers.hpp
 	include/ear/pipewire/port_blocks.hpp
+	include/ear/pipewire/realtime_bell.hpp
 	include/ear/pipewire/rtp_receivers.hpp
 	include/ear/pipewire/sinks.hpp
 	include/ear/pipewire/sound_cards.hpp
