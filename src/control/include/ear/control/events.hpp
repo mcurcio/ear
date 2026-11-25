@@ -15,13 +15,13 @@
 // The graph notifications (docs/control-port.md) as typed events.
 namespace ear::control {
 /// node.added. Its `companions` (feature companions) is always []: a node is told added before NodeHost configures it,
-/// a port-caused replace's newer node too (docs/control-port.md#companions).
+/// and so is a change of ports sent as a replace (docs/control-port.md#companions).
 struct NodeAdded {
 	NodeSpec node;
 	Ports ports;       // public ports only
 	NodeHealth health; // from the spec alone
 	std::chrono::system_clock::time_point since;
-	NodeCounts counts{}; // feature counters: zero, or for a port-caused replace the older node's, which it carries on
+	NodeCounts counts{}; // feature counters: zero, or for a change of ports sent as a replace the node's own
 };
 struct NodeUpdated {
 	NodeName node;

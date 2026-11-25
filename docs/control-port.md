@@ -183,8 +183,10 @@ three or four `node.state`s within milliseconds.
 **Edits** (`node.add`, `node.update`, `node.remove`, `route.*`, `node.disable`, `node.enable`,
 `node.setText`, `node.addText`, `graphFile.set`) are edits of `ear.conf` made at the source, judged before they are kept, and written
 behind ([graph-file.md](graph-file.md#edits-at-the-source)). A node whose ports change (a card's
-channel count) is replaced: `route.removed` for its routes, `node.removed`, then `node.added` and
-`route.added` again. An update with the same settings changes nothing. `disabled` is not a
+channel count) is sent as replaced: `route.removed` for its routes, `node.removed`, then `node.added`
+and `route.added` again, each route's `route.status` sent again after it. The node is not replaced:
+its block is reshaped and the links of the ports it keeps never go
+([architecture.md](architecture.md#reshapes)); `applied` says `restart`. An update with the same settings changes nothing. `disabled` is not a
 setting: a `disabled` key inside `settings` is `invalid-settings`.
 
 **`node.start`, `node.stop` and `node.restart` edit nothing.** They ride with the other requests
@@ -203,7 +205,7 @@ edit. Their effect shows as `node.updated` (`applied` and `disabled`) and the he
 
 | Notification | Params | When |
 |---|---|---|
-| `node.added` | the node as in the Graph, with its health (`phase` `added`, or `disabled` for a node added disabled), its `counters` (zero, or what a port-caused replace carries on: [below](#counters)) and `"companions": []` | A node was added |
+| `node.added` | the node as in the Graph, with its health (`phase` `added`, or `disabled` for a node added disabled), its `counters` (zero, or, after a change of ports, what the node has counted: [below](#counters)) and `"companions": []` | A node was added |
 | `node.updated` | `{"name", "settings", "applied", "disabled"?}`; `applied`: `restart`, `reconfigure` (every changed key's row is marked in place: [architecture.md](architecture.md#restarts-and-changes-of-settings)), `disable`, `enable` or `stored` (a change to a node that stays disabled). It is the plan's outcome, never rewritten by what the node then does: a node that cannot take it in place restarts, which `node.state` shows | A node's settings or `disabled` changed |
 | `node.removed` | `{"name"}` | A node was removed (after `route.removed` for its routes). The client drops the node now |
 | `node.state` | `{"name"}` and every health member | Any health member changed |
@@ -413,9 +415,9 @@ state, the graph's and each node's, which never step back and are never reset
 | A node's `counters` | `missedCycles` (cycles its block missed that the driver did not cut), `overruns` (cycles its own work took longer than), `repositions`, `driverChanges`; from its add, across its restarts |
 
 - **On subscribe**, the snapshot carries the graph's counters and each node's, read in the turn
-  that makes it. `node.added` carries the node's: zero for a node added, or, when a node is
-  replaced only because its ports changed (a card's channel count), the counters it carries on
-  from the older node, which is the same node to the operator. So a client holds every node's
+  that makes it. `node.added` carries the node's: zero for a node added, or, when a change of its
+  ports (a card's channel count) is sent as its replace, the counters the node has counted, since
+  it is the same node with the same block ([architecture.md](architecture.md#reshapes)). So a client holds every node's
   counters from the moment it holds the node.
 - **`counters.changed`** (`test/protocol/counters-changed.json`) carries the graph's counters
   whole and, under `nodes`, the whole counters of each node whose counters changed since the last
@@ -459,7 +461,7 @@ which no node's has), never metered. `test/protocol/companions.json` shows a lis
 - **Where.** Every node of a snapshot carries `companions`, its list in the order its type asked
   for them, read with the rest; `[]` for a node with none (`white`, `sendspin`), not yet
   configured, failed or disabled. `node.added` always carries `[]`: a node is added before it is
-  configured, a port-caused replace's node too (its companions are new and count from zero).
+  configured, and so does a change of ports sent as a replace (a new list follows its configuration).
 - **`node.companionsChanged`** carries the node's whole list and replaces the one the client holds.
   It is sent when an entry is added or removed or its `ready` changes, at once and in order with
   the node's health: after the `configuring` that asked for the list; before the `node.state` a
@@ -531,7 +533,7 @@ breaking change moves `protocol`; anything else is a new feature name
 | `node-text.json` | `nodeTexts` (a comment owned, a snippet's node shared); `node.setText`: success, `file-changed`, `invalid-text` placed in the text, `ear/node-renamed`, `shared-definition`, `ear/not-one-node`; `node.addText`: success, `file-changed`, knobly's error placed in the text, `ear/not-one-node`, `duplicate-node`; the system tests send its requests to the real ear and expect its replies |
 | `errors.json` | Every refusal code and envelope error |
 | `levels.json` | `levels.subscribe` and `levels` |
-| `counters-changed.json` | The counters in a snapshot, `counters.changed`, one naming a node not held, and a port-caused replace's `node.added` carrying its counters |
+| `counters-changed.json` | The counters in a snapshot, `counters.changed`, one naming a node not held, and a change of ports' `node.added` carrying its counters |
 | `companions.json` | The companion lists in a snapshot (every engine and ring kind but a source), a file node's list from `node.added` to running, a counter moving, a stop and a start (no list), a restart, an RTP receiver replaced make-before-break (the old one `retiring`), a failure past a readiness deadline, a removal (no list after `node.removed`) |
 | `unknown-values.json` | Values, members and notifications a client does not know, taken or ignored |
 | `output-records.json` | Standard output's records ([output-records.md](output-records.md)) |

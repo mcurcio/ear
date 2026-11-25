@@ -44,20 +44,20 @@ protected:
 };
 
 /// Told where a node's counts begin and end (docs/engine.md#reporting-the-counters), by NodeHost, which alone knows a
-/// node's life. A span is one node's counts from its add to its end, keyed by the serial of the node that began it; a
-/// port-caused replace carries its older node's span on. Two spans of a name are open at once while an older node of
+/// node's life. A span is one node's counts from its add to its end, keyed by the serial of the node that began it (a
+/// change of ports keeps its node, so its span). Two spans of a name are open at once while an older node of
 /// the name, superseded by a newer one, still closes. Main thread.
 class NodeCountsListener {
 public:
 	/// Span `span` of this name begins counting from zero: a node added, or replacing an older node of the name by
-	/// another type, or by a removal and an add. Not told for a port-caused replace, which goes on in the older's span.
+	/// another type, or by a removal and an add.
 	virtual void countsBegan(const NodeName& node, std::uint64_t span) = 0;
 	/// The span's last node is gone, these its final counts, which nothing answers after. Told just before its nodeGone
-	/// or supersededGone, a superseded node's too; not for the older node of a port-caused replace, whose span goes on.
+	/// or supersededGone, a superseded node's too.
 	virtual void countsEnded(const NodeName& node, std::uint64_t span, const NodeCounts& total) = 0;
 	/// A configuration of a node of this span ended (its teardown's step 5, or it was leaked): its sinks' and sources'
 	/// final counts, which nothing answers after (a companion's counters run per configuration). Told before its node's
-	/// countsEnded; for every configuration, a superseded node's and the older node of a port-caused replace's too.
+	/// countsEnded; for every configuration, a superseded node's too.
 	virtual void companionsEnded(const NodeName& node, std::uint64_t span, std::span<const CompanionView> finals) {
 		static_cast<void>(node);
 		static_cast<void>(span);

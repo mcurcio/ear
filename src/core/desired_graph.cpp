@@ -40,10 +40,23 @@ NodeOutcome outcomeOf(bool wasDisabled, bool isDisabled) {
 
 NodeOutcome outcomeFor(const NodeType& type, std::span<const std::string> keys, bool wasDisabled, bool isDisabled) {
 	const NodeOutcome outcome = outcomeOf(wasDisabled, isDisabled);
-	if (outcome != NodeOutcome::restart || keys.empty()) return outcome;
+	if (outcome != NodeOutcome::restart) return outcome;
+	if (keys.empty()) return NodeOutcome::unchanged;
 	return std::ranges::all_of(keys, [&](const std::string& key) { return type.changesInPlace(key); })
 	           ? NodeOutcome::reconfigure
 	           : NodeOutcome::restart;
+}
+
+NodeChange changeOf(const NodeType& type, std::vector<std::string> keys, bool wasDisabled, bool isDisabled,
+                    const Ports& oldPorts, const Ports& ports) {
+	NodeOutcome outcome = outcomeFor(type, keys, wasDisabled, isDisabled);
+	bool inPlace = false;
+	if (oldPorts != ports && !wasDisabled && !isDisabled) {
+		inPlace = outcome == NodeOutcome::reconfigure;
+		outcome = NodeOutcome::reshape;
+	}
+	return NodeChange{
+		.outcome = outcome, .keys = std::move(keys), .oldPorts = oldPorts, .ports = ports, .inPlace = inPlace};
 }
 
 namespace {
@@ -189,7 +202,7 @@ std::expected<Plan, CommandError> DesiredGraph::plan(std::span<const NodeSpec> n
 	changes->graph = impl_.get();
 	changes->generation = impl_->generation;
 
-	// Nodes, in name order: removed, replaced (removed and added), changed, added.
+	// Nodes, in name order: removed, replaced (another type: removed and added), changed (a reshape among them), added.
 	std::set<NodeName, std::less<>> replaced;
 	for (const auto& [name, held] : impl_->nodes) {
 		const auto it = wanted.find(name);
@@ -199,22 +212,21 @@ std::expected<Plan, CommandError> DesiredGraph::plan(std::span<const NodeSpec> n
 		}
 		const auto& next = it->second;
 		if (next.spec == held.spec) continue;
-		if (next.spec.type == held.spec.type && next.config->ports() == held.config->ports()) {
-			std::vector<std::string> keys = changedKeys(held.spec.settings, next.spec.settings);
-			// The catalogue parsed the node, so its type is there.
-			const NodeOutcome outcome =
-				outcomeFor(*impl_->catalogue.find(next.spec.type), keys, held.spec.disabled, next.spec.disabled);
-			changes->outcomes.emplace_back(name, outcome);
-			changes->nodesChanged.push_back(
-				Plan::Impl::Changed{next.spec, next.config, NodeChange{outcome, std::move(keys)}});
+		if (next.spec.type == held.spec.type) {
+			// The catalogue parsed the node, so its type is there. Its routes still wanted name ports the new ports
+			// declare (checked above), so they are kept.
+			NodeChange change =
+				changeOf(*impl_->catalogue.find(next.spec.type), changedKeys(held.spec.settings, next.spec.settings),
+			             held.spec.disabled, next.spec.disabled, held.config->ports(), next.config->ports());
+			changes->outcomes.emplace_back(name, change.outcome);
+			changes->nodesChanged.push_back(Plan::Impl::Changed{next.spec, next.config, std::move(change)});
 		} else {
 			const NodeOutcome outcome = outcomeOf(held.spec.disabled, next.spec.disabled);
 			changes->outcomes.emplace_back(name, outcome);
 			changes->nodesRemoved.push_back(name);
 			replaced.insert(name);
 			changes->replacedChanges.emplace(name,
-			                                 NodeChange{outcome, changedKeys(held.spec.settings, next.spec.settings),
-			                                            next.spec.type == held.spec.type});
+			                                 NodeChange{outcome, changedKeys(held.spec.settings, next.spec.settings)});
 		}
 	}
 	for (const auto& [name, next] : wanted)

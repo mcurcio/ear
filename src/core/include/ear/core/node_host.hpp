@@ -76,8 +76,7 @@ public:
 	/// Whether this listener hears a superseded node: an older node of a name still closing once a newer node of that
 	/// name was added (another type, or a name added back by a later commit). The wire keys health by name and holds
 	/// the newer node, so the gateway does not; standard output does
-	/// (docs/architecture.md#phases-states-and-what-is-wanted). The older node of a port-caused replace tells nobody:
-	/// its successor carries one health stream for the name.
+	/// (docs/architecture.md#phases-states-and-what-is-wanted).
 	virtual bool hearsSuperseded() const noexcept { return true; }
 	/// A superseded node is gone (told only to listeners that hear one). The default tells nodeGone.
 	virtual void supersededGone(const NodeName& node, std::uint64_t droppedFrames) { nodeGone(node, droppedFrames); }
@@ -155,12 +154,14 @@ protected:
 /// (docs/writing-a-node-type.md#sources), which it plays into their inside input banks before the code, every cycle it
 /// runs that code. All are bound in the invoke that applies the request, with the code, and unbound by the next
 /// request's (a silence binds none), so a sink takes and a source plays exactly the cycles its code drove. All of it
-/// outlives the drive's completion or the block.
+/// outlives the drive's completion or the block. `ports` are the ports the code was laid out for, whose order its spans
+/// come in (docs/engine.md#reshapes): null, the block's own (its last reshape's, else its making's).
 struct DriveRequest {
 	AudioCode* code = nullptr;
 	std::span<const bool> faded;
 	std::span<const SinkBinding> sinks{};
 	std::span<const SourceBinding> sources{};
+	const Ports* ports = nullptr;
 };
 /// Engine side of a port block. Silent until a drive applies a code. Destroying it removes its ports and their links;
 /// after the destructor returns, no process() of any code is running or will run, and no `done` of its requests runs.
@@ -205,6 +206,12 @@ public:
 	virtual void swap(DriveRequest request, std::move_only_function<void(std::uint64_t taken)> done) {
 		drive(request, std::move(done));
 	}
+	/// Main thread; returns at once (docs/engine.md#reshapes): the block's ports become `next`, its links on the ports
+	/// both name kept. A port `next` adds is in the engine on return, silent and metered from its first window; the code
+	/// last asked keeps the spans it was laid out for until a drive or swap brings the code for `next`, and a port
+	/// `next` drops leaves the engine once no layout the data loop may read names it. Applied in order with the block's
+	/// other requests. The default (a test's fake) does nothing.
+	virtual void reshape(const Ports& next) { static_cast<void>(next); }
 	/// Main thread: runs every `done` whose request the data loop already completed, as the block's completion event
 	/// would. A caller calls it before judging any bound, so a main loop that stalled never mistakes a
 	/// late dispatch for a late data loop.
@@ -335,17 +342,15 @@ public:
 	void subscribeNotes(NodeNoteListener& listener);
 	void subscribeDiagnostics(NodeDiagnosticListener& listener);
 	void subscribeEngineDiagnostics(EngineDiagnosticListener& listener);
-	/// Where each span of counts begins and ends (docs/engine.md#reporting-the-counters): countsBegan when a node that
-	/// does not carry an older node's counts is added, its serial the span; countsEnded with its final counts as it
-	/// goes, before its nodeGone or supersededGone (not for the older node of a port-caused replace, whose span its newer
-	/// node carries on). Main thread, before the first node. Also companionsEnded, with a configuration's sinks' and
+	/// Where each span of counts begins and ends (docs/engine.md#reporting-the-counters): countsBegan when a node is added,
+	/// its serial the span; countsEnded with its final counts as it goes, before its nodeGone or supersededGone. Main
+	/// thread, before the first node. Also companionsEnded, with a configuration's sinks' and
 	/// sources' final counts, as it ends (teardown step 5, or a leak).
 	void subscribeCounts(NodeCountsListener& listener);
 	/// Where a node's companion list goes whenever an entry is added or removed or its `ready` changes
 	/// (docs/engine.md#companions-in-a-nodes-list): told at configure's applied return (a source ready, the rest not),
 	/// before the health a companion's readiness allows, and empty at teardown step 1, after the health that began
-	/// the teardown; a stop keeps it. Only the node a client holds tells: never a superseded node, nor the older node of
-	/// a port-caused replace. A move of a counter alone is CounterWatch's to tell. Main thread, before the first node.
+	/// the teardown; a stop keeps it. Only the node a client holds tells: never a superseded node. A move of a counter alone is CounterWatch's to tell. Main thread, before the first node.
 	void subscribeCompanions(NodeCompanionsListener& listener);
 	/// Where log entries attributed to a node go: the framework's own (source "ear", on the main thread: a stop() that
 	/// threw during a teardown, whose fault is dropped, docs/writing-a-node-type.md#rules-the-framework-enforces), and
@@ -394,15 +399,16 @@ public:
 	/// The plan's outcome (docs/architecture.md#restarts-and-changes-of-settings): restart as nodeUpdated (a stopped
 	/// node rests stopped again); disable tears the configuration down (stop() and the fade if it runs), drops the
 	/// node's stop and keeps its block and routes (T20, T21); enable configures it afresh (T22); stored keeps the
-	/// config for the enable.
+	/// config for the enable; reshape restarts it with its block reshaped between the configurations, or takes it in
+	/// place (docs/architecture.md#reshapes); a node with no configuration reshapes its block at once; unchanged does
+	/// nothing.
 	void nodeChanged(const NodeSpec& node, std::shared_ptr<const NodeConfig> config, const NodeChange& change) override;
 	/// stopping; the barrier, then the port block's destruction queued into the turn's flush and the configuration torn
 	/// down as the restart's; nodeGone once both are gone (the flush ran the destruction). Others untouched.
 	void nodeRemoved(const NodeName& node) override;
-	/// A replace (another type or other ports) is a removal and an addition of the name; when only the
-	/// ports changed (change.portCaused), the new node carries the older one's stop (both enabled), its dropped frames
-	/// and one health stream, stopping (restarting) until the older node is gone, the older node telling nobody; any
-	/// other older node tells only the listeners that hear a superseded node.
+	/// A replace (another type under the name) is a removal and an addition of the name; the older node tells only the
+	/// listeners that hear a superseded node. A change of ports is no replace: nodeChanged, a reshape
+	/// (docs/architecture.md#reshapes).
 	void nodeReplacing(const NodeName& node, const NodeChange& change) override;
 	void nodeReplaced(const NodeSpec& node, std::shared_ptr<const NodeConfig> config,
 	                  const NodeChange& change) override;
@@ -422,11 +428,11 @@ public:
 	/// of the same name).
 	std::vector<NodeHealth> health() const;
 	/// The node counters of the newest node of this name not yet gone, from its add (docs/engine.md#counters): what its
-	/// block counts now, or counted before it went, plus, for a port-caused replace, what the older node counted (read
-	/// from it until it is gone, then carried), so they never step back; none when no such node is left.
+	/// block counts now, or counted before it went, so they never step back (a change of ports keeps the block); none
+	/// when no such node is left.
 	std::optional<NodeCounts> counts(const NodeName& node) const override;
-	/// The counts of this span of counts (NodeCountsListener): its newest node not yet gone's, carried as counts()
-	/// carries them; none once the span ended.
+	/// The counts of this span of counts (NodeCountsListener): its newest node not yet gone's; none once the span
+	/// ended.
 	std::optional<NodeCounts> spanCounts(std::uint64_t span) const override;
 	/// The companions of the newest node of this name not yet gone (docs/engine.md#companions-in-a-nodes-list): its
 	/// configuration's, in request order, each sink's `dropped` and source's `shortfall` read now; empty when there is

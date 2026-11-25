@@ -274,13 +274,11 @@ TEST_CASE("An accepted edit is announced, then runs, then is answered, and is wr
 	CHECK(contents(f.file) == change.file.text);
 	CHECK(f.fileLog.written == Lines{change.file.version});
 
-	// playback 4 on desk rewrites @set $ch, so desk and porch are replaced, in one commit.
+	// playback 4 on desk rewrites @set $ch, so desk and porch are reshaped (their routes kept), in one commit.
 	f.log.clear();
 	CHECK(ok(f.update("desk", {{"card", "MOTU"}, {"playback", 4}})));
 	CHECK(f.lastChange().file.text.find("@set $ch 4;") != std::string::npos);
-	CHECK(f.log.lines == Lines{"file edit", "route.removed noise:noise.mono desk:play.1", "node.removed desk",
-	                           "node.removed porch", "node.added desk", "node.added porch",
-	                           "route.added noise:noise.mono desk:play.1", "reply"});
+	CHECK(f.log.lines == Lines{"file edit", "node.updated desk", "node.updated porch", "reply"});
 	CHECK(std::all_of(f.log.turns.begin(), f.log.turns.end(), [&](int turn) { return turn == f.log.turns[0]; }));
 }
 

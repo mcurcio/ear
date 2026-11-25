@@ -539,15 +539,18 @@ refuse a disabled node (`node-disabled`): enable it first.
 to the wanted state (a stopped node is configured again and rests stopped). Every change of a
 node's settings does the same (cause `restarting`, then `configuring` with the changed keys).
 An update that leaves the settings as they are changes nothing, for a failed node too. A change
-of a node's ports (a card's channel count) or of its type replaces the node: its routes and the
-node are removed and added again. A change to a disabled node is stored for when it is enabled.
+of a node's ports (a card's channel count) keeps the node and its block, reshaped
+([below](#reshapes)); a change of its type replaces the node: its routes and the node are removed
+and added again. A change to a disabled node is stored for when it is enabled.
 
-The desired graph's plan says what each edit asks of a node it keeps by name (`NodeOutcome`):
-`disable`, `enable` or `stored` by its `disabled` before and after; otherwise `reconfigure` when
-every changed key's row is marked in place
+The desired graph's plan says what each edit asks of a node it keeps by name (`NodeOutcome`, told
+through `nodeChanged` with a `NodeChange`): `disable`, `enable` or `stored` by its `disabled`
+before and after; otherwise `reshape` when its ports differ, `unchanged` when no key does (nothing
+is done or told), `reconfigure` when every changed key's row is marked in place
 ([writing-a-node-type.md](writing-a-node-type.md#settings-one-table-of-typed-rows)), else
 `restart`. A `reconfigure` is taken in place when the type has a change version
-([below](#changes-in-place)), else as a restart.
+([below](#changes-in-place)), else as a restart. `changeOf` (`desired_graph.hpp`) is the one rule,
+the plan's and the type harness's.
 
 ### Changes in place
 
@@ -662,6 +665,41 @@ one:
   point), `failed` (the change version failed), `restart-requested` (`node.restart`).
 - **A fault** during a change (a kept resource lost, the block lost, a hook that threw) fails the
   node as in any other phase; it is not a fallback.
+
+### Reshapes
+
+A change of a node's ports with its type kept (a card's `playback` count, an `rtp` node's
+`channels`) is a **reshape**: the node keeps its block, and the block's ports change to the new
+ones, the links on the ports both name kept throughout ([engine.md](engine.md#reshapes) says how
+the block does it). The plan's `NodeChange` carries the ports before and after.
+
+- **Routes.** Every wanted route must name a port the new ports declare, as for any edit (a route
+  to `desk:play.4` while `desk` goes to two channels is refused `unknown-port`), so no wanted route
+  names a vanishing port by the time a reshape commits, and a route kept is never removed or added:
+  routes are removed before nodes change in a commit. A route may name a port that appears; it links
+  once the port is live.
+- **As a restart** (the default): the old configuration is torn down as for a restart, then, at the
+  new configuration's start, the block, silent, takes the new ports, and `configure` sees them.
+  Surviving ports keep their links and carry zeros while the node restarts; inside banks are resized
+  with the rest, and their companions are made afresh by the new `configure`. The cause is the
+  settings change's (`settings`, its keys).
+- **On a node with no configuration** (disabled, or failed): the block alone is reshaped at the
+  commit, no hook called; an enable later configures it with the ports the block already has.
+- **In place**, when every changed key is `.inPlace()` (`NodeChange::inPlace`), the type has a
+  change version, and the configuration has no companion (an engine companion, a sink, a source, a
+  recording or a program; one on a resized bank would need a replacement made before break on the
+  new ports, which is not built, so such a node restarts): a change in place
+  ([above](#changes-in-place)). The new ports are in the engine before the change version runs; the
+  old code keeps the ports it was laid out for (each
+  drive names them), with the new outputs written zeros, until the commit's swap brings the code for
+  the new ports; the ports that go leave the engine once that swap completed. A hold names a bank the
+  running code has. The change version must give a code: one that does not fails the node `lost`,
+  "configure changed the ports in place and gave no code for them". No built-in type reshapes in
+  place; `reshape_test.cpp` proves it with a test type, channels 1 and 2 playing on through a third
+  added and removed.
+- **On the wire** a change of ports is still sent as the node's replace, `applied` `restart`
+  ([control-port.md](control-port.md#methods)); the gateway sends the routes it keeps again around
+  it, with their status.
 
 ### Failures
 

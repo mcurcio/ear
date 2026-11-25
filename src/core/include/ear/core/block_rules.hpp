@@ -193,6 +193,19 @@ public:
 	bool held(std::size_t output) const noexcept { return output < held_.size() && held_[output] != 0; }
 	/// Holds applied and not yet acknowledged.
 	std::uint64_t waiting() const noexcept { return asked_ - acked_; }
+	/// A reshape's layout taking over from `from` (docs/engine.md#reshapes): output o takes the gain and the hold of
+	/// `from`'s output map[o] (negative: a new output, at full gain and not held), and the holds waiting carry on.
+	/// Realtime-safe: both are sized already.
+	void carry(const HoldRamp& from, std::span<const std::int32_t> map) noexcept {
+		for (std::size_t o = 0; o < at_.size(); ++o) {
+			const std::int32_t old = o < map.size() ? map[o] : -1;
+			const bool kept = old >= 0 && static_cast<std::size_t>(old) < from.at_.size();
+			at_[o] = kept ? from.at_[static_cast<std::size_t>(old)] : frames_;
+			held_[o] = kept ? from.held_[static_cast<std::size_t>(old)] : std::uint8_t{0};
+		}
+		asked_ = from.asked_;
+		acked_ = from.acked_;
+	}
 
 private:
 	bool silentNow() const noexcept {

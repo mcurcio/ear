@@ -438,10 +438,9 @@ included), after all its work: a `CycleCounters`, four atomics its one writer, t
 loads and stores relaxed, with no lock or allocation; any thread reads them (`PortBlock::counts`).
 They run from the node's add: `NodeHost::counts(name)` gives the newest node of the name not yet
 gone, its block's counts now, or what its block counted before it went, and survives its restarts,
-stops and changes of settings (the block is made once in a node's life). A port-caused replace is
-the same node to the operator (one health stream, its dropped frames), so the newer node adds the
-older's counts, read from it until it is gone and carried after, and the total never steps back; a
-replace by another type is a removal and an add, from zero. Nothing resets a counter but its
+stops and changes of settings (the block is made once in a node's life), a change of its ports
+among them: a reshape keeps the block ([architecture.md](architecture.md#reshapes)), so its counts
+go on and never step back; a replace by another type is a removal and an add, from zero. Nothing resets a counter but its
 owner's end.
 
 ### Reporting the counters
@@ -465,8 +464,8 @@ thread is furthest behind; and a timer of their own would wake the loop again fo
 heartbeat already gives. The cost of a beat is a handful of atomic loads and a lookup per node.
 
 **Spans.** A span is one node's counts from its add, starting from zero, to its end, keyed by the
-serial of the node that began it ([above](#counters): a port-caused replace goes on in its older
-node's span). NodeHost tells where each begins (`countsBegan`: a node added, or a name replaced by
+serial of the node that began it ([above](#counters): a change of ports keeps its node, so its
+span). NodeHost tells where each begins (`countsBegan`: a node added, or a name replaced by
 another type or removed and added again) and ends (`countsEnded`, with its final counts, as its
 last node goes, before its `nodeGone` or `supersededGone`), and answers a span's counts while it is
 open (`NodeHost::spanCounts`), since only NodeHost knows a node's life. A node superseded by a newer
@@ -611,6 +610,50 @@ in order with drives and fades:
 The holds' ramp and rule are core's `HoldRamp` (`ear/core/block_rules.hpp`), which the type
 harness's block runs too. They are asked only while no fade-out waits (a change runs from
 `driving`), so a hold, a release or a swap completes in the invoke that applies it, as a drive does.
+
+### Reshapes
+
+`PortBlock::reshape(next)` changes a streaming block's ports to `next` (a change of a node's ports
+with its type kept: [architecture.md](architecture.md#reshapes)); the links on the ports both name
+stay, since those ports never leave the engine.
+
+- **Layouts.** Everything the realtime side reads that the ports size (the port handles, the spans,
+  the scratch, the meters and the levels' mailbox, the latency each port tells, the holds, the fade
+  mask, the companions' binding storage) is one **layout**, built whole on the main loop for one
+  **view**, the ports a code was laid out for. The data loop reads it through one pointer, which a
+  request's invoke sets, so nothing is resized while a cycle may read it. Installing one carries over,
+  by port, each kept output's hold and fade flag and each kept public port's meter (the window
+  under way goes on), and the bound sinks and sources. Once the request that installed it
+  completed, the levels read its mailbox (swapped under the registry's lock) and every earlier
+  layout is freed: the data loop runs invokes between cycles, so none of them is read again.
+- **Order.** `reshape` adds the ports `next` adds with `pw_filter_add_port` at once: they are in the
+  registry on return, and routes to them can link. The code last asked keeps its view: a layout of
+  its own ports, with every output `next` adds written zeros each cycle (a new input is not read),
+  installed by a request in the ring. A drive or swap names the ports its code was laid out for
+  (`DriveRequest::ports`; none, the block's own) and installs that view's layout with the code, in
+  the same invoke. A silence takes `next`'s view at once, so a restart's reshape (the block silent
+  between two configurations) needs one layout. The ports `next` drops are removed with
+  `pw_filter_remove_port` once the layout installed is `next`'s and no request waits with another,
+  never before: a port's handle is its memory (the S4 trap below). A latency plan is worked out
+  against the block's ports, or, while a reshape waits for its code, against the old view.
+- **The plain add.** A port is added on the main loop with the data loop running, never held (the
+  owner's rule: the graph is changed without interrupting it). It is safe on x86-64, the only
+  architecture ear builds, for the reasons [below](#the-one-data-loop-and-invokes) gives, and it may
+  cross a multiple of 32 ports of a direction (the same section). An arm64 image waits on the append
+  being made on the data loop ([architecture.md](architecture.md#not-built-yet)).
+- **A new port's first cycles** after its link is active may bring no buffer, or silence; a test of a
+  reshape waits for the audio, never counts cycles from the link.
+- **Levels.** A layout meters its view's public ports, so a new public port is metered from the
+  first window of the layout that has it (a reshape beside a running code meters it from the swap
+  that brings its code; until then it carries zeros). Between the install and the main loop's swap
+  of the mailbox, a snapshot reads the old layout's last window.
+- **A wedged data loop** adds and removes no port (each reaches the data loop through a blocking
+  invoke in `impl-port.c`); a port not added reads zeros or writes scratch, as a refused one does.
+
+The tests are `port_block_test.cpp`'s `[reshape]` cases: a port added and removed beside a running
+code (the kept port's audio never breaks, the new output carries exact zeros until its code, the
+vanished port and its link go after the swap), a silent block's reshape keeping a link, a new port
+metered from its first window, and a block grown from 31 to 40 inputs beside a ramp.
 
 ### Sinks
 
@@ -939,8 +982,8 @@ an entry is added or removed or its `ready` or `retiring` changes, in this order
   `node.state` that began it, so a client never waits for the list to learn of a failure; a stop
   keeps the configuration, so its list.
 
-Only the node a client holds tells: neither a node superseded by a newer node of its name nor the
-older node of a port-caused replace, as the wire keys a node by its name
+Only the node a client holds tells: never a node superseded by a newer node of its name, as the wire
+keys a node by its name
 ([architecture.md](architecture.md#phases-states-and-what-is-wanted)).
 
 *Why a counter rides in its companion's entry:* a count belongs to the crossing that drops, so it is
@@ -1209,8 +1252,8 @@ Verified by `spikes_test.cpp` (S1 to S4, and S5's part B) against 1.4.2's `loop.
 - **One data loop.** `context.num-data-loops` reads 1, the process has one `data-loop.0` thread, and
   a filter's `pw_filter_get_data_loop` is that loop. Adapters and the RTP module name `data-loop.0`
   in their info; `pw_filter`s name no loop.
-- **Ports can be added to and removed from a streaming filter** (S4), which no code of ear's does
-  yet. On a connected `RT_PROCESS` filter made as a block's, `pw_filter_add_port` gives a port that
+- **Ports can be added to and removed from a streaming filter** (S4), which a reshape does
+  ([above](#reshapes)). On a connected `RT_PROCESS` filter made as a block's, `pw_filter_add_port` gives a port that
   appears in the registry, links, and carries its peer's audio sample for sample;
   `pw_filter_remove_port` of a linked port takes its port and its link out of the registry. Over 500
   rounds of both (three cycles a round), a port linked throughout kept its link and read every cycle
@@ -1239,6 +1282,23 @@ Verified by `spikes_test.cpp` (S1 to S4, and S5's part B) against 1.4.2's `loop.
   the append being made on the data loop, by PipeWire or by a port block that owns its own port
   list. A filter's own `process` must have stopped using a port's handle
   before `pw_filter_remove_port` returns: the handle is the port's memory.
+- **A block may grow past 32 ports of a direction while it streams.** `pw_filter` keeps each
+  direction's ports in a map that grows 32 slots at a time (`pw_map_init(..., 32, 32)`,
+  `filter.c:1247`), and `alloc_port` grows it on the main loop (`pw_map_insert_new`,
+  `filter.c:342`), which may move its storage. Nothing on the data loop reads that map in 1.4.2:
+  the data loop's walk is the port list (`impl_node_process`, `filter.c:1010`), a block reads a
+  port's buffer through its handle (`pw_filter_get_dsp_buffer`), and the map's only reader that
+  could run there, `impl_port_reuse_buffer` (`filter.c:964`), is reached only through an output
+  port's tee (`tee_reuse_buffer`, `impl-port.c:282`), which nothing calls for a link between DSP
+  ports: an input port's mixer never sends a buffer back to its peer (`schedule_mix_reuse_buffer`,
+  `impl-port.c:323`, a no-op marked "FIXME send reuse buffer to peer"; `mixer-dsp.c:692` recycles
+  its own buffers), the node's `reuse_buffer` callback walks the input mixers only
+  (`node_reuse_buffer`, `impl-node.c:2211`) and `pw_filter` never emits it, and the exported node's
+  server side refuses a reuse (`client-node.c:927`, `-ENOTSUP`); a link's buffer negotiation
+  (`impl-link.c:574`, `pw_buffers_negotiate`) and every other lookup by id (`port_set_io`,
+  `port_set_param`, `port_use_buffers`) run on the main loop, where the map changes. So a reshape
+  is never made a replace for crossing a multiple of 32 ports (the test "A reshape grows a block
+  past 32 inputs ..." runs one beside a ramp); a PipeWire bump reads these callers again.
 - After a 2 s data-loop stall the driver catches up as [above](#the-internal-clock); the bounds treat
   it as no wedge while the loop answers invokes.
 - **The driver reports every cycle a node misses** (S6). Every follower is a target of the driver,

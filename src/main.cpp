@@ -459,7 +459,7 @@ int main(int argc, char** argv) {
 	counterWatch.subscribeCompanions(gateway);     // and its counters' moves
 	counterWatch.subscribe(
 		log);                  // ear.graph-lost-cycles, ear.node-missed-cycles, ear.sink-dropped, ear.source-shortfall
-	gateway.readCounts(nodes); // node.added's counters for a port-caused replace
+	gateway.readCounts(nodes); // node.added's counters for a change of ports sent as a replace
 	reconciler.subscribe(log);
 	reconciler.subscribe(gateway);
 	live.subscribe(reconciler);

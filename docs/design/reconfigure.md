@@ -1,8 +1,8 @@
 # Changes in place and reshape: slice 3d of the node framework
 
-Status: design; steps 1 to 3 of section 11 built (section 2 says what and where). Slice 3d follows slice 3c (built: it swaps claims and posts to loops, both
+Status: design; steps 1 to 4 of section 11 built (section 2 says what and where). Slice 3d follows slice 3c (built: it swaps claims and posts to loops, both
 3c's, `docs/writing-a-node-type.md#claims`, `#loops`) and comes before slice 6 (`control-plane.md`: a retune is one of the outcomes this slice makes). Its PipeWire
-spike (S4) is run: a reshape goes ahead as designed (7.4). It changes the audio path: holds, code swaps and reshapes. The built lifecycle (states,
+spike (S4) is run and the reshape built on it. It changes the audio path: holds, code swaps and reshapes. The built lifecycle (states,
 operations, teardown, fades, barriers and their bounds) is described in `docs/architecture.md` and
 `docs/writing-a-node-type.md`; the built wire in `docs/control-port.md`; this page cites them and says only what 3d adds.
 
@@ -21,11 +21,11 @@ The R numbers are the register the node framework's design used.
 | R24 | "too technical for me to properly answer" (where reconfigure lives and how it reaches a type's threads) | 2026-11-08 | Hooks run on the main loop and reach a node's threads only by typed posts (built: [`docs/writing-a-node-type.md#loops`](../writing-a-node-type.md#loops), "Why loops"); the rest of this page's choices are the designer's (section 12) |
 | R30 (gate W3) | "I would like each port to show meter levels so I can see audio traversing the graph" | 2026-11-08 | A hold is seen as silence on the meters (no "held" marks); a reshape's new ports are metered from their first window (8.4) |
 | R33 | Asked "Should configure come in two versions, each offering only its legal calls, so a wrong call won't compile?": "Two versions" | 2026-11-08 | `Changed configure(ChangeOf<spec>&, const Checked& old, const Checked& now)`, optional; absent, every change restarts (section 4) |
-| X2 | Asked what happens to a change that removes ports that are wired: "(a)", as recommended: the editor lists the wires that would go before applying; Apply removes them and changes the setting in one step (one save of `ear.conf`) or neither; a script must ask (`dropRoutes: true`), else it is refused naming the wires | 2026-11-08 | 7.1, 8.3 |
+| X2 | Asked what happens to a change that removes ports that are wired: "(a)", as recommended: the editor lists the wires that would go before applying; Apply removes them and changes the setting in one step (one save of `ear.conf`) or neither; a script must ask (`dropRoutes: true`), else it is refused naming the wires | 2026-11-08 | 7, 8.3 |
 
 ## 2. What is built, and what this slice changes
 
-Built (steps 1 and 2 of section 11), described where they live and not repeated here:
+Built (steps 1 to 4 of section 11), described where they live and not repeated here:
 
 - the `.inPlace()` mark and the plan's `reconfigure` outcome
   ([`docs/writing-a-node-type.md#settings-one-table-of-typed-rows`](../writing-a-node-type.md#settings-one-table-of-typed-rows),
@@ -60,14 +60,23 @@ Built (steps 1 and 2 of section 11), described where they live and not repeated 
   ([`docs/writing-a-node-type.md#recordings-in-a-change`](../writing-a-node-type.md#recordings-in-a-change));
 - on the wire: `reconfiguring` with `keys` and `next`, the `fell-back` cause, `applied: "reconfigure"`, the
   standard-output records and the three diagnostics ([`docs/control-port.md#node-health`](../control-port.md#node-health),
-  [`docs/output-records.md#node`](../output-records.md#node)).
+  [`docs/output-records.md#node`](../output-records.md#node));
+- the plan's outcomes `reshape` and `unchanged`, a change of ports with the same type told by `nodeChanged` with the
+  ports before and after (no longer a replace, `portCaused` gone), a reshape as a restart with the block reshaped
+  between the configurations, a disabled node's block reshaped alone, and in place with a test type
+  ([`docs/architecture.md#reshapes`](../architecture.md#reshapes)); `PortBlock::reshape` on the plain add, its layouts
+  swapped whole, its levels re-registered, the 32-port question of section 13 settled (a block may cross 32 ports:
+  [`docs/engine.md#reshapes`](../engine.md#reshapes),
+  [`#the-one-data-loop-and-invokes`](../engine.md#the-one-data-loop-and-invokes)). On the wire a change of ports is
+  still sent as a replace, `applied` `restart`, until step 5.
 
 This page still designs:
 
-- the plan's outcomes `reshape` and `unchanged`, and a change of ports with the same type no longer a replace (3, 7);
-- `PortBlock::reshape` (7);
+- a reshape in place of a configuration with companions: the companions on resized inside banks replaced make-before-break
+  (7; built, such a node restarts);
 - `sendspin` in place (6.6);
-- on the wire: features `node.set`, `reshape` and `dryRun`, `dropRoutes`, `ports-in-use`, and the editor (8).
+- on the wire: features `node.set`, `reshape` and `dryRun`, `dropRoutes`, `ports-in-use`, `applied: "reshape"` with
+  `inPlace` and `ports`, the cause `reshape`, and the editor (8).
 
 The transitions this page names are the framework's numbering: **T9** (`running` or `stopped` → `reconfiguring`, the
 change version called), **T10** (the commit point: back to `running` or `stopped`), **T11** (the fallback: `reconfiguring`
@@ -83,21 +92,19 @@ the ports `ports()` makes. The outcomes, the built and those still designed:
 
 | Outcome | When | What the node does | Its state |
 |---|---|---|---|
-| `unchanged` | the same settings | nothing; nothing written | as it was |
+| `unchanged` (built) | the same settings | nothing; nothing written | as it was |
 | `retune` (slice 6) | every changed key is `.live` | the parameter slots move; no hook | as it was |
-| `reconfigure` | every changed key is `.live` or `.inPlace()`, at least one `.inPlace()`, ports unchanged | the change version of `configure` | `reconfiguring`, then back to `running` or `stopped` |
+| `reconfigure` (built) | every changed key is `.live` or `.inPlace()`, at least one `.inPlace()`, ports unchanged | the change version of `configure` | `reconfiguring`, then back to `running` or `stopped` |
 | `restart` (built) | any changed key is restart-only, ports unchanged | torn down, configured from empty, back to the wanted state | `stopping` (`restarting`), `configuring`, then as before |
-| `reshape` | the same type, the ports differ | section 7; in place (`inPlace: true`) when every changed key is `.inPlace()` or `.live`, else a restart with the block reshaped between configurations | `reconfiguring` when in place, else as `restart` |
+| `reshape` (built) | the same type, the ports differ | section 7; in place (`inPlace: true`) when every changed key is `.inPlace()` or `.live`, else a restart with the block reshaped between configurations | `reconfiguring` when in place, else as `restart` |
 | `replace` (built) | another type under the same name | removed and added | `stopping`, removed, then a new node |
-| `disable`, `enable`, `stored` (built) | `disabled` changed, or any change to a node that stays disabled | as built; a `stored` change of ports reshapes the block alone (7.2) | as built |
+| `disable`, `enable`, `stored` (built) | `disabled` changed, or any change to a node that stays disabled | as built; a `stored` change of ports reshapes the block alone | as built |
 
 An edit that changes several kinds of row takes the strongest outcome (`retune` < `reconfigure` < `restart` <
 `reshape`). A node that has not yet rested (`added`, `configuring`, `configured`, `starting`) takes any change as a
-restart of its configuration (D-A7, built for every change in 3a). **How the outcome reaches `NodeHost`**: `NodeOutcome`
-gains `reconfigure`, `reshape` and `unchanged` (and `retune` in slice 6), told through the built
-`DesiredNodeListener::nodeChanged`, whose `NodeChange` gains the old and new ports; a change of ports with the same
-type is no longer a replace (`nodeReplacing`/`nodeReplaced` stay for another type only, and `portCaused` goes). Its
-default still calls `nodeUpdated`, so every listener but `NodeHost` and the gateway is unchanged.
+restart of its configuration (D-A7, built for every change in 3a). How the outcome reaches `NodeHost` is built
+([`docs/architecture.md#restarts-and-changes-of-settings`](../architecture.md#restarts-and-changes-of-settings));
+slice 6 adds `retune`.
 
 **Restart-only by default, and why.** A node's code, instance and loop states were made from the old settings; only the
 type knows which of its members a key reaches. So nothing is in place unless the type says so, and the hook may still
@@ -211,92 +218,25 @@ one already posted runs, and the goodbye behind it stops whichever client exists
 | `rtp` | `address`, `port`, `format`, `rate`, `latencyMs` (built: 6.5) | `channels`: a reshape |
 | `sendspin` | `name`, `port`, `server` (6.6) | — |
 
-No built-in type reshapes in place; this slice proves an in-place reshape with a test type in `ear_core_tests` and the
-spike's engine test (D-R24).
+No built-in type reshapes in place (D-R24); a test type proves it (built:
+[`docs/architecture.md#reshapes`](../architecture.md#reshapes)).
 
 ## 7. A change of shape: reshape
 
-Ports, banks and member counts are made by `ports(checked)` at parse; a change of them is a **reshape** (R17: "might not
-be fully transparent").
+Built: [`docs/architecture.md#reshapes`](../architecture.md#reshapes) (the plan, the restart, the disabled node, in
+place), [`docs/engine.md#reshapes`](../engine.md#reshapes) (`PortBlock::reshape`, the layouts, the plain add, levels;
+S4 and the 32-port answer: [`#the-one-data-loop-and-invokes`](../engine.md#the-one-data-loop-and-invokes)). Still
+designed:
 
-### 7.1 How the desired graph judges it
-
-As built, every wanted route must name a port the new ports declare (a plan keeping a route to `desk:play.4` while
-`desk` goes to two playback channels is refused `unknown-port`). Through the control port it becomes `ports-in-use`,
-naming every such route, and `dropRoutes: true` removes those route lines in the same commit (X2, the owner's answer);
-a hand edit or `graphFile.set` that keeps one is refused `unknown-port` as today. By the time a reshape commits, no wanted
-route names a port that vanishes. Wanted routes may name ports that appear; they link once the ports are live.
-
-### 7.2 What the framework does
-
-- **By default** (not in place): a restart with the block reshaped between the old configuration's teardown and the new
-  one's `configure`. The block is kept. Ports that vanish are removed (no wanted route names them; routes are removed
-  before nodes change in a commit, as built); ports that appear are added, silent, and registered for levels.
-  Surviving ports keep their links throughout and carry zeros while the node restarts. Inside banks are resized with
-  the rest, and their companions are made afresh by the new `configure`.
-- **On a disabled node** (no configuration): the block alone is reshaped at the commit, with no hook called; the
-  outcome is `stored`, with its `ports`; an enable later configures it with the ports the block already has. (Built: a
-  replace told as `node.removed` and `node.added`, `applied: "stored"`.)
-- **In place**, when every changed key is `.inPlace()` or `.live`: a reconfigure. The framework adds the new ports to
-  the engine first, calls the change version, which must swap the code (its `Io` layout changed; a hook that does not
-  fails the node with the rule's text), and removes the vanished ports after the swap's barrier. A type whose channel
-  count is `.inPlace()`, going from 2 to 3 channels, keeps channels 1 and 2 playing. Companions on resized inside banks
-  are replaced make-before-break: the new companion is handed over in one invoke, so a bank never holds two at once
-  (the block's binding storage is one per inside bank, `docs/architecture.md#companions`).
-
-### 7.3 Two layouts while a reshape is in flight
-
-The block's ports are two flat lists by direction, public then inside, and `Io` resolves banks to indices in `prepare`;
-adding `in.3` before an inside bank moves that bank's indices, so the old code keeps the layout it was prepared with
-until the swap. **Each layout is one object, swapped whole** (D-R5): everything the realtime side reads for a block is
-fixed-size today (the port handles, the spans, the scratch, the meters, the latency arrays, and the levels'
-`RegisteredBlock` with its `LevelMailbox`, sized to the public ports, `port_blocks.cpp` [V]), and none is resized in
-place. A **layout** holds all of them for one set of ports; it is built whole on the main loop (allocation included)
-and the block reads it through one pointer. An in-place reshape uses three: the old; a **transitional** one, built once
-the new ports exist in PipeWire, that hands the old code the spans of its own ports and lists the new ports' outputs to
-zero-fill and their inputs to ignore; and the new one, for the new code. Each is installed by one pointer swap in a
-barrier invoke, the second together with the new code; its `RegisteredBlock` is swapped into the levels' list under
-`Levels::mutex`; and the layout it replaced is freed only after a second barrier completed. Vanished ports are removed
-from PipeWire only after the new layout's swap. A restart's reshape (between two configurations) needs one new layout,
-swapped before the new code first drives.
-
-### 7.4 The mechanism, and its spike
-
-`PortBlock::reshape(const Ports& next)` on `pw_filter_add_port` and `pw_filter_remove_port` on a connected
-`PW_FILTER_FLAG_RT_PROCESS` filter. **S4, the spike, first** (planned in 3a's design, D-L43): a test type with two input
-banks and an inside bank, a running ramp through a second block beside it, then `pw_filter_add_port` in the middle of
-the input list and `pw_filter_remove_port` of a linked port, 500 times. Pass: the beside ramp never loses a sample; new
-ports appear in the registry and link; a removed port's links go; a port added while links exist carries audio; and a
-code reading of PipeWire 1.4.2's `filter.c` (`pw_filter_add_port`, `pw_filter_remove_port`, the port list the data
-loop's `impl_node_process` walks, and how each change reaches the data loop) shows the list is changed only inside an
-invoke on the data loop or before the port is visible to it, cited in the test's header. ThreadSanitizer is not a
-criterion: the image's libpipewire is not instrumented. **Fallback** (D-B5): a reshape stays the built port-caused
-replace, and only the UX claim (surviving links stay) is lost.
-
-**S4, run (2026-11-22; `spikes_test.cpp`, tag `[s4]`; what it found of PipeWire is
-`docs/engine.md#the-one-data-loop-and-invokes`).** Every functional criterion passed, in 19 runs of 500 rounds of each of its two cases, six
-of them beside the whole suite: the ramp beside lost nothing, the new port appeared, linked and carried audio, a removed
-port's link went, and a port linked throughout kept its link and its audio. **The code reading did not pass as the
-criterion is written:** `filter.c` appends to and unlinks from the port list its data loop walks on the main loop,
-with no invoke. It is safe in practice for the reasons that page gives: on x86-64 by the order of the append's two
-stores, and for a remove on any architecture. So **the fallback is not taken, and `PortBlock::reshape` is built on
-`pw_filter_add_port` and `pw_filter_remove_port`**, on these terms:
-
-- **A vanishing port leaves the block's layout behind a barrier before `pw_filter_remove_port`**, as 7.3 already
-  orders it: the handle is the port's memory, freed when the call returns.
-- **The add is made plain, never with the data loop held** (the owner, 2026-11-22, binding: the graph is changed
-  without interrupting it). It is safe on x86-64, the only architecture ear builds. The held add the spike also ran is
-  not built: it makes the realtime thread wait on an ordinary one, a priority inversion with no bound (50 to 300 us
-  in most runs, 2.1 ms in one).
-- **An arm64 image waits on this.** Without total store order the plain add is not safe, so arm64
-  (`docs/architecture.md#not-built-yet`) needs the append made on the data loop: by PipeWire (an upstream change to
-  `alloc_port`, not yet reported), or by ear owning its node's port list instead of using `pw_filter` (a port block
-  written on the node interface, its list swapped by the invoke ear already has; not scoped).
-- **A new port's first cycles after its link is active may bring no buffer, or silence.** The transitional layout
-  (7.3) already ignores a new input; a test of an in-place reshape waits for the audio, never counts cycles from
-  `linkActive`.
-- **The safety rests on PipeWire 1.4.2's code, not on a contract of `pw_filter`.** A PipeWire bump reads `alloc_port`,
-  `free_port` and `pw_impl_port_remove` again (the `pipewire-engine` skill's bump steps), and S4 runs on every build.
+- **Through the control port** a plan keeping a route to a vanishing port becomes `ports-in-use`, naming every such
+  route, and `dropRoutes: true` removes those route lines in the same commit (X2, the owner's answer); a hand edit or
+  `graphFile.set` that keeps one is refused `unknown-port`, as built (8.1).
+- **In place with companions**: companions on resized inside banks replaced make-before-break, the new companion
+  handed over in one invoke, so a bank never holds two at once (the block's binding storage is one per inside bank,
+  `docs/architecture.md#companions`). Built, a configuration with any companion takes a reshape as a restart.
+- **arm64** waits on the append being made on the data loop: by PipeWire (an upstream change to `alloc_port`, not yet
+  reported), or by ear owning its node's port list instead of using `pw_filter` (a port block written on the node
+  interface, its list swapped by the invoke ear already has; not scoped).
 
 ## 8. On the wire and in the editor
 
@@ -382,20 +322,18 @@ slice adds the features `node.set`, `reshape` and `dryRun`.
 
 ### 8.4 Levels
 
-A reshape registers the block's new public ports for levels and drops the vanished ones at its barrier (7.3), so a new
-handle's meter moves from its first window (today a block's metered ports are fixed when it is made). A held bank's
-output meter, the wire's level and the fed input's meter all read silence during the hold, since the hold applies after
-the code and before metering.
+Built ([`docs/engine.md#reshapes`](../engine.md#reshapes)): a reshape's new public port is metered from the first window
+of the layout that has it. A held bank's output meter, the wire's level and the fed input's meter all read silence
+during the hold, since the hold applies after the code and before metering.
 
 ## 9. What it changes in the built system
 
-What steps 1 to 3 changed is built (section 2). What is left:
+What steps 1 to 4 changed is built (section 2). What is left:
 
 | Built piece | Change |
 |---|---|
-| `NodeOutcome`, `NodeChange`, `DesiredNodeListener` (`desired_graph.hpp`) | outcomes `reshape`, `unchanged`; `NodeChange` gains the old and new ports and `inPlace`; a change of ports with the same type is told by `nodeChanged`, not as a replace; `portCaused` goes |
-| `NodeHost` | the block's reshape between teardown and `configure` |
-| `PortBlock`, `FilterPortBlocks` | `reshape(next)` with layouts swapped whole; levels re-registered |
+| `NodeHost` | a reshape in place of a configuration with companions (7) |
+| `ear_control` (gateway) | a change of ports sent as `node.updated` with `ports`, no longer as a replace (8.2) |
 | `sendspin` | rows marked `.inPlace()`; its change version |
 | `ear_config` | `node.set`'s merge; `dropRoutes` and `ports-in-use` in the candidate; dry runs posted and dropped |
 | `ear_control`, `web/` | features `node.set`, `reshape`, `dryRun`; 8.3's editor beyond the `reconfiguring` style and line (built) |
@@ -404,10 +342,7 @@ What steps 1 to 3 changed is built (section 2). What is left:
 
 Built: what `docs/testing.md` lists for changes in place. Still to write with what they test:
 
-- **`ear_core_tests`**: a reshape in place by a test type (channels 1 and 2 keep playing).
-- **`ear_pipewire_tests`**: S4 (built: 7.4); reshape (a port added and removed beside a running ramp, links of surviving
-  ports kept, the layout swapped whole, the transitional layout zero-filling new outputs); a reshape's new port metered
-  from its first window; two sources into one inside input mixed (the port mixer loads).
+- **`ear_pipewire_tests`**: two sources into one inside input mixed (the port mixer loads).
 - **`ear_config_tests`**: `node.set`'s merge; a dry run changes nothing and tells no one; `dropRoutes` removes exactly
   the stranded route lines in one write; a route line inside a snippet refused `shared-definition`; `ports-in-use`
   naming every route.
@@ -424,14 +359,14 @@ Built: what `docs/testing.md` lists for changes in place. Still to write with wh
 
 ## 11. Order of work
 
-1. S4, the spike (run: 7.4), and the pure machines' new states and transitions (built:
+1. S4, the spike (run: [`docs/engine.md#the-one-data-loop-and-invokes`](../engine.md#the-one-data-loop-and-invokes)), and the pure machines' new states and transitions (built:
    [`docs/architecture.md#changes-in-place`](../architecture.md#changes-in-place)).
 2. `ChangeOf`, `Changed`, staged posts, holds and their acknowledgement, the commit point, the deadline, supersession,
    the fallback, with a test type; `rtp` in place (built, section 2: with an RTP receiver replaced always break-first,
    the part of step 3 `rtp` needed).
 3. The primitives in a change: claims swapped make-before-break, `whenReady`, `ConfigureDone`, the sink's pause, and
    every kind's replacement (built, section 2).
-4. `PortBlock::reshape` on the plain add (7.4), the 32-port question of section 13 settled first; layouts, levels.
+4. `PortBlock::reshape` on the plain add, the 32-port question settled first; layouts, levels (built, section 2).
 5. The wire and the editor (features `node.set`, `reshape`, `dryRun`).
 6. `sendspin` in place (skipped if U11 or U12 fails).
 7. Words: AGENTS.md and the library docs; this page deleted.
@@ -467,15 +402,7 @@ Each is the designer's (R24); the owner can overturn any.
 
 ## 13. Open questions and risks
 
-- **[U] A block with more than 32 ports of one direction.** `pw_filter` keeps each direction's ports in a map that
-  grows 32 slots at a time (`filter.c:1247`), and `alloc_port` grows it on the main loop (`pw_map_insert_new`,
-  `filter.c:342`), which moves its storage. The data loop looks a port up by id only in `impl_port_reuse_buffer`
-  (`filter.c:964`), reached from the port's tee (`impl-port.c:282`); whether a DSP link ever calls it is not
-  established. Settled by reading `impl-link.c`'s buffer negotiation for a 32-bit float mono port, or by S4 run with
-  40 inputs, **before `PortBlock::reshape` is built** (section 11, step 4). If it can be called, the data loop is
-  never held for it (7.4): a reshape that would cross a multiple of 32 ports in one direction is a replace, until
-  the append is made on the data loop.
-- **arm64** is not open here: it waits on the append being made on the data loop (7.4).
+- **arm64** is not open here: it waits on the append being made on the data loop (7).
 - **[U] Two sources into one inside input** are mixed while a replacement is made before the old one goes; `engine.conf`
   maps no `audio.mixer*` library, so this relies on the port mixer for DSP client-node ports loading through its
   `library.name` fallback.

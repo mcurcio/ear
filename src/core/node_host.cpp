@@ -63,10 +63,9 @@
 // listener is told, in subscribe order, with what the node still waits for added once its phase has lasted
 // 2 s, then changed at most once a second. The plan's outcomes are honoured (nodeChanged): a disable tears
 // the configuration down (its stop, if held, dropped) and keeps the block and wires, an enable configures afresh, a
-// change on a disabled node is stored, and a node added disabled is never configured. A replace whose type is
-// unchanged (only its ports changed) carries the node's stop, its dropped frames and one health stream into its
-// successor, the older node telling nobody; the older node of any other name added back tells only the
-// listeners that hear a superseded node (standard output, not the wire). NodeOperations' stop, start and restart are
+// change on a disabled node is stored, and a node added disabled is never configured. A change of ports keeps the node
+// and its block, reshaped (docs/architecture.md#reshapes); the older node of a name added back (a replace by another
+// type, or a removal and an add) tells only the listeners that hear a superseded node (standard output, not the wire). NodeOperations' stop, start and restart are
 // operations of their own, answered in the call.
 #include "ear/core/node_host.hpp"
 
@@ -314,10 +313,8 @@ struct NodeHost::Impl {
 
 		const NodeName& name() const noexcept { return name_; }
 		std::uint64_t serial() const noexcept { return serial_; }
-		/// The span of counts it belongs to (docs/engine.md#reporting-the-counters): its own serial, or for a port-caused
-		/// replace its older node's span, which it carries on.
+		/// The span of counts it belongs to (docs/engine.md#reporting-the-counters): its own serial.
 		std::uint64_t span() const noexcept { return span_; }
-		void carrySpan(std::uint64_t span) noexcept { span_ = span; }
 		/// Gone: its block destroyed (the flush ran its destruction) and its configuration gone (removed() in
 		/// node_lifecycle.hpp), and so told.
 		bool removed() const noexcept { return gone_; }
@@ -333,61 +330,30 @@ struct NodeHost::Impl {
 		/// No longer wanted: removed by an edit or by stopAll, still stopping or gone.
 		bool removing() const noexcept { return aggregate_.intent() == lc::Intent::remove; }
 		NodeHealth health() const { return composed(aggregate_.health()); }
-		/// The older node of a port-caused replace: it tells nobody.
-		bool silent() const noexcept { return silent_; }
-		/// The serial of the older node this one is the port-caused replace of, while that one is not gone; else 0.
-		std::uint64_t predecessor() const noexcept { return predecessor_; }
 		/// A newer node of this name was added while this one closes: only standard output hears it. From now on only
 		/// the listeners that hear a superseded node hear this one, told its health at once, so they keep it apart from
 		/// the newer node told next.
 		void supersede() {
-			if (std::exchange(superseded_, true) || silent_) return;
+			if (std::exchange(superseded_, true)) return;
 			tell(aggregate_.health());
 		}
 		bool superseded() const noexcept { return superseded_; }
-		/// The stop held, for a port-caused replace to carry.
-		bool stopHeld() const noexcept { return aggregate_.stopHeld(); }
-		bool disabled() const noexcept { return aggregate_.wanted() == lc::Wanted::disabled; }
 		std::uint64_t dropped() const noexcept { return dropped_; }
 		/// The node's counters from its add (docs/engine.md#counters): its block's now, or what it counted before it
-		/// went, plus what the older node of a port-caused replace counted: read from that node while it is not gone,
-		/// carried once it is. Main thread.
-		NodeCounts counts() const noexcept {
-			NodeCounts total = carried_ + (block_ ? block_->counts() : blockCounted_);
-			if (predecessor_ != 0 && !predecessorCarried_)
-				if (const Node* older = host_.find(predecessor_)) total = total + older->counts();
-			return total;
-		}
-		/// The older node of this port-caused replace is gone: its counters are this node's from now on.
-		void carryCounts(NodeCounts older) noexcept {
-			carried_ = carried_ + older;
-			predecessorCarried_ = true;
-		}
-
-		/// What a port-caused replace carries from its older node, or nothing.
-		struct Carried {
-			std::uint64_t predecessor = 0; // its serial: this node is gone only after it, and takes its dropped frames
-			bool stopping = false;         // shown stopping (restarting) until it is gone: this node is enabled
-			bool stopHeld = false;
-			std::vector<std::string> keys;
-		};
+		/// went. Main thread.
+		NodeCounts counts() const noexcept { return block_ ? block_->counts() : blockCounted_; }
 
 		/// The port block once no older block of this name exists (T1: two blocks never share a node.name), and a
 		/// configuration once no older node of this name is left (rule 1), so an old and a new configuration never
 		/// share what the name owns (a listening port, a key file). A node added disabled keeps its block and is never
 		/// configured (T19).
-		void add(const NodeSpec& spec, std::shared_ptr<const NodeConfig> config, bool olderBlock, bool olderNode,
-		         Carried carried) {
+		void add(const NodeSpec& spec, std::shared_ptr<const NodeConfig> config, bool olderBlock, bool olderNode) {
 			ports_ = config->ports();
 			queued_ = std::move(config);
-			predecessor_ = carried.predecessor;
 			// A node added on a wedged loop fails before T1, with no block.
 			feed(aggregate_.add(lc::AddFacts{.disabled = spec.disabled,
-			                                 .stopHeld = carried.stopHeld,
 			                                 .olderBlock = olderBlock,
-			                                 .predecessor = carried.stopping,
 			                                 .olderNode = olderNode,
-			                                 .keys = std::move(carried.keys),
 			                                 .wedged = host_.wedged,
 			                                 .queued = queued()}));
 		}
@@ -395,16 +361,30 @@ struct NodeHost::Impl {
 		/// The plan's outcome for a node kept by name. Its newest config is kept for the next configure
 		/// (a lost block is final: nothing is kept). restart: a configuration settled restarts at once, one still going
 		/// takes it next (rule 2), a failed node retries; disable: the configuration torn down (T20, T21), its
-		/// stop dropped, its block and wires kept; enable: configured afresh (T22); stored: kept for the enable.
+		/// stop dropped, its block and wires kept; enable: configured afresh (T22); stored: kept for the enable;
+		/// reshape: a restart, or in place (docs/architecture.md#reshapes); unchanged: nothing.
 		void change(std::shared_ptr<const NodeConfig> config, const NodeChange& change) {
+			if (change.outcome == NodeOutcome::unchanged) return; // nothing changes, nothing is told
 			const bool lost = aggregate_.block().state() == lc::BlockState::lost;
 			queued_ = lost ? nullptr : std::move(config);
 			++version_;
 			switch (change.outcome) {
+			case NodeOutcome::unchanged: // returned above
+				break;
 			case NodeOutcome::reconfigure: {
 				// In place only for a type with a change version: without one the change restarts as any other, with
 				// no reconfiguring between (docs/architecture.md#changes-in-place).
 				const bool inPlace = config_ && config_->instance && config_->instance->changes();
+				feed(aggregate_.change(queued(), change.keys,
+				                       inPlace ? lc::ChangeKind::inPlace : lc::ChangeKind::restart));
+				break;
+			}
+			case NodeOutcome::reshape: {
+				// In place when every changed key is, for a type with a change version and a configuration with no
+				// companion; else a restart, its block reshaped between the two configurations
+				// (docs/architecture.md#reshapes).
+				const bool inPlace =
+					change.inPlace && config_ && config_->instance && config_->instance->changes() && reshapesInPlace();
 				feed(aggregate_.change(queued(), change.keys,
 				                       inPlace ? lc::ChangeKind::inPlace : lc::ChangeKind::restart));
 				break;
@@ -422,16 +402,25 @@ struct NodeHost::Impl {
 				feed(aggregate_.enable());
 				break;
 			}
+			// A node with no configuration (disabled, failed) reshapes its block at once: a stored change of ports
+			// reshapes the block alone.
+			if (!config_) adoptPorts();
 		}
 
-		/// How a removal relates to a node of the same name added in the same commit (a replace).
-		enum class Replaced { no, superseded, portCaused };
+		/// A reshape in place is taken only by a configuration with no companion: one on a resized bank would need its
+		/// replacement made before break on the new ports, which is not built (docs/architecture.md#reshapes).
+		bool reshapesInPlace() const {
+			const Configuration& c = *config_;
+			return c.engineAsks.empty() && c.sinks.empty() && c.sources.empty() && c.recordings.empty() && !c.program;
+		}
+
+		/// How a removal relates to a node of the same name added in the same commit (a replace, by another type).
+		enum class Replaced { no, superseded };
 
 		/// No longer wanted. A replaced node's newer node of the name comes in the same commit: from here on the older
-		/// node of a port-caused replace tells nobody, any other only standard output.
+		/// node tells only standard output.
 		void remove(Replaced replaced = Replaced::no) {
 			queued_.reset(); // never configured again
-			silent_ = silent_ || replaced == Replaced::portCaused;
 			superseded_ = superseded_ || replaced == Replaced::superseded;
 			stopping(); // stopping (removing) before anything the removal does
 			feed(aggregate_.remove());
@@ -449,14 +438,6 @@ struct NodeHost::Impl {
 
 		/// Every older node of this name is gone.
 		void olderGone() { feed(aggregate_.olderNodeGone()); }
-		/// The older node of this port-caused replace is gone (its configuration none, its block destroyed): its frames
-		/// dropped are this node's.
-		void predecessorGone(std::uint64_t droppedFrames) {
-			predecessor_ = 0;
-			dropped_ += droppedFrames;
-			feed(aggregate_.predecessorGone());
-			tellGone();
-		}
 		/// The older block of this name was destroyed (T1): this node's block is made in the same flush.
 		void olderDestroyed() { feed(aggregate_.olderDestroyed()); }
 
@@ -490,6 +471,7 @@ struct NodeHost::Impl {
 				return;
 			}
 			try {
+				blockPorts_ = ports_;
 				block_ = host_.blocks.make(name_, ports_, host_.format, *this);
 			} catch (...) {
 				// A factory refuses through lost(), never by a throw, so one that throws has a bug of its own; it made
@@ -969,7 +951,7 @@ struct NodeHost::Impl {
 			void holdAll() override {
 				checked("hold", [&] {
 					std::vector<std::string_view> all;
-					for (const Ports::Bank& bank : node_.ports_.banks())
+					for (const Ports::Bank& bank : node_.config_->ports.banks())
 						if (bank.direction == Direction::output && bank.reach == PortBank::Reach::routable)
 							all.push_back(bank.name);
 					node_.holdBanks(all, true);
@@ -1987,6 +1969,9 @@ struct NodeHost::Impl {
 			// faded but a sink's bank. Read by the block until the drive's invoke ran.
 			std::unique_ptr<bool[]> faded;
 			std::size_t fadedCount = 0;
+			/// The ports its code is laid out for, whose order the block hands its spans in: the node's at configure, a
+			/// reshape in place's from its commit point (docs/architecture.md#reshapes).
+			Ports ports;
 			std::vector<BankPair> pairs;          // the pass-through's pairs, for the latency plan
 			std::vector<DeclaredLatency> latency; // what configure declared, one per path
 			LatencyPlan plan;                     // worked out at configure's return; carried with each drive
@@ -2006,7 +1991,8 @@ struct NodeHost::Impl {
 			struct Change {
 				std::shared_ptr<const NodeConfig> target; // the settings it applies, kept alive until the commit
 				std::uint64_t epoch = 0;                  // this change's, so a late timer or answer finds it gone
-				std::vector<std::string> keys;            // the keys it applies, for its diagnostics
+				bool reshape = false;          // its ports differ from the configuration's: a reshape in place
+				std::vector<std::string> keys; // the keys it applies, for its diagnostics
 				std::chrono::steady_clock::time_point began;
 				std::vector<std::pair<std::size_t, std::move_only_function<void(void*)>>> posts; // staged, in order
 				std::unique_ptr<AudioCode> code; // a new code, prepared when the old one is (swapped at the commit)
@@ -2239,7 +2225,25 @@ struct NodeHost::Impl {
 		/// The newest committed settings, and whether a drive of them may fade: some output the code writes exists
 		/// (narrowed at configure's return, once its sinks' banks are known: outputsFaded).
 		lc::Queued queued() const noexcept {
-			return {version_, !ports_.outputs().empty() || !ports_.insideOutputs().empty()};
+			const Ports& ports = queued_ ? queued_->ports() : ports_;
+			return {version_, !ports.outputs().empty() || !ports.insideOutputs().empty()};
+		}
+
+		/// docs/architecture.md#reshapes: with no configuration, or at a configuration's start (the block silent), the
+		/// node takes the ports of its newest settings, and its block is reshaped to them (its links on the ports both
+		/// name kept). A block not made yet is made with them; none is reshaped once the data loop is wedged.
+		void adoptPorts() {
+			// A configuration of other settings still holds the block's ports: it adopts them at its own start.
+			if (!queued_ || (config_ && config_->config != queued_)) return;
+			ports_ = queued_->ports();
+			reshapeBlock();
+		}
+
+		/// The block takes the node's ports, when it was made or last reshaped with others.
+		void reshapeBlock() {
+			if (!block_ || host_.wedged || blockPorts_ == ports_) return;
+			blockPorts_ = ports_;
+			block_->reshape(ports_);
 		}
 
 		/// The configuration of this generation is the current one.
@@ -2371,11 +2375,9 @@ struct NodeHost::Impl {
 			refreshCompanions();
 		}
 
-		/// Removed (the aggregate's Gone): told gone once its block's destruction ran in the flush, not when
-		/// queued, and, for a port-caused replace, once its older node is gone too, whose dropped frames it reports:
-		/// everything of the name it stands for is gone only then.
+		/// Removed (the aggregate's Gone): told gone once its block's destruction ran in the flush, not when queued.
 		void tellGone() {
-			if (!goneHeld_ || gone_ || destroyPending_ || predecessor_ != 0) return;
+			if (!goneHeld_ || gone_ || destroyPending_) return;
 			host_.gone(*this, dropped_);
 		}
 
@@ -2387,7 +2389,7 @@ struct NodeHost::Impl {
 		void tell(NodeHealth now) {
 			if (told_ && *told_ == now) return;
 			told_ = now;
-			if (!silent_) host_.changed(*told_, superseded_);
+			host_.changed(*told_, superseded_);
 		}
 
 		/// A removal's stopping (removing), told before anything it does.
@@ -2667,6 +2669,8 @@ struct NodeHost::Impl {
 			c.generation = ++host_.generations;
 			refusedGeneration_ = 0;
 			c.config = queued_;
+			adoptPorts(); // a restart's reshape: the block, silent, takes the new ports before configure sees them
+			c.ports = ports_;
 			c.channel = std::make_shared<Channel>(*this, host_.mainLoop, host_.timers, name_, type_, host_.logSinks);
 			c.context = std::make_unique<Context>(host_.format, name_, *c.channel, c.loops);
 			c.fadedCount = ports_.outputs().size() + ports_.insideOutputs().size();
@@ -3363,6 +3367,12 @@ struct NodeHost::Impl {
 			Configuration::Change& ch = c.change.emplace();
 			ch.target = queued_;
 			ch.epoch = ++c.changeEpoch;
+			// A reshape in place (docs/architecture.md#reshapes): the new ports are in the engine before the change
+			// version runs, the old code keeping its view until the commit's swap; a newer change that supersedes one
+			// takes the block to its own ports (the old ones again, for a change back).
+			ch.reshape = ch.target->ports() != c.ports;
+			ports_ = ch.target->ports();
+			reshapeBlock();
 			ch.keys = aggregate_.health().keys;
 			ch.began = host_.timers.now();
 			const std::chrono::milliseconds deadline = c.instance->reconfigureDeadline();
@@ -3390,6 +3400,10 @@ struct NodeHost::Impl {
 			}
 			if (answer->restarts())
 				return fallBackLater(epoch, lc::NodeCause::FellBack::restartAsked, answer->reason());
+			// The code running is laid out for the old ports, so a change of them must bring the code for the new ones.
+			if (ch.reshape && !answer->code())
+				return faultLater(lc::Fact::hookThrew,
+				                  "configure changed the ports in place and gave no code for them");
 			// whenReady's Changed is the answer when it was called, and only then.
 			if (ch.continuation.has_value() != answer->continues())
 				return faultLater(lc::Fact::hookThrew, "configure called whenReady and answered with another Changed");
@@ -3533,11 +3547,28 @@ struct NodeHost::Impl {
 			feed(aggregate_.fellBack(reason, std::move(detail)));
 		}
 
+		/// A mask over `from`'s outputs (outputs then inside outputs) as one over `to`'s: each output by its name.
+		static std::vector<std::uint8_t> outputsIn(const Ports& to, const Ports& from,
+		                                           std::span<const std::uint8_t> mask) {
+			std::vector<PortName> was = from.outputs();
+			was.insert(was.end(), from.insideOutputs().begin(), from.insideOutputs().end());
+			std::vector<PortName> now = to.outputs();
+			now.insert(now.end(), to.insideOutputs().begin(), to.insideOutputs().end());
+			std::vector<std::uint8_t> moved(now.size(), 0);
+			for (std::size_t i = 0; i < was.size() && i < mask.size(); ++i) {
+				if (mask[i] == 0) continue;
+				const auto found = std::ranges::find(now, was[i]);
+				if (found != now.end()) moved[static_cast<std::size_t>(found - now.begin())] = 1;
+			}
+			return moved;
+		}
+
 		/// The routable output banks named, as a mask over the block's outputs (outputs then inside outputs).
 		std::vector<std::uint8_t> outputMask(std::span<const std::string_view> banks, bool inside) const {
 			std::vector<std::uint8_t> mask(config_->fadedCount, 0);
 			for (const std::string_view name : banks) {
-				const Ports::Bank& bank = ports_.bank(name);
+				// The banks of the code running, which a reshape in place keeps until its commit point.
+				const Ports::Bank& bank = config_->ports.bank(name);
 				if (bank.direction != Direction::output || (bank.reach != PortBank::Reach::routable && !inside))
 					throw std::logic_error("hold names a routable output bank, not \"" + bank.name + "\"");
 				for (std::size_t i = 0; i < bank.ports.size() && bank.first + i < mask.size(); ++i)
@@ -4188,6 +4219,16 @@ struct NodeHost::Impl {
 			}
 			std::vector<std::uint8_t> held(c.held.size(), 0);
 			std::swap(held, c.held);
+			if (ch.reshape) {
+				// From the commit point the code is laid out for the new ports: the holds it releases are named there,
+				// and every output of the new ports is faded (a reshape in place has no sink's bank).
+				held = outputsIn(ch.target->ports(), c.ports, held);
+				c.ports = ch.target->ports();
+				c.fadedCount = c.ports.outputs().size() + c.ports.insideOutputs().size();
+				c.faded = std::make_unique<bool[]>(c.fadedCount);
+				std::fill_n(c.faded.get(), c.fadedCount, true);
+				c.held.assign(c.fadedCount, 0);
+			}
 			retireMadeFirst(ch);
 			const bool rings = swapRings(ch);
 			refreshCompanions();
@@ -4207,7 +4248,7 @@ struct NodeHost::Impl {
 				overdueAtOnce(barrier, Bound::barrier);
 			} else {
 				block_->swap(DriveRequest{c.code.get(), std::span<const bool>(c.faded.get(), c.fadedCount), c.bindings,
-				                          c.sourceBindings},
+				                          c.sourceBindings, &c.ports},
 				             swapped(barrier));
 				arm(barrier, Bound::barrier);
 			}
@@ -4408,7 +4449,7 @@ struct NodeHost::Impl {
 			block_->carryLatency(c.plan);
 			std::ranges::fill(c.held, std::uint8_t{0}); // a drive ends every hold
 			block_->drive(DriveRequest{c.code.get(), std::span<const bool>(c.faded.get(), c.fadedCount), c.bindings,
-			                           c.sourceBindings},
+			                           c.sourceBindings, &c.ports},
 			              completion(barrier, &lc::NodeAggregate::driven));
 			arm(barrier, Bound::barrier);
 		}
@@ -4543,7 +4584,7 @@ struct NodeHost::Impl {
 			};
 			if (std::ranges::equal(now, companionsTold_, sameEntry)) return;
 			companionsTold_ = now;
-			if (!silent_ && !superseded_) host_.companionsChanged(name_, now);
+			if (!superseded_) host_.companionsChanged(name_, now);
 		}
 
 		/// The configuration ends (teardown step 5, or a leak): its sinks' and sources' final counts, for the records.
@@ -4869,6 +4910,8 @@ struct NodeHost::Impl {
 			config_.reset();
 			// Last: its claims released, each waiter judged again in arrival order.
 			host_.claimsDecided(host_.claims.release(generation));
+			// A node left with no configuration (disabled, failed) shows the ports of its newest settings.
+			adoptPorts();
 		}
 
 		/// The close deadline passed with step 3 or 4 unfinished: said, then leaked.
@@ -4930,6 +4973,7 @@ struct NodeHost::Impl {
 		std::uint64_t serial_;
 		lc::NodeAggregate aggregate_;
 		Ports ports_;
+		Ports blockPorts_;                          // the ports the block was made or last reshaped with
 		std::shared_ptr<const NodeConfig> queued_;  // the newest committed config, the next configure's
 		std::uint64_t version_ = 0;                 // queued_'s, as the aggregate compares it
 		std::optional<NodeHealth> told_;            // the health last told
@@ -4939,8 +4983,6 @@ struct NodeHost::Impl {
 		bool waitingAllowed_ = false;               // the phase has lasted 2 s
 		std::unique_ptr<Timer> phaseTimer_;         // the phase's 2 s
 		std::unique_ptr<Timer> paceTimer_;          // the 1 s pace of a changed list
-		std::uint64_t predecessor_ = 0;             // the port-caused replace's older node, while not gone
-		bool silent_ = false;                       // the older node of a port-caused replace: tells nobody
 		bool superseded_ = false;                   // a newer node of its name was added: standard output alone
 		std::unique_ptr<Configuration> config_;     // the current configuration (at most one)
 		std::unique_ptr<PortBlock> block_;
@@ -4956,7 +4998,7 @@ struct NodeHost::Impl {
 		bool closingSinks_ = false;        // inside the sinks' close() calls of teardown step 3
 		bool makePending_ = false;         // the block's making is queued in the flush
 		bool destroyPending_ = false;      // the block's destruction is queued in the flush
-		bool goneHeld_ = false;            // removed: told gone once its block and its predecessor are gone
+		bool goneHeld_ = false;            // removed: told gone once its block is gone
 		bool gone_ = false;                // told gone
 		bool blockLeaked_ = false;         // its block was leaked on a wedged loop: never freed, nor is this node
 		bool synthetic_ = false;           // a bound judged at once on a wedged loop: its diagnostics are not said
@@ -4965,10 +5007,8 @@ struct NodeHost::Impl {
 		std::uint64_t dropped_ = 0;
 		std::uint64_t refusedGeneration_ =
 			0;                    // its configuration a leaked configuration's claim refused, until the next
-		std::uint64_t span_;      // its span of counts: its serial, or its port-caused older node's
+		std::uint64_t span_;      // its span of counts: its serial
 		NodeCounts blockCounted_; // what its block counted, once the block went
-		NodeCounts carried_;      // what the older node of its port-caused replace counted, once that one is gone
-		bool predecessorCarried_ = false; // carried_ holds the older node's counters: they are not read from it again
 	};
 
 	Impl(AudioFormat format_, PortBlockFactory& blocks_, ResourceRegistry& resources_, Executor& mainLoop_,
@@ -5140,10 +5180,9 @@ struct NodeHost::Impl {
 		return nullptr;
 	}
 
-	/// A node added (a replace's new node when `change` is given): it waits for older nodes of its name (T1, rule 1),
-	/// which are superseded from now on; a port-caused replace carries its older node's stop when both are enabled,
-	/// and its one health stream.
-	void add(const NodeSpec& spec, std::shared_ptr<const NodeConfig> config, const NodeChange* change) {
+	/// A node added (a replace's new node too): it waits for older nodes of its name (T1, rule 1), which are
+	/// superseded from now on.
+	void add(const NodeSpec& spec, std::shared_ptr<const NodeConfig> config) {
 		requireOpen("nodeAdded", spec.name);
 		std::erase_if(nodes, [](auto& known) {
 			if (!known->removed()) return false;
@@ -5152,35 +5191,20 @@ struct NodeHost::Impl {
 		});
 		const std::uint64_t serial = ++serials;
 		nodes.emplace_back(std::make_unique<Node>(*this, spec.name, spec.type, serial));
-		inputFor(serial, [this, spec, config = std::move(config),
-		                  change = change ? std::optional<NodeChange>(*change) : std::nullopt](Node& added) mutable {
+		inputFor(serial, [this, spec, config = std::move(config)](Node& added) mutable {
 			// Older nodes of the name, as they stand when this input is handled (T1, rule 1).
 			bool olderBlock = false;
 			bool olderNode = false;
-			Node* older = nullptr;
 			for (const auto& known : nodes) {
 				if (known.get() == &added) break;
 				if (known->name() != added.name() || known->removed()) continue;
 				olderNode = true;
 				olderBlock = olderBlock || known->holdsBlock();
-				if (!known->silent()) known->supersede();
-				older = known.get();
+				known->supersede();
 			}
-			Node::Carried carried;
-			// A disabled new node is not shown stopping, and carries no stop, but it still stands for its older
-			// node's removal and dropped frames.
-			if (change && change->portCaused && older != nullptr && older->silent()) {
-				carried.predecessor = older->serial();
-				carried.stopping = !spec.disabled;
-				carried.stopHeld = !spec.disabled && older->stopHeld() && !older->disabled();
-				carried.keys = change->keys;
-			}
-			// A node that carries no older node's counts begins a span of its name's counts from zero; a port-caused
-			// replace goes on in its older node's span.
-			if (carried.predecessor == 0)
-				for (auto* listener : countsListeners) listener->countsBegan(added.name(), added.span());
-			else added.carrySpan(older->span());
-			added.add(spec, std::move(config), olderBlock, olderNode, std::move(carried));
+			// Every node begins a span of its name's counts from zero.
+			for (auto* listener : countsListeners) listener->countsBegan(added.name(), added.span());
+			added.add(spec, std::move(config), olderBlock, olderNode);
 		});
 	}
 
@@ -5245,26 +5269,14 @@ struct NodeHost::Impl {
 			if (!known->removed()) inputFor(known->serial(), [](Node& each) { each.dataLoopWedged(); });
 	}
 
-	/// A node is gone; the oldest node left of its name, which no older node holds back now, may configure. The older
-	/// node of a port-caused replace tells nobody, and its successor takes its dropped frames.
+	/// A node is gone; the oldest node left of its name, which no older node holds back now, may configure.
 	void gone(Node& node, std::uint64_t droppedFrames) {
 		node.markGone();
-		// Its span's final counts, which nothing answers once it is gone, a superseded node's too; a port-caused
-		// replace's older node's counts go on in its newer node's span (below), so it ends none.
-		if (!node.silent())
-			for (auto* listener : countsListeners) listener->countsEnded(node.name(), node.span(), node.counts());
-		if (!node.silent())
-			for (auto* listener : listeners) {
-				if (!node.superseded()) listener->nodeGone(node.name(), droppedFrames);
-				else if (listener->hearsSuperseded()) listener->supersededGone(node.name(), droppedFrames);
-			}
-		const auto successor = std::ranges::find_if(
-			nodes, [&](const auto& known) { return known->predecessor() == node.serial() && !known->removed(); });
-		if (successor != nodes.end()) {
-			// Carried at once, not in the input below, so no reading between the two counts the older node twice or not
-			// at all.
-			(*successor)->carryCounts(node.counts());
-			inputFor((*successor)->serial(), [droppedFrames](Node& next) { next.predecessorGone(droppedFrames); });
+		// Its span's final counts, which nothing answers once it is gone, a superseded node's too.
+		for (auto* listener : countsListeners) listener->countsEnded(node.name(), node.span(), node.counts());
+		for (auto* listener : listeners) {
+			if (!node.superseded()) listener->nodeGone(node.name(), droppedFrames);
+			else if (listener->hearsSuperseded()) listener->supersededGone(node.name(), droppedFrames);
 		}
 		const auto next = std::ranges::find_if(
 			nodes, [&](const auto& known) { return known->name() == node.name() && !known->removed(); });
@@ -5325,11 +5337,12 @@ void NodeHost::subscribeInternalErrors(InternalErrorListener& listener) {
 }
 
 void NodeHost::nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) {
-	impl_->add(node, std::move(config), nullptr);
+	impl_->add(node, std::move(config));
 }
 
 void NodeHost::nodeReplaced(const NodeSpec& node, std::shared_ptr<const NodeConfig> config, const NodeChange& change) {
-	impl_->add(node, std::move(config), &change);
+	static_cast<void>(change); // another type under the name: a new node
+	impl_->add(node, std::move(config));
 }
 
 void NodeHost::nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) {
@@ -5350,9 +5363,9 @@ void NodeHost::nodeRemoved(const NodeName& node) {
 
 void NodeHost::nodeReplacing(const NodeName& node, const NodeChange& change) {
 	impl_->requireOpen("nodeReplacing", node);
-	impl_->inputFor(impl_->wanted(node).serial(), [portCaused = change.portCaused](Impl::Node& wanted) {
-		wanted.remove(portCaused ? Impl::Node::Replaced::portCaused : Impl::Node::Replaced::superseded);
-	});
+	static_cast<void>(change);
+	impl_->inputFor(impl_->wanted(node).serial(),
+	                [](Impl::Node& wanted) { wanted.remove(Impl::Node::Replaced::superseded); });
 }
 
 LifecycleReply NodeHost::start(const NodeName& node, OperationJudged judged) {

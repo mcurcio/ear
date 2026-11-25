@@ -11,39 +11,49 @@ struct WantedNode {
 	NodeSpec spec;
 	Ports ports;
 };
-/// What an edit asks of a node it keeps by name (docs/architecture.md#restarts-and-changes-of-settings).
-/// Decided by `disabled`, before and after: false to true `disable`, true to false `enable`, true to true `stored`;
-/// false to false `reconfigure` when every changed key's row is marked inPlace (outcomeFor), else `restart`.
-enum class NodeOutcome { restart, disable, enable, stored, reconfigure };
+/// What an edit asks of a node it keeps by name (docs/architecture.md#restarts-and-changes-of-settings). Decided by
+/// `disabled`, before and after: false to true `disable`, true to false `enable`, true to true `stored`; false to false
+/// by the ports and the keys (changeOf): other ports `reshape`, no changed key `unchanged`, every changed key's row
+/// marked inPlace `reconfigure`, else `restart`.
+enum class NodeOutcome { restart, disable, enable, stored, reconfigure, reshape, unchanged };
 /// The outcome of a change of a node of `type` kept with the same type and ports: `keys` the changed keys, the
-/// `disabled` before and after. Pure; the plan's and the type harness's one rule.
+/// `disabled` before and after. Pure.
 NodeOutcome outcomeFor(const NodeType& type, std::span<const std::string> keys, bool wasDisabled, bool isDisabled);
-/// A node kept with the same type and ports, told by nodeChanged; or a replaced node (another type or other ports),
-/// told by nodeReplacing and nodeReplaced, whose outcome is its `disabled` change's.
+/// A node kept by name with the same type whose spec changed, told by nodeChanged: what the change asks of it, the
+/// changed keys, and, when its ports changed, the ports before and after.
 struct NodeChange {
 	NodeOutcome outcome;
 	std::vector<std::string> keys; // the settings' keys whose values differ, added and removed ones included; key order
-	/// A replace whose type is unchanged (only its ports changed): the node framework carries the node's stop and one
-	/// health stream into the new node (docs/architecture.md#phases-states-and-what-is-wanted). False for a node told
-	/// by nodeChanged.
-	bool portCaused = false;
+	/// The ports before and after (equal unless the ports changed: a `reshape`, or a `disable`, `enable` or `stored`
+	/// whose ports changed too; docs/architecture.md#reshapes).
+	Ports oldPorts{};
+	Ports ports{};
+	/// A reshape every changed key of which changes in place: taken in place by a node whose type has a change version.
+	bool inPlace = false;
+	bool portsChanged() const { return oldPorts != ports; }
 };
+/// The plan's change of a node of `type` kept by name with its type (docs/architecture.md#reshapes): outcomeFor's, but a
+/// node staying enabled whose ports differ is a `reshape`, `inPlace` when there is a changed key and every one changes
+/// in place. Pure; the plan's and the type harness's one rule.
+NodeChange changeOf(const NodeType& type, std::vector<std::string> keys, bool wasDisabled, bool isDisabled,
+                    const Ports& oldPorts, const Ports& ports);
 class DesiredNodeListener {
 public:
 	/// After the node is recorded. The listener may keep `config` for as long as it needs it
 	/// (the node framework keeps it until the insides it started are destroyed).
 	virtual void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) = 0;
-	/// New settings recorded (ports unchanged). Told by nodeChanged's default.
+	/// New settings recorded. Told by nodeChanged's default.
 	virtual void nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) = 0;
-	/// A node kept with the same type and ports whose spec changed (its settings, its `disabled`, or both), with what
-	/// the change asks of it. The default tells nodeUpdated, so a listener that tells no outcome apart needs nothing.
+	/// A node kept with the same type whose spec changed (its settings, its `disabled`, or both; its ports with them),
+	/// with what the change asks of it. The default tells nodeUpdated, so a listener that tells no outcome apart needs
+	/// nothing.
 	virtual void nodeChanged(const NodeSpec& node, std::shared_ptr<const NodeConfig> config, const NodeChange& change) {
 		static_cast<void>(change);
 		nodeUpdated(node, std::move(config));
 	}
 	/// After routeRemoved for each of its routes.
 	virtual void nodeRemoved(const NodeName& node) = 0;
-	/// A replaced node's removal (another type or other ports), told in nodeRemoved's place and order; nodeReplaced
+	/// A replaced node's removal (another type under the name), told in nodeRemoved's place and order; nodeReplaced
 	/// follows in nodeAdded's. The defaults tell nodeRemoved and nodeAdded, so a listener that tells a replace from a
 	/// removal and an addition by nothing needs nothing (only the node framework does:
 	/// docs/architecture.md#restarts-and-changes-of-settings).
@@ -84,10 +94,9 @@ public:
 	~Plan();
 	bool empty() const noexcept; // commit() would tell no listener anything
 	/// The outcome for each node kept by name whose spec changes, in name order: a node told by nodeChanged, and a
-	/// replaced one (another type or other ports, told as a removal and an addition), whose outcome is its `disabled`
-	/// change's as well (a replace of a node staying disabled is `stored`, of one staying enabled `restart`). Nodes
-	/// only added or only removed are not in it. What an edit's reply says it applied
-	/// (docs/architecture.md#restarts-and-changes-of-settings).
+	/// replaced one (another type, told as a removal and an addition), whose outcome is its `disabled` change's (a
+	/// replace of a node staying disabled is `stored`, of one staying enabled `restart`). Nodes only added or only
+	/// removed are not in it. What an edit's reply says it applied (docs/architecture.md#restarts-and-changes-of-settings).
 	std::vector<std::pair<NodeName, NodeOutcome>> outcomes() const;
 
 private:
@@ -113,10 +122,10 @@ public:
 	/// it holds. Errors (the first found; nodes in the given order, then routes in the given order):
 	/// InvalidName, UnknownNodeType, InvalidSettings, DuplicateNode (two given nodes share a name);
 	/// UnknownNode, UnknownPort, WrongDirection (a route); Stopping after close(). Identical routes
-	/// are one route. A node equal to a held one is no change. Same type and ports with other settings or another
-	/// `disabled` is a change, told by nodeChanged with its NodeOutcome. Another type or other ports (its type's parse decides) is a replacement: the node is
-	/// removed and added under the same name, and its held routes that are still wanted are removed
-	/// and added again.
+	/// are one route. A node equal to a held one is no change. The same type with other settings or another
+	/// `disabled` is a change, told by nodeChanged with its NodeChange (other ports, which its type's parse decides, a
+	/// reshape: its routes still wanted are kept). Another type is a replacement: the node is removed and added under
+	/// the same name, and its held routes that are still wanted are removed and added again.
 	std::expected<Plan, CommandError> plan(std::span<const NodeSpec> nodes, std::span<const Route> routes) const;
 	/// Main thread. Applies `plan` in one go, each event to observers then subscribers, in this order:
 	/// routeRemoved (Route order), nodeRemoved (name order), nodeChanged (name order), nodeAdded (name

@@ -242,6 +242,12 @@ called. `ChangeOf` has no `state`, `store`, `executor` or `program`: each does n
 compile. The spec's `.lifecycle = Lifecycle{.reconfigureDeadline = 30s}` (after `.loops`; 10 s
 by default) is how long a change may take; outside 1 s to 60 s it does not compile.
 
+**A change of ports in place** (a row that shapes the ports, marked `.inPlace()`:
+[architecture.md](architecture.md#reshapes)): the change version runs with the new ports already
+in the engine, `now`'s, while the old code keeps playing on the ports it was laid out for. It must answer `cx.applied(code)`, a code for the new ports, swapped in at the
+commit point (any other answer fails the node `lost`); a hold names a bank the old code has. A
+configuration with a companion takes such a change as a restart.
+
 ### whenReady and ConfigureDone
 
 A change whose work must run on the node's own thread once its new acquisitions are ready (a

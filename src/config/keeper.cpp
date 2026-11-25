@@ -61,6 +61,10 @@ CommandResult appliedOf(const NodeName& node, const std::vector<std::pair<NodeNa
 			return control::Applied{control::AppliedKind::restart};
 		case NodeOutcome::reconfigure:
 			return control::Applied{control::AppliedKind::reconfigure};
+		case NodeOutcome::reshape: // on the wire a change of ports is still a restart (docs/control-port.md#methods)
+			return control::Applied{control::AppliedKind::restart};
+		case NodeOutcome::unchanged:
+			return control::Applied{control::AppliedKind::unchanged};
 		}
 	}
 	return control::Applied{control::AppliedKind::unchanged};

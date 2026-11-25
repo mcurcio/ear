@@ -309,10 +309,11 @@ TEST_CASE("Rtp: format, rate, address and latencyMs change in place on the same 
 }
 
 TEST_CASE("Rtp: channels still restarts, and a refused new port falls back to a restart", "[rtp][reconfigure]") {
-	SECTION("channels makes the ports: a replace") {
+	SECTION("channels makes the ports: a reshape, restarting the node behind its block") {
 		auto harness = runningOk(settingsWith());
-		CHECK(harness.change(settingsWith({{"channels", 3}})) == ear::NodeOutcome::restart);
+		CHECK(harness.change(settingsWith({{"channels", 3}})) == ear::NodeOutcome::reshape);
 		CHECK_FALSE(toldReconfiguring(harness));
+		CHECK(toldStopping(harness)); // restarted: channels is restart-only
 	}
 	SECTION("a new port the kernel refuses") {
 		auto harness = runningOk(settingsWith(), {.refusedPorts = {"udp:5006"}});

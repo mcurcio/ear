@@ -658,9 +658,9 @@ happened in the last minute. The rules:
   the last minute, with the last minute's count ("5 dropouts"), which falls as each rise leaves its
   minute; its tooltip says the host held up the audio thread and gives the totals ("44 dropouts
   (234 ms) in 2 stalls since ear started").
-- **A mark lasts across a port-caused replace.** A node's counters never step back while it
+- **A mark lasts across a change of ports.** A node's counters never step back while it
   lives, so the values held for a node are kept when it is removed (until the connection closes).
-  A port-caused replace's `node.added` carries at least what was held, so its carried counts are
+  A change of ports is sent as a replace whose `node.added` carries at least what was held, so its carried counts are
   no rise and a mark the older node showed goes on; a new node under the name comes with zeros, a
   fall, so its counts start fresh. Companions' entries are still forgotten when their list drops
   them, as their counters count per configuration.

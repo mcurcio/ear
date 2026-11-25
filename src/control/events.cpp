@@ -190,6 +190,10 @@ std::string_view outcomeName(NodeOutcome outcome) noexcept {
 		return "enable";
 	case NodeOutcome::stored:
 		return "stored";
+	case NodeOutcome::reshape: // a reshape reaches the wire as a replace (docs/control-port.md#methods)
+		return "restart";
+	case NodeOutcome::unchanged:
+		return "unchanged";
 	}
 	return "restart";
 }

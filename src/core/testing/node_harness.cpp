@@ -159,6 +159,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		explicit FakeBlock(Impl& h) : harness(h) {}
 		~FakeBlock() override { harness.block = nullptr; }
 		void drive(DriveRequest request, std::move_only_function<void(std::uint64_t)> done) override {
+			harness.buffers(request.ports != nullptr ? *request.ports : harness.blockPorts);
 			harness.driven = request.code;
 			harness.bound.assign(request.sinks.begin(), request.sinks.end()); // the taps change with the code
 			harness.boundSources.assign(request.sources.begin(), request.sources.end());
@@ -183,6 +184,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		void release(std::vector<std::uint8_t> outputs) override { harness.holdRamp.release(outputs); }
 		/// As the real block's swap: the code and its taps change, the fade and the holds are kept.
 		void swap(DriveRequest request, std::move_only_function<void(std::uint64_t)> done) override {
+			harness.buffers(request.ports != nullptr ? *request.ports : harness.blockPorts);
 			harness.driven = request.code;
 			harness.bound.assign(request.sinks.begin(), request.sinks.end());
 			harness.boundSources.assign(request.sources.begin(), request.sources.end());
@@ -190,6 +192,12 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			++harness.swaps;
 			const std::uint64_t taken = harness.account.nextPosition();
 			harness.request(false, [done = std::move(done), taken]() mutable { done(taken); });
+		}
+		/// As the real block's: the code running keeps its view (the new outputs are not the harness's until the code
+		/// for them comes); a silence takes the new ports at once.
+		void reshape(const Ports& next) override {
+			harness.blockPorts = next;
+			if (harness.driven == nullptr) harness.buffers(next);
 		}
 		void fadeOut(std::move_only_function<void()> done) override {
 			harness.fade.fadeOut();
@@ -214,9 +222,11 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	};
 	struct FakeBlocks final : PortBlockFactory {
 		explicit FakeBlocks(Impl& h) : harness(h) {}
-		std::unique_ptr<PortBlock> make(const NodeName&, const Ports&, const AudioFormat&,
+		std::unique_ptr<PortBlock> make(const NodeName&, const Ports& ports, const AudioFormat&,
 		                                PortBlockEvents& events) override {
 			harness.blockEvents = &events;
+			harness.blockPorts = ports;
+			harness.buffers(ports);
 			auto made = std::make_unique<FakeBlock>(harness);
 			harness.block = made.get();
 			return made;
@@ -1004,19 +1014,44 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	void requireAdded() const {
 		if (!added) throw std::logic_error("the harness has added no node");
 	}
-	void buffers() {
-		const Ports& ports = config->ports();
-		inputNames.clear();
-		outputNames.clear();
+	/// The block's buffers laid out for `ports`, the view of the code it runs (docs/engine.md#reshapes), as the real
+	/// block's layout: each kept port keeps its samples, its fade flag, its gain and its hold, by name.
+	void buffers(const Ports& ports) {
+		if (laidOut && view == ports) return;
+		std::vector<PortName> ins;
+		std::vector<PortName> outs;
 		for (const auto* names : {&ports.inputs(), &ports.insideInputs()})
-			inputNames.insert(inputNames.end(), names->begin(), names->end());
+			ins.insert(ins.end(), names->begin(), names->end());
 		for (const auto* names : {&ports.outputs(), &ports.insideOutputs()})
-			outputNames.insert(outputNames.end(), names->begin(), names->end());
-		inputs.assign(inputNames.size(), std::vector<float>(options.format.maxBlock, 0.0F));
-		outputs.assign(outputNames.size(), std::vector<float>(options.format.maxBlock, 0.0F));
-		lastGain.assign(outputNames.size(), 1.0F);
-		fadeMask.assign(outputNames.size(), 0);
-		if (holdRamp.outputs() != outputNames.size()) holdRamp = HoldRamp(options.format.rate, outputNames.size());
+			outs.insert(outs.end(), names->begin(), names->end());
+		const auto from = [](const std::vector<PortName>& was, const PortName& name) -> std::int32_t {
+			const auto found = std::ranges::find(was, name);
+			return found == was.end() ? -1 : static_cast<std::int32_t>(found - was.begin());
+		};
+		std::vector<std::vector<float>> nextInputs(ins.size(), std::vector<float>(options.format.maxBlock, 0.0F));
+		for (std::size_t i = 0; i < ins.size(); ++i)
+			if (const std::int32_t old = from(inputNames, ins[i]); old >= 0)
+				nextInputs[i] = inputs[static_cast<std::size_t>(old)];
+		std::vector<std::int32_t> map(outs.size());
+		std::vector<float> gains(outs.size(), 1.0F);
+		std::vector<std::uint8_t> mask(outs.size(), 0);
+		for (std::size_t o = 0; o < outs.size(); ++o) {
+			map[o] = from(outputNames, outs[o]);
+			if (map[o] < 0) continue;
+			gains[o] = lastGain[static_cast<std::size_t>(map[o])];
+			mask[o] = fadeMask[static_cast<std::size_t>(map[o])];
+		}
+		HoldRamp holds(options.format.rate, outs.size());
+		holds.carry(holdRamp, map);
+		holdRamp = std::move(holds);
+		inputs = std::move(nextInputs);
+		outputs.assign(outs.size(), std::vector<float>(options.format.maxBlock, 0.0F));
+		lastGain = std::move(gains);
+		fadeMask = std::move(mask);
+		inputNames = std::move(ins);
+		outputNames = std::move(outs);
+		view = ports;
+		laidOut = true;
 	}
 	/// What the real block with no peers tells on output port `output` (outputs then insideOutputs; its capture latency)
 	/// and on input port `input` (its playback latency): workOut's, as the plan was last carried
@@ -1179,6 +1214,9 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	std::vector<SeenInternalError> internalErrorList;
 
 	std::vector<PortName> inputNames;
+	Ports view;           // the ports the buffers are laid out for: the driven code's view
+	Ports blockPorts;     // the block's own ports: its making's, else its last reshape's
+	bool laidOut = false; // buffers() ran
 	std::vector<PortName> outputNames;
 	std::vector<std::vector<float>> inputs;
 	std::vector<std::vector<float>> outputs;
@@ -1208,7 +1246,7 @@ std::optional<std::string> NodeHarness::parse(const NodeSettings& settings) {
 	if (!parsed) return parsed.error().detail;
 	impl_->settings = settings;
 	impl_->config = std::make_shared<const Impl::SeenConfig>(*impl_, std::move(*parsed));
-	impl_->buffers();
+	impl_->buffers(impl_->config->ports());
 	return std::nullopt;
 }
 
@@ -1438,11 +1476,13 @@ NodeOutcome NodeHarness::changeTo(const NodeSettings& settings) {
 	for (const auto& [key, value] : impl_->settings.items())
 		if (!settings.contains(key)) keys.push_back(key);
 	std::ranges::sort(keys);
+	const Ports oldPorts = impl_->config->ports();
 	impl_->settings = settings;
 	impl_->config = std::make_shared<const Impl::SeenConfig>(*impl_, std::move(*parsed));
-	impl_->buffers();
-	const NodeOutcome outcome = outcomeFor(impl_->type, keys, impl_->disabled, impl_->disabled);
-	impl_->host->nodeChanged(impl_->spec(impl_->disabled), impl_->config, NodeChange{outcome, keys});
+	NodeChange change =
+		changeOf(impl_->type, std::move(keys), impl_->disabled, impl_->disabled, oldPorts, impl_->config->ports());
+	const NodeOutcome outcome = change.outcome;
+	impl_->host->nodeChanged(impl_->spec(impl_->disabled), impl_->config, change);
 	return outcome;
 }
 

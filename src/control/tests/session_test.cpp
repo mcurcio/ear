@@ -293,9 +293,10 @@ struct HandCounts final : ear::NodeCounterSource {
 	std::vector<ear::CompanionView> spanCompanions(std::uint64_t) const override { return {}; }
 };
 
-TEST_CASE("counters-changed.json: the snapshot's counters, counters.changed replacing what it names, and a port-caused "
-          "replace's node.added carrying the counts it carries on",
-          "[session][protocol][counters]") {
+TEST_CASE(
+	"counters-changed.json: the snapshot's counters, counters.changed replacing what it names, and a change of ports' "
+	"node.added carrying the counts it carries on",
+	"[session][protocol][counters]") {
 	using ear::NamedCounts;
 	using ear::NodeCounts;
 	const json document = fixture("counters-changed");
@@ -328,14 +329,16 @@ TEST_CASE("counters-changed.json: the snapshot's counters, counters.changed repl
 		const std::vector<NamedCounts> two{{"desk", {.missedCycles = 12}}, {"ghost", {.missedCycles = 5}}};
 		w.gateway.countersChanged({.cycles = 56250, .cutCycles = 44, .stalls = 2}, 234, two);
 	});
-	// The channel count changes: a port-caused replace. The gateway hears it before NodeHost does, so the name's counts
-	// are still the older node's, which the newer carries on.
+	// The channel count changes: a reshape, which the wire still shows as the node's replace (node.removed, node.added),
+	// its node.added carrying the counters the node has counted.
 	counts.nodes["desk"] = NodeCounts{.missedCycles = 12};
 	w.graph.script.push_back({R"(updateNode desk {"card":"MOTU","playback":4})", [&] {
-								  const ear::NodeChange ports{ear::NodeOutcome::restart, {"playback"}, true};
-								  w.gateway.nodeReplacing("desk", ports);
-								  w.gateway.nodeReplaced({"desk", "card", {{"card", "MOTU"}, {"playback", 4}}},
-		                                                 std::make_shared<Config>(cardPorts(4)), ports);
+								  const ear::NodeChange ports{.outcome = ear::NodeOutcome::reshape,
+		                                                      .keys = {"playback"},
+		                                                      .oldPorts = cardPorts(2),
+		                                                      .ports = cardPorts(4)};
+								  w.gateway.nodeChanged({"desk", "card", {{"card", "MOTU"}, {"playback", 4}}},
+		                                                std::make_shared<Config>(cardPorts(4)), ports);
 								  return Result{};
 							  }});
 	w.receive(session, requests[1]);
@@ -347,7 +350,7 @@ TEST_CASE("counters-changed.json: the snapshot's counters, counters.changed repl
 	CHECK(w.graph.script.empty());
 }
 
-TEST_CASE("A replace that is not port-caused, and a node added, carry zero counters whatever the name counted",
+TEST_CASE("A replace (another type), and a node added, carry zero counters whatever the name counted",
           "[session][counters]") {
 	World w;
 	w.graph.view =
@@ -359,7 +362,7 @@ TEST_CASE("A replace that is not port-caused, and a node added, carry zero count
 	ControlSession session(*w.hub, out);
 	w.receive(session, R"({"jsonrpc":"2.0","id":1,"method":"graph.subscribe"})");
 	w.onMain([&] {
-		const ear::NodeChange type{ear::NodeOutcome::restart, {}, false};
+		const ear::NodeChange type{ear::NodeOutcome::restart, {}};
 		w.gateway.nodeReplacing("x", type);
 		w.gateway.nodeReplaced({"x", "white", json::object()},
 		                       std::make_shared<Config>(ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}}),
@@ -1464,7 +1467,7 @@ TEST_CASE("A node added again under a name starts from node.added's []: its firs
 		w.gateway.companionsChanged("x", ready);
 		// Replaced by a node of another type of the same name, as a change of type is: the older one is superseded
 		// (NodeHost tells it nothing more) and the newer one's list is new to the client.
-		const ear::NodeChange type{ear::NodeOutcome::restart, {}, false};
+		const ear::NodeChange type{ear::NodeOutcome::restart, {}};
 		w.gateway.nodeReplacing("x", type);
 		w.gateway.nodeReplaced({"x", "file", {{"path", "b.wav"}}}, std::make_shared<Config>(recPorts), type);
 		w.gateway.companionsChanged("x", ready);
