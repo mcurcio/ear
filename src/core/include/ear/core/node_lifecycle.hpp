@@ -15,11 +15,21 @@ namespace ear {
 
 // ---- Names on the wire and on standard output (docs/control-port.md#node-health) ----
 
-/// The exact state. 3d adds reconfiguring, slice 8 recovering. A removed node has no phase: it is gone
-/// (NodeAggregate::removed()).
-enum class NodePhase { added, configuring, configured, starting, running, stopping, stopped, disabled, failed };
+/// The exact state. Slice 8 adds recovering. A removed node has no phase: it is gone (NodeAggregate::removed()).
+enum class NodePhase {
+	added,
+	configuring,
+	configured,
+	starting,
+	running,
+	stopping,
+	stopped,
+	disabled,
+	failed,
+	reconfiguring
+};
 /// The phase's colour: added, configuring and configured are starting; every other phase is its own name.
-enum class NodeState { starting, running, stopping, stopped, disabled, failed };
+enum class NodeState { starting, running, stopping, stopped, disabled, failed, reconfiguring };
 /// What the graph wants of the node: disabled from ear.conf, else stopped while its stop is held, else running.
 enum class Wanted { running, stopped, disabled };
 /// docs/architecture.md#phases-states-and-what-is-wanted failure codes and a failure: FailureReason's (node_type.hpp),
@@ -29,12 +39,19 @@ using Failure = FailureReason;
 /// Why a node is stopping, or configuring after a restart, a retry or an enable (docs/control-port.md#node-health
 /// cause.kind).
 struct NodeCause {
-	enum class Kind { stop, removing, disabling, restarting, settings, action, retry, enabling };
+	/// fellBack is a restart's own kind only: a change in place that could not finish
+	/// (docs/architecture.md#changes-in-place).
+	enum class Kind { stop, removing, disabling, restarting, settings, action, retry, enabling, fellBack };
+	/// Why a change in place fell back to a restart.
+	enum class FellBack { restartAsked, deadline, resourceRefused, resourceLost, failed, restartRequested };
 	Kind kind;
-	/// restarting only: the restart's own kind (settings, action or enabling), as configuring's.
+	/// restarting only: the restart's own kind (settings, action, enabling or fellBack), as configuring's.
 	std::optional<Kind> restart;
-	/// settings, or restarting by settings: the changed keys.
+	/// settings or fellBack, or restarting by either: the changed keys.
 	std::vector<std::string> keys;
+	/// fellBack, or restarting by it: why, and in words.
+	std::optional<FellBack> reason{};
+	std::string detail{};
 	bool operator==(const NodeCause&) const = default;
 };
 
@@ -43,6 +60,7 @@ std::string_view phaseName(NodePhase phase) noexcept;
 std::string_view stateName(NodeState state) noexcept;
 std::string_view wantedName(Wanted wanted) noexcept;
 std::string_view causeName(NodeCause::Kind kind) noexcept;
+std::string_view fellBackName(NodeCause::FellBack reason) noexcept;
 inline std::string_view failureCodeName(FailureCode code) noexcept { return failureCode(code); }
 
 // ---- The block machine ----
@@ -205,6 +223,10 @@ struct Health {
 	std::optional<NodeCause> cause;
 	std::optional<Failure> reason;
 	bool blockLost;
+	/// reconfiguring only: the keys the change in flight applies, and those changed since its commit point, which the
+	/// node takes once it ends.
+	std::vector<std::string> keys{};
+	std::vector<std::string> next{};
 	bool operator==(const Health&) const = default;
 };
 /// What the derivation reads: the two machines' states and the aggregate's facts.
@@ -222,6 +244,8 @@ struct DeriveFacts {
 	bool predecessor = false;
 	bool configuredTold = false;
 	FailureCode blockLossCode = FailureCode::engineRefused; // a block lost by its own bug: lost
+	std::vector<std::string> changeKeys{};                  // changing or committing: the change's keys
+	std::vector<std::string> nextKeys{};                    // committing: the keys that wait for its end
 };
 Health derive(const DeriveFacts& facts);
 /// The derivation's first row: block gone, configuration none, intent remove.
@@ -255,6 +279,9 @@ struct Dropped {
 using NodeAction = std::variant<BlockAction, ConfigAction, Tell, Gone, Dropped>;
 using Actions = std::vector<NodeAction>;
 
+/// What the plan said a change of settings can be: a restart, or a change in place (every changed key's row marked).
+enum class ChangeKind { restart, inPlace };
+
 /// core's own replies to start, stop and restart, NodeOperations' (node_host.hpp); MainLoopSide maps them
 /// to the wire.
 enum class LifecycleApplied { start, stop, restart, retry, unchanged };
@@ -287,8 +314,11 @@ public:
 	/// The block refused or dropped (engine-refused), or, by `code` lost, failed by its own bug
 	/// (docs/architecture.md#faults-by-owner); either way final.
 	Actions blockLost(std::string detail, FailureCode code = FailureCode::engineRefused);
-	// The plan's outcomes: a restart-only change, a change on a disabled node, a disable, an enable, a removal.
-	Actions change(Queued queued, std::vector<std::string> keys);
+	// The plan's outcomes: a change (restart-only, or in place), a change on a disabled node, a disable, an enable, a
+	// removal.
+	/// A change in place is taken only by a node that has rested and is neither failed nor disabled, from running or
+	/// stopped (docs/architecture.md#changes-in-place); any other takes it as a restart, as a restart-only change.
+	Actions change(Queued queued, std::vector<std::string> keys, ChangeKind kind = ChangeKind::restart);
 	Actions disable();
 	Actions enable();
 	Actions remove();
@@ -310,6 +340,11 @@ public:
 	Actions fadeBound();
 	Actions barrierBound();
 	Actions closeBound();
+	// A change in place's completions: the change version answered and every replacement is ready (the commit point);
+	// the commit's invoke completed; the change could not finish and restarts with the newest settings.
+	Actions changeReady();
+	Actions committed(std::uint64_t barrier);
+	Actions fellBack(NodeCause::FellBack reason, std::string detail);
 	/// Another node's barrier marked the data loop wedged: this node is never configured again.
 	Actions dataLoopWedged();
 	/// configure's return: whether some output the code writes is faded (ConfigurationMachine::outputsFaded).
@@ -327,6 +362,9 @@ public:
 	bool stopHeld() const noexcept { return stopHeld_; }
 	bool retryAsked() const noexcept { return retryAsked_; }
 	bool changePending() const noexcept;
+	/// A change in place is in flight (reconfiguring), and the settings version it applies.
+	bool changing() const noexcept { return config_.changing(); }
+	std::uint64_t changeVersion() const noexcept { return changeVersion_; }
 	const std::optional<Failure>& failure() const noexcept { return failure_; }
 	const std::optional<Failure>& heldFault() const noexcept { return heldFault_; }
 
@@ -339,6 +377,8 @@ private:
 	void tell(Actions& out);
 	void askConfig(ConfigEvent event, Actions& out);
 	bool beginRestart(NodeCause why, Actions& out);
+	void beginChange(Actions& out);
+	bool mayChangeInPlace() const;
 	void configNone(Actions& out);
 	void destroyIfUndriven(Actions& out);
 	void converge(Actions& out);
@@ -352,6 +392,12 @@ private:
 	Queued queued_;
 	std::uint64_t configuredVersion_ = 0;
 	std::vector<std::string> changedKeys_;
+	// A change in place: the version and keys in flight; the keys of the changes since the applied settings (or, while
+	// committing, since the change in flight) not yet taken, and whether every one of them is in place.
+	std::uint64_t changeVersion_ = 0;
+	std::vector<std::string> changeKeys_;
+	std::vector<std::string> pendingKeys_;
+	bool pendingInPlace_ = false;
 	std::optional<Failure> failure_;
 	bool retryAsked_ = false;
 	std::optional<Failure> heldFault_;

@@ -4,6 +4,7 @@
 // part of a node's health.
 #include "ear/core/node_lifecycle.hpp"
 
+#include <algorithm>
 #include <utility>
 
 namespace ear {
@@ -27,6 +28,8 @@ NodeState stateOf(NodePhase phase) noexcept {
 		return NodeState::disabled;
 	case NodePhase::failed:
 		return NodeState::failed;
+	case NodePhase::reconfiguring:
+		return NodeState::reconfiguring;
 	}
 	return NodeState::failed;
 }
@@ -51,6 +54,8 @@ std::string_view phaseName(NodePhase phase) noexcept {
 		return "disabled";
 	case NodePhase::failed:
 		return "failed";
+	case NodePhase::reconfiguring:
+		return "reconfiguring";
 	}
 	return "unknown";
 }
@@ -69,6 +74,8 @@ std::string_view stateName(NodeState state) noexcept {
 		return "disabled";
 	case NodeState::failed:
 		return "failed";
+	case NodeState::reconfiguring:
+		return "reconfiguring";
 	}
 	return "unknown";
 }
@@ -103,6 +110,27 @@ std::string_view causeName(NodeCause::Kind kind) noexcept {
 		return "retry";
 	case NodeCause::Kind::enabling:
 		return "enabling";
+	case NodeCause::Kind::fellBack:
+		return "fell-back";
+	}
+	return "unknown";
+}
+
+std::string_view fellBackName(NodeCause::FellBack reason) noexcept {
+	using enum NodeCause::FellBack;
+	switch (reason) {
+	case restartAsked:
+		return "restart-asked";
+	case deadline:
+		return "deadline";
+	case resourceRefused:
+		return "resource-refused";
+	case resourceLost:
+		return "resource-lost";
+	case failed:
+		return "failed";
+	case restartRequested:
+		return "restart-requested";
 	}
 	return "unknown";
 }
@@ -606,6 +634,8 @@ NodeCause restarting(const std::optional<NodeCause>& why) {
 	if (why) {
 		cause.restart = why->kind;
 		cause.keys = why->keys;
+		cause.reason = why->reason;
+		cause.detail = why->detail;
 	}
 	return cause;
 }
@@ -654,6 +684,10 @@ Health derive(const DeriveFacts& f) {
 	           (f.config == ConfigState::none && f.intent == Intent::restart)) {
 		h.phase = NodePhase::stopping;
 		h.cause = causeOf(f.intent, f.why);
+	} else if (f.config == ConfigState::changing || f.config == ConfigState::committing) {
+		h.phase = NodePhase::reconfiguring;
+		h.keys = f.changeKeys;
+		h.next = f.nextKeys;
 	} else if (f.config == ConfigState::none) {
 		h.phase = NodePhase::added;
 	} else if (f.config == ConfigState::readying) {
@@ -687,7 +721,9 @@ DeriveFacts NodeAggregate::facts() const {
 	        failure_,
 	        predecessor_,
 	        configuredTold_,
-	        blockLossCode_};
+	        blockLossCode_,
+	        config_.changing() ? changeKeys_ : std::vector<std::string>{},
+	        config_.changing() ? pendingKeys_ : std::vector<std::string>{}};
 }
 
 Health NodeAggregate::health() const { return derive(facts()); }
@@ -748,6 +784,21 @@ void NodeAggregate::onConfig(ConfigInput input, Actions& out) {
 	for (const ConfigAction& action : config_.on(input)) out.emplace_back(action);
 	const ConfigState after = config_.state();
 	if (after != before) {
+		const auto inChange = [](ConfigState state) {
+			return state == ConfigState::changing || state == ConfigState::committing;
+		};
+		if (inChange(before) && !inChange(after)) {
+			// The commit point: the change's settings are the applied ones. Any other end leaves them unapplied, so
+			// they wait, in place, with whatever came after them.
+			if (after == ConfigState::prepared || after == ConfigState::driving) {
+				configuredVersion_ = changeVersion_;
+			} else {
+				for (std::string& key : pendingKeys_)
+					if (std::ranges::find(changeKeys_, key) == changeKeys_.end()) changeKeys_.push_back(std::move(key));
+				pendingKeys_ = std::move(changeKeys_); // the dropped change was in place: pendingInPlace_ holds
+			}
+			changeKeys_.clear();
+		}
 		if (after != ConfigState::prepared) configuredTold_ = false;
 		if (before == ConfigState::readying && after == ConfigState::prepared) why_.reset();
 		if (before == ConfigState::silencing && after == ConfigState::prepared && intent_ == Intent::stop) {
@@ -782,6 +833,22 @@ bool NodeAggregate::beginRestart(NodeCause why, Actions& out) {
 	return true;
 }
 
+/// A change in place is taken only by a node that has rested, with nothing in flight that ends its configuration, on a
+/// loop not wedged (where nothing could be committed); any other node takes it as a restart
+/// (docs/architecture.md#changes-in-place).
+bool NodeAggregate::mayChangeInPlace() const {
+	return config_.rested() && intent_ == Intent::none && !disabled_ && !failure_ && !wedged_;
+}
+
+/// The pending changes become the change in flight, applying the newest settings.
+void NodeAggregate::beginChange(Actions& out) {
+	changeVersion_ = queued_.version;
+	changeKeys_ = std::move(pendingKeys_);
+	pendingKeys_.clear();
+	pendingInPlace_ = true;
+	askConfig(ConfigEvent::changeAsked, out);
+}
+
 /// Rule 1, in its order, until nothing more applies.
 void NodeAggregate::converge(Actions& out) {
 	using enum ConfigState;
@@ -803,6 +870,8 @@ void NodeAggregate::converge(Actions& out) {
 			}
 			failure_.reset();
 			configuredVersion_ = queued_.version;
+			pendingKeys_.clear();
+			pendingInPlace_ = true;
 			onConfig({ConfigEvent::configure, 0, queued_.fades}, out);
 			continue;
 		}
@@ -811,6 +880,10 @@ void NodeAggregate::converge(Actions& out) {
 			continue;
 		}
 		if (state == prepared && changePending()) { // before any drive
+			if (pendingInPlace_ && mayChangeInPlace()) {
+				beginChange(out);
+				continue;
+			}
 			if (!beginRestart({NodeCause::Kind::settings, std::nullopt, changedKeys_}, out)) return;
 			continue;
 		}
@@ -822,12 +895,25 @@ void NodeAggregate::converge(Actions& out) {
 			askConfig(ConfigEvent::rest, out);
 			continue;
 		}
-		if ((state == arming && !config_.stopAsked()) || state == driving) {
+		// An intent raised while a commit's invoke was in flight waited for it (docs/architecture.md#changes-in-place).
+		if (state == driving && intent_ != Intent::none && intent_ != Intent::stop) {
+			askConfig(ConfigEvent::teardownAsked, out);
+			continue;
+		}
+		// A stop ends a change from driving before its commit point, then stops (from prepared nothing is driven).
+		if ((state == arming && !config_.stopAsked()) || state == driving ||
+		    (state == changing && config_.changeFrom() == driving)) {
 			if (wanted() == Wanted::stopped) {
 				raise(Intent::stop);
 				askConfig(ConfigEvent::stopAsked, out);
 				continue;
 			}
+		}
+		// A change that waited for a drive or a commit in flight.
+		if (state == driving && changePending()) {
+			if (pendingInPlace_ && mayChangeInPlace()) beginChange(out);
+			else if (!beginRestart({NodeCause::Kind::settings, std::nullopt, pendingKeys_}, out)) return;
+			continue;
 		}
 		return;
 	}
@@ -909,11 +995,18 @@ Actions NodeAggregate::blockLost(std::string detail, FailureCode code) {
 	return out;
 }
 
-Actions NodeAggregate::change(Queued queued, std::vector<std::string> keys) {
+Actions NodeAggregate::change(Queued queued, std::vector<std::string> keys, ChangeKind kind) {
 	Actions out;
 	if (goneTold_ || intent_ == Intent::remove) return out; // not wanted any more
+	const ConfigState state = config_.state();
+	const bool inPlace = kind == ChangeKind::inPlace;
 	queued_ = queued;
 	changedKeys_ = keys;
+	if (state != ConfigState::changing) { // supersession takes the keys into the change itself
+		for (const std::string& key : keys)
+			if (std::ranges::find(pendingKeys_, key) == pendingKeys_.end()) pendingKeys_.push_back(key);
+		pendingInPlace_ = pendingInPlace_ && inPlace;
+	}
 	if (disabled_) return out; // stored for the enable
 	if (failed()) {
 		if (block_.state() != BlockState::lost) { // T15 once the failed configuration is gone
@@ -924,7 +1017,29 @@ Actions NodeAggregate::change(Queued queued, std::vector<std::string> keys) {
 		tell(out);
 		return out;
 	}
-	const ConfigState state = config_.state();
+	if (state == ConfigState::changing) {
+		// Before the commit point a newer change supersedes: in place, the change version is called again with the
+		// newest settings and every key not yet applied; else the node restarts.
+		for (std::string& key : keys)
+			if (std::ranges::find(changeKeys_, key) == changeKeys_.end()) changeKeys_.push_back(std::move(key));
+		if (inPlace && mayChangeInPlace()) {
+			changeVersion_ = queued.version;
+			askConfig(ConfigEvent::changeAgain, out);
+		} else {
+			beginRestart({NodeCause::Kind::settings, std::nullopt, changeKeys_}, out);
+		}
+		converge(out);
+		return out;
+	}
+	if (state == ConfigState::committing) { // waits for the commit, then applies (next)
+		tell(out);
+		return out;
+	}
+	if (inPlace && mayChangeInPlace()) { // at once from running or stopped, else once a drive or a stop ends
+		converge(out);
+		tell(out);
+		return out;
+	}
 	if (state == ConfigState::readying || state == ConfigState::prepared || state == ConfigState::arming ||
 	    state == ConfigState::driving) // rule 2: a settled configuration restarts at once
 		beginRestart({NodeCause::Kind::settings, std::nullopt, std::move(keys)}, out);
@@ -1026,7 +1141,11 @@ Operated NodeAggregate::restart() {
 	if (intent_ == Intent::restart || predecessor_) return {LifecycleApplied::unchanged, {}};
 	if (health().phase == NodePhase::added)
 		return {std::unexpected(LifecycleRefusal{Code::notRestartable, Reason::notStarted}), {}};
-	beginRestart({NodeCause::Kind::action, std::nullopt, {}}, out);
+	// A restart ends a change in place at once, as its fallback; one asked during the commit's invoke waits for it.
+	if (config_.changing())
+		beginRestart({NodeCause::Kind::fellBack, std::nullopt, changeKeys_, NodeCause::FellBack::restartRequested, {}},
+		             out);
+	else beginRestart({NodeCause::Kind::action, std::nullopt, {}}, out);
 	converge(out);
 	return {LifecycleApplied::restart, std::move(out)};
 }
@@ -1138,7 +1257,10 @@ Actions NodeAggregate::fadeBound() {
 
 Actions NodeAggregate::barrierBound() {
 	Actions out;
-	if (goneTold_ || (config_.state() != ConfigState::silencing && config_.state() != ConfigState::arming)) return out;
+	const ConfigState state = config_.state();
+	if (goneTold_ ||
+	    (state != ConfigState::silencing && state != ConfigState::arming && state != ConfigState::committing))
+		return out;
 	wedged_ = true;
 	// The configuration is leaked on a wedged loop: a stop or a restart can never end, so the node fails
 	// engine-refused (the code for a wedged loop); a disable or removal goes on to its end.
@@ -1152,6 +1274,32 @@ Actions NodeAggregate::closeBound() {
 	Actions out;
 	if (goneTold_) return out;
 	askConfig(ConfigEvent::closeBound, out);
+	converge(out);
+	return out;
+}
+
+Actions NodeAggregate::changeReady() {
+	Actions out;
+	if (goneTold_) return out;
+	askConfig(ConfigEvent::changeReady, out);
+	converge(out);
+	return out;
+}
+
+Actions NodeAggregate::committed(std::uint64_t barrier) {
+	Actions out;
+	if (goneTold_) return out;
+	onConfig({ConfigEvent::committed, barrier}, out);
+	converge(out);
+	return out;
+}
+
+/// The fallback: the change could not finish, so the node restarts with the newest settings (queued_ stays the
+/// newest); it never rolls back to the old ones, which ear.conf no longer holds.
+Actions NodeAggregate::fellBack(NodeCause::FellBack reason, std::string detail) {
+	Actions out;
+	if (goneTold_ || config_.state() != ConfigState::changing) return out;
+	beginRestart({NodeCause::Kind::fellBack, std::nullopt, changeKeys_, reason, std::move(detail)}, out);
 	converge(out);
 	return out;
 }

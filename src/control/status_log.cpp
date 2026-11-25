@@ -267,6 +267,7 @@ void StatusLog::nodeChanged(const NodeHealth& health) {
 	case NodeState::running:
 	case NodeState::stopped:
 	case NodeState::disabled:
+	case NodeState::reconfiguring: // nothing reaches it yet (docs/architecture.md#changes-in-place)
 		break;
 	}
 	emit("node", std::move(fields), std::move(msg));

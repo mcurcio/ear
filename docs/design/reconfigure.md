@@ -38,8 +38,9 @@ at every drive, are built.
 
 This slice adds:
 
-- rows marked `.inPlace()`, the plan's outcomes `reconfigure`, `reshape` and `unchanged`, and the state
-  `reconfiguring`;
+- rows marked `.inPlace()`, and the plan's outcomes `reconfigure`, `reshape` and `unchanged` (the state
+  `reconfiguring` and the pure machines' change states are built:
+  [`docs/architecture.md#changes-in-place`](../architecture.md#changes-in-place));
 - the change version of `configure` with `ChangeOf`, `Changed`, `whenReady` and `ConfigureDone`, staged posts, and
   the spec's `.lifecycle`;
 - holds with fades and their acknowledgement, make-before-break with retiring resources, break-first behind a
@@ -54,7 +55,10 @@ This slice adds:
 The transitions this page names are the framework's numbering: **T9** (`running` or `stopped` → `reconfiguring`, the
 change version called), **T10** (the commit point: back to `running` or `stopped`), **T11** (the fallback: `reconfiguring`
 → `stopping`, cause `restarting`, then a restart with the newest settings), **T18** (a newer change supersedes one
-before its commit point).
+before its commit point). The pure machines carry all four as built
+([`docs/architecture.md#changes-in-place`](../architecture.md#changes-in-place): the configuration machine's
+`changing` and `committing`, and the node aggregate's rules for what arrives mid-change); what this page still designs
+is NodeHost's and the types' side of them.
 
 ## 3. What a type declares, and what the plan decides
 
@@ -556,7 +560,7 @@ the code and before metering.
 |---|---|
 | `NodeOutcome`, `NodeChange`, `DesiredNodeListener` (`desired_graph.hpp`) | outcomes `reconfigure`, `reshape`, `unchanged`; `NodeChange` gains the old and new ports and `inPlace`; a change of ports with the same type is told by `nodeChanged`, not as a replace; `portCaused` goes |
 | `DesiredGraph::plan` | reads each changed key's mark; a dry run is `plan` without `commit` (as built) |
-| `ConfigurationMachine`, `NodeAggregate` (`node_lifecycle.hpp`) | a `changing` state; T9, T10, T11, T18; `NodePhase` and `NodeState` gain `reconfiguring` |
+| `ConfigurationMachine`, `NodeAggregate` (`node_lifecycle.hpp`) | built: [`docs/architecture.md#changes-in-place`](../architecture.md#changes-in-place) |
 | `lifecycle.hpp` | `ChangeOf` defined; `Changed` with real bodies; `ConfigureDone`; `Lifecycle`; `SinkControl` |
 | `NodeHost` | the in-place path: holds and their acknowledgement, retiring resources, the commit point, the deadline, supersession, the fallback; the block's reshape between teardown and `configure`; claims swapped (the claim registry, `docs/writing-a-node-type.md#claims`) |
 | `PortBlock`, `FilterPortBlocks` | `hold(banks)`, `release(banks)` with acknowledgement; `reshape(next)` with layouts swapped whole; levels re-registered |
@@ -601,7 +605,8 @@ the code and before metering.
 
 ## 11. Order of work
 
-1. S4, the spike (run: 7.4), and the pure machines' new states and transitions (tables).
+1. S4, the spike (run: 7.4), and the pure machines' new states and transitions (built:
+   [`docs/architecture.md#changes-in-place`](../architecture.md#changes-in-place)).
 2. `ChangeOf`, `Changed`, staged posts, holds and their acknowledgement, the commit point, the deadline, supersession,
    the fallback, with a test type; `rtp` in place.
 3. The primitives in a change: claims swapped, `whenReady`, `ConfigureDone`, the sink's pause, the same-port rule.

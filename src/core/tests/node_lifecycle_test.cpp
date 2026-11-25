@@ -252,6 +252,12 @@ struct Probe {
 		case ConfigState::tearing:
 			take(node.closed());
 			return true;
+		case ConfigState::changing:
+			take(node.changeReady());
+			return true;
+		case ConfigState::committing:
+			take(node.committed(n));
+			return true;
 		default:
 			return false;
 		}
@@ -265,7 +271,10 @@ struct Probe {
 		facts.queued.version = version;
 		take(node.add(facts));
 	}
-	void change(std::vector<std::string> keys = {"path"}) { take(node.change({++version, true}, std::move(keys))); }
+	void change(std::vector<std::string> keys = {"path"}, ChangeKind kind = ChangeKind::restart) {
+		take(node.change({++version, true}, std::move(keys), kind));
+	}
+	void changeInPlace(std::vector<std::string> keys = {"gain"}) { change(std::move(keys), ChangeKind::inPlace); }
 };
 
 std::vector<std::string_view> names(const std::vector<NodePhase>& phases) {
@@ -289,6 +298,9 @@ enum class Spot {
 	disabled,
 	failed,
 	failedLost,
+	reconfiguringBeforeCommit, // a change in place from running, before its commit point
+	reconfiguringCommitting,   // the same, its commit's invoke in flight
+	reconfiguringFromStopped,  // a change in place from stopped, before its commit point
 };
 
 std::string_view spotName(Spot spot) {
@@ -319,6 +331,12 @@ std::string_view spotName(Spot spot) {
 		return "failed, block kept";
 	case Spot::failedLost:
 		return "failed, block lost";
+	case Spot::reconfiguringBeforeCommit:
+		return "reconfiguring, before the commit point";
+	case Spot::reconfiguringCommitting:
+		return "reconfiguring, committing";
+	case Spot::reconfiguringFromStopped:
+		return "reconfiguring from stopped";
 	}
 	return "?";
 }
@@ -389,17 +407,35 @@ Probe reach(Spot spot) {
 		p.take(p.node.blockLost("no driver"));
 		p.settle();
 		break;
+	case Spot::reconfiguringBeforeCommit:
+		p = running();
+		p.changeInPlace();
+		REQUIRE(p.node.configuration().state() == ConfigState::changing);
+		break;
+	case Spot::reconfiguringCommitting:
+		p = running();
+		p.changeInPlace();
+		p.take(p.node.changeReady());
+		REQUIRE(p.node.configuration().state() == ConfigState::committing);
+		break;
+	case Spot::reconfiguringFromStopped:
+		p = reach(Spot::stopped);
+		p.changeInPlace();
+		REQUIRE(p.node.configuration().state() == ConfigState::changing);
+		break;
 	}
 	p.clear();
 	return p;
 }
 
-enum class Op { change, stop, start, restart, disable, enable, remove, blockLost, fault };
+enum class Op { change, changeInPlace, stop, start, restart, disable, enable, remove, blockLost, fault };
 
 std::string_view opName(Op op) {
 	switch (op) {
 	case Op::change:
 		return "restart-only change";
+	case Op::changeInPlace:
+		return "change in place";
 	case Op::stop:
 		return "stop";
 	case Op::start:
@@ -424,6 +460,9 @@ std::optional<LifecycleReply> apply(Probe& p, Op op) {
 	switch (op) {
 	case Op::change:
 		p.change();
+		return std::nullopt;
+	case Op::changeInPlace:
+		p.changeInPlace();
 		return std::nullopt;
 	case Op::stop:
 		return p.take(p.node.stop());
@@ -1027,6 +1066,28 @@ TEST_CASE("The phase, state, wanted and cause derived for every combination of t
 		{"prepared after resting", {.config = ConfigState::prepared, .rested = true}, P::starting, std::nullopt},
 		{"arming", {.block = BlockState::ready, .config = ConfigState::arming}, P::starting, std::nullopt},
 		{"driving", {.block = BlockState::ready, .config = ConfigState::driving}, P::running, std::nullopt},
+		{"a change in place before its commit point",
+	     {.block = BlockState::ready, .config = ConfigState::changing, .rested = true},
+	     P::reconfiguring,
+	     std::nullopt},
+		{"a change in place from stopped",
+	     {.block = BlockState::ready, .config = ConfigState::changing, .rested = true, .stopHeld = true},
+	     P::reconfiguring,
+	     std::nullopt},
+		{"a commit's invoke in flight, a restart waiting for it",
+	     {.block = BlockState::ready, .config = ConfigState::committing, .rested = true, .intent = Intent::restart},
+	     P::reconfiguring,
+	     std::nullopt},
+		{"a commit's invoke in flight, a removal waiting for it",
+	     {.block = BlockState::ready, .config = ConfigState::committing, .intent = Intent::remove},
+	     P::stopping,
+	     NodeCause{CK::removing, std::nullopt, {}}},
+		{"a fallback's fade",
+	     {.config = ConfigState::fading,
+	      .intent = Intent::restart,
+	      .why = NodeCause{CK::fellBack, std::nullopt, {"port"}, NodeCause::FellBack::deadline, "10 s passed"}},
+	     P::stopping,
+	     NodeCause{CK::restarting, CK::fellBack, {"port"}, NodeCause::FellBack::deadline, "10 s passed"}},
 	};
 	for (const Row& row : rows) {
 		INFO(row.what);
@@ -1037,6 +1098,13 @@ TEST_CASE("The phase, state, wanted and cause derived for every combination of t
 	CHECK(derive({.block = BlockState::lost, .blockLossDetail = "gone"}).reason ==
 	      Failure{FailureCode::engineRefused, "gone"});
 	CHECK(removed({.block = BlockState::gone, .intent = Intent::remove}));
+	const Health changing =
+		derive({.config = ConfigState::committing, .changeKeys = {"gain"}, .nextKeys = {"level", "size"}});
+	CHECK(changing.keys == std::vector<std::string>{"gain"});
+	CHECK(changing.next == std::vector<std::string>{"level", "size"});
+	const Health running = derive({.config = ConfigState::driving, .changeKeys = {"gain"}, .nextKeys = {"level"}});
+	CHECK(running.keys.empty());
+	CHECK(running.next.empty());
 	CHECK_FALSE(removed({.block = BlockState::gone, .config = ConfigState::tearing, .intent = Intent::remove}));
 
 	SECTION("every combination keeps the members consistent") {
@@ -1044,7 +1112,8 @@ TEST_CASE("The phase, state, wanted and cause derived for every combination of t
 		                                     BlockState::gone};
 		const std::vector<ConfigState> configs{ConfigState::none,      ConfigState::readying, ConfigState::prepared,
 		                                       ConfigState::arming,    ConfigState::driving,  ConfigState::fading,
-		                                       ConfigState::silencing, ConfigState::tearing};
+		                                       ConfigState::silencing, ConfigState::tearing,  ConfigState::changing,
+		                                       ConfigState::committing};
 		const std::vector<Intent> intents{Intent::none, Intent::stop,    Intent::restart,
 		                                  Intent::fail, Intent::disable, Intent::remove};
 		std::size_t combinations = 0;
@@ -1077,8 +1146,11 @@ TEST_CASE("The phase, state, wanted and cause derived for every combination of t
 						if (h.cause) CHECK((h.phase == NodePhase::stopping || h.phase == NodePhase::configuring));
 						if (intent == Intent::remove) CHECK(h.phase == NodePhase::stopping);
 						if (h.phase == NodePhase::running) CHECK(config == ConfigState::driving);
+						if (h.phase == NodePhase::reconfiguring)
+							CHECK((config == ConfigState::changing || config == ConfigState::committing));
+						if (h.phase != NodePhase::reconfiguring) CHECK((h.keys.empty() && h.next.empty()));
 					}
-		CHECK(combinations == 5 * 8 * 6 * 64);
+		CHECK(combinations == 5 * 10 * 6 * 64);
 	}
 }
 
@@ -1089,7 +1161,7 @@ TEST_CASE("Phases, states, causes and failure codes have their names", "[lifecyc
 		{P::configured, "configured", "starting"}, {P::starting, "starting", "starting"},
 		{P::running, "running", "running"},        {P::stopping, "stopping", "stopping"},
 		{P::stopped, "stopped", "stopped"},        {P::disabled, "disabled", "disabled"},
-		{P::failed, "failed", "failed"},
+		{P::failed, "failed", "failed"},           {P::reconfiguring, "reconfiguring", "reconfiguring"},
 	};
 	for (const auto& [phase, name, state] : phases) {
 		CHECK(phaseName(phase) == name);
@@ -1104,6 +1176,14 @@ TEST_CASE("Phases, states, causes and failure codes have their names", "[lifecyc
 	CHECK(causeName(CK::action) == "action");
 	CHECK(causeName(CK::retry) == "retry");
 	CHECK(causeName(CK::enabling) == "enabling");
+	CHECK(causeName(CK::fellBack) == "fell-back");
+	using FB = NodeCause::FellBack;
+	CHECK(fellBackName(FB::restartAsked) == "restart-asked");
+	CHECK(fellBackName(FB::deadline) == "deadline");
+	CHECK(fellBackName(FB::resourceRefused) == "resource-refused");
+	CHECK(fellBackName(FB::resourceLost) == "resource-lost");
+	CHECK(fellBackName(FB::failed) == "failed");
+	CHECK(fellBackName(FB::restartRequested) == "restart-requested");
 	CHECK(failureCodeName(FailureCode::startFailed) == "start-failed");
 	CHECK(failureCodeName(FailureCode::engineRefused) == "engine-refused");
 	CHECK(failureCodeName(FailureCode::lost) == "lost");
@@ -1135,6 +1215,7 @@ TEST_CASE("Every operation in every phase answers and moves as NodeOperations pr
 	// derived again at once), so configuring's row stands for both.
 	const std::vector<Row> rows{
 		{Spot::added, Op::change, none, P::added, {}, P::added},
+		{Spot::added, Op::changeInPlace, none, P::added, {}, P::added},
 		{Spot::added, Op::stop, ok(A::stop), P::added, {}, P::added},
 		{Spot::added, Op::start, ok(A::unchanged), P::added, {}, P::added},
 		{Spot::added, Op::restart, no(C::notRestartable, R::notStarted), P::added, {}, P::added},
@@ -1145,6 +1226,7 @@ TEST_CASE("Every operation in every phase answers and moves as NodeOperations pr
 		{Spot::added, Op::fault, none, P::added, {}, P::added},
 
 		{Spot::configuring, Op::change, none, P::stopping, CK::restarting, P::running},
+		{Spot::configuring, Op::changeInPlace, none, P::stopping, CK::restarting, P::running},
 		{Spot::configuring, Op::stop, ok(A::stop), P::configuring, {}, P::stopped},
 		{Spot::configuring, Op::start, ok(A::unchanged), P::configuring, {}, P::running},
 		{Spot::configuring, Op::restart, ok(A::restart), P::stopping, CK::restarting, P::running},
@@ -1155,6 +1237,7 @@ TEST_CASE("Every operation in every phase answers and moves as NodeOperations pr
 		{Spot::configuring, Op::fault, none, P::failed, {}, P::failed},
 
 		{Spot::startingBlock, Op::change, none, P::stopping, CK::restarting, P::starting},
+		{Spot::startingBlock, Op::changeInPlace, none, P::stopping, CK::restarting, P::starting},
 		{Spot::startingBlock, Op::stop, ok(A::stop), P::stopped, {}, P::stopped},
 		{Spot::startingBlock, Op::start, ok(A::unchanged), P::starting, {}, P::starting},
 		{Spot::startingBlock, Op::restart, ok(A::restart), P::stopping, CK::restarting, P::starting},
@@ -1165,6 +1248,7 @@ TEST_CASE("Every operation in every phase answers and moves as NodeOperations pr
 		{Spot::startingBlock, Op::fault, none, P::failed, {}, P::failed},
 
 		{Spot::startingDrive, Op::change, none, P::stopping, CK::restarting, P::running},
+		{Spot::startingDrive, Op::changeInPlace, none, P::stopping, CK::restarting, P::running},
 		{Spot::startingDrive, Op::stop, ok(A::stop), P::stopping, CK::stop, P::stopped},
 		{Spot::startingDrive, Op::start, ok(A::unchanged), P::starting, {}, P::running},
 		{Spot::startingDrive, Op::restart, ok(A::restart), P::stopping, CK::restarting, P::running},
@@ -1175,6 +1259,7 @@ TEST_CASE("Every operation in every phase answers and moves as NodeOperations pr
 		{Spot::startingDrive, Op::fault, none, P::failed, {}, P::failed},
 
 		{Spot::running, Op::change, none, P::stopping, CK::restarting, P::running},
+		{Spot::running, Op::changeInPlace, none, P::reconfiguring, {}, P::running},
 		{Spot::running, Op::stop, ok(A::stop), P::stopping, CK::stop, P::stopped},
 		{Spot::running, Op::start, ok(A::unchanged), P::running, {}, P::running},
 		{Spot::running, Op::restart, ok(A::restart), P::stopping, CK::restarting, P::running},
@@ -1185,6 +1270,7 @@ TEST_CASE("Every operation in every phase answers and moves as NodeOperations pr
 		{Spot::running, Op::fault, none, P::failed, {}, P::failed},
 
 		{Spot::stoppingStop, Op::change, none, P::stopping, CK::stop, P::stopped},
+		{Spot::stoppingStop, Op::changeInPlace, none, P::stopping, CK::stop, P::stopped},
 		{Spot::stoppingStop, Op::stop, ok(A::unchanged), P::stopping, CK::stop, P::stopped},
 		{Spot::stoppingStop, Op::start, ok(A::start), P::stopping, CK::stop, P::running},
 		{Spot::stoppingStop, Op::restart, ok(A::restart), P::stopping, CK::restarting, P::stopped},
@@ -1195,6 +1281,7 @@ TEST_CASE("Every operation in every phase answers and moves as NodeOperations pr
 		{Spot::stoppingStop, Op::fault, none, P::stopping, CK::stop, P::failed},
 
 		{Spot::stoppingRestart, Op::change, none, P::stopping, CK::restarting, P::running},
+		{Spot::stoppingRestart, Op::changeInPlace, none, P::stopping, CK::restarting, P::running},
 		{Spot::stoppingRestart, Op::stop, ok(A::stop), P::stopping, CK::restarting, P::stopped},
 		{Spot::stoppingRestart, Op::start, ok(A::unchanged), P::stopping, CK::restarting, P::running},
 		{Spot::stoppingRestart, Op::restart, ok(A::unchanged), P::stopping, CK::restarting, P::running},
@@ -1205,6 +1292,7 @@ TEST_CASE("Every operation in every phase answers and moves as NodeOperations pr
 		{Spot::stoppingRestart, Op::fault, none, P::stopping, CK::restarting, P::running},
 
 		{Spot::stoppingDisable, Op::change, none, P::stopping, CK::disabling, P::disabled},
+		{Spot::stoppingDisable, Op::changeInPlace, none, P::stopping, CK::disabling, P::disabled},
 		{Spot::stoppingDisable, Op::stop, no(C::nodeDisabled), P::stopping, CK::disabling, P::disabled},
 		{Spot::stoppingDisable, Op::start, no(C::nodeDisabled), P::stopping, CK::disabling, P::disabled},
 		{Spot::stoppingDisable, Op::restart, no(C::nodeDisabled), P::stopping, CK::disabling, P::disabled},
@@ -1215,6 +1303,7 @@ TEST_CASE("Every operation in every phase answers and moves as NodeOperations pr
 		{Spot::stoppingDisable, Op::fault, none, P::stopping, CK::disabling, P::disabled},
 
 		{Spot::stoppingRemove, Op::change, none, P::stopping, CK::removing, removedAfter},
+		{Spot::stoppingRemove, Op::changeInPlace, none, P::stopping, CK::removing, removedAfter},
 		{Spot::stoppingRemove, Op::stop, no(C::unknownNode), P::stopping, CK::removing, removedAfter},
 		{Spot::stoppingRemove, Op::start, no(C::unknownNode), P::stopping, CK::removing, removedAfter},
 		{Spot::stoppingRemove, Op::restart, no(C::unknownNode), P::stopping, CK::removing, removedAfter},
@@ -1225,6 +1314,7 @@ TEST_CASE("Every operation in every phase answers and moves as NodeOperations pr
 		{Spot::stoppingRemove, Op::fault, none, P::stopping, CK::removing, removedAfter},
 
 		{Spot::stopped, Op::change, none, P::stopping, CK::restarting, P::stopped},
+		{Spot::stopped, Op::changeInPlace, none, P::reconfiguring, {}, P::stopped},
 		{Spot::stopped, Op::stop, ok(A::unchanged), P::stopped, {}, P::stopped},
 		{Spot::stopped, Op::start, ok(A::start), P::starting, {}, P::running},
 		{Spot::stopped, Op::restart, ok(A::restart), P::stopping, CK::restarting, P::stopped},
@@ -1235,6 +1325,7 @@ TEST_CASE("Every operation in every phase answers and moves as NodeOperations pr
 		{Spot::stopped, Op::fault, none, P::failed, {}, P::failed},
 
 		{Spot::disabled, Op::change, none, P::disabled, {}, P::disabled},
+		{Spot::disabled, Op::changeInPlace, none, P::disabled, {}, P::disabled},
 		{Spot::disabled, Op::stop, no(C::nodeDisabled), P::disabled, {}, P::disabled},
 		{Spot::disabled, Op::start, no(C::nodeDisabled), P::disabled, {}, P::disabled},
 		{Spot::disabled, Op::restart, no(C::nodeDisabled), P::disabled, {}, P::disabled},
@@ -1245,6 +1336,7 @@ TEST_CASE("Every operation in every phase answers and moves as NodeOperations pr
 		{Spot::disabled, Op::fault, none, P::disabled, {}, P::disabled},
 
 		{Spot::failed, Op::change, none, P::configuring, CK::settings, P::running},
+		{Spot::failed, Op::changeInPlace, none, P::configuring, CK::settings, P::running},
 		{Spot::failed, Op::stop, ok(A::stop), P::failed, {}, P::failed},
 		{Spot::failed, Op::start, ok(A::retry), P::configuring, CK::retry, P::running},
 		{Spot::failed, Op::restart, ok(A::retry), P::configuring, CK::retry, P::running},
@@ -1255,6 +1347,7 @@ TEST_CASE("Every operation in every phase answers and moves as NodeOperations pr
 		{Spot::failed, Op::fault, none, P::failed, {}, P::failed},
 
 		{Spot::failedLost, Op::change, none, P::failed, {}, P::failed},
+		{Spot::failedLost, Op::changeInPlace, none, P::failed, {}, P::failed},
 		{Spot::failedLost, Op::stop, ok(A::stop), P::failed, {}, P::failed},
 		{Spot::failedLost, Op::start, no(C::notRestartable, R::blockLost), P::failed, {}, P::failed},
 		{Spot::failedLost, Op::restart, no(C::notRestartable, R::blockLost), P::failed, {}, P::failed},
@@ -1263,8 +1356,42 @@ TEST_CASE("Every operation in every phase answers and moves as NodeOperations pr
 		{Spot::failedLost, Op::remove, none, P::stopping, CK::removing, removedAfter},
 		{Spot::failedLost, Op::blockLost, none, P::failed, {}, P::failed},
 		{Spot::failedLost, Op::fault, none, P::failed, {}, P::failed},
+
+		{Spot::reconfiguringBeforeCommit, Op::change, none, P::stopping, CK::restarting, P::running},
+		{Spot::reconfiguringBeforeCommit, Op::changeInPlace, none, P::reconfiguring, {}, P::running},
+		{Spot::reconfiguringBeforeCommit, Op::stop, ok(A::stop), P::stopping, CK::stop, P::stopped},
+		{Spot::reconfiguringBeforeCommit, Op::start, ok(A::unchanged), P::reconfiguring, {}, P::running},
+		{Spot::reconfiguringBeforeCommit, Op::restart, ok(A::restart), P::stopping, CK::restarting, P::running},
+		{Spot::reconfiguringBeforeCommit, Op::disable, none, P::stopping, CK::disabling, P::disabled},
+		{Spot::reconfiguringBeforeCommit, Op::enable, none, P::reconfiguring, {}, P::running},
+		{Spot::reconfiguringBeforeCommit, Op::remove, none, P::stopping, CK::removing, removedAfter},
+		{Spot::reconfiguringBeforeCommit, Op::blockLost, none, P::failed, {}, P::failed},
+		{Spot::reconfiguringBeforeCommit, Op::fault, none, P::failed, {}, P::failed},
+
+		// After the commit point everything waits for the commit's invoke, then applies.
+		{Spot::reconfiguringCommitting, Op::change, none, P::reconfiguring, {}, P::running},
+		{Spot::reconfiguringCommitting, Op::changeInPlace, none, P::reconfiguring, {}, P::running},
+		{Spot::reconfiguringCommitting, Op::stop, ok(A::stop), P::reconfiguring, {}, P::stopped},
+		{Spot::reconfiguringCommitting, Op::start, ok(A::unchanged), P::reconfiguring, {}, P::running},
+		{Spot::reconfiguringCommitting, Op::restart, ok(A::restart), P::reconfiguring, {}, P::running},
+		{Spot::reconfiguringCommitting, Op::disable, none, P::reconfiguring, {}, P::disabled},
+		{Spot::reconfiguringCommitting, Op::enable, none, P::reconfiguring, {}, P::running},
+		{Spot::reconfiguringCommitting, Op::remove, none, P::stopping, CK::removing, removedAfter},
+		{Spot::reconfiguringCommitting, Op::blockLost, none, P::failed, {}, P::failed},
+		{Spot::reconfiguringCommitting, Op::fault, none, P::failed, {}, P::failed},
+
+		{Spot::reconfiguringFromStopped, Op::change, none, P::stopping, CK::restarting, P::stopped},
+		{Spot::reconfiguringFromStopped, Op::changeInPlace, none, P::reconfiguring, {}, P::stopped},
+		{Spot::reconfiguringFromStopped, Op::stop, ok(A::unchanged), P::reconfiguring, {}, P::stopped},
+		{Spot::reconfiguringFromStopped, Op::start, ok(A::start), P::reconfiguring, {}, P::running},
+		{Spot::reconfiguringFromStopped, Op::restart, ok(A::restart), P::stopping, CK::restarting, P::stopped},
+		{Spot::reconfiguringFromStopped, Op::disable, none, P::stopping, CK::disabling, P::disabled},
+		{Spot::reconfiguringFromStopped, Op::enable, none, P::reconfiguring, {}, P::stopped},
+		{Spot::reconfiguringFromStopped, Op::remove, none, P::stopping, CK::removing, removedAfter},
+		{Spot::reconfiguringFromStopped, Op::blockLost, none, P::failed, {}, P::failed},
+		{Spot::reconfiguringFromStopped, Op::fault, none, P::failed, {}, P::failed},
 	};
-	CHECK(rows.size() == 13 * 9);
+	CHECK(rows.size() == 16 * 10);
 	for (const Row& row : rows) {
 		INFO(spotName(row.spot) << ", " << opName(row.op));
 		Probe p = reach(row.spot);
@@ -1791,4 +1918,389 @@ TEST_CASE("Inputs after a node is removed change nothing", "[lifecycle][machines
 	CHECK(p.node.change({9, true}, {}).empty());
 	CHECK_FALSE(p.node.start().reply.has_value());
 	CHECK(p.node.start().reply.error().code == LifecycleRefusal::Code::unknownNode);
+}
+
+// ---- Changes in place (docs/architecture.md#changes-in-place) ----
+
+namespace {
+
+/// The told health whose phase is the one named, the last of them.
+std::optional<Health> toldLast(const Probe& p, NodePhase phase) {
+	std::optional<Health> found;
+	for (const Health& h : p.told)
+		if (h.phase == phase) found = h;
+	return found;
+}
+
+/// Every action asked that tears down or makes a configuration: none in a change in place.
+bool restarted(const Probe& p) { return p.did(K::configure) || p.did(K::teardown) || p.did(K::fade); }
+
+} // namespace
+
+TEST_CASE("A change in place from running ends running with the new version and no restart", "[lifecycle][machines]") {
+	Probe p = reach(Spot::running);
+	p.changeInPlace({"gain"});
+	CHECK(p.asked == std::vector<K>{K::reconfigure});
+	CHECK(p.phases() == std::vector<NodePhase>{NodePhase::reconfiguring});
+	CHECK(p.health().state == NodeState::reconfiguring);
+	CHECK(p.health().keys == std::vector<std::string>{"gain"});
+	CHECK_FALSE(p.health().cause.has_value());
+	CHECK(p.node.changing());
+	CHECK(p.node.changeVersion() == p.version);
+	p.take(p.node.changeReady());
+	CHECK(p.asked == std::vector<K>{K::reconfigure, K::commit});
+	CHECK(p.phase() == NodePhase::reconfiguring); // the commit's invoke is in flight
+	p.settle();
+	CHECK(p.phases() == std::vector<NodePhase>{NodePhase::reconfiguring, NodePhase::running});
+	CHECK_FALSE(restarted(p));
+	CHECK_FALSE(p.did(K::stop));
+	CHECK_FALSE(p.node.changing());
+	CHECK_FALSE(p.node.changePending());
+	CHECK(p.health().keys.empty());
+	// Nothing left to apply: a later input does not restart it.
+	p.clear();
+	p.take(p.node.blockReady());
+	CHECK(p.asked.empty());
+}
+
+TEST_CASE("A change in place from stopped ends stopped, needs no invoke, and does not restart on the next converge",
+          "[lifecycle][machines]") {
+	Probe p = reach(Spot::stopped);
+	const auto barrier = p.node.configuration().barrier();
+	p.changeInPlace({"gain"});
+	CHECK(p.phase() == NodePhase::reconfiguring);
+	p.take(p.node.changeReady());
+	CHECK(p.asked == std::vector<K>{K::reconfigure, K::commit});
+	CHECK(p.node.configuration().barrier() == barrier);
+	CHECK(p.phases() == std::vector<NodePhase>{NodePhase::reconfiguring, NodePhase::stopped});
+	CHECK_FALSE(p.node.changePending());
+	// The start drives the configuration as it is now, with no configure.
+	p.clear();
+	p.take(p.node.start());
+	p.settle();
+	CHECK(p.phase() == NodePhase::running);
+	CHECK_FALSE(p.did(K::configure));
+	CHECK(p.did(K::drive));
+}
+
+TEST_CASE("A node that has not rested takes a change in place as a restart, and a failed node as a retry",
+          "[lifecycle][machines]") {
+	using CK = NodeCause::Kind;
+	SECTION("configuring") {
+		Probe p = reach(Spot::configuring);
+		p.changeInPlace({"gain"});
+		CHECK(p.phase() == NodePhase::stopping);
+		REQUIRE(p.health().cause);
+		CHECK(p.health().cause->restart == CK::settings);
+		CHECK(p.health().cause->keys == std::vector<std::string>{"gain"});
+		CHECK_FALSE(p.did(K::reconfigure));
+	}
+	SECTION("starting, its first drive in flight") {
+		Probe p = reach(Spot::startingDrive);
+		p.changeInPlace({"gain"});
+		p.settle();
+		CHECK_FALSE(p.did(K::reconfigure));
+		CHECK(p.did(K::configure));
+		CHECK(p.phase() == NodePhase::running);
+	}
+	SECTION("failed") {
+		Probe p = reach(Spot::failed);
+		p.changeInPlace({"gain"});
+		CHECK(p.phase() == NodePhase::configuring);
+		CHECK(p.health().cause == NodeCause{CK::settings, std::nullopt, {"gain"}});
+		p.settle();
+		CHECK_FALSE(p.did(K::reconfigure));
+		CHECK(p.phase() == NodePhase::running);
+	}
+	SECTION("a loop judged wedged, where nothing could be committed") {
+		Probe p = reach(Spot::running);
+		p.take(p.node.dataLoopWedged());
+		p.changeInPlace({"gain"});
+		CHECK_FALSE(p.did(K::reconfigure));
+		CHECK(p.phase() == NodePhase::stopping);
+	}
+}
+
+TEST_CASE("A change in place waits for a drive or a stop in flight, then applies in place", "[lifecycle][machines]") {
+	SECTION("a start's drive in flight, after the node rested") {
+		Probe p = reach(Spot::stopped);
+		p.take(p.node.start());
+		REQUIRE(p.node.configuration().state() == ConfigState::arming);
+		p.changeInPlace({"gain"});
+		CHECK_FALSE(p.did(K::reconfigure));
+		CHECK(p.phase() == NodePhase::starting);
+		p.take(p.node.driven(p.node.configuration().barrier()));
+		CHECK(p.did(K::reconfigure));
+		p.settle();
+		CHECK(p.phase() == NodePhase::running);
+		CHECK_FALSE(restarted(p));
+	}
+	SECTION("a stop's fade: the change applies once it rested, while stopped") {
+		Probe p = reach(Spot::stoppingStop);
+		p.changeInPlace({"gain"});
+		CHECK_FALSE(p.did(K::reconfigure));
+		p.settle();
+		CHECK(p.did(K::reconfigure));
+		CHECK(p.did(K::commit));
+		CHECK_FALSE(p.did(K::configure));
+		CHECK(p.phase() == NodePhase::stopped);
+		CHECK_FALSE(p.node.changePending());
+	}
+	SECTION("a stop's fade, then a restart-only change too: the node restarts") {
+		Probe p = reach(Spot::stoppingStop);
+		p.changeInPlace({"gain"});
+		p.change({"size"});
+		p.settle();
+		CHECK_FALSE(p.did(K::reconfigure));
+		CHECK(p.did(K::configure));
+		CHECK(p.phase() == NodePhase::stopped);
+	}
+}
+
+TEST_CASE("Supersession: a newer change before the commit point calls the change version again with the newest keys",
+          "[lifecycle][machines]") {
+	using CK = NodeCause::Kind;
+	SECTION("in place") {
+		Probe p = reach(Spot::reconfiguringBeforeCommit);
+		p.changeInPlace({"level"});
+		CHECK(p.asked == std::vector<K>{K::dropChange, K::reconfigure});
+		CHECK(p.node.changeVersion() == p.version);
+		CHECK(p.health().keys == std::vector<std::string>{"gain", "level"});
+		REQUIRE(p.told.size() == 1); // a new reconfiguring, with the new keys
+		CHECK(p.told[0].keys == std::vector<std::string>{"gain", "level"});
+		p.settle();
+		CHECK(p.phase() == NodePhase::running);
+		CHECK_FALSE(p.node.changePending());
+		CHECK_FALSE(restarted(p));
+	}
+	SECTION("a newer restart-only change restarts with cause settings, naming every key not yet applied") {
+		Probe p = reach(Spot::reconfiguringBeforeCommit);
+		p.change({"size"});
+		CHECK(p.asked == std::vector<K>{K::dropChange, K::stop, K::fade});
+		CHECK(p.health().cause == NodeCause{CK::restarting, CK::settings, {"gain", "size"}});
+		p.settle();
+		CHECK(p.did(K::configure));
+		CHECK(p.phase() == NodePhase::running);
+		CHECK_FALSE(p.node.changePending());
+	}
+	SECTION("from stopped") {
+		Probe p = reach(Spot::reconfiguringFromStopped);
+		p.changeInPlace({"level"});
+		CHECK(p.asked == std::vector<K>{K::dropChange, K::reconfigure});
+		p.settle();
+		CHECK(p.phase() == NodePhase::stopped);
+	}
+}
+
+TEST_CASE("A newer change after the commit point waits for it, then applies (next)", "[lifecycle][machines]") {
+	using CK = NodeCause::Kind;
+	SECTION("in place: a fresh change once committed") {
+		Probe p = reach(Spot::reconfiguringCommitting);
+		p.changeInPlace({"level"});
+		CHECK(p.asked.empty());
+		CHECK(p.health().keys == std::vector<std::string>{"gain"});
+		CHECK(p.health().next == std::vector<std::string>{"level"});
+		REQUIRE(p.told.size() == 1);
+		CHECK(p.told[0].next == std::vector<std::string>{"level"});
+		p.take(p.node.committed(p.node.configuration().barrier()));
+		CHECK(p.asked == std::vector<K>{K::reconfigure});
+		CHECK(p.node.changeVersion() == p.version);
+		CHECK(p.health().keys == std::vector<std::string>{"level"});
+		CHECK(p.health().next.empty());
+		p.settle();
+		CHECK(p.phase() == NodePhase::running);
+		CHECK_FALSE(restarted(p));
+	}
+	SECTION("restart-only: a restart once committed, cause settings") {
+		Probe p = reach(Spot::reconfiguringCommitting);
+		p.change({"size"});
+		CHECK(p.asked.empty());
+		CHECK(p.health().next == std::vector<std::string>{"size"});
+		p.take(p.node.committed(p.node.configuration().barrier()));
+		CHECK(p.asked == std::vector<K>{K::stop, K::fade});
+		CHECK(p.health().cause == NodeCause{CK::restarting, CK::settings, {"size"}});
+		p.settle();
+		CHECK(p.phase() == NodePhase::running);
+	}
+	SECTION("an in-place change and then a restart-only one: the restart wins") {
+		Probe p = reach(Spot::reconfiguringCommitting);
+		p.changeInPlace({"level"});
+		p.change({"size"});
+		CHECK(p.health().next == std::vector<std::string>{"level", "size"});
+		p.take(p.node.committed(p.node.configuration().barrier()));
+		CHECK_FALSE(p.did(K::reconfigure));
+		CHECK(p.health().cause == NodeCause{CK::restarting, CK::settings, {"level", "size"}});
+	}
+}
+
+TEST_CASE("Stop, disable and remove during a change end it before the commit point and wait for it after",
+          "[lifecycle][machines]") {
+	using CK = NodeCause::Kind;
+	SECTION("a stop before the commit point ends the change and stops, then the change applies while stopped") {
+		Probe p = reach(Spot::reconfiguringBeforeCommit);
+		p.take(p.node.stop());
+		CHECK(p.asked == std::vector<K>{K::dropChange, K::stop, K::fade});
+		CHECK(p.health().cause == NodeCause{CK::stop, std::nullopt, {}});
+		p.settle();
+		CHECK(p.phase() == NodePhase::stopped);
+		CHECK(toldLast(p, NodePhase::reconfiguring)->keys == std::vector<std::string>{"gain"});
+		CHECK_FALSE(p.did(K::configure));
+		CHECK_FALSE(p.node.changePending());
+	}
+	SECTION("a stop after the commit point waits for it") {
+		Probe p = reach(Spot::reconfiguringCommitting);
+		p.take(p.node.stop());
+		CHECK(p.asked.empty());
+		CHECK(p.phase() == NodePhase::reconfiguring);
+		p.take(p.node.committed(p.node.configuration().barrier()));
+		CHECK(p.asked == std::vector<K>{K::stop, K::fade});
+		p.settle();
+		CHECK(p.phase() == NodePhase::stopped);
+		CHECK_FALSE(p.node.changePending());
+	}
+	SECTION("a disable before the commit point ends the change and disables") {
+		Probe p = reach(Spot::reconfiguringBeforeCommit);
+		p.take(p.node.disable());
+		CHECK(p.asked == std::vector<K>{K::dropChange, K::stop, K::fade});
+		p.settle();
+		CHECK(p.phase() == NodePhase::disabled);
+	}
+	SECTION("a disable after the commit point waits for it") {
+		Probe p = reach(Spot::reconfiguringCommitting);
+		p.take(p.node.disable());
+		CHECK(p.asked.empty());
+		p.take(p.node.committed(p.node.configuration().barrier()));
+		CHECK(p.asked == std::vector<K>{K::stop, K::fade});
+		p.settle();
+		CHECK(p.phase() == NodePhase::disabled);
+	}
+	SECTION("a removal before the commit point ends the change and removes") {
+		Probe p = reach(Spot::reconfiguringBeforeCommit);
+		p.take(p.node.remove());
+		CHECK(p.asked == std::vector<K>{K::dropChange, K::stop, K::fade});
+		p.settle();
+		CHECK(p.node.removed());
+	}
+	SECTION("a removal after the commit point waits for it, and its block is destroyed only once silenced") {
+		Probe p = reach(Spot::reconfiguringCommitting);
+		p.take(p.node.remove());
+		CHECK(p.asked.empty());
+		CHECK_FALSE(p.didBlock(BlockAction::destroy));
+		p.take(p.node.committed(p.node.configuration().barrier()));
+		CHECK(p.asked == std::vector<K>{K::stop, K::fade});
+		p.settle();
+		CHECK(p.didBlock(BlockAction::destroy));
+		CHECK(p.node.removed());
+	}
+	SECTION("a removal of a change from stopped destroys the block at once") {
+		Probe p = reach(Spot::reconfiguringFromStopped);
+		p.take(p.node.remove());
+		CHECK(p.asked == std::vector<K>{K::dropChange, K::release, K::teardown});
+		CHECK(p.didBlock(BlockAction::destroy));
+	}
+}
+
+TEST_CASE("A restart during a change falls back at once, or once the commit's invoke completed (restart-requested)",
+          "[lifecycle][machines]") {
+	using CK = NodeCause::Kind;
+	using FB = NodeCause::FellBack;
+	const NodeCause requested{CK::restarting, CK::fellBack, {"gain"}, FB::restartRequested, {}};
+	SECTION("before the commit point") {
+		Probe p = reach(Spot::reconfiguringBeforeCommit);
+		CHECK(replyName(p.take(p.node.restart())) == "restart");
+		CHECK(p.asked == std::vector<K>{K::dropChange, K::stop, K::fade});
+		CHECK(p.health().cause == requested);
+		p.settle();
+		CHECK(toldLast(p, NodePhase::configuring)->cause ==
+		      NodeCause{CK::fellBack, std::nullopt, {"gain"}, FB::restartRequested, {}});
+		CHECK(p.phase() == NodePhase::running);
+		CHECK_FALSE(p.node.changePending());
+	}
+	SECTION("after the commit point") {
+		Probe p = reach(Spot::reconfiguringCommitting);
+		CHECK(replyName(p.take(p.node.restart())) == "restart");
+		CHECK(p.asked.empty());
+		CHECK(replyName(p.take(p.node.restart())) == "unchanged");
+		p.take(p.node.committed(p.node.configuration().barrier()));
+		CHECK(p.asked == std::vector<K>{K::stop, K::fade});
+		CHECK(p.health().cause == requested);
+		p.settle();
+		CHECK(p.phase() == NodePhase::running);
+	}
+	SECTION("from stopped: torn down with no barrier, and configured again stopped") {
+		Probe p = reach(Spot::reconfiguringFromStopped);
+		p.take(p.node.restart());
+		CHECK(p.asked == std::vector<K>{K::dropChange, K::release, K::teardown});
+		p.settle();
+		CHECK(p.phase() == NodePhase::stopped);
+	}
+}
+
+TEST_CASE("A fallback for each reason restarts with the newest settings and cause fell-back", "[lifecycle][machines]") {
+	using CK = NodeCause::Kind;
+	using FB = NodeCause::FellBack;
+	for (FB reason :
+	     {FB::restartAsked, FB::deadline, FB::resourceRefused, FB::resourceLost, FB::failed, FB::restartRequested}) {
+		INFO(fellBackName(reason));
+		for (Spot spot : {Spot::reconfiguringBeforeCommit, Spot::reconfiguringFromStopped}) {
+			INFO(spotName(spot));
+			Probe p = reach(spot);
+			p.changeInPlace({"level"}); // superseded: the fallback names both keys
+			p.clear();
+			p.take(p.node.fellBack(reason, "the detail"));
+			CHECK(p.asked.front() == K::dropChange);
+			CHECK(p.health().cause == NodeCause{CK::restarting, CK::fellBack, {"gain", "level"}, reason, "the detail"});
+			p.settle();
+			CHECK(p.did(K::configure));
+			CHECK(toldLast(p, NodePhase::configuring)->cause ==
+			      NodeCause{CK::fellBack, std::nullopt, {"gain", "level"}, reason, "the detail"});
+			CHECK_FALSE(p.node.changePending()); // configured with the newest settings, never the old ones
+			CHECK(phaseName(p.phase()) ==
+			      phaseName(spot == Spot::reconfiguringFromStopped ? NodePhase::stopped : NodePhase::running));
+		}
+	}
+	SECTION("only a change before its commit point falls back") {
+		for (Spot spot : {Spot::running, Spot::stopped, Spot::reconfiguringCommitting}) {
+			INFO(spotName(spot));
+			Probe p = reach(spot);
+			CHECK(p.node.fellBack(FB::deadline, "late").empty());
+		}
+	}
+}
+
+TEST_CASE("A fault during a change fails the node, and the commit's invoke overdue marks the loop wedged",
+          "[lifecycle][machines]") {
+	SECTION("before the commit point: lost, the change dropped") {
+		Probe p = reach(Spot::reconfiguringBeforeCommit);
+		p.take(p.node.fault(Fact::nodeLost, "it died"));
+		CHECK(p.asked == std::vector<K>{K::dropChange, K::stop, K::fade});
+		CHECK(p.health().reason == Failure{FailureCode::lost, "it died"});
+		p.settle();
+		CHECK(p.phase() == NodePhase::failed);
+	}
+	SECTION("after the commit point: failed at once, torn down once the invoke completed") {
+		Probe p = reach(Spot::reconfiguringCommitting);
+		p.take(p.node.fault(Fact::engine, "receiver gone"));
+		CHECK(p.asked.empty());
+		CHECK(p.phase() == NodePhase::failed);
+		p.take(p.node.committed(p.node.configuration().barrier()));
+		CHECK(p.asked == std::vector<K>{K::stop, K::fade});
+		p.settle();
+		CHECK(p.health().reason == Failure{FailureCode::engineRefused, "receiver gone"});
+	}
+	SECTION("the commit's invoke overdue") {
+		Probe p = reach(Spot::reconfiguringCommitting);
+		p.take(p.node.barrierBound());
+		CHECK(p.asked == std::vector<K>{K::barrierOverdue, K::markWedged, K::leak});
+		CHECK(p.health().reason == Failure{FailureCode::engineRefused, std::string(wedgedDetail)});
+		CHECK(p.node.configuration().state() == ConfigState::none);
+	}
+	SECTION("the block lost while committing: silenced with no stop(), failed for good") {
+		Probe p = reach(Spot::reconfiguringCommitting);
+		p.take(p.node.blockLost("unplugged"));
+		CHECK(p.asked == std::vector<K>{K::silence});
+		p.settle();
+		CHECK(p.phase() == NodePhase::failed);
+		CHECK(p.health().blockLost);
+	}
 }

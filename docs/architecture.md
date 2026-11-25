@@ -513,6 +513,7 @@ standard output show.
 | `stopped` | `stopped` | Silent, keeping its configuration |
 | `disabled` | `disabled` | Silent, with no configuration |
 | `failed` | `failed` | Torn down after a failure; `reason` says why |
+| `reconfiguring` | `reconfiguring` | Applying new settings in place, from `running` or `stopped`, without a restart ([changes in place](#changes-in-place)); nothing asks for one yet |
 
 `added`, `configured` and `starting` normally last milliseconds. **What the graph wants** of a
 node (`wanted`) is `disabled` when its block in `ear.conf` says `disabled true;`, else `stopped`
@@ -545,7 +546,9 @@ node are removed and added again. A change to a disabled node is stored for when
 
 A change in place applies new settings to a node's configuration without tearing it down. The
 pure machines carry it; nothing in ear asks for one yet (NodeHost and the change version of
-`configure` follow, so today every change still restarts as above).
+`configure` follow, so today every change still restarts as above). The node shows
+`reconfiguring`, with `keys` (the keys the change applies) and `next` (keys changed since its
+commit point, which it takes once the change ends).
 
 The configuration machine has two states for it. **`changing`** begins from `driving`, or from
 `prepared` once the configuration has rested (a change before it first rested is not taken):
@@ -560,6 +563,37 @@ cannot be recalled: a stop, a teardown or a newer change waits for its completio
 to `driving`. Only the block's loss (a silence, as from `driving`) and the invoke's 5 s bound
 (the data loop wedged, the configuration leaked, as for a drive) move the configuration before
 it completes.
+
+The node aggregate decides when a change of settings is taken in place, and what arrives during
+one:
+
+- **Who takes it.** A change the plan says can be made in place is taken in place only by a node
+  that has rested (reached `running` or `stopped` once), with no stop, restart, disable, removal
+  or failure in flight and the data loop not wedged; from `running` or `stopped` at once, and
+  after a start's drive or a stop in flight once it ends. Any other node takes it as a
+  restart-only change: one that has not yet rested restarts (nothing has started, so nothing is
+  gained), a failed one retries, a disabled one stores it, all with cause `settings` as above.
+  Changes that wait together are made in place only if every one of them could be.
+- **The applied settings** become the change's only at the commit point, so a change that ends
+  any other way leaves its keys to apply.
+- **Before the commit point** a newer change in place supersedes the one in flight: the change
+  version is called again with the newest settings and every key not yet applied. A newer
+  restart-only change restarts the node (cause `settings`, naming those keys). A stop ends the
+  change and stops; once stopped, the change is made in place from there. A disable or a
+  removal ends the change and goes on as from `running` or `stopped`. `node.restart` falls back
+  at once.
+- **After the commit point** (the commit's invoke in flight) a newer change, a stop, a disable, a
+  removal, a fault's teardown or `node.restart` waits for the invoke, then applies: a newer change
+  is a fresh change (in place, or a restart if any key of it must restart), a restart falls back.
+  A fault shows `failed` at once.
+- **The fallback.** A change that cannot finish restarts the node with the newest settings, never
+  the old ones, which `ear.conf` no longer holds: `stopping` with cause `restarting`, its own
+  kind `fell-back`, the change's keys, a `reason` and a `detail`, then `configuring` with that
+  cause. The reasons: `restart-asked` (the change version answered restart), `deadline`,
+  `resource-refused` and `resource-lost` (a replacement refused, or lost before the commit
+  point), `failed` (the change version failed), `restart-requested` (`node.restart`).
+- **A fault** during a change (a kept resource lost, the block lost, a hook that threw) fails the
+  node as in any other phase; it is not a fallback.
 
 ### Failures
 
