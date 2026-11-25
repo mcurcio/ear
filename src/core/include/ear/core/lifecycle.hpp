@@ -1099,7 +1099,9 @@ template <const auto& Spec, class Type> class SpecNodeType final : public NodeTy
 	              "a type's reconfigureDeadline is 1 s to 60 s");
 
 public:
-	SpecNodeType() noexcept : NodeType(Spec.settings, StoresOf<Spec>::declared, Spec.lifecycle.reconfigureDeadline) {}
+	SpecNodeType() noexcept
+		: NodeType(Spec.settings, StoresOf<Spec>::declared, Spec.lifecycle.reconfigureDeadline,
+	               BanksOf<Spec>::declared) {}
 
 private:
 	/// The table's walk passed: the class's check, a rule across settings, then the config.

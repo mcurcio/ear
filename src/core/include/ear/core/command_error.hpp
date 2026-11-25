@@ -7,10 +7,17 @@ namespace ear {
 struct UnknownNodeType {
 	std::string type;
 };
+/// Settings a node's type refuses. `detail` is the refusal's whole text (describe's); `key` the full key it names when
+/// the settings walk refused one, empty for a rule naming none (the type's check, settings that are not an object):
+/// data.key on the wire (docs/control-port.md#error-codes).
 struct InvalidSettings {
 	NodeName node;
 	std::string detail;
+	std::string key = {};
 };
+/// The refusal in its own words: `detail` without the "<key>: " it starts with when it names a key (data.detail on
+/// the wire, docs/control-port.md#error-codes), else the whole detail.
+std::string_view refusalWords(const InvalidSettings& error) noexcept;
 struct DuplicateNode {
 	NodeName node;
 }; // name in use with different settings

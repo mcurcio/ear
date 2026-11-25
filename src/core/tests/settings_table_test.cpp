@@ -3,6 +3,8 @@
 // must not compile is compile_fail/settings_table_bad.cpp's.
 #include "ear/core/settings_table.hpp"
 
+#include <array>
+#include <chrono>
 #include <concepts>
 #include <cstdint>
 #include <expected>
@@ -374,4 +376,93 @@ TEST_CASE("A row is restart-only unless marked inPlace", "[settings_table][inPla
 	STATIC_REQUIRE_FALSE(inPlaceTable.changesInPlace("fixed"));
 	STATIC_REQUIRE(inPlaceTable.changesInPlace("moving"));
 	STATIC_REQUIRE_FALSE(inPlaceTable.changesInPlace("unknown"));
+}
+
+namespace settings_table_test_schema {
+inline constexpr std::array<std::string_view, 2> sizes{"small", "large"};
+std::optional<std::string> isSize(std::string_view text) {
+	if (text != "small" && text != "large") return std::nullopt;
+	return std::string(text);
+}
+constexpr auto countRow = setting::defaulted("count", setting::number(1, 8, "channels"), 2).shapesPorts();
+constexpr auto sizeRow =
+	setting::optional("size", setting::text<isSize>(R"("small" or "large")", {.values = sizes, .maxLength = 5}))
+		.inPlace();
+constexpr auto labelRow = setting::optional("label", setting::text<isSize>("a label", {.pattern = "^[a-z]+$"}))
+                              .defaultFrom(setting::DefaultFrom::nodeName)
+                              .inPlace()
+                              .shapesPorts();
+constexpr auto in = ear::bank::input<"in">;
+constexpr auto inside = ear::bank::insideOutput<"inside">;
+constexpr ear::TypeSpec schemaSpec{.settings = ear::SettingsTable<countRow, sizeRow, labelRow>{"schemed"},
+                                   .banks = ear::Banks<in, inside>{},
+                                   .lifecycle = {.reconfigureDeadline = std::chrono::seconds(3)}};
+struct Schemed {
+	static ear::Members<schemaSpec> ports(const ear::CheckedOf<schemaSpec>& s) {
+		return {in(ear::members(s.get<countRow>())), inside(ear::members(1))};
+	}
+	ear::Configured configure(ear::CreateOf<schemaSpec>&, const ear::CheckedOf<schemaSpec>&) {
+		return ear::Configured::failed("not started in these tests");
+	}
+	ear::Changed configure(ear::ChangeOf<schemaSpec>&, const ear::CheckedOf<schemaSpec>&,
+	                       const ear::CheckedOf<schemaSpec>&) {
+		return ear::Changed::restart("not changed in these tests");
+	}
+};
+} // namespace settings_table_test_schema
+
+TEST_CASE("The marks for the type schema keep each other and the row's own", "[settings-table][schema]") {
+	using namespace settings_table_test_schema;
+	STATIC_REQUIRE(countRow.row().shapesPorts);
+	STATIC_REQUIRE(countRow.row().byDefault == 2u);
+	STATIC_REQUIRE_FALSE(countRow.row().defaultFrom.has_value());
+	STATIC_REQUIRE_FALSE(sizeRow.row().shapesPorts);
+	STATIC_REQUIRE(labelRow.row().defaultFrom == setting::DefaultFrom::nodeName);
+	STATIC_REQUIRE(labelRow.row().inPlace);
+	STATIC_REQUIRE(labelRow.row().shapesPorts);
+	constexpr const auto& hints = std::get<ear::TextRule>(sizeRow.row().rule).hints;
+	STATIC_REQUIRE(hints.values.size() == 2);
+	STATIC_REQUIRE(hints.values[1] == "large");
+	STATIC_REQUIRE(hints.maxLength == 5);
+	STATIC_REQUIRE(hints.pattern.empty());
+	STATIC_REQUIRE(std::get<ear::TextRule>(labelRow.row().rule).hints.pattern == "^[a-z]+$");
+	STATIC_REQUIRE(std::get<ear::TextRule>(nameRow.row().rule).hints.values.empty()); // no hints: none given
+}
+
+TEST_CASE("A type's schema is its table's rows, its spec's banks and its deadline", "[settings-table][schema]") {
+	using namespace settings_table_test_schema;
+	const auto type = ear::makeNodeType<schemaSpec, Schemed>();
+	const ear::TypeSchema schema = type->schema();
+	CHECK(schema.name == "schemed");
+	REQUIRE(schema.settings.size() == 3);
+	CHECK(schema.settings[0] == &countRow.row());
+	CHECK(schema.settings[2]->key == "label");
+	REQUIRE(schema.banks.size() == 2);
+	CHECK(schema.banks[0].name == "in");
+	CHECK(schema.banks[0].direction == ear::Direction::input);
+	CHECK(schema.banks[0].reach == ear::PortBank::Reach::routable);
+	CHECK(schema.banks[1].name == "inside");
+	CHECK(schema.banks[1].reach == ear::PortBank::Reach::inside);
+	CHECK(schema.reconfigureDeadline == std::chrono::seconds(3));
+	CHECK(type->schema().settings.data() == schema.settings.data()); // the same every call
+}
+
+TEST_CASE("A refusal of the walk names its key, and one of the type's check names none", "[settings-table][schema]") {
+	checked = 0;
+	refuse = false;
+	const auto type = ear::makeNodeType<countingSpec, Counting>();
+	const auto keyOf = [&](const NodeSettings& settings) {
+		const auto parsed = type->parse("node", settings);
+		REQUIRE_FALSE(parsed.has_value());
+		return std::pair{parsed.error().key, std::string(ear::refusalWords(parsed.error()))};
+	};
+	CHECK(keyOf({{"plain", 99}}) == std::pair<std::string, std::string>{"plain", "must be a whole number, 1-10"});
+	CHECK(keyOf({{"measured", "x"}}) ==
+	      std::pair<std::string, std::string>{"measured", "must be a whole number of Hz, 2-20"});
+	CHECK(keyOf({{"unknown", 1}}) == std::pair<std::string, std::string>{"unknown", "unknown key unknown"});
+	CHECK(keyOf(NodeSettings::array()).first.empty());
+	refuse = true;
+	const auto byCheck = keyOf({{"plain", 3}});
+	refuse = false;
+	CHECK(byCheck == std::pair<std::string, std::string>{"", "check says no to 3"});
 }

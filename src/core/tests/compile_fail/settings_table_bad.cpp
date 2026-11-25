@@ -2,6 +2,7 @@
 // case, each with the reason it must be refused). With no case defined this is the control, and it must compile: what
 // the cases break is only what they name.
 #include <any>
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -75,6 +76,26 @@ constexpr auto bad = setting::number(1, 2, "units", "what it must be");
 
 #ifdef EAR_CASE_default_outside_range
 constexpr auto bad = setting::defaulted("k", setting::number(1, 2), 3);
+#endif
+
+// defaultFrom says where an absent value comes from: a required or defaulted row is never absent.
+#ifdef EAR_CASE_default_from_on_required
+constexpr auto bad = setting::required("r", setting::number(1, 2)).defaultFrom(setting::DefaultFrom::nodeName);
+#endif
+
+#ifdef EAR_CASE_default_from_on_defaulted
+constexpr auto bad =
+	setting::defaulted("d", setting::number(1, 2), 1).defaultFrom(setting::DefaultFrom::graphFrequency);
+#endif
+
+#ifdef EAR_CASE_help_empty
+constexpr auto bad = setting::optional("h", setting::number(1, 2)).help("");
+#endif
+
+// A select offering "" offers a value no text row's mustBe names.
+#ifdef EAR_CASE_text_hint_empty_value
+inline constexpr std::array<std::string_view, 2> withEmpty{"a", ""};
+constexpr auto bad = setting::text<anyText>("anything", {.values = withEmpty});
 #endif
 
 #ifdef EAR_CASE_default_on_text

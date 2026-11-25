@@ -28,6 +28,13 @@ struct PortBank {
 	std::vector<std::string> members;
 	Reach reach = Reach::routable;
 };
+/// One bank as a type's spec declares it (Banks, type_spec.hpp), before any node gives it members: what the type schema
+/// names (docs/writing-a-node-type.md#the-type-schema).
+struct BankDeclaration {
+	std::string_view name;
+	Direction direction;
+	PortBank::Reach reach;
+};
 /// A port's whole name, the one place it is made: "<bank>.<member>", each part 1 or more of [A-Za-z0-9_-]. Throws
 /// std::logic_error otherwise: a type bug, not a user error.
 PortName portName(std::string_view bank, std::string_view member);
@@ -229,6 +236,16 @@ struct SettingDeclaration {
 	SettingKind kind;
 };
 class AnySettingsTable; // settings_table.hpp
+struct SettingRow;      // settings_table.hpp
+/// What a type declares, as the control port's types.get says it (docs/writing-a-node-type.md#the-type-schema): its name, its
+/// setting rows in the walk's order, its banks in declaration order and its in-place deadline. Every member views
+/// static storage (the type's spec), so a schema outlives nothing.
+struct TypeSchema {
+	std::string_view name;
+	std::span<const SettingRow* const> settings;
+	std::span<const BankDeclaration> banks;
+	std::chrono::milliseconds reconfigureDeadline;
+};
 namespace spec_detail {
 template <const auto& Spec, class Type> class SpecNodeType; // lifecycle.hpp
 } // namespace spec_detail
@@ -258,15 +275,19 @@ public:
 	/// How long a change in place may take before it falls back to a restart (the spec's `.lifecycle`:
 	/// docs/architecture.md#changes-in-place).
 	std::chrono::milliseconds reconfigureDeadline() const noexcept { return reconfigureDeadline_; }
+	/// The type's schema, from its spec's table and banks: the same every call; pure.
+	TypeSchema schema() const noexcept;
 
 private:
 	template <const auto& Spec, class Type> friend class spec_detail::SpecNodeType; // nothing else can derive
 	explicit NodeType(const AnySettingsTable& table, std::span<const StoreDeclaration> stores = {},
-	                  std::chrono::milliseconds reconfigureDeadline = std::chrono::seconds(10)) noexcept;
+	                  std::chrono::milliseconds reconfigureDeadline = std::chrono::seconds(10),
+	                  std::span<const BankDeclaration> banks = {}) noexcept;
 	/// The one customisation point. Called only with what the table's walk made.
 	virtual MadeConfig makeConfig(const NodeName& node, CheckedSettings settings) const = 0;
 	const AnySettingsTable* table_;            // static storage: the spec's table
 	std::span<const StoreDeclaration> stores_; // static storage: the spec's Stores::declared
 	std::chrono::milliseconds reconfigureDeadline_;
+	std::span<const BankDeclaration> banks_; // static storage: the spec's Banks::declared
 };
 } // namespace ear

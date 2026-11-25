@@ -132,13 +132,8 @@ struct Banks {
 		constexpr std::array<bool, count> same{std::same_as<Handle, std::remove_cvref_t<decltype(Handles)>>...};
 		return static_cast<std::size_t>(std::ranges::find(same, true) - same.begin());
 	}();
-	struct Declared {
-		std::string_view name;
-		Direction direction;
-		PortBank::Reach reach;
-	};
-	static constexpr std::array<Declared, count> declared{
-		Declared{decltype(Handles)::name, decltype(Handles)::direction, decltype(Handles)::reach}...};
+	static constexpr std::array<BankDeclaration, count> declared{
+		BankDeclaration{decltype(Handles)::name, decltype(Handles)::direction, decltype(Handles)::reach}...};
 };
 template <class T> inline constexpr bool isBanks = false;
 template <auto... Handles> inline constexpr bool isBanks<Banks<Handles...>> = true;

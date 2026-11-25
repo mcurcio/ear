@@ -104,6 +104,23 @@ inline constexpr auto portRow = setting::optional("port", setting::number(1, 655
   ([architecture.md](architecture.md#restarts-and-changes-of-settings)). A key whose value builds
   the node's ports (a channel count) need not be marked: a change of ports is a reshape, in place only
   when every changed key is marked ([architecture.md](architecture.md#reshapes)).
+- `.shapesPorts()` marks a key whose value may change the node's ports (`card`'s `playback` and
+  `capture`, `rtp`'s `channels`). The plan never reads it (it compares the ports themselves); the
+  all-type tests hold it to the type's `ports()` both ways: a row that changes the ports for a value
+  they try must be marked, and a marked row must change them for one ([below](#what-every-type-must-also-pass)).
+- `.defaultFrom(setting::DefaultFrom::graphFrequency)` or `(...::nodeName)` says where an optional
+  row's value comes from when `ear.conf` gives none (`rtp`'s `rate` the graph's frequency; `sendspin`'s
+  and `airplay`'s `name` the node's name). It is documentation for controls: the type's code still
+  reads the row as absent and applies the default itself. On a required or defaulted row it does not
+  compile.
+- `setting::text<Parse>(mustBe, {.values, .pattern, .maxLength})` gives a text row hints for
+  controls: every value it takes (a select: `rtp`'s `format`), an ECMAScript pattern every good value
+  matches, its most bytes. They are hints: `Parse` stays the judge. The all-type tests check that
+  each offered value parses and that every valid setting they hold matches the pattern and fits. An
+  empty value among `values` does not compile.
+- `.help("<one line>")` is what a control shows beside the row: what an absent optional row means
+  when it has neither a default nor `defaultFrom` (`sendspin`'s `server`: "absent: ear listens on port
+  for the server to dial it"), which the all-type tests require, or anything `mustBe` does not say.
 - Each key once; `disabled` (the framework's key) cannot be declared; a table's name must be its
   folder's. Each is a compile error.
 - The table is `SettingsTable<row1, row2, ...>{"<type>"}` (`SettingsTable<>{"white"}` for none).
@@ -111,6 +128,18 @@ inline constexpr auto portRow = setting::optional("port", setting::number(1, 655
   `ear.conf` is read and written) and the whole check, so the graph file reader cannot disagree with `parse`.
 - A parsed value is parsed once: a text row reads as what its parse function made (a `CardId`, an
   `RtpAddress`, a path).
+
+### The type schema
+
+`NodeType::schema()` is the type as the control port describes it: its name, its rows in the walk's
+order (each with its key, rule, required, default, `onlyWithout` and the marks above), its banks in
+declaration order and its in-place deadline (`.lifecycle`). Everything in it views the spec's static
+storage, so it is the same every call. Nothing but the table and the spec makes it: a type writes no
+schema of its own.
+
+A refusal of the walk names its key (`InvalidSettings::key`: `port` for `port: must be a whole
+number, 1-65535`, the unknown key for `unknown key colour`); a refusal of the type's `check` or
+`ports` names none, since a rule across settings has no one key.
 
 ### Banks: the ports
 
@@ -1339,6 +1368,12 @@ harness's own record, its cycles, cut cycles and stalls.
   type whose loops start a network library (`sendspin`) is run with no network.
 - **Refusals.** Add a test case to `test/nodes/settings_refusals_test.cpp` giving each refusal's
   exact text and which of several problems is told first.
+- **The schema.** The same valid settings hold the type's schema to the type
+  (`test/nodes/node_types_test.cpp`): each row is changed alone to its range's ends and middle, its
+  offered values, the value every other valid object gives it, and absence; a change that changes
+  the public ports needs `.shapesPorts()` on the row, and a marked row must change them once. The
+  routable banks are the ones `ports()` makes, the text hints hold, and every optional row without a
+  default has `defaultFrom` or `help` ([above](#settings-one-table-of-typed-rows)).
 
 ### Removing a type
 

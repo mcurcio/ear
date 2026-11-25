@@ -25,6 +25,21 @@
 #include "ear/core/node_type.hpp"
 #include "ear/core/sample_rate.hpp"
 namespace ear {
+namespace setting {
+/// Where an optional row's value comes from when ear.conf does not give it (Row::defaultFrom): the graph's frequency
+/// (an rtp node's sender rate), or the node's own name (a speaker's name). Documentation for controls and the type
+/// schema (docs/writing-a-node-type.md#the-type-schema); the type's code still reads the row as absent and applies it.
+enum class DefaultFrom { graphFrequency, nodeName };
+/// What a control may offer for a text row (docs/writing-a-node-type.md#the-type-schema): the whole set of values it takes
+/// (`values`, a select), an ECMAScript pattern every good value matches (`pattern`), and the most bytes a good value
+/// has (`maxLength`, 0 for none). Hints only: the row's parse function stays the judge, and the all-type tests hold
+/// each hint to it (every value parses; every valid setting matches the pattern and fits).
+struct TextHints {
+	std::span<const std::string_view> values = {};
+	std::string_view pattern = {};
+	std::uint32_t maxLength = 0;
+};
+} // namespace setting
 /// One whole-number rule. A good value is a JSON integer (a float, a bool and a string are not) in [low, high]; an integer
 /// above INT64_MAX is above every range. Otherwise "<key>: must be a whole number[ of <unit>], <low>-<high>".
 struct WholeNumberRule {
@@ -44,6 +59,7 @@ struct RateRule {
 struct TextRule {
 	std::string_view mustBe;
 	std::any (*read)(std::string_view text);
+	setting::TextHints hints = {};
 };
 /// One boolean rule. A good value is JSON true or false (not a string, a number or null); in ear.conf it is the bare word
 /// true or false. Otherwise "<key>: must be true or false".
@@ -56,9 +72,12 @@ struct SettingRow {
 	std::string_view key;
 	bool required; // absent: "<key>: missing"
 	SettingRule rule;
-	std::optional<std::uint32_t> byDefault = {}; // what the row reads when absent
-	std::string_view onlyWithout = {};           // Row::onlyWithout's
-	bool inPlace = false;                        // Row::inPlace's: a change to it may apply in place
+	std::optional<std::uint32_t> byDefault = {};          // what the row reads when absent
+	std::string_view onlyWithout = {};                    // Row::onlyWithout's
+	bool inPlace = false;                                 // Row::inPlace's: a change to it may apply in place
+	std::optional<setting::DefaultFrom> defaultFrom = {}; // Row::defaultFrom's: where an absent value comes from
+	bool shapesPorts = false;                             // Row::shapesPorts's: a change to it may change the ports
+	std::string_view help = {};                           // Row::help's: one line for controls
 };
 
 namespace setting {
@@ -81,10 +100,11 @@ consteval Rule<std::uint32_t> number(std::uint32_t low, std::uint32_t high, std:
 consteval Rule<SampleRate> rate(SampleRate low, SampleRate high);
 /// JSON true or false, read as bool: the bare word true or false in ear.conf.
 consteval Rule<bool> boolean();
-/// Parse: std::optional<T>(std::string_view), T not a view. T is what the row reads. An empty mustBe does not compile.
+/// Parse: std::optional<T>(std::string_view), T not a view. T is what the row reads. An empty mustBe does not compile,
+/// nor an empty value among the hints' `values`.
 template <auto Parse>
 	requires TextParser<Parse>
-consteval Rule<ParsedBy<Parse>> text(std::string_view mustBe);
+consteval Rule<ParsedBy<Parse>> text(std::string_view mustBe, TextHints hints = {});
 
 /// A checked rule whose value reads as T. Only number, rate, boolean and text make one, so T is always what the rule's
 /// reader gives.
@@ -100,7 +120,7 @@ private:
 	friend consteval Rule<bool> boolean();
 	template <auto Parse>
 		requires TextParser<Parse>
-	friend consteval Rule<ParsedBy<Parse>> text(std::string_view mustBe);
+	friend consteval Rule<ParsedBy<Parse>> text(std::string_view mustBe, TextHints hints);
 	SettingRule rule_;
 };
 
@@ -126,6 +146,31 @@ public:
 	consteval Row inPlace() const {
 		Row marked = *this;
 		marked.row_.inPlace = true;
+		return marked;
+	}
+	/// A change to this key may change the node's ports: the type schema's `shapes` (docs/writing-a-node-type.md#the-type-schema),
+	/// the editor's "changes the ports". The plan never reads it (it compares the ports before and after:
+	/// docs/architecture.md#reshapes); the all-type tests hold it to the type's ports(), both ways.
+	consteval Row shapesPorts() const {
+		Row marked = *this;
+		marked.row_.shapesPorts = true;
+		return marked;
+	}
+	/// Where this optional row's value comes from when it is absent, for controls and the type schema
+	/// (docs/writing-a-node-type.md#the-type-schema): the type's code still applies it. A required or defaulted row always reads
+	/// a value, so marking one does not compile.
+	/// One line a control shows beside the row (docs/writing-a-node-type.md#the-type-schema): what an absent optional
+	/// row means when it has neither a default nor defaultFrom, or anything mustBe does not say. Empty does not compile.
+	consteval Row help(std::string_view line) const {
+		if (line.empty()) throw "a row's help is a line, never empty";
+		Row marked = *this;
+		marked.row_.help = line;
+		return marked;
+	}
+	consteval Row defaultFrom(DefaultFrom from) const {
+		if (Always) throw "only an optional row takes defaultFrom: a required or defaulted row always reads a value";
+		Row marked = *this;
+		marked.row_.defaultFrom = from;
 		return marked;
 	}
 
@@ -166,9 +211,11 @@ consteval Rule<SampleRate> rate(SampleRate low, SampleRate high) {
 consteval Rule<bool> boolean() { return Rule<bool>(BooleanRule{}); }
 template <auto Parse>
 	requires TextParser<Parse>
-consteval Rule<ParsedBy<Parse>> text(std::string_view mustBe) {
+consteval Rule<ParsedBy<Parse>> text(std::string_view mustBe, TextHints hints) {
 	if (mustBe.empty()) throw "a text setting needs what it must be";
-	return Rule<ParsedBy<Parse>>(TextRule{mustBe, &readParsed<Parse>});
+	for (const std::string_view value : hints.values)
+		if (value.empty()) throw "a text setting's values are never empty";
+	return Rule<ParsedBy<Parse>>(TextRule{mustBe, &readParsed<Parse>, hints});
 }
 template <class V> consteval Row<V, true> required(std::string_view key, Rule<V> rule) {
 	return Row<V, true>(key, true, rule.held());
@@ -226,6 +273,8 @@ public:
 	constexpr std::string_view name() const noexcept { return name_; }
 	/// NodeType::settingKinds(): every key, each once, in row order; the same span every call.
 	constexpr std::span<const SettingDeclaration> kinds() const noexcept { return kinds_; }
+	/// Every row, in the walk's order: what the type schema is made from (NodeType::schema).
+	constexpr std::span<const SettingRow* const> rows() const noexcept { return rows_; }
 	/// Whether the row of `key` is marked inPlace (Row::inPlace); false for a key the table lacks.
 	constexpr bool changesInPlace(std::string_view key) const noexcept {
 		for (const SettingRow* row : rows_)
@@ -256,7 +305,13 @@ protected:
 	///    " (<name> takes no settings)".
 	/// 3. Each row in order: absent (next row, or missing when required), then onlyWithout, then the kind and the range
 	///    or meaning.
-	std::expected<CheckedSettings, std::string> walk(const NodeSettings& settings) const;
+	/// A refusal's text, and the key it names (empty for "settings: must be an object"): InvalidSettings's `key`
+	/// (docs/control-port.md#error-codes).
+	struct Refusal {
+		std::string text;
+		std::string key;
+	};
+	std::expected<CheckedSettings, Refusal> walk(const NodeSettings& settings) const;
 
 private:
 	friend class NodeType;
@@ -302,7 +357,7 @@ public:
 	/// The walk with no node type around it, for tests; production goes through NodeType::parse.
 	std::expected<Checked, std::string> check(const NodeSettings& settings) const {
 		auto walked = walk(settings);
-		if (!walked) return std::unexpected(std::move(walked.error()));
+		if (!walked) return std::unexpected(std::move(walked.error().text));
 		return Checked(std::move(*walked));
 	}
 
