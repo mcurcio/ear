@@ -72,7 +72,7 @@ snapshots include every edit the batch made.
 
 ## Protocol and features
 
-`graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions", "node-text", "reshape"]`. An absent `protocol` is 0 (the
+`graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun"]`. An absent `protocol` is 0 (the
 wire before the lifecycle). The number moves only on a breaking change: removing or renaming a
 method, notification, member or code, changing a member's type, or changing an order guarantee.
 Additive growth is a new **feature** name.
@@ -87,7 +87,8 @@ Additive growth is a new **feature** name.
   `node.setText`, `node.addText`, and the diagnostic codes `ear/not-one-node` and `ear/node-renamed`
   ([below](#a-nodes-own-text)). `reshape` adds `applied: "reshape"`, `node.updated`'s `ports`,
   `inputs`, `outputs` and `inPlace`, the cause kind `reshape`, `node.update`'s `dropRoutes` and the code
-  `ports-in-use` ([below](#changes-of-ports)).
+  `ports-in-use` ([below](#changes-of-ports)). `node.set` adds `node.set`, and `dryRun` its `dryRun`
+  ([below](#nodeset-and-dry-runs)).
 - **Every enum is open.** `state`, `phase`, `cause.kind`, `waitingFor`'s `kind`, a route's `status`,
   `reason.code`, `applied`, `severity`, a companion's `kind` and every code may gain values, and the counters' names
   are an open set. Draw a value you do not know
@@ -104,7 +105,7 @@ Additive growth is a new **feature** name.
 `graph.get` and `graph.subscribe` answer with the Graph (`test/protocol/snapshot.json`):
 
 ```json
-{"protocol": 1, "features": ["lifecycle", "counters", "companions", "node-text", "reshape"],
+{"protocol": 1, "features": ["lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun"],
  "graphFrequency": 48000, "blockSize": 256, "realtime": true, "scheduling": "SCHED_FIFO 88",
  "types": ["card", "file", "white"],
  "counters": {"cycles": 18750, "cutCycles": 39, "stalls": 1, "lostMs": 208},
@@ -168,6 +169,7 @@ three or four `node.state`s within milliseconds.
 | `levels.subscribe` | none | `{"windowsPerSecond": 30}`; then `levels` notifications | none |
 | `node.add` | `{"name", "type", "settings"?, "disabled"?}` | `{}` | `invalid-name`, `unknown-node-type`, `invalid-settings`, `duplicate-node`, `file-invalid`, `invalid-text`, `stopping` |
 | `node.update` | `{"name", "settings", "dropRoutes"?}`: the node's whole new settings; `dropRoutes` (feature `reshape`) removes the routes its new ports strand ([below](#changes-of-ports)) | `{}` | `unknown-node`, `invalid-settings`, `shared-definition`, `file-invalid`, `invalid-text`, `ports-in-use`, `stopping` |
+| `node.set` | `{"name", "settings", "dryRun"?, "dropRoutes"?}` (feature `node.set`; `dryRun`, feature `dryRun`): `settings` merged into the node's ([below](#nodeset-and-dry-runs)) | `{"applied"}`, and when its ports change `inPlace` (a reshape's), `ports` and `routesDropped` (a dry run: `routes`) | `unknown-node`, `invalid-settings`, `shared-definition`, `file-invalid`, `invalid-text`, `ports-in-use`, the graph's codes, `stopping` |
 | `node.remove` | `{"name"}` | `{}` | `unknown-node`, `shared-definition`, `file-invalid`, `invalid-text`, `stopping` |
 | `route.add` | `{"from": {"node", "port"}, "to": {"node", "port"}}` | `{}` | `unknown-node`, `unknown-port`, `wrong-direction`, `file-invalid`, `invalid-text`, `stopping` |
 | `route.remove` | `{"from", "to"}` | `{}` | `unknown-route`, `shared-definition`, `file-invalid`, `invalid-text`, `stopping` |
@@ -182,7 +184,7 @@ three or four `node.state`s within milliseconds.
 | `node.setText` | `{"name", "text", "version"}`: the node's whole statement in knobly | `{}` once the graph runs it | `file-changed`, `file-invalid`, `unknown-node`, `shared-definition`, `invalid-text`, any code the graph refuses it with, `stopping` |
 | `node.addText` | `{"text", "version"}`: a new node's whole statement in knobly | `{}` once the graph runs it | `file-changed`, `file-invalid`, `invalid-text`, any code the graph refuses it with (`duplicate-node`, `unknown-node-type`, `invalid-settings`), `stopping` |
 
-**Edits** (`node.add`, `node.update`, `node.remove`, `route.*`, `node.disable`, `node.enable`,
+**Edits** (`node.add`, `node.update`, `node.set`, `node.remove`, `route.*`, `node.disable`, `node.enable`,
 `node.setText`, `node.addText`, `graphFile.set`) are edits of `ear.conf` made at the source, judged before they are kept, and written
 behind ([graph-file.md](graph-file.md#edits-at-the-source)). A node whose ports change (a card's
 channel count) stays the same node: `node.updated` says its new ports ([below](#changes-of-ports)). An update with the same settings changes nothing. `disabled` is not a
@@ -384,7 +386,7 @@ Every refusal is -32000 with `data.code`. Its message is the code and what it na
 | `shared-definition` | The line the edit must change or remove also makes other nodes or routes; `node.setText` on a node written in a snippet | `line`, `column` |
 | `node-disabled` | `node.start`, `node.stop` or `node.restart` on a node `ear.conf` disables | |
 | `not-restartable` | `node.start` or `node.restart` on a node whose block is lost; `node.restart` on a node still `added` | `reason`: `block-lost` or `not-started` |
-| `ports-in-use` | `node.update` whose new ports drop a port a wanted route names, without `dropRoutes` (feature `reshape`); the message names the node, the ports and how many routes (`ports-in-use desk: play.2 (1 route)`) | `ports`: the dropped ports routes name; `routes`: every such route, `{from, to}` |
+| `ports-in-use` | `node.update` or `node.set` whose new ports drop a port a wanted route names, without `dropRoutes` (feature `reshape`); the message names the node, the ports and how many routes (`ports-in-use desk: play.2 (1 route)`) | `ports`: the dropped ports routes name; `routes`: every such route, `{from, to}` |
 
 Examples are in `test/protocol/errors.json`:
 
@@ -406,7 +408,7 @@ and the links of the ports it keeps never go ([architecture.md](architecture.md#
   node's new `inputs` and `outputs`. A client redraws the node's ports in place: a surviving port
   keeps its wires, a new one comes unwired. A change of ports on a disabled node (`stored`,
   `disable`, `enable`) carries `ports`, `inputs` and `outputs` too, without `inPlace`.
-- **Routes to a port that goes.** `node.update` whose new ports drop a port a wanted route names is
+- **Routes to a port that goes.** `node.update` or `node.set` whose new ports drop a port a wanted route names is
   refused `ports-in-use`, with `data.ports` (the dropped ports routes name) and `data.routes` (every
   such route), unless it carries `dropRoutes: true`: then those route lines are removed from
   `ear.conf` in the same edit, so the routes and the change are one commit and one write, and the
@@ -421,6 +423,37 @@ and the links of the ports it keeps never go ([architecture.md](architecture.md#
 ```json
 {"jsonrpc": "2.0", "method": "node.updated", "params": {"name": "desk", "settings": {"card": "MOTU", "playback": 4}, "applied": "reshape", "inPlace": false, "ports": {"added": ["play.3", "play.4"], "removed": []}, "inputs": ["play.1", "play.2", "play.3", "play.4"], "outputs": []}}
 {"jsonrpc": "2.0", "id": 21, "error": {"code": -32000, "message": "ports-in-use desk: play.2 (1 route)", "data": {"code": "ports-in-use", "ports": ["play.2"], "routes": [{"from": {"node": "kitchen", "port": "from.left"}, "to": {"node": "desk", "port": "play.2"}}]}}}
+```
+
+## node.set and dry runs
+
+With the feature `node.set` (`test/protocol/node-set.json`), `node.set {"name", "settings"}` sets
+the keys it names and leaves the others: `settings` is a JSON merge patch (RFC 7396) of the node's
+settings, `null` removing a key, which then reads its default. It is `node.update` with the node's
+settings merged, made at the source like every edit, and refused as one: removing a required key is
+`invalid-settings` with the type's text (`invalid-settings rec: path: missing`), a `disabled` key is
+`invalid-settings`, settings that are not an object too.
+
+- **It answers with what it applied**: `{"applied"}`, the plan's outcome for the node at the commit
+  (`reconfigure`, `restart`, `reshape`, `stored`, `unchanged`), never rewritten by what the node then
+  does: a node not yet rested takes any change as a restart, and a type may take a change in place
+  as one; `node.state` (`stopping` with cause `restarting`) says what happened. When the node's
+  ports change it also carries `inPlace` (on a reshape), `ports` (`{"added", "removed"}`) and
+  `routesDropped`, the routes `dropRoutes` removed (`[]` for none). The same settings again are
+  `{"applied": "unchanged"}` and change nothing.
+- **The reply comes at the commit**, after the events it caused, never when the node runs again: a
+  client that must wait for audio waits for the node's next `node.state` (`rpc-call.mjs --until`).
+- **`dryRun: true`** (feature `dryRun`) makes the candidate and has the graph plan it as for the
+  real edit, and answers the same `applied`, changing nothing: no file version, no
+  `graphFile.changed`, no node or route event, no write, no record. Every refusal the real edit would
+  get, it gets, but one: routes a change of ports would strand are not `ports-in-use` but named in
+  the answer's `routes`, the routes the real edit would need `dropRoutes` for. A dry run is advice:
+  the real edit is judged afresh, and another client's edit may land between.
+- **`dropRoutes: true`**: as for `node.update` ([above](#changes-of-ports)).
+
+```json
+{"jsonrpc": "2.0", "id": 10, "method": "node.set", "params": {"name": "desk", "settings": {"playback": 1}, "dryRun": true}}
+{"jsonrpc": "2.0", "id": 10, "result": {"applied": "reshape", "inPlace": false, "ports": {"added": [], "removed": ["play.2"]}, "routes": [{"from": {"node": "noise", "port": "noise.mono"}, "to": {"node": "desk", "port": "play.2"}}]}}
 ```
 
 ## Levels
@@ -560,6 +593,7 @@ breaking change moves `protocol`; anything else is a new feature name
 | `edits.json` | Adds, updates, removals and their statuses |
 | `lifecycle.json` | A node's whole life: start, stop, restart, disable, enable, failure and retry, removal, refusals, `waitingFor`, changes in place, and a change of ports (`applied: "reshape"`, cause `reshape`) |
 | `graph-file.json` | `graphFile.*`, edits at the source, hand edits, refusals; also its `requests` and final `file` |
+| `node-set.json` | `node.set`: a merge answered `reconfigure`, `unchanged` again, `null` removing a key, a required key removed refused, a dry run of each outcome (`reconfigure`, `unchanged`, `restart`, `stored` with its ports, `reshape` naming its routes) changing nothing, a reshape refused `ports-in-use`, then with `dropRoutes` (`routesDropped`) |
 | `node-text.json` | `nodeTexts` (a comment owned, a snippet's node shared); `node.setText`: success, `file-changed`, `invalid-text` placed in the text, `ear/node-renamed`, `shared-definition`, `ear/not-one-node`; `node.addText`: success, `file-changed`, knobly's error placed in the text, `ear/not-one-node`, `duplicate-node`; the system tests send its requests to the real ear and expect its replies |
 | `errors.json` | Every refusal code and envelope error |
 | `levels.json` | `levels.subscribe` and `levels` |

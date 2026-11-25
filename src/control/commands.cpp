@@ -54,6 +54,20 @@ std::expected<Command, RpcError> decodeUpdateNode(const json& params, const Json
 	return UpdateNode{std::move(*name), **settings, *dropRoutes};
 }
 
+std::expected<Command, RpcError> decodeSetNode(const json& params, const JsonPointer& at) {
+	if (auto checked = requireObject(params, at, {"name", "settings", "dryRun", "dropRoutes"}); !checked)
+		return refuse(checked.error());
+	auto name = requireName(params, at, "name");
+	if (!name) return refuse(name.error());
+	auto settings = requireMember(params, at, "settings"); // the keeper merges it; the node's type judges the result
+	if (!settings) return refuse(settings.error());
+	auto dryRun = optionalFlag(params, at, "dryRun");
+	if (!dryRun) return refuse(dryRun.error());
+	auto dropRoutes = optionalFlag(params, at, "dropRoutes");
+	if (!dropRoutes) return refuse(dropRoutes.error());
+	return SetNode{std::move(*name), **settings, *dryRun, *dropRoutes};
+}
+
 std::expected<Command, RpcError> decodeRemoveNode(const json& params, const JsonPointer& at) {
 	if (auto checked = requireObject(params, at, {"name"}); !checked) return refuse(checked.error());
 	auto name = requireName(params, at, "name");
@@ -167,6 +181,7 @@ constexpr Method methods[] = {
 	{"graph.subscribe", decodeGetGraph},
 	{"node.add", decodeAddNode},
 	{"node.update", decodeUpdateNode},
+	{"node.set", decodeSetNode},
 	{"node.remove", decodeRemoveNode},
 	{"route.add", decodeAddRoute},
 	{"route.remove", decodeRemoveRoute},

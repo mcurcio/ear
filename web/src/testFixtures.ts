@@ -8,6 +8,7 @@ import errors from "../../test/protocol/errors.json";
 import graphFile from "../../test/protocol/graph-file.json";
 import levels from "../../test/protocol/levels.json";
 import lifecycle from "../../test/protocol/lifecycle.json";
+import nodeSet from "../../test/protocol/node-set.json";
 import nodeText from "../../test/protocol/node-text.json";
 import snapshot from "../../test/protocol/snapshot.json";
 import unknownValues from "../../test/protocol/unknown-values.json";
@@ -26,6 +27,7 @@ export const fixtures = {
   countersChanged,
   companions,
   nodeText,
+  nodeSet,
 } as unknown as {
   snapshot: ProtocolFixture;
   edits: ProtocolFixture;
@@ -37,6 +39,7 @@ export const fixtures = {
   countersChanged: ProtocolFixture;
   companions: ProtocolFixture;
   nodeText: ProtocolFixture;
+  nodeSet: ProtocolFixture;
 };
 
 /** A fixture's server texts as the messages the client hands on, a batch's in its order. */

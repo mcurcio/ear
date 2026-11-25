@@ -319,7 +319,9 @@ inside a named callback (`boundary::throwInCallback`), so the tests prove each o
 
 1. A request reaches the keeper's thread whole (a batch stays whole). For an edit the keeper
    loads the working copy's text afresh and applies the edit at its source, making a
-   *candidate* ([graph-file.md](graph-file.md#edits-at-the-source)).
+   *candidate* ([graph-file.md](graph-file.md#edits-at-the-source)). An edit of a node's settings
+   that strands a route on a port it takes away is refused there, or with `dropRoutes` takes the
+   route lines out of the same candidate ([control-port.md](control-port.md#changes-of-ports)).
 2. The keeper posts the candidate to the main loop, where its main-loop side asks
    `DesiredGraph::plan` for a verdict against the whole wanted graph.
 3. If accepted, in one main-loop turn: the file change is told (gateway, then `StatusLog`), the
@@ -328,7 +330,9 @@ inside a named callback (`boundary::throwInCallback`), so the tests prove each o
    waiting (write-behind): it swaps the new text in and keeps it only if the text it replaced is
    what it last read or wrote.
 5. A refused candidate is dropped; nothing is told or written, and only the reply carries the
-   refusal.
+   refusal. A dry run's candidate (`node.set` with `dryRun`) is planned and answered, then dropped,
+   accepted or not: nothing is committed, told, recorded or written
+   ([control-port.md](control-port.md#nodeset-and-dry-runs)).
 
 A hand edit arrives as an inotify event, is read on the keeper's thread and offered the same way
 (cause `disk`). The graph may refuse it, but the working copy still follows the disk, and the

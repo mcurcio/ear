@@ -48,7 +48,7 @@ use`).
 
 ## The frame and the lifecycle (protocol 1)
 
-- **The frame.** `graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions", "node-text", "reshape"]`; an absent
+- **The frame.** `graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun"]`; an absent
   `protocol` is 0. Gate every method and request member on its feature, never on a -32601
   probe. Every enum is open: draw a value you do not know neutrally, never fail on it.
 - **Health.** Each node of a snapshot, `node.added` and every `node.state` carries `state` (the
@@ -72,6 +72,11 @@ use`).
   (`disable`, `enable`; `stored` for a change to a disabled node) and `disabled: true` when
   disabled, then the health. No `action` record: the `graph-file` record says it.
   `node.add` takes `"disabled": true`.
+- **`node.set`** (feature `node.set`) merges the settings it names into the node's (`null` removes a key) and answers
+  `{"applied"}` at the commit; `dryRun: true` (feature `dryRun`) answers the same and changes nothing. A change of a
+  node's ports (feature `reshape`) is `node.updated` with `ports`, `inputs` and `outputs`, never a replace; one that
+  strands a route is `ports-in-use` unless the edit carries `dropRoutes: true`
+  (`docs/control-port.md#nodeset-and-dry-runs`, `#changes-of-ports`).
 - Every -32602 carries `data.pointer`, the JSON pointer its message names.
 - **Counters** (feature `counters`): the Graph carries the graph's `counters` (`cycles`, `cutCycles`,
   `stalls`, `lostMs`) and each node of a snapshot and `node.added` its own (`missedCycles`,

@@ -1,6 +1,7 @@
 #pragma once
 #include <expected>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -98,6 +99,9 @@ public:
 	/// replace of a node staying disabled is `stored`, of one staying enabled `restart`). Nodes only added or only
 	/// removed are not in it. What an edit's reply says it applied (docs/architecture.md#restarts-and-changes-of-settings).
 	std::vector<std::pair<NodeName, NodeOutcome>> outcomes() const;
+	/// The change for a node outcomes() names (a kept node's whole NodeChange: its ports, inPlace; a replaced one's
+	/// outcome and keys); std::nullopt for any other name. What node.set's reply carries (docs/control-port.md#methods).
+	std::optional<NodeChange> change(const NodeName& node) const;
 
 private:
 	friend class DesiredGraph;

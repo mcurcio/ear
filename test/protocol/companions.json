@@ -20,7 +20,9 @@
           "counters",
           "companions",
           "node-text",
-          "reshape"
+          "reshape",
+          "node.set",
+          "dryRun"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -693,7 +695,9 @@
       "counters",
       "companions",
       "node-text",
-      "reshape"
+      "reshape",
+      "node.set",
+      "dryRun"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,

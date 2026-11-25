@@ -158,6 +158,15 @@ std::vector<std::pair<NodeName, NodeOutcome>> Plan::outcomes() const {
 	return impl_ == nullptr ? std::vector<std::pair<NodeName, NodeOutcome>>{} : impl_->outcomes;
 }
 
+std::optional<NodeChange> Plan::change(const NodeName& node) const {
+	if (impl_ == nullptr) return std::nullopt;
+	for (const auto& changed : impl_->nodesChanged)
+		if (changed.spec.name == node) return changed.change;
+	if (const auto replaced = impl_->replacedChanges.find(node); replaced != impl_->replacedChanges.end())
+		return replaced->second;
+	return std::nullopt;
+}
+
 std::expected<Plan, CommandError> DesiredGraph::plan(std::span<const NodeSpec> nodes,
                                                      std::span<const Route> routes) const {
 	if (impl_->closed) return std::unexpected(Stopping{});

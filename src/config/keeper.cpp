@@ -47,28 +47,39 @@ std::optional<std::pair<control::LifecycleVerb, NodeName>> verbOf(const control:
 	return std::nullopt;
 }
 
-/// An accepted disable's or enable's answer from the plan's outcome for its node (docs/control-port.md#methods).
-CommandResult appliedOf(const NodeName& node, const std::vector<std::pair<NodeName, NodeOutcome>>& outcomes) {
-	for (const auto& [name, outcome] : outcomes) {
-		if (name != node) continue;
-		switch (outcome) {
-		case NodeOutcome::disable:
-			return control::Applied{control::AppliedKind::disable};
-		case NodeOutcome::enable:
-			return control::Applied{control::AppliedKind::enable};
-		case NodeOutcome::stored:
-			return control::Applied{control::AppliedKind::stored};
-		case NodeOutcome::restart:
-			return control::Applied{control::AppliedKind::restart};
-		case NodeOutcome::reconfigure:
-			return control::Applied{control::AppliedKind::reconfigure};
-		case NodeOutcome::reshape:
-			return control::Applied{control::AppliedKind::reshape};
-		case NodeOutcome::unchanged:
-			return control::Applied{control::AppliedKind::unchanged};
-		}
+control::AppliedKind kindOf(NodeOutcome outcome) {
+	switch (outcome) {
+	case NodeOutcome::disable:
+		return control::AppliedKind::disable;
+	case NodeOutcome::enable:
+		return control::AppliedKind::enable;
+	case NodeOutcome::stored:
+		return control::AppliedKind::stored;
+	case NodeOutcome::restart:
+		return control::AppliedKind::restart;
+	case NodeOutcome::reconfigure:
+		return control::AppliedKind::reconfigure;
+	case NodeOutcome::reshape:
+		return control::AppliedKind::reshape;
+	case NodeOutcome::unchanged:
+		break;
 	}
-	return control::Applied{control::AppliedKind::unchanged};
+	return control::AppliedKind::unchanged;
+}
+
+/// An accepted disable's, enable's or set's answer from the plan's change of its node (docs/control-port.md#methods): no
+/// change is unchanged; node.set's carries, when the ports change, whether a reshape is in place, the ports added and
+/// removed and the routes it removed (or, dry, would remove).
+template <class Answer> CommandResult appliedOf(const Answer& answer, const std::optional<NodeChange>& change) {
+	if (!change) return control::Applied{control::AppliedKind::unchanged};
+	control::Applied applied{kindOf(change->outcome)};
+	if (answer.detailed && change->portsChanged()) {
+		if (change->outcome == NodeOutcome::reshape) applied.inPlace = change->inPlace;
+		applied.ports = portsMoved(change->oldPorts, change->ports);
+		if (answer.dryRun) applied.routes = answer.routes;
+		else applied.routesDropped = answer.routes;
+	}
+	return applied;
 }
 
 /// The routes a candidate keeps that name ports its edit takes from `node`, and those ports, in the order the node
@@ -204,20 +215,24 @@ void Keeper::advance(Batch batch) {
 			continue;
 		}
 		const GraphFileRead& read = candidate_->model.read();
-		Offer offer{fileState(candidate_->model, candidate_->version), *read.wanted, read.placements,
-		            control::FileChangeCause::edit, 0};
+		Offer offer{fileState(candidate_->model, candidate_->version),
+		            *read.wanted,
+		            read.placements,
+		            control::FileChangeCause::edit,
+		            0,
+		            candidate_->answer.dryRun,
+		            candidate_->answer.node};
 		const bool last = batch.next == batch.commands.size();
-		std::optional<NodeName> appliedFor = candidate_->appliedFor;
-		postStep(std::move(batch), std::move(reads), std::move(offer), index, std::move(appliedFor), last);
+		postStep(std::move(batch), std::move(reads), std::move(offer), index, candidate_->answer, last);
 		return;
 	}
-	postStep(std::move(batch), std::move(reads), std::nullopt, 0, std::nullopt, true);
+	postStep(std::move(batch), std::move(reads), std::nullopt, 0, Answer{}, true);
 }
 
 std::optional<CommandResult> Keeper::take(const control::Command& command) {
 	if (stopped_) return refused(Stopping{});
 	std::optional<EditOutcome> edit;
-	std::optional<NodeName> appliedFor;
+	Answer answer;
 	if (const auto* set = std::get_if<control::SetGraphFile>(&command)) {
 		if (set->version != version()) return CommandResult{control::FileRefusal{control::FileChanged{}}};
 		if (workingFromText_ && set->text == working_.text()) return done();
@@ -232,6 +247,18 @@ std::optional<CommandResult> Keeper::take(const control::Command& command) {
 		if (add->version != version()) return CommandResult{control::FileRefusal{control::FileChanged{}}};
 		if (working_.read().hasErrors()) return CommandResult{control::FileRefusal{control::FileInvalid{}}};
 		edit = working_.addNodeText(add->text);
+	} else if (const auto* merge = std::get_if<control::SetNode>(&command)) {
+		// node.set: node.update with the node's settings merged, made at the source like every edit
+		// (docs/control-port.md#nodeset-and-dry-runs).
+		if (working_.read().hasErrors()) return CommandResult{control::FileRefusal{control::FileInvalid{}}};
+		const auto& nodes = working_.read().wanted->nodes;
+		const auto held = std::ranges::find(nodes, merge->node, &NodeSpec::name);
+		if (held == nodes.end()) return refused(UnknownNode{merge->node});
+		if (!merge->settings.is_object()) return refused(InvalidSettings{merge->node, "settings: must be an object"});
+		NodeSettings merged = held->settings;
+		merged.merge_patch(merge->settings); // null removes a key
+		answer = Answer{merge->node, true, merge->dryRun, {}};
+		edit = working_.updateNode(merge->node, merged);
 	} else {
 		if (working_.read().hasErrors()) return CommandResult{control::FileRefusal{control::FileInvalid{}}};
 		edit = std::visit(Overloaded{
@@ -241,11 +268,11 @@ std::optional<CommandResult> Keeper::take(const control::Command& command) {
 							  [&](const control::AddRoute& c) { return working_.addRoute(c.route); },
 							  [&](const control::RemoveRoute& c) { return working_.removeRoute(c.route); },
 							  [&](const control::DisableNode& c) {
-								  appliedFor = c.node;
+								  answer.node = c.node;
 								  return working_.disableNode(c.node);
 							  },
 							  [&](const control::EnableNode& c) {
-								  appliedFor = c.node;
+								  answer.node = c.node;
 								  return working_.enableNode(c.node);
 							  },
 							  [](const auto&) -> EditOutcome { throw std::logic_error("keeper: not an edit"); },
@@ -253,36 +280,40 @@ std::optional<CommandResult> Keeper::take(const control::Command& command) {
 		                  command);
 	}
 	if (!*edit) return refusalOf(edit->error());
-	if (!**edit) return appliedFor ? CommandResult{control::Applied{control::AppliedKind::unchanged}} : done();
+	if (!**edit) return answer.node ? CommandResult{control::Applied{control::AppliedKind::unchanged}} : done();
 	GraphFileModel model = std::move(***edit);
 	// An edit's or a set's candidate that does not read cannot be planned: the text's errors answer it.
 	if (model.read().hasErrors())
 		return CommandResult{control::FileRefusal{control::InvalidText{model.read().diagnostics}}};
-	std::vector<Route> dropped;
-	if (const auto* update = std::get_if<control::UpdateNode>(&command)) {
+	std::optional<std::pair<NodeName, bool>> settingsOf; // a node's settings edit, and whether it drops routes
+	if (const auto* update = std::get_if<control::UpdateNode>(&command))
+		settingsOf = {update->node, update->dropRoutes};
+	if (const auto* merge = std::get_if<control::SetNode>(&command))
+		settingsOf = {merge->node, merge->dropRoutes || merge->dryRun};
+	if (settingsOf) {
 		// A route to a port the edit takes away is refused ports-in-use, naming every such route, unless the edit
-		// asks dropRoutes: then their lines go in the same candidate, one commit and one write
-		// (docs/control-port.md#changes-of-ports).
-		Stranded stranded = strandedBy(working_, model, update->node);
+		// asks dropRoutes: then their lines go in the same candidate, one commit and one write. A dry run names them
+		// as the routes it would remove (docs/control-port.md#changes-of-ports).
+		Stranded stranded = strandedBy(working_, model, settingsOf->first);
 		if (!stranded.routes.empty()) {
-			if (!update->dropRoutes)
+			if (!settingsOf->second)
 				return CommandResult{control::ControlRefusal{
-					control::PortsInUse{update->node, std::move(stranded.ports), std::move(stranded.routes)}}};
+					control::PortsInUse{settingsOf->first, std::move(stranded.ports), std::move(stranded.routes)}}};
 			auto without = model.removeRoutes(stranded.routes);
 			if (!without) return refusalOf(without.error());
 			if (*without) model = std::move(**without);
-			dropped = std::move(stranded.routes);
+			answer.routes = std::move(stranded.routes);
 		}
 	}
-	candidate_ = Candidate{std::move(model), nextVersion(), std::move(appliedFor), std::move(dropped)};
+	candidate_ = Candidate{std::move(model), nextVersion(), std::move(answer)};
 	return std::nullopt;
 }
 
 void Keeper::postStep(Batch batch, std::vector<Read> reads, std::optional<Offer> offer, std::size_t offerIndex,
-                      std::optional<NodeName> appliedFor, bool last) {
+                      Answer answer, bool last) {
 	awaiting_ = true;
 	mainLoop_.post([&side = side_, &self = self_, keeper = this, batch = std::move(batch), reads = std::move(reads),
-	                offer = std::move(offer), offerIndex, appliedFor = std::move(appliedFor), last,
+	                offer = std::move(offer), offerIndex, answer = std::move(answer), last,
 	                stopped = stopped_]() mutable {
 		for (Read& read : reads)
 			batch.results[read.index] =
@@ -298,8 +329,8 @@ void Keeper::postStep(Batch batch, std::vector<Read> reads, std::optional<Offer>
 		if (offer) {
 			Judged judged = side.offer(std::move(*offer));
 			verdict = judged.verdict;
-			if (appliedFor && judged.verdict == Verdict::accepted)
-				batch.results[offerIndex] = appliedOf(*appliedFor, judged.outcomes);
+			if (answer.node && judged.verdict == Verdict::accepted)
+				batch.results[offerIndex] = appliedOf(answer, judged.change);
 			else batch.results[offerIndex] = CommandResult{std::move(judged.result)};
 		}
 		std::optional<Batch> rest;
@@ -318,7 +349,7 @@ void Keeper::postStep(Batch batch, std::vector<Read> reads, std::optional<Offer>
 void Keeper::completed(std::optional<Verdict> verdict, std::optional<Batch> batch) {
 	awaiting_ = false;
 	if (candidate_) {
-		if (verdict == Verdict::accepted) {
+		if (verdict == Verdict::accepted && !candidate_->answer.dryRun) { // a dry run is never kept
 			setWorking(std::move(candidate_->model), true);
 			++unwritten_;
 			retryBlocked_ = false;

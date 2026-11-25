@@ -136,6 +136,18 @@ export interface NodeHealth {
   next?: string[];
 }
 
+/**
+ * node.set's answer: what the plan applied, and when the node's ports change, whether a reshape is in place, the ports
+ * added and removed, and the routes it removed (routesDropped) or, for a dry run, would remove (routes).
+ */
+export interface SetResult {
+  applied: Applied;
+  inPlace?: boolean;
+  ports?: PortsMoved;
+  routesDropped?: RouteEnds[];
+  routes?: RouteEnds[];
+}
+
 /** A change of a node's ports (feature reshape): whole port names. */
 export interface PortsMoved {
   added: string[];
@@ -358,6 +370,15 @@ export interface Methods {
    * written for; {} once the graph runs it. invalid-text's diagnostics are placed in `text`.
    */
   "node.addText": { params: { text: string; version: string }; result: Record<string, never> };
+  /**
+   * Feature node.set: a JSON merge patch of the node's settings (null removes a key), answered at the commit with what
+   * the plan applied. dryRun (feature dryRun): the same answer, nothing changed; dropRoutes (feature reshape): the routes
+   * its new ports strand are removed in the same edit.
+   */
+  "node.set": {
+    params: { name: string; settings: JsonObject; dryRun?: boolean; dropRoutes?: boolean };
+    result: SetResult;
+  };
   /** The lifecycle (feature lifecycle). Start, stop and restart edit nothing; disable and enable edit ear.conf. */
   "node.start": { params: { name: string }; result: { applied: Applied } };
   "node.stop": { params: { name: string }; result: { applied: Applied } };
@@ -534,6 +555,7 @@ const methodSet: { [M in MethodName]: true } = {
   "node.restart": true,
   "node.disable": true,
   "node.enable": true,
+  "node.set": true,
   "node.setText": true,
   "node.addText": true,
 };
@@ -590,6 +612,8 @@ export const countersFeature = "counters";
 export const companionsFeature = "companions";
 export const nodeTextFeature = "node-text";
 export const reshapeFeature = "reshape";
+export const nodeSetFeature = "node.set";
+export const dryRunFeature = "dryRun";
 
 // ----- The conformance fixtures (test/protocol/*.json) -----
 

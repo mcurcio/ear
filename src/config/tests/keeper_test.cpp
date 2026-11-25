@@ -847,3 +847,96 @@ node card desk { card MOTU; playback 2; }
 	CHECK(f.log.lines == Lines{"reply"});
 	CHECK(f.graphFile().text == before.text);
 }
+
+namespace {
+
+const control::Applied& answered(const CommandResult& result) {
+	REQUIRE(std::holds_alternative<control::Applied>(result));
+	return std::get<control::Applied>(result);
+}
+
+} // namespace
+
+TEST_CASE("node.set merges into the node's settings, null removing a key, and answers what the plan applied",
+          "[keeper][node-set]") {
+	Fixture f("node_set", threeChannels);
+	f.start();
+	auto results = f.run({control::SetNode{"desk", {{"card", "X"}}}});
+	CHECK(answered(results[0]).kind == control::AppliedKind::restart);
+	CHECK_FALSE(answered(results[0]).ports.has_value());
+	CHECK(f.lastChange().file.text == replaced(threeChannels, "card MOTU;", "card \"X\";")); // playback 3 kept
+
+	f.log.clear();
+	results = f.run({control::SetNode{"desk", {{"capture", 2}}}});
+	const control::Applied& added = answered(results[0]);
+	CHECK(added.kind == control::AppliedKind::reshape);
+	CHECK(added.inPlace == false);
+	CHECK(added.ports == PortsMoved{{"capture.1", "capture.2"}, {}});
+	CHECK(added.routesDropped == std::vector<Route>{});
+	CHECK_FALSE(added.routes.has_value());
+	CHECK(f.lastChange().file.text.find("capture 2;") != std::string::npos);
+
+	results = f.run({control::SetNode{"desk", {{"capture", nullptr}}}}); // back to its default, 0
+	CHECK(answered(results[0]).ports == PortsMoved{{}, {"capture.1", "capture.2"}});
+	CHECK(f.lastChange().file.text.find("capture") == std::string::npos);
+	CHECK(f.graph.nodes()[0].spec.settings == json{{"card", "X"}, {"playback", 3}});
+
+	f.log.clear();
+	results = f.run({control::SetNode{"desk", {{"playback", 3}}}});
+	CHECK(answered(results[0]).kind == control::AppliedKind::unchanged);
+	CHECK(f.log.lines == Lines{"reply"});
+}
+
+TEST_CASE("node.set refuses a required key removed, an unknown node and settings that are not an object",
+          "[keeper][node-set]") {
+	Fixture f("node_set_refused");
+	f.start();
+	auto results = f.run({control::SetNode{"rec", {{"path", nullptr}}}, control::SetNode{"ghost", json::object()},
+	                      control::SetNode{"rec", json::array()}});
+	CHECK(code(results[0]) == "invalid-settings");
+	CHECK(describe(std::get<std::expected<void, CommandError>>(results[0]).error()) ==
+	      "invalid-settings rec: path: missing");
+	CHECK(code(results[1]) == "unknown-node");
+	CHECK(code(results[2]) == "invalid-settings");
+	CHECK(f.log.lines == Lines{"reply"});
+	CHECK(f.graphFile().text == recordExample);
+}
+
+TEST_CASE("A dry run answers as the real edit would, names the routes a reshape would remove, and changes nothing "
+          "(no announcement, version, graph change or write)",
+          "[keeper][node-set]") {
+	Fixture f("dry_run", threeChannels);
+	f.start();
+	const auto before = f.graphFile();
+	f.log.clear();
+	const std::vector<Route> stranded{{{"noise", "noise.mono"}, {"desk", "play.2"}},
+	                                  {{"noise", "noise.mono"}, {"desk", "play.3"}}};
+	auto results =
+		f.run({control::SetNode{"desk", {{"playback", 1}}, true}, control::SetNode{"desk", {{"card", "X"}}, true},
+	           control::SetNode{"desk", {{"playback", 3}}, true}});
+	const control::Applied& reshape = answered(results[0]);
+	CHECK(reshape.kind == control::AppliedKind::reshape);
+	CHECK(reshape.inPlace == false);
+	CHECK(reshape.ports == PortsMoved{{}, {"play.2", "play.3"}});
+	CHECK(reshape.routes == stranded);
+	CHECK_FALSE(reshape.routesDropped.has_value());
+	CHECK(answered(results[1]).kind == control::AppliedKind::restart);
+	CHECK(answered(results[2]).kind == control::AppliedKind::unchanged);
+	CHECK(f.log.lines == Lines{"reply"}); // nothing told, nothing committed
+	CHECK(f.fileLog.changes.size() == 1); // the boot's
+	const auto after = f.graphFile();
+	CHECK(after.version == before.version);
+	CHECK(after.text == threeChannels);
+	CHECK(f.graph.routes().size() == 4);
+	f.free();
+	CHECK(f.fileLog.written.empty());
+	CHECK(contents(f.file) == threeChannels);
+
+	// The real edit is judged afresh: refused without dropRoutes, made with it.
+	results = f.run({control::SetNode{"desk", {{"playback", 1}}}});
+	CHECK(code(results[0]) == "ports-in-use");
+	results = f.run({control::SetNode{"desk", {{"playback", 1}}, false, true}});
+	CHECK(answered(results[0]).routesDropped == stranded);
+	CHECK_FALSE(answered(results[0]).routes.has_value());
+	CHECK(f.graph.routes().size() == 2);
+}
