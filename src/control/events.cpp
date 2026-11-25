@@ -168,6 +168,7 @@ std::string encodeEvent(const GraphEvent& event) {
 std::string_view outcomeName(NodeOutcome outcome) noexcept {
 	switch (outcome) {
 	case NodeOutcome::restart:
+	case NodeOutcome::reconfigure: // treated as a restart until NodeHost changes in place
 		return "restart";
 	case NodeOutcome::disable:
 		return "disable";

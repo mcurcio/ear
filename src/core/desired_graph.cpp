@@ -36,6 +36,18 @@ NodeOutcome outcomeOf(bool wasDisabled, bool isDisabled) {
 	return isDisabled ? NodeOutcome::disable : NodeOutcome::restart;
 }
 
+} // namespace
+
+NodeOutcome outcomeFor(const NodeType& type, std::span<const std::string> keys, bool wasDisabled, bool isDisabled) {
+	const NodeOutcome outcome = outcomeOf(wasDisabled, isDisabled);
+	if (outcome != NodeOutcome::restart || keys.empty()) return outcome;
+	return std::ranges::all_of(keys, [&](const std::string& key) { return type.changesInPlace(key); })
+	           ? NodeOutcome::reconfigure
+	           : NodeOutcome::restart;
+}
+
+namespace {
+
 /// The keys whose values differ between two settings objects (one given and not the other included), in key order.
 std::vector<std::string> changedKeys(const NodeSettings& was, const NodeSettings& now) {
 	std::set<std::string> keys;
@@ -187,12 +199,17 @@ std::expected<Plan, CommandError> DesiredGraph::plan(std::span<const NodeSpec> n
 		}
 		const auto& next = it->second;
 		if (next.spec == held.spec) continue;
-		const NodeOutcome outcome = outcomeOf(held.spec.disabled, next.spec.disabled);
-		changes->outcomes.emplace_back(name, outcome);
 		if (next.spec.type == held.spec.type && next.config->ports() == held.config->ports()) {
-			changes->nodesChanged.push_back(Plan::Impl::Changed{
-				next.spec, next.config, NodeChange{outcome, changedKeys(held.spec.settings, next.spec.settings)}});
+			std::vector<std::string> keys = changedKeys(held.spec.settings, next.spec.settings);
+			// The catalogue parsed the node, so its type is there.
+			const NodeOutcome outcome =
+				outcomeFor(*impl_->catalogue.find(next.spec.type), keys, held.spec.disabled, next.spec.disabled);
+			changes->outcomes.emplace_back(name, outcome);
+			changes->nodesChanged.push_back(
+				Plan::Impl::Changed{next.spec, next.config, NodeChange{outcome, std::move(keys)}});
 		} else {
+			const NodeOutcome outcome = outcomeOf(held.spec.disabled, next.spec.disabled);
+			changes->outcomes.emplace_back(name, outcome);
 			changes->nodesRemoved.push_back(name);
 			replaced.insert(name);
 			changes->replacedChanges.emplace(name,

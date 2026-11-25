@@ -114,6 +114,8 @@ std::string_view NodeType::name() const noexcept { return table_->name(); }
 
 std::span<const SettingDeclaration> NodeType::settingKinds() const noexcept { return table_->kinds(); }
 
+bool NodeType::changesInPlace(std::string_view key) const noexcept { return table_->changesInPlace(key); }
+
 std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings> NodeType::parse(const NodeName& node,
                                                                                   const NodeSettings& settings) const {
 	// The type's own code (a text row's parse, its check, its ports) runs here, on the main loop

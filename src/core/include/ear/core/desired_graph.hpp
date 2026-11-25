@@ -12,9 +12,12 @@ struct WantedNode {
 	Ports ports;
 };
 /// What an edit asks of a node it keeps by name (docs/architecture.md#restarts-and-changes-of-settings).
-/// Decided by `disabled` alone, before and after: false to true `disable`, true to false `enable`, true to true
-/// `stored`, false to false `restart` (no row changes in place yet: docs/design/reconfigure.md).
-enum class NodeOutcome { restart, disable, enable, stored };
+/// Decided by `disabled`, before and after: false to true `disable`, true to false `enable`, true to true `stored`;
+/// false to false `reconfigure` when every changed key's row is marked inPlace (outcomeFor), else `restart`.
+enum class NodeOutcome { restart, disable, enable, stored, reconfigure };
+/// The outcome of a change of a node of `type` kept with the same type and ports: `keys` the changed keys, the
+/// `disabled` before and after. Pure; the plan's and the type harness's one rule.
+NodeOutcome outcomeFor(const NodeType& type, std::span<const std::string> keys, bool wasDisabled, bool isDisabled);
 /// A node kept with the same type and ports, told by nodeChanged; or a replaced node (another type or other ports),
 /// told by nodeReplacing and nodeReplaced, whose outcome is its `disabled` change's.
 struct NodeChange {

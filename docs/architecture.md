@@ -542,6 +542,13 @@ An update that leaves the settings as they are changes nothing, for a failed nod
 of a node's ports (a card's channel count) or of its type replaces the node: its routes and the
 node are removed and added again. A change to a disabled node is stored for when it is enabled.
 
+The desired graph's plan says what each edit asks of a node it keeps by name (`NodeOutcome`):
+`disable`, `enable` or `stored` by its `disabled` before and after; otherwise `reconfigure` when
+every changed key's row is marked in place
+([writing-a-node-type.md](writing-a-node-type.md#settings-one-table-of-typed-rows)), else
+`restart`. A `reconfigure` is still taken as a restart: NodeHost does not yet change a node in
+place.
+
 ### Changes in place
 
 A change in place applies new settings to a node's configuration without tearing it down. The

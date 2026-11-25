@@ -402,6 +402,7 @@ struct NodeHost::Impl {
 			++version_;
 			switch (change.outcome) {
 			case NodeOutcome::restart:
+			case NodeOutcome::reconfigure: // treated as a restart until NodeHost changes in place
 			case NodeOutcome::stored:
 				feed(aggregate_.change(queued(), change.keys));
 				break;

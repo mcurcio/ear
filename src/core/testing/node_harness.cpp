@@ -1335,7 +1335,7 @@ NodeOutcome NodeHarness::change(const NodeSettings& settings) {
 	impl_->settings = settings;
 	impl_->config = std::make_shared<const Impl::SeenConfig>(*impl_, std::move(*parsed));
 	impl_->buffers();
-	const NodeOutcome outcome = impl_->disabled ? NodeOutcome::stored : NodeOutcome::restart;
+	const NodeOutcome outcome = outcomeFor(impl_->type, keys, impl_->disabled, impl_->disabled);
 	impl_->host->nodeChanged(impl_->spec(impl_->disabled), impl_->config, NodeChange{outcome, keys});
 	impl_->settle();
 	return outcome;

@@ -96,6 +96,13 @@ inline constexpr auto portRow = setting::optional("port", setting::number(1, 655
 
 - `.onlyWithout(above)` refuses the key given together with a row above it: `<key>: only without
   "<above>"`. Neither row may be required.
+- `.inPlace()` marks a key the type can take while the node runs, through its change version of
+  `configure` (`setting::required("port", setting::number(1, 65535)).inPlace()`). Every row is
+  restart-only by default: a change to it restarts the node. The marks are data in the table: the
+  desired graph's plan reads them, and a change whose every changed key is marked is planned
+  `reconfigure` rather than `restart`
+  ([architecture.md](architecture.md#restarts-and-changes-of-settings)). A key whose value builds
+  the node's ports (a channel count) is never marked: a change of ports is a replace.
 - Each key once; `disabled` (the framework's key) cannot be declared; a table's name must be its
   folder's. Each is a compile error.
 - The table is `SettingsTable<row1, row2, ...>{"<type>"}` (`SettingsTable<>{"white"}` for none).
