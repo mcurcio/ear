@@ -40,12 +40,12 @@ three ways:
 
 - **Live**: a slice 6 parameter ([control-plane.md](control-plane.md), 5.1). It moves while the audio plays, ramped by
   the framework, with no hook called.
-- **In place**: a `.inPlace()` row (slice 3d's changes in place, mcurcio/ear#32). The type's change version
+- **In place**: a `.inPlace()` row ([architecture.md](../architecture.md#changes-in-place)). The type's change version
   swaps in a new code at one cycle; the code carries the old one's state and crosses from old to new itself, so nothing
   is held silent. Used where a change must declare a new latency or resize what the code reads, which a live retune
   cannot (it calls no hook).
 - **Reshape in place**: a row that changes the ports (`channels`, `inputs`, `key`), marked `.inPlace()`
-  (slice 3d's reshapes, mcurcio/ear#32): the block keeps its surviving ports and their links, and the
+  ([architecture.md](../architecture.md#reshapes)): the block keeps its surviving ports and their links, and the
   channels that stay keep playing. A configuration with a companion would restart instead, and none of these types has
   one.
 
