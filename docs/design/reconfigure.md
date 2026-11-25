@@ -1,6 +1,6 @@
 # Changes in place and reshape: slice 3d of the node framework
 
-Status: design; steps 1 to 4 of section 11 built (section 2 says what and where). Slice 3d follows slice 3c (built: it swaps claims and posts to loops, both
+Status: design; steps 1 to 5 of section 11 built (step 5 but the editor's Apply with a dry run) (section 2 says what and where). Slice 3d follows slice 3c (built: it swaps claims and posts to loops, both
 3c's, `docs/writing-a-node-type.md#claims`, `#loops`) and comes before slice 6 (`control-plane.md`: a retune is one of the outcomes this slice makes). Its PipeWire
 spike (S4) is run and the reshape built on it. It changes the audio path: holds, code swaps and reshapes. The built lifecycle (states,
 operations, teardown, fades, barriers and their bounds) is described in `docs/architecture.md` and
@@ -73,14 +73,16 @@ Built (steps 1 to 4 of section 11), described where they live and not repeated h
   `node.update`'s `dropRoutes` ([`docs/control-port.md#changes-of-ports`](../control-port.md#changes-of-ports));
   features `node.set` and `dryRun`: the merge, `applied` with `inPlace`, `ports` and `routesDropped`, a dry run of every
   outcome naming the routes a reshape would remove
-  ([`docs/control-port.md#nodeset-and-dry-runs`](../control-port.md#nodeset-and-dry-runs)).
+  ([`docs/control-port.md#nodeset-and-dry-runs`](../control-port.md#nodeset-and-dry-runs));
+- in the editor: a reshape redrawn in place, Stop, Restart and Disable saying they end a change, a fallback's toast
+  ([`docs/editor.md#the-node-box`](../editor.md#the-node-box), [`#toasts`](../editor.md#toasts)).
 
 This page still designs:
 
 - a reshape in place of a configuration with companions: the companions on resized inside banks replaced make-before-break
   (7; built, such a node restarts);
 - `sendspin` in place (6.6);
-- the editor's part of the wire (8.3).
+- the editor's Apply with a dry run, with slice 5's settings form (8.3).
 
 The transitions this page names are the framework's numbering: **T9** (`running` or `stopped` → `reconfiguring`, the
 change version called), **T10** (the commit point: back to `running` or `stopped`), **T11** (the fallback: `reconfiguring`
@@ -258,6 +260,12 @@ order, the standard-output records and the diagnostics ([`docs/control-port.md#n
 
 ### 8.3 The editor
 
+Built ([`docs/editor.md#a-nodes-health`](../editor.md#a-nodes-health), [`#the-node-box`](../editor.md#the-node-box),
+[`#toasts`](../editor.md#toasts)): `reconfiguring`'s style and line, Stop, Restart and Disable saying they end the
+change, a held bank seen as silence on the meters (no "held" mark, R30), a reshape redrawing the box's handles in place,
+and a fallback's toast. Still designed, waiting for slice 5's settings form (`control-plane.md`; the editor edits a node
+by its knobly text, `node.setText`, which has no dry run):
+
 - **Apply asks first** (feature `dryRun`): non-live rows are edited in a form and sent together with one `node.set`.
   Apply sends it with `dryRun: true`, and when the answer is `restart` or `reshape` (or names routes) shows what will
   happen before sending ("Restarts desk: its audio stops for a moment." or "Restarts desk and removes 1 route:
@@ -265,15 +273,7 @@ order, the standard-output records and the diagnostics ([`docs/control-port.md#n
   confirmed send carries `dropRoutes: true` exactly when the dry run named routes; if the real edit is refused
   `ports-in-use` anyway (another edit landed between), the prompt is shown again with the refusal's routes. (Per-field
   hints, "applies in place" or "restarts the node", need the schema's per-row `change`, slice 5's `types.get`.)
-- **`reconfiguring`** has its own style (not a warning colour), its line from `keys` ("reconfiguring port"; "; latencyMs
-  next" from `next`). Stop says "ends the change and stops", Disable "ends the change and disables", Restart "ends the
-  change and restarts". An edit to a key in `keys` or `next` says "applies after this change".
-- **A held bank**: no "held" mark (R30). Its meters fall to silence, its wires thin with their level, and the meters of
-  the ports they feed fall with them, while the box says "reconfiguring port" in words.
-- **A reshape** redraws the box's handles in place when `node.updated` brings `ports`: surviving handles keep their
-  wires (which never go `pending`), new handles appear unwired, and the box keeps its position.
-- **A fallback** also raises a notice: "fpp could not apply port in place, so it restarted: <detail>". The panel keeps
-  the new value: `ear.conf` holds it.
+- **An edit to a key in `keys` or `next`** says "applies after this change".
 
 ### 8.4 Levels
 
@@ -289,7 +289,7 @@ What steps 1 to 4 changed is built (section 2). What is left:
 |---|---|
 | `NodeHost` | a reshape in place of a configuration with companions (7) |
 | `sendspin` | rows marked `.inPlace()`; its change version |
-| `web/` | 8.3's editor beyond the `reconfiguring` style and line (built) |
+| `web/` | 8.3's Apply with a dry run, in slice 5's settings form |
 
 ## 10. Tests
 
@@ -314,7 +314,8 @@ Built: what `docs/testing.md` lists for changes in place. Still to write with wh
 3. The primitives in a change: claims swapped make-before-break, `whenReady`, `ConfigureDone`, the sink's pause, and
    every kind's replacement (built, section 2).
 4. `PortBlock::reshape` on the plain add, the 32-port question settled first; layouts, levels (built, section 2).
-5. The wire and the editor (features `node.set`, `reshape`, `dryRun`): the wire built, the editor's 8.3 left.
+5. The wire and the editor (features `node.set`, `reshape`, `dryRun`): built, but the editor's Apply with a dry run,
+   which waits for slice 5's settings form (8.3).
 6. `sendspin` in place (skipped if U11 or U12 fails).
 7. Words: AGENTS.md and the library docs; this page deleted.
 

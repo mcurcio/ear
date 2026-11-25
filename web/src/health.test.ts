@@ -151,7 +151,19 @@ describe("describeHealth", () => {
     expect(view.styleClass).toBe("state-reconfiguring");
     expect(view.line).toBe("reconfiguring port; latencyMs next");
     expect(view.actions.start.enabled).toBe(false);
-    expect(view.actions.stop.enabled).toBe(true);
+    expect(view.actions.stop).toEqual({ enabled: true, why: "ends the change and stops" });
+    expect(view.actions.restart).toEqual({ enabled: true, why: "ends the change and restarts" });
+    expect(view.actions.disable).toEqual({ enabled: true, why: "ends the change and disables" });
+  });
+
+  it("a change of ports says so, restarting and configuring", () => {
+    const reshape = { kind: "reshape", keys: ["playback"], added: [], removed: ["play.2"] };
+    expect(describeHealth(node({ state: "stopping", phase: "stopping", cause: { kind: "restarting", restart: reshape } }), long).line).toBe(
+      "restarting: ports changed (playback)",
+    );
+    expect(describeHealth(node({ state: "starting", phase: "configuring", cause: reshape }), long).line).toBe(
+      "configuring: ports changed (playback)",
+    );
   });
 
   it("a fallback's restart says what could not be applied in place", () => {

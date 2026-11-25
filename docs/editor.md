@@ -243,7 +243,10 @@ right; they replace the one error banner.
 - **Show.** A toast for a node or route ear holds has Show, which selects it and pans to it.
 - **Kept.** A closed connection clears none, so a reconnect drops nothing the person has not seen.
 
-Slice 5's node events are designed to feed this queue
+A change in place that could not finish raises a warning toast of its own, about its node, from the `node.state` that
+begins its fallback (`fpp could not apply port in place, so it restarted: fell-back deadline 10s passed`): the node
+restarts with the new settings, which `ear.conf` holds, so the panel keeps the new value. Slice 5's node events are
+designed to feed this queue
 ([control-plane.md](design/control-plane.md#84-status-events-diagnostics-and-actions)).
 
 ### Where a refusal lands
@@ -524,6 +527,11 @@ Slice 5's type-schema cache is designed to use this module too ([control-plane.m
   handle under the pointer grows.
 - **Selection** is a 2 px `--accent` ring outside the border with the lifted shadow. Hover lifts
   the shadow alone.
+- **A change of ports redraws the box in place.** `node.updated` with its new `inputs` and
+  `outputs` ([control-port.md](control-port.md#changes-of-ports)) changes the node the editor holds,
+  not a new one: the box keeps its place, a surviving handle keeps its wires (the routes were never
+  removed, so they never go `pending`), a new handle comes unwired, and the counters and marks go
+  on.
 
 ### Wires
 
@@ -571,11 +579,13 @@ buttons; its tests cover every phase. The rules it follows:
   a restart of ear") and `disabled` ("disabled in ear.conf") each have their own quiet style, apart
   from `failed`'s. So has `reconfiguring`, a change in place, which is not a warning: its line
   names the keys it applies and those next ("reconfiguring port; latencyMs next"), and Start is
-  off while it lasts.
+  off while it lasts. Stop, Restart and Disable stay on, each saying what it does to the change:
+  "ends the change and stops", "ends the change and restarts", "ends the change and disables".
 - **The box always says why a node is silent:** what it waits for (from `waitingFor`: "waiting for
   fpp.rtp", "waiting for the previous desk to stop", "waiting for the engine"), why it is
-  stopping or configuring (from `cause`: "restarting: settings changed (card)", "configuring:
-  trying again", "restarting: could not apply port in place"), or a failure's detail.
+  stopping or configuring (from `cause`: "restarting: settings changed (card)", "restarting: ports
+  changed (playback)", "configuring: trying again", "restarting: could not apply port in place"),
+  or a failure's detail.
 - **Fast phases do not flicker:** a starting phase's line shows only once the editor has seen the
   phase for 250 ms, measured on the browser's clock, never against the server's `since`.
 - **Wires stay drawn in every phase,** since the graph keeps them linked; a wire from a silent

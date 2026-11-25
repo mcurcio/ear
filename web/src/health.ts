@@ -172,7 +172,14 @@ export function describeHealth(node: GraphNode, seenMs: number = Infinity): Heal
         word,
         styleClass,
         line: `reconfiguring ${keys}${next}`.trimEnd(),
-        actions: { start: off("it is changing its settings"), stop: on, restart: on, disable, enable },
+        // Each ends the change at once, as a newer change would (docs/editor.md#a-nodes-health).
+        actions: {
+          start: off("it is changing its settings"),
+          stop: { enabled: true, why: "ends the change and stops" },
+          restart: { enabled: true, why: "ends the change and restarts" },
+          disable: { enabled: true, why: "ends the change and disables" },
+          enable,
+        },
       };
     }
     case "stopping": {
