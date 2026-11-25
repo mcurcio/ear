@@ -439,10 +439,18 @@ so with one version on both sides it matches what ear's reader parses.
 
 `web/src/theme.css` holds every colour, radius, shadow and duration the editor draws with, as
 custom properties on `:root`, and is loaded before `editor.css`. `editor.css`, the components (the
-wires' status colours are `editor.css`'s wire classes) and the knobly tokens use only these, and React Flow's
-own variables (`--xy-*`) are pointed at them, so its canvas, dot grid and minimap follow the theme
-without its `colorMode` prop (which would fight `data-theme`). The values live in `theme.css`
-alone; the groups:
+wires' status colours are `editor.css`'s wire classes) and the knobly tokens use only these, and
+ear's values live in `theme.css` alone.
+
+**The order the styles load.** `main.tsx` loads React Flow's `style.css`, then
+`@mcurcio/patchbay/tokens.css`, then `theme.css`, then `editor.css`. patchbay's tokens come first:
+they hold the same values under `--pb-` names (`--knobly-*` as `--pb-code-*`) and point React
+Flow's own variables (`--xy-*`) at them on `.react-flow`, after React Flow's defaults, so its canvas,
+dot grid and minimap follow the theme without its `colorMode` prop (which would fight
+`data-theme`). patchbay (`@mcurcio/patchbay`, pinned exactly in `web/package.json`) documents that
+mapping and its tokens on
+[its tokens page](https://github.com/mcurcio/patchbay/blob/v0.2.0/docs/tokens.md#the-tokens). Until the
+editor draws with the `--pb-` names, both sets load and hold the same values. The groups:
 
 - **Surfaces:** `--surface` the canvas, `--raised` boxes, panels and controls, `--sunken` meter
   tracks, badges and read-only text; `--line` and `--line-strong` the borders and the dot grid.

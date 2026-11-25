@@ -1,7 +1,8 @@
 # The graph editor on patchbay: what is still to build
 
-Status: designed, not built. The graph editor (`web/`, [docs/editor.md](../editor.md)) draws everything itself: its
-tokens in `web/src/theme.css`, its controls in `web/src/components/`, its styles in `web/src/editor.css` (1697 lines).
+Status: designed; of A1 only the package and its tokens are built. The graph editor (`web/`,
+[docs/editor.md](../editor.md)) draws everything itself: its tokens in `web/src/theme.css`, its controls in
+`web/src/components/`, its styles in `web/src/editor.css` (1677 lines).
 `@mcurcio/patchbay` (npm, 0.2.0) is a component library extracted from this editor: its `tokens.css` is `theme.css`
 renamed, and its built primitives and hooks are generic versions of the editor's leaves. This page designs moving the
 editor onto it, one area per change, so that the editor keeps its behaviour and ear keeps everything that is not
@@ -10,7 +11,7 @@ meters) is still only designed in patchbay; those steps wait on patchbay's relea
 
 | Step | What | Waits on |
 |---|---|---|
-| **A1** | The package, its tokens, the rename, the theme (section 3.2) | nothing |
+| **A1** | The rename and the theme (section 3.2); the package and its tokens are in | nothing |
 | **A2** | The built primitives and hooks, one area per change (section 3.3) | the confirmations in section 6 |
 | **A3** | The node box, wires, meters and the canvas sugar (section 3.4) | patchbay's graph layer, released |
 | **A4** | Feedback, the palette and keys, the code editor (section 3.5) | patchbay's composites and hooks, released |
@@ -43,6 +44,9 @@ The choices still open are in section 6; each answer goes in this table with its
 - **The values match.** Every colour in `theme.css` is the same in `tokens.css`, in light and both dark sets; the names
   change (`--X` → `--pb-X`, `--knobly-Y` → `--pb-code-Y`). patchbay's system-dark rule is `:root:not([data-theme])`
   where ear's is `:root:not([data-theme="light"])`; they agree for every value `applyTheme` writes.
+- **The editor loads it.** `web/package.json` pins `@mcurcio/patchbay` 0.2.0 exactly, and `npm ci` takes the
+  tarball-installed knobly 1.0.0 as meeting its `^1.0.0` peer [V: `npm ls` dedupes it]. The order the styles load in,
+  and patchbay's mapping of React Flow's `--xy-*` variables, are in [editor.md](../editor.md#tokens-and-themes).
 
 ## 3. The design
 
@@ -61,18 +65,16 @@ patchbay takes the drawing and the generic mechanics; ear keeps what knows about
 
 ### 3.2 A1: the package, the tokens, the theme
 
-1. **The package.** `@mcurcio/patchbay` from the npm registry, pinned exactly in `web/package.json` and the lock, as
-   AGENTS.md allows every package but knobly [U: that `npm ci` takes the tarball-installed knobly 1.0.0 as meeting the
-   `^1.0.0` peer; checked by this change].
-2. **The cascade.** `main.tsx` imports React Flow's `style.css`, then `@mcurcio/patchbay/tokens.css`, then ear's CSS.
-   `tokens.css` sets `.react-flow`'s `--xy-*` variables and must come after React Flow's defaults; `editor.css`'s own
-   `.react-flow` block goes. `base.css` is optional and waits for A5.
-3. **The rename.** One mechanical change: every `var(--X)` in `editor.css` and the components becomes `var(--pb-X)`,
+The package and its tokens are in: patchbay 0.2.0 pinned exactly, `tokens.css` loaded before `theme.css`, and
+React Flow's `--xy-*` variables mapped by patchbay ([editor.md](../editor.md#tokens-and-themes)). `base.css` is
+optional and waits for A5. What A1 still has to do:
+
+1. **The rename.** One mechanical change: every `var(--X)` in `editor.css` and the components becomes `var(--pb-X)`,
    `--knobly-*` becomes `--pb-code-*`, the font literals become `--pb-font-*` and `--pb-text-*`, and `theme.css` is
    deleted. A missed name fails silently, so the same change adds a test that every `var(--…)` in `web/src` names a
    token in patchbay's `tokens.css` or a variable ear declares (`--state`, `--inspector-width`, `--gutter-digits`,
    `--code-size`).
-4. **The theme.** `useTheme({ key: "ear-editor/1/theme" })`, so the choice people kept is read where it is; patchbay's
+2. **The theme.** `useTheme({ key: "ear-editor/1/theme" })`, so the choice people kept is read where it is; patchbay's
    ThemeSwitch with `labels` carrying ear's tooltip words if they stay. `themeScript` inline in `index.html` would end
    the first-paint flash (section 6).
 

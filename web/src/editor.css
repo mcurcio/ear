@@ -38,26 +38,6 @@ body,
   padding-right: env(safe-area-inset-right, 0px);
 }
 
-/* React Flow's own variables point at the tokens, so its canvas, background and minimap follow the theme; its
-   colorMode prop is not used, as it would fight data-theme. */
-.react-flow {
-  --xy-background-color: var(--surface);
-  --xy-background-pattern-color: var(--line);
-  --xy-node-color: var(--text);
-  --xy-edge-stroke: var(--muted);
-  --xy-connectionline-stroke: var(--muted);
-  --xy-handle-background-color: var(--text);
-  --xy-handle-border-color: var(--raised);
-  --xy-selection-background-color: color-mix(in srgb, var(--accent) 8%, transparent);
-  --xy-selection-border: 1px dotted var(--accent);
-  --xy-attribution-background-color: color-mix(in srgb, var(--raised) 60%, transparent);
-  --xy-minimap-background-color: var(--raised);
-  --xy-minimap-mask-background-color: color-mix(in srgb, var(--surface) 65%, transparent);
-  --xy-minimap-mask-stroke-color: var(--accent);
-  --xy-minimap-node-background-color: var(--sunken);
-  --xy-minimap-node-stroke-color: var(--line-strong);
-}
-
 .react-flow__attribution a {
   color: var(--muted);
 }
