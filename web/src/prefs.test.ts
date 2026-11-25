@@ -7,6 +7,7 @@ import {
   checkFlag,
   checkPlaces,
   checkTheme,
+  checkTypeSchemas,
   checkWidth,
   earKey,
   maxPlaces,
@@ -177,5 +178,28 @@ describe("the keys", () => {
     expect(storage.items.has("ear-editor/1/theme")).toBe(true);
     expect(earKey("a:7777", "places")).toBe("ear-editor/1/a:7777/places");
     expect(themeKey()).toBe("ear-editor/1/theme");
+  });
+});
+
+describe("type schemas", () => {
+  const set = { hash: "fnv1a64:0123456789abcdef", typeSchemas: [{ name: "white", settings: [], inputs: [], outputs: ["noise"], reconfigureMs: 10000 }] };
+
+  it("are kept per ear and read back whole", () => {
+    const storage = new MapStorage();
+    const prefs = new Prefs(storage, "ear.lan:7777");
+    expect(prefs.typeSchemas()).toBeUndefined();
+    prefs.typeSchemaKeeper().save(set);
+    expect([...storage.items.keys()]).toStrictEqual([earKey("ear.lan:7777", "types")]);
+    expect(prefs.typeSchemaKeeper().load()).toStrictEqual(set);
+    expect(new Prefs(storage, "other:7777").typeSchemas()).toBeUndefined();
+  });
+
+  it("are ignored whole when any part is of the wrong shape", () => {
+    expect(checkTypeSchemas(set)).toStrictEqual(set);
+    expect(checkTypeSchemas({ ...set, hash: "" })).toBeUndefined();
+    expect(checkTypeSchemas({ ...set, typeSchemas: {} })).toBeUndefined();
+    expect(checkTypeSchemas({ ...set, typeSchemas: [{ name: 7, settings: [] }] })).toBeUndefined();
+    expect(checkTypeSchemas({ ...set, typeSchemas: [{ name: "x", settings: [{ kind: "text" }] }] })).toBeUndefined();
+    expect(checkTypeSchemas("nope")).toBeUndefined();
   });
 });

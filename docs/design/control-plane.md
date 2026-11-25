@@ -1,7 +1,10 @@
 # The control plane and parameters: slices 5 and 6 of the node framework
 
-Status: design, not built. Slice 5 (the control plane: the type schema on the wire, status, events, node diagnostics on
-the wire, actions, the realtime coded ring, sendspin's notes split) follows slice 3c (built: the node
+Status: design, step 5.1 built (the type schema on the wire, `types.get`, `typeSchemaHash`, `invalid-settings`' `key` and
+`detail`, and the editor's settings form with Apply asking first: `docs/control-port.md#type-schemas`,
+`docs/writing-a-node-type.md#the-type-schema`, `docs/editor.md#the-settings-form`); the rest not built. Slice 5 (the
+control plane: status, events, node diagnostics on the wire, actions, the realtime coded ring, sendspin's notes split)
+follows slice 3c (built: the node
 handle and loops, `docs/writing-a-node-type.md#the-node-handle`, `#loops`). Slice 6 (parameters: decimal, indexed and live rows, parameter slots and their ramps, retunes,
 gestures, the `gain` type, the editor's faders) follows slice 3d (built: the plan's outcomes, `docs/architecture.md#restarts-and-changes-of-settings`, and `node.set`,
 `docs/control-port.md#nodeset-and-dry-runs`)
@@ -262,8 +265,9 @@ Other examples: a card's PCM state (slice 8) is status; `rtp`'s `receiving` is s
 
 The frame is built: an absent `protocol` is 0, the number moves only on a breaking change, additive growth is announced
 in `features`, every enum is open, members ear sends are additive and members a client sends exist only from the
-feature that adds them (ear's decoders refuse an unknown key, -32602 with `data.pointer`). These slices add the
-features `types` (5.1), `status` (5.2: status, events, node diagnostics), `actions` (5.4), `live` (6.3: decimal,
+feature that adds them (ear's decoders refuse an unknown key, -32602 with `data.pointer`). Step 5.1 built the feature
+`types` ([control-port.md](../control-port.md#type-schemas)); these slices add the features `status` (5.2: status,
+events, node diagnostics), `actions` (5.4), `live` (6.3: decimal,
 indexed and live rows, `applied: "retune"`) and `gestures` (6.4).
 
 Names: requests are `<entity>.<verb>`, notifications say what happened; object keys, status field names and setting
@@ -281,7 +285,6 @@ as any refusal does.
 
 | Method | Feature | Params | Result | Refusals (`data.code`) | Path |
 |---|---|---|---|---|---|
-| `types.get` | `types` | `{"ifNoneMatch"?}` | `{"protocol","hash","typeSchemas"}`, or `{"protocol","hash","notModified": true}` | none | control thread (fixed at boot) |
 | `gesture.begin` | `gestures` | `{"name", "key"}` | `{"gesture", "value", "reach", "min", "max", "decimals"}` | `unknown-node`, `not-live`, `shared-definition`, `parameter-held`, `file-invalid`, `file-refused`, `stopping` | control thread, then the main loop (7.2) |
 | `gesture.change` | `gestures` | `{"gesture", "seq", "value"}` | `{}` if sent with an id | `unknown-gesture`, `invalid-settings`, `not-in-batch` | control thread, then the main loop directly |
 | `gesture.end` | `gestures` | `{"gesture", "value"?}` | `{"value"}`: what was committed | `unknown-gesture`, `invalid-settings` (the gesture stays open), `stopping`, the desired graph's (the gesture is aborted) | keeper |
@@ -290,7 +293,10 @@ as any refusal does.
 
 `node.set` and `node.update` (3d) gain `parameter-held` and the outcome `retune` from feature `live`.
 
-**`types.get`**
+**`types.get`** is built ([control-port.md](../control-port.md#type-schemas)). Later steps add to each type `status`,
+`events` and `actions` (5.2, 5.4), and to rows the kind `decimal` with `decimals`, `taper` (`linear`, `log`, `db`, 8.3)
+and `minIsSilence`, `live` (`{"smoothingMs"}`, with `change` `live`) and `indexed` (`{"by": <the count row's key>,
+"from": 1}`) (slice 6), as this example of slice 6's `gain` shows:
 
 ```json
 {"jsonrpc":"2.0","id":7,"result":{"protocol":1,"hash":"fnv1a64:9c2e41f07a3b5d18","typeSchemas":[
@@ -314,16 +320,6 @@ as any refusal does.
    "inputs":[],"outputs":["stream"],"reconfigureMs":10000,"status":[],"events":[],"actions":[]}]}}
 ```
 
-- A setting row: `key`, `kind` (`text`, `wholeNumber`, `decimal`), `required`, and as they apply `default` or
-  `defaultFrom` (an open enum: `graphFrequency`, `nodeName`), `min`, `max`, `unit`, `decimals`, `taper` (`linear`,
-  `log`, `db`, 8.3), `minIsSilence`, `live` (`{"smoothingMs"}`), `indexed` (`{"by": <the count row's key>, "from":
-  1}`), `onlyWithout`, `mustBe` (the row's own prose), and the text hints `values`, `pattern`, `maxLength`, `help`.
-  Text hints are documentation for controls: the row's parse function stays the judge.
-- **`change`** (`live`, `inPlace`, `restart`, from 3d's and 6's marks) and **`shapes: true`** (`.shapesPorts()`, 5.1)
-  on every row: the editor's hints come from these alone. `reconfigureMs` on the type: its in-place deadline (3d's
-  `.lifecycle`).
-- `inputs` and `outputs` are the public banks' names, in declaration order; inside banks are never on the wire.
-- No type's `settings` lists `disabled`: it is the framework's reserved key (built), never a row.
 - A status field: `name`, `kind` (`flag`, `wholeNumber`, `decimal`, `choice`, `text`), `initial` (`null` when it starts
   unknown), `display` (`panel`, `box`, `callout`), `flapsAbove`, and as they apply `min`, `max`, `unit`, `values`,
   `maxBytes`, `help`. Its writer is not on the wire.
@@ -331,9 +327,6 @@ as any refusal does.
   `min`, `max`, `values`).
 - An action: `name`, `by` (`type`; open), `target` (`code` for a trigger, `loop` for a call), `help`, `args` (setting
   rows).
-- The hash is opaque: FNV-1a 64 over the exact bytes of the `typeSchemas` encoding made at boot, written
-  `fnv1a64:<16 hex>`; one hash for the whole set, since types are compiled in and change only with ear. The graph's
-  `types` (a sorted list of names, built) stays.
 
 **`gesture.begin`** opens a gesture on one live row of one node. Its reach is every node and key whose value is defined
 at the same place in `ear.conf` (G1): `amp2`'s `trimDb.1` and `trimDb.2` share `@set $trim 0;`, so a gesture on either
@@ -373,7 +366,7 @@ handler's outcome.
 
 ### 4.3 The graph, and notifications
 
-`graph.get` and `graph.subscribe` gain `typeSchemaHash` at the top and, per node, `status` (every declared field, each
+`graph.get` and `graph.subscribe` (which carry `typeSchemaHash`, built) gain, per node, `status` (every declared field, each
 at its initial value until written; always present, `{}` for a type with none), `gestures` (the open gestures moving
 one of this node's keys, with their live value; always present) and `diagnostics` (one entry per code and subject, each
 with `active`, `count`, `t`, `msg` and its fields; always present). `node.added` carries the same, so a client need not
@@ -434,7 +427,7 @@ All -32000 with `data.code`; every new code is a case in `test/protocol/errors.j
 
 | `data.code` | When | `data` also has |
 |---|---|---|
-| `invalid-settings` (extended) | a value a row or the type's `check` refuses, from the plan or from `Gestures` | `key` (the full key, `trimDb.2`; absent for a rule naming none), `detail` |
+| `invalid-settings` (extended) | a value a row or the type's `check` refuses, from `Gestures` too | `key` (an indexed member's full key, `trimDb.2`), `detail`, as built ([control-port.md](../control-port.md#error-codes)) |
 | `parameter-held` | `node.set`, `node.update`, `gesture.begin`: a key it would change is held by an open gesture (another session's, or the caller's own) | `gesture`, `key` |
 | `not-live` | `gesture.begin`: the key is not a live row (or not declared) | `key` |
 | `shared-definition` (extended) | `gesture.begin`: the reach holds a key that is not live, rows of another kind or unit, or ranges that do not meet | `place`, `with` |
@@ -448,8 +441,6 @@ All -32000 with `data.code`; every new code is a case in `test/protocol/errors.j
 | `action-failed` | the handler refused; message: its text | `detail` |
 | `action-timeout` | the handler did not answer in 10 s | |
 
-`InvalidSettings` (`command_error.hpp`) gains `key`, set by the settings walk; `describe` keeps today's text. The editor
-places a refusal under its field by `data.key` and never parses the message.
 
 ### 4.6 Node diagnostics on the wire
 
@@ -482,7 +473,6 @@ Slice 8 adds `ear.health-flapping`, `ear.recovery-attempt` and `ear.readiness-mi
 
 | File | Covers |
 |---|---|
-| `test/protocol/types.json` | `types.get` with no hash, a stale hash and the current one; every built-in type's schema, each row's `change` and `shapes`, a `defaultFrom` row |
 | `test/protocol/status.json` | a snapshot with status (a choice at `null`); merges; an event after a flush, with `severity`; a reset and a new configuration's first fields; status kept across a stop and a start |
 | `test/protocol/diagnostics.json` | two fields flapping at once, one settling while the other stays; `count` as sent; an observation code; an unknown code drawn generically |
 | `test/protocol/gestures.json` | begin (no echo to the owner, `begin` to another first, then the reply), changes (one stale, one keep-alive), end with its order; a reach of two keys and of 64; a reach refused `shared-definition`; `parameter-held`; a begin on a failed node; cancel; `tick-refused` to the owner only; an end refused `invalid-settings` leaving the gesture open; aborts by a related hand edit and a related `graphFile.set`; an unrelated hand edit and `graphFile.set` leaving it open; ends for a closed and a silent session; `unknown-gesture` after an abort; `not-in-batch` |
@@ -495,23 +485,23 @@ Everything extends `type_spec.hpp`, `settings_table.hpp`, `lifecycle.hpp` and `n
 Every new constant is `inline constexpr` in the type's named namespace, and every new template keyed on a constant
 refuses one in an unnamed namespace (`linkage::named`, as built).
 
-### 5.1 New row kinds: decimal, indexed, live; `.shapesPorts()`
+### 5.1 New row kinds: decimal, indexed, live
+
+`.shapesPorts()`, `.defaultFrom(DefaultFrom)` and a text row's hints (`TextHints`) are built
+([writing-a-node-type.md](../writing-a-node-type.md#settings-one-table-of-typed-rows)), and so is `NodeType::schema()`
+([#the-type-schema](../writing-a-node-type.md#the-type-schema)).
 
 ```cpp
 namespace ear::setting {
 enum class Taper { linear, log, db };            // how a control maps its travel (8.3); log also ramps geometrically
-enum class DefaultFrom { graphFrequency, nodeName };
 struct DecimalHints {
 	std::uint8_t decimals = 2;                       // display precision, and what a gesture's end rounds to
 	Taper taper = Taper::linear;                     // log: low > 0; db: low <= -60 and high >= 0 (else no compile)
 	bool minIsSilence = false;                       // the control shows `low` as -inf
 };
-struct TextHints { std::span<const std::string_view> values = {}; std::string_view pattern = {}; std::uint32_t maxLength = 0; };
 /// A real number in [low, high]: a JSON number (an integer is taken too), never NaN. Otherwise
 /// "<key>: must be a number[ of <unit>] from <low> to <high>". low above high, or a non-finite bound, does not compile.
 consteval Rule<double> decimal(double low, double high, std::string_view unit = {}, DecimalHints hints = {});
-template <auto Parse> requires TextParser<Parse>
-consteval Rule<ParsedBy<Parse>> text(std::string_view mustBe, TextHints hints);   // today's text(), with hints
 /// A family <key>.1 .. <key>.<n>, n being the checked value of `count`, a whole-number row above it in the table.
 template <class V, bool A> consteval IndexedRow<V> indexed(std::string_view key, const Row<std::uint32_t, A>& count,
                                                            Rule<V> rule, V byDefault);
@@ -523,12 +513,9 @@ consteval Smoothing smooth(std::uint32_t ms);
 - `Row::live(Smoothing)` and `IndexedRow::live(Smoothing)` mark a row live (implying `.inPlace()`). Only a row that
   always reads a value (required, defaulted or indexed) of a whole number or a decimal can be live; a live whole-number
   row must have `smooth(0)` (it steps).
-- An optional row takes `.defaultFrom(DefaultFrom)`: documentation for controls and the schema.
-- `.shapesPorts()`: a change to the row may change the node's ports; the schema's `shapes`. The plan never reads it (it
-  compares real ports, 3d); the all-type tests hold it to `ports()`. An indexed family's count row is `.shapesPorts()`
-  only when `ports()` reads it.
-- `SettingRow` gains `liveMs`, `indexedBy`, a `DecimalRule`, the text hints, `defaultFrom` and `shapesPorts`;
-  `SettingKind` gains `decimal`; `SettingDeclaration` gains `live`, `indexed` and `shapesPorts` beside 3d's `inPlace`.
+- An indexed family's count row is `.shapesPorts()` only when `ports()` reads it.
+- `SettingRow` gains `liveMs`, `indexedBy` and a `DecimalRule`; `SettingKind` gains `decimal`; `SettingDeclaration`
+  gains `live` and `indexed`.
 - The walk: a decimal is a JSON number in range, an integer kept as given. An indexed family's keys are `<key>.<i>`, 1
   to the count; another member number is `"<key>.<i>: no such member (<count key> is <n>)"`, placed where the family's
   row sits in the walk's fixed order; unknown keys skip any key whose part before its last `.` names a family. Each
@@ -823,11 +810,9 @@ Each a case in `src/core/tests/compile_fail/`, matched against GCC 14's wording:
 | `h.drain()` | runs the tick now (the harness drains after every `process` and operation by default) |
 | `h.outcome(settings)` | the plan's outcome of a change, without applying it |
 
-The all-type tests gain: every type's schema encodes; every status field's initial value is of its kind or null; every
-`values` entry parses with its row's parse function; every optional row without a `default` has a `defaultFrom` or a
-`help`; every live row ramps from its default to another value with no sample unwritten; for every row, changing it
-alone from its `validSettings` value changes the ports only if the row is `.shapesPorts()`, and every `.shapesPorts()`
-row changes them for some value; the status view survives every in-place change.
+The all-type tests gain (the schema's checks are built: [writing-a-node-type.md](../writing-a-node-type.md#what-every-type-must-also-pass)):
+every status field's initial value is of its kind or null; every live row ramps from its default to another value with
+no sample unwritten; the status view survives every in-place change.
 
 ## 6. The realtime contract
 
@@ -1082,13 +1067,11 @@ The node panel this section names is the inspector's Node subject
 |---|---|---|
 | `protocol.ts` | the wire types of section 4; `ControlErrorCode`; `NodeDiagnostic`, `EventSeverity` | typecheck |
 | `graph.ts` | each node's `status`, `gestures`, `diagnostics`; handlers for the new notifications | vitest, every fixture |
-| `types.ts` (new) | the type schemas by hash; `types.get` with `ifNoneMatch`; cached in `localStorage` through `prefs.ts`, its keys per ear ([editor.md](../editor.md#what-the-browser-keeps)) | vitest |
 | `gesture.ts` (new, pure) | the session's own gestures as a state machine; what to send for each input; the control mapping | vitest, a fake client |
-| `form.ts` (new, pure) | the settings form's per-field drafts; the Apply flow (8.6) | vitest |
 | `activity.ts` (new) | per node, the last 100 events and diagnostics since connecting; notices, coalesced per node and code | vitest |
 
-Features gate the UI: without `gestures` live rows render as plain number fields committed by `node.set`; without
-`types` the panel is today's JSON area. Nothing in `web/` names a node type.
+`types.ts` and `form.ts` are built ([editor.md](../editor.md#the-settings-form)). Features gate the UI: without
+`gestures` live rows render as plain number fields committed by `node.set`. Nothing in `web/` names a node type.
 
 `gesture.ts`'s states and edges:
 
@@ -1113,27 +1096,20 @@ Features gate the UI: without `gestures` live rows render as plain number fields
 
 ### 8.2 How each row kind renders
 
+The settings form is built for today's kinds, with its hints, drafts, refusals in place and Apply
+([editor.md](../editor.md#the-settings-form)); every non-live field is sent by Apply. Slice 6 adds:
+
 | Row | Control | Commits |
 |---|---|---|
-| text with `values` | a select | on change |
-| text with `pattern` or `maxLength` | a text field, checked as typed (ear still judges) | on Enter or blur |
-| whole number | a number field with steppers, `min`, `max`, unit | on Enter or blur |
-| decimal | a number field with `decimals`, unit | on Enter or blur |
-| optional with `defaultFrom` | empty, its placeholder saying where the default comes from | as its kind |
+| decimal | a number field with `decimals`, unit | by Apply |
 | live decimal | a fader in the panel, mapped by `taper`, with a number field beside it | a gesture; the field by `node.set` |
 | live whole number | steppers and a number field (it steps) | `node.set` |
 | indexed family | one control per member, `n` from the count row's value; above 8, a compact strip behind a disclosure | as its kind |
-| `onlyWithout` | disabled while the other key is set, its tooltip naming it | — |
 
 - **The box** shows a knob for each live, non-indexed row when the type declares one or two of them (`gain` shows
   `gainDb`).
-- **Hints from the schema alone**, beside each non-live field: "applies in place" for `inPlace`, "restarts the node" for
-  `restart`, and "changes the ports" for `shapes`.
-- **Drafts.** Each form field keeps its own draft once typed in; a server change to a field with a draft marks it
-  "changed on ear" and offers to take ear's value, as the text pane does (today `Panels.tsx` resets every field on each
-  update). Live controls follow the server, except one the operator holds.
-- A refusal is shown under the field `data.key` names, or at the form's top. Live controls are disabled while the graph
-  file has errors or was refused, and while the connection is not open.
+- Live controls follow the server, except one the operator holds. They are disabled while the graph file has errors or
+  was refused, and while the connection is not open.
 
 ### 8.3 Gestures from pointer and keyboard
 
@@ -1193,20 +1169,7 @@ flapping starting, at most one per node per 5 s; `error` events assertively. Fla
 
 ### 8.6 Apply asks first
 
-Slice 3d built the wire this needs (`node.set`, `dryRun`, `ports-in-use`, `dropRoutes`:
-`docs/control-port.md#nodeset-and-dry-runs`, `#changes-of-ports`); the editor waits for this slice's settings form,
-since today it edits a node by its knobly text through `node.setText`, which has no dry run.
-
-- **Apply asks first** (feature `dryRun`): non-live rows edited in the form are sent together with one `node.set`.
-  Apply sends it with `dryRun: true`, and when the answer is `restart` or `reshape` (or names routes) shows what will
-  happen before sending ("Restarts desk: its audio stops for a moment." or "Restarts desk and removes 1 route:
-  kitchen:from.left → desk:play.2", with Apply and Cancel); `reconfigure` is sent at once, since nothing stops. The
-  confirmed send carries `dropRoutes: true` exactly when the dry run named routes; if the real edit is refused
-  `ports-in-use` anyway (another edit landed between), the prompt is shown again with the refusal's routes. Per-field
-  hints come from the schema (8.2).
-- **An edit to a key in `keys` or `next`** of a node that is `reconfiguring` says "applies after this change".
-- The owner's answer that binds it (2026-11-08, asked what happens to a change that removes ports that are wired): the editor lists the wires that would go before applying; Apply
-  removes them and changes the setting in one step (one save of `ear.conf`) or neither.
+Built ([editor.md](../editor.md#the-settings-form)).
 
 ## 9. Standard-output records
 
@@ -1265,14 +1228,8 @@ Each step keeps every test green, adds its feature to `features`, and changes no
 | 5.1 to 5.5 | 3c; 3d for `change` in the schema | `types`, `status`, `actions` | no |
 | 6.1 to 6.5 | 3d, 5.1, 5.2 | `live`, `gestures` | 6.3 (a live change ramps instead of restarting) |
 
-**5.1 The schema on the wire.** `NodeType::schema()` from the settings table (text hints and `defaultFrom` added to
-`rtp`'s, `card`'s and `sendspin`'s rows; `change` from 3d's marks; `.shapesPorts()` on `card`'s `playback` and `capture`
-and `rtp`'s `channels`); `types.get` answered on the control thread from an encoding made at boot; `typeSchemaHash`;
-`InvalidSettings::key`, `data.key`, `data.detail`; `types.ts`; the settings form rendered from the schema with drafts,
-hints, the JSON toggle and Apply asking first (8.6). Tests: `types.json`, `errors.json`; `form.ts`'s drafts and its Apply
-flow against a fake client (a `reconfigure` sent at once, a `restart` and a `reshape` asking first, `dropRoutes` sent
-exactly when the dry run named routes, a `ports-in-use` refusal asking again); the all-type schema checks;
-`image-smoke.sh` calls `types.get`; a system test that `graph.get`'s hash matches `types.get`'s.
+**5.1 The schema on the wire** is built ([control-port.md](../control-port.md#type-schemas),
+[writing-a-node-type.md](../writing-a-node-type.md#the-type-schema), [editor.md](../editor.md#the-settings-form)).
 
 **5.2 Status and events off the realtime thread.** `StatusTable`, `EventTable`, `LogCodes` in `TypeSpec`; `Report` and
 `NodeOf::report`; the per-node queue, the drain and the tick; `node.statusChanged` with its reset, `node.eventRaised`,
@@ -1412,7 +1369,6 @@ Each is the designer's unless marked the owner's; the owner can overturn any.
 | G15 | A tab silent for 30 s about its gesture is treated as released, like a closed one | A Wi-Fi drop usually shows as silence before TCP closes; the two must agree with R32 |
 | G16 | The idle timer and the end on the owner's behalf live in the session; a stop of ear commits no open gesture | The session sees every message; a stop is nobody's release |
 | K1 | No framework status fields; a companion's counts are on its `companions` entry | Counts belong to the crossing |
-| X1 | The schema's per-row `change` and `shapes`; `.shapesPorts()` held to `ports()` by the all-type tests | The hint beside each field needs no round trip |
 | X5 | A fader only on `.live` rows | A drag over an in-place row would chop the audio into holds |
 | X6 | Values applied off the realtime thread are `.inPlace()` rows the type posts to its loop; no `watch` hook until a type needs one | Covers every built-in need with 3d's machinery |
 | W1 (built) | One `node.state` whenever any health member changes | — |

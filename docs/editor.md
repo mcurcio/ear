@@ -141,7 +141,9 @@ Home and End) between 280 and 560 px. It shows one subject, chosen by the select
 - nothing selected: **Graph**: the engine facts in full, the graph's counters and the add-node
   form;
 - one node: **Node**: its name and type, its state pill as the box draws it, its line, the
-  lifecycle bar (one segmented row; a refusal shown under it as well as in a toast), its knobly box (or JSON settings), its counters, its companions and Delete;
+  lifecycle bar (one segmented row; a refusal shown under it as well as in a toast), its settings form
+  ([below](#the-settings-form)) or, by the Form/Text toggle, its knobly box (or JSON settings), its counters, its
+  companions and Delete;
 - one route: **Route**: from and to as `node:port` buttons that select that node, its status in
   words, its level meter and Remove;
 - several: a count ("3 nodes, 2 routes") and Delete for them all.
@@ -149,8 +151,8 @@ Home and End) between 280 and 560 px. It shows one subject, chosen by the select
 A name or route the graph does not hold is ignored, so the inspector shows only what ear announced.
 Delete asks `node.remove` for each node and `route.remove` only for routes between kept nodes, as
 the delete key does. The add-node form lives only in the Graph subject, so selecting something
-drops a half-typed statement; a new template is written when it shows again. Slice 5's settings
-form and status list are designed to land in the Node subject, under the lifecycle bar and its refusal line
+drops a half-typed statement; a new template is written when it shows again. Slice 5's status list
+is designed to land in the Node subject, under the settings form
 ([control-plane.md](design/control-plane.md#8-the-editor)).
 
 ### The drawer
@@ -391,6 +393,49 @@ only that statement. The rules:
   edits it; while `ear.conf` has errors there are no `nodeTexts` and the box says to fix them in
   the pane. Neither offers Save. The text keeps its full contrast: it is never dimmed.
 
+## The settings form
+
+With the `types` and `node.set` features the inspector's Node subject draws the node's settings
+as a form made from its type's schema (`types.get`, [control-port.md](control-port.md#type-schemas)):
+`web/src/form.ts` is its logic (`form.test.ts`, against a fake client and the fixtures),
+`components/SettingsForm.tsx` draws it, and nothing in `web/` names a node type. A Form/Text toggle
+above it shows the node's knobly box instead ([above](#the-node-panels-text); JSON for an ear
+without `node-text`), for what the form cannot say. *Why:* the owner chose knobly as the person's raw
+text over JSON, so the toggle's other side is the node's own statement.
+
+- **Schemas once per hash.** `web/src/types.ts` (`types.test.ts`) holds the set the Graph's
+  `typeSchemaHash` names, fetched with the held hash as `ifNoneMatch`, and kept per ear
+  ([above](#what-the-browser-keeps)). Until it holds that set the panel shows the text box.
+- **One field per row**, in the table's order: a select for a text with `values` (an optional one
+  starts with its absent choice), a text field (checked against `pattern` and `maxLength` as typed),
+  a number field with the range for a whole number (a rate in Hz), a checkbox for a flag, and a JSON
+  field for a kind the editor does not know. An empty field's placeholder says what absent means: the
+  default (`default 0 channels`), where it comes from (`the graph's frequency`, `the node's name`), or
+  `absent`; a row's `help` and its unit are beside it, and a row that is `onlyWithout` a given key
+  (a draft included) is disabled, saying so.
+- **Hints from the schema alone**, beside each field: "applies in place" for `change: inPlace`,
+  "restarts the node" for `restart`, "changes the ports" for `shapes`; a `change` it does not know says
+  nothing. A drafted key that a node changing in place is applying (`keys`) or will take next (`next`)
+  also says "applies after this change".
+- **Drafts.** A field keeps what the person typed until Apply is answered or Discard; typing the
+  node's value back drops its draft. When ear's value changes under a draft (another editor, a hand
+  edit), the field says "changed on ear" with "Take ear's value"; a change elsewhere leaves it
+  alone. The fields without a draft follow ear.
+- **Apply asks first** (feature `dryRun`). Apply sends the drafted keys as one `node.set` merge
+  patch (an emptied optional field removes its key) with `dryRun: true`. `reconfigure`, `unchanged`
+  and `stored` are then sent at once, since nothing stops; `restart`, `reshape`, an answer naming
+  routes, or an outcome the editor does not know show what will happen first ("Restarts desk: its
+  audio stops for a moment.", "Restarts desk and removes 1 route: kitchen:from.left → desk:play.2",
+  "Changes fpp's ports.") with Apply and Cancel. The confirmed send carries `dropRoutes: true` exactly
+  when the dry run named routes, so the routes and the change are one save of `ear.conf` or neither; if
+  it is refused `ports-in-use` anyway (another edit landed between), the question is asked again with
+  the refusal's routes. Without `dryRun` Apply sends at once. *Why:* the owner, asked what happens to a
+  change that removes wired ports: the editor lists the wires that would go before applying, and Apply
+  removes them and changes the setting in one step, or neither.
+- **Refusals in place.** A value outside the hints is refused before sending, under its field. ear's
+  refusal is shown under the field its `data.key` names, in `data.detail`'s words, or at the form's
+  top when it names none; it raises no toast (a lost answer still does).
+
 ## Highlighting
 
 The pane, the node panel's box and the add-node form draw their knobly highlighted, in one component,
@@ -500,7 +545,9 @@ the page's life), and checks every value on read, ignoring a bad one. `main.tsx`
   ([above](#its-rules)). *Why:* the owner wanted node places kept across reloads in the browser, per ear, so a
   reload no longer scatters a hand-placed graph and places stay the browser's own.
 
-Slice 5's type-schema cache is designed to use this module too ([control-plane.md](design/control-plane.md#81-stores)).
+- **Type schemas**, per ear (`types`): the last set `types.get` answered and its hash (`types.ts`,
+  [below](#the-settings-form)), so a reload draws the settings forms before ear answers. A kept set
+  is drawn only while the Graph names its hash; a kept value that fails the check is ignored whole.
 
 ## The node box, wires and meters
 

@@ -21,7 +21,7 @@ export const lifecycleLabels: Record<LifecycleMethod, string> = {
 /** What asked for a request: a route's two ends, a node's name (and so its button), or the drawer or the form. */
 export type Asked =
   | { method: "route.add" | "route.remove"; ends: RouteEnds }
-  | { method: "node.add" | "node.remove" | "node.update" | "node.setText" | LifecycleMethod; node: string }
+  | { method: "node.add" | "node.remove" | "node.update" | "node.set" | "node.setText" | LifecycleMethod; node: string }
   | { method: "node.addText" | "graphFile.set" };
 
 export type AskedMethod = Asked["method"];
@@ -56,6 +56,7 @@ export function describeAsked(asked: Asked): string {
     case "node.remove":
       return `remove ${asked.node}`;
     case "node.update":
+    case "node.set":
       return `${asked.node}'s settings`;
     case "node.setText":
       return `save ${asked.node}'s text`;

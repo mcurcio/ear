@@ -22,6 +22,7 @@ import type { NoticesView } from "../notices";
 import type { RequestsView } from "../requests";
 import type { Graph, GraphNode, Level } from "../protocol";
 import type { ConnectionStatus } from "../rpc";
+import type { TypeSchemaSet } from "../types";
 
 export const EditorContext = createContext<Editor | null>(null);
 
@@ -36,6 +37,15 @@ export function useGraph(): GraphState {
   return useSyncExternalStore(
     useCallback((listener) => graph.subscribe(listener), [graph]),
     () => graph.get(),
+  );
+}
+
+/** The node types' schemas held (types.ts): re-renders when a new set arrives. */
+export function useTypeSchemas(): TypeSchemaSet | null {
+  const { types } = useEditor();
+  return useSyncExternalStore(
+    useCallback((listener) => types.subscribe(listener), [types]),
+    () => types.get(),
   );
 }
 

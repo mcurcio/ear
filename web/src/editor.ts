@@ -15,6 +15,7 @@ import { noticeOfRefusal, noticeOfState, Notices } from "./notices";
 import type { Methods, Notifications } from "./protocol";
 import { askedOf, Requests, type Asked, type AskedMethod } from "./requests";
 import { RpcClient, RpcError, type ConnectionStatus, type ParamsOf, type RpcClientOptions } from "./rpc";
+import { TypeStore, type TypeSchemaKeeper } from "./types";
 
 /** The connection as the top bar's pill draws it. */
 export interface ConnectionView {
@@ -34,6 +35,8 @@ export class Editor {
   readonly levels = new LevelStore();
   readonly moves = new CompanionMoves();
   readonly counterMoves = new CounterMoves();
+  /** The node types' schemas (types.ts), fetched once per hash the Graph names. */
+  readonly types: TypeStore;
   readonly client: RpcClient;
   readonly requests: Requests;
   readonly notices: Notices;
@@ -41,9 +44,16 @@ export class Editor {
   private readonly statusListeners = new Set<() => void>();
   private readonly now: () => number;
 
-  constructor(options: Omit<RpcClientOptions, "onMessage" | "onStatus" | "onRetry"> & { now?: () => number }) {
-    const { now, ...clientOptions } = options;
+  constructor(
+    options: Omit<RpcClientOptions, "onMessage" | "onStatus" | "onRetry"> & {
+      now?: () => number;
+      /** Where the type schemas are kept across reloads (prefs.ts); none: the page's life. */
+      typeKeeper?: TypeSchemaKeeper;
+    },
+  ) {
+    const { now, typeKeeper, ...clientOptions } = options;
     this.now = now ?? (() => performance.now());
+    this.types = new TypeStore(typeKeeper ?? null);
     this.requests = new Requests(this.now);
     this.notices = new Notices(this.now);
     // The graph's first listeners, so a box drawn for a new graph reads that graph's moves.
@@ -54,6 +64,11 @@ export class Editor {
       onMessage: (message) => {
         this.graph.apply(message);
         this.file.apply(message);
+        // A Graph naming schemas this editor does not hold: fetch them (types.ts), once per hash.
+        const graph = this.graph.get();
+        if (graph !== null && this.types.wanted(graph) !== undefined) {
+          void this.types.sync(graph, (params) => this.client.call("types.get", params));
+        }
         if ("method" in message && message.method === "levels") {
           this.levels.replace((message.params as Notifications["levels"]).nodes);
         }

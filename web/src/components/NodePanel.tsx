@@ -1,20 +1,22 @@
 // The inspector's Node subject (docs/editor.md#the-inspector): the node's name and type, its state pill as the box
 // draws it and its line (health.ts, docs/editor.md#a-nodes-health), the lifecycle bar (Start, Stop, Restart, Disable
-// and Enable when ear has the lifecycle feature, each enabled by health.ts), its text in knobly (with the node-text
-// feature, docs/editor.md#the-node-panels-text; else its settings as JSON), its counters, its companions in words and
-// Delete. Every change is a request to ear; the canvas changes only when ear announces it. A lifecycle button spins
+// and Enable when ear has the lifecycle feature, each enabled by health.ts), its settings form (with the types and
+// node.set features and the type's schema held, docs/editor.md#the-settings-form) or, by the Form/Text toggle, its text
+// in knobly (with the node-text feature, docs/editor.md#the-node-panels-text; else its settings as JSON), its counters,
+// its companions in words and Delete. Every change is a request to ear; the canvas changes only when ear announces it. A lifecycle button spins
 // while its own request is on its way, and a refusal shows under the bar as well as in a toast
 // (docs/editor.md#where-a-refusal-lands).
 import { useEffect, useState } from "react";
 import { describeHealth, type ActionAvailability, type HealthView } from "../health";
 import { refusalParts, type RefusalParts } from "../notices";
-import { lifecycleFeature, nodeTextFeature, type GraphNode } from "../protocol";
+import { dryRunFeature, lifecycleFeature, nodeSetFeature, nodeTextFeature, type GraphNode, type TypeSchema } from "../protocol";
 import { lifecycleAsked, lifecycleLabels, type LifecycleMethod } from "../requests";
 import { parseSettings } from "../settings";
 import { CompanionList } from "./CompanionStrip";
 import { CounterTable } from "./Counters";
 import { useCompanionBadges, useEditor, useGraphFile, useNodeCounters, useRequests } from "./hooks";
 import { NodeTextBox } from "./NodeTextBox";
+import { SettingsForm } from "./SettingsForm";
 import { Spinner } from "./Spinner";
 import { StatePill } from "./StatePill";
 
@@ -56,10 +58,13 @@ function LifecycleButton({
 export function NodePanel({
   node,
   features,
+  schema,
   onRemove,
 }: {
   node: GraphNode;
   features: string[];
+  /** The node's type's schema, when ear has the types feature and the editor holds the set the Graph names. */
+  schema?: TypeSchema;
   onRemove: (name: string) => void;
 }) {
   const editor = useEditor();
@@ -73,6 +78,9 @@ export function NodePanel({
   const file = useGraphFile();
   // A person edits knobly; JSON is the machine API: the JSON box is only for an ear without node-text.
   const knobly = features.includes(nodeTextFeature) && file !== null;
+  // The form needs node.set; the toggle shows the node's text instead (docs/editor.md#the-settings-form).
+  const formable = schema !== undefined && features.includes(nodeSetFeature);
+  const [asText, setAsText] = useState(false);
   const shown = JSON.stringify(node.settings, null, 2);
   const [settings, setSettings] = useState(shown);
   // A new node selected, or its settings changed on the server: show what the server has.
@@ -122,9 +130,19 @@ export function NodePanel({
           {refusal.parts.detail !== "" && ` ${refusal.parts.detail}`}
         </p>
       )}
-      {/* Slice 5's settings form and status list go here, under the lifecycle bar and its refusal line
-          (docs/editor.md#the-inspector). */}
-      {knobly ? (
+      {formable && (
+        <div className="settings-toggle" role="group" aria-label="settings as">
+          <button type="button" aria-pressed={!asText} onClick={() => setAsText(false)}>
+            Form
+          </button>
+          <button type="button" aria-pressed={asText} onClick={() => setAsText(true)}>
+            {knobly ? "Text" : "JSON"}
+          </button>
+        </div>
+      )}
+      {formable && !asText && schema !== undefined ? (
+        <SettingsForm key={node.name} node={node} schema={schema} dryRun={features.includes(dryRunFeature)} />
+      ) : knobly ? (
         <NodeTextBox key={node.name} node={node.name} file={file.file} />
       ) : (
         <>
