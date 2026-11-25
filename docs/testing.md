@@ -585,6 +585,19 @@ engine tests above, but not yet end to end:
   during an `rtp` change and back after; a card's `playback` from 2 to 1 on the test card with
   `dropRoutes`, the surviving route never `pending`.
 
+Owed by status and events ([architecture.md](architecture.md#status-and-events)); the paces and
+the wire are built and covered by `ear_core_tests` (`[report]`), `ear_control_tests` and the
+fixtures, but not yet under load:
+
+- **`ear_server_tests`**: ten nodes' `node.statusChanged` at 30 a second each and their events at
+  their pace, to a client that reads slowly, against the client queue's 256 messages
+  ([control-port.md](control-port.md#per-client-limits-and-stopping)): whether 1008 comes sooner
+  than with the counters alone, and if it does, a node's `node.statusChanged` coalesced with the
+  last queued one. It needs an emitter paced by the role sleeps
+  ([#sleeps-by-role](#sleeps-by-role)), as no built-in type writes status yet.
+- **System tests**: the same end to end, once a built-in type writes status (sendspin's notes
+  split into status and events).
+
 ## What CI does not prove
 
 - **AirPlay 2's sound from a real sender.** No scripted AirPlay 2 sender is known, so the owner checks
