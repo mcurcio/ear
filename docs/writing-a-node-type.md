@@ -236,7 +236,8 @@ Then answer `return cx.applied()` (the code stays), `return cx.whenReady(loop, w
 goes on on the node's own thread once it is ready: [whenReady](#whenready-and-configuredone)),
 `return cx.applied(code)` (a new code, swapped
 in at the commit point between two cycles: a discontinuity unless the type carries its state into
-it; it takes no loop's state, which lives across a change), or `return Changed::restart(reason)`
+it; it takes no loop's state, which lives across a change; a code given is always swapped, as the
+framework never compares codes, so a type with nothing new answers `cx.applied()`), or `return Changed::restart(reason)`
 when the type cannot take this change in place after all, which restarts the node with the new
 settings. A change version cannot refuse a change: the new settings are committed before it is
 called. `ChangeOf` has no `state`, `store`, `executor` or `program`: each does not
@@ -312,7 +313,9 @@ acknowledged; the new one's readiness is bounded by the change's deadline.
 - **Held either way.** The framework holds what the bank carries before it makes or breaks
   anything: for a receiver or a capture card, the public outputs its inside input feeds (through
   the pass-through, else every routable output), so two into one inside input never mix into what
-  the node sends; for a playback card, its own inside output bank (`to_card`), so neither card
+  the node sends (that two sources into one inside input mix at all relies on PipeWire's port mixer
+  for a DSP client-node port loading through its `library.name` fallback, since `engine.conf` maps
+  no `audio.mixer*` library: not yet tested, [testing.md](testing.md#tests-still-to-write)); for a playback card, its own inside output bank (`to_card`), so neither card
   clicks as it goes or comes. The commit point fades it back in.
 - **Retiring.** The old one is listed `retiring: true` in the node's companions just before its
   replacement, which shares its name for a moment
@@ -1043,7 +1046,8 @@ to 8929 holds both for a moment, and another node can take 8928 only once the fi
   and probed as at the first readiness step: held by a configuration that runs, it is refused and the change falls
   back (`resource-refused`, [architecture.md](architecture.md#changes-in-place)), whose restart claims it afresh;
   held by one that is closing, it waits (`ear.claim-wait`), against the change's deadline, not its own 15 s, and past
-  that deadline the restart's `configure` waits afresh.
+  that deadline the restart's `configure` waits afresh (so a port held by a closing node can cost a
+  change its deadline and then the restart's own 15 s, about 25 s, before the node fails).
 - **The registry decides at once and the change hears it in a later turn**, so the changes of one edit are judged
   together: two nodes that swap ports in one edit (`a` from 8928 to 8929, `b` the other way) each find the other's
   port held by a configuration that runs, both fall back, and each restart's claim then finds the other's old

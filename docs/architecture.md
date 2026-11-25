@@ -591,6 +591,9 @@ What NodeHost does, in order:
 6. **The deadline**, 10 s from the change version's call (a type declares 1 s to 60 s: its spec's
    `.lifecycle`): past it the change falls back, reason `deadline`.
 
+The hold's fade (5 ms), its acknowledgement's bound (100 ms) and the deadline (10 s, at most 60 s)
+are first choices, not yet tuned on real hardware (the MOTU).
+
 A **replacement** (an RTP receiver or a sound card on the same bank, a sink or a source on it, or
 a recording: [writing-a-node-type.md](writing-a-node-type.md#make-before-break),
 [#sinks-and-sources-in-a-change](writing-a-node-type.md#sinks-and-sources-in-a-change),
@@ -978,7 +981,8 @@ of the process: the record, not the process's end, says when ear's stop is done.
 ## Not built yet
 
 These are designed or wanted but not in the code: routes naming a whole bank; a reshape in
-place of a configuration with companions ([reshapes](#reshapes)); recovery of failed nodes; sound cards opened off the main loop; an internal
+place of a configuration with companions ([reshapes](#reshapes): the companions on resized inside banks would be
+replaced make-before-break, each new one handed over in one invoke, so a bank never holds two at once); recovery of failed nodes; sound cards opened off the main loop; an internal
 clock anchored to one card; serving PipeWire's socket (for a program that can only be a PipeWire client; its nodes would be engine companions, marked by the socket's peer credentials); a login on port 7777; automatic card retry and hotplug; `@include`; undo; changing the graph
 frequency or block size while ear runs; arm64 images (which wait on a port added to a running block on the data loop: [engine.md](engine.md#the-one-data-loop-and-invokes)); a fault caught at the callback boundary
 failing only the node that owns it (today it ends the process); the `sendspin` library's log lines attributed to their node;

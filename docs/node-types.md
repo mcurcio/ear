@@ -141,7 +141,7 @@ node rtp fpp { address "0.0.0.0"; port 5004; format "L24"; channels 2; rate 48kh
   without a restart ([architecture.md](architecture.md#changes-in-place)): `node fpp
   reconfiguring: port`, then `running`. `stream` is held silent (a 5 ms fade to zero), the
   receiver replaced, and `stream` fades back in once the new one runs; so the audio is silent for
-  as long as PipeWire takes to load the new receiver. On a new port the new receiver is made
+  as long as PipeWire takes to load the new receiver (not yet measured). On a new port the new receiver is made
   beside the old one, which keeps its port until the change commits and is destroyed then
   (make-before-break, [writing-a-node-type.md](writing-a-node-type.md#make-before-break)); on the
   same port, break-first (the old one destroyed, then the new one made: two receivers on one port

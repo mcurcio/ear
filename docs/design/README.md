@@ -13,13 +13,16 @@ the numbers too, and git keeps the pages they were on.
 The slices are built in this order (decided: each later slice hooks into the earlier one's states, and companions,
 built in slice 3b ([architecture.md](../architecture.md#companions)), removed primitives slice 3c would otherwise have built): 3c, 3d, then
 5, 6, 8.
-Slice 3c is built but for the three pieces `slice-3c-remainder.md` keeps, none of which a later slice waits for.
+Slice 3c is built but for the three pieces `slice-3c-remainder.md` keeps, none of which a later slice waits for. Slice 3d
+(changes in place and reshapes) is built ([architecture.md](../architecture.md#changes-in-place),
+[#reshapes](../architecture.md#reshapes)); the editor's Apply with a dry run, which waits for slice 5's settings form,
+moved to `control-plane.md`, and a reshape in place of a node with companions is in
+[architecture.md](../architecture.md#not-built-yet).
 
 | Page | Slice | What it designs | Status |
 |---|---|---|---|
 | [`slice-3c-remainder.md`](slice-3c-remainder.md) | 3c | What slice 3c left unbuilt: the `sendspin` library's log lines attributed to their node by a carried patch (S3c.7), the converter companion's set and tracked modes (T5), and dropping the carried starved-floor patch | designed; S3c.7 waits on priorities, T5 on a first user, the patch's drop on evidence from both burst shapes; the rest of slice 3c is built and in the library docs |
-| [`reconfigure.md`](reconfigure.md) | 3d | Changes in place (`.inPlace()` rows, the change version of `configure`, holds, make-before-break, the commit point, supersession, the fallback), reshape (`PortBlock::reshape`), `rtp` and `sendspin` in place, `node.set`, `dryRun` and `dropRoutes` | designed; steps 1 to 6 built (changes in place with holds, staged posts, a code swap, the deadline, supersession and the fallback; `rtp` in place: [architecture.md](../architecture.md#changes-in-place); claims in a change, `whenReady` and `ConfigureDone`, the sink's pause, and every kind's replacement: RTP receivers and sound cards make-before-break or break-first, sinks and sources swapped in the commit's invoke, recordings: [writing-a-node-type.md](../writing-a-node-type.md#the-change-version); the plan's `reshape` and `unchanged`, and `PortBlock::reshape` on the plain add, with layouts swapped whole: [architecture.md](../architecture.md#reshapes), [engine.md](../engine.md#reshapes)); a change of ports on the wire, feature `reshape` (`node.updated` with its ports, `dropRoutes`, `ports-in-use`: [control-port.md](../control-port.md#changes-of-ports)); `node.set` and `dryRun` ([control-port.md](../control-port.md#nodeset-and-dry-runs)); the editor's reshape redraw and fallback toast ([editor.md](../editor.md#the-node-box)); `sendspin` in place ([node-types.md](../node-types.md#changes-in-place)); the editor's Apply with a dry run (with slice 5's settings form) designed |
-| [`control-plane.md`](control-plane.md) | 5, 6 | The type schema on the wire, status, events, node diagnostics, actions and the realtime coded ring (5); decimal, indexed and live rows, parameter slots and ramps, retunes, gestures, the `gain` type and the editor's faders (6) | designed |
+| [`control-plane.md`](control-plane.md) | 5, 6 | The type schema on the wire, status, events, node diagnostics, actions and the realtime coded ring (5); decimal, indexed and live rows, parameter slots and ramps, retunes, gestures, the `gain` type, the editor's Apply asking first with a dry run and the editor's faders (6) | designed |
 | [`recovery.md`](recovery.md) | 8 | Failed nodes trying again by themselves with a backoff; `recovering` on the wire; status a companion writes | designed |
 | [`cards-and-clock.md`](cards-and-clock.md) | later | The follower watchdog and a wedged card, sound cards opened off the main loop, a clock anchored to one card, latency reported while running, the hardware checks owed | partly designed |
 

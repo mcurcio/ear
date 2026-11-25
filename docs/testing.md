@@ -571,6 +571,20 @@ failing the node `cannot open <path>: it leads outside the folder`, the file out
 `rtp` node on one port refused `held by node <first>` while the first plays what is sent; a file node's companion list in the snapshot, across a stop and a start, and in a restart's order. The `airplay` node end to end (`airplay_test.cpp`, [the AirPlay sender](#the-airplay-sender); run `SERIAL`, nothing beside them, as a loaded host's stall dips a tenth below the level floor): the speaker's `listed` note, then the scripted sender finds the listing by a multicast browse on the port the note named and plays, at a sender volume of 20 that the node ignores, a five-second tone (1 kHz left, 1.5 kHz right, at 44.1 kHz) that the routed `file` node's WAV holds channel for channel at the graph's 48 kHz (each tenth of a second of three seconds fitted, at the best pitch within 1% of the tone's, as the pipe module's steering wanders it by a few tenths of a percent: a level floor and a separation between the channels, not an exact amplitude, as shairport-sync keeps sync by inserting and dropping frames and the pipe module resamples), `playing` and `idle` told around it, and a removal leaving no `shairport-sync` process, no runtime file and, by the goodbye the browser hears, no listing; and two `airplay` nodes of one speaker name (one instance, as AirPlay 1's device id is MD5(name, MAC)): exactly one says `renamed <id>@Kitchen to <id>@Kitchen (2)`, each says its own `listed`, browsers for `Kitchen` and `Kitchen (2)` each find their own on its port, and two senders playing different tones at once land each in its own `file` node, channel for channel. With `airplay2` and a test-run nqptp ([nqptp](#nqptp); tagged `[nqptp]`): the node says `listed` for `<12 hex>@Kitchen` and `Kitchen`, an `_airplay._tcp` browse finds `Kitchen` with its TXT `deviceid` the RAOP prefix, `/dev/shm/ear-kitchen` exists, the same prefix is listed after ear is stopped and started again, and a removal leaves no `shairport-sync` and an empty runtime folder; without nqptp the node fails `start-failed: shairport-sync exited with status <n>: ` and shairport-sync's "The NQPTP service can not be found"; and nqptp stopped under a running node fails it `lost: shairport-sync was ended: shared memory /ear-kitchen, which it needs, was removed`, leaving no `shairport-sync`, and once a new nqptp runs `node.restart` brings it back `running` with both `listed` notes and its channel. Not proved end to end: a companion's counter reaching the wire (`CounterWatch` to the gateway, `main.cpp`'s `counterWatch.subscribeCompanions`), as no system test can hold a file node's consumer back to make its sink drop: libsndfile refuses to write a WAV into a FIFO (`this file format does not support pipe write`, so the node fails at its begin), and a full disk needs a mount. `CounterWatch`'s own tests prove it tells the move |
 | web (Vitest, `make web-test`) | The editor's logic against every `test/protocol` fixture ([editor.md](editor.md#developing-it)) |
 
+## Tests still to write
+
+Owed by the changes in place and reshapes ([architecture.md](architecture.md#changes-in-place),
+[#reshapes](architecture.md#reshapes)); the behaviour is built and covered by the harness and the
+engine tests above, but not yet end to end:
+
+- **`ear_pipewire_tests`**: two sources into one inside input, mixed (the port mixer loads), which a
+  replacement made before break relies on behind its hold
+  ([writing-a-node-type.md](writing-a-node-type.md#make-before-break)).
+- **System tests**: an `rtp` `format` changed on the same port (a fade to exactly 0, silence, a fade
+  in, no step above the fade's slope); `levels` showing `fpp:stream.1` and `rec:record.left` silent
+  during an `rtp` change and back after; a card's `playback` from 2 to 1 on the test card with
+  `dropRoutes`, the surviving route never `pending`.
+
 ## What CI does not prove
 
 - **AirPlay 2's sound from a real sender.** No scripted AirPlay 2 sender is known, so the owner checks
