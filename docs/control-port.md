@@ -72,7 +72,7 @@ snapshots include every edit the batch made.
 
 ## Protocol and features
 
-`graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun", "types"]`. An absent `protocol` is 0 (the
+`graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun", "types", "status"]`. An absent `protocol` is 0 (the
 wire before the lifecycle). The number moves only on a breaking change: removing or renaming a
 method, notification, member or code, changing a member's type, or changing an order guarantee.
 Additive growth is a new **feature** name.
@@ -90,6 +90,9 @@ Additive growth is a new **feature** name.
   `ports-in-use` ([below](#changes-of-ports)). `node.set` adds `node.set`, and `dryRun` its `dryRun`
   ([below](#nodeset-and-dry-runs)). `types` adds `types.get`, the Graph's `typeSchemaHash`
   ([below](#type-schemas)), and `key` and `detail` on `invalid-settings` ([below](#error-codes)).
+  `status` adds `status` and `diagnostics` on each node of a snapshot and `node.added`,
+  `node.statusChanged`, `node.eventRaised` and `node.diagnostic` ([below](#status),
+  [below](#node-diagnostics)), and each type schema's `status` and `events`.
 - **Every enum is open.** `state`, `phase`, `cause.kind`, `waitingFor`'s `kind`, a route's `status`,
   `reason.code`, `applied`, `severity`, a companion's `kind`, a setting row's `kind`, `change` and `defaultFrom`, and
   every code may gain values, and the counters' names are an open set. Draw a value you do not know
@@ -106,7 +109,7 @@ Additive growth is a new **feature** name.
 `graph.get` and `graph.subscribe` answer with the Graph (`test/protocol/snapshot.json`):
 
 ```json
-{"protocol": 1, "features": ["lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun", "types"],
+{"protocol": 1, "features": ["lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun", "types", "status"],
  "graphFrequency": 48000, "blockSize": 256, "realtime": true, "scheduling": "SCHED_FIFO 88",
  "types": ["card", "file", "white"], "typeSchemaHash": "fnv1a64:0123456789abcdef",
  "counters": {"cycles": 18750, "cutCycles": 39, "stalls": 1, "lostMs": 208},
@@ -133,12 +136,13 @@ Additive growth is a new **feature** name.
 | `realtime`, `scheduling` | Whether the audio thread is realtime, and its policy (`SCHED_FIFO 88`, `SCHED_OTHER`) |
 | `types` | The node types ear knows |
 | `typeSchemaHash` | The hash of their schemas (feature `types`), opaque; `types.get` answers the schemas ([below](#type-schemas)) |
-| `nodes[]` | Each node: `name`, `type`, `settings` (as in `ear.conf`), `inputs` and `outputs` (public ports only; inside banks are never routed: only a companion names one), its [health](#node-health), `disabled: true` when `ear.conf` disables it, its `counters` ([below](#counters)) and its `companions` ([below](#companions)) |
+| `nodes[]` | Each node: `name`, `type`, `settings` (as in `ear.conf`), `inputs` and `outputs` (public ports only; inside banks are never routed: only a companion names one), its [health](#node-health), `disabled: true` when `ear.conf` disables it, its `counters` ([below](#counters)), its `companions` ([below](#companions)), its `status` ([below](#status)) and its `diagnostics` ([below](#node-diagnostics)) |
 | `counters` | The graph's counters ([below](#counters)) |
 | `routes[]` | Each route: `from` and `to` (`{node, port}`), `status` (`pending`: an end is not live yet; `linked`; `refused`), `detail` when refused |
 
-One main-loop turn makes the whole snapshot, so its parts agree, the counters and companion lists among them. The
-example abbreviates: every node carries `counters` and `companions`.
+One main-loop turn makes the whole snapshot, so its parts agree, the counters, companion lists, status and
+diagnostics among them. The example abbreviates: every node carries `counters`, `companions`, `status` and
+`diagnostics`.
 
 ### Node health
 
@@ -221,6 +225,9 @@ edit. Their effect shows as `node.updated` (`applied` and `disabled`) and the he
 | `levels` | `{"nodes": {"<node>": {"<port>": [peak, rms]}}}` | 30 times a second, to `levels.subscribe` clients |
 | `counters.changed` | `{"graph": {...}, "nodes": {"<node>": {...}}}` | A counter was lost; at most once a second ([below](#counters)) |
 | `node.companionsChanged` | `{"name", "companions"}`: the node's whole list | Its list changed: an entry added or removed, a `ready`, or a counter (at most once a second) ([below](#companions)) |
+| `node.statusChanged` | `{"name", "fields", "reset"?}` | Status fields changed (at most one per node per 33 ms tick), or with `reset` a configuration closed ([below](#status)) |
+| `node.eventRaised` | `{"name", "code", "severity", "t", "args", "msg"}` | The node raised an event ([below](#status)) |
+| `node.diagnostic` | `{"name", "code", "subject", "active", "count", "t", "msg", the code's fields, "detail"}` | The framework told one of the node's diagnostics ([below](#node-diagnostics)) |
 
 A client ignores an event naming a node it does not know. After `node.removed` the removed node's
 `node.state` (`stopping`, cause `removing`), `node.stopped` and `node.gone` name a node the client
@@ -251,6 +258,12 @@ sends none of the old node's health.
 - **A refused edit announces nothing**: only its reply carries the refusal. A hand edit gives
   `graphFile.changed` with cause `disk` and the events it causes, and no reply; a hand edit the graph
   refuses is announced with `refusal` set.
+- **Status before the event it precedes.** Within a node, a `node.statusChanged` with the fields
+  written so far comes before a `node.eventRaised` the same writer raised after them, so
+  `connection` `connected` reaches a client before `paired`; and a configuration's last values
+  come before the `node.state` its loss causes. A reset follows the closing configuration's last
+  values; on a restart it comes between `stopping` and `configuring`. A stop, a start and a change
+  in place send none.
 - **List, then watch.** A subscriber gets every change after its snapshot and none from before it.
   `test/protocol/lifecycle.json` is a node's whole life in order.
 
@@ -480,6 +493,13 @@ encoding, never through the graph's keeper, so it waits on no edit.
   [architecture.md](architecture.md#changes-in-place)). No type lists `disabled`: it is the
   framework's key, never a row.
 - **A row**: `key`, `kind`, `required` and `change` always; the rest as they apply.
+- **A status field** (feature `status`): `name`, `kind` (`flag`, `wholeNumber`, `decimal`, `choice`,
+  `text`), `initial` (`null` when it starts unknown), `display` (`panel`, `box` or `callout`: a
+  banner while not at its initial value), `flapsAbove` (`{"transitions", "windowMs"}`), and as they
+  apply `min`, `max` and `unit` (a number's or a decimal's), `decimals`, `values` (a choice's),
+  `maxBytes` (a text's) and `help`. Its writer is not on the wire.
+- **An event** (feature `status`): `code`, `severity`, `sentence` (with `{arg}` places) and `args`,
+  each `name` and `kind`, and as they apply `min`, `max`, `decimals`, `values` and `maxBytes`.
 
 | Member | What |
 |---|---|
@@ -604,6 +624,62 @@ which no node's has), never metered. `test/protocol/companions.json` shows a lis
   know is ignored. A node held without `companions` (from an ear without the feature) has none
   to show.
 
+## Status
+
+With the feature `status` (`test/protocol/status.json`), each node carries its **status**: every
+field its type declares ([type schemas](#type-schemas)), each at its value now, `null` while
+unknown (a choice starts unknown), else a flag, a number or a text (a choice's value is its text).
+`{}` for a type with none. `node.added` carries every field at its initial value, so a client need
+not fetch the schema to show a new node. A node's status belongs to its configuration
+([architecture.md](architecture.md#status-and-events)).
+
+- **`node.statusChanged`** `{"name", "fields"}`: the fields changed since the node's last, each at
+  its value now; a client merges them into the node's status. At most one per node per tick (30 a
+  second), carrying the latest values. With `"reset": true` it carries every field at its initial
+  value and replaces the node's status: the configuration closed (a restart, a failure, a removal,
+  a disable).
+- **`node.eventRaised`** `{"name", "code", "severity", "t", "args", "msg"}`: something the node says
+  happened, `severity` `info`, `warn` or `error` (open), `t` when it was written (UTC, microseconds),
+  `args` by name and `msg` the type's sentence with each place filled. It changes nothing in the
+  graph. Paced per node: 32 at once, then one a second; those held back are counted in the node's
+  `ear.events-dropped` diagnostic.
+
+```json
+{"jsonrpc":"2.0","method":"node.statusChanged","params":{"name":"kitchen","fields":{"connection":"connected","pairingCode":"123-456"}}}
+{"jsonrpc":"2.0","method":"node.eventRaised","params":{"name":"kitchen","code":"pairing-failed","severity":"warn","t":"2026-11-08T10:01:52.004211Z","args":{"reason":"pairing-code-mismatch"},"msg":"pairing failed: pairing-code-mismatch"}}
+```
+
+A status change or an event naming a node the client does not hold is ignored; a superseded node's
+(an older node of a name still closing) is never sent.
+
+## Node diagnostics
+
+With the feature `status` (`test/protocol/diagnostics.json`), each node carries its `diagnostics`:
+what the framework observes about its machinery ([output-records.md](output-records.md#diagnostic)),
+kept per **code and subject** (the field, loop, claim, hook or companion it is about; `""` for a code
+without one) for the node's life, a restart included. Each entry has `code`, `subject`, `active`,
+`count`, `t` (when it was last said), `msg`, its code's fields (`ms`, `transitions`, `windowMs`,
+`companion`, `frames`, ...) and `detail`, the sentence alone, so a client never parses `msg`.
+
+- A **condition** (`ear.claim-wait`, `ear.status-flapping`) is sent `active: true` when it begins
+  and `active: false`, same code and subject, when it ends; `count` is how many times it became
+  active.
+- An **observation** (every other code) is always `active: false` and only joins the list; `count`
+  is how many times the node saw it.
+- **`node.diagnostic`** carries one entry with `name`: a client replaces its entry of the same code
+  and subject, or appends it. `count` is as sent.
+
+```json
+{"jsonrpc":"2.0","method":"node.diagnostic","params":{"name":"kitchen","code":"ear.status-flapping","subject":"connection","active":true,"count":2,"t":"2026-11-08T10:02:11.120400Z","msg":"node kitchen ear.status-flapping: connection flapping: 14 changes in 10s","transitions":14,"windowMs":10000,"detail":"connection flapping: 14 changes in 10s"}}
+```
+
+The codes are open: a client draws one it does not know by its `msg`, badges it while `active`, and
+needs no per-code knowledge. Which go on the wire: every node diagnostic NodeHost keeps, CounterWatch's
+`ear.sink-dropped` and `ear.source-shortfall` among them. `ear.node-missed-cycles` stays on standard
+output (the node's `counters` say it), and so does a node's `ear.internal-error` (the node's `lost`
+reason says it), with the diagnostics that name no node. A superseded node's diagnostics never reach
+the wire; its records still reach standard output.
+
 ## Per-client limits and stopping
 
 - One message in flight per connection: the next is read only after every reply to this one is
@@ -653,6 +729,8 @@ breaking change moves `protocol`; anything else is a new feature name
 | `levels.json` | `levels.subscribe` and `levels` |
 | `counters-changed.json` | The counters in a snapshot, `counters.changed`, one naming a node not held, and a change of ports keeping the node and its counters |
 | `companions.json` | The companion lists in a snapshot (every engine and ring kind but a source), a file node's list from `node.added` to running, a counter moving, a stop and a start (no list), a restart, an RTP receiver replaced make-before-break (the old one `retiring`), a failure past a readiness deadline, a removal (no list after `node.removed`) |
+| `status.json` | A snapshot's status (a choice at `null`), merges, an event after the fields before it, a stop and a start keeping the status, a restart's reset between `stopping` and `configuring` and the new configuration's first fields, events and changes naming a node not held |
+| `diagnostics.json` | A snapshot's diagnostics, two fields flapping at once and one settling while the other stays, `count` as sent, an observation code, a code a client does not know, one naming a node not held |
 | `unknown-values.json` | Values, members and notifications a client does not know, taken or ignored |
 | `output-records.json` | Standard output's records ([output-records.md](output-records.md)) |
 

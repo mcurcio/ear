@@ -4,7 +4,7 @@
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"types.get\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"types.get\",\"params\":{\"ifNoneMatch\":\"fnv1a64:0123456789abcdef\"}}",
-    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"types.get\",\"params\":{\"ifNoneMatch\":\"fnv1a64:805cb54992edf0c1\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"types.get\",\"params\":{\"ifNoneMatch\":\"fnv1a64:3da554c2d1911841\"}}",
     "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"types.get\",\"params\":{\"since\":\"yesterday\"}}"
   ],
   "messages": [
@@ -27,7 +27,8 @@
           "reshape",
           "node.set",
           "dryRun",
-          "types"
+          "types",
+          "status"
         ],
         "graphFrequency": 48000,
         "nodes": [],
@@ -35,7 +36,7 @@
         "realtime": false,
         "routes": [],
         "scheduling": "SCHED_OTHER",
-        "typeSchemaHash": "fnv1a64:805cb54992edf0c1",
+        "typeSchemaHash": "fnv1a64:3da554c2d1911841",
         "types": [
           "airplay",
           "card",
@@ -50,10 +51,11 @@
       "jsonrpc": "2.0",
       "id": 2,
       "result": {
-        "hash": "fnv1a64:805cb54992edf0c1",
+        "hash": "fnv1a64:3da554c2d1911841",
         "protocol": 1,
         "typeSchemas": [
           {
+            "events": [],
             "inputs": [],
             "name": "airplay",
             "outputs": [
@@ -77,9 +79,11 @@
                 "kind": "flag",
                 "required": false
               }
-            ]
+            ],
+            "status": []
           },
           {
+            "events": [],
             "inputs": [
               "play"
             ],
@@ -120,9 +124,11 @@
                 "shapes": true,
                 "unit": "channels"
               }
-            ]
+            ],
+            "status": []
           },
           {
+            "events": [],
             "inputs": [
               "record"
             ],
@@ -137,9 +143,11 @@
                 "mustBe": "a non-empty string",
                 "required": true
               }
-            ]
+            ],
+            "status": []
           },
           {
+            "events": [],
             "inputs": [],
             "name": "rtp",
             "outputs": [
@@ -204,9 +212,11 @@
                 "required": false,
                 "unit": "milliseconds"
               }
-            ]
+            ],
+            "status": []
           },
           {
+            "events": [],
             "inputs": [
               "to"
             ],
@@ -244,16 +254,19 @@
                 "mustBe": "1 to 64 bytes of UTF-8 with no control characters",
                 "required": false
               }
-            ]
+            ],
+            "status": []
           },
           {
+            "events": [],
             "inputs": [],
             "name": "white",
             "outputs": [
               "noise"
             ],
             "reconfigureMs": 10000,
-            "settings": []
+            "settings": [],
+            "status": []
           }
         ]
       }
@@ -262,10 +275,11 @@
       "jsonrpc": "2.0",
       "id": 3,
       "result": {
-        "hash": "fnv1a64:805cb54992edf0c1",
+        "hash": "fnv1a64:3da554c2d1911841",
         "protocol": 1,
         "typeSchemas": [
           {
+            "events": [],
             "inputs": [],
             "name": "airplay",
             "outputs": [
@@ -289,9 +303,11 @@
                 "kind": "flag",
                 "required": false
               }
-            ]
+            ],
+            "status": []
           },
           {
+            "events": [],
             "inputs": [
               "play"
             ],
@@ -332,9 +348,11 @@
                 "shapes": true,
                 "unit": "channels"
               }
-            ]
+            ],
+            "status": []
           },
           {
+            "events": [],
             "inputs": [
               "record"
             ],
@@ -349,9 +367,11 @@
                 "mustBe": "a non-empty string",
                 "required": true
               }
-            ]
+            ],
+            "status": []
           },
           {
+            "events": [],
             "inputs": [],
             "name": "rtp",
             "outputs": [
@@ -416,9 +436,11 @@
                 "required": false,
                 "unit": "milliseconds"
               }
-            ]
+            ],
+            "status": []
           },
           {
+            "events": [],
             "inputs": [
               "to"
             ],
@@ -456,16 +478,19 @@
                 "mustBe": "1 to 64 bytes of UTF-8 with no control characters",
                 "required": false
               }
-            ]
+            ],
+            "status": []
           },
           {
+            "events": [],
             "inputs": [],
             "name": "white",
             "outputs": [
               "noise"
             ],
             "reconfigureMs": 10000,
-            "settings": []
+            "settings": [],
+            "status": []
           }
         ]
       }
@@ -475,7 +500,7 @@
       "id": 4,
       "result": {
         "protocol": 1,
-        "hash": "fnv1a64:805cb54992edf0c1",
+        "hash": "fnv1a64:3da554c2d1911841",
         "notModified": true
       }
     },
@@ -507,7 +532,8 @@
       "reshape",
       "node.set",
       "dryRun",
-      "types"
+      "types",
+      "status"
     ],
     "graphFrequency": 48000,
     "nodes": [],
@@ -515,7 +541,7 @@
     "realtime": false,
     "routes": [],
     "scheduling": "SCHED_OTHER",
-    "typeSchemaHash": "fnv1a64:805cb54992edf0c1",
+    "typeSchemaHash": "fnv1a64:3da554c2d1911841",
     "types": [
       "airplay",
       "card",

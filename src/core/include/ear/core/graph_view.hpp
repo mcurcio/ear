@@ -1,6 +1,7 @@
 #pragma once
 #include <chrono>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 #include "ear/core/desired_graph.hpp"
@@ -15,8 +16,10 @@ struct EngineView {
 };
 /// A wanted node as a snapshot shows it (docs/control-port.md#node-health): its spec (`disabled`
 /// among it), its public ports, its health, when its phase began, which the gateway fills in and the read
-/// leaves empty, its counters (docs/engine.md#counters; zero before NodeHost knows it) and its companion list
-/// (docs/engine.md#companions-in-a-nodes-list; empty before it is configured).
+/// leaves empty, its counters (docs/engine.md#counters; zero before NodeHost knows it), its companion list
+/// (docs/engine.md#companions-in-a-nodes-list; empty before it is configured), its status view (every field of its
+/// type, at its initial value before NodeHost knows it) and its node diagnostics (docs/control-port.md#node-diagnostics),
+/// each with when it was said, which the gateway fills in.
 struct NodeView {
 	NodeSpec spec;
 	Ports ports; // public only (inside lists empty)
@@ -24,7 +27,12 @@ struct NodeView {
 	std::optional<std::chrono::system_clock::time_point> since{};
 	NodeCounts counts{};
 	std::vector<CompanionView> companions{};
+	std::vector<FieldValue> status{};
+	std::vector<NodeDiagnostic> diagnostics{};
+	std::vector<std::chrono::system_clock::time_point> diagnosticsAt{}; // one per diagnostic, stamped by the gateway
 };
+/// Every field of these declarations at its initial value: a node's status before NodeHost knows it.
+std::vector<FieldValue> initialStatus(std::span<const StatusDeclaration* const> fields);
 /// A wanted node's health before NodeHost told any: added and wanted running, or disabled from the spec.
 NodeHealth healthFromSpec(const NodeSpec& spec);
 struct GraphView {

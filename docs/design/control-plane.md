@@ -266,8 +266,8 @@ Other examples: a card's PCM state (slice 8) is status; `rtp`'s `receiving` is s
 The frame is built: an absent `protocol` is 0, the number moves only on a breaking change, additive growth is announced
 in `features`, every enum is open, members ear sends are additive and members a client sends exist only from the
 feature that adds them (ear's decoders refuse an unknown key, -32602 with `data.pointer`). Step 5.1 built the feature
-`types` ([control-port.md](../control-port.md#type-schemas)); these slices add the features `status` (5.2: status,
-events, node diagnostics), `actions` (5.4), `live` (6.3: decimal,
+`types` ([control-port.md](../control-port.md#type-schemas)) and step 5.2 the feature `status` (status, events, node
+diagnostics: [control-port.md](../control-port.md#status)); these slices add the features `actions` (5.4), `live` (6.3: decimal,
 indexed and live rows, `applied: "retune"`) and `gestures` (6.4).
 
 Names: requests are `<entity>.<verb>`, notifications say what happened; object keys, status field names and setting
@@ -293,8 +293,8 @@ as any refusal does.
 
 `node.set` and `node.update` (3d) gain `parameter-held` and the outcome `retune` from feature `live`.
 
-**`types.get`** is built ([control-port.md](../control-port.md#type-schemas)). Later steps add to each type `status`,
-`events` and `actions` (5.2, 5.4), and to rows the kind `decimal` with `decimals`, `taper` (`linear`, `log`, `db`, 8.3)
+**`types.get`** is built ([control-port.md](../control-port.md#type-schemas)), with each type's `status` and `events`
+(5.2). Later steps add to each type `actions` (5.4), and to rows the kind `decimal` with `decimals`, `taper` (`linear`, `log`, `db`, 8.3)
 and `minIsSilence`, `live` (`{"smoothingMs"}`, with `change` `live`) and `indexed` (`{"by": <the count row's key>,
 "from": 1}`) (slice 6), as this example of slice 6's `gain` shows:
 
@@ -320,11 +320,6 @@ and `minIsSilence`, `live` (`{"smoothingMs"}`, with `change` `live`) and `indexe
    "inputs":[],"outputs":["stream"],"reconfigureMs":10000,"status":[],"events":[],"actions":[]}]}}
 ```
 
-- A status field: `name`, `kind` (`flag`, `wholeNumber`, `decimal`, `choice`, `text`), `initial` (`null` when it starts
-  unknown), `display` (`panel`, `box`, `callout`), `flapsAbove`, and as they apply `min`, `max`, `unit`, `values`,
-  `maxBytes`, `help`. Its writer is not on the wire.
-- An event: `code`, `severity` (`info`, `warn`, `error`), `sentence` (with `{arg}` places), `args` (each `name`, `kind`,
-  `min`, `max`, `values`).
 - An action: `name`, `by` (`type`; open), `target` (`code` for a trigger, `loop` for a call), `help`, `args` (setting
   rows).
 
@@ -366,24 +361,15 @@ handler's outcome.
 
 ### 4.3 The graph, and notifications
 
-`graph.get` and `graph.subscribe` (which carry `typeSchemaHash`, built) gain, per node, `status` (every declared field, each
-at its initial value until written; always present, `{}` for a type with none), `gestures` (the open gestures moving
-one of this node's keys, with their live value; always present) and `diagnostics` (one entry per code and subject, each
-with `active`, `count`, `t`, `msg` and its fields; always present). `node.added` carries the same, so a client need not
-fetch the schema to show a new node. One main-loop turn makes the whole snapshot, so status, health, gestures,
-diagnostics and companions agree.
+`graph.get` and `graph.subscribe` carry, per node, `status` and `diagnostics` (built:
+[control-port.md](../control-port.md#status)), and gain `gestures` (the open gestures moving one of this node's keys,
+with their live value; always present, in `node.added` too).
 
 | Notification | Params | Rate |
 |---|---|---|
-| `node.statusChanged` | `{"name","fields":{name: value},"reset"?: true}`: the fields changed since the last; with `reset`, every field at its initial value | at most 30 a second per node |
-| `node.eventRaised` | `{"name","code","severity","t","args":{...},"msg"}` | 32 at once, then 1 a second per node |
-| `node.diagnostic` | `{"name","code","subject","active","count","t","msg", the code's fields}` | per code (4.6) |
 | `gesture.changed` | `{"gesture","phase", and by phase: "reach","value","reason","code","key","detail"}` | `change`: at most 30 a second per gesture |
 
 ```json
-{"jsonrpc":"2.0","method":"node.statusChanged","params":{"name":"kitchen","fields":{"pairingCode":"123-456"}}}
-{"jsonrpc":"2.0","method":"node.eventRaised","params":{"name":"kitchen","code":"pairing-failed","severity":"warn","t":"2026-11-08T10:01:52.004211Z","args":{"reason":"pairing-code-mismatch"},"msg":"pairing failed: pairing-code-mismatch"}}
-{"jsonrpc":"2.0","method":"node.diagnostic","params":{"name":"kitchen","code":"ear.status-flapping","subject":"connection","active":true,"count":2,"t":"2026-11-08T10:02:11.120400Z","transitions":14,"windowMs":10000,"msg":"node kitchen connection flapping: 14 changes in 10s"}}
 {"jsonrpc":"2.0","method":"gesture.changed","params":{"gesture":"g4","phase":"begin","value":-6,"reach":[{"name":"amp","key":"gainDb"}]}}
 {"jsonrpc":"2.0","method":"gesture.changed","params":{"gesture":"g4","phase":"end","value":-3.5,"reason":"session-closed"}}
 {"jsonrpc":"2.0","method":"gesture.changed","params":{"gesture":"g4","phase":"aborted","reason":"cancelled","value":-6}}
@@ -397,16 +383,10 @@ diagnostics and companions agree.
   `reason`: `hand-edit`, `file-saved`, `cancelled`, `refused`, `node-removed`, `key-removed` (a reshape removed a key it
   reaches), and `value` (the committed value the slots returned to) except on `hand-edit` and `file-saved`, where the
   following `node.updated` gives the new value.
-- **A configuration's status reset.** When a configuration closes (or leaks), the node's status view returns to every
-  field's initial value, and the drain sends one `node.statusChanged` with `reset: true` and every field, after that
-  configuration's last values. A stop, a start and an in-place change send none.
 
-**Order**, added to the built rules (a change's notification before the statuses it causes):
+**Order**, added to the built rules (status before the event it precedes and the reset are built:
+[control-port.md](../control-port.md#order)):
 
-1. Within a node, a `node.statusChanged` with the fields written so far precedes any `node.eventRaised` that followed
-   them in the same writer's order, so `connection = connected` reaches a client before `paired`.
-2. A configuration's last status values reach a client before the `node.state` its loss causes, and its reset follows
-   its last values; on a restart, the reset comes between `stopping` and `configuring`.
 3. A gesture's begin: `gesture.changed` `begin` to the others, then the reply, in one turn. Its end: `graphFile.changed`,
    `node.updated` (`applied: "retune"`), `gesture.changed` `end`, the reply.
 4. An abort by a related save: `gesture.changed` `aborted` for each related gesture, then `graphFile.changed`, then the
@@ -416,9 +396,6 @@ diagnostics and companions agree.
 
 | Notification | Changes | Ignored when |
 |---|---|---|
-| `node.statusChanged` | with `reset`: `status` replaced; otherwise merged | the node is unknown |
-| `node.eventRaised` | nothing in the graph; the activity list | the node is unknown |
-| `node.diagnostic` | the entry of the same `code` and `subject` replaced, `count` as sent | the node is unknown |
 | `gesture.changed` | `begin` adds `{gesture, key, value}` to each reached node's `gestures`; `change` sets `value` wherever the id is; `end` and `aborted` remove it everywhere; `tick-refused` changes nothing | no node holds the id (except `begin`) |
 
 ### 4.5 Error codes
@@ -444,37 +421,16 @@ All -32000 with `data.code`; every new code is a case in `test/protocol/errors.j
 
 ### 4.6 Node diagnostics on the wire
 
-Built: `diagnostic` records on standard output with `code`, fields and `detail` (`ear.close-overdue`,
-`ear.fade-unacknowledged`, `ear.barrier-overdue`, `ear.hook-slow`, and node-less `ear.data-loop-wedged`,
-`ear.main-loop-stalled`, `ear.main-loop-resumed`). Slice 5 puts node diagnostics on the wire as `node.diagnostic`,
-keeps each per **code and subject** (a field, a loop, a claim, a hook or a companion; empty when the code has none), and
-gives each `active` and `count`: a condition code (flapping, a claim wait) becomes active and later inactive with the
-same code and subject; an observation code (a drop, a slow handler) is sent with `active: false` and only joins the list.
-The editor badges active entries and lists all, needing no per-code knowledge. The node-less ones stay standard-output
-only (a stalled main loop cannot answer the wire in time).
-
-| Code | Subject | Fields | Owner |
-|---|---|---|---|
-| `ear.close-overdue` | — | `detail` | built; 3c adds counts |
-| `ear.fade-unacknowledged`, `ear.barrier-overdue` | — | `ms` | built |
-| `ear.hook-slow` | the hook | `ms` | built |
-| `ear.loop-slow`, `ear.loop-source-left`, `ear.claim-wait`, `ear.close-late` | the loop, the claim | `ms`, `sources`, `holder`/`waitedMs`, `detail` | 3c (built: `docs/output-records.md`) |
-| `ear.sink-dropped`, `ear.source-shortfall` | the companion | `companion`, `frames`, `totalFrames` | built as records (`docs/output-records.md#diagnostic`); on the wire with `node.diagnostic` |
-| `ear.reconfigure-fell-back`, `ear.reconfigure-superseded`, `ear.retiring-lost` | —, —, the companion | built as records (`docs/output-records.md#diagnostic`) | 3d |
-| `ear.status-flapping` | the field | `transitions`, `windowMs` | here: active once a field changes more than its `flapsAbove` within the window; inactive once a whole window passes at or below it; at most once per window while active |
-| `ear.events-dropped` | — | `heldBack` | here: events held back by the per-node rate (replaces 3c's `notes-dropped` note); at most once a second |
-| `ear.records-dropped` | `status`, `realtime` or `queue` | `count` | here: `status` records held back on stdout, or records a node's ring or queue had no room for; at most once a second per subject |
-| `ear.realtime-overrun` | — | `codeUs`, `cycleUs` | reserved, not built |
-
+Built ([control-port.md](../control-port.md#node-diagnostics), [output-records.md](../output-records.md#diagnostic)):
+`node.diagnostic`, kept per code and subject with `active` and `count`, and `detail` beside `msg`. Left:
+`ear.records-dropped` gains subject `realtime` (5.3), and `ear.realtime-overrun` (`codeUs`, `cycleUs`) stays reserved.
 Slice 8 adds `ear.health-flapping`, `ear.recovery-attempt` and `ear.readiness-missed` in the same shape
-(`recovery.md`). There are no framework status fields: a companion's counts are members of its entry in `companions`.
+(`recovery.md`).
 
 ### 4.7 Fixtures
 
 | File | Covers |
 |---|---|
-| `test/protocol/status.json` | a snapshot with status (a choice at `null`); merges; an event after a flush, with `severity`; a reset and a new configuration's first fields; status kept across a stop and a start |
-| `test/protocol/diagnostics.json` | two fields flapping at once, one settling while the other stays; `count` as sent; an observation code; an unknown code drawn generically |
 | `test/protocol/gestures.json` | begin (no echo to the owner, `begin` to another first, then the reply), changes (one stale, one keep-alive), end with its order; a reach of two keys and of 64; a reach refused `shared-definition`; `parameter-held`; a begin on a failed node; cancel; `tick-refused` to the owner only; an end refused `invalid-settings` leaving the gesture open; aborts by a related hand edit and a related `graphFile.set`; an unrelated hand edit and `graphFile.set` leaving it open; ends for a closed and a silent session; `unknown-gesture` after an abort; `not-in-batch` |
 | `test/protocol/actions.json` | a trigger; a call; `not-running` with its `phase`; every refusal an action can get |
 | `unknown-values.json`, `errors.json`, `snapshot.json`, `edits.json`, `output-records.json` | extended with this page's members, codes and records |

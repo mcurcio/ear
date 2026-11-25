@@ -234,6 +234,28 @@ export interface Companion {
   shortfall?: number;
 }
 
+/** A status field's value (feature status): null while unknown, a flag, a number, or a text (a choice's value is its text). */
+export type StatusValue = null | boolean | number | string;
+/** How an event reads to an operator; not a graph file diagnostic's Severity. */
+export type EventSeverity = "info" | "warn" | "error" | (string & {});
+/**
+ * One of a node's diagnostics (feature status, docs/control-port.md#node-diagnostics), kept per code and subject: a
+ * condition is active until it ends; an observation is never active. Its code's fields ride beside the rest. A code
+ * this editor does not know is drawn by its msg.
+ */
+export interface NodeDiagnostic {
+  code: string;
+  /** What it is about: a field, a loop, a claim, a hook or a companion; "" when its code has none. */
+  subject: string;
+  active: boolean;
+  /** A condition's times it became active, an observation's times seen. */
+  count: number;
+  t: string;
+  msg: string;
+  detail?: string;
+  [field: string]: JsonValue | undefined;
+}
+
 /** A node as snapshots and node.added carry it: its spec, its public ports, its health, its counters and companions. */
 export interface GraphNode extends NodeHealth {
   name: string;
@@ -247,6 +269,10 @@ export interface GraphNode extends NodeHealth {
   counters?: NodeCounters;
   /** Feature companions: its companion list, in request order ([] in node.added, and for a node with none). */
   companions?: Companion[];
+  /** Feature status: every status field of its type at its value now (initial values in node.added). */
+  status?: { [field: string]: StatusValue };
+  /** Feature status: every diagnostic the node was told, one per code and subject ([] in node.added). */
+  diagnostics?: NodeDiagnostic[];
 }
 
 export interface GraphRoute extends RouteEnds {
@@ -307,6 +333,32 @@ export interface SettingSchema {
   help?: string;
 }
 
+/** One status field of a type (feature status). */
+export interface StatusFieldSchema {
+  name: string;
+  kind: "flag" | "wholeNumber" | "decimal" | "choice" | "text" | (string & {});
+  /** null: it starts unknown. */
+  initial: StatusValue;
+  /** panel: only in the node's panel; box: on its box too; callout: a banner while not at its initial value. */
+  display: "panel" | "box" | "callout" | (string & {});
+  flapsAbove: { transitions: number; windowMs: number };
+  min?: number;
+  max?: number;
+  decimals?: number;
+  unit?: string;
+  values?: string[];
+  maxBytes?: number;
+  help?: string;
+}
+
+/** One event of a type (feature status): its sentence names each argument once as {name}. */
+export interface EventSchema {
+  code: string;
+  severity: EventSeverity;
+  sentence: string;
+  args: Array<{ name: string; kind: string; min?: number; max?: number; decimals?: number; values?: string[]; maxBytes?: number }>;
+}
+
 /** One node type, as types.get says it. */
 export interface TypeSchema {
   name: string;
@@ -316,6 +368,9 @@ export interface TypeSchema {
   outputs: string[];
   /** How long a change in place may take before it falls back to a restart. */
   reconfigureMs: number;
+  /** Feature status: its status fields and events, in declaration order. */
+  status?: StatusFieldSchema[];
+  events?: EventSchema[];
 }
 
 /** types.get's result: the schemas, or notModified when ifNoneMatch named the hash. */
@@ -488,6 +543,22 @@ export interface Notifications {
    * or (at most once a second) a counter moved. Replaces the list; a node not held is ignored.
    */
   "node.companionsChanged": { name: string; companions: Companion[] };
+  /**
+   * Feature status: the fields changed since the node's last (merged into its status), at most 30 a second per node;
+   * with reset, every field at its initial value (replacing its status) after its configuration closed.
+   */
+  "node.statusChanged": { name: string; fields: { [field: string]: StatusValue }; reset?: true };
+  /** Feature status: an event the node raised; nothing in the graph changes. */
+  "node.eventRaised": {
+    name: string;
+    code: string;
+    severity: EventSeverity;
+    t: string;
+    args: { [arg: string]: StatusValue };
+    msg: string;
+  };
+  /** Feature status: one diagnostic, replacing the node's entry of the same code and subject, or joining its list. */
+  "node.diagnostic": { name: string } & NodeDiagnostic;
 }
 export type NotificationName = keyof Notifications;
 
@@ -632,6 +703,9 @@ const notificationSet: { [N in NotificationName]: true } = {
   "graphFile.changed": true,
   "counters.changed": true,
   "node.companionsChanged": true,
+  "node.statusChanged": true,
+  "node.eventRaised": true,
+  "node.diagnostic": true,
 };
 export const notificationNames = Object.keys(notificationSet) as NotificationName[];
 

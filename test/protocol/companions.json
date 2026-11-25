@@ -23,7 +23,8 @@
           "reshape",
           "node.set",
           "dryRun",
-          "types"
+          "types",
+          "status"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -78,7 +79,9 @@
                 "bank": "from_card",
                 "ready": true
               }
-            ]
+            ],
+            "status": {},
+            "diagnostics": []
           },
           {
             "name": "fpp",
@@ -112,7 +115,9 @@
                 "bank": "from_rtp",
                 "ready": true
               }
-            ]
+            ],
+            "status": {},
+            "diagnostics": []
           },
           {
             "name": "noise",
@@ -133,7 +138,9 @@
               "repositions": 0,
               "driverChanges": 0
             },
-            "companions": []
+            "companions": [],
+            "status": {},
+            "diagnostics": []
           },
           {
             "name": "rec",
@@ -165,7 +172,9 @@
                 "ready": true,
                 "dropped": 0
               }
-            ]
+            ],
+            "status": {},
+            "diagnostics": []
           },
           {
             "name": "kitchen",
@@ -194,7 +203,9 @@
                 "bank": "from_airplay",
                 "ready": true
               }
-            ]
+            ],
+            "status": {},
+            "diagnostics": []
           }
         ],
         "routes": [],
@@ -231,7 +242,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       }
     },
     {
@@ -700,7 +713,8 @@
       "reshape",
       "node.set",
       "dryRun",
-      "types"
+      "types",
+      "status"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -755,7 +769,9 @@
             "bank": "from_card",
             "ready": true
           }
-        ]
+        ],
+        "status": {},
+        "diagnostics": []
       },
       {
         "name": "fpp",
@@ -786,7 +802,9 @@
         "reason": {
           "code": "engine-refused",
           "detail": "the RTP receiver never ran (UDP port 5004 held?)"
-        }
+        },
+        "status": {},
+        "diagnostics": []
       },
       {
         "name": "kitchen",
@@ -815,7 +833,9 @@
             "bank": "from_airplay",
             "ready": true
           }
-        ]
+        ],
+        "status": {},
+        "diagnostics": []
       },
       {
         "name": "noise",
@@ -836,7 +856,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       },
       {
         "name": "rec",
@@ -868,7 +890,9 @@
             "ready": true,
             "dropped": 0
           }
-        ]
+        ],
+        "status": {},
+        "diagnostics": []
       }
     ],
     "routes": [],

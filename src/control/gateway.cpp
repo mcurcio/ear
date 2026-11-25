@@ -47,6 +47,7 @@ struct MainLoopGateway::Impl {
 	Executor& control;
 	GraphRequests& requests;
 	WallClock clock;
+	SteadyClock steady;
 	EventSink* sink = nullptr; // main loop only
 	/// Each node's health as last sent (main loop only), forgotten when the node leaves the graph.
 	std::unique_ptr<SentMap> sent = std::make_unique<SentMap>();
@@ -62,10 +63,21 @@ struct MainLoopGateway::Impl {
 	void post(GraphEvent event) {
 		toSink([event = std::move(event)](EventSink& to) mutable { to.graphChanged(std::move(event)); });
 	}
+	/// A steady stamp moved onto the wall clock (docs/architecture.md#status-and-events: core reads no wall clock).
+	std::chrono::system_clock::time_point onWall(std::chrono::steady_clock::time_point at) const {
+		const auto ago = steady() - at;
+		return clock() - std::chrono::duration_cast<std::chrono::system_clock::duration>(
+							 ago > std::chrono::steady_clock::duration::zero()
+								 ? ago
+								 : std::chrono::steady_clock::duration::zero());
+	}
+	/// Whether a client holds the node: added, and not removed since.
+	bool held(const NodeName& node) const { return companions->contains(node); }
 };
 
-MainLoopGateway::MainLoopGateway(Executor& mainLoop, Executor& control, GraphRequests& requests, WallClock clock)
-	: impl_(std::make_unique<Impl>(Impl{mainLoop, control, requests, std::move(clock)})) {}
+MainLoopGateway::MainLoopGateway(Executor& mainLoop, Executor& control, GraphRequests& requests, WallClock clock,
+                                 SteadyClock steady)
+	: impl_(std::make_unique<Impl>(Impl{mainLoop, control, requests, std::move(clock), std::move(steady)})) {}
 
 MainLoopGateway::~MainLoopGateway() = default;
 
@@ -94,7 +106,7 @@ void MainLoopGateway::nodeAdded(const NodeSpec& node, std::shared_ptr<const Node
 	const auto since = impl_->clock();
 	impl_->sent->insert_or_assign(node.name, Sent{health, since, !node.disabled});
 	impl_->companions->insert_or_assign(node.name, std::vector<CompanionView>{}); // what node.added says
-	impl_->post(NodeAdded{node, config->ports().publicOnly(), health, since});
+	impl_->post(NodeAdded{node, config->ports().publicOnly(), health, since, initialStatus(config->statusDeclared())});
 }
 
 void MainLoopGateway::nodeReplaced(const NodeSpec& node, std::shared_ptr<const NodeConfig> config,
@@ -169,10 +181,30 @@ void MainLoopGateway::companionsChanged(const NodeName& node, std::span<const Co
 	impl_->post(NodeCompanionsChanged{node, {companions.begin(), companions.end()}});
 }
 
+void MainLoopGateway::statusChanged(const NodeName& node, std::span<const FieldValue> fields) {
+	if (impl_->held(node)) impl_->post(NodeStatusChanged{node, {fields.begin(), fields.end()}});
+}
+
+void MainLoopGateway::statusReset(const NodeName& node, std::span<const FieldValue> fields) {
+	if (impl_->held(node)) impl_->post(NodeStatusChanged{node, {fields.begin(), fields.end()}, true});
+}
+
+void MainLoopGateway::eventRaised(const NodeName& node, const RaisedEvent& event) {
+	if (impl_->held(node)) impl_->post(NodeEventRaised{node, event, impl_->onWall(event.at)});
+}
+
+void MainLoopGateway::nodeDiagnostic(const NodeName& node, const NodeDiagnostic& diagnostic) {
+	if (impl_->held(node)) impl_->post(NodeDiagnosed{node, diagnostic, impl_->onWall(diagnostic.at)});
+}
+
 void MainLoopGateway::stamp(GraphView& view) const {
-	for (NodeView& node : view.nodes)
+	for (NodeView& node : view.nodes) {
 		if (const auto known = impl_->sent->find(node.spec.name); known != impl_->sent->end())
 			node.since = known->second.since;
+		node.diagnosticsAt.clear();
+		for (const NodeDiagnostic& diagnostic : node.diagnostics)
+			node.diagnosticsAt.push_back(impl_->onWall(diagnostic.at));
+	}
 }
 
 } // namespace ear::control

@@ -28,7 +28,8 @@
           "reshape",
           "node.set",
           "dryRun",
-          "types"
+          "types",
+          "status"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -64,7 +65,9 @@
               "repositions": 0,
               "driverChanges": 0
             },
-            "companions": []
+            "companions": [],
+            "status": {},
+            "diagnostics": []
           },
           {
             "name": "fpp",
@@ -91,7 +94,9 @@
               "repositions": 0,
               "driverChanges": 0
             },
-            "companions": []
+            "companions": [],
+            "status": {},
+            "diagnostics": []
           },
           {
             "name": "noise",
@@ -111,7 +116,9 @@
               "repositions": 0,
               "driverChanges": 0
             },
-            "companions": []
+            "companions": [],
+            "status": {},
+            "diagnostics": []
           },
           {
             "name": "porch",
@@ -136,7 +143,9 @@
               "repositions": 0,
               "driverChanges": 0
             },
-            "companions": []
+            "companions": [],
+            "status": {},
+            "diagnostics": []
           },
           {
             "name": "rec",
@@ -159,7 +168,9 @@
               "repositions": 0,
               "driverChanges": 0
             },
-            "companions": []
+            "companions": [],
+            "status": {},
+            "diagnostics": []
           }
         ],
         "routes": [
@@ -556,7 +567,8 @@
       "reshape",
       "node.set",
       "dryRun",
-      "types"
+      "types",
+      "status"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -592,7 +604,9 @@
           "driverChanges": 0
         },
         "companions": [],
-        "since": "2026-11-09T10:00:00.080000Z"
+        "since": "2026-11-09T10:00:00.080000Z",
+        "status": {},
+        "diagnostics": []
       },
       {
         "name": "fpp",
@@ -619,7 +633,9 @@
           "driverChanges": 0
         },
         "companions": [],
-        "since": "2026-11-09T10:00:00.030000Z"
+        "since": "2026-11-09T10:00:00.030000Z",
+        "status": {},
+        "diagnostics": []
       },
       {
         "name": "noise",
@@ -639,7 +655,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       },
       {
         "name": "porch",
@@ -664,7 +682,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       },
       {
         "name": "rec",
@@ -687,7 +707,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       }
     ],
     "routes": [

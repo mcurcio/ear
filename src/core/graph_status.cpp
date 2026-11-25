@@ -18,6 +18,13 @@ NodeHealth healthFromSpec(const NodeSpec& spec) {
 	return health;
 }
 
+std::vector<FieldValue> initialStatus(std::span<const StatusDeclaration* const> fields) {
+	std::vector<FieldValue> status;
+	status.reserve(fields.size());
+	for (const StatusDeclaration* field : fields) status.push_back({field->name, field->initial()});
+	return status;
+}
+
 GraphStatus::GraphStatus(EngineView engine, const NodeCatalogue& catalogue, const DesiredGraph& desired,
                          const NodeHost& nodes, const Reconciler& routes, const GraphCounterSource* graphCounts)
 	: engine_(std::move(engine)), catalogue_(catalogue), desired_(desired), nodes_(nodes), routes_(routes),
@@ -38,6 +45,11 @@ GraphView GraphStatus::read() const {
 		node.health.superseded = false;
 		node.counts = nodes_.counts(node.spec.name).value_or(NodeCounts{});
 		node.companions = nodes_.companionsOf(node.spec.name);
+		node.status = nodes_.statusOf(node.spec.name);
+		if (node.status.empty())
+			if (const NodeType* type = catalogue_.find(node.spec.type))
+				node.status = initialStatus(type->schema().status);
+		node.diagnostics = nodes_.diagnosticsOf(node.spec.name);
 		view.nodes.push_back(std::move(node));
 	}
 

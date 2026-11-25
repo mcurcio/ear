@@ -6,7 +6,9 @@
 // ignored, never a failure. The counters (docs/control-port.md#counters) are kept as sent, whole, an unknown counter
 // among them, and counters.changed replaces those it names. A node's companion list (docs/control-port.md#companions) is
 // kept as sent, and node.companionsChanged replaces it whole. A change of a node's ports (node.updated with its inputs and
-// outputs) keeps the node and its routes.
+// outputs) keeps the node and its routes. A node's status (docs/control-port.md#status) is merged by
+// node.statusChanged, replaced whole by one with reset; its diagnostics are kept one per code and subject, each
+// node.diagnostic replacing the entry it names or joining the list; node.eventRaised changes nothing here (activity.ts).
 import type {
   Graph,
   GraphNode,
@@ -47,7 +49,7 @@ const protocol0Health: NodeHealth = { state: "starting", phase: "added", wanted:
  * knows (a protocol 0 ear sends no health: such a node is starting), so a member it does not know never goes stale.
  */
 function nodeOf(from: GraphNode): GraphNode {
-  const { name, type, settings, inputs, outputs, disabled, counters, companions } = from;
+  const { name, type, settings, inputs, outputs, disabled, counters, companions, status, diagnostics } = from;
   return {
     name,
     type,
@@ -58,6 +60,8 @@ function nodeOf(from: GraphNode): GraphNode {
     ...(disabled === true ? { disabled } : {}),
     ...(counters !== undefined ? { counters } : {}),
     ...(companions !== undefined ? { companions } : {}),
+    ...(status !== undefined ? { status } : {}),
+    ...(diagnostics !== undefined ? { diagnostics } : {}),
   };
 }
 
@@ -188,6 +192,19 @@ const handlers: { [N in keyof Notifications]: (graph: Graph, params: Event<N>) =
   }),
   // The whole list, replacing the one held; a node not held is ignored.
   "node.companionsChanged": (graph, { name, companions }) => updateNode(graph, name, (node) => ({ ...node, companions })),
+  // Merged, or with reset the whole status; a node not held is ignored.
+  "node.statusChanged": (graph, { name, fields, reset }) =>
+    updateNode(graph, name, (node) => ({ ...node, status: reset === true ? fields : { ...node.status, ...fields } })),
+  // An event lives in the node's activity (activity.ts), never in the graph.
+  "node.eventRaised": (graph) => graph,
+  // The entry of the same code and subject replaced in place, or a new one at the end.
+  "node.diagnostic": (graph, { name, ...diagnostic }) =>
+    updateNode(graph, name, (node) => {
+      const kept = node.diagnostics ?? [];
+      const at = kept.findIndex((one) => one.code === diagnostic.code && one.subject === diagnostic.subject);
+      const diagnostics = at < 0 ? [...kept, diagnostic] : kept.map((one, i) => (i === at ? diagnostic : one));
+      return { ...node, diagnostics };
+    }),
 };
 
 /** The graph after one server text. Responses other than a graph, and errors, change nothing. */

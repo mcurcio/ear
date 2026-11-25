@@ -24,7 +24,8 @@
           "reshape",
           "node.set",
           "dryRun",
-          "types"
+          "types",
+          "status"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -55,7 +56,9 @@
               "repositions": 0,
               "driverChanges": 0
             },
-            "companions": []
+            "companions": [],
+            "status": {},
+            "diagnostics": []
           },
           {
             "name": "rec",
@@ -78,7 +81,9 @@
               "repositions": 0,
               "driverChanges": 0
             },
-            "companions": []
+            "companions": [],
+            "status": {},
+            "diagnostics": []
           }
         ],
         "routes": [
@@ -124,7 +129,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       }
     },
     {
@@ -230,7 +237,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       }
     },
     {
@@ -482,7 +491,8 @@
       "reshape",
       "node.set",
       "dryRun",
-      "types"
+      "types",
+      "status"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -514,7 +524,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       },
       {
         "name": "rec",
@@ -538,7 +550,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       },
       {
         "name": "tape",
@@ -566,7 +580,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       }
     ],
     "routes": [

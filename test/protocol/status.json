@@ -1,0 +1,354 @@
+{
+  "description": "The feature status (docs/control-port.md#status): every node of a snapshot carries its status view, every field of its type at its value now (a choice not yet written is null), and node.added the same at the initial values. node.statusChanged merges the fields it names; one with reset replaces the whole status. Within a node, fields written before an event reach the client before its node.eventRaised (connection connected before the pairing's failure). A stop and a start keep the status and send none. A restart: stopping, then after the old configuration's last values its reset with every field, then configuring and the new configuration's first fields. A status change or an event naming a node the client does not hold is ignored.",
+  "requests": [
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
+    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"node.stop\",\"params\":{\"name\":\"kitchen\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"node.start\",\"params\":{\"name\":\"kitchen\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"node.restart\",\"params\":{\"name\":\"kitchen\"}}"
+  ],
+  "messages": [
+    {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "protocol": 1,
+        "features": [
+          "lifecycle",
+          "counters",
+          "companions",
+          "node-text",
+          "reshape",
+          "node.set",
+          "dryRun",
+          "types",
+          "status"
+        ],
+        "graphFrequency": 48000,
+        "blockSize": 256,
+        "realtime": false,
+        "scheduling": "SCHED_OTHER",
+        "types": [
+          "sendspin",
+          "white"
+        ],
+        "typeSchemaHash": "fnv1a64:0123456789abcdef",
+        "nodes": [
+          {
+            "name": "kitchen",
+            "type": "sendspin",
+            "settings": {
+              "name": "Kitchen"
+            },
+            "inputs": [],
+            "outputs": [
+              "from_server.left",
+              "from_server.right"
+            ],
+            "state": "running",
+            "phase": "running",
+            "since": "2026-11-08T10:00:00.000000Z",
+            "wanted": "running",
+            "blockLost": false,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": [],
+            "status": {
+              "connection": null,
+              "paired": false,
+              "pairingCode": "",
+              "streamRate": 0
+            },
+            "diagnostics": []
+          }
+        ],
+        "routes": [],
+        "counters": {
+          "cycles": 0,
+          "cutCycles": 0,
+          "stalls": 0,
+          "lostMs": 0
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.statusChanged",
+      "params": {
+        "name": "kitchen",
+        "fields": {
+          "connection": "dialling"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.statusChanged",
+      "params": {
+        "name": "kitchen",
+        "fields": {
+          "connection": "connected",
+          "pairingCode": "123-456"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.eventRaised",
+      "params": {
+        "name": "kitchen",
+        "code": "pairing-failed",
+        "severity": "warn",
+        "t": "2026-11-08T10:01:52.004211Z",
+        "args": {
+          "reason": "pairing-code-mismatch"
+        },
+        "msg": "pairing failed: pairing-code-mismatch"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.statusChanged",
+      "params": {
+        "name": "kitchen",
+        "fields": {
+          "paired": true,
+          "pairingCode": "",
+          "streamRate": 48000
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "kitchen",
+        "state": "stopping",
+        "phase": "stopping",
+        "since": "2026-11-08T10:02:00.000000Z",
+        "wanted": "stopped",
+        "blockLost": false,
+        "cause": {
+          "kind": "stop"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "kitchen",
+        "state": "stopped",
+        "phase": "stopped",
+        "since": "2026-11-08T10:02:00.010000Z",
+        "wanted": "stopped",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "kitchen",
+        "state": "starting",
+        "phase": "starting",
+        "since": "2026-11-08T10:02:05.000000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "kitchen",
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-08T10:02:05.010000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "kitchen",
+        "state": "stopping",
+        "phase": "stopping",
+        "since": "2026-11-08T10:03:00.000000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "cause": {
+          "kind": "restarting"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 4,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.statusChanged",
+      "params": {
+        "name": "kitchen",
+        "fields": {
+          "connection": "dialling"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.statusChanged",
+      "params": {
+        "name": "kitchen",
+        "fields": {
+          "connection": null,
+          "paired": false,
+          "pairingCode": "",
+          "streamRate": 0
+        },
+        "reset": true
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "kitchen",
+        "state": "starting",
+        "phase": "configuring",
+        "since": "2026-11-08T10:03:00.050000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "cause": {
+          "kind": "restarting"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.statusChanged",
+      "params": {
+        "name": "kitchen",
+        "fields": {
+          "connection": "dialling"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "kitchen",
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-08T10:03:00.100000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.statusChanged",
+      "params": {
+        "name": "ghost",
+        "fields": {
+          "connection": "connected"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.eventRaised",
+      "params": {
+        "name": "ghost",
+        "code": "paired",
+        "severity": "info",
+        "t": "2026-11-08T10:03:01.000000Z",
+        "args": {
+          "server": "ma-7f3c"
+        },
+        "msg": "paired with ma-7f3c"
+      }
+    }
+  ],
+  "graph": {
+    "protocol": 1,
+    "features": [
+      "lifecycle",
+      "counters",
+      "companions",
+      "node-text",
+      "reshape",
+      "node.set",
+      "dryRun",
+      "types",
+      "status"
+    ],
+    "graphFrequency": 48000,
+    "blockSize": 256,
+    "realtime": false,
+    "scheduling": "SCHED_OTHER",
+    "types": [
+      "sendspin",
+      "white"
+    ],
+    "typeSchemaHash": "fnv1a64:0123456789abcdef",
+    "nodes": [
+      {
+        "name": "kitchen",
+        "type": "sendspin",
+        "settings": {
+          "name": "Kitchen"
+        },
+        "inputs": [],
+        "outputs": [
+          "from_server.left",
+          "from_server.right"
+        ],
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-08T10:03:00.100000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": [],
+        "status": {
+          "connection": "dialling",
+          "paired": false,
+          "pairingCode": "",
+          "streamRate": 0
+        },
+        "diagnostics": []
+      }
+    ],
+    "routes": [],
+    "counters": {
+      "cycles": 0,
+      "cutCycles": 0,
+      "stalls": 0,
+      "lostMs": 0
+    }
+  }
+}

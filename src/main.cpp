@@ -458,6 +458,8 @@ int main(int argc, char** argv) {
 	nodes.subscribeCounts(counterWatch);           // where each name's counts begin and end
 	counterWatch.subscribe(gateway);               // counters.changed
 	nodes.subscribeCompanions(gateway);            // node.companionsChanged: a list's entries and readiness
+	nodes.subscribeStatus(gateway);                // node.statusChanged, node.eventRaised (docs/control-port.md#status)
+	nodes.subscribeDiagnostics(gateway);           // node.diagnostic: a node's diagnostics, its superseded node's never
 	counterWatch.subscribeCompanions(gateway);     // and its counters' moves
 	counterWatch.subscribe(log);                   // ear.graph-lost-cycles, ear.node-missed-cycles
 	counterWatch.subscribe(nodes); // ear.sink-dropped, ear.source-shortfall: kept on the node, told as its own

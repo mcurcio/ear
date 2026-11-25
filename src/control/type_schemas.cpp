@@ -73,6 +73,64 @@ json encodeRow(const SettingRow& row) {
 
 } // namespace
 
+/// A status field as types.get says it (docs/control-port.md#type-schemas).
+json encodeStatusField(const StatusDeclaration& field) {
+	json out = {
+		{"name", field.name},
+		{"kind", valueKindName(field.kind)},
+		{"initial", nullptr},
+		{"display", displayName(field.display)},
+		{"flapsAbove", {{"transitions", field.flapsAbove.transitions}, {"windowMs", field.flapsAbove.windowMs}}}};
+	const StatusValue initial = field.initial();
+	if (const auto* flag = std::get_if<bool>(&initial)) out["initial"] = *flag;
+	else if (const auto* number = std::get_if<std::int64_t>(&initial)) out["initial"] = *number;
+	else if (const auto* decimal = std::get_if<double>(&initial)) out["initial"] = *decimal;
+	else if (const auto* text = std::get_if<std::string>(&initial)) out["initial"] = *text;
+	switch (field.kind) {
+	case ValueKind::wholeNumber:
+		out["min"] = field.low;
+		out["max"] = field.high;
+		break;
+	case ValueKind::decimal:
+		out["min"] = field.lowDecimal;
+		out["max"] = field.highDecimal;
+		out["decimals"] = field.decimals;
+		break;
+	case ValueKind::choice:
+		out["values"] = json(std::vector<std::string_view>(field.values.begin(), field.values.end()));
+		break;
+	case ValueKind::text:
+		out["maxBytes"] = field.maxBytes;
+		break;
+	case ValueKind::flag:
+		break;
+	}
+	if (!field.unit.empty()) out["unit"] = field.unit;
+	if (!field.help.empty()) out["help"] = field.help;
+	return out;
+}
+
+/// An event as types.get says it: its code, severity, sentence and arguments.
+json encodeEventDeclaration(const EventDeclaration& event) {
+	json args = json::array();
+	for (const ArgDeclaration& arg : event.args) {
+		json out = {{"name", arg.name}, {"kind", valueKindName(arg.kind)}};
+		if (arg.kind == ValueKind::wholeNumber) {
+			out["min"] = arg.low;
+			out["max"] = arg.high;
+		}
+		if (arg.kind == ValueKind::decimal) out["decimals"] = arg.decimals;
+		if (arg.kind == ValueKind::choice)
+			out["values"] = json(std::vector<std::string_view>(arg.values.begin(), arg.values.end()));
+		if (arg.kind == ValueKind::text) out["maxBytes"] = arg.maxBytes;
+		args.push_back(std::move(out));
+	}
+	return {{"code", event.code},
+	        {"severity", severityName(event.severity)},
+	        {"sentence", event.sentence},
+	        {"args", std::move(args)}};
+}
+
 json encodeTypeSchema(const TypeSchema& schema) {
 	json settings = json::array();
 	for (const SettingRow* row : schema.settings) settings.push_back(encodeRow(*row));
@@ -82,11 +140,17 @@ json encodeTypeSchema(const TypeSchema& schema) {
 		if (bank.reach != PortBank::Reach::routable) continue; // inside banks are never on the wire
 		(bank.direction == Direction::input ? inputs : outputs).push_back(bank.name);
 	}
+	json status = json::array();
+	for (const StatusDeclaration* field : schema.status) status.push_back(encodeStatusField(*field));
+	json events = json::array();
+	for (const EventDeclaration& event : schema.events) events.push_back(encodeEventDeclaration(event));
 	return {{"name", schema.name},
 	        {"settings", std::move(settings)},
 	        {"inputs", std::move(inputs)},
 	        {"outputs", std::move(outputs)},
-	        {"reconfigureMs", schema.reconfigureDeadline.count()}};
+	        {"reconfigureMs", schema.reconfigureDeadline.count()},
+	        {"status", std::move(status)},
+	        {"events", std::move(events)}};
 }
 
 TypeSchemas encodeTypeSchemas(std::span<const TypeSchema> schemas) {

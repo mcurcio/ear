@@ -3,6 +3,7 @@
 // system tests hold the real ear to.
 #include "ear/control/type_schemas.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <optional>
@@ -52,6 +53,40 @@ struct Every {
 };
 
 } // namespace type_schemas_test
+
+namespace reporting {
+using namespace ear;
+struct State {};
+inline constexpr auto worker = loop::strand<"worker", State>;
+inline constexpr std::string_view states[] = {"dialling", "connected"};
+inline constexpr auto connection =
+	status::choice<"connection">(writer::loop(worker), states).display(Display::box).help("how it reaches a server");
+inline constexpr auto paired = status::flag<"paired">(writer::loop(worker)).flapsAbove(4, 2000);
+inline constexpr auto rate = status::number<"rate">(writer::loop(worker), 0, 192000, "Hz").initially(48000);
+inline constexpr auto peak = status::decimal<"peak">(writer::rt, -90.0, 6.0, "dB", 1);
+inline constexpr auto code = status::text<"code">(writer::loop(worker), 16).display(Display::callout);
+inline constexpr auto failed =
+	event::of<"pairing-failed">(EventSeverity::warn, "pairing failed: {reason} after {tries} tries",
+                                arg::choice<"reason">(states), arg::number<"tries">(1, 9));
+inline constexpr auto said =
+	event::of<"said">(EventSeverity::info, "said {what} at {level}", arg::text<"what">(32), arg::decimal<"level">());
+inline constexpr auto out = bank::output<"out">;
+inline constexpr TypeSpec spec{.settings = SettingsTable<>{"reporting"},
+                               .banks = Banks<out>{},
+                               .loops = Loops<worker>{},
+                               .status = StatusTable<connection, paired, rate, peak, code>{},
+                               .events = EventTable<failed, said>{}};
+struct Silence {
+	void process(Io<spec> io, const GraphCycle&) noexcept {
+		for (const auto member : io[out]) std::ranges::fill(member, 0.0F);
+	}
+};
+struct Reporting {
+	static Members<spec> ports(const CheckedOf<spec>&) { return {out(members("mono"))}; }
+	Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>&) { return cx.applied(Silence{}, cx.state(worker)); }
+};
+} // namespace reporting
+
 using namespace type_schemas_test;
 
 TEST_CASE("Each row kind and mark is on the wire as the control port takes the key", "[types][protocol]") {
@@ -69,7 +104,32 @@ TEST_CASE("Each row kind and mark is on the wire as the control port takes the k
 	     "unit": "Hz", "defaultFrom": "graphFrequency"},
 	    {"key": "loud", "kind": "flag", "required": false, "change": "restart", "help": "absent: quiet"},
 	    {"key": "port", "kind": "wholeNumber", "required": false, "change": "restart", "min": 1, "max": 9,
-	     "onlyWithout": "shape"}]})"));
+	     "onlyWithout": "shape"}],
+	  "status": [], "events": []})"));
+}
+
+TEST_CASE("A type's status fields and events are on the wire in declaration order, each with what applies",
+          "[types][protocol][status]") {
+	const auto type = ear::makeNodeType<reporting::spec, reporting::Reporting>();
+	const json schema = ear::control::encodeTypeSchema(type->schema());
+	CHECK(schema["status"] == json::parse(R"([
+	  {"name": "connection", "kind": "choice", "initial": null, "display": "box",
+	   "flapsAbove": {"transitions": 10, "windowMs": 10000}, "values": ["dialling", "connected"],
+	   "help": "how it reaches a server"},
+	  {"name": "paired", "kind": "flag", "initial": false, "display": "panel",
+	   "flapsAbove": {"transitions": 4, "windowMs": 2000}},
+	  {"name": "rate", "kind": "wholeNumber", "initial": 48000, "display": "panel",
+	   "flapsAbove": {"transitions": 10, "windowMs": 10000}, "min": 0, "max": 192000, "unit": "Hz"},
+	  {"name": "peak", "kind": "decimal", "initial": 0.0, "display": "panel",
+	   "flapsAbove": {"transitions": 10, "windowMs": 10000}, "min": -90.0, "max": 6.0, "decimals": 1, "unit": "dB"},
+	  {"name": "code", "kind": "text", "initial": "", "display": "callout",
+	   "flapsAbove": {"transitions": 10, "windowMs": 10000}, "maxBytes": 16}])"));
+	CHECK(schema["events"] == json::parse(R"([
+	  {"code": "pairing-failed", "severity": "warn", "sentence": "pairing failed: {reason} after {tries} tries",
+	   "args": [{"name": "reason", "kind": "choice", "values": ["dialling", "connected"]},
+	            {"name": "tries", "kind": "wholeNumber", "min": 1, "max": 9}]},
+	  {"code": "said", "severity": "info", "sentence": "said {what} at {level}",
+	   "args": [{"name": "what", "kind": "text", "maxBytes": 32}, {"name": "level", "kind": "decimal", "decimals": 2}]}])"));
 }
 
 TEST_CASE("The hash is FNV-1a 64 of the schemas' encoding, written with its name", "[types][protocol]") {

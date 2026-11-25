@@ -18,7 +18,8 @@
           "reshape",
           "node.set",
           "dryRun",
-          "types"
+          "types",
+          "status"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -57,7 +58,9 @@
               "repositions": 0,
               "driverChanges": 0
             },
-            "companions": []
+            "companions": [],
+            "status": {},
+            "diagnostics": []
           },
           {
             "name": "noise",
@@ -78,7 +81,9 @@
               "repositions": 0,
               "driverChanges": 0
             },
-            "companions": []
+            "companions": [],
+            "status": {},
+            "diagnostics": []
           },
           {
             "name": "quiet",
@@ -99,7 +104,9 @@
               "repositions": 0,
               "driverChanges": 0
             },
-            "companions": []
+            "companions": [],
+            "status": {},
+            "diagnostics": []
           },
           {
             "name": "rec",
@@ -130,7 +137,9 @@
                 "ready": true,
                 "dropped": 0
               }
-            ]
+            ],
+            "status": {},
+            "diagnostics": []
           },
           {
             "name": "tape",
@@ -157,7 +166,9 @@
               "repositions": 0,
               "driverChanges": 0
             },
-            "companions": []
+            "companions": [],
+            "status": {},
+            "diagnostics": []
           }
         ],
         "routes": [
@@ -217,7 +228,8 @@
           "reshape",
           "node.set",
           "dryRun",
-          "types"
+          "types",
+          "status"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -256,7 +268,9 @@
               "repositions": 0,
               "driverChanges": 0
             },
-            "companions": []
+            "companions": [],
+            "status": {},
+            "diagnostics": []
           },
           {
             "name": "noise",
@@ -277,7 +291,9 @@
               "repositions": 0,
               "driverChanges": 0
             },
-            "companions": []
+            "companions": [],
+            "status": {},
+            "diagnostics": []
           },
           {
             "name": "quiet",
@@ -298,7 +314,9 @@
               "repositions": 0,
               "driverChanges": 0
             },
-            "companions": []
+            "companions": [],
+            "status": {},
+            "diagnostics": []
           },
           {
             "name": "rec",
@@ -329,7 +347,9 @@
                 "ready": true,
                 "dropped": 0
               }
-            ]
+            ],
+            "status": {},
+            "diagnostics": []
           },
           {
             "name": "tape",
@@ -356,7 +376,9 @@
               "repositions": 0,
               "driverChanges": 0
             },
-            "companions": []
+            "companions": [],
+            "status": {},
+            "diagnostics": []
           }
         ],
         "routes": [
@@ -414,7 +436,8 @@
       "reshape",
       "node.set",
       "dryRun",
-      "types"
+      "types",
+      "status"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -453,7 +476,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       },
       {
         "name": "noise",
@@ -474,7 +499,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       },
       {
         "name": "quiet",
@@ -495,7 +522,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       },
       {
         "name": "rec",
@@ -526,7 +555,9 @@
             "ready": true,
             "dropped": 0
           }
-        ]
+        ],
+        "status": {},
+        "diagnostics": []
       },
       {
         "name": "tape",
@@ -553,7 +584,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       }
     ],
     "routes": [

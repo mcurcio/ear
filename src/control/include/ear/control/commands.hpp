@@ -87,9 +87,9 @@ inline constexpr std::string_view dryRunFeature = "dryRun";
 /// The node types' schemas: types.get and the Graph's typeSchemaHash (docs/control-port.md#type-schemas); with it,
 /// invalid-settings carries data.key and data.detail (docs/control-port.md#error-codes).
 inline constexpr std::string_view typesFeature = "types";
-inline constexpr std::array<std::string_view, 8> wireFeatures{"lifecycle",     "counters",     companionsFeature,
+inline constexpr std::array<std::string_view, 9> wireFeatures{"lifecycle",     "counters",     companionsFeature,
                                                               nodeTextFeature, reshapeFeature, nodeSetFeature,
-                                                              dryRunFeature,   typesFeature};
+                                                              dryRunFeature,   typesFeature,   "status"};
 /// Control thread. Named params only, decoded with graph_json. Unknown method: methodNotFound;
 /// a missing, extra or mistyped key: invalidParams whose message is the JsonError
 /// ("/from/port: missing") and whose data is {"pointer"} (the JSON pointer it names). graphFile.get and

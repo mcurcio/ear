@@ -22,6 +22,27 @@ struct NodeAdded {
 	Ports ports;       // public ports only
 	NodeHealth health; // from the spec alone
 	std::chrono::system_clock::time_point since;
+	std::vector<FieldValue> status{}; // feature status: every field of its type at its initial value
+};
+/// node.statusChanged (feature status, docs/control-port.md#status): the fields changed since the node's last, each at
+/// its value now; with `reset`, every field at its initial value after its configuration closed.
+struct NodeStatusChanged {
+	NodeName node;
+	std::vector<FieldValue> fields;
+	bool reset = false;
+};
+/// node.eventRaised (feature status): one event past the node's event pace, `t` when it was written.
+struct NodeEventRaised {
+	NodeName node;
+	RaisedEvent event;
+	std::chrono::system_clock::time_point t;
+};
+/// node.diagnostic (feature status, docs/control-port.md#node-diagnostics): one of the node's diagnostics as NodeHost
+/// kept it, `t` when it was said.
+struct NodeDiagnosed {
+	NodeName node;
+	NodeDiagnostic diagnostic;
+	std::chrono::system_clock::time_point t;
 };
 /// node.updated's members for a change of a node's ports (feature reshape, docs/control-port.md#notifications).
 struct NodeReshaped {
@@ -70,7 +91,8 @@ struct CountersChanged {
 	std::vector<NamedCounts> nodes;
 };
 using GraphEvent = std::variant<NodeAdded, NodeUpdated, NodeRemoved, NodeChanged, NodeStopped, NodeGone, RouteAdded,
-                                RouteRemoved, RouteChanged, CountersChanged, NodeCompanionsChanged>;
+                                RouteRemoved, RouteChanged, CountersChanged, NodeCompanionsChanged, NodeStatusChanged,
+                                NodeEventRaised, NodeDiagnosed>;
 class EventSink { // control thread
 public:
 	virtual void graphChanged(GraphEvent event) = 0;
