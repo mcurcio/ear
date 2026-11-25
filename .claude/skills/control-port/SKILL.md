@@ -1,6 +1,6 @@
 ---
 name: control-port
-description: How to talk to EAR's control port (7777, HTTP for the graph editor plus JSON-RPC 2.0 over WebSocket at /rpc), its flags, the Host and Origin rules, protocol 1 and its features (lifecycle, counters, companions and node.companionsChanged), the lifecycle requests (node.start, node.stop, node.restart, node.disable, node.enable), node health and node.gone, the graphFile.* calls that read and replace ear.conf, rpc-call.mjs --until, write-behind and hand edits, how it runs on its own thread and reaches the graph through the graph file keeper and the gateway, per-client queues, levels, stopping, and the traps found while building it. Use when calling ear from a script, test or browser, when a request gets 403, file-changed, file-invalid or shared-definition, a socket closes with 1008 or a reset, levels never arrive, an edit is lost or not written, stop hangs, or when changing src/server/, src/control/ (rpc, commands, events, gateway, session), src/config/ or web/src/rpc.ts.
+description: How to talk to EAR's control port (7777, HTTP for the graph editor plus JSON-RPC 2.0 over WebSocket at /rpc), its flags, the Host and Origin rules, protocol 1 and its features (lifecycle, counters, companions and node.companionsChanged, status with node.statusChanged, node.eventRaised and node.diagnostic), the lifecycle requests (node.start, node.stop, node.restart, node.disable, node.enable), node health and node.gone, the graphFile.* calls that read and replace ear.conf, rpc-call.mjs --until and --follow, write-behind and hand edits, how it runs on its own thread and reaches the graph through the graph file keeper and the gateway, per-client queues, levels, stopping, and the traps found while building it. Use when calling ear from a script, test or browser, when a request gets 403, file-changed, file-invalid or shared-definition, a socket closes with 1008 or a reset, levels never arrive, an edit is lost or not written, stop hangs, or when changing src/server/, src/control/ (rpc, commands, events, gateway, session), src/config/ or web/src/rpc.ts.
 ---
 
 # EAR's control port
@@ -33,7 +33,11 @@ use`).
   default; 10 without `--until`): `node scripts/rpc-call.mjs $U --until 'porch running'
   node.start '{"name":"porch"}'`. Exit codes: 0 done, 1 an error reply, a `failed` node or a
   lost socket, 2 the state did not come in time, 3 bad arguments, 4 no answer in time (without
-  `--until`). Inside the image: `scripts/dev.sh node scripts/rpc-call.mjs ...`.
+  `--until`). `--follow` (no `--until`) sends `graph.subscribe` (or the method given), prints
+  its result and then every notification as one line `{"method","params"}` until interrupted or
+  `--timeout`: `node scripts/rpc-call.mjs $U --follow | jq -c 'select(.method ==
+  "node.eventRaised")'` watches a node's events, `node.statusChanged` its status. Inside the
+  image: `scripts/dev.sh node scripts/rpc-call.mjs ...`.
 - **From a browser:** `http://<host>:7777/`. In development, `EAR_DEV_PUBLISH=5173:5173
   scripts/dev.sh bash -c 'cd web && npm run dev -- --host 0.0.0.0'` serves the editor with hot
   reload and forwards `/rpc` to an `ear` on `localhost:7777` (run `ear` in the same container,

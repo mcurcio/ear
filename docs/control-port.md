@@ -25,6 +25,15 @@ request goes to the graph file keeper and from there to the main loop
 
   Exit codes: 0 done; 1 an error reply, a `failed` node or a lost socket; 2 the state did not come
   in time; 3 bad arguments; 4 no answer in time (without `--until`).
+
+  With `--follow` it sends the method (`graph.subscribe` when none is given), prints its result,
+  then every notification after it as one JSON line `{"method", "params"}`, in the order the
+  session sent them, until interrupted (exit 0) or `--timeout` passes (exit 0); a socket that
+  closes first is exit 1:
+
+  ```bash
+  node scripts/rpc-call.mjs ws://127.0.0.1:7777/rpc --follow | jq -c 'select(.method == "node.statusChanged")'
+  ```
 - **From a browser:** `http://<host>:7777/`.
 - **Startup:** wait for the `control listening on <address>:<port>` record on standard output,
   never for a time. `--control-port 0` takes any free port, which that record names.
