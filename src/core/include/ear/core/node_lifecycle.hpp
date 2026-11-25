@@ -344,6 +344,10 @@ public:
 	// A change in place's completions: the change version answered and every replacement is ready (the commit point);
 	// the commit's invoke completed; the change could not finish and restarts with the newest settings.
 	Actions changeReady();
+	/// The change's continuation was posted to its loop (docs/writing-a-node-type.md#whenready-and-configuredone): from
+	/// here a newer change waits for the change's end, as during the commit's invoke; a stop, a teardown, the block's
+	/// loss and a fallback still end it.
+	Actions continued();
 	Actions committed(std::uint64_t barrier);
 	Actions fellBack(NodeCause::FellBack reason, std::string detail);
 	/// Another node's barrier marked the data loop wedged: this node is never configured again.
@@ -365,6 +369,8 @@ public:
 	bool changePending() const noexcept;
 	/// A change in place is in flight (reconfiguring), and the settings version it applies.
 	bool changing() const noexcept { return config_.changing(); }
+	/// The change in flight is past its continuation's post: a newer change waits for it (continued()).
+	bool continuing() const noexcept;
 	std::uint64_t changeVersion() const noexcept { return changeVersion_; }
 	const std::optional<Failure>& failure() const noexcept { return failure_; }
 	const std::optional<Failure>& heldFault() const noexcept { return heldFault_; }
@@ -396,6 +402,7 @@ private:
 	// A change in place: the version and keys in flight; the keys of the changes since the applied settings (or, while
 	// committing, since the change in flight) not yet taken, and whether every one of them is in place.
 	std::uint64_t changeVersion_ = 0;
+	bool continued_ = false; // the change in flight posted its continuation
 	std::vector<std::string> changeKeys_;
 	std::vector<std::string> pendingKeys_;
 	bool pendingInPlace_ = false;

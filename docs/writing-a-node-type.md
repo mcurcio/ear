@@ -229,7 +229,9 @@ its own state, and may touch nothing the old code's `process` reads.
 | `cx.post(handle, work)` | Work on a loop, staged until the commit point and destroyed unrun if the change is superseded or falls back | As on creation |
 | `cx.declareLatency(from, to, Latency{...})` | The new configuration's latency on a path, carried from the commit point | As on creation |
 
-Then answer `return cx.applied()` (the code stays), `return cx.applied(code)` (a new code, swapped
+Then answer `return cx.applied()` (the code stays), `return cx.whenReady(loop, work)` (the change
+goes on on the node's own thread once it is ready: [whenReady](#whenready-and-configuredone)),
+`return cx.applied(code)` (a new code, swapped
 in at the commit point between two cycles: a discontinuity unless the type carries its state into
 it; it takes no loop's state, which lives across a change), or `return Changed::restart(reason)`
 when the type cannot take this change in place after all, which restarts the node with the new
@@ -237,6 +239,48 @@ settings. A change version cannot refuse a change: the new settings are committe
 called. `ChangeOf` has no `state`, `store`, `executor`, `recording` or `program`: each does
 not compile. The spec's `.lifecycle = Lifecycle{.reconfigureDeadline = 30s}` (after `.loops`; 10 s
 by default) is how long a change may take; outside 1 s to 60 s it does not compile.
+
+### whenReady and ConfigureDone
+
+A change whose work must run on the node's own thread once its new acquisitions are ready (a
+library's client swapped on its worker) answers with `cx.whenReady(loop, work)` instead of
+`cx.applied()`: one call, which joins "once ready" and "on my thread", so a type writes neither a
+poll nor a second hook.
+
+```cpp
+Changed configure(ChangeOf<spec>& cx, const Checked& old, const Checked& now) {
+	cx.claim(claim::TcpListen(now.get<portRow>()));
+	cx.unclaim(claim::TcpListen(old.get<portRow>()));
+	return cx.whenReady(worker, [next = settingsFrom(now)](Worker& w, ConfigureDone done) mutable {
+		w.swapClient(std::move(next), std::move(done)); // done.done() or done.fail(detail), later, from any thread
+	});
+}
+```
+
+- **When it runs.** Once every acquisition of the change is ready (its claims granted and
+  probed, its replacement companions running) and every hold acknowledged, `work(state, done)` is
+  posted to the loop as the node's own work (`work(done)` for a loop with no state). The commit
+  point waits for `done.done()`: then the staged posts are released, the holds fade in and what
+  the change replaced is released, last.
+- **Before the post** a newer change supersedes the change, and a refusal, a loss, the deadline, a
+  stop, a removal or `node.restart` ends it: `work` is destroyed unrun on the main loop, with every
+  post the change staged.
+- **From the post on** `work` is the node's own: it runs even if a stop, a restart or a removal
+  began after the post, before the goodbye `stop()` posts behind it, so a goodbye sees a whole
+  state, old or new. A newer change waits for the change to end (as for the commit's invoke) and
+  is then made afresh; a stop, a removal, a restart and the deadline still end the change, and its
+  `done` is then ignored.
+- **`ConfigureDone`** is move-only. `std::move(done).done()` or `std::move(done).fail(detail)` once,
+  from any thread; `fail` falls the change back to a restart (reason `failed`, `detail` its words),
+  and a token destroyed without either (dropped, or destroyed unrun with its work when the loop's
+  state is gone) fails it `the change was dropped`. Once the change ended any other way both are
+  ignored.
+- **The rules:** `whenReady` at most once in a change, its `Changed` the one `configure` returns
+  (a second call, or another answer after it, fails the node `lost`); the code stays the node's
+  (a continuation swaps no code and holds no bank: those are `cx` calls, made before it).
+- **In the harness** the continuation runs at `runLoops()`, as every loop's work does, so a test
+  readies the change's companions, then runs the loops, and the change commits once its token
+  answered.
 
 ### Make-before-break
 

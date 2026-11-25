@@ -571,13 +571,17 @@ What NodeHost does, in order:
    prepared), and its latency plan worked out; a broken rule, a pass-through or a plan that does
    not fit fails the node `lost`. An answer `restart`, or a change version that threw, falls back
    (below).
-4. **The commit point.** The instance adopts the new settings and the configuration holds them;
+4. **The continuation**, when the change version answered `whenReady`
+   ([writing-a-node-type.md](writing-a-node-type.md#whenready-and-configuredone)): once every
+   acquisition is ready and every hold acknowledged it is posted to its loop, and the commit point
+   waits for its `done()`; a `fail(detail)`, or its token dropped, falls back (`failed`).
+5. **The commit point.** The instance adopts the new settings and the configuration holds them;
    the staged posts are released to their loops, in the order posted; the plan is carried; a new
    code is swapped in one invoke, its completion the commit's (from `prepared`, or with no new
    code, the commit completes in its own turn); the old code is released once its swap completed;
    then the holds fade back in; last, the ports the configuration no longer asks are released.
    The loops and their states go on: nothing is torn down.
-5. **The deadline**, 10 s from the change version's call (a type declares 1 s to 60 s: its spec's
+6. **The deadline**, 10 s from the change version's call (a type declares 1 s to 60 s: its spec's
    `.lifecycle`): past it the change falls back, reason `deadline`.
 
 A **replacement** (an RTP receiver on the same bank,
@@ -635,6 +639,10 @@ one:
   change and stops; once stopped, the change is made in place from there. A disable or a
   removal ends the change and goes on as from `running` or `stopped`. `node.restart` falls back
   at once.
+- **After the continuation's post** a newer change waits for the change's end, then is made
+  afresh (in place, or a restart if any key of it must restart); a stop, a disable, a removal,
+  `node.restart`, a fault and the deadline still end the change, the continuation running on its
+  loop all the same, its `done` ignored.
 - **After the commit point** (the commit's invoke in flight) a newer change, a stop, a disable, a
   removal, a fault's teardown or `node.restart` waits for the invoke, then applies: a newer change
   is a fresh change (in place, or a restart if any key of it must restart), a restart falls back.

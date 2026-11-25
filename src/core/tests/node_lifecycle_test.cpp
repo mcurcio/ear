@@ -2320,3 +2320,41 @@ TEST_CASE("A fault during a change fails the node, and the commit's invoke overd
 		CHECK(p.health().blockLost);
 	}
 }
+
+TEST_CASE(
+	"After a change's continuation was posted a newer change waits for the change's end, then is made, and a stop "
+	"or a fallback still ends it",
+	"[lifecycle][machines]") {
+	SECTION("a newer change in place waits, as next") {
+		Probe p = reach(Spot::reconfiguringBeforeCommit);
+		p.take(p.node.continued());
+		CHECK(p.node.continuing());
+		p.clear();
+		p.changeInPlace({"level"});
+		CHECK(p.asked.empty()); // not superseded
+		CHECK(p.health().keys == std::vector<std::string>{"gain"});
+		CHECK(p.health().next == std::vector<std::string>{"level"});
+		p.take(p.node.changeReady());
+		p.settle();
+		CHECK(p.did(K::reconfigure)); // the newer change, made once the first committed
+		CHECK_FALSE(restarted(p));
+	}
+	SECTION("a newer restart-only change waits, then restarts") {
+		Probe p = reach(Spot::reconfiguringBeforeCommit);
+		p.take(p.node.continued());
+		p.clear();
+		p.change({"size"});
+		CHECK(p.asked.empty());
+		p.take(p.node.changeReady());
+		p.settle();
+		CHECK(restarted(p));
+	}
+	SECTION("the fallback still ends it") {
+		Probe p = reach(Spot::reconfiguringBeforeCommit);
+		p.take(p.node.continued());
+		p.clear();
+		p.take(p.node.fellBack(NodeCause::FellBack::failed, "the change was dropped"));
+		CHECK(p.did(K::dropChange));
+		CHECK_FALSE(p.node.continuing());
+	}
+}

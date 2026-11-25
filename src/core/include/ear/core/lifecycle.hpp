@@ -118,6 +118,52 @@ private:
 
 template <const auto& Spec> class ChangeOf;
 
+namespace detail {
+/// Where a ConfigureDone answers: NodeHost's, posting the answer to the main loop through the change's configuration,
+/// so an answer after the change ended (or the configuration did) lands nowhere. Any thread.
+class ChangeAnswer {
+public:
+	virtual ~ChangeAnswer() = default;
+	/// `failure` empty: done; else the change fails with it.
+	virtual void answer(std::optional<std::string_view> failure) noexcept = 0;
+};
+} // namespace detail
+
+/// A change in place's token (docs/writing-a-node-type.md#whenready-and-configuredone), handed to the continuation
+/// whenReady posted: move-only; done() or fail(detail) once, from any thread. Destroyed without either (dropped, or
+/// destroyed unrun with its work), it fails the change "the change was dropped". Once the change ended any other way,
+/// both are ignored.
+class ConfigureDone {
+public:
+	explicit ConfigureDone(std::unique_ptr<detail::ChangeAnswer> answer) noexcept : answer_(std::move(answer)) {}
+	ConfigureDone(ConfigureDone&&) noexcept = default;
+	ConfigureDone& operator=(ConfigureDone&& other) noexcept {
+		if (this != &other) {
+			drop();
+			answer_ = std::move(other.answer_);
+		}
+		return *this;
+	}
+	ConfigureDone(const ConfigureDone&) = delete;
+	ConfigureDone& operator=(const ConfigureDone&) = delete;
+	~ConfigureDone() { drop(); }
+	/// The continuation's work is done: the change goes on to its commit point.
+	void done() && {
+		if (const auto answer = std::exchange(answer_, nullptr)) answer->answer(std::nullopt);
+	}
+	/// The change cannot be made: it falls back to a restart with the new settings (reason failed, `detail` its words).
+	void fail(std::string detail) && {
+		if (const auto answer = std::exchange(answer_, nullptr)) answer->answer(std::string_view(detail));
+	}
+
+private:
+	void drop() noexcept {
+		if (const auto answer = std::exchange(answer_, nullptr))
+			answer->answer(std::string_view("the change was dropped"));
+	}
+	std::unique_ptr<detail::ChangeAnswer> answer_;
+};
+
 /// What the change version of configure answers (docs/writing-a-node-type.md#the-change-version): applied, with or
 /// without a new code, made only by its context (`cx.applied(...)`), or a restart the type asks for when it cannot take
 /// this change in place after all, which falls the change back to a restart with the new settings.
@@ -135,11 +181,18 @@ public:
 	const std::string& reason() const noexcept { return restart_ ? *restart_ : empty(); }
 	/// For the framework, on an applied answer: the new code, if one was given (taken once).
 	std::optional<NodeCode>& code() noexcept { return code_; }
+	/// For the framework: the answer whenReady gave, which goes on in its continuation.
+	bool continues() const noexcept { return continues_; }
 
 private:
 	friend class ErasedInstance;
 	template <const auto&> friend class ChangeOf;
 	Changed() = default;
+	static Changed continued() {
+		Changed answer;
+		answer.continues_ = true;
+		return answer;
+	}
 	static Changed erased(std::optional<NodeCode> code) {
 		Changed answer;
 		answer.code_ = std::move(code);
@@ -151,6 +204,7 @@ private:
 	}
 	std::optional<std::string> restart_;
 	std::optional<NodeCode> code_;
+	bool continues_ = false;
 };
 
 // ---- The erased contexts NodeHost implements ----
@@ -288,6 +342,11 @@ public:
 	/// A port the configuration holds that it no longer needs: released at the commit point, last; a key the change
 	/// also claims stays held. A key it does not hold is a std::logic_error.
 	virtual void unclaim(Claim claim) = 0;
+	/// The change's one later answer (docs/writing-a-node-type.md#whenready-and-configuredone): `work`, called with
+	/// declared loop `loop`'s state (null for a loop with none) and the change's token, is posted to that loop once
+	/// every acquisition of the change is ready and every hold acknowledged; destroyed unrun if the change ends before.
+	/// A second call is a std::logic_error.
+	virtual void whenReady(std::size_t loop, std::move_only_function<void(void*, ConfigureDone)> work) = 0;
 
 protected:
 	~ChangeContext() = default;
@@ -700,6 +759,26 @@ public:
 		static_assert(From::direction == Direction::input && To::direction == Direction::output,
 		              "declareLatency names a pair: an input bank, then an output bank");
 		context_->declareLatency(From::name, To::name, latency);
+	}
+	/// The change's one later answer, and what configure returns (docs/writing-a-node-type.md#whenready-and-configuredone):
+	/// once every acquisition this call made is ready (claims granted and probed, replacement companions running and
+	/// linked) and every hold acknowledged, `work(state, done)` is posted to loop `Handle` as the node's own work (a loop
+	/// with no state: `work(done)`). If the change ends before that, `work` is destroyed unrun on the main loop; once
+	/// posted it runs, even if a stop, a restart or a removal began after the post. The commit point (staged posts
+	/// released, holds faded in, replaced resources released) comes after its done(). The code stays the node's.
+	template <class Handle, class Work> Changed whenReady(Handle, Work work) {
+		static_assert(ownLoop<Handle>, "a context takes only its spec's loops");
+		if constexpr (Handle::stateful)
+			static_assert(std::invocable<Work&, typename Handle::State&, ConfigureDone>,
+			              "whenReady's work takes the loop's state and the change's ConfigureDone");
+		else static_assert(std::invocable<Work&, ConfigureDone>, "whenReady's work takes the change's ConfigureDone");
+		context_->whenReady(LoopsOf<Spec>::template indexOf<Handle>,
+		                    [work = std::move(work)](void* state, ConfigureDone done) mutable {
+								if constexpr (Handle::stateful)
+									work(*static_cast<typename Handle::State*>(state), std::move(done));
+								else work(std::move(done));
+							});
+		return Changed::continued();
 	}
 	/// Holds these routable output banks silent: from the next cycle each fades to zero over 5 ms and stays there until
 	/// the commit point, which fades it back in (or until release).

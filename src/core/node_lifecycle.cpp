@@ -852,6 +852,7 @@ bool NodeAggregate::mayChangeInPlace() const {
 
 /// The pending changes become the change in flight, applying the newest settings.
 void NodeAggregate::beginChange(Actions& out) {
+	continued_ = false;
 	changeVersion_ = queued_.version;
 	changeKeys_ = std::move(pendingKeys_);
 	pendingKeys_.clear();
@@ -1012,7 +1013,8 @@ Actions NodeAggregate::change(Queued queued, std::vector<std::string> keys, Chan
 	const bool inPlace = kind == ChangeKind::inPlace;
 	queued_ = queued;
 	changedKeys_ = keys;
-	if (state != ConfigState::changing) { // supersession takes the keys into the change itself
+	const bool supersedes = state == ConfigState::changing && !continuing();
+	if (!supersedes) { // supersession takes the keys into the change itself
 		for (const std::string& key : keys)
 			if (std::ranges::find(pendingKeys_, key) == pendingKeys_.end()) pendingKeys_.push_back(key);
 		pendingInPlace_ = pendingInPlace_ && inPlace;
@@ -1027,7 +1029,7 @@ Actions NodeAggregate::change(Queued queued, std::vector<std::string> keys, Chan
 		tell(out);
 		return out;
 	}
-	if (state == ConfigState::changing) {
+	if (supersedes) {
 		// Before the commit point a newer change supersedes: in place, the change version is called again with the
 		// newest settings and every key not yet applied; else the node restarts.
 		for (std::string& key : keys)
@@ -1041,7 +1043,7 @@ Actions NodeAggregate::change(Queued queued, std::vector<std::string> keys, Chan
 		converge(out);
 		return out;
 	}
-	if (state == ConfigState::committing) { // waits for the commit, then applies (next)
+	if (state == ConfigState::committing || continuing()) { // waits for the change's end, then applies (next)
 		tell(out);
 		return out;
 	}
@@ -1301,6 +1303,15 @@ Actions NodeAggregate::changeReady() {
 	converge(out);
 	return out;
 }
+
+Actions NodeAggregate::continued() {
+	Actions out;
+	if (goneTold_ || config_.state() != ConfigState::changing) return out;
+	continued_ = true;
+	return out;
+}
+
+bool NodeAggregate::continuing() const noexcept { return continued_ && config_.state() == ConfigState::changing; }
 
 Actions NodeAggregate::committed(std::uint64_t barrier) {
 	Actions out;

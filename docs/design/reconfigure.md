@@ -1,7 +1,7 @@
 # Changes in place and reshape: slice 3d of the node framework
 
-Status: design; steps 1 and 2 of section 11 built, and of step 3 claims in a change and make-before-break for an RTP
-receiver (section 2 says what and where). Slice 3d follows slice 3c (built: it swaps claims and posts to loops, both
+Status: design; steps 1 and 2 of section 11 built, and of step 3 claims in a change, make-before-break for an RTP
+receiver, `whenReady` and `ConfigureDone` (section 2 says what and where). Slice 3d follows slice 3c (built: it swaps claims and posts to loops, both
 3c's, `docs/writing-a-node-type.md#claims`, `#loops`) and comes before slice 6 (`control-plane.md`: a retune is one of the outcomes this slice makes). Its PipeWire
 spike (S4) is run: a reshape goes ahead as designed (7.4). It changes the audio path: holds, code swaps and reshapes. The built lifecycle (states,
 operations, teardown, fades, barriers and their bounds) is described in `docs/architecture.md` and
@@ -47,6 +47,9 @@ Built (steps 1 and 2 of section 11), described where they live and not repeated 
 - `cx.claim` and `cx.unclaim` in a change: judged as the change version returns, before anything else, the old port
   released at the commit point, last, and two nodes swapping ports in one edit both coming back after a restart each
   ([`docs/writing-a-node-type.md#claims-in-a-change`](../writing-a-node-type.md#claims-in-a-change));
+- `whenReady` and `ConfigureDone`: the continuation posted once every acquisition is ready, the commit point after its
+  `done()`, a newer change waiting from the post
+  ([`docs/writing-a-node-type.md#whenready-and-configuredone`](../writing-a-node-type.md#whenready-and-configuredone));
 - on the wire: `reconfiguring` with `keys` and `next`, the `fell-back` cause, `applied: "reconfigure"`, the
   standard-output records and the three diagnostics ([`docs/control-port.md#node-health`](../control-port.md#node-health),
   [`docs/output-records.md#node`](../output-records.md#node)).
@@ -54,7 +57,7 @@ Built (steps 1 and 2 of section 11), described where they live and not repeated 
 This page still designs:
 
 - the plan's outcomes `reshape` and `unchanged`, and a change of ports with the same type no longer a replace (3, 7);
-- `whenReady` and `ConfigureDone`, recordings, sinks, sources and cards replaced in a change (4, 6);
+- recordings, sinks, sources and cards replaced in a change (4, 6);
 - make-before-break for the other kinds, and `Order::breakFirst` (5);
 - `SinkControl::pause` and `resume` (6.4);
 - `PortBlock::reshape` (7);
@@ -106,13 +109,6 @@ cannot check, each failing the node `lost`; the new code's `prepare` beside the 
 to `ChangeOf`:
 
 ```cpp
-/// An in-place change's token: move-only; done() or fail(detail) once, from any thread. Destroyed without either, it
-/// fails the change ("<node>: the change was dropped"). After teardown began, both are ignored.
-class ConfigureDone {
-public:
-	void done() &&;
-	void fail(std::string detail) &&;
-};
 template <const auto& Spec> class ChangeOf {
 public:
 	// Replacements of the other kinds, made before break (5.3).
@@ -120,29 +116,11 @@ public:
 	template <class Bank> SourceWriter& attach(Bank, SourceShape);
 	template <class Bank> SinkControl& attach(Bank, SinkShape, /* its consumer, in creation's three forms */);   // 6.4
 	int recording(RecordingRequest);                                   // a replacement, made before break
-	/// Once every acquisition this call made is ready (claims granted and probed, recordings open, replacement companions
-	/// running and linked), posts work(state, token) to `loop` as the node's own work; the one later answer.
-	template <class Loop>
-	Changed whenReady(Loop, std::move_only_function<void(typename Loop::State&, ConfigureDone)> work);
 };
 ```
 
-The rules still to build: `whenReady` is called at most once, and its `Changed` is
-what `configure` returns. Staged posts are released after the continuation's `done()`, once a continuation exists.
-
-**`whenReady`** joins "act once the new acquisitions are ready" and "act on the node's own thread" (a hook holds no reference to a loop's state, so a post typed by the loop's handle is
-its only way there: [`docs/writing-a-node-type.md#loops`](../writing-a-node-type.md#loops)), so a
-type writes neither a poll nor a second hook (G20):
-
-- if an acquisition is refused or lost, or the deadline passes before the post, `work` is destroyed unrun on the main
-  loop and the change falls back (T11);
-- if a newer change supersedes it before the post, or a stop, a removal or `node.restart` ends it, `work` is destroyed
-  unrun the same way, with every plain post the hook staged, and its acquisitions are released; the post is the commit
-  point after which a newer change waits;
-- once posted, `work` is the node's own work: it runs even if a stop, a restart or a removal began after the post,
-  before the goodbye `stop()` posts behind it, so a goodbye always sees a whole state, old or new, never half a swap;
-  its `done` is then ignored;
-- a continuation may not swap the code or hold banks: those are `cx` calls, applied at the commit point.
+Built: `whenReady` and `ConfigureDone`
+([`docs/writing-a-node-type.md#whenready-and-configuredone`](../writing-a-node-type.md#whenready-and-configuredone)).
 
 **A code in the answer is always a swap** (D-R18): the framework never compares codes, so a type whose code keeps state
 carries it into the new code or answers `cx.applied()` with none. A code swap without holds is a discontinuity unless the type carries its state;
@@ -175,8 +153,7 @@ break.
 
 ### 6.1 Claims swapped make-before-break
 
-Built: [`docs/writing-a-node-type.md#claims-in-a-change`](../writing-a-node-type.md#claims-in-a-change). Still
-designed: a refused claim also destroys the continuation unrun (section 4).
+Built: [`docs/writing-a-node-type.md#claims-in-a-change`](../writing-a-node-type.md#claims-in-a-change).
 
 **A same-port RTP receiver** (`rtp` changing `format` on 5004) asks `udp:5004`, which its configuration holds: its own.
 Two rtp-source modules bound to one port with SO_REUSEADDR would split or duplicate the datagrams [U13], so the
@@ -467,12 +444,12 @@ What steps 1 and 2 changed is built (section 2). What is left:
 | Built piece | Change |
 |---|---|
 | `NodeOutcome`, `NodeChange`, `DesiredNodeListener` (`desired_graph.hpp`) | outcomes `reshape`, `unchanged`; `NodeChange` gains the old and new ports and `inPlace`; a change of ports with the same type is told by `nodeChanged`, not as a replace; `portCaused` goes |
-| `lifecycle.hpp` | `ConfigureDone`, `whenReady`, the other kinds' replacements; `SinkControl` |
-| `NodeHost` | make-before-break for the other kinds; the continuation; the block's reshape between teardown and `configure` |
+| `lifecycle.hpp` | the other kinds' replacements; `SinkControl` |
+| `NodeHost` | make-before-break for the other kinds; the block's reshape between teardown and `configure` |
 | `PortBlock`, `FilterPortBlocks` | `reshape(next)` with layouts swapped whole; levels re-registered |
 | The sink companion | `pause` and `resume` on its thread |
 | `sendspin` | rows marked `.inPlace()`; its change version |
-| `TypeHarness` | the continuation on `runLoops()`; `paused(bank)`, `pausedFrames(bank)` |
+| `TypeHarness` | `paused(bank)`, `pausedFrames(bank)` |
 | `ear_config` | `node.set`'s merge; `dropRoutes` and `ports-in-use` in the candidate; dry runs posted and dropped |
 | `ear_control`, `web/` | features `node.set`, `reshape`, `dryRun`; 8.3's editor beyond the `reconfiguring` style and line (built) |
 
@@ -480,9 +457,8 @@ What steps 1 and 2 changed is built (section 2). What is left:
 
 Built: what `docs/testing.md` lists for changes in place. Still to write with what they test:
 
-- **`ear_core_tests`**: the code swap with a sink and its replacement splitting the cycles exactly, a continuation run
-  only once every acquisition is ready and on the loop named, a token dropped failing the change, a reshape in place by
-  a test type (channels 1 and 2 keep playing); a refused new claim destroying the continuation.
+- **`ear_core_tests`**: the code swap with a sink and its replacement splitting the cycles exactly, a reshape in place by
+  a test type (channels 1 and 2 keep playing).
 - **`ear_pipewire_tests`**: S4 (built: 7.4); reshape (a port added and removed beside a running ramp, links of surviving
   ports kept, the layout swapped whole, the transitional layout zero-filling new outputs); a reshape's new port metered
   from its first window; two sources into one inside input mixed (the port mixer loads).

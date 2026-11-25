@@ -987,6 +987,16 @@ struct NodeHost::Impl {
 			void unclaim(Claim claim) override {
 				checked("unclaim", [&] { node_.unclaimInChange(claim); });
 			}
+			void whenReady(std::size_t loop, std::move_only_function<void(void*, ConfigureDone)> work) override {
+				checked("whenReady", [&] {
+					Configuration::Change& ch = *node_.config_->change;
+					if (ch.continuation || ch.continuationPosted)
+						throw std::logic_error("whenReady called twice in one change");
+					if (loop >= node_.config_->loops.size()) throw std::logic_error("whenReady on a loop not declared");
+					ch.continuation = std::move(work);
+					ch.continuationLoop = loop;
+				});
+			}
 
 		private:
 			template <typename Call> void checked(std::string_view call, Call&& run) {
@@ -1137,6 +1147,14 @@ struct NodeHost::Impl {
 					else if (LeakedRecord* record = self->record_) record->programEnded();
 				});
 			}
+			/// A change's continuation answered (ConfigureDone, any thread): heard on the main loop while the configuration
+			/// is attached and not going, by the change of `epoch` alone.
+			void changeAnswered(std::uint64_t epoch, std::optional<std::string> failure) {
+				completions_->post([self = shared_from_this(), epoch, failure = std::move(failure)]() mutable {
+					if (Node* node = self->attachedNode(); node != nullptr && !self->closing_)
+						node->continuationAnswered(node->config_->generation, epoch, std::move(failure));
+				});
+			}
 			/// Its report feed's bytes: dropped once the configuration ended, as every report of its threads is.
 			void programFed(std::string bytes) {
 				completions_->post([self = shared_from_this(), bytes = std::move(bytes)]() mutable {
@@ -1163,6 +1181,24 @@ struct NodeHost::Impl {
 			std::mutex sayMutex_;
 			detail::NoteGate gate_; // sayMutex_
 			bool closing_ = false;  // main thread only
+		};
+
+		/// Where a change's ConfigureDone answers: its configuration's Channel, so an answer that outlives the change or
+		/// the configuration lands nowhere.
+		class ContinuationAnswer final : public detail::ChangeAnswer {
+		public:
+			ContinuationAnswer(std::shared_ptr<Channel> channel, std::uint64_t epoch) noexcept
+				: channel_(std::move(channel)), epoch_(epoch) {}
+			void answer(std::optional<std::string_view> failure) noexcept override {
+				try {
+					channel_->changeAnswered(epoch_, failure ? std::optional<std::string>(*failure) : std::nullopt);
+				} catch (...) { // no memory to say it: the change's deadline ends it
+				}
+			}
+
+		private:
+			std::shared_ptr<Channel> channel_;
+			std::uint64_t epoch_;
 		};
 
 		class LoopSlot;
@@ -1964,6 +2000,12 @@ struct NodeHost::Impl {
 				};
 				std::vector<Added> added;
 				std::size_t claimsPending = 0;
+				/// whenReady's continuation (docs/writing-a-node-type.md#whenready-and-configuredone): held here until
+				/// every acquisition is ready, then posted to its loop; the commit point waits for its done().
+				std::optional<std::move_only_function<void(void*, ConfigureDone)>> continuation;
+				std::size_t continuationLoop = 0;
+				bool continuationPosted = false;
+				bool continuationDone = false;
 			};
 			std::optional<Change> change;
 			std::uint64_t changeEpoch = 0;
@@ -3261,6 +3303,9 @@ struct NodeHost::Impl {
 			}
 			if (answer->restarts())
 				return fallBackLater(epoch, lc::NodeCause::FellBack::restartAsked, answer->reason());
+			// whenReady's Changed is the answer when it was called, and only then.
+			if (ch.continuation.has_value() != answer->continues())
+				return faultLater(lc::Fact::hookThrew, "configure called whenReady and answered with another Changed");
 			if (std::optional<NodeCode>& given = answer->code()) {
 				ch.codeGiven = true;
 				ch.pairs = given->pairs();
@@ -3330,8 +3375,37 @@ struct NodeHost::Impl {
 				if (node.config_->change->claimsPending > 0 || node.holdsWaiting()) return;
 				if (!std::ranges::all_of(node.config_->change->replacements, [](const auto& r) { return r.ready; }))
 					return;
+				Configuration::Change& ch = *node.config_->change;
+				if (ch.continuation) return node.postContinuation();
+				if (ch.continuationPosted && !ch.continuationDone) return;
 				node.feed(node.aggregate_.changeReady());
 			});
+		}
+
+		/// Every acquisition ready: the continuation posted to its loop as the node's own work, with the change's token
+		/// (destroyed unrun with the work if its loop's state is gone). From here a newer change waits for the change.
+		void postContinuation() {
+			Configuration& c = *config_;
+			Configuration::Change& ch = *c.change;
+			auto work = std::move(*ch.continuation);
+			ch.continuation.reset();
+			ch.continuationPosted = true;
+			c.loops.at(ch.continuationLoop)
+				->postState([work = std::move(work),
+			                 done = ConfigureDone(std::make_unique<ContinuationAnswer>(c.channel, ch.epoch))](
+								void* state) mutable { work(state, std::move(done)); });
+			feed(aggregate_.continued());
+		}
+
+		/// The continuation answered: done, the commit point comes once nothing else is pending; failed (or its token
+		/// dropped), the change falls back. Ignored once the change ended any other way.
+		void continuationAnswered(std::uint64_t generation, std::uint64_t epoch, std::optional<std::string> failure) {
+			if (!inChange(generation, epoch) || !config_->change->continuationPosted ||
+			    config_->change->continuationDone)
+				return;
+			if (failure) return fallBack(lc::NodeCause::FellBack::failed, std::move(*failure));
+			config_->change->continuationDone = true;
+			checkChangeReady();
 		}
 
 		/// A fault found in a change, as an input of its own.

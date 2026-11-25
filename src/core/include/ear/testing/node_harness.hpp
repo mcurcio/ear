@@ -304,7 +304,8 @@ public:
 	/// A committed change of settings (parse, then NodeHost::nodeChanged with the plan's outcome for the changed keys:
 	/// outcomeFor, reconfigure when every one is marked inPlace, stored on a disabled node), settled as every call is:
 	/// with autoComplete a change in place runs to its end in the call (holds acknowledged, its commit completed),
-	/// else it waits on what the test completes (acknowledgeHolds, completeBarrier, ready, advance past its deadline).
+	/// else it waits on what the test completes (acknowledgeHolds, completeBarrier, ready, advance past its deadline);
+	/// a change that answered whenReady waits for runLoops(), which runs its continuation (and lands its token's answer).
 	/// std::logic_error for settings the type refuses.
 	NodeOutcome change(const NodeSettings& settings);
 	/// With autoComplete off: every hold waiting acknowledged, as acknowledgeHolds, and a change to `settings`, as

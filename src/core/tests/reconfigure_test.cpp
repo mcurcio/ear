@@ -639,3 +639,189 @@ TEST_CASE("Supersession while a replacement is pending makes the newest, keeping
 	CHECK(h->phase() == "running");
 	CHECK(h->companions()[0].destroyed);
 }
+
+// ---- whenReady and ConfigureDone (docs/writing-a-node-type.md#whenready-and-configuredone) ----
+
+namespace reconfigure_test {
+/// The loop the continuation runs on: what ran on it, in order.
+struct Swapper {
+	std::vector<std::string> seen;
+};
+constexpr auto swapper = loop::strand<"swapper", Swapper>;
+constexpr TypeSpec continuingSpec{.settings = SettingsTable<portRow, latencyRow>{"continuing"},
+                                  .banks = Banks<out, side, fromRtp>{},
+                                  .loops = Loops<swapper>{}};
+
+/// How the continuation answers.
+enum class Answer { done, fail, drop, keep };
+Answer answer = Answer::done;
+/// What ran on the loop, over every configuration, in order: "continue <port>", "post <port>".
+std::vector<std::string> ran;
+/// A token the continuation kept, for the test to answer from its own thread.
+std::optional<ConfigureDone> kept;
+
+RtpReceiverShape receiverOf(const CheckedOf<continuingSpec>& s, AudioFormat format) {
+	return RtpReceiverShape{.address = *RtpAddress::parse("0.0.0.0"),
+	                        .port = static_cast<std::uint16_t>(s.get<portRow>()),
+	                        .encoding = RtpEncoding::l24,
+	                        .rate = format.rate,
+	                        .latencyMs = static_cast<std::uint32_t>(s.get<latencyRow>())};
+}
+
+struct Continuing {
+	using Checked = CheckedOf<continuingSpec>;
+	static Members<continuingSpec> ports(const Checked&) {
+		return {out(members(1)), side(members(1)), fromRtp(members(1))};
+	}
+	Configured configure(CreateOf<continuingSpec>& cx, const Checked& s) {
+		cx.attach(fromRtp, receiverOf(s, cx.format()));
+		return cx.applied(passThrough(bankPair(fromRtp, out)), cx.state(swapper));
+	}
+	Changed configure(ChangeOf<continuingSpec>& cx, const Checked&, const Checked& now) {
+		cx.attach(fromRtp, receiverOf(now, cx.format()));
+		const std::string port = std::to_string(now.get<portRow>());
+		cx.post(swapper, [port](Swapper& s) {
+			s.seen.push_back("post " + port);
+			ran.push_back("post " + port);
+		});
+		return cx.whenReady(swapper, [port](Swapper& s, ConfigureDone done) {
+			s.seen.push_back("continue " + port);
+			ran.push_back("continue " + port);
+			switch (answer) {
+			case Answer::done:
+				std::move(done).done();
+				break;
+			case Answer::fail:
+				std::move(done).fail("the client did not start");
+				break;
+			case Answer::drop:
+				break;
+			case Answer::keep:
+				kept.emplace(std::move(done));
+				break;
+			}
+		});
+	}
+};
+using Continuer = testing::TypeHarness<continuingSpec, Continuing>;
+
+std::unique_ptr<Continuer> continuing(testing::HarnessOptions options = {}, Answer how = Answer::done) {
+	answer = how;
+	ran.clear();
+	kept.reset();
+	auto h = std::make_unique<Continuer>(std::move(options));
+	REQUIRE_FALSE(h->parse({{"port", 5004}}));
+	h->add();
+	h->blockReady();
+	h->node().ready("from_rtp");
+	REQUIRE(h->phase() == "running");
+	h->runLoops();
+	return h;
+}
+
+/// The fallback's detail, as its stopping was told.
+std::string fellBackDetail(const testing::NodeHarness& h) {
+	for (const NodeHealth& one : h.healths())
+		if (one.phase == NodePhase::stopping && one.cause && one.cause->restart == NodeCause::Kind::fellBack)
+			return one.cause->detail;
+	return {};
+}
+} // namespace reconfigure_test
+
+TEST_CASE("A continuation runs on the loop named only once every acquisition is ready, then the staged posts, then "
+          "the commit point",
+          "[reconfigure][continuation]") {
+	auto owned = continuing();
+	auto& h = *owned;
+	h.change({{"port", 5006}});
+	h->runLoops();
+	CHECK(ran.empty()); // the new receiver is not ready
+	CHECK(h->phase() == "reconfiguring");
+	h->ready("from_rtp");
+	CHECK(h->phase() == "reconfiguring"); // posted, not yet run
+	CHECK_FALSE(h->companions()[0].destroyed);
+	h->runLoops();
+	CHECK(ran == std::vector<std::string>{"continue 5006", "post 5006"});
+	CHECK(h->phase() == "running");
+	CHECK(h->companions()[0].destroyed); // the replaced receiver goes at the commit point, after done
+	CHECK_FALSE(fellBackReason(h.node()));
+}
+
+TEST_CASE("A continuation that fails, or drops its token, falls the change back, reason failed",
+          "[reconfigure][continuation]") {
+	SECTION("fail") {
+		auto owned = continuing({}, Answer::fail);
+		auto& h = *owned;
+		h.change({{"port", 5006}});
+		h->ready("from_rtp");
+		h->runLoops();
+		CHECK(fellBackReason(h.node()) == NodeCause::FellBack::failed);
+		CHECK(fellBackDetail(h.node()) == "the client did not start");
+	}
+	SECTION("the token dropped") {
+		auto owned = continuing({}, Answer::drop);
+		auto& h = *owned;
+		h.change({{"port", 5006}});
+		h->ready("from_rtp");
+		h->runLoops();
+		CHECK(fellBackReason(h.node()) == NodeCause::FellBack::failed);
+		CHECK(fellBackDetail(h.node()) == "the change was dropped");
+	}
+	CHECK(std::ranges::find(ran, std::string("post 5006")) == ran.end()); // a staged post never runs
+}
+
+TEST_CASE("A continuation is destroyed unrun when its change is superseded or refused before the post",
+          "[reconfigure][continuation]") {
+	SECTION("superseded") {
+		auto owned = continuing();
+		auto& h = *owned;
+		h.change({{"port", 5006}});
+		h.change({{"port", 5008}});
+		h->ready("from_rtp");
+		h->runLoops();
+		CHECK(ran == std::vector<std::string>{"continue 5008", "post 5008"});
+		CHECK(h->phase() == "running");
+	}
+	SECTION("a new claim refused") {
+		auto owned = continuing({.refusedPorts = {"udp:5006"}});
+		auto& h = *owned;
+		h.change({{"port", 5006}});
+		h->runLoops();
+		CHECK(fellBackReason(h.node()) == NodeCause::FellBack::resourceRefused);
+		CHECK(ran.empty());
+	}
+}
+
+TEST_CASE("Once posted, a continuation runs even if a removal began, before the goodbye",
+          "[reconfigure][continuation]") {
+	auto owned = continuing();
+	auto& h = *owned;
+	h.change({{"port", 5006}});
+	h->ready("from_rtp");
+	h.remove();
+	CHECK(ran == std::vector<std::string>{"continue 5006"}); // its done is ignored: no commit, no staged post
+	CHECK(h->gone());
+}
+
+TEST_CASE("A newer change after the continuation's post waits for the change to end, then is made",
+          "[reconfigure][continuation]") {
+	auto owned = continuing({}, Answer::keep);
+	auto& h = *owned;
+	h.change({{"port", 5006}});
+	h->ready("from_rtp");
+	h->runLoops();
+	REQUIRE(kept);
+	h.change({{"port", 5008}});
+	CHECK_FALSE(said(h.node(), "ear.reconfigure-superseded"));
+	CHECK(h->health().next == std::vector<std::string>{"port"});
+	answer = Answer::done;
+	std::move(*kept).done(); // from the test's thread: any thread may answer
+	kept.reset();
+	h->runLoops(); // the answer lands, the change commits; the newer one begins
+	CHECK(h->phase() == "reconfiguring");
+	CHECK(portOf(h->companion("from_rtp")) == 5008);
+	h->ready("from_rtp");
+	h->runLoops();
+	CHECK(h->phase() == "running");
+	CHECK(ran == std::vector<std::string>{"continue 5006", "post 5006", "continue 5008", "post 5008"});
+}
