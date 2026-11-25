@@ -530,55 +530,17 @@ consteval Smoothing smooth(std::uint32_t ms);
 
 ### 5.2 Status fields
 
-```cpp
-namespace ear {
-enum class Display { panel, box, callout };   // callout: a banner while not at its initial value
-namespace writer {
-struct Writer { enum class Kind { rt, loop, companion } kind; LoopName loop = {}; };
-inline constexpr Writer rt{Writer::Kind::rt};               // the node's code, through Io
-template <class Handle> consteval Writer loop(Handle);      // a loop of the spec (docs/writing-a-node-type.md#loops)
-inline constexpr Writer companion{Writer::Kind::companion}; // a companion kind's adapter (slice 8: rtp's receiving)
-}
-namespace status {
-inline constexpr struct Unknown {} unknown;   // `.initially(status::unknown)`: the field starts null
-template <spec_detail::Name N> consteval FlagField<N> flag(writer::Writer w);
-template <spec_detail::Name N> consteval NumberField<N> number(writer::Writer w, std::int64_t low, std::int64_t high, std::string_view unit = {});
-template <spec_detail::Name N> consteval DecimalField<N> decimal(writer::Writer w, double low, double high, std::string_view unit = {}, std::uint8_t decimals = 2);
-template <spec_detail::Name N, std::size_t K> consteval ChoiceField<N, K> choice(writer::Writer w, const std::string_view (&values)[K]);   // starts unknown
-template <spec_detail::Name N> consteval TextField<N> text(writer::Writer w, std::uint32_t maxBytes = 256);   // never rt
-}
-template <auto... Fields> struct StatusTable { /* unique names */ };
-}
-```
-
-- Every field has `.display(Display)`, `.help(text)`, `.flapsAbove(transitions, windowMs)` (default 10 in 10 000 ms) and
-  `.initially(value)`. Defaults: a flag `false`, a number `0`, a text `""`, a choice unknown (`null`).
-- A choice's values are named once; `field("connected")` is consteval, so a misspelt value does not compile.
-- `rt` fields are flag, number, decimal and choice only (one atomic word each); a text field marked `writer::rt` does not
-  compile.
-- `writer::loop(worker)` takes a loop handle the spec lists in `.loops`; `Report::set` of a loop field asserts
-  `Loop::inLoop()` in debug builds. A library thread with something to report posts to the loop that owns the field;
-  there is no `writer::thread`.
-- `writer::companion`: a field a companion kind's adapter writes for its node (slice 8's `receiving`); the framework
-  binds it to the companion of that kind the node acquired.
+Built: the declarations, `StatusTable` and the spec's `.status`
+([writing-a-node-type.md](../writing-a-node-type.md#status-fields)). The tables take `const auto&...`, as
+`SettingsTable` does, since their entries hold views. What is left is the realtime writer's side (`writer::rt` through
+`Io`, 5.4 below) and `writer::companion` (slice 8).
 
 ### 5.3 Events, log codes, `Report<spec>`
 
 ```cpp
 namespace ear {
 enum class EventSeverity { info, warn, error };
-namespace arg { /* number<N>(low, high), decimal<N>(), flag<N>(), choice<N>(values), text<N>(maxBytes) (never from process) */ }
-namespace event {
-/// `sentence` names each argument once as {name}; a place that names no argument, or an argument with no place, does
-/// not compile. It is the record's msg and the editor's line.
-template <spec_detail::Name Code, class... Args>
-consteval Event<Code, Args...> of(EventSeverity severity, std::string_view sentence, Args... args);
-}
-namespace log {   // numbers, decimals and flags only, at most four
-template <spec_detail::Name Code, class... Args> consteval LogCode<Code, Args...> code(LogLevel level, std::string_view sentence, Args... args);
-}
-template <auto... Events> struct EventTable {};
-template <auto... Codes> struct LogCodes {};
+// event::of, arg::*, log::code, EventTable and LogCodes are built (docs/writing-a-node-type.md#events).
 
 /// The typed control-plane face of one node, over 3c's NodeHandle: status writes and events by the spec's handles, from
 /// the loops its fields name. Copyable; never blocks but on one short mutex; a write after the configuration began
@@ -595,8 +557,8 @@ private:
 }
 ```
 
-- `TypeSpec` gains `.status`, `.events`, `.actions` and `.logCodes`, in that order after 3d's `.lifecycle`
-  (after `.stores` and `.loops`, `docs/writing-a-node-type.md#stores`), each defaulting to an empty list.
+- `TypeSpec` gains `.actions` between `.events` and `.logCodes` (the rest are built:
+  [writing-a-node-type.md](../writing-a-node-type.md#the-spec)).
 - A choice argument off the realtime thread takes a `std::string_view`, checked at run time (a value not among them is a
   type bug: the node fails with the rule's text); from `process` a consteval-made index only.
 - `Report` carries its writes in the same per-node channel as `NodeHandle::lost`, so a status write, an event and a
@@ -789,11 +751,10 @@ Each a case in `src/core/tests/compile_fail/`, matched against GCC 14's wording:
 `live-whole-smoothed`, `get-live-row`, `indexed-count-below`, `indexed-count-not-number`, `indexed-no-default`,
 `decimal-low-above-high`, `decimal-default-outside`, `log-taper-nonpositive`, `db-taper-range`, `param-not-live`,
 `param-row-not-in-spec`, `param-indexed-without-member`, `param-member-of-plain-row`, `set-field-not-in-spec`,
-`set-field-not-rt`, `report-set-rt-field`, `rt-text-field`, `writer-loop-not-in-spec`, `call-loop-not-in-spec`,
-`choice-value-misspelt`, `initially-not-a-value`, `raise-text-arg-from-process`, `raise-wrong-arg-count`,
-`raise-event-not-in-spec`, `sentence-unknown-place`, `sentence-missing-arg`, `report-of-other-spec`,
-`report-constructed`, `triggered-not-a-trigger`, `action-named-lifecycle`, `duplicate-status-name`,
-`duplicate-event-code`, `status-in-unnamed-namespace`, `event-in-unnamed-namespace`.
+`set-field-not-rt`, `report-set-rt-field`, `call-loop-not-in-spec`, `raise-text-arg-from-process`, `raise-wrong-arg-count`,
+`raise-event-not-in-spec`, `report-of-other-spec`, `report-constructed`, `triggered-not-a-trigger`,
+`action-named-lifecycle` (the status and event declarations' cases are built:
+`src/core/tests/compile_fail/status_spec_bad.cpp`).
 
 ### 5.9 The harness
 

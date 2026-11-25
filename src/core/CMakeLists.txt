@@ -32,6 +32,7 @@ add_library(ear_core STATIC
 	sound_card.cpp
 	recording.cpp
 	source_ring.cpp
+	status_spec.cpp
 	store.cpp)
 # The public headers as a header set: its base directory is the include path of ear_core and
 # of everything that links it, and VERIFY_INTERFACE_HEADER_SETS adds a target that compiles
@@ -78,6 +79,8 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/sound_card.hpp
 	include/ear/core/source.hpp
 	include/ear/core/source_ring.hpp
+	include/ear/core/status_declarations.hpp
+	include/ear/core/status_spec.hpp
 	include/ear/core/store.hpp
 	include/ear/core/store_rule.hpp
 	include/ear/core/timers.hpp
@@ -134,6 +137,7 @@ if(BUILD_TESTS)
 		tests/sink_pause_test.cpp
 		tests/sound_card_test.cpp
 		tests/source_ring_test.cpp
+		tests/status_spec_test.cpp
 		tests/store_test.cpp
 		tests/type_spec_test.cpp)
 	target_link_libraries(ear_core_tests PRIVATE ear_core ear_type_harness ear_latency_table ear_cycle_table ear_inducers
@@ -233,6 +237,26 @@ if(BUILD_TESTS)
 	ear_sample_rate_compile_fail(format-from-integer "could not convert '48000' from 'int' to 'ear::SampleRate'")
 	ear_sample_rate_compile_fail(sink-ring-at-integer "no matching function for call to 'ear::SinkRing::SinkRing\\(int, int, int\\)'")
 	ear_sample_rate_compile_fail(level-window-at-integer "could not convert '48000' from 'int' to 'ear::SampleRate'")
+
+	# What must not compile about a type's status fields, events and log codes
+	# (docs/writing-a-node-type.md#status-and-events): tests/compile_fail/status_spec_bad.cpp says what each case is.
+	set(bad_status "${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail/status_spec_bad.cpp")
+	ear_compile_check(ear_status_spec_compile_fail_control "${bad_status}")
+	function(ear_status_spec_compile_fail case regex)
+		ear_compile_fail(ear_status_spec_compile_fail_${case} "${bad_status}" ${case} "${regex}")
+	endfunction()
+	ear_status_spec_compile_fail(rt-text-field "a text field is never written from the realtime thread")
+	ear_status_spec_compile_fail(writer-loop-not-in-spec "a writer::loop status field names one of its spec's loops")
+	ear_status_spec_compile_fail(choice-value-misspelt "not one of the choice field's values")
+	ear_status_spec_compile_fail(initially-not-a-value "initial value is outside its range")
+	ear_status_spec_compile_fail(sentence-unknown-place "a sentence's place names no argument")
+	ear_status_spec_compile_fail(sentence-missing-arg "an argument has no place in the sentence")
+	ear_status_spec_compile_fail(duplicate-status-name "a type's status fields have unique names")
+	ear_status_spec_compile_fail(duplicate-event-code "a type's events have unique codes")
+	ear_status_spec_compile_fail(log-code-text-arg "the realtime thread writes no text")
+	ear_status_spec_compile_fail(log-code-five-args "a log code has at most four arguments")
+	ear_status_spec_compile_fail(status-in-unnamed-namespace "status fields are declared in a named namespace")
+	ear_status_spec_compile_fail(event-in-unnamed-namespace "events are declared in a named namespace")
 
 	# What must not compile about a type spec, its class, the contexts its configure is handed, Io and the harness
 	# (docs/writing-a-node-type.md#the-class; docs/writing-a-node-type.md#rules-the-framework-enforces):

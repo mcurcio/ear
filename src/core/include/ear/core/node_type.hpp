@@ -15,6 +15,7 @@
 #include "ear/core/latency.hpp" // Latency, BankPair
 #include "ear/core/node_handle.hpp"
 #include "ear/core/sample_rate.hpp"
+#include "ear/core/status_declarations.hpp"
 #include "ear/core/store_rule.hpp"
 namespace ear {
 /// One named group of a node's ports, all one way. Each is "<name>.<member>" (portName). A routable bank's ports are
@@ -216,6 +217,11 @@ public:
 	/// Main thread, at T2: one configuration's instance, which NodeHost drives (lifecycle.hpp); `node` outlives it.
 	/// makeNodeType's config makes the type's class.
 	virtual std::unique_ptr<ErasedInstance> make(NodeContext& node) const = 0;
+	/// The type's status fields and events (docs/writing-a-node-type.md#status-and-events), in declaration order: what
+	/// NodeHost's status view starts from and its events are read by. Static storage; none for a type written without
+	/// a spec.
+	virtual std::span<const StatusDeclaration* const> statusDeclared() const { return {}; }
+	virtual std::span<const EventDeclaration> eventsDeclared() const { return {}; }
 };
 /// How one setting is written in the graph file: the keeper reads it with knobly's reader of this
 /// kind and writes a JSON value of this kind back. The one home of each key's kind.
@@ -238,13 +244,15 @@ struct SettingDeclaration {
 class AnySettingsTable; // settings_table.hpp
 struct SettingRow;      // settings_table.hpp
 /// What a type declares, as the control port's types.get says it (docs/writing-a-node-type.md#the-type-schema): its name, its
-/// setting rows in the walk's order, its banks in declaration order and its in-place deadline. Every member views
-/// static storage (the type's spec), so a schema outlives nothing.
+/// setting rows in the walk's order, its banks in declaration order, its in-place deadline, and its status fields and
+/// events in declaration order. Every member views static storage (the type's spec), so a schema outlives nothing.
 struct TypeSchema {
 	std::string_view name;
 	std::span<const SettingRow* const> settings;
 	std::span<const BankDeclaration> banks;
 	std::chrono::milliseconds reconfigureDeadline;
+	std::span<const StatusDeclaration* const> status{};
+	std::span<const EventDeclaration> events{};
 };
 namespace spec_detail {
 template <const auto& Spec, class Type> class SpecNodeType; // lifecycle.hpp
@@ -282,12 +290,16 @@ private:
 	template <const auto& Spec, class Type> friend class spec_detail::SpecNodeType; // nothing else can derive
 	explicit NodeType(const AnySettingsTable& table, std::span<const StoreDeclaration> stores = {},
 	                  std::chrono::milliseconds reconfigureDeadline = std::chrono::seconds(10),
-	                  std::span<const BankDeclaration> banks = {}) noexcept;
+	                  std::span<const BankDeclaration> banks = {},
+	                  std::span<const StatusDeclaration* const> status = {},
+	                  std::span<const EventDeclaration> events = {}) noexcept;
 	/// The one customisation point. Called only with what the table's walk made.
 	virtual MadeConfig makeConfig(const NodeName& node, CheckedSettings settings) const = 0;
 	const AnySettingsTable* table_;            // static storage: the spec's table
 	std::span<const StoreDeclaration> stores_; // static storage: the spec's Stores::declared
 	std::chrono::milliseconds reconfigureDeadline_;
-	std::span<const BankDeclaration> banks_; // static storage: the spec's Banks::declared
+	std::span<const BankDeclaration> banks_;           // static storage: the spec's Banks::declared
+	std::span<const StatusDeclaration* const> status_; // static storage: the spec's StatusTable::declared
+	std::span<const EventDeclaration> events_;         // static storage: the spec's EventTable::declared
 };
 } // namespace ear

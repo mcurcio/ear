@@ -1062,6 +1062,8 @@ public:
 		return std::make_unique<SpecInstance<Spec, Type>>(node, settings_);
 	}
 	const CheckedOf<Spec>& settings() const noexcept { return settings_; }
+	std::span<const StatusDeclaration* const> statusDeclared() const override { return StatusOf<Spec>::declared; }
+	std::span<const EventDeclaration> eventsDeclared() const override { return EventsOf<Spec>::declared; }
 
 private:
 	CheckedOf<Spec> settings_;
@@ -1100,8 +1102,8 @@ template <const auto& Spec, class Type> class SpecNodeType final : public NodeTy
 
 public:
 	SpecNodeType() noexcept
-		: NodeType(Spec.settings, StoresOf<Spec>::declared, Spec.lifecycle.reconfigureDeadline,
-	               BanksOf<Spec>::declared) {}
+		: NodeType(Spec.settings, StoresOf<Spec>::declared, Spec.lifecycle.reconfigureDeadline, BanksOf<Spec>::declared,
+	               StatusOf<Spec>::declared, EventsOf<Spec>::declared) {}
 
 private:
 	/// The table's walk passed: the class's check, a rule across settings, then the config.

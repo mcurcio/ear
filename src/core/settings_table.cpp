@@ -113,11 +113,13 @@ std::expected<CheckedSettings, AnySettingsTable::Refusal> AnySettingsTable::walk
 }
 
 NodeType::NodeType(const AnySettingsTable& table, std::span<const StoreDeclaration> stores,
-                   std::chrono::milliseconds reconfigureDeadline, std::span<const BankDeclaration> banks) noexcept
-	: table_(&table), stores_(stores), reconfigureDeadline_(reconfigureDeadline), banks_(banks) {}
+                   std::chrono::milliseconds reconfigureDeadline, std::span<const BankDeclaration> banks,
+                   std::span<const StatusDeclaration* const> status, std::span<const EventDeclaration> events) noexcept
+	: table_(&table), stores_(stores), reconfigureDeadline_(reconfigureDeadline), banks_(banks), status_(status),
+	  events_(events) {}
 
 TypeSchema NodeType::schema() const noexcept {
-	return TypeSchema{table_->name(), table_->rows(), banks_, reconfigureDeadline_};
+	return TypeSchema{table_->name(), table_->rows(), banks_, reconfigureDeadline_, status_, events_};
 }
 
 std::string_view NodeType::name() const noexcept { return table_->name(); }

@@ -43,6 +43,7 @@
 #include "ear/core/loop.hpp"
 #include "ear/core/node_type.hpp"
 #include "ear/core/settings_table.hpp"
+#include "ear/core/status_spec.hpp"
 #include "ear/core/store.hpp"
 namespace ear {
 namespace spec_detail {
@@ -138,11 +139,12 @@ struct Banks {
 template <class T> inline constexpr bool isBanks = false;
 template <auto... Handles> inline constexpr bool isBanks<Banks<Handles...>> = true;
 
-/// A type's one declaration: its settings table, its banks, its stores (docs/writing-a-node-type.md#stores) and its
-/// loops (docs/writing-a-node-type.md#loops), the last two none by default. The later tables (status, events, log
-/// codes, actions: docs/writing-a-node-type.md#the-spec) join as members with empty defaults, so a spec gives only what
-/// it uses, in this order (designated initialisers follow it): {.settings, .banks}, {.settings, .banks, .stores},
-/// {.settings, .banks, .loops} and {.settings, .banks, .stores, .loops} each deduce the rest.
+/// A type's one declaration: its settings table, its banks, its stores (docs/writing-a-node-type.md#stores), its loops
+/// (docs/writing-a-node-type.md#loops), its lifecycle settings, its status fields, its events and its realtime log
+/// codes (docs/writing-a-node-type.md#status-and-events), all but the first two none (or the defaults) when not given.
+/// Designated initialisers follow this order (settings, banks, stores, loops, lifecycle, status, events, then the
+/// actions of slice 5.4, then logCodes), and a spec gives only what it uses: any of them after .banks deduce the
+/// rest. Each writer::loop field names one of the spec's loops.
 ///
 /// A spec and its rows are declared in a named namespace, the type's own (ear::nodes::<type>, in its private header
 /// src/nodes/<type>/<type>_spec.hpp, which the type's tests include too): every template a type instantiates with its
@@ -159,15 +161,34 @@ struct Lifecycle {
 inline constexpr std::chrono::milliseconds reconfigureDeadlineLeast = std::chrono::seconds(1);
 inline constexpr std::chrono::milliseconds reconfigureDeadlineMost = std::chrono::seconds(60);
 
-template <class Settings, class BankList, class StoreList = Stores<>, class LoopList = Loops<>>
+namespace spec_detail {
+/// Whether each writer::loop field of `Fields` names a loop of `LoopList`.
+template <class Fields, class LoopList> consteval bool loopWritersKnown() {
+	for (const StatusDeclaration* field : Fields::declared) {
+		if (field->writer.kind != writer::Writer::Kind::loop) continue;
+		if (std::ranges::none_of(LoopList::declared,
+		                         [&](const LoopDeclaration& loop) { return loop.name == field->writer.loop; }))
+			return false;
+	}
+	return true;
+}
+} // namespace spec_detail
+
+template <class Settings, class BankList, class StoreList = Stores<>, class LoopList = Loops<>,
+          class StatusList = StatusTable<>, class EventList = EventTable<>, class LogList = LogCodes<>>
 	requires(std::derived_from<Settings, AnySettingsTable> && isBanks<BankList> && isStores<StoreList> &&
-             isLoops<LoopList>)
+             isLoops<LoopList> && isStatusTable<StatusList> && isEventTable<EventList> && isLogCodes<LogList>)
 struct TypeSpec {
+	static_assert(spec_detail::loopWritersKnown<StatusList, LoopList>(),
+	              "a writer::loop status field names one of its spec's loops");
 	Settings settings;
 	BankList banks;
 	StoreList stores{};
 	LoopList loops{};
 	Lifecycle lifecycle{};
+	StatusList status{};
+	EventList events{};
+	LogList logCodes{};
 };
 
 template <const auto& Spec> using SettingsOf = std::remove_cvref_t<decltype(Spec.settings)>;
@@ -176,6 +197,9 @@ template <const auto& Spec> using CheckedOf = typename SettingsOf<Spec>::Checked
 template <const auto& Spec> using BanksOf = std::remove_cvref_t<decltype(Spec.banks)>;
 template <const auto& Spec> using StoresOf = std::remove_cvref_t<decltype(Spec.stores)>;
 template <const auto& Spec> using LoopsOf = std::remove_cvref_t<decltype(Spec.loops)>;
+template <const auto& Spec> using StatusOf = std::remove_cvref_t<decltype(Spec.status)>;
+template <const auto& Spec> using EventsOf = std::remove_cvref_t<decltype(Spec.events)>;
+template <const auto& Spec> using LogCodesOf = std::remove_cvref_t<decltype(Spec.logCodes)>;
 
 /// Every bank of a spec with its members: what a type's ports() returns, {stream(members(n)), from(members(n))}.
 /// Each bank of the spec once, in any order; a bank of another spec, or one left out, does not compile.

@@ -63,7 +63,10 @@ src/nodes/<type>/
 ## The spec
 
 In the type's private header, inside its own named namespace `ear::nodes::<type>` (never an
-unnamed one), every constant `inline constexpr`. The header includes `ear/core/lifecycle.hpp`,
+unnamed one), every constant `inline constexpr`. A `TypeSpec`'s members come in this order, and
+designated initialisers follow it: `.settings`, `.banks`, `.stores`, `.loops`, `.lifecycle`,
+`.status`, `.events`, `.logCodes`. Only the first two are required; a spec gives any of the rest it
+uses, in that order, and deduces the others empty. The header includes `ear/core/lifecycle.hpp`,
 which brings in `type_spec.hpp` and `settings_table.hpp`.
 
 *Why a named namespace:* GCC 14 gives a template instantiated on a reference to an object external
@@ -133,7 +136,8 @@ inline constexpr auto portRow = setting::optional("port", setting::number(1, 655
 
 `NodeType::schema()` is the type as the control port describes it: its name, its rows in the walk's
 order (each with its key, rule, required, default, `onlyWithout` and the marks above), its banks in
-declaration order and its in-place deadline (`.lifecycle`). Everything in it views the spec's static
+declaration order, its in-place deadline (`.lifecycle`), and its status fields and events in
+declaration order ([status and events](#status-and-events)). Everything in it views the spec's static
 storage, so it is the same every call. Nothing but the table and the spec makes it: a type writes no
 schema of its own.
 
@@ -155,6 +159,82 @@ inline constexpr TypeSpec spec{.settings = SettingsTable<cardRow, playbackRow, c
 A bank handle is only its name, direction and reach, fixed at compile time; a name is one or more
 of `[A-Za-z0-9_-]`, unique in the spec. A public port's whole name is `<bank>.<member>`, made in
 one place (`portName`). Members come from settings, in the class's `ports()`.
+
+### Status and events
+
+What a node reports about itself, declared in the spec like its rows and banks, each an `inline
+constexpr` in the type's named namespace (`ear/core/status_spec.hpp`, which `lifecycle.hpp`
+brings in). The rule for choosing: a fact with a value right now is a **status field**; something
+that happened at an instant, with nothing to read once it passed, is an **event**; if it also
+leaves a value behind, write both (`paired`, the event, and `paired = true`). Settings, health and
+node diagnostics are not the type's to write.
+
+```cpp
+inline constexpr auto worker = loop::strand<"worker", WorkerState>;
+inline constexpr std::string_view connections[] = {"dialling", "listening", "connected"};
+inline constexpr auto connection =
+	status::choice<"connection">(writer::loop(worker), connections).display(Display::box);   // starts unknown
+inline constexpr auto pairingCode = status::text<"pairingCode">(writer::loop(worker), 16)
+                                        .display(Display::callout).help("type it into Music Assistant to pair");
+inline constexpr std::string_view reasons[] = {"attempt-timeout", "pairing-code-mismatch", "unknown"};
+inline constexpr auto pairingFailed =
+	event::of<"pairing-failed">(EventSeverity::warn, "pairing failed: {reason}", arg::choice<"reason">(reasons));
+inline constexpr TypeSpec spec{.settings = table,
+                               .banks = Banks<toServer>{},
+                               .loops = Loops<worker>{},
+                               .status = StatusTable<connection, pairingCode>{},
+                               .events = EventTable<pairingFailed>{}};
+```
+
+#### Status fields
+
+| Maker | Value | Starts |
+|---|---|---|
+| `status::flag<"name">(writer)` | `bool` | `false` |
+| `status::number<"name">(writer, low, high, unit = {})` | `std::int64_t` in `[low, high]` | `0`, or the end of the range nearer it |
+| `status::decimal<"name">(writer, low, high, unit = {}, decimals = 2)` | `double` in `[low, high]` | `0`, likewise |
+| `status::choice<"name">(writer, values)` | one of `values` (each named once, never empty) | unknown (`null`) |
+| `status::text<"name">(writer, maxBytes = 256)` | text of at most `maxBytes` bytes | `""` |
+
+A name is camelCase (`[a-z][A-Za-z0-9]*`), unique in the spec. Every field takes
+`.display(Display::panel | box | callout)` (where a client shows it: only in the node's panel, also
+on its box, or as a banner while it is not at its initial value), `.help(line)`,
+`.flapsAbove(transitions, windowMs)` (default 10 changes in 10 000 ms: more is
+`ear.status-flapping`) and `.initially(value)` (of its kind and within its range, or
+`status::unknown`). A choice's values are named once, in the field: `connection("connected")` is
+consteval, so a misspelt value does not compile.
+
+Each field has one **writer**: `writer::loop(handle)`, one of the spec's own loops (the spec does not
+compile when a field names another), which writes it through `Report` from that loop's thread;
+`writer::rt`, the node's code on the realtime thread (a flag, number, decimal or choice, one atomic
+word each, never a text; at most 64 per type; its writes through `Io` are not built yet,
+[design](design/control-plane.md)); or `writer::companion`, a companion kind's adapter (not built
+yet). A library thread with something to report posts to the loop that owns the
+field.
+
+A field belongs to the configuration: the framework keeps the node's **status view**, every field at
+its initial value until written, and puts it back to every initial value when a configuration
+closes (a restart, a failure, a removal), while a stop, a start and a change in place keep it.
+
+#### Events
+
+`event::of<"code">(severity, sentence, args...)`: the code is kebab-case (`[a-z][a-z0-9-]*`, so
+never one of the framework's `ear.` codes), unique in the spec; the severity `info`, `warn` or
+`error`; the sentence names each argument once as `{name}`, and is both the record's `msg` and the
+editor's line (a place that names no argument, or an argument with no place, does not compile).
+Arguments are `arg::number<"n">(low, high)`, `arg::decimal<"n">(decimals = 2)`, `arg::flag<"n">()`,
+`arg::choice<"n">(values)` and `arg::text<"n">(maxBytes = 256)`. A decimal fills its place with
+`decimals` places; a flag with `true` or `false`.
+
+`log::code<"code">(level, sentence, args...)` declares a log line the realtime thread may write, in
+`.logCodes` (its writing is not built yet, [design](design/control-plane.md)): numbers, decimals and
+flags only, at most four.
+
+`StatusTable`, `EventTable` and `LogCodes` take references to the constants (`const auto&...`, as
+`SettingsTable` does: their entries hold views, so they cannot be template arguments by value), and
+each refuses one declared in an unnamed namespace. `NodeType::schema()` carries the fields and
+events in declaration order, and each node's config gives them (`statusDeclared()`,
+`eventsDeclared()`).
 
 ## The class
 
