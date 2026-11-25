@@ -217,7 +217,6 @@ TEST_CASE("A sink paused and resumed 10^4 times under a writer at full rate neve
 	writer.join();
 	CHECK(answered == rounds);
 	CHECK(violations.load() == 0);
-	REQUIRE(eventually([&] {
-		return consumed.load() + sink.pause.pausedFrames() + sink.ring.droppedFrames() == written.load();
-	}));
+	REQUIRE(eventually(
+		[&] { return consumed.load() + sink.pause.pausedFrames() + sink.ring.droppedFrames() == written.load(); }));
 }
