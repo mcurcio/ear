@@ -95,3 +95,42 @@ TEST_CASE("Every type's refusal is a parse refusal in the harness too, before an
 		CHECK_THROWS_AS(harness.add(), std::logic_error);
 	}
 }
+
+TEST_CASE("Every type's change of keys marked in place ends running with the same configuration, or in a restart "
+          "it asked for",
+          "[harness][reconfigure]") {
+	constexpr ear::AudioFormat format{.rate = ear::SampleRate::fixed<48000>(), .maxBlock = 128};
+	std::size_t inPlace = 0;
+	for (const auto& type : ear::test::allTypes()) {
+		INFO(type->name());
+		const auto settings = ear::test::validSettings(type->name());
+		for (const ear::NodeSettings& from : settings)
+			for (const ear::NodeSettings& to : settings) {
+				if (from == to) continue;
+				ear::testing::NodeHarness harness(*type, {.format = format, .node = "probe"});
+				REQUIRE_FALSE(harness.parse(from));
+				const ear::Ports ports = harness.ports();
+				if (harness.parse(to) || harness.ports() != ports) continue; // a replace, not a change
+				REQUIRE_FALSE(harness.parse(from));
+				INFO(from.dump() << " to " << to.dump());
+				harness.add();
+				harness.blockReady();
+				readyEvery(harness);
+				REQUIRE(harness.phase() == "running");
+				const std::size_t before = harness.healths().size();
+				if (harness.change(to) != ear::NodeOutcome::reconfigure) continue; // a restart-only key changed
+				++inPlace;
+				readyEvery(harness);
+				CHECK(harness.phase() == "running");
+				for (std::size_t i = before; i < harness.healths().size(); ++i) {
+					const ear::NodeHealth& one = harness.healths()[i];
+					if (one.phase != ear::NodePhase::stopping) continue;
+					REQUIRE(one.cause);
+					CHECK(one.cause->restart == ear::NodeCause::Kind::fellBack);
+					CHECK(one.cause->reason == ear::NodeCause::FellBack::restartAsked);
+				}
+				everySampleWritten(harness, format.maxBlock);
+			}
+	}
+	CHECK(inPlace > 0); // some type's valid settings differ in place only
+}

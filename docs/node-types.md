@@ -137,6 +137,15 @@ node rtp fpp { address "0.0.0.0"; port 5004; format "L24"; channels 2; rate 48kh
   told it.
 - The stream follows the graph's clock and never drives it. A sender at another rate is
   resampled to the graph frequency.
+- **Changes in place.** A change of `address`, `port`, `format`, `rate` or `latencyMs` is made
+  without a restart ([architecture.md](architecture.md#changes-in-place)): `node fpp
+  reconfiguring: port`, then `running`. `stream` is held silent (a 5 ms fade to zero), the
+  receiver replaced break-first (the old one destroyed, then the new one made: two receivers on
+  one port would split its datagrams), and `stream` fades back in once the new one runs; so the
+  audio is silent for as long as PipeWire takes to load the new receiver. A new port is claimed
+  first: one held by another node or program falls back to a restart (`could not apply port in
+  place: ...`), which then fails as a start on that port would. `channels` makes the ports, so a
+  change of it replaces the node.
 - **Why only those addresses:** a unicast address does not mean "this host's address" to
   PipeWire: it would hear only that sender, and only when it sends from the same port it sends to.
   A host name is refused because looking it up blocks the main loop (15 s for `fpp.local` once).

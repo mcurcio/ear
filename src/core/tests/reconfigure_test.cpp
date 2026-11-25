@@ -176,9 +176,8 @@ TEST_CASE("In place ends running with the same configuration: no restart, no dri
 	CHECK(h.change({{"gain", 20}}) == NodeOutcome::reconfigure);
 	CHECK(calls.back() == "change g10->g20");
 	// The reconfiguring the change told carried its keys.
-	const auto changing = std::ranges::find_if(h->healths(), [](const NodeHealth& one) {
-		return one.phase == NodePhase::reconfiguring;
-	});
+	const auto changing =
+		std::ranges::find_if(h->healths(), [](const NodeHealth& one) { return one.phase == NodePhase::reconfiguring; });
 	REQUIRE(changing != h->healths().end());
 	CHECK(changing->keys == std::vector<std::string>{"gain"});
 }
@@ -225,7 +224,7 @@ TEST_CASE("A change that cannot finish falls back to a restart with the newest s
 	SECTION("restart-asked: the change version answered restart") {
 		reset({.answer = Script::Answer::restart});
 		auto owned = running();
-	auto& h = *owned;
+		auto& h = *owned;
 		h.change({{"gain", 10}});
 		CHECK(fellBackReason(h.node()) == NodeCause::FellBack::restartAsked);
 		CHECK(said(h.node(), "ear.reconfigure-fell-back"));
@@ -237,7 +236,7 @@ TEST_CASE("A change that cannot finish falls back to a restart with the newest s
 	SECTION("failed: the change version threw") {
 		reset({.answer = Script::Answer::throws});
 		auto owned = running();
-	auto& h = *owned;
+		auto& h = *owned;
 		h.change({{"gain", 10}});
 		CHECK(fellBackReason(h.node()) == NodeCause::FellBack::failed);
 		CHECK(calls.back() == "configure g10");
@@ -246,7 +245,7 @@ TEST_CASE("A change that cannot finish falls back to a restart with the newest s
 	SECTION("restart-requested: node.restart during a change") {
 		reset();
 		auto owned = running(manual());
-	auto& h = *owned;
+		auto& h = *owned;
 		h.change({{"gain", 10}});
 		REQUIRE(h->phase() == "reconfiguring"); // its hold waits for its acknowledgement
 		CHECK(h.restart() == LifecycleReply{LifecycleApplied::restart});
@@ -327,7 +326,8 @@ TEST_CASE("Supersession: a newer change before the commit point calls the change
 	CHECK(worked == std::vector<std::string>{"post g20"}); // the superseded change's post never ran
 }
 
-TEST_CASE("A newer change after the commit point waits for it, as next, then changes again", "[reconfigure][supersede]") {
+TEST_CASE("A newer change after the commit point waits for it, as next, then changes again",
+          "[reconfigure][supersede]") {
 	reset({.answer = Script::Answer::appliedCode, .holdOut = false});
 	auto owned = running(manual());
 	auto& h = *owned;
@@ -534,7 +534,8 @@ TEST_CASE("A change not ready by its deadline falls back: 10 s, or the 30 s its 
 	}
 }
 
-TEST_CASE("Supersession while a replacement is pending makes the newest, keeping the hold", "[reconfigure][replacement]") {
+TEST_CASE("Supersession while a replacement is pending makes the newest, keeping the hold",
+          "[reconfigure][replacement]") {
 	auto owned = receiving();
 	auto& h = *owned;
 	h.change({{"port", 5006}});

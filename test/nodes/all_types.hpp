@@ -24,13 +24,20 @@ inline const std::vector<NodeSettings>& validSettings(std::string_view type) {
 		{"airplay", {{{"name", "Kitchen"}, {"airplay2", true}}}},
 		{"file", {{{"path", "a.wav"}}}},
 		{"card", {{{"card", "Pro24"}, {"playback", 2}, {"capture", 2}}}},
+		// Two, differing in every key a change makes in place, so the all-type change in place has a pair.
 		{"rtp",
 	     {{{"address", "0.0.0.0"},
 	       {"port", 5004},
 	       {"format", "L24"},
 	       {"channels", 2},
 	       {"rate", 48000},
-	       {"latencyMs", 100}}}},
+	       {"latencyMs", 100}},
+	      {{"address", "239.69.0.1"},
+	       {"port", 5006},
+	       {"format", "L16"},
+	       {"channels", 2},
+	       {"rate", 44100},
+	       {"latencyMs", 200}}}},
 		// "port" only without "server", so it takes two objects to give every key.
 		{"sendspin", {{{"port", 8928}, {"name", "Kitchen"}}, {{"server", "ws://a/b"}, {"name", "Kitchen"}}}}};
 	const auto found = valid.find(type);
