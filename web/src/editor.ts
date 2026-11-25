@@ -11,6 +11,7 @@ import { CounterMoves } from "./counters";
 import { GraphStore } from "./graph";
 import { GraphFileStore } from "./graphFile";
 import { LevelStore } from "./levels";
+import { Activity } from "./activity";
 import { noticeOfRefusal, noticeOfState, Notices } from "./notices";
 import type { Methods, Notifications } from "./protocol";
 import { askedOf, Requests, type Asked, type AskedMethod } from "./requests";
@@ -40,6 +41,8 @@ export class Editor {
   readonly client: RpcClient;
   readonly requests: Requests;
   readonly notices: Notices;
+  /** Each node's events and diagnostics since this page connected (activity.ts). */
+  readonly activity: Activity;
   private view: ConnectionView = { status: "connecting" };
   private readonly statusListeners = new Set<() => void>();
   private readonly now: () => number;
@@ -56,6 +59,7 @@ export class Editor {
     this.types = new TypeStore(typeKeeper ?? null);
     this.requests = new Requests(this.now);
     this.notices = new Notices(this.now);
+    this.activity = new Activity(this.now);
     // The graph's first listeners, so a box drawn for a new graph reads that graph's moves.
     this.moves.attach(this.graph);
     this.counterMoves.attach(this.graph);
@@ -72,6 +76,9 @@ export class Editor {
         if ("method" in message && message.method === "levels") {
           this.levels.replace((message.params as Notifications["levels"]).nodes);
         }
+        // A warn or error event is a toast too (docs/editor.md#status-events-and-diagnostics).
+        const raised = this.activity.apply(message);
+        if (raised !== undefined) this.notices.add(raised);
         if ("method" in message && message.method === "node.state") {
           const notice = noticeOfState(message.params as Notifications["node.state"]);
           if (notice !== undefined) this.notices.add(notice);

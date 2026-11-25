@@ -247,9 +247,8 @@ right; they replace the one error banner.
 
 A change in place that could not finish raises a warning toast of its own, about its node, from the `node.state` that
 begins its fallback (`fpp could not apply port in place, so it restarted: fell-back deadline 10s passed`): the node
-restarts with the new settings, which `ear.conf` holds, so the panel keeps the new value. Slice 5's node events are
-designed to feed this queue
-([control-plane.md](design/control-plane.md#84-status-events-diagnostics-and-actions)).
+restarts with the new settings, which `ear.conf` holds, so the panel keeps the new value. A node's `warn` and `error`
+events feed this queue too ([status, events and diagnostics](#status-events-and-diagnostics)).
 
 ### Where a refusal lands
 
@@ -682,6 +681,31 @@ for ready, its drop count on hover; never boxes or handles of their own. The rul
   "played short in the last minute"); the strip is a list labelled "companions".
 - **Not part of editing.** A badge is no handle and no node: clicking it selects its node and
   dragging it moves the box, as any part of the box does; nothing in it sends a request.
+
+## Status, events and diagnostics
+
+`web/src/activity.ts` is the one place that turns a node's status, events and diagnostics
+([control-port.md](control-port.md#status), [#node-diagnostics](control-port.md#node-diagnostics))
+into what the editor draws; `activity.test.ts` replays the `status` and `diagnostics` fixtures
+through it. Nothing in it names a type or a code: where a field shows is its schema's `display`, and
+a diagnostic is drawn by its own words.
+
+- **The box** shows its `box` fields after the state line, their values joined by ` · `
+  ("connected · 48000"), and a banner per `callout` field while it is not at its initial value
+  (a pairing code), only while the node is `running`, `reconfiguring` or `stopped` and never for a
+  `null`; without the type's schema held, none. A banner is a polite live region, so a screen
+  reader hears it change.
+- **A badge per active diagnostic** on the box, its words from its code and subject ("flapping:
+  connection"; an unknown code by its own name with the `ear.` dropped), its tooltip the
+  diagnostic's sentence, how often, and for flapping its threshold. An observation is never
+  badged. The warning sign is hidden from screen readers; the list is labelled "diagnostics", so
+  flapping is never shown by colour alone.
+- **The node panel** lists every status field in words (a flag yes or no, `null` unknown) in the
+  schema's order, every diagnostic the node was told with its count, and the node's **activity**:
+  its events and diagnostics since this page connected, newest first, at most 100.
+- **Toasts.** A `warn` or `error` event is also a notice in the toast queue ([toasts](#toasts)),
+  `<node> says: <code> <sentence>`, coalesced by node and code as every notice is, and at most one
+  new notice per node per 5 s; the toast queue's own live region announces it.
 
 ## Counters
 

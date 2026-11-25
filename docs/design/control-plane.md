@@ -2,7 +2,12 @@
 
 Status: design, step 5.1 built (the type schema on the wire, `types.get`, `typeSchemaHash`, `invalid-settings`' `key` and
 `detail`, and the editor's settings form with Apply asking first: `docs/control-port.md#type-schemas`,
-`docs/writing-a-node-type.md#the-type-schema`, `docs/editor.md#the-settings-form`); the rest not built. Slice 5 (the
+`docs/writing-a-node-type.md#the-type-schema`, `docs/editor.md#the-settings-form`), step 5.2 built (status fields,
+events and log codes in the spec, `Report`, the per-node queue, the tick and its paces, the `status` and `event` records,
+the feature `status` with `node.statusChanged`, `node.eventRaised` and `node.diagnostic`, `rpc-call.mjs --follow`, the
+editor's status list, badges and activity: `docs/writing-a-node-type.md#status-and-events`,
+`docs/architecture.md#status-and-events`, `docs/output-records.md#status`, `docs/control-port.md#status`,
+`docs/editor.md#status-events-and-diagnostics`); the rest not built. Slice 5 (the
 control plane: status, events, node diagnostics on the wire, actions, the realtime coded ring, sendspin's notes split)
 follows slice 3c (built: the node
 handle and loops, `docs/writing-a-node-type.md#the-node-handle`, `#loops`). Slice 6 (parameters: decimal, indexed and live rows, parameter slots and their ramps, retunes,
@@ -1028,15 +1033,7 @@ A value is shown and sent rounded to `decimals`; `minIsSilence` shows the minimu
 
 ### 8.4 Status, events, diagnostics and actions
 
-- **Status**: `box` fields on the box after the state line ("connected · Music Assistant"); every field in the panel (a
-  flag as yes or no, `null` as "unknown"); `callout` fields as a banner on the box and in the panel while not initial,
-  with a copy button for text. Box and callout fields show only while the node is `running`, `reconfiguring` or
-  `stopped` and the value is not `null`.
-- **Events**: the node's activity list (since this page connected); `warn` and `error` also as a notice in the editor's
-  toast queue ([`editor.md`](../editor.md#toasts)), coalesced per node and code by its rule ("pairing failed ×3"), at
-  most one new notice per node per 5 s.
-- **Diagnostics**: a badge on the box for each active entry ("flapping: connection"), its tooltip giving the count and,
-  for flapping, `flapsAbove`; the panel lists every entry. An unknown code is shown by its `msg`.
+- Status, events and diagnostics are built ([editor.md](../editor.md#status-events-and-diagnostics)).
 - **Actions**: one button per type action after the built lifecycle buttons; a call with arguments opens a small form;
   disabled while in flight and when the node has no configuration.
 
@@ -1044,8 +1041,8 @@ A value is shown and sent rounded to `decimals`; `minIsSilence` shows the minimu
 
 Faders and knobs are `role="slider"` with `aria-valuemin`, `aria-valuemax`, `aria-valuenow`, `aria-valuetext` ("-3.5
 dB", "-inf dB") and a label from the key, keyboard per the WAI-ARIA slider pattern; held by another editor:
-`aria-disabled` with the reason. A polite live region announces callout fields when they change, aborted gestures and
-flapping starting, at most one per node per 5 s; `error` events assertively. Flapping is never shown by colour alone.
+`aria-disabled` with the reason. A polite live region announces aborted gestures (callouts are built as one; flapping and events reach the toast
+queue's). Flapping is never shown by colour alone.
 
 ### 8.6 Apply asks first
 

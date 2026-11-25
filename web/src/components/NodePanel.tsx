@@ -13,6 +13,7 @@ import { dryRunFeature, lifecycleFeature, nodeSetFeature, nodeTextFeature, type 
 import { lifecycleAsked, lifecycleLabels, type LifecycleMethod } from "../requests";
 import { parseSettings } from "../settings";
 import { CompanionList } from "./CompanionStrip";
+import { NodeActivity, NodeDiagnostics, NodeStatus } from "./NodeActivity";
 import { CounterTable } from "./Counters";
 import { useCompanionBadges, useEditor, useGraphFile, useNodeCounters, useRequests } from "./hooks";
 import { NodeTextBox } from "./NodeTextBox";
@@ -155,8 +156,11 @@ export function NodePanel({
           </button>
         </>
       )}
+      <NodeStatus node={node} schema={schema} />
       <CounterTable heading="Counters since it was added" rows={counters.rows} />
       <CompanionList badges={companions} />
+      <NodeDiagnostics node={node} />
+      <NodeActivity node={node.name} />
       <button type="button" className="inspector-delete" onClick={() => onRemove(node.name)}>
         Delete node
       </button>

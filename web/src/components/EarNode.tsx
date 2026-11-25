@@ -15,12 +15,13 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import { useEffect, useState } from "react";
+import { boxStatus, diagnosticBadges } from "../activity";
 import { handleCue, handleId } from "../connect";
 import { describeHealth, startingLineDelayMs } from "../health";
 import type { GraphNode } from "../protocol";
 import { CompanionStrip } from "./CompanionStrip";
 import { NodeCounterMark } from "./Counters";
-import { useCompanionBadges, useNodeCounters } from "./hooks";
+import { useCompanionBadges, useNodeCounters, useNodeSchema } from "./hooks";
 import { Meter } from "./Meter";
 import { StatePill } from "./StatePill";
 
@@ -76,6 +77,8 @@ export function EarNode({ id, data: { node }, selected }: NodeProps<EarFlowNode>
   useEffect(() => updateInternals(id), [id, portsKey, updateInternals]);
   const companions = useCompanionBadges(node);
   const { mark } = useNodeCounters(node);
+  const status = boxStatus(node, useNodeSchema(node));
+  const badges = diagnosticBadges(node);
   return (
     <div className={`ear-node ${health.styleClass} phase-${node.phase}${selected ? " selected" : ""}`}>
       <div className="ear-node-header">
@@ -93,6 +96,27 @@ export function EarNode({ id, data: { node }, selected }: NodeProps<EarFlowNode>
           <div className="ear-node-line" title={health.line}>
             {health.line}
           </div>
+        )}
+        {status.line !== "" && (
+          <div className="ear-node-fields" title={status.line}>
+            {status.line}
+          </div>
+        )}
+        {status.callouts.map((callout) => (
+          // A banner while the field is not at its initial value; polite, so a reader hears it change.
+          <div key={callout.name} className="ear-node-callout" role="status">
+            <span className="ear-node-callout-name">{callout.name}</span> {callout.text}
+          </div>
+        ))}
+        {badges.length > 0 && (
+          <ul className="ear-node-badges" aria-label="diagnostics">
+            {badges.map((badge) => (
+              <li key={badge.key} className="ear-node-badge" title={badge.title}>
+                <span aria-hidden="true">⚠ </span>
+                {badge.label}
+              </li>
+            ))}
+          </ul>
         )}
       </div>
       <div className="ear-node-ports">
