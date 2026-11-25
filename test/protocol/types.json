@@ -1,0 +1,528 @@
+{
+  "description": "The node types' schemas (feature types, docs/control-port.md#type-schemas): types.get with no hash, a stale hash and the current one (notModified), and with an unknown member (-32602); the Graph names the same hash. The schemas and the hash are the real ear's: every built-in type's rows with their change, shapes, defaultFrom and text hints. The system tests send its types.get requests to the real ear and expect these replies, so a change to any type's settings rows regenerates this file in the same commit (run out/ear and take graph.get's and types.get's results).",
+  "requests": [
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
+    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"types.get\"}",
+    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"types.get\",\"params\":{\"ifNoneMatch\":\"fnv1a64:0123456789abcdef\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"types.get\",\"params\":{\"ifNoneMatch\":\"fnv1a64:805cb54992edf0c1\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"types.get\",\"params\":{\"since\":\"yesterday\"}}"
+  ],
+  "messages": [
+    {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "blockSize": 256,
+        "counters": {
+          "cutCycles": 0,
+          "cycles": 0,
+          "lostMs": 0,
+          "stalls": 0
+        },
+        "features": [
+          "lifecycle",
+          "counters",
+          "companions",
+          "node-text",
+          "reshape",
+          "node.set",
+          "dryRun",
+          "types"
+        ],
+        "graphFrequency": 48000,
+        "nodes": [],
+        "protocol": 1,
+        "realtime": false,
+        "routes": [],
+        "scheduling": "SCHED_OTHER",
+        "typeSchemaHash": "fnv1a64:805cb54992edf0c1",
+        "types": [
+          "airplay",
+          "card",
+          "file",
+          "rtp",
+          "sendspin",
+          "white"
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "result": {
+        "hash": "fnv1a64:805cb54992edf0c1",
+        "protocol": 1,
+        "typeSchemas": [
+          {
+            "inputs": [],
+            "name": "airplay",
+            "outputs": [
+              "out"
+            ],
+            "reconfigureMs": 10000,
+            "settings": [
+              {
+                "change": "restart",
+                "defaultFrom": "nodeName",
+                "key": "name",
+                "kind": "text",
+                "maxLength": 50,
+                "mustBe": "a speaker name: 1 to 50 bytes, no control characters, no %, @ or dot",
+                "required": false
+              },
+              {
+                "change": "restart",
+                "help": "absent: AirPlay 1; AirPlay 2 needs nqptp beside ear",
+                "key": "airplay2",
+                "kind": "flag",
+                "required": false
+              }
+            ]
+          },
+          {
+            "inputs": [
+              "play"
+            ],
+            "name": "card",
+            "outputs": [
+              "capture"
+            ],
+            "reconfigureMs": 10000,
+            "settings": [
+              {
+                "change": "restart",
+                "key": "card",
+                "kind": "text",
+                "maxLength": 15,
+                "mustBe": "an ALSA card id, 1-15 characters of [A-Za-z0-9_-] (as in /proc/asound/cards)",
+                "pattern": "^[A-Za-z0-9_-]{1,15}$",
+                "required": true
+              },
+              {
+                "change": "restart",
+                "default": 0,
+                "key": "playback",
+                "kind": "wholeNumber",
+                "max": 64,
+                "min": 0,
+                "required": false,
+                "shapes": true,
+                "unit": "channels"
+              },
+              {
+                "change": "restart",
+                "default": 0,
+                "key": "capture",
+                "kind": "wholeNumber",
+                "max": 64,
+                "min": 0,
+                "required": false,
+                "shapes": true,
+                "unit": "channels"
+              }
+            ]
+          },
+          {
+            "inputs": [
+              "record"
+            ],
+            "name": "file",
+            "outputs": [],
+            "reconfigureMs": 10000,
+            "settings": [
+              {
+                "change": "restart",
+                "key": "path",
+                "kind": "text",
+                "mustBe": "a non-empty string",
+                "required": true
+              }
+            ]
+          },
+          {
+            "inputs": [],
+            "name": "rtp",
+            "outputs": [
+              "stream"
+            ],
+            "reconfigureMs": 10000,
+            "settings": [
+              {
+                "change": "inPlace",
+                "key": "address",
+                "kind": "text",
+                "maxLength": 15,
+                "mustBe": "\"0.0.0.0\" or an IPv4 multicast group (224.0.0.0-239.255.255.255), as a dotted quad",
+                "pattern": "^[0-9]{1,3}(\\.[0-9]{1,3}){3}$",
+                "required": true
+              },
+              {
+                "change": "inPlace",
+                "key": "port",
+                "kind": "wholeNumber",
+                "max": 65535,
+                "min": 1,
+                "required": true
+              },
+              {
+                "change": "inPlace",
+                "key": "format",
+                "kind": "text",
+                "mustBe": "\"L16\" or \"L24\"",
+                "required": true,
+                "values": [
+                  "L16",
+                  "L24"
+                ]
+              },
+              {
+                "change": "restart",
+                "key": "channels",
+                "kind": "wholeNumber",
+                "max": 64,
+                "min": 1,
+                "required": true,
+                "shapes": true
+              },
+              {
+                "change": "inPlace",
+                "defaultFrom": "graphFrequency",
+                "key": "rate",
+                "kind": "wholeNumber",
+                "max": 192000,
+                "min": 8000,
+                "required": false,
+                "unit": "Hz"
+              },
+              {
+                "change": "inPlace",
+                "default": 100,
+                "key": "latencyMs",
+                "kind": "wholeNumber",
+                "max": 1000,
+                "min": 1,
+                "required": false,
+                "unit": "milliseconds"
+              }
+            ]
+          },
+          {
+            "inputs": [
+              "to"
+            ],
+            "name": "sendspin",
+            "outputs": [
+              "from"
+            ],
+            "reconfigureMs": 10000,
+            "settings": [
+              {
+                "change": "inPlace",
+                "help": "absent: ear listens on port for the server to dial it",
+                "key": "server",
+                "kind": "text",
+                "mustBe": "ws://<host>[:<port>]/<path>",
+                "pattern": "^ws://[A-Za-z0-9.-]+(:[0-9]{1,5})?/[A-Za-z0-9/._~-]*$",
+                "required": false
+              },
+              {
+                "change": "inPlace",
+                "default": 8928,
+                "key": "port",
+                "kind": "wholeNumber",
+                "max": 65535,
+                "min": 1,
+                "onlyWithout": "server",
+                "required": false
+              },
+              {
+                "change": "inPlace",
+                "defaultFrom": "nodeName",
+                "key": "name",
+                "kind": "text",
+                "maxLength": 64,
+                "mustBe": "1 to 64 bytes of UTF-8 with no control characters",
+                "required": false
+              }
+            ]
+          },
+          {
+            "inputs": [],
+            "name": "white",
+            "outputs": [
+              "noise"
+            ],
+            "reconfigureMs": 10000,
+            "settings": []
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "result": {
+        "hash": "fnv1a64:805cb54992edf0c1",
+        "protocol": 1,
+        "typeSchemas": [
+          {
+            "inputs": [],
+            "name": "airplay",
+            "outputs": [
+              "out"
+            ],
+            "reconfigureMs": 10000,
+            "settings": [
+              {
+                "change": "restart",
+                "defaultFrom": "nodeName",
+                "key": "name",
+                "kind": "text",
+                "maxLength": 50,
+                "mustBe": "a speaker name: 1 to 50 bytes, no control characters, no %, @ or dot",
+                "required": false
+              },
+              {
+                "change": "restart",
+                "help": "absent: AirPlay 1; AirPlay 2 needs nqptp beside ear",
+                "key": "airplay2",
+                "kind": "flag",
+                "required": false
+              }
+            ]
+          },
+          {
+            "inputs": [
+              "play"
+            ],
+            "name": "card",
+            "outputs": [
+              "capture"
+            ],
+            "reconfigureMs": 10000,
+            "settings": [
+              {
+                "change": "restart",
+                "key": "card",
+                "kind": "text",
+                "maxLength": 15,
+                "mustBe": "an ALSA card id, 1-15 characters of [A-Za-z0-9_-] (as in /proc/asound/cards)",
+                "pattern": "^[A-Za-z0-9_-]{1,15}$",
+                "required": true
+              },
+              {
+                "change": "restart",
+                "default": 0,
+                "key": "playback",
+                "kind": "wholeNumber",
+                "max": 64,
+                "min": 0,
+                "required": false,
+                "shapes": true,
+                "unit": "channels"
+              },
+              {
+                "change": "restart",
+                "default": 0,
+                "key": "capture",
+                "kind": "wholeNumber",
+                "max": 64,
+                "min": 0,
+                "required": false,
+                "shapes": true,
+                "unit": "channels"
+              }
+            ]
+          },
+          {
+            "inputs": [
+              "record"
+            ],
+            "name": "file",
+            "outputs": [],
+            "reconfigureMs": 10000,
+            "settings": [
+              {
+                "change": "restart",
+                "key": "path",
+                "kind": "text",
+                "mustBe": "a non-empty string",
+                "required": true
+              }
+            ]
+          },
+          {
+            "inputs": [],
+            "name": "rtp",
+            "outputs": [
+              "stream"
+            ],
+            "reconfigureMs": 10000,
+            "settings": [
+              {
+                "change": "inPlace",
+                "key": "address",
+                "kind": "text",
+                "maxLength": 15,
+                "mustBe": "\"0.0.0.0\" or an IPv4 multicast group (224.0.0.0-239.255.255.255), as a dotted quad",
+                "pattern": "^[0-9]{1,3}(\\.[0-9]{1,3}){3}$",
+                "required": true
+              },
+              {
+                "change": "inPlace",
+                "key": "port",
+                "kind": "wholeNumber",
+                "max": 65535,
+                "min": 1,
+                "required": true
+              },
+              {
+                "change": "inPlace",
+                "key": "format",
+                "kind": "text",
+                "mustBe": "\"L16\" or \"L24\"",
+                "required": true,
+                "values": [
+                  "L16",
+                  "L24"
+                ]
+              },
+              {
+                "change": "restart",
+                "key": "channels",
+                "kind": "wholeNumber",
+                "max": 64,
+                "min": 1,
+                "required": true,
+                "shapes": true
+              },
+              {
+                "change": "inPlace",
+                "defaultFrom": "graphFrequency",
+                "key": "rate",
+                "kind": "wholeNumber",
+                "max": 192000,
+                "min": 8000,
+                "required": false,
+                "unit": "Hz"
+              },
+              {
+                "change": "inPlace",
+                "default": 100,
+                "key": "latencyMs",
+                "kind": "wholeNumber",
+                "max": 1000,
+                "min": 1,
+                "required": false,
+                "unit": "milliseconds"
+              }
+            ]
+          },
+          {
+            "inputs": [
+              "to"
+            ],
+            "name": "sendspin",
+            "outputs": [
+              "from"
+            ],
+            "reconfigureMs": 10000,
+            "settings": [
+              {
+                "change": "inPlace",
+                "help": "absent: ear listens on port for the server to dial it",
+                "key": "server",
+                "kind": "text",
+                "mustBe": "ws://<host>[:<port>]/<path>",
+                "pattern": "^ws://[A-Za-z0-9.-]+(:[0-9]{1,5})?/[A-Za-z0-9/._~-]*$",
+                "required": false
+              },
+              {
+                "change": "inPlace",
+                "default": 8928,
+                "key": "port",
+                "kind": "wholeNumber",
+                "max": 65535,
+                "min": 1,
+                "onlyWithout": "server",
+                "required": false
+              },
+              {
+                "change": "inPlace",
+                "defaultFrom": "nodeName",
+                "key": "name",
+                "kind": "text",
+                "maxLength": 64,
+                "mustBe": "1 to 64 bytes of UTF-8 with no control characters",
+                "required": false
+              }
+            ]
+          },
+          {
+            "inputs": [],
+            "name": "white",
+            "outputs": [
+              "noise"
+            ],
+            "reconfigureMs": 10000,
+            "settings": []
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 4,
+      "result": {
+        "protocol": 1,
+        "hash": "fnv1a64:805cb54992edf0c1",
+        "notModified": true
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 5,
+      "error": {
+        "code": -32602,
+        "message": "/since: unknown key",
+        "data": {
+          "pointer": "/since"
+        }
+      }
+    }
+  ],
+  "graph": {
+    "blockSize": 256,
+    "counters": {
+      "cutCycles": 0,
+      "cycles": 0,
+      "lostMs": 0,
+      "stalls": 0
+    },
+    "features": [
+      "lifecycle",
+      "counters",
+      "companions",
+      "node-text",
+      "reshape",
+      "node.set",
+      "dryRun",
+      "types"
+    ],
+    "graphFrequency": 48000,
+    "nodes": [],
+    "protocol": 1,
+    "realtime": false,
+    "routes": [],
+    "scheduling": "SCHED_OTHER",
+    "typeSchemaHash": "fnv1a64:805cb54992edf0c1",
+    "types": [
+      "airplay",
+      "card",
+      "file",
+      "rtp",
+      "sendspin",
+      "white"
+    ]
+  }
+}

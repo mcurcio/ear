@@ -138,6 +138,7 @@ json encodeGraph(const GraphView& view) {
 	        {"realtime", view.engine.realtime},
 	        {"scheduling", view.engine.scheduling},
 	        {"types", view.types},
+	        {"typeSchemaHash", view.typeSchemaHash},
 	        {"nodes", std::move(nodes)},
 	        {"routes", std::move(routes)},
 	        {"counters", encodeGraphCounts(view.counts, lostMs)}};

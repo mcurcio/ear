@@ -17,6 +17,9 @@ namespace ear::control::testing {
 /// 2026-11-09T10:00:00Z: where the session replay's gateway clock starts (it moves 10 ms at each reading).
 inline constexpr std::chrono::system_clock::time_point testEpoch{std::chrono::seconds{1'794'218'400}};
 /// The instant `n` readings of that clock after its start.
+/// The hash every fixture's Graph carries but types.json's, which holds the real types' own
+/// (docs/control-port.md#type-schemas).
+inline constexpr std::string_view fixtureTypeSchemaHash = "fnv1a64:0123456789abcdef";
 inline std::chrono::system_clock::time_point reading(int n) { return testEpoch + std::chrono::milliseconds(10 * n); }
 
 /// A health as NodeHost tells it, by its state: starting is the configuring phase, stopped is wanted stopped, disabled
@@ -139,6 +142,7 @@ inline ear::GraphView graphView(int playback, const std::string& recPath) {
 	                      health("rec", NodeState::running)});
 	view.routes.push_back({{{"noise", "noise.mono"}, {"desk", "play.1"}}, ear::RouteMatch::pending, ""});
 	view.routes.push_back({{{"noise", "noise.mono"}, {"rec", "record.left"}}, ear::RouteMatch::linked, ""});
+	view.typeSchemaHash = fixtureTypeSchemaHash;
 	return view;
 }
 
@@ -182,6 +186,7 @@ inline ear::GraphView snapshotView() {
 	                       ear::RouteMatch::refused,
 	                       "the engine removed the link before it was active"});
 	view.counts = ear::GraphCounts{.cycles = 18750, .cutCycles = 39, .stalls = 1}; // lostMs 208: 39 blocks of 256
+	view.typeSchemaHash = fixtureTypeSchemaHash;
 	return view;
 }
 

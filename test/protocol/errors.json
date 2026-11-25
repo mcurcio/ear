@@ -39,7 +39,8 @@
           "node-text",
           "reshape",
           "node.set",
-          "dryRun"
+          "dryRun",
+          "types"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -50,6 +51,7 @@
           "file",
           "white"
         ],
+        "typeSchemaHash": "fnv1a64:0123456789abcdef",
         "nodes": [
           {
             "name": "noise",
@@ -145,7 +147,9 @@
         "code": -32000,
         "message": "invalid-settings tape: path: missing",
         "data": {
-          "code": "invalid-settings"
+          "code": "invalid-settings",
+          "key": "path",
+          "detail": "missing"
         }
       }
     },
@@ -387,7 +391,8 @@
       "node-text",
       "reshape",
       "node.set",
-      "dryRun"
+      "dryRun",
+      "types"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -398,6 +403,7 @@
       "file",
       "white"
     ],
+    "typeSchemaHash": "fnv1a64:0123456789abcdef",
     "nodes": [
       {
         "name": "noise",

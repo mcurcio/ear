@@ -11,6 +11,7 @@ import lifecycle from "../../test/protocol/lifecycle.json";
 import nodeSet from "../../test/protocol/node-set.json";
 import nodeText from "../../test/protocol/node-text.json";
 import snapshot from "../../test/protocol/snapshot.json";
+import types from "../../test/protocol/types.json";
 import unknownValues from "../../test/protocol/unknown-values.json";
 import type { ProtocolFixture, ServerMessage, ServerText } from "./protocol";
 import type { SocketEvents, SocketLike } from "./rpc";
@@ -28,6 +29,7 @@ export const fixtures = {
   companions,
   nodeText,
   nodeSet,
+  types,
 } as unknown as {
   snapshot: ProtocolFixture;
   edits: ProtocolFixture;
@@ -40,6 +42,7 @@ export const fixtures = {
   companions: ProtocolFixture;
   nodeText: ProtocolFixture;
   nodeSet: ProtocolFixture;
+  types: ProtocolFixture;
 };
 
 /** A fixture's server texts as the messages the client hands on, a batch's in its order. */

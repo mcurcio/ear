@@ -22,7 +22,8 @@
           "node-text",
           "reshape",
           "node.set",
-          "dryRun"
+          "dryRun",
+          "types"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -35,6 +36,7 @@
           "rtp",
           "white"
         ],
+        "typeSchemaHash": "fnv1a64:0123456789abcdef",
         "nodes": [
           {
             "name": "desk",
@@ -697,7 +699,8 @@
       "node-text",
       "reshape",
       "node.set",
-      "dryRun"
+      "dryRun",
+      "types"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -710,6 +713,7 @@
       "rtp",
       "white"
     ],
+    "typeSchemaHash": "fnv1a64:0123456789abcdef",
     "nodes": [
       {
         "name": "desk",

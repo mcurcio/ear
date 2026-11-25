@@ -42,6 +42,7 @@
 #include "ear/config/graph_file_keeper.hpp"
 #include "ear/control/gateway.hpp"
 #include "ear/control/status_log.hpp"
+#include "ear/control/type_schemas.hpp"
 #include "ear/core/counter_watch.hpp"
 #include "ear/core/desired_graph.hpp"
 #include "ear/core/graph_view.hpp"
@@ -479,7 +480,10 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 
-	auto started = ear::server::ControlPort::start(portSettings, control, gateway, blocks, bell);
+	// The node types' schemas, encoded once: types.get answers from this, and every Graph names its hash
+	// (docs/control-port.md#type-schemas).
+	auto started = ear::server::ControlPort::start(portSettings, control, gateway, blocks, bell,
+	                                               ear::control::encodeTypeSchemas(catalogue));
 	if (!started) {
 		// The keeper's thread closes its inotify descriptor, which waits on the kernel, before ear's last record.
 		keeper.stop();

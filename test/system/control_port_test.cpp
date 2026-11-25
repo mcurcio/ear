@@ -268,7 +268,7 @@ TEST_CASE("node.stop and node.start through the control port edit nothing, and w
 	REQUIRE(snapshot.contains("result"));
 	CHECK(snapshot["result"]["protocol"] == 1);
 	CHECK(snapshot["result"]["features"] ==
-	      json::array({"lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun"}));
+	      json::array({"lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun", "types"}));
 	CHECK(snapshot["result"]["nodes"][0]["phase"] == "running");
 	CHECK(snapshot["result"]["nodes"][0]["wanted"] == "running");
 
@@ -363,7 +363,7 @@ TEST_CASE("A file node's sink is in its companion list: ready while it records, 
 	INFO("snapshot: " << snapshot.dump());
 	REQUIRE(snapshot.contains("result"));
 	CHECK(snapshot["result"]["features"] ==
-	      json::array({"lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun"}));
+	      json::array({"lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun", "types"}));
 	const json& nodes = snapshot["result"]["nodes"];
 	REQUIRE(nodes.size() == 2);
 	CHECK(nodes[0]["name"] == "noise");
@@ -517,5 +517,34 @@ TEST_CASE("A sound card node runs and its route is linked", "[system][control][c
 		if (r["to"] == toCard["to"]) cardLinked = r["status"] == "linked";
 	}
 	CHECK(cardLinked);
+	CHECK(ear.stop(rpc) == 0);
+}
+
+TEST_CASE("types.get answers types.json's replies, and graph.get names the same hash", "[system][control][types]") {
+	std::ifstream fixtureFile(std::string(EAR_PROTOCOL_DIR) + "/types.json");
+	REQUIRE(fixtureFile);
+	const json document = json::parse(fixtureFile);
+	Running started;
+	Ear& ear = started.ear;
+	Rpc rpc(ear.port());
+	const json graph = rpc.call("graph.get")["result"];
+	for (const json& text : document["requests"]) {
+		const json request = json::parse(text.get<std::string>());
+		if (request["method"] != "types.get") continue;
+		const json reply = rpc.call("types.get", request.value("params", json::object()));
+		json expected;
+		for (const json& message : document["messages"])
+			if (message.contains("id") && message["id"] == request["id"]) expected = message;
+		INFO("request " << request.dump());
+		REQUIRE(expected.is_object());
+		// The schemas are the real types' own: a change to a type's rows regenerates types.json (its description).
+		if (expected.contains("error")) CHECK(reply["error"] == expected["error"]);
+		else CHECK(reply["result"] == expected["result"]);
+		if (reply.contains("result")) CHECK(reply["result"]["hash"] == graph["typeSchemaHash"]);
+	}
+	// A refusal of the settings walk names its key (docs/control-port.md#error-codes).
+	const json refused = rpc.call("node.set", {{"name", "rec"}, {"settings", {{"path", ""}}}});
+	CHECK(refused["error"]["data"] ==
+	      json{{"code", "invalid-settings"}, {"key", "path"}, {"detail", "must be a non-empty string"}});
 	CHECK(ear.stop(rpc) == 0);
 }

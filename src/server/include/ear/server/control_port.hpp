@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include "ear/control/gateway.hpp"
+#include "ear/control/type_schemas.hpp"
 #include "ear/core/levels.hpp"
 #include "ear/server/control_thread.hpp"
 // No Boost type in this header: Beast and Asio stay private to ear_server.
@@ -40,11 +41,10 @@ private:
 class ControlPort final {
 public:
 	/// Binds and listens, then makes the hub and starts accepting on `thread`. All arguments
-	/// outlive the port.
-	static std::expected<std::unique_ptr<ControlPort>, ControlPortError> start(const ControlPortSettings& settings,
-	                                                                           ControlThread& thread,
-	                                                                           control::GraphGateway& graph,
-	                                                                           LevelReader& levels, LevelBell& bell);
+	/// outlive the port; `types` (types.get's, encoded at boot) is the hub's own.
+	static std::expected<std::unique_ptr<ControlPort>, ControlPortError>
+	start(const ControlPortSettings& settings, ControlThread& thread, control::GraphGateway& graph, LevelReader& levels,
+	      LevelBell& bell, control::TypeSchemas types = {});
 	~ControlPort();                      // stop()
 	std::uint16_t port() const noexcept; // the bound port
 	/// Any thread but the control thread; idempotent. On the control thread: closes the listener

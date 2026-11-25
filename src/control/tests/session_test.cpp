@@ -187,7 +187,12 @@ struct World {
 		graph.running = &running;
 		graph.mainLoop = &main;
 		graph.stamp = &gateway;
-		onControl([&] { hub = std::make_unique<ControlHub>(gateway, levels); });
+		// The fixtures' placeholder hash (types.json holds the real one): every Graph the session sends carries it.
+		onControl([&] {
+			hub = std::make_unique<ControlHub>(gateway, levels,
+			                                   ear::control::TypeSchemas{std::string(testing::fixtureTypeSchemaHash),
+			                                                             json::array({{{"name", "white"}}})});
+		});
 		pump();
 	}
 	~World() {
@@ -460,7 +465,7 @@ TEST_CASE("errors.json: refusals, stopping and envelope errors", "[session][prot
 	const std::vector<std::pair<std::string, ear::CommandError>> refusals{
 		{"addNode a.b white {}", ear::InvalidName{"a.b"}},
 		{"addNode pinky pink {}", ear::UnknownNodeType{"pink"}},
-		{"addNode tape file {}", ear::InvalidSettings{"tape", "path: missing"}},
+		{"addNode tape file {}", ear::InvalidSettings{"tape", "path: missing", "path"}},
 		{R"(addNode noise file {"path":"z.wav"})", ear::DuplicateNode{"noise"}},
 		{"updateNode ghost {}", ear::UnknownNode{"ghost"}},
 		{"removeNode ghost", ear::UnknownNode{"ghost"}},
@@ -1086,7 +1091,7 @@ TEST_CASE("node-set.json: a merge of a node's settings answered with what it app
 	w.receive(session, requests[5]);
 	w.onMain([&] { w.told(at("fpp", NodePhase::running)); });
 	w.graph.script.push_back({R"(setNode rec {"path":null})",
-	                          answer(Result(std::unexpected(ear::InvalidSettings{"rec", "path: missing"})))});
+	                          answer(Result(std::unexpected(ear::InvalidSettings{"rec", "path: missing", "path"})))});
 	w.receive(session, requests[6]);
 	w.graph.script.push_back({R"(setNode rec {"path":"take2.wav"} dryRun)", answer(Applied{AppliedKind::restart})});
 	w.receive(session, requests[7]);
@@ -1616,4 +1621,36 @@ TEST_CASE("A node added again under a name starts from node.added's []: its firs
 	for (const json& message : parsed(out.all)) methods.push_back(message.value("method", "reply"));
 	CHECK(methods == std::vector<std::string>{"reply", "node.added", "node.companionsChanged", "node.removed",
 	                                          "node.added", "node.companionsChanged"});
+}
+
+TEST_CASE("types.get is answered by the hub in its place in a batch, never through the keeper, and every Graph carries "
+          "its hash",
+          "[session][types][protocol]") {
+	World w;
+	w.graph.view = baseView();
+	const std::string hash(ear::control::testing::fixtureTypeSchemaHash);
+	RecordingOutbox out;
+	ControlSession session(*w.hub, out);
+	w.receive(session, R"([{"jsonrpc":"2.0","id":1,"method":"types.get"},
+	                       {"jsonrpc":"2.0","id":2,"method":"graph.get"},
+	                       {"jsonrpc":"2.0","id":3,"method":"types.get","params":{"ifNoneMatch":"fnv1a64:0123456789abcdef"}},
+	                       {"jsonrpc":"2.0","id":4,"method":"types.get","params":{"since":1}},
+	                       {"jsonrpc":"2.0","method":"types.get"}])");
+	REQUIRE(out.all.size() == 1);
+	const json batch = json::parse(out.all[0]);
+	REQUIRE(batch.size() == 4); // the notification is not answered
+	CHECK(batch[0] ==
+	      json{{"jsonrpc", "2.0"},
+	           {"id", 1},
+	           {"result", {{"protocol", 1}, {"hash", hash}, {"typeSchemas", json::array({{{"name", "white"}}})}}}});
+	CHECK(batch[1]["result"]["typeSchemaHash"] == hash);
+	CHECK(batch[2]["result"] == json{{"protocol", 1}, {"hash", hash}, {"notModified", true}});
+	CHECK(batch[3]["error"]["code"] == -32602);
+	CHECK(batch[3]["error"]["data"] == json{{"pointer", "/since"}});
+	CHECK(w.graph.calls == std::vector<std::string>{"read"});
+
+	w.receive(session, R"({"jsonrpc":"2.0","id":5,"method":"types.get","params":{}})");
+	REQUIRE(out.all.size() == 2);
+	CHECK(json::parse(out.all[1])["result"]["hash"] == hash);
+	CHECK(w.graph.calls.size() == 1); // answered on the control thread alone
 }

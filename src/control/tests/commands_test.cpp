@@ -128,7 +128,7 @@ TEST_CASE("The frame: graph.get says protocol 1 and the lifecycle, counters, com
 		encodeGraph(ear::GraphView{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {}, {}, {}});
 	CHECK(graph["protocol"] == 1);
 	CHECK(graph["features"] ==
-	      json::array({"lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun"}));
+	      json::array({"lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun", "types"}));
 }
 
 TEST_CASE("A snapshot's node carries its companion list in request order, each counter only on its kind, and [] for "
@@ -328,6 +328,7 @@ TEST_CASE("unknown-values.json starts from a snapshot ear makes", "[commands][pr
 	                      ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
 	                      health("rec", NodeState::running)});
 	view.routes.push_back({noiseToRecFl, ear::RouteMatch::linked, ""});
+	view.typeSchemaHash = ear::control::testing::fixtureTypeSchemaHash; // the control port stamps it
 	CHECK(json::parse(encodeResult(1, encodeCommandResult(view).value())) == document["messages"][0]);
 }
 
@@ -337,7 +338,7 @@ TEST_CASE("Success is {} and each refusal is errors.json's -32000 response", "[c
 	const std::vector<ear::CommandError> errors{
 		ear::InvalidName{"a.b"},
 		ear::UnknownNodeType{"pink"},
-		ear::InvalidSettings{"tape", "path: missing"},
+		ear::InvalidSettings{"tape", "path: missing", "path"},
 		ear::DuplicateNode{"noise"},
 		ear::UnknownNode{"ghost"},
 		ear::UnknownNode{"ghost"},
@@ -352,4 +353,23 @@ TEST_CASE("Success is {} and each refusal is errors.json's -32000 response", "[c
 		REQUIRE_FALSE(encoded.has_value());
 		CHECK(json::parse(encodeError(static_cast<int>(i) + 2, encoded.error())) == messages[i + 1]);
 	}
+}
+
+TEST_CASE("invalid-settings carries the key it names and the refusal in its own words, or the words alone",
+          "[commands][protocol][types]") {
+	const auto encoded = [](ear::InvalidSettings error) {
+		const auto result = encodeCommandResult(std::expected<void, ear::CommandError>(std::unexpected(error)));
+		REQUIRE_FALSE(result.has_value());
+		return result.error();
+	};
+	const auto keyed = encoded({"desk", "playback: must be a whole number of channels, 0-64", "playback"});
+	CHECK(keyed.message == "invalid-settings desk: playback: must be a whole number of channels, 0-64");
+	CHECK(keyed.data == json{{"code", "invalid-settings"},
+	                         {"key", "playback"},
+	                         {"detail", "must be a whole number of channels, 0-64"}});
+	const auto across = encoded({"desk", "playback or capture: at least one must be above 0"});
+	CHECK(across.data ==
+	      json{{"code", "invalid-settings"}, {"detail", "playback or capture: at least one must be above 0"}});
+	const auto unknown = encoded({"desk", "unknown key colour", "colour"});
+	CHECK(unknown.data == json{{"code", "invalid-settings"}, {"key", "colour"}, {"detail", "unknown key colour"}});
 }

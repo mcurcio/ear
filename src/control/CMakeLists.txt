@@ -15,7 +15,8 @@ add_library(ear_control STATIC
 	graph_json.cpp
 	rpc.cpp
 	session.cpp
-	status_log.cpp)
+	status_log.cpp
+	type_schemas.cpp)
 # Header set and its standalone compile check: see src/core/CMakeLists.txt.
 target_sources(ear_control PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/control/commands.hpp
@@ -28,7 +29,8 @@ target_sources(ear_control PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/control/requests.hpp
 	include/ear/control/rpc.hpp
 	include/ear/control/session.hpp
-	include/ear/control/status_log.hpp)
+	include/ear/control/status_log.hpp
+	include/ear/control/type_schemas.hpp)
 set_target_properties(ear_control PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)
 target_link_libraries(ear_control PUBLIC ear_core)
 
@@ -41,7 +43,8 @@ if(BUILD_TESTS)
 		tests/graph_json_test.cpp
 		tests/rpc_test.cpp
 		tests/session_test.cpp
-		tests/status_log_test.cpp)
+		tests/status_log_test.cpp
+		tests/type_schemas_test.cpp)
 	target_link_libraries(ear_control_tests PRIVATE ear_control ear_catch_main)
 	# The wire format's fixtures, shared with the web UI's tests (docs/control-port.md).
 	target_compile_definitions(ear_control_tests PRIVATE

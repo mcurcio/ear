@@ -48,7 +48,7 @@ use`).
 
 ## The frame and the lifecycle (protocol 1)
 
-- **The frame.** `graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun"]`; an absent
+- **The frame.** `graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun", "types"]`; an absent
   `protocol` is 0. Gate every method and request member on its feature, never on a -32601
   probe. Every enum is open: draw a value you do not know neutrally, never fail on it.
 - **Health.** Each node of a snapshot, `node.added` and every `node.state` carries `state` (the
@@ -78,6 +78,14 @@ use`).
   strands a route is `ports-in-use` unless the edit carries `dropRoutes: true`
   (`docs/control-port.md#nodeset-and-dry-runs`, `#changes-of-ports`).
 - Every -32602 carries `data.pointer`, the JSON pointer its message names.
+- **Type schemas** (feature `types`, `docs/control-port.md#type-schemas`): `types.get {"ifNoneMatch"?}` answers every
+  type's schema (rows with `kind`, `required`, `change`, `shapes`, `default`/`defaultFrom`, ranges and text hints;
+  `inputs`, `outputs`, `reconfigureMs`) and its `hash`, or `notModified` for the hash given. It is answered by the hub
+  on the control thread from the encoding `main.cpp` makes at boot (`control::encodeTypeSchemas`), never through the
+  keeper; the session stamps that hash on every Graph as `typeSchemaHash`. `invalid-settings` carries `data.detail`
+  and, when the settings walk refused one key, `data.key`. `test/protocol/types.json` is the real ear's answer: a
+  change to any type's rows regenerates it (the system test `types.get answers types.json's replies` says what
+  differs).
 - **Counters** (feature `counters`): the Graph carries the graph's `counters` (`cycles`, `cutCycles`,
   `stalls`, `lostMs`) and each node of a snapshot and `node.added` its own (`missedCycles`,
   `overruns`, `repositions`, `driverChanges`); `counters.changed` to `graph.subscribe` clients, at
@@ -272,6 +280,6 @@ record, status 0) says the stop is done; a script waiting on ear's exit judges t
 - `ear_system_tests` (`test/system/control_port_test.cpp`, `graph_file_test.cpp`): the real
   `out/ear`, end to end, edits written back and hand edits winning; `node-text.json`'s requests
   are sent to the real ear and its replies must be the fixture's.
-- `scripts/image-smoke.sh`: the run image serves `/` and answers `graph.get` and
+- `scripts/image-smoke.sh`: the run image serves `/`, answers `types.get` for the hash `graph.get` names, and answers `graph.get` and
   `graphFile.get`.
 - `web/` vitest: the editor's client and reducer against the same fixtures.

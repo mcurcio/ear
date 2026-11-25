@@ -33,6 +33,9 @@ struct GraphView {
 	std::vector<NodeView> nodes;     // wanted nodes, name order
 	std::vector<RouteStatus> routes; // wanted routes, Route order
 	GraphCounts counts{};            // the graph's counters (docs/engine.md#counters), read with the rest
+	/// The node types' schemas' hash (docs/control-port.md#type-schemas): fixed at boot, stamped by the control port on
+	/// every Graph it sends; the read leaves it empty.
+	std::string typeSchemaHash{};
 };
 class GraphReader {
 public:

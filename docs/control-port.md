@@ -72,7 +72,7 @@ snapshots include every edit the batch made.
 
 ## Protocol and features
 
-`graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun"]`. An absent `protocol` is 0 (the
+`graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun", "types"]`. An absent `protocol` is 0 (the
 wire before the lifecycle). The number moves only on a breaking change: removing or renaming a
 method, notification, member or code, changing a member's type, or changing an order guarantee.
 Additive growth is a new **feature** name.
@@ -88,10 +88,11 @@ Additive growth is a new **feature** name.
   ([below](#a-nodes-own-text)). `reshape` adds `applied: "reshape"`, `node.updated`'s `ports`,
   `inputs`, `outputs` and `inPlace`, the cause kind `reshape`, `node.update`'s `dropRoutes` and the code
   `ports-in-use` ([below](#changes-of-ports)). `node.set` adds `node.set`, and `dryRun` its `dryRun`
-  ([below](#nodeset-and-dry-runs)).
+  ([below](#nodeset-and-dry-runs)). `types` adds `types.get`, the Graph's `typeSchemaHash`
+  ([below](#type-schemas)), and `key` and `detail` on `invalid-settings` ([below](#error-codes)).
 - **Every enum is open.** `state`, `phase`, `cause.kind`, `waitingFor`'s `kind`, a route's `status`,
-  `reason.code`, `applied`, `severity`, a companion's `kind` and every code may gain values, and the counters' names
-  are an open set. Draw a value you do not know
+  `reason.code`, `applied`, `severity`, a companion's `kind`, a setting row's `kind`, `change` and `defaultFrom`, and
+  every code may gain values, and the counters' names are an open set. Draw a value you do not know
   neutrally (a state as `starting`'s style, a code as its text, a counter by its name and number),
   and ignore a notification you do not know; never fail on either (`test/protocol/unknown-values.json`).
 - **A client that sees a higher `protocol`** shows a banner and keeps working with what it
@@ -105,9 +106,9 @@ Additive growth is a new **feature** name.
 `graph.get` and `graph.subscribe` answer with the Graph (`test/protocol/snapshot.json`):
 
 ```json
-{"protocol": 1, "features": ["lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun"],
+{"protocol": 1, "features": ["lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun", "types"],
  "graphFrequency": 48000, "blockSize": 256, "realtime": true, "scheduling": "SCHED_FIFO 88",
- "types": ["card", "file", "white"],
+ "types": ["card", "file", "white"], "typeSchemaHash": "fnv1a64:0123456789abcdef",
  "counters": {"cycles": 18750, "cutCycles": 39, "stalls": 1, "lostMs": 208},
  "nodes": [
    {"name": "noise", "type": "white", "settings": {}, "inputs": [], "outputs": ["noise.mono"],
@@ -131,6 +132,7 @@ Additive growth is a new **feature** name.
 | `graphFrequency`, `blockSize` | The engine's, fixed at boot |
 | `realtime`, `scheduling` | Whether the audio thread is realtime, and its policy (`SCHED_FIFO 88`, `SCHED_OTHER`) |
 | `types` | The node types ear knows |
+| `typeSchemaHash` | The hash of their schemas (feature `types`), opaque; `types.get` answers the schemas ([below](#type-schemas)) |
 | `nodes[]` | Each node: `name`, `type`, `settings` (as in `ear.conf`), `inputs` and `outputs` (public ports only; inside banks are never routed: only a companion names one), its [health](#node-health), `disabled: true` when `ear.conf` disables it, its `counters` ([below](#counters)) and its `companions` ([below](#companions)) |
 | `counters` | The graph's counters ([below](#counters)) |
 | `routes[]` | Each route: `from` and `to` (`{node, port}`), `status` (`pending`: an end is not live yet; `linked`; `refused`), `detail` when refused |
@@ -167,6 +169,7 @@ three or four `node.state`s within milliseconds.
 | `graph.get` | none | Graph | none |
 | `graph.subscribe` | none | Graph; then every graph notification on this connection | none |
 | `levels.subscribe` | none | `{"windowsPerSecond": 30}`; then `levels` notifications | none |
+| `types.get` | `{"ifNoneMatch"?}` (feature `types`) | `{"protocol", "hash", "typeSchemas"}`, or `{"protocol", "hash", "notModified": true}` when `ifNoneMatch` is the hash ([below](#type-schemas)) | none |
 | `node.add` | `{"name", "type", "settings"?, "disabled"?}` | `{}` | `invalid-name`, `unknown-node-type`, `invalid-settings`, `duplicate-node`, `file-invalid`, `invalid-text`, `stopping` |
 | `node.update` | `{"name", "settings", "dropRoutes"?}`: the node's whole new settings; `dropRoutes` (feature `reshape`) removes the routes its new ports strand ([below](#changes-of-ports)) | `{}` | `unknown-node`, `invalid-settings`, `shared-definition`, `file-invalid`, `invalid-text`, `ports-in-use`, `stopping` |
 | `node.set` | `{"name", "settings", "dryRun"?, "dropRoutes"?}` (feature `node.set`; `dryRun`, feature `dryRun`): `settings` merged into the node's ([below](#nodeset-and-dry-runs)) | `{"applied"}`, and when its ports change `inPlace` (a reshape's), `ports` and `routesDropped` (a dry run: `routes`) | `unknown-node`, `invalid-settings`, `shared-definition`, `file-invalid`, `invalid-text`, `ports-in-use`, the graph's codes, `stopping` |
@@ -373,7 +376,7 @@ Every refusal is -32000 with `data.code`. Its message is the code and what it na
 |---|---|---|
 | `invalid-name` | A node name that is not 1 to 64 of `[A-Za-z0-9_-]` | |
 | `unknown-node-type` | `node.add` with a type ear does not know | |
-| `invalid-settings` | Settings the node's type refuses; the message carries the type's text (`invalid-settings tape: path: missing`) | |
+| `invalid-settings` | Settings the node's type refuses; the message carries the type's text (`invalid-settings tape: path: missing`) | `detail`: the refusal in its own words (`missing`); `key` (feature `types`): the key it names (`path`), absent for a rule naming none (`playback or capture: at least one must be above 0`) or settings that are not an object. A client places it under that key's field and never parses the message |
 | `duplicate-node` | `node.add` with a name already taken | |
 | `unknown-node` | A name no node has (also a route naming one) | |
 | `unknown-port` | A route naming a port the node does not have | |
@@ -391,6 +394,7 @@ Every refusal is -32000 with `data.code`. Its message is the code and what it na
 Examples are in `test/protocol/errors.json`:
 
 ```json
+{"jsonrpc": "2.0", "id": 4, "error": {"code": -32000, "message": "invalid-settings tape: path: missing", "data": {"code": "invalid-settings", "key": "path", "detail": "missing"}}}
 {"jsonrpc": "2.0", "id": 8, "error": {"code": -32000, "message": "unknown-port rec:FX", "data": {"code": "unknown-port"}}}
 {"jsonrpc": "2.0", "id": 15, "error": {"code": -32000, "message": "not-restartable desk: block-lost", "data": {"code": "not-restartable", "reason": "block-lost"}}}
 {"jsonrpc": "2.0", "id": 18, "error": {"code": -32602, "message": "/colour: unknown key", "data": {"pointer": "/colour"}}}
@@ -455,6 +459,55 @@ settings merged, made at the source like every edit, and refused as one: removin
 {"jsonrpc": "2.0", "id": 10, "method": "node.set", "params": {"name": "desk", "settings": {"playback": 1}, "dryRun": true}}
 {"jsonrpc": "2.0", "id": 10, "result": {"applied": "reshape", "inPlace": false, "ports": {"added": [], "removed": ["play.2"]}, "routes": [{"from": {"node": "noise", "port": "noise.mono"}, "to": {"node": "desk", "port": "play.2"}}]}}
 ```
+
+## Type schemas
+
+With the feature `types` (`test/protocol/types.json`), `types.get` answers what every node type
+ear knows declares, as its settings table says it ([writing-a-node-type.md](writing-a-node-type.md#the-type-schema)):
+everything a client needs to draw a node's settings as a form and say beside each field what a
+change does, with no type's name written in the client. The schemas are made from the types at
+compile time and encoded once at boot; `types.get` is answered on the control thread from that
+encoding, never through the graph's keeper, so it waits on no edit.
+
+- **Fetch once per hash.** The Graph carries `typeSchemaHash`, one hash for the whole set (types
+  are compiled in and change only with ear): FNV-1a 64 over the exact bytes of the `typeSchemas`
+  encoding, written `fnv1a64:<16 hex>`, opaque to a client. A client that holds a set sends its hash
+  as `ifNoneMatch` and gets `{"protocol", "hash", "notModified": true}` when it is the current one.
+  `ifNoneMatch` is the only member; any other is -32602.
+- **A type**: `name`, `settings` (its rows, in the order its table checks them), `inputs` and
+  `outputs` (its routable banks' names in declaration order: inside banks are never on the wire) and
+  `reconfigureMs` (how long a change in place may take before it falls back to a restart,
+  [architecture.md](architecture.md#changes-in-place)). No type lists `disabled`: it is the
+  framework's key, never a row.
+- **A row**: `key`, `kind`, `required` and `change` always; the rest as they apply.
+
+| Member | What |
+|---|---|
+| `kind` | What the control port takes for the key: `text` (a JSON string), `wholeNumber` (a JSON integer; a rate is one, in Hz, with `unit` `Hz`, whatever `ear.conf` writes), `flag` (JSON `true` or `false`). Open: a client draws a kind it does not know as a JSON value |
+| `change` | What a change to the key alone asks of the node: `inPlace` (its row is marked [in place](architecture.md#changes-in-place)) or `restart`. Open |
+| `shapes` | `true` when a change to the key may change the node's ports ([below](#changes-of-ports)) |
+| `default` | What an absent key reads |
+| `defaultFrom` | Where an absent key's value comes from instead: `graphFrequency` or `nodeName`. Open |
+| `min`, `max`, `unit` | A whole number's range, and its unit when it has one (`channels`, `milliseconds`, `Hz`) |
+| `mustBe` | A text's rule in its own words, as its refusal says it |
+| `values`, `pattern`, `maxLength` | A text's hints for a control: every value it takes (a select), an ECMAScript pattern every good value matches, its most bytes. Hints only: ear judges every value |
+| `onlyWithout` | The key it is refused beside |
+| `help` | One line a control shows beside the field |
+
+```json
+{"jsonrpc": "2.0", "id": 3, "method": "types.get", "params": {"ifNoneMatch": "fnv1a64:0123456789abcdef"}}
+{"jsonrpc": "2.0", "id": 3, "result": {"protocol": 1, "hash": "fnv1a64:9c2e41f07a3b5d18", "typeSchemas": [
+  {"name": "rtp", "inputs": [], "outputs": ["stream"], "reconfigureMs": 10000, "settings": [
+    {"key": "format", "kind": "text", "required": true, "change": "inPlace", "mustBe": "\"L16\" or \"L24\"", "values": ["L16", "L24"]},
+    {"key": "channels", "kind": "wholeNumber", "required": true, "change": "restart", "min": 1, "max": 64, "shapes": true},
+    {"key": "rate", "kind": "wholeNumber", "required": false, "change": "inPlace", "min": 8000, "max": 192000, "unit": "Hz", "defaultFrom": "graphFrequency"}]}]}}
+```
+
+The hints come from the schema alone: a client says "applies in place" for `inPlace`, "restarts
+the node" for `restart` and "changes the ports" for `shapes`, and asks ear what an edit of several
+keys will do with a dry run ([below](#nodeset-and-dry-runs)). `types.json` holds every built-in
+type's schema and its hash, and the system tests hold the real ear to it, so a change to a type's
+rows changes that fixture in the same commit.
 
 ## Levels
 
@@ -595,7 +648,8 @@ breaking change moves `protocol`; anything else is a new feature name
 | `graph-file.json` | `graphFile.*`, edits at the source, hand edits, refusals; also its `requests` and final `file` |
 | `node-set.json` | `node.set`: a merge answered `reconfigure`, `unchanged` again, `null` removing a key, a required key removed refused, a dry run of each outcome (`reconfigure`, `unchanged`, `restart`, `stored` with its ports, `reshape` naming its routes) changing nothing, a reshape refused `ports-in-use`, then with `dropRoutes` (`routesDropped`) |
 | `node-text.json` | `nodeTexts` (a comment owned, a snippet's node shared); `node.setText`: success, `file-changed`, `invalid-text` placed in the text, `ear/node-renamed`, `shared-definition`, `ear/not-one-node`; `node.addText`: success, `file-changed`, knobly's error placed in the text, `ear/not-one-node`, `duplicate-node`; the system tests send its requests to the real ear and expect its replies |
-| `errors.json` | Every refusal code and envelope error |
+| `errors.json` | Every refusal code and envelope error, `invalid-settings` with its `key` and `detail` |
+| `types.json` | `types.get` with no hash, a stale hash and the current one, and with an unknown member; every built-in type's schema (each row's `change`, `shapes`, `defaultFrom` and hints) and its hash; the system tests send its requests to the real ear and expect its replies |
 | `levels.json` | `levels.subscribe` and `levels` |
 | `counters-changed.json` | The counters in a snapshot, `counters.changed`, one naming a node not held, and a change of ports keeping the node and its counters |
 | `companions.json` | The companion lists in a snapshot (every engine and ring kind but a source), a file node's list from `node.added` to running, a counter moving, a stop and a start (no list), a restart, an RTP receiver replaced make-before-break (the old one `retiring`), a failure past a readiness deadline, a removal (no list after `node.removed`) |

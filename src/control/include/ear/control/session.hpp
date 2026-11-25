@@ -3,6 +3,7 @@
 #include <memory>
 #include <string>
 #include "ear/control/gateway.hpp"
+#include "ear/control/type_schemas.hpp"
 #include "ear/core/levels.hpp"
 // The protocol per connection (control thread only; docs/control-port.md).
 namespace ear::control {
@@ -36,11 +37,11 @@ private:
 /// Sessions, subscriptions, the event stream and levels. Control thread only, construction
 /// included. graph.subscribe: the session gets graph events after its snapshot, never before;
 /// graphFile.subscribe: graphFile.changed after its snapshot, never before. A batch's subscribe
-/// snapshots run after its other commands, in request order. levels.subscribe is answered here,
-/// without the main loop.
+/// snapshots run after its other commands, in request order. levels.subscribe and types.get are answered here,
+/// without the main loop; every Graph a session sends carries `types`' hash as typeSchemaHash.
 class ControlHub final : public EventSink {
 public:
-	ControlHub(GraphGateway& graph, LevelReader& levels); // calls graph.watch(*this)
+	ControlHub(GraphGateway& graph, LevelReader& levels, TypeSchemas types = {}); // calls graph.watch(*this)
 	~ControlHub();
 	void graphChanged(GraphEvent event) override; // encoded once, to graph-subscribed sessions
 	/// Encoded once (encodeGraphFileChanged), to graphFile-subscribed sessions.

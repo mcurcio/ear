@@ -270,7 +270,58 @@ export interface Graph {
   routes: GraphRoute[];
   /** Feature counters: the graph's counters, read with the rest. */
   counters?: GraphCounters;
+  /** Feature types: the hash of the node types' schemas (types.get's), opaque; fetch them once per hash. */
+  typeSchemaHash?: string;
 }
+
+// ----- The node types' schemas (feature types, docs/control-port.md#type-schemas) -----
+
+/** A setting's value kind, as the control port takes it: a rate is a whole number of Hz there. */
+export type SettingValueKind = "text" | "wholeNumber" | "flag" | (string & {});
+/** What a change to the row asks of the node: from its row's marks. */
+export type SettingChange = "inPlace" | "restart" | (string & {});
+/** Where an optional row's value comes from when absent. */
+export type DefaultFrom = "graphFrequency" | "nodeName" | (string & {});
+
+/** One setting row of a type, as types.get says it; members that do not apply are absent. */
+export interface SettingSchema {
+  key: string;
+  kind: SettingValueKind;
+  required: boolean;
+  change: SettingChange;
+  /** A change to it may change the node's ports. */
+  shapes?: true;
+  default?: JsonValue;
+  defaultFrom?: DefaultFrom;
+  /** wholeNumber: its range, and its unit when it has one. */
+  min?: number;
+  max?: number;
+  unit?: string;
+  /** text: what it must be, in the row's own words, and the hints for its control (ear stays the judge). */
+  mustBe?: string;
+  values?: string[];
+  pattern?: string;
+  maxLength?: number;
+  /** Refused when the key named is given too. */
+  onlyWithout?: string;
+  help?: string;
+}
+
+/** One node type, as types.get says it. */
+export interface TypeSchema {
+  name: string;
+  settings: SettingSchema[];
+  /** The public banks' names, in declaration order. */
+  inputs: string[];
+  outputs: string[];
+  /** How long a change in place may take before it falls back to a restart. */
+  reconfigureMs: number;
+}
+
+/** types.get's result: the schemas, or notModified when ifNoneMatch named the hash. */
+export type TypesResult =
+  | { protocol: number; hash: string; typeSchemas: TypeSchema[]; notModified?: undefined }
+  | { protocol: number; hash: string; notModified: true; typeSchemas?: undefined };
 
 // ----- The graph file (docs/control-port.md#the-graph-file-over-the-port) -----
 
@@ -344,6 +395,8 @@ export interface Methods {
   "graph.get": { params: undefined; result: Graph };
   "graph.subscribe": { params: undefined; result: Graph };
   "levels.subscribe": { params: undefined; result: { windowsPerSecond: number } };
+  /** Feature types: every node type's schema, or notModified when ifNoneMatch is the hash. */
+  "types.get": { params: { ifNoneMatch?: string }; result: TypesResult };
   /** disabled (feature lifecycle): written as `disabled true;` in the node's braces. */
   "node.add": { params: NodeSpec & { disabled?: boolean }; result: Record<string, never> };
   /** dropRoutes (feature reshape): the routes its new ports strand are removed in the same edit. */
@@ -498,6 +551,9 @@ export interface RpcErrorObject {
     routes?: RouteEnds[];
     /** invalidParams. */
     pointer?: string;
+    /** invalid-settings: the key the refusal names (absent for a rule naming none), and the refusal in its own words. */
+    key?: string;
+    detail?: string;
   };
 }
 
@@ -542,6 +598,7 @@ const methodSet: { [M in MethodName]: true } = {
   "graph.get": true,
   "graph.subscribe": true,
   "levels.subscribe": true,
+  "types.get": true,
   "node.add": true,
   "node.update": true,
   "node.remove": true,
@@ -614,6 +671,7 @@ export const nodeTextFeature = "node-text";
 export const reshapeFeature = "reshape";
 export const nodeSetFeature = "node.set";
 export const dryRunFeature = "dryRun";
+export const typesFeature = "types";
 
 // ----- The conformance fixtures (test/protocol/*.json) -----
 

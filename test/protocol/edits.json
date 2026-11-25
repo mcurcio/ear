@@ -23,7 +23,8 @@
           "node-text",
           "reshape",
           "node.set",
-          "dryRun"
+          "dryRun",
+          "types"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -34,6 +35,7 @@
           "file",
           "white"
         ],
+        "typeSchemaHash": "fnv1a64:0123456789abcdef",
         "nodes": [
           {
             "name": "noise",
@@ -479,7 +481,8 @@
       "node-text",
       "reshape",
       "node.set",
-      "dryRun"
+      "dryRun",
+      "types"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -490,6 +493,7 @@
       "file",
       "white"
     ],
+    "typeSchemaHash": "fnv1a64:0123456789abcdef",
     "nodes": [
       {
         "name": "n2",
