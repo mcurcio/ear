@@ -140,7 +140,7 @@ constexpr TypeSpec otherSpec{.settings = SettingsTable<>{"other"}, .banks = Bank
 static_assert(std::same_as<decltype(otherOut), decltype(out)>);
 static_assert(requires(Io<spec> io) { io[otherOut]; });
 
-/// A class that writes the change version: it compiles, and nothing calls it yet (docs/design/reconfigure.md).
+/// A class that writes the change version (docs/writing-a-node-type.md#the-change-version).
 struct Changing {
 	static Members<spec> ports(const Checked&) {
 		return {in(members(1)), out(members(1)), toDevice(members(1)), fromDevice(members(1))};
@@ -149,7 +149,7 @@ struct Changing {
 		calls.emplace_back("configure");
 		return cx.applied(Doubler{&prepares});
 	}
-	Changed configure(ChangeOf<spec>&, const Checked&, const Checked&) { return Changed::applied(); }
+	Changed configure(ChangeOf<spec>& cx, const Checked&, const Checked&) { return cx.applied(); }
 };
 
 // The spec's spellings (docs/writing-a-node-type.md#stores): every subset of the members after the banks, given in

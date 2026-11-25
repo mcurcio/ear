@@ -141,7 +141,7 @@ compile.
 | `Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s)` | yes | Acquire and construct only, on the main loop, then answer with the code and the loops' states: `return cx.applied(code, states...)` |
 | `void start()` | no | Called once its code is driven (the node is then `running`); work that must wait for that is posted to a loop here |
 | `void stop()` | no | Called once before each silence that follows a `start()` that returned; it posts its goodbye to its loops |
-| `Changed configure(ChangeOf<spec>&, const CheckedOf<spec>& old, const CheckedOf<spec>& now)` | no | The change version: its signature is checked, but it is **never called yet**: every change of settings restarts the node, until in-place changes are built |
+| `Changed configure(ChangeOf<spec>&, const CheckedOf<spec>& old, const CheckedOf<spec>& now)` | no | The [change version](#the-change-version): a change of settings in place, on the configuration that already runs |
 
 Settings are read by row: `s.get<playbackRow>()`. A misspelt row, a row of another table, or an
 optional row read as a plain value does not compile.
@@ -201,6 +201,39 @@ adapter's refusal is: the node fails `start-failed: configure threw: no <kind> i
 host with no runtime folder refuses a pipe receiver or a program the same way (`no runtime folder in this host`); a
 recording fails it `start-failed: cannot open <path>: no recordings folder`. A host with no port probe judges a port
 [claim](#claims) between its nodes only.
+
+### The change version
+
+```cpp
+Changed configure(ChangeOf<spec>& cx, const Checked& old, const Checked& now) {
+	cx.hold(stream);
+	cx.attach(fromRtp, receiverFor(now, cx.format()));
+	return cx.applied();
+}
+```
+
+A type that can take some of its settings while the node runs marks their rows `.inPlace()`
+([settings](#settings-one-table-of-typed-rows)) and writes this second `configure`. `old` is the
+settings the configuration applies, `now` the change's target. NodeHost does not call it yet:
+every change of settings still restarts the node
+([architecture.md](architecture.md#changes-in-place)).
+
+| Call | What | Rules |
+|---|---|---|
+| `cx.format()`, `cx.node()` | As on creation | |
+| `cx.hold(banks...)`, `cx.holdAll()`, `cx.release(banks...)` | Hold routable output banks silent: from the next cycle each fades to zero over 5 ms and stays there until the commit point, which fades it back in; `release` ends a hold sooner | Routable output banks of the spec (compile time) |
+| `cx.attach(bank, RtpReceiverShape{...})` | A replacement for the RTP receiver on that inside input bank | Inside input banks only (compile time) |
+| `cx.post(handle, work)` | Work on a loop, staged until the commit point and destroyed unrun if the change is superseded or falls back | As on creation |
+| `cx.declareLatency(from, to, Latency{...})` | The new configuration's latency on a path, carried from the commit point | As on creation |
+
+Then answer `return cx.applied()` (the code stays), `return cx.applied(code)` (a new code, swapped
+in at the commit point between two cycles: a discontinuity unless the type carries its state into
+it; it takes no loop's state, which lives across a change), or `return Changed::restart(reason)`
+when the type cannot take this change in place after all, which restarts the node with the new
+settings. A change version cannot refuse a change: the new settings are committed before it is
+called. `ChangeOf` has no `state`, `store`, `executor`, `recording`, `claim` or `program`: each does
+not compile. The spec's `.lifecycle = Lifecycle{.reconfigureDeadline = 30s}` (after `.loops`; 10 s
+by default) is how long a change may take; outside 1 s to 60 s it does not compile.
 
 ### The node handle
 

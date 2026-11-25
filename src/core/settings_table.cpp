@@ -107,8 +107,9 @@ std::expected<CheckedSettings, std::string> AnySettingsTable::walk(const NodeSet
 	return CheckedSettings(std::move(slots));
 }
 
-NodeType::NodeType(const AnySettingsTable& table, std::span<const StoreDeclaration> stores) noexcept
-	: table_(&table), stores_(stores) {}
+NodeType::NodeType(const AnySettingsTable& table, std::span<const StoreDeclaration> stores,
+                   std::chrono::milliseconds reconfigureDeadline) noexcept
+	: table_(&table), stores_(stores), reconfigureDeadline_(reconfigureDeadline) {}
 
 std::string_view NodeType::name() const noexcept { return table_->name(); }
 

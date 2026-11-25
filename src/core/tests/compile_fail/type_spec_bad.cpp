@@ -159,6 +159,9 @@ Configured configure(CreateOf<spec>& cx, const Checked&) {
 #ifdef EAR_CASE_context_bank_the_spec_lacks
 		cx.attach(otherInsideOut, SinkShape{.frames = 64}, std::unique_ptr<SinkConsumer>{});
 #endif
+#ifdef EAR_CASE_create_context_has_no_hold
+		cx.hold(out); // holds are a change's
+#endif
 #if defined(EAR_CASE_pass_through_backwards)
 		return cx.applied(passThrough(bankPair(out, in)));
 #elif defined(EAR_CASE_pass_through_no_pair)
@@ -175,13 +178,29 @@ return ErasedInstance::applied(NodeCode(Copy{}));
 return cx.applied(Copy{});
 #endif
 	}
-	// The change version: optional and not called yet (docs/design/reconfigure.md); of exactly its shape when given.
+	// The change version: optional (docs/writing-a-node-type.md#the-change-version); of exactly its shape when given,
+	// and its context offers only a change's calls.
 #ifdef EAR_CASE_change_version_wrong_signature
-	Changed configure(ChangeOf<spec>&, Checked, Checked) { return Changed::applied(); }
+	Changed configure(ChangeOf<spec>& cx, Checked, Checked) { return cx.applied(); }
 #elif defined(EAR_CASE_change_version_wrong_context)
-	Changed configure(CreateOf<spec>&, const Checked&, const Checked&) { return Changed::applied(); }
-#else
+	Changed configure(CreateOf<spec>&, const Checked&, const Checked&) { return Changed::restart("no"); }
+#elif defined(EAR_CASE_change_context_has_no_state)
+Changed configure(ChangeOf<spec>& cx, const Checked&, const Checked&) {
+	static_cast<void>(cx.state(out));
+	return cx.applied();
+}
+#elif defined(EAR_CASE_hold_names_an_input_bank)
+Changed configure(ChangeOf<spec>& cx, const Checked&, const Checked&) {
+	cx.hold(in);
+	return cx.applied();
+}
+#elif defined(EAR_CASE_change_answered_applied_without_context)
 Changed configure(ChangeOf<spec>&, const Checked&, const Checked&) { return Changed::applied(); }
+#else
+Changed configure(ChangeOf<spec>& cx, const Checked&, const Checked&) {
+	cx.hold(out);
+	return cx.applied();
+}
 #endif
 #ifdef EAR_CASE_start_wrong_signature
 	int start() { return 0; }
@@ -462,6 +481,21 @@ struct Stored {
 #endif
 #ifdef EAR_CASE_program_path_not_plain
 [[maybe_unused]] constexpr ProgramPath climbingPath{"/usr/../bin/true"};
+#endif
+
+// A spec's reconfigureDeadline is 1 s to 60 s, checked when its type is made.
+#if defined(EAR_CASE_reconfigure_deadline_below_1s) || defined(EAR_CASE_reconfigure_deadline_above_60s)
+#ifdef EAR_CASE_reconfigure_deadline_below_1s
+constexpr Lifecycle quickLifecycle{.reconfigureDeadline = std::chrono::milliseconds(999)};
+#else
+constexpr Lifecycle quickLifecycle{.reconfigureDeadline = std::chrono::seconds(61)};
+#endif
+constexpr TypeSpec quickSpec{.settings = SettingsTable<>{"t"}, .banks = Banks<out>{}, .lifecycle = quickLifecycle};
+struct Quick {
+	static Members<quickSpec> ports(const CheckedOf<quickSpec>&) { return {out(members(1))}; }
+	Configured configure(CreateOf<quickSpec>&, const CheckedOf<quickSpec>&) { return Configured::failed("never"); }
+};
+[[maybe_unused]] void quickType() { static_cast<void>(makeNodeType<quickSpec, Quick>()); }
 #endif
 
 } // namespace type_spec_bad

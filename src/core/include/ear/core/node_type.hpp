@@ -1,4 +1,5 @@
 #pragma once
+#include <chrono>
 #include <concepts>
 #include <cstdint>
 #include <expected>
@@ -245,13 +246,18 @@ public:
 	/// The stores every node of the type has (docs/writing-a-node-type.md#stores), from its spec, in declaration
 	/// order: the boot sweep reads them before any node exists.
 	std::span<const StoreDeclaration> stores() const noexcept { return stores_; }
+	/// How long a change in place may take before it falls back to a restart (the spec's `.lifecycle`:
+	/// docs/architecture.md#changes-in-place).
+	std::chrono::milliseconds reconfigureDeadline() const noexcept { return reconfigureDeadline_; }
 
 private:
 	template <const auto& Spec, class Type> friend class spec_detail::SpecNodeType; // nothing else can derive
-	explicit NodeType(const AnySettingsTable& table, std::span<const StoreDeclaration> stores = {}) noexcept;
+	explicit NodeType(const AnySettingsTable& table, std::span<const StoreDeclaration> stores = {},
+	                  std::chrono::milliseconds reconfigureDeadline = std::chrono::seconds(10)) noexcept;
 	/// The one customisation point. Called only with what the table's walk made.
 	virtual MadeConfig makeConfig(const NodeName& node, CheckedSettings settings) const = 0;
 	const AnySettingsTable* table_;            // static storage: the spec's table
 	std::span<const StoreDeclaration> stores_; // static storage: the spec's Stores::declared
+	std::chrono::milliseconds reconfigureDeadline_;
 };
 } // namespace ear
