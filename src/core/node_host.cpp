@@ -2184,6 +2184,12 @@ struct NodeHost::Impl {
 			case Kind::markWedged:
 				host_.markWedged(name_, judgedMs_);
 				break;
+			case Kind::reconfigure:
+			case Kind::commit:
+			case Kind::dropChange:
+				// Only a change in place asks these, and NodeHost asks for none yet
+				// (docs/architecture.md#changes-in-place).
+				break;
 			}
 		}
 
@@ -3365,6 +3371,7 @@ struct NodeHost::Impl {
 				break;
 			case lc::ConfigState::arming:
 			case lc::ConfigState::silencing:
+			case lc::ConfigState::committing: // the commit's invoke, like a drive's, can never complete
 				feedSilently(Bound::barrier);
 				break;
 			case lc::ConfigState::fading:
@@ -3372,6 +3379,7 @@ struct NodeHost::Impl {
 				break;
 			case lc::ConfigState::none:
 			case lc::ConfigState::driving:
+			case lc::ConfigState::changing: // nothing in flight on the data loop
 			case lc::ConfigState::tearing:
 				break;
 			}

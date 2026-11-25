@@ -68,7 +68,11 @@ enum class At {
 	drivingUnfaded,
 	fading,
 	silencing,
-	tearing
+	tearing,
+	preparedRested,      // prepared after a stop rested it
+	changingFromDriving, // a change in place from driving, before its commit point
+	changingFromPrepared,
+	committing
 };
 
 std::string_view atName(At at) {
@@ -93,11 +97,32 @@ std::string_view atName(At at) {
 		return "silencing";
 	case At::tearing:
 		return "tearing";
+	case At::preparedRested:
+		return "prepared, rested";
+	case At::changingFromDriving:
+		return "changing from driving";
+	case At::changingFromPrepared:
+		return "changing from prepared";
+	case At::committing:
+		return "committing";
 	}
 	return "?";
 }
 
 ConfigurationMachine reachConfig(At at) {
+	if (at == At::preparedRested || at == At::changingFromPrepared) {
+		ConfigurationMachine m = reachConfig(At::fading);
+		m.on({ConfigEvent::faded, m.barrier()});
+		m.on({ConfigEvent::silencedForStop, m.barrier()});
+		if (at == At::changingFromPrepared) m.on({ConfigEvent::changeAsked});
+		return m;
+	}
+	if (at == At::changingFromDriving || at == At::committing) {
+		ConfigurationMachine m = reachConfig(At::driving);
+		m.on({ConfigEvent::changeAsked});
+		if (at == At::committing) m.on({ConfigEvent::changeReady});
+		return m;
+	}
 	ConfigurationMachine m;
 	if (at == At::none) return m;
 	m.on({ConfigEvent::configure, 0, at != At::drivingUnfaded});
@@ -140,6 +165,13 @@ ConfigState stateAt(At at) {
 		return ConfigState::silencing;
 	case At::tearing:
 		return ConfigState::tearing;
+	case At::preparedRested:
+		return ConfigState::prepared;
+	case At::changingFromDriving:
+	case At::changingFromPrepared:
+		return ConfigState::changing;
+	case At::committing:
+		return ConfigState::committing;
 	}
 	return ConfigState::none;
 }
@@ -475,7 +507,8 @@ TEST_CASE("Every event in every configuration state moves the configuration mach
 		ConfigEvent::teardownAsked, ConfigEvent::rest,           ConfigEvent::drive,           ConfigEvent::driven,
 		ConfigEvent::faded,         ConfigEvent::fadeBound,      ConfigEvent::silencedForStop, ConfigEvent::silenced,
 		ConfigEvent::barrierBound,  ConfigEvent::closed,         ConfigEvent::closeBound,      ConfigEvent::blockLost,
-		ConfigEvent::startThrew};
+		ConfigEvent::startThrew,    ConfigEvent::changeAsked,    ConfigEvent::changeAgain,     ConfigEvent::changeReady,
+		ConfigEvent::committed};
 	// Columns as events above.
 	const ConfigCell toTearing{tearing, {K::teardown}};
 	const ConfigCell toTearingReleased{tearing, {K::release, K::teardown}};
@@ -500,25 +533,22 @@ TEST_CASE("Every event in every configuration state moves the configuration mach
 	      same,
 	      same,
 	      same,
+	      same,
+	      same,
+	      same,
+	      same,
 	      same}},
-		{At::readying,
-	     {same,
-	      {prepared, {K::prepare}},
-	      same,
-	      same,
-	      toTearing,
-	      same,
-	      same,
-	      same,
-	      same,
-	      same,
-	      same,
-	      same,
-	      same,
-	      same,
-	      same,
-	      toTearing,
-	      same}},
+		{At::readying, {same,      {prepared, {K::prepare}},
+	                    same,      same,
+	                    toTearing, same,
+	                    same,      same,
+	                    same,      same,
+	                    same,      same,
+	                    same,      same,
+	                    same,      toTearing,
+	                    same,      same,
+	                    same,      same,
+	                    same}},
 		{At::prepared,
 	     {same,
 	      same,
@@ -536,43 +566,17 @@ TEST_CASE("Every event in every configuration state moves the configuration mach
 	      same,
 	      same,
 	      toTearingReleased,
+	      same,
+	      same,
+	      same,
+	      same,
 	      same}},
-		{At::arming,
-	     {same,
-	      same,
-	      same,
-	      same,
-	      same,
-	      same,
-	      same,
-	      {driving, {K::start}},
-	      same,
-	      same,
-	      same,
-	      same,
-	      leakedOverdue,
-	      same,
-	      same,
-	      lostToSilence,
-	      same}},
-		{At::armingStopAsked,
-	     {same,
-	      same,
-	      same,
-	      same,
-	      same,
-	      same,
-	      same,
-	      {fading, {K::fade}},
-	      same,
-	      same,
-	      same,
-	      same,
-	      leakedOverdue,
-	      same,
-	      same,
-	      lostToSilence,
-	      same}},
+		{At::arming, {same, same, same, same, same,          same, same, {driving, {K::start}},
+	                  same, same, same, same, leakedOverdue, same, same, lostToSilence,
+	                  same, same, same, same, same}},
+		{At::armingStopAsked, {same, same, same, same, same,          same, same, {fading, {K::fade}},
+	                           same, same, same, same, leakedOverdue, same, same, lostToSilence,
+	                           same, same, same, same, same}},
 		{At::driving,
 	     {same,
 	      same,
@@ -590,6 +594,10 @@ TEST_CASE("Every event in every configuration state moves the configuration mach
 	      same,
 	      same,
 	      lostToSilence,
+	      same,
+	      {changing, {K::reconfigure}},
+	      same,
+	      same,
 	      same}},
 		{At::drivingUnfaded,
 	     {same,
@@ -608,6 +616,10 @@ TEST_CASE("Every event in every configuration state moves the configuration mach
 	      same,
 	      same,
 	      lostToSilence,
+	      same,
+	      {changing, {K::reconfigure}},
+	      same,
+	      same,
 	      same}},
 		{At::fading,
 	     {same,
@@ -626,6 +638,10 @@ TEST_CASE("Every event in every configuration state moves the configuration mach
 	      same,
 	      same,
 	      lostToSilence,
+	      same,
+	      same,
+	      same,
+	      same,
 	      same}},
 		{At::silencing,
 	     {same,
@@ -641,6 +657,10 @@ TEST_CASE("Every event in every configuration state moves the configuration mach
 	      {prepared, {K::release, K::prepare}},
 	      toTearingReleased,
 	      {none, {K::barrierOverdue, K::markWedged, K::leak}},
+	      same,
+	      same,
+	      same,
+	      same,
 	      same,
 	      same,
 	      same,
@@ -662,9 +682,62 @@ TEST_CASE("Every event in every configuration state moves the configuration mach
 	      {none, {K::free}},
 	      {none, {K::closeOverdue, K::leak}},
 	      same,
+	      same,
+	      same,
+	      same,
+	      same,
 	      same}},
+		{At::preparedRested,
+	     {same, same, same, same, toTearingReleased, same, {arming, {K::drive}},         same, same, same, same,
+	      same, same, same, same, toTearingReleased, same, {changing, {K::reconfigure}}, same, same, same}},
+		{At::changingFromDriving,
+	     {same,
+	      same,
+	      {fading, {K::dropChange, K::stop, K::fade}},
+	      same,
+	      {fading, {K::dropChange, K::stop, K::fade}},
+	      same,
+	      same,
+	      same,
+	      same,
+	      same,
+	      same,
+	      same,
+	      same,
+	      same,
+	      same,
+	      {silencing, {K::dropChange, K::silence}},
+	      same,
+	      same,
+	      {changing, {K::dropChange, K::reconfigure}},
+	      {committing, {K::commit}},
+	      same}},
+		{At::changingFromPrepared,
+	     {same,
+	      same,
+	      same, // nothing driven to stop: the change goes on
+	      same,
+	      {tearing, {K::dropChange, K::release, K::teardown}},
+	      same,
+	      same,
+	      same,
+	      same,
+	      same,
+	      same,
+	      same,
+	      same,
+	      same,
+	      same,
+	      {tearing, {K::dropChange, K::release, K::teardown}},
+	      same,
+	      same,
+	      {changing, {K::dropChange, K::reconfigure}},
+	      {prepared, {K::commit}},
+	      same}},
+		{At::committing, {same, same,          same, same, same,          same, same, same, same, same,         same,
+	                      same, leakedOverdue, same, same, lostToSilence, same, same, same, same, {driving, {}}}},
 	};
-	REQUIRE(table.size() == 10);
+	REQUIRE(table.size() == 14);
 	for (const auto& [from, cells] : table) {
 		REQUIRE(cells.size() == events.size());
 		for (std::size_t i = 0; i < events.size(); ++i) {
@@ -677,8 +750,8 @@ TEST_CASE("Every event in every configuration state moves the configuration mach
 			std::vector<K> kinds;
 			for (const ConfigAction& a : actions) {
 				kinds.push_back(a.kind);
-				// Every request posted raises the barrier number, and carries it.
-				if (posted(a.kind)) CHECK(a.barrier == before + 1);
+				// Every request posted raises the barrier number, and carries it; a commit is posted only when driving.
+				if (posted(a.kind) || (a.kind == K::commit && m.state() == committing)) CHECK(a.barrier == before + 1);
 				else CHECK(a.barrier == 0);
 			}
 			CHECK(kinds == cells[i].actions);
@@ -687,16 +760,110 @@ TEST_CASE("Every event in every configuration state moves the configuration mach
 }
 
 TEST_CASE("A completion with an older barrier number changes nothing", "[lifecycle][machines]") {
-	for (At at : {At::arming, At::fading, At::silencing}) {
+	for (At at : {At::arming, At::fading, At::silencing, At::committing}) {
 		INFO(atName(at));
 		ConfigurationMachine m = reachConfig(at);
 		const ConfigState state = m.state();
 		const auto stale = m.barrier() - 1;
-		for (ConfigEvent e :
-		     {ConfigEvent::driven, ConfigEvent::faded, ConfigEvent::silencedForStop, ConfigEvent::silenced}) {
+		for (ConfigEvent e : {ConfigEvent::driven, ConfigEvent::faded, ConfigEvent::silencedForStop,
+		                      ConfigEvent::silenced, ConfigEvent::committed}) {
 			CHECK(m.on({e, stale}).empty());
 			CHECK(m.state() == state);
 		}
+	}
+}
+
+TEST_CASE("A change in place: the configuration's facts, and the paths through it", "[lifecycle][machines]") {
+	SECTION("a change keeps started, driven and rested, and its commit returns to driving") {
+		ConfigurationMachine m = reachConfig(At::driving);
+		CHECK(m.on({ConfigEvent::changeAsked}) == std::vector<ConfigAction>{{K::reconfigure}});
+		CHECK(m.changing());
+		CHECK(m.changeFrom() == ConfigState::driving);
+		CHECK(m.started());
+		CHECK(m.driven());
+		CHECK(m.rested());
+		const auto commit = m.on({ConfigEvent::changeReady});
+		REQUIRE(commit.size() == 1);
+		CHECK(commit[0] == ConfigAction{K::commit, m.barrier()});
+		CHECK(m.state() == ConfigState::committing);
+		CHECK(m.changing());
+		CHECK(m.on({ConfigEvent::committed, m.barrier()}).empty());
+		CHECK(m.state() == ConfigState::driving);
+		CHECK_FALSE(m.changing());
+		CHECK(m.changeFrom() == ConfigState::none);
+		CHECK(m.started());
+		CHECK(m.driven());
+	}
+	SECTION("a change from stopped commits with no invoke") {
+		ConfigurationMachine m = reachConfig(At::preparedRested);
+		const auto barrier = m.barrier();
+		CHECK(m.on({ConfigEvent::changeAsked}) == std::vector<ConfigAction>{{K::reconfigure}});
+		CHECK(m.changeFrom() == ConfigState::prepared);
+		CHECK(m.on({ConfigEvent::changeReady}) == std::vector<ConfigAction>{{K::commit, 0}});
+		CHECK(m.state() == ConfigState::prepared);
+		CHECK(m.barrier() == barrier);
+		CHECK_FALSE(m.changing());
+		CHECK_FALSE(m.driven());
+		CHECK(m.rested());
+	}
+	SECTION("a change before the configuration first rested is not taken") {
+		ConfigurationMachine m = reachConfig(At::prepared);
+		CHECK(m.on({ConfigEvent::changeAsked}).empty());
+		CHECK(m.state() == ConfigState::prepared);
+	}
+	SECTION("a stale committed barrier changes nothing") {
+		ConfigurationMachine m = reachConfig(At::committing);
+		CHECK(m.on({ConfigEvent::committed, m.barrier() - 1}).empty());
+		CHECK(m.state() == ConfigState::committing);
+		CHECK(m.on({ConfigEvent::committed, m.barrier()}).empty());
+		CHECK(m.state() == ConfigState::driving);
+	}
+	SECTION("a committing invoke overdue marks the data loop wedged and leaks the configuration") {
+		ConfigurationMachine m = reachConfig(At::committing);
+		CHECK(m.on({ConfigEvent::barrierBound}) ==
+		      std::vector<ConfigAction>{{K::barrierOverdue}, {K::markWedged}, {K::leak}});
+		CHECK(m.state() == ConfigState::none);
+		CHECK_FALSE(m.started());
+		CHECK_FALSE(m.driven());
+	}
+	SECTION("a fallback from driving fades, silences, stops and tears down") {
+		ConfigurationMachine m = reachConfig(At::changingFromDriving);
+		std::vector<K> kinds;
+		const auto take = [&](const std::vector<ConfigAction>& actions) {
+			for (const ConfigAction& a : actions) kinds.push_back(a.kind);
+		};
+		take(m.on({ConfigEvent::teardownAsked}));
+		take(m.on({ConfigEvent::faded, m.barrier()}));
+		take(m.on({ConfigEvent::silenced, m.barrier()}));
+		take(m.on({ConfigEvent::closed}));
+		CHECK(kinds == std::vector<K>{K::dropChange, K::stop, K::fade, K::silence, K::release, K::teardown, K::free});
+		CHECK(m.state() == ConfigState::none);
+	}
+	SECTION("a fallback from prepared tears down with no barrier") {
+		ConfigurationMachine m = reachConfig(At::changingFromPrepared);
+		const auto barrier = m.barrier();
+		CHECK(m.on({ConfigEvent::teardownAsked}) ==
+		      std::vector<ConfigAction>{{K::dropChange}, {K::release}, {K::teardown}});
+		CHECK(m.barrier() == barrier);
+		CHECK(m.state() == ConfigState::tearing);
+	}
+	SECTION("a stop before the commit point ends the change and stops; the configuration rests prepared") {
+		ConfigurationMachine m = reachConfig(At::changingFromDriving);
+		const auto actions = m.on({ConfigEvent::stopAsked});
+		CHECK(actions == std::vector<ConfigAction>{{K::dropChange}, {K::stop}, {K::fade, m.barrier()}});
+		m.on({ConfigEvent::faded, m.barrier()});
+		m.on({ConfigEvent::silencedForStop, m.barrier()});
+		CHECK(m.state() == ConfigState::prepared);
+		CHECK(m.rested());
+		CHECK(m.changeFrom() == ConfigState::none);
+	}
+	SECTION("a block lost while committing silences with no stop()") {
+		ConfigurationMachine m = reachConfig(At::committing);
+		const auto actions = m.on({ConfigEvent::blockLost});
+		REQUIRE(actions.size() == 1);
+		CHECK(actions[0] == ConfigAction{K::silence, m.barrier()});
+		CHECK_FALSE(m.started());
+		CHECK(m.changeFrom() == ConfigState::none);
 	}
 }
 

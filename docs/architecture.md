@@ -541,6 +541,26 @@ An update that leaves the settings as they are changes nothing, for a failed nod
 of a node's ports (a card's channel count) or of its type replaces the node: its routes and the
 node are removed and added again. A change to a disabled node is stored for when it is enabled.
 
+### Changes in place
+
+A change in place applies new settings to a node's configuration without tearing it down. The
+pure machines carry it; nothing in ear asks for one yet (NodeHost and the change version of
+`configure` follow, so today every change still restarts as above).
+
+The configuration machine has two states for it. **`changing`** begins from `driving`, or from
+`prepared` once the configuration has rested (a change before it first rested is not taken):
+the change version is called (`reconfigure`) while the configuration still applies the old
+settings, and it lasts until the change is ready to commit. A newer change in place in
+`changing` ends the change uncommitted (`dropChange`) and calls the change version again. A
+stop, a teardown or the block's loss ends it uncommitted too, then does what the state it began
+from does (a stop of a change from `prepared` has nothing driven to stop, so the change goes
+on). The **commit point** (`commit`) from `prepared` needs no invoke and returns there at once;
+from `driving` it is one barrier-numbered invoke on the data loop, **`committing`**, which
+cannot be recalled: a stop, a teardown or a newer change waits for its completion, which returns
+to `driving`. Only the block's loss (a silence, as from `driving`) and the invoke's 5 s bound
+(the data loop wedged, the configuration leaked, as for a drive) move the configuration before
+it completes.
+
 ### Failures
 
 A failure tears the node's configuration down at once and keeps its block and routes; the node

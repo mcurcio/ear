@@ -175,6 +175,10 @@ std::string_view configStateName(ConfigState state) noexcept {
 		return "silencing";
 	case ConfigState::tearing:
 		return "tearing";
+	case ConfigState::changing:
+		return "changing";
+	case ConfigState::committing:
+		return "committing";
 	}
 	return "unknown";
 }
@@ -215,6 +219,14 @@ std::string_view configEventName(ConfigEvent event) noexcept {
 		return "block lost";
 	case ConfigEvent::startThrew:
 		return "start threw";
+	case ConfigEvent::changeAsked:
+		return "change asked";
+	case ConfigEvent::changeAgain:
+		return "change again";
+	case ConfigEvent::changeReady:
+		return "change ready";
+	case ConfigEvent::committed:
+		return "committed";
 	}
 	return "unknown";
 }
@@ -252,6 +264,12 @@ std::string_view configActionName(ConfigAction::Kind kind) noexcept {
 		return "leak";
 	case closeOverdue:
 		return "close overdue";
+	case reconfigure:
+		return "reconfigure";
+	case commit:
+		return "commit";
+	case dropChange:
+		return "drop change";
 	}
 	return "unknown";
 }
@@ -346,6 +364,7 @@ void ConfigurationMachine::reset() noexcept {
 	driven_ = false;
 	rested_ = false;
 	stopAsked_ = false;
+	changeFrom_ = ConfigState::none;
 }
 
 ConfigAction ConfigurationMachine::post(ConfigAction::Kind kind) { return {kind, ++barrier_}; }
@@ -376,6 +395,38 @@ std::vector<ConfigAction> ConfigurationMachine::beginTeardown() {
 	return actions;
 }
 
+/// changing: the change version's work before the commit point. The configuration still applies the old settings, so a
+/// stop, a teardown or the block's loss ends the change uncommitted and then does what the state it began from does; a
+/// stop of a change from prepared has nothing driven to stop, so the change goes on.
+std::vector<ConfigAction> ConfigurationMachine::onChanging(const ConfigInput& input) {
+	using Kind = ConfigAction::Kind;
+	switch (input.event) {
+	case ConfigEvent::changeAgain:
+		return {{Kind::dropChange}, {Kind::reconfigure}};
+	case ConfigEvent::changeReady:
+		if (changeFrom_ == ConfigState::driving) {
+			state_ = ConfigState::committing;
+			return {post(Kind::commit)};
+		}
+		state_ = changeFrom_; // nothing driven: the commit needs no invoke
+		changeFrom_ = ConfigState::none;
+		return {{Kind::commit}};
+	case ConfigEvent::stopAsked:
+		if (changeFrom_ == ConfigState::prepared) return {};
+		[[fallthrough]];
+	case ConfigEvent::teardownAsked:
+	case ConfigEvent::blockLost: {
+		state_ = changeFrom_;
+		changeFrom_ = ConfigState::none;
+		std::vector<ConfigAction> actions{{Kind::dropChange}};
+		for (const ConfigAction& action : on(input)) actions.push_back(action);
+		return actions;
+	}
+	default:
+		return {};
+	}
+}
+
 std::vector<ConfigAction> ConfigurationMachine::on(const ConfigInput& input) {
 	using enum ConfigState;
 	using Kind = ConfigAction::Kind;
@@ -396,6 +447,11 @@ std::vector<ConfigAction> ConfigurationMachine::on(const ConfigInput& input) {
 		if (event == ConfigEvent::teardownAsked || event == ConfigEvent::blockLost) return beginTeardown();
 		return {};
 	case prepared:
+		if (event == ConfigEvent::changeAsked && rested_) { // before the node first rested, a change restarts
+			changeFrom_ = prepared;
+			state_ = changing;
+			return {{Kind::reconfigure}};
+		}
 		if (event == ConfigEvent::rest) {
 			rested_ = true;
 			return {};
@@ -433,6 +489,11 @@ std::vector<ConfigAction> ConfigurationMachine::on(const ConfigInput& input) {
 		}
 		return {};
 	case driving:
+		if (event == ConfigEvent::changeAsked) {
+			changeFrom_ = driving;
+			state_ = changing;
+			return {{Kind::reconfigure}};
+		}
 		if (event == ConfigEvent::stopAsked || event == ConfigEvent::teardownAsked) return stopDriving();
 		if (event == ConfigEvent::startThrew) {
 			started_ = false;
@@ -485,6 +546,28 @@ std::vector<ConfigAction> ConfigurationMachine::on(const ConfigInput& input) {
 			reset();
 			state_ = none;
 			return {{Kind::closeOverdue}, {Kind::leak}};
+		}
+		return {};
+	case changing:
+		return onChanging(input);
+	case committing:
+		// The commit's invoke cannot be recalled: a stop, a teardown or a newer change waits for it (the aggregate
+		// holds them), and only the block's loss or the invoke overdue moves the configuration before it completes.
+		if (event == ConfigEvent::committed && current) {
+			changeFrom_ = none;
+			state_ = driving;
+			return {};
+		}
+		if (event == ConfigEvent::blockLost) {
+			started_ = false; // as driving's: no stop(), no fade
+			changeFrom_ = none;
+			state_ = silencing;
+			return {post(Kind::silence)};
+		}
+		if (event == ConfigEvent::barrierBound) { // the commit's invoke never ran: the loop is wedged
+			reset();
+			state_ = none;
+			return {{Kind::barrierOverdue}, {Kind::markWedged}, {Kind::leak}};
 		}
 		return {};
 	}
@@ -970,6 +1053,8 @@ Actions NodeAggregate::fault(Fact fact, std::string detail) {
 	case ConfigState::readying:
 	case ConfigState::prepared:
 	case ConfigState::driving:
+	case ConfigState::changing:                     // ends the change, then as from where it began
+	case ConfigState::committing:                   // its teardown waits for the commit's invoke
 		if (!raise(Intent::fail)) return dropped(); // a disable or removal in flight drops it
 		failure_ = Failure{failureCodeFor(fact, config_.rested()), std::move(detail)};
 		askConfig(ConfigEvent::teardownAsked, out);

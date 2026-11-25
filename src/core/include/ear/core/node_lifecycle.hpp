@@ -80,7 +80,9 @@ inline constexpr std::string_view wedgedDetail = "the data loop is wedged";
 
 // ---- The configuration machine ----
 
-enum class ConfigState { none, readying, prepared, arming, driving, fading, silencing, tearing };
+/// changing and committing are a change in place (docs/architecture.md#changes-in-place): changing until
+/// the change is ready to commit, committing while the commit's invoke is on the data loop.
+enum class ConfigState { none, readying, prepared, arming, driving, fading, silencing, tearing, changing, committing };
 enum class ConfigEvent {
 	configure,       // the aggregate configures, with the outputs' fade fact
 	resourcesReady,  // every resource ready (at once when none is pending)
@@ -99,10 +101,14 @@ enum class ConfigEvent {
 	closeBound,      // 10 s
 	blockLost,       // the block lost (T13)
 	startThrew,      // start() threw: it never set started, so no stop() pairs with it
+	changeAsked,     // a change in place, from driving, or from prepared once rested
+	changeAgain,     // a newer change in place before the commit point (supersession)
+	changeReady,     // the change version answered and every replacement is ready: the commit point
+	committed,       // the commit's completion on the data loop, with its barrier number
 };
 struct ConfigInput {
 	ConfigEvent event;
-	std::uint64_t barrier = 0; // driven, faded, silenced: the request's number
+	std::uint64_t barrier = 0; // driven, faded, silenced, committed: the request's number
 	bool fades = true;         // configure: some output the code writes is faded (fades)
 };
 struct ConfigAction {
@@ -122,9 +128,12 @@ struct ConfigAction {
 		markWedged,         // the data loop is wedged
 		leak,               // leak the configuration
 		closeOverdue,       // ear.close-overdue
+		reconfigure,        // call the change version; start (or restart) the change's deadline
+		commit,             // the commit point: with a barrier when driving (one invoke), none from prepared
+		dropChange,         // end the change uncommitted: its replacements released, its staged posts destroyed
 	};
 	Kind kind;
-	std::uint64_t barrier = 0; // drive, fade, silence: the number the request carries
+	std::uint64_t barrier = 0; // drive, fade, silence, a driving commit: the number the request carries
 	bool operator==(const ConfigAction&) const = default;
 };
 std::string_view configStateName(ConfigState state) noexcept;
@@ -140,6 +149,10 @@ public:
 	bool stopAsked() const noexcept { return stopAsked_; }
 	bool fades() const noexcept { return fades_; }
 	std::uint64_t barrier() const noexcept { return barrier_; } // the newest request's number
+	/// changing or committing: a change in place is in flight.
+	bool changing() const noexcept { return state_ == ConfigState::changing || state_ == ConfigState::committing; }
+	/// Where the change in flight began (driving or prepared), and where its commit returns; none otherwise.
+	ConfigState changeFrom() const noexcept { return changeFrom_; }
 	/// configure's return, while readying: whether some output the code writes is faded, now that the companions
 	/// whose banks are never faded (a sink's) are known. Narrows what `configure` said from the ports alone.
 	void outputsFaded(bool fades) noexcept {
@@ -152,6 +165,7 @@ private:
 	std::vector<ConfigAction> stopDriving();
 	ConfigAction fadeOrSilence();
 	std::vector<ConfigAction> beginTeardown();
+	std::vector<ConfigAction> onChanging(const ConfigInput& input);
 	ConfigAction post(ConfigAction::Kind kind);
 	void reset() noexcept;
 	ConfigState state_ = ConfigState::none;
@@ -161,6 +175,7 @@ private:
 	bool stopAsked_ = false;
 	bool fades_ = true;
 	std::uint64_t barrier_ = 0;
+	ConfigState changeFrom_ = ConfigState::none;
 };
 
 // ---- The failure's code, by fact ----
