@@ -592,7 +592,8 @@ granted (a replacement already made stays the bank's companion, its ports the co
 one broken but not yet made, its flush still to run, is made only if no newer change broke the
 same bank first: the newest break's replacement is the one made);
 its holds stay until the next commit or the silence. A supersession says `ear.reconfigure-superseded`, a fallback
-`ear.reconfigure-fell-back` before its `stopping` ([output-records.md](output-records.md#diagnostic)).
+`ear.reconfigure-fell-back` before its `stopping` (all but `restart-requested`, which the operator's own
+`node.restart` asked for; its `stopping` record names the reason) ([output-records.md](output-records.md#diagnostic)).
 
 The configuration machine has two states for it. **`changing`** begins from `driving`, or from
 `prepared` once the configuration has rested (a change before it first rested is not taken):
