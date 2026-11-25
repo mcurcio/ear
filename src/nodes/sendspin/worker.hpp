@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 #include "connection_watch.hpp"
+#include "ear/core/lifecycle.hpp"
 #include "ear/core/loop.hpp"
 #include "ear/core/node_handle.hpp"
 #include "ear/core/node_type.hpp"
@@ -88,14 +89,16 @@ struct WorkerParts {
 	SourceWriter& writer; // the source's: its size, and the writer's idle
 	PlayerSlot& player;   // lent to the notifier
 	Loop& self;           // the worker loop, its 10 ms tick
+	SinkControl& sink;    // the sink on `to_server`, paused while a change swaps the client
 	SendspinSettings settings;
 	AudioFormat format;
 };
 
 /// The worker loop's state. Made in configure with no I/O and nothing armed; begin() runs once the node is configured
 /// and makes the client on the tick's first run; the client lives as long as the configuration, so a stop and a start
-/// keep its connection and pairing (docs/node-types.md#stop-restart-disable). Destroyed on its loop at teardown step 4:
-/// the mDNS goodbye, the client stopped (the Sendspin goodbye, its threads joined) and destroyed.
+/// keep its connection and pairing (docs/node-types.md#stop-restart-disable), but for a change of settings, which swaps
+/// it for a new one over the same key store (swapClient). Destroyed on its loop at teardown step 4: the mDNS goodbye,
+/// the client stopped (the Sendspin goodbye, its threads joined) and destroyed.
 class Worker final : public ::sendspin::PlayerRoleListener,
 					 public ::sendspin::SendspinNetworkProvider,
 					 public ::sendspin::SendspinClientListener,
@@ -109,6 +112,12 @@ public:
 	/// The worker loop, once: arms the tick, whose first run reads the key record and makes, starts and (listening)
 	/// advertises the client, and whose every later run turns the library, reads the connection and answers mDNS.
 	void begin();
+	/// The worker loop, the continuation of a change in place (docs/node-types.md#changes-in-place): the sink paused, the
+	/// client stopped and destroyed as at teardown, then a client of `next` made over the same key store, read from its
+	/// memory, so the identity and pairings stay; the sink resumed and `done` answered once it started. A client that
+	/// does not start fails `done`, and the change falls back to a restart. Before the tick's first run there is no
+	/// client yet: the settings are taken, and that run makes it.
+	void swapClient(SendspinSettings next, ConfigureDone done);
 	/// The sink on `to_server`'s consumer (attached as worker, &Worker::toServer): its calls are the sink's thread's.
 	ToServer toServer;
 	/// Any thread: the library's time filter, for the tests; 0 before the client is made.
@@ -135,6 +144,11 @@ public:
 private:
 	void tick();
 	void startClient();
+	/// Makes and starts a client of settings_ over keyStore_, says its id, and listens or watches the dial: nothing, or
+	/// why it did not start.
+	std::optional<std::string> runClient();
+	/// The paused sink's hand-over: the old client goes, the new one comes.
+	void replaceClient(SendspinSettings next, ConfigureDone done);
 	std::unique_ptr<::sendspin::SendspinClient> makeClient(NodeKeyStore& keys);
 	void startListening(std::string_view clientId);
 	void turn();
@@ -147,6 +161,7 @@ private:
 	SourceWriter& writer_;
 	PlayerSlot& player_;
 	Loop& self_;
+	SinkControl& sink_;
 	SendspinSettings settings_;
 	AudioFormat format_;
 	std::vector<float> scratch_;                        // the sync thread's; a ring's worth of floats

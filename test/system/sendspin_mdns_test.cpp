@@ -186,7 +186,8 @@ TEST_CASE("A 64-character node name is found over mDNS too", "[system][sendspin]
 	checkFoundOverMdns(node, "", node);
 }
 
-TEST_CASE("A server browsing mDNS comes back by itself after a new name restarts the node", "[system][sendspin]") {
+TEST_CASE("A server browsing mDNS comes back by itself after a new name swaps the node's client",
+          "[system][sendspin]") {
 	const std::uint16_t port = freeTcpPort();
 	TempDirectory directory;
 	writeGraphFile(directory, graphFileText("node sendspin back { port " + std::to_string(port) + "; }\n",

@@ -335,15 +335,64 @@ connects again and rests stopped.
 | | Connection | Pairing | Port and key file |
 |---|---|---|---|
 | `node.stop`, `node.start` | Kept | Kept, and a held pairing stays held | Kept |
-| `node.restart`, a change of settings | Goodbye (`shutdown`), then a new client from the key file, which dials or listens again | Kept in the key file; a held pairing is released | Released, then claimed and opened again |
+| `node.restart` | Goodbye (`shutdown`), then a new client from the key file, which dials or listens again | Kept in the key file; a held pairing is released | Released, then claimed and opened again |
+| A change of `name`, `port` or `server` ([in place](#changes-in-place)) | Goodbye (`shutdown`), then a new client in the same configuration, which dials or listens again | Kept, from the key store's memory; a held pairing is released | A new port claimed first, the old one released once the change is made; the key file not read again |
 | `node.disable`, `node.remove` | Goodbye (`shutdown`), dropped | Kept in the key file | Released: a disabled node holds no port and no connection |
 
 `node.enable` builds a new client from the key file, as a restart does. A name added back waits for
 its old node to go.
 
-After a `node.update` or `node.restart` the goodbye is `shutdown`, and a server that dialled by hand
+After a change of settings or a `node.restart` the goodbye is `shutdown`, and a server that dialled by hand
 (`aiosendspin`'s `connect_to_client`) did not redial within 30 s in tests, though the spec has a
 server reconnect on that reason; one browsing mDNS comes back by itself.
+
+### Changes in place
+
+Every setting, `name`, `port` and `server`, changes in place, the switch between listening and
+dialling included ([architecture.md](architecture.md#changes-in-place)): the node is
+`reconfiguring` and back to `running` (or `stopped`), never `stopping`, and keeps its
+configuration (its worker and notifier, its source, sink and clock, its key store, its state).
+The library fixes its settings when a client is made, so every change makes a new client on the
+worker:
+
+1. A new listening port is [claimed](writing-a-node-type.md#claims-in-a-change) as the change
+   begins, and the old one is held until the change is made, then released; the same port, a
+   new name, stays the node's. A port another node holds falls the change back to a restart,
+   which fails as a start on it would (`failed start-failed: cannot listen on port 8929: held by
+   node porch`); one held by a node still closing is waited for against the change's 10 s.
+2. Once that is granted, the worker [pauses](writing-a-node-type.md#pausing-a-sink) the sink to
+   the server (what reaches `to` meanwhile is discarded), cuts the notifier off from the player,
+   says the mDNS goodbye and `disconnected` (if it had said `connected`), and stops and destroys
+   the client as a teardown does: the Sendspin goodbye (`shutdown`), the library's threads
+   joined, its stream ended (`stream-ended`), so the source fades out and the old sync thread,
+   the source's one writer, is gone before the new one starts.
+3. It makes a client of the new settings over the same key store, which reads the identity and
+   pairings from what it holds in memory, not from the file: the same client id (`id <same id>`
+   again) and the same pairings, so a server it was paired with connects paired, with no code.
+   A listening client listens and advertises (`listening <port> as ...`), a dialling one dials
+   (`dialling <url>`). Then the sink resumes and the change is made.
+
+What the operator sees for `kitchen` moving from 8928 to 8929: `node kitchen reconfiguring:
+port`, `says disconnected`, `says id <the same id>`, `says listening 8929 as ear-kitchen-<id>`,
+`node kitchen running after reconfiguring for 302 ms`, then a server finds it again.
+
+- **The audio drops either way.** The connection and the stream end with the old client; the
+  server streams again once it is connected to the new one.
+- **A server that dialled by hand** gets `shutdown` and may not dial again (as after a restart,
+  [above](#stop-restart-disable)); one browsing mDNS hears the new announcement. A held pairing is
+  released, as a new client's round count starts at 0 ([pairing](#pairing)).
+- **A new client that does not start** fails the change, which falls back to a restart with the
+  new settings (`the Sendspin client did not start`); the sink stays paused until the teardown.
+- **How long.** The swap took 1 to 3 ms with a dialled server connected and streaming, about 300
+  ms listening with a server dialled in (its WebSocket close), and 1 ms dialling a peer that took
+  the socket and never answered the upgrade (`swap_test.cpp`, against the real server; the
+  system tests saw the same). The library bounds a stop by its transports' close: a raw inbound
+  socket that never upgraded holds the join for its 3 s handshake timeout, the longest known, so
+  the change's default 10 s deadline stands.
+- **A server change redials nothing.** A new `server` with the same name is a new client too,
+  not `connect_to` on the old one: the connection watch reads `is_connected()`, which reads the
+  old session until the library's protocol task has taken the disconnect, so it could not tell
+  the new server's connection from the old; a new client starts with a new watch.
 
 ### Its listing
 
@@ -582,7 +631,7 @@ threads at teardown; the node writes no thread.
 | Thread | Runs |
 |---|---|
 | Data loop | The block plays the source on `from_server` by its clock (skip, count, tell, ring the clock wake), then the node's pass-through: `from_server` to `from`, `to` to the sink's bank `to_server` |
-| Worker loop `ear-sendspin <node>` | Its state is the library's "main loop": on a 10 ms tick, the client's making (the key record read, start, listen or dial) at its first run, then `loop()`, the connection watch and mDNS; every listener callback but `on_audio_write`; the key store's writes; at teardown, stop and destruction |
+| Worker loop `ear-sendspin <node>` | Its state is the library's "main loop": on a 10 ms tick, the client's making (the key record read, start, listen or dial) at its first run, then `loop()`, the connection watch and mDNS; every listener callback but `on_audio_write`; the key store's writes; a change's client swap ([changes in place](#changes-in-place)); at teardown, stop and destruction |
 | Notifier loop `ear-notify <node>` | Its state watches the source's clock wake, then calls `notify_audio_played` with the frames counted since its last report of the stream (apart from the worker, whose disk writes would delay it), through a slot the worker clears before it stops the client |
 | The sink's thread | `ToServer`, a member of the worker's state: `write_audio` |
 | The library's own | Protocol, sync (`on_audio_write`, writing through the clock, which paces there while no tick drains), source, IXWebSocket's |
@@ -635,7 +684,13 @@ takes up to 3 s.
   they reach standard output as unattributed `log` records from `stderr` at `warn`. ear fixes its
   level at WARN.
 - The library has no retry after a lost dial (hence the connection watch) and only logs a port it
-  cannot take (hence the check at start). `stop()` takes under 10 ms and the destructor 1 ms, even
+  cannot take (hence the check at start).
+- A client made again in the same process over the same persistence provider, after the first
+  was stopped and destroyed, has the same client id and pairings: `start()` builds its identity
+  and record store from the provider (`client.cpp`, `load_or_generate_identity` and the
+  `RecordStore` made in `start()`), and the node's key store serves them from memory
+  (`swap_test.cpp`). An outbound attempt still upgrading does not hold a stop or a destruction:
+  IXWebSocket's close cancels the handshake (`_requestInitCancellation`). `stop()` takes under 10 ms and the destructor 1 ms, even
   while dialling a dead address.
 - One format, FLAC 24. *Why:* the library hands audio over with no format beside it, and a
   `stream/start` reaches the worker out of step with the audio, so a server changing depth mid-stream

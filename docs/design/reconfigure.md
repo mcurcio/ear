@@ -1,6 +1,6 @@
 # Changes in place and reshape: slice 3d of the node framework
 
-Status: design; steps 1 to 5 of section 11 built (step 5 but the editor's Apply with a dry run) (section 2 says what and where). Slice 3d follows slice 3c (built: it swaps claims and posts to loops, both
+Status: design; steps 1 to 6 of section 11 built (step 5 but the editor's Apply with a dry run) (section 2 says what and where). Slice 3d follows slice 3c (built: it swaps claims and posts to loops, both
 3c's, `docs/writing-a-node-type.md#claims`, `#loops`) and comes before slice 6 (`control-plane.md`: a retune is one of the outcomes this slice makes). Its PipeWire
 spike (S4) is run and the reshape built on it. It changes the audio path: holds, code swaps and reshapes. The built lifecycle (states,
 operations, teardown, fades, barriers and their bounds) is described in `docs/architecture.md` and
@@ -25,7 +25,7 @@ The R numbers are the register the node framework's design used.
 
 ## 2. What is built, and what this slice changes
 
-Built (steps 1 to 4 of section 11), described where they live and not repeated here:
+Built (steps 1 to 6 of section 11), described where they live and not repeated here:
 
 - the `.inPlace()` mark and the plan's `reconfigure` outcome
   ([`docs/writing-a-node-type.md#settings-one-table-of-typed-rows`](../writing-a-node-type.md#settings-one-table-of-typed-rows),
@@ -74,6 +74,9 @@ Built (steps 1 to 4 of section 11), described where they live and not repeated h
   features `node.set` and `dryRun`: the merge, `applied` with `inPlace`, `ports` and `routesDropped`, a dry run of every
   outcome naming the routes a reshape would remove
   ([`docs/control-port.md#nodeset-and-dry-runs`](../control-port.md#nodeset-and-dry-runs));
+- `sendspin` in place: every setting, the listen/dial switch included, by a new client on the worker over the same key
+  store, the sink paused meanwhile; U11 and U12 settled there
+  ([`docs/node-types.md#changes-in-place`](../node-types.md#changes-in-place));
 - in the editor: a reshape redrawn in place, Stop, Restart and Disable saying they end a change, a fallback's toast
   ([`docs/editor.md#the-node-box`](../editor.md#the-node-box), [`#toasts`](../editor.md#toasts)).
 
@@ -81,7 +84,6 @@ This page still designs:
 
 - a reshape in place of a configuration with companions: the companions on resized inside banks replaced make-before-break
   (7; built, such a node restarts);
-- `sendspin` in place (6.6);
 - the editor's Apply with a dry run, with slice 5's settings form (8.3).
 
 The transitions this page names are the framework's numbering: **T9** (`running` or `stopped` → `reconfiguring`, the
@@ -167,52 +169,9 @@ Built ([`docs/node-types.md#rtp`](../node-types.md#rtp)): made before break on a
 
 ### 6.6 `sendspin` in place
 
-Decided (G19): `sendspin`'s `name`, `port` and `server` change in place, the listening and dialling switch included.
-sendspin-cpp fixes its configuration when a client is made (`include/sendspin/client.h:333-335` [V]), so a name or port
-change makes a new client inside the node's worker; a `server` change between two URLs with the same name is a redial
-of the same client (`connect_to`, `client.h:389` [V]). The audio drops either way (the connection drops and the stream
-ends); in place keeps the node's configuration (instance, worker state, loops, companions, status), its identity
-without re-reading the key file, and both ports claimed for a moment. If the client swap's unknowns (U11, U12) fail,
-the rows stay restart-only and this step is skipped.
-
-```cpp
-Changed Sendspin::configure(ChangeOf<spec>& cx, const Checked& old, const Checked& now) {
-	SendspinSettings next = settingsFrom(cx.node(), now);
-	if (old.get<rows::server>() && now.get<rows::server>() && settingsFrom(cx.node(), old).name == next.name) {
-		cx.post(worker, [url = *next.server](Worker& w) { w.redial(url); });   // staged until the commit point
-		return cx.applied();
-	}
-	if (!old.get<rows::server>()) cx.unclaim(claim::TcpListen{old.get<rows::port>()});   // released at the end
-	if (!now.get<rows::server>()) cx.claim(claim::TcpListen{now.get<rows::port>()});     // judged now
-	return cx.whenReady(worker, [next = std::move(next)](Worker& w, ConfigureDone done) mutable {
-		w.swapClient(std::move(next), std::move(done));
-	});
-}
-```
-
-`swapClient` runs on the worker, the library's main loop, which the library's `start()` and `stop()` require
-(`client.h:337`, `362` [V]):
-
-1. posts to the notifier, which destroys its `onWake` source (no `notify_audio_played` reaches the old client), and back;
-2. `toServerSink_.pause(worker_, ...)`, on the `SinkControl&` that attaching the sink returned and the worker's state
-   keeps (given to `cx.state` after the attach): the sink's thread finishes any `consume` in flight and discards until
-   `resume`, so
-   `write_audio` never reaches a client being destroyed (this replaces the worker's `clientMutex_`);
-3. says goodbye on mDNS, then `client->stop()`: goodbye to the server, the library's threads joined, `on_stream_end`
-   delivered (which clears the source, which fades out); the client destroyed; the old sync thread, the source's
-   writer, joined, so the new one may write (one writing thread at a time: `docs/writing-a-node-type.md#sources`);
-4. makes the new client over the same key store, so the identity and pairings stay (U11), with `log_context` the same
-   node handle; `start()`; on `false`, `done.fail("the Sendspin client did not start")`;
-5. re-arms the notifier's `onWake`, `toServer_.resume()`, opens the advertiser on the new port, and calls `done.done()`.
-
-What the operator sees for `kitchen` moving from 8928 to 8929: `node kitchen reconfiguring: port`; notes
-`disconnected`, `stream-ended`, then `listening 8929 as ear-kitchen-<id>` and `id <same client id>`; `node kitchen
-running`; then Music Assistant finds it again (`connected "Music Assistant" paired`). Its failures, each a fallback to a
-restart with the new settings: 8929 held by another running node (refused at once, the continuation destroyed, the
-restart's claim refused: `failed start-failed: cannot listen on port 8929: held by node porch`); held by a node still
-closing (`ear.claim-wait` against the change's deadline; a newer edit meanwhile supersedes it); the new client not
-starting (`done.fail`, then the restart); a stop or removal during the swap (a continuation not yet posted is destroyed;
-one already posted runs, and the goodbye behind it stops whichever client exists).
+Built ([`docs/node-types.md#changes-in-place`](../node-types.md#changes-in-place)): a new client for every change, a
+`server` change with the same name included (not a redial of the same client: the connection watch could not tell the
+new session from the old).
 
 ### 6.7 The built-in types
 
@@ -222,7 +181,7 @@ one already posted runs, and the goodbye behind it stops whichever client exists
 | `file` | — | `path`: a new file is a new recording (a gapless switch is possible later) |
 | `card` | — | `card`: the same device cannot be opened twice, so break-first only, a restart in all but name; `playback`, `capture`: a reshape |
 | `rtp` | `address`, `port`, `format`, `rate`, `latencyMs` (built: 6.5) | `channels`: a reshape |
-| `sendspin` | `name`, `port`, `server` (6.6) | — |
+| `sendspin` | `name`, `port`, `server` (built: 6.6) | — |
 
 No built-in type reshapes in place (D-R24); a test type proves it (built:
 [`docs/architecture.md#reshapes`](../architecture.md#reshapes)).
@@ -288,7 +247,6 @@ What steps 1 to 4 changed is built (section 2). What is left:
 | Built piece | Change |
 |---|---|
 | `NodeHost` | a reshape in place of a configuration with companions (7) |
-| `sendspin` | rows marked `.inPlace()`; its change version |
 | `web/` | 8.3's Apply with a dry run, in slice 5's settings form |
 
 ## 10. Tests
@@ -296,13 +254,10 @@ What steps 1 to 4 changed is built (section 2). What is left:
 Built: what `docs/testing.md` lists for changes in place. Still to write with what they test:
 
 - **`ear_pipewire_tests`**: two sources into one inside input mixed (the port mixer loads).
-- **Types**: `sendspin`'s in-place cases through the harness.
 - **System tests**: an `rtp` format changed on the same port (a fade to exactly 0, silence, a fade in, no step above the
   fade's slope), and `levels` showing `fpp:stream.1` and `rec:record.left` silent during an `rtp` change and back after
   (the port change itself is built); a card's `playback` from 2 to 1 on the test card with `dropRoutes`, the surviving
-  route never `pending`; a `sendspin` port, name and server changed in place (`reconfiguring` and never `stopping`, the
-  same client id, the key file not read again, the connection dropped and back), a change to a held port restarting and
-  failing with today's text, dialling to listening and back.
+  route never `pending`.
 
 ## 11. Order of work
 
@@ -316,7 +271,7 @@ Built: what `docs/testing.md` lists for changes in place. Still to write with wh
 4. `PortBlock::reshape` on the plain add, the 32-port question settled first; layouts, levels (built, section 2).
 5. The wire and the editor (features `node.set`, `reshape`, `dryRun`): built, but the editor's Apply with a dry run,
    which waits for slice 5's settings form (8.3).
-6. `sendspin` in place (skipped if U11 or U12 fails).
+6. `sendspin` in place (built, section 2).
 7. Words: AGENTS.md and the library docs; this page deleted.
 
 ## 12. Decisions already taken
@@ -355,11 +310,6 @@ Each is the designer's (R24); the owner can overturn any.
   maps no `audio.mixer*` library, so this relies on the port mixer for DSP client-node ports loading through its
   `library.name` fallback.
 - **[U] How long rtp-source takes to unload and load** on a port change, which is how long `rtp` holds its outputs.
-- **U11.** That a second `SendspinClient` made in the same process over the same persistence provider, after the first
-  was stopped and destroyed, has the same client id and pairings (`client.h:347-348`, `config.h:171-174` [V] say a
-  `start()` after `stop()` keeps them and the id comes from the persisted keypair; a new instance is not stated).
-- **U12.** How long a client swap takes against the 10 s deadline (`stop()` is bounded by the transports' send and
-  close, `client.h:351-354` [V]); sendspin may declare a longer one.
 - **U13.** What Linux does with unicast datagrams for two sockets bound to one UDP port with SO_REUSEADDR; the
   break-first rule makes it moot, and the RTP test shows no doubled audio.
 - **Tuning.** The fade (5 ms), the hold acknowledgement's bound (100 ms) and the in-place deadline (10 s, at most 60 s)
@@ -367,5 +317,4 @@ Each is the designer's (R24); the owner can overturn any.
 - **Risks.** A wider lifecycle: the number of interleavings (a change during a reconfigure, a loss during a reshape)
   grows; each is a state-table test. `applied` is not what happened (a client must read `node.state`); a dry run may be
   stale by the real edit. A claim wait in a change can cost up to its deadline and then the restart's own 15 s, about
-  25 s before the node fails. `sendspin`'s in-place change still drops the connection and the stream (Music Assistant
-  reconnects in seconds). A pause discards what the node sends during a swap.
+  25 s before the node fails. A pause discards what the node sends during a swap.

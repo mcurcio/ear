@@ -193,3 +193,82 @@ TEST_CASE("A stop and a start keep the configuration whole, the worker's tick ar
 	CHECK(h->gone());
 	CHECK(h->node().diagnostics().empty());
 }
+
+namespace {
+
+bool told(Harness& h, ear::NodePhase phase) {
+	return std::ranges::any_of(h.node().healths(), [&](const ear::NodeHealth& one) { return one.phase == phase; });
+}
+
+const ear::NodeSettings dialling{{"server", "ws://10.0.0.1:8927/sendspin"}};
+
+} // namespace
+
+// docs/node-types.md#changes-in-place: every setting is marked in place, and the change version claims a new listening
+// port, gives the old one up and swaps the client on the worker, the sink paused meanwhile. The harness runs no tick, so
+// the worker has no client yet and its continuation takes the settings for the tick's first run; the swap of a real
+// client is swap_test.cpp's and the system tests'.
+TEST_CASE("Each of name, port and server changes in place, listening to dialling and back included, "
+          "reconfiguring and never stopping, the configuration, its loops and its key store kept",
+          "[sendspin][type][reconfigure]") {
+	struct Case {
+		ear::NodeSettings from;
+		ear::NodeSettings to;
+		std::vector<std::string> keys;
+	};
+	const Case change = GENERATE_COPY(
+		Case{ear::NodeSettings::object(), {{"name", "Kitchen"}}, {"name"}},
+		Case{ear::NodeSettings::object(), {{"port", 8929}}, {"port"}},
+		Case{ear::NodeSettings::object(), dialling, {"server"}},
+		Case{dialling, ear::NodeSettings::object(), {"server"}},
+		Case{dialling, {{"server", "ws://10.0.0.2:8927/sendspin"}, {"name", "Kitchen"}}, {"name", "server"}});
+	INFO(change.from.dump() << " to " << change.to.dump());
+	auto h = running(change.from);
+	const std::size_t storeCalls = h->node().storeCalls().size();
+	CHECK(h->change(change.to) == ear::NodeOutcome::reconfigure);
+	CHECK(h->phase() == "reconfiguring");
+	const auto changing = std::ranges::find_if(
+		h->node().healths(), [](const ear::NodeHealth& one) { return one.phase == ear::NodePhase::reconfiguring; });
+	REQUIRE(changing != h->node().healths().end());
+	CHECK(changing->keys == change.keys);
+	h->runLoops(); // the continuation, on the worker
+	CHECK(h->phase() == "running");
+	CHECK_FALSE(told(*h, ear::NodePhase::stopping));
+	CHECK(h->node().loops().size() == 2); // the same configuration's two loops
+	CHECK(h->armed(worker) == 1);
+	CHECK_FALSE(h->node().paused(toServer.name));       // resumed by the continuation
+	CHECK(h->node().storeCalls().size() == storeCalls); // the key file is not read again
+	h->remove();
+	CHECK(h->node().diagnostics().empty());
+}
+
+TEST_CASE("A change to a listening port the host refuses falls back to a restart, which fails as a start on it would",
+          "[sendspin][type][reconfigure]") {
+	auto h = std::make_unique<Harness>(Harness::Options{.format = format, .node = "ma", .refusedPorts = {"tcp:8929"}});
+	REQUIRE_FALSE(h->parse(ear::NodeSettings::object()));
+	h->add();
+	h->blockReady();
+	h->runLoops();
+	REQUIRE(h->phase() == "running");
+	h->change({{"port", 8929}});
+	h->runLoops();
+	const auto fellBack = std::ranges::find_if(h->node().healths(), [](const ear::NodeHealth& one) {
+		return one.phase == ear::NodePhase::stopping && one.cause &&
+		       one.cause->reason == ear::NodeCause::FellBack::resourceRefused;
+	});
+	CHECK(fellBack != h->node().healths().end());
+	CHECK(h->phase() == "failed");
+	CHECK(failure(*h) == "start-failed: cannot listen on port 8929: in use");
+}
+
+TEST_CASE("A change while stopped applies in place and rests stopped", "[sendspin][type][reconfigure]") {
+	auto h = running();
+	REQUIRE(h->stop());
+	h->runLoops();
+	REQUIRE(h->phase() == "stopped");
+	CHECK(h->change({{"name", "Kitchen"}}) == ear::NodeOutcome::reconfigure);
+	h->runLoops();
+	CHECK(h->phase() == "stopped");
+	CHECK(h->node().loops().size() == 2);
+	CHECK_FALSE(h->node().paused(toServer.name));
+}

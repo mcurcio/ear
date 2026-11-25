@@ -121,6 +121,7 @@ TEST_CASE("Every type's change of keys marked in place ends running with the sam
 				if (harness.change(to) != ear::NodeOutcome::reconfigure) continue; // a restart-only key changed
 				++inPlace;
 				readyEvery(harness);
+				harness.runLoops(); // a change that answered whenReady goes on on its loop
 				CHECK(harness.phase() == "running");
 				for (std::size_t i = before; i < harness.healths().size(); ++i) {
 					const ear::NodeHealth& one = harness.healths()[i];

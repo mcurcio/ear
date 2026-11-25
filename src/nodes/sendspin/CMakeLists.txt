@@ -19,6 +19,7 @@ ear_node_type(
 		tests/notes_test.cpp
 		tests/pcm_test.cpp
 		tests/settings_test.cpp
+		tests/swap_test.cpp
 		tests/to_server_test.cpp
 		tests/transport_test.cpp
 		tests/type_test.cpp
