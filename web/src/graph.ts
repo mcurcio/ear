@@ -18,7 +18,18 @@ import type {
 } from "./protocol";
 
 /** The health members a node.state carries (docs/control-port.md#node-health), the ones it replaces. */
-const healthKeys = ["state", "phase", "since", "wanted", "blockLost", "cause", "waitingFor", "reason"] as const;
+const healthKeys = [
+  "state",
+  "phase",
+  "since",
+  "wanted",
+  "blockLost",
+  "cause",
+  "waitingFor",
+  "reason",
+  "keys",
+  "next",
+] as const;
 
 /** The health members `from` has, and only those: a member ear adds later is not this editor's to keep. */
 function healthOf(from: Partial<NodeHealth>): NodeHealth {
@@ -51,8 +62,19 @@ function nodeOf(from: GraphNode): GraphNode {
 
 /** A node without its health members. */
 function withoutHealth(node: GraphNode): Omit<GraphNode, keyof NodeHealth> {
-  const { state: _s, phase: _p, since: _t, wanted: _w, blockLost: _b, cause: _c, waitingFor: _f, reason: _r, ...spec } =
-    node;
+  const {
+    state: _s,
+    phase: _p,
+    since: _t,
+    wanted: _w,
+    blockLost: _b,
+    cause: _c,
+    waitingFor: _f,
+    reason: _r,
+    keys: _k,
+    next: _n,
+    ...spec
+  } = node;
   return spec;
 }
 

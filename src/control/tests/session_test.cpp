@@ -540,7 +540,7 @@ TEST_CASE("lifecycle.json: a node's whole life, each health change one node.stat
 	using Lifecycle = std::expected<void, ear::CommandError>;
 	const json document = fixture("lifecycle");
 	const auto requests = requestsOf(document);
-	REQUIRE(requests.size() == 26);
+	REQUIRE(requests.size() == 30);
 	World w;
 	const ear::Ports card2{{{ear::Direction::input, "play", {"1", "2"}}}};
 	const ear::Ports noisePorts{{{ear::Direction::output, "noise", {"mono"}}}};
@@ -775,6 +775,57 @@ TEST_CASE("lifecycle.json: a node's whole life, each health change one node.stat
 	w.onMain([&] {
 		w.told(at("fpp", NodePhase::configured, Wanted::stopped));
 		w.told(at("fpp", NodePhase::stopped, Wanted::stopped));
+	});
+
+	// Changes in place: node.updated (reconfigure), reconfiguring with its keys, the reply; from stopped it ends
+	// stopped, from running running; a newer change during the commit is next, then a fresh change, which falls back.
+	const auto rtpAt = [&](int port, const char* format) {
+		return json{{"address", "0.0.0.0"}, {"channels", 2}, {"format", format}, {"port", port}};
+	};
+	const auto changing = [](ear::NodeHealth h, std::vector<std::string> keys, std::vector<std::string> next = {}) {
+		h.keys = std::move(keys);
+		h.next = std::move(next);
+		return h;
+	};
+	const auto inPlace = [&](int port, const char* format, std::vector<std::string> keys, ear::NodeHealth told) {
+		const json settings = rtpAt(port, format);
+		w.graph.script.push_back(
+			{"updateNode fpp " + settings.dump(), [&w, settings, keys, told, rtpPorts]() -> CommandResult {
+				 w.gateway.nodeChanged({"fpp", "rtp", settings}, std::make_shared<Config>(rtpPorts),
+			                           ear::NodeChange{ear::NodeOutcome::reconfigure, keys});
+				 w.told(told);
+				 return Lifecycle{};
+			 }});
+	};
+	inPlace(5006, "L24", {"port"}, changing(at("fpp", NodePhase::reconfiguring, Wanted::stopped), {"port"}));
+	w.receive(session, requests[26]);
+	w.onMain([&] { w.told(at("fpp", NodePhase::stopped, Wanted::stopped)); });
+	w.graph.script.push_back({"startNode fpp", [&]() -> CommandResult {
+								  w.told(at("fpp", NodePhase::starting));
+								  return Applied{AppliedKind::start};
+							  }});
+	w.receive(session, requests[27]);
+	w.onMain([&] { w.told(at("fpp", NodePhase::running)); });
+	inPlace(5008, "L24", {"port"}, changing(at("fpp", NodePhase::reconfiguring), {"port"}));
+	w.receive(session, requests[28]);
+	inPlace(5008, "L16", {"format"}, changing(at("fpp", NodePhase::reconfiguring), {"port"}, {"format"}));
+	w.receive(session, requests[29]);
+	w.onMain([&] {
+		w.told(changing(at("fpp", NodePhase::reconfiguring), {"format"}));
+		const ear::NodeCause fellBack{
+			Kind::fellBack, std::nullopt, {"format"}, ear::NodeCause::FellBack::deadline, "deadline 10s passed"};
+		ear::NodeCause restarting = fellBack;
+		restarting.kind = Kind::restarting;
+		restarting.restart = Kind::fellBack;
+		auto stopping = at("fpp", NodePhase::stopping);
+		stopping.cause = restarting;
+		w.told(stopping);
+		auto configuring = at("fpp", NodePhase::configuring);
+		configuring.cause = fellBack;
+		w.told(configuring);
+		w.told(at("fpp", NodePhase::configured));
+		w.told(at("fpp", NodePhase::starting));
+		w.told(at("fpp", NodePhase::running));
 	});
 
 	checkMessages(out, document["messages"]);

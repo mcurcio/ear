@@ -1,5 +1,5 @@
 {
-  "description": "A node's whole life on the wire (docs/control-port.md#fixtures; the phases slice 3a has): node.added (added), then a node.state for every change of any health member, each carrying state, phase, since (when the phase began: it moves only with the phase), wanted and blockLost, and cause, waitingFor and reason when the health has them. A stop and a start (no graphFile.changed or node.updated: they edit nothing); a restart (stopping with cause restarting, its reply, then configuring with cause action); a disable and an enable (node.updated with applied and disabled; stopping with cause disabling, then disabled; configuring with cause enabling); node.start on a disabled node refused node-disabled; a node configured while stopped (it rests stopped again); a node added disabled (node.added says disabled, and its first node.state says it again, for a client that reads a state only from node.state); a failed node stopped (one node.state, wanted stopped), retried by node.start and by node.restart (applied retry); a restart during a restart (unchanged); a block lost (blockLost) and the refusals not-restartable block-lost; a name added back waiting for its older node (waitingFor older-node) and refused not-restartable not-started; a removal (node.stopped, then node.gone; ignored by the client, which dropped the node at node.removed); node.restart of a disabled node refused node-disabled; node.stop on a node still configuring (one node.state, the same phase, wanted stopped), then waiting for its program (waitingFor program, named by the program, its last readiness step), which rests stopped once configured. Every reply comes after the node.state its request caused in that turn.",
+  "description": "A node's whole life on the wire (docs/control-port.md#fixtures; the phases slice 3a has): node.added (added), then a node.state for every change of any health member, each carrying state, phase, since (when the phase began: it moves only with the phase), wanted and blockLost, and cause, waitingFor and reason when the health has them. A stop and a start (no graphFile.changed or node.updated: they edit nothing); a restart (stopping with cause restarting, its reply, then configuring with cause action); a disable and an enable (node.updated with applied and disabled; stopping with cause disabling, then disabled; configuring with cause enabling); node.start on a disabled node refused node-disabled; a node configured while stopped (it rests stopped again); a node added disabled (node.added says disabled, and its first node.state says it again, for a client that reads a state only from node.state); a failed node stopped (one node.state, wanted stopped), retried by node.start and by node.restart (applied retry); a restart during a restart (unchanged); a block lost (blockLost) and the refusals not-restartable block-lost; a name added back waiting for its older node (waitingFor older-node) and refused not-restartable not-started; a removal (node.stopped, then node.gone; ignored by the client, which dropped the node at node.removed); node.restart of a disabled node refused node-disabled; node.stop on a node still configuring (one node.state, the same phase, wanted stopped), then waiting for its program (waitingFor program, named by the program, its last readiness step), which rests stopped once configured. Every reply comes after the node.state its request caused in that turn. A change in place (node.updated with applied reconfigure, then node.state reconfiguring with keys, the keys it applies, then the reply): from stopped it ends stopped, from running it ends running; a newer change during the commit's invoke is next, and taken as a fresh change once it ends (keys the newer ones); one that cannot finish falls back to a restart with the newest settings (stopping with cause restarting, its own kind fell-back with keys, reason and detail, then configuring with that cause).",
   "requests": [
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"node.add\",\"params\":{\"name\":\"noise\",\"type\":\"white\"}}",
@@ -26,7 +26,11 @@
     "{\"jsonrpc\":\"2.0\",\"id\":24,\"method\":\"node.remove\",\"params\":{\"name\":\"noise\"}}",
     "{\"jsonrpc\":\"2.0\",\"id\":25,\"method\":\"node.restart\",\"params\":{\"name\":\"quiet\"}}",
     "{\"jsonrpc\":\"2.0\",\"id\":26,\"method\":\"node.add\",\"params\":{\"name\":\"fpp\",\"type\":\"rtp\",\"settings\":{\"address\":\"0.0.0.0\",\"port\":5004,\"format\":\"L24\",\"channels\":2}}}",
-    "{\"jsonrpc\":\"2.0\",\"id\":27,\"method\":\"node.stop\",\"params\":{\"name\":\"fpp\"}}"
+    "{\"jsonrpc\":\"2.0\",\"id\":27,\"method\":\"node.stop\",\"params\":{\"name\":\"fpp\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":28,\"method\":\"node.update\",\"params\":{\"name\":\"fpp\",\"settings\":{\"address\":\"0.0.0.0\",\"port\":5006,\"format\":\"L24\",\"channels\":2}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":29,\"method\":\"node.start\",\"params\":{\"name\":\"fpp\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":30,\"method\":\"node.update\",\"params\":{\"name\":\"fpp\",\"settings\":{\"address\":\"0.0.0.0\",\"port\":5008,\"format\":\"L24\",\"channels\":2}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":31,\"method\":\"node.update\",\"params\":{\"name\":\"fpp\",\"settings\":{\"address\":\"0.0.0.0\",\"port\":5008,\"format\":\"L16\",\"channels\":2}}}"
   ],
   "messages": [
     {
@@ -1204,6 +1208,248 @@
         "wanted": "stopped",
         "blockLost": false
       }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.updated",
+      "params": {
+        "name": "fpp",
+        "settings": {
+          "address": "0.0.0.0",
+          "channels": 2,
+          "format": "L24",
+          "port": 5006
+        },
+        "applied": "reconfigure"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "fpp",
+        "state": "reconfiguring",
+        "phase": "reconfiguring",
+        "since": "2026-11-09T10:00:00.510000Z",
+        "wanted": "stopped",
+        "blockLost": false,
+        "keys": [
+          "port"
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 28,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "fpp",
+        "state": "stopped",
+        "phase": "stopped",
+        "since": "2026-11-09T10:00:00.520000Z",
+        "wanted": "stopped",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "fpp",
+        "state": "starting",
+        "phase": "starting",
+        "since": "2026-11-09T10:00:00.530000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 29,
+      "result": {
+        "applied": "start"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "fpp",
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.540000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.updated",
+      "params": {
+        "name": "fpp",
+        "settings": {
+          "address": "0.0.0.0",
+          "channels": 2,
+          "format": "L24",
+          "port": 5008
+        },
+        "applied": "reconfigure"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "fpp",
+        "state": "reconfiguring",
+        "phase": "reconfiguring",
+        "since": "2026-11-09T10:00:00.550000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "keys": [
+          "port"
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 30,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.updated",
+      "params": {
+        "name": "fpp",
+        "settings": {
+          "address": "0.0.0.0",
+          "channels": 2,
+          "format": "L16",
+          "port": 5008
+        },
+        "applied": "reconfigure"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "fpp",
+        "state": "reconfiguring",
+        "phase": "reconfiguring",
+        "since": "2026-11-09T10:00:00.550000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "keys": [
+          "port"
+        ],
+        "next": [
+          "format"
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 31,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "fpp",
+        "state": "reconfiguring",
+        "phase": "reconfiguring",
+        "since": "2026-11-09T10:00:00.550000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "keys": [
+          "format"
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "fpp",
+        "state": "stopping",
+        "phase": "stopping",
+        "since": "2026-11-09T10:00:00.560000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "cause": {
+          "kind": "restarting",
+          "restart": {
+            "kind": "fell-back",
+            "keys": [
+              "format"
+            ],
+            "reason": "deadline",
+            "detail": "deadline 10s passed"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "fpp",
+        "state": "starting",
+        "phase": "configuring",
+        "since": "2026-11-09T10:00:00.570000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "cause": {
+          "kind": "fell-back",
+          "keys": [
+            "format"
+          ],
+          "reason": "deadline",
+          "detail": "deadline 10s passed"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "fpp",
+        "state": "starting",
+        "phase": "configured",
+        "since": "2026-11-09T10:00:00.580000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "fpp",
+        "state": "starting",
+        "phase": "starting",
+        "since": "2026-11-09T10:00:00.590000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "fpp",
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.600000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
     }
   ],
   "graph": {
@@ -1260,18 +1506,18 @@
         "settings": {
           "address": "0.0.0.0",
           "channels": 2,
-          "format": "L24",
-          "port": 5004
+          "format": "L16",
+          "port": 5008
         },
         "inputs": [],
         "outputs": [
           "stream.1",
           "stream.2"
         ],
-        "state": "stopped",
-        "phase": "stopped",
-        "since": "2026-11-09T10:00:00.500000Z",
-        "wanted": "stopped",
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.600000Z",
+        "wanted": "running",
         "blockLost": false,
         "counters": {
           "missedCycles": 0,

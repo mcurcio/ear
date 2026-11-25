@@ -1967,7 +1967,9 @@ struct NodeHost::Impl {
 			                  health.cause,
 			                  health.phase == wantedPhase_ ? waitingShown_ : std::vector<WaitingFor>{},
 			                  health.blockLost,
-			                  superseded_};
+			                  superseded_,
+			                  health.keys,
+			                  health.next};
 		}
 
 		/// What the node waits for now, unpaced: an older node of its name; its engine companions

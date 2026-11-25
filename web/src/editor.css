@@ -858,6 +858,11 @@ body,
   --state: var(--ok);
 }
 
+/* A change in place is the node's own work, not a warning (docs/editor.md#a-nodes-health). */
+.state-reconfiguring {
+  --state: var(--accent);
+}
+
 /* A state this editor does not know: neutral, as starting's. */
 .state-starting,
 .state-stopping,

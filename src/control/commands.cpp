@@ -243,6 +243,8 @@ std::string_view appliedName(AppliedKind kind) noexcept {
 		return "stored";
 	case AppliedKind::unchanged:
 		return "unchanged";
+	case AppliedKind::reconfigure:
+		return "reconfigure";
 	}
 	return "unchanged";
 }

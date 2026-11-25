@@ -58,8 +58,9 @@ CommandResult appliedOf(const NodeName& node, const std::vector<std::pair<NodeNa
 		case NodeOutcome::stored:
 			return control::Applied{control::AppliedKind::stored};
 		case NodeOutcome::restart:
-		case NodeOutcome::reconfigure: // treated as a restart until NodeHost changes in place
 			return control::Applied{control::AppliedKind::restart};
+		case NodeOutcome::reconfigure:
+			return control::Applied{control::AppliedKind::reconfigure};
 		}
 	}
 	return control::Applied{control::AppliedKind::unchanged};

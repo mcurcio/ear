@@ -569,11 +569,13 @@ buttons; its tests cover every phase. The rules it follows:
 
 - **Silence the operator asked for is never drawn as a fault.** `stopped` ("stopped until Start or
   a restart of ear") and `disabled` ("disabled in ear.conf") each have their own quiet style, apart
-  from `failed`'s.
+  from `failed`'s. So has `reconfiguring`, a change in place, which is not a warning: its line
+  names the keys it applies and those next ("reconfiguring port; latencyMs next"), and Start is
+  off while it lasts.
 - **The box always says why a node is silent:** what it waits for (from `waitingFor`: "waiting for
   fpp.rtp", "waiting for the previous desk to stop", "waiting for the engine"), why it is
   stopping or configuring (from `cause`: "restarting: settings changed (card)", "configuring:
-  trying again"), or a failure's detail.
+  trying again", "restarting: could not apply port in place"), or a failure's detail.
 - **Fast phases do not flicker:** a starting phase's line shows only once the editor has seen the
   phase for 250 ms, measured on the browser's clock, never against the server's `since`.
 - **Wires stay drawn in every phase,** since the graph keeps them linked; a wire from a silent

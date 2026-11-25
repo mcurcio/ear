@@ -26,16 +26,25 @@ json encodeNode(const NodeSpec& node, const Ports& ports) {
 	        {"outputs", ports.outputs()}};
 }
 
-/// A cause as the wire carries it (docs/control-port.md#node-health): {"kind"}, "keys" for a settings change, and a
-/// restart's own kind (with its keys) under "restart".
+/// A cause's own members by its kind: "keys" for a settings change; "keys", "reason" and "detail" for a fallback.
+void addCauseMembers(json& into, NodeCause::Kind kind, const NodeCause& cause) {
+	if (kind == NodeCause::Kind::settings || kind == NodeCause::Kind::fellBack) into["keys"] = cause.keys;
+	if (kind == NodeCause::Kind::fellBack) {
+		if (cause.reason) into["reason"] = fellBackName(*cause.reason);
+		into["detail"] = cause.detail;
+	}
+}
+
+/// A cause as the wire carries it (docs/control-port.md#node-health): {"kind"} with its own members, and a restart's own
+/// kind (with its members) under "restart".
 json encodeCause(const NodeCause& cause) {
 	json out = {{"kind", causeName(cause.kind)}};
 	if (cause.kind == NodeCause::Kind::restarting && cause.restart) {
 		json restart = {{"kind", causeName(*cause.restart)}};
-		if (*cause.restart == NodeCause::Kind::settings) restart["keys"] = cause.keys;
+		addCauseMembers(restart, *cause.restart, cause);
 		out["restart"] = std::move(restart);
-	} else if (cause.kind == NodeCause::Kind::settings) {
-		out["keys"] = cause.keys;
+	} else {
+		addCauseMembers(out, cause.kind, cause);
 	}
 	return out;
 }
@@ -60,6 +69,10 @@ void addHealth(json& into, const NodeHealth& h, std::optional<std::chrono::syste
 		into["waitingFor"] = std::move(waits);
 	}
 	if (h.reason) into["reason"] = {{"code", failureCode(h.reason->code)}, {"detail", h.reason->detail}};
+	if (h.phase == NodePhase::reconfiguring) {
+		into["keys"] = h.keys;
+		if (!h.next.empty()) into["next"] = h.next;
+	}
 }
 
 /// A node's counters (docs/control-port.md#counters), one encoding for snapshots, node.added and counters.changed.
@@ -168,8 +181,9 @@ std::string encodeEvent(const GraphEvent& event) {
 std::string_view outcomeName(NodeOutcome outcome) noexcept {
 	switch (outcome) {
 	case NodeOutcome::restart:
-	case NodeOutcome::reconfigure: // treated as a restart until NodeHost changes in place
 		return "restart";
+	case NodeOutcome::reconfigure:
+		return "reconfigure";
 	case NodeOutcome::disable:
 		return "disable";
 	case NodeOutcome::enable:

@@ -60,6 +60,10 @@ struct NodeHealth {
 	/// An older node of the name, still closing after a newer node of that name was added: told only to listeners that
 	/// hear a superseded node (NodeHealthListener::hearsSuperseded), first with the health it has when superseded.
 	bool superseded = false;
+	/// reconfiguring only (docs/control-port.md#node-health): the keys the change in flight applies, and the keys changed
+	/// since its commit point, which the node takes once it ends.
+	std::vector<std::string> keys{};
+	std::vector<std::string> next{};
 	friend bool operator==(const NodeHealth&, const NodeHealth&) = default;
 };
 /// Told after every machine transition that changes any member of a node's health

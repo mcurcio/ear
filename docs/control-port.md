@@ -142,12 +142,14 @@ The meaning of each phase and state is [architecture.md](architecture.md#the-nod
 
 | Member | Always | What |
 |---|---|---|
-| `state` | yes | The colour: `starting`, `running`, `stopping`, `stopped`, `disabled`, `failed` |
-| `phase` | yes | The exact state: `added`, `configuring`, `configured`, `starting`, `running`, `stopping`, `stopped`, `disabled`, `failed`. Explain by it; colour by `state` |
+| `state` | yes | The colour: `starting`, `running`, `stopping`, `stopped`, `disabled`, `failed`, `reconfiguring` |
+| `phase` | yes | The exact state: `added`, `configuring`, `configured`, `starting`, `running`, `stopping`, `stopped`, `disabled`, `failed`, `reconfiguring`. Explain by it; colour by `state` |
 | `since` | when known | When this phase began, UTC to the microsecond, stamped as the gateway hears it (a snapshot's is the one its phase had when the graph was read) |
 | `wanted` | yes | `running`, `stopped` (a stop held in memory) or `disabled` (in `ear.conf`) |
 | `blockLost` | yes | The node's block is gone for good; it cannot restart until removed and added, or ear restarts |
-| `cause` | `stopping`; `configuring` after a restart, retry or enable | `{"kind"}`: `stop`, `disabling`, `removing`, `restarting` (with `restart: {"kind"}`, the restart's own kind: `settings` with its `keys`, or `action` for `node.restart`), and for `configuring`: `settings` (with `keys`), `action`, `retry`, `enabling` |
+| `cause` | `stopping`; `configuring` after a restart, retry or enable | `{"kind"}`: `stop`, `disabling`, `removing`, `restarting` (with `restart: {"kind"}`, the restart's own kind: `settings` with its `keys`, `action` for `node.restart`, or `fell-back` with its `keys`, `reason` and `detail`), and for `configuring`: `settings` (with `keys`), `action`, `retry`, `enabling`, `fell-back` (with `keys`, `reason`, `detail`). `fell-back` is a change in place that could not finish ([architecture.md](architecture.md#changes-in-place)); its `reason` is `restart-asked`, `deadline`, `resource-refused`, `resource-lost`, `failed` or `restart-requested`, its `detail` the words |
+| `keys` | `reconfiguring` | The keys the change in place applies (a supersession adds its own) |
+| `next` | `reconfiguring`, when any | The keys changed since the change's commit point, which the node takes once it ends |
 | `waitingFor` | once the phase has lasted 2 s | What the node still waits for: a list of `{"kind", "name"?}`, kind `older-node` (a removed or renamed node of its name still closing), `block` (the engine), `companion` (an engine companion, by engine name: `fpp.rtp`), `consumer` (a sink's consumer), `loop` (one of the node's loops not yet running, by its name: `sendspin`), `store` (one of the node's stores not yet opened, by its file's name: `sendspin-kitchen.key`), `recording` (one of the node's recordings not yet opened, by its path: `take1.wav`), `claim` (one of the node's claims not yet granted, by its key: `udp:5004`, while its holder closes), `program` (the node's program not yet started, by the program's name: its executable's last component). Changed at most once a second |
 | `reason` | `failed` | `{"code", "detail"}`, code `engine-refused`, `start-failed` or `lost` |
 
@@ -202,7 +204,7 @@ edit. Their effect shows as `node.updated` (`applied` and `disabled`) and the he
 | Notification | Params | When |
 |---|---|---|
 | `node.added` | the node as in the Graph, with its health (`phase` `added`, or `disabled` for a node added disabled), its `counters` (zero, or what a port-caused replace carries on: [below](#counters)) and `"companions": []` | A node was added |
-| `node.updated` | `{"name", "settings", "applied", "disabled"?}`; `applied`: `restart`, `disable`, `enable` or `stored` (a change to a node that stays disabled) | A node's settings or `disabled` changed |
+| `node.updated` | `{"name", "settings", "applied", "disabled"?}`; `applied`: `restart`, `reconfigure` (every changed key's row is marked in place: [architecture.md](architecture.md#restarts-and-changes-of-settings)), `disable`, `enable` or `stored` (a change to a node that stays disabled). It is the plan's outcome, never rewritten by what the node then does: a node that cannot take it in place restarts, which `node.state` shows | A node's settings or `disabled` changed |
 | `node.removed` | `{"name"}` | A node was removed (after `route.removed` for its routes). The client drops the node now |
 | `node.state` | `{"name"}` and every health member | Any health member changed |
 | `node.stopped` | `{"name", "droppedFrames"}` | Deprecated (removed at protocol 2): everything the node made is gone |
@@ -234,7 +236,10 @@ sends none of the old node's health.
   start: `starting`, the reply, `running`. A disable: `graphFile.changed`, `node.updated`,
   `node.state` `stopping` (cause `disabling`), the reply, then `disabled`. An enable:
   `graphFile.changed`, `node.updated`, `node.state` `configuring` (cause `enabling`), the reply, then
-  as a start.
+  as a start. A change in place: `graphFile.changed`, `node.updated` (`applied: "reconfigure"`),
+  `node.state` `reconfiguring` (with `keys`), the reply, then `running` (or `stopped`) once it ends,
+  or a fallback's `stopping` (cause `restarting`, its own kind `fell-back`) and a restart's
+  sequence.
 - **A refused edit announces nothing**: only its reply carries the refusal. A hand edit gives
   `graphFile.changed` with cause `disk` and the events it causes, and no reply; a hand edit the graph
   refuses is announced with `refusal` set.

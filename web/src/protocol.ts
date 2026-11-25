@@ -12,7 +12,15 @@ export type JsonObject = { [key: string]: JsonValue };
 // ----- The graph -----
 
 /** The phase's colour (docs/control-port.md#node-health). */
-export type NodeState = "starting" | "running" | "stopping" | "stopped" | "disabled" | "failed" | (string & {});
+export type NodeState =
+  | "starting"
+  | "running"
+  | "stopping"
+  | "stopped"
+  | "disabled"
+  | "failed"
+  | "reconfiguring"
+  | (string & {});
 /** The exact state; a client explains by it and never colours by it. */
 export type NodePhase =
   | "added"
@@ -24,6 +32,7 @@ export type NodePhase =
   | "stopped"
   | "disabled"
   | "failed"
+  | "reconfiguring"
   | (string & {});
 /** What the graph wants of the node: disabled from ear.conf, stopped while its stop is held, else running. */
 export type Wanted = "running" | "stopped" | "disabled" | (string & {});
@@ -37,6 +46,16 @@ export type CauseKind =
   | "action"
   | "retry"
   | "enabling"
+  | "fell-back"
+  | (string & {});
+/** Why a change in place fell back to a restart (cause.kind fell-back). */
+export type FellBackReason =
+  | "restart-asked"
+  | "deadline"
+  | "resource-refused"
+  | "resource-lost"
+  | "failed"
+  | "restart-requested"
   | (string & {});
 export type RouteStatusName = "pending" | "linked" | "refused" | (string & {});
 export type FailureCode = "engine-refused" | "start-failed" | "lost" | (string & {});
@@ -50,6 +69,7 @@ export type Applied =
   | "enable"
   | "stored"
   | "unchanged"
+  | "reconfigure"
   | (string & {});
 
 export interface FailureReason {
@@ -59,10 +79,13 @@ export interface FailureReason {
 
 export interface NodeCause {
   kind: CauseKind;
-  /** settings: the changed keys. */
+  /** settings and fell-back: the changed keys. */
   keys?: string[];
-  /** restarting: the restart's own kind (and its keys). */
-  restart?: { kind: CauseKind; keys?: string[] };
+  /** fell-back: why, and in words. */
+  reason?: FellBackReason;
+  detail?: string;
+  /** restarting: the restart's own kind (and its members). */
+  restart?: { kind: CauseKind; keys?: string[]; reason?: FellBackReason; detail?: string };
 }
 
 /** What a node still waits for, once its phase has lasted 2 s. */
@@ -95,6 +118,10 @@ export interface NodeHealth {
   waitingFor?: WaitingFor[];
   /** Present only while failed. */
   reason?: FailureReason;
+  /** reconfiguring only: the keys the change in flight applies. */
+  keys?: string[];
+  /** reconfiguring only: the keys changed since its commit point, which the node takes once it ends. */
+  next?: string[];
 }
 
 export interface PortRef {

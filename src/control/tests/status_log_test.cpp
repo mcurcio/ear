@@ -112,6 +112,14 @@ ear::NodeHealth health(const std::string& node, ear::NodePhase phase, std::optio
 	return told;
 }
 
+/// A node reconfiguring: the keys its change applies, and those next.
+ear::NodeHealth changing(const std::string& node, std::vector<std::string> keys, std::vector<std::string> next = {}) {
+	ear::NodeHealth told = health(node, ear::NodePhase::reconfiguring);
+	told.keys = std::move(keys);
+	told.next = std::move(next);
+	return told;
+}
+
 ear::NodeCause cause(ear::NodeCause::Kind kind, std::vector<std::string> keys = {}) {
 	return {kind, std::nullopt, keys};
 }
@@ -361,6 +369,30 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 			paceNow += std::chrono::seconds(10);
 			log.nodeChanged(
 				health("fpp", NodePhase::configuring, {}, {}, {{ear::WaitingFor::Kind::recording, "take1.wav"}}));
+		},
+		[](StatusLog& log, Lines&) { log.nodeChanged(health("tv", NodePhase::running)); },
+		[](StatusLog& log, Lines&) { log.nodeChanged(changing("tv", {"port"})); },
+		[](StatusLog& log, Lines&) { log.nodeChanged(changing("tv", {"format", "port"}, {"latencyMs"})); },
+		[](StatusLog& log, Lines&) {
+			paceNow += std::chrono::milliseconds(312);
+			log.nodeChanged(health("tv", NodePhase::running));
+		},
+		[](StatusLog& log, Lines&) { log.nodeChanged(changing("tv", {"port"})); },
+		[](StatusLog& log, Lines&) {
+			log.nodeChanged(health("tv", NodePhase::stopping,
+		                           ear::NodeCause{Kind::restarting,
+		                                          Kind::fellBack,
+		                                          {"port"},
+		                                          ear::NodeCause::FellBack::deadline,
+		                                          "deadline 10s passed"}));
+		},
+		[](StatusLog& log, Lines&) {
+			log.nodeChanged(health("tv", NodePhase::configuring,
+		                           ear::NodeCause{Kind::fellBack,
+		                                          std::nullopt,
+		                                          {"port"},
+		                                          ear::NodeCause::FellBack::deadline,
+		                                          "deadline 10s passed"}));
 		},
 		[](StatusLog& log, Lines&) { log.stopped(); },
 	};

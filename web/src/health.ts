@@ -29,7 +29,7 @@ export interface HealthView {
 /** A starting phase's line shows only once the phase has lasted this long (fast phases do not flicker). */
 export const startingLineDelayMs = 250;
 
-const knownStates = new Set(["starting", "running", "stopping", "stopped", "disabled", "failed"]);
+const knownStates = new Set(["starting", "running", "stopping", "stopped", "disabled", "failed", "reconfiguring"]);
 
 const on: ActionAvailability = { enabled: true };
 const off = (why: string): ActionAvailability => ({ enabled: false, why });
@@ -46,6 +46,8 @@ function restartWords(kind: CauseKind, keys: string[] | undefined): string {
       return "restart invoked";
     case "enabling":
       return "enabled";
+    case "fell-back":
+      return `could not apply ${keys !== undefined ? keys.join(", ") : "its settings"} in place`;
     default:
       return kind;
   }
@@ -72,6 +74,8 @@ function causeWords(cause: NodeCause): string {
       return "configuring: trying again";
     case "enabling":
       return "configuring: enabled";
+    case "fell-back":
+      return `configuring: ${restartWords("fell-back", cause.keys)}`;
     default:
       return cause.kind;
   }
@@ -156,6 +160,17 @@ export function describeHealth(node: GraphNode, seenMs: number = Infinity): Heal
         line: "",
         actions: { start: off("it runs"), stop: on, restart: on, disable, enable },
       };
+    case "reconfiguring": {
+      // Applying new settings in place: not a warning, and the node keeps its configuration throughout.
+      const keys = (node.keys ?? []).join(", ");
+      const next = node.next !== undefined && node.next.length > 0 ? `; ${node.next.join(", ")} next` : "";
+      return {
+        word,
+        styleClass,
+        line: `reconfiguring ${keys}${next}`.trimEnd(),
+        actions: { start: off("it is changing its settings"), stop: on, restart: on, disable, enable },
+      };
+    }
     case "stopping": {
       const all = off("it is stopping");
       return {

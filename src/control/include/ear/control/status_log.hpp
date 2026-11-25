@@ -144,6 +144,7 @@ private:
 		std::chrono::steady_clock::time_point since;
 		std::optional<std::chrono::steady_clock::time_point> still{};
 		std::vector<WaitingFor> written{}; // the list the last still record wrote, in this phase
+		std::optional<std::chrono::steady_clock::time_point> changeBegan{}; // a change in place's first reconfiguring
 	};
 	/// A node's removed record.
 	void removed(const NodeName& node, std::uint64_t droppedFrames);

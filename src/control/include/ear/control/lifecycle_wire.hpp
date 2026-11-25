@@ -14,7 +14,7 @@ namespace ear::control {
 /// (stop, unchanged), node.restart (restart, retry, unchanged), node.disable (disable, unchanged), node.enable (enable,
 /// unchanged). `stored` is node.update's on a disabled node, from slice 3d (docs/design/reconfigure.md); it is here so
 /// the one list of names has one home.
-enum class AppliedKind { start, stop, restart, retry, disable, enable, stored, unchanged };
+enum class AppliedKind { start, stop, restart, retry, disable, enable, stored, unchanged, reconfigure };
 /// "start" | "stop" | "restart" | "retry" | "disable" | "enable" | "stored" | "unchanged": the one home of these strings.
 std::string_view appliedName(AppliedKind kind) noexcept;
 /// A lifecycle request's result: {"applied": appliedName(kind)}.
