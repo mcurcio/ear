@@ -15,7 +15,6 @@
 #include <algorithm>
 #include <map>
 #include <optional>
-#include <set>
 #include <utility>
 #include <vector>
 
@@ -48,17 +47,12 @@ struct MainLoopGateway::Impl {
 	Executor& control;
 	GraphRequests& requests;
 	WallClock clock;
-	EventSink* sink = nullptr;                 // main loop only
-	const NodeCounterSource* counts = nullptr; // main loop only
+	EventSink* sink = nullptr; // main loop only
 	/// Each node's health as last sent (main loop only), forgotten when the node leaves the graph.
 	std::unique_ptr<SentMap> sent = std::make_unique<SentMap>();
 	/// The companion list last sent for each node a client holds (main loop only): [] at its node.added, erased at its
 	/// node.removed (a replace's too).
 	std::unique_ptr<CompanionsMap> companions = std::make_unique<CompanionsMap>();
-	/// The wanted routes and each one's status as last told (main loop only): a change of a node's ports is sent as its
-	/// replace, so its routes are sent again around it with the status they keep (docs/control-port.md#methods).
-	std::set<Route> routes;
-	std::map<Route, RouteStatus> statuses;
 
 	/// Main loop: `call(*sink)` on the control executor; dropped before watch().
 	template <class Call> void toSink(Call call) {
@@ -95,8 +89,6 @@ void MainLoopGateway::graphFileChanged(const GraphFileChanged& change) {
 
 void MainLoopGateway::graphFileWritten(const std::string&) {}
 
-void MainLoopGateway::readCounts(const NodeCounterSource& nodes) { impl_->counts = &nodes; }
-
 void MainLoopGateway::nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) {
 	const NodeHealth health = healthFromSpec(node);
 	const auto since = impl_->clock();
@@ -107,47 +99,26 @@ void MainLoopGateway::nodeAdded(const NodeSpec& node, std::shared_ptr<const Node
 
 void MainLoopGateway::nodeReplaced(const NodeSpec& node, std::shared_ptr<const NodeConfig> config,
                                    const NodeChange& change) {
-	// Observers hear the replace before NodeHost does, so the name's counts are still the older node's: what the newer
-	// one carries on from.
-	static_cast<void>(change); // a replace is of another type, which counts from zero
-	const NodeCounts carried{};
+	static_cast<void>(change); // a replace is of another type, a new node that counts from zero
 	const NodeHealth health = healthFromSpec(node);
 	const auto since = impl_->clock();
 	impl_->sent->insert_or_assign(node.name, Sent{health, since, !node.disabled});
 	impl_->companions->insert_or_assign(node.name, std::vector<CompanionView>{}); // what node.added says
-	impl_->post(NodeAdded{node, config->ports().publicOnly(), health, since, carried});
+	impl_->post(NodeAdded{node, config->ports().publicOnly(), health, since});
 }
 
 void MainLoopGateway::nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig>) {
 	impl_->post(NodeUpdated{node.name, node.settings, node.disabled, NodeOutcome::restart});
 }
 
-void MainLoopGateway::nodeChanged(const NodeSpec& node, std::shared_ptr<const NodeConfig> config,
-                                  const NodeChange& change) {
-	if (!change.portsChanged()) {
-		impl_->post(NodeUpdated{node.name, node.settings, node.disabled, change.outcome});
-		return;
-	}
-	// A change of ports reaches the wire as the node's replace, as it did before the block was reshaped in place: its
-	// routes removed, the node removed and added with the ports it now has and the counters it carries on, its routes
-	// added again with the status they keep, since their links never went (docs/architecture.md#reshapes).
-	std::vector<Route> kept;
-	for (const Route& route : impl_->routes)
-		if (route.from.node == node.name || route.to.node == node.name) kept.push_back(route);
-	for (const Route& route : kept) impl_->post(RouteRemoved{route});
-	const NodeCounts carried =
-		impl_->counts != nullptr ? impl_->counts->counts(node.name).value_or(NodeCounts{}) : NodeCounts{};
-	nodeRemoved(node.name);
-	const NodeHealth health = healthFromSpec(node);
-	const auto since = impl_->clock();
-	impl_->sent->insert_or_assign(node.name, Sent{health, since, !node.disabled});
-	impl_->companions->insert_or_assign(node.name, std::vector<CompanionView>{}); // what node.added says
-	impl_->post(NodeAdded{node, config->ports().publicOnly(), health, since, carried});
-	for (const Route& route : kept) {
-		impl_->post(RouteAdded{route});
-		if (const auto status = impl_->statuses.find(route); status != impl_->statuses.end())
-			impl_->post(RouteChanged{status->second});
-	}
+void MainLoopGateway::nodeChanged(const NodeSpec& node, std::shared_ptr<const NodeConfig>, const NodeChange& change) {
+	NodeUpdated updated{node.name, node.settings, node.disabled, change.outcome};
+	// A change of ports keeps the node, its block and the links of the ports it keeps (docs/architecture.md#reshapes):
+	// the client redraws its handles in place (docs/control-port.md#notifications).
+	if (change.portsChanged())
+		updated.reshaped =
+			NodeReshaped{change.inPlace, portsMoved(change.oldPorts, change.ports), change.ports.publicOnly()};
+	impl_->post(std::move(updated));
 }
 
 void MainLoopGateway::nodeRemoved(const NodeName& node) {
@@ -156,16 +127,9 @@ void MainLoopGateway::nodeRemoved(const NodeName& node) {
 	impl_->post(NodeRemoved{node});
 }
 
-void MainLoopGateway::routeAdded(const Route& route) {
-	impl_->routes.insert(route);
-	impl_->post(RouteAdded{route});
-}
+void MainLoopGateway::routeAdded(const Route& route) { impl_->post(RouteAdded{route}); }
 
-void MainLoopGateway::routeRemoved(const Route& route) {
-	impl_->routes.erase(route);
-	impl_->statuses.erase(route);
-	impl_->post(RouteRemoved{route});
-}
+void MainLoopGateway::routeRemoved(const Route& route) { impl_->post(RouteRemoved{route}); }
 
 void MainLoopGateway::nodeChanged(const NodeHealth& told) {
 	NodeHealth health = onWire(told);
@@ -187,10 +151,7 @@ void MainLoopGateway::nodeGone(const NodeName& node, std::uint64_t droppedFrames
 	impl_->post(NodeGone{node, droppedFrames});
 }
 
-void MainLoopGateway::routeChanged(const RouteStatus& status) {
-	if (impl_->routes.contains(status.route)) impl_->statuses.insert_or_assign(status.route, status);
-	impl_->post(RouteChanged{status});
-}
+void MainLoopGateway::routeChanged(const RouteStatus& status) { impl_->post(RouteChanged{status}); }
 
 void MainLoopGateway::countersChanged(const GraphCounts& graph, std::uint64_t lostMs,
                                       std::span<const NamedCounts> nodes) {

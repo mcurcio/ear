@@ -40,18 +40,21 @@ using Failure = FailureReason;
 /// cause.kind).
 struct NodeCause {
 	/// fellBack is a restart's own kind only: a change in place that could not finish
-	/// (docs/architecture.md#changes-in-place).
-	enum class Kind { stop, removing, disabling, restarting, settings, action, retry, enabling, fellBack };
+	/// (docs/architecture.md#changes-in-place). reshape is a settings change that changes the ports
+	/// (docs/architecture.md#reshapes).
+	enum class Kind { stop, removing, disabling, restarting, settings, action, retry, enabling, fellBack, reshape };
 	/// Why a change in place fell back to a restart.
 	enum class FellBack { restartAsked, deadline, resourceRefused, resourceLost, failed, restartRequested };
 	Kind kind;
-	/// restarting only: the restart's own kind (settings, action, enabling or fellBack), as configuring's.
+	/// restarting only: the restart's own kind (settings, reshape, action, enabling or fellBack), as configuring's.
 	std::optional<Kind> restart;
-	/// settings or fellBack, or restarting by either: the changed keys.
+	/// settings, reshape or fellBack, or restarting by one: the changed keys.
 	std::vector<std::string> keys;
 	/// fellBack, or restarting by it: why, and in words.
 	std::optional<FellBack> reason{};
 	std::string detail{};
+	/// reshape, or restarting by it: the public ports the change adds and removes against the configuration's.
+	PortsMoved ports{};
 	bool operator==(const NodeCause&) const = default;
 };
 
@@ -312,7 +315,9 @@ public:
 	// removal.
 	/// A change in place is taken only by a node that has rested and is neither failed nor disabled, from running or
 	/// stopped (docs/architecture.md#changes-in-place); any other takes it as a restart, as a restart-only change.
-	Actions change(Queued queued, std::vector<std::string> keys, ChangeKind kind = ChangeKind::restart);
+	/// `ports`: the newest settings' ports against the configuration's; not empty, a restart's cause is `reshape`.
+	Actions change(Queued queued, std::vector<std::string> keys, ChangeKind kind = ChangeKind::restart,
+	               PortsMoved ports = {});
 	Actions disable();
 	Actions enable();
 	Actions remove();
@@ -377,6 +382,7 @@ private:
 	void tell(Actions& out);
 	void askConfig(ConfigEvent event, Actions& out);
 	bool beginRestart(NodeCause why, Actions& out);
+	NodeCause settingsCause(std::vector<std::string> keys) const; // settings, or reshape when the ports moved
 	void beginChange(Actions& out);
 	bool mayChangeInPlace() const;
 	void configNone(Actions& out);
@@ -392,6 +398,7 @@ private:
 	Queued queued_;
 	std::uint64_t configuredVersion_ = 0;
 	std::vector<std::string> changedKeys_;
+	PortsMoved movedPorts_; // the newest settings' ports against the configuration's
 	// A change in place: the version and keys in flight; the keys of the changes since the applied settings (or, while
 	// committing, since the change in flight) not yet taken, and whether every one of them is in place.
 	std::uint64_t changeVersion_ = 0;

@@ -4018,7 +4018,7 @@ TEST_CASE("A change of ports restarts the node behind its one block, reshaped be
 	four->widen();
 	f.host.nodeChanged(NodeSpec{"desk", "test", {{"playback", 4}}}, four, reshapeTo(*four));
 	f.settle();
-	CHECK(f.listener.phases("desk") == Phases{"stopping (restarting settings)", "configuring (settings)", "stopped"});
+	CHECK(f.listener.phases("desk") == Phases{"stopping (restarting reshape)", "configuring (reshape)", "stopped"});
 	CHECK(f.blocks.made.size() == 1); // the block is kept
 	CHECK(std::ranges::count(f.log, std::string("block destroyed")) == 0);
 	// Reshaped once, after the old configuration went and before the new one's configure.

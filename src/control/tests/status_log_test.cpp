@@ -395,6 +395,16 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 		                                          "deadline 10s passed"}));
 		},
 		[](StatusLog& log, Lines&) {
+			ear::NodeCause restarting{Kind::restarting, Kind::reshape, {"playback"}};
+			restarting.ports = ear::PortsMoved{{"play.3"}, {}};
+			log.nodeChanged(health("desk", NodePhase::stopping, restarting));
+		},
+		[](StatusLog& log, Lines&) {
+			ear::NodeCause reshape{Kind::reshape, std::nullopt, {"playback"}};
+			reshape.ports = ear::PortsMoved{{"play.3"}, {}};
+			log.nodeChanged(health("desk", NodePhase::configuring, reshape));
+		},
+		[](StatusLog& log, Lines&) {
 			log.nodeDiagnostic("tv", "ear.reconfigure-superseded",
 		                       "a newer change superseded the change of port before its commit point", {});
 		},

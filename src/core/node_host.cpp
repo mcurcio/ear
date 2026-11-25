@@ -368,6 +368,10 @@ struct NodeHost::Impl {
 			const bool lost = aggregate_.block().state() == lc::BlockState::lost;
 			queued_ = lost ? nullptr : std::move(config);
 			++version_;
+			// A restart's cause is a reshape when the newest ports differ from the configuration's
+			// (docs/architecture.md#reshapes).
+			PortsMoved moved;
+			if (config_ && config_->config && queued_) moved = portsMoved(config_->config->ports(), queued_->ports());
 			switch (change.outcome) {
 			case NodeOutcome::unchanged: // returned above
 				break;
@@ -386,12 +390,12 @@ struct NodeHost::Impl {
 				const bool inPlace =
 					change.inPlace && config_ && config_->instance && config_->instance->changes() && reshapesInPlace();
 				feed(aggregate_.change(queued(), change.keys,
-				                       inPlace ? lc::ChangeKind::inPlace : lc::ChangeKind::restart));
+				                       inPlace ? lc::ChangeKind::inPlace : lc::ChangeKind::restart, moved));
 				break;
 			}
 			case NodeOutcome::restart:
 			case NodeOutcome::stored:
-				feed(aggregate_.change(queued(), change.keys));
+				feed(aggregate_.change(queued(), change.keys, lc::ChangeKind::restart, moved));
 				break;
 			case NodeOutcome::disable:
 				feed(aggregate_.disable());

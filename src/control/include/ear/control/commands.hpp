@@ -19,6 +19,8 @@ struct AddNode {
 struct UpdateNode {
 	NodeName node;
 	NodeSettings settings;
+	bool dropRoutes =
+		false; // feature reshape: remove the routes its new ports strand (docs/control-port.md#changes-of-ports)
 };
 struct RemoveNode {
 	NodeName node;
@@ -67,8 +69,11 @@ using CommandResult =
 inline constexpr int wireProtocol = 1;
 /// A node's own knobly text: nodeTexts on the GraphFile and node.setText (docs/control-port.md#a-nodes-own-text).
 inline constexpr std::string_view nodeTextFeature = "node-text";
-inline constexpr std::array<std::string_view, 4> wireFeatures{"lifecycle", "counters", companionsFeature,
-                                                              nodeTextFeature};
+/// A change of a node's ports kept as the same node: applied reshape, node.updated's ports, dropRoutes and ports-in-use
+/// (docs/control-port.md#changes-of-ports).
+inline constexpr std::string_view reshapeFeature = "reshape";
+inline constexpr std::array<std::string_view, 5> wireFeatures{"lifecycle", "counters", companionsFeature,
+                                                              nodeTextFeature, reshapeFeature};
 /// Control thread. Named params only, decoded with graph_json. Unknown method: methodNotFound;
 /// a missing, extra or mistyped key: invalidParams whose message is the JsonError
 /// ("/from/port: missing") and whose data is {"pointer"} (the JSON pointer it names). graphFile.get and

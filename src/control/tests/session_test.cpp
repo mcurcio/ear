@@ -281,21 +281,9 @@ TEST_CASE("snapshot.json: graph.get and graph.subscribe answer with the whole gr
 	CHECK(w.graph.offLoop == 0);
 }
 
-/// A node's counters by name, as NodeHost answers them.
-struct HandCounts final : ear::NodeCounterSource {
-	std::map<ear::NodeName, ear::NodeCounts> nodes;
-	std::optional<ear::NodeCounts> counts(const ear::NodeName& node) const override {
-		const auto it = nodes.find(node);
-		if (it == nodes.end()) return std::nullopt;
-		return it->second;
-	}
-	std::optional<ear::NodeCounts> spanCounts(std::uint64_t) const override { return std::nullopt; }
-	std::vector<ear::CompanionView> spanCompanions(std::uint64_t) const override { return {}; }
-};
-
 TEST_CASE(
-	"counters-changed.json: the snapshot's counters, counters.changed replacing what it names, and a change of ports' "
-	"node.added carrying the counts it carries on",
+	"counters-changed.json: the snapshot's counters, counters.changed replacing what it names, and a change of ports "
+	"keeping the node",
 	"[session][protocol][counters]") {
 	using ear::NamedCounts;
 	using ear::NodeCounts;
@@ -315,8 +303,6 @@ TEST_CASE(
 	                              std::nullopt,
 	                              NodeCounts{.missedCycles = 33, .overruns = 2}});
 	w.graph.view.counts = ear::GraphCounts{.cycles = 18750, .cutCycles = 39, .stalls = 1};
-	HandCounts counts;
-	w.gateway.readCounts(counts);
 	RecordingOutbox out;
 	ControlSession session(*w.hub, out);
 
@@ -329,9 +315,8 @@ TEST_CASE(
 		const std::vector<NamedCounts> two{{"desk", {.missedCycles = 12}}, {"ghost", {.missedCycles = 5}}};
 		w.gateway.countersChanged({.cycles = 56250, .cutCycles = 44, .stalls = 2}, 234, two);
 	});
-	// The channel count changes: a reshape, which the wire still shows as the node's replace (node.removed, node.added),
-	// its node.added carrying the counters the node has counted.
-	counts.nodes["desk"] = NodeCounts{.missedCycles = 12};
+	// The channel count changes: a reshape, the same node with the counters it has counted
+	// (docs/control-port.md#changes-of-ports).
 	w.graph.script.push_back({R"(updateNode desk {"card":"MOTU","playback":4})", [&] {
 								  const ear::NodeChange ports{.outcome = ear::NodeOutcome::reshape,
 		                                                      .keys = {"playback"},
@@ -350,14 +335,10 @@ TEST_CASE(
 	CHECK(w.graph.script.empty());
 }
 
-TEST_CASE("A replace (another type), and a node added, carry zero counters whatever the name counted",
-          "[session][counters]") {
+TEST_CASE("A replace (another type), and a node added, carry zero counters", "[session][counters]") {
 	World w;
 	w.graph.view =
 		ear::GraphView{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {"card", "white"}, {}, {}};
-	HandCounts counts;
-	counts.nodes["x"] = ear::NodeCounts{.overruns = 9};
-	w.gateway.readCounts(counts);
 	RecordingOutbox out;
 	ControlSession session(*w.hub, out);
 	w.receive(session, R"({"jsonrpc":"2.0","id":1,"method":"graph.subscribe"})");
@@ -496,6 +477,10 @@ TEST_CASE("errors.json: refusals, stopping and envelope errors", "[session][prot
 	w.graph.script.push_back(
 		{"restartNode fpp", refused(ControlRefusal{NotRestartable{"fpp", NotRestartable::Reason::notStarted}})});
 	w.graph.script.push_back({"stopNode ghost", refused(Result(std::unexpected(ear::UnknownNode{"ghost"})))});
+	// A change of ports stranding a route (docs/control-port.md#changes-of-ports).
+	w.graph.script.push_back(
+		{R"(updateNode desk {"card":"MOTU","playback":1})",
+	     refused(ControlRefusal{PortsInUse{"desk", {"play.2"}, {{{"kitchen", "from.left"}, {"desk", "play.2"}}}}})});
 	w.graph.script.push_back({"startNode noise", refused(Result(std::unexpected(ear::Stopping{})))});
 	RecordingOutbox out;
 	ControlSession session(*w.hub, out);
@@ -543,7 +528,7 @@ TEST_CASE("lifecycle.json: a node's whole life, each health change one node.stat
 	using Lifecycle = std::expected<void, ear::CommandError>;
 	const json document = fixture("lifecycle");
 	const auto requests = requestsOf(document);
-	REQUIRE(requests.size() == 30);
+	REQUIRE(requests.size() == 31);
 	World w;
 	const ear::Ports card2{{{ear::Direction::input, "play", {"1", "2"}}}};
 	const ear::Ports noisePorts{{{ear::Direction::output, "noise", {"mono"}}}};
@@ -831,6 +816,38 @@ TEST_CASE("lifecycle.json: a node's whole life, each health change one node.stat
 		w.told(at("fpp", NodePhase::running));
 	});
 
+	// A change of ports (docs/control-port.md#changes-of-ports): the same node, its ports redrawn, restarted with the
+	// cause reshape.
+	const ear::Ports card3{{{ear::Direction::input, "play", {"1", "2", "3"}}}};
+	const json porch3 = {{"card", "USB3"}, {"playback", 3}};
+	w.graph.script.push_back({"updateNode porch " + porch3.dump(), [&]() -> CommandResult {
+								  w.gateway.nodeChanged({"porch", "card", porch3}, std::make_shared<Config>(card3),
+		                                                ear::NodeChange{.outcome = ear::NodeOutcome::reshape,
+		                                                                .keys = {"playback"},
+		                                                                .oldPorts = card2,
+		                                                                .ports = card3});
+								  ear::NodeCause reshape{Kind::reshape, std::nullopt, {"playback"}};
+								  reshape.ports = ear::portsMoved(card2, card3);
+								  ear::NodeCause restarting = reshape;
+								  restarting.kind = Kind::restarting;
+								  restarting.restart = Kind::reshape;
+								  auto stopping = at("porch", NodePhase::stopping);
+								  stopping.cause = restarting;
+								  w.told(stopping);
+								  return Lifecycle{};
+							  }});
+	w.receive(session, requests[30]);
+	w.onMain([&] {
+		ear::NodeCause reshape{Kind::reshape, std::nullopt, {"playback"}};
+		reshape.ports = ear::portsMoved(card2, card3);
+		auto configuring = at("porch", NodePhase::configuring);
+		configuring.cause = reshape;
+		w.told(configuring);
+		w.told(at("porch", NodePhase::configured));
+		w.told(at("porch", NodePhase::starting));
+		w.told(at("porch", NodePhase::running));
+	});
+
 	checkMessages(out, document["messages"]);
 	CHECK(w.graph.script.empty());
 	CHECK(w.graph.offLoop == 0);
@@ -886,7 +903,6 @@ TEST_CASE("graph-file.json: file changes come before the events they cause, and 
 	const auto requests = requestsOf(document);
 	REQUIRE(requests.size() == 15);
 	const fx::Texts t;
-	const ear::Route toDesk{{"noise", "noise.mono"}, {"desk", "play.1"}};
 	const ear::Ports card2{{{ear::Direction::input, "play", {"1", "2"}}}};
 	const ear::Ports card4{{{ear::Direction::input, "play", ear::numbered(4)}}};
 	const auto config = [](ear::Ports ports) { return std::make_shared<Config>(std::move(ports)); };
@@ -942,16 +958,23 @@ TEST_CASE("graph-file.json: file changes come before the events they cause, and 
 	w.graph.script.push_back({R"(updateNode desk {"card":"MOTU"})", refused(FileRefusal{SharedDefinition{{8, 5}}})});
 	w.receive(session, requests[8]);
 
-	w.graph.script.push_back({R"(updateNode desk {"card":"MOTU","playback":4})", [&]() -> CommandResult {
-								  w.fileChanged(fx::recordFile("v7", t.t7, "v7"), FileChangeCause::edit);
-								  w.gateway.routeRemoved(toDesk);
-								  w.gateway.nodeRemoved("desk");
-								  w.gateway.nodeRemoved("porch");
-								  w.nodeAdded({"desk", "card", {{"card", "MOTU"}, {"playback", 4}}}, card4);
-								  w.nodeAdded({"porch", "card", {{"card", "USB2"}, {"playback", 4}}}, card4);
-								  w.gateway.routeAdded(toDesk);
-								  return Result{};
-							  }});
+	w.graph.script.push_back(
+		{R"(updateNode desk {"card":"MOTU","playback":4})", [&]() -> CommandResult {
+			 // A reshape of both: the same nodes, the route to desk:play.1 kept
+			 // (docs/control-port.md#changes-of-ports); each failed card configured afresh.
+			 w.fileChanged(fx::recordFile("v7", t.t7, "v7"), FileChangeCause::edit);
+			 const ear::NodeChange reshape{
+				 .outcome = ear::NodeOutcome::reshape, .keys = {"playback"}, .oldPorts = card2, .ports = card4};
+			 w.gateway.nodeChanged({"desk", "card", {{"card", "MOTU"}, {"playback", 4}}}, config(card4), reshape);
+			 w.gateway.nodeChanged({"porch", "card", {{"card", "USB2"}, {"playback", 4}}}, config(card4), reshape);
+			 for (const char* name : {"desk", "porch"}) {
+				 ear::NodeHealth configuring = health(name, NodeState::starting);
+				 configuring.cause = ear::NodeCause{ear::NodeCause::Kind::reshape, std::nullopt, {"playback"}};
+				 configuring.cause->ports = ear::PortsMoved{{"play.3", "play.4"}, {}};
+				 w.told(configuring);
+			 }
+			 return Result{};
+		 }});
 	w.receive(session, requests[9]);
 	w.onMain([&] {
 		w.state("desk", NodeState::failed,

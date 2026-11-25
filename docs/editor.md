@@ -659,11 +659,11 @@ happened in the last minute. The rules:
   minute; its tooltip says the host held up the audio thread and gives the totals ("44 dropouts
   (234 ms) in 2 stalls since ear started").
 - **A mark lasts across a change of ports.** A node's counters never step back while it
-  lives, so the values held for a node are kept when it is removed (until the connection closes).
-  A change of ports is sent as a replace whose `node.added` carries at least what was held, so its carried counts are
-  no rise and a mark the older node showed goes on; a new node under the name comes with zeros, a
-  fall, so its counts start fresh. Companions' entries are still forgotten when their list drops
-  them, as their counters count per configuration.
+  lives, and a change of its ports keeps the node (`node.updated` with its new ports), so its counts
+  and its mark go on. The values held for a node are kept when it is removed (until the connection
+  closes), so a new node under the name, which comes with zeros, is a fall and its counts start
+  fresh. Companions' entries are still forgotten when their list drops them, as their counters
+  count per configuration.
 - **In text, not colour alone.** Each mark's glyph is hidden from screen readers beside its words
   ("in the last minute: overran 1 time", "3 more in the last minute"); the badge's count is its
   text. Nothing shows without the feature: an ear without it sends no counters.

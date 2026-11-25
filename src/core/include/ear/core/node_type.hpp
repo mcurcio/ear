@@ -69,6 +69,15 @@ private:
 	std::vector<PortName> insideOutputs_;
 	std::vector<Bank> banks_;
 };
+/// A change of a node's public ports (docs/architecture.md#reshapes): the whole names `after` has and `before` lacks,
+/// and those `before` has and `after` lacks, inputs then outputs, each in its ports' order.
+struct PortsMoved {
+	std::vector<PortName> added;
+	std::vector<PortName> removed;
+	bool empty() const noexcept { return added.empty() && removed.empty(); }
+	friend bool operator==(const PortsMoved&, const PortsMoved&) = default;
+};
+PortsMoved portsMoved(const Ports& before, const Ports& after);
 /// Why a node is failed. Part of health; never returned by a control call. The codes are
 /// docs/architecture.md#phases-states-and-what-is-wanted: `lost` is a node that had reached running or stopped and said
 /// it cannot go on (its handle's lost(detail), or a hook that threw once it rested).

@@ -47,6 +47,7 @@ export type CauseKind =
   | "retry"
   | "enabling"
   | "fell-back"
+  | "reshape"
   | (string & {});
 /** Why a change in place fell back to a restart (cause.kind fell-back). */
 export type FellBackReason =
@@ -70,6 +71,7 @@ export type Applied =
   | "stored"
   | "unchanged"
   | "reconfigure"
+  | "reshape"
   | (string & {});
 
 export interface FailureReason {
@@ -79,13 +81,23 @@ export interface FailureReason {
 
 export interface NodeCause {
   kind: CauseKind;
-  /** settings and fell-back: the changed keys. */
+  /** settings, reshape and fell-back: the changed keys. */
   keys?: string[];
+  /** reshape: the public ports the change adds and removes. */
+  added?: string[];
+  removed?: string[];
   /** fell-back: why, and in words. */
   reason?: FellBackReason;
   detail?: string;
   /** restarting: the restart's own kind (and its members). */
-  restart?: { kind: CauseKind; keys?: string[]; reason?: FellBackReason; detail?: string };
+  restart?: {
+    kind: CauseKind;
+    keys?: string[];
+    added?: string[];
+    removed?: string[];
+    reason?: FellBackReason;
+    detail?: string;
+  };
 }
 
 /** What a node still waits for, once its phase has lasted 2 s. */
@@ -122,6 +134,12 @@ export interface NodeHealth {
   keys?: string[];
   /** reconfiguring only: the keys changed since its commit point, which the node takes once it ends. */
   next?: string[];
+}
+
+/** A change of a node's ports (feature reshape): whole port names. */
+export interface PortsMoved {
+  added: string[];
+  removed: string[];
 }
 
 export interface PortRef {
@@ -213,7 +231,7 @@ export interface GraphNode extends NodeHealth {
   outputs: string[];
   /** ear.conf disables it (`disabled true;` in its braces). */
   disabled?: true;
-  /** Feature counters: its counters (a port-caused replace's node.added carries those it carries on). */
+  /** Feature counters: its counters (zero in node.added; a change of ports keeps them). */
   counters?: NodeCounters;
   /** Feature companions: its companion list, in request order ([] in node.added, and for a node with none). */
   companions?: Companion[];
@@ -316,7 +334,11 @@ export interface Methods {
   "levels.subscribe": { params: undefined; result: { windowsPerSecond: number } };
   /** disabled (feature lifecycle): written as `disabled true;` in the node's braces. */
   "node.add": { params: NodeSpec & { disabled?: boolean }; result: Record<string, never> };
-  "node.update": { params: { name: string; settings: JsonObject }; result: Record<string, never> };
+  /** dropRoutes (feature reshape): the routes its new ports strand are removed in the same edit. */
+  "node.update": {
+    params: { name: string; settings: JsonObject; dropRoutes?: boolean };
+    result: Record<string, never>;
+  };
   "node.remove": { params: { name: string }; result: Record<string, never> };
   "route.add": { params: RouteEnds; result: Record<string, never> };
   "route.remove": { params: RouteEnds; result: Record<string, never> };
@@ -353,8 +375,20 @@ export type Level = [peak: number, rms: number];
 export interface Notifications {
   /** Public ports only; its health from its spec (added, or disabled). */
   "node.added": GraphNode;
-  /** applied: what the change asks of the node; disabled only when true. */
-  "node.updated": { name: string; settings: JsonObject; applied?: Applied; disabled?: true };
+  /**
+   * applied: what the change asks of the node; disabled only when true. Feature reshape: when its ports changed, the
+   * ports added and removed and its new inputs and outputs, and on a reshape whether it is taken in place.
+   */
+  "node.updated": {
+    name: string;
+    settings: JsonObject;
+    applied?: Applied;
+    disabled?: true;
+    inPlace?: boolean;
+    ports?: PortsMoved;
+    inputs?: string[];
+    outputs?: string[];
+  };
   /** After route.removed for each of its routes. */
   "node.removed": { name: string };
   /** Every health member: one absent is absent now. */
@@ -414,6 +448,8 @@ export type ControlErrorCode =
   | "node-disabled"
   /** node.start or node.restart: the block is lost; node.restart: not started yet (data.reason). */
   | "not-restartable"
+  /** node.update without dropRoutes: its new ports drop ports routes name (data.ports, data.routes). */
+  | "ports-in-use"
   | (string & {});
 
 export const rpcErrorCodes = {
@@ -436,6 +472,9 @@ export interface RpcErrorObject {
     column?: number;
     /** not-restartable: "block-lost" or "not-started". */
     reason?: string;
+    /** ports-in-use: the dropped ports routes name, and every such route. */
+    ports?: string[];
+    routes?: RouteEnds[];
     /** invalidParams. */
     pointer?: string;
   };
@@ -538,9 +577,10 @@ const fileErrorCodeSet: { [C in FileErrorCode]: true } = {
 };
 export const fileErrorCodes = Object.keys(fileErrorCodeSet) as FileErrorCode[];
 
-const controlErrorCodeSet: { [C in "node-disabled" | "not-restartable"]: true } = {
+const controlErrorCodeSet: { [C in "node-disabled" | "not-restartable" | "ports-in-use"]: true } = {
   "node-disabled": true,
   "not-restartable": true,
+  "ports-in-use": true,
 };
 export const controlErrorCodes = Object.keys(controlErrorCodeSet) as ControlErrorCode[];
 
@@ -549,6 +589,7 @@ export const lifecycleFeature = "lifecycle";
 export const countersFeature = "counters";
 export const companionsFeature = "companions";
 export const nodeTextFeature = "node-text";
+export const reshapeFeature = "reshape";
 
 // ----- The conformance fixtures (test/protocol/*.json) -----
 

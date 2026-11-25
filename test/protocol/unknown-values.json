@@ -14,7 +14,8 @@
           "lifecycle",
           "counters",
           "companions",
-          "node-text"
+          "node-text",
+          "reshape"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -259,7 +260,8 @@
       "lifecycle",
       "counters",
       "companions",
-      "node-text"
+      "node-text",
+      "reshape"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,

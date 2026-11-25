@@ -6,6 +6,7 @@
 // knobly object leaves this thread.
 #include "keeper.hpp"
 
+#include <algorithm>
 #include <format>
 #include <random>
 #include <stdexcept>
@@ -61,13 +62,47 @@ CommandResult appliedOf(const NodeName& node, const std::vector<std::pair<NodeNa
 			return control::Applied{control::AppliedKind::restart};
 		case NodeOutcome::reconfigure:
 			return control::Applied{control::AppliedKind::reconfigure};
-		case NodeOutcome::reshape: // on the wire a change of ports is still a restart (docs/control-port.md#methods)
-			return control::Applied{control::AppliedKind::restart};
+		case NodeOutcome::reshape:
+			return control::Applied{control::AppliedKind::reshape};
 		case NodeOutcome::unchanged:
 			return control::Applied{control::AppliedKind::unchanged};
 		}
 	}
 	return control::Applied{control::AppliedKind::unchanged};
+}
+
+/// The routes a candidate keeps that name ports its edit takes from `node`, and those ports, in the order the node
+/// had them (docs/control-port.md#changes-of-ports). The keeper knows them on its own thread: a type's parse and ports
+/// are pure.
+struct Stranded {
+	std::vector<PortName> ports;
+	std::vector<Route> routes;
+};
+Stranded strandedBy(const GraphFileModel& before, const GraphFileModel& after, const NodeName& node) {
+	Stranded out;
+	const auto was = before.portsOf(node);
+	const auto now = after.portsOf(node);
+	if (!was || !now || !after.read().wanted) return out;
+	const PortsMoved moved = portsMoved(*was, *now);
+	if (moved.removed.empty()) return out;
+	const auto gone = [&](const PortRef& end) {
+		return end.node == node && std::ranges::find(moved.removed, end.port) != moved.removed.end();
+	};
+	for (const Route& route : after.read().wanted->routes)
+		if ((gone(route.from) || gone(route.to)) && std::ranges::find(out.routes, route) == out.routes.end())
+			out.routes.push_back(route);
+	for (const PortName& port : moved.removed)
+		if (std::ranges::any_of(out.routes, [&](const Route& r) {
+				return (r.from.node == node && r.from.port == port) || (r.to.node == node && r.to.port == port);
+			}))
+			out.ports.push_back(port);
+	return out;
+}
+
+CommandResult refusalOf(const EditRefusal& refusal) {
+	return std::visit(Overloaded{[](const CommandError& e) { return refused(e); },
+	                             [](const control::FileRefusal& r) { return CommandResult{r}; }},
+	                  refusal);
 }
 
 } // namespace
@@ -217,16 +252,29 @@ std::optional<CommandResult> Keeper::take(const control::Command& command) {
 						  },
 		                  command);
 	}
-	if (!*edit)
-		return std::visit(Overloaded{[](const CommandError& e) { return refused(e); },
-		                             [](const control::FileRefusal& r) { return CommandResult{r}; }},
-		                  edit->error());
+	if (!*edit) return refusalOf(edit->error());
 	if (!**edit) return appliedFor ? CommandResult{control::Applied{control::AppliedKind::unchanged}} : done();
 	GraphFileModel model = std::move(***edit);
 	// An edit's or a set's candidate that does not read cannot be planned: the text's errors answer it.
 	if (model.read().hasErrors())
 		return CommandResult{control::FileRefusal{control::InvalidText{model.read().diagnostics}}};
-	candidate_ = Candidate{std::move(model), nextVersion(), std::move(appliedFor)};
+	std::vector<Route> dropped;
+	if (const auto* update = std::get_if<control::UpdateNode>(&command)) {
+		// A route to a port the edit takes away is refused ports-in-use, naming every such route, unless the edit
+		// asks dropRoutes: then their lines go in the same candidate, one commit and one write
+		// (docs/control-port.md#changes-of-ports).
+		Stranded stranded = strandedBy(working_, model, update->node);
+		if (!stranded.routes.empty()) {
+			if (!update->dropRoutes)
+				return CommandResult{control::ControlRefusal{
+					control::PortsInUse{update->node, std::move(stranded.ports), std::move(stranded.routes)}}};
+			auto without = model.removeRoutes(stranded.routes);
+			if (!without) return refusalOf(without.error());
+			if (*without) model = std::move(**without);
+			dropped = std::move(stranded.routes);
+		}
+	}
+	candidate_ = Candidate{std::move(model), nextVersion(), std::move(appliedFor), std::move(dropped)};
 	return std::nullopt;
 }
 

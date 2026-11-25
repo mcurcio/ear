@@ -765,3 +765,85 @@ TEST_CASE("stop(): queued edits answer stopping, reads are answered, and the las
 		CHECK(f.keeper->finalWriteFailure() == "disk full");
 	}
 }
+
+namespace {
+
+const std::string threeChannels = R"(graph {
+    rate 48khz;
+    block_size 256;
+}
+node white noise;
+node card desk { card MOTU; playback 3; }
+node card porch { card USB2; playback 2; }
+route noise:noise.mono desk:play.1;
+route noise:noise.mono desk:play.2; # goes with desk's second channel
+route noise:noise.mono porch:play.2;
+route noise:noise.mono desk:play.3;
+)";
+
+} // namespace
+
+TEST_CASE("An update dropping ports that routes name is refused ports-in-use, naming every such route, and changes "
+          "nothing",
+          "[keeper][reshape]") {
+	Fixture f("ports_in_use", threeChannels);
+	f.start();
+	const auto before = f.graphFile();
+	f.log.clear();
+	const CommandResult result = f.update("desk", {{"card", "MOTU"}, {"playback", 1}});
+	REQUIRE(code(result) == "ports-in-use");
+	const auto& inUse = std::get<control::PortsInUse>(std::get<control::ControlRefusal>(result));
+	CHECK(inUse.node == "desk");
+	CHECK(inUse.ports == std::vector<PortName>{"play.2", "play.3"});
+	CHECK(inUse.routes == std::vector<Route>{{{"noise", "noise.mono"}, {"desk", "play.2"}},
+	                                         {{"noise", "noise.mono"}, {"desk", "play.3"}}});
+	CHECK(f.log.lines == Lines{"reply"});
+	CHECK(f.graphFile().version == before.version);
+	// A change that strands no route is not refused: the channel it adds is unwired.
+	CHECK(ok(f.update("desk", {{"card", "MOTU"}, {"playback", 4}})));
+}
+
+TEST_CASE("dropRoutes removes exactly the stranded route lines with the change, in one commit and one write",
+          "[keeper][reshape]") {
+	Fixture f("drop_routes", threeChannels);
+	f.start();
+	const std::size_t changes = f.fileLog.changes.size();
+	auto results = f.run({control::UpdateNode{"desk", {{"card", "MOTU"}, {"playback", 1}}, true}});
+	CHECK(ok(results[0]));
+	CHECK(f.log.lines == Lines{"file edit", "route.removed noise:noise.mono desk:play.2",
+	                           "route.removed noise:noise.mono desk:play.3", "node.updated desk", "reply"});
+	const std::string expected =
+		replaced(replaced(replaced(threeChannels, "playback 3;", "playback 1;"),
+	                      "route noise:noise.mono desk:play.2; # goes with desk's second channel\n", ""),
+	             "route noise:noise.mono desk:play.3;\n", "");
+	CHECK(f.lastChange().file.text == expected);
+	CHECK(f.fileLog.changes.size() == changes + 1);
+	f.free();
+	CHECK(contents(f.file) == expected);
+	CHECK(f.fileLog.written.size() == 1);
+}
+
+TEST_CASE("dropRoutes refuses shared-definition when a stranded route's line makes other routes too, and changes "
+          "nothing",
+          "[keeper][reshape]") {
+	const std::string snippet = R"(graph {
+    rate 48khz;
+    block_size 256;
+}
+@snippet both $to {
+    route noise:noise.mono $to;
+}
+node white noise;
+node card desk { card MOTU; playback 2; }
+@use both desk:play.1;
+@use both desk:play.2;
+)";
+	Fixture f("drop_shared", snippet);
+	f.start();
+	const auto before = f.graphFile();
+	f.log.clear();
+	auto results = f.run({control::UpdateNode{"desk", {{"card", "MOTU"}, {"playback", 1}}, true}});
+	CHECK(code(results[0]) == "shared-definition");
+	CHECK(f.log.lines == Lines{"reply"});
+	CHECK(f.graphFile().text == before.text);
+}

@@ -67,7 +67,9 @@ does; it carries the `phase` beside the state.
 | `node <name> still <phase> after <s>s: waiting for <what>` | A phase that has lasted 2 s, when what it waits for first appears, then at most once per 10 s while that changes | `waitingFor` |
 | `node <name> removed dropped=<frames>` | Gone: everything it made is destroyed (state `stopping`, phase `removed`) | `droppedFrames` |
 
-`<why>` and the configuring cause read `settings changed: <keys>`, `restart invoked` (for
+`<why>` and the configuring cause read `settings changed: <keys>`, `ports changed: <keys>` (a
+change of settings that changes the node's ports: cause `reshape`, its `keys`, `added` and `removed`,
+[architecture.md](architecture.md#reshapes)), `restart invoked` (for
 `node.restart`), `retry`, `enabling`, or `could not apply <keys> in place: <detail>` (a change in
 place that fell back to a restart; `<detail>` the change version's reason, the refusal, the loss,
 or `deadline <n>s passed`). `<what>` names `the previous <name>` (an older node of its
@@ -75,7 +77,7 @@ name), `the engine` (its block), an engine companion's engine name (`fpp.rtp`), 
 `its loop <name>` (one of the node's loops not yet running), `its store <file>`, `its recording <path>`, `its claim
 <key>`, or `its program <name>` (its program not yet started).
 `configuring`, `configured` and `starting` after the first add write nothing of their own (they
-share the colour `starting`). The `cause` field is `{"kind"}`, with `restart: {"kind", "keys"?,
+share the colour `starting`). The `cause` field is `{"kind"}`, with `restart: {"kind", "keys"?, "added"?, "removed"?,
 "reason"?, "detail"?}` for a restart, as on the wire ([control-port.md](control-port.md#node-health)).
 
 ```json

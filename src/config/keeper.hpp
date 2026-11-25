@@ -55,6 +55,7 @@ private:
 		GraphFileModel model;
 		std::string version;
 		std::optional<NodeName> appliedFor{}; // the node of a DisableNode or EnableNode: answered by its outcome
+		std::vector<Route> routesDropped{};   // the routes dropRoutes removed from it
 	};
 
 	void pump();

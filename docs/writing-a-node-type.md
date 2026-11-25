@@ -102,7 +102,8 @@ inline constexpr auto portRow = setting::optional("port", setting::number(1, 655
   desired graph's plan reads them, and a change whose every changed key is marked is planned
   `reconfigure` rather than `restart`
   ([architecture.md](architecture.md#restarts-and-changes-of-settings)). A key whose value builds
-  the node's ports (a channel count) is never marked: a change of ports is a replace.
+  the node's ports (a channel count) need not be marked: a change of ports is a reshape, in place only
+  when every changed key is marked ([architecture.md](architecture.md#reshapes)).
 - Each key once; `disabled` (the framework's key) cannot be declared; a table's name must be its
   folder's. Each is a compile error.
 - The table is `SettingsTable<row1, row2, ...>{"<type>"}` (`SettingsTable<>{"white"}` for none).

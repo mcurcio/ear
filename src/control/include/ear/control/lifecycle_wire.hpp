@@ -7,19 +7,28 @@
 #include <string>
 #include <string_view>
 #include <variant>
+#include <vector>
 #include "ear/core/graph_spec.hpp"
+#include "ear/core/node_type.hpp"
 namespace ear::control {
 
 /// A lifecycle request's `applied` (docs/control-port.md#methods): node.start (start, retry, unchanged), node.stop
 /// (stop, unchanged), node.restart (restart, retry, unchanged), node.disable (disable, unchanged), node.enable (enable,
-/// unchanged). `stored` is node.update's on a disabled node, from slice 3d (docs/design/reconfigure.md); it is here so
-/// the one list of names has one home.
-enum class AppliedKind { start, stop, restart, retry, disable, enable, stored, unchanged, reconfigure };
-/// "start" | "stop" | "restart" | "retry" | "disable" | "enable" | "stored" | "unchanged": the one home of these strings.
+/// unchanged), and an edit's outcome where it is answered (node.disable, node.enable, node.set: `reconfigure`,
+/// `reshape` and `stored` among them, docs/control-port.md#methods); the one list of names has one home.
+enum class AppliedKind { start, stop, restart, retry, disable, enable, stored, unchanged, reconfigure, reshape };
+/// "start" | "stop" | "restart" | "retry" | "disable" | "enable" | "stored" | "unchanged" | "reconfigure" | "reshape":
+/// the one home of these strings.
 std::string_view appliedName(AppliedKind kind) noexcept;
-/// A lifecycle request's result: {"applied": appliedName(kind)}.
+/// A request's result: {"applied": appliedName(kind)}, and for a change of the node's ports
+/// (docs/control-port.md#changes-of-ports) "inPlace" (a reshape's), "ports" and the routes it removed ("routesDropped"),
+/// or, for a dry run, would remove ("routes").
 struct Applied {
 	AppliedKind kind;
+	std::optional<bool> inPlace{};
+	std::optional<PortsMoved> ports{};
+	std::optional<std::vector<Route>> routesDropped{};
+	std::optional<std::vector<Route>> routes{};
 	friend bool operator==(const Applied&, const Applied&) = default;
 };
 
@@ -35,14 +44,23 @@ struct NotRestartable {
 	Reason reason;
 	friend bool operator==(const NotRestartable&, const NotRestartable&) = default;
 };
+/// An edit whose new ports drop ports that wanted routes name, without `dropRoutes`
+/// (docs/control-port.md#changes-of-ports): those ports, and every such route.
+struct PortsInUse {
+	NodeName node;
+	std::vector<PortName> ports;
+	std::vector<Route> routes;
+	friend bool operator==(const PortsInUse&, const PortsInUse&) = default;
+};
 /// The control plane's own refusals (docs/control-port.md#error-codes ControlRefusal; slice 5 adds its other codes
 /// here).
-using ControlRefusal = std::variant<NodeDisabled, NotRestartable>;
-/// "node-disabled" | "not-restartable": the one home of these strings.
+using ControlRefusal = std::variant<NodeDisabled, NotRestartable, PortsInUse>;
+/// "node-disabled" | "not-restartable" | "ports-in-use": the one home of these strings.
 std::string_view controlRefusalCode(const ControlRefusal& refusal) noexcept;
 /// "block-lost" | "not-started".
 std::string_view reasonName(NotRestartable::Reason reason) noexcept;
-/// The code plus what it names: "node-disabled porch", "not-restartable desk: block-lost".
+/// The code plus what it names: "node-disabled porch", "not-restartable desk: block-lost",
+/// "ports-in-use desk: play.2 (1 route)".
 std::string describe(const ControlRefusal& refusal);
 
 /// The three lifecycle requests that are not edits (docs/control-port.md#methods).

@@ -677,12 +677,16 @@ the block does it). The plan's `NodeChange` carries the ports before and after.
   to `desk:play.4` while `desk` goes to two channels is refused `unknown-port`), so no wanted route
   names a vanishing port by the time a reshape commits, and a route kept is never removed or added:
   routes are removed before nodes change in a commit. A route may name a port that appears; it links
-  once the port is live.
+  once the port is live. Through the control port, the graph file keeper refuses such an edit first
+  as `ports-in-use`, naming every route, or with `dropRoutes` removes those route lines in the same
+  edit ([control-port.md](control-port.md#changes-of-ports)).
 - **As a restart** (the default): the old configuration is torn down as for a restart, then, at the
   new configuration's start, the block, silent, takes the new ports, and `configure` sees them.
   Surviving ports keep their links and carry zeros while the node restarts; inside banks are resized
-  with the rest, and their companions are made afresh by the new `configure`. The cause is the
-  settings change's (`settings`, its keys).
+  with the rest, and their companions are made afresh by the new `configure`. The cause is
+  `reshape`: the changed keys and the public ports added and removed against the ending
+  configuration's (a later change that brings the ports back before the restart is `settings`
+  again).
 - **On a node with no configuration** (disabled, or failed): the block alone is reshaped at the
   commit, no hook called; an enable later configures it with the ports the block already has.
 - **In place**, when every changed key is `.inPlace()` (`NodeChange::inPlace`), the type has a
@@ -697,9 +701,8 @@ the block does it). The plan's `NodeChange` carries the ports before and after.
   "configure changed the ports in place and gave no code for them". No built-in type reshapes in
   place; `reshape_test.cpp` proves it with a test type, channels 1 and 2 playing on through a third
   added and removed.
-- **On the wire** a change of ports is still sent as the node's replace, `applied` `restart`
-  ([control-port.md](control-port.md#methods)); the gateway sends the routes it keeps again around
-  it, with their status.
+- **On the wire** a change of ports is `node.updated` with `applied: "reshape"`, `inPlace` and the
+  ports added and removed ([control-port.md](control-port.md#changes-of-ports)).
 
 ### Failures
 

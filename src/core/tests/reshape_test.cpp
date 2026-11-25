@@ -124,6 +124,18 @@ TEST_CASE("A reshape with a restart-only key restarts the node behind its block,
 	for (int i = 0; i < 4; ++i) h.process(); // past the restart's fade-in
 	CHECK(h.phase() == "running");
 	CHECK(told(h, NodePhase::stopping));
+	// The restart's cause is the reshape's: its keys and the ports it adds (docs/architecture.md#reshapes).
+	NodeCause reshape{NodeCause::Kind::reshape, std::nullopt, {"channels", "mode"}};
+	reshape.ports = PortsMoved{{"out.3"}, {}};
+	NodeCause restarting = reshape;
+	restarting.kind = NodeCause::Kind::restarting;
+	restarting.restart = NodeCause::Kind::reshape;
+	CHECK(std::ranges::any_of(h.node().healths(), [&](const NodeHealth& one) {
+		return one.phase == NodePhase::stopping && one.cause == restarting;
+	}));
+	CHECK(std::ranges::any_of(h.node().healths(), [&](const NodeHealth& one) {
+		return one.phase == NodePhase::configuring && one.cause == reshape;
+	}));
 	CHECK(calls == std::vector<std::string>{"configure 2", "configure 3"});
 	CHECK(plays(h, 2, 3.0F));
 }

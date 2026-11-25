@@ -389,12 +389,10 @@ describe("the fixtures, replayed through the reducer into what is drawn", () => 
     expect(Object.keys(drawn[second]!.tables)).toEqual(["desk", "rec"]);
   });
 
-  it("keeps desk's mark across the port-caused replace, its carried counts no rise, then marks the next rise", () => {
-    const removed = isMethod("node.removed");
-    expect(drawn[removed]!.marks.desk).toBeUndefined();
-    const added = isMethod("node.added");
-    expect(drawn[added]!.marks.desk).toBe(true);
-    expect(drawn[added]!.tables.desk![0]).toBe("missed cycles 12!");
+  it("keeps desk's mark across a change of its ports, the same node, then marks the next rise", () => {
+    const updated = isMethod("node.updated");
+    expect(drawn[updated]!.marks.desk).toBe(true);
+    expect(drawn[updated]!.tables.desk![0]).toBe("missed cycles 12!");
     const last = drawn[drawn.length - 1]!;
     expect(last.marks).toEqual({ desk: true, rec: true });
     expect(last.tables.desk).toEqual(["missed cycles 12!", "overruns 1!", "repositions 0", "driver changes 0"]);

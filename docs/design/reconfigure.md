@@ -67,16 +67,17 @@ Built (steps 1 to 4 of section 11), described where they live and not repeated h
   ([`docs/architecture.md#reshapes`](../architecture.md#reshapes)); `PortBlock::reshape` on the plain add, its layouts
   swapped whole, its levels re-registered, the 32-port question of section 13 settled (a block may cross 32 ports:
   [`docs/engine.md#reshapes`](../engine.md#reshapes),
-  [`#the-one-data-loop-and-invokes`](../engine.md#the-one-data-loop-and-invokes)). On the wire a change of ports is
-  still sent as a replace, `applied` `restart`, until step 5.
+  [`#the-one-data-loop-and-invokes`](../engine.md#the-one-data-loop-and-invokes));
+- on the wire, feature `reshape`: `applied: "reshape"`, `node.updated` with `inPlace`, `ports`, `inputs` and `outputs`
+  in place of the replace, the cause `reshape` (`added`, `removed`) and its `ports changed` record, `ports-in-use` and
+  `node.update`'s `dropRoutes` ([`docs/control-port.md#changes-of-ports`](../control-port.md#changes-of-ports)).
 
 This page still designs:
 
 - a reshape in place of a configuration with companions: the companions on resized inside banks replaced make-before-break
   (7; built, such a node restarts);
 - `sendspin` in place (6.6);
-- on the wire: features `node.set`, `reshape` and `dryRun`, `dropRoutes`, `ports-in-use`, `applied: "reshape"` with
-  `inPlace` and `ports`, the cause `reshape`, and the editor (8).
+- on the wire: features `node.set` and `dryRun`, and the editor (8).
 
 The transitions this page names are the framework's numbering: **T9** (`running` or `stopped` → `reconfiguring`, the
 change version called), **T10** (the commit point: back to `running` or `stopped`), **T11** (the fallback: `reconfiguring`
@@ -228,9 +229,6 @@ place), [`docs/engine.md#reshapes`](../engine.md#reshapes) (`PortBlock::reshape`
 S4 and the 32-port answer: [`#the-one-data-loop-and-invokes`](../engine.md#the-one-data-loop-and-invokes)). Still
 designed:
 
-- **Through the control port** a plan keeping a route to a vanishing port becomes `ports-in-use`, naming every such
-  route, and `dropRoutes: true` removes those route lines in the same commit (X2, the owner's answer); a hand edit or
-  `graphFile.set` that keeps one is refused `unknown-port`, as built (8.1).
 - **In place with companions**: companions on resized inside banks replaced make-before-break, the new companion
   handed over in one invoke, so a bank never holds two at once (the block's binding storage is one per inside bank,
   `docs/architecture.md#companions`). Built, a configuration with any companion takes a reshape as a restart.
@@ -241,7 +239,7 @@ designed:
 ## 8. On the wire and in the editor
 
 The wire's frame (protocol 1, `features`, open enums) and the lifecycle's wire are built (`docs/control-port.md`). This
-slice adds the features `node.set`, `reshape` and `dryRun`.
+slice adds the features `node.set`, `reshape` (built: [`docs/control-port.md#changes-of-ports`](../control-port.md#changes-of-ports)) and `dryRun`.
 
 ### 8.1 Requests
 
@@ -265,13 +263,9 @@ slice adds the features `node.set`, `reshape` and `dryRun`.
 - **`dryRun: true`**: the keeper makes the candidate as for a real edit and posts it; the main loop plans it and
   answers the outcome without committing, telling, writing or changing the working copy. Every refusal a real edit
   would get, it gets. A dry run is advice: the real edit is judged afresh.
-- **`dropRoutes: true`** (on `node.set` and `node.update`, feature `reshape`): an edit whose new ports drop a port that
-  a wanted route names is refused `ports-in-use` (`data.ports`, `data.routes`, each `{from, to}`) unless it carries
-  `dropRoutes`; then the keeper removes those route lines in the same candidate (as `node.remove` removes a node's
-  route lines), so the routes and the reshape are one commit and one write (X2). The keeper knows the new ports on its
-  thread: a type's `parse` and `ports` are pure. A route line inside a snippet another route or node uses is refused
-  `shared-definition`. The reply and `node.updated` then carry `ports` (`{"added", "removed"}`, whole port names) and
-  the node's new `inputs` and `outputs`, the reply `routesDropped`.
+- **`dropRoutes`** and `ports-in-use` are built for `node.update`
+  ([`docs/control-port.md#changes-of-ports`](../control-port.md#changes-of-ports)); `node.set` takes `dropRoutes` the
+  same way, and its reply carries the change's `ports` and the routes removed, `routesDropped`.
 
 ```json
 {"jsonrpc":"2.0","id":8,"method":"node.set","params":{"name":"desk","settings":{"playback":1},"dryRun":true}}
@@ -281,25 +275,9 @@ slice adds the features `node.set`, `reshape` and `dryRun`.
 
 ### 8.2 Health, notifications and records
 
-- **`node.state`**: `state` and `phase` gain `reconfiguring` (open values, so additive within protocol 1); `keys`
-  (`reconfiguring` only: the keys this change applies) and `next` (keys changed since its commit point, which the node
-  takes when it ends). A supersession sends a new `node.state` `reconfiguring` with the new `keys` (or a `stopping` with
-  cause `restarting` if the newest change needs one). `cause.kind` of a restart gains `reshape` (`added`, `removed`) and
-  `fell-back` (`reason`: `restart-asked`, `deadline`, `resource-refused`, `resource-lost`, `failed`,
-  `restart-requested`; `detail`). A retune (slice 6) changes no health.
-- **`node.updated`** carries `ports` on a reshape (handles redrawn in place); a change of ports with the same type is no
-  longer `node.removed` and `node.added`.
-- **Companions**: `retiring: true` is built ([`docs/control-port.md#companions`](../control-port.md#companions)).
-- **Order**: an in-place change sends `node.updated` (`applied: "reconfigure"`), then `node.state` `reconfiguring`, then
-  the reply, in the commit's turn; then `node.state` `running` (or `stopped`). A reshape sends the dropped routes'
-  `route.removed`, then `node.updated` with `ports`, then the restart's or the reconfigure's sequence; the block's new
-  ports reach `route.status` only after `node.updated` named them.
-- **Standard output**: `node <n> reconfiguring: <keys, comma-separated>` (phase `reconfiguring`, `keys`); the `running`
-  that ends it carries `afterMs`; `stopping: restarting (<restart>)` gains `ports changed` and `could not apply <keys>
-  in place: <detail>` (`detail` the hook's reason, the refusal, `deadline 10s passed` or the loss).
-- **Diagnostics** (`diagnostic` records; on the wire with slice 5's `node.diagnostic`): `ear.reconfigure-fell-back`
-  (`reason`, `keys`, `detail`, `elapsedMs`; just before its `stopping` record), `ear.reconfigure-superseded` (`keys`, the
-  abandoned ones; `next`, the newest), `ear.retiring-lost` (subject the companion, `detail`).
+Built: `reconfiguring`, `keys`, `next`, the causes `fell-back` and `reshape`, `node.updated` with a change's ports, the
+order, the standard-output records and the diagnostics ([`docs/control-port.md#node-health`](../control-port.md#node-health),
+[`#changes-of-ports`](../control-port.md#changes-of-ports), [`docs/output-records.md#node`](../output-records.md#node)).
 
 ### 8.3 The editor
 
@@ -333,19 +311,16 @@ What steps 1 to 4 changed is built (section 2). What is left:
 | Built piece | Change |
 |---|---|
 | `NodeHost` | a reshape in place of a configuration with companions (7) |
-| `ear_control` (gateway) | a change of ports sent as `node.updated` with `ports`, no longer as a replace (8.2) |
 | `sendspin` | rows marked `.inPlace()`; its change version |
-| `ear_config` | `node.set`'s merge; `dropRoutes` and `ports-in-use` in the candidate; dry runs posted and dropped |
-| `ear_control`, `web/` | features `node.set`, `reshape`, `dryRun`; 8.3's editor beyond the `reconfiguring` style and line (built) |
+| `ear_config` | `node.set`'s merge; dry runs posted and dropped |
+| `ear_control`, `web/` | features `node.set`, `dryRun`; 8.3's editor beyond the `reconfiguring` style and line (built) |
 
 ## 10. Tests
 
 Built: what `docs/testing.md` lists for changes in place. Still to write with what they test:
 
 - **`ear_pipewire_tests`**: two sources into one inside input mixed (the port mixer loads).
-- **`ear_config_tests`**: `node.set`'s merge; a dry run changes nothing and tells no one; `dropRoutes` removes exactly
-  the stranded route lines in one write; a route line inside a snippet refused `shared-definition`; `ports-in-use`
-  naming every route.
+- **`ear_config_tests`**: `node.set`'s merge; a dry run changes nothing and tells no one.
 - **Types**: `sendspin`'s in-place cases through the harness.
 - **System tests**: an `rtp` format changed on the same port (a fade to exactly 0, silence, a fade in, no step above the
   fade's slope), and `levels` showing `fpp:stream.1` and `rec:record.left` silent during an `rtp` change and back after
@@ -354,8 +329,7 @@ Built: what `docs/testing.md` lists for changes in place. Still to write with wh
   same client id, the key file not read again, the connection dropped and back), a change to a held port restarting and
   failing with today's text, dialling to listening and back.
 - **Wire fixtures**: `test/protocol/node-set.json` (merge, `null`, a missing required key, each `applied`, `dryRun` for
-  each outcome, a reshape refused `ports-in-use` then with `dropRoutes`); the reshape cases of `lifecycle.json` (its
-  reconfigure cases are built).
+  each outcome, a reshape refused `ports-in-use` then with `dropRoutes`). The reshape case of `lifecycle.json` is built.
 
 ## 11. Order of work
 

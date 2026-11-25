@@ -2324,3 +2324,26 @@ TEST_CASE(
 		CHECK_FALSE(p.node.continuing());
 	}
 }
+
+TEST_CASE("A change of ports restarts with the cause reshape, its keys and the ports added and removed, and a later "
+          "change that keeps the configuration's ports is settings again",
+          "[lifecycle][machines]") {
+	Probe p = reach(Spot::running);
+	const PortsMoved moved{{"play.3"}, {"play.2"}};
+	p.take(p.node.change({++p.version, true}, {"playback"}, ChangeKind::restart, moved));
+	NodeCause reshape{NodeCause::Kind::reshape, std::nullopt, {"playback"}};
+	reshape.ports = moved;
+	NodeCause restarting = reshape;
+	restarting.kind = NodeCause::Kind::restarting;
+	restarting.restart = NodeCause::Kind::reshape;
+	CHECK(p.health().cause == restarting);
+	while (p.phase() != NodePhase::configuring && p.step()) {
+	}
+	REQUIRE(p.phase() == NodePhase::configuring);
+	CHECK(p.health().cause == reshape);
+	p.settle();
+	CHECK(p.phase() == NodePhase::running);
+	p.change({"card"});
+	CHECK(p.health().cause == NodeCause{NodeCause::Kind::restarting, NodeCause::Kind::settings, {"card"}});
+	CHECK(causeName(NodeCause::Kind::reshape) == "reshape");
+}

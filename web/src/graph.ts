@@ -5,7 +5,8 @@
 // now, docs/control-port.md#notifications); members and values this editor does not know are taken as they come or
 // ignored, never a failure. The counters (docs/control-port.md#counters) are kept as sent, whole, an unknown counter
 // among them, and counters.changed replaces those it names. A node's companion list (docs/control-port.md#companions) is
-// kept as sent, and node.companionsChanged replaces it whole.
+// kept as sent, and node.companionsChanged replaces it whole. A change of a node's ports (node.updated with its inputs and
+// outputs) keeps the node and its routes.
 import type {
   Graph,
   GraphNode,
@@ -135,10 +136,15 @@ const handlers: { [N in keyof Notifications]: (graph: Graph, params: Event<N>) =
     const nodes = [...graph.nodes, nodeOf(added)].sort((a, b) => compare(a.name, b.name));
     return { ...graph, nodes };
   },
-  "node.updated": (graph, { name, settings, disabled }) =>
-    updateNode(graph, name, ({ disabled: _old, ...node }) =>
-      disabled === true ? { ...node, settings, disabled } : { ...node, settings },
-    ),
+  // A change of ports (feature reshape) brings the node's new inputs and outputs: the same node, redrawn in place.
+  "node.updated": (graph, { name, settings, disabled, inputs, outputs }) =>
+    updateNode(graph, name, ({ disabled: _old, ...node }) => {
+      const ports = {
+        ...(inputs !== undefined ? { inputs } : {}),
+        ...(outputs !== undefined ? { outputs } : {}),
+      };
+      return disabled === true ? { ...node, settings, ...ports, disabled } : { ...node, settings, ...ports };
+    }),
   "node.removed": (graph, { name }) =>
     hasNode(graph, name) ? { ...graph, nodes: graph.nodes.filter((node) => node.name !== name) } : graph,
   "node.state": (graph, params) =>

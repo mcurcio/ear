@@ -104,6 +104,13 @@ public:
 	EditOutcome addRoute(const Route& route) const;
 	/// Removes its statement; SharedDefinition when it makes more than one rendered directive.
 	EditOutcome removeRoute(const Route& route) const;
+	/// Removes the statement of each of `routes` (every one wanted) in one edit, as node.update's `dropRoutes` does
+	/// (docs/control-port.md#changes-of-ports); SharedDefinition when any of them makes more than one rendered
+	/// directive, and then nothing is removed.
+	EditOutcome removeRoutes(const std::vector<Route>& routes) const;
+	/// The public ports the wanted node of this name has, as its type's parse makes them (pure: the keeper's thread
+	/// may ask); std::nullopt when there is no such node or its settings do not parse.
+	std::optional<Ports> portsOf(const NodeName& node) const;
 	/// node.setText (docs/control-port.md#a-nodes-own-text): `text`, with the whitespace around it dropped, replaces the
 	/// node's own statement (its byte range, owned comments included), and every other byte of the file is kept.
 	/// UnknownNode; SharedDefinition at the statement when it is not the node's own (it sits in a snippet or makes

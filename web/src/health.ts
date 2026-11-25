@@ -48,6 +48,8 @@ function restartWords(kind: CauseKind, keys: string[] | undefined): string {
       return "enabled";
     case "fell-back":
       return `could not apply ${keys !== undefined ? keys.join(", ") : "its settings"} in place`;
+    case "reshape":
+      return keys !== undefined && keys.length > 0 ? `ports changed (${keys.join(", ")})` : "ports changed";
     default:
       return kind;
   }
@@ -76,6 +78,8 @@ function causeWords(cause: NodeCause): string {
       return "configuring: enabled";
     case "fell-back":
       return `configuring: ${restartWords("fell-back", cause.keys)}`;
+    case "reshape":
+      return `configuring: ${restartWords("reshape", cause.keys)}`;
     default:
       return cause.kind;
   }

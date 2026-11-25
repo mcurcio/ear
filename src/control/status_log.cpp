@@ -64,10 +64,15 @@ std::string joinedKeys(const std::vector<std::string>& keys) {
 	return text;
 }
 
-/// A cause's own members by its kind: a settings change's keys; a fallback's keys, reason and detail.
+/// A cause's own members by its kind: a settings change's keys; a reshape's keys and the ports it adds and removes; a
+/// fallback's keys, reason and detail.
 void addCauseFields(Fields& fields, NodeCause::Kind kind, const NodeCause& cause) {
-	if (kind == NodeCause::Kind::settings || kind == NodeCause::Kind::fellBack)
+	if (kind == NodeCause::Kind::settings || kind == NodeCause::Kind::fellBack || kind == NodeCause::Kind::reshape)
 		fields.emplace_back("keys", strings(cause.keys));
+	if (kind == NodeCause::Kind::reshape) {
+		fields.emplace_back("added", strings(cause.ports.added));
+		fields.emplace_back("removed", strings(cause.ports.removed));
+	}
 	if (kind == NodeCause::Kind::fellBack) {
 		if (cause.reason) fields.emplace_back("reason", json(fellBackName(*cause.reason)));
 		fields.emplace_back("detail", json(cause.detail));
@@ -93,6 +98,8 @@ std::string restartText(NodeCause::Kind kind, const NodeCause& cause) {
 	switch (kind) {
 	case NodeCause::Kind::settings:
 		return cause.keys.empty() ? std::string("settings changed") : "settings changed: " + joinedKeys(cause.keys);
+	case NodeCause::Kind::reshape:
+		return cause.keys.empty() ? std::string("ports changed") : "ports changed: " + joinedKeys(cause.keys);
 	case NodeCause::Kind::action:
 		return "restart invoked";
 	case NodeCause::Kind::fellBack:

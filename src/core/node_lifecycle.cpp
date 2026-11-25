@@ -112,6 +112,8 @@ std::string_view causeName(NodeCause::Kind kind) noexcept {
 		return "enabling";
 	case NodeCause::Kind::fellBack:
 		return "fell-back";
+	case NodeCause::Kind::reshape:
+		return "reshape";
 	}
 	return "unknown";
 }
@@ -646,6 +648,7 @@ NodeCause restarting(const std::optional<NodeCause>& why) {
 		cause.keys = why->keys;
 		cause.reason = why->reason;
 		cause.detail = why->detail;
+		cause.ports = why->ports;
 	}
 	return cause;
 }
@@ -839,6 +842,13 @@ bool NodeAggregate::beginRestart(NodeCause why, Actions& out) {
 	return true;
 }
 
+NodeCause NodeAggregate::settingsCause(std::vector<std::string> keys) const {
+	NodeCause cause{movedPorts_.empty() ? NodeCause::Kind::settings : NodeCause::Kind::reshape, std::nullopt,
+	                std::move(keys)};
+	cause.ports = movedPorts_;
+	return cause;
+}
+
 /// A change in place is taken only by a node that has rested, with nothing in flight that ends its configuration, on a
 /// loop not wedged (where nothing could be committed); any other node takes it as a restart
 /// (docs/architecture.md#changes-in-place).
@@ -891,7 +901,7 @@ void NodeAggregate::converge(Actions& out) {
 				beginChange(out);
 				continue;
 			}
-			if (!beginRestart({NodeCause::Kind::settings, std::nullopt, changedKeys_}, out)) return;
+			if (!beginRestart(settingsCause(changedKeys_), out)) return;
 			continue;
 		}
 		if (state == prepared && wanted() == Wanted::running && block == BlockState::ready) {
@@ -919,7 +929,7 @@ void NodeAggregate::converge(Actions& out) {
 		// A change that waited for a drive or a commit in flight.
 		if (state == driving && changePending()) {
 			if (pendingInPlace_ && mayChangeInPlace()) beginChange(out);
-			else if (!beginRestart({NodeCause::Kind::settings, std::nullopt, pendingKeys_}, out)) return;
+			else if (!beginRestart(settingsCause(pendingKeys_), out)) return;
 			continue;
 		}
 		return;
@@ -985,13 +995,14 @@ Actions NodeAggregate::blockLost(std::string detail, FailureCode code) {
 	return out;
 }
 
-Actions NodeAggregate::change(Queued queued, std::vector<std::string> keys, ChangeKind kind) {
+Actions NodeAggregate::change(Queued queued, std::vector<std::string> keys, ChangeKind kind, PortsMoved ports) {
 	Actions out;
 	if (goneTold_ || intent_ == Intent::remove) return out; // not wanted any more
 	const ConfigState state = config_.state();
 	const bool inPlace = kind == ChangeKind::inPlace;
 	queued_ = queued;
 	changedKeys_ = keys;
+	movedPorts_ = std::move(ports);
 	const bool supersedes = state == ConfigState::changing && !continuing();
 	if (!supersedes) { // supersession takes the keys into the change itself
 		for (const std::string& key : keys)
@@ -1002,7 +1013,7 @@ Actions NodeAggregate::change(Queued queued, std::vector<std::string> keys, Chan
 	if (failed()) {
 		if (block_.state() != BlockState::lost) { // T15 once the failed configuration is gone
 			retryAsked_ = true;
-			why_ = NodeCause{NodeCause::Kind::settings, std::nullopt, std::move(keys)};
+			why_ = settingsCause(std::move(keys));
 		}
 		converge(out);
 		tell(out);
@@ -1017,7 +1028,7 @@ Actions NodeAggregate::change(Queued queued, std::vector<std::string> keys, Chan
 			changeVersion_ = queued.version;
 			askConfig(ConfigEvent::changeAgain, out);
 		} else {
-			beginRestart({NodeCause::Kind::settings, std::nullopt, changeKeys_}, out);
+			beginRestart(settingsCause(changeKeys_), out);
 		}
 		converge(out);
 		return out;
@@ -1033,7 +1044,7 @@ Actions NodeAggregate::change(Queued queued, std::vector<std::string> keys, Chan
 	}
 	if (state == ConfigState::readying || state == ConfigState::prepared || state == ConfigState::arming ||
 	    state == ConfigState::driving) // rule 2: a settled configuration restarts at once
-		beginRestart({NodeCause::Kind::settings, std::nullopt, std::move(keys)}, out);
+		beginRestart(settingsCause(std::move(keys)), out);
 	converge(out);
 	return out;
 }

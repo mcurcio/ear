@@ -48,7 +48,7 @@ use`).
 
 ## The frame and the lifecycle (protocol 1)
 
-- **The frame.** `graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions", "node-text"]`; an absent
+- **The frame.** `graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions", "node-text", "reshape"]`; an absent
   `protocol` is 0. Gate every method and request member on its feature, never on a -32601
   probe. Every enum is open: draw a value you do not know neutrally, never fail on it.
 - **Health.** Each node of a snapshot, `node.added` and every `node.state` carries `state` (the
