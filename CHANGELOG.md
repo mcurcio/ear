@@ -1,3 +1,31 @@
+## [4.3.0](https://github.com/mcurcio/ear/compare/v4.2.0...v4.3.0) (2026-11-25)
+
+### Features
+
+* **control:** node.set merges a node's settings and answers what it applied, with dry runs ([c87d44c](https://github.com/mcurcio/ear/commit/c87d44c2efb9102e25e9079d5388633d5fbb311e)), closes [docs/control-port.md#nodeset-and-dry-runs](https://github.com/docs/control-port.md/issues/nodeset-and-dry-runs)
+* **control:** reconfiguring and reconfigure on the wire ([a252463](https://github.com/mcurcio/ear/commit/a252463ef06a00bf3a099f9790dcd71c21598cb4))
+* **control:** send a change of ports as the same node, with ports-in-use and dropRoutes ([534eefe](https://github.com/mcurcio/ear/commit/534eefe48cb2c9021f1b3722841a333e2944690f)), closes [docs/control-port.md#changes-of-ports](https://github.com/docs/control-port.md/issues/changes-of-ports)
+* **core:** .inPlace() setting rows and the reconfigure outcome ([cabbcb5](https://github.com/mcurcio/ear/commit/cabbcb5a52fd5c04be809acbd21365be77c35bee))
+* **core:** Changed, ChangeOf and the change version's seam ([2dfc142](https://github.com/mcurcio/ear/commit/2dfc142b1227cacb9c58c953e646baf9ff5a658a))
+* **core:** changes in place in NodeHost, with an engine companion replaced break-first ([390079c](https://github.com/mcurcio/ear/commit/390079ca2e1064799dca25e07f1eef3449674e0e))
+* **core:** claim and unclaim ports in a change in place ([0667021](https://github.com/mcurcio/ear/commit/0667021e78da1e8eea264b7eb55c2ad73c920e68))
+* **core:** holds, code swaps and their acknowledgement in the port block ([2d13080](https://github.com/mcurcio/ear/commit/2d13080670b155e8358eeacbf501a6caecdfab1b))
+* **core:** make a replacement companion before breaking the old one ([3ed5769](https://github.com/mcurcio/ear/commit/3ed5769e7fb4fddbdb163cad7721c0b8abb47467))
+* **core:** pause a sink's consumer while the type swaps what it writes into ([fb45474](https://github.com/mcurcio/ear/commit/fb45474d894bc0647dfc0b7a50e4944553917a62))
+* **core:** replace sinks, sources, sound cards and recordings in a change in place ([4a6c3c0](https://github.com/mcurcio/ear/commit/4a6c3c0751351b40496a4e0dad3f512640d41824))
+* **core:** reshape a node's block when its ports change, in place or between configurations ([fa07a41](https://github.com/mcurcio/ear/commit/fa07a4103bb1c7354c385a7c2bcffadaf32c2247)), closes [docs/engine.md#the-one-data-loop-and-invokes](https://github.com/docs/engine.md/issues/the-one-data-loop-and-invokes)
+* **core:** the configuration machine's change states ([6b90902](https://github.com/mcurcio/ear/commit/6b909024cd3abcc48c33bb3ee4e5f82c2b112000))
+* **core:** the node aggregate's change in place ([d7786df](https://github.com/mcurcio/ear/commit/d7786df6c77ece5f78462ac5af1bd252c4d0aabd))
+* **core:** whenReady and ConfigureDone, a change's one later answer ([9ad55c0](https://github.com/mcurcio/ear/commit/9ad55c02e50d704892aa516c36ec880d716b9e76))
+* **rtp:** change address, port, format, rate and latency in place ([9c21465](https://github.com/mcurcio/ear/commit/9c21465731d903c64b84c07cc877b0f622d51feb))
+* **sendspin:** change name, port and server in place by swapping the client ([3c70105](https://github.com/mcurcio/ear/commit/3c7010537056e486546959b25404f16aa83e5793))
+* **web:** redraw a reshaped node in place, say what a change in place's buttons end, and toast its fallback ([febecb2](https://github.com/mcurcio/ear/commit/febecb2210bb2d97cd8d49827c56ef8bab40cf5f))
+
+### Bug Fixes
+
+* **core:** a replacement's flush item makes nothing once a newer break asked for another ([d14aa4f](https://github.com/mcurcio/ear/commit/d14aa4f7b880d5acaa93279695a13afa28ffe22b))
+* **core:** a start() that throws in the batch that began a change in place fails the node ([6791cea](https://github.com/mcurcio/ear/commit/6791ceae1694bb9936d4935f9a92da845515e800))
+
 ## [4.2.0](https://github.com/mcurcio/ear/compare/v4.1.1...v4.2.0) (2026-11-25)
 
 ### Features
