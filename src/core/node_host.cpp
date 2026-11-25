@@ -1874,6 +1874,14 @@ struct NodeHost::Impl {
 			std::unique_ptr<AudioCode> code;   // may read the instance, so goes first
 			std::vector<EngineAsk> engineAsks; // in request order
 			std::vector<std::unique_ptr<Companion>> engineCompanions;
+			/// An engine companion a make-first replacement was made beside: still running, listed retiring, until the
+			/// commit point destroys it (or, the change ending uncommitted, it is the bank's companion again).
+			struct RetiringCompanion {
+				std::size_t index;
+				EngineAsk ask;
+				std::unique_ptr<Companion> companion;
+			};
+			std::vector<RetiringCompanion> retiring;
 			// Its one program: destroyed after the instance and before the claims are released (teardown step 5), so a
 			// port it held is released only once it was reaped.
 			std::optional<ProgramSlot> program;
@@ -1935,8 +1943,12 @@ struct NodeHost::Impl {
 					std::vector<Claim> claims;    // the new one's, by its shape's rule
 					std::uint64_t retiringId = 0; // the companion it replaces
 					std::uint64_t id = 0;         // its own, once made
-					std::vector<Claim> oldClaims; // the replaced one's, by its shape's rule (once broken)
-					bool broken = false;          // the old one destroyed, the new one asked for
+					std::vector<Claim> oldClaims; // the replaced one's, by its shape's rule (once broken or made)
+					/// Made before break (docs/writing-a-node-type.md#make-before-break): the new one made beside the old
+					/// one, which goes at the commit point; else break-first.
+					bool makeFirst = false;
+					bool broken = false; // break-first: the old one destroyed, the new one asked for
+					bool made = false;   // make-first: the new one asked for beside the old one, which is retiring
 					bool ready = false;
 				};
 				std::vector<Replacement> replacements;
@@ -3426,8 +3438,12 @@ struct NodeHost::Impl {
 			if (std::ranges::any_of(c.change->replacements, [&](const auto& r) { return r.index == index; }))
 				throw std::logic_error("a second replacement on bank " + found.name + " in one change");
 			std::vector<Claim> claims = claimsOf(*receiver);
+			// Two receivers bound to one port would split or duplicate its datagrams, so a receiver on the same port is
+			// replaced break-first, whatever the type asks; on a new port, made before break
+			// (docs/writing-a-node-type.md#make-before-break).
+			const bool samePort = std::get<RtpReceiverShape>(at->shape).port == receiver->port;
 			c.change->replacements.push_back(Configuration::Change::Replacement{
-				.index = index, .shape = std::move(shape), .claims = std::move(claims)});
+				.index = index, .shape = std::move(shape), .claims = std::move(claims), .makeFirst = !samePort});
 		}
 
 		/// cx.claim in a change (docs/writing-a-node-type.md#claims-in-a-change): a port, recorded now and judged when
@@ -3589,26 +3605,27 @@ struct NodeHost::Impl {
 		void stepReplacements() {
 			Configuration& c = *config_;
 			if (c.change->claimsPending > 0) return; // claims first, before anything is broken or made
+			bool listed = false;
 			for (auto& r : c.change->replacements) {
-				if (r.broken) continue;
+				if (r.broken || r.made) continue;
+				// What the bank feeds is held either way: two sources into one inside input would mix for a moment.
 				const std::vector<std::string_view> fed = fedBy(r.index);
 				holdBanks(fed, true);
 				if (holdsWaiting()) continue;
-				r.broken = true;
 				r.oldClaims =
 					std::visit([](const auto& shape) { return claimsOf(shape); }, c.engineAsks[r.index].shape);
 				if (r.retiringId != 0) c.retiredIds.push_back(r.retiringId);
-				if (r.index < c.engineCompanions.size() && c.engineCompanions[r.index])
-					host_.queue(FlushKind::destroyCompanion, name_,
-					            [&host = host_, companion = std::move(c.engineCompanions[r.index])]() mutable {
-									if (!host.wedged) {
-										companion.reset();
-										return;
-									}
-									static_cast<void>(
-										companion.release()); // leaked: destroying it calls the wedged loop
-									++host.leaked;
-								});
+				if (r.makeFirst) {
+					r.made = true;
+					listed = true;
+					if (r.index < c.engineCompanions.size() && c.engineCompanions[r.index])
+						c.retiring.push_back(Configuration::RetiringCompanion{r.index, c.engineAsks[r.index],
+						                                                      std::move(c.engineCompanions[r.index])});
+				} else {
+					r.broken = true;
+					if (r.index < c.engineCompanions.size() && c.engineCompanions[r.index])
+						destroyCompanionLater(std::move(c.engineCompanions[r.index]));
+				}
 				c.engineAsks[r.index].shape = r.shape;
 				r.id = ++host_.companionIds;
 				if (c.replacing.size() <= r.index) c.replacing.resize(r.index + 1, 0);
@@ -3617,6 +3634,55 @@ struct NodeHost::Impl {
 				            [&host = host_, serial = serial_, generation = c.generation, index = r.index, id = r.id] {
 								if (Node* node = host.find(serial)) node->makeReplacement(generation, index, id);
 							});
+			}
+			if (listed) refreshCompanions();
+		}
+
+		/// An engine companion destroyed in the turn's flush; leaked once the data loop is wedged, since destroying it
+		/// calls into that loop.
+		void destroyCompanionLater(std::unique_ptr<Companion> companion) {
+			host_.queue(FlushKind::destroyCompanion, name_,
+			            [&host = host_, companion = std::move(companion)]() mutable {
+							if (!host.wedged) {
+								companion.reset();
+								return;
+							}
+							static_cast<void>(companion.release());
+							++host.leaked;
+						});
+		}
+
+		/// At the commit point: each companion a make-first replacement was made beside is destroyed, and the bank is
+		/// its replacement's (so its claims settle as a break's do).
+		void retireMadeFirst(Configuration::Change& ch) {
+			Configuration& c = *config_;
+			for (auto& r : ch.replacements) {
+				if (!r.made) continue;
+				r.broken = true;
+				for (auto& retiring : c.retiring)
+					if (retiring.index == r.index && retiring.companion)
+						destroyCompanionLater(std::move(retiring.companion));
+				std::erase_if(c.retiring, [&](const auto& retiring) { return retiring.index == r.index; });
+			}
+		}
+
+		/// A change ending uncommitted: each make-first replacement made (or asked for) is destroyed, and the companion
+		/// it was made beside is the bank's again, no longer retiring.
+		void restoreMadeFirst(Configuration::Change& ch) {
+			Configuration& c = *config_;
+			for (auto& r : ch.replacements) {
+				if (!r.made) continue;
+				r.made = false;
+				if (r.index < c.engineCompanions.size() && c.engineCompanions[r.index])
+					destroyCompanionLater(std::move(c.engineCompanions[r.index]));
+				if (r.index < c.replacing.size()) c.replacing[r.index] = 0; // a make still queued makes nothing
+				const auto found =
+					std::ranges::find_if(c.retiring, [&](const auto& retiring) { return retiring.index == r.index; });
+				if (found == c.retiring.end()) continue;
+				c.engineAsks[r.index] = found->ask;
+				if (found->companion) std::erase(c.retiredIds, found->companion->id());
+				c.engineCompanions[r.index] = std::move(found->companion);
+				c.retiring.erase(found);
 			}
 		}
 
@@ -3655,6 +3721,7 @@ struct NodeHost::Impl {
 			for (auto& r : config_->change->replacements)
 				if (r.id == id && !r.ready) {
 					r.ready = true;
+					refreshCompanions();
 					checkChangeReady();
 				}
 		}
@@ -3744,6 +3811,7 @@ struct NodeHost::Impl {
 			}
 			std::vector<std::uint8_t> held(c.held.size(), 0);
 			std::swap(held, c.held);
+			retireMadeFirst(ch);
 			if (barrier == 0) {         // nothing driven: the machine is back where it began
 				settleClaims(ch, true); // last
 				return retireCode();
@@ -3805,8 +3873,10 @@ struct NodeHost::Impl {
 				const MainLoopActivity::Scope activity("release", name_);
 				ch.code->release();
 			}
-			settleClaims(ch, false); // a companion already replaced stays the bank's, with its claims
+			restoreMadeFirst(ch);
+			settleClaims(ch, false); // a companion already replaced break-first stays the bank's, with its claims
 			config_->change.reset();
+			refreshCompanions();
 		}
 
 		/// T5's completion: the instance's start(), timed; one that threw is a fault once this batch was carried out
@@ -3960,13 +4030,24 @@ struct NodeHost::Impl {
 			for (const Asked& asked : c.requestOrder) switch (asked.family) {
 				case Asked::Family::engine: {
 					if (asked.index >= c.engineAsks.size()) break;
+					const auto view = [&](const EngineAsk& ask, bool ready, bool retiring) {
+						return CompanionView{
+							.name = ask.target.engineNode,
+							.kind = std::visit([&](const auto& shape) { return engineKind(shape, ask.target.bank); },
+						                       ask.shape),
+							.bank = ask.target.insideBank,
+							.ready = ready,
+							.retiring = retiring};
+					};
+					// A companion a make-first replacement was made beside is listed retiring, before its replacement,
+					// which shares its name for a moment (docs/control-port.md#companions).
+					for (const auto& retiring : c.retiring)
+						if (retiring.index == asked.index) list.push_back(view(retiring.ask, true, true));
+					const bool replacing = c.change && std::ranges::any_of(c.change->replacements, [&](const auto& r) {
+											   return r.index == asked.index && (r.broken || r.made) && !r.ready;
+										   });
 					const EngineAsk& ask = c.engineAsks[asked.index];
-					list.push_back(CompanionView{
-						.name = ask.target.engineNode,
-						.kind = std::visit([&](const auto& shape) { return engineKind(shape, ask.target.bank); },
-					                       ask.shape),
-						.bank = ask.target.insideBank,
-						.ready = c.readiness.isReady(ask.item)});
+					list.push_back(view(ask, c.readiness.isReady(ask.item) && !replacing, false));
 					break;
 				}
 				case Asked::Family::sink: {
@@ -3999,7 +4080,8 @@ struct NodeHost::Impl {
 		void refreshCompanions() {
 			std::vector<CompanionView> now = companions();
 			const auto sameEntry = [](const CompanionView& a, const CompanionView& b) {
-				return a.name == b.name && a.kind == b.kind && a.bank == b.bank && a.ready == b.ready;
+				return a.name == b.name && a.kind == b.kind && a.bank == b.bank && a.ready == b.ready &&
+				       a.retiring == b.retiring;
 			};
 			if (std::ranges::equal(now, companionsTold_, sameEntry)) return;
 			companionsTold_ = now;
@@ -4180,6 +4262,9 @@ struct NodeHost::Impl {
 						++host.leaked;
 					});
 			c.engineCompanions.clear();
+			for (auto& retiring : c.retiring)
+				if (retiring.companion) destroyCompanionLater(std::move(retiring.companion));
+			c.retiring.clear();
 			c.engineAsks.clear();
 			c.readiness.disarm();
 			// What its loops were sent before it was configured never runs: destroyed here, unrun.

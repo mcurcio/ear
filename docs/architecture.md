@@ -583,17 +583,20 @@ What NodeHost does, in order:
 A **replacement** (an RTP receiver on the same bank,
 [writing-a-node-type.md](writing-a-node-type.md#engine-companions)) is judged once the change
 version answered: its new claims first, with the change's own (a refusal falls back,
-`resource-refused`, before anything breaks), then break-first behind a hold the framework takes on what its bank feeds, the old one
-destroyed and the new one made in one flush; the commit point waits for it to be ready (its loss
-first falls back, `resource-lost`), and releases the ports the old one held that the new one does
-not, last. The old one is retiring meanwhile: its loss is `ear.retiring-lost`. Make-before-break
-(two companions beside each other for a moment) is not built: every replacement is break-first.
+`resource-refused`, before anything breaks), then, behind a hold the framework takes on what its
+bank feeds, made beside the old one ([make-before-break](writing-a-node-type.md#make-before-break):
+an RTP receiver on a new port), or break-first, the old one destroyed and the new one made in one
+flush (an RTP receiver on the same port); the commit point waits for it to be ready (its loss
+first falls back, `resource-lost`), destroys the old one if it still runs, and releases the ports
+the old one held that the new one does not, last. The old one is retiring meanwhile (listed
+`retiring`): its loss is `ear.retiring-lost`.
 
 A change that ends without committing (superseded, stopped, failed or fallen back) destroys its
-staged posts unrun and releases its new code and the ports a replacement not yet made was
-granted (a replacement already made stays the bank's companion, its ports the configuration's;
-one broken but not yet made, its flush still to run, is made only if no newer change broke the
-same bank first: the newest break's replacement is the one made);
+staged posts unrun and releases its new code and the ports it was granted (a replacement made
+break-first stays the bank's companion, its ports the configuration's; one broken but not yet
+made, its flush still to run, is made only if no newer change broke the same bank first: the
+newest break's replacement is the one made; one made before break is destroyed, and the one it
+was made beside is the bank's again);
 its holds stay until the next commit or the silence. A supersession says `ear.reconfigure-superseded`, a fallback
 `ear.reconfigure-fell-back` before its `stopping` (all but `restart-requested`, which the operator's own
 `node.restart` asked for; its `stopping` record names the reason) ([output-records.md](output-records.md#diagnostic)).

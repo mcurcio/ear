@@ -266,7 +266,8 @@ bool toldStopping(Harness& harness) {
 }
 } // namespace
 
-TEST_CASE("Rtp: a port changed in place replaces the receiver break-first, stream held until the new one is ready",
+TEST_CASE("Rtp: a port changed in place replaces the receiver make-before-break, stream held until the new one is "
+          "ready, the old one destroyed then",
           "[rtp][reconfigure]") {
 	auto harness = runningOk(settingsWith());
 	CHECK(harness.change(settingsWith({{"port", 5006}})) == ear::NodeOutcome::reconfigure);
@@ -274,10 +275,11 @@ TEST_CASE("Rtp: a port changed in place replaces the receiver break-first, strea
 	CHECK(harness.held(rtp::stream, 0));
 	CHECK(harness.held(rtp::stream, 1));
 	REQUIRE(harness->companions().size() == 2);
-	CHECK(harness->companions()[0].destroyed); // break-first: the old one first
+	CHECK_FALSE(harness->companions()[0].destroyed); // made before break: the old one runs on beside it
 	CHECK(std::get<ear::RtpReceiverShape>(harness.companion(rtp::fromRtp).shape).port == 5006);
 	harness.ready(rtp::fromRtp);
 	CHECK(harness.phase() == "running");
+	CHECK(harness->companions()[0].destroyed); // at the commit point
 	CHECK_FALSE(harness.held(rtp::stream, 0));
 	CHECK(toldReconfiguring(harness));
 	CHECK_FALSE(toldStopping(harness));

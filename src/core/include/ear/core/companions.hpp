@@ -140,6 +140,9 @@ struct CompanionView {
 	CompanionKind kind;
 	std::string bank; // the inside bank it joins: inside banks appear nowhere else on the wire
 	bool ready = false;
+	/// A companion a change in place replaces make-before-break, until the commit point destroys it: listed before its
+	/// replacement, which shares its name for a moment (docs/control-port.md#companions).
+	bool retiring = false;
 	std::optional<std::uint64_t> dropped{};   // a sink: frames its ring had no room for, this configuration
 	std::optional<std::uint64_t> shortfall{}; // a source: frames played as zeros while its writer was not idle
 	friend bool operator==(const CompanionView&, const CompanionView&) = default;

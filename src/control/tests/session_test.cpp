@@ -1407,6 +1407,15 @@ TEST_CASE("companions.json: each node's list in the snapshot, node.added's [], e
 		w.told(at("rec", NodePhase::running));
 	});
 
+	// An RTP receiver replaced make-before-break: the old one retiring before its replacement, then gone.
+	w.onMain([&] {
+		CompanionView retiring = rtp(true);
+		retiring.retiring = true;
+		list("fpp", {retiring, rtp(false)});
+		list("fpp", {retiring, rtp(true)});
+		list("fpp", {rtp(true)});
+	});
+
 	// A failure past the receiver's deadline: failed, then the empty list.
 	w.graph.script.push_back({"restartNode fpp", [&]() -> CommandResult {
 								  w.told(because(at("fpp", NodePhase::stopping), Kind::restarting, Kind::action));

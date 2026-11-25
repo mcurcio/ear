@@ -914,12 +914,15 @@ is in its node's list, as a client will see it (`companions.hpp`: `CompanionView
 inside bank it joins, whether it is ready (an engine companion once linked, a sink once its
 consumer began, a source always), and its counter: a sink's `dropped` (`Sink::droppedFrames`), a
 source's `shortfall` (`Source::shortfallFrames`), each counted from its configuration's making.
+A companion a change in place replaces is not ready until its replacement is; one replaced
+make-before-break is listed `retiring` just before its replacement, which shares its name, until
+the commit point destroys it ([writing-a-node-type.md](writing-a-node-type.md#make-before-break)).
 `NodeHost::companionsOf(name)` reads the list of the newest node of the name, in request order, the
 counters read then; it is empty before configure returned applied, after it failed, and from
 teardown step 1.
 
 **Who tells it, and when.** `NodeHost` tells its `NodeCompanionsListener`s the whole list whenever
-an entry is added or removed or its `ready` changes, in this order against the node's health:
+an entry is added or removed or its `ready` or `retiring` changes, in this order against the node's health:
 
 - after the `configuring` it was asked in (the end of that input's batch);
 - before the health a companion's readiness allows: a ready engine companion or a begun sink is

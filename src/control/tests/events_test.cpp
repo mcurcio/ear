@@ -144,5 +144,13 @@ TEST_CASE("node.companionsChanged and node.added's companions encode as companio
 	CHECK(encoded(NodeCompanionsChanged{"rec", {}}) == m[17]);
 	CHECK(encoded(NodeCompanionsChanged{
 			  "fpp", {{.name = "fpp.rtp", .kind = CompanionKind::rtpReceiver, .bank = "from_rtp", .ready = false}}}) ==
-	      m[29]);
+	      m[32]);
+	CHECK(encoded(NodeCompanionsChanged{
+			  "fpp",
+			  {{.name = "fpp.rtp",
+	            .kind = CompanionKind::rtpReceiver,
+	            .bank = "from_rtp",
+	            .ready = true,
+	            .retiring = true},
+	           {.name = "fpp.rtp", .kind = CompanionKind::rtpReceiver, .bank = "from_rtp", .ready = false}}}) == m[25]);
 }

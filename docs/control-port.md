@@ -451,7 +451,8 @@ which no node's has), never metered. `test/protocol/companions.json` shows a lis
 | `name` | `<node>.playback`, `<node>.capture`, `<node>.rtp`, `<node>.pipe` (the engine node's name, as `waitingFor` names it); a sink's or source's `<node>.<bank>` |
 | `kind` | `card-playback`, `card-capture`, `rtp-receiver`, `pipe-receiver`, `sink`, `source`; an open set |
 | `bank` | The node's inside bank it joins |
-| `ready` | A card or an RTP or pipe receiver once linked and running, a sink once its consumer began, a source always |
+| `ready` | A card or an RTP or pipe receiver once linked and running, a sink once its consumer began, a source always; a companion a change in place is replacing, until its replacement is |
+| `retiring` | `true` on a companion a change in place replaces make-before-break, until the commit point destroys it ([writing-a-node-type.md](writing-a-node-type.md#make-before-break)): listed just before its replacement, which shares its name for a moment; absent otherwise |
 | `dropped` | A sink only: frames its ring had no room for since this configuration made it |
 | `shortfall` | A source only: frames played as zeros while its writer was not idle, since this configuration made it |
 
@@ -467,7 +468,10 @@ which no node's has), never metered. `test/protocol/companions.json` shows a lis
   failure's, disable's), so a failure is never held back for it. A stop keeps the configuration,
   so its list: a stop and a start send none. It is also sent when a `dropped` or `shortfall`
   moved, at most once a second per node and at most 1.1 s behind. The same list is never sent
-  twice for a node.
+  twice for a node. A change in place that replaces a companion sends the list as the replacement
+  is asked for (a make-before-break's old entry `retiring`, the new one not ready), as it becomes
+  ready, and as the commit point drops the retiring entry, all before the `node.state` `running`
+  that ends the change.
 - **Counters per configuration.** `dropped` and `shortfall` count from the configuration that made
   the companion: a restart's next list starts from zero. They are never in `counters` or
   `counters.changed`, whose counters run from the node's add and never step back
@@ -528,7 +532,7 @@ breaking change moves `protocol`; anything else is a new feature name
 | `errors.json` | Every refusal code and envelope error |
 | `levels.json` | `levels.subscribe` and `levels` |
 | `counters-changed.json` | The counters in a snapshot, `counters.changed`, one naming a node not held, and a port-caused replace's `node.added` carrying its counters |
-| `companions.json` | The companion lists in a snapshot (every engine and ring kind but a source), a file node's list from `node.added` to running, a counter moving, a stop and a start (no list), a restart, a failure past a readiness deadline, a removal (no list after `node.removed`) |
+| `companions.json` | The companion lists in a snapshot (every engine and ring kind but a source), a file node's list from `node.added` to running, a counter moving, a stop and a start (no list), a restart, an RTP receiver replaced make-before-break (the old one `retiring`), a failure past a readiness deadline, a removal (no list after `node.removed`) |
 | `unknown-values.json` | Values, members and notifications a client does not know, taken or ignored |
 | `output-records.json` | Standard output's records ([output-records.md](output-records.md)) |
 

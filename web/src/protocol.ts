@@ -193,6 +193,11 @@ export interface Companion {
   /** The inside bank it joins: inside banks appear nowhere else on the wire. */
   bank: string;
   ready: boolean;
+  /**
+   * A companion a change in place replaces make-before-break, until the commit point destroys it: listed just before
+   * its replacement, which shares its name for a moment. Absent otherwise.
+   */
+  retiring?: true;
   /** A sink: frames its ring had no room for, this configuration. */
   dropped?: number;
   /** A source: frames played as zeros while its writer was not idle, this configuration. */

@@ -603,7 +603,9 @@ for ready, its drop count on hover; never boxes or handles of their own. The rul
   name, word, bank, readiness and the total its counter carries since its configuration made it
   ("rec.writer (sink on writer): ready; 4096 frames dropped since it was made"; a source's
   shortfall "... frames played short since it was made"). An engine kind has no counter. A counter
-  member the editor knows is shown whatever the kind; one it does not know is ignored.
+  member the editor knows is shown whatever the kind; one it does not know is ignored. A companion
+  a change in place replaces make-before-break gets its own badge, before its replacement's, and
+  its words end ", retiring" ("fpp.rtp (rtp on from_rtp): ready, retiring").
 - **A mark only while it moves.** A badge carries the warning mark only while its `dropped` or
   `shortfall` rose in the last minute, by the rule of [recent marks](#recent-marks), held per node
   and companion: a value that fell is a new configuration seen without its `[]`, and an entry seen

@@ -1,6 +1,7 @@
 # Changes in place and reshape: slice 3d of the node framework
 
-Status: design; steps 1 and 2 of section 11 built, and of step 3 claims in a change (section 2 says what and where). Slice 3d follows slice 3c (built: it swaps claims and posts to loops, both
+Status: design; steps 1 and 2 of section 11 built, and of step 3 claims in a change and make-before-break for an RTP
+receiver (section 2 says what and where). Slice 3d follows slice 3c (built: it swaps claims and posts to loops, both
 3c's, `docs/writing-a-node-type.md#claims`, `#loops`) and comes before slice 6 (`control-plane.md`: a retune is one of the outcomes this slice makes). Its PipeWire
 spike (S4) is run: a reshape goes ahead as designed (7.4). It changes the audio path: holds, code swaps and reshapes. The built lifecycle (states,
 operations, teardown, fades, barriers and their bounds) is described in `docs/architecture.md` and
@@ -36,8 +37,11 @@ Built (steps 1 and 2 of section 11), described where they live and not repeated 
   ([`docs/architecture.md#changes-in-place`](../architecture.md#changes-in-place),
   [`docs/writing-a-node-type.md#the-change-version`](../writing-a-node-type.md#the-change-version));
 - `PortBlock::hold`, `release` and `swap` ([`docs/engine.md#holds-and-swaps`](../engine.md#holds-and-swaps));
-- an RTP receiver replaced in a change, always break-first behind a framework hold, its claims judged first and a key no
+- an RTP receiver replaced in a change behind a framework hold, made before break on a new port and break-first on the
+  same one, the old one listed `retiring` until the commit point destroys it, its claims judged first and a key no
   longer asked released per key at the commit point
+  ([`docs/writing-a-node-type.md#make-before-break`](../writing-a-node-type.md#make-before-break)); `rtp` on a new
+  port made before break
   ([`docs/writing-a-node-type.md#engine-companions`](../writing-a-node-type.md#engine-companions));
 - `rtp` in place ([`docs/node-types.md#rtp`](../node-types.md#rtp));
 - `cx.claim` and `cx.unclaim` in a change: judged as the change version returns, before anything else, the old port
@@ -51,8 +55,7 @@ This page still designs:
 
 - the plan's outcomes `reshape` and `unchanged`, and a change of ports with the same type no longer a replace (3, 7);
 - `whenReady` and `ConfigureDone`, recordings, sinks, sources and cards replaced in a change (4, 6);
-- make-before-break: a replacement made beside the one it replaces, and companions' `retiring: true` (5, 6.1); every
-  replacement is break-first today, `rtp`'s on a new port included;
+- make-before-break for the other kinds, and `Order::breakFirst` (5);
 - `SinkControl::pause` and `resume` (6.4);
 - `PortBlock::reshape` (7);
 - `sendspin` in place (6.6);
@@ -162,8 +165,8 @@ mid-change: [`docs/architecture.md#changes-in-place`](../architecture.md#changes
   replaced source's writer closed; replaced companions destroyed; replaced sinks drained to their own consumers and
   finished; replaced recordings closed; `unclaim`ed claims released, last), after the continuation's `done`.
 
-**Break before make** is built for an RTP receiver, always
-([`docs/writing-a-node-type.md#engine-companions`](../writing-a-node-type.md#engine-companions)); still designed: a type
+**Make-before-break** is built for an RTP receiver, and break-first on its same port
+([`docs/writing-a-node-type.md#make-before-break`](../writing-a-node-type.md#make-before-break)); still designed: a type
 asking for it with `Order::breakFirst` where only it can know (a card: one ALSA device opened twice), holding the inside
 output bank that feeds the companion being destroyed (a card's `to_card`), and every other replacement made before
 break.
@@ -220,9 +223,7 @@ samples `pausedFrames` beside the companion's drops.
 
 ### 6.5 `rtp` in place
 
-Built ([`docs/node-types.md#rtp`](../node-types.md#rtp)), break-first on every port. With make-before-break (6.1) a new
-port would be claimed and its receiver made beside the old one, the old port released at the end; the same port stays
-break-first (G22). Since `rtp` holds `stream` across the switch, what is heard is the same either way.
+Built ([`docs/node-types.md#rtp`](../node-types.md#rtp)): made before break on a new port, break-first on the same one.
 
 ### 6.6 `sendspin` in place
 
@@ -421,8 +422,7 @@ slice adds the features `node.set`, `reshape` and `dryRun`.
   `restart-requested`; `detail`). A retune (slice 6) changes no health.
 - **`node.updated`** carries `ports` on a reshape (handles redrawn in place); a change of ports with the same type is no
   longer `node.removed` and `node.added`.
-- **Companions** (`docs/control-port.md#companions`) gain `retiring: true` on the old entry during a make-before-break, listed before
-  its replacement, which shares its name for a moment.
+- **Companions**: `retiring: true` is built ([`docs/control-port.md#companions`](../control-port.md#companions)).
 - **Order**: an in-place change sends `node.updated` (`applied: "reconfigure"`), then `node.state` `reconfiguring`, then
   the reply, in the commit's turn; then `node.state` `running` (or `stopped`). A reshape sends the dropped routes'
   `route.removed`, then `node.updated` with `ports`, then the restart's or the reconfigure's sequence; the block's new
@@ -468,7 +468,7 @@ What steps 1 and 2 changed is built (section 2). What is left:
 |---|---|
 | `NodeOutcome`, `NodeChange`, `DesiredNodeListener` (`desired_graph.hpp`) | outcomes `reshape`, `unchanged`; `NodeChange` gains the old and new ports and `inPlace`; a change of ports with the same type is told by `nodeChanged`, not as a replace; `portCaused` goes |
 | `lifecycle.hpp` | `ConfigureDone`, `whenReady`, the other kinds' replacements; `SinkControl` |
-| `NodeHost` | make-before-break with retiring resources; the continuation; the block's reshape between teardown and `configure` |
+| `NodeHost` | make-before-break for the other kinds; the continuation; the block's reshape between teardown and `configure` |
 | `PortBlock`, `FilterPortBlocks` | `reshape(next)` with layouts swapped whole; levels re-registered |
 | The sink companion | `pause` and `resume` on its thread |
 | `sendspin` | rows marked `.inPlace()`; its change version |
@@ -500,7 +500,7 @@ Built: what `docs/testing.md` lists for changes in place. Still to write with wh
   failing with today's text, dialling to listening and back.
 - **Wire fixtures**: `test/protocol/node-set.json` (merge, `null`, a missing required key, each `applied`, `dryRun` for
   each outcome, a reshape refused `ports-in-use` then with `dropRoutes`); the reshape cases of `lifecycle.json` (its
-  reconfigure cases are built); `companions.json`'s `retiring`.
+  reconfigure cases are built).
 
 ## 11. Order of work
 

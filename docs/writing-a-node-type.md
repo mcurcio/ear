@@ -238,6 +238,29 @@ called. `ChangeOf` has no `state`, `store`, `executor`, `recording` or `program`
 not compile. The spec's `.lifecycle = Lifecycle{.reconfigureDeadline = 30s}` (after `.loops`; 10 s
 by default) is how long a change may take; outside 1 s to 60 s it does not compile.
 
+### Make-before-break
+
+A replacement in a change is **made before break** where it can be: the new companion is made
+beside the one it replaces, both run for a moment, and the old one goes at the commit point. So
+the old one's resources (an RTP receiver's port) are held until the new one runs, and a
+replacement that cannot be made costs nothing but the fallback. An RTP receiver on a new port is
+made before break; one on the same port is break-first, whatever the type asks (two bound to one
+UDP port would split or duplicate its datagrams, so the framework decides, as only it knows how
+PipeWire binds).
+
+- **Held either way.** The framework holds what the bank feeds before it makes or breaks
+  anything, so two receivers into one inside input never mix into what the node sends.
+- **Retiring.** The old one is listed `retiring: true` in the node's companions just before its
+  replacement, which shares its name for a moment
+  ([control-port.md](control-port.md#companions)); the replacement is `ready: false` until it
+  runs. A retiring companion's loss is said (`ear.retiring-lost`) and never fails the node.
+- **At the commit point** the old one is destroyed in the turn's flush and, last, the ports its
+  replacement does not ask are released ([claims in a change](#claims-in-a-change)), so a node
+  waiting for one probes it once the old one has let go.
+- **A change that ends uncommitted** (superseded, stopped, fallen back) destroys the replacement
+  made, or still to be made, and the old one is the bank's companion again, no longer retiring; a
+  newer change judges its own replacement against it.
+
 ### The node handle
 
 `NodeOf::handle()` gives the configuration's `NodeHandle` (`ear/core/node_handle.hpp`), the type's
@@ -345,11 +368,12 @@ return cx.applied(passThrough(bankPair(play, toCard), bankPair(fromRtp, stream))
   broken rule). Its claims are judged first, with the change's own ([claims in a change](#claims-in-a-change)): a
   key the configuration already holds (the same port) is its own, granted unprobed; a new port is judged and probed
   as at the first readiness step, and one refused falls the change back (`resource-refused`) before anything is
-  broken. Then, break-first
-  (two receivers on one port would split its datagrams), the framework holds the public output banks
-  the bank feeds through the pass-through (every routable output for a code of the type's own),
-  waits for the acknowledgement, destroys the old receiver and makes the new one in one flush. The
-  old one is retiring from the attach on: its loss is said (`ear.retiring-lost`), never a failure.
+  broken. Then the framework holds the public output banks the bank feeds through the pass-through
+  (every routable output for a code of the type's own) and waits for the acknowledgement. On a new
+  port the new receiver is made beside the old one ([make-before-break](#make-before-break)); on
+  the same port (two receivers on one port would split its datagrams) break-first: the old receiver
+  destroyed and the new one made in one flush. The old one is retiring from the attach on: its loss
+  is said (`ear.retiring-lost`), never a failure.
   The new one's loss before the commit point falls the change back (`resource-lost`); the change's
   deadline bounds its readiness. At the commit point the ports the new one no longer asks are
   released, last, so a node waiting for the old port is granted it then.

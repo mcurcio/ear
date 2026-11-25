@@ -477,11 +477,12 @@ std::size_t receiversMade(const testing::NodeHarness& h) {
 }
 } // namespace reconfigure_test
 
-TEST_CASE("A replacement is made break-first behind a framework hold: held, the old destroyed, then the new made",
+TEST_CASE("A same-port replacement is made break-first behind a framework hold: held, the old destroyed, then the new "
+          "made",
           "[reconfigure][replacement]") {
 	auto owned = receiving(manual());
 	auto& h = *owned;
-	h.change({{"port", 5006}});
+	h.change({{"port", 5004}, {"latency", 200}});
 	REQUIRE(h->phase() == "reconfiguring");
 	CHECK(h.held(out)); // what the bank feeds through the pass-through, held by the framework
 	CHECK_FALSE(h.held(side));
@@ -489,10 +490,43 @@ TEST_CASE("A replacement is made break-first behind a framework hold: held, the 
 	h->acknowledgeHolds();
 	REQUIRE(receiversMade(h.node()) == 2);
 	CHECK(h->companions()[0].destroyed);
-	CHECK(portOf(h->companions()[1]) == 5006);
+	CHECK(std::get<RtpReceiverShape>(h->companions()[1].shape).latencyMs == 200);
 	CHECK(h->phase() == "reconfiguring"); // the new one is not ready yet
+	CHECK(h->companionList().size() == 1);
+	CHECK_FALSE(h->companionList()[0].ready);
 	h->ready("from_rtp");
 	CHECK(h->phase() == "running");
+	CHECK_FALSE(h.held(out));
+	CHECK_FALSE(toldPhase(h.node(), NodePhase::stopping));
+}
+
+TEST_CASE("A replacement on a new port is made before break: held, made beside the old one, which is listed retiring "
+          "until the commit point destroys it",
+          "[reconfigure][replacement]") {
+	auto owned = receiving(manual());
+	auto& h = *owned;
+	h.change({{"port", 5006}});
+	REQUIRE(h->phase() == "reconfiguring");
+	CHECK(h.held(out)); // two receivers into one inside input would mix for a moment
+	CHECK(receiversMade(h.node()) == 1);
+	h->acknowledgeHolds();
+	REQUIRE(receiversMade(h.node()) == 2);
+	CHECK_FALSE(h->companions()[0].destroyed); // the old one runs on beside its replacement
+	CHECK(portOf(h->companions()[1]) == 5006);
+	std::vector<CompanionView> list = h->companionList();
+	REQUIRE(list.size() == 2);
+	CHECK(list[0].retiring);
+	CHECK(list[0].ready);
+	CHECK(list[0].name == list[1].name);
+	CHECK_FALSE(list[1].retiring);
+	CHECK_FALSE(list[1].ready);
+	h->ready("from_rtp");
+	CHECK(h->phase() == "running");
+	CHECK(h->companions()[0].destroyed);
+	list = h->companionList();
+	REQUIRE(list.size() == 1);
+	CHECK_FALSE(list[0].retiring);
+	CHECK(list[0].ready);
 	CHECK_FALSE(h.held(out));
 	CHECK_FALSE(toldPhase(h.node(), NodePhase::stopping));
 }
@@ -572,16 +606,15 @@ TEST_CASE("A newer change that breaks before the older one's flush ran makes onl
           "[reconfigure][replacement][supersede]") {
 	auto owned = receiving(manual());
 	auto& h = *owned;
-	h.change({{"port", 5006}});
+	h.change({{"port", 5004}, {"latency", 150}});
 	REQUIRE(h->phase() == "reconfiguring");
 	// The hold's acknowledgement breaks the first change; the second, on the same port (its claims all the
 	// configuration's), reached the main loop before that break's flush ran, so it breaks at once too.
-	h->acknowledgeHoldsThenChange({{"port", 5006}, {"latency", 200}});
+	h->acknowledgeHoldsThenChange({{"port", 5004}, {"latency", 200}});
 	CHECK(said(h.node(), "ear.reconfigure-superseded"));
 	REQUIRE(receiversMade(h.node()) == 2); // the first change's replacement is never made
 	CHECK(h->companions()[0].destroyed);
 	const auto& made = h->companion("from_rtp");
-	CHECK(portOf(made) == 5006);
 	CHECK(std::get<RtpReceiverShape>(made.shape).latencyMs == 200);
 	h->ready("from_rtp");
 	CHECK(h->phase() == "running");
@@ -597,7 +630,12 @@ TEST_CASE("Supersession while a replacement is pending makes the newest, keeping
 	h.change({{"port", 5008}});
 	CHECK(said(h.node(), "ear.reconfigure-superseded"));
 	CHECK(h.held(out));
+	// The abandoned replacement is destroyed, and the old one is the bank's again until the newest commits.
+	REQUIRE(receiversMade(h.node()) == 3);
+	CHECK_FALSE(h->companions()[0].destroyed);
+	CHECK(h->companions()[1].destroyed);
 	CHECK(portOf(h->companion("from_rtp")) == 5008);
 	h->ready("from_rtp");
 	CHECK(h->phase() == "running");
+	CHECK(h->companions()[0].destroyed);
 }

@@ -1,5 +1,5 @@
 {
-  "description": "The feature companions (docs/control-port.md#companions): each node of the snapshot carries its companion list (a card's playback and capture, an RTP receiver, a file's sink with its dropped frames, an airplay node's pipe receiver; none for white), so every engine kind is shown. A file node's life: node.added with [], configuring, its sink listed not ready, then ready before the configured its readiness allowed. A counter moving: the whole list again. A stop and a start keep the list. A restart: the empty list after the node.state that began its teardown, then the next configuration's list from zero. A failure past a readiness deadline: failed, then the empty list. A removal: nothing about the removed node's companions after node.removed. Each list replaces the node's whole list; the same list is never sent twice.",
+  "description": "The feature companions (docs/control-port.md#companions): each node of the snapshot carries its companion list (a card's playback and capture, an RTP receiver, a file's sink with its dropped frames, an airplay node's pipe receiver; none for white), so every engine kind is shown. A file node's life: node.added with [], configuring, its sink listed not ready, then ready before the configured its readiness allowed. A counter moving: the whole list again. A stop and a start keep the list. A restart: the empty list after the node.state that began its teardown, then the next configuration's list from zero. An RTP receiver replaced make-before-break by a change in place (its port moved; the change's own messages are lifecycle.json's): the old one listed retiring, before its replacement, which shares its name, not ready, then ready, then the old one gone at the commit point. A failure past a readiness deadline: failed, then the empty list. A removal: nothing about the removed node's companions after node.removed. Each list replaces the node's whole list; the same list is never sent twice.",
   "requests": [
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"node.add\",\"params\":{\"name\":\"take\",\"type\":\"file\",\"settings\":{\"path\":\"take.wav\"}}}",
@@ -509,6 +509,65 @@
         "since": "2026-11-09T10:00:00.180000Z",
         "wanted": "running",
         "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.companionsChanged",
+      "params": {
+        "name": "fpp",
+        "companions": [
+          {
+            "name": "fpp.rtp",
+            "kind": "rtp-receiver",
+            "bank": "from_rtp",
+            "ready": true,
+            "retiring": true
+          },
+          {
+            "name": "fpp.rtp",
+            "kind": "rtp-receiver",
+            "bank": "from_rtp",
+            "ready": false
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.companionsChanged",
+      "params": {
+        "name": "fpp",
+        "companions": [
+          {
+            "name": "fpp.rtp",
+            "kind": "rtp-receiver",
+            "bank": "from_rtp",
+            "ready": true,
+            "retiring": true
+          },
+          {
+            "name": "fpp.rtp",
+            "kind": "rtp-receiver",
+            "bank": "from_rtp",
+            "ready": true
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.companionsChanged",
+      "params": {
+        "name": "fpp",
+        "companions": [
+          {
+            "name": "fpp.rtp",
+            "kind": "rtp-receiver",
+            "bank": "from_rtp",
+            "ready": true
+          }
+        ]
       }
     },
     {
