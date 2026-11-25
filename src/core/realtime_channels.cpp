@@ -1,9 +1,11 @@
 #include "ear/core/realtime_channels.hpp"
 #include <utility>
 namespace ear {
-RealtimeChannels::RealtimeChannels(std::vector<Initial> fields, RealtimeBell* bell)
+RealtimeChannels::RealtimeChannels(std::vector<Initial> fields, RealtimeBell* bell, std::size_t triggers)
 	: initial_(std::move(fields)), words_(std::make_unique<Word[]>(initial_.size())), bell_(bell),
-	  slots_(std::make_unique<RealtimeRecord[]>(ringSize)) {}
+	  slots_(std::make_unique<RealtimeRecord[]>(ringSize)), triggerCount_(triggers),
+	  triggers_(std::make_unique<std::atomic<std::uint32_t>[]>(triggers)),
+	  seen_(std::make_unique<std::uint32_t[]>(triggers)) {}
 
 RealtimeChannels::Taken RealtimeChannels::take() {
 	// Cleared before the read: a write after it rings again, so nothing the code writes waits for a later write.

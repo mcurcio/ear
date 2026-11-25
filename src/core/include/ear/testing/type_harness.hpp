@@ -40,6 +40,21 @@ public:
 	void disable() { node_->disable(); }
 	void enable() { node_->enable(); }
 	void remove() { node_->remove(); }
+	/// Trigger `Trigger` of the spec (docs/writing-a-node-type.md#actions): answered at once.
+	template <const auto& Trigger> ActionReply trigger() {
+		static_assert(ActionsOf<Spec>::template has<Trigger>, "trigger takes only its spec's actions");
+		static_assert(!std::remove_cvref_t<decltype(Trigger)>::isCall, "trigger takes a trigger; a call is invoke's");
+		return node_->invoke(Trigger.declaration().name).reply();
+	}
+	/// Call `Call` of the spec with `args`, its handler run on the harness's loops (runLoops): its answer, which is
+	/// empty while the node's loops hold it (the call queued behind work the test has not run).
+	template <const auto& Call> ActionAnswer invoke(const NodeSettings& args = nullptr) {
+		static_assert(ActionsOf<Spec>::template has<Call>, "invoke takes only its spec's actions");
+		static_assert(std::remove_cvref_t<decltype(Call)>::isCall, "invoke takes a call; a trigger is trigger's");
+		ActionAnswer answer = node_->invoke(Call.declaration().name, args);
+		node_->runLoops();
+		return answer;
+	}
 	std::string_view phase() const { return node_->phase(); }
 	NodeHealth health() const { return node_->health(); }
 	bool gone() const noexcept { return node_->gone(); }

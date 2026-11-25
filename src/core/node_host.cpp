@@ -288,7 +288,59 @@ std::string_view waitingKindName(WaitingFor::Kind kind) noexcept {
 	return "unknown";
 }
 
+namespace {
+/// One call's answer, on the main loop only: told once, by its handler's answer, its guard's restarted or stopping, or
+/// its deadline.
+struct PendingAction {
+	explicit PendingAction(NodeActions::ActionAnswered told) : answered(std::move(told)) {}
+	void answer(const ActionReply& reply) {
+		if (done) return;
+		done = true;
+		deadline.reset(); // allowed inside the deadline's own due (Timers::after)
+		auto tell = std::move(answered);
+		tell(reply);
+	}
+	NodeActions::ActionAnswered answered;
+	std::unique_ptr<Timer> deadline;
+	bool done = false;
+};
+} // namespace
+
 struct NodeHost::Impl {
+	/// A call's work as its loop holds it (docs/writing-a-node-type.md#actions): its answer posted to the main loop; work
+	/// destroyed unrun (its configuration torn down first: NodeLoop::closeToOthers) answers restarted, or stopping once
+	/// stopAll began. Destroyed on the loop's thread; it holds the pending answer only until it posts it.
+	class CallGuard {
+	public:
+		CallGuard(Impl& host, std::shared_ptr<PendingAction> pending)
+			: host_(&host), alive_(host.alive), pending_(std::move(pending)) {}
+		CallGuard(CallGuard&& other) noexcept
+			: host_(other.host_), alive_(std::move(other.alive_)), pending_(std::move(other.pending_)) {}
+		CallGuard& operator=(CallGuard&&) = delete;
+		~CallGuard() {
+			if (pending_) post(std::nullopt);
+		}
+		void answer(std::expected<void, std::string> answer) { post(std::move(answer)); }
+
+	private:
+		void post(std::optional<std::expected<void, std::string>> answer) {
+			if (!pending_) return;
+			host_->mainLoop.post(
+				[host = host_, alive = std::move(alive_), pending = std::move(pending_), answer = std::move(answer)] {
+					if (alive.expired()) return;
+					if (!answer)
+						return pending->answer(std::unexpected(ActionRefusal{
+							host->stopRequested ? ActionRefusal::Code::stopping : ActionRefusal::Code::restarted}));
+					if (*answer) return pending->answer({});
+					pending->answer(
+						std::unexpected(ActionRefusal{.code = ActionRefusal::Code::failed, .detail = answer->error()}));
+				});
+		}
+		Impl* host_;
+		std::weak_ptr<char> alive_;
+		std::shared_ptr<PendingAction> pending_;
+	};
+
 	/// PipeWire's object changes a turn queues, in the order a flush runs them: destroys (engine companions, then
 	/// blocks), then makes (blocks, then engine companions).
 	enum class FlushKind { destroyCompanion, destroyBlock, makeBlock, makeCompanion };
@@ -489,6 +541,61 @@ struct NodeHost::Impl {
 			if (judged) judged(operated.reply);
 			feed(std::move(operated.actions));
 			return operated.reply;
+		}
+
+		/// A type action (docs/writing-a-node-type.md#actions): checked against the type's declarations and arguments,
+		/// then a trigger's counter moved, or a call posted to its loop as outside work.
+		void invoke(std::string_view action, const NodeSettings& args, NodeActions::ActionAnswered& answered) {
+			const NodeConfig* declared = config_ && config_->config ? config_->config.get() : queued_.get();
+			const NodePhase phase = aggregate_.health().phase;
+			const auto refuse = [&](ActionRefusal refusal) { answered(std::unexpected(std::move(refusal))); };
+			const auto notRunning = [&] { refuse({.code = ActionRefusal::Code::notRunning, .phase = phase}); };
+			if (declared == nullptr) return notRunning();
+			const std::span<const ActionDeclaration> actions = declared->actionsDeclared();
+			const auto found = std::ranges::find(actions, action, &ActionDeclaration::name);
+			if (found == actions.end()) return refuse({.code = ActionRefusal::Code::unknownAction});
+			const auto index = static_cast<std::size_t>(found - actions.begin());
+			if (found->target == ActionDeclaration::Target::code) {
+				// A trigger takes no arguments: an object with a key is refused by it, as an empty table refuses one.
+				if (args.is_object() && !args.empty())
+					return refuse({.code = ActionRefusal::Code::invalidArgs,
+					               .key = args.begin().key(),
+					               .detail = "unknown key " + args.begin().key() + " (" + std::string(action) +
+					                         " takes no arguments)"});
+				if (!config_ || !config_->realtime ||
+				    (phase != NodePhase::running && phase != NodePhase::reconfiguring))
+					return notRunning();
+				config_->realtime->trigger(found->trigger);
+				answered({});
+				return;
+			}
+			auto walked = found->table->checkArgs(args.is_null() ? NodeSettings::object() : args);
+			if (!walked) {
+				std::string text = std::move(walked.error().text);
+				if (text.starts_with("settings:")) text.replace(0, 9, "args:");
+				return refuse(
+					{.code = ActionRefusal::Code::invalidArgs, .key = std::move(walked.error().key), .detail = text});
+			}
+			if (!config_ || config_->startFailed || !config_->loopsReleased || config_->ending) return notRunning();
+			const auto slot = std::ranges::find_if(config_->loops, [&](const std::unique_ptr<LoopSlot>& loop) {
+				return loop->declared.name == found->loop;
+			});
+			if (slot == config_->loops.end()) return notRunning();
+			auto pending = std::make_shared<PendingAction>(std::move(answered));
+			pending->deadline = host_.timers.after(actionDeadline, [weak = std::weak_ptr<PendingAction>(pending)] {
+				if (auto held = weak.lock()) held->answer(std::unexpected(ActionRefusal{ActionRefusal::Code::timeout}));
+			});
+			(*slot)->postOutsideState([guard = CallGuard(host_, std::move(pending)), config = declared, index,
+			                           args = std::move(*walked)](void* state) mutable {
+				std::expected<void, std::string> answer;
+				try {
+					answer = config->runCall(index, state, std::move(args));
+				} catch (const std::exception& error) {
+					guard.answer(std::unexpected(std::string("the handler threw: ") + error.what()));
+					throw; // the loop fails the node, as for any handler that throws
+				}
+				guard.answer(std::move(answer));
+			});
 		}
 
 		/// Every older node of this name is gone.
@@ -909,7 +1016,10 @@ struct NodeHost::Impl {
 			const std::span<const StatusDeclaration* const> fields = config.statusDeclared();
 			const bool rt = std::ranges::any_of(
 				fields, [](const StatusDeclaration* field) { return field->writer.kind == writer::Writer::Kind::rt; });
-			if (!rt && config.eventsDeclared().empty() && config.logCodesDeclared().empty()) return nullptr;
+			const auto triggers = static_cast<std::size_t>(std::ranges::count(
+				config.actionsDeclared(), ActionDeclaration::Target::code, &ActionDeclaration::target));
+			if (!rt && config.eventsDeclared().empty() && config.logCodesDeclared().empty() && triggers == 0)
+				return nullptr;
 			std::vector<RealtimeChannels::Initial> initial;
 			initial.reserve(fields.size());
 			for (const StatusDeclaration* field : fields) {
@@ -933,7 +1043,7 @@ struct NodeHost::Impl {
 				}
 				initial.push_back(one);
 			}
-			return std::make_unique<RealtimeChannels>(std::move(initial), bell);
+			return std::make_unique<RealtimeChannels>(std::move(initial), bell, triggers);
 		}
 		/// The ring's records as the book reads them, each stamped with its cycle's start; a log record written to the
 		/// log's sinks here, through the configuration's handle (its source the type, its topic the code).
@@ -5548,6 +5658,23 @@ struct NodeHost::Impl {
 		return *reply;
 	}
 
+	/// A type action: refused stopping during stopAll and unknown-node for a name no wanted node has; else the wanted
+	/// node judges it, in an input of its own.
+	void invoke(const NodeName& name, std::string_view action, const NodeSettings& args,
+	            NodeActions::ActionAnswered answered) {
+		if (handling || inItem || flushing)
+			throw std::logic_error("an action on node " + name + " inside NodeHost's own input: a wiring bug");
+		if (stopRequested) return answered(std::unexpected(ActionRefusal{ActionRefusal::Code::stopping}));
+		Node* node = wantedOrNull(name);
+		bool judged = false;
+		if (node != nullptr)
+			inputFor(node->serial(), [&](Node& wanted) {
+				judged = true;
+				wanted.invoke(action, args, answered);
+			});
+		if (!judged) answered(std::unexpected(ActionRefusal{ActionRefusal::Code::unknownNode}));
+	}
+
 	void companionsChanged(const NodeName& node, std::span<const CompanionView> companions) {
 		for (auto* listener : companionListeners) listener->companionsChanged(node, companions);
 	}
@@ -5746,6 +5873,11 @@ LifecycleReply NodeHost::stop(const NodeName& node, OperationJudged judged) {
 
 LifecycleReply NodeHost::restart(const NodeName& node, OperationJudged judged) {
 	return impl_->operate(node, &NodeAggregate::restart, std::move(judged));
+}
+
+void NodeHost::invoke(const NodeName& node, std::string_view action, const NodeSettings& args,
+                      ActionAnswered answered) {
+	impl_->invoke(node, action, args, std::move(answered));
 }
 
 void NodeHost::stopAll(GraphClosed, std::move_only_function<void()> allGone) {

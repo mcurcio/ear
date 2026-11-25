@@ -62,8 +62,9 @@ public:
 		std::uint64_t bits = 0;
 	};
 	/// Main loop. `fields` is one entry per status field of the spec, in declaration order; `bell` may be null (a host
-	/// with none: the tick drains what is written whenever it runs).
-	RealtimeChannels(std::vector<Initial> fields, RealtimeBell* bell);
+	/// with none: the tick drains what is written whenever it runs); `triggers` is how many triggers the spec has, each
+	/// a counter (docs/writing-a-node-type.md#actions).
+	RealtimeChannels(std::vector<Initial> fields, RealtimeBell* bell, std::size_t triggers = 0);
 	RealtimeChannels(const RealtimeChannels&) = delete;
 	RealtimeChannels& operator=(const RealtimeChannels&) = delete;
 
@@ -114,7 +115,20 @@ public:
 		if (!pending_.exchange(true, std::memory_order_acq_rel) && bell_ != nullptr) bell_->ring();
 	}
 
+	/// Whether trigger `trigger` was invoked since the code last asked: its counter against the last one a code of this
+	/// configuration saw, so several invokes before a block are one and a code swapped in sees one unseen.
+	bool triggered(std::size_t trigger) noexcept {
+		const std::uint32_t now = triggers_[trigger].load(std::memory_order_acquire);
+		if (now == seen_[trigger]) return false;
+		seen_[trigger] = now;
+		return true;
+	}
+
 	// ---- The main loop's side ----
+
+	/// Trigger `trigger` invoked: its counter moves, wait-free; the code sees it in its next block.
+	void trigger(std::size_t trigger) noexcept { triggers_[trigger].fetch_add(1, std::memory_order_release); }
+	std::size_t triggers() const noexcept { return triggerCount_; }
 
 	/// What one drain read, in order: the ring's records, the records the ring refused since the last drain by kind,
 	/// and the broken value, if the code broke one (said once).
@@ -154,5 +168,8 @@ private:
 	bool brokenTaken_ = false; // main loop only
 	std::atomic<bool> pending_{false};
 	bool wrote_ = false; // the code's: it wrote in this cycle
+	const std::size_t triggerCount_;
+	const std::unique_ptr<std::atomic<std::uint32_t>[]> triggers_; // the main loop's to move
+	const std::unique_ptr<std::uint32_t[]> seen_;                  // the code's: each counter as it last saw it
 };
 } // namespace ear

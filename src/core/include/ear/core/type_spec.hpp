@@ -44,6 +44,7 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+#include "ear/core/action_spec.hpp"
 #include "ear/core/loop.hpp"
 #include "ear/core/node_type.hpp"
 #include "ear/core/realtime_channels.hpp"
@@ -145,11 +146,11 @@ template <class T> inline constexpr bool isBanks = false;
 template <auto... Handles> inline constexpr bool isBanks<Banks<Handles...>> = true;
 
 /// A type's one declaration: its settings table, its banks, its stores (docs/writing-a-node-type.md#stores), its loops
-/// (docs/writing-a-node-type.md#loops), its lifecycle settings, its status fields, its events and its realtime log
-/// codes (docs/writing-a-node-type.md#status-and-events), all but the first two none (or the defaults) when not given.
-/// Designated initialisers follow this order (settings, banks, stores, loops, lifecycle, status, events, then the
-/// actions of slice 5.4, then logCodes), and a spec gives only what it uses: any of them after .banks deduce the
-/// rest. Each writer::loop field names one of the spec's loops.
+/// (docs/writing-a-node-type.md#loops), its lifecycle settings, its status fields, its events
+/// (docs/writing-a-node-type.md#status-and-events), its actions (docs/writing-a-node-type.md#actions) and its realtime
+/// log codes, all but the first two none (or the defaults) when not given. Designated initialisers follow this order
+/// (settings, banks, stores, loops, lifecycle, status, events, actions, logCodes), and a spec gives only what it uses:
+/// any of them after .banks deduce the rest. Each writer::loop field and each call names one of the spec's loops.
 ///
 /// A spec and its rows are declared in a named namespace, the type's own (ear::nodes::<type>, in its private header
 /// src/nodes/<type>/<type>_spec.hpp, which the type's tests include too): every template a type instantiates with its
@@ -177,15 +178,28 @@ template <class Fields, class LoopList> consteval bool loopWritersKnown() {
 	}
 	return true;
 }
+/// Whether each call of `Actions` names a loop of `LoopList`.
+template <class Actions, class LoopList> consteval bool callLoopsKnown() {
+	for (const ActionDeclaration& action : Actions::declared) {
+		if (action.target != ActionDeclaration::Target::loop) continue;
+		if (std::ranges::none_of(LoopList::declared,
+		                         [&](const LoopDeclaration& loop) { return loop.name == action.loop; }))
+			return false;
+	}
+	return true;
+}
 } // namespace spec_detail
 
 template <class Settings, class BankList, class StoreList = Stores<>, class LoopList = Loops<>,
-          class StatusList = StatusTable<>, class EventList = EventTable<>, class LogList = LogCodes<>>
+          class StatusList = StatusTable<>, class EventList = EventTable<>, class ActionList = ActionTable<>,
+          class LogList = LogCodes<>>
 	requires(std::derived_from<Settings, AnySettingsTable> && isBanks<BankList> && isStores<StoreList> &&
-             isLoops<LoopList> && isStatusTable<StatusList> && isEventTable<EventList> && isLogCodes<LogList>)
+             isLoops<LoopList> && isStatusTable<StatusList> && isEventTable<EventList> && isActionTable<ActionList> &&
+             isLogCodes<LogList>)
 struct TypeSpec {
 	static_assert(spec_detail::loopWritersKnown<StatusList, LoopList>(),
 	              "a writer::loop status field names one of its spec's loops");
+	static_assert(spec_detail::callLoopsKnown<ActionList, LoopList>(), "a call names one of its spec's loops");
 	Settings settings;
 	BankList banks;
 	StoreList stores{};
@@ -193,17 +207,29 @@ struct TypeSpec {
 	Lifecycle lifecycle{};
 	StatusList status{};
 	EventList events{};
+	ActionList actions{};
 	LogList logCodes{};
 };
 
 template <const auto& Spec> using SettingsOf = std::remove_cvref_t<decltype(Spec.settings)>;
-/// The settings a spec's table passed: what ports(), check() and configure() read, by row (`s.get<row>()`).
-template <const auto& Spec> using CheckedOf = typename SettingsOf<Spec>::Checked;
+namespace spec_detail {
+template <const auto& Of, bool Table = std::derived_from<std::remove_cvref_t<decltype(Of)>, AnySettingsTable>>
+struct CheckedFor {
+	using Type = typename std::remove_cvref_t<decltype(Of.settings)>::Checked;
+};
+template <const auto& Of> struct CheckedFor<Of, true> {
+	using Type = typename std::remove_cvref_t<decltype(Of)>::Checked;
+};
+} // namespace spec_detail
+/// The settings a spec's table passed: what ports(), check() and configure() read, by row (`s.get<row>()`). Of a
+/// SettingsTable itself (a call's arguments), what that table passed.
+template <const auto& Of> using CheckedOf = typename spec_detail::CheckedFor<Of>::Type;
 template <const auto& Spec> using BanksOf = std::remove_cvref_t<decltype(Spec.banks)>;
 template <const auto& Spec> using StoresOf = std::remove_cvref_t<decltype(Spec.stores)>;
 template <const auto& Spec> using LoopsOf = std::remove_cvref_t<decltype(Spec.loops)>;
 template <const auto& Spec> using StatusOf = std::remove_cvref_t<decltype(Spec.status)>;
 template <const auto& Spec> using EventsOf = std::remove_cvref_t<decltype(Spec.events)>;
+template <const auto& Spec> using ActionsOf = std::remove_cvref_t<decltype(Spec.actions)>;
 template <const auto& Spec> using LogCodesOf = std::remove_cvref_t<decltype(Spec.logCodes)>;
 
 namespace spec_detail {
@@ -219,11 +245,16 @@ template <class Fields> consteval std::size_t rtFieldCount() {
 template <const auto& Spec> inline constexpr bool writesRealtime =
 	rtFieldCount<std::remove_cvref_t<decltype(Spec.status)>>() > 0 ||
 	std::remove_cvref_t<decltype(Spec.events)>::count > 0 || std::remove_cvref_t<decltype(Spec.logCodes)>::count > 0;
-/// Whether only the code could serve what a spec declares: an rt field or a log code, which a pass-through never
-/// writes.
+/// Whether a spec's configurations have realtime channels: its code writes there, or it has a trigger, whose counter
+/// lives there (docs/architecture.md#the-realtime-channels).
+template <const auto& Spec> inline constexpr bool hasChannels =
+	writesRealtime<Spec> || std::remove_cvref_t<decltype(Spec.actions)>::triggers > 0;
+/// Whether only the code could serve what a spec declares: an rt field, a log code or a trigger, which a pass-through
+/// never writes or reads.
 template <const auto& Spec> inline constexpr bool needsCode =
 	rtFieldCount<std::remove_cvref_t<decltype(Spec.status)>>() > 0 ||
-	std::remove_cvref_t<decltype(Spec.logCodes)>::count > 0;
+	std::remove_cvref_t<decltype(Spec.logCodes)>::count > 0 ||
+	std::remove_cvref_t<decltype(Spec.actions)>::triggers > 0;
 /// Whether an argument list holds a text, which the realtime thread never writes.
 template <class ArgTypes> struct HasText;
 template <class... Args> struct HasText<std::tuple<Args...>> {
@@ -396,6 +427,14 @@ public:
 		                                 static_cast<std::uint16_t>(LogCodesOf<Spec>::template indexOf<Code>),
 		                                 Code.declaration().args, values...);
 	}
+	/// Whether trigger `Trigger` of the spec was invoked since the code last saw it (docs/writing-a-node-type.md#actions):
+	/// true once, however many invokes came before this block; a code swapped in sees one its predecessor did not.
+	template <const auto& Trigger> bool triggered() const noexcept {
+		static_assert(ActionsOf<Spec>::template has<Trigger>, "io.triggered takes only its spec's actions");
+		static_assert(!std::remove_cvref_t<decltype(Trigger)>::isCall,
+		              "io.triggered takes a trigger: a call reaches its loop's state, never the code");
+		return channels_->triggered(ActionsOf<Spec>::template triggerIndexOf<Trigger>);
+	}
 
 private:
 	template <class ArgTypes, class... Values> void put(RealtimeRecord::Kind kind, std::uint16_t index,
@@ -468,8 +507,9 @@ public:
 	void prepare(const AudioFormat& format) override {
 		if (ports_ == nullptr)
 			throw std::logic_error("a code written against a spec runs only in a type made by makeNodeType");
-		if constexpr (writesRealtime<Spec>) {
-			if (channels_ == nullptr || channels_->fields() != StatusOf<Spec>::count)
+		if constexpr (hasChannels<Spec>) {
+			if (channels_ == nullptr || channels_->fields() != StatusOf<Spec>::count ||
+			    channels_->triggers() != ActionsOf<Spec>::triggers)
 				throw std::logic_error("a code that writes on the realtime thread runs only in a type made by "
 				                       "makeNodeType");
 		}

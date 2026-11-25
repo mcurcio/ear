@@ -65,7 +65,7 @@ src/nodes/<type>/
 In the type's private header, inside its own named namespace `ear::nodes::<type>` (never an
 unnamed one), every constant `inline constexpr`. A `TypeSpec`'s members come in this order, and
 designated initialisers follow it: `.settings`, `.banks`, `.stores`, `.loops`, `.lifecycle`,
-`.status`, `.events`, `.logCodes`. Only the first two are required; a spec gives any of the rest it
+`.status`, `.events`, `.actions`, `.logCodes`. Only the first two are required; a spec gives any of the rest it
 uses, in that order, and deduces the others empty. The header includes `ear/core/lifecycle.hpp`,
 which brings in `type_spec.hpp` and `settings_table.hpp`.
 
@@ -569,6 +569,78 @@ with the rule's text (`status level: 101 is outside 0 to 100`), and nothing is w
 channels belong to the configuration: a code a change swaps in writes the same ones, so a field
 keeps the value the old code last wrote, and a new configuration's fields start at their initial
 values again.
+
+## Actions
+
+What a client may ask a node to do now, which nothing redoes after a restart: a request that
+changes no setting (`ear/core/action_spec.hpp`, which `lifecycle.hpp` brings in). Each is an
+`inline constexpr` in the type's named namespace, listed in the spec's `.actions` (after `.events`,
+before `.logCodes`). A **trigger** reaches the code, wait-free and with no arguments; a **call**
+reaches one loop's state, with arguments, and its handler's answer is the reply.
+
+```cpp
+struct Worker; // a loop's state, defined below: its handler names the call
+inline constexpr auto worker = loop::dedicated<"worker", Worker>;
+inline constexpr auto serverRow = setting::required("server", setting::number(1, 100));
+inline constexpr SettingsTable<serverRow> forgetArgs{"forget-pairing"};
+inline constexpr auto resetClip = action::trigger<"reset-clip">("clear the clipping flag");
+inline constexpr auto forget = action::call<"forget-pairing", forgetArgs, worker>("forget one server's pairing");
+inline constexpr TypeSpec spec{.settings = table,
+                               .banks = Banks<in, out>{},
+                               .loops = Loops<worker>{},
+                               .actions = ActionTable<resetClip, forget>{}};
+
+struct Worker {
+	std::expected<void, std::string> act(Invoked<forget>, const CheckedOf<forgetArgs>& args) {
+		if (!known(args.get<serverRow>())) return std::unexpected(std::string("no pairing with that server"));
+		return {};
+	}
+};
+struct Code {
+	bool latched = false;
+	void process(Io<spec> io, const GraphCycle&) noexcept {
+		if (io.triggered<resetClip>()) latched = false;
+		// ...
+	}
+};
+```
+
+The rules, each refused at compile time (`src/core/tests/compile_fail/action_bad.cpp`):
+
+- An action's name is kebab-case and never `start`, `stop`, `restart`, `disable` or `enable`, the
+  framework's lifecycle requests ([control-port.md](control-port.md#methods)); its help is one line.
+- A call names a loop its spec lists, declared with a state, and its arguments are a
+  `SettingsTable`: the same walk as settings, so a call's arguments are checked as a node's
+  settings are. `CheckedOf<table>` is what that table passed.
+- A call's handler is a member of its loop's state found by its tag, `Invoked<call>`, and held to
+  exactly `std::expected<void, std::string> act(Invoked<call>, const CheckedOf<args>&)`; one per
+  call, overloaded by the tag.
+- `io.triggered<trigger>()` takes only the spec's triggers (a call reaches its loop, never the
+  code). It is true once for every invoke since the code last saw it: several invokes before a
+  block are one, and asking twice in one block is true once. A trigger is lossy by design; an action
+  that must count is a call.
+- A spec with a trigger answers `configure` with a code of its own, never a pass-through, as a
+  spec with `rt` fields or log codes does: nothing would read it.
+
+**What NodeHost answers** (`NodeActions::invoke`, on the main loop):
+
+| Answer | When |
+|---|---|
+| done | a trigger: once its counter moved, at once; a call: when its handler answered `{}` |
+| `unknownNode` | no wanted node has the name |
+| `unknownAction` | the node's type has no action of the name |
+| `invalidArgs` | the arguments fail the call's table (its key and the walk's text, `args:` for `settings:`), or a trigger is given any |
+| `notRunning` (its phase) | a trigger while the code does not drive (any phase but `running` and `reconfiguring`); a call before the node is configured (`added`, `configuring`), while its configuration tears down, or with none (failed, disabled). A `stopped` node takes calls: its loops run on |
+| `restarted` | a call queued when its configuration was torn down: teardown step 1 closes the loop to outside work and destroys it unrun, and its reply object answers from its destructor |
+| `stopping` | ear is stopping: before the node is asked, or for a queued call torn down by the stop |
+| `failed` | the handler answered an error: its text. A handler that throws answers `failed` (`the handler threw: <what>`) and fails the node, as any handler that throws ([loops](#loops)) |
+| `timeout` | the handler did not answer within `actionDeadline` (10 s); its late answer is dropped |
+
+A call is posted as work from outside (`NodeLoop::postFromOutside`), behind the loop's own work: a
+running handler finishes and answers before the goodbye `stop()` posted behind it. The triggers'
+counters live in the configuration's realtime channels
+([architecture.md](architecture.md#the-realtime-channels)) with the code's last-seen value beside
+each, so a code a change swaps in sees once a trigger its predecessor did not, and never one it did.
 
 ## Engine companions
 
@@ -1451,7 +1523,8 @@ fakes allow. Banks are named by the spec's handles.
 | `h->facts()`, `h->cuts()` | The last cycle's `CycleFacts`, and the cut record the block's account reads |
 | `h.feed(bank, interleaved)`, `h.lastPlayed(bank)`, `h.shortfall(bank)` | A source's writer, never waiting (it takes what fits and returns the frames taken); what the last `process()` did with its ring (the `SourcePlayed` its clock was told, all zero before the first); its shortfall |
 | `h.input(bank, i)`, `h.output(bank, i)` | A port's buffer |
-| `h.stop()`, `h.start()`, `h.restart()`, `h.change(settings)`, `h.disable()`, `h.enable()`, `h.remove()` | The operations |
+| `h.stop()`, `h.start()`, `h.restart()`, `h.change(settings)`, `h.disable()`, `h.enable()`, `h.remove()`, `h->stopAll()` | The operations; `stopAll()` is ear's stop, run to the end (what the harness's destructor does) |
+| `h.trigger<trigger>()`, `h.invoke<call>(args)`, `h->invoke(name, args)` | The [actions](#actions): a trigger, answered at once (an `ActionReply`); a call, its handler run by `runLoops()` before it returns (an `ActionAnswer`: `answered()`, `reply()`); by name, unchecked and without running the loops, so a test can hold a call queued (behind a restart, past its deadline) |
 | `h.phase()`, `h.health()`, `h.gone()`, `h.droppedFrames()`, `h.companionList()` | What the node shows; its companion list as a client will see it ([engine.md](engine.md#companions-in-a-nodes-list)), read now |
 | `h->unwritten()`, `h->notes()`, `h->logs()`, `h->diagnostics()`, `h->latencyPlan()`, `h->ports()` | Through `->`, the underlying `NodeHarness`; `notes()` as the main loop heard them (after the [note rate](#the-node-handle)), `logs()` every log entry attributed to the node |
 | `h.companion(bank)` | What was made on a bank (an engine companion's bank as `NodeHost` named it): its `kind` (`CompanionKind`: a card's by its bank's direction), `name`, `shape`, `made`, `ready`, `destroyed`, a pipe receiver's `fifo`, and a sink's `chunks` as its consumer got them, one per call (a chunk split at the ring's end is two) |

@@ -103,6 +103,38 @@ public:
 protected:
 	~NodeOperations() = default;
 };
+/// Why a type action was not done (docs/writing-a-node-type.md#actions): no such node (`unknownNode`), no such action
+/// of its type (`unknownAction`), arguments its table refuses (`invalidArgs`, with the key and the walk's text), a node
+/// that cannot take it now (`notRunning`, with its phase: a trigger needs the code driving, a call a configuration
+/// configured and not tearing down), a configuration torn down before a queued call ran (`restarted`), ear stopping
+/// (`stopping`), the handler's refusal (`failed`, its text) and no answer within actionDeadline (`timeout`). Core names
+/// no wire code.
+struct ActionRefusal {
+	enum class Code { unknownNode, unknownAction, invalidArgs, notRunning, restarted, stopping, failed, timeout };
+	Code code;
+	std::string key{};
+	std::string detail{};
+	std::optional<NodePhase> phase{};
+	friend bool operator==(const ActionRefusal&, const ActionRefusal&) = default;
+};
+using ActionReply = std::expected<void, ActionRefusal>;
+/// How long a call's handler may take to answer: past it the call is answered `timeout` and the handler's late
+/// answer is dropped (docs/architecture.md#rates-and-bounds).
+inline constexpr std::chrono::milliseconds actionDeadline{10000};
+/// A client's request to run one of a node's type actions (docs/writing-a-node-type.md#actions). Main thread, never
+/// inside another of NodeHost's calls.
+class NodeActions {
+public:
+	/// Called once, on the main loop: inside the call for a refusal and a trigger, later for a call (its handler's
+	/// answer, `restarted` or `stopping` when its configuration was torn down first, `timeout` at actionDeadline).
+	using ActionAnswered = std::move_only_function<void(const ActionReply& reply)>;
+	/// Action `action` of node `node`'s type, with `args` (an object, or null for none).
+	virtual void invoke(const NodeName& node, std::string_view action, const NodeSettings& args,
+	                    ActionAnswered answered) = 0;
+
+protected:
+	~NodeActions() = default;
+};
 /// What a node's run says: a sentence, never a state (NodeHandle::say), paced as it says.
 class NodeNoteListener {
 public:
@@ -363,6 +395,7 @@ inline constexpr std::chrono::milliseconds hookSlowBound{20};
 inline constexpr std::chrono::milliseconds statusTickPace{33};
 class NodeHost final : public DesiredNodeListener,
 					   public NodeOperations,
+					   public NodeActions,
 					   public NodeCounterSource,
 					   public CounterListener {
 public:
@@ -463,6 +496,12 @@ public:
 	LifecycleReply start(const NodeName& node, OperationJudged judged = {}) override;
 	LifecycleReply stop(const NodeName& node, OperationJudged judged = {}) override;
 	LifecycleReply restart(const NodeName& node, OperationJudged judged = {}) override;
+	/// NodeActions (docs/writing-a-node-type.md#actions): a trigger moves its counter in the configuration's realtime
+	/// channels and is answered at once; a call is posted to its loop as work from outside (NodeLoop::postFromOutside)
+	/// and answered with its handler's answer, on the main loop. Refused: stopping during stopAll, unknown-node,
+	/// unknown-action, invalid-args, not-running.
+	void invoke(const NodeName& node, std::string_view action, const NodeSettings& args,
+	            ActionAnswered answered) override;
 	/// `closed` proves the graph takes no more edits, so no nodeAdded, nodeUpdated or nodeRemoved
 	/// can follow (one would throw std::logic_error: a wiring bug). Every node: stopping; torn
 	/// down; gone. `allGone` runs once on the main thread after the last (at once if none).

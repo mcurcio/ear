@@ -41,6 +41,7 @@ add_library(ear_core STATIC
 # each header on its own, so none depends on what an includer happened to include first. The
 # test executable depends on that target, so "make test" builds it.
 target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
+	include/ear/core/action_spec.hpp
 	include/ear/core/block_rules.hpp
 	include/ear/core/claims.hpp
 	include/ear/core/command_error.hpp
@@ -111,6 +112,7 @@ if(BUILD_TESTS)
 	ear_poison_raw_sleeps(ear_type_harness "${EAR_NO_RAW_SLEEPS}" ear_sleeps)
 
 	add_executable(ear_core_tests
+		tests/actions_test.cpp
 		tests/block_rules_test.cpp
 		tests/claims_test.cpp
 		tests/completions_test.cpp
@@ -284,6 +286,19 @@ if(BUILD_TESTS)
 	ear_realtime_compile_fail(report-of-other-spec "set takes only its spec's status fields")
 	ear_realtime_compile_fail(report-constructed "Report<.*>::Report\\(.*is private within this context")
 	ear_realtime_compile_fail(pass-through-with-rt "answers with a code of its own, never a pass-through")
+
+	# A type's actions (docs/writing-a-node-type.md#actions): tests/compile_fail/action_bad.cpp says what each case is.
+	set(bad_action "${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail/action_bad.cpp")
+	ear_compile_check(ear_action_compile_fail_control "${bad_action}")
+	function(ear_action_compile_fail case regex)
+		ear_compile_fail(ear_action_compile_fail_${case} "${bad_action}" ${case} "${regex}")
+	endfunction()
+	ear_action_compile_fail(action-named-lifecycle "an action is never named start, stop, restart, disable or enable")
+	ear_action_compile_fail(action-name-not-kebab "an action's name is kebab-case")
+	ear_action_compile_fail(call-loop-not-in-spec "a call names one of its spec's loops")
+	ear_action_compile_fail(call-handler-signature "a call's handler is std::expected<void, std::string> act")
+	ear_action_compile_fail(triggered-not-a-trigger "io.triggered takes a trigger")
+	ear_action_compile_fail(pass-through-with-trigger "answers with a code of its own, never a pass-through")
 
 	# What must not compile about a type spec, its class, the contexts its configure is handed, Io and the harness
 	# (docs/writing-a-node-type.md#the-class; docs/writing-a-node-type.md#rules-the-framework-enforces):

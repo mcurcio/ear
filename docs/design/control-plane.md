@@ -10,7 +10,9 @@ editor's status list, badges and activity: `docs/writing-a-node-type.md#status-a
 `docs/editor.md#status-events-and-diagnostics`), step 5.3's realtime channels built (`rt` fields, `io.set`, `io.raise`,
 `io.log`, the ring with its log budget, cycle stamps and the gated bell, bound when the code is prepared and rebound at a
 swap: `docs/writing-a-node-type.md#reporting-from-the-code`, `docs/architecture.md#the-realtime-channels`,
-`docs/engine.md#the-realtime-bell`); the rest not built. Slice 5 (the
+`docs/engine.md#the-realtime-bell`), step 5.4's core built (`ActionTable`, triggers into the code, calls into a loop's
+state, `NodeActions::invoke` with its refusals and its 10 s deadline, the harness's `trigger` and `invoke`:
+`docs/writing-a-node-type.md#actions`); the rest not built. Slice 5 (the
 control plane: status, events, node diagnostics on the wire, actions, the realtime coded ring, sendspin's notes split)
 follows slice 3c (built: the node
 handle and loops, `docs/writing-a-node-type.md#the-node-handle`, `#loops`). Slice 6 (parameters: decimal, indexed and live rows, parameter slots and their ramps, retunes,
@@ -511,8 +513,6 @@ enum class EventSeverity { info, warn, error };
 }
 ```
 
-- `TypeSpec` gains `.actions` between `.events` and `.logCodes` (the rest are built:
-  [writing-a-node-type.md](../writing-a-node-type.md#the-spec)).
 - `NodeHandle::say` stays for `sendspin` until step 5.5 removes it.
 
 ### 5.4 What `process` gets: `Io<spec>` grows
@@ -520,10 +520,10 @@ enum class EventSeverity { info, warn, error };
 ```cpp
 template <const auto& Spec> class Io {
 public:
-	// built: operator[](bank), frames(), set, raise, log (docs/writing-a-node-type.md#reporting-from-the-code)
+	// built: operator[](bank), frames(), set, raise, log, triggered (docs/writing-a-node-type.md#reporting-from-the-code,
+	// #actions)
 	template <const auto& Row> Smoothed param() const noexcept;                         // a live, non-indexed row
 	template <const auto& Row> Smoothed param(std::size_t member) const noexcept;       // a live indexed row, from 0
-	template <const auto& Trigger> bool triggered() const noexcept;                    // true once per invoke
 };
 class Smoothed {   // one live row's values for this block, in the row's own unit
 public:
@@ -553,37 +553,18 @@ public:
 - **Members of one reach change together only by chance**: the main loop writes a reach's slots one at a time, so one
   block may see channel 1's new target and channel 2's old one (at most one block of ramp, about 0.07 dB for 2.5 dB over
   20 ms); a seqlock per node was judged not worth its cost.
-- `io.triggered` compares the trigger's counter with the last the code saw. Every handle resolves to an index when the
-  code is prepared, as banks do.
+- Every handle resolves to an index when the code is prepared, as banks do.
 
 ### 5.5 Actions
 
-```cpp
-namespace ear::action {
-/// Into the node's code, wait-free: no arguments, answered {} once handed over; io.triggered<t>() true once in the next
-/// block. Several invokes before a block are one.
-template <spec_detail::Name N> consteval Trigger<N> trigger(std::string_view help);
-/// Into a loop's state, posted to `Loop` (a handle the spec lists): arguments checked by `Args`, a SettingsTable; the
-/// handler's std::expected<void, std::string> is the reply.
-template <spec_detail::Name N, const auto& Args, const auto& Loop> consteval Call<N, Args, Loop> call(std::string_view help);
-}
-template <auto... Actions> struct ActionTable {};
-```
-
-- `start`, `stop`, `restart`, `disable` and `enable` are the framework's lifecycle requests (built); a type action of
-  one of those names does not compile.
-- A call's handler is a member of the loop's state, `std::expected<void, std::string> act(Invoked<forgetPairing>, const
-  CheckedOf<forgetArgs>&)`, found by its argument type and held to that signature. It is posted with 3c's
-  `NodeLoop::postFromOutside`; a queued call whose configuration is torn down first is destroyed unrun at teardown step 1
-  and its reply object answers `restarted` (or `stopping`) from its destructor.
-- An action's arguments are a `SettingsTable`: one checker for settings, arguments and parameters.
+Built ([writing-a-node-type.md](../writing-a-node-type.md#actions)).
 
 ### 5.6 How the framework carries them
 
 - **Per configuration** (made when `configure` is called from empty, freed at teardown step 5), beside the realtime
   channels, which are built and bound this way ([architecture.md](../architecture.md#the-realtime-channels)): one
-  `std::atomic<double>` slot per live member, one `std::atomic<std::uint32_t>` per trigger, each live member's ramp
-  state. All of it is the node's, not the code's: the code is bound to it when prepared, and a code an in-place change
+  `std::atomic<double>` slot per live member and each live member's ramp state (the triggers' counters are built there:
+  [writing-a-node-type.md](../writing-a-node-type.md#actions)). All of it is the node's, not the code's: the code is bound to it when prepared, and a code an in-place change
   swaps in is bound to the same objects before its barrier. A stop, a start and an in-place change keep all of it; a
   reshape in place resizes an indexed family's slots (survivors keep their ramps, new members start at the committed
   value, vanished ones are dropped after the swap's barrier).
@@ -693,8 +674,8 @@ report_.raise<pairingFailed>(abortReasonName(reason));      // checked against p
 Each a case in `src/core/tests/compile_fail/`, matched against GCC 14's wording: `live-text-row`, `live-optional-row`,
 `live-whole-smoothed`, `get-live-row`, `indexed-count-below`, `indexed-count-not-number`, `indexed-no-default`,
 `decimal-low-above-high`, `decimal-default-outside`, `log-taper-nonpositive`, `db-taper-range`, `param-not-live`,
-`param-row-not-in-spec`, `param-indexed-without-member`, `param-member-of-plain-row`, `call-loop-not-in-spec`,
-`triggered-not-a-trigger`, `action-named-lifecycle` (the status and event declarations' cases are built,
+`param-row-not-in-spec`, `param-indexed-without-member`, `param-member-of-plain-row` (the actions' cases are built,
+`src/core/tests/compile_fail/action_bad.cpp`; the status and event declarations' cases are built,
 `src/core/tests/compile_fail/status_spec_bad.cpp`, and so are `Io`'s and `Report`'s,
 `src/core/tests/compile_fail/realtime_bad.cpp`).
 
@@ -708,7 +689,6 @@ thread:
 |---|---|
 | `h.live<row>(value)`, `h.live<row>(member, value)` | moves the slot, as a gesture tick (runs `checkLive`, failing the test on a refusal) |
 | `h.retune(settings)` | a change of live rows only: slots move, no restart (asserts the plan would retune) |
-| `h.trigger<action>()`, `h.invoke<action>(args)` | a trigger; a call, on the harness's loops |
 | `h.outcome(settings)` | the plan's outcome of a change, without applying it |
 
 The all-type tests gain (the schema's checks are built: [writing-a-node-type.md](../writing-a-node-type.md#what-every-type-must-also-pass)):
@@ -722,9 +702,8 @@ is of its kind or null, and that the status view survives every in-place change,
 | Channel | Direction | Mechanism | Bound | On overflow |
 |---|---|---|---|---|
 | Parameter slot | in | one `std::atomic<double>` per live member, written by the main loop, loaded once a block | 256 live members per node | — |
-| Trigger | in | one `std::atomic<std::uint32_t>` counter per trigger | — | several invokes in one block are one |
 
-The outward channels (`rt` fields, the ring, the bell) are built
+The outward channels (`rt` fields, the ring, the bell) and the triggers' counters are built
 ([architecture.md](../architecture.md#the-realtime-channels)); `rt` fields are stored as 64-bit words, so only the
 parameter slots need `std::atomic<double>`, lock-free on x86-64 and arm64; a `static_assert` on `is_always_lock_free`
 makes it a build failure elsewhere [U: no arm64 build yet].
@@ -749,7 +728,6 @@ one `gesture.changed` `change` per gesture moved.
 | The tick, `status` records, events and flapping | built | [architecture.md](../architecture.md#rates-and-bounds) |
 | Gesture ticks into the main loop | one pending per gesture | the control thread keeps the newest until the main loop took the last |
 | `gesture.changed` `change` | 30 a second per gesture | never to the owner |
-| Action reply | 10 s | `action-timeout`; the handler's late answer dropped |
 | Gesture idle | 30 s with no message about it from its owner (keep-alives included), timed on the control thread | ended as released, keeping the last value heard (R32, G15) |
 | A session's queued requests | 16 messages with an id (or batches) read ahead | at 16, the socket is not read until one is answered |
 
@@ -779,16 +757,17 @@ and its owner, drops a stale `seq`, stops for a keep-alive, checks the value aga
 ### 6.6 The channels across the lifecycle
 
 The outward channels (`rt` words and counters, the ring, the queue, the `Report`) are built across the lifecycle this
-way ([architecture.md](../architecture.md#the-realtime-channels)); what is left is the slots' and triggers':
+way ([architecture.md](../architecture.md#the-realtime-channels)), and so are the triggers' counters; what is left is
+the slots':
 
-| Moment | What happens to the slots and triggers |
+| Moment | What happens to the slots |
 |---|---|
-| `configure` from empty | made: slots seeded from the committed values or the node's held live values, trigger counters |
+| `configure` from empty | made: slots seeded from the committed values or the node's held live values |
 | configured | the code is prepared and bound to them; nothing runs on the realtime thread yet |
 | the code drives | the first block starts every ramp at its slot's value; then `start()` |
 | a retune, in any phase | the slots move at once, wait-free; with no configuration only the node's live value moves and seeds the next one; while `stopped` the slots move and the code ramps from them at the next start |
 | an in-place change (3d) | the code keeps running and ramping |
-| a code swap (3d) | the new code is bound to the same slots and counters; each ramp goes on, an unseen trigger is seen once by the new code |
+| a code swap (3d) | the new code is bound to the same slots; each ramp goes on |
 | a stop | the code stops; the slots stay |
 | teardown step 5 | freed, after the code and the loops' states |
 
@@ -1169,7 +1148,6 @@ formulas and their inverses; Backspace on a focused knob sends no `node.remove`.
 - **A dropped connection writes its last value** (R32), 30 s later at most; the `param` record says so.
 - **Rounding at the end** can differ from the last live value by half a step (0.05 dB at one decimal).
 - **Ticks run the type's `check`** on the main loop, once per gesture per turn at most.
-- **Triggers are lossy by design**: several invokes in one block are one; an action that must count is a call.
 - [U] Aggregate deduction of `TypeSpec` with designated initialisers and defaulted parameters on GCC 14: it holds for
   `.stores` and `.loops` (every subset spelling compiles, `type_spec_test.cpp`) and is still to check for this page's
   members; fallback a consteval `makeSpec` with the same members in the same order.

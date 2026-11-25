@@ -549,8 +549,9 @@ public:
 				              "configure answers with a code written against its own type's spec");
 				static_cast<spec_detail::BankBoundCode&>(*erased.own()).bind(context_->ports(), context_->realtime());
 			} else {
-				static_assert(!spec_detail::needsCode<Spec>, "a spec with writer::rt fields or log codes answers with "
-				                                             "a code of its own, never a pass-through");
+				static_assert(!spec_detail::needsCode<Spec>,
+				              "a spec with writer::rt fields, log codes or triggers answers with "
+				              "a code of its own, never a pass-through");
 			}
 			return Configured::erased(std::move(erased),
 			                          ErasedLoopState::of(LoopsOf<Spec>::template indexOf<typename States::Loop>,
@@ -758,8 +759,9 @@ public:
 			              "configure answers with a code written against its own type's spec");
 			static_cast<spec_detail::BankBoundCode&>(*erased.own()).bind(context_->ports(), context_->realtime());
 		} else {
-			static_assert(!spec_detail::needsCode<Spec>, "a spec with writer::rt fields or log codes answers with "
-			                                             "a code of its own, never a pass-through");
+			static_assert(!spec_detail::needsCode<Spec>,
+			              "a spec with writer::rt fields, log codes or triggers answers with "
+			              "a code of its own, never a pass-through");
 		}
 		return Changed::erased(std::move(erased));
 	}
@@ -1080,6 +1082,12 @@ public:
 	std::span<const StatusDeclaration* const> statusDeclared() const override { return StatusOf<Spec>::declared; }
 	std::span<const EventDeclaration> eventsDeclared() const override { return EventsOf<Spec>::declared; }
 	std::span<const LogCodeDeclaration> logCodesDeclared() const override { return LogCodesOf<Spec>::declared; }
+	std::span<const ActionDeclaration> actionsDeclared() const override { return ActionsOf<Spec>::declared; }
+	std::expected<void, std::string> runCall(std::size_t action, void* state, CheckedSettings&& args) const override {
+		const spec_detail::CallRunner run = spec_detail::CallRunners<ActionsOf<Spec>>::runners.at(action);
+		if (run == nullptr) return NodeConfig::runCall(action, state, std::move(args));
+		return run(state, std::move(args));
+	}
 
 private:
 	CheckedOf<Spec> settings_;
@@ -1119,7 +1127,7 @@ template <const auto& Spec, class Type> class SpecNodeType final : public NodeTy
 public:
 	SpecNodeType() noexcept
 		: NodeType(Spec.settings, StoresOf<Spec>::declared, Spec.lifecycle.reconfigureDeadline, BanksOf<Spec>::declared,
-	               StatusOf<Spec>::declared, EventsOf<Spec>::declared) {}
+	               StatusOf<Spec>::declared, EventsOf<Spec>::declared, ActionsOf<Spec>::declared) {}
 
 private:
 	/// The table's walk passed: the class's check, a rule across settings, then the config.

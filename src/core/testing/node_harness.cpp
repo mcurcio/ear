@@ -896,6 +896,11 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		std::span<const StatusDeclaration* const> statusDeclared() const override { return inner->statusDeclared(); }
 		std::span<const EventDeclaration> eventsDeclared() const override { return inner->eventsDeclared(); }
 		std::span<const LogCodeDeclaration> logCodesDeclared() const override { return inner->logCodesDeclared(); }
+		std::span<const ActionDeclaration> actionsDeclared() const override { return inner->actionsDeclared(); }
+		std::expected<void, std::string> runCall(std::size_t action, void* state,
+		                                         CheckedSettings&& args) const override {
+			return inner->runCall(action, state, std::move(args));
+		}
 		Impl& harness;
 		std::unique_ptr<const NodeConfig> inner;
 	};
@@ -1559,6 +1564,16 @@ LifecycleReply NodeHarness::start() {
 	const LifecycleReply reply = impl_->host->start(impl_->options.node);
 	impl_->settle();
 	return reply;
+}
+
+void NodeHarness::stopAll() { impl_->finish(); }
+
+ActionAnswer NodeHarness::invoke(std::string_view action, const NodeSettings& args) {
+	impl_->requireAdded();
+	ActionAnswer answer;
+	impl_->host->invoke(impl_->options.node, action, args, answer.teller());
+	impl_->settle();
+	return answer;
 }
 
 LifecycleReply NodeHarness::restart() {

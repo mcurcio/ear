@@ -31,6 +31,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -176,6 +177,25 @@ struct AddOptions {
 };
 
 /// Any NodeType, by names.
+/// One type action's answer (NodeHarness::invoke): empty until NodeHost answered it, on the main loop.
+class ActionAnswer {
+public:
+	ActionAnswer() : slot_(std::make_shared<std::optional<ActionReply>>()) {}
+	bool answered() const noexcept { return slot_->has_value(); }
+	/// The answer; std::logic_error while there is none.
+	const ActionReply& reply() const {
+		if (!*slot_) throw std::logic_error("the action is not answered yet");
+		return **slot_;
+	}
+	/// Where NodeHost's answer lands.
+	NodeActions::ActionAnswered teller() const {
+		return [slot = slot_](const ActionReply& reply) { *slot = reply; };
+	}
+
+private:
+	std::shared_ptr<std::optional<ActionReply>> slot_;
+};
+
 class NodeHarness {
 public:
 	using Options = HarnessOptions;
@@ -345,6 +365,11 @@ public:
 	void disable();           // nodeChanged, outcome disable (spec.disabled true)
 	void enable();            // nodeChanged, outcome enable
 	void remove();            // nodeRemoved
+	/// NodeHost::stopAll, to the end: what the harness's destructor does, earlier, for a test of what a stop answers.
+	void stopAll();
+	/// NodeActions::invoke, settled: a trigger or a refusal is answered at once; a call's handler runs at the next
+	/// runLoops().
+	ActionAnswer invoke(std::string_view action, const NodeSettings& args = nullptr);
 
 	// What the node shows.
 	NodeHealth health() const;                               // as last told; std::logic_error before anything was told

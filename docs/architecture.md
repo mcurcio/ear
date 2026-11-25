@@ -432,6 +432,7 @@ clock: each is stamped on the main loop's steady clock, and each listener maps i
 | Events (wire and standard output alike) | per node: 32 at once, then one a second | held back ones counted in `ear.events-dropped` (`heldBack`) |
 | `ear.events-dropped`, `ear.records-dropped` | at most one a second per node (and subject) | the count since the last |
 | Flapping | a field with more than its `flapsAbove` changes (default 10 in 10 s) within the window | `ear.status-flapping`, subject the field, active (`transitions`, `windowMs`) when it crosses, said again at most once a window while it stays above; inactive once a whole window passed with it at or below |
+| A call's answer | 10 s (`actionDeadline`), timed by NodeHost on the main loop's timers | answered `timeout`; the handler's late answer dropped ([writing-a-node-type.md](writing-a-node-type.md#actions)) |
 
 A node diagnostic of these is the node's, kept per code and subject as the framework's own
 ([output-records.md](output-records.md#diagnostic)): `ear.status-flapping` is a condition,
@@ -452,6 +453,7 @@ never touches a queue, a lock or a clock of its own.
 | The ring | single producer (the code), single consumer (the drain), fixed 48-byte records: kind, index, count, the cycle's `startNs`, up to four 8-byte values | 256 records per configuration; a log record is refused once 192 are in use, so status and events keep the last quarter | dropped, counted per kind: `ear.records-dropped`, subject `realtime` (`count`, `status`, `events`, `logs`) |
 | The bell | `RealtimeBell::ring()` (ear_pipewire's: [engine.md](engine.md#the-realtime-bell)), gated by one atomic exchange per configuration: rung after a `process` that wrote anything, unless it was rung since the last drain | at most once per drain, and the drain is the tick's, so at most 30 a second per node | — |
 | A broken value | the first value outside its declaration, kept once | one | the node fails `lost` with the rule |
+| A trigger (in) | one `std::atomic<std::uint32_t>` counter per trigger, moved by the main loop; beside it the last value the code saw, the code's alone ([writing-a-node-type.md](writing-a-node-type.md#actions)) | — | several invokes before a block are one |
 
 `io.set` stores the word and, when the value differs from the last one the code wrote (its
 initial value before any), counts a transition and puts a status record in the ring. `io.raise` and
@@ -476,8 +478,8 @@ when `configure` answers (`CreateOf::applied`), and a code a change swaps in is 
 ones (`ChangeOf::applied`), so each `rt` field keeps the value the old code last wrote. A stop and a
 start keep them; a restart, a failure or a removal drains them with the queue as the
 configuration closes, and its successor starts from new ones. One node's channels are never
-another's. A type whose code writes nothing on the realtime thread (no `rt` field, event or log
-code) has none.
+another's. A type whose code writes nothing on the realtime thread and reads no trigger (no `rt`
+field, event, log code or trigger) has none.
 
 ## Companions
 

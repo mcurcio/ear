@@ -4,6 +4,8 @@
 #include "ear/core/rate_text.hpp"
 
 #include <algorithm>
+#include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -114,12 +116,17 @@ std::expected<CheckedSettings, AnySettingsTable::Refusal> AnySettingsTable::walk
 
 NodeType::NodeType(const AnySettingsTable& table, std::span<const StoreDeclaration> stores,
                    std::chrono::milliseconds reconfigureDeadline, std::span<const BankDeclaration> banks,
-                   std::span<const StatusDeclaration* const> status, std::span<const EventDeclaration> events) noexcept
+                   std::span<const StatusDeclaration* const> status, std::span<const EventDeclaration> events,
+                   std::span<const ActionDeclaration> actions) noexcept
 	: table_(&table), stores_(stores), reconfigureDeadline_(reconfigureDeadline), banks_(banks), status_(status),
-	  events_(events) {}
+	  events_(events), actions_(actions) {}
 
 TypeSchema NodeType::schema() const noexcept {
-	return TypeSchema{table_->name(), table_->rows(), banks_, reconfigureDeadline_, status_, events_};
+	return TypeSchema{table_->name(), table_->rows(), banks_, reconfigureDeadline_, status_, events_, actions_};
+}
+
+std::expected<void, std::string> NodeConfig::runCall(std::size_t action, void*, CheckedSettings&&) const {
+	throw std::logic_error("node config: action " + std::to_string(action) + " is no call of its type");
 }
 
 std::string_view NodeType::name() const noexcept { return table_->name(); }

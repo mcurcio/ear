@@ -240,6 +240,9 @@ constexpr SettingDeclaration declarationOf(const SettingRow& row) {
 template <const auto&... Rows>
 	requires(setting::isRow<std::remove_cvref_t<decltype(Rows)>> && ...)
 class SettingsTable;
+namespace spec_detail {
+struct ArgsAccess; // action_spec.hpp: a call's checked arguments, made from what its table's walk made
+} // namespace spec_detail
 
 namespace linkage {
 template <const auto& Object> consteval std::string_view spelling() { return __PRETTY_FUNCTION__; }
@@ -263,6 +266,7 @@ private:
 	template <const auto&... Rows>
 		requires(setting::isRow<std::remove_cvref_t<decltype(Rows)>> && ...)
 	friend class SettingsTable;
+	friend struct spec_detail::ArgsAccess;
 	std::vector<std::any> slots_;
 };
 
@@ -281,6 +285,15 @@ public:
 			if (row->key == key) return row->inPlace;
 		return false;
 	}
+	/// A refusal's text, and the key it names (empty for "settings: must be an object"): InvalidSettings's `key`
+	/// (docs/control-port.md#error-codes), and an action's invalid-args.
+	struct Refusal {
+		std::string text;
+		std::string key;
+	};
+	/// A call's arguments walked as settings are (docs/writing-a-node-type.md#actions): what NodeHost hands the call's
+	/// handler, or the refusal.
+	std::expected<CheckedSettings, Refusal> checkArgs(const NodeSettings& args) const { return walk(args); }
 
 protected:
 	/// Refuses at compile time: an empty name, a key given twice, an onlyWithout that names no row above its own.
@@ -305,12 +318,6 @@ protected:
 	///    " (<name> takes no settings)".
 	/// 3. Each row in order: absent (next row, or missing when required), then onlyWithout, then the kind and the range
 	///    or meaning.
-	/// A refusal's text, and the key it names (empty for "settings: must be an object"): InvalidSettings's `key`
-	/// (docs/control-port.md#error-codes).
-	struct Refusal {
-		std::string text;
-		std::string key;
-	};
 	std::expected<CheckedSettings, Refusal> walk(const NodeSettings& settings) const;
 
 private:
@@ -352,6 +359,7 @@ public:
 		explicit Checked(CheckedSettings settings) noexcept : settings_(std::move(settings)) {}
 		friend SettingsTable;
 		template <const auto& Spec, class Type> friend class spec_detail::SpecNodeType;
+		friend struct spec_detail::ArgsAccess;
 		CheckedSettings settings_;
 	};
 	/// The walk with no node type around it, for tests; production goes through NodeType::parse.
