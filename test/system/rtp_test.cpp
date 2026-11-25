@@ -319,3 +319,63 @@ TEST_CASE("node.restart of an rtp node binds its port again: its claim's probe r
 	CHECK(rpc.readUntilClosed() == 1001);
 	CHECK(waitForStop(ear) == 0);
 }
+
+// Changes in place (docs/node-types.md#rtp; docs/architecture.md#changes-in-place): a port moved without a restart.
+
+TEST_CASE("An rtp port changed in place: reconfiguring with its keys and back to running, no stopping, the tone on "
+          "the new port in the WAV",
+          "[system][rtp][reconfigure]") {
+	TempDirectory directory;
+	const std::uint16_t first = freeUdpPort();
+	writeGraph(directory, first);
+	auto ear = runEar(directory);
+	const bool ready = waitForLines(ear, runningAndLinked);
+	const auto listening = ear.lineStartingWith(listeningPrefix);
+	INFO("ear printed:\n" << ear.output());
+	REQUIRE(ready);
+	REQUIRE(listening);
+	Rpc rpc(static_cast<std::uint16_t>(std::stoul(listening->substr(listeningPrefix.size()))));
+	REQUIRE(rpc.call("graph.subscribe").contains("result"));
+
+	std::uint16_t second = freeUdpPort();
+	while (second == first) second = freeUdpPort();
+	const std::size_t from = rpc.notifications.size();
+	const json updated = rpc.call(
+		"node.update", {{"name", "fpp"},
+	                    {"settings", {{"address", "0.0.0.0"}, {"port", second}, {"format", "L24"}, {"channels", 2}}}});
+	INFO(updated.dump());
+	REQUIRE(updated.contains("result"));
+	const json changing = rpc.waitFor(
+		[](const json& m) { return Rpc::matches(m, "node.state", {{"name", "fpp"}, {"state", "reconfiguring"}}); },
+		from);
+	CHECK(changing["params"]["keys"] == json::array({"port"}));
+	CHECK(rpc.indexOf("node.updated", {{"name", "fpp"}, {"applied", "reconfigure"}}, from) < rpc.notifications.size());
+	const json settled = rpc.waitFor(
+		[](const json& m) {
+			return Rpc::matches(m, "node.state", {{"name", "fpp"}, {"state", "running"}}) ||
+		           Rpc::matches(m, "node.state", {{"name", "fpp"}, {"state", "failed"}});
+		},
+		from);
+	INFO("notifications: " << json(rpc.notifications).dump());
+	REQUIRE(settled["params"]["state"] == "running");
+	CHECK(rpc.indexOf("node.state", {{"name", "fpp"}, {"state", "stopping"}}, from) == rpc.notifications.size());
+	CHECK(ear.waitForLine("node fpp reconfiguring: port", deadline));
+
+	// The tone sent to the new port reaches the WAV.
+	RtpSender sender(second, RtpPcm::l24, graphFrequency, RtpTone{{750.0, 1500.0}, amplitude});
+	sender.send(graphFrequency * 10);
+	std::size_t loud = 0;
+	const bool heard = waitForWav(
+		directory.recordings() / "rec.wav",
+		[&](std::span<const float> fresh, std::size_t) {
+			loud += static_cast<std::size_t>(
+				std::ranges::count_if(fresh, [](float s) { return std::abs(s) > amplitude / 2; }));
+			return loud > graphFrequency / 10;
+		},
+		std::chrono::seconds(30));
+	CHECK(heard);
+	ear.signal(SIGTERM);
+	CHECK(rpc.readUntilClosed() == 1001);
+	CHECK(waitForStop(ear) == 0);
+	CHECK_FALSE(ear.hasLine("node fpp stopping: restarting (settings changed: port)"));
+}

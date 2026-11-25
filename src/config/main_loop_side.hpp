@@ -32,12 +32,17 @@ struct Offer {
 	Placements placements;
 	control::FileChangeCause cause; // edit or disk
 	std::uint32_t droppedEdits;     // disk only
+	/// An edit's dry run (docs/control-port.md#nodeset-and-dry-runs): planned and answered, never committed, told,
+	/// recorded or run.
+	bool dryRun = false;
+	/// The node whose change the reply answers with (node.disable, node.enable, node.set).
+	std::optional<NodeName> answerFor = std::nullopt;
 };
 enum class Verdict { accepted, refused, stopping };
 struct Judged {
 	Verdict verdict;
 	std::expected<void, CommandError> result;
-	std::vector<std::pair<NodeName, NodeOutcome>> outcomes{}; // Plan::outcomes() of an accepted offer
+	std::optional<NodeChange> change{}; // an accepted offer's Plan::change(answerFor)
 };
 /// Where a refusal points: the named node's line; the first route naming a refused node or port;
 /// the route refused; the first node of an unknown type; the second of two nodes sharing a name. Pure.
@@ -59,7 +64,8 @@ public:
 	control::CommandResult operate(control::LifecycleVerb verb, const NodeName& node, bool stopping);
 	/// Plan. Accepted: running = offer.file.version, listeners told graphFileChanged, commit. Refused
 	/// with cause disk: the refusal recorded for that version (place from placeOf), listeners told.
-	/// Refused edit: nothing told. Stopping: nothing told.
+	/// Refused edit: nothing told. Stopping: nothing told. A dry run: planned only, accepted or refused, nothing told,
+	/// recorded or committed.
 	Judged offer(Offer offer);
 	/// A file change with no plan (errors; a write state): listeners told graphFileChanged.
 	void announce(FileState file, control::FileChangeCause cause, std::uint32_t droppedEdits);

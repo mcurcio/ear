@@ -84,6 +84,8 @@ json encodePortRef(const PortRef& port) { return {{"node", port.node}, {"port", 
 
 json encodeRoute(const Route& route) { return {{"from", encodePortRef(route.from)}, {"to", encodePortRef(route.to)}}; }
 
+json encodePortsMoved(const PortsMoved& ports) { return {{"added", ports.added}, {"removed", ports.removed}}; }
+
 std::string utcMicros(std::chrono::system_clock::time_point at) {
 	return std::format("{:%FT%T}Z", std::chrono::floor<std::chrono::microseconds>(at));
 }

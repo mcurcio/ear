@@ -1,6 +1,7 @@
 #pragma once
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -14,20 +15,26 @@
 #include "ear/core/reconciler.hpp"
 // The graph notifications (docs/control-port.md) as typed events.
 namespace ear::control {
-/// node.added. Its `companions` (feature companions) is always []: a node is told added before NodeHost configures it,
-/// a port-caused replace's newer node too (docs/control-port.md#companions).
+/// node.added. Its `companions` (feature companions) is always [] and its `counters` zero: a node is told added before
+/// NodeHost configures it (docs/control-port.md#companions).
 struct NodeAdded {
 	NodeSpec node;
 	Ports ports;       // public ports only
 	NodeHealth health; // from the spec alone
 	std::chrono::system_clock::time_point since;
-	NodeCounts counts{}; // feature counters: zero, or for a port-caused replace the older node's, which it carries on
+};
+/// node.updated's members for a change of a node's ports (feature reshape, docs/control-port.md#notifications).
+struct NodeReshaped {
+	bool inPlace;     // a reshape's; carried only when `applied` is reshape
+	PortsMoved ports; // the public ports added and removed
+	Ports now;        // its public ports: `inputs` and `outputs`
 };
 struct NodeUpdated {
 	NodeName node;
 	NodeSettings settings;
 	bool disabled;
 	NodeOutcome applied;
+	std::optional<NodeReshaped> reshaped{}; // its ports changed
 };
 struct NodeRemoved {
 	NodeName node;
@@ -73,7 +80,7 @@ protected:
 	~EventSink() = default;
 };
 std::string encodeEvent(const GraphEvent& event); // one notification
-/// node.updated's `applied`: "restart" | "disable" | "enable" | "stored".
+/// node.updated's `applied`: "restart" | "reconfigure" | "reshape" | "disable" | "enable" | "stored" | "unchanged".
 std::string_view outcomeName(NodeOutcome outcome) noexcept;
 std::string encodeLevels(std::span<const NodeLevels> levels); // one "levels" notification
 /// One "graphFile.changed" notification: the GraphFile JSON (encodeGraphFile) plus "cause", plus

@@ -126,9 +126,12 @@ if(BUILD_TESTS)
 		tests/program_test.cpp
 		tests/rate_text_test.cpp
 		tests/readiness_test.cpp
+		tests/reconfigure_test.cpp
+		tests/reshape_test.cpp
 		tests/reconciler_test.cpp
 		tests/rtp_receiver_test.cpp
 		tests/settings_table_test.cpp
+		tests/sink_pause_test.cpp
 		tests/sound_card_test.cpp
 		tests/source_ring_test.cpp
 		tests/store_test.cpp
@@ -269,10 +272,16 @@ if(BUILD_TESTS)
 	ear_type_spec_compile_fail(start-wrong-signature "a type's start is void start\\(\\)")
 	ear_type_spec_compile_fail(stop-wrong-signature "a type's stop is void stop\\(\\)")
 	ear_type_spec_compile_fail(constructor-neither "a type's class is constructed from NodeOf<spec>& or from nothing")
-	# The change version compiles though nothing calls it yet (the control writes one; docs/design/reconfigure.md); of
-	# the wrong shape, not.
+	# The change version (the control writes one; docs/writing-a-node-type.md#the-change-version): of the wrong shape,
+	# not; its context offers only a change's calls, and creation's none of them.
 	ear_type_spec_compile_fail(change-version-wrong-signature "a type's change version is Changed configure")
 	ear_type_spec_compile_fail(change-version-wrong-context "a type's change version is Changed configure")
+	ear_type_spec_compile_fail(change-context-has-no-state "has no member named 'state'")
+	ear_type_spec_compile_fail(hold-names-an-input-bank "hold names a routable output bank of its spec")
+	ear_type_spec_compile_fail(change-answered-applied-without-context "'applied' is not a member of 'ear::Changed'")
+	ear_type_spec_compile_fail(create-context-has-no-hold "has no member named 'hold'")
+	ear_type_spec_compile_fail(reconfigure-deadline-below-1s "a type's reconfigureDeadline is 1 s to 60 s")
+	ear_type_spec_compile_fail(reconfigure-deadline-above-60s "a type's reconfigureDeadline is 1 s to 60 s")
 	# A member found by name whatever its access or overloads: refused, never silently not called.
 	ear_type_spec_compile_fail(private-start "a type's start is public and not overloaded")
 	ear_type_spec_compile_fail(private-stop "a type's stop is public and not overloaded")

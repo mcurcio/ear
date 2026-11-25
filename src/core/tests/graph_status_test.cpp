@@ -12,6 +12,7 @@
 #include "catch2/catch.hpp"
 #include "ear/core/graph_view.hpp"
 #include "ear/core/lifecycle.hpp"
+#include "ear/core/sink_ring.hpp"
 
 using namespace ear;
 
@@ -133,6 +134,8 @@ struct PendingSink final : Sink, SinkTap {
 	}
 	void close(std::move_only_function<void(std::uint64_t)> c) override { closed = std::move(c); }
 	std::uint64_t droppedFrames() const noexcept override { return 0; }
+	SinkControl& control() noexcept override { return pause; }
+	SinkPause pause;
 	void write(std::span<const std::span<const float>>, std::uint32_t, const ChunkStamp&) noexcept override {}
 };
 

@@ -3,7 +3,8 @@
 Status: design, not built. Slice 5 (the control plane: the type schema on the wire, status, events, node diagnostics on
 the wire, actions, the realtime coded ring, sendspin's notes split) follows slice 3c (built: the node
 handle and loops, `docs/writing-a-node-type.md#the-node-handle`, `#loops`). Slice 6 (parameters: decimal, indexed and live rows, parameter slots and their ramps, retunes,
-gestures, the `gain` type, the editor's faders) follows slice 3d (`reconfigure.md`: the plan's outcomes and `node.set`)
+gestures, the `gain` type, the editor's faders) follows slice 3d (built: the plan's outcomes, `docs/architecture.md#restarts-and-changes-of-settings`, and `node.set`,
+`docs/control-port.md#nodeset-and-dry-runs`)
 and slice 5. The two are designed together because they share one type schema, one write path for what lasts (the graph
 file keeper), one wire vocabulary, one family of realtime channels and one editor model.
 
@@ -13,8 +14,8 @@ What is built and not repeated here (`docs/control-port.md`, `docs/output-record
 `node.start`, `node.stop`, `node.restart`, `node.disable`, `node.enable`; `node-disabled`, `not-restartable`;
 `node.gone` beside `node.stopped`; `applied` on `node.updated`); `data.pointer` on every -32602; the `node`, `action`
 (for the lifecycle verbs), `diagnostic` (code, fields, detail) and `still` records; `rpc-call.mjs --until`. Companions on
-the wire are built (`docs/control-port.md#companions`), `node.set`, `dryRun`, `dropRoutes` and the reconfigure outcomes 3d's
-(`reconfigure.md`), recovery's members slice 8's (`recovery.md`).
+the wire are built (`docs/control-port.md#companions`), `node.set`, `dryRun`, `dropRoutes` and the reconfigure outcomes are built
+(`docs/control-port.md#nodeset-and-dry-runs`, `#changes-of-ports`), recovery's members slice 8's (`recovery.md`).
 
 [V] = verified in the source named, as of 2026-11-09; [U] = unverified, with the step whose test checks it (section 12).
 
@@ -468,7 +469,7 @@ only (a stalled main loop cannot answer the wire in time).
 | `ear.hook-slow` | the hook | `ms` | built |
 | `ear.loop-slow`, `ear.loop-source-left`, `ear.claim-wait`, `ear.close-late` | the loop, the claim | `ms`, `sources`, `holder`/`waitedMs`, `detail` | 3c (built: `docs/output-records.md`) |
 | `ear.sink-dropped`, `ear.source-shortfall` | the companion | `companion`, `frames`, `totalFrames` | built as records (`docs/output-records.md#diagnostic`); on the wire with `node.diagnostic` |
-| `ear.reconfigure-fell-back`, `ear.reconfigure-superseded`, `ear.retiring-lost` | —, —, the companion | as `reconfigure.md` 8.2 | 3d |
+| `ear.reconfigure-fell-back`, `ear.reconfigure-superseded`, `ear.retiring-lost` | —, —, the companion | built as records (`docs/output-records.md#diagnostic`) | 3d |
 | `ear.status-flapping` | the field | `transitions`, `windowMs` | here: active once a field changes more than its `flapsAbove` within the window; inactive once a whole window passes at or below it; at most once per window while active |
 | `ear.events-dropped` | — | `heldBack` | here: events held back by the per-node rate (replaces 3c's `notes-dropped` note); at most once a second |
 | `ear.records-dropped` | `status`, `realtime` or `queue` | `count` | here: `status` records held back on stdout, or records a node's ring or queue had no room for; at most once a second per subject |
@@ -1039,7 +1040,7 @@ the new text's, and nothing is sent. Its cost is one comparison per open gesture
 ### 7.4 Retune: a live change without a restart
 
 `DesiredGraph::plan` names a **retune** when every key whose value differs is live and the ports are unchanged
-(`reconfigure.md` 3's outcome table). It reaches `NodeHost` through the built `nodeChanged` with outcome `retune` and
+(beside the built outcomes: `docs/architecture.md#restarts-and-changes-of-settings`). It reaches `NodeHost` through the built `nodeChanged` with outcome `retune` and
 the changed keys; `NodeHost` keeps the new config for later configurations and writes each key's slot from
 `config->liveValues()`, unless a gesture holds the key, in any phase. So a hand edit, `node.update` or `node.set` that
 changes only `gainDb` retunes: the audio ramps, no `node.state` follows, and standard output has a `param` record. A
@@ -1048,8 +1049,8 @@ loop's state and companions are not told of a retune: a value that must reach th
 | Row | `node.set` | A gesture | Node `running` or `stopped` | Node `reconfiguring` | Not yet rested | `failed`, `recovering` |
 |---|---|---|---|---|---|---|
 | **live** | `retune`: slots move at once | yes | ramps; no `node.state` | ramps at once; the change goes on | the node's live value moves and seeds the next configuration | the same; no restart, no recovery skip |
-| **in place** | `reconfigure` | refused `not-live` (X5) | `reconfigure.md` | `reconfigure.md` | a restart | a restart at once |
-| **restart-only** | `restart` | refused `not-live` | built | `reconfigure.md` | built | built |
+| **in place** | `reconfigure` | refused `not-live` (X5) | built: a change in place | built: supersedes it, or waits after its commit point | a restart | a restart at once |
+| **restart-only** | `restart` | refused `not-live` | built | built: a restart | built | built |
 
 A **disabled** node takes every row the same way: the change is written (`stored`); a live row moves only the node's
 live value; a gesture on it is allowed as on a failed node.
@@ -1072,15 +1073,18 @@ live value; a gesture on it is allowed as on a failed node.
 
 ## 8. The editor
 
+The node panel this section names is the inspector's Node subject
+([editor.md](../editor.md#the-inspector)); its settings form and status list go there, under the lifecycle bar.
+
 ### 8.1 Stores
 
 | Module | Holds | Tested by |
 |---|---|---|
 | `protocol.ts` | the wire types of section 4; `ControlErrorCode`; `NodeDiagnostic`, `EventSeverity` | typecheck |
 | `graph.ts` | each node's `status`, `gestures`, `diagnostics`; handlers for the new notifications | vitest, every fixture |
-| `types.ts` (new) | the type schemas by hash; `types.get` with `ifNoneMatch`; cached in `localStorage` (in `try`) | vitest |
+| `types.ts` (new) | the type schemas by hash; `types.get` with `ifNoneMatch`; cached in `localStorage` through `prefs.ts`, its keys per ear ([editor.md](../editor.md#what-the-browser-keeps)) | vitest |
 | `gesture.ts` (new, pure) | the session's own gestures as a state machine; what to send for each input; the control mapping | vitest, a fake client |
-| `form.ts` (new, pure) | the settings form's per-field drafts; the Apply flow (3d's dry run) | vitest |
+| `form.ts` (new, pure) | the settings form's per-field drafts; the Apply flow (8.6) | vitest |
 | `activity.ts` (new) | per node, the last 100 events and diagnostics since connecting; notices, coalesced per node and code | vitest |
 
 Features gate the UI: without `gestures` live rows render as plain number fields committed by `node.set`; without
@@ -1156,7 +1160,8 @@ A value is shown and sent rounded to `decimals`; `minIsSilence` shows the minimu
 
 - **The canvas does not see a control's input**: every control on a box carries React Flow's `nodrag`, `nowheel`,
   `nopan` and `nokey` classes and stops the propagation of every key it handles, so Backspace on a focused knob never
-  deletes the node [U: React Flow 12's class names and key filter, checked against the pinned package].
+  deletes the node. React Flow 12.12.0's own classes are `nodrag`, `nowheel` and `nopan`, and its key filter skips
+  input, select, textarea, contenteditable and anything inside `.nokey` ([editor.md](../editor.md#shortcuts)).
 - Another session's gesture: the control moves, is disabled, and says "held by another editor".
 - Notices for its own gesture's abort: `hand-edit` "ear.conf was edited by hand and changed amp gainDb while you held
   it; it now says -10." [Set -3.5 again]; `file-saved` the same from the text pane; `node-removed` "amp was removed or
@@ -1171,8 +1176,9 @@ A value is shown and sent rounded to `decimals`; `minIsSilence` shows the minimu
   flag as yes or no, `null` as "unknown"); `callout` fields as a banner on the box and in the panel while not initial,
   with a copy button for text. Box and callout fields show only while the node is `running`, `reconfiguring` or
   `stopped` and the value is not `null`.
-- **Events**: the node's activity list (since this page connected); `warn` and `error` also as a notice, coalesced per
-  node and code ("pairing failed ×3"), at most one new notice per node per 5 s.
+- **Events**: the node's activity list (since this page connected); `warn` and `error` also as a notice in the editor's
+  toast queue ([`editor.md`](../editor.md#toasts)), coalesced per node and code by its rule ("pairing failed ×3"), at
+  most one new notice per node per 5 s.
 - **Diagnostics**: a badge on the box for each active entry ("flapping: connection"), its tooltip giving the count and,
   for flapping, `flapsAbove`; the panel lists every entry. An unknown code is shown by its `msg`.
 - **Actions**: one button per type action after the built lifecycle buttons; a call with arguments opens a small form;
@@ -1184,6 +1190,23 @@ Faders and knobs are `role="slider"` with `aria-valuemin`, `aria-valuemax`, `ari
 dB", "-inf dB") and a label from the key, keyboard per the WAI-ARIA slider pattern; held by another editor:
 `aria-disabled` with the reason. A polite live region announces callout fields when they change, aborted gestures and
 flapping starting, at most one per node per 5 s; `error` events assertively. Flapping is never shown by colour alone.
+
+### 8.6 Apply asks first
+
+Slice 3d built the wire this needs (`node.set`, `dryRun`, `ports-in-use`, `dropRoutes`:
+`docs/control-port.md#nodeset-and-dry-runs`, `#changes-of-ports`); the editor waits for this slice's settings form,
+since today it edits a node by its knobly text through `node.setText`, which has no dry run.
+
+- **Apply asks first** (feature `dryRun`): non-live rows edited in the form are sent together with one `node.set`.
+  Apply sends it with `dryRun: true`, and when the answer is `restart` or `reshape` (or names routes) shows what will
+  happen before sending ("Restarts desk: its audio stops for a moment." or "Restarts desk and removes 1 route:
+  kitchen:from.left → desk:play.2", with Apply and Cancel); `reconfigure` is sent at once, since nothing stops. The
+  confirmed send carries `dropRoutes: true` exactly when the dry run named routes; if the real edit is refused
+  `ports-in-use` anyway (another edit landed between), the prompt is shown again with the refusal's routes. Per-field
+  hints come from the schema (8.2).
+- **An edit to a key in `keys` or `next`** of a node that is `reconfiguring` says "applies after this change".
+- The owner's answer that binds it (2026-11-08, asked what happens to a change that removes ports that are wired): the editor lists the wires that would go before applying; Apply
+  removes them and changes the setting in one step (one save of `ear.conf`) or neither.
 
 ## 9. Standard-output records
 
@@ -1246,7 +1269,9 @@ Each step keeps every test green, adds its feature to `features`, and changes no
 `rtp`'s, `card`'s and `sendspin`'s rows; `change` from 3d's marks; `.shapesPorts()` on `card`'s `playback` and `capture`
 and `rtp`'s `channels`); `types.get` answered on the control thread from an encoding made at boot; `typeSchemaHash`;
 `InvalidSettings::key`, `data.key`, `data.detail`; `types.ts`; the settings form rendered from the schema with drafts,
-hints and the JSON toggle. Tests: `types.json`, `errors.json`; `form.ts`'s drafts; the all-type schema checks;
+hints, the JSON toggle and Apply asking first (8.6). Tests: `types.json`, `errors.json`; `form.ts`'s drafts and its Apply
+flow against a fake client (a `reconfigure` sent at once, a `restart` and a `reshape` asking first, `dropRoutes` sent
+exactly when the dry run named routes, a `ports-in-use` refusal asking again); the all-type schema checks;
 `image-smoke.sh` calls `types.get`; a system test that `graph.get`'s hash matches `types.get`'s.
 
 **5.2 Status and events off the realtime thread.** `StatusTable`, `EventTable`, `LogCodes` in `TypeSpec`; `Report` and

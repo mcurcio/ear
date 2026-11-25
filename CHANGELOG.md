@@ -1,3 +1,18 @@
+## [4.2.0](https://github.com/mcurcio/ear/compare/v4.1.1...v4.2.0) (2026-11-25)
+
+### Features
+
+* **web:** colour tokens and a dark theme ([6521653](https://github.com/mcurcio/ear/commit/65216530086e95015839f9f484294ec71a57a695))
+* **web:** command palette, shortcuts, canvas adding and kept places ([f4f6636](https://github.com/mcurcio/ear/commit/f4f6636c25c57adfdc3c26c059f1b68e43e8ebda))
+* **web:** fit phones and touch screens, a foldable's two screens included ([b3a7f1c](https://github.com/mcurcio/ear/commit/b3a7f1cf98677fed80879bc6c64f18bfd71d69e5))
+* **web:** in-flight feedback, toasts and the ear.conf gutter ([53160d6](https://github.com/mcurcio/ear/commit/53160d61633430d578c0b1895f351c394f24f9a2))
+* **web:** restyle node boxes, wires and meters ([98de119](https://github.com/mcurcio/ear/commit/98de11953cf1912002adac2cdbeb3095156b6bb1))
+* **web:** top bar, inspector and ear.conf drawer ([69b0541](https://github.com/mcurcio/ear/commit/69b054111442c95c0413d0cdda0ebe7b308b5f63))
+
+### Bug Fixes
+
+* **web:** fit the view once laid out, a segmented lifecycle bar, the palette's long hints and the phone-width top bar ([a983322](https://github.com/mcurcio/ear/commit/a9833225cb4eb923ae72a1cf99a0b08a246cf7c8))
+
 ## [4.1.1](https://github.com/mcurcio/ear/compare/v4.1.0...v4.1.1) (2026-11-22)
 
 ### Bug Fixes

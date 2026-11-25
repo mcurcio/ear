@@ -26,16 +26,31 @@ json encodeNode(const NodeSpec& node, const Ports& ports) {
 	        {"outputs", ports.outputs()}};
 }
 
-/// A cause as the wire carries it (docs/control-port.md#node-health): {"kind"}, "keys" for a settings change, and a
-/// restart's own kind (with its keys) under "restart".
+/// A cause's own members by its kind: "keys" for a settings change; "keys", "added" and "removed" for a reshape; "keys",
+/// "reason" and "detail" for a fallback.
+void addCauseMembers(json& into, NodeCause::Kind kind, const NodeCause& cause) {
+	if (kind == NodeCause::Kind::settings || kind == NodeCause::Kind::fellBack || kind == NodeCause::Kind::reshape)
+		into["keys"] = cause.keys;
+	if (kind == NodeCause::Kind::reshape) {
+		into["added"] = cause.ports.added;
+		into["removed"] = cause.ports.removed;
+	}
+	if (kind == NodeCause::Kind::fellBack) {
+		if (cause.reason) into["reason"] = fellBackName(*cause.reason);
+		into["detail"] = cause.detail;
+	}
+}
+
+/// A cause as the wire carries it (docs/control-port.md#node-health): {"kind"} with its own members, and a restart's own
+/// kind (with its members) under "restart".
 json encodeCause(const NodeCause& cause) {
 	json out = {{"kind", causeName(cause.kind)}};
 	if (cause.kind == NodeCause::Kind::restarting && cause.restart) {
 		json restart = {{"kind", causeName(*cause.restart)}};
-		if (*cause.restart == NodeCause::Kind::settings) restart["keys"] = cause.keys;
+		addCauseMembers(restart, *cause.restart, cause);
 		out["restart"] = std::move(restart);
-	} else if (cause.kind == NodeCause::Kind::settings) {
-		out["keys"] = cause.keys;
+	} else {
+		addCauseMembers(out, cause.kind, cause);
 	}
 	return out;
 }
@@ -60,6 +75,10 @@ void addHealth(json& into, const NodeHealth& h, std::optional<std::chrono::syste
 		into["waitingFor"] = std::move(waits);
 	}
 	if (h.reason) into["reason"] = {{"code", failureCode(h.reason->code)}, {"detail", h.reason->detail}};
+	if (h.phase == NodePhase::reconfiguring) {
+		into["keys"] = h.keys;
+		if (!h.next.empty()) into["next"] = h.next;
+	}
 }
 
 /// A node's counters (docs/control-port.md#counters), one encoding for snapshots, node.added and counters.changed.
@@ -130,10 +149,16 @@ std::string encodeEvent(const GraphEvent& event) {
 			using E = std::decay_t<decltype(e)>;
 			if constexpr (std::is_same_v<E, NodeAdded>) {
 				return encodeNotification("node.added",
-			                              encodeNodeWithHealth(e.node, e.ports, e.health, e.since, e.counts, {}));
+			                              encodeNodeWithHealth(e.node, e.ports, e.health, e.since, NodeCounts{}, {}));
 			} else if constexpr (std::is_same_v<E, NodeUpdated>) {
 				json params = {{"name", e.node}, {"settings", e.settings}, {"applied", outcomeName(e.applied)}};
 				if (e.disabled) params["disabled"] = true;
+				if (e.reshaped) {
+					if (e.applied == NodeOutcome::reshape) params["inPlace"] = e.reshaped->inPlace;
+					params["ports"] = encodePortsMoved(e.reshaped->ports);
+					params["inputs"] = e.reshaped->now.inputs();
+					params["outputs"] = e.reshaped->now.outputs();
+				}
 				return encodeNotification("node.updated", params);
 			} else if constexpr (std::is_same_v<E, NodeRemoved>) {
 				return encodeNotification("node.removed", {{"name", e.node}});
@@ -169,12 +194,18 @@ std::string_view outcomeName(NodeOutcome outcome) noexcept {
 	switch (outcome) {
 	case NodeOutcome::restart:
 		return "restart";
+	case NodeOutcome::reconfigure:
+		return "reconfigure";
 	case NodeOutcome::disable:
 		return "disable";
 	case NodeOutcome::enable:
 		return "enable";
 	case NodeOutcome::stored:
 		return "stored";
+	case NodeOutcome::reshape:
+		return "reshape";
+	case NodeOutcome::unchanged:
+		return "unchanged";
 	}
 	return "restart";
 }

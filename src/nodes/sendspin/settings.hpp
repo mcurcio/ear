@@ -30,13 +30,15 @@ struct SendspinSettings {
 };
 /// The name, nothing outside 1-64 bytes of UTF-8 or with a control character.
 std::optional<std::string> parseName(std::string_view text);
+/// Every row changes in place: a new client on the node's worker, over the same key store
+/// (docs/node-types.md#changes-in-place).
 namespace rows {
 inline constexpr auto server =
-	setting::optional("server", setting::text<ServerUrl::parse>("ws://<host>[:<port>]/<path>"));
+	setting::optional("server", setting::text<ServerUrl::parse>("ws://<host>[:<port>]/<path>")).inPlace();
 inline constexpr auto port =
-	setting::defaulted("port", setting::number(1, 65535), defaultListenPort).onlyWithout(server);
+	setting::defaulted("port", setting::number(1, 65535), defaultListenPort).onlyWithout(server).inPlace();
 inline constexpr auto name =
-	setting::optional("name", setting::text<parseName>("1 to 64 bytes of UTF-8 with no control characters"));
+	setting::optional("name", setting::text<parseName>("1 to 64 bytes of UTF-8 with no control characters")).inPlace();
 } // namespace rows
 inline constexpr SettingsTable<rows::server, rows::port, rows::name> settingsTable{"sendspin"};
 /// Pure. `node`: the node's name, the default of "name".

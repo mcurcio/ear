@@ -10,12 +10,87 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <mutex>
 #include <span>
+#include <utility>
 #include <vector>
 #include "ear/core/frame_ring.hpp"
 #include "ear/core/latency.hpp"
+#include "ear/core/loop.hpp"
 #include "ear/core/sink.hpp"
 namespace ear {
+
+/// The pause of a sink's consumer (SinkControl; docs/writing-a-node-type.md#pausing-a-sink), the one home of its rules,
+/// which ear_pipewire's ThreadSink and the type harness's sink both run. Asked from a loop's thread, taken by the sink's
+/// thread between two chunks (holds()), never seen by the tap: the realtime write path reads nothing of it. The sink's
+/// thread reads one atomic per chunk; the lock is taken only to ask, to take a request and to resume.
+class SinkPause final : public SinkControl {
+public:
+	/// `wake`: how the sink's thread is woken to take a request while no chunk comes (ThreadSink's signal); any thread.
+	explicit SinkPause(std::move_only_function<void()> wake = nullptr) : wake_(std::move(wake)) {}
+	SinkPause(const SinkPause&) = delete;
+	SinkPause& operator=(const SinkPause&) = delete;
+
+	void pause(Loop& loop, std::move_only_function<void()> paused) override {
+		std::move_only_function<void()> now;
+		{
+			const std::scoped_lock lock(mutex_);
+			if (state_.load(std::memory_order_relaxed) == paused_) now = std::move(paused);
+			else {
+				waiting_.push_back(Waiting{&loop, std::move(paused)});
+				state_.store(requested_, std::memory_order_release);
+			}
+		}
+		if (now) loop.post(std::move(now));
+		else if (wake_) wake_();
+	}
+	void resume() override {
+		std::vector<Waiting> dropped;
+		{
+			const std::scoped_lock lock(mutex_);
+			dropped = std::exchange(waiting_, {});
+			state_.store(running_, std::memory_order_release);
+		}
+	}
+	std::uint64_t pausedFrames() const noexcept override { return frames_.load(std::memory_order_relaxed); }
+
+	/// The sink's thread, before each chunk and on each wake: whether its consumer is paused now. A request is taken
+	/// here, between two consumes, and its `paused` posted to its loop.
+	bool holds() {
+		const int state = state_.load(std::memory_order_acquire);
+		if (state == running_) return false;
+		if (state == requested_) {
+			std::vector<Waiting> answered;
+			{
+				const std::scoped_lock lock(mutex_);
+				if (state_.load(std::memory_order_relaxed) != requested_) return false; // resumed meanwhile
+				state_.store(paused_, std::memory_order_release);
+				answered = std::exchange(waiting_, {});
+			}
+			for (Waiting& one : answered) one.loop->post(std::move(one.paused));
+		}
+		return true;
+	}
+	/// The sink's thread: `frames` discarded while paused.
+	void discarded(std::uint32_t frames) noexcept { frames_.fetch_add(frames, std::memory_order_relaxed); }
+	/// Whether it is paused (a request taken), for a test.
+	bool paused() const noexcept { return state_.load(std::memory_order_acquire) == paused_; }
+
+private:
+	struct Waiting {
+		Loop* loop;
+		std::move_only_function<void()> paused;
+	};
+	static constexpr int running_ = 0;
+	static constexpr int requested_ = 1;
+	static constexpr int paused_ = 2;
+	std::move_only_function<void()> wake_;
+	std::mutex mutex_;
+	std::vector<Waiting> waiting_; // mutex_
+	std::atomic<int> state_{running_};
+	std::atomic<std::uint64_t> frames_{0};
+};
 
 class SinkRing {
 public:

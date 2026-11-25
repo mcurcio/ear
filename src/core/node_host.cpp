@@ -63,10 +63,9 @@
 // listener is told, in subscribe order, with what the node still waits for added once its phase has lasted
 // 2 s, then changed at most once a second. The plan's outcomes are honoured (nodeChanged): a disable tears
 // the configuration down (its stop, if held, dropped) and keeps the block and wires, an enable configures afresh, a
-// change on a disabled node is stored, and a node added disabled is never configured. A replace whose type is
-// unchanged (only its ports changed) carries the node's stop, its dropped frames and one health stream into its
-// successor, the older node telling nobody; the older node of any other name added back tells only the
-// listeners that hear a superseded node (standard output, not the wire). NodeOperations' stop, start and restart are
+// change on a disabled node is stored, and a node added disabled is never configured. A change of ports keeps the node
+// and its block, reshaped (docs/architecture.md#reshapes); the older node of a name added back (a replace by another
+// type, or a removal and an add) tells only the listeners that hear a superseded node (standard output, not the wire). NodeOperations' stop, start and restart are
 // operations of their own, answered in the call.
 #include "ear/core/node_host.hpp"
 
@@ -314,10 +313,8 @@ struct NodeHost::Impl {
 
 		const NodeName& name() const noexcept { return name_; }
 		std::uint64_t serial() const noexcept { return serial_; }
-		/// The span of counts it belongs to (docs/engine.md#reporting-the-counters): its own serial, or for a port-caused
-		/// replace its older node's span, which it carries on.
+		/// The span of counts it belongs to (docs/engine.md#reporting-the-counters): its own serial.
 		std::uint64_t span() const noexcept { return span_; }
-		void carrySpan(std::uint64_t span) noexcept { span_ = span; }
 		/// Gone: its block destroyed (the flush ran its destruction) and its configuration gone (removed() in
 		/// node_lifecycle.hpp), and so told.
 		bool removed() const noexcept { return gone_; }
@@ -333,61 +330,30 @@ struct NodeHost::Impl {
 		/// No longer wanted: removed by an edit or by stopAll, still stopping or gone.
 		bool removing() const noexcept { return aggregate_.intent() == lc::Intent::remove; }
 		NodeHealth health() const { return composed(aggregate_.health()); }
-		/// The older node of a port-caused replace: it tells nobody.
-		bool silent() const noexcept { return silent_; }
-		/// The serial of the older node this one is the port-caused replace of, while that one is not gone; else 0.
-		std::uint64_t predecessor() const noexcept { return predecessor_; }
 		/// A newer node of this name was added while this one closes: only standard output hears it. From now on only
 		/// the listeners that hear a superseded node hear this one, told its health at once, so they keep it apart from
 		/// the newer node told next.
 		void supersede() {
-			if (std::exchange(superseded_, true) || silent_) return;
+			if (std::exchange(superseded_, true)) return;
 			tell(aggregate_.health());
 		}
 		bool superseded() const noexcept { return superseded_; }
-		/// The stop held, for a port-caused replace to carry.
-		bool stopHeld() const noexcept { return aggregate_.stopHeld(); }
-		bool disabled() const noexcept { return aggregate_.wanted() == lc::Wanted::disabled; }
 		std::uint64_t dropped() const noexcept { return dropped_; }
 		/// The node's counters from its add (docs/engine.md#counters): its block's now, or what it counted before it
-		/// went, plus what the older node of a port-caused replace counted: read from that node while it is not gone,
-		/// carried once it is. Main thread.
-		NodeCounts counts() const noexcept {
-			NodeCounts total = carried_ + (block_ ? block_->counts() : blockCounted_);
-			if (predecessor_ != 0 && !predecessorCarried_)
-				if (const Node* older = host_.find(predecessor_)) total = total + older->counts();
-			return total;
-		}
-		/// The older node of this port-caused replace is gone: its counters are this node's from now on.
-		void carryCounts(NodeCounts older) noexcept {
-			carried_ = carried_ + older;
-			predecessorCarried_ = true;
-		}
-
-		/// What a port-caused replace carries from its older node, or nothing.
-		struct Carried {
-			std::uint64_t predecessor = 0; // its serial: this node is gone only after it, and takes its dropped frames
-			bool stopping = false;         // shown stopping (restarting) until it is gone: this node is enabled
-			bool stopHeld = false;
-			std::vector<std::string> keys;
-		};
+		/// went. Main thread.
+		NodeCounts counts() const noexcept { return block_ ? block_->counts() : blockCounted_; }
 
 		/// The port block once no older block of this name exists (T1: two blocks never share a node.name), and a
 		/// configuration once no older node of this name is left (rule 1), so an old and a new configuration never
 		/// share what the name owns (a listening port, a key file). A node added disabled keeps its block and is never
 		/// configured (T19).
-		void add(const NodeSpec& spec, std::shared_ptr<const NodeConfig> config, bool olderBlock, bool olderNode,
-		         Carried carried) {
+		void add(const NodeSpec& spec, std::shared_ptr<const NodeConfig> config, bool olderBlock, bool olderNode) {
 			ports_ = config->ports();
 			queued_ = std::move(config);
-			predecessor_ = carried.predecessor;
 			// A node added on a wedged loop fails before T1, with no block.
 			feed(aggregate_.add(lc::AddFacts{.disabled = spec.disabled,
-			                                 .stopHeld = carried.stopHeld,
 			                                 .olderBlock = olderBlock,
-			                                 .predecessor = carried.stopping,
 			                                 .olderNode = olderNode,
-			                                 .keys = std::move(carried.keys),
 			                                 .wedged = host_.wedged,
 			                                 .queued = queued()}));
 		}
@@ -395,15 +361,41 @@ struct NodeHost::Impl {
 		/// The plan's outcome for a node kept by name. Its newest config is kept for the next configure
 		/// (a lost block is final: nothing is kept). restart: a configuration settled restarts at once, one still going
 		/// takes it next (rule 2), a failed node retries; disable: the configuration torn down (T20, T21), its
-		/// stop dropped, its block and wires kept; enable: configured afresh (T22); stored: kept for the enable.
+		/// stop dropped, its block and wires kept; enable: configured afresh (T22); stored: kept for the enable;
+		/// reshape: a restart, or in place (docs/architecture.md#reshapes); unchanged: nothing.
 		void change(std::shared_ptr<const NodeConfig> config, const NodeChange& change) {
+			if (change.outcome == NodeOutcome::unchanged) return; // nothing changes, nothing is told
 			const bool lost = aggregate_.block().state() == lc::BlockState::lost;
 			queued_ = lost ? nullptr : std::move(config);
 			++version_;
+			// A restart's cause is a reshape when the newest ports differ from the configuration's
+			// (docs/architecture.md#reshapes).
+			PortsMoved moved;
+			if (config_ && config_->config && queued_) moved = portsMoved(config_->config->ports(), queued_->ports());
 			switch (change.outcome) {
+			case NodeOutcome::unchanged: // returned above
+				break;
+			case NodeOutcome::reconfigure: {
+				// In place only for a type with a change version: without one the change restarts as any other, with
+				// no reconfiguring between (docs/architecture.md#changes-in-place).
+				const bool inPlace = config_ && config_->instance && config_->instance->changes();
+				feed(aggregate_.change(queued(), change.keys,
+				                       inPlace ? lc::ChangeKind::inPlace : lc::ChangeKind::restart));
+				break;
+			}
+			case NodeOutcome::reshape: {
+				// In place when every changed key is, for a type with a change version and a configuration with no
+				// companion; else a restart, its block reshaped between the two configurations
+				// (docs/architecture.md#reshapes).
+				const bool inPlace =
+					change.inPlace && config_ && config_->instance && config_->instance->changes() && reshapesInPlace();
+				feed(aggregate_.change(queued(), change.keys,
+				                       inPlace ? lc::ChangeKind::inPlace : lc::ChangeKind::restart, moved));
+				break;
+			}
 			case NodeOutcome::restart:
 			case NodeOutcome::stored:
-				feed(aggregate_.change(queued(), change.keys));
+				feed(aggregate_.change(queued(), change.keys, lc::ChangeKind::restart, moved));
 				break;
 			case NodeOutcome::disable:
 				feed(aggregate_.disable());
@@ -414,16 +406,25 @@ struct NodeHost::Impl {
 				feed(aggregate_.enable());
 				break;
 			}
+			// A node with no configuration (disabled, failed) reshapes its block at once: a stored change of ports
+			// reshapes the block alone.
+			if (!config_) adoptPorts();
 		}
 
-		/// How a removal relates to a node of the same name added in the same commit (a replace).
-		enum class Replaced { no, superseded, portCaused };
+		/// A reshape in place is taken only by a configuration with no companion: one on a resized bank would need its
+		/// replacement made before break on the new ports, which is not built (docs/architecture.md#reshapes).
+		bool reshapesInPlace() const {
+			const Configuration& c = *config_;
+			return c.engineAsks.empty() && c.sinks.empty() && c.sources.empty() && c.recordings.empty() && !c.program;
+		}
+
+		/// How a removal relates to a node of the same name added in the same commit (a replace, by another type).
+		enum class Replaced { no, superseded };
 
 		/// No longer wanted. A replaced node's newer node of the name comes in the same commit: from here on the older
-		/// node of a port-caused replace tells nobody, any other only standard output.
+		/// node tells only standard output.
 		void remove(Replaced replaced = Replaced::no) {
 			queued_.reset(); // never configured again
-			silent_ = silent_ || replaced == Replaced::portCaused;
 			superseded_ = superseded_ || replaced == Replaced::superseded;
 			stopping(); // stopping (removing) before anything the removal does
 			feed(aggregate_.remove());
@@ -441,14 +442,6 @@ struct NodeHost::Impl {
 
 		/// Every older node of this name is gone.
 		void olderGone() { feed(aggregate_.olderNodeGone()); }
-		/// The older node of this port-caused replace is gone (its configuration none, its block destroyed): its frames
-		/// dropped are this node's.
-		void predecessorGone(std::uint64_t droppedFrames) {
-			predecessor_ = 0;
-			dropped_ += droppedFrames;
-			feed(aggregate_.predecessorGone());
-			tellGone();
-		}
 		/// The older block of this name was destroyed (T1): this node's block is made in the same flush.
 		void olderDestroyed() { feed(aggregate_.olderDestroyed()); }
 
@@ -482,6 +475,7 @@ struct NodeHost::Impl {
 				return;
 			}
 			try {
+				blockPorts_ = ports_;
 				block_ = host_.blocks.make(name_, ports_, host_.format, *this);
 			} catch (...) {
 				// A factory refuses through lost(), never by a throw, so one that throws has a bug of its own; it made
@@ -519,8 +513,8 @@ struct NodeHost::Impl {
 			    index != config_->engineCompanions.size() || index >= config_->engineAsks.size())
 				return;
 			Configuration& c = *config_;
-			auto& companion =
-				*c.engineCompanions.emplace_back(std::make_unique<Companion>(host_, serial_, c.generation, index));
+			auto& companion = *c.engineCompanions.emplace_back(
+				std::make_unique<Companion>(host_, serial_, c.generation, index, ++host_.companionIds));
 			EngineAsk& asked = c.engineAsks[index];
 			CompanionTarget& target = asked.target;
 			target.blockId = block_->blockId(); // ready, so read
@@ -681,8 +675,8 @@ struct NodeHost::Impl {
 		/// without one) is the type's broken rule, found before the sink is made. An adapter that cannot make it (no
 		/// thread) fails the node through configure, recorded so a type that catches it still fails; an adapter's own
 		/// bug fails it lost (adapter()).
-		void sink(std::string_view bank, SinkShape shape, SinkConsumerFrom consumer) override {
-			guarded([&] {
+		SinkControl& sink(std::string_view bank, SinkShape shape, SinkConsumerFrom consumer) override {
+			return guarded([&]() -> SinkControl& {
 				requireConfiguring("attach");
 				const std::string name(bank);
 				const Ports::Bank& found = insideBank(ports_, name, Direction::output, "a sink");
@@ -710,6 +704,7 @@ struct NodeHost::Impl {
 				c.requestOrder.push_back({Asked::Family::sink, c.sinks.size() - 1});
 				for (std::size_t i = found.first; i < found.first + found.ports.size() && i < c.fadedCount; ++i)
 					c.faded[i] = false;
+				return slot.sink->control();
 			});
 		}
 		/// A source (docs/writing-a-node-type.md#sources): made at once on the inside input bank, ready at once, bound
@@ -782,6 +777,7 @@ struct NodeHost::Impl {
 		/// A claim of the configuration of `generation` judged (an input of its own): granted, to probe, refused, or
 		/// waiting for its holder, which is closing.
 		void claimJudged(std::uint64_t generation, const Claim& claim, detail::ClaimJudged judged) {
+			if (current(generation) && changeClaimJudged(claim, judged)) return;
 			if (!stillReadying(generation)) return;
 			const auto found = std::ranges::find(config_->claims, claim, &ClaimSlot::claim);
 			if (found == config_->claims.end()) return;
@@ -877,16 +873,22 @@ struct NodeHost::Impl {
 		/// land only on the configuration that made it.
 		class Companion final : public EngineCompanionEvents {
 		public:
-			Companion(Impl& host, std::uint64_t serial, std::uint64_t generation, std::size_t index)
-				: host_(host), serial_(serial), generation_(generation), index_(index) {}
+			/// `id`: unique across the host, so an event of a companion a change replaced (retiring) is told apart from
+			/// its replacement's on the same index.
+			Companion(Impl& host, std::uint64_t serial, std::uint64_t generation, std::size_t index, std::uint64_t id)
+				: host_(host), serial_(serial), generation_(generation), index_(index), id_(id) {}
 			std::unique_ptr<EngineCompanion> made;
+			std::uint64_t id() const noexcept { return id_; }
 			// Told inside its making (during the flush) or later: an input of its own either way.
 			void ready() override {
-				host_.inputFor(serial_, [generation = generation_, index = index_](Node& node) {
+				host_.inputFor(serial_, [generation = generation_, index = index_, id = id_](Node& node) {
 					// Still current while it tears down, when its engine companions are already gone: nothing to ready.
 					if (!node.current(generation) || node.config_->tearing ||
-					    index >= node.config_->engineCompanions.size())
+					    index >= node.config_->engineCompanions.size() || !node.config_->engineCompanions[index] ||
+					    node.config_->engineCompanions[index]->id() != id)
 						return;
+					// Once the configuration was ready, a companion made is a change's replacement.
+					if (node.config_->readyTold) return node.replacementReady(id);
 					node.itemReady(generation, node.config_->engineAsks[index].item);
 				});
 			}
@@ -895,19 +897,120 @@ struct NodeHost::Impl {
 
 		private:
 			void tell(lc::Fact fact, std::string detail) {
-				host_.inputFor(serial_,
-				               [generation = generation_, fact, detail = std::move(detail)](Node& node) mutable {
-								   if (node.current(generation))
-									   node.feed(node.aggregate_.fault(fact, std::move(detail)));
-							   });
+				host_.inputFor(serial_, [generation = generation_, index = index_, id = id_, fact,
+				                         detail = std::move(detail)](Node& node) mutable {
+					if (!node.current(generation)) return;
+					// A companion a change replaces is retiring: its loss is said, never a fault of the node; its
+					// replacement's before the commit point falls the change back
+					// (docs/architecture.md#changes-in-place).
+					if (node.companionLostInChange(index, id, detail)) return;
+					node.feed(node.aggregate_.fault(fact, std::move(detail)));
+				});
 			}
 			Impl& host_; // never the node: a queued destruction may outlive it
 			std::uint64_t serial_;
 			std::uint64_t generation_;
 			std::size_t index_;
+			std::uint64_t id_;
 		};
 
 		class LeakedRecord;
+
+		/// What a change version works through (ChangeContext; docs/writing-a-node-type.md#the-change-version): the
+		/// node's own, valid only inside the change version's call; every call after it is a broken rule, as a
+		/// CreateContext's is. Its checks run through the node's guarded, so a broken rule fails the node even when the
+		/// type catches it.
+		class ChangeScope final : public ChangeContext {
+		public:
+			explicit ChangeScope(Node& node) noexcept : node_(node) {}
+			bool valid = false;  // inside the change version's call
+			bool broken = false; // a call found a rule broken in this call
+			AudioFormat format() const override { return node_.host_.format; }
+			const NodeName& node() const override { return node_.name_; }
+			const Ports& ports() const override { return node_.ports_; }
+			void postToLoop(std::size_t loop, std::move_only_function<void(void*)> work) override {
+				checked("post", [&] {
+					if (loop >= node_.config_->loops.size()) throw std::logic_error("a post to a loop not declared");
+					node_.config_->change->posts.emplace_back(loop, std::move(work));
+				});
+			}
+			void attachEngine(std::string_view bank, EngineCompanionShape shape, Order order) override {
+				checked("attach", [&] { node_.attachInChange(bank, std::move(shape), order); });
+			}
+			SinkControl& sink(std::string_view bank, SinkShape shape, SinkConsumerFrom consumer) override {
+				return checked("attach",
+				               [&]() -> SinkControl& { return node_.sinkInChange(bank, shape, std::move(consumer)); });
+			}
+			SourceWriter& source(std::string_view bank, SourceShape shape,
+			                     std::unique_ptr<SourceClock> clock) override {
+				return checked("attach",
+				               [&]() -> SourceWriter& { return node_.sourceInChange(bank, shape, std::move(clock)); });
+			}
+			Recording& recording(const Recording& replaced, const RecordingRequest& request) override {
+				return checked("recording", [&]() -> Recording& { return node_.recordingInChange(replaced, request); });
+			}
+			void hold(std::span<const std::string_view> banks) override {
+				checked("hold", [&] { node_.holdBanks(banks, true); });
+			}
+			void holdAll() override {
+				checked("hold", [&] {
+					std::vector<std::string_view> all;
+					for (const Ports::Bank& bank : node_.config_->ports.banks())
+						if (bank.direction == Direction::output && bank.reach == PortBank::Reach::routable)
+							all.push_back(bank.name);
+					node_.holdBanks(all, true);
+				});
+			}
+			void release(std::span<const std::string_view> banks) override {
+				checked("release", [&] { node_.holdBanks(banks, false); });
+			}
+			void declareLatency(std::string_view from, std::string_view to, Latency latency) override {
+				checked("declareLatency", [&] {
+					const Ports::Bank& input = node_.ports_.bank(from);
+					const Ports::Bank& output = node_.ports_.bank(to);
+					if (input.direction != Direction::input || output.direction != Direction::output)
+						throw std::logic_error("declareLatency names a pair: an input bank, then an output bank");
+					auto& declared = node_.config_->change->latency;
+					if (!declared) declared.emplace();
+					if (std::ranges::any_of(*declared, [&](const DeclaredLatency& one) {
+							return one.bank == output.name && one.from == input.name;
+						}))
+						throw std::logic_error("latency declared twice for the path " + input.name + " to " +
+						                       output.name);
+					declared->push_back(DeclaredLatency{input.name, output.name, latency});
+				});
+			}
+			void claim(Claim claim) override {
+				checked("claim", [&] { node_.claimInChange(std::move(claim)); });
+			}
+			void unclaim(Claim claim) override {
+				checked("unclaim", [&] { node_.unclaimInChange(claim); });
+			}
+			void whenReady(std::size_t loop, std::move_only_function<void(void*, ConfigureDone)> work) override {
+				checked("whenReady", [&] {
+					Configuration::Change& ch = *node_.config_->change;
+					if (ch.continuation || ch.continuationPosted)
+						throw std::logic_error("whenReady called twice in one change");
+					if (loop >= node_.config_->loops.size()) throw std::logic_error("whenReady on a loop not declared");
+					ch.continuation = std::move(work);
+					ch.continuationLoop = loop;
+				});
+			}
+
+		private:
+			template <typename Call> std::invoke_result_t<Call> checked(std::string_view call, Call&& run) {
+				return node_.guarded([&]() -> std::invoke_result_t<Call> {
+					try {
+						if (!valid) throw std::logic_error(std::string(call) + " outside configure");
+						return run();
+					} catch (const std::logic_error&) {
+						broken = true;
+						throw;
+					}
+				});
+			}
+			Node& node_;
+		};
 
 		/// One configuration as its own threads reach the node, and its handle's implementation
 		/// (docs/writing-a-node-type.md#the-node-handle): everything they tell crosses to the main loop, in order, and
@@ -1002,6 +1105,20 @@ struct NodeHost::Impl {
 					else if (LeakedRecord* record = self->record_) record->sinkClosed(index);
 				};
 			}
+			/// The `begun` a sink a change made as a replacement gets, by its id.
+			std::move_only_function<void()> replacementBegunCall(std::uint64_t id) {
+				return [self = shared_from_this(), id] {
+					if (Node* node = self->attachedNode()) node->replacementSinkBegun(node->config_->generation, id);
+				};
+			}
+			/// The `closed` a sink a change replaced (or a replacement it dropped) gets, by its id.
+			std::move_only_function<void(std::uint64_t)> retiredSinkClosedCall(std::uint64_t id) {
+				return [self = shared_from_this(), id](std::uint64_t droppedFrames) {
+					if (Node* node = self->attachedNode())
+						node->retiredSinkClosed(node->config_->generation, id, droppedFrames);
+					else if (LeakedRecord* record = self->record_) record->retiredSinkClosed(id);
+				};
+			}
 			/// The `finished` loop `index` of this configuration gets at teardown step 4: on the main thread, later.
 			std::move_only_function<void()> loopFinishedCall(std::size_t index) {
 				return [self = shared_from_this(), index] {
@@ -1043,6 +1160,14 @@ struct NodeHost::Impl {
 					else if (LeakedRecord* record = self->record_) record->programEnded();
 				});
 			}
+			/// A change's continuation answered (ConfigureDone, any thread): heard on the main loop while the configuration
+			/// is attached and not going, by the change of `epoch` alone.
+			void changeAnswered(std::uint64_t epoch, std::optional<std::string> failure) {
+				completions_->post([self = shared_from_this(), epoch, failure = std::move(failure)]() mutable {
+					if (Node* node = self->attachedNode(); node != nullptr && !self->closing_)
+						node->continuationAnswered(node->config_->generation, epoch, std::move(failure));
+				});
+			}
 			/// Its report feed's bytes: dropped once the configuration ended, as every report of its threads is.
 			void programFed(std::string bytes) {
 				completions_->post([self = shared_from_this(), bytes = std::move(bytes)]() mutable {
@@ -1069,6 +1194,24 @@ struct NodeHost::Impl {
 			std::mutex sayMutex_;
 			detail::NoteGate gate_; // sayMutex_
 			bool closing_ = false;  // main thread only
+		};
+
+		/// Where a change's ConfigureDone answers: its configuration's Channel, so an answer that outlives the change or
+		/// the configuration lands nowhere.
+		class ContinuationAnswer final : public detail::ChangeAnswer {
+		public:
+			ContinuationAnswer(std::shared_ptr<Channel> channel, std::uint64_t epoch) noexcept
+				: channel_(std::move(channel)), epoch_(epoch) {}
+			void answer(std::optional<std::string_view> failure) noexcept override {
+				try {
+					channel_->changeAnswered(epoch_, failure ? std::optional<std::string>(*failure) : std::nullopt);
+				} catch (...) { // no memory to say it: the change's deadline ends it
+				}
+			}
+
+		private:
+			std::shared_ptr<Channel> channel_;
+			std::uint64_t epoch_;
 		};
 
 		class LoopSlot;
@@ -1158,6 +1301,7 @@ struct NodeHost::Impl {
 			/// `state`: the state of loop `stateLoop` when the consumer is part of it (it lives until teardown step 4,
 			/// after the sink's last call at step 3), else null.
 			void begin(std::shared_ptr<Channel> channel, std::move_only_function<void()> begun, void* state) {
+				resolved = stateLoop ? &member_(state) : consumer_.get();
 				std::unique_ptr<SinkConsumer> consumer =
 					stateLoop ? std::make_unique<StateConsumer>(member_(state)) : std::move(consumer_);
 				sink->begin(std::make_unique<GuardedSinkConsumer>(std::move(consumer), std::move(channel), bank),
@@ -1170,6 +1314,12 @@ struct NodeHost::Impl {
 			bool closed = false;                    // its close reported
 			std::size_t item = detail::noReadiness; // its consumer's readiness item: ready once it began
 			std::optional<std::size_t> stateLoop;   // the loop whose state holds the consumer
+			std::uint64_t id = 0;                   // unique across the host: a replaced sink's reports find it
+			bool closeAsked = false;                // a replaced sink's close was asked (once)
+			bool kept = false; // a replacement dropped after its change's continuation was posted: freed at step 5
+			const SinkConsumer* resolved = nullptr; // the consumer its sink calls, once begun
+			/// The consumer `state` holds for this sink, by the member it names: an address alone, nothing read.
+			const SinkConsumer* stateConsumer(void* state) { return stateLoop ? &member_(state) : nullptr; }
 
 		private:
 			/// A consumer a loop's state owns, called through: the sink owns only this.
@@ -1697,11 +1847,11 @@ struct NodeHost::Impl {
 							return {std::unexpected(detail::whatOf(std::current_exception())), std::nullopt};
 						}
 					},
-					[host, serial, generation, index](std::expected<void, std::string> outcome,
-				                                      std::optional<detail::IoFault> fault) {
-						host->inputFor(serial, [generation, index, outcome = std::move(outcome),
+					[host, serial, generation, index, id = id](std::expected<void, std::string> outcome,
+				                                               std::optional<detail::IoFault> fault) {
+						host->inputFor(serial, [generation, index, id, outcome = std::move(outcome),
 					                            fault = std::move(fault)](Node& node) mutable {
-							node.recordingOpened(generation, index, std::move(outcome), std::move(fault));
+							node.recordingOpened(generation, index, id, std::move(outcome), std::move(fault));
 						});
 					});
 			}
@@ -1709,6 +1859,9 @@ struct NodeHost::Impl {
 			void opened() noexcept { opened_.store(true, std::memory_order_release); }
 
 			std::size_t item = detail::noReadiness; // its readiness item: ready once its open made the file
+			std::uint64_t id = 0;  // a change's replacement's, by which its open finds it; 0 for creation's
+			bool awaiting = false; // a recording a change replaced, until its commit completed
+			bool due = false;      // then: it closes once no sink the change replaced writes it
 
 		private:
 			const std::string path_;      // as asked
@@ -1766,13 +1919,24 @@ struct NodeHost::Impl {
 			// Each recording (cx.recording): outlives the sinks whose consumers write it and the instance that may hold
 			// it (file's WavWriter closes its SNDFILE on the descriptor when freed); closed on the I/O thread when freed.
 			std::vector<std::unique_ptr<RecordingSlot>> recordings;
+			// Each recording a change replaced (closed once its commit completed and every sink it replaced finished) or
+			// a replacement it dropped (closed at once): kept, closed, until step 5, so a Recording& the type holds stays
+			// valid (its descriptor refused once closed).
+			std::vector<std::unique_ptr<RecordingSlot>> retiredRecordings;
 			// Each sink's consumer may write a recording above, and may hold a reference into the instance: freed after
 			// the code and before the instance (teardown step 5).
 			std::vector<std::unique_ptr<SinkSlot>> sinks;
 			std::vector<SinkBinding> bindings; // every sink's, built at the return checks; every drive points at it
+			// Each sink a change replaced, from its commit point (or a replacement a change ending uncommitted dropped):
+			// drained to its own consumer and finished, then freed; teardown step 4 waits for each as for a sink, but
+			// none counts in sinksClosed (docs/writing-a-node-type.md#sinks-and-sources-in-a-change).
+			std::vector<std::unique_ptr<SinkSlot>> retiredSinks;
 			// Each source's writer may be held by the instance's threads; freed after the instance (teardown step 5).
 			std::vector<SourceSlot> sources;
 			std::vector<SourceBinding> sourceBindings; // every source's, built at the return checks, likewise
+			// Each source a change replaced, its writer closed: kept until step 5 with the sources, since a thread of the
+			// instance may still call its writer.
+			std::vector<SourceSlot> retiredSources;
 			// Each declared loop, its state and its adapter's loop: a state may hold a source's writer, so they go first;
 			// the instance only posts to them, so they go after it.
 			std::vector<std::unique_ptr<LoopSlot>> loops;
@@ -1780,6 +1944,14 @@ struct NodeHost::Impl {
 			std::unique_ptr<AudioCode> code;   // may read the instance, so goes first
 			std::vector<EngineAsk> engineAsks; // in request order
 			std::vector<std::unique_ptr<Companion>> engineCompanions;
+			/// An engine companion a make-first replacement was made beside: still running, listed retiring, until the
+			/// commit point destroys it (or, the change ending uncommitted, it is the bank's companion again).
+			struct RetiringCompanion {
+				std::size_t index;
+				EngineAsk ask;
+				std::unique_ptr<Companion> companion;
+			};
+			std::vector<RetiringCompanion> retiring;
 			// Its one program: destroyed after the instance and before the claims are released (teardown step 5), so a
 			// port it held is released only once it was reaped.
 			std::optional<ProgramSlot> program;
@@ -1801,6 +1973,9 @@ struct NodeHost::Impl {
 			// faded but a sink's bank. Read by the block until the drive's invoke ran.
 			std::unique_ptr<bool[]> faded;
 			std::size_t fadedCount = 0;
+			/// The ports its code is laid out for, whose order the block hands its spans in: the node's at configure, a
+			/// reshape in place's from its commit point (docs/architecture.md#reshapes).
+			Ports ports;
 			std::vector<BankPair> pairs;          // the pass-through's pairs, for the latency plan
 			std::vector<DeclaredLatency> latency; // what configure declared, one per path
 			LatencyPlan plan;                     // worked out at configure's return; carried with each drive
@@ -1815,6 +1990,97 @@ struct NodeHost::Impl {
 			enum class LoopsStep { open, finishing, closing, closed } loopsStep = LoopsStep::open;
 			bool closedTold = false; // step 4 is done: the machine was told closed
 			std::size_t sinksClosed = 0;
+			/// A change in place in flight (docs/architecture.md#changes-in-place): what its change version asked, until
+			/// its commit point or its end. Its holds are the configuration's (held), kept across a supersession.
+			struct Change {
+				std::shared_ptr<const NodeConfig> target; // the settings it applies, kept alive until the commit
+				std::uint64_t epoch = 0;                  // this change's, so a late timer or answer finds it gone
+				bool reshape = false;          // its ports differ from the configuration's: a reshape in place
+				std::vector<std::string> keys; // the keys it applies, for its diagnostics
+				std::chrono::steady_clock::time_point began;
+				std::vector<std::pair<std::size_t, std::move_only_function<void(void*)>>> posts; // staged, in order
+				std::unique_ptr<AudioCode> code; // a new code, prepared when the old one is (swapped at the commit)
+				std::vector<BankPair> pairs;     // the new code's pass-through pairs, if it is one
+				bool codeGiven = false;
+				bool codePrepared = false;
+				std::optional<std::vector<DeclaredLatency>> latency; // declared in the change: the new paths
+				LatencyPlan plan;                                    // the plan from the commit point
+				bool answered = false;                               // the change version answered applied
+				std::unique_ptr<Timer> deadline;
+				std::unique_ptr<Timer> holdBound; // the holds' acknowledgement's 100 ms
+				bool holdGaveUp = false;          // past it: the change went on
+				/// An engine companion the change replaces, break-first behind a hold: its claims judged first, then
+				/// (once held) the old one destroyed and the new one made in one flush.
+				struct Replacement {
+					std::size_t index;            // the engine ask, and companion, it replaces
+					EngineCompanionShape shape;   // the new one's
+					std::vector<Claim> claims;    // the new one's, by its shape's rule
+					std::uint64_t retiringId = 0; // the companion it replaces
+					std::uint64_t id = 0;         // its own, once made
+					std::vector<Claim> oldClaims; // the replaced one's, by its shape's rule (once broken or made)
+					/// Made before break (docs/writing-a-node-type.md#make-before-break): the new one made beside the old
+					/// one, which goes at the commit point; else break-first.
+					bool makeFirst = false;
+					bool broken = false; // break-first: the old one destroyed, the new one asked for
+					bool made = false;   // make-first: the new one asked for beside the old one, which is retiring
+					bool ready = false;
+				};
+				std::vector<Replacement> replacements;
+				/// A sink the change replaces (docs/writing-a-node-type.md#sinks-and-sources-in-a-change): made beside the
+				/// old one, its consumer begun once the change's claims and recordings are ready; the tap moves to it in
+				/// the commit's invoke.
+				struct SinkReplacement {
+					std::size_t index; // the sink it replaces
+					std::unique_ptr<SinkSlot> slot;
+					bool asked = false; // its consumer asked to begin
+					bool ready = false; // its consumer began
+				};
+				std::vector<SinkReplacement> sinks;
+				/// A source the change replaces: made beside the old one, ready at once, played from the commit's invoke.
+				struct SourceReplacement {
+					std::size_t index; // the source it replaces
+					SourceSlot slot;
+				};
+				std::vector<SourceReplacement> sources;
+				/// A recording the change replaces (docs/writing-a-node-type.md#recordings-in-a-change): claimed with the
+				/// change's claims, then opened beside the old one, before any companion of the change.
+				struct RecordingReplacement {
+					std::size_t index; // the recording it replaces
+					std::unique_ptr<RecordingSlot> slot;
+					bool asked = false;  // its open posted
+					bool opened = false; // its open made the file
+				};
+				std::vector<RecordingReplacement> recordings;
+				/// docs/writing-a-node-type.md#claims-in-a-change: the ports cx.claim asked (each once), and those it
+				/// unclaimed (keys the configuration holds, released at the commit point, last).
+				std::vector<Claim> claimed;
+				std::vector<std::string> unclaimed;
+				/// Every claim of the change the configuration does not hold yet (cx.claim's and the replacements'),
+				/// judged when the change version returned, before anything else is acquired; granted once probed.
+				struct Added {
+					Claim claim;
+					bool granted = false;
+				};
+				std::vector<Added> added;
+				std::size_t claimsPending = 0;
+				/// whenReady's continuation (docs/writing-a-node-type.md#whenready-and-configuredone): held here until
+				/// every acquisition is ready, then posted to its loop; the commit point waits for its done().
+				std::optional<std::move_only_function<void(void*, ConfigureDone)>> continuation;
+				std::size_t continuationLoop = 0;
+				bool continuationPosted = false;
+				bool continuationDone = false;
+			};
+			std::optional<Change> change;
+			std::uint64_t changeEpoch = 0;
+			std::vector<std::uint8_t> held; // per output (outputs then inside outputs): held by a change, until it ends
+			std::uint64_t holdsAsked = 0;   // holds posted to the block, and those it acknowledged
+			std::uint64_t holdsAcked = 0;
+			std::unique_ptr<AudioCode> retiringCode; // the code a change's swap replaces, until the swap completed
+			std::vector<std::uint64_t> retiredIds;   // the engine companions a change replaced: their losses are said
+			// Per engine companion: the id of the replacement a break last asked for, which its flush item makes. A newer
+			// change that breaks before an older break's flush ran asks for its own; the older item then makes nothing.
+			std::vector<std::uint64_t> replacing;
+			bool retiringPrepared = false; // and whether it was prepared
 
 			Configuration() = default;
 			Configuration(const Configuration&) = delete;
@@ -1834,16 +2100,21 @@ struct NodeHost::Impl {
 			/// one was never torn down, so each loop still up is destroyed, which ends its thread, before any state
 			/// that thread may be in; its sinks' threads end where the sinks stand in the order, before the states.
 			void freeInOrder() noexcept {
+				change.reset();
+				retiringCode.reset();
 				code.reset();
 				sinks.clear();
+				retiredSinks.clear();
 				if (loopsStep != LoopsStep::closed)
 					for (const auto& slot : loops) slot->made.reset();
 				for (const auto& slot : loops) slot->state.reset();
 				instance.reset();
 				loops.clear();
 				sources.clear();
+				retiredSources.clear();
 				stores.clear();
 				recordings.clear();
+				retiredRecordings.clear();
 				program.reset();
 			}
 		};
@@ -1868,6 +2139,13 @@ struct NodeHost::Impl {
 					if (index >= c.sinks.size() || c.sinks[index]->closed) return;
 					c.sinks[index]->closed = true;
 					++c.sinksClosed;
+					carryOn();
+				});
+			}
+			void retiredSinkClosed(std::uint64_t id) {
+				host_.input([this, id] {
+					for (auto& slot : config_->retiredSinks)
+						if (slot->id == id) slot->closed = true;
 					carryOn();
 				});
 			}
@@ -1896,7 +2174,9 @@ struct NodeHost::Impl {
 			/// closed.
 			void carryOn() {
 				Configuration& c = *config_;
-				if (closed_ || c.sinksClosed != c.sinks.size() || (c.program && c.program->open())) return;
+				if (closed_ || c.sinksClosed != c.sinks.size() || !retiredSinksClosed(c) ||
+				    (c.program && c.program->open()))
+					return;
 				if (c.loopsStep == Configuration::LoopsStep::open) finishLoopsOf(c);
 				if (c.loopsStep != Configuration::LoopsStep::closed) return;
 				closedLate();
@@ -1912,6 +2192,7 @@ struct NodeHost::Impl {
 				config_->channel->detach();
 				--host_.leaked;
 				for (const auto& recording : config_->recordings) recording->close();
+				for (const auto& recording : config_->retiredRecordings) recording->close();
 				const bool held = host_.claims.holds(generation_);
 				host_.claimsDecided(host_.claims.release(generation_));
 				const auto refused = host_.refusedByLeaked.extract(generation_);
@@ -1948,7 +2229,25 @@ struct NodeHost::Impl {
 		/// The newest committed settings, and whether a drive of them may fade: some output the code writes exists
 		/// (narrowed at configure's return, once its sinks' banks are known: outputsFaded).
 		lc::Queued queued() const noexcept {
-			return {version_, !ports_.outputs().empty() || !ports_.insideOutputs().empty()};
+			const Ports& ports = queued_ ? queued_->ports() : ports_;
+			return {version_, !ports.outputs().empty() || !ports.insideOutputs().empty()};
+		}
+
+		/// docs/architecture.md#reshapes: with no configuration, or at a configuration's start (the block silent), the
+		/// node takes the ports of its newest settings, and its block is reshaped to them (its links on the ports both
+		/// name kept). A block not made yet is made with them; none is reshaped once the data loop is wedged.
+		void adoptPorts() {
+			// A configuration of other settings still holds the block's ports: it adopts them at its own start.
+			if (!queued_ || (config_ && config_->config != queued_)) return;
+			ports_ = queued_->ports();
+			reshapeBlock();
+		}
+
+		/// The block takes the node's ports, when it was made or last reshaped with others.
+		void reshapeBlock() {
+			if (!block_ || host_.wedged || blockPorts_ == ports_) return;
+			blockPorts_ = ports_;
+			block_->reshape(ports_);
 		}
 
 		/// The configuration of this generation is the current one.
@@ -1966,7 +2265,9 @@ struct NodeHost::Impl {
 			                  health.cause,
 			                  health.phase == wantedPhase_ ? waitingShown_ : std::vector<WaitingFor>{},
 			                  health.blockLost,
-			                  superseded_};
+			                  superseded_,
+			                  health.keys,
+			                  health.next};
 		}
 
 		/// What the node waits for now, unpaced: an older node of its name; its engine companions
@@ -2078,11 +2379,9 @@ struct NodeHost::Impl {
 			refreshCompanions();
 		}
 
-		/// Removed (the aggregate's Gone): told gone once its block's destruction ran in the flush, not when
-		/// queued, and, for a port-caused replace, once its older node is gone too, whose dropped frames it reports:
-		/// everything of the name it stands for is gone only then.
+		/// Removed (the aggregate's Gone): told gone once its block's destruction ran in the flush, not when queued.
 		void tellGone() {
-			if (!goneHeld_ || gone_ || destroyPending_ || predecessor_ != 0) return;
+			if (!goneHeld_ || gone_ || destroyPending_) return;
 			host_.gone(*this, dropped_);
 		}
 
@@ -2094,7 +2393,7 @@ struct NodeHost::Impl {
 		void tell(NodeHealth now) {
 			if (told_ && *told_ == now) return;
 			told_ = now;
-			if (!silent_) host_.changed(*told_, superseded_);
+			host_.changed(*told_, superseded_);
 		}
 
 		/// A removal's stopping (removing), told before anything it does.
@@ -2184,6 +2483,15 @@ struct NodeHost::Impl {
 			case Kind::markWedged:
 				host_.markWedged(name_, judgedMs_);
 				break;
+			case Kind::reconfigure:
+				reconfigure();
+				break;
+			case Kind::commit:
+				commit(action.barrier);
+				break;
+			case Kind::dropChange:
+				dropChange();
+				break;
 			}
 		}
 
@@ -2253,10 +2561,15 @@ struct NodeHost::Impl {
 		/// path of its own: its pair is carried (added for a code of the type's own; a pass-through must already copy
 		/// it, checked at configure's return) with the delay on it, both ways.
 		LatencyPlan latencyPlan(const Configuration& c) const {
-			LatencyPlan plan{.pairs = c.pairs};
+			return latencyPlan(c, c.pairs, c.latency, c.engineAsks);
+		}
+		/// The same, with these pairs, declarations and engine companions (a change's, from its commit point).
+		LatencyPlan latencyPlan(const Configuration& c, const std::vector<BankPair>& pairs,
+		                        const std::vector<DeclaredLatency>& latency, const std::vector<EngineAsk>& asks) const {
+			LatencyPlan plan{.pairs = pairs};
 			for (const SourceSlot& slot : c.sources)
 				plan.beyond.emplace_back(slot.bank, Delay{Latency{0, slot.source->writer().capacityFrames()}});
-			for (const EngineAsk& asked : c.engineAsks)
+			for (const EngineAsk& asked : asks)
 				std::visit(
 					[&]<class Shape>(const Shape& shape) {
 						if constexpr (ModuleRunShape<Shape>)
@@ -2264,7 +2577,7 @@ struct NodeHost::Impl {
 						                             moduleRunDelay(shape, FrameClock(host_.format.rate)));
 					},
 					asked.shape);
-			for (const DeclaredLatency& declared : c.latency) {
+			for (const DeclaredLatency& declared : latency) {
 				const BankPair pair{declared.from, declared.bank};
 				if (std::ranges::find(plan.pairs, pair) == plan.pairs.end()) plan.pairs.push_back(pair);
 				plan.onPair.emplace_back(pair, Delay{declared.latency});
@@ -2360,6 +2673,8 @@ struct NodeHost::Impl {
 			c.generation = ++host_.generations;
 			refusedGeneration_ = 0;
 			c.config = queued_;
+			adoptPorts(); // a restart's reshape: the block, silent, takes the new ports before configure sees them
+			c.ports = ports_;
 			c.channel = std::make_shared<Channel>(*this, host_.mainLoop, host_.timers, name_, type_, host_.logSinks);
 			c.context = std::make_unique<Context>(host_.format, name_, *c.channel, c.loops);
 			c.fadedCount = ports_.outputs().size() + ports_.insideOutputs().size();
@@ -2890,8 +3205,9 @@ struct NodeHost::Impl {
 
 		/// Recording `index`'s open landed (attached, so this configuration's): a fault of the adapter's fails the node
 		/// lost (ear.internal-error); a refusal fails it start-failed "cannot open <path>: <why>"; a file made is ready.
-		void recordingOpened(std::uint64_t generation, std::size_t index, std::expected<void, std::string> outcome,
-		                     std::optional<detail::IoFault> fault) {
+		void recordingOpened(std::uint64_t generation, std::size_t index, std::uint64_t id,
+		                     std::expected<void, std::string> outcome, std::optional<detail::IoFault> fault) {
+			if (id != 0) return replacementRecordingOpened(generation, id, std::move(outcome), std::move(fault));
 			if (!current(generation) || index >= config_->recordings.size()) return;
 			RecordingSlot& slot = *config_->recordings[index];
 			if (fault) return ioJobFaulted(generation, "open recording " + slot.path(), fault->callback, fault->what);
@@ -3039,6 +3355,1014 @@ struct NodeHost::Impl {
 			});
 		}
 
+		// ---- A change in place (docs/architecture.md#changes-in-place) ----
+
+		bool changeFromDriving() const noexcept {
+			return aggregate_.configuration().changeFrom() == lc::ConfigState::driving;
+		}
+
+		/// The change version: a new change of the configuration, its deadline armed, and the type's change version
+		/// called through the change's context, timed as `configure`. Its answer, as an input of its own: a rule it broke
+		/// (or a fault of ear's adapter) fails the node; a throw, or a restart it asks for, falls back to a restart with
+		/// the new settings; an applied answer's new code is prepared now, while the old one runs, and the commit point
+		/// comes once every hold it asked was acknowledged.
+		void reconfigure() {
+			Configuration& c = *config_;
+			Configuration::Change& ch = c.change.emplace();
+			ch.target = queued_;
+			ch.epoch = ++c.changeEpoch;
+			// A reshape in place (docs/architecture.md#reshapes): the new ports are in the engine before the change
+			// version runs, the old code keeping its view until the commit's swap; a newer change that supersedes one
+			// takes the block to its own ports (the old ones again, for a change back).
+			ch.reshape = ch.target->ports() != c.ports;
+			ports_ = ch.target->ports();
+			reshapeBlock();
+			ch.keys = aggregate_.health().keys;
+			ch.began = host_.timers.now();
+			const std::chrono::milliseconds deadline = c.instance->reconfigureDeadline();
+			ch.deadline = host_.timers.after(
+				deadline, [&host = host_, serial = serial_, generation = c.generation, epoch = ch.epoch, deadline] {
+					host.inputFor(serial, [generation, epoch, deadline](Node& node) {
+						if (!node.inChange(generation, epoch)) return;
+						const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(deadline).count();
+						node.fallBack(lc::NodeCause::FellBack::deadline,
+					                  "deadline " + std::to_string(seconds) + "s passed");
+					});
+				});
+			if (c.held.size() != c.fadedCount) c.held.assign(c.fadedCount, 0);
+			changeScope_.valid = true;
+			changeScope_.broken = false;
+			std::expected<Changed, TypeFault> answer =
+				callType(hooks::configure, [&] { return c.instance->change(changeScope_, *ch.target); });
+			changeScope_.valid = false;
+			const std::uint64_t epoch = ch.epoch;
+			if (!answer) {
+				if (answer.error().adapterFaulted) return faultLater(lc::Fact::adapterFaulted, answer.error().detail);
+				// A rule broken in a change is the type's bug: the node fails lost, as a rested node's hook that throws.
+				if (changeScope_.broken) return faultLater(lc::Fact::hookThrew, answer.error().detail);
+				return fallBackLater(epoch, lc::NodeCause::FellBack::failed, answer.error().detail);
+			}
+			if (answer->restarts())
+				return fallBackLater(epoch, lc::NodeCause::FellBack::restartAsked, answer->reason());
+			// The code running is laid out for the old ports, so a change of them must bring the code for the new ones.
+			if (ch.reshape && !answer->code())
+				return faultLater(lc::Fact::hookThrew,
+				                  "configure changed the ports in place and gave no code for them");
+			// whenReady's Changed is the answer when it was called, and only then.
+			if (ch.continuation.has_value() != answer->continues())
+				return faultLater(lc::Fact::hookThrew, "configure called whenReady and answered with another Changed");
+			if (std::optional<NodeCode>& given = answer->code()) {
+				ch.codeGiven = true;
+				ch.pairs = given->pairs();
+				ch.code = std::move(given->own());
+				if (!ch.code) {
+					try {
+						ch.code = makePassThrough(ports_, ch.pairs);
+					} catch (const std::logic_error& error) {
+						return faultLater(lc::Fact::hookThrew,
+						                  std::string("configure gave a pass-through: ") + error.what());
+					}
+				}
+			}
+			// The plan from the commit point, worked out now as configure's return does, so a misfit fails here.
+			const std::vector<BankPair>& pairs = ch.codeGiven ? ch.pairs : c.pairs;
+			const std::vector<DeclaredLatency>& latency = ch.latency ? *ch.latency : c.latency;
+			if (!pairs.empty())
+				for (const DeclaredLatency& declared : latency)
+					if (std::ranges::find(pairs, BankPair{declared.from, declared.bank}) == pairs.end())
+						return faultLater(lc::Fact::hookThrew, "configure declared latency on " + declared.from +
+						                                           " to " + declared.bank +
+						                                           ", a path its pass-through does not copy");
+			try {
+				std::vector<EngineAsk> asks = c.engineAsks;
+				for (const Configuration::Change::Replacement& r : ch.replacements) asks[r.index].shape = r.shape;
+				ch.plan = latencyPlan(c, pairs, latency, asks);
+				const std::vector<std::optional<Latency>> inputs(ports_.inputs().size() + ports_.insideInputs().size());
+				const std::vector<std::optional<Latency>> outputs(ports_.outputs().size() +
+				                                                  ports_.insideOutputs().size());
+				static_cast<void>(workOut(ports_, ch.plan, inputs, outputs));
+			} catch (const std::logic_error& error) {
+				return faultLater(lc::Fact::hookThrew,
+				                  std::string("configure gave a latency plan that does not fit: ") + error.what());
+			}
+			// The new code is prepared now, while the old one runs, when the old one is (a stopped node's after its
+			// stop's silence is not: its start prepares the code it then has).
+			if (ch.code && (changeFromDriving() || c.prepared)) {
+				if (auto prepared = callType(hooks::prepare, [&] { ch.code->prepare(host_.format); }); !prepared)
+					return faultLater(lc::Fact::hookThrew, std::move(prepared.error().detail));
+				ch.codePrepared = true;
+			}
+			for (const auto& r : ch.recordings)
+				if (r.slot->refused())
+					return fallBackLater(epoch, lc::NodeCause::FellBack::resourceRefused,
+					                     "cannot open " + r.slot->path() + ": " + *r.slot->refused());
+			ch.answered = true;
+			refreshCompanions(); // a replacement sink or source is listed beside the one it replaces from here
+			judgeChangeClaims();
+			checkChangeReady();
+		}
+
+		/// The configuration of `generation` is current and its change of `epoch` is the one in flight, before its commit
+		/// point.
+		bool inChange(std::uint64_t generation, std::uint64_t epoch) const {
+			return current(generation) && config_->change && config_->change->epoch == epoch &&
+			       aggregate_.configuration().state() == lc::ConfigState::changing;
+		}
+
+		/// A hold asked of the block and not yet acknowledged, while the change has not given up on it.
+		bool holdsWaiting() const {
+			return config_->holdsAcked < config_->holdsAsked && !(config_->change && config_->change->holdGaveUp);
+		}
+
+		/// The change's next steps, as an input of its own: once every claim of the change is granted, each replacement
+		/// is held, then made once its hold is acknowledged; the commit point comes once the change version answered
+		/// applied, every claim is granted, every hold it asked was acknowledged and every replacement is ready.
+		void checkChangeReady() {
+			if (!config_ || !config_->change) return;
+			host_.inputFor(serial_, [generation = config_->generation, epoch = config_->change->epoch](Node& node) {
+				if (!node.inChange(generation, epoch) || !node.config_->change->answered) return;
+				node.stepReplacements();
+				if (node.config_->change->claimsPending > 0 || node.holdsWaiting()) return;
+				if (!std::ranges::all_of(node.config_->change->replacements, [](const auto& r) { return r.ready; }) ||
+				    !std::ranges::all_of(node.config_->change->sinks, [](const auto& r) { return r.ready; }) ||
+				    !std::ranges::all_of(node.config_->change->recordings, [](const auto& r) { return r.opened; }))
+					return;
+				Configuration::Change& ch = *node.config_->change;
+				if (ch.continuation) return node.postContinuation();
+				if (ch.continuationPosted && !ch.continuationDone) return;
+				node.feed(node.aggregate_.changeReady());
+			});
+		}
+
+		/// Every acquisition ready: the continuation posted to its loop as the node's own work, with the change's token
+		/// (destroyed unrun with the work if its loop's state is gone). From here a newer change waits for the change.
+		void postContinuation() {
+			Configuration& c = *config_;
+			Configuration::Change& ch = *c.change;
+			auto work = std::move(*ch.continuation);
+			ch.continuation.reset();
+			ch.continuationPosted = true;
+			c.loops.at(ch.continuationLoop)
+				->postState([work = std::move(work),
+			                 done = ConfigureDone(std::make_unique<ContinuationAnswer>(c.channel, ch.epoch))](
+								void* state) mutable { work(state, std::move(done)); });
+			feed(aggregate_.continued());
+		}
+
+		/// The continuation answered: done, the commit point comes once nothing else is pending; failed (or its token
+		/// dropped), the change falls back. Ignored once the change ended any other way.
+		void continuationAnswered(std::uint64_t generation, std::uint64_t epoch, std::optional<std::string> failure) {
+			if (!inChange(generation, epoch) || !config_->change->continuationPosted ||
+			    config_->change->continuationDone)
+				return;
+			if (failure) return fallBack(lc::NodeCause::FellBack::failed, std::move(*failure));
+			config_->change->continuationDone = true;
+			checkChangeReady();
+		}
+
+		/// A fault found in a change, as an input of its own.
+		void faultLater(lc::Fact fact, std::string detail) {
+			host_.inputFor(serial_,
+			               [generation = config_->generation, fact, detail = std::move(detail)](Node& node) mutable {
+							   if (node.current(generation)) node.feed(node.aggregate_.fault(fact, std::move(detail)));
+						   });
+		}
+
+		/// A fallback the change's answer asked, as an input of its own.
+		void fallBackLater(std::uint64_t epoch, lc::NodeCause::FellBack reason, std::string detail) {
+			host_.inputFor(serial_, [generation = config_->generation, epoch, reason,
+			                         detail = std::move(detail)](Node& node) mutable {
+				if (node.inChange(generation, epoch)) node.fallBack(reason, std::move(detail));
+			});
+		}
+
+		/// The fallback (docs/architecture.md#changes-in-place): said (ear.reconfigure-fell-back), then a restart with the
+		/// newest settings.
+		void fallBack(lc::NodeCause::FellBack reason, std::string detail) {
+			const Configuration::Change& ch = *config_->change;
+			const std::int64_t ms = millisecondsBetween(ch.began, host_.timers.now());
+			const std::array fields{DiagnosticField{"elapsedMs", ms}};
+			std::string keys;
+			for (const std::string& key : ch.keys) keys += (keys.empty() ? "" : ", ") + key;
+			host_.diagnosed(name_, "ear.reconfigure-fell-back",
+			                "could not apply " + keys + " in place (" + std::string(lc::fellBackName(reason)) +
+			                    "): " + detail,
+			                fields);
+			feed(aggregate_.fellBack(reason, std::move(detail)));
+		}
+
+		/// A mask over `from`'s outputs (outputs then inside outputs) as one over `to`'s: each output by its name.
+		static std::vector<std::uint8_t> outputsIn(const Ports& to, const Ports& from,
+		                                           std::span<const std::uint8_t> mask) {
+			std::vector<PortName> was = from.outputs();
+			was.insert(was.end(), from.insideOutputs().begin(), from.insideOutputs().end());
+			std::vector<PortName> now = to.outputs();
+			now.insert(now.end(), to.insideOutputs().begin(), to.insideOutputs().end());
+			std::vector<std::uint8_t> moved(now.size(), 0);
+			for (std::size_t i = 0; i < was.size() && i < mask.size(); ++i) {
+				if (mask[i] == 0) continue;
+				const auto found = std::ranges::find(now, was[i]);
+				if (found != now.end()) moved[static_cast<std::size_t>(found - now.begin())] = 1;
+			}
+			return moved;
+		}
+
+		/// The routable output banks named, as a mask over the block's outputs (outputs then inside outputs).
+		std::vector<std::uint8_t> outputMask(std::span<const std::string_view> banks, bool inside) const {
+			std::vector<std::uint8_t> mask(config_->fadedCount, 0);
+			for (const std::string_view name : banks) {
+				// The banks of the code running, which a reshape in place keeps until its commit point.
+				const Ports::Bank& bank = config_->ports.bank(name);
+				if (bank.direction != Direction::output || (bank.reach != PortBank::Reach::routable && !inside))
+					throw std::logic_error("hold names a routable output bank, not \"" + bank.name + "\"");
+				for (std::size_t i = 0; i < bank.ports.size() && bank.first + i < mask.size(); ++i)
+					mask[bank.first + i] = 1;
+			}
+			return mask;
+		}
+
+		/// A change's hold or release of these banks: told to the block only while it is driven (a stopped node is
+		/// silent already), each hold's acknowledgement bounded by 100 ms. `inside`: the framework's own hold, which
+		/// may take an inside output (a playback card's bank).
+		void holdBanks(std::span<const std::string_view> banks, bool hold, bool inside = false) {
+			Configuration& c = *config_;
+			const std::vector<std::uint8_t> marked = outputMask(banks, inside);
+			std::vector<std::uint8_t> changed(marked.size(), 0);
+			bool any = false;
+			for (std::size_t i = 0; i < marked.size() && i < c.held.size(); ++i)
+				if (marked[i] != 0 && (c.held[i] != 0) != hold) {
+					changed[i] = 1;
+					c.held[i] = hold ? 1 : 0;
+					any = true;
+				}
+			if (!any || !changeFromDriving() || host_.wedged) return;
+			if (!hold) return block_->release(std::move(changed));
+			const std::uint64_t asked = ++c.holdsAsked;
+			Configuration::Change& ch = *c.change;
+			if (!ch.holdBound)
+				ch.holdBound = host_.timers.after(fadeAcknowledgeBound, [&host = host_, serial = serial_,
+				                                                         generation = c.generation, epoch = ch.epoch] {
+					host.inputFor(serial, [generation, epoch](Node& node) {
+						if (!node.inChange(generation, epoch) || !node.holdsWaiting()) return;
+						node.config_->change->holdGaveUp = true;
+						const std::array fields{DiagnosticField{"ms", fadeAcknowledgeBound.count()}};
+						node.host_.diagnosed(node.name_, "ear.fade-unacknowledged",
+						                     "the hold before a change in place was not acknowledged within " +
+						                         std::to_string(fadeAcknowledgeBound.count()) +
+						                         " ms, so the change went on",
+						                     fields);
+						node.checkChangeReady();
+					});
+				});
+			block_->hold(std::move(changed), [&host = host_, serial = serial_, generation = c.generation, asked] {
+				host.inputFor(serial, [generation, asked](Node& node) {
+					if (!node.current(generation)) return;
+					node.config_->holdsAcked = std::max(node.config_->holdsAcked, asked);
+					if (node.config_->change && !node.holdsWaiting()) {
+						node.config_->change->holdBound.reset();
+						node.checkChangeReady();
+					}
+				});
+			});
+		}
+
+		/// A replacement in a change (docs/writing-a-node-type.md#make-before-break): an RTP receiver or a sound card for
+		/// the one on the same inside bank, recorded now and judged once the change version answered.
+		void attachInChange(std::string_view bank, EngineCompanionShape shape, Order order) {
+			Configuration& c = *config_;
+			const std::string name(bank);
+			const auto* receiver = std::get_if<RtpReceiverShape>(&shape);
+			const bool card = std::holds_alternative<SoundCardShape>(shape);
+			if (receiver == nullptr && !card)
+				throw std::logic_error("a change replaces an RTP receiver or a sound card, never a pipe receiver");
+			const Ports::Bank& found =
+				card ? cardBank(ports_, name) : insideBank(ports_, name, Direction::input, "an RTP receiver");
+			const auto at = std::ranges::find_if(
+				c.engineAsks, [&](const EngineAsk& asked) { return asked.target.insideBank == found.name; });
+			if (at == c.engineAsks.end() || at->shape.index() != shape.index())
+				throw std::logic_error("a change attaches only a replacement: bank " + found.name + " has no " +
+				                       (card ? "sound card" : "RTP receiver"));
+			const auto index = static_cast<std::size_t>(at - c.engineAsks.begin());
+			if (std::ranges::any_of(c.change->replacements, [&](const auto& r) { return r.index == index; }))
+				throw std::logic_error("a second replacement on bank " + found.name + " in one change");
+			std::vector<Claim> claims = std::visit([](const auto& one) { return claimsOf(one); }, shape);
+			// Two receivers bound to one port would split or duplicate its datagrams, so a receiver on the same port is
+			// replaced break-first, whatever the type asks; on a new port, made before break. A card goes as the type
+			// orders, since only it knows whether the new card is the same ALSA device
+			// (docs/writing-a-node-type.md#make-before-break).
+			const bool makeFirst =
+				card ? order == Order::makeFirst : std::get<RtpReceiverShape>(at->shape).port != receiver->port;
+			c.change->replacements.push_back(Configuration::Change::Replacement{
+				.index = index, .shape = std::move(shape), .claims = std::move(claims), .makeFirst = makeFirst});
+		}
+
+		/// The ring companion of `family` on bank `name`, which a change replaces: its index among the configuration's
+		/// sinks or sources. A bank with none, or one replaced already in this change, is a broken rule.
+		template <class Slots, class Replacements>
+		std::size_t ringReplaced(const Slots& slots, const Replacements& replacements, const std::string& name,
+		                         std::string_view what) {
+			const auto at = std::ranges::find_if(slots, [&](const auto& slot) {
+				if constexpr (requires { slot->bank; }) return slot->bank == name;
+				else return slot.bank == name;
+			});
+			if (at == slots.end())
+				throw std::logic_error("a change attaches only a replacement: bank " + name + " has no " +
+				                       std::string(what));
+			const auto index = static_cast<std::size_t>(at - slots.begin());
+			if (std::ranges::any_of(replacements, [&](const auto& r) { return r.index == index; }))
+				throw std::logic_error("a second replacement on bank " + name + " in one change");
+			return index;
+		}
+
+		/// A sink's replacement in a change (docs/writing-a-node-type.md#sinks-and-sources-in-a-change): made now beside
+		/// the old one, by creation's rules, its consumer begun once the change's claims and recordings are ready. A
+		/// consumer in a loop's state may not be the one the old sink calls: two sinks would call it at once.
+		SinkControl& sinkInChange(std::string_view bank, SinkShape shape, SinkConsumerFrom consumer) {
+			Configuration& c = *config_;
+			Configuration::Change& ch = *c.change;
+			const Ports::Bank& found = insideBank(ports_, std::string(bank), Direction::output, "a sink");
+			const std::size_t index = ringReplaced(c.sinks, ch.sinks, found.name, "sink");
+			if (auto* own = std::get_if<std::unique_ptr<SinkConsumer>>(&consumer)) {
+				if (!*own) throw std::logic_error("sink " + found.name + " given no consumer");
+			} else {
+				const LoopSlot& slot = *c.loops.at(std::get<StateSinkConsumer>(consumer).loop);
+				if (!slot.declared.stateful)
+					throw std::logic_error("sink " + found.name + " is consumed by loop " +
+					                       std::string(slot.declared.name) + ", which has no state");
+			}
+			auto made = std::make_unique<SinkSlot>(found.name, std::move(consumer));
+			if (made->stateLoop) {
+				const SinkSlot& old = *c.sinks[index];
+				if (old.resolved != nullptr &&
+				    made->stateConsumer(c.loops.at(*made->stateLoop)->state.get()) == old.resolved)
+					throw std::logic_error("the replacement for sink " + found.name +
+					                       " is consumed by the consumer it replaces");
+			}
+			SinkAdapter& sinks = given(host_.resources.sinks(), "sinks");
+			made->sink = adapter("SinkAdapter::make", [&] {
+				auto sink = sinks.make(name_, found.name, static_cast<std::uint32_t>(found.ports.size()), shape.frames,
+				                       host_.format.rate);
+				if (!sink) throw std::logic_error("the sink adapter made no sink for bank " + found.name);
+				return sink;
+			});
+			made->binding = SinkBinding{&made->sink->tap(), found.first, found.ports.size()};
+			made->id = ++host_.companionIds;
+			SinkControl& control = made->sink->control();
+			ch.sinks.push_back(Configuration::Change::SinkReplacement{index, std::move(made)});
+			return control;
+		}
+
+		/// A source's replacement in a change: made now beside the old one and ready at once, by creation's rules.
+		SourceWriter& sourceInChange(std::string_view bank, SourceShape shape, std::unique_ptr<SourceClock> clock) {
+			Configuration& c = *config_;
+			Configuration::Change& ch = *c.change;
+			const Ports::Bank& found = insideBank(ports_, std::string(bank), Direction::input, "a source");
+			if (shape.frames == 0) throw std::logic_error("a source on bank " + found.name + " holds no frames");
+			if (shape.frames > maxSourceFrames)
+				throw std::logic_error("a source on bank " + found.name + " holds more than " +
+				                       std::to_string(maxSourceFrames) + " frames");
+			const std::size_t index = ringReplaced(c.sources, ch.sources, found.name, "source");
+			SourceAdapter& sources = given(host_.resources.sources(), "sources");
+			std::unique_ptr<Source> made = adapter("SourceAdapter::make", [&] {
+				auto source = sources.make(name_, found.name, static_cast<std::uint32_t>(found.ports.size()),
+				                           shape.frames, host_.format.rate, std::move(clock));
+				if (!source) throw std::logic_error("the source adapter made no source for bank " + found.name);
+				return source;
+			});
+			SourceSlot slot{found.name, std::move(made), {}};
+			slot.binding = SourceBinding{&slot.source->tap(), found.first, found.ports.size()};
+			SourceWriter& writer = slot.source->writer();
+			ch.sources.push_back(Configuration::Change::SourceReplacement{index, std::move(slot)});
+			return writer;
+		}
+
+		/// A recording's replacement in a change (docs/writing-a-node-type.md#recordings-in-a-change): claimed with the
+		/// change's claims, opened beside the old one once they are granted. `replaced` is one the configuration holds;
+		/// its own path, or one another recording holds, is a broken rule.
+		Recording& recordingInChange(const Recording& replaced, const RecordingRequest& request) {
+			Configuration& c = *config_;
+			Configuration::Change& ch = *c.change;
+			const auto at = std::ranges::find_if(
+				c.recordings, [&](const auto& slot) { return static_cast<const Recording*>(slot.get()) == &replaced; });
+			if (at == c.recordings.end())
+				throw std::logic_error("a change replaces a recording its configuration holds, not " + replaced.path());
+			const auto index = static_cast<std::size_t>(at - c.recordings.begin());
+			if (std::ranges::any_of(ch.recordings, [&](const auto& r) { return r.index == index; }))
+				throw std::logic_error("a second replacement for recording " + replaced.path() + " in one change");
+			std::unique_ptr<RecordingSlot> made;
+			if (auto refused = recordingPathRefused(request.path)) {
+				made = std::make_unique<RecordingSlot>(request.path, nullptr, name_, std::move(refused));
+			} else {
+				const std::string claimed = recordingClaimPath(request.path);
+				const auto holds = [&](const auto& slot) { return slot->claimPath() == claimed; };
+				if (std::ranges::any_of(c.recordings, holds) ||
+				    std::ranges::any_of(ch.recordings, [&](const auto& r) { return holds(r.slot); }))
+					throw std::logic_error(claimKey(Claim{Claim::Kind::recording, claimed}) + " claimed twice");
+				made = std::make_unique<RecordingSlot>(request.path, &given(host_.resources.recordings(), "recordings"),
+				                                       name_);
+			}
+			made->id = ++host_.companionIds;
+			Recording& recording = *made;
+			ch.recordings.push_back(Configuration::Change::RecordingReplacement{index, std::move(made)});
+			return recording;
+		}
+
+		/// A replacement recording's open landed: made, the change may go on; refused, it falls back (resource-refused),
+		/// as the restart would fail.
+		void replacementRecordingOpened(std::uint64_t generation, std::uint64_t id,
+		                                std::expected<void, std::string> outcome,
+		                                std::optional<detail::IoFault> fault) {
+			if (!current(generation) || !config_->change ||
+			    aggregate_.configuration().state() != lc::ConfigState::changing)
+				return;
+			for (auto& r : config_->change->recordings) {
+				if (r.slot->id != id || r.opened) continue;
+				if (fault)
+					return ioJobFaulted(generation, "open recording " + r.slot->path(), fault->callback, fault->what);
+				if (!outcome)
+					return fallBack(lc::NodeCause::FellBack::resourceRefused,
+					                "cannot open " + r.slot->path() + ": " + outcome.error());
+				r.slot->opened();
+				r.opened = true;
+				return checkChangeReady();
+			}
+		}
+
+		/// Each recording a change retired whose commit completed is closed (on the I/O thread) once no sink the change
+		/// replaced still writes it, and then, last, its claim is released, so a next open of its path comes after the
+		/// close.
+		void closeRetiredRecordings() {
+			Configuration& c = *config_;
+			if (!retiredSinksClosed(c)) return;
+			for (auto& slot : c.retiredRecordings) {
+				if (!std::exchange(slot->due, false)) continue;
+				slot->close();
+				const std::string key = claimKey(Claim{Claim::Kind::recording, slot->claimPath()});
+				if (!holdsClaim(key)) continue;
+				std::erase_if(c.claims, [&](const ClaimSlot& claim) { return claimKey(claim.claim) == key; });
+				host_.claimsDecided(host_.claims.release(c.generation, key));
+			}
+		}
+
+		/// A replacement sink's consumer began: the change may go on.
+		void replacementSinkBegun(std::uint64_t generation, std::uint64_t id) {
+			host_.inputFor(serial_, [generation, id](Node& node) {
+				if (!node.current(generation) || !node.config_->change) return;
+				for (auto& r : node.config_->change->sinks)
+					if (r.slot->id == id && !r.ready) {
+						r.ready = true;
+						node.refreshCompanions();
+						node.checkChangeReady();
+					}
+			});
+		}
+
+		/// Every sink a change retired whose close is not yet asked: drained to its own consumer and finished, each on
+		/// its own thread, once nothing taps it.
+		void closeRetiredSinks() {
+			Configuration& c = *config_;
+			for (auto& slot : c.retiredSinks)
+				if (!std::exchange(slot->closeAsked, true))
+					slot->sink->close(c.channel->retiredSinkClosedCall(slot->id));
+		}
+
+		/// A retired sink closed: its drops are the node's, it is freed, and a teardown waiting for it goes on.
+		void retiredSinkClosed(std::uint64_t generation, std::uint64_t id, std::uint64_t droppedFrames) {
+			host_.inputFor(serial_, [generation, id, droppedFrames](Node& node) {
+				if (!node.current(generation)) return;
+				auto& retired = node.config_->retiredSinks;
+				const auto at = std::ranges::find_if(retired, [&](const auto& slot) { return slot->id == id; });
+				if (at == retired.end() || (*at)->closed) return;
+				node.dropped_ += droppedFrames;
+				(*at)->closed = true;
+				// Kept while a continuation that may hold its control can still run (Change::SinkReplacement).
+				if (!(*at)->kept) retired.erase(at);
+				node.closeRetiredRecordings();
+				node.closeLoops();
+			});
+		}
+
+		/// cx.claim in a change (docs/writing-a-node-type.md#claims-in-a-change): a port, recorded now and judged when
+		/// the change version returned. Asked twice is the type's bug, as on creation.
+		void claimInChange(Claim claim) {
+			if (claim.kind != Claim::Kind::tcp && claim.kind != Claim::Kind::udp)
+				throw std::logic_error("claim takes a port: " + claimKey(claim) + " is the framework's to claim");
+			Configuration::Change& ch = *config_->change;
+			const std::string key = claimKey(claim);
+			if (std::ranges::any_of(ch.claimed, [&](const Claim& one) { return claimKey(one) == key; }))
+				throw std::logic_error(key + " claimed twice");
+			ch.claimed.push_back(std::move(claim));
+		}
+
+		/// cx.unclaim: a port the configuration holds, released at the commit point, last.
+		void unclaimInChange(const Claim& claim) {
+			const std::string key = claimKey(claim);
+			if (!holdsClaim(key)) throw std::logic_error("unclaim names a port the configuration holds, not " + key);
+			std::vector<std::string>& unclaimed = config_->change->unclaimed;
+			if (std::ranges::find(unclaimed, key) == unclaimed.end()) unclaimed.push_back(key);
+		}
+
+		/// Whether the configuration holds the claim of `key`.
+		bool holdsClaim(const std::string& key) const {
+			return std::ranges::any_of(config_->claims,
+			                           [&](const ClaimSlot& slot) { return claimKey(slot.claim) == key; });
+		}
+
+		/// Once the change version answered: the companions it replaces are retiring from now on, and every claim
+		/// of the change the configuration does not hold yet (a key it holds is its own: granted, never probed) is
+		/// judged at once, before anything else is acquired. The registry decides now, so two nodes whose changes
+		/// in one edit swap ports each find the other's port held by a configuration that runs, and both fall back
+		/// (docs/writing-a-node-type.md#claims-in-a-change); the decisions are heard in a later turn, each as an
+		/// input of its own.
+		void judgeChangeClaims() {
+			Configuration& c = *config_;
+			Configuration::Change& ch = *c.change;
+			for (auto& r : ch.replacements)
+				if (r.index < c.engineCompanions.size() && c.engineCompanions[r.index])
+					r.retiringId = c.engineCompanions[r.index]->id();
+			const auto ask = [&](const Claim& claim) {
+				const std::string key = claimKey(claim);
+				if (holdsClaim(key) ||
+				    std::ranges::any_of(ch.added, [&](const auto& one) { return claimKey(one.claim) == key; }))
+					return;
+				ch.added.push_back(Configuration::Change::Added{claim});
+			};
+			for (const Claim& claim : ch.claimed) ask(claim);
+			for (const auto& r : ch.recordings) ask(Claim{Claim::Kind::recording, r.slot->claimPath()});
+			for (const auto& r : ch.replacements)
+				for (const Claim& claim : r.claims) ask(claim);
+			ch.claimsPending = ch.added.size();
+			if (ch.added.empty()) return;
+			std::vector<detail::ClaimDecided> decided;
+			for (const auto& added : ch.added) {
+				const detail::ClaimHolder holder{c.generation, serial_, name_};
+				decided.push_back(detail::ClaimDecided{holder, added.claim, host_.claims.claim(holder, added.claim)});
+			}
+			host_.mainLoop.post(
+				[&host = host_, alive = std::weak_ptr<char>(host_.alive), decided = std::move(decided)]() mutable {
+					if (alive.lock()) host.claimsDecided(std::move(decided));
+				});
+		}
+
+		/// The change's claim of `claim`'s key, if any.
+		Configuration::Change::Added* addedAsking(const Claim& claim) {
+			if (!config_->change) return nullptr;
+			const std::string key = claimKey(claim);
+			for (auto& added : config_->change->added)
+				if (claimKey(added.claim) == key) return &added;
+			return nullptr;
+		}
+
+		/// A claim the change asked, judged: granted, probed, refused (the change falls back, resource-refused,
+		/// before anything was broken) or waiting for its holder, which is closing (against the change's deadline).
+		/// False for a claim no change in flight asked.
+		bool changeClaimJudged(const Claim& claim, const detail::ClaimJudged& judged) {
+			Configuration::Change::Added* added = addedAsking(claim);
+			if (added == nullptr || added->granted || aggregate_.configuration().state() != lc::ConfigState::changing)
+				return false;
+			switch (judged.outcome) {
+			case detail::ClaimJudged::Outcome::granted:
+				changeClaimReady(claim);
+				break;
+			case detail::ClaimJudged::Outcome::probe:
+				probeChangeClaim(claim);
+				break;
+			case detail::ClaimJudged::Outcome::refused:
+				fallBack(lc::NodeCause::FellBack::resourceRefused, claimText(claim, judged.why));
+				break;
+			case detail::ClaimJudged::Outcome::waits:
+				host_.diagnosed(name_, "ear.claim-wait",
+				                claimKey(claim) + " held by node " + judged.why + ", which is closing", {});
+				break;
+			}
+			return true;
+		}
+
+		void changeClaimReady(const Claim& claim) {
+			Configuration::Change::Added* added = addedAsking(claim);
+			if (added == nullptr || added->granted) return;
+			added->granted = true;
+			--config_->change->claimsPending;
+			checkChangeReady();
+		}
+
+		/// A change's port granted by the registry, probed behind the turn's flush as a readiness claim is.
+		void probeChangeClaim(const Claim& claim) {
+			PortProbe* probe = host_.resources.ports();
+			if (probe == nullptr) return changeClaimReady(claim);
+			host_.mainLoop.post([&host = host_, alive = std::weak_ptr<char>(host_.alive), probe, serial = serial_,
+			                     generation = config_->generation, epoch = config_->change->epoch, claim] {
+				if (!alive.lock()) return;
+				const MainLoopActivity::Scope activity("probe port", claimKey(claim));
+				const auto port = static_cast<std::uint16_t>(std::stoul(claim.value));
+				std::expected<void, std::string> outcome;
+				std::optional<std::string> fault;
+				try {
+					outcome = claim.kind == Claim::Kind::tcp ? probe->tcpListen(port) : probe->udp(port, claim.group);
+				} catch (...) {
+					fault = detail::whatOf(std::current_exception());
+				}
+				host.inputFor(serial, [generation, epoch, claim, outcome = std::move(outcome),
+				                       fault = std::move(fault)](Node& node) mutable {
+					if (!node.inChange(generation, epoch)) return;
+					if (fault) {
+						const std::string callback = "PortProbe";
+						node.host_.internalError(InternalError{.callback = callback,
+						                                       .node = node.name_,
+						                                       .where = "the probe of " + claimKey(claim),
+						                                       .what = *fault});
+						return node.feed(
+							node.aggregate_.fault(lc::Fact::adapterFaulted, internalErrorDetail(callback, *fault)));
+					}
+					if (!outcome)
+						return node.fallBack(lc::NodeCause::FellBack::resourceRefused,
+						                     claimText(claim, outcome.error()));
+					node.changeClaimReady(claim);
+				});
+			});
+		}
+
+		/// The public output banks the inside bank `index`'s companion feeds: through the pass-through, the banks its
+		/// pairs copy that bank to; a code of the type's own, every routable output.
+		std::vector<std::string_view> fedBy(std::size_t index) const {
+			const std::string& bank = config_->engineAsks[index].target.insideBank;
+			// A playback card's bank is an inside output: what it carries is the bank itself.
+			if (config_->engineAsks[index].target.bank == Direction::output) return {std::string_view(bank)};
+			std::vector<std::string_view> fed;
+			for (const Ports::Bank& one : ports_.banks()) {
+				if (one.direction != Direction::output || one.reach != PortBank::Reach::routable) continue;
+				const bool copied = std::ranges::any_of(
+					config_->pairs, [&](const BankPair& pair) { return pair.from == bank && pair.to == one.name; });
+				if (config_->pairs.empty() || copied) fed.push_back(one.name);
+			}
+			return fed;
+		}
+
+		/// Break-first (docs/architecture.md#changes-in-place): a replacement whose claims are all granted holds what its
+		/// bank feeds; once that is acknowledged, the old companion is destroyed and the new one made, in one flush, the
+		/// bank's companion the new one's from here on.
+		void stepReplacements() {
+			Configuration& c = *config_;
+			if (c.change->claimsPending > 0) return; // claims first, before anything is broken or made
+			// Then files: each replacement recording opened beside the old one, before any companion, so a consumer
+			// that writes it finds it open at its begin.
+			for (auto& r : c.change->recordings)
+				if (!std::exchange(r.asked, true))
+					r.slot->open(&host_, serial_, c.generation, 0, c.channel->completions());
+			if (!std::ranges::all_of(c.change->recordings, [](const auto& r) { return r.opened; })) return;
+			// Each replacement sink's consumer begins beside the old one's, which goes on consuming until the commit.
+			for (auto& r : c.change->sinks) {
+				if (std::exchange(r.asked, true)) continue;
+				SinkSlot& slot = *r.slot;
+				void* state = slot.stateLoop ? c.loops.at(*slot.stateLoop)->state.get() : nullptr;
+				slot.begin(c.channel, c.channel->replacementBegunCall(slot.id), state);
+			}
+			bool listed = false;
+			for (auto& r : c.change->replacements) {
+				if (r.broken || r.made) continue;
+				// What the bank feeds is held either way: two sources into one inside input would mix for a moment.
+				const std::vector<std::string_view> fed = fedBy(r.index);
+				holdBanks(fed, true, true);
+				if (holdsWaiting()) continue;
+				r.oldClaims =
+					std::visit([](const auto& shape) { return claimsOf(shape); }, c.engineAsks[r.index].shape);
+				if (r.retiringId != 0) c.retiredIds.push_back(r.retiringId);
+				if (r.makeFirst) {
+					r.made = true;
+					listed = true;
+					if (r.index < c.engineCompanions.size() && c.engineCompanions[r.index])
+						c.retiring.push_back(Configuration::RetiringCompanion{r.index, c.engineAsks[r.index],
+						                                                      std::move(c.engineCompanions[r.index])});
+				} else {
+					r.broken = true;
+					if (r.index < c.engineCompanions.size() && c.engineCompanions[r.index])
+						destroyCompanionLater(std::move(c.engineCompanions[r.index]));
+				}
+				c.engineAsks[r.index].shape = r.shape;
+				r.id = ++host_.companionIds;
+				if (c.replacing.size() <= r.index) c.replacing.resize(r.index + 1, 0);
+				c.replacing[r.index] = r.id;
+				host_.queue(FlushKind::makeCompanion, name_,
+				            [&host = host_, serial = serial_, generation = c.generation, index = r.index, id = r.id] {
+								if (Node* node = host.find(serial)) node->makeReplacement(generation, index, id);
+							});
+			}
+			if (listed) refreshCompanions();
+		}
+
+		/// An engine companion destroyed in the turn's flush; leaked once the data loop is wedged, since destroying it
+		/// calls into that loop.
+		void destroyCompanionLater(std::unique_ptr<Companion> companion) {
+			host_.queue(FlushKind::destroyCompanion, name_,
+			            [&host = host_, companion = std::move(companion)]() mutable {
+							if (!host.wedged) {
+								companion.reset();
+								return;
+							}
+							static_cast<void>(companion.release());
+							++host.leaked;
+						});
+		}
+
+		/// At the commit point: each companion a make-first replacement was made beside is destroyed, and the bank is
+		/// its replacement's (so its claims settle as a break's do).
+		void retireMadeFirst(Configuration::Change& ch) {
+			Configuration& c = *config_;
+			for (auto& r : ch.replacements) {
+				if (!r.made) continue;
+				r.broken = true;
+				for (auto& retiring : c.retiring)
+					if (retiring.index == r.index && retiring.companion)
+						destroyCompanionLater(std::move(retiring.companion));
+				std::erase_if(c.retiring, [&](const auto& retiring) { return retiring.index == r.index; });
+			}
+		}
+
+		/// A change ending uncommitted: each make-first replacement made (or asked for) is destroyed, and the companion
+		/// it was made beside is the bank's again, no longer retiring.
+		void restoreMadeFirst(Configuration::Change& ch) {
+			Configuration& c = *config_;
+			for (auto& r : ch.replacements) {
+				if (!r.made) continue;
+				r.made = false;
+				if (r.index < c.engineCompanions.size() && c.engineCompanions[r.index])
+					destroyCompanionLater(std::move(c.engineCompanions[r.index]));
+				if (r.index < c.replacing.size()) c.replacing[r.index] = 0; // a make still queued makes nothing
+				const auto found =
+					std::ranges::find_if(c.retiring, [&](const auto& retiring) { return retiring.index == r.index; });
+				if (found == c.retiring.end()) continue;
+				c.engineAsks[r.index] = found->ask;
+				if (found->companion) std::erase(c.retiredIds, found->companion->id());
+				c.engineCompanions[r.index] = std::move(found->companion);
+				c.retiring.erase(found);
+			}
+		}
+
+		/// A flush item: the replacement on engine companion `index` made, unless its configuration moved on or a newer
+		/// break asked for another in its place (that one's own item makes it, with the shape the ask now has).
+		void makeReplacement(std::uint64_t generation, std::size_t index, std::uint64_t id) {
+			if (host_.wedged || !current(generation) || config_->tearing || !block_ ||
+			    index >= config_->engineCompanions.size() || config_->engineCompanions[index] ||
+			    index >= config_->replacing.size() || config_->replacing[index] != id)
+				return;
+			Configuration& c = *config_;
+			auto& companion =
+				*(c.engineCompanions[index] = std::make_unique<Companion>(host_, serial_, c.generation, index, id));
+			EngineAsk& asked = c.engineAsks[index];
+			asked.target.blockId = block_->blockId();
+			try {
+				companion.made = std::visit(
+					[&](const auto& shape) {
+						return host_.resources.adapterFor(shape)->make(asked.target, shape, companion);
+					},
+					asked.shape);
+			} catch (...) {
+				c.engineCompanions[index].reset();
+				adapterFaulted(companionMaker(asked.shape), [this, generation](std::string detail) {
+					host_.inputFor(serial_, [generation, detail = std::move(detail)](Node& node) mutable {
+						if (node.current(generation))
+							node.feed(node.aggregate_.fault(lc::Fact::adapterFaulted, std::move(detail)));
+					});
+				});
+			}
+		}
+
+		/// A replacement companion is ready (a configuration's companion ready after its readiness ended is one).
+		void replacementReady(std::uint64_t id) {
+			if (!config_->change) return;
+			for (auto& r : config_->change->replacements)
+				if (r.id == id && !r.ready) {
+					r.ready = true;
+					refreshCompanions();
+					checkChangeReady();
+				}
+		}
+
+		/// An engine companion's loss while a change is in flight or after one replaced it: a retiring companion's is
+		/// said (ear.retiring-lost), never a fault; a replacement's before the commit point falls the change back
+		/// (resource-lost). False for any other loss, which fails the node as it always does.
+		bool companionLostInChange(std::size_t index, std::uint64_t id, const std::string& detail) {
+			Configuration& c = *config_;
+			const bool retiring = std::ranges::find(c.retiredIds, id) != c.retiredIds.end() ||
+			                      (c.change && std::ranges::any_of(c.change->replacements, [&](const auto& r) {
+									   return r.retiringId == id && !r.broken;
+								   }));
+			if (retiring) {
+				const std::string companion =
+					index < c.engineAsks.size() ? c.engineAsks[index].target.engineNode : name_;
+				host_.diagnosed(name_, "ear.retiring-lost",
+				                companion + ", which a change in place replaces, was lost: " + detail, {});
+				return true;
+			}
+			if (c.change && aggregate_.configuration().state() == lc::ConfigState::changing &&
+			    std::ranges::any_of(c.change->replacements, [&](const auto& r) { return r.id == id; })) {
+				fallBack(lc::NodeCause::FellBack::resourceLost, detail);
+				return true;
+			}
+			return false;
+		}
+
+		/// The change's claims settle (docs/writing-a-node-type.md#claims-in-a-change). At the commit point
+		/// (`committed`): every claim it added is the configuration's; then, last, the ports no longer asked are
+		/// released (a replaced companion's its replacement does not ask, and every key unclaimed that the change
+		/// does not claim again), so a node waiting for one is granted it only now. Ending uncommitted: the claims a
+		/// replacement already made asks stay the configuration's, as that replacement does; every other claim it
+		/// added is released, and every wait of it dropped.
+		void settleClaims(Configuration::Change& ch, bool committed) {
+			Configuration& c = *config_;
+			const auto key = [](const Claim& claim) { return claimKey(claim); };
+			const auto asks = [&](const std::vector<Claim>& claims, const std::string& k) {
+				return std::ranges::any_of(claims, [&](const Claim& one) { return key(one) == k; });
+			};
+			for (const auto& added : ch.added) {
+				const std::string k = key(added.claim);
+				const bool kept = committed || std::ranges::any_of(ch.replacements, [&](const auto& r) {
+									  return r.broken && asks(r.claims, k);
+								  });
+				if (kept) c.claims.push_back(ClaimSlot{added.claim});
+				else host_.claimsDecided(host_.claims.release(c.generation, k));
+			}
+			std::vector<std::string> released;
+			for (const auto& r : ch.replacements) {
+				if (!r.broken) continue;
+				for (const Claim& old : r.oldClaims)
+					if (!asks(r.claims, key(old))) released.push_back(key(old));
+			}
+			if (committed)
+				for (const std::string& k : ch.unclaimed)
+					if (!asks(ch.claimed, k)) released.push_back(k);
+			for (const std::string& k : released) {
+				if (!holdsClaim(k)) continue;
+				std::erase_if(c.claims, [&](const ClaimSlot& slot) { return key(slot.claim) == k; });
+				host_.claimsDecided(host_.claims.release(c.generation, k));
+			}
+		}
+
+		/// The commit point: the instance adopts the new settings, the configuration takes them, its staged posts
+		/// are released to their loops in order, its plan and its code are the change's; driven, the plan is carried and a
+		/// new code swapped in one invoke (its completion the commit's), else the commit completes in this turn; the holds
+		/// fade back in. Undriven, the old code is released now; driven, once the swap completed.
+		void commit(std::uint64_t barrier) {
+			Configuration& c = *config_;
+			if (!c.change) return;
+			Configuration::Change ch = std::move(*c.change);
+			c.change.reset();
+			ch.deadline.reset();
+			ch.holdBound.reset();
+			c.instance->adopt(*ch.target);
+			c.config = ch.target; // the old config goes once nothing reads it: the instance reads the new one
+			for (auto& [loop, work] : ch.posts) c.loops.at(loop)->postState(std::move(work));
+			c.plan = std::move(ch.plan);
+			if (ch.latency) c.latency = std::move(*ch.latency);
+			if (ch.codeGiven) {
+				c.retiringCode = std::move(c.code);
+				c.retiringPrepared = c.prepared;
+				c.code = std::move(ch.code);
+				c.pairs = std::move(ch.pairs);
+				c.prepared = ch.codePrepared;
+			}
+			std::vector<std::uint8_t> held(c.held.size(), 0);
+			std::swap(held, c.held);
+			if (ch.reshape) {
+				// From the commit point the code is laid out for the new ports: the holds it releases are named there,
+				// and every output of the new ports is faded (a reshape in place has no sink's bank).
+				held = outputsIn(ch.target->ports(), c.ports, held);
+				c.ports = ch.target->ports();
+				c.fadedCount = c.ports.outputs().size() + c.ports.insideOutputs().size();
+				c.faded = std::make_unique<bool[]>(c.fadedCount);
+				std::fill_n(c.faded.get(), c.fadedCount, true);
+				c.held.assign(c.fadedCount, 0);
+			}
+			retireMadeFirst(ch);
+			const bool rings = swapRings(ch);
+			refreshCompanions();
+			if (barrier == 0) { // nothing driven: the machine is back where it began
+				commitCompleted();
+				settleClaims(ch, true); // last
+				return retireCode();
+			}
+			if (!host_.wedged) block_->carryLatency(c.plan);
+			if (!ch.codeGiven && !rings) {
+				host_.inputFor(serial_, [generation = c.generation, barrier](Node& node) {
+					if (!node.current(generation)) return;
+					node.commitCompleted();
+					node.feed(node.aggregate_.committed(barrier));
+				});
+			} else if (host_.wedged) {
+				overdueAtOnce(barrier, Bound::barrier);
+			} else {
+				block_->swap(DriveRequest{c.code.get(), std::span<const bool>(c.faded.get(), c.fadedCount), c.bindings,
+				                          c.sourceBindings, &c.ports},
+				             swapped(barrier));
+				arm(barrier, Bound::barrier);
+			}
+			if (!host_.wedged && std::ranges::any_of(held, [](std::uint8_t one) { return one != 0; }))
+				block_->release(std::move(held));
+			settleClaims(ch, true); // last: a released port may grant another node
+		}
+
+		/// At the commit point: each ring companion the change replaced gives its bank to its replacement, whose binding
+		/// the commit's invoke carries (so the old sink takes the cycles before it and the new one those from it, and two
+		/// sources never play into one bank). The old sinks are retired, closed once nothing taps them; the old sources'
+		/// writers are closed now. Whether there was any.
+		bool swapRings(Configuration::Change& ch) {
+			Configuration& c = *config_;
+			for (auto& r : ch.sinks) {
+				r.slot->item = c.sinks[r.index]->item; // its readiness is the bank's, which the replacement now holds
+				c.retiredSinks.push_back(std::exchange(c.sinks[r.index], std::move(r.slot)));
+				c.bindings[r.index] = c.sinks[r.index]->binding;
+			}
+			for (auto& r : ch.sources) {
+				c.sources[r.index].source->close();
+				c.retiredSources.push_back(std::exchange(c.sources[r.index], std::move(r.slot)));
+				c.sourceBindings[r.index] = c.sources[r.index].binding;
+			}
+			for (auto& r : ch.recordings) {
+				c.retiredRecordings.push_back(std::exchange(c.recordings[r.index], std::move(r.slot)));
+				c.retiredRecordings.back()->awaiting = true;
+			}
+			return !ch.sinks.empty() || !ch.sources.empty();
+		}
+
+		/// The commit completed (its swap, or a commit with no invoke): the recordings it retired close once no sink it
+		/// replaced still writes them.
+		void commitCompleted() {
+			closeRetiredSinks(); // nothing taps them from here
+			for (auto& slot : config_->retiredRecordings)
+				if (std::exchange(slot->awaiting, false)) slot->due = true;
+			closeRetiredRecordings();
+		}
+
+		/// A change ending uncommitted: each replacement sink is closed (never tapped, its consumer finished if it
+		/// began), each replacement source's writer closed; once the continuation was posted they are kept until step
+		/// 5, since it may hold them.
+		void dropRings(Configuration::Change& ch) {
+			Configuration& c = *config_;
+			for (auto& r : ch.sinks) {
+				r.slot->kept = ch.continuationPosted;
+				c.retiredSinks.push_back(std::move(r.slot));
+			}
+			ch.sinks.clear();
+			for (auto& r : ch.sources) {
+				r.slot.source->close();
+				c.retiredSources.push_back(std::move(r.slot));
+			}
+			ch.sources.clear();
+			for (auto& r : ch.recordings) {
+				r.slot->close(); // before settleClaims releases its claim
+				c.retiredRecordings.push_back(std::move(r.slot));
+			}
+			ch.recordings.clear();
+			closeRetiredSinks();
+		}
+
+		/// The swap's completion: the old code released, then the commit's completion heard.
+		std::move_only_function<void(std::uint64_t)> swapped(std::uint64_t barrier) {
+			return [&host = host_, serial = serial_, generation = config_->generation, barrier](std::uint64_t) {
+				if (Node* node = host.find(serial)) ++node->completionsRun_;
+				host.inputFor(serial, [generation, barrier](Node& node) {
+					if (!node.current(generation)) return;
+					if (node.aggregate_.configuration().barrier() == barrier) node.config_->bound.reset();
+					node.retireCode();
+					node.commitCompleted();
+					node.feed(node.aggregate_.committed(barrier));
+				});
+			};
+		}
+
+		/// The code a swap replaced: released (it was prepared) and freed, now that no process() of it runs.
+		void retireCode() {
+			if (!config_ || !config_->retiringCode) return;
+			if (std::exchange(config_->retiringPrepared, false)) {
+				const MainLoopActivity::Scope activity("release", name_);
+				config_->retiringCode->release();
+			}
+			config_->retiringCode.reset();
+		}
+
+		/// The change ends uncommitted: its staged posts destroyed unrun, its new code released and freed, its deadline
+		/// cancelled; its holds stay (a newer change keeps them; a teardown's silence ends them). Superseded (still
+		/// changing: a newer change follows at once), ear.reconfigure-superseded says what was abandoned.
+		void dropChange() {
+			if (!config_ || !config_->change) return;
+			Configuration::Change& ch = *config_->change;
+			if (aggregate_.configuration().state() == lc::ConfigState::changing) {
+				std::string keys;
+				for (const std::string& key : ch.keys) keys += (keys.empty() ? "" : ", ") + key;
+				host_.diagnosed(name_, "ear.reconfigure-superseded",
+				                "a newer change superseded the change of " + keys + " before its commit point", {});
+			}
+			if (ch.code && ch.codePrepared) {
+				const MainLoopActivity::Scope activity("release", name_);
+				ch.code->release();
+			}
+			restoreMadeFirst(ch);
+			dropRings(ch);
+			settleClaims(ch, false); // a companion already replaced break-first stays the bank's, with its claims
+			config_->change.reset();
+			refreshCompanions();
+		}
+
 		/// T5's completion: the instance's start(), timed; one that threw is a fault once this batch was carried out
 		/// (it never set started, so no stop() pairs with it).
 		void startHook() {
@@ -3127,8 +4451,9 @@ struct NodeHost::Impl {
 			}
 			// The plan configure's return checked against the ports (latencyPlan), so carrying it cannot throw.
 			block_->carryLatency(c.plan);
+			std::ranges::fill(c.held, std::uint8_t{0}); // a drive ends every hold
 			block_->drive(DriveRequest{c.code.get(), std::span<const bool>(c.faded.get(), c.fadedCount), c.bindings,
-			                           c.sourceBindings},
+			                           c.sourceBindings, &c.ports},
 			              completion(barrier, &lc::NodeAggregate::driven));
 			arm(barrier, Bound::barrier);
 		}
@@ -3179,6 +4504,13 @@ struct NodeHost::Impl {
 				config_->program->running->stop();
 		}
 
+		/// The replacement of ring companion `index` in `replacements`, if the change has one.
+		template <class Replacements>
+		static const typename Replacements::value_type* findIndex(const Replacements& replacements, std::size_t index) {
+			const auto at = std::ranges::find_if(replacements, [&](const auto& r) { return r.index == index; });
+			return at == replacements.end() ? nullptr : &*at;
+		}
+
 	public:
 		/// The configuration's companions as a client sees them (docs/engine.md#companions-in-a-nodes-list), in request
 		/// order; none before configure returned applied, after it failed, or from teardown step 1.
@@ -3189,33 +4521,56 @@ struct NodeHost::Impl {
 			for (const Asked& asked : c.requestOrder) switch (asked.family) {
 				case Asked::Family::engine: {
 					if (asked.index >= c.engineAsks.size()) break;
+					const auto view = [&](const EngineAsk& ask, bool ready, bool retiring) {
+						return CompanionView{
+							.name = ask.target.engineNode,
+							.kind = std::visit([&](const auto& shape) { return engineKind(shape, ask.target.bank); },
+						                       ask.shape),
+							.bank = ask.target.insideBank,
+							.ready = ready,
+							.retiring = retiring};
+					};
+					// A companion a make-first replacement was made beside is listed retiring, before its replacement,
+					// which shares its name for a moment (docs/control-port.md#companions).
+					for (const auto& retiring : c.retiring)
+						if (retiring.index == asked.index) list.push_back(view(retiring.ask, true, true));
+					const bool replacing = c.change && std::ranges::any_of(c.change->replacements, [&](const auto& r) {
+											   return r.index == asked.index && (r.broken || r.made) && !r.ready;
+										   });
 					const EngineAsk& ask = c.engineAsks[asked.index];
-					list.push_back(CompanionView{
-						.name = ask.target.engineNode,
-						.kind = std::visit([&](const auto& shape) { return engineKind(shape, ask.target.bank); },
-					                       ask.shape),
-						.bank = ask.target.insideBank,
-						.ready = c.readiness.isReady(ask.item)});
+					list.push_back(view(ask, c.readiness.isReady(ask.item) && !replacing, false));
 					break;
 				}
 				case Asked::Family::sink: {
 					if (asked.index >= c.sinks.size()) break;
 					const SinkSlot& slot = *c.sinks[asked.index];
-					list.push_back(CompanionView{.name = name_ + "." + slot.bank,
-					                             .kind = CompanionKind::sink,
-					                             .bank = slot.bank,
-					                             .ready = c.readiness.isReady(slot.item),
-					                             .dropped = slot.sink->droppedFrames()});
+					const auto view = [&](const SinkSlot& one, bool ready, bool retiring) {
+						return CompanionView{.name = name_ + "." + one.bank,
+						                     .kind = CompanionKind::sink,
+						                     .bank = one.bank,
+						                     .ready = ready,
+						                     .retiring = retiring,
+						                     .dropped = one.sink->droppedFrames()};
+					};
+					// A sink a change replaces is listed retiring, before its replacement, as an engine companion is.
+					const auto* replacing = c.change ? findIndex(c.change->sinks, asked.index) : nullptr;
+					list.push_back(view(slot, c.readiness.isReady(slot.item), replacing != nullptr));
+					if (replacing != nullptr) list.push_back(view(*replacing->slot, replacing->ready, false));
 					break;
 				}
 				case Asked::Family::source: {
 					if (asked.index >= c.sources.size()) break;
-					const SourceSlot& slot = c.sources[asked.index];
-					list.push_back(CompanionView{.name = name_ + "." + slot.bank,
-					                             .kind = CompanionKind::source,
-					                             .bank = slot.bank,
-					                             .ready = true,
-					                             .shortfall = slot.source->shortfallFrames()});
+					const auto view = [&](const SourceSlot& one, bool retiring) {
+						return CompanionView{.name = name_ + "." + one.bank,
+						                     .kind = CompanionKind::source,
+						                     .bank = one.bank,
+						                     .ready = true,
+						                     .retiring = retiring,
+						                     .shortfall = one.source->shortfallFrames()};
+					};
+					const auto* replacing = c.change ? findIndex(c.change->sources, asked.index) : nullptr;
+					list.push_back(view(c.sources[asked.index], replacing != nullptr));
+					if (replacing != nullptr) list.push_back(view(replacing->slot, false));
 					break;
 				}
 				}
@@ -3228,11 +4583,12 @@ struct NodeHost::Impl {
 		void refreshCompanions() {
 			std::vector<CompanionView> now = companions();
 			const auto sameEntry = [](const CompanionView& a, const CompanionView& b) {
-				return a.name == b.name && a.kind == b.kind && a.bank == b.bank && a.ready == b.ready;
+				return a.name == b.name && a.kind == b.kind && a.bank == b.bank && a.ready == b.ready &&
+				       a.retiring == b.retiring;
 			};
 			if (std::ranges::equal(now, companionsTold_, sameEntry)) return;
 			companionsTold_ = now;
-			if (!silent_ && !superseded_) host_.companionsChanged(name_, now);
+			if (!superseded_) host_.companionsChanged(name_, now);
 		}
 
 		/// The configuration ends (teardown step 5, or a leak): its sinks' and sources' final counts, for the records.
@@ -3322,7 +4678,8 @@ struct NodeHost::Impl {
 			const lc::ConfigState state = aggregate_.configuration().state();
 			const bool pending = bound == Bound::fade
 			                         ? state == lc::ConfigState::fading
-			                         : state == lc::ConfigState::silencing || state == lc::ConfigState::arming;
+			                         : state == lc::ConfigState::silencing || state == lc::ConfigState::arming ||
+			                               state == lc::ConfigState::committing;
 			if (!pending) return;
 			if (unfair) return armTimer(barrier, bound, graceOf(bound));
 			judgedMs_ = millisecondsBetween(config_->postedAt, host_.timers.now());
@@ -3365,6 +4722,7 @@ struct NodeHost::Impl {
 				break;
 			case lc::ConfigState::arming:
 			case lc::ConfigState::silencing:
+			case lc::ConfigState::committing: // the commit's invoke, like a drive's, can never complete
 				feedSilently(Bound::barrier);
 				break;
 			case lc::ConfigState::fading:
@@ -3372,6 +4730,7 @@ struct NodeHost::Impl {
 				break;
 			case lc::ConfigState::none:
 			case lc::ConfigState::driving:
+			case lc::ConfigState::changing: // nothing in flight on the data loop
 			case lc::ConfigState::tearing:
 				break;
 			}
@@ -3379,6 +4738,7 @@ struct NodeHost::Impl {
 
 	private:
 		void release() {
+			retireCode(); // a swap's old code, if the silence came before the swap's completion was heard
 			// A silent block carries nothing through and adds nothing; on a wedged loop no PipeWire call is made.
 			if (block_ && !host_.wedged) block_->carryLatency({});
 			if (config_->prepared) {
@@ -3405,6 +4765,9 @@ struct NodeHost::Impl {
 						++host.leaked;
 					});
 			c.engineCompanions.clear();
+			for (auto& retiring : c.retiring)
+				if (retiring.companion) destroyCompanionLater(std::move(retiring.companion));
+			c.retiring.clear();
 			c.engineAsks.clear();
 			c.readiness.disarm();
 			// What its loops were sent before it was configured never runs: destroyed here, unrun.
@@ -3424,6 +4787,7 @@ struct NodeHost::Impl {
 			closingSinks_ = true;
 			// A sink drains what its ring holds and finishes a consumer that began.
 			for (std::size_t i = 0; i < c.sinks.size(); ++i) c.sinks[i]->sink->close(c.channel->sinkClosedCall(i));
+			closeRetiredSinks(); // a commit's, if its swap's completion never came: nothing taps them since the silence
 			closingSinks_ = false;
 			closeLoops();
 		}
@@ -3432,7 +4796,8 @@ struct NodeHost::Impl {
 		/// close() call: the loops finish and close, and once they have the machine hears closed, once.
 		void closeLoops() {
 			if (!config_ || !config_->tearing || closingSinks_ || config_->closedTold ||
-			    config_->sinksClosed != config_->sinks.size() || (config_->program && config_->program->open()))
+			    config_->sinksClosed != config_->sinks.size() || !retiredSinksClosed(*config_) ||
+			    (config_->program && config_->program->open()))
 				return;
 			if (config_->loopsStep == Configuration::LoopsStep::open) finishLoops();
 			if (config_->loopsStep != Configuration::LoopsStep::closed) return;
@@ -3440,6 +4805,11 @@ struct NodeHost::Impl {
 			host_.inputFor(serial_, [generation = config_->generation](Node& node) {
 				if (node.current(generation)) node.feed(node.aggregate_.closed());
 			});
+		}
+
+		/// Every sink a change retired has closed (a teardown's step 4 waits for each, as for its sinks).
+		static bool retiredSinksClosed(const Configuration& c) {
+			return std::ranges::all_of(c.retiredSinks, [](const auto& slot) { return slot->closed; });
 		}
 
 		/// Teardown step 4's loops, once every sink closed: each loop that was made (and did not fail to
@@ -3544,11 +4914,15 @@ struct NodeHost::Impl {
 			config_.reset();
 			// Last: its claims released, each waiter judged again in arrival order.
 			host_.claimsDecided(host_.claims.release(generation));
+			// A node left with no configuration (disabled, failed) shows the ports of its newest settings.
+			adoptPorts();
 		}
 
 		/// The close deadline passed with step 3 or 4 unfinished: said, then leaked.
 		void closeOverdue() {
-			const std::size_t sinksOpen = config_->sinks.size() - config_->sinksClosed;
+			const std::size_t sinksOpen = config_->sinks.size() - config_->sinksClosed +
+			                              static_cast<std::size_t>(std::ranges::count_if(
+											  config_->retiredSinks, [](const auto& slot) { return !slot->closed; }));
 			// What step 4 waits for (finishLoopsOf). Before it began: every loop it will ask, one still up, since it
 			// has to close before the configuration can go; never one that could not start, which runs nothing and is
 			// never asked. Once it began: every loop asked that has not closed (the rest were marked closed there).
@@ -3603,6 +4977,7 @@ struct NodeHost::Impl {
 		std::uint64_t serial_;
 		lc::NodeAggregate aggregate_;
 		Ports ports_;
+		Ports blockPorts_;                          // the ports the block was made or last reshaped with
 		std::shared_ptr<const NodeConfig> queued_;  // the newest committed config, the next configure's
 		std::uint64_t version_ = 0;                 // queued_'s, as the aggregate compares it
 		std::optional<NodeHealth> told_;            // the health last told
@@ -3612,12 +4987,11 @@ struct NodeHost::Impl {
 		bool waitingAllowed_ = false;               // the phase has lasted 2 s
 		std::unique_ptr<Timer> phaseTimer_;         // the phase's 2 s
 		std::unique_ptr<Timer> paceTimer_;          // the 1 s pace of a changed list
-		std::uint64_t predecessor_ = 0;             // the port-caused replace's older node, while not gone
-		bool silent_ = false;                       // the older node of a port-caused replace: tells nobody
 		bool superseded_ = false;                   // a newer node of its name was added: standard output alone
 		std::unique_ptr<Configuration> config_;     // the current configuration (at most one)
 		std::unique_ptr<PortBlock> block_;
 		bool configuring_ = false;         // inside the instance's making and configure: the contexts' calls are valid
+		ChangeScope changeScope_{*this};   // a change version's context, valid only inside its call
 		std::optional<EarFault> earFault_; // the first fault of ear's own in the hook running (guarded)
 		std::exception_ptr refused_;       // an adapter's refusal, thrown on through guarded as itself
 		std::optional<std::string> brokenRule_;   // the first rule a context call found broken in the hook running
@@ -3628,7 +5002,7 @@ struct NodeHost::Impl {
 		bool closingSinks_ = false;        // inside the sinks' close() calls of teardown step 3
 		bool makePending_ = false;         // the block's making is queued in the flush
 		bool destroyPending_ = false;      // the block's destruction is queued in the flush
-		bool goneHeld_ = false;            // removed: told gone once its block and its predecessor are gone
+		bool goneHeld_ = false;            // removed: told gone once its block is gone
 		bool gone_ = false;                // told gone
 		bool blockLeaked_ = false;         // its block was leaked on a wedged loop: never freed, nor is this node
 		bool synthetic_ = false;           // a bound judged at once on a wedged loop: its diagnostics are not said
@@ -3637,10 +5011,8 @@ struct NodeHost::Impl {
 		std::uint64_t dropped_ = 0;
 		std::uint64_t refusedGeneration_ =
 			0;                    // its configuration a leaked configuration's claim refused, until the next
-		std::uint64_t span_;      // its span of counts: its serial, or its port-caused older node's
+		std::uint64_t span_;      // its span of counts: its serial
 		NodeCounts blockCounted_; // what its block counted, once the block went
-		NodeCounts carried_;      // what the older node of its port-caused replace counted, once that one is gone
-		bool predecessorCarried_ = false; // carried_ holds the older node's counters: they are not read from it again
 	};
 
 	Impl(AudioFormat format_, PortBlockFactory& blocks_, ResourceRegistry& resources_, Executor& mainLoop_,
@@ -3665,6 +5037,7 @@ struct NodeHost::Impl {
 	bool wedged = false;                      // the data loop was judged wedged: no PipeWire call is made again
 	std::vector<std::unique_ptr<Node>> nodes; // in arrival order; removed ones are pruned on add
 	std::uint64_t generations = 0;            // every configuration's generation, across nodes, so none is ever reused
+	std::uint64_t companionIds = 0;           // every engine companion's id, so none is ever reused
 	std::uint64_t serials = 0;                // every node's serial, so a completion never finds a newer node
 	std::size_t leaked = 0;                   // configurations, blocks and engine companions never freed
 	detail::ClaimRegistry claims;             // every claim ear-wide (docs/writing-a-node-type.md#claims)
@@ -3811,10 +5184,9 @@ struct NodeHost::Impl {
 		return nullptr;
 	}
 
-	/// A node added (a replace's new node when `change` is given): it waits for older nodes of its name (T1, rule 1),
-	/// which are superseded from now on; a port-caused replace carries its older node's stop when both are enabled,
-	/// and its one health stream.
-	void add(const NodeSpec& spec, std::shared_ptr<const NodeConfig> config, const NodeChange* change) {
+	/// A node added (a replace's new node too): it waits for older nodes of its name (T1, rule 1), which are
+	/// superseded from now on.
+	void add(const NodeSpec& spec, std::shared_ptr<const NodeConfig> config) {
 		requireOpen("nodeAdded", spec.name);
 		std::erase_if(nodes, [](auto& known) {
 			if (!known->removed()) return false;
@@ -3823,35 +5195,20 @@ struct NodeHost::Impl {
 		});
 		const std::uint64_t serial = ++serials;
 		nodes.emplace_back(std::make_unique<Node>(*this, spec.name, spec.type, serial));
-		inputFor(serial, [this, spec, config = std::move(config),
-		                  change = change ? std::optional<NodeChange>(*change) : std::nullopt](Node& added) mutable {
+		inputFor(serial, [this, spec, config = std::move(config)](Node& added) mutable {
 			// Older nodes of the name, as they stand when this input is handled (T1, rule 1).
 			bool olderBlock = false;
 			bool olderNode = false;
-			Node* older = nullptr;
 			for (const auto& known : nodes) {
 				if (known.get() == &added) break;
 				if (known->name() != added.name() || known->removed()) continue;
 				olderNode = true;
 				olderBlock = olderBlock || known->holdsBlock();
-				if (!known->silent()) known->supersede();
-				older = known.get();
+				known->supersede();
 			}
-			Node::Carried carried;
-			// A disabled new node is not shown stopping, and carries no stop, but it still stands for its older
-			// node's removal and dropped frames.
-			if (change && change->portCaused && older != nullptr && older->silent()) {
-				carried.predecessor = older->serial();
-				carried.stopping = !spec.disabled;
-				carried.stopHeld = !spec.disabled && older->stopHeld() && !older->disabled();
-				carried.keys = change->keys;
-			}
-			// A node that carries no older node's counts begins a span of its name's counts from zero; a port-caused
-			// replace goes on in its older node's span.
-			if (carried.predecessor == 0)
-				for (auto* listener : countsListeners) listener->countsBegan(added.name(), added.span());
-			else added.carrySpan(older->span());
-			added.add(spec, std::move(config), olderBlock, olderNode, std::move(carried));
+			// Every node begins a span of its name's counts from zero.
+			for (auto* listener : countsListeners) listener->countsBegan(added.name(), added.span());
+			added.add(spec, std::move(config), olderBlock, olderNode);
 		});
 	}
 
@@ -3916,26 +5273,14 @@ struct NodeHost::Impl {
 			if (!known->removed()) inputFor(known->serial(), [](Node& each) { each.dataLoopWedged(); });
 	}
 
-	/// A node is gone; the oldest node left of its name, which no older node holds back now, may configure. The older
-	/// node of a port-caused replace tells nobody, and its successor takes its dropped frames.
+	/// A node is gone; the oldest node left of its name, which no older node holds back now, may configure.
 	void gone(Node& node, std::uint64_t droppedFrames) {
 		node.markGone();
-		// Its span's final counts, which nothing answers once it is gone, a superseded node's too; a port-caused
-		// replace's older node's counts go on in its newer node's span (below), so it ends none.
-		if (!node.silent())
-			for (auto* listener : countsListeners) listener->countsEnded(node.name(), node.span(), node.counts());
-		if (!node.silent())
-			for (auto* listener : listeners) {
-				if (!node.superseded()) listener->nodeGone(node.name(), droppedFrames);
-				else if (listener->hearsSuperseded()) listener->supersededGone(node.name(), droppedFrames);
-			}
-		const auto successor = std::ranges::find_if(
-			nodes, [&](const auto& known) { return known->predecessor() == node.serial() && !known->removed(); });
-		if (successor != nodes.end()) {
-			// Carried at once, not in the input below, so no reading between the two counts the older node twice or not
-			// at all.
-			(*successor)->carryCounts(node.counts());
-			inputFor((*successor)->serial(), [droppedFrames](Node& next) { next.predecessorGone(droppedFrames); });
+		// Its span's final counts, which nothing answers once it is gone, a superseded node's too.
+		for (auto* listener : countsListeners) listener->countsEnded(node.name(), node.span(), node.counts());
+		for (auto* listener : listeners) {
+			if (!node.superseded()) listener->nodeGone(node.name(), droppedFrames);
+			else if (listener->hearsSuperseded()) listener->supersededGone(node.name(), droppedFrames);
 		}
 		const auto next = std::ranges::find_if(
 			nodes, [&](const auto& known) { return known->name() == node.name() && !known->removed(); });
@@ -3996,11 +5341,12 @@ void NodeHost::subscribeInternalErrors(InternalErrorListener& listener) {
 }
 
 void NodeHost::nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) {
-	impl_->add(node, std::move(config), nullptr);
+	impl_->add(node, std::move(config));
 }
 
 void NodeHost::nodeReplaced(const NodeSpec& node, std::shared_ptr<const NodeConfig> config, const NodeChange& change) {
-	impl_->add(node, std::move(config), &change);
+	static_cast<void>(change); // another type under the name: a new node
+	impl_->add(node, std::move(config));
 }
 
 void NodeHost::nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) {
@@ -4021,9 +5367,9 @@ void NodeHost::nodeRemoved(const NodeName& node) {
 
 void NodeHost::nodeReplacing(const NodeName& node, const NodeChange& change) {
 	impl_->requireOpen("nodeReplacing", node);
-	impl_->inputFor(impl_->wanted(node).serial(), [portCaused = change.portCaused](Impl::Node& wanted) {
-		wanted.remove(portCaused ? Impl::Node::Replaced::portCaused : Impl::Node::Replaced::superseded);
-	});
+	static_cast<void>(change);
+	impl_->inputFor(impl_->wanted(node).serial(),
+	                [](Impl::Node& wanted) { wanted.remove(Impl::Node::Replaced::superseded); });
 }
 
 LifecycleReply NodeHost::start(const NodeName& node, OperationJudged judged) {

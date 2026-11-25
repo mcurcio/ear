@@ -27,8 +27,8 @@ operate it, and what bites.
   before Music Assistant can offer pairing: `says connected "<server>" unpaired` comes first.
 - **The same settings change nothing.** `node.update` with what the node already has is no restart, for a failed node too.
   To retry, `node.restart` or `node.start` (a failed node is configured again only when asked).
-- **A server that dialled by hand may not come back after a restart of the node.** After a `node.update` or `node.restart`
-  the goodbye is
+- **A server that dialled by hand may not come back after a restart or a change of the node.** After a `node.update` or
+  `node.restart` the goodbye is
   `shutdown`, and `aiosendspin`, having dialled by hand, did not redial within 30 s, though the spec has a server reconnect on
   that reason. One browsing mDNS comes back by itself.
 
@@ -88,6 +88,13 @@ client is the configuration's. What that means to an operator (the owner's answe
   closes the connection: "ring pinned behind held items") nor stays in its priming; the first tick back takes the
   timeline back and plays on from the pacer's time.
   Nothing reaches `to_server` while stopped, so the server's source goes quiet.
+- **A change of settings swaps the client in place** (`docs/node-types.md#changes-in-place`): `reconfiguring`, never
+  `stopping`. The change version claims a new listening port (the old one released at the commit point) and answers
+  `whenReady` on the worker, whose `swapClient` pauses the sink (`SinkControl`, kept from the attach), then stops and
+  destroys the client as the teardown does and makes one of the new settings over the same `NodeKeyStore`, so the id
+  and pairings come from its memory and the key file is not read. A `server` change is a new client too, never
+  `connect_to` on the old one: the watch could not tell the new session from the old. `swap_test.cpp` holds the library
+  to it against the real server (same id and pairing; 1 to 3 ms, 300 ms listening with a server in).
 - **A restart, a disable or a removal drops it.** The configuration is torn down: the sink drains, then the worker's
   state, destroyed on its loop, says goodbye (`shutdown`) and stops the client; a restart or an enable builds a new client
   from the key file. A disabled node holds no port and no connection.

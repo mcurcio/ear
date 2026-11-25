@@ -27,6 +27,7 @@
 #pragma once
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -154,6 +155,15 @@ template <auto... Handles> inline constexpr bool isBanks<Banks<Handles...>> = tr
 /// an instantiation external linkage even in an unnamed namespace, so two files' `(anonymous namespace)::spec` would be
 /// one symbol and the linker would keep one type's code for both. Io, Members, makeNodeType and SettingsTable refuse
 /// one in an unnamed namespace (linkage::named, settings_table.hpp).
+/// A spec's lifecycle settings (TypeSpec's `.lifecycle`, after `.loops`): how long a change in place may take before it
+/// falls back to a restart (docs/architecture.md#changes-in-place), 1 s to 60 s, checked when the type is made.
+struct Lifecycle {
+	std::chrono::milliseconds reconfigureDeadline = std::chrono::seconds(10);
+};
+/// The shortest and the longest deadline a type may declare for a change in place.
+inline constexpr std::chrono::milliseconds reconfigureDeadlineLeast = std::chrono::seconds(1);
+inline constexpr std::chrono::milliseconds reconfigureDeadlineMost = std::chrono::seconds(60);
+
 template <class Settings, class BankList, class StoreList = Stores<>, class LoopList = Loops<>>
 	requires(std::derived_from<Settings, AnySettingsTable> && isBanks<BankList> && isStores<StoreList> &&
              isLoops<LoopList>)
@@ -162,6 +172,7 @@ struct TypeSpec {
 	BankList banks;
 	StoreList stores{};
 	LoopList loops{};
+	Lifecycle lifecycle{};
 };
 
 template <const auto& Spec> using SettingsOf = std::remove_cvref_t<decltype(Spec.settings)>;

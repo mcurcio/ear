@@ -51,19 +51,27 @@ private:
 		             std::pair<control::LifecycleVerb, NodeName> /* StartNode, StopNode, RestartNode */>
 			what;
 	};
+	/// How an edit's reply answers (docs/control-port.md#methods): `{}`, or by the plan's change of `node` (node.disable,
+	/// node.enable; node.set with its ports and routes too, and as a dry run, never kept).
+	struct Answer {
+		std::optional<NodeName> node{};
+		bool detailed = false;     // node.set: inPlace, ports and the routes
+		bool dryRun = false;       // planned and answered, then dropped
+		std::vector<Route> routes; // the routes removed with the change (or, for a dry run, that would be)
+	};
 	struct Candidate {
 		GraphFileModel model;
 		std::string version;
-		std::optional<NodeName> appliedFor{}; // the node of a DisableNode or EnableNode: answered by its outcome
+		Answer answer{};
 	};
 
 	void pump();
 	void advance(Batch batch);
 	/// A keeper-made answer to command `index`, or nothing when it made a candidate (left in candidate_).
 	std::optional<control::CommandResult> take(const control::Command& command);
-	/// appliedFor: the node of a DisableNode or EnableNode whose candidate this offer is.
+	/// answer: how the reply to the edit whose candidate this offer is answers.
 	void postStep(Batch batch, std::vector<Read> reads, std::optional<Offer> offer, std::size_t offerIndex,
-	              std::optional<NodeName> appliedFor, bool last);
+	              Answer answer, bool last);
 	void completed(std::optional<Verdict> verdict, std::optional<Batch> batch);
 	void checkDisk(DiskText disk);
 	void present(std::uint32_t droppedEdits); // the working copy after a disk load: announced or offered

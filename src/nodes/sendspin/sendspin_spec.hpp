@@ -3,7 +3,7 @@
 // Sendspin> by the same handles. In the type's own named namespace, never an unnamed one (type_spec.hpp says why).
 //
 // Its ports are fixed; the connection is the worker's, so an absent server is no failure: the node runs and its outputs
-// are silent. The library's client lives on the worker loop for the whole configuration: a stop silences the node's
+// are silent. Every setting changes in place: the worker swaps its client (docs/node-types.md#changes-in-place). The library's client lives on the worker loop for the whole configuration: a stop silences the node's
 // audio both ways (the block's silence) and keeps the connection and pairing, so the server still sees the player and a
 // start plays again at once; a restart, a disable or a removal tears the configuration down, and the worker's state,
 // destroyed, says goodbye (docs/node-types.md#stop-restart-disable).
@@ -66,6 +66,10 @@ public:
 	/// on `to_server` consumed by the worker's ToServer, and the pass-through; the loops start the client and the watch
 	/// once the node is configured.
 	Configured configure(CreateOf<spec>& cx, const Checked& s);
+	/// A change of `name`, `port` or `server`, the switch between listening and dialling included
+	/// (docs/node-types.md#changes-in-place): the old listening port released at the commit point and a new one claimed
+	/// now, then the worker swaps the client for one of the new settings over the same key store, the sink paused.
+	Changed configure(ChangeOf<spec>& cx, const Checked& old, const Checked& now);
 
 private:
 	NodeOf<spec>& node_;

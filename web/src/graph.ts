@@ -5,7 +5,8 @@
 // now, docs/control-port.md#notifications); members and values this editor does not know are taken as they come or
 // ignored, never a failure. The counters (docs/control-port.md#counters) are kept as sent, whole, an unknown counter
 // among them, and counters.changed replaces those it names. A node's companion list (docs/control-port.md#companions) is
-// kept as sent, and node.companionsChanged replaces it whole.
+// kept as sent, and node.companionsChanged replaces it whole. A change of a node's ports (node.updated with its inputs and
+// outputs) keeps the node and its routes.
 import type {
   Graph,
   GraphNode,
@@ -18,7 +19,18 @@ import type {
 } from "./protocol";
 
 /** The health members a node.state carries (docs/control-port.md#node-health), the ones it replaces. */
-const healthKeys = ["state", "phase", "since", "wanted", "blockLost", "cause", "waitingFor", "reason"] as const;
+const healthKeys = [
+  "state",
+  "phase",
+  "since",
+  "wanted",
+  "blockLost",
+  "cause",
+  "waitingFor",
+  "reason",
+  "keys",
+  "next",
+] as const;
 
 /** The health members `from` has, and only those: a member ear adds later is not this editor's to keep. */
 function healthOf(from: Partial<NodeHealth>): NodeHealth {
@@ -51,8 +63,19 @@ function nodeOf(from: GraphNode): GraphNode {
 
 /** A node without its health members. */
 function withoutHealth(node: GraphNode): Omit<GraphNode, keyof NodeHealth> {
-  const { state: _s, phase: _p, since: _t, wanted: _w, blockLost: _b, cause: _c, waitingFor: _f, reason: _r, ...spec } =
-    node;
+  const {
+    state: _s,
+    phase: _p,
+    since: _t,
+    wanted: _w,
+    blockLost: _b,
+    cause: _c,
+    waitingFor: _f,
+    reason: _r,
+    keys: _k,
+    next: _n,
+    ...spec
+  } = node;
   return spec;
 }
 
@@ -113,10 +136,15 @@ const handlers: { [N in keyof Notifications]: (graph: Graph, params: Event<N>) =
     const nodes = [...graph.nodes, nodeOf(added)].sort((a, b) => compare(a.name, b.name));
     return { ...graph, nodes };
   },
-  "node.updated": (graph, { name, settings, disabled }) =>
-    updateNode(graph, name, ({ disabled: _old, ...node }) =>
-      disabled === true ? { ...node, settings, disabled } : { ...node, settings },
-    ),
+  // A change of ports (feature reshape) brings the node's new inputs and outputs: the same node, redrawn in place.
+  "node.updated": (graph, { name, settings, disabled, inputs, outputs }) =>
+    updateNode(graph, name, ({ disabled: _old, ...node }) => {
+      const ports = {
+        ...(inputs !== undefined ? { inputs } : {}),
+        ...(outputs !== undefined ? { outputs } : {}),
+      };
+      return disabled === true ? { ...node, settings, ...ports, disabled } : { ...node, settings, ...ports };
+    }),
   "node.removed": (graph, { name }) =>
     hasNode(graph, name) ? { ...graph, nodes: graph.nodes.filter((node) => node.name !== name) } : graph,
   "node.state": (graph, params) =>

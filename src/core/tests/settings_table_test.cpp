@@ -357,3 +357,21 @@ TEST_CASE("A refusal never reaches the type's check, and a refusal from its chec
 	CHECK(refused.error().node == "other");
 	CHECK(refused.error().detail == "check says no to 3");
 }
+
+namespace settings_table_test_inplace {
+constexpr auto fixedRow = ear::setting::required("fixed", setting::number(1, 9));
+constexpr auto movingRow = ear::setting::optional("moving", setting::number(1, 9)).inPlace();
+constexpr auto limitedRow = ear::setting::optional("limited", setting::number(1, 9)).onlyWithout(movingRow).inPlace();
+constexpr ear::SettingsTable<fixedRow, movingRow, limitedRow> inPlaceTable{"inplace"};
+} // namespace settings_table_test_inplace
+
+TEST_CASE("A row is restart-only unless marked inPlace", "[settings_table][inPlace]") {
+	using namespace settings_table_test_inplace;
+	STATIC_REQUIRE_FALSE(fixedRow.row().inPlace);
+	STATIC_REQUIRE(movingRow.row().inPlace);
+	STATIC_REQUIRE(limitedRow.row().inPlace);
+	STATIC_REQUIRE(limitedRow.row().onlyWithout == "moving"); // the marks keep each other
+	STATIC_REQUIRE_FALSE(inPlaceTable.changesInPlace("fixed"));
+	STATIC_REQUIRE(inPlaceTable.changesInPlace("moving"));
+	STATIC_REQUIRE_FALSE(inPlaceTable.changesInPlace("unknown"));
+}

@@ -112,6 +112,14 @@ ear::NodeHealth health(const std::string& node, ear::NodePhase phase, std::optio
 	return told;
 }
 
+/// A node reconfiguring: the keys its change applies, and those next.
+ear::NodeHealth changing(const std::string& node, std::vector<std::string> keys, std::vector<std::string> next = {}) {
+	ear::NodeHealth told = health(node, ear::NodePhase::reconfiguring);
+	told.keys = std::move(keys);
+	told.next = std::move(next);
+	return told;
+}
+
 ear::NodeCause cause(ear::NodeCause::Kind kind, std::vector<std::string> keys = {}) {
 	return {kind, std::nullopt, keys};
 }
@@ -361,6 +369,54 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 			paceNow += std::chrono::seconds(10);
 			log.nodeChanged(
 				health("fpp", NodePhase::configuring, {}, {}, {{ear::WaitingFor::Kind::recording, "take1.wav"}}));
+		},
+		[](StatusLog& log, Lines&) { log.nodeChanged(health("tv", NodePhase::running)); },
+		[](StatusLog& log, Lines&) { log.nodeChanged(changing("tv", {"port"})); },
+		[](StatusLog& log, Lines&) { log.nodeChanged(changing("tv", {"format", "port"}, {"latencyMs"})); },
+		[](StatusLog& log, Lines&) {
+			paceNow += std::chrono::milliseconds(312);
+			log.nodeChanged(health("tv", NodePhase::running));
+		},
+		[](StatusLog& log, Lines&) { log.nodeChanged(changing("tv", {"port"})); },
+		[](StatusLog& log, Lines&) {
+			log.nodeChanged(health("tv", NodePhase::stopping,
+		                           ear::NodeCause{Kind::restarting,
+		                                          Kind::fellBack,
+		                                          {"port"},
+		                                          ear::NodeCause::FellBack::deadline,
+		                                          "deadline 10s passed"}));
+		},
+		[](StatusLog& log, Lines&) {
+			log.nodeChanged(health("tv", NodePhase::configuring,
+		                           ear::NodeCause{Kind::fellBack,
+		                                          std::nullopt,
+		                                          {"port"},
+		                                          ear::NodeCause::FellBack::deadline,
+		                                          "deadline 10s passed"}));
+		},
+		[](StatusLog& log, Lines&) {
+			ear::NodeCause restarting{Kind::restarting, Kind::reshape, {"playback"}};
+			restarting.ports = ear::PortsMoved{{"play.3"}, {}};
+			log.nodeChanged(health("desk", NodePhase::stopping, restarting));
+		},
+		[](StatusLog& log, Lines&) {
+			ear::NodeCause reshape{Kind::reshape, std::nullopt, {"playback"}};
+			reshape.ports = ear::PortsMoved{{"play.3"}, {}};
+			log.nodeChanged(health("desk", NodePhase::configuring, reshape));
+		},
+		[](StatusLog& log, Lines&) {
+			log.nodeDiagnostic("tv", "ear.reconfigure-superseded",
+		                       "a newer change superseded the change of port before its commit point", {});
+		},
+		[](StatusLog& log, Lines&) {
+			const std::array fields{ear::DiagnosticField{"elapsedMs", 10000}};
+			log.nodeDiagnostic("tv", "ear.reconfigure-fell-back",
+		                       "could not apply port in place (deadline): deadline 10s passed", fields);
+		},
+		[](StatusLog& log, Lines&) {
+			log.nodeDiagnostic("tv", "ear.retiring-lost",
+		                       "tv.rtp, which a change in place replaces, was lost: the RTP receiver's node went away",
+		                       {});
 		},
 		[](StatusLog& log, Lines&) { log.stopped(); },
 	};

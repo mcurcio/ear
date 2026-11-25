@@ -1,6 +1,9 @@
-// React's view of the editor session: the graph, the graph file, the connection and one port's level, each read
-// from its store with useSyncExternalStore, so a levels message re-renders only the meters and
-// wires of the ports that changed; and a node's companion badges and the counters' marks at the browser's time.
+// React's view of the editor session: the graph, the graph file, the connection (its status, and the view the top
+// bar's pill draws, docs/editor.md#the-top-bar) and one port's level, each read from its store with
+// useSyncExternalStore, so a levels message re-renders only the meters and wires of the ports that changed; a node's
+// companion badges and the counters' marks at the browser's time; a media query (the narrow window,
+// docs/editor.md#narrow-windows); the requests in flight (docs/editor.md#requests-in-flight) and the toast queue
+// (docs/editor.md#toasts), with a timer for their expiries.
 import { createContext, useCallback, useContext, useEffect, useState, useSyncExternalStore } from "react";
 import { companionBadges, type CompanionBadge } from "../companions";
 import {
@@ -12,9 +15,11 @@ import {
   type CounterRow,
   type DropoutBadge,
 } from "../counters";
-import type { Editor } from "../editor";
+import type { ConnectionView, Editor } from "../editor";
 import type { GraphState } from "../graph";
 import type { GraphFileState } from "../graphFile";
+import type { NoticesView } from "../notices";
+import type { RequestsView } from "../requests";
 import type { Graph, GraphNode, Level } from "../protocol";
 import type { ConnectionStatus } from "../rpc";
 
@@ -50,6 +55,31 @@ export function useConnection(): ConnectionStatus {
   );
 }
 
+/** The connection as the top bar's pill draws it: its status, and while closed when the next socket opens. */
+export function useConnectionView(): ConnectionView {
+  const editor = useEditor();
+  return useSyncExternalStore(
+    useCallback((listener) => editor.subscribeConnection(listener), [editor]),
+    () => editor.connectionView(),
+  );
+}
+
+/** Whether `query` matches the window now; false without window.matchMedia. */
+export function useMediaQuery(query: string): boolean {
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      if (typeof window === "undefined" || typeof window.matchMedia !== "function") return () => {};
+      const media = window.matchMedia(query);
+      media.addEventListener("change", listener);
+      return () => media.removeEventListener("change", listener);
+    },
+    [query],
+  );
+  return useSyncExternalStore(subscribe, () =>
+    typeof window !== "undefined" && typeof window.matchMedia === "function" ? window.matchMedia(query).matches : false,
+  );
+}
+
 export function useLevel(node: string, port: string): Level {
   const { levels } = useEditor();
   return useSyncExternalStore(
@@ -59,10 +89,10 @@ export function useLevel(node: string, port: string): Level {
 }
 
 /**
- * The browser's monotonic time now, drawn again at `nextChange(now)`: when a shown mark's minute ends or a count of the
- * last minute falls. A new graph (a new node object) draws again anyway.
+ * The browser's monotonic time now, drawn again at `nextChange(now)`: when a shown mark's minute ends, a count of the
+ * last minute falls or the pill's seconds drop. A new graph (a new node object) draws again anyway.
  */
-function useRecentNow(nextChange: (now: number) => number | undefined): number {
+export function useRecentNow(nextChange: (now: number) => number | undefined): number {
   const [, redraw] = useState(0);
   const now = performance.now();
   const leaves = nextChange(now);
@@ -93,4 +123,33 @@ export function useGraphCounters(graph: Graph): { badge: DropoutBadge | undefine
   const { counterMoves } = useEditor();
   const now = useRecentNow((t) => counterMoves.nextGraphChange(t));
   return { badge: dropoutBadge(graph, counterMoves, now), rows: graphCounterRows(graph, counterMoves, now) };
+}
+
+/** The requests this editor sent and ear has not answered (requests.ts). */
+export function useRequests(): RequestsView {
+  const { requests } = useEditor();
+  return useSyncExternalStore(
+    useCallback((listener) => requests.subscribe(listener), [requests]),
+    () => requests.get(),
+  );
+}
+
+/** The toast queue (notices.ts). */
+export function useNotices(): NoticesView {
+  const { notices } = useEditor();
+  return useSyncExternalStore(
+    useCallback((listener) => notices.subscribe(listener), [notices]),
+    () => notices.get(),
+  );
+}
+
+/** Runs `run` at `at` on the browser's monotonic clock while `at` is defined; a new `at` or `run` sets it again. */
+export function useExpiry(at: number | undefined, run: () => void): void {
+  useEffect(() => {
+    if (at === undefined) return undefined;
+    // A millisecond past `at`, so a timer that fires on the dot never finds the store not yet expired, which would
+    // leave `at` unchanged and no timer set again.
+    const timer = setTimeout(run, Math.max(0, Math.ceil(at - performance.now()) + 1));
+    return () => clearTimeout(timer);
+  }, [at, run]);
 }

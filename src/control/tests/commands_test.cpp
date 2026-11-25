@@ -55,6 +55,18 @@ TEST_CASE("Every method decodes into its command", "[commands]") {
 	const auto update = decodeCommand("node.update", json::parse(R"({"name": "rec", "settings": {"path": "y.wav"}})"));
 	CHECK(std::get<UpdateNode>(update.value()).node == "rec");
 	CHECK(std::get<UpdateNode>(update.value()).settings == json{{"path", "y.wav"}});
+	CHECK_FALSE(std::get<UpdateNode>(update.value()).dropRoutes);
+	const auto dropping = decodeCommand(
+		"node.update", json::parse(R"({"name": "desk", "settings": {"playback": 1}, "dropRoutes": true})"));
+	CHECK(std::get<UpdateNode>(dropping.value()).dropRoutes);
+	const auto merge =
+		decodeCommand("node.set", json::parse(R"({"name": "fpp", "settings": {"latencyMs": null}, "dryRun": true})"));
+	CHECK(std::get<SetNode>(merge.value()).node == "fpp");
+	CHECK(std::get<SetNode>(merge.value()).settings == json{{"latencyMs", nullptr}});
+	CHECK(std::get<SetNode>(merge.value()).dryRun);
+	CHECK_FALSE(std::get<SetNode>(merge.value()).dropRoutes);
+	CHECK(decodeCommand("node.set", json::parse(R"({"name": "fpp", "settings": {}, "dryRun": 1})")).error().data ==
+	      json{{"pointer", "/dryRun"}});
 
 	CHECK(std::get<RemoveNode>(decodeCommand("node.remove", json::parse(R"({"name": "rec"})")).value()).node == "rec");
 	CHECK(std::get<AddRoute>(decodeCommand("route.add", json::parse(noiseToRecFlJson)).value()).route == noiseToRecFl);
@@ -115,7 +127,8 @@ TEST_CASE("The frame: graph.get says protocol 1 and the lifecycle, counters, com
 	const json graph =
 		encodeGraph(ear::GraphView{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {}, {}, {}});
 	CHECK(graph["protocol"] == 1);
-	CHECK(graph["features"] == json::array({"lifecycle", "counters", "companions", "node-text"}));
+	CHECK(graph["features"] ==
+	      json::array({"lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun"}));
 }
 
 TEST_CASE("A snapshot's node carries its companion list in request order, each counter only on its kind, and [] for "
@@ -268,6 +281,10 @@ TEST_CASE("encodeGraph gives snapshot.json's graph exactly", "[commands][protoco
 
 TEST_CASE("Applied is {applied} and the lifecycle's refusals are errors.json's", "[commands][protocol][lifecycle]") {
 	CHECK(encodeCommandResult(Applied{AppliedKind::retry}).value() == json{{"applied", "retry"}});
+	const Applied reshaped{AppliedKind::reshape, true, ear::PortsMoved{{"out.3"}, {}}, std::vector<ear::Route>{}};
+	CHECK(encodeCommandResult(reshaped).value() ==
+	      json::parse(
+			  R"({"applied":"reshape","inPlace":true,"ports":{"added":["out.3"],"removed":[]},"routesDropped":[]})"));
 	const json messages = fixture("errors")["messages"];
 	const std::vector<CommandResult> results{
 		ControlRefusal{NodeDisabled{"porch"}},
@@ -289,6 +306,13 @@ TEST_CASE("Applied is {applied} and the lifecycle's refusals are errors.json's",
 	CHECK(appliedName(AppliedKind::stored) == "stored");
 	CHECK(verbName(LifecycleVerb::restart) == "restart");
 	CHECK(describe(ControlRefusal{NodeDisabled{"porch"}}) == "node-disabled porch");
+	const auto inUse = encodeCommandResult(
+		ControlRefusal{PortsInUse{"desk", {"play.2"}, {{{"kitchen", "from.left"}, {"desk", "play.2"}}}}});
+	REQUIRE_FALSE(inUse.has_value());
+	CHECK(json::parse(encodeError(21, inUse.error())) == messages[21]);
+	CHECK(messages[22]["error"]["data"]["pointer"] == "/dropRoutes");
+	CHECK(describe(ControlRefusal{PortsInUse{"desk", {"play.2", "play.3"}, {{}, {}}}}) ==
+	      "ports-in-use desk: play.2, play.3 (2 routes)");
 }
 
 TEST_CASE("unknown-values.json starts from a snapshot ear makes", "[commands][protocol][lifecycle]") {

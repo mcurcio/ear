@@ -19,6 +19,8 @@ struct AddNode {
 struct UpdateNode {
 	NodeName node;
 	NodeSettings settings;
+	bool dropRoutes =
+		false; // feature reshape: remove the routes its new ports strand (docs/control-port.md#changes-of-ports)
 };
 struct RemoveNode {
 	NodeName node;
@@ -58,17 +60,32 @@ struct DisableNode {
 struct EnableNode {
 	NodeName node;
 }; // node.enable {"name"}
+/// node.set {"name", "settings", "dryRun"?, "dropRoutes"?} (feature node.set; dryRun, feature dryRun): `settings` is a
+/// JSON merge patch of the node's settings, null removing a key (docs/control-port.md#nodeset-and-dry-runs).
+struct SetNode {
+	NodeName node;
+	NodeSettings settings;
+	bool dryRun = false;
+	bool dropRoutes = false;
+};
 using Command =
 	std::variant<GetGraph, AddNode, UpdateNode, RemoveNode, AddRoute, RemoveRoute, GetGraphFile, SetGraphFile,
-                 StartNode, StopNode, RestartNode, DisableNode, EnableNode, SetNodeText, AddNodeText>;
+                 StartNode, StopNode, RestartNode, DisableNode, EnableNode, SetNodeText, AddNodeText, SetNode>;
 using CommandResult =
 	std::variant<GraphView, std::expected<void, CommandError>, GraphFile, FileRefusal, Applied, ControlRefusal>;
 /// The wire's frame (docs/control-port.md#protocol-and-features): graph.get's "protocol" and "features".
 inline constexpr int wireProtocol = 1;
 /// A node's own knobly text: nodeTexts on the GraphFile and node.setText (docs/control-port.md#a-nodes-own-text).
 inline constexpr std::string_view nodeTextFeature = "node-text";
-inline constexpr std::array<std::string_view, 4> wireFeatures{"lifecycle", "counters", companionsFeature,
-                                                              nodeTextFeature};
+/// A change of a node's ports kept as the same node: applied reshape, node.updated's ports, dropRoutes and ports-in-use
+/// (docs/control-port.md#changes-of-ports).
+inline constexpr std::string_view reshapeFeature = "reshape";
+/// node.set, a merge of a node's settings answered with what it applied, and its dry runs
+/// (docs/control-port.md#nodeset-and-dry-runs).
+inline constexpr std::string_view nodeSetFeature = "node.set";
+inline constexpr std::string_view dryRunFeature = "dryRun";
+inline constexpr std::array<std::string_view, 7> wireFeatures{
+	"lifecycle", "counters", companionsFeature, nodeTextFeature, reshapeFeature, nodeSetFeature, dryRunFeature};
 /// Control thread. Named params only, decoded with graph_json. Unknown method: methodNotFound;
 /// a missing, extra or mistyped key: invalidParams whose message is the JsonError
 /// ("/from/port: missing") and whose data is {"pointer"} (the JSON pointer it names). graphFile.get and

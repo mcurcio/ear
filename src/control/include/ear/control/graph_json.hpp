@@ -6,6 +6,7 @@
 #include <string_view>
 #include <nlohmann/json.hpp>
 #include "ear/core/graph_spec.hpp"
+#include "ear/core/node_type.hpp"
 // The one home of node and route JSON: the control port's commands decode with it, and its
 // results and events encode with it.
 namespace ear::control {
@@ -27,6 +28,8 @@ std::expected<NodeSpec, JsonError> decodeNodeSpec(const nlohmann::json& value, c
 std::expected<Route, JsonError> decodeRoute(const nlohmann::json& value, const JsonPointer& at);
 nlohmann::json encodePortRef(const PortRef& port); // {"node", "port"}
 nlohmann::json encodeRoute(const Route& route);    // {"from", "to"}
+/// {"added", "removed"}: a change of ports' whole port names (feature reshape, docs/control-port.md#notifications).
+nlohmann::json encodePortsMoved(const PortsMoved& ports);
 /// An instant as the wire's `since` and the records' `t` write it: UTC to the microsecond,
 /// "2026-11-09T10:05:12.770000Z". The one home of that text.
 std::string utcMicros(std::chrono::system_clock::time_point at);

@@ -104,9 +104,8 @@ TEST_CASE("A graph file's JSON leaves out each absent optional and holds each pr
 TEST_CASE("Every graph-file.json message encodes as the fixture has it", "[graph_file_state][protocol]") {
 	const json document = fixture("graph-file");
 	const json& m = document["messages"];
-	REQUIRE(m.size() == 41);
+	REQUIRE(m.size() == 39);
 	const Texts t;
-	const ear::Route toDesk{{"noise", "noise.mono"}, {"desk", "play.1"}};
 
 	SECTION("graphFile.subscribe, graph.subscribe and the first edit") {
 		CHECK(resultOf(1, recordFile("v1", t.t1, "v1")) == m[0]);
@@ -133,55 +132,57 @@ TEST_CASE("Every graph-file.json message encodes as the fixture has it", "[graph
 		CHECK(changed(recordFile("v6", t.t2, "v6"), FileChangeCause::disk, 1) == m[14]);
 		CHECK(event(NodeUpdated{"rec", {{"path", "take2.wav"}}, false, ear::NodeOutcome::restart}) == m[15]);
 	}
-	SECTION("playback 4 through @set $ch replaces both cards") {
+	SECTION("playback 4 through @set $ch reshapes both cards") {
+		const ear::Ports two{{{ear::Direction::input, "play", ear::numbered(2)}}};
 		const ear::Ports four{{{ear::Direction::input, "play", ear::numbered(4)}}};
 		CHECK(changed(recordFile("v7", t.t7, "v7"), FileChangeCause::edit) == m[17]);
-		CHECK(event(RouteRemoved{toDesk}) == m[18]);
-		CHECK(event(NodeRemoved{"desk"}) == m[19]);
-		CHECK(event(NodeRemoved{"porch"}) == m[20]);
-		// The gateway's clock: one reading for each node.added and for each node.state that changed a phase.
-		CHECK(event(NodeAdded{
-				  {"desk", "card", {{"card", "MOTU"}, {"playback", 4}}}, four, ear::NodeHealth{"desk"}, reading(0)}) ==
-		      m[21]);
-		CHECK(
-			event(NodeAdded{
-				{"porch", "card", {{"card", "USB2"}, {"playback", 4}}}, four, ear::NodeHealth{"porch"}, reading(1)}) ==
-			m[22]);
-		CHECK(event(RouteAdded{toDesk}) == m[23]);
-		CHECK(resultOf(10, std::expected<void, ear::CommandError>{}) == m[24]);
+		const NodeReshaped reshaped{false, ear::portsMoved(two, four), four};
+		CHECK(event(NodeUpdated{
+				  "desk", {{"card", "MOTU"}, {"playback", 4}}, false, ear::NodeOutcome::reshape, reshaped}) == m[18]);
+		CHECK(event(NodeUpdated{
+				  "porch", {{"card", "USB2"}, {"playback", 4}}, false, ear::NodeOutcome::reshape, reshaped}) == m[19]);
+		// The gateway's clock: one reading for each node.state that changed a phase.
+		ear::NodeHealth desk = health("desk", ear::NodeState::starting);
+		desk.cause = ear::NodeCause{ear::NodeCause::Kind::reshape, std::nullopt, {"playback"}};
+		desk.cause->ports = ear::PortsMoved{{"play.3", "play.4"}, {}};
+		CHECK(event(NodeChanged{desk, reading(0)}) == m[20]);
+		ear::NodeHealth porch = desk;
+		porch.name = "porch";
+		CHECK(event(NodeChanged{porch, reading(1)}) == m[21]);
+		CHECK(resultOf(10, std::expected<void, ear::CommandError>{}) == m[22]);
 		const auto& view = graphView(4, "take4.wav");
-		CHECK(event(NodeChanged{view.nodes[0].health, reading(2)}) == m[25]);
-		CHECK(event(NodeChanged{view.nodes[2].health, reading(3)}) == m[26]);
+		CHECK(event(NodeChanged{view.nodes[0].health, reading(2)}) == m[23]);
+		CHECK(event(NodeChanged{view.nodes[2].health, reading(3)}) == m[24]);
 	}
 	SECTION("a write that fails, then succeeds") {
 		GraphFile failed = recordFile("v7", t.t7, "v7");
 		failed.writeFailed = "ear.conf: No space left on device";
-		CHECK(changed(failed, FileChangeCause::write) == m[27]);
-		CHECK(changed(recordFile("v7", t.t7, "v7"), FileChangeCause::write) == m[28]);
+		CHECK(changed(failed, FileChangeCause::write) == m[25]);
+		CHECK(changed(recordFile("v7", t.t7, "v7"), FileChangeCause::write) == m[26]);
 	}
 	SECTION("a hand edit the graph refuses, then graphFile.set with another graph frequency") {
-		CHECK(changed(recordFile("v8", t.t8, "v8"), FileChangeCause::edit) == m[29]);
+		CHECK(changed(recordFile("v8", t.t8, "v8"), FileChangeCause::edit) == m[27]);
 		GraphFile refused = recordFile("v9", t.t9, "v8");
 		refused.refusal = Refusal{ear::UnknownPort{{"rec", "FX"}}, TextPlace{16, 1}};
-		CHECK(changed(refused, FileChangeCause::disk, 1) == m[32]);
+		CHECK(changed(refused, FileChangeCause::disk, 1) == m[30]);
 		GraphFile pending = recordFile("v10", t.t10, "v10");
 		pending.pendingRestart = {FormatKey::graphFrequency};
-		CHECK(changed(pending, FileChangeCause::edit) == m[33]);
+		CHECK(changed(pending, FileChangeCause::edit) == m[31]);
 	}
 	SECTION("the two batches, graphFile.get, and what the client holds at the end") {
 		GraphFile last = recordFile("v11", t.t11, "v11");
 		last.pendingRestart = {FormatKey::graphFrequency};
-		CHECK(changed(last, FileChangeCause::edit) == m[36]);
+		CHECK(changed(last, FileChangeCause::edit) == m[34]);
 		ear::GraphView view = graphView(4, "take4.wav");
 		view.nodes[0].since = reading(2); // the gateway fills in when each card's failure began
 		view.nodes[2].since = reading(3);
 		const std::vector<std::string> first{encodeResult(13, json::object()),
 		                                     encodeResult(14, encodeCommandResult(view).value())};
-		CHECK(json::parse(encodeBatch(first)) == m[38]);
+		CHECK(json::parse(encodeBatch(first)) == m[36]);
 		const std::vector<std::string> second{encodeResult(15, encodeCommandResult(view).value()),
 		                                      encodeResult(16, encodeCommandResult(last).value())};
-		CHECK(json::parse(encodeBatch(second)) == m[39]);
-		CHECK(resultOf(17, last) == m[40]);
+		CHECK(json::parse(encodeBatch(second)) == m[37]);
+		CHECK(resultOf(17, last) == m[38]);
 		CHECK(encodeGraph(view) == document["graph"]);
 		CHECK(encodeGraphFile(last) == document["file"]);
 	}

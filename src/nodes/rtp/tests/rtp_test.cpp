@@ -2,6 +2,7 @@
 // receiver it asks for (docs/node-types.md#rtp;
 // docs/writing-a-node-type.md#testing-a-type: its class, over a real NodeHost). The engine side of a receiver
 // (RtpReceivers) is tested in src/pipewire/tests/rtp_receiver_test.cpp.
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -240,4 +241,89 @@ TEST_CASE("Rtp: a receiver ready within 5 s keeps the node running past its dead
 	CHECK(harness.phase() == "running");
 	harness->advance(std::chrono::milliseconds(60'000));
 	CHECK(harness.phase() == "running");
+}
+
+namespace {
+/// Running with `settings`, its receiver ready.
+Harness runningOk(const NodeSettings& settings, ear::testing::HarnessOptions options = {}) {
+	options.node = "fpp";
+	Harness harness(std::move(options));
+	REQUIRE_FALSE(harness.parse(settings));
+	harness.add();
+	harness.blockReady();
+	harness.ready(rtp::fromRtp);
+	REQUIRE(harness.phase() == "running");
+	return harness;
+}
+
+bool toldReconfiguring(Harness& harness) {
+	return std::ranges::any_of(harness->healths(),
+	                           [](const ear::NodeHealth& one) { return one.phase == ear::NodePhase::reconfiguring; });
+}
+bool toldStopping(Harness& harness) {
+	return std::ranges::any_of(harness->healths(),
+	                           [](const ear::NodeHealth& one) { return one.phase == ear::NodePhase::stopping; });
+}
+} // namespace
+
+TEST_CASE("Rtp: a port changed in place replaces the receiver make-before-break, stream held until the new one is "
+          "ready, the old one destroyed then",
+          "[rtp][reconfigure]") {
+	auto harness = runningOk(settingsWith());
+	CHECK(harness.change(settingsWith({{"port", 5006}})) == ear::NodeOutcome::reconfigure);
+	CHECK(harness.phase() == "reconfiguring");
+	CHECK(harness.held(rtp::stream, 0));
+	CHECK(harness.held(rtp::stream, 1));
+	REQUIRE(harness->companions().size() == 2);
+	CHECK_FALSE(harness->companions()[0].destroyed); // made before break: the old one runs on beside it
+	CHECK(std::get<ear::RtpReceiverShape>(harness.companion(rtp::fromRtp).shape).port == 5006);
+	harness.ready(rtp::fromRtp);
+	CHECK(harness.phase() == "running");
+	CHECK(harness->companions()[0].destroyed); // at the commit point
+	CHECK_FALSE(harness.held(rtp::stream, 0));
+	CHECK(toldReconfiguring(harness));
+	CHECK_FALSE(toldStopping(harness));
+	const auto& health = harness->healths();
+	const auto changing = std::ranges::find_if(
+		health, [](const ear::NodeHealth& one) { return one.phase == ear::NodePhase::reconfiguring; });
+	CHECK(changing->keys == std::vector<std::string>{"port"});
+}
+
+TEST_CASE("Rtp: format, rate, address and latencyMs change in place on the same port, latencyMs re-carried",
+          "[rtp][reconfigure][latency]") {
+	auto harness = runningOk(settingsWith());
+	CHECK(harness.change(
+			  settingsWith({{"format", "L16"}, {"rate", 44100}, {"address", "0.0.0.0"}, {"latencyMs", 250}})) ==
+	      ear::NodeOutcome::reconfigure);
+	harness.ready(rtp::fromRtp);
+	CHECK(harness.phase() == "running");
+	const auto shape = std::get<ear::RtpReceiverShape>(harness.companion(rtp::fromRtp).shape);
+	CHECK(shape.port == 5004);
+	CHECK(shape.encoding == ear::RtpEncoding::l16);
+	CHECK(shape.rate.hz() == 44100);
+	CHECK(shape.latencyMs == 250);
+	const auto& beyond = harness->latencyPlan().beyond;
+	REQUIRE(beyond.size() == 1);
+	CHECK(beyond[0].second == ear::Delay{{12000, 12000}}); // 250 ms at the graph's 48 kHz
+	CHECK_FALSE(toldStopping(harness));
+}
+
+TEST_CASE("Rtp: channels still restarts, and a refused new port falls back to a restart", "[rtp][reconfigure]") {
+	SECTION("channels makes the ports: a reshape, restarting the node behind its block") {
+		auto harness = runningOk(settingsWith());
+		CHECK(harness.change(settingsWith({{"channels", 3}})) == ear::NodeOutcome::reshape);
+		CHECK_FALSE(toldReconfiguring(harness));
+		CHECK(toldStopping(harness)); // restarted: channels is restart-only
+	}
+	SECTION("a new port the kernel refuses") {
+		auto harness = runningOk(settingsWith(), {.refusedPorts = {"udp:5006"}});
+		harness.change(settingsWith({{"port", 5006}}));
+		const auto stopped = std::ranges::find_if(harness->healths(), [](const ear::NodeHealth& one) {
+			return one.phase == ear::NodePhase::stopping && one.cause &&
+			       one.cause->reason == ear::NodeCause::FellBack::resourceRefused;
+		});
+		CHECK(stopped != harness->healths().end());
+		CHECK(harness.phase() == "failed");
+		CHECK(harness.health().reason->detail.find("5006") != std::string::npos);
+	}
 }

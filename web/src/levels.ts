@@ -1,7 +1,8 @@
 // Live audio levels, kept outside React state (docs/editor.md). Each `levels`
 // notification is a complete snapshot, so it replaces the store: a node missing from
 // it has no level and reads silent. Listeners are per port, so at 30 messages a second only the
-// meters and wires whose port changed re-render, never the whole canvas.
+// meters and wires whose port changed re-render, never the whole canvas. The meter's scale is here; meters.ts draws its
+// zones and peak hold on the same scale (docs/editor.md#meters).
 import type { Level, Notifications, PortRef } from "./protocol";
 
 export type LevelSnapshot = Notifications["levels"]["nodes"];
@@ -15,9 +16,14 @@ export function toDbfs(linear: number): number {
   return Math.max(floorDb, 20 * Math.log10(linear));
 }
 
+/** How far along a meter a dBFS value sits, 0 at floorDb and 1 at 0 dBFS. */
+export function fractionOfDb(db: number): number {
+  return Math.min(1, Math.max(0, (db - floorDb) / -floorDb));
+}
+
 /** How full a meter is, 0 at floorDb and 1 at full scale (0 dBFS). */
 export function meterFraction(linear: number): number {
-  return Math.min(1, (toDbfs(linear) - floorDb) / -floorDb);
+  return fractionOfDb(toDbfs(linear));
 }
 
 const silent: Level = [0, 0];

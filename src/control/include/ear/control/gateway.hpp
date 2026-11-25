@@ -55,19 +55,16 @@ public:
 	void watch(EventSink& sink) override;
 	void graphFileChanged(const GraphFileChanged& change) override; // posted to sink->graphFileChanged
 	void graphFileWritten(const std::string& version) override;     // nothing: a status line only
-	/// Main thread, before the first event: where node.added reads the counters a port-caused replace carries on
-	/// (docs/control-port.md#counters). Without it every node.added carries zero counters.
-	void readCounts(const NodeCounterSource& nodes);
 	/// node.added with the spec's health, `since` stamped, and zero counters: a node added counts from zero.
 	void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
-	/// node.added as nodeAdded; a port-caused replace's carries the counters it carries on, the older node's now
-	/// (docs/engine.md#counters), read before NodeHost hears the replace.
+	/// node.added as nodeAdded, for another type under the name: from zero.
 	void nodeReplaced(const NodeSpec& node, std::shared_ptr<const NodeConfig> config,
 	                  const NodeChange& change) override;
 	/// node.updated with `applied` restart (told only by a listener's default nodeChanged, which this one overrides).
 	void nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
 	/// DesiredNodeListener (observer): a node kept by name whose spec changed: node.updated with the outcome and
-	/// `disabled`.
+	/// `disabled`, and on a change of its ports (docs/architecture.md#reshapes) the ports it adds and removes and those it
+	/// now has (docs/control-port.md#notifications); a reshape also says whether it is in place.
 	void nodeChanged(const NodeSpec& node, std::shared_ptr<const NodeConfig> config, const NodeChange& change) override;
 	void nodeRemoved(const NodeName& node) override;
 	void routeAdded(const Route& route) override;

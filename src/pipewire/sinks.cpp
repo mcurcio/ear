@@ -73,6 +73,7 @@ public:
 	}
 
 	std::uint64_t droppedFrames() const noexcept override { return rules_.droppedFrames(); }
+	SinkControl& control() noexcept override { return pause_; }
 
 	/// Realtime: the two rings drop together (SinkRing::write); the thread is woken when a frame was taken.
 	void write(std::span<const std::span<const float>> bank, std::uint32_t frames,
@@ -92,6 +93,7 @@ private:
 			consumer_->begin();
 			mainLoop_.post(std::move(begun_));
 		}
+		static_cast<void>(pause_.holds()); // a pause asked while no chunk comes is taken here
 		drain();
 		if (closing && !finished_) {
 			finished_ = true;
@@ -101,10 +103,15 @@ private:
 		}
 	}
 
-	/// Every stamped chunk to a begun consumer, in order; frames that no begun consumer can take (none began, or it
+	/// Every stamped chunk to a begun consumer, in order, but while it is paused (each chunk then discarded and
+	/// counted: SinkPause, taken between two chunks); frames that no begun consumer can take (none began, or it
 	/// finished) are skipped.
 	void drain() {
-		if (began_ && !finished_) rules_.drain([this](const Chunk& chunk) { consumer_->consume(chunk); });
+		if (began_ && !finished_)
+			rules_.drain([this](const Chunk& chunk) {
+				if (pause_.holds()) return pause_.discarded(chunk.frames);
+				consumer_->consume(chunk);
+			});
 		else rules_.discard();
 	}
 
@@ -118,6 +125,7 @@ private:
 
 	Executor& mainLoop_;
 	SinkRing rules_;
+	SinkPause pause_{[this] { signal(); }}; // its wake: the thread takes a request with no chunk coming
 	std::atomic<bool> beginAsked_{false};
 	std::atomic<bool> closing_{false};
 	std::unique_ptr<SinkConsumer> consumer_;              // set before beginAsked_; then the sink's thread's

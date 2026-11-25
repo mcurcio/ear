@@ -60,19 +60,25 @@ does; it carries the `phase` beside the state.
 | `node <name> starting` | Added (phase `added`) | |
 | `node <name> starting: <cause>` | Configuring again after a restart, a retry or an enable | `cause` |
 | `node <name> running`, `stopped`, `disabled` | Reached that state | |
+| `node <name> reconfiguring: <keys>[; <next> next]` | A change in place began, or a newer change superseded it with other keys ([architecture.md](architecture.md#changes-in-place)) | `keys`, `next` (when a key changed after its commit point) |
+| `node <name> running after reconfiguring for <n> ms`, likewise `stopped` | A change in place ended, `<n>` from its first `reconfiguring` | `afterMs` |
 | `node <name> stopping[: <cause>]` | Stopping; the cause is `stop`, `disabling`, `removing` or `restarting (<why>)` | `cause` |
 | `node <name> failed <code>: <detail>` | Failed; code `engine-refused`, `start-failed` or `lost` | `failure: {code, detail}` |
 | `node <name> still <phase> after <s>s: waiting for <what>` | A phase that has lasted 2 s, when what it waits for first appears, then at most once per 10 s while that changes | `waitingFor` |
 | `node <name> removed dropped=<frames>` | Gone: everything it made is destroyed (state `stopping`, phase `removed`) | `droppedFrames` |
 
-`<why>` and the configuring cause read `settings changed: <keys>`, `restart invoked` (for
-`node.restart`), `retry` or `enabling`. `<what>` names `the previous <name>` (an older node of its
+`<why>` and the configuring cause read `settings changed: <keys>`, `ports changed: <keys>` (a
+change of settings that changes the node's ports: cause `reshape`, its `keys`, `added` and `removed`,
+[architecture.md](architecture.md#reshapes)), `restart invoked` (for
+`node.restart`), `retry`, `enabling`, or `could not apply <keys> in place: <detail>` (a change in
+place that fell back to a restart; `<detail>` the change version's reason, the refusal, the loss,
+or `deadline <n>s passed`). `<what>` names `the previous <name>` (an older node of its
 name), `the engine` (its block), an engine companion's engine name (`fpp.rtp`), `its consumer`,
 `its loop <name>` (one of the node's loops not yet running), `its store <file>`, `its recording <path>`, `its claim
 <key>`, or `its program <name>` (its program not yet started).
 `configuring`, `configured` and `starting` after the first add write nothing of their own (they
-share the colour `starting`). The `cause` field is `{"kind"}`, with `restart: {"kind", "keys"?}`
-for a restart, as on the wire ([control-port.md](control-port.md#node-health)).
+share the colour `starting`). The `cause` field is `{"kind"}`, with `restart: {"kind", "keys"?, "added"?, "removed"?,
+"reason"?, "detail"?}` for a restart, as on the wire ([control-port.md](control-port.md#node-health)).
 
 ```json
 {"v":1,"seq":66,"t":"...","kind":"node","node":"rec","state":"stopping","phase":"stopping","cause":{"kind":"restarting","restart":{"kind":"settings","keys":["path"]}},"msg":"node rec stopping: restarting (settings changed: path)"}
@@ -132,7 +138,10 @@ The framework's own observations. With a node:
 | `ear.close-overdue` | | A configuration's teardown did not finish within 10 s; it is leaked, never freed. `detail` counts what still had to close (sinks; loops still up, asked to close yet or not, never one that could not start; programs). A close that completed is never judged: the deadline counts only while a sink, a loop or the program has still to report |
 | `ear.close-late` | `ms` | A configuration leaked at the close deadline finally closed: everything it held reported, `ms` after its teardown began (`detail`: `the configuration leaked at the close deadline closed <ms> ms after its close began`, with `; its claims are released` when it still held a claim). It is then freed, no longer keeps ear's stop from ending normally, and each node its claims refused is started again ([architecture.md](architecture.md#teardown-by-dependency)) |
 | `ear.claim-wait` | | One of the node's claims waits for its holder, a configuration that is closing (`detail`: `<key> held by node <n>, which is closing`, the key as `udp:5004`); once per wait. It ends in a grant, or the node fails: after 15 s, or refused by the holder once it is leaked (`... which did not close; it starts when that closes`, the late close then starting the node; or, leaked on a wedged data loop, `... which the wedged data loop keeps; it starts once ear restarts`) ([writing-a-node-type.md](writing-a-node-type.md#claims)) |
-| `ear.fade-unacknowledged` | `ms` | A planned silence's fade was not acknowledged within 100 ms; the silence was taken unfaded |
+| `ear.fade-unacknowledged` | `ms` | A planned silence's fade was not acknowledged within 100 ms; the silence was taken unfaded. Or a change in place's hold was not, and the change went on |
+| `ear.reconfigure-fell-back` | `elapsedMs` | A change in place could not finish and restarts with the newest settings, just before its `stopping` record (`detail`: `could not apply <keys> in place (<reason>): <detail>`, the reason as on the wire's `fell-back` cause); `elapsedMs` since its change version was called ([architecture.md](architecture.md#changes-in-place)) |
+| `ear.retiring-lost` | | An engine companion a change in place replaces was lost while it retired (`detail`: `<companion>, which a change in place replaces, was lost: <detail>`); never a failure of the node |
+| `ear.reconfigure-superseded` | | A newer change superseded a change in place before its commit point (`detail`: `a newer change superseded the change of <keys> before its commit point`) |
 | `ear.barrier-overdue` | `ms` | A drive or silence posted to the data loop did not complete within 5 s; the configuration and block are leaked |
 | `ear.hook-slow` | `ms` | A hook (`configure`, `start` or `stop`, named in `detail`) ran past 20 ms on the main loop; once per node and hook |
 | `ear.loop-slow` | `ms` | One of the node's strand loops ran one handler past 100 ms (`detail`: `loop <name> ran one handler for <ms> ms`); once per loop and configuration ([writing-a-node-type.md](writing-a-node-type.md#loops)) |

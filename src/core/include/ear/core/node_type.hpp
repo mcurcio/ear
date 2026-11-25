@@ -1,4 +1,5 @@
 #pragma once
+#include <chrono>
 #include <concepts>
 #include <cstdint>
 #include <expected>
@@ -68,6 +69,15 @@ private:
 	std::vector<PortName> insideOutputs_;
 	std::vector<Bank> banks_;
 };
+/// A change of a node's public ports (docs/architecture.md#reshapes): the whole names `after` has and `before` lacks,
+/// and those `before` has and `after` lacks, inputs then outputs, each in its ports' order.
+struct PortsMoved {
+	std::vector<PortName> added;
+	std::vector<PortName> removed;
+	bool empty() const noexcept { return added.empty() && removed.empty(); }
+	friend bool operator==(const PortsMoved&, const PortsMoved&) = default;
+};
+PortsMoved portsMoved(const Ports& before, const Ports& after);
 /// Why a node is failed. Part of health; never returned by a control call. The codes are
 /// docs/architecture.md#phases-states-and-what-is-wanted: `lost` is a node that had reached running or stopped and said
 /// it cannot go on (its handle's lost(detail), or a hook that threw once it rested).
@@ -239,16 +249,24 @@ public:
 	                                                                        const NodeSettings& settings) const;
 	/// Every key parse() accepts, each once, with its kind, in row order; the same span every call; pure.
 	std::span<const SettingDeclaration> settingKinds() const noexcept;
+	/// Whether a change to `key` may apply in place (its row marked inPlace: docs/writing-a-node-type.md#settings-one-table-of-typed-rows);
+	/// false for a key the type lacks.
+	bool changesInPlace(std::string_view key) const noexcept;
 	/// The stores every node of the type has (docs/writing-a-node-type.md#stores), from its spec, in declaration
 	/// order: the boot sweep reads them before any node exists.
 	std::span<const StoreDeclaration> stores() const noexcept { return stores_; }
+	/// How long a change in place may take before it falls back to a restart (the spec's `.lifecycle`:
+	/// docs/architecture.md#changes-in-place).
+	std::chrono::milliseconds reconfigureDeadline() const noexcept { return reconfigureDeadline_; }
 
 private:
 	template <const auto& Spec, class Type> friend class spec_detail::SpecNodeType; // nothing else can derive
-	explicit NodeType(const AnySettingsTable& table, std::span<const StoreDeclaration> stores = {}) noexcept;
+	explicit NodeType(const AnySettingsTable& table, std::span<const StoreDeclaration> stores = {},
+	                  std::chrono::milliseconds reconfigureDeadline = std::chrono::seconds(10)) noexcept;
 	/// The one customisation point. Called only with what the table's walk made.
 	virtual MadeConfig makeConfig(const NodeName& node, CheckedSettings settings) const = 0;
 	const AnySettingsTable* table_;            // static storage: the spec's table
 	std::span<const StoreDeclaration> stores_; // static storage: the spec's Stores::declared
+	std::chrono::milliseconds reconfigureDeadline_;
 };
 } // namespace ear

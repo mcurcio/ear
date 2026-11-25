@@ -160,20 +160,22 @@ Judged MainLoopSide::offer(Offer offer) {
 	auto plan = graph_.plan(offer.wanted.nodes, offer.wanted.routes);
 	if (!plan) {
 		if (std::holds_alternative<Stopping>(plan.error())) return {Verdict::stopping, std::unexpected(plan.error())};
-		if (offer.cause == control::FileChangeCause::disk) {
+		if (offer.cause == control::FileChangeCause::disk && !offer.dryRun) {
 			refusal_ = Recorded{offer.file.version,
 			                    control::Refusal{plan.error(), placeOf(plan.error(), offer.wanted, offer.placements)}};
 			tell(std::move(offer.file), offer.cause, offer.droppedEdits);
 		}
 		return {Verdict::refused, std::unexpected(plan.error())};
 	}
+	std::optional<NodeChange> change = offer.answerFor ? plan->change(*offer.answerFor) : std::nullopt;
+	// A dry run is advice: the plan's answer, and nothing more (docs/control-port.md#nodeset-and-dry-runs).
+	if (offer.dryRun) return {Verdict::accepted, {}, std::move(change)};
 	running_ = offer.file.version;
 	tell(std::move(offer.file), offer.cause, offer.droppedEdits);
-	auto outcomes = plan->outcomes();
 	// Planned in this turn, so the graph cannot have closed or changed since: commit cannot refuse.
 	auto committed = graph_.commit(std::move(*plan));
 	if (!committed) return {Verdict::stopping, std::unexpected(committed.error())};
-	return {Verdict::accepted, {}, std::move(outcomes)};
+	return {Verdict::accepted, {}, std::move(change)};
 }
 
 void MainLoopSide::announce(FileState file, control::FileChangeCause cause, std::uint32_t droppedEdits) {

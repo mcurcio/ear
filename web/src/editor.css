@@ -1,4 +1,7 @@
-/* The graph editor's styles: a full-window canvas with a side panel. */
+/* The graph editor's styles: the shell (docs/editor.md#the-shell: the top bar, the canvas and its tools, the inspector,
+   the ear.conf drawer, the narrow window's sheet), the node boxes, wires and meters
+   (docs/editor.md#the-node-box-wires-and-meters). Colours, radii, shadows and durations are theme.css's tokens only
+   (docs/editor.md#tokens-and-themes), which theme.test.ts checks. */
 html,
 body,
 #root {
@@ -6,163 +9,1005 @@ body,
   height: 100%;
   font-family: system-ui, sans-serif;
   font-size: 13px;
+  background: var(--surface);
+  color: var(--text);
 }
 
+/* The code boxes' size, shared by the textarea, its highlighted copy and the drawer's gutter so their glyphs line up;
+   16 px on a touch screen (docs/editor.md#phones-and-touch), where iOS Safari zooms the page on focusing a smaller text
+   field. */
+:root {
+  --code-size: 12px;
+}
+
+/* A phone's screen: the shell fills the visible viewport (dvh, so Safari's toolbar never covers the drawer), and with
+   viewport-fit=cover it keeps its controls inside the safe area (a notch, rounded corners, the home indicator) while
+   its backgrounds run to the edges (docs/editor.md#phones-and-touch). */
+#root {
+  height: 100dvh;
+}
+
+/* The shell: the top bar, the workspace (the canvas and the inspector) and the drawer, which never move each other's
+   content. */
 .app {
-  display: flex;
+  display: grid;
+  grid-template-rows: calc(44px + env(safe-area-inset-top, 0px)) minmax(0, 1fr) auto;
   height: 100%;
+  box-sizing: border-box;
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
 }
 
-.app > .react-flow {
+/* React Flow's own variables point at the tokens, so its canvas, background and minimap follow the theme; its
+   colorMode prop is not used, as it would fight data-theme. */
+.react-flow {
+  --xy-background-color: var(--surface);
+  --xy-background-pattern-color: var(--line);
+  --xy-node-color: var(--text);
+  --xy-edge-stroke: var(--muted);
+  --xy-connectionline-stroke: var(--muted);
+  --xy-handle-background-color: var(--text);
+  --xy-handle-border-color: var(--raised);
+  --xy-selection-background-color: color-mix(in srgb, var(--accent) 8%, transparent);
+  --xy-selection-border: 1px dotted var(--accent);
+  --xy-attribution-background-color: color-mix(in srgb, var(--raised) 60%, transparent);
+  --xy-minimap-background-color: var(--raised);
+  --xy-minimap-mask-background-color: color-mix(in srgb, var(--surface) 65%, transparent);
+  --xy-minimap-mask-stroke-color: var(--accent);
+  --xy-minimap-node-background-color: var(--sunken);
+  --xy-minimap-node-stroke-color: var(--line-strong);
+}
+
+.react-flow__attribution a {
+  color: var(--muted);
+}
+
+.react-flow__minimap {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  box-shadow: var(--shadow);
+}
+
+/* A minimap box takes its node's state class (Canvas.tsx), so it is drawn in --state. */
+.react-flow .react-flow__minimap-node[class*="state-"] {
+  fill: var(--state);
+}
+
+/* The top bar (docs/editor.md#the-top-bar): about the whole graph, never a selection. */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: env(safe-area-inset-top, 0px) 12px 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--raised);
+  min-width: 0;
+}
+
+.topbar-start,
+.topbar-end {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.topbar-facts {
+  display: flex;
+  align-items: center;
   flex: 1;
+  min-width: 0;
+  gap: 8px;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
-.panel {
-  width: 360px;
+.wordmark {
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: 0.08em;
+}
+
+.pill,
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  line-height: 22px;
+  border-radius: var(--radius-pill);
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.pill-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-pill);
+  background: currentColor;
+}
+
+/* The tone classes colour a chip's or a status word's text from the state tokens; the pill keeps its word in --text
+   and colours its dot. */
+.tone-ok {
+  color: var(--ok);
+}
+
+.tone-warn {
+  color: var(--warn);
+}
+
+.tone-err {
+  color: var(--err);
+}
+
+.tone-muted {
+  color: var(--muted);
+}
+
+.pill {
+  color: var(--text);
+}
+
+.pill.tone-ok .pill-dot {
+  background: var(--ok);
+}
+
+.pill.tone-warn .pill-dot {
+  background: var(--warn);
+}
+
+.pill.tone-err .pill-dot {
+  background: var(--err);
+}
+
+.engine-chip {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.engine-realtime {
+  color: var(--muted);
+}
+
+.theme-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.theme-icon {
+  flex: none;
+}
+
+.topbar-drawer .chip {
+  margin-left: 6px;
+  line-height: 18px;
+}
+
+/* The workspace: the canvas fills what the inspector leaves. */
+.workspace {
+  position: relative;
+  display: flex;
+  min-height: 0;
+}
+
+.workspace > .react-flow {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Tidy slides each node to its new place (docs/editor.md#the-canvas); --motion-slow is 0 under reduced motion. */
+.react-flow.tidying .react-flow__node {
+  transition: transform var(--motion-slow) ease-out;
+}
+
+/* The canvas's floating tools, in place of React Flow's Controls. */
+.canvas-tools [role="toolbar"] {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  box-shadow: var(--shadow);
+}
+
+.app .canvas-tools button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.app .canvas-tools button:hover:not(:disabled),
+.app .canvas-tools button[aria-pressed="true"] {
+  background: var(--sunken);
+}
+
+.app .canvas-tools button[aria-pressed="true"] {
+  color: var(--accent);
+}
+
+/* The toasts at the canvas's bottom right (docs/editor.md#toasts): the newest four, each edged in its severity's
+   token, its code in monospace and its count in tabular figures. */
+.toasts {
+  max-width: 420px;
+  margin: 12px;
+}
+
+.toast-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.toast {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 8px 10px;
+  background: var(--raised);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--toast-tone);
+  border-radius: var(--radius-box);
+  box-shadow: var(--shadow-lifted);
+  animation: toast-in var(--motion-slow) ease-out;
+}
+
+.toast-error {
+  --toast-tone: var(--err);
+}
+
+.toast-warning {
+  --toast-tone: var(--warn);
+}
+
+.toast-info {
+  --toast-tone: var(--muted);
+}
+
+.toast-text {
+  margin: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+.toast-code {
+  font-family: ui-monospace, monospace;
+}
+
+.toast-count {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.toast-actions {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+
+.toast-more {
+  margin: 0 0 6px;
+  color: var(--muted);
+  text-align: right;
+}
+
+/* A 0 ms duration under reduced motion is harmless here: the animation is finite. */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+/* The command palette and the shortcut sheet (docs/editor.md#the-palette-and-the-keyboard): a raised frame over the
+   canvas, centred near the top, or at the pointer for quick add. The backdrop catches a pointer outside and has no
+   colour, so no scrim token is needed. */
+.palette-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+}
+
+.palette,
+.shortcut-sheet {
+  position: fixed;
+  top: 12vh;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(560px, calc(100vw - 32px));
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--raised);
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-box);
+  box-shadow: var(--shadow-lifted);
+  animation: palette-in var(--motion-fast) ease-out;
+}
+
+/* Its size is Palette.tsx's anchoredBox, which keeps it inside the window. */
+.palette[data-anchored] {
+  transform: none;
+  width: 320px;
+  max-height: 360px;
+}
+
+.palette-input {
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: var(--radius-box) var(--radius-box) 0 0;
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 15px;
+  background: transparent;
+  color: inherit;
+}
+
+.palette-input:focus {
+  outline: none;
+}
+
+.palette-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+}
+
+/* The label keeps its width; a long hint gives way, cut short, its whole text in its tooltip. */
+.palette-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+  padding: 6px 8px;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+
+.palette-option[aria-selected="true"] {
+  background: var(--sunken);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.palette-label {
+  overflow-wrap: anywhere;
+}
+
+/* Overrides the browser's own mark colours. */
+.palette-label mark {
+  background: none;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.palette-meta {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.palette-group,
+.palette-hint {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.palette-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.palette-group {
+  flex: none;
+}
+
+.palette-empty {
+  margin: 0;
+  padding: 12px;
+  color: var(--muted);
+}
+
+.shortcut-sheet {
+  width: min(440px, calc(100vw - 32px));
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.shortcut-sheet h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.shortcut-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 12px 0;
+}
+
+.shortcut-row {
+  display: contents;
+}
+
+.shortcut-list dd {
+  margin: 0;
+}
+
+.shortcut-note {
+  margin: 0 0 12px;
+  color: var(--muted);
+}
+
+.shortcut-sheet button {
+  align-self: flex-end;
+}
+
+.app kbd {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  padding: 1px 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--sunken);
+  color: var(--text);
+}
+
+/* A 0 ms duration under reduced motion is harmless here: the animation is finite. */
+@keyframes palette-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* A route request's ghost wire (docs/editor.md#requests-in-flight): thin, dashed and muted, plainly not a route; never
+   under the pointer, so it cannot be hovered or clicked; the error colour for its second when ear refuses it. */
+.react-flow__edge.ear-ghost-edge {
+  pointer-events: none;
+}
+
+.ear-ghost {
+  stroke: var(--muted);
+  stroke-width: 1.5px;
+  stroke-dasharray: 4 4;
+  fill: none;
+  transition: stroke var(--motion-fast);
+}
+
+.ear-ghost-refused {
+  stroke: var(--err);
+}
+
+/* The busy mark on a button whose request is on its way (docs/editor.md#requests-in-flight): an open ring that turns
+   over --motion-spin; under reduced motion it stands still (below). */
+.spinner {
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  margin-right: 4px;
+  vertical-align: -0.1em;
+  box-sizing: border-box;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: var(--radius-pill);
+  animation: spin var(--motion-spin) linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* The inspector (docs/editor.md#the-inspector): one subject, resized by its left edge between sizes.ts's bounds, which
+   sizes.test.ts holds equal. */
+.inspector {
+  position: relative;
+  flex: none;
+  width: clamp(280px, var(--inspector-width), 560px);
+  border-left: 1px solid var(--line);
+  background: var(--raised);
+}
+
+.inspector-body {
+  height: 100%;
   overflow-y: auto;
   padding: 8px 12px;
-  border-left: 1px solid #ddd;
-  background: #fafafa;
+  box-sizing: border-box;
 }
 
-.panel h1 {
-  font-size: 18px;
-  margin: 4px 0 8px;
-}
-
-.panel h2 {
+.inspector h2 {
   font-size: 14px;
   margin: 0 0 6px;
 }
 
-.panel-section {
-  padding: 8px 0;
-  border-top: 1px solid #e5e5e5;
+.inspector h3 {
+  font-size: 12px;
+  margin: 6px 0 2px;
 }
 
-.panel label {
+.inspector-section {
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+}
+
+.inspector-body > .inspector-section:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.inspector label {
   display: block;
   margin-bottom: 6px;
 }
 
-.panel textarea,
-.panel input,
-.panel select {
+.inspector-node {
+  padding-bottom: 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.inspector-line {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.inspector-delete {
+  margin-top: 8px;
+}
+
+.inspector-list {
+  margin: 0 0 6px;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 12px;
+  margin: 0 0 6px;
+  font-size: 12px;
+}
+
+.facts > div {
+  display: contents;
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.facts .tone-err dd {
+  color: var(--err);
+}
+
+.facts .tone-warn dd {
+  color: var(--warn);
+}
+
+.port-ref {
+  font-family: ui-monospace, monospace;
+}
+
+.wire-status.wire-linked {
+  color: var(--ok);
+}
+
+.wire-status.wire-pending {
+  color: var(--warn);
+}
+
+.wire-status.wire-unknown {
+  color: var(--muted);
+}
+
+.wire-status.wire-refused {
+  color: var(--err);
+}
+
+.route-level {
+  display: flex;
+  align-items: center;
+  min-width: 120px;
+}
+
+/* A splitter: transparent until hovered or focused, when its fill is the cue (so focus needs no outline of its own). */
+.splitter {
+  position: absolute;
+  z-index: 5;
+  background: transparent;
+  touch-action: none;
+  transition: background-color var(--motion-fast);
+}
+
+.splitter-vertical {
+  left: -3px;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+}
+
+.splitter-horizontal {
+  left: 0;
+  right: 0;
+  top: -3px;
+  height: 6px;
+  cursor: row-resize;
+}
+
+.splitter:hover,
+.splitter:focus-visible {
+  background: var(--accent);
+  outline: none;
+}
+
+/* The ear.conf drawer (docs/editor.md#the-drawer): a 32 px header that stays when closed, and a body resized by its top
+   edge between sizes.ts's bounds, which sizes.test.ts holds equal. */
+.drawer {
+  position: relative;
+  border-top: 1px solid var(--line);
+  background: var(--raised);
+  min-width: 0;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.drawer-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 32px;
+  padding: 0 12px;
+  box-sizing: border-box;
+}
+
+.drawer-status {
+  display: flex;
+  flex: 1;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.drawer-word + .drawer-word::before {
+  content: " · ";
+  white-space: pre;
+  color: var(--muted);
+}
+
+.drawer-body {
+  height: clamp(120px, var(--drawer-height), 70vh);
+  overflow: auto;
+  padding: 0 12px 8px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The body stays mounted while closed (the draft, the caret and the scroll are kept); its display: flex would otherwise
+   beat the hidden attribute. */
+.drawer-body[hidden] {
+  display: none;
+}
+
+.text-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+/* The drawer's text is its gutter beside the box (docs/editor.md#the-drawers-gutter), filling the body. */
+.text-pane .knobly-text-row {
+  flex: 1;
+  min-height: 80px;
+}
+
+.text-pane .knobly-text-row .knobly-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.app .text-pane .knobly-text-input {
+  height: 100%;
+  resize: none;
+}
+
+/* The base controls, everywhere in the shell. */
+.app textarea,
+.app input,
+.app select {
   width: 100%;
   box-sizing: border-box;
   font-family: ui-monospace, monospace;
 }
 
+.app button {
+  font: inherit;
+  color: var(--text);
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  padding: 2px 8px;
+  transition: background-color var(--motion-fast);
+}
+
+.app button:hover:not(:disabled) {
+  background: var(--sunken);
+}
+
+.app button:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.app input,
+.app select,
+.app textarea:not(.knobly-text-input) {
+  color: var(--text);
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+}
+
+.app .port-ref {
+  padding: 0 4px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .banner {
   padding: 6px 8px;
   margin-bottom: 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-control);
 }
 
-.banner-connection {
-  background: #fff3bf;
+.banner-warn {
+  background: var(--warn-soft);
+  color: var(--text);
 }
 
 .banner-error {
-  background: #ffe3e3;
-  color: #a61e1e;
+  background: var(--err-soft);
+  color: var(--err);
 }
 
 .badge-not-realtime {
   display: inline-block;
   padding: 1px 6px;
-  border-radius: 8px;
-  background: #e03131;
-  color: white;
+  border-radius: var(--radius-pill);
+  background: var(--err);
+  color: var(--on-strong);
   font-weight: 600;
 }
 
+/* The node box (docs/editor.md#the-node-box): a stripe down its left edge and a pill in the state's token (--state),
+   the word always beside the colour. Its width is layout.ts's nodeWidth, which layout.test.ts holds equal. */
 .ear-node {
-  width: 200px;
-  background: white;
-  border: 1px solid #999;
-  border-radius: 6px;
+  --state: var(--warn);
+  position: relative;
+  width: 220px;
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-box);
+  box-shadow: var(--shadow);
+  font-variant-numeric: tabular-nums;
+  transition:
+    box-shadow var(--motion-fast),
+    border-color var(--motion-fast);
 }
 
+.ear-node::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--state);
+  border-radius: calc(var(--radius-box) - 1px) 0 0 calc(var(--radius-box) - 1px);
+  pointer-events: none;
+}
+
+.ear-node:hover {
+  box-shadow: var(--shadow-lifted);
+}
+
+/* The ring sits outside the border, so a failed box keeps its --err border while selected. */
 .ear-node.selected {
-  border-color: #1c7ed6;
-  box-shadow: 0 0 0 2px #a5d8ff;
+  box-shadow:
+    0 0 0 2px var(--accent),
+    var(--shadow-lifted);
 }
 
-.ear-node-header {
-  padding: 6px 8px;
-  border-bottom: 1px solid #eee;
+.state-running {
+  --state: var(--ok);
 }
 
-.ear-node-type {
-  color: #777;
-  font-weight: normal;
-}
-
-.ear-node-state {
-  font-size: 11px;
-}
-
-.state-running .ear-node-state {
-  color: #2f9e44;
-}
-
-.state-starting .ear-node-state,
-.state-stopping .ear-node-state {
-  color: #e8a317;
-}
-
-.state-failed {
-  border-color: #e03131;
-}
-
-.state-failed .ear-node-state {
-  color: #e03131;
-}
-
-/* Silence the operator asked for is quiet, never a fault (docs/editor.md#a-nodes-health); stopped and disabled apart. */
-.state-stopped .ear-node-state {
-  color: #5c7cfa;
-}
-
-.state-disabled {
-  border-style: dashed;
-}
-
-.state-disabled .ear-node-state {
-  color: #868e96;
+/* A change in place is the node's own work, not a warning (docs/editor.md#a-nodes-health). */
+.state-reconfiguring {
+  --state: var(--accent);
 }
 
 /* A state this editor does not know: neutral, as starting's. */
-.state-unknown .ear-node-state {
-  color: #e8a317;
+.state-starting,
+.state-stopping,
+.state-unknown {
+  --state: var(--warn);
 }
 
-.phase-configuring .ear-node-state {
-  animation: pulse 2s ease-in-out infinite;
+.state-failed {
+  --state: var(--err);
 }
 
-@keyframes pulse {
-  50% {
-    opacity: 0.5;
-  }
+.ear-node.state-failed {
+  border-color: var(--err);
 }
 
-.ear-node-line {
-  font-size: 11px;
-  color: #555;
-  max-width: 220px;
+/* Silence the operator asked for is quiet, never a fault (docs/editor.md#a-nodes-health); stopped and disabled apart.
+   A disabled box is never dimmed: its text keeps full contrast. */
+.state-stopped {
+  --state: var(--quiet);
+}
+
+.state-disabled {
+  --state: var(--off);
+}
+
+.ear-node.state-disabled {
+  border-style: dashed;
+}
+
+.ear-node.state-disabled::before {
+  background: repeating-linear-gradient(135deg, var(--off) 0 3px, transparent 3px 6px);
+}
+
+.ear-node-header {
+  padding: 6px 8px 6px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.ear-node-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.ear-node-name {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.ear-node-type {
+  font-size: 10px;
+  color: var(--muted);
+  font-weight: normal;
+  white-space: nowrap;
+}
+
+.ear-node-status {
+  display: flex;
+  align-items: center;
+  margin: 3px 0 2px;
+}
+
+.ear-node-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 7px 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--sunken);
+  color: var(--state);
+  font-size: 11px;
+  line-height: 18px;
+  font-weight: 600;
+}
+
+.ear-node-pill-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-pill);
+  background: var(--state);
+}
+
+.ear-node-reason {
+  font-family: ui-monospace, monospace;
+  font-weight: normal;
+}
+
+/* configuring pulses the dot only, never the word. */
+.phase-configuring .ear-node-pill-dot {
+  animation: pulse var(--motion-pulse) ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.4;
+  }
+}
+
+.ear-node-line {
+  font-size: 11px;
+  color: var(--muted);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The lifecycle bar: one segmented row the inspector's width, its buttons sharing borders
+   (docs/editor.md#the-inspector). */
 .lifecycle-buttons {
+  display: flex;
   margin: 6px 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  overflow: hidden;
 }
 
 .lifecycle-buttons button {
-  margin-right: 4px;
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0;
+  padding: 0 4px;
+  height: 30px;
+  border: 0;
+  border-radius: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lifecycle-buttons button + button {
+  border-left: 1px solid var(--line);
+}
+
+/* A lifecycle refusal under the bar, beside the button that asked (docs/editor.md#where-a-refusal-lands). */
+.lifecycle-refusal {
+  margin: 4px 0 0;
+  color: var(--err);
+}
+
+.lifecycle-refusal code {
+  font-family: ui-monospace, monospace;
 }
 
 .ear-node-ports {
@@ -176,6 +1021,7 @@ body,
   width: 50%;
 }
 
+/* A port row's height is layout.ts's portHeight, which layout.test.ts holds equal. */
 .port {
   position: relative;
   height: 22px;
@@ -190,30 +1036,192 @@ body,
   flex-direction: row-reverse;
 }
 
+.port-name {
+  font-family: ui-monospace, monospace;
+}
+
+/* Handles: a 10 px dot with a 20 px hit area (its ::before is part of the handle's pointer target). While a wire is
+   drawn, connect.ts's handleCue rings every handle a drop on would make a route and dims the rest; the ringed one under
+   the pointer grows, by size alone, so React Flow's own translate keeps it centred on the edge. */
+.ear-node .react-flow__handle {
+  box-sizing: border-box;
+  width: 10px;
+  height: 10px;
+  background: var(--text);
+  border: 2px solid var(--raised);
+  transition:
+    width var(--motion-fast),
+    height var(--motion-fast),
+    opacity var(--motion-fast);
+}
+
+.ear-node .react-flow__handle::before {
+  content: "";
+  position: absolute;
+  inset: -7px;
+  border-radius: var(--radius-pill);
+}
+
+.ear-node .react-flow__handle.handle-target {
+  box-shadow: 0 0 0 3px var(--accent);
+}
+
+.ear-node .react-flow__handle.handle-dimmed {
+  opacity: 0.3;
+}
+
+.ear-node .react-flow__handle.handle-target.connectingto {
+  width: 14px;
+  height: 14px;
+}
+
+/* A meter (docs/editor.md#meters): the zones are fixed on the scale and the rms bar uncovers them; the tick and the
+   lamp follow the fractions Meter.tsx paints (--meter-rms-at, --meter-peak-at; not --meter-peak, the tick's colour). */
 .meter {
+  --meter-rms-at: 0;
+  --meter-peak-at: 0;
   position: relative;
   flex: 1;
   height: 6px;
-  background: #eee;
-  border-radius: 2px;
+  background: var(--sunken);
+  border-radius: var(--radius-pill);
   overflow: hidden;
 }
 
 .meter-rms {
-  height: 100%;
-  background: #40c057;
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to right,
+    var(--meter-low) var(--meter-mid-at),
+    var(--meter-mid) var(--meter-mid-at) var(--meter-hot-at),
+    var(--meter-hot) var(--meter-hot-at)
+  );
+  clip-path: inset(0 calc(100% - var(--meter-rms-at) * 100%) 0 0);
 }
 
 .meter-peak {
   position: absolute;
   top: 0;
+  left: calc(var(--meter-peak-at) * 100%);
   width: 2px;
   height: 100%;
   margin-left: -2px;
-  background: #2b8a3e;
+  background: var(--meter-peak);
 }
 
-/* The ear.conf pane: the text unwrapped (lines and columns match the diagnostics), and its
+.meter-clip {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 4px;
+  height: 100%;
+  background: transparent;
+}
+
+.meter[data-clipped] .meter-clip {
+  background: var(--meter-hot);
+}
+
+/* Wires (docs/editor.md#wires): the colour is the status class's, the width and brightness the level's (set inline as
+   --wire-width and stroke-opacity). The selector outweighs React Flow's selected-edge stroke, so a selected wire keeps
+   its status colour and shows selection by its width. */
+.ear-wire.wire-linked,
+.ear-wire-flow.wire-linked {
+  --wire-colour: var(--ok);
+}
+
+.wire-pending,
+.wire-unknown {
+  --wire-colour: var(--warn);
+}
+
+.wire-refused {
+  --wire-colour: var(--err);
+}
+
+.react-flow .react-flow__edge .react-flow__edge-path.ear-wire {
+  stroke: var(--wire-colour);
+  stroke-width: var(--wire-width);
+  transition: stroke-width var(--motion-fast);
+}
+
+.react-flow .react-flow__edge .ear-wire-dashed {
+  stroke-dasharray: 6 4;
+}
+
+.react-flow .react-flow__edge:hover .react-flow__edge-path.ear-wire {
+  stroke-width: calc(var(--wire-width) + 1px);
+}
+
+/* The flow: a dash moving from the output toward the input at a fixed speed (16 px a period), saying "signal", not how
+   loud. */
+.ear-wire-flow {
+  stroke: var(--raised);
+  stroke-opacity: 0.75;
+  stroke-width: max(1px, calc(var(--wire-width) * 0.4));
+  stroke-dasharray: 3 13;
+  stroke-linecap: round;
+  pointer-events: none;
+  animation: wire-flow var(--motion-flow) linear infinite;
+}
+
+@keyframes wire-flow {
+  to {
+    stroke-dashoffset: -16;
+  }
+}
+
+.wire-label {
+  position: absolute;
+  pointer-events: none;
+  padding: 0 6px;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-pill);
+  background: var(--raised);
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 600;
+}
+
+.wire-label.wire-refused {
+  color: var(--err);
+}
+
+.wire-label.wire-unknown {
+  color: var(--muted);
+}
+
+/* The durations are already 0 under reduced motion (theme.css); the configuring pulse, the wires' flow and the busy
+   spinner are infinite animations, which a 0 s duration would churn rather than stop, so they stop here (the
+   spinner keeps its open ring as the busy mark). The peak tick's fall is
+   data, not decoration, and stays. */
+@media (prefers-reduced-motion: reduce) {
+  .phase-configuring .ear-node-pill-dot {
+    animation: none;
+  }
+
+  .ear-wire-flow {
+    display: none;
+  }
+
+  .spinner {
+    animation: none;
+  }
+}
+
+/* Forced colours (Windows high contrast): the stripe stays visible in the system's text colour. */
+@media (forced-colors: active) {
+  .ear-node::before {
+    background: CanvasText;
+  }
+
+  .gutter-dot {
+    background: CanvasText;
+  }
+}
+
+/* The ear.conf drawer's text: unwrapped (lines and columns match the diagnostics), and its
    diagnostics as buttons that put the caret at their place. */
 .text-pane-text {
   white-space: pre;
@@ -238,11 +1246,11 @@ body,
 }
 
 .diagnostic-error button {
-  color: #a61e1e;
+  color: var(--err);
 }
 
 .diagnostic-warning button {
-  color: #8a6100;
+  color: var(--warn);
 }
 
 /* A node's companions (docs/editor.md#companions): small badges along the box's bottom edge, a known kind and an
@@ -254,7 +1262,7 @@ body,
   margin: 0;
   padding: 4px 8px 6px;
   list-style: none;
-  border-top: 1px solid #eee;
+  border-top: 1px solid var(--line);
 }
 
 .companion-badge {
@@ -262,25 +1270,25 @@ body,
   align-items: center;
   gap: 3px;
   padding: 0 6px;
-  border: 1px solid #ced4da;
-  border-radius: 8px;
-  background: #f8f9fa;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  background: var(--sunken);
   font-size: 10px;
   line-height: 16px;
-  color: #343a40;
+  color: var(--text);
 }
 
 .companion-dot {
-  color: #2f9e44;
+  color: var(--ok);
 }
 
 .companion-not-ready {
-  color: #868e96;
+  color: var(--off);
   border-style: dashed;
 }
 
 .companion-not-ready .companion-dot {
-  color: #868e96;
+  color: var(--off);
 }
 
 /* The warning mark: something moved in the last minute (a companion's counter). */
@@ -289,9 +1297,9 @@ body,
   width: 12px;
   height: 12px;
   margin-left: 2px;
-  border-radius: 50%;
-  background: #f08c00;
-  color: white;
+  border-radius: var(--radius-pill);
+  background: var(--warn);
+  color: var(--on-strong);
   font-size: 9px;
   font-weight: 700;
   line-height: 12px;
@@ -320,8 +1328,8 @@ body,
   white-space: nowrap;
 }
 
-/* The diagnostics counters (docs/editor.md#counters): the box's mark sits after the state word; the dropouts badge
-   beside "not realtime" carries the same mark and its count in words; the panel's totals are a plain table, an unknown
+/* The diagnostics counters (docs/editor.md#counters): the box's mark sits after the state word; the dropouts badge in
+   the top bar carries the same mark and its count in words; the inspector's totals are a plain table, an unknown
    counter's name in monospace as sent. */
 .counter-mark {
   margin-left: 4px;
@@ -330,10 +1338,10 @@ body,
 .badge-dropouts {
   display: inline-block;
   padding: 0 6px 0 3px;
-  border: 1px solid #f08c00;
-  border-radius: 8px;
-  background: #fff4e6;
-  color: #a35200;
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-pill);
+  background: var(--warn-soft);
+  color: var(--warn);
   font-weight: 600;
 }
 
@@ -355,7 +1363,7 @@ body,
   padding: 0 12px 0 0;
   font-weight: normal;
   text-align: left;
-  color: #555;
+  color: var(--muted);
 }
 
 .counter-table td {
@@ -365,16 +1373,16 @@ body,
 }
 
 .counter-recent {
-  color: #a35200;
+  color: var(--warn);
 }
 
 .counter-unknown th {
   font-family: ui-monospace, monospace;
 }
 
-/* The node panel's knobly box (docs/editor.md#the-node-panels-text): the pane's text style; a read-only one (a
-   snippet's node, a file with errors) is on a grey surface at full contrast, its label saying "(read-only)" and the
-   note why. */
+/* The inspector's Node subject's knobly box (docs/editor.md#the-node-panels-text): the drawer's text style; a
+   read-only one (a snippet's node, a file with errors) is on the sunken surface at full contrast, its label saying
+   "(read-only)" and the note why. */
 .node-text {
   margin: 8px 0 4px;
 }
@@ -385,42 +1393,29 @@ body,
 
 .node-text-note {
   font-size: 12px;
-  color: #495057;
+  color: var(--muted);
   margin-bottom: 4px;
 }
 
 /* knobly's highlighting (docs/editor.md#highlighting), display only: the textarea on top holds the text, caret and
    selection with its glyphs transparent; the highlighted copy behind it draws them. Both boxes share every metric
-   (font, size, line height, padding, border, tabs, no wrapping), so each glyph lies under its caret position. The
-   colours are tokens from the editor's palette (its blue, the warnings' amber and brown, the meters' green, the
-   errors' red), each a shade at 4.5:1 or better on both the white and the read-only grey surface. */
+   (font, size, line height, padding, border, corners, tabs, no wrapping), so each glyph lies under its caret
+   position. The colours are theme.css's knobly tokens, light and dark, each at 4.5:1 or better on both the box's
+   surface and the read-only one, which theme.test.ts checks. */
 .knobly-text {
-  --knobly-surface: #fff;
-  --knobly-surface-readonly: #f1f3f5;
-  --knobly-border: #adb5bd;
-  --knobly-text: #212529;
-  --knobly-directive: #1864ab;
-  --knobly-keyword: #a35200;
-  --knobly-variable: #8a6100;
-  --knobly-number: #2b7a3a;
-  --knobly-string: #a61e1e;
-  --knobly-comment: #666;
-  --knobly-punctuation: #495057;
-  --knobly-error: #c92a2a;
-  --knobly-error-surface: #ffe3e3;
   position: relative;
   background: var(--knobly-surface);
-  border-radius: 2px;
+  border-radius: var(--radius-control);
 }
 
-
 .knobly-text-shown,
-.panel .knobly-text-input {
+.knobly-text .knobly-text-input {
   margin: 0;
   padding: 4px;
   border: 1px solid var(--knobly-border);
+  border-radius: var(--radius-control);
   font-family: ui-monospace, monospace;
-  font-size: 12px;
+  font-size: var(--code-size);
   line-height: 1.4;
   letter-spacing: normal;
   tab-size: 8;
@@ -445,7 +1440,7 @@ body,
   font: inherit;
 }
 
-.panel .knobly-text-input {
+.knobly-text .knobly-text-input {
   position: relative;
   display: block;
   resize: vertical;
@@ -496,14 +1491,207 @@ body,
   background: var(--knobly-error-surface);
 }
 
+/* The drawer's gutter (docs/editor.md#the-drawers-gutter): a second pre beside the box, never inside it, with the
+   box's font, size and line height and a top inset of the textarea's border and padding, so row n lies beside line
+   n; it follows the textarea's vertical scroll, and its bottom room lets it scroll as far. Only the dots take the
+   pointer. */
+.knobly-text-row {
+  display: flex;
+  min-height: 0;
+}
+
+.knobly-gutter {
+  margin: 0;
+  flex: none;
+  box-sizing: border-box;
+  width: calc(var(--gutter-digits) * 1ch + 22px);
+  padding: 5px 6px 0 4px;
+  overflow: hidden;
+  pointer-events: none;
+  text-align: right;
+  font-family: ui-monospace, monospace;
+  font-size: var(--code-size);
+  line-height: 1.4;
+  white-space: pre;
+  color: var(--muted);
+  background: var(--sunken);
+  border-radius: var(--radius-control) 0 0 var(--radius-control);
+  font-variant-numeric: tabular-nums;
+}
+
+.knobly-gutter code {
+  display: inline-block;
+  padding-bottom: 32px;
+  font: inherit;
+}
+
+.gutter-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 4px;
+  border-radius: var(--radius-pill);
+  vertical-align: 0.05em;
+}
+
+.gutter-dot-error {
+  background: var(--err);
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.gutter-dot-warning {
+  background: var(--warn);
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.gutter-dot-other {
+  background: var(--muted);
+  pointer-events: auto;
+  cursor: pointer;
+}
+
 /* Forced colours (Windows high contrast): the plain textarea in the system's colours, no copy behind it. */
 @media (forced-colors: active) {
   .knobly-text-shown {
     display: none;
   }
 
-  .panel .knobly-text-input {
+  .knobly-text .knobly-text-input {
     color: CanvasText;
     background: Canvas;
+  }
+}
+
+/* Narrow windows (docs/editor.md#narrow-windows; sizes.ts's narrowQuery, which sizes.test.ts holds equal): the
+   inspector is a sheet over the canvas's right edge, shown while open, and is not resized. */
+@media (max-width: 759px) {
+  .inspector {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 10;
+    width: min(clamp(280px, var(--inspector-width), 560px), calc(100% - 48px));
+    box-shadow: var(--shadow-lifted);
+  }
+
+  .app[data-sheet="closed"] .inspector {
+    display: none;
+  }
+
+  .inspector .splitter {
+    display: none;
+  }
+}
+
+@media (max-width: 599px) {
+  .topbar .wordmark {
+    display: none;
+  }
+
+  /* At phone width the top bar's buttons fit beside the pill: the theme switch keeps its icon (its label says the
+     choice), the drawer toggle its words and chip. */
+  .topbar {
+    gap: 6px;
+    padding: 0 8px;
+  }
+
+  .topbar-end {
+    gap: 6px;
+  }
+
+  .theme-word,
+  .topbar-drawer-glyph {
+    display: none;
+  }
+
+  .palette,
+  .shortcut-sheet {
+    top: 8px;
+  }
+}
+
+/* Forced colours: the palette's active option by the system's highlight, as its background is not drawn. */
+@media (forced-colors: active) {
+  .palette-option[aria-selected="true"] {
+    outline: 2px solid Highlight;
+  }
+}
+
+/* Phones and touch (docs/editor.md#phones-and-touch). A coarse pointer with no hover is a finger: text fields at 16 px
+   (iOS Safari zooms the page on focusing a smaller one), controls at least 40 px tall, port handles with a hit area a
+   finger can find (as tall as their port row, so a row's neighbour stays its own, and wide outward), and the palette
+   button a search icon, as there is no keyboard to press its key on. */
+.palette-icon {
+  display: none;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  :root {
+    --code-size: 16px;
+  }
+
+  .app input,
+  .app select,
+  .app textarea {
+    font-size: 16px;
+  }
+
+  .topbar button {
+    min-height: 36px;
+  }
+
+  .palette-icon {
+    display: block;
+  }
+
+  .palette-key {
+    display: none;
+  }
+
+  .app .canvas-tools button {
+    width: 40px;
+    height: 40px;
+  }
+
+  .lifecycle-buttons button {
+    height: 40px;
+  }
+
+  .ear-node .react-flow__handle::before {
+    inset: -6px -16px;
+  }
+
+  .palette-option {
+    padding: 10px 8px;
+  }
+}
+
+/* A phone in portrait (below 600 px): the inspector is a sheet from the bottom, over the canvas's lower part, so the
+   graph stays in sight above it; the engine chip gives way (the Graph subject holds the same facts). */
+@media (max-width: 599px) {
+  .topbar .engine-chip {
+    display: none;
+  }
+
+  .inspector {
+    top: auto;
+    left: 0;
+    width: auto;
+    max-height: 62%;
+    border-left: none;
+    border-top: 1px solid var(--line);
+    border-radius: var(--radius-box) var(--radius-box) 0 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* The sheet has only a max height, so its body scrolls as a flex child, not by a height of 100%. */
+  .inspector-body {
+    height: auto;
+    flex: 1 1 auto;
+    min-height: 0;
   }
 }

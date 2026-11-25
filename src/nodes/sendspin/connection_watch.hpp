@@ -19,6 +19,8 @@ public:
 	explicit ConnectionWatch(bool dials) noexcept : dials_(dials) {}
 	/// Never `dial` within 31 s of the last dial. `disconnected` only after `connected` and 5 s of false.
 	Told read(Reading now, std::chrono::steady_clock::time_point at) noexcept;
+	/// Whether it last told `connected` (no `disconnected` since).
+	bool toldConnected() const noexcept { return toldConnected_; }
 
 private:
 	bool dials_;

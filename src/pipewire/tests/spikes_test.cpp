@@ -2434,7 +2434,7 @@ TEST_CASE("S7: a module-run converter's ports tell no latency of their own, resa
 
 // ---------------------------------------------------------------------------------------------------------------------
 // S4: ports added to and removed from a connected, streaming RT_PROCESS filter: what a port block's reshape would do
-// (not built: docs/design/reconfigure.md). What it found is docs/engine.md#the-one-data-loop-and-invokes.
+// (built: docs/engine.md#reshapes). What it found is docs/engine.md#the-one-data-loop-and-invokes.
 //
 // The code reading, PipeWire 1.4.2 (src/pipewire/filter.c unless named):
 //  - pw_filter_add_port (1802) runs on the main loop (ensure_loop, 1813) and calls alloc_port (328), which puts the

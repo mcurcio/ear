@@ -25,16 +25,19 @@ inline std::optional<RtpEncoding> encodingOf(std::string_view format) {
 	return std::nullopt;
 }
 
-inline constexpr auto addressRow = setting::required(
-	"address", setting::text<RtpAddress::parse>(
-				   R"("0.0.0.0" or an IPv4 multicast group (224.0.0.0-239.255.255.255), as a dotted quad)"));
-inline constexpr auto portRow = setting::required("port", setting::number(1, 65535));
-inline constexpr auto formatRow = setting::required("format", setting::text<encodingOf>(R"("L16" or "L24")"));
+inline constexpr auto addressRow =
+	setting::required("address",
+                      setting::text<RtpAddress::parse>(
+						  R"("0.0.0.0" or an IPv4 multicast group (224.0.0.0-239.255.255.255), as a dotted quad)"))
+		.inPlace();
+// Every key but channels changes in place (docs/node-types.md#rtp): channels makes the ports.
+inline constexpr auto portRow = setting::required("port", setting::number(1, 65535)).inPlace();
+inline constexpr auto formatRow = setting::required("format", setting::text<encodingOf>(R"("L16" or "L24")")).inPlace();
 inline constexpr auto channelsRow = setting::required("channels", setting::number(1, 64));
 inline constexpr auto rateRow =
-	setting::optional("rate", setting::rate(SampleRate::fixed<8'000>(), SampleRate::fixed<192'000>()));
+	setting::optional("rate", setting::rate(SampleRate::fixed<8'000>(), SampleRate::fixed<192'000>())).inPlace();
 inline constexpr auto latencyRow =
-	setting::defaulted("latencyMs", setting::number(1, 1000, "milliseconds"), defaultLatencyMs);
+	setting::defaulted("latencyMs", setting::number(1, 1000, "milliseconds"), defaultLatencyMs).inPlace();
 inline constexpr auto stream = bank::output<"stream">;
 inline constexpr auto fromRtp = bank::insideInput<"from_rtp">;
 inline constexpr TypeSpec spec{
@@ -47,17 +50,29 @@ struct Rtp {
 		return {stream(members(s.get<channelsRow>())), fromRtp(members(s.get<channelsRow>()))};
 	}
 
-	Configured configure(CreateOf<spec>& cx, const Checked& s) {
-		// The receive buffer's latency reaches `stream` through the pass-through: the framework puts the receiver's
-		// latencyMs beyond from_rtp (docs/writing-a-node-type.md#engine-companions). The sender's rate is its own (the
-		// row reads a rate), the graph's when the file gives none.
+	/// The receiver the settings ask for. The receive buffer's latency reaches `stream` through the pass-through: the
+	/// framework puts the receiver's latencyMs beyond from_rtp (docs/writing-a-node-type.md#engine-companions). The
+	/// sender's rate is its own (the row reads a rate), the graph's when the file gives none.
+	static RtpReceiverShape receiverFor(const Checked& s, AudioFormat format) {
 		const std::optional<SampleRate> sender = s.get<rateRow>();
-		cx.attach(fromRtp, RtpReceiverShape{.address = s.get<addressRow>(),
-		                                    .port = static_cast<std::uint16_t>(s.get<portRow>()),
-		                                    .encoding = s.get<formatRow>(),
-		                                    .rate = sender.value_or(cx.format().rate),
-		                                    .latencyMs = s.get<latencyRow>()});
+		return RtpReceiverShape{.address = s.get<addressRow>(),
+		                        .port = static_cast<std::uint16_t>(s.get<portRow>()),
+		                        .encoding = s.get<formatRow>(),
+		                        .rate = sender.value_or(format.rate),
+		                        .latencyMs = s.get<latencyRow>()};
+	}
+
+	Configured configure(CreateOf<spec>& cx, const Checked& s) {
+		cx.attach(fromRtp, receiverFor(s, cx.format()));
 		return cx.applied(passThrough(bankPair(fromRtp, stream)));
+	}
+
+	/// A change of anything but channels: the receiver replaced, `stream` held silent until the new one runs
+	/// (docs/node-types.md#rtp). The pass-through stays; the new receiver's latencyMs is carried from the commit point.
+	Changed configure(ChangeOf<spec>& cx, const Checked&, const Checked& now) {
+		cx.hold(stream);
+		cx.attach(fromRtp, receiverFor(now, cx.format()));
+		return cx.applied();
 	}
 };
 

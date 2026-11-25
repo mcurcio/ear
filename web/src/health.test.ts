@@ -135,10 +135,41 @@ describe("describeHealth", () => {
     const view = describeHealth(node({ state: "recovering", phase: "recovering" }), long);
     expect(view.word).toBe("recovering");
     expect(view.styleClass).toBe("state-unknown");
-    const phaseOnly = describeHealth(node({ state: "mystery", phase: "reconfiguring" }), long);
-    expect(phaseOnly.word).toBe("reconfiguring");
+    const phaseOnly = describeHealth(node({ state: "mystery", phase: "retuning" }), long);
+    expect(phaseOnly.word).toBe("retuning");
     expect(phaseOnly.styleClass).toBe("state-unknown");
     // An unknown phase of a known state keeps the state's word and style.
-    expect(describeHealth(node({ state: "running", phase: "reconfiguring" }), long).styleClass).toBe("state-running");
+    expect(describeHealth(node({ state: "running", phase: "retuning" }), long).styleClass).toBe("state-running");
+  });
+
+  it("reconfiguring has its own style and a line from its keys and next", () => {
+    const view = describeHealth(
+      node({ state: "reconfiguring", phase: "reconfiguring", keys: ["port"], next: ["latencyMs"] }),
+      long,
+    );
+    expect(view.word).toBe("reconfiguring");
+    expect(view.styleClass).toBe("state-reconfiguring");
+    expect(view.line).toBe("reconfiguring port; latencyMs next");
+    expect(view.actions.start.enabled).toBe(false);
+    expect(view.actions.stop).toEqual({ enabled: true, why: "ends the change and stops" });
+    expect(view.actions.restart).toEqual({ enabled: true, why: "ends the change and restarts" });
+    expect(view.actions.disable).toEqual({ enabled: true, why: "ends the change and disables" });
+  });
+
+  it("a change of ports says so, restarting and configuring", () => {
+    const reshape = { kind: "reshape", keys: ["playback"], added: [], removed: ["play.2"] };
+    expect(describeHealth(node({ state: "stopping", phase: "stopping", cause: { kind: "restarting", restart: reshape } }), long).line).toBe(
+      "restarting: ports changed (playback)",
+    );
+    expect(describeHealth(node({ state: "starting", phase: "configuring", cause: reshape }), long).line).toBe(
+      "configuring: ports changed (playback)",
+    );
+  });
+
+  it("a fallback's restart says what could not be applied in place", () => {
+    const fellBack = { kind: "fell-back", keys: ["port"], reason: "deadline", detail: "deadline 10s passed" };
+    expect(describeHealth(node({ state: "stopping", phase: "stopping", cause: { kind: "restarting", restart: fellBack } }), long).line).toBe(
+      "restarting: could not apply port in place",
+    );
   });
 });

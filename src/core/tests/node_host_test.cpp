@@ -34,6 +34,7 @@
 #include "ear/core/main_loop_activity.hpp"
 #include "ear/core/node_host.hpp"
 #include "ear/testing/erased.hpp"
+#include "ear/core/sink_ring.hpp"
 #include "ear/core/source_ring.hpp"
 
 using namespace ear;
@@ -62,8 +63,10 @@ struct QuietConsumer final : SinkConsumer {
 
 /// Routable inputs record.left and record.right; the inside input bank "cap" (one port) and the inside output bank
 /// "pb" (two); then, for each of `sinks` sinks, the inside output bank "tap<n>" (two), counting from 1.
-Ports testPorts(int sinks = 0) {
-	std::vector<PortBank> banks{{Direction::input, "record", {"left", "right"}},
+Ports testPorts(int sinks = 0, bool wide = false) {
+	std::vector<std::string> record{"left", "right"};
+	if (wide) record.emplace_back("extra"); // a reshape's other ports
+	std::vector<PortBank> banks{{Direction::input, "record", record},
 	                            {Direction::input, "cap", {"1"}, PortBank::Reach::inside},
 	                            {Direction::output, "pb", {"1", "2"}, PortBank::Reach::inside}};
 	static const std::vector<std::string> taps{"tap1", "tap2", "tap3"};
@@ -105,6 +108,8 @@ struct TestConfig final : NodeConfig {
 		sinks = count;
 		ports_ = testPorts(count);
 	}
+	/// Other ports: a third routable input, record.extra.
+	void widen() { ports_ = testPorts(sinks, true); }
 	const Ports& ports() const override { return ports_; }
 	std::unique_ptr<ErasedInstance> make(NodeContext& node) const override;
 };
@@ -230,6 +235,10 @@ struct TestBlock final : PortBlock {
 	void fadeOut(std::move_only_function<void()> done) override {
 		log.push_back("fade");
 		complete(std::move(done));
+	}
+	void reshape(const Ports& next) override {
+		log.push_back("reshape " + std::to_string(next.inputs().size() + next.insideInputs().size() +
+		                                          next.outputs().size() + next.insideOutputs().size()));
 	}
 	void settle() override {
 		++modes.settles;
@@ -371,6 +380,8 @@ struct TestSink final : Sink, SinkTap {
 		mainLoop.post([closed = std::exchange(closed, nullptr), dropped = dropped]() mutable { closed(dropped); });
 	}
 	std::uint64_t droppedFrames() const noexcept override { return dropped; }
+	SinkControl& control() noexcept override { return pause; }
+	SinkPause pause;
 	void write(std::span<const std::span<const float>>, std::uint32_t, const ChunkStamp&) noexcept override {}
 };
 
@@ -1163,8 +1174,9 @@ TEST_CASE("An update restarts the configuration behind the same port block, lett
 		f.log.clear();
 		f.finishSink(0);
 		f.settle();
-		CHECK(f.log == Log{"sink rec.tap1 destroyed", "instance destroyed", "config A destroyed", "configure 44100 C",
-		                   "node rec starting", "prepare 44100/256", "drive code", "node rec running"});
+		CHECK(f.log == Log{"sink rec.tap1 destroyed", "instance destroyed", "config A destroyed", "reshape 5",
+		                   "configure 44100 C", "node rec starting", "prepare 44100/256", "drive code",
+		                   "node rec running"});
 	}
 	SECTION("a removal during a restart stops the node and starts nothing") {
 		f.host.nodeRemoved("rec");
@@ -1504,7 +1516,8 @@ TEST_CASE("A receiver lost after the node ran fails it, and an update makes a ne
 
 	f.update("fpp", withReceiver(f.log, "B"));
 	f.endTurn();
-	CHECK(f.log == Log{"config A destroyed", "configure 44100 B", "node fpp starting", "receiver fpp.rtp of fpp"});
+	CHECK(f.log ==
+	      Log{"config A destroyed", "reshape 5", "configure 44100 B", "node fpp starting", "receiver fpp.rtp of fpp"});
 	REQUIRE(f.receivers.events.size() == 2); // made once more, not twice
 	CHECK(f.blocks.events.size() == 1);      // the block stayed
 	f.log.clear();
@@ -1961,8 +1974,9 @@ TEST_CASE("A restart waits for the old configuration to close before it configur
 	std::thread([&] { f.finishLoop(0); }).join();
 	CHECK(f.log.empty());
 	f.settle();
-	CHECK(f.log == Log{"loop net.worker close", "instance destroyed", "loop net.worker freed", "configure 44100 next",
-	                   "node net starting", "prepare 44100/256", "drive code", "node net running"});
+	CHECK(f.log == Log{"loop net.worker close", "instance destroyed", "loop net.worker freed", "reshape 5",
+	                   "configure 44100 next", "node net starting", "prepare 44100/256", "drive code",
+	                   "node net running"});
 	f.stopAll();
 	f.settle();
 }
@@ -2218,6 +2232,8 @@ struct BlockingSink final : Sink, SinkTap {
 		});
 	}
 	std::uint64_t droppedFrames() const noexcept override { return 0; }
+	SinkControl& control() noexcept override { return pause; }
+	SinkPause pause;
 	void write(std::span<const std::span<const float>>, std::uint32_t, const ChunkStamp&) noexcept override {}
 };
 
@@ -2387,7 +2403,7 @@ TEST_CASE("A loop never finishing past the deadline is leaked, and a restart the
 
 	f.timers.advance(closeDeadline);
 	// The old configuration is leaked (never freed: its thread may still touch it); the next configuration begins.
-	CHECK(f.log == Log{"diagnostic net ear.close-overdue", "configure 44100 next", "node net starting",
+	CHECK(f.log == Log{"diagnostic net ear.close-overdue", "reshape 5", "configure 44100 next", "node net starting",
 	                   "prepare 44100/256", "drive code"});
 	CHECK(std::ranges::count(f.log, std::string("instance destroyed")) == 0);
 	CHECK(f.host.leaked() == 1);
@@ -3665,7 +3681,7 @@ TEST_CASE("A card's playback bank, an inside output, fades in at every drive and
 }
 
 // ---- The node's health (docs/architecture.md#the-node-lifecycle): the wanted state, health per transition,
-// waitingFor's pacing, the operations and the port-caused replace.
+// waitingFor's pacing, the operations and the change of ports.
 
 namespace {
 
@@ -3979,8 +3995,18 @@ TEST_CASE("A name added back says it waits for the older node after 2 s", "[node
 	CHECK(f.allGone == 1);
 }
 
-TEST_CASE("A change of ports keeps the node's stop and one health stream for the name, the old node telling nothing",
-          "[node_host][replace]") {
+/// A reshape's change (docs/architecture.md#reshapes): `next`'s ports, widened from the test ports.
+NodeChange reshapeTo(const TestConfig& next, bool inPlace = false) {
+	return NodeChange{.outcome = NodeOutcome::reshape,
+	                  .keys = {"playback"},
+	                  .oldPorts = testPorts(),
+	                  .ports = next.ports(),
+	                  .inPlace = inPlace};
+}
+
+TEST_CASE("A change of ports restarts the node behind its one block, reshaped between the two configurations, and "
+          "keeps its stop",
+          "[node_host][reshape]") {
 	Fixture f;
 	addRunning(f, "desk", std::make_shared<TestConfig>(f.log, "two"));
 	REQUIRE(replyText(f.host.stop("desk")) == "stop");
@@ -3988,16 +4014,46 @@ TEST_CASE("A change of ports keeps the node's stop and one health stream for the
 	f.log.clear();
 	f.listener.told.clear();
 
-	const NodeChange ports{NodeOutcome::restart, {"playback"}, true};
-	f.host.nodeReplacing("desk", ports);
-	f.host.nodeReplaced(NodeSpec{"desk", "test", {{"playback", 4}}}, std::make_shared<TestConfig>(f.log, "four"),
-	                    ports);
+	auto four = std::make_shared<TestConfig>(f.log, "four");
+	four->widen();
+	f.host.nodeChanged(NodeSpec{"desk", "test", {{"playback", 4}}}, four, reshapeTo(*four));
 	f.settle();
-	CHECK(f.listener.phases("desk") == Phases{"stopping (restarting settings)", "configuring (settings)", "stopped"});
-	CHECK(std::ranges::count(f.log, std::string("node desk gone dropped=0")) == 0); // the old one told nothing
+	CHECK(f.listener.phases("desk") == Phases{"stopping (restarting reshape)", "configuring (reshape)", "stopped"});
+	CHECK(f.blocks.made.size() == 1); // the block is kept
+	CHECK(std::ranges::count(f.log, std::string("block destroyed")) == 0);
+	// Reshaped once, after the old configuration went and before the new one's configure.
+	REQUIRE(std::ranges::count(f.log, std::string("reshape 6")) == 1);
+	CHECK(indexOf(f.log, "config two destroyed") < indexOf(f.log, "reshape 6"));
+	CHECK(indexOf(f.log, "reshape 6") < indexOf(f.log, "configure 48000 four"));
 	REQUIRE(f.host.health().size() == 1);
 	CHECK(f.host.health()[0].wanted == Wanted::stopped);
-	CHECK(f.host.health()[0].phase == NodePhase::stopped);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A change of ports to a disabled node reshapes its block alone, and its enable configures the ports the "
+          "block has",
+          "[node_host][reshape]") {
+	Fixture f;
+	addRunning(f, "desk", std::make_shared<TestConfig>(f.log));
+	f.host.nodeChanged(NodeSpec{"desk", "test", {}, true}, std::make_shared<TestConfig>(f.log),
+	                   NodeChange{NodeOutcome::disable, {}});
+	f.settle();
+	REQUIRE(f.host.health()[0].phase == NodePhase::disabled);
+	f.log.clear();
+	auto four = std::make_shared<TestConfig>(f.log);
+	four->widen();
+	NodeChange stored = reshapeTo(*four);
+	stored.outcome = NodeOutcome::stored;
+	f.host.nodeChanged(NodeSpec{"desk", "test", {{"playback", 4}}, true}, four, stored);
+	f.settle();
+	CHECK(f.log == Log{"reshape 6"}); // nothing else: no hook, no configuration
+	CHECK(f.host.health()[0].phase == NodePhase::disabled);
+	f.host.nodeChanged(NodeSpec{"desk", "test", {{"playback", 4}}}, four, NodeChange{NodeOutcome::enable, {}});
+	f.settle();
+	CHECK(std::ranges::count(f.log, std::string("reshape 6")) == 1); // the block has them already
+	CHECK(f.host.health()[0].phase == NodePhase::running);
 	f.stopAll();
 	f.settle();
 	CHECK(f.allGone == 1);
@@ -4015,55 +4071,37 @@ struct CountsSpans final : NodeCountsListener {
 	}
 };
 
-// docs/engine.md#counters: a node's counters run from its add, its block's kept when the block goes; a port-caused
-// replace is the same node to the operator (one health stream, its dropped frames), so it carries them too, and they
-// never step back on the way; a replace by another type is a new node, from zero.
-TEST_CASE("A node's counters are its block's, kept when the block goes and carried across a change of ports",
-          "[node_host][replace][counters]") {
+// docs/engine.md#counters: a node's counters run from its add, its block's kept when the block goes; a change of ports
+// keeps the block (a reshape), so they go on; a replace by another type is a new node, from zero.
+TEST_CASE("A node's counters are its block's, kept when the block goes and across a change of ports",
+          "[node_host][reshape][counters]") {
 	Fixture f;
 	CountsSpans spans;
 	f.host.subscribeCounts(spans);
 	CHECK_FALSE(f.host.counts("desk"));
 	addRunning(f, "desk", std::make_shared<TestConfig>(f.log, "two"));
 	CHECK(f.host.counts("desk") == NodeCounts{});
-	TestBlock* older = f.blocks.made.at(0);
-	older->counted = NodeCounts{.missedCycles = 1, .overruns = 2, .repositions = 3, .driverChanges = 4};
-	CHECK(f.host.counts("desk") == older->counted);
+	TestBlock* block = f.blocks.made.at(0);
+	block->counted = NodeCounts{.missedCycles = 1, .overruns = 2, .repositions = 3, .driverChanges = 4};
+	CHECK(f.host.counts("desk") == block->counted);
 
-	const NodeChange ports{NodeOutcome::restart, {"playback"}, true};
-	f.host.nodeReplacing("desk", ports);
-	f.host.nodeReplaced(NodeSpec{"desk", "test", {{"playback", 4}}}, std::make_shared<TestConfig>(f.log, "four"),
-	                    ports);
-	CHECK(f.host.counts("desk") == NodeCounts{1, 2, 3, 4}); // the older node's, read from it while it closes
-	older->counted.overruns = 5;                            // its block still runs until the barrier
-	CHECK(f.host.counts("desk") == NodeCounts{1, 5, 3, 4});
-	// Turn by turn until the older block is destroyed and the newer made, the counts never step back.
-	std::size_t turns = 0;
-	while (f.blocks.made.size() < 2 && turns++ < 50) {
-		f.endTurn();
-		CHECK(f.host.counts("desk") == NodeCounts{1, 5, 3, 4});
-	}
-	REQUIRE(f.blocks.made.size() == 2);
-	f.blocks.made.at(1)->counted = NodeCounts{.missedCycles = 10, .overruns = 20};
-	CHECK(f.host.counts("desk") == NodeCounts{11, 25, 3, 4});
-	f.blocks.events.back()->ready();
+	auto four = std::make_shared<TestConfig>(f.log, "four");
+	four->widen();
+	f.host.nodeChanged(NodeSpec{"desk", "test", {{"playback", 4}}}, four, reshapeTo(*four));
 	f.settle();
-	REQUIRE(f.host.health().size() == 1); // the older node is gone: its counts are carried
-	CHECK(f.host.counts("desk") == NodeCounts{11, 25, 3, 4});
-	CHECK(f.host.spanCounts(1) == NodeCounts{11, 25, 3, 4}); // the older node's span, which the newer carries on
-	CHECK_FALSE(f.host.spanCounts(2));                       // no span of its own
-	f.blocks.made.at(1)->counted.repositions = 1;
-	CHECK(f.host.counts("desk") == NodeCounts{11, 25, 4, 4});
+	REQUIRE(f.blocks.made.size() == 1);
+	block->counted.overruns = 5;
+	CHECK(f.host.counts("desk") == NodeCounts{1, 5, 3, 4});
+	CHECK(f.host.spanCounts(1) == NodeCounts{1, 5, 3, 4});
 
 	// Removed: still its counts while it stops, its block's kept past the block; none once it is gone, when its span
-	// ends with them. The port-caused replace began no span and ended none: one span, the name's.
+	// ends with them.
 	f.host.nodeRemoved("desk");
-	CHECK(f.host.counts("desk") == NodeCounts{11, 25, 4, 4});
+	CHECK(f.host.counts("desk") == NodeCounts{1, 5, 3, 4});
 	f.settle();
 	CHECK_FALSE(f.host.counts("desk"));
 	CHECK_FALSE(f.host.spanCounts(1));
-	// The newer node (serial 2) went on in span 1, which its counts answer, and ended it.
-	CHECK(spans.told == std::vector<std::string>{"began desk 1", "ended desk 1 11,25,4,4"});
+	CHECK(spans.told == std::vector<std::string>{"began desk 1", "ended desk 1 1,5,3,4"});
 	f.stopAll();
 	f.settle();
 	CHECK(f.allGone == 1);
@@ -4075,7 +4113,7 @@ TEST_CASE("A replace by another type starts the name's counters from zero", "[no
 	f.host.subscribeCounts(spans);
 	addRunning(f, "x", std::make_shared<TestConfig>(f.log, "old"));
 	f.blocks.made.at(0)->counted = NodeCounts{.missedCycles = 7};
-	const NodeChange type{NodeOutcome::restart, {}, false};
+	const NodeChange type{NodeOutcome::restart, {}};
 	f.host.nodeReplacing("x", type);
 	f.host.nodeReplaced(NodeSpec{"x", "other", {}}, std::make_shared<TestConfig>(f.log, "new"), type);
 	CHECK(f.host.counts("x") == NodeCounts{}); // the newer node's, though the older still closes
@@ -4125,7 +4163,7 @@ TEST_CASE("A replace of another type sends the older node's health to standard o
 	f.host.subscribe(wire);
 	addRunning(f, "x", std::make_shared<TestConfig>(f.log, "old"));
 	f.log.clear();
-	const NodeChange type{NodeOutcome::restart, {}, false};
+	const NodeChange type{NodeOutcome::restart, {}};
 	f.host.nodeReplacing("x", type);
 	f.host.nodeReplaced(NodeSpec{"x", "other", {}}, std::make_shared<TestConfig>(f.log, "new"), type);
 	f.settle();
@@ -4141,63 +4179,23 @@ TEST_CASE("A replace of another type sends the older node's health to standard o
 	CHECK(f.allGone == 1);
 }
 
-TEST_CASE("A port-caused replace's new node reports its older node's dropped frames, and its own removal waits for "
-          "the older node to be gone",
-          "[node_host][replace]") {
+TEST_CASE("A change of ports keeps the frames its sinks dropped for the node's removal", "[node_host][reshape]") {
 	Fixture f;
 	auto two = std::make_shared<TestConfig>(f.log, "two");
 	two->withSinks(1);
 	addRunning(f, "desk", two);
-	const NodeChange ports{NodeOutcome::restart, {"playback"}, true};
-
-	SECTION("the frames carried into the new node's removed") {
-		f.host.nodeReplacing("desk", ports);
-		f.host.nodeReplaced(NodeSpec{"desk", "test", {{"playback", 4}}}, std::make_shared<TestConfig>(f.log, "four"),
-		                    ports);
-		f.settle();
-		f.finishSink(5); // the older node's sink closes: it is gone, telling nobody
-		f.settle();
-		f.blocks.events.back()->ready();
-		f.settle();
-		REQUIRE(f.host.health().back().phase == NodePhase::running);
-		f.log.clear();
-		f.stopAll();
-		f.settle();
-		CHECK(f.log.back() == "all gone");
-		CHECK(std::ranges::count(f.log, std::string("node desk gone dropped=5")) == 1);
-	}
-	SECTION("removed while the older node still closes: gone only after it, with its frames") {
-		f.host.nodeReplacing("desk", ports);
-		f.host.nodeReplaced(NodeSpec{"desk", "test", {{"playback", 4}}}, std::make_shared<TestConfig>(f.log, "four"),
-		                    ports);
-		f.settle();
-		f.log.clear();
-		f.host.nodeRemoved("desk"); // the new node: its block still waits for the older one's
-		f.settle();
-		CHECK(std::ranges::count(f.log, std::string("node desk gone dropped=0")) == 0);
-		REQUIRE(f.host.health().size() == 2);
-		f.finishSink(5);
-		f.settle();
-		CHECK(f.log.back() == "node desk gone dropped=5");
-		CHECK(f.host.health().empty());
-		f.stopAll();
-		CHECK(f.allGone == 1);
-	}
-	SECTION("a new node added disabled still stands for the older node's removal and frames") {
-		f.host.nodeReplacing("desk", ports);
-		f.host.nodeReplaced(NodeSpec{"desk", "test", {{"playback", 4}}, true},
-		                    std::make_shared<TestConfig>(f.log, "four"), ports);
-		f.settle();
-		CHECK(f.host.health().back().phase == NodePhase::disabled);
-		f.log.clear();
-		f.stopAll();
-		f.settle();
-		CHECK(f.allGone == 0); // the older node's sink still closes
-		f.finishSink(5);
-		f.settle();
-		CHECK(std::ranges::count(f.log, std::string("node desk gone dropped=5")) == 1);
-		CHECK(f.allGone == 1);
-	}
+	auto four = std::make_shared<TestConfig>(f.log, "four");
+	four->widen();
+	f.host.nodeChanged(NodeSpec{"desk", "test", {{"playback", 4}}}, four, reshapeTo(*four));
+	f.settle();
+	f.finishSink(5); // the old configuration's sink closes, having dropped 5 frames
+	f.settle();
+	REQUIRE(f.host.health().back().phase == NodePhase::running);
+	f.log.clear();
+	f.stopAll();
+	f.settle();
+	CHECK(f.log.back() == "all gone");
+	CHECK(std::ranges::count(f.log, std::string("node desk gone dropped=5")) == 1);
 }
 
 // The type's class, configure and its contexts, and the hooks (docs/writing-a-node-type.md): an
@@ -6166,9 +6164,7 @@ TEST_CASE("Only the node a client holds tells its list: a replaced node's teardo
 	f.settle();
 	CHECK(listsOf(f.log) == std::vector<std::string>{"list x [configuring] x.playback? x.cap"});
 	f.log.clear();
-	const bool portCaused = GENERATE(false, true);
-	INFO((portCaused ? "a port-caused replace" : "a replace by another type"));
-	const NodeChange change{NodeOutcome::restart, {}, portCaused};
+	const NodeChange change{NodeOutcome::restart, {}};
 	f.host.nodeReplacing("x", change);
 	f.host.nodeReplaced(NodeSpec{"x", "test", {}}, config, change);
 	f.settle();
@@ -7199,6 +7195,143 @@ TEST_CASE("A host with no pipe receivers' or programs' adapter refuses them at t
 		f.add("a", config);
 		CHECK(failureOf(f, "a") == "start-failed: configure threw: no programs in this host");
 	}
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+// ---- Claims in a change in place (docs/writing-a-node-type.md#claims-in-a-change) ----
+
+namespace {
+
+/// A class that listens on `port` (cx.claim) and changes it in place: the new port claimed, the old one unclaimed. With
+/// `sinks`, one sink on tap1 whose close the test holds, so its teardown waits for the test.
+struct ListenConfig final : NodeConfig {
+	Log& log;
+	std::uint16_t port;
+	Ports ports_;
+	bool sink;
+	ListenConfig(Log& l, std::uint16_t p, bool s = false) : log(l), port(p), ports_(testPorts(s ? 1 : 0)), sink(s) {}
+	const Ports& ports() const override { return ports_; }
+	struct Instance final : ErasedInstance {
+		const ListenConfig* applied;
+		explicit Instance(const ListenConfig& c) : applied(&c) {}
+		Configured configure(CreateContext& cx) override {
+			cx.claim(claim::of(claim::TcpListen(applied->port)));
+			if (applied->sink) cx.sink("tap1", SinkShape{.frames = 1024}, std::make_unique<QuietConsumer>());
+			return Erased::applied(std::make_unique<TestAudioCode>(applied->log));
+		}
+		bool changes() const noexcept override { return true; }
+		Changed change(ChangeContext& cx, const NodeConfig& now) override {
+			const auto& next = static_cast<const ListenConfig&>(now);
+			cx.claim(claim::of(claim::TcpListen(next.port)));
+			cx.unclaim(claim::of(claim::TcpListen(applied->port)));
+			return Erased::changed();
+		}
+		void adopt(const NodeConfig& now) override { applied = &static_cast<const ListenConfig&>(now); }
+	};
+	std::unique_ptr<ErasedInstance> make(NodeContext&) const override { return std::make_unique<Instance>(*this); }
+};
+
+std::shared_ptr<ListenConfig> listening(Log& log, std::uint16_t port, bool sink = false) {
+	return std::make_shared<ListenConfig>(log, port, sink);
+}
+
+/// A change in place of `name` to `config`, told as the plan tells a change of `port` alone; the turn goes on.
+void changePort(Fixture& f, const NodeName& name, std::shared_ptr<const NodeConfig> config) {
+	f.host.nodeChanged(NodeSpec{name, "test", {}}, std::move(config), NodeChange{NodeOutcome::reconfigure, {"port"}});
+}
+
+/// Whether node `name`'s phases told a fallback restart.
+bool fellBack(const Fixture& f, const NodeName& name) {
+	return std::ranges::any_of(f.listener.told, [&](const NodeHealth& health) {
+		return health.name == name && health.cause && health.cause->restart == NodeCause::Kind::fellBack;
+	});
+}
+
+} // namespace
+
+TEST_CASE("A port claimed in a change is held beside the old one, which is released at the commit point, last, and a "
+          "change waiting for a closing holder keeps the old port, and another node takes it only once the change "
+          "committed",
+          "[node_host][claims][reconfigure]") {
+	Fixture f(HostShape{.probing = true});
+	addRunning(f, "c", listening(f.log, 8929, true)); // its teardown waits for the test
+	addRunning(f, "a", listening(f.log, 8928));
+	f.host.nodeRemoved("c");
+	f.settle();
+	changePort(f, "a", listening(f.log, 8929));
+	f.settle();
+	CHECK(healthOf(f, "a").phase == NodePhase::reconfiguring);
+	CHECK(countOf(f.log, "diagnostic a ear.claim-wait") == 1);
+	f.add("b", listening(f.log, 8928));
+	f.blocks.events.back()->ready();
+	f.settle();
+	CHECK(failureOf(f, "b") == "start-failed: cannot listen on port 8928: held by node a");
+	f.log.clear();
+	f.finishSink(0); // c's teardown ends: 8929 goes to a's change, probed, and the change commits
+	f.settle();
+	CHECK(indexOf(f.log, "probe tcp:8929") < indexOf(f.log, "node a running"));
+	CHECK(healthOf(f, "a").state == NodeState::running);
+	CHECK_FALSE(fellBack(f, "a"));
+	REQUIRE(f.host.restart("b"));
+	f.settle();
+	f.blocks.events.back()->ready();
+	f.settle();
+	CHECK(countOf(f.log, "probe tcp:8928") == 1); // granted now, a having let go of it
+	CHECK(healthOf(f, "b").state == NodeState::running);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A port claimed in a change that another running node holds falls the change back before anything else, "
+          "resource-refused, and the restart's own claim is refused",
+          "[node_host][claims][reconfigure]") {
+	Fixture f;
+	addRunning(f, "a", listening(f.log, 8928));
+	addRunning(f, "b", listening(f.log, 8929));
+	changePort(f, "a", listening(f.log, 8929));
+	f.settle();
+	CHECK(fellBack(f, "a"));
+	CHECK(countOf(f.log, "diagnostic a ear.reconfigure-fell-back elapsedMs=0") == 1);
+	CHECK(failureOf(f, "a") == "start-failed: cannot listen on port 8929: held by node b");
+	CHECK(healthOf(f, "b").state == NodeState::running);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("Two nodes whose changes in one edit swap their ports are each refused by the other's running "
+          "configuration, fall back, and both run on their new ports after a restart each",
+          "[node_host][claims][reconfigure]") {
+	Fixture f;
+	addRunning(f, "a", listening(f.log, 8928));
+	addRunning(f, "b", listening(f.log, 8929));
+	changePort(f, "a", listening(f.log, 8929));
+	changePort(f, "b", listening(f.log, 8928));
+	f.settle();
+	CHECK(fellBack(f, "a"));
+	CHECK(fellBack(f, "b"));
+	for (std::size_t i = 2; i < f.blocks.events.size(); ++i) f.blocks.events[i]->ready();
+	f.settle();
+	CHECK(healthOf(f, "a").state == NodeState::running);
+	CHECK(healthOf(f, "b").state == NodeState::running);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A change's claim of a port its configuration holds is granted unprobed",
+          "[node_host][claims][reconfigure]") {
+	Fixture f(HostShape{.probing = true});
+	addRunning(f, "a", listening(f.log, 8928));
+	f.log.clear();
+	changePort(f, "a", listening(f.log, 8928));
+	f.settle();
+	CHECK(countOf(f.log, "probe tcp:8928") == 0);
+	CHECK(healthOf(f, "a").state == NodeState::running);
+	CHECK_FALSE(fellBack(f, "a"));
 	f.stopAll();
 	f.settle();
 	CHECK(f.allGone == 1);

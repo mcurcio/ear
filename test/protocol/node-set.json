@@ -1,0 +1,707 @@
+{
+  "description": "node.set (features node.set and dryRun, docs/control-port.md#nodeset-and-dry-runs): a JSON merge patch of a node's settings, made at the source, answered at the commit with what the plan applied. A dry run of each outcome (reconfigure, unchanged, restart, stored, reshape) answers it and changes nothing, tells no one and writes nothing; the real edit of the same settings is judged afresh. A key set: reconfigure (node.updated, reconfiguring with its keys, the reply, running); the same again: unchanged, and no event. null removes a key (latencyMs, which then reads its default); removing a required key is invalid-settings with the type's missing. A change of ports on a disabled node: stored, with its ports. A reshape: its dry run names the route it would remove (routes); the real edit without dropRoutes is refused ports-in-use naming every such route; with dropRoutes the route.removed, node.updated with its ports, the restart (cause reshape), and the reply with inPlace, ports and routesDropped, all in one commit.",
+  "requests": [
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
+    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"node.set\",\"params\":{\"name\":\"fpp\",\"settings\":{\"port\":5006},\"dryRun\":true}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"node.set\",\"params\":{\"name\":\"fpp\",\"settings\":{\"port\":5006}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"node.set\",\"params\":{\"name\":\"fpp\",\"settings\":{\"port\":5006}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"node.set\",\"params\":{\"name\":\"fpp\",\"settings\":{\"port\":5006},\"dryRun\":true}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"node.set\",\"params\":{\"name\":\"fpp\",\"settings\":{\"latencyMs\":null}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"node.set\",\"params\":{\"name\":\"rec\",\"settings\":{\"path\":null}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"node.set\",\"params\":{\"name\":\"rec\",\"settings\":{\"path\":\"take2.wav\"},\"dryRun\":true}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"node.set\",\"params\":{\"name\":\"porch\",\"settings\":{\"playback\":4},\"dryRun\":true}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"node.set\",\"params\":{\"name\":\"desk\",\"settings\":{\"playback\":1},\"dryRun\":true}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"node.set\",\"params\":{\"name\":\"desk\",\"settings\":{\"playback\":1}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"node.set\",\"params\":{\"name\":\"desk\",\"settings\":{\"playback\":1},\"dropRoutes\":true}}"
+  ],
+  "messages": [
+    {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "protocol": 1,
+        "features": [
+          "lifecycle",
+          "counters",
+          "companions",
+          "node-text",
+          "reshape",
+          "node.set",
+          "dryRun"
+        ],
+        "graphFrequency": 48000,
+        "blockSize": 256,
+        "realtime": false,
+        "scheduling": "SCHED_OTHER",
+        "types": [
+          "card",
+          "file",
+          "rtp",
+          "white"
+        ],
+        "nodes": [
+          {
+            "name": "desk",
+            "type": "card",
+            "settings": {
+              "card": "MOTU",
+              "playback": 2
+            },
+            "inputs": [
+              "play.1",
+              "play.2"
+            ],
+            "outputs": [],
+            "state": "running",
+            "phase": "running",
+            "wanted": "running",
+            "blockLost": false,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": []
+          },
+          {
+            "name": "fpp",
+            "type": "rtp",
+            "settings": {
+              "address": "0.0.0.0",
+              "channels": 2,
+              "format": "L24",
+              "latencyMs": 40,
+              "port": 5004
+            },
+            "inputs": [],
+            "outputs": [
+              "stream.1",
+              "stream.2"
+            ],
+            "state": "running",
+            "phase": "running",
+            "wanted": "running",
+            "blockLost": false,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": []
+          },
+          {
+            "name": "noise",
+            "type": "white",
+            "settings": {},
+            "inputs": [],
+            "outputs": [
+              "noise.mono"
+            ],
+            "state": "running",
+            "phase": "running",
+            "wanted": "running",
+            "blockLost": false,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": []
+          },
+          {
+            "name": "porch",
+            "type": "card",
+            "settings": {
+              "card": "USB2",
+              "playback": 2
+            },
+            "inputs": [
+              "play.1",
+              "play.2"
+            ],
+            "outputs": [],
+            "state": "disabled",
+            "phase": "disabled",
+            "wanted": "disabled",
+            "blockLost": false,
+            "disabled": true,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": []
+          },
+          {
+            "name": "rec",
+            "type": "file",
+            "settings": {
+              "path": "take1.wav"
+            },
+            "inputs": [
+              "record.left",
+              "record.right"
+            ],
+            "outputs": [],
+            "state": "running",
+            "phase": "running",
+            "wanted": "running",
+            "blockLost": false,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": []
+          }
+        ],
+        "routes": [
+          {
+            "from": {
+              "node": "noise",
+              "port": "noise.mono"
+            },
+            "to": {
+              "node": "desk",
+              "port": "play.2"
+            },
+            "status": "linked"
+          },
+          {
+            "from": {
+              "node": "fpp",
+              "port": "stream.1"
+            },
+            "to": {
+              "node": "rec",
+              "port": "record.left"
+            },
+            "status": "linked"
+          }
+        ],
+        "counters": {
+          "cycles": 0,
+          "cutCycles": 0,
+          "stalls": 0,
+          "lostMs": 0
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "result": {
+        "applied": "reconfigure"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.updated",
+      "params": {
+        "name": "fpp",
+        "settings": {
+          "address": "0.0.0.0",
+          "channels": 2,
+          "format": "L24",
+          "latencyMs": 40,
+          "port": 5006
+        },
+        "applied": "reconfigure"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "fpp",
+        "state": "reconfiguring",
+        "phase": "reconfiguring",
+        "since": "2026-11-09T10:00:00.000000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "keys": [
+          "port"
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "result": {
+        "applied": "reconfigure"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "fpp",
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.010000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 4,
+      "result": {
+        "applied": "unchanged"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 5,
+      "result": {
+        "applied": "unchanged"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.updated",
+      "params": {
+        "name": "fpp",
+        "settings": {
+          "address": "0.0.0.0",
+          "channels": 2,
+          "format": "L24",
+          "port": 5006
+        },
+        "applied": "reconfigure"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "fpp",
+        "state": "reconfiguring",
+        "phase": "reconfiguring",
+        "since": "2026-11-09T10:00:00.020000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "keys": [
+          "latencyMs"
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 6,
+      "result": {
+        "applied": "reconfigure"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "fpp",
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.030000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 7,
+      "error": {
+        "code": -32000,
+        "message": "invalid-settings rec: path: missing",
+        "data": {
+          "code": "invalid-settings"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 8,
+      "result": {
+        "applied": "restart"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 9,
+      "result": {
+        "applied": "stored",
+        "ports": {
+          "added": [
+            "play.3",
+            "play.4"
+          ],
+          "removed": []
+        },
+        "routes": []
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 10,
+      "result": {
+        "applied": "reshape",
+        "inPlace": false,
+        "ports": {
+          "added": [],
+          "removed": [
+            "play.2"
+          ]
+        },
+        "routes": [
+          {
+            "from": {
+              "node": "noise",
+              "port": "noise.mono"
+            },
+            "to": {
+              "node": "desk",
+              "port": "play.2"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 11,
+      "error": {
+        "code": -32000,
+        "message": "ports-in-use desk: play.2 (1 route)",
+        "data": {
+          "code": "ports-in-use",
+          "ports": [
+            "play.2"
+          ],
+          "routes": [
+            {
+              "from": {
+                "node": "noise",
+                "port": "noise.mono"
+              },
+              "to": {
+                "node": "desk",
+                "port": "play.2"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "route.removed",
+      "params": {
+        "from": {
+          "node": "noise",
+          "port": "noise.mono"
+        },
+        "to": {
+          "node": "desk",
+          "port": "play.2"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.updated",
+      "params": {
+        "name": "desk",
+        "settings": {
+          "card": "MOTU",
+          "playback": 1
+        },
+        "applied": "reshape",
+        "inPlace": false,
+        "ports": {
+          "added": [],
+          "removed": [
+            "play.2"
+          ]
+        },
+        "inputs": [
+          "play.1"
+        ],
+        "outputs": []
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "desk",
+        "state": "stopping",
+        "phase": "stopping",
+        "since": "2026-11-09T10:00:00.040000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "cause": {
+          "kind": "restarting",
+          "restart": {
+            "kind": "reshape",
+            "keys": [
+              "playback"
+            ],
+            "added": [],
+            "removed": [
+              "play.2"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 12,
+      "result": {
+        "applied": "reshape",
+        "inPlace": false,
+        "ports": {
+          "added": [],
+          "removed": [
+            "play.2"
+          ]
+        },
+        "routesDropped": [
+          {
+            "from": {
+              "node": "noise",
+              "port": "noise.mono"
+            },
+            "to": {
+              "node": "desk",
+              "port": "play.2"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "desk",
+        "state": "starting",
+        "phase": "configuring",
+        "since": "2026-11-09T10:00:00.050000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "cause": {
+          "kind": "reshape",
+          "keys": [
+            "playback"
+          ],
+          "added": [],
+          "removed": [
+            "play.2"
+          ]
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "desk",
+        "state": "starting",
+        "phase": "configured",
+        "since": "2026-11-09T10:00:00.060000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "desk",
+        "state": "starting",
+        "phase": "starting",
+        "since": "2026-11-09T10:00:00.070000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "desk",
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.080000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    }
+  ],
+  "graph": {
+    "protocol": 1,
+    "features": [
+      "lifecycle",
+      "counters",
+      "companions",
+      "node-text",
+      "reshape",
+      "node.set",
+      "dryRun"
+    ],
+    "graphFrequency": 48000,
+    "blockSize": 256,
+    "realtime": false,
+    "scheduling": "SCHED_OTHER",
+    "types": [
+      "card",
+      "file",
+      "rtp",
+      "white"
+    ],
+    "nodes": [
+      {
+        "name": "desk",
+        "type": "card",
+        "settings": {
+          "card": "MOTU",
+          "playback": 1
+        },
+        "inputs": [
+          "play.1"
+        ],
+        "outputs": [],
+        "state": "running",
+        "phase": "running",
+        "wanted": "running",
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": [],
+        "since": "2026-11-09T10:00:00.080000Z"
+      },
+      {
+        "name": "fpp",
+        "type": "rtp",
+        "settings": {
+          "address": "0.0.0.0",
+          "channels": 2,
+          "format": "L24",
+          "port": 5006
+        },
+        "inputs": [],
+        "outputs": [
+          "stream.1",
+          "stream.2"
+        ],
+        "state": "running",
+        "phase": "running",
+        "wanted": "running",
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": [],
+        "since": "2026-11-09T10:00:00.030000Z"
+      },
+      {
+        "name": "noise",
+        "type": "white",
+        "settings": {},
+        "inputs": [],
+        "outputs": [
+          "noise.mono"
+        ],
+        "state": "running",
+        "phase": "running",
+        "wanted": "running",
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": []
+      },
+      {
+        "name": "porch",
+        "type": "card",
+        "settings": {
+          "card": "USB2",
+          "playback": 2
+        },
+        "inputs": [
+          "play.1",
+          "play.2"
+        ],
+        "outputs": [],
+        "state": "disabled",
+        "phase": "disabled",
+        "wanted": "disabled",
+        "blockLost": false,
+        "disabled": true,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": []
+      },
+      {
+        "name": "rec",
+        "type": "file",
+        "settings": {
+          "path": "take1.wav"
+        },
+        "inputs": [
+          "record.left",
+          "record.right"
+        ],
+        "outputs": [],
+        "state": "running",
+        "phase": "running",
+        "wanted": "running",
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": []
+      }
+    ],
+    "routes": [
+      {
+        "from": {
+          "node": "fpp",
+          "port": "stream.1"
+        },
+        "to": {
+          "node": "rec",
+          "port": "record.left"
+        },
+        "status": "linked"
+      }
+    ],
+    "counters": {
+      "cycles": 0,
+      "cutCycles": 0,
+      "stalls": 0,
+      "lostMs": 0
+    }
+  }
+}

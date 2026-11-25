@@ -4,8 +4,8 @@
 // TypeHarness (type_harness.hpp) adds the spec's bank handles. The test's thread stands in for the main loop and the
 // realtime thread both: every call pumps the harness's manual executor until nothing is queued, so each returns with
 // the transition it asked for applied as far as the fakes allow. The harness does not observe a class's start() and
-// stop(): their pairing is node_host_test.cpp's. Not yet: holds, which come with the slice that builds them
-// (docs/design/). The store fake is an in-memory disk under the real store policy, its jobs on an I/O executor run on the
+// stop(): their pairing is node_host_test.cpp's. The block fake holds outputs and swaps codes by the real block's rule
+// (HoldRamp: docs/engine.md#holds-and-swaps). The store fake is an in-memory disk under the real store policy, its jobs on an I/O executor run on the
 // test's thread as each call settles (or, with holdIo, at runIo()). The fake clock (advance) runs every main-loop timer NodeHost arms, each companion's readiness
 // deadline included (docs/engine.md#readiness-deadlines), and every loop's timer. The loop fake runs each of the node's
 // loops on the test's thread (docs/writing-a-node-type.md#loops): a queue and the fake clock's timers per loop, its
@@ -139,6 +139,9 @@ struct HarnessOptions {
 	/// The host's runtime folder (ResourceAdapters::runtimeFolder), which every runtime path the harness resolves
 	/// begins with; empty: none, and pipe receivers and programs are refused "no runtime folder in this host".
 	std::string runtimeFolder = "/ear-runtime";
+	/// Port claims the host's probe refuses (docs/writing-a-node-type.md#claims), by key ("udp:5006"), with "in use" as
+	/// the kernel's reason; empty: the host has no probe, and every port its nodes do not hold is granted unprobed.
+	std::vector<std::string> refusedPorts{};
 };
 /// How add() adds the node.
 struct AddOptions {
@@ -186,6 +189,15 @@ public:
 	/// it (its `done` never ran), both by the real block's rule (BlockFade).
 	void acknowledgeFade();
 	void completeBarrier();
+	/// With autoComplete off: every hold waiting is acknowledged (its outputs at zero at once, as a block not processing
+	/// acknowledges them). std::logic_error when none waits. With autoComplete on a hold is acknowledged as it is asked.
+	void acknowledgeHolds();
+	/// Whether output `port` is held (PortBlock::hold, until a release or a drive), and the hold's gain on it now (1 when
+	/// none: the gain the next cycle's first sample takes).
+	bool held(std::string_view port) const;
+	float lastHoldGain(std::string_view port) const;
+	/// How many code swaps the block was asked (PortBlock::swap: a change in place's new code).
+	std::size_t swaps() const noexcept;
 	/// The fake clock moves on; timers due fire, in time order (the 100 ms, 5 s and 10 s bounds, waitingFor's 2 s, each
 	/// companion's readiness deadline: a card's 10 s, an RTP receiver's and a sink's consumer's 5 s; and each loop's
 	/// timers, on its loop, an `every` once for each tick the move passes: a handler takes no time on the fake clock).
@@ -289,9 +301,17 @@ public:
 	/// The graph's counters of the harness's own cut record: cycles started (each process() and each lost cycle), the
 	/// cut ones (loseCycles with Lost::cut) and the stalls they made (one per loseCycles run of cuts).
 	GraphCounts graphCounts() const noexcept;
-	/// A committed change of settings (parse, then NodeHost::nodeChanged with outcome restart and the changed keys, or
-	/// stored on a disabled node). std::logic_error for settings the type refuses.
+	/// A committed change of settings (parse, then NodeHost::nodeChanged with the plan's outcome for the changed keys:
+	/// outcomeFor, reconfigure when every one is marked inPlace, stored on a disabled node), settled as every call is:
+	/// with autoComplete a change in place runs to its end in the call (holds acknowledged, its commit completed),
+	/// else it waits on what the test completes (acknowledgeHolds, completeBarrier, ready, advance past its deadline);
+	/// a change that answered whenReady waits for runLoops(), which runs its continuation (and lands its token's answer).
+	/// std::logic_error for settings the type refuses.
 	NodeOutcome change(const NodeSettings& settings);
+	/// With autoComplete off: every hold waiting acknowledged, as acknowledgeHolds, and a change to `settings`, as
+	/// change, queued on the main loop right behind the acknowledgements, so it runs after them and before anything
+	/// their turn posts (a change that reached the main loop while a hold's acknowledgement was on its way).
+	NodeOutcome acknowledgeHoldsThenChange(const NodeSettings& settings);
 	LifecycleReply stop();    // NodeOperations::stop
 	LifecycleReply start();   // NodeOperations::start
 	LifecycleReply restart(); // NodeOperations::restart
@@ -300,10 +320,11 @@ public:
 	void remove();            // nodeRemoved
 
 	// What the node shows.
-	NodeHealth health() const;           // as last told; std::logic_error before anything was told
-	std::string_view phase() const;      // phaseName of the last told health
-	bool gone() const noexcept;          // nodeGone was told
-	std::uint64_t droppedFrames() const; // nodeGone's count
+	NodeHealth health() const;                               // as last told; std::logic_error before anything was told
+	const std::vector<NodeHealth>& healths() const noexcept; // every health told, in order
+	std::string_view phase() const;                          // phaseName of the last told health
+	bool gone() const noexcept;                              // nodeGone was told
+	std::uint64_t droppedFrames() const;                     // nodeGone's count
 	/// The node's companion list as NodeHost lists it for a client (NodeHost::companionsOf): its configuration's
 	/// companions in request order, each ready or not, a sink's `dropped` and a source's `shortfall` read now.
 	std::vector<CompanionView> companionList() const;
@@ -337,6 +358,11 @@ public:
 	std::uint32_t feed(std::string_view bank, std::span<const float> interleaved);
 	SourcePlayed lastPlayed(std::string_view bank) const;
 	std::uint64_t shortfall(std::string_view bank) const;
+	/// The newest live sink on `bank` (std::logic_error when none): whether its consumer is paused
+	/// (SinkControl::pause taken: the fake takes a request at once, no consume being in flight on the test's thread),
+	/// and the frames it discarded while paused (docs/writing-a-node-type.md#pausing-a-sink).
+	bool paused(std::string_view bank) const;
+	std::uint64_t pausedFrames(std::string_view bank) const;
 	/// Every recording asked for (CreateOf's recording), in order, whether or not the folder opened it.
 	const std::vector<RecordingRequest>& recordingRequests() const noexcept;
 
@@ -360,6 +386,7 @@ public:
 	void programExited(std::size_t index, ProgramExit exit);
 
 private:
+	NodeOutcome changeTo(const NodeSettings& settings); // change's, unsettled
 	struct Impl;
 	std::unique_ptr<Impl> impl_;
 };

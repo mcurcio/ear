@@ -9,6 +9,7 @@ nlohmann::json encodeCompanion(const CompanionView& companion) {
 	                        {"kind", companionKindName(companion.kind)},
 	                        {"bank", companion.bank},
 	                        {"ready", companion.ready}};
+	if (companion.retiring) entry["retiring"] = true;
 	if (companion.dropped) entry["dropped"] = *companion.dropped;
 	if (companion.shortfall) entry["shortfall"] = *companion.shortfall;
 	return entry;

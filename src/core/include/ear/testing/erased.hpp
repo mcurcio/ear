@@ -5,8 +5,9 @@
 #pragma once
 #include "ear/core/lifecycle.hpp"
 namespace ear::testing {
-/// ErasedInstance::applied, public: `Erased::applied(code, states...)`. Never made.
+/// ErasedInstance::applied and changed, public: `Erased::applied(code, states...)`, `Erased::changed()`. Never made.
 struct Erased : ErasedInstance {
 	using ErasedInstance::applied;
+	using ErasedInstance::changed;
 };
 } // namespace ear::testing

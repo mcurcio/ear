@@ -1,4 +1,4 @@
-// The sendspin node's connections: dialling, listening, held and shared ports, a restart or stop with no peer or a stuck one.
+// The sendspin node's connections: dialling, listening, held and shared ports, a change or stop with no peer or a stuck one.
 // (Shared helpers: sendspin_system.hpp.)
 
 #include <chrono>
@@ -77,7 +77,8 @@ private:
 	std::vector<int> fillers_;
 };
 
-/// The dialling node stops within the bound, and a new name restarts it within the bound, on a peer that holds the dial.
+/// The dialling node stops within the bound, and a new name swaps its client within the bound
+/// (docs/node-types.md#changes-in-place), on a peer that holds the dial.
 void checkHeldDial(const TempDirectory& directory, const std::string& url) {
 	writeGraphFile(directory, dialToRec(url));
 	{
@@ -142,13 +143,13 @@ TEST_CASE("With no server at all the sendspin node runs, its meters silent, and 
 	CHECK_FALSE(ear.lineStartingWith("node ma failed"));
 }
 
-TEST_CASE("A peer that accepts and never answers holds up neither a restart nor a stop", "[system][sendspin]") {
+TEST_CASE("A peer that accepts and never answers holds up neither a change nor a stop", "[system][sendspin]") {
 	Listener peer(16);
 	TempDirectory directory;
 	checkHeldDial(directory, peer.url());
 }
 
-TEST_CASE("A listener with a full backlog holds up neither a restart nor a stop", "[system][sendspin]") {
+TEST_CASE("A listener with a full backlog holds up neither a change nor a stop", "[system][sendspin]") {
 	Listener peer(0);
 	peer.fillBacklog();
 	TempDirectory directory;

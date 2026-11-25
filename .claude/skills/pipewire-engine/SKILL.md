@@ -457,8 +457,9 @@ Recorded in `docs/engine.md#the-one-data-loop-and-invokes` with PipeWire's sourc
   the append being made on the data loop (`docs/engine.md#the-one-data-loop-and-invokes`).
   Nothing of ear's may touch a port's handle once `pw_filter_remove_port` was called on it: swap
   it out of what `process` reads behind a blocking invoke first. A new link's first cycles may
-  bring no buffer or silence. No code of ear's adds or removes a port on a connected filter yet
-  (`docs/design/reconfigure.md`).
+  bring no buffer or silence. `PortBlock::reshape` does both, through layouts swapped whole
+  (`docs/engine.md#reshapes`); a block may cross 32 ports of a direction, since nothing on the data loop reads
+  `pw_filter`'s port map in 1.4.2 (the evidence: `docs/engine.md#the-one-data-loop-and-invokes`).
 - After a 2 s data-loop stall the dummy driver resyncs (an error of about -96,000 frames) and then
   resets about 70 times within 7 ms; the bounds treat it as no wedge while the loop answers invokes.
 
@@ -621,7 +622,8 @@ pins the base image by digest, not the packages. To move to another PipeWire:
    always-process nodes and of node groups (from 1.7.0, load `libpipewire-module-scheduler-v1`
    in `engine.conf`, and re-check how a card joins the group's clock), renamed clock keys,
    whether `context.properties` still overwrite `pw_context_new`'s properties, `pw_filter` and
-   `link-factory` behaviour (link by name and by id), `filter.c`'s `alloc_port` and `free_port` and
+   `link-factory` behaviour (link by name and by id), `filter.c`'s `alloc_port` and `free_port`,
+   who calls `impl_port_reuse_buffer` (a data-loop reader of the port map, uncalled in 1.4.2), and
    `impl-port.c`'s `pw_impl_port_remove` (what S4's safety rests on: the append's order of stores,
    and the blocking invoke before a removed port is freed), the adapter's port configuration (whether
    `adapter.auto-port-config` now works), `node.driver-id` events, the registry's key
