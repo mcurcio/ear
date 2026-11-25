@@ -65,6 +65,28 @@ public:
 	virtual void finish() = 0;
 };
 
+class Loop;
+
+/// What attaching a sink returns (docs/writing-a-node-type.md#pausing-a-sink): a loop's state keeps it, to hand the
+/// sink's consumer to one of the node's loops and back while the type swaps what the consumer writes into. Valid until
+/// the configuration is freed.
+class SinkControl {
+public:
+	/// Any of the node's loops' threads. The sink's thread finishes a consume in flight, then discards chunks (counted
+	/// as paused frames, never drops) until resume(); `paused` is posted to `loop` once no consume can run. Until
+	/// resume() the consumer's state may be used by the thread that runs `paused`: the post is the hand-over. Pausing a
+	/// paused sink posts `paused` at once.
+	virtual void pause(Loop& loop, std::move_only_function<void()> paused) = 0;
+	/// The thread that paused it, once `paused` ran. The next chunk goes to consume with its own position, so the
+	/// consumer sees the gap. A resume before `paused` ran drops `paused` unrun.
+	virtual void resume() = 0;
+	/// Any thread: the frames discarded while paused, over the sink's life.
+	virtual std::uint64_t pausedFrames() const noexcept = 0;
+
+protected:
+	~SinkControl() = default;
+};
+
 /// How much a sink's ring holds, in frames at the graph frequency (docs/writing-a-node-type.md#configure-and-createof
 /// default: 2 s). The channel count is its bank's size.
 struct SinkShape {
@@ -159,6 +181,9 @@ public:
 	virtual void close(std::move_only_function<void(std::uint64_t droppedFrames)> closed) = 0;
 	/// Any thread: the frames the tap refused since the sink was made (the count `closed` reports once closed).
 	virtual std::uint64_t droppedFrames() const noexcept = 0;
+	/// Its pause (a SinkPause its thread takes between chunks), what attaching it returns to the type. Valid for the
+	/// sink's life.
+	virtual SinkControl& control() noexcept = 0;
 };
 
 /// The sink kind's adapter (ResourceRegistry's slot). ear_pipewire's ThreadSinks implements it.

@@ -141,6 +141,14 @@ public:
 		static_assert(ownBank<Bank>, "the harness takes only its spec's banks");
 		return node_->lastPlayed(Bank::name);
 	}
+	template <class Bank> bool paused(Bank) const {
+		static_assert(ownBank<Bank>, "the harness takes only its spec's banks");
+		return node_->paused(Bank::name);
+	}
+	template <class Bank> std::uint64_t pausedFrames(Bank) const {
+		static_assert(ownBank<Bank>, "the harness takes only its spec's banks");
+		return node_->pausedFrames(Bank::name);
+	}
 	template <class Bank> std::uint64_t shortfall(Bank) const {
 		static_assert(ownBank<Bank>, "the harness takes only its spec's banks");
 		return node_->shortfall(Bank::name);

@@ -130,6 +130,7 @@ if(BUILD_TESTS)
 		tests/reconciler_test.cpp
 		tests/rtp_receiver_test.cpp
 		tests/settings_table_test.cpp
+		tests/sink_pause_test.cpp
 		tests/sound_card_test.cpp
 		tests/source_ring_test.cpp
 		tests/store_test.cpp

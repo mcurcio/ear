@@ -689,8 +689,8 @@ struct NodeHost::Impl {
 		/// without one) is the type's broken rule, found before the sink is made. An adapter that cannot make it (no
 		/// thread) fails the node through configure, recorded so a type that catches it still fails; an adapter's own
 		/// bug fails it lost (adapter()).
-		void sink(std::string_view bank, SinkShape shape, SinkConsumerFrom consumer) override {
-			guarded([&] {
+		SinkControl& sink(std::string_view bank, SinkShape shape, SinkConsumerFrom consumer) override {
+			return guarded([&]() -> SinkControl& {
 				requireConfiguring("attach");
 				const std::string name(bank);
 				const Ports::Bank& found = insideBank(ports_, name, Direction::output, "a sink");
@@ -718,6 +718,7 @@ struct NodeHost::Impl {
 				c.requestOrder.push_back({Asked::Family::sink, c.sinks.size() - 1});
 				for (std::size_t i = found.first; i < found.first + found.ports.size() && i < c.fadedCount; ++i)
 					c.faded[i] = false;
+				return slot.sink->control();
 			});
 		}
 		/// A source (docs/writing-a-node-type.md#sources): made at once on the inside input bank, ready at once, bound

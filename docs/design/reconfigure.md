@@ -1,7 +1,7 @@
 # Changes in place and reshape: slice 3d of the node framework
 
 Status: design; steps 1 and 2 of section 11 built, and of step 3 claims in a change, make-before-break for an RTP
-receiver, `whenReady` and `ConfigureDone` (section 2 says what and where). Slice 3d follows slice 3c (built: it swaps claims and posts to loops, both
+receiver, `whenReady` and `ConfigureDone`, and the sink's pause (section 2 says what and where). Slice 3d follows slice 3c (built: it swaps claims and posts to loops, both
 3c's, `docs/writing-a-node-type.md#claims`, `#loops`) and comes before slice 6 (`control-plane.md`: a retune is one of the outcomes this slice makes). Its PipeWire
 spike (S4) is run: a reshape goes ahead as designed (7.4). It changes the audio path: holds, code swaps and reshapes. The built lifecycle (states,
 operations, teardown, fades, barriers and their bounds) is described in `docs/architecture.md` and
@@ -50,6 +50,9 @@ Built (steps 1 and 2 of section 11), described where they live and not repeated 
 - `whenReady` and `ConfigureDone`: the continuation posted once every acquisition is ready, the commit point after its
   `done()`, a newer change waiting from the post
   ([`docs/writing-a-node-type.md#whenready-and-configuredone`](../writing-a-node-type.md#whenready-and-configuredone));
+- `SinkControl::pause`, `resume` and `pausedFrames`, attaching a sink returning its `SinkControl&`, and the harness's
+  `paused` and `pausedFrames` ([`docs/writing-a-node-type.md#pausing-a-sink`](../writing-a-node-type.md#pausing-a-sink));
+  U15 is settled there (the tap never reads the pause);
 - on the wire: `reconfiguring` with `keys` and `next`, the `fell-back` cause, `applied: "reconfigure"`, the
   standard-output records and the three diagnostics ([`docs/control-port.md#node-health`](../control-port.md#node-health),
   [`docs/output-records.md#node`](../output-records.md#node)).
@@ -59,7 +62,6 @@ This page still designs:
 - the plan's outcomes `reshape` and `unchanged`, and a change of ports with the same type no longer a replace (3, 7);
 - recordings, sinks, sources and cards replaced in a change (4, 6);
 - make-before-break for the other kinds, and `Order::breakFirst` (5);
-- `SinkControl::pause` and `resume` (6.4);
 - `PortBlock::reshape` (7);
 - `sendspin` in place (6.6);
 - on the wire: features `node.set`, `reshape` and `dryRun`, `dropRoutes`, `ports-in-use`, and the editor (8).
@@ -171,32 +173,9 @@ continue on it (`whenReady`). Slice 5's action calls keep running on the node's 
 
 ### 6.4 A sink paused while the type swaps what it writes into
 
-A consumer that writes into something its node swaps in place (sendspin's library client, 6.6; an RTP sender's socket)
-needs a moment when no `consume` runs. Without it every such type writes a lock around its target on the sink's thread;
-with it the framework owns the one hand-over (G21).
-
-```cpp
-class SinkControl {                                    // what attaching a sink returns: a loop's state keeps it
-public:
-	/// Any of the node's loops. The sink's thread finishes a consume in flight, then discards chunks (counted as paused
-	/// frames, not drops) until resume(); `paused` is posted to `loop` once no consume can run. Until resume(), the
-	/// consumer's state may be used by the thread that runs `paused`: the post is the hand-over. Pausing a paused sink
-	/// posts `paused` at once.
-	virtual void pause(Loop& loop, std::move_only_function<void()> paused) = 0;
-	/// The thread that paused it. The next chunk goes to consume, with its own position, so the consumer sees the gap.
-	virtual void resume() = 0;
-	virtual std::uint64_t pausedFrames() const noexcept = 0;
-protected:
-	~SinkControl() = default;
-};
-```
-
-Attaching a sink returns its `SinkControl&` (`cx.attach(bank, SinkShape{...}, consumer)`, on creation and in a change;
-on creation it returns nothing today). Paused audio is discarded, not queued: a swap is a break in what the node
-sends, and the chunks' positions say where. A paused sink at teardown is drained by discarding, then `finish` is called;
-a consumer's `finish` must cope with a pause it never saw resumed. A replaced sink drains to its own consumer and
-finishes at the commit point; its replacement's `begin` runs as it becomes ready, before the commit point. Slice 5
-samples `pausedFrames` beside the companion's drops.
+Built ([`docs/writing-a-node-type.md#pausing-a-sink`](../writing-a-node-type.md#pausing-a-sink)). Still designed: a
+replaced sink drains to its own consumer and finishes at the commit point; its replacement's `begin` runs as it becomes
+ready, before the commit point (6.2's kinds, section 5). Slice 5 samples `pausedFrames` beside the companion's drops.
 
 ### 6.5 `rtp` in place
 
@@ -444,12 +423,10 @@ What steps 1 and 2 changed is built (section 2). What is left:
 | Built piece | Change |
 |---|---|
 | `NodeOutcome`, `NodeChange`, `DesiredNodeListener` (`desired_graph.hpp`) | outcomes `reshape`, `unchanged`; `NodeChange` gains the old and new ports and `inPlace`; a change of ports with the same type is told by `nodeChanged`, not as a replace; `portCaused` goes |
-| `lifecycle.hpp` | the other kinds' replacements; `SinkControl` |
+| `lifecycle.hpp` | the other kinds' replacements |
 | `NodeHost` | make-before-break for the other kinds; the block's reshape between teardown and `configure` |
 | `PortBlock`, `FilterPortBlocks` | `reshape(next)` with layouts swapped whole; levels re-registered |
-| The sink companion | `pause` and `resume` on its thread |
 | `sendspin` | rows marked `.inPlace()`; its change version |
-| `TypeHarness` | `paused(bank)`, `pausedFrames(bank)` |
 | `ear_config` | `node.set`'s merge; `dropRoutes` and `ports-in-use` in the candidate; dry runs posted and dropped |
 | `ear_control`, `web/` | features `node.set`, `reshape`, `dryRun`; 8.3's editor beyond the `reconfiguring` style and line (built) |
 
@@ -465,8 +442,6 @@ Built: what `docs/testing.md` lists for changes in place. Still to write with wh
 - **`ear_config_tests`**: `node.set`'s merge; a dry run changes nothing and tells no one; `dropRoutes` removes exactly
   the stranded route lines in one write; a route line inside a snippet refused `shared-definition`; `ports-in-use`
   naming every route.
-- **The sink pause**: waits for a consume in flight, discards and counts, posts `paused`; a paused sink at teardown
-  finishes; a writer at full rate while pausing and resuming 10^4 times (U15).
 - **Types**: `sendspin`'s in-place cases through the harness.
 - **System tests**: an `rtp` format changed on the same port (a fade to exactly 0, silence, a fade in, no step above the
   fade's slope), and `levels` showing `fpp:stream.1` and `rec:record.left` silent during an `rtp` change and back after
@@ -543,7 +518,6 @@ Each is the designer's (R24); the owner can overturn any.
   close, `client.h:351-354` [V]); sendspin may declare a longer one.
 - **U13.** What Linux does with unicast datagrams for two sockets bound to one UDP port with SO_REUSEADDR; the
   break-first rule makes it moot, and the RTP test shows no doubled audio.
-- **U15.** That the sink's thread can stop calling a consumer between chunks without a lock on the ring's hot path.
 - **Tuning.** The fade (5 ms), the hold acknowledgement's bound (100 ms) and the in-place deadline (10 s, at most 60 s)
   are first choices, to be tuned on the MOTU.
 - **Risks.** A wider lifecycle: the number of interleavings (a change during a reconfigure, a loss during a reshape)

@@ -34,6 +34,7 @@
 #include "ear/core/main_loop_activity.hpp"
 #include "ear/core/node_host.hpp"
 #include "ear/testing/erased.hpp"
+#include "ear/core/sink_ring.hpp"
 #include "ear/core/source_ring.hpp"
 
 using namespace ear;
@@ -371,6 +372,8 @@ struct TestSink final : Sink, SinkTap {
 		mainLoop.post([closed = std::exchange(closed, nullptr), dropped = dropped]() mutable { closed(dropped); });
 	}
 	std::uint64_t droppedFrames() const noexcept override { return dropped; }
+	SinkControl& control() noexcept override { return pause; }
+	SinkPause pause;
 	void write(std::span<const std::span<const float>>, std::uint32_t, const ChunkStamp&) noexcept override {}
 };
 
@@ -2218,6 +2221,8 @@ struct BlockingSink final : Sink, SinkTap {
 		});
 	}
 	std::uint64_t droppedFrames() const noexcept override { return 0; }
+	SinkControl& control() noexcept override { return pause; }
+	SinkPause pause;
 	void write(std::span<const std::span<const float>>, std::uint32_t, const ChunkStamp&) noexcept override {}
 };
 

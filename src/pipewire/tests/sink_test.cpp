@@ -38,6 +38,7 @@
 #include "engine_harness.hpp"
 #include "cycle_judge.hpp"
 #include "inducers.hpp"
+#include "sleeps.hpp"
 
 namespace {
 using namespace ear;
@@ -995,4 +996,64 @@ TEST_CASE("A sink's dropped count is readable while its block writes it, and clo
 	block.reset();
 	CHECK(dropped == silenced);
 	CHECK(sink->droppedFrames() == silenced);
+}
+
+namespace {
+/// One of a node's loops as a sink's pause posts to it: its posts land on the test's main loop; it arms nothing.
+class PostingLoop final : public ear::Loop {
+public:
+	explicit PostingLoop(TestLoop& on) : on_(on) {}
+	void post(std::move_only_function<void()> work) override {
+		++posts;
+		on_.post(std::move(work));
+	}
+	std::atomic<int> posts{0};
+	std::unique_ptr<ear::Timer> after(std::chrono::milliseconds, std::move_only_function<void()>) override {
+		throw std::logic_error("no timers");
+	}
+	std::unique_ptr<ear::Timer> every(std::chrono::milliseconds, std::move_only_function<void()>) override {
+		throw std::logic_error("no timers");
+	}
+	std::unique_ptr<ear::Timer> onWake(ear::Wake&, std::move_only_function<void()>) override {
+		throw std::logic_error("no watches");
+	}
+	std::unique_ptr<ear::Timer> onReadable(int, std::move_only_function<void()>) override {
+		throw std::logic_error("no watches");
+	}
+	ear::LoopKind kind() const noexcept override { return ear::LoopKind::dedicated; }
+	bool inLoop() const noexcept override { return false; }
+
+private:
+	TestLoop& on_;
+};
+} // namespace
+
+TEST_CASE("A ThreadSink's pause waits for the consume in flight, then discards and counts what the tap writes, and a "
+          "paused sink's close finishes its consumer",
+          "[sink][pause]") {
+	PipeWire pipewire;
+	TestLoop loop;
+	PostingLoop worker(loop);
+	ThreadSinks sinks(loop);
+	Shared shared;
+	auto sink = sinks.make("rec", "writer", 2, 1024, ear::SampleRate::fixed<kTestRate>());
+	beginAndWait(loop, *sink, std::make_unique<TestConsumer>(shared, nullptr, true));
+	Signal signal(64);
+	sink->tap().write(signal.block(0, 64), 64, stampAt(0));
+	REQUIRE(shared.waitFor([&] { return shared.stalled; })); // a consume in flight
+	bool paused = false;
+	sink->control().pause(worker, [&] { paused = true; });
+	ear::sleeps::negative(20ms, "a paused posted while the consume still runs would land within this");
+	CHECK(worker.posts.load() == 0);
+	shared.release.open();
+	REQUIRE(loop.until([&] { return paused; }));
+	sink->tap().write(signal.block(64, 64), 64, stampAt(64));
+	const auto deadline = std::chrono::steady_clock::now() + kDeadline;
+	while (sink->control().pausedFrames() < 64 && std::chrono::steady_clock::now() < deadline)
+		ear::sleeps::poll(1ms, "the sink's thread discards the chunk on its own");
+	CHECK(sink->control().pausedFrames() == 64);
+	CHECK(closeAndWait(loop, *sink) == 0);
+	const std::scoped_lock lock(shared.mutex);
+	CHECK(shared.frames == 64);
+	CHECK(shared.calls.back() == "finish");
 }

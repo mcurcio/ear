@@ -156,7 +156,7 @@ optional row read as a plain value does not compile.
 | `cx.attach(bank, RtpReceiverShape{...})` | An RTP receiver, an [engine companion](#engine-companions), `<node>.rtp`; its `latencyMs` is latency beyond the bank | Inside input banks only |
 | `part::Fifo f = cx.attach(bank, PipeReceiverShape{.format, .rate})` | A pipe receiver, an [engine companion](#engine-companions), `<node>.pipe`, reading a FIFO a program of the configuration writes; its module's fixed buffer is latency beyond the bank. It returns that FIFO, as a part of a [program](#programs)'s argument or file: attaching the receiver is the only way to one | Inside input banks only |
 | `SourceWriter& w = cx.attach(bank, SourceShape{.frames = n}, clock)` | A source ([sources](#sources)): what the type's own thread writes, played into the bank before the code; `clock`, a `std::unique_ptr<SourceClock>`, its own clock ([a source's clock](#a-sources-clock)), left out for a source with none | Inside input banks only; `0 < n <= maxSourceFrames` (2^24) |
-| `cx.attach(bank, SinkShape{.frames = n}, std::make_unique<Consumer>(...))` | A sink with its one consumer ([sinks](#sinks)); or `cx.attach(bank, shape, loop, &State::member)` / `cx.attach(bank, shape, loop)`, a consumer that is part of a [loop](#loops)'s state | Inside output banks only; a loop's form names a loop of the spec, declared with a state; the member is the state's own or one it inherits, and a `SinkConsumer`; a sink given no consumer does not compile (each at compile time); a null consumer fails the node |
+| `SinkControl& c = cx.attach(bank, SinkShape{.frames = n}, std::make_unique<Consumer>(...))` | A sink with its one consumer ([sinks](#sinks)), returning its [pause](#pausing-a-sink); or `cx.attach(bank, shape, loop, &State::member)` / `cx.attach(bank, shape, loop)`, a consumer that is part of a [loop](#loops)'s state | Inside output banks only; a loop's form names a loop of the spec, declared with a state; the member is the state's own or one it inherits, and a `SinkConsumer`; a sink given no consumer does not compile (each at compile time); a null consumer fails the node |
 | `const Recording& r = cx.recording(RecordingRequest{path})` | A [recording](#recordings): a file beneath the recordings folder, claimed, then created or truncated off the main loop; give it to the sink's consumer, which reads `r.descriptor()` from `begin()` on | Nothing to answer: a refusal fails the node at its readiness step; one path asked for twice (however spelled) fails it `start-failed` |
 | `cx.declareLatency(from, to, Latency{min, max})` | The code's own latency on the path from an input bank to an output bank, in frames: carried as a path through the block, so it counts in both banks' told latency ([latency](#latency)) | Once per path (a mixer declares each of its inputs' paths into one output); with a pass-through, one of its pairs; a plan that does not fit the ports fails the node `start-failed` |
 | `auto st = cx.state(handle, args...)` | A [loop](#loops)'s state, constructed here from `args` with no I/O and no threads, for the answer (a `LoopState`, move-only) | Only a loop of the spec declared with a state type (compile time) |
@@ -489,6 +489,32 @@ return cx.applied(passThrough(bankPair(record, writer)));
   lock or atomic the two threads need. The member may be one the state inherits. A loop the spec
   lacks, one declared without a state, a member of another class or one that is not a
   `SinkConsumer` does not compile.
+
+### Pausing a sink
+
+A consumer that writes into something its node swaps (a network library's client, a socket)
+needs a moment when no `consume` runs. Attaching a sink returns its `SinkControl&`, which a
+loop's state keeps (`cx.state(worker, control, ...)` after the attach), so the framework owns the
+one hand-over and no type writes a lock around its target on the sink's thread.
+
+| On a `SinkControl&` | What |
+|---|---|
+| `pause(loop, paused)` | From one of the node's loops. The sink's thread finishes a `consume` in flight, then discards chunks until `resume()`, counting their frames as paused, never as drops; `paused` is posted to `loop` once no `consume` can run. Until `resume()` the consumer's state is the thread's that runs `paused`: the post is the hand-over. Pausing a paused sink posts `paused` at once |
+| `resume()` | From the thread that paused it, once `paused` ran: the next chunk goes to `consume` with its own position, so the consumer sees the gap (a resume before `paused` ran drops it unrun) |
+| `pausedFrames()` | Any thread: the frames discarded while paused, over the sink's life |
+
+- **Discarded, not queued**: a swap is a break in what the node sends, and the chunks' positions
+  say where.
+- **At teardown** a paused sink is drained by discarding, then its consumer's `finish()` is
+  called: a `finish` copes with a pause it never saw resumed.
+- **No lock on the ring's hot path.** The block's tap never reads the pause; the sink's thread
+  reads one atomic before each chunk and takes a lock only to take a request (core's `SinkPause`,
+  `ear/core/sink_ring.hpp`, which the engine's sink and the harness's both run). A request made
+  while no chunk comes wakes the sink's thread, so `paused` never waits for audio. A writer at
+  full rate under 10^4 pauses and resumes sees no `consume` between `paused` and `resume()`, and
+  every frame consumed, paused or dropped (`sink_pause_test.cpp`).
+- **In the harness** a pause is taken at once (no `consume` is ever in flight on the test's
+  thread); `harness.paused(bank)` and `harness.pausedFrames(bank)` read it.
 
 ## Sources
 

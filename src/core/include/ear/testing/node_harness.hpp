@@ -358,6 +358,11 @@ public:
 	std::uint32_t feed(std::string_view bank, std::span<const float> interleaved);
 	SourcePlayed lastPlayed(std::string_view bank) const;
 	std::uint64_t shortfall(std::string_view bank) const;
+	/// The newest live sink on `bank` (std::logic_error when none): whether its consumer is paused
+	/// (SinkControl::pause taken: the fake takes a request at once, no consume being in flight on the test's thread),
+	/// and the frames it discarded while paused (docs/writing-a-node-type.md#pausing-a-sink).
+	bool paused(std::string_view bank) const;
+	std::uint64_t pausedFrames(std::string_view bank) const;
 	/// Every recording asked for (CreateOf's recording), in order, whether or not the folder opened it.
 	const std::vector<RecordingRequest>& recordingRequests() const noexcept;
 

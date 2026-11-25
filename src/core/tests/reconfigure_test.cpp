@@ -825,3 +825,92 @@ TEST_CASE("A newer change after the continuation's post waits for the change to 
 	CHECK(h->phase() == "running");
 	CHECK(ran == std::vector<std::string>{"continue 5006", "post 5006", "continue 5008", "post 5008"});
 }
+
+// ---- A sink paused while the type swaps what its consumer writes into (docs/writing-a-node-type.md#pausing-a-sink) ----
+
+namespace reconfigure_test {
+constexpr auto tap = bank::insideOutput<"tap">;
+
+/// A consumer that records each chunk's position, and its finish.
+struct Tap final : SinkConsumer {
+	std::vector<std::uint64_t> positions;
+	bool finished = false;
+	void consume(const Chunk& chunk) override { positions.push_back(chunk.position); }
+	void finish() override { finished = true; }
+};
+/// Read by the test once the state is gone.
+bool tapFinished = false;
+/// The loop's state: the sink's consumer, and what attaching the sink returned.
+struct Writer {
+	Writer(SinkControl& c, Loop& l) : control(c), loop(l) {}
+	~Writer() { tapFinished = tap.finished; }
+	Tap tap;
+	SinkControl& control;
+	Loop& loop;
+};
+constexpr auto writer = loop::dedicated<"writer", Writer>;
+constexpr TypeSpec pausingSpec{
+	.settings = SettingsTable<gainRow>{"pausing"}, .banks = Banks<in, tap>{}, .loops = Loops<writer>{}};
+
+/// The pause's token and the state, for the test to answer and to read on its own thread.
+std::optional<ConfigureDone> pausedDone;
+Writer* pausedState = nullptr;
+
+struct Pausing {
+	using Checked = CheckedOf<pausingSpec>;
+	static Members<pausingSpec> ports(const Checked&) { return {in(members(1)), tap(members(1))}; }
+	Configured configure(CreateOf<pausingSpec>& cx, const Checked&) {
+		SinkControl& control = cx.attach(tap, SinkShape{.frames = 4096}, writer, &Writer::tap);
+		auto state = cx.state(writer, control, cx.executor(writer));
+		return cx.applied(passThrough(bankPair(in, tap)), std::move(state));
+	}
+	Changed configure(ChangeOf<pausingSpec>& cx, const Checked&, const Checked&) {
+		return cx.whenReady(writer, [](Writer& w, ConfigureDone done) {
+			w.control.pause(w.loop, [&w, done = std::move(done)]() mutable {
+				pausedState = &w; // the consumer is the loop's now: a swap would go here
+				pausedDone.emplace(std::move(done));
+			});
+		});
+	}
+};
+using Pauser = testing::TypeHarness<pausingSpec, Pausing>;
+} // namespace reconfigure_test
+
+TEST_CASE("A sink paused from a loop posts paused, discards and counts what the block taps, and after resume consumes "
+          "again with the gap in its position",
+          "[reconfigure][pause]") {
+	pausedDone.reset();
+	pausedState = nullptr;
+	Pauser h;
+	REQUIRE_FALSE(h.parse(NodeSettings::object()));
+	h.add();
+	h.blockReady();
+	h->runLoops();
+	REQUIRE(h.phase() == "running");
+	h->process();
+	h.change({{"gain", 3}});
+	h->runLoops(); // the continuation pauses the sink; its paused runs on the loop
+	REQUIRE(pausedState != nullptr);
+	CHECK(h.paused(tap));
+	h->process();
+	h->process();
+	CHECK(h.pausedFrames(tap) == 512);
+	CHECK(pausedState->tap.positions == std::vector<std::uint64_t>{0});
+	pausedState->control.resume();
+	std::move(*pausedDone).done();
+	pausedDone.reset();
+	h->runLoops();
+	CHECK(h.phase() == "running");
+	CHECK_FALSE(h.paused(tap));
+	h->process();
+	CHECK(pausedState->tap.positions == std::vector<std::uint64_t>{0, 768});
+	SECTION("a paused sink at teardown is drained by discarding, then finished") {
+		h.change({{"gain", 4}});
+		h->runLoops();
+		REQUIRE(h.paused(tap));
+		tapFinished = false;
+		h.remove();
+		CHECK(tapFinished);
+		pausedDone.reset(); // its change ended: the answer lands nowhere
+	}
+}

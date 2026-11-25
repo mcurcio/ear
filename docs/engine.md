@@ -622,7 +622,9 @@ dropped frames, which `Sink::droppedFrames()` reads at any time (an atomic) and 
 Every rule of the two rings, the drop, the pairing and the cut below, is core's `SinkRing`
 (`ear/core/sink_ring.hpp`), which `ThreadSink` and the type harness's sink both wrap. A
 sink's first chunk after a block's first drive carries the clock's real position, which may differ
-from that drive's take-up position when no cycle ran before it.
+from that drive's take-up position when no cycle ran before it. A sink's pause
+([writing-a-node-type.md](writing-a-node-type.md#pausing-a-sink)) is its thread's alone: taken
+between two chunks (core's `SinkPause`), its wake the same eventfd, and never read by the tap.
 
 `upstreamFrames` is the most capture latency the block last told on the sink's bank
 ([below](#latency-per-bank-pair)): what reaches the input banks paired with it plus what the

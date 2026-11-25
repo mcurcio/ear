@@ -285,15 +285,18 @@ struct NodeHarness::Impl final : NodeHealthListener,
 				[closed = std::move(closed), dropped = rules.droppedFrames()]() mutable { closed(dropped); });
 		}
 		std::uint64_t droppedFrames() const noexcept override { return rules.droppedFrames(); }
+		SinkControl& control() noexcept override { return pause; }
 		void write(std::span<const std::span<const float>> bank, std::uint32_t frames,
 		           const ChunkStamp& stamp) noexcept override {
 			if (rules.write(bank, frames, stamp)) drain();
 		}
 		/// What the sink's thread does when woken: every chunk to a consumer that began and has not finished, else
-		/// skipped.
+		/// skipped; while paused (SinkPause, its request taken here at once: no consume is ever in flight on the
+		/// test's thread), each chunk discarded and counted.
 		void drain() {
 			if (!began || finished) return rules.discard();
 			rules.drain([&](const Chunk& chunk) {
+				if (pause.holds()) return pause.discarded(chunk.frames);
 				harness.companionList.at(index).chunks.push_back(
 					SeenChunk{{chunk.interleaved.begin(), chunk.interleaved.end()},
 				              chunk.frames,
@@ -309,6 +312,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		Impl& harness;
 		std::size_t index;
 		SinkRing rules;
+		SinkPause pause{[this] { pause.holds(); }};
 		std::unique_ptr<SinkConsumer> consumer;
 		std::move_only_function<void()> begun; // until its consumer begins
 		bool began = false;
@@ -823,8 +827,8 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			harness.recordingList.push_back(request);
 			return create.recording(request);
 		}
-		void sink(std::string_view bank, SinkShape shape, SinkConsumerFrom consumer) override {
-			create.sink(bank, shape, std::move(consumer));
+		SinkControl& sink(std::string_view bank, SinkShape shape, SinkConsumerFrom consumer) override {
+			return create.sink(bank, shape, std::move(consumer));
 		}
 		SourceWriter& source(std::string_view bank, SourceShape shape, std::unique_ptr<SourceClock> clock) override {
 			return create.source(bank, shape, std::move(clock));
@@ -1023,6 +1027,12 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		                          : facts.told.at(ports.inputs().size() + ports.insideInputs().size() + output);
 	}
 	Latency toldOnInput(std::size_t input) const { return facts.told.empty() ? Latency{} : facts.told.at(input); }
+	/// The newest sink made on `bank` that is alive.
+	FakeSink& sinkOn(std::string_view bank) const {
+		for (auto it = sinkFakes.rbegin(); it != sinkFakes.rend(); ++it)
+			if (companionList.at(it->first).bank == bank) return *it->second;
+		throw std::logic_error("no sink on bank " + std::string(bank) + " is alive");
+	}
 	/// The newest source made on `bank`.
 	FakeSource& sourceOn(std::string_view bank) const {
 		for (auto it = sourceList.rbegin(); it != sourceList.rend(); ++it)
@@ -1544,6 +1554,12 @@ std::uint32_t NodeHarness::feed(std::string_view bank, std::span<const float> in
 SourcePlayed NodeHarness::lastPlayed(std::string_view bank) const { return impl_->sourceOn(bank).lastPlayed; }
 
 std::uint64_t NodeHarness::shortfall(std::string_view bank) const { return impl_->sourceOn(bank).shortfallFrames(); }
+
+bool NodeHarness::paused(std::string_view bank) const { return impl_->sinkOn(bank).pause.paused(); }
+
+std::uint64_t NodeHarness::pausedFrames(std::string_view bank) const {
+	return impl_->sinkOn(bank).pause.pausedFrames();
+}
 
 const std::vector<RecordingRequest>& NodeHarness::recordingRequests() const noexcept { return impl_->recordingList; }
 

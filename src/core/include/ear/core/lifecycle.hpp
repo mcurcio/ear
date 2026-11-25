@@ -275,7 +275,7 @@ public:
 	/// A sink on an inside output bank (docs/engine.md#sinks), with its one consumer: made at once (its thread starts);
 	/// its consumer begins once configure answered applied (readiness 4'). A null consumer, or one in the state of a
 	/// loop declared without a state, is a std::logic_error naming the sink's bank, and no sink is made.
-	virtual void sink(std::string_view bank, SinkShape shape, SinkConsumerFrom consumer) = 0;
+	virtual SinkControl& sink(std::string_view bank, SinkShape shape, SinkConsumerFrom consumer) = 0;
 	/// A source on an inside input bank (docs/writing-a-node-type.md#sources): made at once and ready at once; the block
 	/// plays it into the bank before the code every cycle the code runs; its ring's capacity is declared beyond the bank
 	/// (LatencyPlan::beyond, Latency{0, capacity}). A second companion on the bank, `shape.frames == 0` or a call outside
@@ -571,9 +571,9 @@ public:
 	/// the type's own, given whole and owned by the sink (file's WavWriter). Its shape is named (deduced), so a braced
 	/// shape with a null third argument is a source with no clock, never a sink with no consumer.
 	template <class Bank, std::same_as<SinkShape> Shape>
-	void attach(Bank, Shape shape, std::unique_ptr<SinkConsumer> consumer) {
+	SinkControl& attach(Bank, Shape shape, std::unique_ptr<SinkConsumer> consumer) {
 		checkCompanion<Bank, SinkShape>();
-		context_->sink(Bank::name, shape, std::move(consumer));
+		return context_->sink(Bank::name, shape, std::move(consumer));
 	}
 	/// A sink with no consumer does not compile: nothing would ever read it. Its shape is deduced, so a braced shape
 	/// (`cx.attach(bank, {.frames = n})`, a source's) never selects this refusal.
@@ -586,7 +586,7 @@ public:
 	/// does not compile.
 	template <class Bank, class Handle, class State, class Member>
 		requires isLoopHandle<Handle>
-	void attach(Bank, SinkShape shape, Handle, Member State::* member) {
+	SinkControl& attach(Bank, SinkShape shape, Handle, Member State::* member) {
 		checkCompanion<Bank, SinkShape>();
 		static_assert(ownLoop<Handle>, "a sink is consumed by one of its spec's loops");
 		// The member may be one the state inherits (`&Worker::toServer` then names its base), so the state is cast to
@@ -597,7 +597,7 @@ public:
 		if constexpr (Handle::stateful && std::derived_from<typename Handle::State, State> &&
 		              std::derived_from<Member, SinkConsumer>) {
 			using Own = typename Handle::State;
-			context_->sink(
+			return context_->sink(
 				Bank::name, shape,
 				StateSinkConsumer{LoopsOf<Spec>::template indexOf<Handle>, [member](void* state) -> SinkConsumer& {
 									  return static_cast<Own*>(state)->*member;
@@ -607,15 +607,16 @@ public:
 	/// The sink's consumer is loop `Handle`'s state itself.
 	template <class Bank, class Handle>
 		requires isLoopHandle<Handle>
-	void attach(Bank, SinkShape shape, Handle) {
+	SinkControl& attach(Bank, SinkShape shape, Handle) {
 		checkCompanion<Bank, SinkShape>();
 		static_assert(ownLoop<Handle>, "a sink is consumed by one of its spec's loops");
 		using State = typename Handle::State;
 		static_assert(Handle::stateful && std::derived_from<State, SinkConsumer>,
 		              "a loop's state that consumes a sink is a SinkConsumer");
-		context_->sink(Bank::name, shape,
-		               StateSinkConsumer{LoopsOf<Spec>::template indexOf<Handle>,
-		                                 [](void* state) -> SinkConsumer& { return *static_cast<State*>(state); }});
+		return context_->sink(
+			Bank::name, shape,
+			StateSinkConsumer{LoopsOf<Spec>::template indexOf<Handle>,
+		                      [](void* state) -> SinkConsumer& { return *static_cast<State*>(state); }});
 	}
 	/// What is no companion's shape does not compile.
 	template <class Bank, class Shape, class... Rest>
