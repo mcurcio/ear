@@ -460,8 +460,10 @@ Built: what `docs/testing.md` lists for changes in place. Still to write with wh
 2. `ChangeOf`, `Changed`, staged posts, holds and their acknowledgement, the commit point, the deadline, supersession,
    the fallback, with a test type; `rtp` in place (built, section 2: with an RTP receiver replaced always break-first,
    the part of step 3 `rtp` needed).
-3. The primitives in a change: claims swapped make-before-break, `whenReady`, `ConfigureDone`, the sink's pause, the
-   other kinds' replacements; `rtp` on a new port moved to make-before-break if wanted.
+3. The primitives in a change: claims swapped make-before-break, `whenReady`, `ConfigureDone`, the sink's pause,
+   make-before-break for an RTP receiver and `rtp` on a new port (built, section 2); the other kinds' replacements
+   (cards with `Order`, sources, sinks with the cycles split at the commit's invoke, recordings: sections 4, 5, 6.2,
+   6.4) still to build.
 4. `PortBlock::reshape` on the plain add (7.4), the 32-port question of section 13 settled first; layouts, levels.
 5. The wire and the editor (features `node.set`, `reshape`, `dryRun`).
 6. `sendspin` in place (skipped if U11 or U12 fails).
