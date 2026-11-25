@@ -1,176 +1,260 @@
-// The graph editor (docs/editor.md): a React Flow canvas of ear's graph and the
-// ear.conf pane. Nodes and wires are exactly what ear announced; dragging a wire between ports,
-// the panels, the pane's Save and the delete key send requests, and the canvas changes when ear's
-// events arrive. Node positions
-// and selection are the browser's own.
-import {
-  Background,
-  Controls,
-  ReactFlow,
-  applyNodeChanges,
-  type Connection,
-  type EdgeChange,
-  type NodeChange,
-  type OnBeforeDelete,
-} from "@xyflow/react";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { edgeId, handleId, isValidConnection, routeFromConnection } from "./connect";
-import type { GraphState } from "./graph";
-import { Places, type Position } from "./layout";
-import { RpcError } from "./rpc";
-import { EarNode, type EarFlowNode } from "./components/EarNode";
-import { useConnection, useEditor, useGraph, useGraphFile } from "./components/hooks";
-import { LevelEdge, type LevelFlowEdge } from "./components/LevelEdge";
-import { AddNodePanel, EngineFacts, NodePanel } from "./components/Panels";
-import { TextPane } from "./components/TextPane";
+// The graph editor's shell (docs/editor.md#the-shell): the top bar, the canvas with the inspector on its right, and the
+// full-width ear.conf drawer along the bottom; below the narrow width the inspector is a sheet over the canvas. Nodes
+// and wires are exactly what ear announced; dragging a wire between ports, the inspector, the drawer's Save, the
+// delete key and the command palette's commands send requests (through the session's ask, so each shows while on its
+// way and a refusal becomes a toast, docs/editor.md#feedback), and the canvas changes when ear's events arrive. The
+// shortcuts and the palette (docs/editor.md#the-palette-and-the-keyboard) and quick add on the canvas
+// (docs/editor.md#adding-on-the-canvas) are held here. Node places, the selection, the sizes and the theme are the
+// browser's own; places, sizes, the minimap and the theme outlive the page (docs/editor.md#what-the-browser-keeps).
+import { useReactFlow, type Connection } from "@xyflow/react";
+import { useCallback, useEffect, useState } from "react";
+import { freeName } from "./addText";
+import { routeFromConnection } from "./connect";
+import { isMac, keyLabel, type ShortcutAction } from "./keys";
+import type { PlaceHint, Position } from "./layout";
+import type { Command, PaletteScope } from "./palette";
+import type { Prefs } from "./prefs";
+import { nodeTextFeature, type RouteEnds } from "./protocol";
+import { nothingSelected, removals, selectionKey, subjectOf } from "./selection";
+import { inspectorWidth, narrowQuery } from "./sizes";
+import { applyTheme, defaultTheme, type ThemeChoice } from "./theme";
+import { Canvas } from "./components/Canvas";
+import { fitPadding } from "./components/CanvasTools";
+import { AutoFit } from "./fit";
+import { Drawer } from "./components/Drawer";
+import { useEditor, useGraph, useGraphFile, useMediaQuery } from "./components/hooks";
+import { Inspector, type AddIntent } from "./components/Inspector";
+import { Palette } from "./components/Palette";
+import { ShortcutSheet } from "./components/ShortcutSheet";
+import { TopBar } from "./components/TopBar";
+import { useCanvas } from "./components/useCanvas";
+import { useCommands } from "./components/useCommands";
+import { useDrawer } from "./components/useDrawer";
+import { useShortcuts } from "./components/useShortcuts";
 
-const nodeTypes = { ear: EarNode };
-const edgeTypes = { level: LevelEdge };
-
-/**
- * The canvas's nodes for a new graph: kept nodes keep their place, a node replaced under the same
- * name takes its old place, new ones are laid out.
- */
-function syncNodes(previous: EarFlowNode[], graph: GraphState, places: Places): EarFlowNode[] {
-  if (graph === null) return [];
-  const kept = new Map(previous.map((node) => [node.id, node]));
-  const current = new Map<string, Position>(previous.map((node) => [node.id, node.position]));
-  const positions = places.place(graph, current);
-  return graph.nodes.map((node) => {
-    const old = kept.get(node.name);
-    if (old !== undefined) return { ...old, data: { node } };
-    return { id: node.name, type: "ear", position: positions.get(node.name)!, data: { node } };
-  });
+/** The open palette: all commands or only Add; for quick add, the screen point it opens at and the node's place. */
+interface PaletteOpen {
+  scope: PaletteScope;
+  at?: { x: number; y: number };
+  place?: Position;
 }
 
-function describe(error: unknown): string {
-  if (error instanceof RpcError)
-    return error.data?.code !== undefined ? `${error.data.code}: ${error.message}` : error.message;
-  return error instanceof Error ? error.message : String(error);
+/** navigator.userAgentData is not in every browser, nor in TypeScript's DOM types. */
+function platform(): string {
+  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
+  return nav.userAgentData?.platform ?? nav.platform ?? "";
 }
 
-export function App() {
-  const { client } = useEditor();
+export function App({ prefs }: { prefs: Prefs }) {
+  const editor = useEditor();
   const graph = useGraph();
-  const file = useGraphFile();
-  const connection = useConnection();
-  const [nodes, setNodes] = useState<EarFlowNode[]>([]);
-  const [selectedEdges, setSelectedEdges] = useState<ReadonlySet<string>>(new Set());
-  const [error, setError] = useState<string | null>(null);
-  const showError = useCallback((caught: unknown) => setError(describe(caught)), []);
+  const fileState = useGraphFile();
+  const flow = useReactFlow();
+  const [mac] = useState(() => isMac(platform()));
 
-  const [places] = useState(() => new Places());
-  useEffect(() => setNodes((previous) => syncNodes(previous, graph, places)), [graph, places]);
+  const [theme, setTheme] = useState<ThemeChoice>(() => prefs.theme() ?? defaultTheme);
+  useEffect(() => {
+    applyTheme(document.documentElement, theme);
+    prefs.setTheme(theme);
+  }, [prefs, theme]);
 
-  const edges = useMemo<LevelFlowEdge[]>(
-    () =>
-      (graph?.routes ?? []).map((route) => {
-        const id = edgeId(route);
-        return {
-          id,
-          type: "level",
-          source: route.from.node,
-          sourceHandle: handleId("out", route.from.port),
-          target: route.to.node,
-          targetHandle: handleId("in", route.to.port),
-          selected: selectedEdges.has(id),
-          data: { route },
-        };
-      }),
-    [graph, selectedEdges],
-  );
+  const [keeper] = useState(() => prefs.placeKeeper());
+  const canvas = useCanvas(graph, keeper);
+  const drawer = useDrawer(fileState, prefs);
+  const [inspectorPx, setInspectorPx] = useState<number>(() => prefs.inspectorWidth() ?? inspectorWidth.initial);
+  useEffect(() => prefs.setInspectorWidth(inspectorPx), [prefs, inspectorPx]);
+  const [minimap, setMinimap] = useState(() => prefs.minimap() ?? false);
+  useEffect(() => prefs.setMinimap(minimap), [prefs, minimap]);
+  const toggleMinimap = useCallback(() => setMinimap((shown) => !shown), []);
 
-  // Moves and selection are the browser's; adding and removing wait for ear's events.
-  const onNodesChange = useCallback(
-    (changes: NodeChange<EarFlowNode>[]) =>
-      setNodes((current) => applyNodeChanges(changes.filter((c) => c.type !== "remove" && c.type !== "add"), current)),
-    [],
-  );
-  const onEdgesChange = useCallback((changes: EdgeChange<LevelFlowEdge>[]) => {
-    setSelectedEdges((current) => {
-      const next = new Set(current);
-      for (const change of changes) {
-        if (change.type !== "select") continue;
-        if (change.selected) next.add(change.id);
-        else next.delete(change.id);
-      }
-      return next;
-    });
-  }, []);
+  // Below the narrow width the inspector is a sheet: it opens on a selection and closes on Escape or the canvas.
+  const narrow = useMediaQuery(narrowQuery);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const key = selectionKey(canvas.selection);
+  useEffect(() => {
+    if (key !== "") setSheetOpen(true);
+  }, [key]);
+  const closeSheet = useCallback(() => setSheetOpen(false), []);
+
+  const [palette, setPalette] = useState<PaletteOpen | null>(null);
+  const [shortcutSheet, setShortcutSheet] = useState(false);
+  const [addIntent, setAddIntent] = useState<AddIntent | null>(null);
 
   const onConnect = useCallback(
-    (connectionMade: Connection) => {
-      const route = routeFromConnection(connectionMade);
-      if (route !== null) client.call("route.add", route).catch(showError);
+    (connection: Connection) => {
+      const route = routeFromConnection(connection);
+      if (route !== null) editor.send("route.add", route);
     },
-    [client, showError],
+    [editor],
   );
 
-  // The delete key asks ear to remove the selection and deletes nothing itself.
-  const onBeforeDelete = useCallback<OnBeforeDelete<EarFlowNode, LevelFlowEdge>>(
-    async ({ nodes: doomedNodes, edges: doomedEdges }) => {
-      const names = new Set(doomedNodes.map((node) => node.id));
-      for (const name of names) client.call("node.remove", { name }).catch(showError);
-      for (const edge of doomedEdges) {
-        const route = edge.data!.route;
-        // Removing a node removes its routes; only wires between kept nodes are asked for.
-        if (names.has(route.from.node) || names.has(route.to.node)) continue;
-        client.call("route.remove", { from: route.from, to: route.to }).catch(showError);
+  // Delete asks ear; removing a node removes its routes, so only routes between kept nodes are asked for.
+  const onRemove = useCallback(
+    (nodes: readonly string[], routes: readonly RouteEnds[]) => {
+      const asked = removals(nodes, routes);
+      for (const name of asked.nodes) editor.send("node.remove", { name });
+      for (const ends of asked.routes) editor.send("route.remove", { from: ends.from, to: ends.to });
+    },
+    [editor],
+  );
+
+  const drawerToggle =
+    drawer === null ? null : { open: drawer.open, status: drawer.status, onToggle: () => drawer.setOpen(!drawer.open) };
+  const subject = graph === null ? null : subjectOf(graph, canvas.selection);
+
+  // The add form, and its half-typed statement, go with the Graph subject (docs/editor.md#the-inspector), so its
+  // intent and quick add's hint go too.
+  const onGraph = subject?.kind === "graph";
+  useEffect(() => {
+    if (onGraph) return;
+    setAddIntent(null);
+    canvas.hint(null);
+  }, [onGraph, canvas.hint]);
+
+  // The view fits by itself until the person moves it (fit.ts); Fit lets it go again, a jump to a node holds it.
+  const [autoFit] = useState(() => new AutoFit());
+  const fit = useCallback(() => {
+    autoFit.release();
+    void flow.fitView({ padding: fitPadding });
+  }, [autoFit, flow]);
+  // As a toast's Show does.
+  const goTo = useCallback(
+    (name: string) => {
+      canvas.select({ nodes: [name], routes: [] });
+      autoFit.hold();
+      void flow.fitView({ nodes: [{ id: name }], padding: 0.4, duration: 180 });
+    },
+    [autoFit, canvas.select, flow],
+  );
+
+  // An Add command: the Graph subject's form with that type's template; quick add's place is kept as a hint for the
+  // template's name (with no template, the JSON form, for the next node that arrives).
+  const openAdd = useCallback(
+    (type: string, place?: Position) => {
+      canvas.select(nothingSelected);
+      setAddIntent((previous) => ({ type, nonce: (previous?.nonce ?? 0) + 1 }));
+      if (narrow) setSheetOpen(true);
+      let hint: PlaceHint | null = null;
+      if (place !== undefined && graph !== null) {
+        const knobly = (graph.features ?? []).includes(nodeTextFeature) && fileState !== null;
+        const names = graph.nodes.map((node) => node.name);
+        hint = { name: knobly ? freeName(type, names) : null, position: place };
       }
-      return false;
+      canvas.hint(hint);
     },
-    [client, showError],
+    [canvas.select, canvas.hint, narrow, graph, fileState],
   );
 
-  const selectedNode = nodes.find((node) => node.selected)?.data.node;
+  const { commands, run } = useCommands(
+    {
+      graph,
+      selection: canvas.selection,
+      drawer,
+      minimap,
+      theme,
+      goTo,
+      onAdd: openAdd,
+      onRemove,
+      fit,
+      tidy: canvas.tidy,
+      toggleMinimap,
+      setTheme,
+      onShortcuts: () => setShortcutSheet(true),
+    },
+    palette?.scope ?? "all",
+  );
+  // Quick add (docs/editor.md#adding-on-the-canvas): the Add commands at the pointer, with where the node should land.
+  const onQuickAdd = useCallback(
+    (at: { x: number; y: number }, place: Position) => setPalette({ scope: "add", at, place }),
+    [],
+  );
+  const onRun = useCallback((command: Command) => run(command.action, palette?.place), [run, palette]);
+
+  // The shortcuts (docs/editor.md#shortcuts). While the palette or the sheet is open only the palette's toggle and
+  // Escape act; the palette handles its own Escape.
+  useShortcuts(mac, (action: ShortcutAction) => {
+    const modal = palette !== null || shortcutSheet;
+    if (modal && action !== "palette" && action !== "escape") return;
+    switch (action) {
+      case "palette":
+        return setPalette((open) => (open !== null ? null : { scope: "all" }));
+      case "add":
+        // Centred with no place, so the node is laid out by dagre.
+        return setPalette({ scope: "add" });
+      case "drawer":
+        return drawer?.setOpen(!drawer.open);
+      case "save":
+        // Prevented either way, so the browser's Save page never opens.
+        if (drawer?.canSave) drawer.save();
+        return;
+      case "fit":
+        return fit();
+      case "tidy":
+        return canvas.tidy();
+      case "minimap":
+        return toggleMinimap();
+      case "shortcuts":
+        return setShortcutSheet(true);
+      case "escape":
+        if (palette !== null) return setPalette(null);
+        if (shortcutSheet) return setShortcutSheet(false);
+        if (narrow && sheetOpen) return setSheetOpen(false);
+        if (key !== "") canvas.select(nothingSelected);
+        return;
+    }
+  });
 
   return (
-    <div className="app">
-      <ReactFlow<EarFlowNode, LevelFlowEdge>
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={nodeTypes}
-        edgeTypes={edgeTypes}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onConnect={onConnect}
-        isValidConnection={isValidConnection}
-        onBeforeDelete={onBeforeDelete}
-        deleteKeyCode={["Delete", "Backspace"]}
-        fitView
-      >
-        <Background />
-        <Controls />
-      </ReactFlow>
-      <aside className="panel">
-        <h1>EAR</h1>
-        {connection !== "open" && (
-          <div className="banner banner-connection">
-            {connection === "connecting" ? "Connecting to ear…" : "Lost the connection to ear; retrying."}
-          </div>
-        )}
-        {error !== null && (
-          <div className="banner banner-error" role="alert">
-            {error}{" "}
-            <button type="button" onClick={() => setError(null)}>
-              Dismiss
-            </button>
-          </div>
-        )}
-        {graph !== null && <EngineFacts graph={graph} />}
-        {graph !== null && (
-          <AddNodePanel
-            types={graph.types}
-            names={graph.nodes.map((node) => node.name)}
-            features={graph.features ?? []}
-            onError={showError}
+    <div className="app" data-narrow={narrow || undefined} data-sheet={sheetOpen ? "open" : "closed"}>
+      <h1 className="visually-hidden">EAR graph editor</h1>
+      <TopBar
+        graph={graph}
+        theme={theme}
+        onTheme={setTheme}
+        drawer={drawerToggle}
+        narrow={narrow}
+        sheetOpen={sheetOpen}
+        onToggleSheet={() => setSheetOpen((open) => !open)}
+        onPalette={() => setPalette({ scope: "all" })}
+        paletteLabel={keyLabel("palette", mac)}
+      />
+      <div className="workspace">
+        <Canvas
+          canvas={canvas}
+          onConnect={onConnect}
+          onRemove={onRemove}
+          onPaneClick={closeSheet}
+          minimap={minimap}
+          onToggleMinimap={toggleMinimap}
+          onShow={canvas.select}
+          onQuickAdd={onQuickAdd}
+          autoFit={autoFit}
+          onFit={fit}
+        />
+        {graph !== null && subject !== null && (
+          <Inspector
+            graph={graph}
+            subject={subject}
+            addIntent={addIntent}
+            width={inspectorPx}
+            onResize={setInspectorPx}
+            onSelect={canvas.select}
+            onRemove={onRemove}
           />
         )}
-        {selectedNode !== undefined && (
-          <NodePanel node={selectedNode} features={graph?.features ?? []} onError={showError} />
-        )}
-        {file !== null && <TextPane state={file} onError={showError} />}
-      </aside>
+      </div>
+      {drawer !== null && <Drawer drawer={drawer} />}
+      {palette !== null && (
+        <Palette
+          commands={commands}
+          at={palette.at}
+          placeholder={palette.scope === "add" ? "Add a node of type…" : "Type a command or a node's name"}
+          mac={mac}
+          onRun={onRun}
+          onClose={() => setPalette(null)}
+        />
+      )}
+      {shortcutSheet && <ShortcutSheet mac={mac} onClose={() => setShortcutSheet(false)} />}
     </div>
   );
 }

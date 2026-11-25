@@ -1,7 +1,7 @@
 // dBFS conversion and clamp; a wire's level is its from port's; a port update
 // notifies only that port's listeners; a node missing from the next message reads silent.
 import { describe, expect, it } from "vitest";
-import { LevelStore, floorDb, meterFraction, toDbfs, wireLevel } from "./levels";
+import { LevelStore, floorDb, fractionOfDb, meterFraction, toDbfs, wireLevel } from "./levels";
 import type { Notifications } from "./protocol";
 import { fixtures } from "./testFixtures";
 
@@ -20,6 +20,16 @@ describe("dBFS", () => {
     expect(meterFraction(1)).toBe(1);
     expect(meterFraction(2)).toBe(1);
     expect(meterFraction(0.5)).toBeCloseTo(1 - 6.0206 / 60, 4);
+  });
+
+  it("places a dBFS value on the meter's scale, clamped at both ends", () => {
+    expect(fractionOfDb(-90)).toBe(0);
+    expect(fractionOfDb(-60)).toBe(0);
+    expect(fractionOfDb(-18)).toBeCloseTo(0.7, 10);
+    expect(fractionOfDb(-6)).toBeCloseTo(0.9, 10);
+    expect(fractionOfDb(0)).toBe(1);
+    expect(fractionOfDb(6)).toBe(1);
+    for (const linear of [0, 0.001, 0.5, 1]) expect(meterFraction(linear)).toBe(fractionOfDb(toDbfs(linear)));
   });
 });
 

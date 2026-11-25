@@ -4,39 +4,8 @@
 import { describe, expect, it } from "vitest";
 import { Editor } from "./editor";
 import type { Graph, JsonValue, ServerMessage } from "./protocol";
-import { ConnectionClosedError, RpcClient, RpcError, firstRetryMs, longestRetryMs, type SocketEvents, type SocketLike } from "./rpc";
-import { fixtures, messagesOf } from "./testFixtures";
-
-class FakeSocket implements SocketLike {
-  readonly sent: Array<{ id?: number; method: string; params?: unknown }> = [];
-  closedByClient = false;
-
-  constructor(private readonly events: SocketEvents) {}
-
-  send(text: string): void {
-    this.sent.push(JSON.parse(text));
-  }
-  close(): void {
-    this.closedByClient = true;
-  }
-  /** The server accepts the connection. */
-  accept(): void {
-    this.events.open();
-  }
-  /** The server sends one text. */
-  receive(message: unknown): void {
-    this.events.message(JSON.stringify(message));
-  }
-  /** The connection drops. */
-  drop(): void {
-    this.events.close();
-  }
-  idOf(method: string): number {
-    const request = this.sent.find((sent) => sent.method === method);
-    if (request?.id === undefined) throw new Error(`no ${method} request was sent`);
-    return request.id;
-  }
-}
+import { ConnectionClosedError, RpcClient, RpcError, firstRetryMs, longestRetryMs, type SocketEvents } from "./rpc";
+import { FakeSocket, fixtures, messagesOf } from "./testFixtures";
 
 /** A client on fake sockets, with the reconnect waits recorded and fired by the test. */
 function harness() {
@@ -132,6 +101,32 @@ describe("the rpc client", () => {
     expect(socket.sent.map((request) => request.method)).toEqual(subscriptions);
     socket.drop();
     expect(waits.at(-1)!.ms).toBe(firstRetryMs);
+  });
+
+  it("tells onRetry the wait it schedules, after onStatus('closed'), and nothing after stop()", () => {
+    const h = harness();
+    const told: string[] = [];
+    const client = new RpcClient({
+      ...h.options,
+      onMessage: () => {},
+      onStatus: (status) => told.push(status),
+      onRetry: (ms) => told.push(`retry ${ms}`),
+    });
+    client.start();
+    h.sockets[0]!.accept();
+    h.sockets[0]!.drop();
+    expect(told).toEqual(["connecting", "open", "closed", `retry ${firstRetryMs}`]);
+    expect(h.waits.at(-1)!.ms).toBe(firstRetryMs);
+    h.waits.at(-1)!.retry();
+    h.sockets[1]!.drop();
+    expect(told.slice(-2)).toEqual(["closed", "retry 2000"]);
+    expect(h.waits.at(-1)!.ms).toBe(2000);
+    h.waits.at(-1)!.retry();
+    h.sockets[2]!.accept();
+    told.length = 0;
+    client.stop();
+    h.sockets[2]!.drop();
+    expect(told).toEqual(["closed"]);
   });
 
   it("stays closed after stop()", () => {
