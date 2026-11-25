@@ -623,7 +623,10 @@ Every node with an output fades its outputs in over 5 ms at every start, and out
 every planned silence: a stop, a restart, a disable, a removal and a failure. A card's playback
 bank fades too, so its speakers never click; a sink's bank (a `file` node's) is never faded, so a
 recording keeps the exact samples of every cycle its code ran, and a node whose only outputs are
-sinks' banks is silenced at once, with no fade before. A lost block cannot be faded.
+sinks' banks is silenced at once, with no fade before. A lost block cannot be faded. A change in
+place holds outputs silent the same way, a second gain after the fade: each held output fades to
+zero over 5 ms, stays there, and fades back in at the change's end
+([engine.md](engine.md#holds-and-swaps)).
 
 ### Bounds, the wedged data loop and the watchdog
 

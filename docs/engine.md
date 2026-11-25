@@ -584,6 +584,31 @@ so a drive or fade never waits for a cycle that will not come.
 - **One invoke in flight per block is a requirement.** An unbounded producer of invokes wedges the
   data loop ([below](#the-one-data-loop-and-invokes)).
 
+### Holds and swaps
+
+A change in place ([architecture.md](architecture.md#changes-in-place)) holds outputs silent and
+may swap the code, through three more requests in the same ring, applied in the same invokes and
+in order with drives and fades:
+
+- **`hold(outputs, acknowledged)`** ramps the marked outputs (public, then inside, as a drive's
+  fade mask) to zero over 5 ms from the next cycle and keeps them there, the code still running.
+  It is a second gain, after the fade and before the sinks and the meters, so the meters and the
+  links read the silence (a held bank has no mark of its own). `acknowledged` runs on the main loop
+  once a cycle ended with every held output at zero, or at once (by signal) on a block not
+  processing or one that leaves `STREAMING`; `NodeHost` bounds it at 100 ms (the fade's bound), past
+  which it goes on, `ear.fade-unacknowledged`. The acknowledgements are counted apart from the
+  request ring's completions (an atomic the data loop publishes), so a hold never blocks the
+  requests behind it.
+- **`release(outputs)`** ramps the marked outputs back to full gain over 5 ms.
+- **`swap(request, done)`** is a drive that keeps the fade and the holds: the new code, its sinks
+  and its sources take the cycles from the next one, at the gains the old code had, with no
+  fade-in. `done` runs as a drive's. A drive ends every hold at full gain (its own fade-in covers
+  the faded outputs).
+
+The holds' ramp and rule are core's `HoldRamp` (`ear/core/block_rules.hpp`), which the type
+harness's block runs too. They are asked only while no fade-out waits (a change runs from
+`driving`), so a hold, a release or a swap completes in the invoke that applies it, as a drive does.
+
 ### Sinks
 
 A drive carries the sink bindings of its configuration; the invoke copies them into storage sized

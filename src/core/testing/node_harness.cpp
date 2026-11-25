@@ -168,7 +168,26 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			const std::uint64_t cancelled = harness.fade.driven(
 				std::ranges::any_of(harness.fadeMask, [](std::uint8_t faded) { return faded != 0; }));
 			harness.dropFades(cancelled);
+			harness.ackHolds(harness.holdRamp.driven());
 			harness.account.driven();
+			const std::uint64_t taken = harness.account.nextPosition();
+			harness.request(false, [done = std::move(done), taken]() mutable { done(taken); });
+		}
+		/// A hold, by the real block's rule (HoldRamp): acknowledged at once with autoComplete (a block not
+		/// processing), else when a cycle ends it at zero or the test acknowledges it.
+		void hold(std::vector<std::uint8_t> outputs, std::move_only_function<void()> acknowledged) override {
+			harness.holdRamp.hold(outputs);
+			harness.holdAcks.push_back(std::move(acknowledged));
+			if (harness.options.autoComplete) harness.ackHolds(harness.holdRamp.notProcessing());
+		}
+		void release(std::vector<std::uint8_t> outputs) override { harness.holdRamp.release(outputs); }
+		/// As the real block's swap: the code and its taps change, the fade and the holds are kept.
+		void swap(DriveRequest request, std::move_only_function<void(std::uint64_t)> done) override {
+			harness.driven = request.code;
+			harness.bound.assign(request.sinks.begin(), request.sinks.end());
+			harness.boundSources.assign(request.sources.begin(), request.sources.end());
+			harness.account.driven();
+			++harness.swaps;
 			const std::uint64_t taken = harness.account.nextPosition();
 			harness.request(false, [done = std::move(done), taken]() mutable { done(taken); });
 		}
@@ -948,6 +967,13 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			--count;
 		}
 	}
+	/// The oldest `count` holds waiting were acknowledged: each posted, never run here.
+	void ackHolds(std::uint64_t count) {
+		for (; count > 0 && !holdAcks.empty(); --count) {
+			executor.post(std::move(holdAcks.front()));
+			holdAcks.pop_front();
+		}
+	}
 	void completeFades(std::uint64_t count) {
 		if (count > 0) finishFades(count, true);
 	}
@@ -975,6 +1001,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		outputs.assign(outputNames.size(), std::vector<float>(options.format.maxBlock, 0.0F));
 		lastGain.assign(outputNames.size(), 1.0F);
 		fadeMask.assign(outputNames.size(), 0);
+		if (holdRamp.waiting() == 0 && holdAcks.empty()) holdRamp = HoldRamp(options.format.rate, outputNames.size());
 	}
 	/// What the real block with no peers tells on output port `output` (outputs then insideOutputs; its capture latency)
 	/// and on input port `input` (its playback latency): workOut's, as the plan was last carried
@@ -1077,6 +1104,9 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	std::deque<PendingRequest> pending;
 	std::vector<std::uint8_t> fadeMask; // per output, outputs then insideOutputs: the last drive's faded ones
 	BlockFade fade;                     // the real block's fade and its rule for fade-outs
+	HoldRamp holdRamp{SampleRate::fixed<48'000>(), 0};    // the real block's holds, sized with the buffers
+	std::deque<std::move_only_function<void()>> holdAcks; // each hold's acknowledgement not yet posted
+	std::size_t swaps = 0;                                // swaps the block was asked
 	// The fake block's cycles (docs/writing-a-node-type.md#lost-cycles): its graph's cut record, the real block's rule
 	// that states each cycle's facts, and the clock the next process() runs on.
 	HarnessCuts cuts;
@@ -1209,6 +1239,24 @@ void NodeHarness::acknowledgeFade() {
 
 void NodeHarness::completeBarrier() { impl_->completeOldest(false); }
 
+void NodeHarness::acknowledgeHolds() {
+	// As a block not processing: every held output is at zero now.
+	const std::uint64_t acknowledged = impl_->holdRamp.notProcessing();
+	if (acknowledged == 0) throw std::logic_error("no hold is waiting");
+	impl_->ackHolds(acknowledged);
+	impl_->settle();
+}
+
+bool NodeHarness::held(std::string_view port) const {
+	return impl_->holdRamp.held(Impl::indexOf(impl_->outputNames, port));
+}
+
+float NodeHarness::lastHoldGain(std::string_view port) const {
+	return impl_->holdRamp.gain(Impl::indexOf(impl_->outputNames, port));
+}
+
+std::size_t NodeHarness::swaps() const noexcept { return impl_->swaps; }
+
 void NodeHarness::advance(std::chrono::milliseconds by) {
 	impl_->clock.advance(by);
 	impl_->settle();
@@ -1274,6 +1322,8 @@ void NodeHarness::process(std::uint32_t frames) {
 	// The fade, by the real block's own rule.
 	const BlockFade::Applied faded = h.fade.apply(out, h.fadeMask, frames);
 	for (std::size_t o = 0; o < out.size(); ++o) h.lastGain[o] = h.fadeMask[o] != 0 ? faded.lastGain : 1.0F;
+	// The holds, after the fade and before the sinks, by the real block's own rule.
+	const std::uint64_t holdsAcknowledged = h.holdRamp.apply(out, frames);
 	// Each sink's tap after the fade (a sink's bank is never faded), as the real block writes it, while a code runs.
 	if (h.driven != nullptr)
 		for (const SinkBinding& binding : h.bound) {
@@ -1288,10 +1338,10 @@ void NodeHarness::process(std::uint32_t frames) {
 	h.timeFrames += frames;
 	h.lastFrames = frames;
 	// A cycle that ended a fade-out at zero acknowledged every fade-out waiting.
-	if (faded.acknowledged > 0) {
-		h.completeFades(faded.acknowledged);
-		h.settle();
-	}
+	if (faded.acknowledged > 0) h.completeFades(faded.acknowledged);
+	// A cycle that ended with every held output at zero acknowledged every hold waiting.
+	h.ackHolds(holdsAcknowledged);
+	if (faded.acknowledged > 0 || holdsAcknowledged > 0) h.settle();
 }
 
 void NodeHarness::loseCycles(std::uint32_t count, Lost how) {

@@ -150,6 +150,19 @@ public:
 		static_assert(Bank::direction == Direction::output, "a fade is on an output bank");
 		return node_->lastFadeGain(node_->ports().bank(Bank::name).ports.at(member));
 	}
+	/// Whether a member of output bank `Bank` is held, and its hold's gain now (NodeHarness::held, lastHoldGain).
+	template <class Bank> bool held(Bank, std::size_t member = 0) const {
+		static_assert(ownBank<Bank>, "the harness takes only its spec's banks");
+		static_assert(Bank::direction == Direction::output, "a hold is on an output bank");
+		return node_->held(node_->ports().bank(Bank::name).ports.at(member));
+	}
+	template <class Bank> float lastHoldGain(Bank, std::size_t member = 0) const {
+		static_assert(ownBank<Bank>, "the harness takes only its spec's banks");
+		static_assert(Bank::direction == Direction::output, "a hold is on an output bank");
+		return node_->lastHoldGain(node_->ports().bank(Bank::name).ports.at(member));
+	}
+	void acknowledgeHolds() { node_->acknowledgeHolds(); }
+	std::size_t swaps() const noexcept { return node_->swaps(); }
 
 private:
 	std::unique_ptr<const NodeType> type_;

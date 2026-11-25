@@ -277,3 +277,61 @@ TEST_CASE("The stamps carry the cycle's facts and the most of the latency told o
 		CHECK(chunkStamp(jumped, Latency{}).causes == other);
 	}
 }
+
+TEST_CASE(
+	"HoldRamp: a hold fades its outputs to zero over the fade's frames and keeps them there, the others untouched",
+	"[block_rules][hold]") {
+	// 48 kHz: the fade is 240 frames.
+	HoldRamp ramp(SampleRate::fixed<48'000>(), 2);
+	REQUIRE(ramp.frames() == 240);
+	std::vector<float> a(256, 1.0F);
+	std::vector<float> b(256, 1.0F);
+	std::array outputs{std::span<float>(a), std::span<float>(b)};
+	CHECK(ramp.apply(outputs, 256) == 0); // nothing held: full gain, untouched
+	CHECK(a[255] == 1.0F);
+	const std::array<std::uint8_t, 2> first{1, 0};
+	ramp.hold(first);
+	CHECK(ramp.held(0));
+	CHECK_FALSE(ramp.held(1));
+	CHECK(ramp.waiting() == 1);
+	std::ranges::fill(a, 1.0F);
+	std::ranges::fill(b, 1.0F);
+	SECTION("acknowledged in the cycle it reached zero") {
+		CHECK(ramp.apply(outputs, 256) == 1);
+		CHECK(a[0] == 1.0F);
+		CHECK(a[1] == Approx(239.0F / 240.0F));
+		CHECK(a[239] == Approx(1.0F / 240.0F));
+		CHECK(a[240] == 0.0F); // exact at the end
+		CHECK(a[255] == 0.0F);
+		CHECK(b[255] == 1.0F);
+		CHECK(ramp.waiting() == 0);
+		std::ranges::fill(a, 1.0F);
+		CHECK(ramp.apply(outputs, 256) == 0); // stays at zero, acknowledged once
+		CHECK(std::ranges::all_of(a, [](float s) { return s == 0.0F; }));
+	}
+	SECTION("a cycle shorter than the fade is not yet at zero, so the hold waits") {
+		CHECK(ramp.apply(outputs, 128) == 0);
+		CHECK(ramp.waiting() == 1);
+		CHECK(ramp.apply(outputs, 128) == 1);
+	}
+	SECTION("release fades in over the fade's frames") {
+		CHECK(ramp.apply(outputs, 256) == 1);
+		ramp.release(first);
+		std::ranges::fill(a, 1.0F);
+		CHECK(ramp.apply(outputs, 256) == 0);
+		CHECK(a[0] == 0.0F);
+		CHECK(a[1] == Approx(1.0F / 240.0F));
+		CHECK(a[240] == 1.0F);
+		CHECK(ramp.gain(0) == 1.0F);
+	}
+	SECTION("notProcessing acknowledges at once, its outputs at zero") {
+		CHECK(ramp.notProcessing() == 1);
+		CHECK(ramp.gain(0) == 0.0F);
+		CHECK(ramp.wroteZeros() == 0); // nothing more waits
+	}
+	SECTION("a drive ends every hold at full gain and acknowledges those waiting") {
+		CHECK(ramp.driven() == 1);
+		CHECK_FALSE(ramp.held(0));
+		CHECK(ramp.gain(0) == 1.0F);
+	}
+}

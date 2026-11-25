@@ -4,8 +4,8 @@
 // TypeHarness (type_harness.hpp) adds the spec's bank handles. The test's thread stands in for the main loop and the
 // realtime thread both: every call pumps the harness's manual executor until nothing is queued, so each returns with
 // the transition it asked for applied as far as the fakes allow. The harness does not observe a class's start() and
-// stop(): their pairing is node_host_test.cpp's. Not yet: holds, which come with the slice that builds them
-// (docs/design/). The store fake is an in-memory disk under the real store policy, its jobs on an I/O executor run on the
+// stop(): their pairing is node_host_test.cpp's. The block fake holds outputs and swaps codes by the real block's rule
+// (HoldRamp: docs/engine.md#holds-and-swaps). The store fake is an in-memory disk under the real store policy, its jobs on an I/O executor run on the
 // test's thread as each call settles (or, with holdIo, at runIo()). The fake clock (advance) runs every main-loop timer NodeHost arms, each companion's readiness
 // deadline included (docs/engine.md#readiness-deadlines), and every loop's timer. The loop fake runs each of the node's
 // loops on the test's thread (docs/writing-a-node-type.md#loops): a queue and the fake clock's timers per loop, its
@@ -186,6 +186,15 @@ public:
 	/// it (its `done` never ran), both by the real block's rule (BlockFade).
 	void acknowledgeFade();
 	void completeBarrier();
+	/// With autoComplete off: every hold waiting is acknowledged (its outputs at zero at once, as a block not processing
+	/// acknowledges them). std::logic_error when none waits. With autoComplete on a hold is acknowledged as it is asked.
+	void acknowledgeHolds();
+	/// Whether output `port` is held (PortBlock::hold, until a release or a drive), and the hold's gain on it now (1 when
+	/// none: the gain the next cycle's first sample takes).
+	bool held(std::string_view port) const;
+	float lastHoldGain(std::string_view port) const;
+	/// How many code swaps the block was asked (PortBlock::swap: a change in place's new code).
+	std::size_t swaps() const noexcept;
 	/// The fake clock moves on; timers due fire, in time order (the 100 ms, 5 s and 10 s bounds, waitingFor's 2 s, each
 	/// companion's readiness deadline: a card's 10 s, an RTP receiver's and a sink's consumer's 5 s; and each loop's
 	/// timers, on its loop, an `every` once for each tick the move passes: a handler takes no time on the fake clock).

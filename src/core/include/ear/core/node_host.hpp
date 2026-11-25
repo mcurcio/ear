@@ -185,6 +185,23 @@ public:
 	/// STREAMING, or no data loop) completes it by signal, never inline, and so does a block that leaves STREAMING
 	/// before the fade ended.
 	virtual void fadeOut(std::move_only_function<void()> done) = 0;
+	/// Main thread; returns at once (docs/engine.md#holds-and-swaps). From the next cycle every output `outputs` marks
+	/// (one entry per output, outputs then inside outputs) ramps to zero over 5 ms and stays there, after the fade and
+	/// before the meters, the code still running; `acknowledged()` runs on the main loop once a cycle ended with every
+	/// held output at zero (at once, by signal, on a block not processing). Until a release or the next drive. Never asked
+	/// while a fade-out waits. The default (a test's fake) acknowledges at once.
+	virtual void hold(std::vector<std::uint8_t> outputs, std::move_only_function<void()> acknowledged) {
+		static_cast<void>(outputs);
+		acknowledged();
+	}
+	/// Main thread; returns at once: the outputs `outputs` marks ramp back to full gain over 5 ms.
+	virtual void release(std::vector<std::uint8_t> outputs) { static_cast<void>(outputs); }
+	/// Main thread; returns at once (docs/engine.md#holds-and-swaps): as drive, but the fade and the holds are kept, so
+	/// the new code takes the cycles from the next one on with no fade-in: the swap at one position a change in place
+	/// commits. `done(P)` as drive's. The default (a test's fake) drives.
+	virtual void swap(DriveRequest request, std::move_only_function<void(std::uint64_t taken)> done) {
+		drive(request, std::move(done));
+	}
 	/// Main thread: runs every `done` whose request the data loop already completed, as the block's completion event
 	/// would. A caller calls it before judging any bound, so a main loop that stalled never mistakes a
 	/// late dispatch for a late data loop.

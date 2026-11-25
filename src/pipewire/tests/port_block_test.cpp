@@ -1937,6 +1937,108 @@ TEST_CASE("A fade-out reaches exactly 0 over 5 ms and is acknowledged in the cyc
 	CHECK(cyclesAtAck >= cyclesAtFade + 1);
 }
 
+TEST_CASE("A hold reaches exactly 0 over 5 ms, stays there, is acknowledged, and its release fades back in",
+          "[blocks][hold][async]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Wiring wiring(*engine, waiter);
+	Constant one(waiter, 1.0F);
+	BlockEvents events(waiter);
+	Done done(waiter);
+	ProbeListener listener(waiter, 2);
+	ear::pipewire::testing::Probe probe(*engine, waiter, "listener", 2, 0, listener);
+	auto block = blocks.make("holder", Ports{{{Direction::output, "out", {"a", "b"}}}}, kFormat, events);
+	const bool faded[] = {true, true};
+	block->drive(DriveRequest{&one, faded}, done.drive(1));
+	REQUIRE(wiring.link(waiter, {"holder", "out.a"}, {"listener", "in.1"}));
+	REQUIRE(wiring.link(waiter, {"holder", "out.b"}, {"listener", "in.2"}));
+	std::size_t full = 0;
+	REQUIRE(waiter.until([&] {
+		while (full < listener.count() && (listener.sample(0, full) != 1.0F || listener.sample(1, full) != 1.0F)) {
+			++full;
+		}
+		return full + 4 * kBlock <= listener.count();
+	}));
+
+	block->hold({1, 0}, done.fade(2)); // out.a held, out.b not
+	REQUIRE(waiter.until([&] { return done.has(2); }));
+	const std::size_t ackedBy = listener.count();
+	REQUIRE(waiter.until([&] { return listener.count() >= ackedBy + 4 * kBlock; }));
+	// out.a: (kFade - k) / kFade for k = 0..kFade, then exact zeros, the code still running; out.b untouched.
+	std::size_t start = full;
+	while (start < listener.count() && listener.sample(0, start) == 1.0F) ++start;
+	REQUIRE(start > full);
+	--start;
+	const std::size_t heldTo = listener.count();
+	REQUIRE(start + kFade + 2 * kBlock < heldTo);
+	for (std::uint32_t k = 0; k <= kFade; ++k) {
+		INFO("hold frame " << k);
+		CHECK(listener.sample(0, start + k) == fadeGain(kFade - k));
+	}
+	std::size_t nonzero = 0;
+	for (std::size_t n = start + kFade; n < heldTo; ++n) nonzero += listener.sample(0, n) != 0.0F ? 1 : 0;
+	CHECK(nonzero == 0);
+	std::size_t notFull = 0;
+	for (std::size_t n = full; n < heldTo; ++n) notFull += listener.sample(1, n) != 1.0F ? 1 : 0;
+	CHECK(notFull == 0);
+
+	// The release: from zero back to full gain over 5 ms, frame k at k / kFade.
+	block->release({1, 0});
+	REQUIRE(waiter.until([&] {
+		std::size_t at = heldTo;
+		while (at < listener.count() && listener.sample(0, at) != 1.0F) ++at;
+		return at + kBlock < listener.count();
+	}));
+	std::size_t back = heldTo;
+	while (back < listener.count() && listener.sample(0, back) == 0.0F) ++back;
+	REQUIRE(back > heldTo);
+	--back; // k = 0 of the fade in
+	for (std::uint32_t k = 0; k <= kFade; ++k) {
+		INFO("release frame " << k);
+		CHECK(listener.sample(0, back + k) == fadeGain(k));
+	}
+}
+
+TEST_CASE("A code swap takes effect at one position, with no fade and no gap", "[blocks][hold][async]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Wiring wiring(*engine, waiter);
+	Constant one(waiter, 1.0F);
+	Constant half(waiter, 0.5F);
+	BlockEvents events(waiter);
+	Done done(waiter);
+	ProbeListener listener(waiter, 1);
+	ear::pipewire::testing::Probe probe(*engine, waiter, "listener", 1, 0, listener);
+	auto block = blocks.make("swapper", oneOutput, kFormat, events);
+	const bool faded[] = {true};
+	block->drive(DriveRequest{&one, faded}, done.drive(1));
+	REQUIRE(wiring.link(waiter, {"swapper", "out.a"}, {"listener", "in.1"}));
+	std::size_t full = 0;
+	REQUIRE(waiter.until([&] {
+		while (full < listener.count() && listener.sample(0, full) != 1.0F) ++full;
+		return full + 4 * kBlock <= listener.count();
+	}));
+	block->swap(DriveRequest{&half, faded}, done.drive(2));
+	REQUIRE(waiter.until([&] { return done.has(2); }));
+	const std::size_t swappedBy = listener.count();
+	REQUIRE(waiter.until([&] { return listener.count() >= swappedBy + 4 * kBlock; }));
+	// Every frame after the full gain is the old code's or the new one's, at full gain: one change, nothing between.
+	std::size_t changes = 0;
+	std::size_t other = 0;
+	for (std::size_t n = full + 1; n < listener.count(); ++n) {
+		const float now = listener.sample(0, n);
+		if (now != 1.0F && now != 0.5F) ++other;
+		if (now != listener.sample(0, n - 1)) ++changes;
+	}
+	CHECK(other == 0);
+	CHECK(changes == 1);
+	CHECK(listener.sample(0, listener.count() - 1) == 0.5F);
+}
+
 TEST_CASE("A fade-out on a block that is not processing, or that leaves STREAMING mid-fade, is acknowledged by signal",
           "[blocks][fade][async]") {
 	auto engine = makeEngine();

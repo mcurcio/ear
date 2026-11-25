@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <span>
 #include <utility>
+#include <vector>
 #include "ear/core/latency.hpp"
 #include "ear/core/node_type.hpp"
 #include "ear/core/sink.hpp"
@@ -125,6 +126,85 @@ public:
 private:
 	FadeRamp ramp_;
 	std::uint64_t waiting_ = 0;
+};
+
+/// The holds on a block's outputs (docs/engine.md#holds-and-swaps): a second gain per output, after the fade and before
+/// the sinks and the meters, so a held output's meters and links read the silence. A hold ramps its outputs linearly to
+/// zero over fadeLength (whole frames, at least one) and keeps them there; a release ramps them back to full gain. Each
+/// hold waits for its acknowledgement: the end of the first cycle at which every held output is at zero, a cycle too
+/// large to run (written as zeros), or at once on a block not processing. Each call returns how many holds waiting it
+/// acknowledged. Sized at its making (main thread); nothing after allocates.
+class HoldRamp {
+public:
+	/// `rate`: the graph's; `outputs`: the block's, outputs then inside outputs.
+	HoldRamp(SampleRate rate, std::size_t outputs)
+		: frames_(std::max(static_cast<std::uint32_t>(FrameClock(rate).frames(fadeLength)), 1U)), at_(outputs, frames_),
+		  held_(outputs, 0) {}
+
+	std::uint32_t frames() const noexcept { return frames_; }
+	/// Holds the outputs `mask` marks (one entry per output; a shorter mask leaves the rest): from the next sample each
+	/// ramps to zero from the gain it has. Waits for its acknowledgement.
+	void hold(std::span<const std::uint8_t> mask) noexcept {
+		for (std::size_t o = 0; o < held_.size() && o < mask.size(); ++o)
+			if (mask[o] != 0) held_[o] = 1;
+		++asked_;
+	}
+	/// Releases the outputs `mask` marks: from the next sample each ramps back to full gain.
+	void release(std::span<const std::uint8_t> mask) noexcept {
+		for (std::size_t o = 0; o < held_.size() && o < mask.size(); ++o)
+			if (mask[o] != 0) held_[o] = 0;
+	}
+	/// A drive applied: every hold ends at full gain at once (the drive's own fade-in covers the faded outputs), and the
+	/// holds waiting are acknowledged.
+	std::uint64_t driven() noexcept {
+		std::ranges::fill(at_, frames_);
+		std::ranges::fill(held_, std::uint8_t{0});
+		return acknowledge();
+	}
+	/// The ramp over `frames` samples of every output (`outputs` as long as the ramp's outputs, each span at least
+	/// `frames` long); the holds this cycle acknowledged by ending with every held output at zero.
+	std::uint64_t apply(std::span<const std::span<float>> outputs, std::uint32_t frames) noexcept {
+		for (std::size_t o = 0; o < outputs.size() && o < at_.size(); ++o) {
+			std::uint32_t& at = at_[o];
+			const bool held = held_[o] != 0;
+			if (!held && at == frames_) continue; // full gain: nothing to do
+			for (std::uint32_t i = 0; i < frames; ++i) {
+				outputs[o][i] = at == 0 ? 0.0F : outputs[o][i] * (static_cast<float>(at) / static_cast<float>(frames_));
+				if (held && at > 0) --at;
+				else if (!held && at < frames_) ++at;
+			}
+		}
+		return silentNow() ? acknowledge() : 0;
+	}
+	/// A cycle too large to run, every output written as zeros: the held outputs are at zero there.
+	std::uint64_t wroteZeros() noexcept { return notProcessing(); }
+	/// The block is not processing, so no cycle will come: the held outputs are at zero now, and every hold waiting is
+	/// acknowledged.
+	std::uint64_t notProcessing() noexcept {
+		for (std::size_t o = 0; o < at_.size(); ++o)
+			if (held_[o] != 0) at_[o] = 0;
+		return acknowledge();
+	}
+	/// The gain output `output` has now (1 at full gain), and whether it is held.
+	float gain(std::size_t output) const noexcept {
+		return output < at_.size() ? static_cast<float>(at_[output]) / static_cast<float>(frames_) : 1.0F;
+	}
+	bool held(std::size_t output) const noexcept { return output < held_.size() && held_[output] != 0; }
+	/// Holds applied and not yet acknowledged.
+	std::uint64_t waiting() const noexcept { return asked_ - acked_; }
+
+private:
+	bool silentNow() const noexcept {
+		for (std::size_t o = 0; o < at_.size(); ++o)
+			if (held_[o] != 0 && at_[o] != 0) return false;
+		return true;
+	}
+	std::uint64_t acknowledge() noexcept { return asked_ - std::exchange(acked_, asked_); }
+	std::uint32_t frames_;
+	std::vector<std::uint32_t> at_;  // each output's gain numerator: the next sample's gain is at_ / frames_
+	std::vector<std::uint8_t> held_; // each output held
+	std::uint64_t asked_ = 0;        // holds applied
+	std::uint64_t acked_ = 0;        // holds acknowledged
 };
 
 /// The frames the graph lost before a cycle, as a sink's chunk says them (Chunk::lostFrames): a catch-up's jump, else

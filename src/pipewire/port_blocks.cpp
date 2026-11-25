@@ -143,7 +143,8 @@ public:
 		  cycleClock_(format.rate), downstream_(outputs_.size()), downstreamNow_(outputs_.size()),
 		  inputToldNow_(inputs_.size()), outputToldNow_(outputs_.size()), inputPeers_(inputs_.size()),
 		  outputPeers_(outputs_.size()), inputTold_(inputs_.size()), outputTold_(outputs_.size()), fade_(format.rate),
-		  fadeMask_(outputs_.size(), 0), sinks_(insideBanks(ports, Direction::output)), tapSpans_(outputs_.size()),
+		  hold_(format.rate, outputs_.size()), fadeMask_(outputs_.size(), 0),
+		  sinks_(insideBanks(ports, Direction::output)), tapSpans_(outputs_.size()),
 		  sources_(insideBanks(ports, Direction::input)), sourceSpans_(inputs_.size()) {
 		for (std::size_t i = 0; i < outputs_.size(); ++i) {
 			scratch_.emplace_back(format.maxBlock, 0.0f);
@@ -217,12 +218,29 @@ public:
 		// make, and apply() binds no more than it holds. Nothing is thrown here: this runs on the main loop, inside
 		// PipeWire's C callbacks.
 		pending_.push_back(
-			Pending{Kind::drive, request.code, request.faded, request.sinks, request.sources, std::move(done), {}});
+			Pending{Kind::drive, request.code, request.faded, request.sinks, request.sources, std::move(done), {}, {}});
 		pump();
 	}
 
 	void fadeOut(std::move_only_function<void()> done) override {
-		pending_.push_back(Pending{Kind::fade, nullptr, {}, {}, {}, {}, std::move(done)});
+		pending_.push_back(Pending{Kind::fade, nullptr, {}, {}, {}, {}, std::move(done), {}});
+		pump();
+	}
+
+	void hold(std::vector<std::uint8_t> outputs, std::move_only_function<void()> acknowledged) override {
+		holdAcks_.push_back(std::move(acknowledged));
+		pending_.push_back(Pending{Kind::hold, nullptr, {}, {}, {}, {}, {}, std::move(outputs)});
+		pump();
+	}
+
+	void release(std::vector<std::uint8_t> outputs) override {
+		pending_.push_back(Pending{Kind::release, nullptr, {}, {}, {}, {}, {}, std::move(outputs)});
+		pump();
+	}
+
+	void swap(DriveRequest request, std::move_only_function<void(std::uint64_t)> done) override {
+		pending_.push_back(
+			Pending{Kind::swap, request.code, request.faded, request.sinks, request.sources, std::move(done), {}, {}});
 		pump();
 	}
 
@@ -239,11 +257,20 @@ public:
 			const std::uint64_t taken = slot.takenAt;
 			const bool cancelled = slot.cancelled;
 			++finished_;
-			if (next.kind == Kind::drive) {
+			if (next.kind == Kind::drive || next.kind == Kind::swap) {
 				if (next.driven) next.driven(taken);
-			} else if (!cancelled && next.faded) {
+			} else if (next.kind == Kind::fade && !cancelled && next.faded) {
 				next.faded();
 			}
+			if (alive.expired()) return;
+		}
+		// Every hold the data loop acknowledged, in the order asked.
+		const std::uint64_t acknowledged = holdsAcked_.load(std::memory_order_acquire);
+		while (holdAcksRun_ < acknowledged && !holdAcks_.empty()) {
+			std::move_only_function<void()> heard = std::move(holdAcks_.front());
+			holdAcks_.pop_front();
+			++holdAcksRun_;
+			if (heard) heard();
 			if (alive.expired()) return;
 		}
 		pump();
@@ -340,7 +367,8 @@ private:
 		if (streaming && blockId_ == SPA_ID_INVALID && filter_ != nullptr) {
 			blockId_ = pw_filter_get_node_id(filter_.get());
 		}
-		if (!streaming && old == PW_FILTER_STATE_STREAMING && completed_.load(std::memory_order_acquire) < pushed_) {
+		if (!streaming && old == PW_FILTER_STATE_STREAMING &&
+		    (completed_.load(std::memory_order_acquire) < pushed_ || !holdAcks_.empty())) {
 			kick_ = true;
 			pump();
 		}
@@ -432,6 +460,8 @@ private:
 			                                 .code = next.code,
 			                                 .faded = next.mask.data(),
 			                                 .fadedCount = next.mask.size(),
+			                                 .outputs = next.outputs.data(),
+			                                 .outputCount = next.outputs.size(),
 			                                 .sinks = next.sinks.data(),
 			                                 .sinkCount = next.sinks.size(),
 			                                 .sources = next.sources.data(),
@@ -477,6 +507,12 @@ private:
 				fade_.fadeOut();
 				continue;
 			}
+			if (request.kind == Kind::hold || request.kind == Kind::release) {
+				const std::span<const std::uint8_t> marked(request.outputs, request.outputCount);
+				if (request.kind == Kind::hold) hold_.hold(marked);
+				else hold_.release(marked);
+				continue;
+			}
 			code_.store(request.code, std::memory_order_release);
 			// The taps change with the code, in this invoke: copied into storage sized at make.
 			sinkCount_ = std::min(request.sinkCount, sinks_.size());
@@ -484,20 +520,28 @@ private:
 			sourceCount_ = std::min(request.sourceCount, sources_.size());
 			std::copy_n(request.sources, sourceCount_, sources_.begin());
 			account_.driven(); // the new code's first cycle is a discontinuity to it
-			bool anyFaded = false;
-			for (std::size_t i = 0; i < fadeMask_.size(); ++i) {
-				fadeMask_[i] = i < request.fadedCount && request.faded[i] ? 1 : 0;
-				anyFaded = anyFaded || fadeMask_[i] != 0;
+			// A swap keeps the fade and the holds: the new code takes the next cycle at the gains the old one had.
+			if (request.kind == Kind::drive) {
+				bool anyFaded = false;
+				for (std::size_t i = 0; i < fadeMask_.size(); ++i) {
+					fadeMask_[i] = i < request.fadedCount && request.faded[i] ? 1 : 0;
+					anyFaded = anyFaded || fadeMask_[i] != 0;
+				}
+				// The fade-outs waiting, the newest requests before this one, are cancelled (BlockFade's rule).
+				const std::uint64_t cancelled = fade_.driven(anyFaded);
+				for (std::uint64_t pending = drained - cancelled; pending < drained; ++pending)
+					ring_[pending % kRing].cancelled = true;
+				holdsAckedRt_ += hold_.driven();
 			}
-			// The fade-outs waiting, the newest requests before this one, are cancelled (BlockFade's rule).
-			const std::uint64_t cancelled = fade_.driven(anyFaded);
-			for (std::uint64_t pending = drained - cancelled; pending < drained; ++pending)
-				ring_[pending % kRing].cancelled = true;
 			request.takenAt = account_.nextPosition();
 			takenAt_.store(account_.nextPosition(), std::memory_order_release);
 		}
 		drained_.store(drained, std::memory_order_release);
-		if (!processing_.load(std::memory_order_acquire)) fade_.notProcessing(); // no cycle will come to end them
+		if (!processing_.load(std::memory_order_acquire)) { // no cycle will come to end them
+			fade_.notProcessing();
+			holdsAckedRt_ += hold_.notProcessing();
+		}
+		holdsAcked_.store(holdsAckedRt_, std::memory_order_release);
 		// Requests complete in order and only fade-outs wait, so every request before the waiting ones is complete.
 		completed_.store(drained - fade_.waiting(), std::memory_order_release);
 	}
@@ -506,6 +550,18 @@ private:
 	/// acknowledged at the end of the first cycle that ended at zero.
 	void applyFade(std::uint32_t frames) noexcept {
 		if (fade_.apply(outputs_, fadeMask_, frames).acknowledged > 0) acknowledgeFade();
+	}
+
+	/// Realtime thread, after the fade: the holds (HoldRamp), and those waiting acknowledged at the end of the first
+	/// cycle that ended with every held output at zero.
+	void applyHolds(std::uint32_t frames) noexcept { acknowledgeHolds(hold_.apply(outputs_, frames)); }
+
+	/// Realtime thread: `count` more holds are acknowledged.
+	void acknowledgeHolds(std::uint64_t count) noexcept {
+		if (count == 0) return;
+		holdsAckedRt_ += count;
+		holdsAcked_.store(holdsAckedRt_, std::memory_order_release);
+		pw_loop_signal_event(loop_, completion_.get());
 	}
 
 	/// Realtime thread: every pending fade-out is done.
@@ -566,8 +622,9 @@ private:
 					std::fill_n(out, frames, 0.0f);
 				}
 			}
-			// It wrote zeros: a fade-out ends here.
+			// It wrote zeros: a fade-out and the holds end here.
 			if (fade_.wroteZeros() > 0) acknowledgeFade();
+			acknowledgeHolds(hold_.wroteZeros());
 		}
 		// Every block of one driver sees the same clock position, so every block's windows end at
 		// the same multiples of windowFrames_, whenever the block was made.
@@ -613,7 +670,8 @@ private:
 		} else {
 			for (const std::span<float> out : outputs_) std::ranges::fill(out, 0.0f);
 		}
-		applyFade(frames); // before metering, so levels show the fade
+		applyFade(frames);  // before metering, so levels show the fade
+		applyHolds(frames); // likewise, after the fade
 		// Each sink's tap, after the code and the fade (a sink's bank is never faded), from its inside output bank's
 		// spans (an unlinked one's scratch included); only while a code runs: a silence binds none.
 		for (std::size_t s = 0; s < sinkCount_; ++s) {
@@ -687,7 +745,7 @@ private:
 	std::string refusalDetail_;
 
 	// The asynchronous drive and fade (see pump()).
-	enum class Kind : std::uint8_t { drive, fade };
+	enum class Kind : std::uint8_t { drive, fade, hold, release, swap };
 	// A first choice: one invoke in flight per block, the rest queued here (docs/engine.md#drive-and-fade).
 	static constexpr std::size_t kRing = 8;
 	/// One request in the ring: what the main thread hands, then what the data loop writes back.
@@ -696,6 +754,8 @@ private:
 		AudioCode* code = nullptr;
 		const bool* faded = nullptr;
 		std::size_t fadedCount = 0;
+		const std::uint8_t* outputs = nullptr; // a hold or a release: the outputs it marks
+		std::size_t outputCount = 0;
 		const SinkBinding* sinks = nullptr; // a drive: the taps it binds
 		std::size_t sinkCount = 0;
 		const SourceBinding* sources = nullptr; // a drive: the sources it binds
@@ -712,8 +772,11 @@ private:
 		std::span<const SourceBinding> sources;
 		std::move_only_function<void(std::uint64_t)> driven;
 		std::move_only_function<void()> faded;
+		std::vector<std::uint8_t> outputs; // a hold or a release: what the ring's request points into
 	};
 	BlockFade fade_;                                // data loop only
+	HoldRamp hold_;                                 // data loop only
+	std::uint64_t holdsAckedRt_ = 0;                // holds acknowledged; data loop only
 	std::vector<std::uint8_t> fadeMask_;            // per output; data loop only
 	std::vector<SinkBinding> sinks_;                // the applied drive's taps, sized at make; data loop only
 	std::size_t sinkCount_ = 0;                     // how many of sinks_ are bound; data loop only
@@ -729,8 +792,11 @@ private:
 	std::atomic<std::uint64_t> takenAt_{0};
 	std::atomic<bool> processing_{false}; // STREAMING, as the main loop last heard
 	std::atomic<std::uint64_t> invokesRun_{0};
+	std::atomic<std::uint64_t> holdsAcked_{0}; // holds the data loop acknowledged
 	// Main thread only.
-	std::deque<Pending> pending_; // from request finished_ on
+	std::deque<Pending> pending_;                          // from request finished_ on
+	std::deque<std::move_only_function<void()>> holdAcks_; // each hold's acknowledgement not yet run, in order
+	std::uint64_t holdAcksRun_ = 0;
 	std::uint64_t pushed_ = 0;
 	std::uint64_t finished_ = 0;
 	std::uint64_t invokesPosted_ = 0;
