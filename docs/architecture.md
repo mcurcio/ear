@@ -612,7 +612,9 @@ one:
 - **Who takes it.** A change the plan says can be made in place is taken in place only by a node
   that has rested (reached `running` or `stopped` once), with no stop, restart, disable, removal
   or failure in flight and the data loop not wedged; from `running` or `stopped` at once, and
-  after a start's drive or a stop in flight once it ends. Any other node takes it as a
+  after a start's drive or a stop in flight once it ends (a change that waited for a start's drive
+  begins in the drive's own batch, before `start()` runs; a `start()` that throws there still
+  fails the node `start-failed` with no `stop()`, ending the change). Any other node takes it as a
   restart-only change: one that has not yet rested restarts (nothing has started, so nothing is
   gained), a failed one retries, a disabled one stores it, all with cause `settings` as above.
   Changes that wait together are made in place only if every one of them could be.

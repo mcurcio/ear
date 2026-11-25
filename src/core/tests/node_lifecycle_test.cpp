@@ -2035,6 +2035,22 @@ TEST_CASE("A change in place waits for a drive or a stop in flight, then applies
 		CHECK(p.phase() == NodePhase::running);
 		CHECK_FALSE(restarted(p));
 	}
+	SECTION("a start() that threw in the batch that began the change is start-failed and pairs with no stop()") {
+		Probe p = reach(Spot::stopped);
+		p.take(p.node.start());
+		p.changeInPlace({"gain"});
+		p.take(p.node.driven(p.node.configuration().barrier()));
+		REQUIRE(p.did(K::start));
+		REQUIRE(p.node.configuration().state() == ConfigState::changing);
+		p.clear();
+		p.take(p.node.startThrew("start() threw: boom"));
+		CHECK(p.health().reason == Failure{FailureCode::startFailed, "start() threw: boom"});
+		CHECK(p.did(K::dropChange));
+		CHECK_FALSE(p.did(K::stop));
+		CHECK(p.did(K::fade));
+		p.settle();
+		CHECK(p.phase() == NodePhase::failed);
+	}
 	SECTION("a stop's fade: the change applies once it rested, while stopped") {
 		Probe p = reach(Spot::stoppingStop);
 		p.changeInPlace({"gain"});

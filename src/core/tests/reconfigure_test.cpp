@@ -49,11 +49,14 @@ struct Script {
 	enum class Answer { applied, appliedCode, restart, throws, breakRule } answer = Answer::applied;
 	bool holdOut = true;
 	bool post = true;
+	bool startThrows = false;
 	float codeLevel = 0.25F;
 };
 Script script;
 /// What the type was called with, in order: "configure g<gain>", "change g<old>->g<now>".
 std::vector<std::string> calls;
+/// How many times stop() was called.
+int stops = 0;
 /// Every Work the loop saw, by what it last held (read once a test ran the loops).
 std::vector<std::string> worked;
 
@@ -78,6 +81,10 @@ template <const auto& Spec> struct Reconf {
 		calls.push_back("configure " + gainOf(s));
 		return cx.applied(Level<Spec>{1.0F}, cx.state(work));
 	}
+	void start() {
+		if (script.startThrows) throw std::runtime_error("no device");
+	}
+	void stop() { ++stops; }
 	Changed configure(ChangeOf<Spec>& cx, const Checked& old, const Checked& now) {
 		calls.push_back("change " + gainOf(old) + "->" + gainOf(now));
 		if (script.holdOut) cx.hold(out);
@@ -120,6 +127,7 @@ void reset(Script asked = {}) {
 	script = asked;
 	calls.clear();
 	worked.clear();
+	stops = 0;
 }
 
 /// Added and running with `settings`; with autoComplete off its drive completed by hand.
@@ -384,6 +392,30 @@ TEST_CASE("A stop, a removal or a disable during a change ends it before its com
 		CHECK(h->phase() == "disabled");
 		CHECK(worked.empty());
 	}
+}
+
+TEST_CASE("A start() that threw in the batch that began a change waiting for its drive fails the node start-failed, "
+          "with no stop()",
+          "[reconfigure]") {
+	reset();
+	auto owned = running(manual());
+	auto& h = *owned;
+	h.stop();
+	h->acknowledgeFade();
+	h->completeBarrier();
+	REQUIRE(h->phase() == "stopped");
+	script.startThrows = true;
+	h.start();
+	REQUIRE(h->phase() == "starting"); // its drive in flight
+	h.change({{"gain", 10}});          // waits for the drive
+	const int stopsBefore = stops;
+	h->completeBarrier(); // the drive: start() throws, and the waiting change begins in the same batch
+	h->acknowledgeFade();
+	h->completeBarrier();
+	CHECK(h->phase() == "failed");
+	REQUIRE(h->health().reason);
+	CHECK(h->health().reason->code == FailureReason::Code::startFailed);
+	CHECK(stops == stopsBefore); // no stop() pairs with the start() that threw
 }
 
 TEST_CASE("A type's reconfigureDeadline is its spec's", "[reconfigure]") {

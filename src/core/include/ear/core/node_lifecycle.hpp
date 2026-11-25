@@ -182,6 +182,7 @@ public:
 private:
 	std::vector<ConfigAction> stopDriving();
 	ConfigAction fadeOrSilence();
+	void throwStart();
 	std::vector<ConfigAction> beginTeardown();
 	std::vector<ConfigAction> onChanging(const ConfigInput& input);
 	ConfigAction post(ConfigAction::Kind kind);

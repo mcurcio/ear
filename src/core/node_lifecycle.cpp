@@ -408,6 +408,15 @@ std::vector<ConfigAction> ConfigurationMachine::stopDriving() {
 	return actions;
 }
 
+/// The start() of the drive that began driving threw: nothing started, so no stop() pairs with it, and the node has not
+/// rested. A change in place begun in the same batch as that start (one that waited for the drive) is still from
+/// driving, so the same holds while it changes or commits.
+void ConfigurationMachine::throwStart() {
+	if (state_ != ConfigState::driving && changeFrom_ != ConfigState::driving) return;
+	started_ = false;
+	rested_ = false;
+}
+
 /// A driven code goes silent: a fade first, or a silence at once when no output is faded.
 ConfigAction ConfigurationMachine::fadeOrSilence() {
 	state_ = fades_ ? ConfigState::fading : ConfigState::silencing;
@@ -431,6 +440,9 @@ std::vector<ConfigAction> ConfigurationMachine::onChanging(const ConfigInput& in
 	switch (input.event) {
 	case ConfigEvent::changeAgain:
 		return {{Kind::dropChange}, {Kind::reconfigure}};
+	case ConfigEvent::startThrew:
+		throwStart();
+		return {};
 	case ConfigEvent::changeReady:
 		if (changeFrom_ == ConfigState::driving) {
 			state_ = ConfigState::committing;
@@ -523,10 +535,7 @@ std::vector<ConfigAction> ConfigurationMachine::on(const ConfigInput& input) {
 			return {{Kind::reconfigure}};
 		}
 		if (event == ConfigEvent::stopAsked || event == ConfigEvent::teardownAsked) return stopDriving();
-		if (event == ConfigEvent::startThrew) {
-			started_ = false;
-			rested_ = false;
-		}
+		if (event == ConfigEvent::startThrew) throwStart();
 		if (event == ConfigEvent::blockLost) {
 			started_ = false; // no stop(), no fade
 			state_ = silencing;
@@ -586,6 +595,7 @@ std::vector<ConfigAction> ConfigurationMachine::on(const ConfigInput& input) {
 			state_ = driving;
 			return {};
 		}
+		if (event == ConfigEvent::startThrew) throwStart();
 		if (event == ConfigEvent::blockLost) {
 			started_ = false; // as driving's: no stop(), no fade
 			changeFrom_ = none;
@@ -1199,7 +1209,13 @@ Actions NodeAggregate::holdOrDrop(Fact fact, std::string detail) {
 }
 
 Actions NodeAggregate::startThrew(std::string detail) {
-	if (goneTold_ || config_.state() != ConfigState::driving) return {};
+	// A change in place that waited for the start's drive begins in the start's own batch, before the hook ran: the
+	// start's fault is still the node's while that change is in flight.
+	const ConfigState state = config_.state();
+	const bool fromDriving =
+		state == ConfigState::driving || ((state == ConfigState::changing || state == ConfigState::committing) &&
+	                                      config_.changeFrom() == ConfigState::driving);
+	if (goneTold_ || !fromDriving) return {};
 	Actions out;
 	askConfig(ConfigEvent::startThrew, out);
 	Actions failed = fault(Fact::hookThrew, std::move(detail));
