@@ -856,6 +856,13 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		std::span<const StoreDeclaration> stores() const noexcept override { return inner->stores(); }
 		void start() override { inner->start(); }
 		void stop() override { inner->stop(); }
+		// A change in place reaches the type's own instance with the type's own config, which the harness's wraps.
+		bool changes() const noexcept override { return inner->changes(); }
+		Changed change(ChangeContext& cx, const NodeConfig& now) override {
+			return inner->change(cx, *static_cast<const SeenConfig&>(now).inner);
+		}
+		void adopt(const NodeConfig& now) override { inner->adopt(*static_cast<const SeenConfig&>(now).inner); }
+		std::chrono::milliseconds reconfigureDeadline() const noexcept override { return inner->reconfigureDeadline(); }
 		Impl& harness;
 		std::unique_ptr<ErasedInstance> inner;
 	};
@@ -879,6 +886,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	                                .recordings = options.noRecordingsFolder ? nullptr : &recordings,
 	                                .loops = &loops,
 	                                .stores = &stores,
+	                                .ports = options.refusedPorts.empty() ? nullptr : &probe,
 	                                .pipeReceivers = &pipes,
 	                                .programs = &programs,
 	                                .runtimeFolder = options.runtimeFolder}),
@@ -909,7 +917,10 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	}
 
 	// ---- Listeners ----
-	void nodeChanged(const NodeHealth& h) override { told = h; }
+	void nodeChanged(const NodeHealth& h) override {
+		told = h;
+		toldList.push_back(h);
+	}
 	void nodeGone(const NodeName&, std::uint64_t dropped) override {
 		wentAway = true;
 		dropped_ = dropped;
@@ -1001,7 +1012,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		outputs.assign(outputNames.size(), std::vector<float>(options.format.maxBlock, 0.0F));
 		lastGain.assign(outputNames.size(), 1.0F);
 		fadeMask.assign(outputNames.size(), 0);
-		if (holdRamp.waiting() == 0 && holdAcks.empty()) holdRamp = HoldRamp(options.format.rate, outputNames.size());
+		if (holdRamp.outputs() != outputNames.size()) holdRamp = HoldRamp(options.format.rate, outputNames.size());
 	}
 	/// What the real block with no peers tells on output port `output` (outputs then insideOutputs; its capture latency)
 	/// and on input port `input` (its playback latency): workOut's, as the plan was last carried
@@ -1077,6 +1088,23 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	FakeBlocks blocks;
 	FakeEngineCompanions<SoundCardShape> cards;
 	FakeEngineCompanions<RtpReceiverShape> receivers;
+	/// The port probe, when the options refuse a port: each key listed refused "in use".
+	struct FakeProbe final : PortProbe {
+		explicit FakeProbe(const std::vector<std::string>& r) : refused(r) {}
+		std::expected<void, std::string> judged(std::string key) const {
+			if (std::ranges::find(refused, key) != refused.end()) return std::unexpected(std::string("in use"));
+			return {};
+		}
+		std::expected<void, std::string> tcpListen(std::uint16_t port) override {
+			return judged("tcp:" + std::to_string(port));
+		}
+		std::expected<void, std::string> udp(std::uint16_t port, std::string_view) override {
+			return judged("udp:" + std::to_string(port));
+		}
+		std::expected<std::uint16_t, std::string> freeTcp() override { return std::uint16_t{49152}; }
+		const std::vector<std::string>& refused;
+	};
+	FakeProbe probe{options.refusedPorts};
 	FakeEngineCompanions<PipeReceiverShape> pipes;
 	FakeSinks sinks;
 	FakeSources sources;
@@ -1131,6 +1159,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	std::vector<ProgramEvents*> programEvents;                  // by programList's index: what NodeHost gave its launch
 
 	std::optional<NodeHealth> told;
+	std::vector<NodeHealth> toldList; // every health told, in order
 	bool wentAway = false;
 	std::uint64_t dropped_ = 0;
 	std::vector<std::string> noteList;
@@ -1431,6 +1460,8 @@ void NodeHarness::remove() {
 	impl_->host->nodeRemoved(impl_->options.node);
 	impl_->settle();
 }
+
+const std::vector<NodeHealth>& NodeHarness::healths() const noexcept { return impl_->toldList; }
 
 NodeHealth NodeHarness::health() const {
 	if (!impl_->told) throw std::logic_error("nothing was told of the node");

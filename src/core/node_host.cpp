@@ -401,8 +401,15 @@ struct NodeHost::Impl {
 			queued_ = lost ? nullptr : std::move(config);
 			++version_;
 			switch (change.outcome) {
+			case NodeOutcome::reconfigure: {
+				// In place only for a type with a change version: without one the change restarts as any other, with
+				// no reconfiguring between (docs/architecture.md#changes-in-place).
+				const bool inPlace = config_ && config_->instance && config_->instance->changes();
+				feed(aggregate_.change(queued(), change.keys,
+				                       inPlace ? lc::ChangeKind::inPlace : lc::ChangeKind::restart));
+				break;
+			}
 			case NodeOutcome::restart:
-			case NodeOutcome::reconfigure: // treated as a restart until NodeHost changes in place
 			case NodeOutcome::stored:
 				feed(aggregate_.change(queued(), change.keys));
 				break;
@@ -520,8 +527,8 @@ struct NodeHost::Impl {
 			    index != config_->engineCompanions.size() || index >= config_->engineAsks.size())
 				return;
 			Configuration& c = *config_;
-			auto& companion =
-				*c.engineCompanions.emplace_back(std::make_unique<Companion>(host_, serial_, c.generation, index));
+			auto& companion = *c.engineCompanions.emplace_back(
+				std::make_unique<Companion>(host_, serial_, c.generation, index, ++host_.companionIds));
 			EngineAsk& asked = c.engineAsks[index];
 			CompanionTarget& target = asked.target;
 			target.blockId = block_->blockId(); // ready, so read
@@ -783,6 +790,7 @@ struct NodeHost::Impl {
 		/// A claim of the configuration of `generation` judged (an input of its own): granted, to probe, refused, or
 		/// waiting for its holder, which is closing.
 		void claimJudged(std::uint64_t generation, const Claim& claim, detail::ClaimJudged judged) {
+			if (current(generation) && changeClaimJudged(claim, judged)) return;
 			if (!stillReadying(generation)) return;
 			const auto found = std::ranges::find(config_->claims, claim, &ClaimSlot::claim);
 			if (found == config_->claims.end()) return;
@@ -878,16 +886,22 @@ struct NodeHost::Impl {
 		/// land only on the configuration that made it.
 		class Companion final : public EngineCompanionEvents {
 		public:
-			Companion(Impl& host, std::uint64_t serial, std::uint64_t generation, std::size_t index)
-				: host_(host), serial_(serial), generation_(generation), index_(index) {}
+			/// `id`: unique across the host, so an event of a companion a change replaced (retiring) is told apart from
+			/// its replacement's on the same index.
+			Companion(Impl& host, std::uint64_t serial, std::uint64_t generation, std::size_t index, std::uint64_t id)
+				: host_(host), serial_(serial), generation_(generation), index_(index), id_(id) {}
 			std::unique_ptr<EngineCompanion> made;
+			std::uint64_t id() const noexcept { return id_; }
 			// Told inside its making (during the flush) or later: an input of its own either way.
 			void ready() override {
-				host_.inputFor(serial_, [generation = generation_, index = index_](Node& node) {
+				host_.inputFor(serial_, [generation = generation_, index = index_, id = id_](Node& node) {
 					// Still current while it tears down, when its engine companions are already gone: nothing to ready.
 					if (!node.current(generation) || node.config_->tearing ||
-					    index >= node.config_->engineCompanions.size())
+					    index >= node.config_->engineCompanions.size() || !node.config_->engineCompanions[index] ||
+					    node.config_->engineCompanions[index]->id() != id)
 						return;
+					// Once the configuration was ready, a companion made is a change's replacement.
+					if (node.config_->readyTold) return node.replacementReady(id);
 					node.itemReady(generation, node.config_->engineAsks[index].item);
 				});
 			}
@@ -896,19 +910,92 @@ struct NodeHost::Impl {
 
 		private:
 			void tell(lc::Fact fact, std::string detail) {
-				host_.inputFor(serial_,
-				               [generation = generation_, fact, detail = std::move(detail)](Node& node) mutable {
-								   if (node.current(generation))
-									   node.feed(node.aggregate_.fault(fact, std::move(detail)));
-							   });
+				host_.inputFor(serial_, [generation = generation_, index = index_, id = id_, fact,
+				                         detail = std::move(detail)](Node& node) mutable {
+					if (!node.current(generation)) return;
+					// A companion a change replaces is retiring: its loss is said, never a fault of the node; its
+					// replacement's before the commit point falls the change back
+					// (docs/architecture.md#changes-in-place).
+					if (node.companionLostInChange(index, id, detail)) return;
+					node.feed(node.aggregate_.fault(fact, std::move(detail)));
+				});
 			}
 			Impl& host_; // never the node: a queued destruction may outlive it
 			std::uint64_t serial_;
 			std::uint64_t generation_;
 			std::size_t index_;
+			std::uint64_t id_;
 		};
 
 		class LeakedRecord;
+
+		/// What a change version works through (ChangeContext; docs/writing-a-node-type.md#the-change-version): the
+		/// node's own, valid only inside the change version's call; every call after it is a broken rule, as a
+		/// CreateContext's is. Its checks run through the node's guarded, so a broken rule fails the node even when the
+		/// type catches it.
+		class ChangeScope final : public ChangeContext {
+		public:
+			explicit ChangeScope(Node& node) noexcept : node_(node) {}
+			bool valid = false;  // inside the change version's call
+			bool broken = false; // a call found a rule broken in this call
+			AudioFormat format() const override { return node_.host_.format; }
+			const NodeName& node() const override { return node_.name_; }
+			const Ports& ports() const override { return node_.ports_; }
+			void postToLoop(std::size_t loop, std::move_only_function<void(void*)> work) override {
+				checked("post", [&] {
+					if (loop >= node_.config_->loops.size()) throw std::logic_error("a post to a loop not declared");
+					node_.config_->change->posts.emplace_back(loop, std::move(work));
+				});
+			}
+			void attachEngine(std::string_view bank, EngineCompanionShape shape) override {
+				checked("attach", [&] { node_.attachInChange(bank, std::move(shape)); });
+			}
+			void hold(std::span<const std::string_view> banks) override {
+				checked("hold", [&] { node_.holdBanks(banks, true); });
+			}
+			void holdAll() override {
+				checked("hold", [&] {
+					std::vector<std::string_view> all;
+					for (const Ports::Bank& bank : node_.ports_.banks())
+						if (bank.direction == Direction::output && bank.reach == PortBank::Reach::routable)
+							all.push_back(bank.name);
+					node_.holdBanks(all, true);
+				});
+			}
+			void release(std::span<const std::string_view> banks) override {
+				checked("release", [&] { node_.holdBanks(banks, false); });
+			}
+			void declareLatency(std::string_view from, std::string_view to, Latency latency) override {
+				checked("declareLatency", [&] {
+					const Ports::Bank& input = node_.ports_.bank(from);
+					const Ports::Bank& output = node_.ports_.bank(to);
+					if (input.direction != Direction::input || output.direction != Direction::output)
+						throw std::logic_error("declareLatency names a pair: an input bank, then an output bank");
+					auto& declared = node_.config_->change->latency;
+					if (!declared) declared.emplace();
+					if (std::ranges::any_of(*declared, [&](const DeclaredLatency& one) {
+							return one.bank == output.name && one.from == input.name;
+						}))
+						throw std::logic_error("latency declared twice for the path " + input.name + " to " +
+						                       output.name);
+					declared->push_back(DeclaredLatency{input.name, output.name, latency});
+				});
+			}
+
+		private:
+			template <typename Call> void checked(std::string_view call, Call&& run) {
+				node_.guarded([&] {
+					try {
+						if (!valid) throw std::logic_error(std::string(call) + " outside configure");
+						run();
+					} catch (const std::logic_error&) {
+						broken = true;
+						throw;
+					}
+				});
+			}
+			Node& node_;
+		};
 
 		/// One configuration as its own threads reach the node, and its handle's implementation
 		/// (docs/writing-a-node-type.md#the-node-handle): everything they tell crosses to the main loop, in order, and
@@ -1816,6 +1903,48 @@ struct NodeHost::Impl {
 			enum class LoopsStep { open, finishing, closing, closed } loopsStep = LoopsStep::open;
 			bool closedTold = false; // step 4 is done: the machine was told closed
 			std::size_t sinksClosed = 0;
+			/// A change in place in flight (docs/architecture.md#changes-in-place): what its change version asked, until
+			/// its commit point or its end. Its holds are the configuration's (held), kept across a supersession.
+			struct Change {
+				std::shared_ptr<const NodeConfig> target; // the settings it applies, kept alive until the commit
+				std::uint64_t epoch = 0;                  // this change's, so a late timer or answer finds it gone
+				std::vector<std::string> keys;            // the keys it applies, for its diagnostics
+				std::chrono::steady_clock::time_point began;
+				std::vector<std::pair<std::size_t, std::move_only_function<void(void*)>>> posts; // staged, in order
+				std::unique_ptr<AudioCode> code; // a new code, prepared when the old one is (swapped at the commit)
+				std::vector<BankPair> pairs;     // the new code's pass-through pairs, if it is one
+				bool codeGiven = false;
+				bool codePrepared = false;
+				std::optional<std::vector<DeclaredLatency>> latency; // declared in the change: the new paths
+				LatencyPlan plan;                                    // the plan from the commit point
+				bool answered = false;                               // the change version answered applied
+				std::unique_ptr<Timer> deadline;
+				std::unique_ptr<Timer> holdBound; // the holds' acknowledgement's 100 ms
+				bool holdGaveUp = false;          // past it: the change went on
+				/// An engine companion the change replaces, break-first behind a hold: its claims judged first, then
+				/// (once held) the old one destroyed and the new one made in one flush.
+				struct Replacement {
+					std::size_t index;          // the engine ask, and companion, it replaces
+					EngineCompanionShape shape; // the new one's
+					std::vector<Claim> claims;  // the new one's, by its shape's rule
+					std::vector<Claim> added;   // those the configuration did not hold: judged, probed, and kept on
+					std::size_t claimsPending = 0;
+					std::uint64_t retiringId = 0; // the companion it replaces
+					std::uint64_t id = 0;         // its own, once made
+					std::vector<Claim> oldClaims; // the replaced one's, by its shape's rule (once broken)
+					bool broken = false;          // the old one destroyed, the new one asked for
+					bool ready = false;
+				};
+				std::vector<Replacement> replacements;
+			};
+			std::optional<Change> change;
+			std::uint64_t changeEpoch = 0;
+			std::vector<std::uint8_t> held; // per output (outputs then inside outputs): held by a change, until it ends
+			std::uint64_t holdsAsked = 0;   // holds posted to the block, and those it acknowledged
+			std::uint64_t holdsAcked = 0;
+			std::unique_ptr<AudioCode> retiringCode; // the code a change's swap replaces, until the swap completed
+			std::vector<std::uint64_t> retiredIds;   // the engine companions a change replaced: their losses are said
+			bool retiringPrepared = false;           // and whether it was prepared
 
 			Configuration() = default;
 			Configuration(const Configuration&) = delete;
@@ -1835,6 +1964,8 @@ struct NodeHost::Impl {
 			/// one was never torn down, so each loop still up is destroyed, which ends its thread, before any state
 			/// that thread may be in; its sinks' threads end where the sinks stand in the order, before the states.
 			void freeInOrder() noexcept {
+				change.reset();
+				retiringCode.reset();
 				code.reset();
 				sinks.clear();
 				if (loopsStep != LoopsStep::closed)
@@ -2188,10 +2319,13 @@ struct NodeHost::Impl {
 				host_.markWedged(name_, judgedMs_);
 				break;
 			case Kind::reconfigure:
+				reconfigure();
+				break;
 			case Kind::commit:
+				commit(action.barrier);
+				break;
 			case Kind::dropChange:
-				// Only a change in place asks these, and NodeHost asks for none yet
-				// (docs/architecture.md#changes-in-place).
+				dropChange();
 				break;
 			}
 		}
@@ -2262,10 +2396,15 @@ struct NodeHost::Impl {
 		/// path of its own: its pair is carried (added for a code of the type's own; a pass-through must already copy
 		/// it, checked at configure's return) with the delay on it, both ways.
 		LatencyPlan latencyPlan(const Configuration& c) const {
-			LatencyPlan plan{.pairs = c.pairs};
+			return latencyPlan(c, c.pairs, c.latency, c.engineAsks);
+		}
+		/// The same, with these pairs, declarations and engine companions (a change's, from its commit point).
+		LatencyPlan latencyPlan(const Configuration& c, const std::vector<BankPair>& pairs,
+		                        const std::vector<DeclaredLatency>& latency, const std::vector<EngineAsk>& asks) const {
+			LatencyPlan plan{.pairs = pairs};
 			for (const SourceSlot& slot : c.sources)
 				plan.beyond.emplace_back(slot.bank, Delay{Latency{0, slot.source->writer().capacityFrames()}});
-			for (const EngineAsk& asked : c.engineAsks)
+			for (const EngineAsk& asked : asks)
 				std::visit(
 					[&]<class Shape>(const Shape& shape) {
 						if constexpr (ModuleRunShape<Shape>)
@@ -2273,7 +2412,7 @@ struct NodeHost::Impl {
 						                             moduleRunDelay(shape, FrameClock(host_.format.rate)));
 					},
 					asked.shape);
-			for (const DeclaredLatency& declared : c.latency) {
+			for (const DeclaredLatency& declared : latency) {
 				const BankPair pair{declared.from, declared.bank};
 				if (std::ranges::find(plan.pairs, pair) == plan.pairs.end()) plan.pairs.push_back(pair);
 				plan.onPair.emplace_back(pair, Delay{declared.latency});
@@ -3048,6 +3187,542 @@ struct NodeHost::Impl {
 			});
 		}
 
+		// ---- A change in place (docs/architecture.md#changes-in-place) ----
+
+		bool changeFromDriving() const noexcept {
+			return aggregate_.configuration().changeFrom() == lc::ConfigState::driving;
+		}
+
+		/// The change version (T9): a new change of the configuration, its deadline armed, and the type's change version
+		/// called through the change's context, timed as `configure`. Its answer, as an input of its own: a rule it broke
+		/// (or a fault of ear's adapter) fails the node; a throw, or a restart it asks for, falls back to a restart with
+		/// the new settings; an applied answer's new code is prepared now, while the old one runs, and the commit point
+		/// comes once every hold it asked was acknowledged.
+		void reconfigure() {
+			Configuration& c = *config_;
+			Configuration::Change& ch = c.change.emplace();
+			ch.target = queued_;
+			ch.epoch = ++c.changeEpoch;
+			ch.keys = aggregate_.health().keys;
+			ch.began = host_.timers.now();
+			const std::chrono::milliseconds deadline = c.instance->reconfigureDeadline();
+			ch.deadline = host_.timers.after(
+				deadline, [&host = host_, serial = serial_, generation = c.generation, epoch = ch.epoch, deadline] {
+					host.inputFor(serial, [generation, epoch, deadline](Node& node) {
+						if (!node.inChange(generation, epoch)) return;
+						const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(deadline).count();
+						node.fallBack(lc::NodeCause::FellBack::deadline,
+					                  "deadline " + std::to_string(seconds) + "s passed");
+					});
+				});
+			if (c.held.size() != c.fadedCount) c.held.assign(c.fadedCount, 0);
+			changeScope_.valid = true;
+			changeScope_.broken = false;
+			std::expected<Changed, TypeFault> answer =
+				callType(hooks::configure, [&] { return c.instance->change(changeScope_, *ch.target); });
+			changeScope_.valid = false;
+			const std::uint64_t epoch = ch.epoch;
+			if (!answer) {
+				if (answer.error().adapterFaulted) return faultLater(lc::Fact::adapterFaulted, answer.error().detail);
+				// A rule broken in a change is the type's bug: the node fails lost, as a rested node's hook that throws.
+				if (changeScope_.broken) return faultLater(lc::Fact::hookThrew, answer.error().detail);
+				return fallBackLater(epoch, lc::NodeCause::FellBack::failed, answer.error().detail);
+			}
+			if (answer->restarts())
+				return fallBackLater(epoch, lc::NodeCause::FellBack::restartAsked, answer->reason());
+			if (std::optional<NodeCode>& given = answer->code()) {
+				ch.codeGiven = true;
+				ch.pairs = given->pairs();
+				ch.code = std::move(given->own());
+				if (!ch.code) {
+					try {
+						ch.code = makePassThrough(ports_, ch.pairs);
+					} catch (const std::logic_error& error) {
+						return faultLater(lc::Fact::hookThrew,
+						                  std::string("configure gave a pass-through: ") + error.what());
+					}
+				}
+			}
+			// The plan from the commit point, worked out now as configure's return does, so a misfit fails here.
+			const std::vector<BankPair>& pairs = ch.codeGiven ? ch.pairs : c.pairs;
+			const std::vector<DeclaredLatency>& latency = ch.latency ? *ch.latency : c.latency;
+			if (!pairs.empty())
+				for (const DeclaredLatency& declared : latency)
+					if (std::ranges::find(pairs, BankPair{declared.from, declared.bank}) == pairs.end())
+						return faultLater(lc::Fact::hookThrew, "configure declared latency on " + declared.from +
+						                                           " to " + declared.bank +
+						                                           ", a path its pass-through does not copy");
+			try {
+				std::vector<EngineAsk> asks = c.engineAsks;
+				for (const Configuration::Change::Replacement& r : ch.replacements) asks[r.index].shape = r.shape;
+				ch.plan = latencyPlan(c, pairs, latency, asks);
+				const std::vector<std::optional<Latency>> inputs(ports_.inputs().size() + ports_.insideInputs().size());
+				const std::vector<std::optional<Latency>> outputs(ports_.outputs().size() +
+				                                                  ports_.insideOutputs().size());
+				static_cast<void>(workOut(ports_, ch.plan, inputs, outputs));
+			} catch (const std::logic_error& error) {
+				return faultLater(lc::Fact::hookThrew,
+				                  std::string("configure gave a latency plan that does not fit: ") + error.what());
+			}
+			// The new code is prepared now, while the old one runs, when the old one is (a stopped node's after its
+			// stop's silence is not: its start prepares the code it then has).
+			if (ch.code && (changeFromDriving() || c.prepared)) {
+				if (auto prepared = callType(hooks::prepare, [&] { ch.code->prepare(host_.format); }); !prepared)
+					return faultLater(lc::Fact::hookThrew, std::move(prepared.error().detail));
+				ch.codePrepared = true;
+			}
+			ch.answered = true;
+			startReplacements();
+			checkChangeReady();
+		}
+
+		/// The configuration of `generation` is current and its change of `epoch` is the one in flight, before its commit
+		/// point.
+		bool inChange(std::uint64_t generation, std::uint64_t epoch) const {
+			return current(generation) && config_->change && config_->change->epoch == epoch &&
+			       aggregate_.configuration().state() == lc::ConfigState::changing;
+		}
+
+		/// A hold asked of the block and not yet acknowledged, while the change has not given up on it.
+		bool holdsWaiting() const {
+			return config_->holdsAcked < config_->holdsAsked && !(config_->change && config_->change->holdGaveUp);
+		}
+
+		/// The change's next steps, as an input of its own: a replacement whose claims are granted is held, then made
+		/// once its hold is acknowledged; the commit point comes once the change version answered applied, every hold it
+		/// asked was acknowledged and every replacement is ready.
+		void checkChangeReady() {
+			if (!config_ || !config_->change) return;
+			host_.inputFor(serial_, [generation = config_->generation, epoch = config_->change->epoch](Node& node) {
+				if (!node.inChange(generation, epoch) || !node.config_->change->answered) return;
+				node.stepReplacements();
+				if (node.holdsWaiting()) return;
+				if (!std::ranges::all_of(node.config_->change->replacements, [](const auto& r) { return r.ready; }))
+					return;
+				node.feed(node.aggregate_.changeReady());
+			});
+		}
+
+		/// A fault found in a change, as an input of its own.
+		void faultLater(lc::Fact fact, std::string detail) {
+			host_.inputFor(serial_,
+			               [generation = config_->generation, fact, detail = std::move(detail)](Node& node) mutable {
+							   if (node.current(generation)) node.feed(node.aggregate_.fault(fact, std::move(detail)));
+						   });
+		}
+
+		/// A fallback the change's answer asked, as an input of its own.
+		void fallBackLater(std::uint64_t epoch, lc::NodeCause::FellBack reason, std::string detail) {
+			host_.inputFor(serial_, [generation = config_->generation, epoch, reason,
+			                         detail = std::move(detail)](Node& node) mutable {
+				if (node.inChange(generation, epoch)) node.fallBack(reason, std::move(detail));
+			});
+		}
+
+		/// The fallback (docs/architecture.md#changes-in-place): said (ear.reconfigure-fell-back), then a restart with the
+		/// newest settings.
+		void fallBack(lc::NodeCause::FellBack reason, std::string detail) {
+			const Configuration::Change& ch = *config_->change;
+			const std::int64_t ms = millisecondsBetween(ch.began, host_.timers.now());
+			const std::array fields{DiagnosticField{"elapsedMs", ms}};
+			std::string keys;
+			for (const std::string& key : ch.keys) keys += (keys.empty() ? "" : ", ") + key;
+			host_.diagnosed(name_, "ear.reconfigure-fell-back",
+			                "could not apply " + keys + " in place (" + std::string(lc::fellBackName(reason)) +
+			                    "): " + detail,
+			                fields);
+			feed(aggregate_.fellBack(reason, std::move(detail)));
+		}
+
+		/// The routable output banks named, as a mask over the block's outputs (outputs then inside outputs).
+		std::vector<std::uint8_t> outputMask(std::span<const std::string_view> banks) const {
+			std::vector<std::uint8_t> mask(config_->fadedCount, 0);
+			for (const std::string_view name : banks) {
+				const Ports::Bank& bank = ports_.bank(name);
+				if (bank.direction != Direction::output || bank.reach != PortBank::Reach::routable)
+					throw std::logic_error("hold names a routable output bank, not \"" + bank.name + "\"");
+				for (std::size_t i = 0; i < bank.ports.size() && bank.first + i < mask.size(); ++i)
+					mask[bank.first + i] = 1;
+			}
+			return mask;
+		}
+
+		/// A change's hold or release of these banks: told to the block only while it is driven (a stopped node is
+		/// silent already), each hold's acknowledgement bounded by 100 ms.
+		void holdBanks(std::span<const std::string_view> banks, bool hold) {
+			Configuration& c = *config_;
+			const std::vector<std::uint8_t> marked = outputMask(banks);
+			std::vector<std::uint8_t> changed(marked.size(), 0);
+			bool any = false;
+			for (std::size_t i = 0; i < marked.size() && i < c.held.size(); ++i)
+				if (marked[i] != 0 && (c.held[i] != 0) != hold) {
+					changed[i] = 1;
+					c.held[i] = hold ? 1 : 0;
+					any = true;
+				}
+			if (!any || !changeFromDriving() || host_.wedged) return;
+			if (!hold) return block_->release(std::move(changed));
+			const std::uint64_t asked = ++c.holdsAsked;
+			Configuration::Change& ch = *c.change;
+			if (!ch.holdBound)
+				ch.holdBound = host_.timers.after(fadeAcknowledgeBound, [&host = host_, serial = serial_,
+				                                                         generation = c.generation, epoch = ch.epoch] {
+					host.inputFor(serial, [generation, epoch](Node& node) {
+						if (!node.inChange(generation, epoch) || !node.holdsWaiting()) return;
+						node.config_->change->holdGaveUp = true;
+						const std::array fields{DiagnosticField{"ms", fadeAcknowledgeBound.count()}};
+						node.host_.diagnosed(node.name_, "ear.fade-unacknowledged",
+						                     "the hold before a change in place was not acknowledged within " +
+						                         std::to_string(fadeAcknowledgeBound.count()) +
+						                         " ms, so the change went on",
+						                     fields);
+						node.checkChangeReady();
+					});
+				});
+			block_->hold(std::move(changed), [&host = host_, serial = serial_, generation = c.generation, asked] {
+				host.inputFor(serial, [generation, asked](Node& node) {
+					if (!node.current(generation)) return;
+					node.config_->holdsAcked = std::max(node.config_->holdsAcked, asked);
+					if (node.config_->change && !node.holdsWaiting()) {
+						node.config_->change->holdBound.reset();
+						node.checkChangeReady();
+					}
+				});
+			});
+		}
+
+		/// A replacement in a change (docs/writing-a-node-type.md#engine-companions): an RTP receiver for the one on the
+		/// same inside bank, recorded now and judged once the change version answered.
+		void attachInChange(std::string_view bank, EngineCompanionShape shape) {
+			Configuration& c = *config_;
+			const auto* receiver = std::get_if<RtpReceiverShape>(&shape);
+			if (receiver == nullptr) throw std::logic_error("a change replaces an RTP receiver only");
+			const Ports::Bank& found = insideBank(ports_, std::string(bank), Direction::input, "an RTP receiver");
+			const auto at = std::ranges::find_if(
+				c.engineAsks, [&](const EngineAsk& asked) { return asked.target.insideBank == found.name; });
+			if (at == c.engineAsks.end() || !std::holds_alternative<RtpReceiverShape>(at->shape))
+				throw std::logic_error("a change attaches only a replacement: bank " + found.name +
+				                       " has no RTP receiver");
+			const auto index = static_cast<std::size_t>(at - c.engineAsks.begin());
+			if (std::ranges::any_of(c.change->replacements, [&](const auto& r) { return r.index == index; }))
+				throw std::logic_error("a second replacement on bank " + found.name + " in one change");
+			std::vector<Claim> claims = claimsOf(*receiver);
+			c.change->replacements.push_back(Configuration::Change::Replacement{
+				.index = index, .shape = std::move(shape), .claims = std::move(claims)});
+		}
+
+		/// Once the change version answered: each replacement's claims the configuration does not hold yet are judged
+		/// (a key it holds is its own: granted, never probed); the companion it replaces is retiring from now on.
+		void startReplacements() {
+			Configuration& c = *config_;
+			for (auto& r : c.change->replacements) {
+				if (r.index < c.engineCompanions.size() && c.engineCompanions[r.index])
+					r.retiringId = c.engineCompanions[r.index]->id();
+				for (const Claim& claim : r.claims)
+					if (std::ranges::none_of(
+							c.claims, [&](const ClaimSlot& slot) { return claimKey(slot.claim) == claimKey(claim); }))
+						r.added.push_back(claim);
+				r.claimsPending = r.added.size();
+			}
+			// Judged after this input, each as an input of its own, as the readiness step's claims are.
+			for (const auto& r : c.change->replacements)
+				for (const Claim& claim : r.added) {
+					const detail::ClaimHolder holder{c.generation, serial_, name_};
+					host_.claimsDecided({detail::ClaimDecided{holder, claim, host_.claims.claim(holder, claim)}});
+				}
+		}
+
+		/// The change's replacement asking `claim`, if any.
+		Configuration::Change::Replacement* replacementAsking(const Claim& claim) {
+			if (!config_->change) return nullptr;
+			for (auto& r : config_->change->replacements)
+				if (std::ranges::any_of(r.added, [&](const Claim& one) { return claimKey(one) == claimKey(claim); }))
+					return &r;
+			return nullptr;
+		}
+
+		/// A claim a change's replacement asked, judged: granted, probed, refused (the change falls back,
+		/// resource-refused, before anything was broken) or waiting for its holder, which is closing. False for a claim no
+		/// replacement in flight asked.
+		bool changeClaimJudged(const Claim& claim, const detail::ClaimJudged& judged) {
+			Configuration::Change::Replacement* r = replacementAsking(claim);
+			if (r == nullptr || aggregate_.configuration().state() != lc::ConfigState::changing) return false;
+			switch (judged.outcome) {
+			case detail::ClaimJudged::Outcome::granted:
+				changeClaimReady(*r);
+				break;
+			case detail::ClaimJudged::Outcome::probe:
+				probeChangeClaim(claim);
+				break;
+			case detail::ClaimJudged::Outcome::refused:
+				fallBack(lc::NodeCause::FellBack::resourceRefused, claimText(claim, judged.why));
+				break;
+			case detail::ClaimJudged::Outcome::waits:
+				host_.diagnosed(name_, "ear.claim-wait",
+				                claimKey(claim) + " held by node " + judged.why + ", which is closing", {});
+				break;
+			}
+			return true;
+		}
+
+		void changeClaimReady(Configuration::Change::Replacement& r) {
+			if (r.claimsPending > 0) --r.claimsPending;
+			checkChangeReady();
+		}
+
+		/// A replacement's port granted by the registry, probed behind the turn's flush as a readiness claim is.
+		void probeChangeClaim(const Claim& claim) {
+			PortProbe* probe = host_.resources.ports();
+			if (probe == nullptr) return changeClaimReady(*replacementAsking(claim));
+			host_.mainLoop.post([&host = host_, alive = std::weak_ptr<char>(host_.alive), probe, serial = serial_,
+			                     generation = config_->generation, epoch = config_->change->epoch, claim] {
+				if (!alive.lock()) return;
+				const MainLoopActivity::Scope activity("probe port", claimKey(claim));
+				const auto port = static_cast<std::uint16_t>(std::stoul(claim.value));
+				std::expected<void, std::string> outcome;
+				std::optional<std::string> fault;
+				try {
+					outcome = claim.kind == Claim::Kind::tcp ? probe->tcpListen(port) : probe->udp(port, claim.group);
+				} catch (...) {
+					fault = detail::whatOf(std::current_exception());
+				}
+				host.inputFor(serial, [generation, epoch, claim, outcome = std::move(outcome),
+				                       fault = std::move(fault)](Node& node) mutable {
+					if (!node.inChange(generation, epoch)) return;
+					if (fault) {
+						const std::string callback = "PortProbe";
+						node.host_.internalError(InternalError{.callback = callback,
+						                                       .node = node.name_,
+						                                       .where = "the probe of " + claimKey(claim),
+						                                       .what = *fault});
+						return node.feed(
+							node.aggregate_.fault(lc::Fact::adapterFaulted, internalErrorDetail(callback, *fault)));
+					}
+					if (!outcome)
+						return node.fallBack(lc::NodeCause::FellBack::resourceRefused,
+						                     claimText(claim, outcome.error()));
+					if (auto* r = node.replacementAsking(claim)) node.changeClaimReady(*r);
+				});
+			});
+		}
+
+		/// The public output banks the inside bank `index`'s companion feeds: through the pass-through, the banks its
+		/// pairs copy that bank to; a code of the type's own, every routable output.
+		std::vector<std::string_view> fedBy(std::size_t index) const {
+			const std::string& bank = config_->engineAsks[index].target.insideBank;
+			std::vector<std::string_view> fed;
+			for (const Ports::Bank& one : ports_.banks()) {
+				if (one.direction != Direction::output || one.reach != PortBank::Reach::routable) continue;
+				const bool copied = std::ranges::any_of(
+					config_->pairs, [&](const BankPair& pair) { return pair.from == bank && pair.to == one.name; });
+				if (config_->pairs.empty() || copied) fed.push_back(one.name);
+			}
+			return fed;
+		}
+
+		/// Break-first (docs/architecture.md#changes-in-place): a replacement whose claims are all granted holds what its
+		/// bank feeds; once that is acknowledged, the old companion is destroyed and the new one made, in one flush, the
+		/// bank's companion the new one's from here on.
+		void stepReplacements() {
+			Configuration& c = *config_;
+			for (auto& r : c.change->replacements) {
+				if (r.broken || r.claimsPending > 0) continue;
+				const std::vector<std::string_view> fed = fedBy(r.index);
+				holdBanks(fed, true);
+				if (holdsWaiting()) continue;
+				r.broken = true;
+				r.oldClaims =
+					std::visit([](const auto& shape) { return claimsOf(shape); }, c.engineAsks[r.index].shape);
+				if (r.retiringId != 0) c.retiredIds.push_back(r.retiringId);
+				if (r.index < c.engineCompanions.size() && c.engineCompanions[r.index])
+					host_.queue(FlushKind::destroyCompanion, name_,
+					            [&host = host_, companion = std::move(c.engineCompanions[r.index])]() mutable {
+									if (!host.wedged) {
+										companion.reset();
+										return;
+									}
+									static_cast<void>(
+										companion.release()); // leaked: destroying it calls the wedged loop
+									++host.leaked;
+								});
+				c.engineAsks[r.index].shape = r.shape;
+				r.id = ++host_.companionIds;
+				host_.queue(FlushKind::makeCompanion, name_,
+				            [&host = host_, serial = serial_, generation = c.generation, index = r.index, id = r.id] {
+								if (Node* node = host.find(serial)) node->makeReplacement(generation, index, id);
+							});
+			}
+		}
+
+		/// A flush item: the replacement on engine companion `index` made, unless its configuration moved on.
+		void makeReplacement(std::uint64_t generation, std::size_t index, std::uint64_t id) {
+			if (host_.wedged || !current(generation) || config_->tearing || !block_ ||
+			    index >= config_->engineCompanions.size() || config_->engineCompanions[index])
+				return;
+			Configuration& c = *config_;
+			auto& companion =
+				*(c.engineCompanions[index] = std::make_unique<Companion>(host_, serial_, c.generation, index, id));
+			EngineAsk& asked = c.engineAsks[index];
+			asked.target.blockId = block_->blockId();
+			try {
+				companion.made = std::visit(
+					[&](const auto& shape) {
+						return host_.resources.adapterFor(shape)->make(asked.target, shape, companion);
+					},
+					asked.shape);
+			} catch (...) {
+				c.engineCompanions[index].reset();
+				adapterFaulted(companionMaker(asked.shape), [this, generation](std::string detail) {
+					host_.inputFor(serial_, [generation, detail = std::move(detail)](Node& node) mutable {
+						if (node.current(generation))
+							node.feed(node.aggregate_.fault(lc::Fact::adapterFaulted, std::move(detail)));
+					});
+				});
+			}
+		}
+
+		/// A replacement companion is ready (a configuration's companion ready after its readiness ended is one).
+		void replacementReady(std::uint64_t id) {
+			if (!config_->change) return;
+			for (auto& r : config_->change->replacements)
+				if (r.id == id && !r.ready) {
+					r.ready = true;
+					checkChangeReady();
+				}
+		}
+
+		/// An engine companion's loss while a change is in flight or after one replaced it: a retiring companion's is
+		/// said (ear.retiring-lost), never a fault; a replacement's before the commit point falls the change back
+		/// (resource-lost). False for any other loss, which fails the node as it always does.
+		bool companionLostInChange(std::size_t index, std::uint64_t id, const std::string& detail) {
+			Configuration& c = *config_;
+			const bool retiring = std::ranges::find(c.retiredIds, id) != c.retiredIds.end() ||
+			                      (c.change && std::ranges::any_of(c.change->replacements, [&](const auto& r) {
+									   return r.retiringId == id && !r.broken;
+								   }));
+			if (retiring) {
+				const std::string companion =
+					index < c.engineAsks.size() ? c.engineAsks[index].target.engineNode : name_;
+				host_.diagnosed(name_, "ear.retiring-lost",
+				                companion + ", which a change in place replaces, was lost: " + detail, {});
+				return true;
+			}
+			if (c.change && aggregate_.configuration().state() == lc::ConfigState::changing &&
+			    std::ranges::any_of(c.change->replacements, [&](const auto& r) { return r.id == id; })) {
+				fallBack(lc::NodeCause::FellBack::resourceLost, detail);
+				return true;
+			}
+			return false;
+		}
+
+		/// A replacement's claims settle as its companion now stands: once broken (made, or being made), the new one's
+		/// claims are the configuration's and the old one's it no longer asks are released, last; before that, the
+		/// claims it was granted are released. At the commit point, and when a change ends uncommitted.
+		void settleClaims(Configuration::Change::Replacement& r) {
+			Configuration& c = *config_;
+			const auto key = [](const Claim& claim) { return claimKey(claim); };
+			if (!r.broken) {
+				for (const Claim& claim : r.added) host_.claimsDecided(host_.claims.release(c.generation, key(claim)));
+				return;
+			}
+			for (const Claim& claim : r.added) c.claims.push_back(ClaimSlot{claim});
+			for (const Claim& old : r.oldClaims) {
+				if (std::ranges::any_of(r.claims, [&](const Claim& now) { return key(now) == key(old); })) continue;
+				std::erase_if(c.claims, [&](const ClaimSlot& slot) { return key(slot.claim) == key(old); });
+				host_.claimsDecided(host_.claims.release(c.generation, key(old)));
+			}
+		}
+
+		/// The commit point (T10): the instance adopts the new settings, the configuration takes them, its staged posts
+		/// are released to their loops in order, its plan and its code are the change's; driven, the plan is carried and a
+		/// new code swapped in one invoke (its completion the commit's), else the commit completes in this turn; the holds
+		/// fade back in. Undriven, the old code is released now; driven, once the swap completed.
+		void commit(std::uint64_t barrier) {
+			Configuration& c = *config_;
+			if (!c.change) return;
+			Configuration::Change ch = std::move(*c.change);
+			c.change.reset();
+			ch.deadline.reset();
+			ch.holdBound.reset();
+			c.instance->adopt(*ch.target);
+			c.config = ch.target; // the old config goes once nothing reads it: the instance reads the new one
+			for (auto& [loop, work] : ch.posts) c.loops.at(loop)->postState(std::move(work));
+			c.plan = std::move(ch.plan);
+			if (ch.latency) c.latency = std::move(*ch.latency);
+			if (ch.codeGiven) {
+				c.retiringCode = std::move(c.code);
+				c.retiringPrepared = c.prepared;
+				c.code = std::move(ch.code);
+				c.pairs = std::move(ch.pairs);
+				c.prepared = ch.codePrepared;
+			}
+			std::vector<std::uint8_t> held(c.held.size(), 0);
+			std::swap(held, c.held);
+			if (barrier == 0) {                                  // nothing driven: the machine is back where it began
+				for (auto& r : ch.replacements) settleClaims(r); // last
+				return retireCode();
+			}
+			if (!host_.wedged) block_->carryLatency(c.plan);
+			if (!ch.codeGiven) {
+				host_.inputFor(serial_, [generation = c.generation, barrier](Node& node) {
+					if (node.current(generation)) node.feed(node.aggregate_.committed(barrier));
+				});
+			} else if (host_.wedged) {
+				overdueAtOnce(barrier, Bound::barrier);
+			} else {
+				block_->swap(DriveRequest{c.code.get(), std::span<const bool>(c.faded.get(), c.fadedCount), c.bindings,
+				                          c.sourceBindings},
+				             swapped(barrier));
+				arm(barrier, Bound::barrier);
+			}
+			if (!host_.wedged && std::ranges::any_of(held, [](std::uint8_t one) { return one != 0; }))
+				block_->release(std::move(held));
+			for (auto& r : ch.replacements) settleClaims(r); // last: a released port may grant another node
+		}
+
+		/// The swap's completion: the old code released, then the commit's completion heard.
+		std::move_only_function<void(std::uint64_t)> swapped(std::uint64_t barrier) {
+			return [&host = host_, serial = serial_, generation = config_->generation, barrier](std::uint64_t) {
+				if (Node* node = host.find(serial)) ++node->completionsRun_;
+				host.inputFor(serial, [generation, barrier](Node& node) {
+					if (!node.current(generation)) return;
+					if (node.aggregate_.configuration().barrier() == barrier) node.config_->bound.reset();
+					node.retireCode();
+					node.feed(node.aggregate_.committed(barrier));
+				});
+			};
+		}
+
+		/// The code a swap replaced: released (it was prepared) and freed, now that no process() of it runs.
+		void retireCode() {
+			if (!config_ || !config_->retiringCode) return;
+			if (std::exchange(config_->retiringPrepared, false)) {
+				const MainLoopActivity::Scope activity("release", name_);
+				config_->retiringCode->release();
+			}
+			config_->retiringCode.reset();
+		}
+
+		/// The change ends uncommitted: its staged posts destroyed unrun, its new code released and freed, its deadline
+		/// cancelled; its holds stay (a newer change keeps them; a teardown's silence ends them). Superseded (still
+		/// changing: a newer change follows at once), ear.reconfigure-superseded says what was abandoned.
+		void dropChange() {
+			if (!config_ || !config_->change) return;
+			Configuration::Change& ch = *config_->change;
+			if (aggregate_.configuration().state() == lc::ConfigState::changing) {
+				std::string keys;
+				for (const std::string& key : ch.keys) keys += (keys.empty() ? "" : ", ") + key;
+				host_.diagnosed(name_, "ear.reconfigure-superseded",
+				                "a newer change superseded the change of " + keys + " before its commit point", {});
+			}
+			if (ch.code && ch.codePrepared) {
+				const MainLoopActivity::Scope activity("release", name_);
+				ch.code->release();
+			}
+			for (auto& r : ch.replacements) settleClaims(r); // a companion already replaced stays the bank's
+			config_->change.reset();
+		}
+
 		/// T5's completion: the instance's start(), timed; one that threw is a fault once this batch was carried out
 		/// (it never set started, so no stop() pairs with it).
 		void startHook() {
@@ -3136,6 +3811,7 @@ struct NodeHost::Impl {
 			}
 			// The plan configure's return checked against the ports (latencyPlan), so carrying it cannot throw.
 			block_->carryLatency(c.plan);
+			std::ranges::fill(c.held, std::uint8_t{0}); // a drive ends every hold
 			block_->drive(DriveRequest{c.code.get(), std::span<const bool>(c.faded.get(), c.fadedCount), c.bindings,
 			                           c.sourceBindings},
 			              completion(barrier, &lc::NodeAggregate::driven));
@@ -3331,7 +4007,8 @@ struct NodeHost::Impl {
 			const lc::ConfigState state = aggregate_.configuration().state();
 			const bool pending = bound == Bound::fade
 			                         ? state == lc::ConfigState::fading
-			                         : state == lc::ConfigState::silencing || state == lc::ConfigState::arming;
+			                         : state == lc::ConfigState::silencing || state == lc::ConfigState::arming ||
+			                               state == lc::ConfigState::committing;
 			if (!pending) return;
 			if (unfair) return armTimer(barrier, bound, graceOf(bound));
 			judgedMs_ = millisecondsBetween(config_->postedAt, host_.timers.now());
@@ -3390,6 +4067,7 @@ struct NodeHost::Impl {
 
 	private:
 		void release() {
+			retireCode(); // a swap's old code, if the silence came before the swap's completion was heard
 			// A silent block carries nothing through and adds nothing; on a wedged loop no PipeWire call is made.
 			if (block_ && !host_.wedged) block_->carryLatency({});
 			if (config_->prepared) {
@@ -3629,6 +4307,7 @@ struct NodeHost::Impl {
 		std::unique_ptr<Configuration> config_;     // the current configuration (at most one)
 		std::unique_ptr<PortBlock> block_;
 		bool configuring_ = false;         // inside the instance's making and configure: the contexts' calls are valid
+		ChangeScope changeScope_{*this};   // a change version's context, valid only inside its call
 		std::optional<EarFault> earFault_; // the first fault of ear's own in the hook running (guarded)
 		std::exception_ptr refused_;       // an adapter's refusal, thrown on through guarded as itself
 		std::optional<std::string> brokenRule_;   // the first rule a context call found broken in the hook running
@@ -3676,6 +4355,7 @@ struct NodeHost::Impl {
 	bool wedged = false;                      // the data loop was judged wedged: no PipeWire call is made again
 	std::vector<std::unique_ptr<Node>> nodes; // in arrival order; removed ones are pruned on add
 	std::uint64_t generations = 0;            // every configuration's generation, across nodes, so none is ever reused
+	std::uint64_t companionIds = 0;           // every engine companion's id, so none is ever reused
 	std::uint64_t serials = 0;                // every node's serial, so a completion never finds a newer node
 	std::size_t leaked = 0;                   // configurations, blocks and engine companions never freed
 	detail::ClaimRegistry claims;             // every claim ear-wide (docs/writing-a-node-type.md#claims)

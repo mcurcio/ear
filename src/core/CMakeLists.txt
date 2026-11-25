@@ -126,6 +126,7 @@ if(BUILD_TESTS)
 		tests/program_test.cpp
 		tests/rate_text_test.cpp
 		tests/readiness_test.cpp
+		tests/reconfigure_test.cpp
 		tests/reconciler_test.cpp
 		tests/rtp_receiver_test.cpp
 		tests/settings_table_test.cpp

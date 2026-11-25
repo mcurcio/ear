@@ -214,9 +214,11 @@ Changed configure(ChangeOf<spec>& cx, const Checked& old, const Checked& now) {
 
 A type that can take some of its settings while the node runs marks their rows `.inPlace()`
 ([settings](#settings-one-table-of-typed-rows)) and writes this second `configure`. `old` is the
-settings the configuration applies, `now` the change's target. NodeHost does not call it yet:
-every change of settings still restarts the node
-([architecture.md](architecture.md#changes-in-place)).
+settings the configuration applies, `now` the change's target. It is called for a change whose
+every changed key is marked, on a node that has rested; any other change restarts the node
+([architecture.md](architecture.md#changes-in-place), which says the framework's order). A new
+code's `prepare` runs on the main loop while the old code still runs: it may allocate and build
+its own state, and may touch nothing the old code's `process` reads.
 
 | Call | What | Rules |
 |---|---|---|
@@ -337,6 +339,18 @@ return cx.applied(passThrough(bankPair(play, toCard), bankPair(fromRtp, stream))
   `a second resource named <node>.<name> in one configuration` for two sinks or two sources on one
   bank, or two engine companions of one kind on any banks; `a second companion on bank <bank>` only
   for two of different kinds on one bank.
+- **A replacement in a change** ([the change version](#the-change-version)): `cx.attach(bank,
+  RtpReceiverShape{...})` in a change replaces the RTP receiver on that bank (a bank with none is a
+  broken rule). Its claims are judged first: a key the configuration already holds (the same port)
+  is its own, granted unprobed; a new port is judged and probed as at the first readiness step, and
+  one refused falls the change back (`resource-refused`) before anything is broken. Then, break-first
+  (two receivers on one port would split its datagrams), the framework holds the public output banks
+  the bank feeds through the pass-through (every routable output for a code of the type's own),
+  waits for the acknowledgement, destroys the old receiver and makes the new one in one flush. The
+  old one is retiring from the attach on: its loss is said (`ear.retiring-lost`), never a failure.
+  The new one's loss before the commit point falls the change back (`resource-lost`); the change's
+  deadline bounds its readiness. At the commit point the ports the new one no longer asks are
+  released, last, so a node waiting for the old port is granted it then.
 - A receiver's buffer is latency beyond its bank, which the framework adds to the latency plan
   ([latency](#latency)); a type declares none for it: an RTP receiver's `latencyMs`, and a pipe
   receiver's module's fixed 8192 frames at the writer's rate, in graph frames rounded half up

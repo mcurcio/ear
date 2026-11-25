@@ -139,6 +139,9 @@ struct HarnessOptions {
 	/// The host's runtime folder (ResourceAdapters::runtimeFolder), which every runtime path the harness resolves
 	/// begins with; empty: none, and pipe receivers and programs are refused "no runtime folder in this host".
 	std::string runtimeFolder = "/ear-runtime";
+	/// Port claims the host's probe refuses (docs/writing-a-node-type.md#claims), by key ("udp:5006"), with "in use" as
+	/// the kernel's reason; empty: the host has no probe, and every port its nodes do not hold is granted unprobed.
+	std::vector<std::string> refusedPorts{};
 };
 /// How add() adds the node.
 struct AddOptions {
@@ -298,8 +301,11 @@ public:
 	/// The graph's counters of the harness's own cut record: cycles started (each process() and each lost cycle), the
 	/// cut ones (loseCycles with Lost::cut) and the stalls they made (one per loseCycles run of cuts).
 	GraphCounts graphCounts() const noexcept;
-	/// A committed change of settings (parse, then NodeHost::nodeChanged with outcome restart and the changed keys, or
-	/// stored on a disabled node). std::logic_error for settings the type refuses.
+	/// A committed change of settings (parse, then NodeHost::nodeChanged with the plan's outcome for the changed keys:
+	/// outcomeFor, reconfigure when every one is marked inPlace, stored on a disabled node), settled as every call is:
+	/// with autoComplete a change in place runs to its end in the call (holds acknowledged, its commit completed),
+	/// else it waits on what the test completes (acknowledgeHolds, completeBarrier, ready, advance past its deadline).
+	/// std::logic_error for settings the type refuses.
 	NodeOutcome change(const NodeSettings& settings);
 	LifecycleReply stop();    // NodeOperations::stop
 	LifecycleReply start();   // NodeOperations::start
@@ -309,10 +315,11 @@ public:
 	void remove();            // nodeRemoved
 
 	// What the node shows.
-	NodeHealth health() const;           // as last told; std::logic_error before anything was told
-	std::string_view phase() const;      // phaseName of the last told health
-	bool gone() const noexcept;          // nodeGone was told
-	std::uint64_t droppedFrames() const; // nodeGone's count
+	NodeHealth health() const;                               // as last told; std::logic_error before anything was told
+	const std::vector<NodeHealth>& healths() const noexcept; // every health told, in order
+	std::string_view phase() const;                          // phaseName of the last told health
+	bool gone() const noexcept;                              // nodeGone was told
+	std::uint64_t droppedFrames() const;                     // nodeGone's count
 	/// The node's companion list as NodeHost lists it for a client (NodeHost::companionsOf): its configuration's
 	/// companions in request order, each ready or not, a sink's `dropped` and a source's `shortfall` read now.
 	std::vector<CompanionView> companionList() const;

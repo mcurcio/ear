@@ -126,6 +126,16 @@ std::vector<ClaimDecided> ClaimRegistry::release(std::uint64_t generation) {
 	return rejudge(keys);
 }
 
+std::vector<ClaimDecided> ClaimRegistry::release(std::uint64_t generation, const std::string& key) {
+	std::erase_if(waiting_, [&](const Waiting& waiting) {
+		return waiting.waiter.generation == generation && waiting.key == key;
+	});
+	const auto found = held_.find(key);
+	if (found == held_.end() || found->second.holder.generation != generation) return {};
+	held_.erase(found);
+	return rejudge({key});
+}
+
 bool ClaimRegistry::holds(std::uint64_t generation) const noexcept {
 	return std::ranges::any_of(held_, [&](const auto& entry) { return entry.second.holder.generation == generation; });
 }

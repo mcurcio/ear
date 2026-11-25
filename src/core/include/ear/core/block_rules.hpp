@@ -142,6 +142,7 @@ public:
 		  held_(outputs, 0) {}
 
 	std::uint32_t frames() const noexcept { return frames_; }
+	std::size_t outputs() const noexcept { return at_.size(); }
 	/// Holds the outputs `mask` marks (one entry per output; a shorter mask leaves the rest): from the next sample each
 	/// ramps to zero from the gain it has. Waits for its acknowledgement.
 	void hold(std::span<const std::uint8_t> mask) noexcept {

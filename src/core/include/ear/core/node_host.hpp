@@ -123,7 +123,10 @@ struct DiagnosticField {
 /// unfaded; `ms`), "ear.barrier-overdue" (a barrier not completed within 5 s: the node's configuration and block are
 /// leaked; `ms`) and "ear.hook-slow" (a hook, named in the detail, "configure ran 31 ms", ran past hookSlowBound on the
 /// main loop; `ms`; once per node and hook for the node's life:
-/// docs/writing-a-node-type.md#rules-the-framework-enforces). `fields` lives only for the call.
+/// docs/writing-a-node-type.md#rules-the-framework-enforces), "ear.reconfigure-fell-back" (a change in place that falls
+/// back to a restart; `elapsedMs`), "ear.reconfigure-superseded" (one superseded before its commit point; no field) and
+/// "ear.retiring-lost" (an engine companion a change replaces lost while it retired; no field:
+/// docs/architecture.md#changes-in-place). `fields` lives only for the call.
 class NodeDiagnosticListener {
 public:
 	virtual void nodeDiagnostic(const NodeName& node, std::string_view code, const std::string& detail,

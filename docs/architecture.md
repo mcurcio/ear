@@ -513,7 +513,7 @@ standard output show.
 | `stopped` | `stopped` | Silent, keeping its configuration |
 | `disabled` | `disabled` | Silent, with no configuration |
 | `failed` | `failed` | Torn down after a failure; `reason` says why |
-| `reconfiguring` | `reconfiguring` | Applying new settings in place, from `running` or `stopped`, without a restart ([changes in place](#changes-in-place)); nothing asks for one yet |
+| `reconfiguring` | `reconfiguring` | Applying new settings in place, from `running` or `stopped`, without a restart ([changes in place](#changes-in-place)) |
 
 `added`, `configured` and `starting` normally last milliseconds. **What the graph wants** of a
 node (`wanted`) is `disabled` when its block in `ear.conf` says `disabled true;`, else `stopped`
@@ -546,16 +546,51 @@ The desired graph's plan says what each edit asks of a node it keeps by name (`N
 `disable`, `enable` or `stored` by its `disabled` before and after; otherwise `reconfigure` when
 every changed key's row is marked in place
 ([writing-a-node-type.md](writing-a-node-type.md#settings-one-table-of-typed-rows)), else
-`restart`. A `reconfigure` is still taken as a restart: NodeHost does not yet change a node in
-place.
+`restart`. A `reconfigure` is taken in place when the type has a change version
+([below](#changes-in-place)), else as a restart.
 
 ### Changes in place
 
-A change in place applies new settings to a node's configuration without tearing it down. The
-pure machines carry it; nothing in ear asks for one yet (NodeHost and the change version of
-`configure` follow, so today every change still restarts as above). The node shows
-`reconfiguring`, with `keys` (the keys the change applies) and `next` (keys changed since its
-commit point, which it takes once the change ends).
+A change in place applies new settings to a node's configuration without tearing it down: a
+change the plan says is a `reconfigure`, on a node whose type has a change version of
+`configure` ([writing-a-node-type.md](writing-a-node-type.md#the-change-version)); a type with
+none takes it as a restart. The node shows `reconfiguring`, with `keys` (the keys the change
+applies) and `next` (keys changed since its commit point, which it takes once the change ends).
+
+What NodeHost does, in order:
+
+1. **Calls the change version** on the main loop, timed as `configure`, with `old` the applied
+   settings and `now` the change's target; the configuration still applies the old ones. Its
+   context offers holds, staged posts, a latency declaration and the answer.
+2. **Holds** the banks it names: told to the block only while the node is driven (a stopped node
+   is silent already). The commit point waits for each hold's acknowledgement, at most 100 ms
+   (past it `ear.fade-unacknowledged`, and the change goes on).
+3. **Answers.** A new code is prepared now, while the old one runs (when the old one is
+   prepared), and its latency plan worked out; a broken rule, a pass-through or a plan that does
+   not fit fails the node `lost`. An answer `restart`, or a change version that threw, falls back
+   (below).
+4. **The commit point.** The instance adopts the new settings and the configuration holds them;
+   the staged posts are released to their loops, in the order posted; the plan is carried; a new
+   code is swapped in one invoke, its completion the commit's (from `prepared`, or with no new
+   code, the commit completes in its own turn); the old code is released once its swap completed;
+   then the holds fade back in. The loops and their states go on: nothing is torn down.
+5. **The deadline**, 10 s from the change version's call (a type declares 1 s to 60 s: its spec's
+   `.lifecycle`): past it the change falls back, reason `deadline`.
+
+A **replacement** (an RTP receiver on the same bank,
+[writing-a-node-type.md](writing-a-node-type.md#engine-companions)) is judged once the change
+version answered: its new claims first (a refusal falls back, `resource-refused`, before anything
+breaks), then break-first behind a hold the framework takes on what its bank feeds, the old one
+destroyed and the new one made in one flush; the commit point waits for it to be ready (its loss
+first falls back, `resource-lost`), and releases the ports the old one held that the new one does
+not, last. The old one is retiring meanwhile: its loss is `ear.retiring-lost`. Make-before-break
+(two companions beside each other for a moment) is not built: every replacement is break-first.
+
+A change that ends without committing (superseded, stopped, failed or fallen back) destroys its
+staged posts unrun and releases its new code and the ports a replacement not yet made was
+granted (a replacement already made stays the bank's companion, its ports the configuration's);
+its holds stay until the next commit or the silence. A supersession says `ear.reconfigure-superseded`, a fallback
+`ear.reconfigure-fell-back` before its `stopping` ([output-records.md](output-records.md#diagnostic)).
 
 The configuration machine has two states for it. **`changing`** begins from `driving`, or from
 `prepared` once the configuration has rested (a change before it first rested is not taken):

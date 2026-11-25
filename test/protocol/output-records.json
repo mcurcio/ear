@@ -1059,10 +1059,50 @@
       }
     },
     {
-      "case": "a stop has done all ear does: every node removed, the control port closed, ear.conf's last write made; ear's last record before it exits 0",
+      "case": "a newer change superseded a change in place before its commit point",
       "record": {
         "v": 1,
         "seq": 102,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "node": "tv",
+        "code": "ear.reconfigure-superseded",
+        "detail": "a newer change superseded the change of port before its commit point",
+        "msg": "node tv ear.reconfigure-superseded: a newer change superseded the change of port before its commit point"
+      }
+    },
+    {
+      "case": "a change in place could not finish, said just before its fallback's stopping record",
+      "record": {
+        "v": 1,
+        "seq": 103,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "node": "tv",
+        "code": "ear.reconfigure-fell-back",
+        "elapsedMs": 10000,
+        "detail": "could not apply port in place (deadline): deadline 10s passed",
+        "msg": "node tv ear.reconfigure-fell-back: could not apply port in place (deadline): deadline 10s passed"
+      }
+    },
+    {
+      "case": "an engine companion a change in place replaces was lost while it retired",
+      "record": {
+        "v": 1,
+        "seq": 104,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "node": "tv",
+        "code": "ear.retiring-lost",
+        "detail": "tv.rtp, which a change in place replaces, was lost: the RTP receiver's node went away",
+        "msg": "node tv ear.retiring-lost: tv.rtp, which a change in place replaces, was lost: the RTP receiver's node went away"
+      }
+    },
+    {
+      "case": "a stop has done all ear does: every node removed, the control port closed, ear.conf's last write made; ear's last record before it exits 0",
+      "record": {
+        "v": 1,
+        "seq": 105,
         "t": "2026-11-07T17:42:03.512094Z",
         "kind": "exit",
         "status": 0,

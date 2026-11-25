@@ -742,6 +742,8 @@ public:
 	}
 	/// The commit point: `now`'s settings are the instance's from here (`now` outlives the instance).
 	virtual void adopt(const NodeConfig& now) { static_cast<void>(now); }
+	/// How long a change in place may take before it falls back to a restart (the spec's `.lifecycle`).
+	virtual std::chrono::milliseconds reconfigureDeadline() const noexcept { return Lifecycle{}.reconfigureDeadline; }
 
 protected:
 	/// The applied answer as the erased layer makes it: an instance written by hand (the framework's own tests) answers
@@ -843,6 +845,9 @@ public:
 		return type_.configure(create, *settings_);
 	}
 	bool changes() const noexcept override { return hasChange; }
+	std::chrono::milliseconds reconfigureDeadline() const noexcept override {
+		return Spec.lifecycle.reconfigureDeadline;
+	}
 	Changed change(ChangeContext& cx, const NodeConfig& now) override;
 	void adopt(const NodeConfig& now) override;
 	void start() override {

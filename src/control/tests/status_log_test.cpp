@@ -394,6 +394,20 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 		                                          ear::NodeCause::FellBack::deadline,
 		                                          "deadline 10s passed"}));
 		},
+		[](StatusLog& log, Lines&) {
+			log.nodeDiagnostic("tv", "ear.reconfigure-superseded",
+		                       "a newer change superseded the change of port before its commit point", {});
+		},
+		[](StatusLog& log, Lines&) {
+			const std::array fields{ear::DiagnosticField{"elapsedMs", 10000}};
+			log.nodeDiagnostic("tv", "ear.reconfigure-fell-back",
+		                       "could not apply port in place (deadline): deadline 10s passed", fields);
+		},
+		[](StatusLog& log, Lines&) {
+			log.nodeDiagnostic("tv", "ear.retiring-lost",
+		                       "tv.rtp, which a change in place replaces, was lost: the RTP receiver's node went away",
+		                       {});
+		},
 		[](StatusLog& log, Lines&) { log.stopped(); },
 	};
 }

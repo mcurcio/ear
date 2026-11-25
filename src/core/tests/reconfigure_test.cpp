@@ -1,0 +1,548 @@
+// Changes in place through NodeHost (docs/architecture.md#changes-in-place), by a test type run in the type harness:
+// the change version called on a rested node, its holds acknowledged before the commit point and faded in after, its
+// staged posts released at the commit in order (and destroyed unrun when the change does not commit), a new code
+// swapped at one position, supersession before and after the commit point, a stop, a removal and a disable during a
+// change, and the fallback to a restart with each of its reasons. The aggregate's own rules are node_lifecycle_test's.
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include "catch2/catch.hpp"
+#include "ear/core/lifecycle.hpp"
+#include "ear/testing/type_harness.hpp"
+
+// Named, never unnamed: every table, row and spec a template is keyed on (settings_table.hpp, linkage).
+namespace reconfigure_test {
+using namespace ear;
+
+constexpr auto gainRow = setting::optional("gain", setting::number(0, 100)).inPlace();
+constexpr auto levelRow = setting::optional("level", setting::number(0, 100)).inPlace();
+constexpr auto sizeRow = setting::defaulted("size", setting::number(1, 4), 1); // restart-only
+constexpr auto in = bank::input<"in">;
+constexpr auto out = bank::output<"out">;
+constexpr auto side = bank::output<"side">;
+
+/// The loop's state: what the work posted to it saw, in order; it lives across a change.
+struct Work {
+	std::vector<std::string> seen;
+};
+constexpr auto work = loop::strand<"work", Work>;
+
+constexpr TypeSpec spec{.settings = SettingsTable<gainRow, levelRow, sizeRow>{"reconf"},
+                        .banks = Banks<in, out, side>{},
+                        .loops = Loops<work>{}};
+constexpr TypeSpec slowSpec{.settings = SettingsTable<gainRow, levelRow, sizeRow>{"slow"},
+                            .banks = Banks<in, out, side>{},
+                            .loops = Loops<work>{},
+                            .lifecycle = Lifecycle{.reconfigureDeadline = std::chrono::seconds(30)}};
+constexpr TypeSpec bareSpec{.settings = SettingsTable<gainRow, levelRow, sizeRow>{"bare"},
+                            .banks = Banks<in, out, side>{},
+                            .loops = Loops<work>{}};
+
+/// What the change version does, set by each test.
+struct Script {
+	enum class Answer { applied, appliedCode, restart, throws, breakRule } answer = Answer::applied;
+	bool holdOut = true;
+	bool post = true;
+	float codeLevel = 0.25F;
+};
+Script script;
+/// What the type was called with, in order: "configure g<gain>", "change g<old>->g<now>".
+std::vector<std::string> calls;
+/// Every Work the loop saw, by what it last held (read once a test ran the loops).
+std::vector<std::string> worked;
+
+std::string gainOf(const auto& settings) {
+	const auto gain = settings.template get<gainRow>();
+	return "g" + (gain ? std::to_string(*gain) : std::string("-"));
+}
+
+/// Writes `level` on every output.
+template <const auto& Spec> struct Level {
+	float level;
+	void process(Io<Spec> io, const GraphCycle&) noexcept {
+		for (auto member : io[out]) std::ranges::fill(member, level);
+		for (auto member : io[side]) std::ranges::fill(member, level);
+	}
+};
+
+template <const auto& Spec> struct Reconf {
+	using Checked = CheckedOf<Spec>;
+	static Members<Spec> ports(const Checked&) { return {in(members(1)), out(members(1)), side(members(1))}; }
+	Configured configure(CreateOf<Spec>& cx, const Checked& s) {
+		calls.push_back("configure " + gainOf(s));
+		return cx.applied(Level<Spec>{1.0F}, cx.state(work));
+	}
+	Changed configure(ChangeOf<Spec>& cx, const Checked& old, const Checked& now) {
+		calls.push_back("change " + gainOf(old) + "->" + gainOf(now));
+		if (script.holdOut) cx.hold(out);
+		if (script.post)
+			cx.post(work, [what = "post " + gainOf(now)](Work& w) {
+				w.seen.push_back(what);
+				worked.push_back(what);
+			});
+		switch (script.answer) {
+		case Script::Answer::applied:
+			return cx.applied();
+		case Script::Answer::appliedCode:
+			return cx.applied(Level<Spec>{script.codeLevel});
+		case Script::Answer::restart:
+			return Changed::restart("cannot take it");
+		case Script::Answer::throws:
+			throw std::runtime_error("blew up");
+		case Script::Answer::breakRule:
+			cx.declareLatency(in, out, Latency{});
+			cx.declareLatency(in, out, Latency{}); // one path declared twice: a broken rule
+			return cx.applied();
+		}
+		return cx.applied();
+	}
+};
+
+/// The same type without a change version.
+struct Bare {
+	using Checked = CheckedOf<bareSpec>;
+	static Members<bareSpec> ports(const Checked&) { return {in(members(1)), out(members(1)), side(members(1))}; }
+	Configured configure(CreateOf<bareSpec>& cx, const Checked& s) {
+		calls.push_back("configure " + gainOf(s));
+		return cx.applied(Level<bareSpec>{1.0F}, cx.state(work));
+	}
+};
+
+using Harness = testing::TypeHarness<spec, Reconf<spec>>;
+
+void reset(Script asked = {}) {
+	script = asked;
+	calls.clear();
+	worked.clear();
+}
+
+/// Added and running with `settings`; with autoComplete off its drive completed by hand.
+template <class H = Harness>
+std::unique_ptr<H> running(testing::HarnessOptions options = {}, NodeSettings settings = NodeSettings::object()) {
+	auto h = std::make_unique<H>(std::move(options));
+	REQUIRE_FALSE(h->parse(settings));
+	h->add();
+	h->blockReady();
+	if (h->phase() != "running") h->node().completeBarrier();
+	REQUIRE(h->phase() == "running");
+	h->runLoops();
+	return h;
+}
+
+testing::HarnessOptions manual() { return testing::HarnessOptions{.autoComplete = false}; }
+
+bool toldPhase(const testing::NodeHarness& h, NodePhase phase) {
+	return std::ranges::any_of(h.healths(), [&](const NodeHealth& one) { return one.phase == phase; });
+}
+
+/// The fallback's restart, as its stopping was told: its reason, if any was told.
+std::optional<NodeCause::FellBack> fellBackReason(const testing::NodeHarness& h) {
+	for (const NodeHealth& one : h.healths())
+		if (one.phase == NodePhase::stopping && one.cause && one.cause->restart == NodeCause::Kind::fellBack)
+			return one.cause->reason;
+	return std::nullopt;
+}
+
+bool said(const testing::NodeHarness& h, std::string_view code) {
+	return std::ranges::any_of(h.diagnostics(), [&](const auto& one) { return one.code == code; });
+}
+
+} // namespace reconfigure_test
+using namespace reconfigure_test;
+
+TEST_CASE("In place ends running with the same configuration: no restart, no drive, the loop's state kept",
+          "[reconfigure]") {
+	reset();
+	auto owned = running();
+	auto& h = *owned;
+	h->runLoops();
+	CHECK(h.change({{"gain", 10}}) == NodeOutcome::reconfigure);
+	CHECK(h->phase() == "running");
+	CHECK(toldPhase(h.node(), NodePhase::reconfiguring));
+	CHECK_FALSE(toldPhase(h.node(), NodePhase::stopping));
+	CHECK(calls == std::vector<std::string>{"configure g-", "change g-->g10"});
+	CHECK(h->health().cause == std::nullopt);
+	CHECK(h->swaps() == 0);
+	// The staged post runs on the same loop state, once released at the commit.
+	h->runLoops();
+	CHECK(worked == std::vector<std::string>{"post g10"});
+	// A second change sees the first's settings as the applied ones.
+	CHECK(h.change({{"gain", 20}}) == NodeOutcome::reconfigure);
+	CHECK(calls.back() == "change g10->g20");
+	// The reconfiguring the change told carried its keys.
+	const auto changing = std::ranges::find_if(h->healths(), [](const NodeHealth& one) {
+		return one.phase == NodePhase::reconfiguring;
+	});
+	REQUIRE(changing != h->healths().end());
+	CHECK(changing->keys == std::vector<std::string>{"gain"});
+}
+
+TEST_CASE("In place from stopped ends stopped, and does not restart on the next converge", "[reconfigure]") {
+	reset();
+	auto owned = running();
+	auto& h = *owned;
+	h.stop();
+	REQUIRE(h->phase() == "stopped");
+	CHECK(h.change({{"level", 3}}) == NodeOutcome::reconfigure);
+	CHECK(h->phase() == "stopped");
+	CHECK(calls == std::vector<std::string>{"configure g-", "change g-->g-"});
+	h.start();
+	CHECK(h->phase() == "running");
+	CHECK(calls.size() == 2); // the start drove the configuration it had
+}
+
+TEST_CASE("A type with no change version restarts (cause settings), with no reconfiguring", "[reconfigure]") {
+	reset();
+	auto owned = running<testing::TypeHarness<bareSpec, Bare>>();
+	auto& h = *owned;
+	CHECK(h.change({{"gain", 10}}) == NodeOutcome::reconfigure); // the plan's outcome stays what it was
+	CHECK(h->phase() == "running");
+	CHECK(calls == std::vector<std::string>{"configure g-", "configure g10"});
+	CHECK_FALSE(toldPhase(h.node(), NodePhase::reconfiguring));
+	CHECK(toldPhase(h.node(), NodePhase::stopping));
+}
+
+TEST_CASE("A node not yet rested takes a change in place as a restart", "[reconfigure]") {
+	reset();
+	Harness h;
+	REQUIRE_FALSE(h.parse(NodeSettings::object()));
+	h.add(); // configured, waiting for its block: not rested
+	CHECK(h.change({{"gain", 10}}) == NodeOutcome::reconfigure);
+	h.blockReady();
+	CHECK(h.phase() == "running");
+	CHECK(calls == std::vector<std::string>{"configure g-", "configure g10"});
+	CHECK_FALSE(toldPhase(h.node(), NodePhase::reconfiguring));
+}
+
+TEST_CASE("A change that cannot finish falls back to a restart with the newest settings, cause fell-back",
+          "[reconfigure][fallback]") {
+	SECTION("restart-asked: the change version answered restart") {
+		reset({.answer = Script::Answer::restart});
+		auto owned = running();
+	auto& h = *owned;
+		h.change({{"gain", 10}});
+		CHECK(fellBackReason(h.node()) == NodeCause::FellBack::restartAsked);
+		CHECK(said(h.node(), "ear.reconfigure-fell-back"));
+		CHECK(calls == std::vector<std::string>{"configure g-", "change g-->g10", "configure g10"});
+		CHECK(h->phase() == "running");
+		h->runLoops();
+		CHECK(worked.empty()); // its staged post was destroyed unrun
+	}
+	SECTION("failed: the change version threw") {
+		reset({.answer = Script::Answer::throws});
+		auto owned = running();
+	auto& h = *owned;
+		h.change({{"gain", 10}});
+		CHECK(fellBackReason(h.node()) == NodeCause::FellBack::failed);
+		CHECK(calls.back() == "configure g10");
+		CHECK(h->phase() == "running");
+	}
+	SECTION("restart-requested: node.restart during a change") {
+		reset();
+		auto owned = running(manual());
+	auto& h = *owned;
+		h.change({{"gain", 10}});
+		REQUIRE(h->phase() == "reconfiguring"); // its hold waits for its acknowledgement
+		CHECK(h.restart() == LifecycleReply{LifecycleApplied::restart});
+		CHECK(fellBackReason(h.node()) == NodeCause::FellBack::restartRequested);
+	}
+}
+
+TEST_CASE("A rule broken in a change fails the node lost", "[reconfigure]") {
+	reset({.answer = Script::Answer::breakRule});
+	auto owned = running();
+	auto& h = *owned;
+	h.change({{"gain", 10}});
+	REQUIRE(h->phase() == "failed");
+	CHECK(h->health().reason->code == FailureReason::Code::lost);
+	CHECK_FALSE(fellBackReason(h.node()));
+}
+
+TEST_CASE("Holds are acknowledged before the commit point and faded back in after it", "[reconfigure][hold]") {
+	reset();
+	auto owned = running(manual());
+	auto& h = *owned;
+	for (int i = 0; i < 4; ++i) h.process(); // the drive's fade-in long over
+	h.change({{"gain", 10}});
+	REQUIRE(h->phase() == "reconfiguring");
+	CHECK(h.held(out));
+	CHECK_FALSE(h.held(side));
+	h.process(); // 256 frames: the hold's 240 reach zero, and the cycle acknowledges it
+	CHECK(h.lastHoldGain(out) == 0.0F);
+	CHECK(h.output(out, 0)[255] == 0.0F);
+	CHECK(h.output(side, 0)[255] == 1.0F);
+	// The commit point came with the acknowledgement: committed at once (no code to swap), its hold released.
+	CHECK(h->phase() == "running");
+	CHECK_FALSE(h.held(out));
+	h.process();
+	CHECK(h.output(out, 0)[0] == 0.0F);
+	CHECK(h.output(out, 0)[255] == 1.0F); // faded back in
+}
+
+TEST_CASE("A hold never acknowledged goes on after 100 ms, said", "[reconfigure][hold]") {
+	reset();
+	auto owned = running(manual());
+	auto& h = *owned;
+	h.change({{"gain", 10}});
+	REQUIRE(h->phase() == "reconfiguring");
+	h->advance(std::chrono::milliseconds(100));
+	CHECK(said(h.node(), "ear.fade-unacknowledged"));
+	CHECK(h->phase() == "running");
+}
+
+TEST_CASE("A new code is swapped in at the commit point, at one position with no fade", "[reconfigure][swap]") {
+	reset({.answer = Script::Answer::appliedCode, .holdOut = false});
+	auto owned = running();
+	auto& h = *owned;
+	for (int i = 0; i < 4; ++i) h.process();
+	h.change({{"gain", 10}});
+	CHECK(h->phase() == "running");
+	CHECK(h->swaps() == 1);
+	h.process();
+	CHECK(h.output(out, 0)[0] == 0.25F);
+	CHECK(h.lastFadeGain(out) == 1.0F);
+	CHECK(calls.size() == 2);
+}
+
+TEST_CASE("Supersession: a newer change before the commit point calls the change version again, from the applied "
+          "settings",
+          "[reconfigure][supersede]") {
+	reset();
+	auto owned = running(manual());
+	auto& h = *owned;
+	h.change({{"gain", 10}});
+	REQUIRE(h->phase() == "reconfiguring");
+	h.change({{"gain", 20}});
+	CHECK(said(h.node(), "ear.reconfigure-superseded"));
+	CHECK(calls == std::vector<std::string>{"configure g-", "change g-->g10", "change g-->g20"});
+	h->acknowledgeHolds();
+	CHECK(h->phase() == "running");
+	h->runLoops();
+	CHECK(worked == std::vector<std::string>{"post g20"}); // the superseded change's post never ran
+}
+
+TEST_CASE("A newer change after the commit point waits for it, as next, then changes again", "[reconfigure][supersede]") {
+	reset({.answer = Script::Answer::appliedCode, .holdOut = false});
+	auto owned = running(manual());
+	auto& h = *owned;
+	h.change({{"gain", 10}});
+	REQUIRE(h->phase() == "reconfiguring"); // the swap's invoke in flight: committing
+	h.change({{"gain", 20}, {"level", 1}});
+	CHECK(h->health().next == std::vector<std::string>{"gain", "level"});
+	CHECK(calls.size() == 2); // it waits
+	h->completeBarrier();     // the commit completed: the newer change begins
+	CHECK(calls.back() == "change g10->g20");
+	h->completeBarrier();
+	CHECK(h->phase() == "running");
+}
+
+TEST_CASE("A newer restart-only change before the commit point restarts, cause settings", "[reconfigure][supersede]") {
+	reset();
+	auto owned = running(manual());
+	auto& h = *owned;
+	h.change({{"gain", 10}});
+	REQUIRE(h->phase() == "reconfiguring");
+	CHECK(h.change({{"gain", 10}, {"size", 2}}) == NodeOutcome::restart);
+	const auto restarted = std::ranges::find_if(h->healths(), [](const NodeHealth& one) {
+		return one.phase == NodePhase::stopping && one.cause && one.cause->restart == NodeCause::Kind::settings;
+	});
+	CHECK(restarted != h->healths().end());
+}
+
+TEST_CASE("A stop, a removal or a disable during a change ends it before its commit point", "[reconfigure]") {
+	reset();
+	auto owned = running(manual());
+	auto& h = *owned;
+	h.change({{"gain", 10}});
+	REQUIRE(h->phase() == "reconfiguring");
+	SECTION("a stop ends the change and stops; stopped, the change is made in place") {
+		h.stop();
+		h->acknowledgeFade();
+		h->completeBarrier();
+		CHECK(h->phase() == "stopped");
+		CHECK(calls == std::vector<std::string>{"configure g-", "change g-->g10", "change g-->g10"});
+	}
+	SECTION("a removal") {
+		h.remove();
+		h->acknowledgeFade();
+		h->completeBarrier();
+		h->runLoops();
+		CHECK(h->gone());
+		CHECK(worked.empty());
+	}
+	SECTION("a disable") {
+		h.disable();
+		h->acknowledgeFade();
+		h->completeBarrier();
+		h->runLoops();
+		CHECK(h->phase() == "disabled");
+		CHECK(worked.empty());
+	}
+}
+
+TEST_CASE("A type's reconfigureDeadline is its spec's", "[reconfigure]") {
+	CHECK(makeNodeType<spec, Reconf<spec>>()->reconfigureDeadline() == std::chrono::seconds(10));
+	CHECK(makeNodeType<slowSpec, Reconf<slowSpec>>()->reconfigureDeadline() == std::chrono::seconds(30));
+}
+
+// ---- A replacement companion, break-first behind a hold the framework takes ----
+
+namespace reconfigure_test {
+constexpr auto portRow = setting::required("port", setting::number(1, 65535)).inPlace();
+constexpr auto fromRtp = bank::insideInput<"from_rtp">;
+constexpr TypeSpec receivingSpec{.settings = SettingsTable<portRow>{"receiving"}, .banks = Banks<out, side, fromRtp>{}};
+constexpr TypeSpec quickSpec{.settings = SettingsTable<portRow>{"quick"},
+                             .banks = Banks<out, side, fromRtp>{},
+                             .lifecycle = Lifecycle{.reconfigureDeadline = std::chrono::seconds(30)}};
+
+template <const auto& Spec> struct Receiving {
+	using Checked = CheckedOf<Spec>;
+	static Members<Spec> ports(const Checked&) { return {out(members(1)), side(members(1)), fromRtp(members(1))}; }
+	static RtpReceiverShape receiverFor(const Checked& s, AudioFormat format) {
+		return RtpReceiverShape{.address = *RtpAddress::parse("0.0.0.0"),
+		                        .port = static_cast<std::uint16_t>(s.template get<portRow>()),
+		                        .encoding = RtpEncoding::l24,
+		                        .rate = format.rate,
+		                        .latencyMs = 100};
+	}
+	Configured configure(CreateOf<Spec>& cx, const Checked& s) {
+		cx.attach(fromRtp, receiverFor(s, cx.format()));
+		return cx.applied(passThrough(bankPair(fromRtp, out)));
+	}
+	Changed configure(ChangeOf<Spec>& cx, const Checked&, const Checked& now) {
+		cx.attach(fromRtp, receiverFor(now, cx.format()));
+		return cx.applied();
+	}
+};
+using Receiver = testing::TypeHarness<receivingSpec, Receiving<receivingSpec>>;
+
+/// A receiving node running on port 5004, its receiver ready.
+std::unique_ptr<Receiver> receiving(testing::HarnessOptions options = {}) {
+	auto h = std::make_unique<Receiver>(std::move(options));
+	REQUIRE_FALSE(h->parse({{"port", 5004}}));
+	h->add();
+	h->blockReady();
+	h->node().ready("from_rtp");
+	if (h->phase() != "running") h->node().completeBarrier();
+	REQUIRE(h->phase() == "running");
+	return h;
+}
+
+std::uint16_t portOf(const testing::CompanionFake& fake) { return std::get<RtpReceiverShape>(fake.shape).port; }
+
+std::size_t receiversMade(const testing::NodeHarness& h) {
+	return static_cast<std::size_t>(std::ranges::count_if(h.companions(), [](const testing::CompanionFake& one) {
+		return one.kind == CompanionKind::rtpReceiver && one.made;
+	}));
+}
+} // namespace reconfigure_test
+
+TEST_CASE("A replacement is made break-first behind a framework hold: held, the old destroyed, then the new made",
+          "[reconfigure][replacement]") {
+	auto owned = receiving(manual());
+	auto& h = *owned;
+	h.change({{"port", 5006}});
+	REQUIRE(h->phase() == "reconfiguring");
+	CHECK(h.held(out)); // what the bank feeds through the pass-through, held by the framework
+	CHECK_FALSE(h.held(side));
+	CHECK(receiversMade(h.node()) == 1); // nothing broken before the hold is acknowledged
+	h->acknowledgeHolds();
+	REQUIRE(receiversMade(h.node()) == 2);
+	CHECK(h->companions()[0].destroyed);
+	CHECK(portOf(h->companions()[1]) == 5006);
+	CHECK(h->phase() == "reconfiguring"); // the new one is not ready yet
+	h->ready("from_rtp");
+	CHECK(h->phase() == "running");
+	CHECK_FALSE(h.held(out));
+	CHECK_FALSE(toldPhase(h.node(), NodePhase::stopping));
+}
+
+TEST_CASE("A same-port replacement is granted unprobed, and a new port is probed, and a refused one falls back before "
+          "anything is broken",
+          "[reconfigure][replacement]") {
+	SECTION("the same port, the probe refusing it, is its own") {
+		auto owned = receiving({.refusedPorts = {}});
+		auto& h = *owned;
+		h.change({{"port", 5004}});
+		h->ready("from_rtp");
+		CHECK(h->phase() == "running");
+	}
+	SECTION("a new port the kernel refuses") {
+		auto owned = receiving({.refusedPorts = {"udp:5006"}});
+		auto& h = *owned;
+		h.change({{"port", 5006}});
+		CHECK(fellBackReason(h.node()) == NodeCause::FellBack::resourceRefused);
+		CHECK(h->companions()[0].destroyed); // by the restart's teardown, not a break
+		CHECK(h->phase() == "failed");       // the restart's own claim is refused too
+	}
+}
+
+TEST_CASE("A replacement lost before the commit point falls back (resource-lost), and a retiring one lost is only said",
+          "[reconfigure][replacement]") {
+	SECTION("the replacement lost") {
+		auto owned = receiving();
+		auto& h = *owned;
+		h.change({{"port", 5006}});
+		REQUIRE(h->phase() == "reconfiguring");
+		h->lose("from_rtp", "gone");
+		CHECK(fellBackReason(h.node()) == NodeCause::FellBack::resourceLost);
+	}
+	SECTION("the retiring one lost while its hold waits") {
+		auto owned = receiving(manual());
+		auto& h = *owned;
+		h.change({{"port", 5006}});
+		REQUIRE(h->phase() == "reconfiguring");
+		h->lose("from_rtp", "gone"); // the old receiver, not yet broken
+		CHECK(said(h.node(), "ear.retiring-lost"));
+		CHECK(h->phase() == "reconfiguring");
+		h->acknowledgeHolds();
+		h->ready("from_rtp");
+		CHECK(h->phase() == "running");
+	}
+}
+
+TEST_CASE("A change not ready by its deadline falls back: 10 s, or the 30 s its spec declares",
+          "[reconfigure][replacement][deadline]") {
+	SECTION("10 s by default") {
+		auto owned = receiving();
+		auto& h = *owned;
+		h.change({{"port", 5006}});
+		h->advance(std::chrono::milliseconds(9'999));
+		CHECK(h->phase() == "reconfiguring");
+		h->advance(std::chrono::milliseconds(1));
+		CHECK(fellBackReason(h.node()) == NodeCause::FellBack::deadline);
+		CHECK(said(h.node(), "ear.reconfigure-fell-back"));
+	}
+	SECTION("30 s declared") {
+		testing::TypeHarness<quickSpec, Receiving<quickSpec>> h;
+		REQUIRE_FALSE(h.parse({{"port", 5004}}));
+		h.add();
+		h.blockReady();
+		h->ready("from_rtp");
+		REQUIRE(h.phase() == "running");
+		h.change({{"port", 5006}});
+		h->advance(std::chrono::seconds(29));
+		CHECK(h.phase() == "reconfiguring");
+		h->advance(std::chrono::seconds(1));
+		CHECK(fellBackReason(h.node()) == NodeCause::FellBack::deadline);
+	}
+}
+
+TEST_CASE("Supersession while a replacement is pending makes the newest, keeping the hold", "[reconfigure][replacement]") {
+	auto owned = receiving();
+	auto& h = *owned;
+	h.change({{"port", 5006}});
+	REQUIRE(h->phase() == "reconfiguring");
+	h.change({{"port", 5008}});
+	CHECK(said(h.node(), "ear.reconfigure-superseded"));
+	CHECK(h.held(out));
+	CHECK(portOf(h->companion("from_rtp")) == 5008);
+	h->ready("from_rtp");
+	CHECK(h->phase() == "running");
+}
