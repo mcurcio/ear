@@ -282,6 +282,12 @@ public:
 	virtual void release(std::span<const std::string_view> banks) = 0;
 	/// The new configuration's latency on the path from `from` to `to`, carried from the commit point.
 	virtual void declareLatency(std::string_view from, std::string_view to, Latency latency) = 0;
+	/// A port the type's own thread will bind once the change is made (docs/writing-a-node-type.md#claims-in-a-change):
+	/// judged when the change version returns, before any other acquisition; a key the configuration holds is its own.
+	virtual void claim(Claim claim) = 0;
+	/// A port the configuration holds that it no longer needs: released at the commit point, last; a key the change
+	/// also claims stays held. A key it does not hold is a std::logic_error.
+	virtual void unclaim(Claim claim) = 0;
 
 protected:
 	~ChangeContext() = default;
@@ -630,8 +636,8 @@ private:
 };
 
 /// configure for a change in place (docs/writing-a-node-type.md#the-change-version): holds, a replacement companion,
-/// staged posts, the latency and the answer. It has no state, store, executor, recording or claim (a loop's state lives
-/// across a change and already holds what it needs), so a call the mode does not offer does not compile.
+/// claims and unclaims, staged posts, the latency and the answer. It has no state, store, executor or program (a loop's
+/// state lives across a change and already holds what it needs), so a call the mode does not offer does not compile.
 template <const auto& Spec> class ChangeOf {
 	static_assert(linkage::named<Spec>, "a spec is declared in a named namespace, never an unnamed one");
 	using List = BanksOf<Spec>;
@@ -679,6 +685,15 @@ public:
 		CompanionBank<RtpReceiverShape>::template check<Bank>();
 		context_->attachEngine(Bank::name, std::move(shape));
 	}
+	/// A port the type's own thread binds once the change is made (docs/writing-a-node-type.md#claims-in-a-change):
+	/// judged when this call returns, before any other new acquisition; a refusal falls the change back
+	/// (resource-refused). A port the configuration already holds is its own, granted unprobed.
+	void claim(claim::TcpListen port) { context_->claim(claim::of(port)); }
+	void claim(claim::Udp port) { context_->claim(claim::of(port)); }
+	/// A port the configuration holds and the change no longer needs: released at the commit point, after everything
+	/// the change replaced, so another node can take it only once this one runs without it.
+	void unclaim(claim::TcpListen port) { context_->unclaim(claim::of(port)); }
+	void unclaim(claim::Udp port) { context_->unclaim(claim::of(port)); }
 	/// The new configuration's latency on a path, as CreateOf::declareLatency, carried from the commit point.
 	template <class From, class To> void declareLatency(From, To, Latency latency) {
 		static_assert(ownBank<From> && ownBank<To>, "declareLatency takes its spec's banks");

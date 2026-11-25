@@ -561,7 +561,9 @@ What NodeHost does, in order:
 
 1. **Calls the change version** on the main loop, timed as `configure`, with `old` the applied
    settings and `now` the change's target; the configuration still applies the old ones. Its
-   context offers holds, staged posts, a latency declaration and the answer.
+   context offers holds, replacements, claims and unclaims, staged posts, a latency declaration
+   and the answer. Its claims are judged as it returns, before anything else
+   ([writing-a-node-type.md](writing-a-node-type.md#claims-in-a-change)).
 2. **Holds** the banks it names: told to the block only while the node is driven (a stopped node
    is silent already). The commit point waits for each hold's acknowledgement, at most 100 ms
    (past it `ear.fade-unacknowledged`, and the change goes on).
@@ -573,14 +575,15 @@ What NodeHost does, in order:
    the staged posts are released to their loops, in the order posted; the plan is carried; a new
    code is swapped in one invoke, its completion the commit's (from `prepared`, or with no new
    code, the commit completes in its own turn); the old code is released once its swap completed;
-   then the holds fade back in. The loops and their states go on: nothing is torn down.
+   then the holds fade back in; last, the ports the configuration no longer asks are released.
+   The loops and their states go on: nothing is torn down.
 5. **The deadline**, 10 s from the change version's call (a type declares 1 s to 60 s: its spec's
    `.lifecycle`): past it the change falls back, reason `deadline`.
 
 A **replacement** (an RTP receiver on the same bank,
 [writing-a-node-type.md](writing-a-node-type.md#engine-companions)) is judged once the change
-version answered: its new claims first (a refusal falls back, `resource-refused`, before anything
-breaks), then break-first behind a hold the framework takes on what its bank feeds, the old one
+version answered: its new claims first, with the change's own (a refusal falls back,
+`resource-refused`, before anything breaks), then break-first behind a hold the framework takes on what its bank feeds, the old one
 destroyed and the new one made in one flush; the commit point waits for it to be ready (its loss
 first falls back, `resource-lost`), and releases the ports the old one held that the new one does
 not, last. The old one is retiring meanwhile: its loss is `ear.retiring-lost`. Make-before-break

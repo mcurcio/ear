@@ -225,6 +225,7 @@ its own state, and may touch nothing the old code's `process` reads.
 | `cx.format()`, `cx.node()` | As on creation | |
 | `cx.hold(banks...)`, `cx.holdAll()`, `cx.release(banks...)` | Hold routable output banks silent: from the next cycle each fades to zero over 5 ms and stays there until the commit point, which fades it back in; `release` ends a hold sooner | Routable output banks of the spec (compile time) |
 | `cx.attach(bank, RtpReceiverShape{...})` | A replacement for the RTP receiver on that inside input bank | Inside input banks only (compile time) |
+| `cx.claim(claim::TcpListen(p))`, `cx.claim(claim::Udp(p))`, `cx.unclaim(...)` | A port to bind once the change is made, judged when the change version returns; a port the configuration holds and no longer needs, released at the commit point, last ([claims in a change](#claims-in-a-change)) | `unclaim` names a port the configuration holds |
 | `cx.post(handle, work)` | Work on a loop, staged until the commit point and destroyed unrun if the change is superseded or falls back | As on creation |
 | `cx.declareLatency(from, to, Latency{...})` | The new configuration's latency on a path, carried from the commit point | As on creation |
 
@@ -233,7 +234,7 @@ in at the commit point between two cycles: a discontinuity unless the type carri
 it; it takes no loop's state, which lives across a change), or `return Changed::restart(reason)`
 when the type cannot take this change in place after all, which restarts the node with the new
 settings. A change version cannot refuse a change: the new settings are committed before it is
-called. `ChangeOf` has no `state`, `store`, `executor`, `recording`, `claim` or `program`: each does
+called. `ChangeOf` has no `state`, `store`, `executor`, `recording` or `program`: each does
 not compile. The spec's `.lifecycle = Lifecycle{.reconfigureDeadline = 30s}` (after `.loops`; 10 s
 by default) is how long a change may take; outside 1 s to 60 s it does not compile.
 
@@ -341,9 +342,10 @@ return cx.applied(passThrough(bankPair(play, toCard), bankPair(fromRtp, stream))
   for two of different kinds on one bank.
 - **A replacement in a change** ([the change version](#the-change-version)): `cx.attach(bank,
   RtpReceiverShape{...})` in a change replaces the RTP receiver on that bank (a bank with none is a
-  broken rule). Its claims are judged first: a key the configuration already holds (the same port)
-  is its own, granted unprobed; a new port is judged and probed as at the first readiness step, and
-  one refused falls the change back (`resource-refused`) before anything is broken. Then, break-first
+  broken rule). Its claims are judged first, with the change's own ([claims in a change](#claims-in-a-change)): a
+  key the configuration already holds (the same port) is its own, granted unprobed; a new port is judged and probed
+  as at the first readiness step, and one refused falls the change back (`resource-refused`) before anything is
+  broken. Then, break-first
   (two receivers on one port would split its datagrams), the framework holds the public output banks
   the bank feeds through the pass-through (every routable output for a code of the type's own),
   waits for the acknowledgement, destroys the old receiver and makes the new one in one flush. The
@@ -844,6 +846,32 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
   before the old node closed it).
 
 `sendspin` claims its listening port with `cx.claim(claim::TcpListen(port))`, and a dialling node claims nothing.
+
+### Claims in a change
+
+The [change version](#the-change-version) claims a port it will bind with `cx.claim(claim::TcpListen(p))` or
+`cx.claim(claim::Udp(p))`, and gives up one the configuration holds with `cx.unclaim(...)`. So a node moving from 8928
+to 8929 holds both for a moment, and another node can take 8928 only once the first runs on 8929.
+
+- **Judged when the change version returns**, before anything else the change acquires (a replacement companion's own
+  claims are judged with them, and nothing is broken or made until every one is granted). A port the configuration
+  already holds is its own: granted, never probed (the probe would fail against the node itself). Any other is judged
+  and probed as at the first readiness step: held by a configuration that runs, it is refused and the change falls
+  back (`resource-refused`, [architecture.md](architecture.md#changes-in-place)), whose restart claims it afresh;
+  held by one that is closing, it waits (`ear.claim-wait`), against the change's deadline, not its own 15 s, and past
+  that deadline the restart's `configure` waits afresh.
+- **The registry decides at once and the change hears it in a later turn**, so the changes of one edit are judged
+  together: two nodes that swap ports in one edit (`a` from 8928 to 8929, `b` the other way) each find the other's
+  port held by a configuration that runs, both fall back, and each restart's claim then finds the other's old
+  configuration going and waits for it, so both run on their new ports, after a restart each.
+- **Released at the commit point, last**: what the configuration no longer asks (each key `cx.unclaim` named, unless
+  the change claimed it again, and the ports of a replaced companion its replacement does not ask) is released after
+  everything else the commit does, so a node waiting for one is granted it then.
+- **A change that ends uncommitted** (superseded, stopped, fallen back) releases what it was granted and drops its
+  waits; a port a replacement already made asks stays the configuration's, as that replacement does.
+- **The rules:** a key claimed twice in one change, a claim of a store's or a recording's key, and an `unclaim` of a
+  port the configuration does not hold are broken rules (the node fails `lost`). Claiming a key and unclaiming it in
+  one change keeps it (`sendspin` renaming on the same port does both).
 
 ## Programs
 

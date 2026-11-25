@@ -1,6 +1,6 @@
 # Changes in place and reshape: slice 3d of the node framework
 
-Status: design; steps 1 and 2 of section 11 built (section 2 says what and where). Slice 3d follows slice 3c (built: it swaps claims and posts to loops, both
+Status: design; steps 1 and 2 of section 11 built, and of step 3 claims in a change (section 2 says what and where). Slice 3d follows slice 3c (built: it swaps claims and posts to loops, both
 3c's, `docs/writing-a-node-type.md#claims`, `#loops`) and comes before slice 6 (`control-plane.md`: a retune is one of the outcomes this slice makes). Its PipeWire
 spike (S4) is run: a reshape goes ahead as designed (7.4). It changes the audio path: holds, code swaps and reshapes. The built lifecycle (states,
 operations, teardown, fades, barriers and their bounds) is described in `docs/architecture.md` and
@@ -40,6 +40,9 @@ Built (steps 1 and 2 of section 11), described where they live and not repeated 
   longer asked released per key at the commit point
   ([`docs/writing-a-node-type.md#engine-companions`](../writing-a-node-type.md#engine-companions));
 - `rtp` in place ([`docs/node-types.md#rtp`](../node-types.md#rtp));
+- `cx.claim` and `cx.unclaim` in a change: judged as the change version returns, before anything else, the old port
+  released at the commit point, last, and two nodes swapping ports in one edit both coming back after a restart each
+  ([`docs/writing-a-node-type.md#claims-in-a-change`](../writing-a-node-type.md#claims-in-a-change));
 - on the wire: `reconfiguring` with `keys` and `next`, the `fell-back` cause, `applied: "reconfigure"`, the
   standard-output records and the three diagnostics ([`docs/control-port.md#node-health`](../control-port.md#node-health),
   [`docs/output-records.md#node`](../output-records.md#node)).
@@ -47,10 +50,9 @@ Built (steps 1 and 2 of section 11), described where they live and not repeated 
 This page still designs:
 
 - the plan's outcomes `reshape` and `unchanged`, and a change of ports with the same type no longer a replace (3, 7);
-- `whenReady` and `ConfigureDone`, `cx.claim` and `cx.unclaim` in a change, recordings, sinks, sources and cards
-  replaced in a change (4, 6);
-- make-before-break: a replacement made beside the one it replaces, claims swapped (both held, the old released last),
-  and companions' `retiring: true` (5, 6.1); every replacement is break-first today, `rtp`'s on a new port included;
+- `whenReady` and `ConfigureDone`, recordings, sinks, sources and cards replaced in a change (4, 6);
+- make-before-break: a replacement made beside the one it replaces, and companions' `retiring: true` (5, 6.1); every
+  replacement is break-first today, `rtp`'s on a new port included;
 - `SinkControl::pause` and `resume` (6.4);
 - `PortBlock::reshape` (7);
 - `sendspin` in place (6.6);
@@ -114,8 +116,6 @@ public:
 	template <class Bank> void attach(Bank, SoundCardShape, Order = Order::makeFirst);
 	template <class Bank> SourceWriter& attach(Bank, SourceShape);
 	template <class Bank> SinkControl& attach(Bank, SinkShape, /* its consumer, in creation's three forms */);   // 6.4
-	void claim(claim::TcpListen);   void claim(claim::Udp);            // judged when the hook returns (6.1)
-	void unclaim(claim::TcpListen); void unclaim(claim::Udp);          // released at the commit point, last
 	int recording(RecordingRequest);                                   // a replacement, made before break
 	/// Once every acquisition this call made is ready (claims granted and probed, recordings open, replacement companions
 	/// running and linked), posts work(state, token) to `loop` as the node's own work; the one later answer.
@@ -124,7 +124,7 @@ public:
 };
 ```
 
-The rules still to build: `unclaim` names a key the node holds; `whenReady` is called at most once, and its `Changed` is
+The rules still to build: `whenReady` is called at most once, and its `Changed` is
 what `configure` returns. Staged posts are released after the continuation's `done()`, once a continuation exists.
 
 **`whenReady`** joins "act once the new acquisitions are ready" and "act on the node's own thread" (a hook holds no reference to a loop's state, so a post typed by the loop's handle is
@@ -161,10 +161,6 @@ mid-change: [`docs/architecture.md#changes-in-place`](../architecture.md#changes
 - **At the commit point**, the retiring resources released by the teardown's order for those resources only (a
   replaced source's writer closed; replaced companions destroyed; replaced sinks drained to their own consumers and
   finished; replaced recordings closed; `unclaim`ed claims released, last), after the continuation's `done`.
-- **Two nodes swapping ports in one edit** (`a` from 8928 to 8929, `b` the other way) cannot each hold both: each new
-  claim is held by the other node's current configuration, so it is refused, and both fall back to restarts; each
-  restart's claim then finds the other's old configuration going and waits for it. Both come back on their new ports,
-  after a restart each.
 
 **Break before make** is built for an RTP receiver, always
 ([`docs/writing-a-node-type.md#engine-companions`](../writing-a-node-type.md#engine-companions)); still designed: a type
@@ -176,12 +172,8 @@ break.
 
 ### 6.1 Claims swapped make-before-break
 
-`cx.claim` in a change is judged when the hook returns, before any other new acquisition; a refusal ends the change
-(T11) and destroys its continuation unrun. `cx.unclaim` names a key the node holds and releases it at the commit point,
-after the replaced resources, last. So a node moving from 8928 to 8929 holds both for a moment, and another node can
-take 8928 only once the first is `running` on 8929. **A key the node already holds** (a replacement asking its own key)
-is granted at once, not probed (the probe would fail against the node itself) (G22). A claim wait inside a change
-counts against the change's deadline, not its own 15 s; past it the fallback restart's `configure` waits afresh.
+Built: [`docs/writing-a-node-type.md#claims-in-a-change`](../writing-a-node-type.md#claims-in-a-change). Still
+designed: a refused claim also destroys the continuation unrun (section 4).
 
 **A same-port RTP receiver** (`rtp` changing `format` on 5004) asks `udp:5004`, which its configuration holds: its own.
 Two rtp-source modules bound to one port with SO_REUSEADDR would split or duplicate the datagrams [U13], so the
@@ -475,8 +467,8 @@ What steps 1 and 2 changed is built (section 2). What is left:
 | Built piece | Change |
 |---|---|
 | `NodeOutcome`, `NodeChange`, `DesiredNodeListener` (`desired_graph.hpp`) | outcomes `reshape`, `unchanged`; `NodeChange` gains the old and new ports and `inPlace`; a change of ports with the same type is told by `nodeChanged`, not as a replace; `portCaused` goes |
-| `lifecycle.hpp` | `ConfigureDone`, `whenReady`, `claim` and `unclaim` in a change, the other kinds' replacements; `SinkControl` |
-| `NodeHost` | make-before-break with retiring resources and claims swapped; the continuation; the block's reshape between teardown and `configure` |
+| `lifecycle.hpp` | `ConfigureDone`, `whenReady`, the other kinds' replacements; `SinkControl` |
+| `NodeHost` | make-before-break with retiring resources; the continuation; the block's reshape between teardown and `configure` |
 | `PortBlock`, `FilterPortBlocks` | `reshape(next)` with layouts swapped whole; levels re-registered |
 | The sink companion | `pause` and `resume` on its thread |
 | `sendspin` | rows marked `.inPlace()`; its change version |
@@ -490,8 +482,7 @@ Built: what `docs/testing.md` lists for changes in place. Still to write with wh
 
 - **`ear_core_tests`**: the code swap with a sink and its replacement splitting the cycles exactly, a continuation run
   only once every acquisition is ready and on the loop named, a token dropped failing the change, a reshape in place by
-  a test type (channels 1 and 2 keep playing); claims swapped make-before-break (both held, the old released last), a
-  refused new claim destroying the continuation and restarting, two nodes swapping ports both restarting and running.
+  a test type (channels 1 and 2 keep playing); a refused new claim destroying the continuation.
 - **`ear_pipewire_tests`**: S4 (built: 7.4); reshape (a port added and removed beside a running ramp, links of surviving
   ports kept, the layout swapped whole, the transitional layout zero-filling new outputs); a reshape's new port metered
   from its first window; two sources into one inside input mixed (the port mixer loads).

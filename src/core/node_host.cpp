@@ -981,6 +981,12 @@ struct NodeHost::Impl {
 					declared->push_back(DeclaredLatency{input.name, output.name, latency});
 				});
 			}
+			void claim(Claim claim) override {
+				checked("claim", [&] { node_.claimInChange(std::move(claim)); });
+			}
+			void unclaim(Claim claim) override {
+				checked("unclaim", [&] { node_.unclaimInChange(claim); });
+			}
 
 		private:
 			template <typename Call> void checked(std::string_view call, Call&& run) {
@@ -1924,11 +1930,9 @@ struct NodeHost::Impl {
 				/// An engine companion the change replaces, break-first behind a hold: its claims judged first, then
 				/// (once held) the old one destroyed and the new one made in one flush.
 				struct Replacement {
-					std::size_t index;          // the engine ask, and companion, it replaces
-					EngineCompanionShape shape; // the new one's
-					std::vector<Claim> claims;  // the new one's, by its shape's rule
-					std::vector<Claim> added;   // those the configuration did not hold: judged, probed, and kept on
-					std::size_t claimsPending = 0;
+					std::size_t index;            // the engine ask, and companion, it replaces
+					EngineCompanionShape shape;   // the new one's
+					std::vector<Claim> claims;    // the new one's, by its shape's rule
 					std::uint64_t retiringId = 0; // the companion it replaces
 					std::uint64_t id = 0;         // its own, once made
 					std::vector<Claim> oldClaims; // the replaced one's, by its shape's rule (once broken)
@@ -1936,6 +1940,18 @@ struct NodeHost::Impl {
 					bool ready = false;
 				};
 				std::vector<Replacement> replacements;
+				/// docs/writing-a-node-type.md#claims-in-a-change: the ports cx.claim asked (each once), and those it
+				/// unclaimed (keys the configuration holds, released at the commit point, last).
+				std::vector<Claim> claimed;
+				std::vector<std::string> unclaimed;
+				/// Every claim of the change the configuration does not hold yet (cx.claim's and the replacements'),
+				/// judged when the change version returned, before anything else is acquired; granted once probed.
+				struct Added {
+					Claim claim;
+					bool granted = false;
+				};
+				std::vector<Added> added;
+				std::size_t claimsPending = 0;
 			};
 			std::optional<Change> change;
 			std::uint64_t changeEpoch = 0;
@@ -3275,7 +3291,7 @@ struct NodeHost::Impl {
 				ch.codePrepared = true;
 			}
 			ch.answered = true;
-			startReplacements();
+			judgeChangeClaims();
 			checkChangeReady();
 		}
 
@@ -3291,15 +3307,15 @@ struct NodeHost::Impl {
 			return config_->holdsAcked < config_->holdsAsked && !(config_->change && config_->change->holdGaveUp);
 		}
 
-		/// The change's next steps, as an input of its own: a replacement whose claims are granted is held, then made
-		/// once its hold is acknowledged; the commit point comes once the change version answered applied, every hold it
-		/// asked was acknowledged and every replacement is ready.
+		/// The change's next steps, as an input of its own: once every claim of the change is granted, each replacement
+		/// is held, then made once its hold is acknowledged; the commit point comes once the change version answered
+		/// applied, every claim is granted, every hold it asked was acknowledged and every replacement is ready.
 		void checkChangeReady() {
 			if (!config_ || !config_->change) return;
 			host_.inputFor(serial_, [generation = config_->generation, epoch = config_->change->epoch](Node& node) {
 				if (!node.inChange(generation, epoch) || !node.config_->change->answered) return;
 				node.stepReplacements();
-				if (node.holdsWaiting()) return;
+				if (node.config_->change->claimsPending > 0 || node.holdsWaiting()) return;
 				if (!std::ranges::all_of(node.config_->change->replacements, [](const auto& r) { return r.ready; }))
 					return;
 				node.feed(node.aggregate_.changeReady());
@@ -3414,45 +3430,86 @@ struct NodeHost::Impl {
 				.index = index, .shape = std::move(shape), .claims = std::move(claims)});
 		}
 
-		/// Once the change version answered: each replacement's claims the configuration does not hold yet are judged
-		/// (a key it holds is its own: granted, never probed); the companion it replaces is retiring from now on.
-		void startReplacements() {
-			Configuration& c = *config_;
-			for (auto& r : c.change->replacements) {
-				if (r.index < c.engineCompanions.size() && c.engineCompanions[r.index])
-					r.retiringId = c.engineCompanions[r.index]->id();
-				for (const Claim& claim : r.claims)
-					if (std::ranges::none_of(
-							c.claims, [&](const ClaimSlot& slot) { return claimKey(slot.claim) == claimKey(claim); }))
-						r.added.push_back(claim);
-				r.claimsPending = r.added.size();
-			}
-			// Judged after this input, each as an input of its own, as the readiness step's claims are.
-			for (const auto& r : c.change->replacements)
-				for (const Claim& claim : r.added) {
-					const detail::ClaimHolder holder{c.generation, serial_, name_};
-					host_.claimsDecided({detail::ClaimDecided{holder, claim, host_.claims.claim(holder, claim)}});
-				}
+		/// cx.claim in a change (docs/writing-a-node-type.md#claims-in-a-change): a port, recorded now and judged when
+		/// the change version returned. Asked twice is the type's bug, as on creation.
+		void claimInChange(Claim claim) {
+			if (claim.kind != Claim::Kind::tcp && claim.kind != Claim::Kind::udp)
+				throw std::logic_error("claim takes a port: " + claimKey(claim) + " is the framework's to claim");
+			Configuration::Change& ch = *config_->change;
+			const std::string key = claimKey(claim);
+			if (std::ranges::any_of(ch.claimed, [&](const Claim& one) { return claimKey(one) == key; }))
+				throw std::logic_error(key + " claimed twice");
+			ch.claimed.push_back(std::move(claim));
 		}
 
-		/// The change's replacement asking `claim`, if any.
-		Configuration::Change::Replacement* replacementAsking(const Claim& claim) {
+		/// cx.unclaim: a port the configuration holds, released at the commit point, last.
+		void unclaimInChange(const Claim& claim) {
+			const std::string key = claimKey(claim);
+			if (!holdsClaim(key)) throw std::logic_error("unclaim names a port the configuration holds, not " + key);
+			std::vector<std::string>& unclaimed = config_->change->unclaimed;
+			if (std::ranges::find(unclaimed, key) == unclaimed.end()) unclaimed.push_back(key);
+		}
+
+		/// Whether the configuration holds the claim of `key`.
+		bool holdsClaim(const std::string& key) const {
+			return std::ranges::any_of(config_->claims,
+			                           [&](const ClaimSlot& slot) { return claimKey(slot.claim) == key; });
+		}
+
+		/// Once the change version answered: the companions it replaces are retiring from now on, and every claim
+		/// of the change the configuration does not hold yet (a key it holds is its own: granted, never probed) is
+		/// judged at once, before anything else is acquired. The registry decides now, so two nodes whose changes
+		/// in one edit swap ports each find the other's port held by a configuration that runs, and both fall back
+		/// (docs/writing-a-node-type.md#claims-in-a-change); the decisions are heard in a later turn, each as an
+		/// input of its own.
+		void judgeChangeClaims() {
+			Configuration& c = *config_;
+			Configuration::Change& ch = *c.change;
+			for (auto& r : ch.replacements)
+				if (r.index < c.engineCompanions.size() && c.engineCompanions[r.index])
+					r.retiringId = c.engineCompanions[r.index]->id();
+			const auto ask = [&](const Claim& claim) {
+				const std::string key = claimKey(claim);
+				if (holdsClaim(key) ||
+				    std::ranges::any_of(ch.added, [&](const auto& one) { return claimKey(one.claim) == key; }))
+					return;
+				ch.added.push_back(Configuration::Change::Added{claim});
+			};
+			for (const Claim& claim : ch.claimed) ask(claim);
+			for (const auto& r : ch.replacements)
+				for (const Claim& claim : r.claims) ask(claim);
+			ch.claimsPending = ch.added.size();
+			if (ch.added.empty()) return;
+			std::vector<detail::ClaimDecided> decided;
+			for (const auto& added : ch.added) {
+				const detail::ClaimHolder holder{c.generation, serial_, name_};
+				decided.push_back(detail::ClaimDecided{holder, added.claim, host_.claims.claim(holder, added.claim)});
+			}
+			host_.mainLoop.post(
+				[&host = host_, alive = std::weak_ptr<char>(host_.alive), decided = std::move(decided)]() mutable {
+					if (alive.lock()) host.claimsDecided(std::move(decided));
+				});
+		}
+
+		/// The change's claim of `claim`'s key, if any.
+		Configuration::Change::Added* addedAsking(const Claim& claim) {
 			if (!config_->change) return nullptr;
-			for (auto& r : config_->change->replacements)
-				if (std::ranges::any_of(r.added, [&](const Claim& one) { return claimKey(one) == claimKey(claim); }))
-					return &r;
+			const std::string key = claimKey(claim);
+			for (auto& added : config_->change->added)
+				if (claimKey(added.claim) == key) return &added;
 			return nullptr;
 		}
 
-		/// A claim a change's replacement asked, judged: granted, probed, refused (the change falls back,
-		/// resource-refused, before anything was broken) or waiting for its holder, which is closing. False for a claim no
-		/// replacement in flight asked.
+		/// A claim the change asked, judged: granted, probed, refused (the change falls back, resource-refused,
+		/// before anything was broken) or waiting for its holder, which is closing (against the change's deadline).
+		/// False for a claim no change in flight asked.
 		bool changeClaimJudged(const Claim& claim, const detail::ClaimJudged& judged) {
-			Configuration::Change::Replacement* r = replacementAsking(claim);
-			if (r == nullptr || aggregate_.configuration().state() != lc::ConfigState::changing) return false;
+			Configuration::Change::Added* added = addedAsking(claim);
+			if (added == nullptr || added->granted || aggregate_.configuration().state() != lc::ConfigState::changing)
+				return false;
 			switch (judged.outcome) {
 			case detail::ClaimJudged::Outcome::granted:
-				changeClaimReady(*r);
+				changeClaimReady(claim);
 				break;
 			case detail::ClaimJudged::Outcome::probe:
 				probeChangeClaim(claim);
@@ -3468,15 +3525,18 @@ struct NodeHost::Impl {
 			return true;
 		}
 
-		void changeClaimReady(Configuration::Change::Replacement& r) {
-			if (r.claimsPending > 0) --r.claimsPending;
+		void changeClaimReady(const Claim& claim) {
+			Configuration::Change::Added* added = addedAsking(claim);
+			if (added == nullptr || added->granted) return;
+			added->granted = true;
+			--config_->change->claimsPending;
 			checkChangeReady();
 		}
 
-		/// A replacement's port granted by the registry, probed behind the turn's flush as a readiness claim is.
+		/// A change's port granted by the registry, probed behind the turn's flush as a readiness claim is.
 		void probeChangeClaim(const Claim& claim) {
 			PortProbe* probe = host_.resources.ports();
-			if (probe == nullptr) return changeClaimReady(*replacementAsking(claim));
+			if (probe == nullptr) return changeClaimReady(claim);
 			host_.mainLoop.post([&host = host_, alive = std::weak_ptr<char>(host_.alive), probe, serial = serial_,
 			                     generation = config_->generation, epoch = config_->change->epoch, claim] {
 				if (!alive.lock()) return;
@@ -3504,7 +3564,7 @@ struct NodeHost::Impl {
 					if (!outcome)
 						return node.fallBack(lc::NodeCause::FellBack::resourceRefused,
 						                     claimText(claim, outcome.error()));
-					if (auto* r = node.replacementAsking(claim)) node.changeClaimReady(*r);
+					node.changeClaimReady(claim);
 				});
 			});
 		}
@@ -3528,8 +3588,9 @@ struct NodeHost::Impl {
 		/// bank's companion the new one's from here on.
 		void stepReplacements() {
 			Configuration& c = *config_;
+			if (c.change->claimsPending > 0) return; // claims first, before anything is broken or made
 			for (auto& r : c.change->replacements) {
-				if (r.broken || r.claimsPending > 0) continue;
+				if (r.broken) continue;
 				const std::vector<std::string_view> fed = fedBy(r.index);
 				holdBanks(fed, true);
 				if (holdsWaiting()) continue;
@@ -3622,21 +3683,39 @@ struct NodeHost::Impl {
 			return false;
 		}
 
-		/// A replacement's claims settle as its companion now stands: once broken (made, or being made), the new one's
-		/// claims are the configuration's and the old one's it no longer asks are released, last; before that, the
-		/// claims it was granted are released. At the commit point, and when a change ends uncommitted.
-		void settleClaims(Configuration::Change::Replacement& r) {
+		/// The change's claims settle (docs/writing-a-node-type.md#claims-in-a-change). At the commit point
+		/// (`committed`): every claim it added is the configuration's; then, last, the ports no longer asked are
+		/// released (a replaced companion's its replacement does not ask, and every key unclaimed that the change
+		/// does not claim again), so a node waiting for one is granted it only now. Ending uncommitted: the claims a
+		/// replacement already made asks stay the configuration's, as that replacement does; every other claim it
+		/// added is released, and every wait of it dropped.
+		void settleClaims(Configuration::Change& ch, bool committed) {
 			Configuration& c = *config_;
 			const auto key = [](const Claim& claim) { return claimKey(claim); };
-			if (!r.broken) {
-				for (const Claim& claim : r.added) host_.claimsDecided(host_.claims.release(c.generation, key(claim)));
-				return;
+			const auto asks = [&](const std::vector<Claim>& claims, const std::string& k) {
+				return std::ranges::any_of(claims, [&](const Claim& one) { return key(one) == k; });
+			};
+			for (const auto& added : ch.added) {
+				const std::string k = key(added.claim);
+				const bool kept = committed || std::ranges::any_of(ch.replacements, [&](const auto& r) {
+									  return r.broken && asks(r.claims, k);
+								  });
+				if (kept) c.claims.push_back(ClaimSlot{added.claim});
+				else host_.claimsDecided(host_.claims.release(c.generation, k));
 			}
-			for (const Claim& claim : r.added) c.claims.push_back(ClaimSlot{claim});
-			for (const Claim& old : r.oldClaims) {
-				if (std::ranges::any_of(r.claims, [&](const Claim& now) { return key(now) == key(old); })) continue;
-				std::erase_if(c.claims, [&](const ClaimSlot& slot) { return key(slot.claim) == key(old); });
-				host_.claimsDecided(host_.claims.release(c.generation, key(old)));
+			std::vector<std::string> released;
+			for (const auto& r : ch.replacements) {
+				if (!r.broken) continue;
+				for (const Claim& old : r.oldClaims)
+					if (!asks(r.claims, key(old))) released.push_back(key(old));
+			}
+			if (committed)
+				for (const std::string& k : ch.unclaimed)
+					if (!asks(ch.claimed, k)) released.push_back(k);
+			for (const std::string& k : released) {
+				if (!holdsClaim(k)) continue;
+				std::erase_if(c.claims, [&](const ClaimSlot& slot) { return key(slot.claim) == k; });
+				host_.claimsDecided(host_.claims.release(c.generation, k));
 			}
 		}
 
@@ -3665,8 +3744,8 @@ struct NodeHost::Impl {
 			}
 			std::vector<std::uint8_t> held(c.held.size(), 0);
 			std::swap(held, c.held);
-			if (barrier == 0) {                                  // nothing driven: the machine is back where it began
-				for (auto& r : ch.replacements) settleClaims(r); // last
+			if (barrier == 0) {         // nothing driven: the machine is back where it began
+				settleClaims(ch, true); // last
 				return retireCode();
 			}
 			if (!host_.wedged) block_->carryLatency(c.plan);
@@ -3684,7 +3763,7 @@ struct NodeHost::Impl {
 			}
 			if (!host_.wedged && std::ranges::any_of(held, [](std::uint8_t one) { return one != 0; }))
 				block_->release(std::move(held));
-			for (auto& r : ch.replacements) settleClaims(r); // last: a released port may grant another node
+			settleClaims(ch, true); // last: a released port may grant another node
 		}
 
 		/// The swap's completion: the old code released, then the commit's completion heard.
@@ -3726,7 +3805,7 @@ struct NodeHost::Impl {
 				const MainLoopActivity::Scope activity("release", name_);
 				ch.code->release();
 			}
-			for (auto& r : ch.replacements) settleClaims(r); // a companion already replaced stays the bank's
+			settleClaims(ch, false); // a companion already replaced stays the bank's, with its claims
 			config_->change.reset();
 		}
 

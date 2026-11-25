@@ -7203,3 +7203,140 @@ TEST_CASE("A host with no pipe receivers' or programs' adapter refuses them at t
 	f.settle();
 	CHECK(f.allGone == 1);
 }
+
+// ---- Claims in a change in place (docs/writing-a-node-type.md#claims-in-a-change) ----
+
+namespace {
+
+/// A class that listens on `port` (cx.claim) and changes it in place: the new port claimed, the old one unclaimed. With
+/// `sinks`, one sink on tap1 whose close the test holds, so its teardown waits for the test.
+struct ListenConfig final : NodeConfig {
+	Log& log;
+	std::uint16_t port;
+	Ports ports_;
+	bool sink;
+	ListenConfig(Log& l, std::uint16_t p, bool s = false) : log(l), port(p), ports_(testPorts(s ? 1 : 0)), sink(s) {}
+	const Ports& ports() const override { return ports_; }
+	struct Instance final : ErasedInstance {
+		const ListenConfig* applied;
+		explicit Instance(const ListenConfig& c) : applied(&c) {}
+		Configured configure(CreateContext& cx) override {
+			cx.claim(claim::of(claim::TcpListen(applied->port)));
+			if (applied->sink) cx.sink("tap1", SinkShape{.frames = 1024}, std::make_unique<QuietConsumer>());
+			return Erased::applied(std::make_unique<TestAudioCode>(applied->log));
+		}
+		bool changes() const noexcept override { return true; }
+		Changed change(ChangeContext& cx, const NodeConfig& now) override {
+			const auto& next = static_cast<const ListenConfig&>(now);
+			cx.claim(claim::of(claim::TcpListen(next.port)));
+			cx.unclaim(claim::of(claim::TcpListen(applied->port)));
+			return Erased::changed();
+		}
+		void adopt(const NodeConfig& now) override { applied = &static_cast<const ListenConfig&>(now); }
+	};
+	std::unique_ptr<ErasedInstance> make(NodeContext&) const override { return std::make_unique<Instance>(*this); }
+};
+
+std::shared_ptr<ListenConfig> listening(Log& log, std::uint16_t port, bool sink = false) {
+	return std::make_shared<ListenConfig>(log, port, sink);
+}
+
+/// A change in place of `name` to `config`, told as the plan tells a change of `port` alone; the turn goes on.
+void changePort(Fixture& f, const NodeName& name, std::shared_ptr<const NodeConfig> config) {
+	f.host.nodeChanged(NodeSpec{name, "test", {}}, std::move(config), NodeChange{NodeOutcome::reconfigure, {"port"}});
+}
+
+/// Whether node `name`'s phases told a fallback restart.
+bool fellBack(const Fixture& f, const NodeName& name) {
+	return std::ranges::any_of(f.listener.told, [&](const NodeHealth& health) {
+		return health.name == name && health.cause && health.cause->restart == NodeCause::Kind::fellBack;
+	});
+}
+
+} // namespace
+
+TEST_CASE("A port claimed in a change is held beside the old one, which is released at the commit point, last, and a "
+          "change waiting for a closing holder keeps the old port, and another node takes it only once the change "
+          "committed",
+          "[node_host][claims][reconfigure]") {
+	Fixture f(HostShape{.probing = true});
+	addRunning(f, "c", listening(f.log, 8929, true)); // its teardown waits for the test
+	addRunning(f, "a", listening(f.log, 8928));
+	f.host.nodeRemoved("c");
+	f.settle();
+	changePort(f, "a", listening(f.log, 8929));
+	f.settle();
+	CHECK(healthOf(f, "a").phase == NodePhase::reconfiguring);
+	CHECK(countOf(f.log, "diagnostic a ear.claim-wait") == 1);
+	f.add("b", listening(f.log, 8928));
+	f.blocks.events.back()->ready();
+	f.settle();
+	CHECK(failureOf(f, "b") == "start-failed: cannot listen on port 8928: held by node a");
+	f.log.clear();
+	f.finishSink(0); // c's teardown ends: 8929 goes to a's change, probed, and the change commits
+	f.settle();
+	CHECK(indexOf(f.log, "probe tcp:8929") < indexOf(f.log, "node a running"));
+	CHECK(healthOf(f, "a").state == NodeState::running);
+	CHECK_FALSE(fellBack(f, "a"));
+	REQUIRE(f.host.restart("b"));
+	f.settle();
+	f.blocks.events.back()->ready();
+	f.settle();
+	CHECK(countOf(f.log, "probe tcp:8928") == 1); // granted now, a having let go of it
+	CHECK(healthOf(f, "b").state == NodeState::running);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A port claimed in a change that another running node holds falls the change back before anything else, "
+          "resource-refused, and the restart's own claim is refused",
+          "[node_host][claims][reconfigure]") {
+	Fixture f;
+	addRunning(f, "a", listening(f.log, 8928));
+	addRunning(f, "b", listening(f.log, 8929));
+	changePort(f, "a", listening(f.log, 8929));
+	f.settle();
+	CHECK(fellBack(f, "a"));
+	CHECK(countOf(f.log, "diagnostic a ear.reconfigure-fell-back elapsedMs=0") == 1);
+	CHECK(failureOf(f, "a") == "start-failed: cannot listen on port 8929: held by node b");
+	CHECK(healthOf(f, "b").state == NodeState::running);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("Two nodes whose changes in one edit swap their ports are each refused by the other's running "
+          "configuration, fall back, and both run on their new ports after a restart each",
+          "[node_host][claims][reconfigure]") {
+	Fixture f;
+	addRunning(f, "a", listening(f.log, 8928));
+	addRunning(f, "b", listening(f.log, 8929));
+	changePort(f, "a", listening(f.log, 8929));
+	changePort(f, "b", listening(f.log, 8928));
+	f.settle();
+	CHECK(fellBack(f, "a"));
+	CHECK(fellBack(f, "b"));
+	for (std::size_t i = 2; i < f.blocks.events.size(); ++i) f.blocks.events[i]->ready();
+	f.settle();
+	CHECK(healthOf(f, "a").state == NodeState::running);
+	CHECK(healthOf(f, "b").state == NodeState::running);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A change's claim of a port its configuration holds is granted unprobed",
+          "[node_host][claims][reconfigure]") {
+	Fixture f(HostShape{.probing = true});
+	addRunning(f, "a", listening(f.log, 8928));
+	f.log.clear();
+	changePort(f, "a", listening(f.log, 8928));
+	f.settle();
+	CHECK(countOf(f.log, "probe tcp:8928") == 0);
+	CHECK(healthOf(f, "a").state == NodeState::running);
+	CHECK_FALSE(fellBack(f, "a"));
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
