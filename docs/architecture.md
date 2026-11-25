@@ -334,6 +334,13 @@ inside a named callback (`boundary::throwInCallback`), so the tests prove each o
    accepted or not: nothing is committed, told, recorded or written
    ([control-port.md](control-port.md#nodeset-and-dry-runs)).
 
+**A type action** (`node.invoke`, [control-port.md](control-port.md#actions)) rides the keeper's
+order as a lifecycle verb does: it needs no file, and its step hands it to `NodeHost` on the main
+loop (`MainLoopSide::invoke`, `NodeActions::invoke`) and ends there. The keeper never waits for a
+handler. The batch's reply is held on the main loop (the keeper's `Waiting`) until every action in it
+answered, at once for a trigger or a refusal, later for a call, at most 10 s
+([rates](#rates-and-bounds)), so it goes behind every event before it.
+
 A hand edit arrives as an inotify event, is read on the keeper's thread and offered the same way
 (cause `disk`). The graph may refuse it, but the working copy still follows the disk, and the
 graph keeps running what it ran.

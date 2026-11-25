@@ -28,10 +28,8 @@ constexpr SettingsTable<> noArgs{"refuse"};
 constexpr auto reset = action::trigger<"reset">("clear the latch");
 constexpr auto add = action::call<"add", addArgs, work>("add to the count");
 constexpr auto refuse = action::call<"refuse", noArgs, work>("refuse, always");
-constexpr TypeSpec spec{.settings = table,
-                        .banks = Banks<out>{},
-                        .loops = Loops<work>{},
-                        .actions = ActionTable<reset, add, refuse>{}};
+constexpr TypeSpec spec{
+	.settings = table, .banks = Banks<out>{}, .loops = Loops<work>{}, .actions = ActionTable<reset, add, refuse>{}};
 constexpr TypeSpec statusAfterNothing{.settings = table, .banks = Banks<out>{}};
 
 // Every spelling: .actions alone after each member before it, before .logCodes, and all together, deduce the rest.
@@ -114,9 +112,7 @@ struct Counter {
 };
 struct Actor {
 	static Members<spec> ports(const CheckedOf<spec>&) { return {out(members("mono"))}; }
-	Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>&) {
-		return cx.applied(Code{}, cx.state(work));
-	}
+	Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>&) { return cx.applied(Code{}, cx.state(work)); }
 	/// A change of gain in place, answered with a new code: swapped in at the commit point.
 	Changed configure(ChangeOf<spec>& cx, const CheckedOf<spec>&, const CheckedOf<spec>&) { return cx.applied(Code{}); }
 };

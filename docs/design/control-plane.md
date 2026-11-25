@@ -12,7 +12,9 @@ editor's status list, badges and activity: `docs/writing-a-node-type.md#status-a
 swap: `docs/writing-a-node-type.md#reporting-from-the-code`, `docs/architecture.md#the-realtime-channels`,
 `docs/engine.md#the-realtime-bell`), step 5.4's core built (`ActionTable`, triggers into the code, calls into a loop's
 state, `NodeActions::invoke` with its refusals and its 10 s deadline, the harness's `trigger` and `invoke`:
-`docs/writing-a-node-type.md#actions`); the rest not built. Slice 5 (the
+`docs/writing-a-node-type.md#actions`; the feature `actions` with `node.invoke`, its six codes, the schema's `actions`,
+the batch reply held for its actions and the `action` record for type actions: `docs/control-port.md#actions`,
+`docs/output-records.md#action`); the rest not built. Slice 5 (the
 control plane: status, events, node diagnostics on the wire, actions, the realtime coded ring, sendspin's notes split)
 follows slice 3c (built: the node
 handle and loops, `docs/writing-a-node-type.md#the-node-handle`, `#loops`). Slice 6 (parameters: decimal, indexed and live rows, parameter slots and their ramps, retunes,
@@ -299,12 +301,11 @@ as any refusal does.
 | `gesture.change` | `gestures` | `{"gesture", "seq", "value"}` | `{}` if sent with an id | `unknown-gesture`, `invalid-settings`, `not-in-batch` | control thread, then the main loop directly |
 | `gesture.end` | `gestures` | `{"gesture", "value"?}` | `{"value"}`: what was committed | `unknown-gesture`, `invalid-settings` (the gesture stays open), `stopping`, the desired graph's (the gesture is aborted) | keeper |
 | `gesture.cancel` | `gestures` | `{"gesture"}` | `{}` if sent with an id | `unknown-gesture`, `not-in-batch` | control thread, then the main loop directly |
-| `node.invoke` | `actions` | `{"name", "action", "args"?}` | `{}` | `unknown-node`, `unknown-action`, `invalid-args`, `not-running`, `restarted`, `stopping`, `action-failed`, `action-timeout` | keeper, then the node's loop |
 
 `node.set` and `node.update` (3d) gain `parameter-held` and the outcome `retune` from feature `live`.
 
 **`types.get`** is built ([control-port.md](../control-port.md#type-schemas)), with each type's `status` and `events`
-(5.2). Later steps add to each type `actions` (5.4), and to rows the kind `decimal` with `decimals`, `taper` (`linear`, `log`, `db`, 8.3)
+(5.2) and `actions` (5.4, [control-port.md](../control-port.md#actions)). Slice 6 adds to rows the kind `decimal` with `decimals`, `taper` (`linear`, `log`, `db`, 8.3)
 and `minIsSilence`, `live` (`{"smoothingMs"}`, with `change` `live`) and `indexed` (`{"by": <the count row's key>,
 "from": 1}`) (slice 6), as this example of slice 6's `gain` shows:
 
@@ -330,8 +331,6 @@ and `minIsSilence`, `live` (`{"smoothingMs"}`, with `change` `live`) and `indexe
    "inputs":[],"outputs":["stream"],"reconfigureMs":10000,"status":[],"events":[],"actions":[]}]}}
 ```
 
-- An action: `name`, `by` (`type`; open), `target` (`code` for a trigger, `loop` for a call), `help`, `args` (setting
-  rows).
 
 **`gesture.begin`** opens a gesture on one live row of one node. Its reach is every node and key whose value is defined
 at the same place in `ear.conf` (G1): `amp2`'s `trimDb.1` and `trimDb.2` share `@set $trim 0;`, so a gesture on either
@@ -360,14 +359,7 @@ refusal aborts it (`refused`). An end whose value equals the committed one write
 
 **`gesture.cancel`** aborts the caller's own gesture: every reached slot returns to the committed value.
 
-**`node.invoke`** runs one of the type's actions. A trigger is answered once handed to the code; a call with its
-handler's outcome.
-
-```json
-{"jsonrpc":"2.0","id":13,"method":"node.invoke","params":{"name":"amp","action":"reset-clip"}}
-{"jsonrpc":"2.0","id":13,"result":{}}
-{"jsonrpc":"2.0","id":14,"method":"node.invoke","params":{"name":"kitchen","action":"forget-pairing","args":{"server":"ma-7f3c"}}}
-```
+`node.invoke` is built ([control-port.md](../control-port.md#actions)).
 
 ### 4.3 The graph, and notifications
 
@@ -421,12 +413,6 @@ All -32000 with `data.code`; every new code is a case in `test/protocol/errors.j
 | `file-refused` | `gesture.begin`: the graph refused the working copy's last hand edit, so the running version is not the file's | |
 | `unknown-gesture` | no open gesture of this session by that id | |
 | `not-in-batch` | `gesture.change` or `gesture.cancel` inside a batch | |
-| `unknown-action` | `node.invoke`: no such action | `action` |
-| `invalid-args` | `node.invoke`: the arguments fail the action's table | `key`, `detail` |
-| `not-running` | `node.invoke`: the node cannot take it now (no configuration, one tearing down, or one not yet configured); a `stopped` node takes actions | `phase` |
-| `restarted` | `node.invoke`: the node's configuration was torn down before the action ran | |
-| `action-failed` | the handler refused; message: its text | `detail` |
-| `action-timeout` | the handler did not answer in 10 s | |
 
 
 ### 4.6 Node diagnostics on the wire
@@ -442,7 +428,6 @@ Slice 8 adds `ear.health-flapping`, `ear.recovery-attempt` and `ear.readiness-mi
 | File | Covers |
 |---|---|
 | `test/protocol/gestures.json` | begin (no echo to the owner, `begin` to another first, then the reply), changes (one stale, one keep-alive), end with its order; a reach of two keys and of 64; a reach refused `shared-definition`; `parameter-held`; a begin on a failed node; cancel; `tick-refused` to the owner only; an end refused `invalid-settings` leaving the gesture open; aborts by a related hand edit and a related `graphFile.set`; an unrelated hand edit and `graphFile.set` leaving it open; ends for a closed and a silent session; `unknown-gesture` after an abort; `not-in-batch` |
-| `test/protocol/actions.json` | a trigger; a call; `not-running` with its `phase`; every refusal an action can get |
 | `unknown-values.json`, `errors.json`, `snapshot.json`, `edits.json`, `output-records.json` | extended with this page's members, codes and records |
 
 ## 5. The C++ SPI
@@ -902,19 +887,7 @@ live value; a gesture on it is allowed as on a failed node.
 
 ### 7.5 Actions
 
-- `node.invoke` reaches the keeper's thread in order with every other request, needs no file, and posts a step to the
-  main loop at once, as the built lifecycle verbs do. There `NodeHost::invoke(node, action, args, reply)` checks the
-  action and its arguments against the type's table.
-- A trigger: the counter is incremented and the reply posted at once; `not-running` (with the `phase`) when the code is
-  not driving (any phase but `running` and `reconfiguring`).
-- A call: posted with `postFromOutside` to the loop it names; the reply when the handler returns. A queued call gets
-  `restarted` (or `stopping`) when the configuration is torn down; a running one finishes and replies before the goodbye
-  `stop()` posted behind it. A stopped node's loops take calls.
-- **The keeper never waits for a handler.** Its step completes when the action is dispatched; the batch's reply is held
-  on the main loop until every action in it answered (or its 10 s deadline passed), then posted behind every event
-  before it. A slow handler holds that client's later requests with an id (the FIFO), never its ticks and never the
-  keeper's queue.
-- An `action` record on standard output (built for the lifecycle verbs) says who asked for what.
+Built ([control-port.md](../control-port.md#actions), [architecture.md](../architecture.md#how-a-change-moves)).
 
 ## 8. The editor
 
@@ -1030,7 +1003,6 @@ New kinds, each with `v`, `seq`, `t`, `kind`, its fields, `msg`, as built. Every
 ```json
 {"v":1,"seq":124,"t":"2026-11-08T10:03:00.500001Z","kind":"param","node":"amp","key":"gainDb","from":-6,"to":-3.5,"cause":"gesture","gesture":"g4","msg":"node amp gainDb -6 -> -3.5"}
 {"v":1,"seq":125,"t":"2026-11-08T10:03:40.000300Z","kind":"param","node":"amp","key":"gainDb","from":-4.25,"to":-6,"cause":"aborted","gesture":"g4","reason":"cancelled","msg":"node amp gainDb gesture g4 aborted (cancelled): back to -6"}
-{"v":1,"seq":128,"t":"2026-11-08T10:05:20.770000Z","kind":"action","node":"kitchen","action":"forget-pairing","result":"action-failed","detail":"no pairing with ma-0000","msg":"node kitchen forget-pairing refused: no pairing with ma-0000"}
 ```
 
 - `status`, `event`, and the diagnostic's `subject`, `active` and `count` are built
@@ -1040,8 +1012,7 @@ New kinds, each with `v`, `seq`, `t`, `kind`, its fields, `msg`, as built. Every
   `node.update`, `disk` for a hand edit or `graphFile.set`) and at each abort (`cause: aborted`, `reason`; `to` the value
   it returned to, absent for `hand-edit` and `file-saved`). An end ear made for its owner is `cause: gesture` with
   `reason`.
-- `action` (built for the lifecycle verbs) gains one per `node.invoke` answered, with `result` (`ok` or the refusal's
-  code) and `detail` for a refusal.
+- `action` for type actions is built ([output-records.md](../output-records.md#action)).
 - `note`: written only by `sendspin` until step 5.5; then the kind is removed from the encoder. Operators grep `says
   pairing-code` (the `ear-on-talos` skill), so step 5.5's commit carries a `BREAKING CHANGE:` footer naming the
   replacement, and the release notes say it.
@@ -1089,11 +1060,11 @@ system test of ten chatty nodes and a slowly reading client.
 **5.3 The realtime ring** is built ([architecture.md](../architecture.md#the-realtime-channels),
 [writing-a-node-type.md](../writing-a-node-type.md#reporting-from-the-code), [engine.md](../engine.md#the-realtime-bell)).
 
-**5.4 Actions.** `ActionTable`, triggers, calls on a loop of the spec, `node.invoke` through the keeper, `not-running`,
-deferred batch replies with their deadline, the `action` record for type actions, the editor's buttons; sendspin's
-`forget-pairing` as the first call. Tests: `actions.json`; an invoke ordered between two edits in one batch; the keeper
-taking the next batch while a handler is slow; a trigger seen once; a call refused before the node is configured; a
-call taken while stopped; a queued call answered `restarted`.
+**5.4 Actions.** Built but for the editor's buttons and sendspin's first call
+([writing-a-node-type.md](../writing-a-node-type.md#actions), [control-port.md](../control-port.md#actions)). Left:
+the editor's buttons (8.4); sendspin's `forget-pairing` as the first call, which the pinned sendspin-cpp cannot serve
+(it has no way to forget one server's pairing): the owner chooses a carried patch, `open-pairing-window` (which opens
+pairing without the device gesture to any control-port client), or no sendspin action yet.
 
 **5.5 Sendspin's notes split** (section 10). Tests: the sendspin system tests rewritten to read records; each field and
 event; a rename through the in-place `configure` keeping `clientId`. The commit carries the `BREAKING CHANGE:` footer.

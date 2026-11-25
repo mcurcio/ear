@@ -9,6 +9,7 @@
 #include <variant>
 #include <vector>
 #include "ear/core/graph_spec.hpp"
+#include "ear/core/node_lifecycle.hpp"
 #include "ear/core/node_type.hpp"
 namespace ear::control {
 
@@ -52,15 +53,59 @@ struct PortsInUse {
 	std::vector<Route> routes;
 	friend bool operator==(const PortsInUse&, const PortsInUse&) = default;
 };
-/// The control plane's own refusals (docs/control-port.md#error-codes ControlRefusal; slice 5 adds its other codes
-/// here).
-using ControlRefusal = std::variant<NodeDisabled, NotRestartable, PortsInUse>;
-/// "node-disabled" | "not-restartable" | "ports-in-use": the one home of these strings.
+/// node.invoke of an action the node's type does not have (docs/control-port.md#actions).
+struct UnknownAction {
+	NodeName node;
+	std::string action;
+	friend bool operator==(const UnknownAction&, const UnknownAction&) = default;
+};
+/// node.invoke whose arguments the action's table refuses: the walk's whole text and the key it names (none for an
+/// argument list that is not an object).
+struct InvalidArgs {
+	NodeName node;
+	std::string action;
+	std::string text;
+	std::string key{};
+	friend bool operator==(const InvalidArgs&, const InvalidArgs&) = default;
+};
+/// node.invoke on a node that cannot take the action now: its phase.
+struct NotRunning {
+	NodeName node;
+	NodePhase phase;
+	friend bool operator==(const NotRunning&, const NotRunning&) = default;
+};
+/// node.invoke of a call whose configuration was torn down before it ran.
+struct Restarted {
+	NodeName node;
+	friend bool operator==(const Restarted&, const Restarted&) = default;
+};
+/// node.invoke whose handler refused: its text.
+struct ActionFailed {
+	NodeName node;
+	std::string action;
+	std::string detail;
+	friend bool operator==(const ActionFailed&, const ActionFailed&) = default;
+};
+/// node.invoke whose handler did not answer within 10 s (actionDeadline).
+struct ActionTimeout {
+	NodeName node;
+	std::string action;
+	friend bool operator==(const ActionTimeout&, const ActionTimeout&) = default;
+};
+/// The control plane's own refusals (docs/control-port.md#error-codes ControlRefusal): the lifecycle's, a change of
+/// ports', and the actions' (docs/control-port.md#actions).
+using ControlRefusal = std::variant<NodeDisabled, NotRestartable, PortsInUse, UnknownAction, InvalidArgs, NotRunning,
+                                    Restarted, ActionFailed, ActionTimeout>;
+/// "node-disabled" | "not-restartable" | "ports-in-use" | "unknown-action" | "invalid-args" | "not-running" |
+/// "restarted" | "action-failed" | "action-timeout": the one home of these strings.
 std::string_view controlRefusalCode(const ControlRefusal& refusal) noexcept;
+/// invalid-args' words: its text without the key it names ("must be a whole number, 1-10"), as invalid-settings'.
+std::string_view argsWords(const InvalidArgs& refusal) noexcept;
 /// "block-lost" | "not-started".
 std::string_view reasonName(NotRestartable::Reason reason) noexcept;
 /// The code plus what it names: "node-disabled porch", "not-restartable desk: block-lost",
-/// "ports-in-use desk: play.2 (1 route)".
+/// "ports-in-use desk: play.2 (1 route)", "unknown-action amp: forget", "invalid-args amp add: amount: missing",
+/// "not-running amp: stopped", "restarted amp", "action-timeout amp add"; action-failed's is its text alone.
 std::string describe(const ControlRefusal& refusal);
 
 /// The three lifecycle requests that are not edits (docs/control-port.md#methods).
@@ -71,10 +116,11 @@ std::string_view verbName(LifecycleVerb verb) noexcept;
 /// One `action` record (docs/output-records.md#action): an operator's request that edits nothing, answered.
 struct ActionRecord {
 	NodeName node;
-	std::string action; // verbName: a lifecycle verb (a type's own action names are not built yet)
+	std::string action; // verbName (a lifecycle verb), or a type action's name (node.invoke)
 	std::string result; // "ok", or the refusal's code ("node-disabled", "not-restartable", "unknown-node",
-						// "stopping")
-	std::optional<std::string> detail; // not-restartable's reason; slice 5: an action's refusal text
+						// "stopping", or an action's: docs/output-records.md#action)
+	std::optional<std::string> detail; // not-restartable's reason; invalid-args' words, action-failed's text,
+									   // not-running's phase
 	friend bool operator==(const ActionRecord&, const ActionRecord&) = default;
 };
 /// Who writes each answered lifecycle request on standard output (StatusLog). Told on the main loop by the graph file

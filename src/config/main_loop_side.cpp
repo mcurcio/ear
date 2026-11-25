@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace ear::config {
@@ -118,6 +120,50 @@ control::ActionRecord recordOf(control::LifecycleVerb verb, const NodeName& node
 	return record;
 }
 
+control::CommandResult resultOf(const NodeName& node, std::string_view action, const ActionReply& reply) {
+	using Outcome = std::expected<void, CommandError>;
+	if (reply) return Outcome{};
+	const ActionRefusal& refusal = reply.error();
+	const std::string named(action);
+	using Code = ActionRefusal::Code;
+	switch (refusal.code) {
+	case Code::unknownNode:
+		return Outcome{std::unexpected(CommandError{UnknownNode{node}})};
+	case Code::unknownAction:
+		return control::ControlRefusal{control::UnknownAction{node, named}};
+	case Code::invalidArgs:
+		return control::ControlRefusal{control::InvalidArgs{node, named, refusal.detail, refusal.key}};
+	case Code::notRunning:
+		return control::ControlRefusal{control::NotRunning{node, refusal.phase.value_or(NodePhase::added)}};
+	case Code::restarted:
+		return control::ControlRefusal{control::Restarted{node}};
+	case Code::failed:
+		return control::ControlRefusal{control::ActionFailed{node, named, refusal.detail}};
+	case Code::timeout:
+		return control::ControlRefusal{control::ActionTimeout{node, named}};
+	case Code::stopping:
+		break;
+	}
+	return Outcome{std::unexpected(CommandError{Stopping{}})};
+}
+
+control::ActionRecord recordOf(const NodeName& node, std::string_view action, const ActionReply& reply) {
+	control::ActionRecord record{node, std::string(action), "ok", std::nullopt};
+	if (reply) return record;
+	const control::CommandResult result = resultOf(node, action, reply);
+	if (const auto* refusal = std::get_if<control::ControlRefusal>(&result)) {
+		record.result = std::string(control::controlRefusalCode(*refusal));
+		if (const auto* invalid = std::get_if<control::InvalidArgs>(refusal))
+			record.detail = std::string(control::argsWords(*invalid));
+		if (const auto* failed = std::get_if<control::ActionFailed>(refusal)) record.detail = failed->detail;
+		if (const auto* notRunning = std::get_if<control::NotRunning>(refusal))
+			record.detail = std::string(phaseName(notRunning->phase));
+	} else {
+		record.result = std::string(errorCode(std::get<std::expected<void, CommandError>>(result).error()));
+	}
+	return record;
+}
+
 MainLoopSide::MainLoopSide(DesiredGraph& graph, const GraphReader& reader, NodeOperations& operations)
 	: graph_(graph), reader_(reader), operations_(operations) {}
 
@@ -154,6 +200,23 @@ control::CommandResult MainLoopSide::operate(control::LifecycleVerb verb, const 
 	}
 	if (!told) tellAction(recordOf(verb, node, reply)); // an implementation that never called back
 	return resultOf(node, reply);
+}
+
+void MainLoopSide::answerActions(NodeActions& actions) { actions_ = &actions; }
+
+void MainLoopSide::invoke(const NodeName& node, const std::string& action, const NodeSettings& args, bool stopping,
+                          ActionResult result) {
+	if (stopping) {
+		const ActionReply refused = std::unexpected(ActionRefusal{ActionRefusal::Code::stopping});
+		tellAction(recordOf(node, action, refused));
+		return result(resultOf(node, action, refused));
+	}
+	if (actions_ == nullptr) throw std::logic_error("node.invoke with no NodeActions given: a wiring bug");
+	actions_->invoke(node, action, args,
+	                 [this, node, action, result = std::move(result)](const ActionReply& reply) mutable {
+						 tellAction(recordOf(node, action, reply));
+						 result(resultOf(node, action, reply));
+					 });
 }
 
 Judged MainLoopSide::offer(Offer offer) {

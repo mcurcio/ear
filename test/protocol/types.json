@@ -4,7 +4,7 @@
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"types.get\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"types.get\",\"params\":{\"ifNoneMatch\":\"fnv1a64:0123456789abcdef\"}}",
-    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"types.get\",\"params\":{\"ifNoneMatch\":\"fnv1a64:3da554c2d1911841\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"types.get\",\"params\":{\"ifNoneMatch\":\"fnv1a64:04362f4cdc2ee9af\"}}",
     "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"types.get\",\"params\":{\"since\":\"yesterday\"}}"
   ],
   "messages": [
@@ -28,7 +28,8 @@
           "node.set",
           "dryRun",
           "types",
-          "status"
+          "status",
+          "actions"
         ],
         "graphFrequency": 48000,
         "nodes": [],
@@ -36,7 +37,7 @@
         "realtime": false,
         "routes": [],
         "scheduling": "SCHED_OTHER",
-        "typeSchemaHash": "fnv1a64:3da554c2d1911841",
+        "typeSchemaHash": "fnv1a64:04362f4cdc2ee9af",
         "types": [
           "airplay",
           "card",
@@ -51,7 +52,7 @@
       "jsonrpc": "2.0",
       "id": 2,
       "result": {
-        "hash": "fnv1a64:3da554c2d1911841",
+        "hash": "fnv1a64:04362f4cdc2ee9af",
         "protocol": 1,
         "typeSchemas": [
           {
@@ -80,7 +81,8 @@
                 "required": false
               }
             ],
-            "status": []
+            "status": [],
+            "actions": []
           },
           {
             "events": [],
@@ -125,7 +127,8 @@
                 "unit": "channels"
               }
             ],
-            "status": []
+            "status": [],
+            "actions": []
           },
           {
             "events": [],
@@ -144,7 +147,8 @@
                 "required": true
               }
             ],
-            "status": []
+            "status": [],
+            "actions": []
           },
           {
             "events": [],
@@ -213,7 +217,8 @@
                 "unit": "milliseconds"
               }
             ],
-            "status": []
+            "status": [],
+            "actions": []
           },
           {
             "events": [],
@@ -255,7 +260,8 @@
                 "required": false
               }
             ],
-            "status": []
+            "status": [],
+            "actions": []
           },
           {
             "events": [],
@@ -266,7 +272,8 @@
             ],
             "reconfigureMs": 10000,
             "settings": [],
-            "status": []
+            "status": [],
+            "actions": []
           }
         ]
       }
@@ -275,7 +282,7 @@
       "jsonrpc": "2.0",
       "id": 3,
       "result": {
-        "hash": "fnv1a64:3da554c2d1911841",
+        "hash": "fnv1a64:04362f4cdc2ee9af",
         "protocol": 1,
         "typeSchemas": [
           {
@@ -304,7 +311,8 @@
                 "required": false
               }
             ],
-            "status": []
+            "status": [],
+            "actions": []
           },
           {
             "events": [],
@@ -349,7 +357,8 @@
                 "unit": "channels"
               }
             ],
-            "status": []
+            "status": [],
+            "actions": []
           },
           {
             "events": [],
@@ -368,7 +377,8 @@
                 "required": true
               }
             ],
-            "status": []
+            "status": [],
+            "actions": []
           },
           {
             "events": [],
@@ -437,7 +447,8 @@
                 "unit": "milliseconds"
               }
             ],
-            "status": []
+            "status": [],
+            "actions": []
           },
           {
             "events": [],
@@ -479,7 +490,8 @@
                 "required": false
               }
             ],
-            "status": []
+            "status": [],
+            "actions": []
           },
           {
             "events": [],
@@ -490,7 +502,8 @@
             ],
             "reconfigureMs": 10000,
             "settings": [],
-            "status": []
+            "status": [],
+            "actions": []
           }
         ]
       }
@@ -500,7 +513,7 @@
       "id": 4,
       "result": {
         "protocol": 1,
-        "hash": "fnv1a64:3da554c2d1911841",
+        "hash": "fnv1a64:04362f4cdc2ee9af",
         "notModified": true
       }
     },
@@ -533,7 +546,8 @@
       "node.set",
       "dryRun",
       "types",
-      "status"
+      "status",
+      "actions"
     ],
     "graphFrequency": 48000,
     "nodes": [],
@@ -541,7 +555,7 @@
     "realtime": false,
     "routes": [],
     "scheduling": "SCHED_OTHER",
-    "typeSchemaHash": "fnv1a64:3da554c2d1911841",
+    "typeSchemaHash": "fnv1a64:04362f4cdc2ee9af",
     "types": [
       "airplay",
       "card",

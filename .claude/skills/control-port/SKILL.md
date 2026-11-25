@@ -1,6 +1,6 @@
 ---
 name: control-port
-description: How to talk to EAR's control port (7777, HTTP for the graph editor plus JSON-RPC 2.0 over WebSocket at /rpc), its flags, the Host and Origin rules, protocol 1 and its features (lifecycle, counters, companions and node.companionsChanged, status with node.statusChanged, node.eventRaised and node.diagnostic), the lifecycle requests (node.start, node.stop, node.restart, node.disable, node.enable), node health and node.gone, the graphFile.* calls that read and replace ear.conf, rpc-call.mjs --until and --follow, write-behind and hand edits, how it runs on its own thread and reaches the graph through the graph file keeper and the gateway, per-client queues, levels, stopping, and the traps found while building it. Use when calling ear from a script, test or browser, when a request gets 403, file-changed, file-invalid or shared-definition, a socket closes with 1008 or a reset, levels never arrive, an edit is lost or not written, stop hangs, or when changing src/server/, src/control/ (rpc, commands, events, gateway, session), src/config/ or web/src/rpc.ts.
+description: How to talk to EAR's control port (7777, HTTP for the graph editor plus JSON-RPC 2.0 over WebSocket at /rpc), its flags, the Host and Origin rules, protocol 1 and its features (lifecycle, counters, companions and node.companionsChanged, status with node.statusChanged, node.eventRaised and node.diagnostic, actions with node.invoke), the lifecycle requests (node.start, node.stop, node.restart, node.disable, node.enable), node health and node.gone, the graphFile.* calls that read and replace ear.conf, rpc-call.mjs --until and --follow, write-behind and hand edits, how it runs on its own thread and reaches the graph through the graph file keeper and the gateway, per-client queues, levels, stopping, and the traps found while building it. Use when calling ear from a script, test or browser, when a request gets 403, file-changed, file-invalid or shared-definition, a socket closes with 1008 or a reset, levels never arrive, an edit is lost or not written, stop hangs, or when changing src/server/, src/control/ (rpc, commands, events, gateway, session), src/config/ or web/src/rpc.ts.
 ---
 
 # EAR's control port
@@ -52,7 +52,7 @@ use`).
 
 ## The frame and the lifecycle (protocol 1)
 
-- **The frame.** `graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun", "types"]`; an absent
+- **The frame.** `graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun", "types", "status", "actions"]`; an absent
   `protocol` is 0. Gate every method and request member on its feature, never on a -32601
   probe. Every enum is open: draw a value you do not know neutrally, never fail on it.
 - **Health.** Each node of a snapshot, `node.added` and every `node.state` carries `state` (the
@@ -71,6 +71,12 @@ use`).
   records it causes (`node porch stop invoked`). Refusals: `node-disabled` (enable it first),
   `not-restartable` (`data.reason` `block-lost`, or `not-started` for a restart of a node still
   `added`), `unknown-node`, `stopping`.
+- **`node.invoke {"name", "action", "args"?}`** (feature `actions`, `docs/control-port.md#actions`) runs one of the
+  node's type actions: a trigger into its code (`{}` at once; `not-running` with `data.phase` unless it runs) or a call
+  into a loop's state (`{}` when its handler did it, `action-failed` with its text, `restarted`, `action-timeout` after
+  10 s). It rides the keeper's order like a verb, but the keeper never waits for a handler: the reply (a batch's too)
+  is held on the main loop until the action answered, so a slow handler holds only that client's later requests. Each
+  answer writes an `action` record. No built-in type has an action yet; `types.get` lists each type's `actions`.
 - **`node.disable`, `node.enable`** are edits of the node's own `disabled` line (`node white
   noise { disabled true; }`), written behind like any edit: `node.updated` with `applied`
   (`disable`, `enable`; `stored` for a change to a disabled node) and `disabled: true` when

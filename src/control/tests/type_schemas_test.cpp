@@ -7,6 +7,7 @@
 #include <array>
 #include <chrono>
 #include <optional>
+#include <expected>
 #include <string>
 #include <string_view>
 
@@ -56,7 +57,7 @@ struct Every {
 
 namespace reporting {
 using namespace ear;
-struct State {};
+struct State;
 inline constexpr auto worker = loop::strand<"worker", State>;
 inline constexpr std::string_view states[] = {"dialling", "connected"};
 inline constexpr auto connection =
@@ -71,11 +72,20 @@ inline constexpr auto failed =
 inline constexpr auto said =
 	event::of<"said">(EventSeverity::info, "said {what} at {level}", arg::text<"what">(32), arg::decimal<"level">());
 inline constexpr auto out = bank::output<"out">;
+inline constexpr auto serverRow = setting::required("server", setting::number(1, 99)).help("its number");
+inline constexpr auto shoutRow = setting::optional("shout", setting::boolean());
+inline constexpr SettingsTable<serverRow, shoutRow> forgetArgs{"forget"};
+inline constexpr auto resetPeak = action::trigger<"reset-peak">("clear the peak");
+inline constexpr auto forget = action::call<"forget", forgetArgs, worker>("forget a server");
 inline constexpr TypeSpec spec{.settings = SettingsTable<>{"reporting"},
                                .banks = Banks<out>{},
                                .loops = Loops<worker>{},
                                .status = StatusTable<connection, paired, rate, peak, code>{},
-                               .events = EventTable<failed, said>{}};
+                               .events = EventTable<failed, said>{},
+                               .actions = ActionTable<resetPeak, forget>{}};
+struct State {
+	std::expected<void, std::string> act(Invoked<forget>, const CheckedOf<forgetArgs>&) { return {}; }
+};
 struct Silence {
 	void process(Io<spec> io, const GraphCycle&) noexcept {
 		for (const auto member : io[out]) std::ranges::fill(member, 0.0F);
@@ -105,7 +115,18 @@ TEST_CASE("Each row kind and mark is on the wire as the control port takes the k
 	    {"key": "loud", "kind": "flag", "required": false, "change": "restart", "help": "absent: quiet"},
 	    {"key": "port", "kind": "wholeNumber", "required": false, "change": "restart", "min": 1, "max": 9,
 	     "onlyWithout": "shape"}],
-	  "status": [], "events": []})"));
+	  "status": [], "events": [], "actions": []})"));
+}
+
+TEST_CASE("A type's actions are on the wire in declaration order, a call's arguments as setting rows",
+          "[types][protocol][actions]") {
+	const auto type = ear::makeNodeType<reporting::spec, reporting::Reporting>();
+	const json schema = ear::control::encodeTypeSchema(type->schema());
+	CHECK(schema["actions"] == json::parse(R"([
+	  {"name": "reset-peak", "by": "type", "target": "code", "help": "clear the peak", "args": []},
+	  {"name": "forget", "by": "type", "target": "loop", "help": "forget a server", "args": [
+	    {"key": "server", "kind": "wholeNumber", "required": true, "min": 1, "max": 99, "help": "its number"},
+	    {"key": "shout", "kind": "flag", "required": false}]}])"));
 }
 
 TEST_CASE("A type's status fields and events are on the wire in declaration order, each with what applies",

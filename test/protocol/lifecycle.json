@@ -48,7 +48,8 @@
           "node.set",
           "dryRun",
           "types",
-          "status"
+          "status",
+          "actions"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -1597,7 +1598,8 @@
       "node.set",
       "dryRun",
       "types",
-      "status"
+      "status",
+      "actions"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,

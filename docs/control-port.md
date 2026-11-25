@@ -81,7 +81,7 @@ snapshots include every edit the batch made.
 
 ## Protocol and features
 
-`graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun", "types", "status"]`. An absent `protocol` is 0 (the
+`graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun", "types", "status", "actions"]`. An absent `protocol` is 0 (the
 wire before the lifecycle). The number moves only on a breaking change: removing or renaming a
 method, notification, member or code, changing a member's type, or changing an order guarantee.
 Additive growth is a new **feature** name.
@@ -101,7 +101,9 @@ Additive growth is a new **feature** name.
   ([below](#type-schemas)), and `key` and `detail` on `invalid-settings` ([below](#error-codes)).
   `status` adds `status` and `diagnostics` on each node of a snapshot and `node.added`,
   `node.statusChanged`, `node.eventRaised` and `node.diagnostic` ([below](#status),
-  [below](#node-diagnostics)), and each type schema's `status` and `events`.
+  [below](#node-diagnostics)), and each type schema's `status` and `events`. `actions` adds
+  `node.invoke`, each type schema's `actions` and the codes `unknown-action`, `invalid-args`,
+  `not-running`, `restarted`, `action-failed` and `action-timeout` ([below](#actions)).
 - **Every enum is open.** `state`, `phase`, `cause.kind`, `waitingFor`'s `kind`, a route's `status`,
   `reason.code`, `applied`, `severity`, a companion's `kind`, a setting row's `kind`, `change` and `defaultFrom`, and
   every code may gain values, and the counters' names are an open set. Draw a value you do not know
@@ -194,6 +196,7 @@ three or four `node.state`s within milliseconds.
 | `node.restart` | `{"name"}` | `{"applied"}`: `restart`, `retry` (a failed node) or `unchanged` (a restart already under way) | `unknown-node`, `node-disabled`, `not-restartable` (`block-lost`; or `not-started` for a node still `added`), `stopping` |
 | `node.disable` | `{"name"}` | `{"applied"}`: `disable` or `unchanged` (already disabled; nothing written) | `unknown-node`, `shared-definition`, `file-invalid`, `stopping` |
 | `node.enable` | `{"name"}` | `{"applied"}`: `enable` or `unchanged` | `unknown-node`, `shared-definition`, `file-invalid`, `stopping` |
+| `node.invoke` | `{"name", "action", "args"?}` (feature `actions`): one of the node's type actions, `args` an object ([below](#actions)) | `{}`: a trigger once handed to the code, a call once its handler did it | `unknown-node`, `unknown-action`, `invalid-args`, `not-running`, `restarted`, `action-failed`, `action-timeout`, `stopping` |
 | `graphFile.get` | none | GraphFile | none |
 | `graphFile.subscribe` | none | GraphFile; then every `graphFile.changed` | none |
 | `graphFile.set` | `{"text", "version"}` | `{}` once the graph runs the text | `file-changed`, `invalid-text`, any code the graph refuses the text with, `stopping` |
@@ -412,6 +415,12 @@ Every refusal is -32000 with `data.code`. Its message is the code and what it na
 | `node-disabled` | `node.start`, `node.stop` or `node.restart` on a node `ear.conf` disables | |
 | `not-restartable` | `node.start` or `node.restart` on a node whose block is lost; `node.restart` on a node still `added` | `reason`: `block-lost` or `not-started` |
 | `ports-in-use` | `node.update` or `node.set` whose new ports drop a port a wanted route names, without `dropRoutes` (feature `reshape`); the message names the node, the ports and how many routes (`ports-in-use desk: play.2 (1 route)`) | `ports`: the dropped ports routes name; `routes`: every such route, `{from, to}` |
+| `unknown-action` | `node.invoke`: the node's type has no action of that name (feature `actions`) | `action` |
+| `invalid-args` | `node.invoke`: the arguments fail the action's table, as `invalid-settings` fails a node's (`invalid-args amp add: amount: missing`); a trigger takes none | `detail`: the refusal in its own words; `key`: the argument it names, absent for none |
+| `not-running` | `node.invoke`: the node cannot take it now; a trigger needs its code driving (`running` or `reconfiguring`), a call a configuration that is configured and not tearing down, so a `stopped` node takes calls | `phase`: the node's phase |
+| `restarted` | `node.invoke`: the node's configuration was torn down (a restart, a failure, a removal) before the call ran | |
+| `action-failed` | `node.invoke`: the handler refused; the message is its text | `detail`: the same text |
+| `action-timeout` | `node.invoke`: the handler did not answer within 10 s; its late answer is dropped | |
 
 Examples are in `test/protocol/errors.json`:
 
@@ -537,6 +546,40 @@ the node" for `restart` and "changes the ports" for `shapes`, and asks ear what 
 keys will do with a dry run ([below](#nodeset-and-dry-runs)). `types.json` holds every built-in
 type's schema and its hash, and the system tests hold the real ear to it, so a change to a type's
 rows changes that fixture in the same commit.
+
+## Actions
+
+With the feature `actions` (`test/protocol/actions.json`), `node.invoke` runs one of a node's type
+actions: a request that changes no setting and that nothing redoes after a restart
+([writing-a-node-type.md](writing-a-node-type.md#actions)). Each type schema carries `actions`, in
+declaration order, `[]` for a type with none; no built-in type has one yet.
+
+- **An action**: `name` (kebab-case, never a lifecycle verb's), `by` (`type`; open), `target`
+  (`code` for a trigger, `loop` for a call; open), `help`, and `args`: its arguments as setting
+  rows ([above](#type-schemas)), with no `change` or `shapes`; `[]` for a trigger, which takes
+  none.
+- **A trigger** is answered `{}` once handed to the node's code (its counter moved); the code sees
+  it in its next block, and several invokes before a block are one. It is `not-running` unless
+  the code drives.
+- **A call** is answered with its handler's outcome: `{}`, `action-failed` with its text,
+  `restarted` when the configuration was torn down before it ran, `stopping` when ear's stop tore
+  it down, or `action-timeout` after 10 s, its late answer dropped.
+- **It rides the keeper's order** with every other request, needs no file (it works while
+  `ear.conf` has errors), makes no version and sends no `graphFile.changed`. The keeper never waits
+  for a handler: its step ends when the action is handed on. The reply to the request (or to the
+  batch that holds it) is held on the main loop until every action in it answered, then sent
+  behind every event before it. A slow handler holds that client's later requests (one message in
+  flight per connection: [below](#per-client-limits-and-stopping)), never another client's or the
+  keeper's.
+- Each answered `node.invoke` writes an `action` record on standard output, its `result` `ok` or
+  the refusal's code ([output-records.md](output-records.md#action)).
+
+```json
+{"jsonrpc":"2.0","id":13,"method":"node.invoke","params":{"name":"amp","action":"reset-clip"}}
+{"jsonrpc":"2.0","id":13,"result":{}}
+{"jsonrpc":"2.0","id":14,"method":"node.invoke","params":{"name":"amp","action":"add","args":{"amount":12}}}
+{"jsonrpc":"2.0","id":14,"error":{"code":-32000,"message":"invalid-args amp add: amount: must be a whole number, 1-10","data":{"code":"invalid-args","key":"amount","detail":"must be a whole number, 1-10"}}}
+```
 
 ## Levels
 
@@ -739,6 +782,7 @@ breaking change moves `protocol`; anything else is a new feature name
 | `counters-changed.json` | The counters in a snapshot, `counters.changed`, one naming a node not held, and a change of ports keeping the node and its counters |
 | `companions.json` | The companion lists in a snapshot (every engine and ring kind but a source), a file node's list from `node.added` to running, a counter moving, a stop and a start (no list), a restart, an RTP receiver replaced make-before-break (the old one `retiring`), a failure past a readiness deadline, a removal (no list after `node.removed`) |
 | `status.json` | A snapshot's status (a choice at `null`), merges, an event after the fields before it, a stop and a start keeping the status, a restart's reset between `stopping` and `configuring` and the new configuration's first fields, events and changes naming a node not held |
+| `actions.json` | `node.invoke`: a trigger and a call answered `{}`, a trigger on a stopped node `not-running` with its phase, a batch whose reply holds its action's, then every refusal an action can get |
 | `diagnostics.json` | A snapshot's diagnostics, two fields flapping at once and one settling while the other stays, `count` as sent, an observation code, a code a client does not know, one naming a node not held |
 | `unknown-values.json` | Values, members and notifications a client does not know, taken or ignored |
 | `output-records.json` | Standard output's records ([output-records.md](output-records.md)) |

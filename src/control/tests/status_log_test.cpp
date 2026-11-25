@@ -301,6 +301,11 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 		[](StatusLog& log, Lines&) { log.actionAnswered({"desk", "restart", "ok", std::nullopt}); },
 		[](StatusLog& log, Lines&) { log.actionAnswered({"desk", "restart", "not-restartable", "block-lost"}); },
 		[](StatusLog& log, Lines&) { log.actionAnswered({"porch", "start", "node-disabled", std::nullopt}); },
+		// A type action's (node.invoke), written when it is answered (docs/output-records.md#action).
+		[](StatusLog& log, Lines&) { log.actionAnswered({"amp", "reset-clip", "ok", std::nullopt}); },
+		[](StatusLog& log, Lines&) {
+			log.actionAnswered({"kitchen", "forget-pairing", "action-failed", "no pairing with ma-0000"});
+		},
 		[](StatusLog& log, Lines&) {
 			log.internalError(
 				{.callback = "FilterPortBlock::onStateChanged", .node = "hall", .where = {}, .what = "bad state"});

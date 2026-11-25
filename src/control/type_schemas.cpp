@@ -131,6 +131,23 @@ json encodeEventDeclaration(const EventDeclaration& event) {
 	        {"args", std::move(args)}};
 }
 
+/// A type action as types.get says it (docs/control-port.md#actions): its arguments are setting rows, without what
+/// only a setting has (`change`, `shapes`).
+json encodeAction(const ActionDeclaration& action) {
+	json args = json::array();
+	for (const SettingRow* row : action.args) {
+		json out = encodeRow(*row);
+		out.erase("change");
+		out.erase("shapes");
+		args.push_back(std::move(out));
+	}
+	return {{"name", action.name},
+	        {"by", "type"},
+	        {"target", action.target == ActionDeclaration::Target::code ? "code" : "loop"},
+	        {"help", action.help},
+	        {"args", std::move(args)}};
+}
+
 json encodeTypeSchema(const TypeSchema& schema) {
 	json settings = json::array();
 	for (const SettingRow* row : schema.settings) settings.push_back(encodeRow(*row));
@@ -144,13 +161,16 @@ json encodeTypeSchema(const TypeSchema& schema) {
 	for (const StatusDeclaration* field : schema.status) status.push_back(encodeStatusField(*field));
 	json events = json::array();
 	for (const EventDeclaration& event : schema.events) events.push_back(encodeEventDeclaration(event));
+	json actions = json::array();
+	for (const ActionDeclaration& action : schema.actions) actions.push_back(encodeAction(action));
 	return {{"name", schema.name},
 	        {"settings", std::move(settings)},
 	        {"inputs", std::move(inputs)},
 	        {"outputs", std::move(outputs)},
 	        {"reconfigureMs", schema.reconfigureDeadline.count()},
 	        {"status", std::move(status)},
-	        {"events", std::move(events)}};
+	        {"events", std::move(events)},
+	        {"actions", std::move(actions)}};
 }
 
 TypeSchemas encodeTypeSchemas(std::span<const TypeSchema> schemas) {

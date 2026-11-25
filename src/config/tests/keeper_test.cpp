@@ -94,6 +94,7 @@ struct Fixture {
 		graph.subscribe(static_cast<DesiredRouteListener&>(graphLog));
 		side.subscribe(fileLog);
 		side.subscribeActions(actions);
+		side.answerActions(nodeActions);
 		GraphFileDisk& disk = fake != nullptr ? static_cast<GraphFileDisk&>(*fake) : realDisk;
 		DiskText base = disk.read();
 		auto first = GraphFileModel::load(base, catalogue);
@@ -169,6 +170,7 @@ struct Fixture {
 	Reader reader{graph, log};
 	FakeOperations operations{log};
 	ActionLog actions{log};
+	FakeActions nodeActions{log};
 	MainLoopSide side{graph, reader, operations};
 	std::optional<Keeper> keeper;
 };
@@ -939,4 +941,75 @@ TEST_CASE("A dry run answers as the real edit would, names the routes a reshape 
 	CHECK(answered(results[0]).routesDropped == stranded);
 	CHECK_FALSE(answered(results[0]).routes.has_value());
 	CHECK(f.graph.routes().size() == 2);
+}
+
+TEST_CASE("An invoke between two edits of one batch runs between them, and the batch's reply waits for its answer, "
+          "behind every event before it",
+          "[keeper][actions]") {
+	Fixture f("invoke_between");
+	f.start();
+	f.nodeActions.hold = true;
+	std::optional<std::vector<CommandResult>> got;
+	f.request({control::UpdateNode{"rec", take2}, control::InvokeNode{"rec", "reset", nullptr},
+	           control::UpdateNode{"rec", take3}},
+	          got);
+	f.pump();
+	CHECK(f.log.lines ==
+	      Lines{"file edit", "node.updated rec", "invoke rec reset null", "file edit", "node.updated rec"});
+	CHECK(f.log.turnOf("invoke rec reset null") < f.log.lines.size()); // asked in the second edit's step
+	CHECK_FALSE(got.has_value());
+	// The keeper's queue is not held: another batch is taken and answered meanwhile.
+	auto other = f.run({control::GetGraph{}});
+	CHECK(other.size() == 1);
+	CHECK_FALSE(got.has_value());
+	f.nodeActions.answer({});
+	f.pump();
+	REQUIRE(got.has_value());
+	REQUIRE(got->size() == 3);
+	CHECK(ok((*got)[0]));
+	CHECK(ok((*got)[1]));
+	CHECK(ok((*got)[2]));
+	CHECK(f.log.lines.back() == "reply");
+	CHECK(f.actions.records.back() == control::ActionRecord{"rec", "reset", "ok", std::nullopt});
+}
+
+TEST_CASE("A slow handler holds only its own batch: the keeper takes the next one, and each reply comes when its "
+          "batch is done",
+          "[keeper][actions]") {
+	Fixture f("invoke_slow");
+	f.start();
+	f.nodeActions.hold = true;
+	std::optional<std::vector<CommandResult>> slow;
+	std::optional<std::vector<CommandResult>> edit;
+	f.request({control::InvokeNode{"rec", "forget", json{{"server", 3}}}}, slow);
+	f.request({control::UpdateNode{"rec", take2}}, edit);
+	f.pump();
+	CHECK_FALSE(slow.has_value());
+	REQUIRE(edit.has_value());
+	CHECK(ok((*edit)[0]));
+	f.nodeActions.answer(
+		std::unexpected(ActionRefusal{.code = ActionRefusal::Code::failed, .detail = "no such server"}));
+	f.pump();
+	REQUIRE(slow.has_value());
+	CHECK(code((*slow)[0]) == "action-failed");
+	CHECK(f.actions.records.back() ==
+	      control::ActionRecord{"rec", "forget", "action-failed", std::string("no such server")});
+}
+
+TEST_CASE("An action answered at once is answered in its batch's last step, its record first, and once the keeper "
+          "stopped it answers stopping without asking",
+          "[keeper][actions]") {
+	Fixture f("invoke_now");
+	f.start();
+	f.nodeActions.reply =
+		std::unexpected(ActionRefusal{.code = ActionRefusal::Code::notRunning, .phase = NodePhase::stopped});
+	auto results = f.run({control::InvokeNode{"rec", "reset", nullptr}, control::GetGraph{}});
+	CHECK(f.log.lines == Lines{"invoke rec reset null", "action rec reset not-running stopped", "read graph", "reply"});
+	CHECK(code(results[0]) == "not-running");
+	f.keeper->stop();
+	f.pump();
+	f.log.clear();
+	results = f.run({control::InvokeNode{"rec", "reset", nullptr}});
+	CHECK(f.log.lines == Lines{"action rec reset stopping", "reply"});
+	CHECK(code(results[0]) == "stopping");
 }

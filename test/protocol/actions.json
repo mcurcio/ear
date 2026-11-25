@@ -1,0 +1,435 @@
+{
+  "description": "node.invoke (feature actions, docs/control-port.md#actions): a trigger answered {} once handed to the code; a call answered {} once its handler did it; a trigger on a stopped node refused not-running with its phase while a call on it is taken; a batch of a read and a call, answered as one array once the call answered; then every refusal an action can get (unknown-node, unknown-action, invalid-args, restarted, action-failed, action-timeout, stopping). None changes the graph.",
+  "requests": [
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
+    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"node.invoke\",\"params\":{\"name\":\"amp\",\"action\":\"reset-clip\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"node.invoke\",\"params\":{\"name\":\"amp\",\"action\":\"add\",\"args\":{\"amount\":3}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"node.invoke\",\"params\":{\"name\":\"amp\",\"action\":\"reset-clip\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"node.invoke\",\"params\":{\"name\":\"amp\",\"action\":\"add\",\"args\":{\"amount\":1}}}",
+    "[{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"graph.get\"},{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"node.invoke\",\"params\":{\"name\":\"amp\",\"action\":\"add\",\"args\":{\"amount\":5}}}]",
+    "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"node.invoke\",\"params\":{\"name\":\"ghost\",\"action\":\"reset-clip\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"node.invoke\",\"params\":{\"name\":\"amp\",\"action\":\"forget\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"node.invoke\",\"params\":{\"name\":\"amp\",\"action\":\"add\",\"args\":{\"amount\":12}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"node.invoke\",\"params\":{\"name\":\"amp\",\"action\":\"reset-clip\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"node.invoke\",\"params\":{\"name\":\"amp\",\"action\":\"add\",\"args\":{\"amount\":2}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"node.invoke\",\"params\":{\"name\":\"amp\",\"action\":\"add\",\"args\":{\"amount\":3}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":14,\"method\":\"node.invoke\",\"params\":{\"name\":\"amp\",\"action\":\"add\",\"args\":{\"amount\":4}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":15,\"method\":\"node.invoke\",\"params\":{\"name\":\"amp\",\"action\":\"reset-clip\"}}"
+  ],
+  "messages": [
+    {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "protocol": 1,
+        "features": [
+          "lifecycle",
+          "counters",
+          "companions",
+          "node-text",
+          "reshape",
+          "node.set",
+          "dryRun",
+          "types",
+          "status",
+          "actions"
+        ],
+        "graphFrequency": 48000,
+        "blockSize": 256,
+        "realtime": false,
+        "scheduling": "SCHED_OTHER",
+        "types": [
+          "card",
+          "file",
+          "white"
+        ],
+        "typeSchemaHash": "fnv1a64:0123456789abcdef",
+        "nodes": [
+          {
+            "name": "noise",
+            "type": "white",
+            "settings": {},
+            "inputs": [],
+            "outputs": [
+              "noise.mono"
+            ],
+            "state": "running",
+            "phase": "running",
+            "wanted": "running",
+            "blockLost": false,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": [],
+            "status": {},
+            "diagnostics": []
+          },
+          {
+            "name": "rec",
+            "type": "file",
+            "settings": {
+              "path": "x.wav"
+            },
+            "inputs": [
+              "record.left",
+              "record.right"
+            ],
+            "outputs": [],
+            "state": "running",
+            "phase": "running",
+            "wanted": "running",
+            "blockLost": false,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": [],
+            "status": {},
+            "diagnostics": []
+          }
+        ],
+        "routes": [
+          {
+            "from": {
+              "node": "noise",
+              "port": "noise.mono"
+            },
+            "to": {
+              "node": "rec",
+              "port": "record.left"
+            },
+            "status": "linked"
+          }
+        ],
+        "counters": {
+          "cycles": 0,
+          "cutCycles": 0,
+          "stalls": 0,
+          "lostMs": 0
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 4,
+      "error": {
+        "code": -32000,
+        "message": "not-running amp: stopped",
+        "data": {
+          "code": "not-running",
+          "phase": "stopped"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 5,
+      "result": {}
+    },
+    [
+      {
+        "jsonrpc": "2.0",
+        "id": 6,
+        "result": {
+          "protocol": 1,
+          "features": [
+            "lifecycle",
+            "counters",
+            "companions",
+            "node-text",
+            "reshape",
+            "node.set",
+            "dryRun",
+            "types",
+            "status",
+            "actions"
+          ],
+          "graphFrequency": 48000,
+          "blockSize": 256,
+          "realtime": false,
+          "scheduling": "SCHED_OTHER",
+          "types": [
+            "card",
+            "file",
+            "white"
+          ],
+          "typeSchemaHash": "fnv1a64:0123456789abcdef",
+          "nodes": [
+            {
+              "name": "noise",
+              "type": "white",
+              "settings": {},
+              "inputs": [],
+              "outputs": [
+                "noise.mono"
+              ],
+              "state": "running",
+              "phase": "running",
+              "wanted": "running",
+              "blockLost": false,
+              "counters": {
+                "missedCycles": 0,
+                "overruns": 0,
+                "repositions": 0,
+                "driverChanges": 0
+              },
+              "companions": [],
+              "status": {},
+              "diagnostics": []
+            },
+            {
+              "name": "rec",
+              "type": "file",
+              "settings": {
+                "path": "x.wav"
+              },
+              "inputs": [
+                "record.left",
+                "record.right"
+              ],
+              "outputs": [],
+              "state": "running",
+              "phase": "running",
+              "wanted": "running",
+              "blockLost": false,
+              "counters": {
+                "missedCycles": 0,
+                "overruns": 0,
+                "repositions": 0,
+                "driverChanges": 0
+              },
+              "companions": [],
+              "status": {},
+              "diagnostics": []
+            }
+          ],
+          "routes": [
+            {
+              "from": {
+                "node": "noise",
+                "port": "noise.mono"
+              },
+              "to": {
+                "node": "rec",
+                "port": "record.left"
+              },
+              "status": "linked"
+            }
+          ],
+          "counters": {
+            "cycles": 0,
+            "cutCycles": 0,
+            "stalls": 0,
+            "lostMs": 0
+          }
+        }
+      },
+      {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "result": {}
+      }
+    ],
+    {
+      "jsonrpc": "2.0",
+      "id": 8,
+      "error": {
+        "code": -32000,
+        "message": "unknown-node ghost",
+        "data": {
+          "code": "unknown-node"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 9,
+      "error": {
+        "code": -32000,
+        "message": "unknown-action amp: forget",
+        "data": {
+          "code": "unknown-action",
+          "action": "forget"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 10,
+      "error": {
+        "code": -32000,
+        "message": "invalid-args amp add: amount: must be a whole number, 1-10",
+        "data": {
+          "code": "invalid-args",
+          "key": "amount",
+          "detail": "must be a whole number, 1-10"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 11,
+      "error": {
+        "code": -32000,
+        "message": "not-running amp: stopped",
+        "data": {
+          "code": "not-running",
+          "phase": "stopped"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 12,
+      "error": {
+        "code": -32000,
+        "message": "restarted amp",
+        "data": {
+          "code": "restarted"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 13,
+      "error": {
+        "code": -32000,
+        "message": "the count is full",
+        "data": {
+          "code": "action-failed",
+          "detail": "the count is full"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 14,
+      "error": {
+        "code": -32000,
+        "message": "action-timeout amp add",
+        "data": {
+          "code": "action-timeout"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 15,
+      "error": {
+        "code": -32000,
+        "message": "stopping",
+        "data": {
+          "code": "stopping"
+        }
+      }
+    }
+  ],
+  "graph": {
+    "protocol": 1,
+    "features": [
+      "lifecycle",
+      "counters",
+      "companions",
+      "node-text",
+      "reshape",
+      "node.set",
+      "dryRun",
+      "types",
+      "status",
+      "actions"
+    ],
+    "graphFrequency": 48000,
+    "blockSize": 256,
+    "realtime": false,
+    "scheduling": "SCHED_OTHER",
+    "types": [
+      "card",
+      "file",
+      "white"
+    ],
+    "typeSchemaHash": "fnv1a64:0123456789abcdef",
+    "nodes": [
+      {
+        "name": "noise",
+        "type": "white",
+        "settings": {},
+        "inputs": [],
+        "outputs": [
+          "noise.mono"
+        ],
+        "state": "running",
+        "phase": "running",
+        "wanted": "running",
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": [],
+        "status": {},
+        "diagnostics": []
+      },
+      {
+        "name": "rec",
+        "type": "file",
+        "settings": {
+          "path": "x.wav"
+        },
+        "inputs": [
+          "record.left",
+          "record.right"
+        ],
+        "outputs": [],
+        "state": "running",
+        "phase": "running",
+        "wanted": "running",
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": [],
+        "status": {},
+        "diagnostics": []
+      }
+    ],
+    "routes": [
+      {
+        "from": {
+          "node": "noise",
+          "port": "noise.mono"
+        },
+        "to": {
+          "node": "rec",
+          "port": "record.left"
+        },
+        "status": "linked"
+      }
+    ],
+    "counters": {
+      "cycles": 0,
+      "cutCycles": 0,
+      "stalls": 0,
+      "lostMs": 0
+    }
+  }
+}

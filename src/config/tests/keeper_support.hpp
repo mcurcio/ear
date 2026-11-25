@@ -177,6 +177,35 @@ private:
 	Log& log_;
 };
 
+/// NodeHost's type actions, faked: each invoke logged ("invoke rec reset {}"); answered at once with `reply`, or, with
+/// `hold`, kept until the test answers it (answer()).
+class FakeActions final : public NodeActions {
+public:
+	explicit FakeActions(Log& log) : log_(log) {}
+	ActionReply reply{};
+	bool hold = false;
+	std::vector<ActionAnswered> held;
+	void invoke(const NodeName& node, std::string_view action, const NodeSettings& args,
+	            ActionAnswered answered) override {
+		log_.push("invoke " + node + " " + std::string(action) + " " + args.dump());
+		if (hold) {
+			held.push_back(std::move(answered));
+			return;
+		}
+		answered(reply);
+	}
+	/// The oldest held invoke answered with `with`.
+	void answer(const ActionReply& with) {
+		REQUIRE_FALSE(held.empty());
+		auto answered = std::move(held.front());
+		held.erase(held.begin());
+		answered(with);
+	}
+
+private:
+	Log& log_;
+};
+
 /// Action records as log lines ("action rec stop ok", "action desk restart not-restartable block-lost").
 class ActionLog final : public control::ActionListener {
 public:

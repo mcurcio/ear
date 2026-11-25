@@ -128,7 +128,7 @@ TEST_CASE("The frame: graph.get says protocol 1 and the lifecycle, counters, com
 		encodeGraph(ear::GraphView{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {}, {}, {}});
 	CHECK(graph["protocol"] == 1);
 	CHECK(graph["features"] == json::array({"lifecycle", "counters", "companions", "node-text", "reshape", "node.set",
-	                                        "dryRun", "types", "status"}));
+	                                        "dryRun", "types", "status", "actions"}));
 }
 
 TEST_CASE("A snapshot's node carries its companion list in request order, each counter only on its kind, and [] for "
@@ -374,4 +374,35 @@ TEST_CASE("invalid-settings carries the key it names and the refusal in its own 
 	      json{{"code", "invalid-settings"}, {"detail", "playback or capture: at least one must be above 0"}});
 	const auto unknown = encoded({"desk", "unknown key colour", "colour"});
 	CHECK(unknown.data == json{{"code", "invalid-settings"}, {"key", "colour"}, {"detail", "unknown key colour"}});
+}
+
+TEST_CASE("node.invoke decodes its name, action and args, and its refusals are errors.json's", "[commands][actions]") {
+	const auto trigger = decodeCommand("node.invoke", json::parse(R"({"name": "amp", "action": "reset-clip"})"));
+	CHECK(std::get<InvokeNode>(trigger.value()).node == "amp");
+	CHECK(std::get<InvokeNode>(trigger.value()).action == "reset-clip");
+	CHECK(std::get<InvokeNode>(trigger.value()).args.is_null());
+	const auto call =
+		decodeCommand("node.invoke", json::parse(R"({"name": "amp", "action": "add", "args": {"amount": 3}})"));
+	CHECK(std::get<InvokeNode>(call.value()).args == json{{"amount", 3}});
+	CHECK(invalid("node.invoke", R"({"name": "amp"})") == "/action: missing");
+	CHECK(invalid("node.invoke", R"({"name": "amp", "action": ""})") == "/action: must not be empty");
+	CHECK(invalid("node.invoke", R"({"name": "amp", "action": "add", "args": [3]})") == "/args: must be an object");
+	CHECK(invalid("node.invoke", R"({"name": "amp", "action": "add", "colour": 1})") == "/colour: unknown key");
+
+	const json messages = fixture("errors")["messages"];
+	const std::vector<ControlRefusal> refusals{
+		UnknownAction{"amp", "forget"},
+		InvalidArgs{"amp", "add", "amount: must be a whole number, 1-10", "amount"},
+		NotRunning{"amp", ear::NodePhase::stopped},
+		Restarted{"amp"},
+		ActionFailed{"amp", "add", "the count is full"},
+		ActionTimeout{"amp", "add"},
+	};
+	for (std::size_t i = 0; i < refusals.size(); ++i) {
+		INFO(i);
+		const auto encoded = encodeCommandResult(refusals[i]);
+		REQUIRE_FALSE(encoded.has_value());
+		CHECK(json::parse(encodeError(static_cast<int>(i) + 23, encoded.error())) == messages[i + 24]);
+	}
+	CHECK(argsWords(InvalidArgs{"amp", "add", "args: must be an object"}) == "args: must be an object");
 }

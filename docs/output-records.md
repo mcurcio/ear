@@ -221,9 +221,15 @@ An operator's `node.start`, `node.stop` or `node.restart`, answered, written bef
 records it causes. `result` is `ok`, or the refusal's code (`node-disabled`, `not-restartable` with
 `detail` its reason, `unknown-node`, `stopping`).
 
+A `node.invoke` of a type action ([control-port.md](control-port.md#actions)), written when it is
+answered: `action` is the type action's name, `result` `ok` or the refusal's code (`unknown-node`,
+`unknown-action`, `invalid-args`, `not-running`, `restarted`, `action-failed`, `action-timeout`,
+`stopping`), and `detail` what the refusal says: `invalid-args`' words, `action-failed`'s text, and
+`not-running`'s phase.
+
 ```
-node <name> <start|stop|restart> invoked
-node <name> <start|stop|restart> refused: <code>[ (<reason>)]
+node <name> <action> invoked
+node <name> <action> refused: <code>[ (<detail>)]
 ```
 
 `node.disable` and `node.enable` write no `action` record: they are edits, and their `graph-file`

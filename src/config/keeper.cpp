@@ -110,6 +110,14 @@ Stranded strandedBy(const GraphFileModel& before, const GraphFileModel& after, c
 	return out;
 }
 
+/// A batch's whole reply, every result filled.
+void replyWith(std::vector<std::optional<CommandResult>>& filled, control::BatchReply& reply) {
+	std::vector<CommandResult> results;
+	results.reserve(filled.size());
+	for (auto& result : filled) results.push_back(std::move(*result));
+	reply(std::move(results));
+}
+
 CommandResult refusalOf(const EditRefusal& refusal) {
 	return std::visit(Overloaded{[](const CommandError& e) { return refused(e); },
 	                             [](const control::FileRefusal& r) { return CommandResult{r}; }},
@@ -137,6 +145,16 @@ void Keeper::start() {
 		diskCheckQueued_ = true;
 	}
 	pump();
+}
+
+void Keeper::answered(Waiting& waiting, std::size_t index, CommandResult result) {
+	--waiting.outstanding;
+	if (!waiting.held) {
+		waiting.early.emplace_back(index, std::move(result));
+		return;
+	}
+	waiting.results[index] = std::move(result);
+	if (waiting.outstanding == 0) replyWith(waiting.results, waiting.reply); // behind every event before it
 }
 
 void Keeper::request(std::vector<control::Command> commands, control::BatchReply reply) {
@@ -208,6 +226,10 @@ void Keeper::advance(Batch batch) {
 		}
 		if (auto verb = verbOf(command)) {
 			reads.push_back({index, std::move(*verb)});
+			continue;
+		}
+		if (const auto* invoke = std::get_if<control::InvokeNode>(&command)) {
+			reads.push_back({index, *invoke});
 			continue;
 		}
 		if (auto answer = take(command)) {
@@ -315,7 +337,17 @@ void Keeper::postStep(Batch batch, std::vector<Read> reads, std::optional<Offer>
 	mainLoop_.post([&side = side_, &self = self_, keeper = this, batch = std::move(batch), reads = std::move(reads),
 	                offer = std::move(offer), offerIndex, answer = std::move(answer), last,
 	                stopped = stopped_]() mutable {
-		for (Read& read : reads)
+		for (Read& read : reads) {
+			if (auto* invoke = std::get_if<control::InvokeNode>(&read.what)) {
+				// Handed on, never waited for: its answer lands in the batch's waiting results, now or later
+				// (docs/control-port.md#actions).
+				++batch.waiting->outstanding;
+				side.invoke(invoke->node, invoke->action, invoke->args, stopped,
+				            [waiting = batch.waiting, index = read.index](CommandResult result) mutable {
+								answered(*waiting, index, std::move(result));
+							});
+				continue;
+			}
 			batch.results[read.index] =
 				std::visit(Overloaded{
 							   [&](std::monostate) { return CommandResult{side.graph()}; },
@@ -323,8 +355,10 @@ void Keeper::postStep(Batch batch, std::vector<Read> reads, std::optional<Offer>
 							   [&](std::pair<control::LifecycleVerb, NodeName>& verb) {
 								   return side.operate(verb.first, verb.second, stopped);
 							   },
+							   [](control::InvokeNode&) -> CommandResult { throw std::logic_error("keeper: invoke"); },
 						   },
 			               read.what);
+		}
 		std::optional<Verdict> verdict;
 		if (offer) {
 			Judged judged = side.offer(std::move(*offer));
@@ -335,10 +369,16 @@ void Keeper::postStep(Batch batch, std::vector<Read> reads, std::optional<Offer>
 		}
 		std::optional<Batch> rest;
 		if (last) {
-			std::vector<CommandResult> results;
-			results.reserve(batch.results.size());
-			for (auto& result : batch.results) results.push_back(std::move(*result));
-			batch.reply(std::move(results));
+			Waiting& waiting = *batch.waiting;
+			for (auto& [index, result] : waiting.early) batch.results[index] = std::move(result);
+			waiting.early.clear();
+			if (waiting.outstanding > 0) { // held on the main loop until its last action answered
+				waiting.results = std::move(batch.results);
+				waiting.reply = std::move(batch.reply);
+				waiting.held = true;
+			} else {
+				replyWith(batch.results, batch.reply);
+			}
 		} else {
 			rest = std::move(batch);
 		}

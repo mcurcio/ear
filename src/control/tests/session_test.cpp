@@ -91,6 +91,8 @@ std::string describe(const Command& command) {
 			else if constexpr (std::is_same_v<C, EnableNode>) return "enableNode " + c.node;
 			else if constexpr (std::is_same_v<C, SetNodeText>) return "setNodeText " + c.node + " " + c.version;
 			else if constexpr (std::is_same_v<C, AddNodeText>) return "addNodeText " + c.version;
+			else if constexpr (std::is_same_v<C, InvokeNode>)
+				return "invokeNode " + c.node + " " + c.action + " " + c.args.dump();
 			else if constexpr (std::is_same_v<C, SetNode>)
 				return "setNode " + c.node + " " + c.settings.dump() + (c.dryRun ? " dryRun" : "") +
 			           (c.dropRoutes ? " dropRoutes" : "");
@@ -491,6 +493,52 @@ TEST_CASE("errors.json: refusals, stopping and envelope errors", "[session][prot
 		{R"(updateNode desk {"card":"MOTU","playback":1})",
 	     refused(ControlRefusal{PortsInUse{"desk", {"play.2"}, {{{"kitchen", "from.left"}, {"desk", "play.2"}}}}})});
 	w.graph.script.push_back({"startNode noise", refused(Result(std::unexpected(ear::Stopping{})))});
+	// The actions' refusals (docs/control-port.md#actions).
+	w.graph.script.push_back({"invokeNode amp forget null", refused(ControlRefusal{UnknownAction{"amp", "forget"}})});
+	w.graph.script.push_back(
+		{R"(invokeNode amp add {"amount":12})",
+	     refused(ControlRefusal{InvalidArgs{"amp", "add", "amount: must be a whole number, 1-10", "amount"}})});
+	w.graph.script.push_back(
+		{"invokeNode amp reset-clip null", refused(ControlRefusal{NotRunning{"amp", ear::NodePhase::stopped}})});
+	w.graph.script.push_back({R"(invokeNode amp add {"amount":2})", refused(ControlRefusal{Restarted{"amp"}})});
+	w.graph.script.push_back({R"(invokeNode amp add {"amount":3})",
+	                          refused(ControlRefusal{ActionFailed{"amp", "add", "the count is full"}})});
+	w.graph.script.push_back(
+		{R"(invokeNode amp add {"amount":4})", refused(ControlRefusal{ActionTimeout{"amp", "add"}})});
+	RecordingOutbox out;
+	ControlSession session(*w.hub, out);
+	for (const auto& request : requestsOf(document)) w.receive(session, request);
+	checkMessages(out, document["messages"]);
+	CHECK(w.graph.script.empty());
+}
+
+TEST_CASE("actions.json: node.invoke's answers, a batch's reply holding its action's, and every refusal",
+          "[session][protocol][actions]") {
+	const json document = fixture("actions");
+	World w;
+	w.graph.view = baseView();
+	const auto answer = [](CommandResult result) { return [result] { return result; }; };
+	const CommandResult done = Result{};
+	w.graph.script.push_back({"invokeNode amp reset-clip null", answer(done)});
+	w.graph.script.push_back({R"(invokeNode amp add {"amount":3})", answer(done)});
+	w.graph.script.push_back(
+		{"invokeNode amp reset-clip null", answer(ControlRefusal{NotRunning{"amp", ear::NodePhase::stopped}})});
+	w.graph.script.push_back({R"(invokeNode amp add {"amount":1})", answer(done)});
+	w.graph.script.push_back({R"(invokeNode amp add {"amount":5})", answer(done)});
+	w.graph.script.push_back(
+		{"invokeNode ghost reset-clip null", answer(Result(std::unexpected(ear::UnknownNode{"ghost"})))});
+	w.graph.script.push_back({"invokeNode amp forget null", answer(ControlRefusal{UnknownAction{"amp", "forget"}})});
+	w.graph.script.push_back(
+		{R"(invokeNode amp add {"amount":12})",
+	     answer(ControlRefusal{InvalidArgs{"amp", "add", "amount: must be a whole number, 1-10", "amount"}})});
+	w.graph.script.push_back(
+		{"invokeNode amp reset-clip null", answer(ControlRefusal{NotRunning{"amp", ear::NodePhase::stopped}})});
+	w.graph.script.push_back({R"(invokeNode amp add {"amount":2})", answer(ControlRefusal{Restarted{"amp"}})});
+	w.graph.script.push_back({R"(invokeNode amp add {"amount":3})",
+	                          answer(ControlRefusal{ActionFailed{"amp", "add", "the count is full"}})});
+	w.graph.script.push_back(
+		{R"(invokeNode amp add {"amount":4})", answer(ControlRefusal{ActionTimeout{"amp", "add"}})});
+	w.graph.script.push_back({"invokeNode amp reset-clip null", answer(Result(std::unexpected(ear::Stopping{})))});
 	RecordingOutbox out;
 	ControlSession session(*w.hub, out);
 	for (const auto& request : requestsOf(document)) w.receive(session, request);

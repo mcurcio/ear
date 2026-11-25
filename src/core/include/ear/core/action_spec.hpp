@@ -71,14 +71,16 @@ private:
 };
 template <class T> inline constexpr bool isAction = false;
 template <spec_detail::Name N> inline constexpr bool isAction<Trigger<N>> = true;
-template <spec_detail::Name N, const auto& Args, auto LoopH> inline constexpr bool isAction<Call<N, Args, LoopH>> = true;
+template <spec_detail::Name N, const auto& Args, auto LoopH> inline constexpr bool isAction<Call<N, Args, LoopH>> =
+	true;
 
 /// Into the node's code, wait-free: no arguments, answered {} once handed over; io.triggered<t>() is true once in the
 /// next block. Several invokes before a block are one.
 template <spec_detail::Name N> consteval Trigger<N> trigger(std::string_view help) { return Trigger<N>(help); }
 /// Into a loop's state, posted to `LoopH` (a loop the spec lists, declared with a state): its arguments checked by
 /// `Args`, a SettingsTable; the handler's std::expected<void, std::string> is the reply.
-template <spec_detail::Name N, const auto& Args, auto LoopH> consteval Call<N, Args, LoopH> call(std::string_view help) {
+template <spec_detail::Name N, const auto& Args, auto LoopH>
+consteval Call<N, Args, LoopH> call(std::string_view help) {
 	static_assert(std::derived_from<std::remove_cvref_t<decltype(Args)>, AnySettingsTable>,
 	              "a call's arguments are a SettingsTable");
 	static_assert(isLoopHandle<decltype(LoopH)>, "a call names a loop handle");

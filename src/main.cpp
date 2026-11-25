@@ -441,6 +441,7 @@ int main(int argc, char** argv) {
 	                              engine.get());
 
 	ear::config::GraphFileKeeper keeper(std::move(first), *config, format, graph, status, nodes, mainLoop);
+	keeper.answerActions(nodes);
 	ear::control::MainLoopGateway gateway(mainLoop, control, keeper);
 	// The counters' reports (docs/engine.md#reporting-the-counters): read at the heartbeat, told to the wire and to
 	// standard output.

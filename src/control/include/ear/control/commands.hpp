@@ -68,9 +68,16 @@ struct SetNode {
 	bool dryRun = false;
 	bool dropRoutes = false;
 };
-using Command =
-	std::variant<GetGraph, AddNode, UpdateNode, RemoveNode, AddRoute, RemoveRoute, GetGraphFile, SetGraphFile,
-                 StartNode, StopNode, RestartNode, DisableNode, EnableNode, SetNodeText, AddNodeText, SetNode>;
+/// node.invoke {"name", "action", "args"?} (feature actions): one of the node's type actions, `args` an object or null
+/// when absent (docs/control-port.md#actions).
+struct InvokeNode {
+	NodeName node;
+	std::string action;
+	NodeSettings args = nullptr;
+};
+using Command = std::variant<GetGraph, AddNode, UpdateNode, RemoveNode, AddRoute, RemoveRoute, GetGraphFile,
+                             SetGraphFile, StartNode, StopNode, RestartNode, DisableNode, EnableNode, SetNodeText,
+                             AddNodeText, SetNode, InvokeNode>;
 using CommandResult =
 	std::variant<GraphView, std::expected<void, CommandError>, GraphFile, FileRefusal, Applied, ControlRefusal>;
 /// The wire's frame (docs/control-port.md#protocol-and-features): graph.get's "protocol" and "features".
@@ -87,15 +94,18 @@ inline constexpr std::string_view dryRunFeature = "dryRun";
 /// The node types' schemas: types.get and the Graph's typeSchemaHash (docs/control-port.md#type-schemas); with it,
 /// invalid-settings carries data.key and data.detail (docs/control-port.md#error-codes).
 inline constexpr std::string_view typesFeature = "types";
-inline constexpr std::array<std::string_view, 9> wireFeatures{"lifecycle",     "counters",     companionsFeature,
-                                                              nodeTextFeature, reshapeFeature, nodeSetFeature,
-                                                              dryRunFeature,   typesFeature,   "status"};
+/// node.invoke and each type schema's actions (docs/control-port.md#actions).
+inline constexpr std::string_view actionsFeature = "actions";
+inline constexpr std::array<std::string_view, 10> wireFeatures{
+	"lifecycle",    "counters",    companionsFeature, nodeTextFeature, reshapeFeature,
+	nodeSetFeature, dryRunFeature, typesFeature,      "status",        actionsFeature};
 /// Control thread. Named params only, decoded with graph_json. Unknown method: methodNotFound;
 /// a missing, extra or mistyped key: invalidParams whose message is the JsonError
 /// ("/from/port: missing") and whose data is {"pointer"} (the JSON pointer it names). graphFile.get and
 /// graphFile.subscribe (params absent or {}) are GetGraphFile; graphFile.set is SetGraphFile (text and version, each a
 /// required string); node.setText is SetNodeText (name, text and version); node.addText is AddNodeText (text and
-/// version); node.start, node.stop, node.restart, node.disable and node.enable take {"name"}. The
+/// version); node.start, node.stop, node.restart, node.disable and node.enable take {"name"}; node.invoke is
+/// InvokeNode ({"name", "action", "args"?}: action a non-empty string, args an object). The
 /// graph file keeper runs every command (requests.hpp).
 std::expected<Command, RpcError> decodeCommand(std::string_view method, const nlohmann::json& params);
 /// Control thread. GraphView -> encodeGraph; success -> {}; CommandError ->
@@ -103,7 +113,8 @@ std::expected<Command, RpcError> decodeCommand(std::string_view method, const nl
 /// FileRefusal -> RpcError{commandRefused, describe(r), {"code": fileRefusalCode(r)}, plus
 /// "diagnostics" (InvalidText) or "line", "column" (SharedDefinition)}; Applied -> {"applied"};
 /// ControlRefusal -> RpcError{commandRefused, describe(r), {"code": controlRefusalCode(r)}, plus "reason"
-/// (NotRestartable)}.
+/// (NotRestartable), "ports" and "routes" (PortsInUse), "action" (UnknownAction), "key" and "detail" (InvalidArgs),
+/// "phase" (NotRunning), "detail" (ActionFailed)}.
 std::expected<nlohmann::json, RpcError> encodeCommandResult(const CommandResult& result);
 /// {"protocol", "features", "graphFrequency", ..., "nodes": [each with its health, docs/control-port.md#node-health],
 /// "routes"}.

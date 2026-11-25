@@ -359,6 +359,21 @@ export interface EventSchema {
   args: Array<{ name: string; kind: string; min?: number; max?: number; decimals?: number; values?: string[]; maxBytes?: number }>;
 }
 
+/** An action's argument: a setting row without what only a setting has (change, shapes). */
+export type ActionArgSchema = Omit<SettingSchema, "change" | "shapes">;
+
+/**
+ * One type action (feature actions, docs/control-port.md#actions): a trigger (target code, no args) or a call (target
+ * loop, its args setting rows).
+ */
+export interface ActionSchema {
+  name: string;
+  by: "type" | (string & {});
+  target: "code" | "loop" | (string & {});
+  help: string;
+  args: ActionArgSchema[];
+}
+
 /** One node type, as types.get says it. */
 export interface TypeSchema {
   name: string;
@@ -371,6 +386,8 @@ export interface TypeSchema {
   /** Feature status: its status fields and events, in declaration order. */
   status?: StatusFieldSchema[];
   events?: EventSchema[];
+  /** Feature actions: its actions, in declaration order. */
+  actions?: ActionSchema[];
 }
 
 /** types.get's result: the schemas, or notModified when ifNoneMatch named the hash. */
@@ -493,6 +510,8 @@ export interface Methods {
   "node.restart": { params: { name: string }; result: { applied: Applied } };
   "node.disable": { params: { name: string }; result: { applied: Applied } };
   "node.enable": { params: { name: string }; result: { applied: Applied } };
+  /** Feature actions: one of the node's type actions, args an object; {} once done (docs/control-port.md#actions). */
+  "node.invoke": { params: { name: string; action: string; args?: JsonObject }; result: Record<string, never> };
 }
 export type MethodName = keyof Methods;
 
@@ -595,6 +614,18 @@ export type ControlErrorCode =
   | "not-restartable"
   /** node.update without dropRoutes: its new ports drop ports routes name (data.ports, data.routes). */
   | "ports-in-use"
+  /** node.invoke (feature actions): no such action of the node's type (data.action). */
+  | "unknown-action"
+  /** node.invoke: the arguments fail the action's table (data.key, data.detail). */
+  | "invalid-args"
+  /** node.invoke: the node cannot take it now (data.phase). */
+  | "not-running"
+  /** node.invoke: the configuration was torn down before the call ran. */
+  | "restarted"
+  /** node.invoke: the handler refused; the message is its text (data.detail). */
+  | "action-failed"
+  /** node.invoke: no answer within 10 s. */
+  | "action-timeout"
   | (string & {});
 
 export const rpcErrorCodes = {
@@ -622,9 +653,16 @@ export interface RpcErrorObject {
     routes?: RouteEnds[];
     /** invalidParams. */
     pointer?: string;
-    /** invalid-settings: the key the refusal names (absent for a rule naming none), and the refusal in its own words. */
+    /**
+     * invalid-settings and invalid-args: the key the refusal names (absent for a rule naming none), and the refusal in
+     * its own words; action-failed: the handler's text.
+     */
     key?: string;
     detail?: string;
+    /** unknown-action: the action asked for. */
+    action?: string;
+    /** not-running: the node's phase. */
+    phase?: string;
   };
 }
 
@@ -686,6 +724,7 @@ const methodSet: { [M in MethodName]: true } = {
   "node.set": true,
   "node.setText": true,
   "node.addText": true,
+  "node.invoke": true,
 };
 export const methodNames = Object.keys(methodSet) as MethodName[];
 
@@ -730,10 +769,27 @@ const fileErrorCodeSet: { [C in FileErrorCode]: true } = {
 };
 export const fileErrorCodes = Object.keys(fileErrorCodeSet) as FileErrorCode[];
 
-const controlErrorCodeSet: { [C in "node-disabled" | "not-restartable" | "ports-in-use"]: true } = {
+const controlErrorCodeSet: {
+  [C in
+    | "node-disabled"
+    | "not-restartable"
+    | "ports-in-use"
+    | "unknown-action"
+    | "invalid-args"
+    | "not-running"
+    | "restarted"
+    | "action-failed"
+    | "action-timeout"]: true;
+} = {
   "node-disabled": true,
   "not-restartable": true,
   "ports-in-use": true,
+  "unknown-action": true,
+  "invalid-args": true,
+  "not-running": true,
+  restarted: true,
+  "action-failed": true,
+  "action-timeout": true,
 };
 export const controlErrorCodes = Object.keys(controlErrorCodeSet) as ControlErrorCode[];
 
@@ -746,6 +802,7 @@ export const reshapeFeature = "reshape";
 export const nodeSetFeature = "node.set";
 export const dryRunFeature = "dryRun";
 export const typesFeature = "types";
+export const actionsFeature = "actions";
 
 // ----- The conformance fixtures (test/protocol/*.json) -----
 
