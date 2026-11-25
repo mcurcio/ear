@@ -5,9 +5,13 @@
 #pragma once
 #include <string>
 #include <utility>
+#include <cstddef>
+#include <vector>
 #include "ear/core/graph_spec.hpp"
 #include "ear/core/log.hpp"
+#include "ear/core/status_declarations.hpp"
 namespace ear {
+template <const auto& Spec> class Report;
 /// One configuration's handle (NodeOf::handle(), NodeContext::handle()). Called from any of the configuration's own
 /// threads (the main loop, its workers, its sink consumers), never from the realtime thread (`process`): a call takes
 /// brief locks (the note rate's, an executor's queue, a log sink's) and never waits on the main loop. It may be kept
@@ -40,5 +44,18 @@ public:
 
 protected:
 	~NodeHandle() = default;
+	/// Report<spec>'s way in (report.hpp, docs/writing-a-node-type.md#report): status field `field` (its index in the
+	/// spec's StatusTable) now `value`, and event `event` (its index in the EventTable) with its arguments, both
+	/// checked and made safe by Report. Into the configuration's queue, in order with `lost`; dropped once the
+	/// configuration has ended. A handle no NodeHost made (a test's own) drops them.
+	virtual void reportStatus(std::size_t field, StatusValue value) {
+		static_cast<void>(field);
+		static_cast<void>(value);
+	}
+	virtual void reportEvent(std::size_t event, std::vector<StatusValue> args) {
+		static_cast<void>(event);
+		static_cast<void>(args);
+	}
+	template <const auto&> friend class Report;
 };
 } // namespace ear

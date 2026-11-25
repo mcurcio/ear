@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 #include "ear/core/lifecycle.hpp"
+#include "ear/core/report.hpp"
 #include "ear/testing/node_harness.hpp"
 namespace ear::testing {
 
@@ -63,6 +64,18 @@ public:
 		node_->programSays(index, level, std::move(line));
 	}
 	void programExited(std::size_t index, ProgramExit exit) { node_->programExited(index, std::move(exit)); }
+
+	/// Field `Field`'s value in the status view after the last drain.
+	template <const auto& Field> StatusValue status() const {
+		static_assert(StatusOf<Spec>::template has<Field>, "status takes only its spec's fields");
+		for (const FieldValue& field : node_->status())
+			if (field.name == Field.declaration().name) return field.value;
+		return Field.declaration().initial(); // never configured yet
+	}
+	std::vector<FieldValue> status() const { return node_->status(); }
+	const std::vector<SeenStatus>& statusRecord() const noexcept { return node_->statusRecord(); }
+	const std::vector<SeenEvent>& events() const noexcept { return node_->events(); }
+	void drain() { node_->drain(); }
 
 	void runLoops() { node_->runLoops(); }
 	void loopsReady() { node_->loopsReady(); }

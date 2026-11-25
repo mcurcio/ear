@@ -98,6 +98,7 @@
 #include "io_opens.hpp"
 #include "note_gate.hpp"
 #include "readiness.hpp"
+#include "status_book.hpp"
 #include "stores.hpp"
 
 namespace ear {
@@ -360,6 +361,32 @@ struct NodeHost::Impl {
 		}
 		/// Every diagnostic this node was told, as last told, in the order each was first said.
 		const std::vector<NodeDiagnostic>& diagnostics() const noexcept { return diagnostics_; }
+
+	private:
+		class Channel;
+		struct Configuration;
+
+	public:
+		// ---- Status and events (docs/architecture.md#status-and-events) ----
+
+		/// The status view, every field in declaration order; empty before the node first configured.
+		std::vector<FieldValue> status() const { return book_ ? book_->view() : std::vector<FieldValue>{}; }
+		/// Records of `channel`, the current configuration's, are waiting: drained at once (a loss behind them), or at
+		/// the next tick.
+		void reportsDue(Channel& channel, bool now) {
+			if (now) return drainReports(channel);
+			host_.statusDirty();
+		}
+		/// The tick (Impl::tickStatus): the current configuration's records drained, then the book's own paces.
+		void statusTick(std::chrono::steady_clock::time_point now) {
+			if (!book_) return;
+			if (config_ && config_->channel) drainReports(*config_->channel);
+			BookOut out(*this, nullptr);
+			book_->tick(now, out);
+		}
+		std::optional<std::chrono::steady_clock::time_point> statusDue() const {
+			return book_ ? book_->due() : std::nullopt;
+		}
 		/// The node's counters from its add (docs/engine.md#counters): its block's now, or what it counted before it
 		/// went. Main thread.
 		NodeCounts counts() const noexcept { return block_ ? block_->counts() : blockCounted_; }
@@ -795,6 +822,60 @@ struct NodeHost::Impl {
 			});
 		}
 
+		/// What the book tells, fanned out to the host's status listeners (a superseded node's only to those that hear
+		/// one), its diagnostics kept as the node's own, and a loss to the node while its configuration's teardown has
+		/// not begun.
+		class BookOut final : public detail::StatusBookEvents {
+		public:
+			BookOut(Node& node, Channel* channel) : node_(node), channel_(channel) {}
+			void written(const StatusWrite& write) override {
+				for (auto* listener : node_.heard()) listener->statusWritten(node_.name_, write);
+			}
+			void changed(std::span<const FieldValue> fields) override {
+				for (auto* listener : node_.heard()) listener->statusChanged(node_.name_, fields);
+			}
+			void reset(std::span<const FieldValue> fields) override {
+				for (auto* listener : node_.heard()) listener->statusReset(node_.name_, fields);
+			}
+			void raised(const RaisedEvent& event) override {
+				for (auto* listener : node_.heard()) listener->eventRaised(node_.name_, event);
+			}
+			void diagnosed(NodeDiagnostic diagnostic) override { node_.diagnose(std::move(diagnostic)); }
+			void lost(std::string detail) override {
+				if (channel_ != nullptr && !channel_->isClosing()) node_.insidesLost(std::move(detail));
+			}
+
+		private:
+			Node& node_;
+			Channel* channel_;
+		};
+		/// The status listeners that hear this node.
+		std::vector<NodeStatusListener*> heard() const {
+			std::vector<NodeStatusListener*> heard;
+			for (auto* listener : host_.statusListeners)
+				if (!superseded_ || listener->hearsSuperseded()) heard.push_back(listener);
+			return heard;
+		}
+		/// Every record `channel` holds, in order, into the book.
+		void drainReports(Channel& channel) {
+			if (!book_) return;
+			BookOut out(*this, &channel);
+			std::deque<detail::ReportRecord> records = channel.queue().take();
+			const std::uint64_t dropped = channel.queue().takeDropped();
+			if (records.empty() && dropped == 0) return;
+			book_->apply(std::move(records), dropped, host_.timers.now(), out);
+		}
+		/// The configuration closed (or failed to start, or is leaked): its last records drained, nothing more of it
+		/// reaches the node, then the status view returns to every initial value (docs/architecture.md#status-and-events).
+		/// `repointed`: its channel is detached by its LeakedRecord's repoint instead.
+		void closeStatus(Configuration& c, bool repointed = false) {
+			drainReports(*c.channel);
+			if (!repointed) c.channel->detach();
+			if (!book_) return;
+			BookOut out(*this, nullptr);
+			book_->reset(host_.timers.now(), out);
+		}
+
 		/// ear.claim-wait, a condition (docs/output-records.md#diagnostic): the claim of `key` waits for its holder.
 		void claimWaits(const std::string& key, const std::string& why) {
 			diagnose({.code = "ear.claim-wait",
@@ -1074,9 +1155,9 @@ struct NodeHost::Impl {
 			/// clock the note rate counts on.
 			Channel(Node& node, Executor& mainLoop, Timers& timers, NodeName name, std::string type,
 			        std::vector<LogSink*> sinks)
-				: node_(&node), mainLoop_(mainLoop), completions_(std::make_shared<detail::Completions>(mainLoop)),
-				  name_(std::move(name)), type_(std::move(type)), sinks_(std::move(sinks)),
-				  gate_([&timers] { return timers.now(); }) {}
+				: node_(&node), mainLoop_(mainLoop), timers_(timers),
+				  completions_(std::make_shared<detail::Completions>(mainLoop)), name_(std::move(name)),
+				  type_(std::move(type)), sinks_(std::move(sinks)), gate_([&timers] { return timers.now(); }) {}
 			const NodeName& node() const noexcept override { return name_; }
 			/// Judged on the saying thread, so a note held back is never queued; posted under the gate's lock, so the
 			/// order notes pass the gate is the order they land in, `notes-dropped` just before the note it precedes.
@@ -1092,12 +1173,35 @@ struct NodeHost::Impl {
 					node->host_.noted(node->name_, text);
 				});
 			}
+			/// Through the queue, behind the status and events written before it (docs/architecture.md#status-and-events),
+			/// and drained at once rather than at the next tick: a loss is never paced. Never dropped by the queue's
+			/// bound; dropped on the main loop once the teardown began.
 			void lost(std::string detail) override {
-				completions_->post([self = shared_from_this(), detail = std::move(detail)]() mutable {
-					if (Node* node = self->attachedNode(); node != nullptr && !self->closing_)
-						node->insidesLost(std::move(detail));
+				queue_.push(
+					{.kind = detail::ReportRecord::Kind::lost, .detail = std::move(detail), .at = timers_.now()});
+				completions_->post([self = shared_from_this()] {
+					if (Node* node = self->attachedNode()) node->reportsDue(*self, true);
 				});
 			}
+			/// Report's writes (report.hpp): into the queue on the writer's thread, the first since the last drain
+			/// waking the main loop once. Dropped once the configuration has ended.
+			void reportStatus(std::size_t field, StatusValue value) override {
+				if (!completions_->attached()) return;
+				woken(queue_.push({.kind = detail::ReportRecord::Kind::status,
+				                   .index = field,
+				                   .value = std::move(value),
+				                   .at = timers_.now()}));
+			}
+			void reportEvent(std::size_t event, std::vector<StatusValue> args) override {
+				if (!completions_->attached()) return;
+				woken(queue_.push({.kind = detail::ReportRecord::Kind::event,
+				                   .index = event,
+				                   .args = std::move(args),
+				                   .at = timers_.now()}));
+			}
+			/// Main thread: the records written since the last take, and how many the bound dropped.
+			detail::ReportQueue& queue() noexcept { return queue_; }
+			bool isClosing() const noexcept { return closing_; }
 			/// Straight to the sinks on the calling thread, as captured output goes; the attached flag is atomic, so a
 			/// configuration that ended logs nothing, but for one entry that read the flag just before the detach
 			/// (the detach does not wait for a log in progress).
@@ -1222,6 +1326,12 @@ struct NodeHost::Impl {
 			}
 
 		private:
+			void woken(bool first) {
+				if (!first) return;
+				completions_->post([self = shared_from_this()] {
+					if (Node* node = self->attachedNode()) node->reportsDue(*self, false);
+				});
+			}
 			/// Main thread: the node, while this configuration is attached.
 			Node* attachedNode() const noexcept { return node_; }
 			Node* node_;                     // main thread only
@@ -1229,6 +1339,7 @@ struct NodeHost::Impl {
 			/// Where the reports a leaked configuration may still make are posted (its closes, its consumers' throws),
 			/// each judged where it lands: the node's while attached, else the record's if re-pointed, else dropped.
 			Executor& mainLoop_;
+			Timers& timers_; // what a report's record is stamped with
 			/// The way back to the main loop for everything else this configuration's threads tell (its handle's notes
 			/// and losses, its I/O jobs' completions), detached with node_ and never re-pointed; its attached() is node_
 			/// for the threads that cannot read it.
@@ -1238,7 +1349,8 @@ struct NodeHost::Impl {
 			const std::vector<LogSink*> sinks_;
 			std::mutex sayMutex_;
 			detail::NoteGate gate_; // sayMutex_
-			bool closing_ = false;  // main thread only
+			detail::ReportQueue queue_;
+			bool closing_ = false; // main thread only
 		};
 
 		/// Where a change's ConfigureDone answers: its configuration's Channel, so an answer that outlives the change or
@@ -2723,6 +2835,8 @@ struct NodeHost::Impl {
 		/// unprepared, and the resources are asked for.
 		void configure() {
 			if (config_) throw std::logic_error("node " + name_ + ": a configuration began while another had not gone");
+			if (!book_)
+				book_ = std::make_unique<detail::StatusBook>(queued_->statusDeclared(), queued_->eventsDeclared());
 			config_ = std::make_unique<Configuration>();
 			Configuration& c = *config_;
 			c.generation = ++host_.generations;
@@ -3403,7 +3517,7 @@ struct NodeHost::Impl {
 			c.sinks.clear();
 			closeSources(); // freed at step 5, after the instance that may hold their writers
 			c.engineAsks.clear();
-			c.channel->detach();
+			closeStatus(c);
 			host_.inputFor(serial_, [generation = c.generation, fact, detail = std::move(detail)](Node& node) mutable {
 				if (!node.current(generation)) return;
 				node.feed(node.aggregate_.fault(fact, std::move(detail)));
@@ -4970,7 +5084,7 @@ struct NodeHost::Impl {
 			const MainLoopActivity::Scope activity("free configuration", name_);
 			Configuration& c = *config_;
 			c.deadline.reset();
-			c.channel->detach();
+			closeStatus(c);
 			companionsEnded(); // closed (no tap or play since the barrier), so their counts are final
 			c.freeInOrder();
 			const std::uint64_t generation = c.generation;
@@ -5022,6 +5136,7 @@ struct NodeHost::Impl {
 			companionsEnded(); // their counts as they stand: the configuration reaches no node again
 			const bool listening = c.tearing;
 			c.storesWritable->store(false, std::memory_order_release); // a write not begun is dropped
+			closeStatus(c, listening); // a listening record's channel is re-pointed below, which detaches it
 			if (!listening) c.channel->detach();
 			// Its ports abandoned, its stores and recordings kept: what waited for them is judged now. One that listens
 			// lists the nodes its claims refuse, which its late close starts again.
@@ -5052,6 +5167,7 @@ struct NodeHost::Impl {
 		std::unique_ptr<Timer> paceTimer_;          // the 1 s pace of a changed list
 		bool superseded_ = false;                   // a newer node of its name was added: standard output alone
 		std::vector<NodeDiagnostic> diagnostics_;   // per code and subject, kept for the node's life (diagnose)
+		std::unique_ptr<detail::StatusBook> book_;  // its status view and paces, from its first configuration
 		std::unique_ptr<Configuration> config_;     // the current configuration (at most one)
 		std::unique_ptr<PortBlock> block_;
 		bool configuring_ = false;         // inside the instance's making and configure: the contexts' calls are valid
@@ -5093,6 +5209,12 @@ struct NodeHost::Impl {
 	std::vector<NodeHealthListener*> listeners;
 	std::vector<NodeNoteListener*> noteListeners;
 	std::vector<NodeDiagnosticListener*> diagnosticListeners;
+	std::vector<NodeStatusListener*> statusListeners;
+	/// The status tick (docs/architecture.md#status-and-events): at most one per statusTickPace, armed only when a node
+	/// has records waiting or something due.
+	std::unique_ptr<Timer> statusTimer;
+	std::chrono::steady_clock::time_point statusTimerAt{};
+	std::optional<std::chrono::steady_clock::time_point> lastStatusTick; // none before the first
 	std::vector<EngineDiagnosticListener*> engineListeners;
 	std::vector<NodeCountsListener*> countsListeners;
 	std::vector<NodeCompanionsListener*> companionListeners;
@@ -5317,6 +5439,34 @@ struct NodeHost::Impl {
 		for (auto* listener : internalErrorListeners) listener->internalError(error);
 	}
 
+	/// A node's records wait: the tick is armed, if it is not, for 33 ms after the last (docs/architecture.md#status-and-events).
+	void statusDirty() { armStatusTick(std::nullopt); }
+	void armStatusTick(std::optional<std::chrono::steady_clock::time_point> due) {
+		const auto now = timers.now();
+		auto at = lastStatusTick ? *lastStatusTick + statusTickPace : now;
+		if (due && *due > at) at = *due;
+		if (statusTimer && at >= statusTimerAt) return; // one sooner is armed
+		statusTimerAt = at;
+		const auto delay =
+			at > now ? std::chrono::ceil<std::chrono::milliseconds>(at - now) : std::chrono::milliseconds(0);
+		statusTimer = timers.after(delay, [this] {
+			statusTimer.reset();
+			tickStatus();
+		});
+	}
+	/// Every node's records drained and its book ticked, in arrival order; armed again for what a book still has due.
+	void tickStatus() {
+		const auto now = timers.now();
+		lastStatusTick = now;
+		std::optional<std::chrono::steady_clock::time_point> due;
+		for (const auto& node : nodes) {
+			if (node->removed()) continue;
+			node->statusTick(now);
+			if (const auto next = node->statusDue(); next && (!due || *next < *due)) due = next;
+		}
+		if (due) armStatusTick(due);
+	}
+
 	/// A diagnostic about the node of `serial`, kept on it while it is not gone (Node::diagnose), else told only to the
 	/// listeners that hear a superseded node, as said once.
 	void diagnosed(std::uint64_t serial, const NodeName& name, NodeDiagnostic diagnostic) {
@@ -5396,6 +5546,19 @@ void NodeHost::subscribeNotes(NodeNoteListener& listener) { impl_->noteListeners
 
 void NodeHost::subscribeDiagnostics(NodeDiagnosticListener& listener) {
 	impl_->diagnosticListeners.push_back(&listener);
+}
+
+void NodeHost::subscribeStatus(NodeStatusListener& listener) { impl_->statusListeners.push_back(&listener); }
+
+void NodeHost::drainStatus() {
+	impl_->statusTimer.reset();
+	impl_->tickStatus();
+}
+
+std::vector<FieldValue> NodeHost::statusOf(const NodeName& node) const {
+	for (auto it = impl_->nodes.rbegin(); it != impl_->nodes.rend(); ++it)
+		if ((*it)->name() == node && !(*it)->removed()) return (*it)->status();
+	return {};
 }
 
 void NodeHost::subscribeEngineDiagnostics(EngineDiagnosticListener& listener) {

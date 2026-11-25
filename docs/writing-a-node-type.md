@@ -226,6 +226,39 @@ Arguments are `arg::number<"n">(low, high)`, `arg::decimal<"n">(decimals = 2)`, 
 `arg::choice<"n">(values)` and `arg::text<"n">(maxBytes = 256)`. A decimal fills its place with
 `decimals` places; a flag with `true` or `false`.
 
+#### Report
+
+`NodeOf<spec>::report()` gives the configuration's `Report<spec>` (`ear/core/report.hpp`), which
+the instance copies into the loop states that write: `report.set<field>(value)` and
+`report.raise<event>(values...)` take only the spec's own handles (another spec's field or event,
+a `writer::rt` field, or the wrong count of arguments, does not compile). A choice's value is
+`field("value")` (checked at compile time) or its text (checked at run time); `set<field>(status::unknown)`
+makes it null. Write a field from the loop it names: Report does not check the thread. A library
+thread with something to report posts to that loop.
+
+```cpp
+struct WorkerState {
+	ear::Report<spec> report;
+	void connected(std::string_view server) {
+		report.set<connection>(connection("connected"));
+		report.set<serverName>(server);                     // made safe and cut at its maxBytes
+		report.raise<pairingFailed>(reasonName(why));         // a text not among its values fails the node
+	}
+};
+```
+
+A write never blocks but on the configuration's queue's one short mutex, and goes in order with
+the handle's `lost`: a status write before an event is drained before it, a `lost` after the last
+status after it ([architecture.md](architecture.md#status-and-events)). A text is made safe on the
+writer's thread: bytes that are not UTF-8 become U+FFFD, a tab, newline or carriage return a space
+and another control character U+FFFD, and a text past `maxBytes` is cut at a character so that,
+with `…` appended, it fits. A value that breaks its declaration (a choice's text not among its
+values, a number outside its range, a decimal that is not finite) is the type's bug: the node fails
+`lost` with the rule's text (`status link: "sideways" is not one of its values`), through the same
+queue, and nothing is written. Writes land on the configuration that made the Report until it
+closed, so a goodbye written during its teardown is heard; an older configuration's Report reaches
+nothing.
+
 `log::code<"code">(level, sentence, args...)` declares a log line the realtime thread may write, in
 `.logCodes` (its writing is not built yet, [design](design/control-plane.md)): numbers, decimals and
 flags only, at most four.
@@ -1382,6 +1415,7 @@ fakes allow. Banks are named by the spec's handles.
 | `h.runLoops()`, `h->advance(ms)`, `h.armed(loop)`, `h.readable(fd)`, `h.loopsReady()`, `h->loops()` | The loops ([loops](#loops)), on the test's thread with their kind kept: `runLoops()` runs what was posted and each watch rung (a source's clock wake rung by `process()`, a descriptor marked `readable(fd)`) until all are idle, never a timer; `advance` fires their timers in time order with the framework's (an `every` once per period passed: a handler takes no time); `armed(loop)` counts the sources armed on it whose handles live. Loops start when the framework asks (with `holdLoops`, at `loopsReady()`; with `refuseLoops = "<why>"`, never); a teardown turns each loop until it finished and closed; a source a state left armed fails the call that tore it down unless `allowSourcesLeft` (then only `ear.loop-source-left` in `diagnostics()`). `loops()` lists each loop made: its name, kind, and whether it closed to others, finished and closed |
 | `h.presetStore(store, text, mode)`, `h.storeText(store)`, `h.storeMode(store)`, `h.failStoreOpen(store, why)`, `h.failNextWrite(store, why)`, `h.runIo()`, `h->ioJobs()`, `h->storeCalls()`, `h->breakStores(what)` | The [stores](#stores), by the spec's handle, on an in-memory disk under the framework's own store rules: a file put there before the node opens it, what it holds and its mode now, every open's read refused or the next write refused with `<file>: <why>`. Each open and write is a job on the harness's I/O executor, run as each call settles (with the option `holdIo`, only at `runIo()`); a blocking `replace` runs its job inside the call. `ioJobs()` names every job run (`open store <file>`, `write store <file>`, and `release store <file>` for a dropped open's handle), `storeCalls()` every disk call in order (`readNarrowed`, `read`, `narrow`, `replace`), `breakStores(what)` makes every disk call throw, an adapter's bug, and `overdueNextWrite(ran)` makes the next `replace`'s wait give up, after its job ran (`unconfirmed`, and it landed) or before it began (`refused`) |
 | `h.programs()`, `h.programStarted(i)`, `h.programRefused(i, why)`, `h.feedProgram(i, bytes)`, `h.programSays(i, level, line)`, `h.programExited(i, exit)` | The [programs](#programs), on a fake adapter: every launch in order over every configuration (`ProgramFake`: the `ProgramLaunch` NodeHost resolved, and whether it was told started, stopped, ended and its `RunningProgram` destroyed). Each is told started at its launch, and a stopped one exited at once (killed by `SIGTERM`), unless `holdPrograms`, when the test tells each; the test's calls feed its report feed, write a line on its standard output (`info`) or error (`warn`), refuse it or end it. Every runtime path begins with `runtimeFolder` (`/ear-runtime`; empty: none, and pipe receivers and programs are refused). The harness has no probe, so `claim::AnyTcp` grants 49152, 49153 and so on |
+| `h.status<field>()`, `h.status()`, `h.statusRecord()`, `h.events()`, `h.drain()`, `h->reported()` | Its [status and events](#report): a field's value and the whole view after the last drain; standard output's status records in order (`SeenStatus`: `field`, `from`, `to`, `heldBack`, and each `reset`); its events past the node's pace (`SeenEvent`: `code`, `severity`, `args`, `msg`); the tick now. Each call settles with the tick run (with the option `holdStatus`, only at `drain()` and as `advance` reaches its timer). `reported()` is what the wire would hear, in order with the node's phases: `changed <field>=<value> ...`, `reset ...`, `event <code>: <msg>`, `node <phase>`; `clearReported()` empties it and the two lists |
 | `h->internalErrors()` | Every adapter bug told about the node (the `ear.internal-error` record's callback, node, where and what), in order |
 
 The harness does not see a class's `start()` and `stop()`; their pairing is tested in

@@ -379,6 +379,64 @@ engine refused the link. A wire never depends on a node's state.
    time; the control thread sends the newest to subscribers
    ([control-port.md](control-port.md#levels)).
 
+## Status and events
+
+A node reports what it observes as **status** (fields with a current value) and **events**
+(things that happened), declared in its spec
+([writing-a-node-type.md](writing-a-node-type.md#status-and-events)) and written off the realtime
+thread through `Report<spec>` ([writing-a-node-type.md](writing-a-node-type.md#report)). *Why:* the
+owner's rule, "Nodes should not have direct access to stdout or stderr. The core framework should
+expose the necessary primitives for events, diagnostics, and logging", and status is "view +
+change record": a live view on the wire, coalesced, and every change on standard output, paced so
+each field's last record is its value.
+
+- **One queue per configuration.** `Report`'s writes and the handle's `lost` go into the
+  configuration's queue, on its channel ([teardown](#teardown-by-dependency)), under one short
+  mutex: bounded at 1024 records, a full queue drops a status write or an event and counts it
+  (`ear.records-dropped`, subject `queue`), never a loss. A text is made safe there, on the
+  writer's thread. One writer's records stay in its order, so a status write before an event is
+  drained before it, and a `lost` after the last status after it.
+- **The wake.** The first record into an empty queue posts one wake to the main loop, which marks
+  the node dirty and arms the **tick** on the main loop's timers: 33 ms after the last tick, or at
+  once if that has passed, so at most 30 ticks a second for all nodes together, and none while
+  nothing is written. A `lost` is never paced: it posts a drain of its own, which drains the queue
+  up to it at once.
+- **The drain**, at each tick, node by node in arrival order: a status write updates the node's
+  **status view** (a write of the value a field holds is no change), is offered to standard
+  output's per-field pace and marked for the wire; an event first sends the node's marked fields,
+  then is offered to the node's event pace; a `lost` first sends the marked fields, then fails the
+  node as built (dropped once its configuration's teardown began). At the tick's end, one
+  `statusChanged` per node with the fields marked since the last.
+- **What the view belongs to.** The view is the node's, held by NodeHost: every field at its
+  initial value until written. It belongs to the configuration: when a configuration closes,
+  fails to start or is leaked, its last records are drained, nothing more of it lands (its channel
+  is detached), and the view returns to every initial value, told as one reset after those last
+  values. On a restart that falls between the old configuration's `stopping` and the new one's
+  `configuring`. A stop, a start and a change in place keep the configuration, so they keep the
+  view and send no reset. A write lands until the configuration closed, so a goodbye written
+  during its teardown is heard.
+
+NodeHost tells its `NodeStatusListener`s each change as standard output writes it
+(`statusWritten`), the wire's coalesced changes (`statusChanged`), each reset (`statusReset`) and
+each event (`eventRaised`); a superseded node's only to listeners that hear one. Core reads no wall
+clock: each is stamped on the main loop's steady clock, and each listener maps it to UTC.
+
+### Rates and bounds
+
+| What | Bound | Policy |
+|---|---|---|
+| The tick | 30 a second, all nodes together | armed only when something is written or due |
+| `statusChanged` | one per node per tick | the latest values |
+| A node's queue | 1024 records | a status write or an event dropped and counted (`ear.records-dropped`, subject `queue`); a `lost` never |
+| Standard output's status records | per node and field: 32 at once, then one a second | once the pace holds a change back, every later change of the field is held too, until a **trailing** record writes the view's value with `heldBack`, the count, at the first tick the pace allows (at most 1 s after the last held change); so the last record of each field always matches the view. The held changes are also counted in `ear.records-dropped`, subject `status` |
+| Events (wire and standard output alike) | per node: 32 at once, then one a second | held back ones counted in `ear.events-dropped` (`heldBack`) |
+| `ear.events-dropped`, `ear.records-dropped` | at most one a second per node (and subject) | the count since the last |
+| Flapping | a field with more than its `flapsAbove` changes (default 10 in 10 s) within the window | `ear.status-flapping`, subject the field, active (`transitions`, `windowMs`) when it crosses, said again at most once a window while it stays above; inactive once a whole window passed with it at or below |
+
+A node diagnostic of these is the node's, kept per code and subject as the framework's own
+([output-records.md](output-records.md#diagnostic)): `ear.status-flapping` is a condition,
+`ear.events-dropped` and `ear.records-dropped` observations.
+
 ## Companions
 
 A type's realtime code reads its input banks and writes its output banks, and nothing else. *Why:*

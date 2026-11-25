@@ -32,6 +32,7 @@ add_library(ear_core STATIC
 	sound_card.cpp
 	recording.cpp
 	source_ring.cpp
+	status_book.cpp
 	status_spec.cpp
 	store.cpp)
 # The public headers as a header set: its base directory is the include path of ear_core and
@@ -64,6 +65,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/node_handle.hpp
 	include/ear/core/node_host.hpp
 	include/ear/core/node_lifecycle.hpp
+	include/ear/core/node_status.hpp
 	include/ear/core/node_type.hpp
 	include/ear/core/pass_through.hpp
 	include/ear/core/program.hpp
@@ -71,6 +73,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/ready_events.hpp
 	include/ear/core/reconciler.hpp
 	include/ear/core/recording.hpp
+	include/ear/core/report.hpp
 	include/ear/core/rtp_receiver.hpp
 	include/ear/core/sample_rate.hpp
 	include/ear/core/settings_table.hpp
@@ -129,6 +132,7 @@ if(BUILD_TESTS)
 		tests/program_test.cpp
 		tests/rate_text_test.cpp
 		tests/readiness_test.cpp
+		tests/report_test.cpp
 		tests/reconfigure_test.cpp
 		tests/reshape_test.cpp
 		tests/reconciler_test.cpp

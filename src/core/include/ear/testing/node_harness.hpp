@@ -90,6 +90,23 @@ struct SeenDiagnostic {
 	std::uint64_t count = 1;
 };
 
+/// One status record standard output would write (NodeStatusListener::statusWritten), or a reset (`reset`, no
+/// field), in order (docs/writing-a-node-type.md#testing-a-type).
+struct SeenStatus {
+	std::string field;
+	StatusValue from;
+	StatusValue to;
+	std::uint64_t heldBack = 0;
+	bool reset = false;
+};
+/// One event the node raised, past its event pace, in order: its arguments by name and its sentence filled.
+struct SeenEvent {
+	std::string code;
+	EventSeverity severity;
+	std::vector<std::pair<std::string, StatusValue>> args;
+	std::string msg;
+};
+
 /// One bug of an adapter's NodeHost caught and told (InternalErrorListener), before its node failed lost, in order.
 struct SeenInternalError {
 	std::string callback;
@@ -123,7 +140,9 @@ struct HarnessOptions {
 	/// A host with no recordings folder: every recording is refused ("cannot open <path>: no recordings folder").
 	bool noRecordingsFolder = false;
 	bool autoComplete = true; // fades acknowledged and barriers completed as soon as posted
-	bool holdSinks = false;   // each sink's consumer begins only at ready(bank), not at configure's return
+	/// The status tick runs only at drain() and as the fake clock reaches it, not as each call settles.
+	bool holdStatus = false;
+	bool holdSinks = false; // each sink's consumer begins only at ready(bank), not at configure's return
 	/// Each sink's ring in frames, in place of the size the type asked for (rounded up to a power of two, as the
 	/// engine's is): a ring that a test's cycles do not divide makes the sink hand chunks split at its end, as the
 	/// engine's does (docs/engine.md#sinks).
@@ -339,6 +358,20 @@ public:
 	/// as a type's own thread may log while it is read.
 	std::vector<LogEntry> logs() const;
 	const std::vector<SeenDiagnostic>& diagnostics() const noexcept;
+	/// The node's status and events as the wire would hear them, in order, with its phases between
+	/// (docs/writing-a-node-type.md#testing-a-type): "changed <field>=<value> ...", "reset <field>=<value> ...",
+	/// "event <code>: <msg>", and "node <phase>" at each change of phase. clearReported() empties it and the two below.
+	const std::vector<std::string>& reported() const noexcept;
+	void clearReported();
+	/// Standard output's status records, each reset among them, in order.
+	const std::vector<SeenStatus>& statusRecord() const noexcept;
+	const std::vector<SeenEvent>& events() const noexcept;
+	/// The status view now (NodeHost::statusOf).
+	std::vector<FieldValue> status() const;
+	/// The status tick now, then settled.
+	void drain();
+	/// The main loop pumped and settled as after any call.
+	void settle();
 	/// Every adapter bug told about the node (ear.internal-error's record), in order.
 	const std::vector<SeenInternalError>& internalErrors() const noexcept;
 

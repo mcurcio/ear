@@ -49,6 +49,11 @@ public:
 		const std::scoped_lock lock(mutex_);
 		queue_.push_back(std::move(work));
 	}
+	/// Whether anything is posted and not yet run.
+	bool pending() {
+		const std::scoped_lock lock(mutex_);
+		return !queue_.empty();
+	}
 	/// Runs everything posted, and what that posts, until nothing is left.
 	void pump() {
 		for (;;) {
@@ -145,6 +150,7 @@ part::Fifo FifoMaker::on(std::string bank) { return part::Fifo(std::move(bank));
 struct NodeHarness::Impl final : NodeHealthListener,
 								 NodeNoteListener,
 								 NodeDiagnosticListener,
+								 NodeStatusListener,
 								 EngineDiagnosticListener,
 								 InternalErrorListener,
 								 LogSink {
@@ -886,6 +892,8 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		std::unique_ptr<ErasedInstance> make(NodeContext& node) const override {
 			return std::make_unique<SeenInstance>(harness, inner->make(node));
 		}
+		std::span<const StatusDeclaration* const> statusDeclared() const override { return inner->statusDeclared(); }
+		std::span<const EventDeclaration> eventsDeclared() const override { return inner->eventsDeclared(); }
 		Impl& harness;
 		std::unique_ptr<const NodeConfig> inner;
 	};
@@ -910,6 +918,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		host->subscribeNotes(*this);
 		host->subscribeLog(*this);
 		host->subscribeDiagnostics(*this);
+		host->subscribeStatus(*this);
 		host->subscribeEngineDiagnostics(*this);
 		host->subscribeInternalErrors(*this);
 		clock.setOthers(FakeClock::Others{
@@ -932,8 +941,31 @@ struct NodeHarness::Impl final : NodeHealthListener,
 
 	// ---- Listeners ----
 	void nodeChanged(const NodeHealth& h) override {
+		if (!told || told->phase != h.phase) reportedList.push_back("node " + std::string(phaseName(h.phase)));
 		told = h;
 		toldList.push_back(h);
+	}
+	static std::string fieldsText(std::span<const FieldValue> fields) {
+		std::string text;
+		for (const FieldValue& field : fields)
+			text += (text.empty() ? "" : " ") + std::string(field.name) + "=" + valueText(field.value);
+		return text;
+	}
+	void statusWritten(const NodeName&, const StatusWrite& write) override {
+		statusList.push_back(SeenStatus{std::string(write.field), write.from, write.to, write.heldBack, false});
+	}
+	void statusChanged(const NodeName&, std::span<const FieldValue> fields) override {
+		reportedList.push_back("changed " + fieldsText(fields));
+	}
+	void statusReset(const NodeName&, std::span<const FieldValue> fields) override {
+		reportedList.push_back("reset " + fieldsText(fields));
+		statusList.push_back(SeenStatus{{}, {}, {}, 0, true});
+	}
+	void eventRaised(const NodeName&, const RaisedEvent& event) override {
+		reportedList.push_back("event " + std::string(event.code) + ": " + event.msg);
+		SeenEvent seen{std::string(event.code), event.severity, {}, event.msg};
+		for (const FieldValue& arg : event.args) seen.args.emplace_back(std::string(arg.name), arg.value);
+		eventList.push_back(std::move(seen));
 	}
 	void nodeGone(const NodeName&, std::uint64_t dropped) override {
 		wentAway = true;
@@ -1105,6 +1137,14 @@ struct NodeHarness::Impl final : NodeHealthListener,
 					turned = true;
 				}
 			executor.pump();
+			if (!options.holdStatus && added) {
+				// The status tick now, as each call settles (docs/writing-a-node-type.md#testing-a-type).
+				host->drainStatus();
+				if (executor.pending()) {
+					executor.pump();
+					turned = true;
+				}
+			}
 		}
 		if (!sourcesLeft.empty()) {
 			const std::string left = sourcesLeft.front();
@@ -1210,6 +1250,9 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	bool wentAway = false;
 	std::uint64_t dropped_ = 0;
 	std::vector<std::string> noteList;
+	std::vector<std::string> reportedList; // what the wire would hear of the node's status and events, and its phases
+	std::vector<SeenStatus> statusList;    // standard output's status records, and each reset
+	std::vector<SeenEvent> eventList;
 	mutable std::mutex logMutex;
 	std::vector<LogEntry> logList; // logMutex
 	std::vector<SeenDiagnostic> diagnosticList;
@@ -1545,6 +1588,27 @@ std::uint64_t NodeHarness::droppedFrames() const { return impl_->dropped_; }
 std::vector<CompanionView> NodeHarness::companionList() const { return impl_->host->companionsOf(impl_->options.node); }
 
 const std::vector<std::string>& NodeHarness::notes() const noexcept { return impl_->noteList; }
+
+const std::vector<std::string>& NodeHarness::reported() const noexcept { return impl_->reportedList; }
+
+void NodeHarness::clearReported() {
+	impl_->reportedList.clear();
+	impl_->statusList.clear();
+	impl_->eventList.clear();
+}
+
+const std::vector<SeenStatus>& NodeHarness::statusRecord() const noexcept { return impl_->statusList; }
+
+const std::vector<SeenEvent>& NodeHarness::events() const noexcept { return impl_->eventList; }
+
+std::vector<FieldValue> NodeHarness::status() const { return impl_->host->statusOf(impl_->options.node); }
+
+void NodeHarness::drain() {
+	impl_->host->drainStatus();
+	impl_->settle();
+}
+
+void NodeHarness::settle() { impl_->settle(); }
 
 std::vector<LogEntry> NodeHarness::logs() const {
 	const std::scoped_lock lock(impl_->logMutex);

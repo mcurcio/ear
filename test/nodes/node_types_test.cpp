@@ -120,6 +120,30 @@ TEST_CASE("Each built-in type's schema holds to its ports and its parse", "[buil
 		INFO(type->name());
 		const ear::TypeSchema schema = type->schema();
 		CHECK(schema.name == type->name());
+		// Every status field starts at a value of its kind, or unknown (docs/writing-a-node-type.md#status-fields).
+		for (const ear::StatusDeclaration* field : schema.status) {
+			INFO(field->name);
+			const ear::StatusValue initial = field->initial();
+			switch (field->kind) {
+			case ear::ValueKind::flag:
+				CHECK(std::holds_alternative<bool>(initial));
+				break;
+			case ear::ValueKind::wholeNumber:
+				CHECK(std::holds_alternative<std::int64_t>(initial));
+				break;
+			case ear::ValueKind::decimal:
+				CHECK(std::holds_alternative<double>(initial));
+				break;
+			case ear::ValueKind::choice:
+				CHECK((std::holds_alternative<std::monostate>(initial) ||
+				       std::ranges::find(field->values, std::get<std::string>(initial)) != field->values.end()));
+				continue;
+			case ear::ValueKind::text:
+				CHECK(std::holds_alternative<std::string>(initial));
+				break;
+			}
+			if (field->initialUnknown) CHECK(std::holds_alternative<std::monostate>(initial));
+		}
 		REQUIRE(schema.settings.size() == type->settingKinds().size());
 		const auto& valid = ear::test::validSettings(type->name());
 		for (const ear::NodeSettings& settings : valid) {

@@ -5,6 +5,7 @@
 // disabled, enabled and removed. The types come from the generated list; this file names none.
 #include <algorithm>
 #include <cstdint>
+#include <ranges>
 #include <span>
 #include <string>
 #include <variant>
@@ -118,11 +119,22 @@ TEST_CASE("Every type's change of keys marked in place ends running with the sam
 				readyEvery(harness);
 				REQUIRE(harness.phase() == "running");
 				const std::size_t before = harness.healths().size();
+				const std::vector<ear::FieldValue> status = harness.status();
 				if (harness.change(to) != ear::NodeOutcome::reconfigure) continue; // a restart-only key changed
 				++inPlace;
 				readyEvery(harness);
 				harness.runLoops(); // a change that answered whenReady goes on on its loop
 				CHECK(harness.phase() == "running");
+				// A change in place keeps the configuration, so the status view (docs/architecture.md#status-and-events)
+				// is never reset by it: a field moves only by its writer.
+				const bool fellBack =
+					std::ranges::any_of(harness.healths() | std::views::drop(before), [](const ear::NodeHealth& one) {
+						return one.phase == ear::NodePhase::stopping;
+					});
+				if (!fellBack) {
+					CHECK(harness.status().size() == status.size());
+					CHECK(std::ranges::none_of(harness.statusRecord(), &ear::testing::SeenStatus::reset));
+				}
 				for (std::size_t i = before; i < harness.healths().size(); ++i) {
 					const ear::NodeHealth& one = harness.healths()[i];
 					if (one.phase != ear::NodePhase::stopping) continue;

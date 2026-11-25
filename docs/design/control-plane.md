@@ -542,29 +542,14 @@ namespace ear {
 enum class EventSeverity { info, warn, error };
 // event::of, arg::*, log::code, EventTable and LogCodes are built (docs/writing-a-node-type.md#events).
 
-/// The typed control-plane face of one node, over 3c's NodeHandle: status writes and events by the spec's handles, from
-/// the loops its fields name. Copyable; never blocks but on one short mutex; a write after the configuration began
-/// closing is dropped. A text value is UTF-8 checked, control characters replaced, cut at its bound.
-template <const auto& Spec> class Report {
-public:
-	template <const auto& Field> void set(typename FieldOf<Field>::Value value);   // a writer::loop field
-	template <const auto& Event> void raise(typename ArgsOf<Event>::Values... values);
-	NodeHandle& handle() const noexcept;
-private:
-	explicit Report(NodeHandle& handle);   // made by the framework (NodeOf<Spec>::report) and the harness only
-};
-// NodeOf<Spec> gains: Report<Spec> report();
+// Report<spec> and NodeOf::report() are built (docs/writing-a-node-type.md#report).
 }
 ```
 
 - `TypeSpec` gains `.actions` between `.events` and `.logCodes` (the rest are built:
   [writing-a-node-type.md](../writing-a-node-type.md#the-spec)).
-- A choice argument off the realtime thread takes a `std::string_view`, checked at run time (a value not among them is a
-  type bug: the node fails with the rule's text); from `process` a consteval-made index only.
-- `Report` carries its writes in the same per-node channel as `NodeHandle::lost`, so a status write, an event and a
-  `lost` keep one writer's order. `NodeHandle::say` stays for `sendspin` until step 5.5 removes it.
-- The `Report` exists from `configure`; loops' work runs once configured, so in practice writes come from `configured`
-  on. A write during an in-place change or while stopped lands on the same configuration.
+- From `process`, a choice argument is a consteval-made index only (off the realtime thread it is built: its text,
+  checked at run time). `NodeHandle::say` stays for `sendspin` until step 5.5 removes it.
 
 ### 5.4 What `process` gets: `Io<spec>` grows
 
@@ -764,16 +749,13 @@ Each a case in `src/core/tests/compile_fail/`, matched against GCC 14's wording:
 |---|---|
 | `h.live<row>(value)`, `h.live<row>(member, value)` | moves the slot, as a gesture tick (runs `checkLive`, failing the test on a refusal) |
 | `h.retune(settings)` | a change of live rows only: slots move, no restart (asserts the plan would retune) |
-| `h.status<field>()`, `h.status()` | the live view after the last drain |
-| `h.statusRecord()` | every change in order, `{field, from, to}`, and each reset |
-| `h.events()`, `h.logs()`, `h.diagnostics()` | in order, each with its formatted `msg` |
+| `h.logs()` | the realtime log codes' lines, in order (the status and event captures are built: [writing-a-node-type.md](../writing-a-node-type.md#its-own-tests)) |
 | `h.trigger<action>()`, `h.invoke<action>(args)` | a trigger; a call, on the harness's loops |
-| `h.drain()` | runs the tick now (the harness drains after every `process` and operation by default) |
 | `h.outcome(settings)` | the plan's outcome of a change, without applying it |
 
 The all-type tests gain (the schema's checks are built: [writing-a-node-type.md](../writing-a-node-type.md#what-every-type-must-also-pass)):
-every status field's initial value is of its kind or null; every live row ramps from its default to another value with
-no sample unwritten; the status view survives every in-place change.
+every live row ramps from its default to another value with no sample unwritten (that every status field's initial value
+is of its kind or null, and that the status view survives every in-place change, are built).
 
 ## 6. The realtime contract
 
@@ -796,39 +778,20 @@ allocates, locks, formats, or makes a syscall other than the bell's write.
 
 ### 6.2 Off the realtime thread: one queue per node
 
-- `Report<spec>` writes and the handle's `lost` go into the node's queue: records (status change, event, lost) under one
-  mutex, bounded at 1024 (a `lost` is never dropped); a full queue drops and counts (`ear.records-dropped`, subject
-  `queue`). The handle's `log` goes straight to the log sink, as 3c defines it.
-- The first record into an empty queue posts one wake to the main loop (an atomic flag gates it).
-- Each writer's records stay in its order, so a status write before an event is drained before it, and a `lost` after
-  the last status is drained after it.
-- Text is made safe at the write, on the writer's thread: UTF-8 checked, control characters replaced, cut at the
-  field's `maxBytes` and marked.
+Built ([architecture.md](../architecture.md#status-and-events)).
 
 ### 6.3 The drain and the tick, on the main loop
 
-1. A wake, the bell, a gesture tick taken, or a trailing record due marks the node dirty and, if no tick is due, arms
-   one on `Timers` for 33 ms after the last tick, or now if that has passed.
-2. The tick drains every dirty node: its realtime ring first, then its queue. A status change updates the view, is
-   offered to `StatusLog` (paced per field), counts a transition and marks the field for the wire; an event first sends
-   the node's marked fields as one `node.statusChanged`, then `node.eventRaised` and an `event` record (its `t` the
-   record's cycle start mapped to UTC for a realtime event, the write's time otherwise); a `lost` fails the node as
-   built.
-3. `rt` fields are sampled: a value that differs from the view's is marked for the wire.
-4. One `node.statusChanged` per node with marked fields; one `gesture.changed` `change` per gesture moved; flapping is
-   judged; drops become `ear.events-dropped` or `ear.records-dropped`; trailing status records due are written.
-5. A `lost` from a configuration whose teardown began is dropped; its status and events are still drained until it
-   closed, so a goodbye is heard; then its reset is sent.
+Built for the queue ([architecture.md](../architecture.md#status-and-events)). Left: the realtime ring is drained first,
+before the queue, and the bell and a gesture tick taken mark a node dirty too; after the queue, `rt` fields are sampled
+and a value that differs from the view's is marked for the wire (its transitions counted between samples, for
+flapping); one `gesture.changed` `change` per gesture moved.
 
 ### 6.4 Rates and bounds
 
 | What | Bound | Policy |
 |---|---|---|
-| The tick | 30 a second, all nodes together | armed only when something is dirty |
-| `node.statusChanged` | 30 a second per node | the latest values |
-| `status` records | per node and field: 32 at once, then 1 a second | when the pace held changes back, a **trailing** record with the current value at the next tick the pace allows (at most 1 s after the last held change), carrying `heldBack`; so the last `status` record of each field always matches the view (G9) |
-| Events (wire and stdout) | 32 at once, then 1 a second per node | held back counted in `ear.events-dropped` |
-| Flapping | a field above its `flapsAbove` (default 10 in 10 s) | counted at each write and by the transition counter, so changes between samples count |
+| The tick, `status` records, events and flapping | built | [architecture.md](../architecture.md#rates-and-bounds); flapping also counts an `rt` field's transitions between samples (5.3) |
 | Gesture ticks into the main loop | one pending per gesture | the control thread keeps the newest until the main loop took the last |
 | `gesture.changed` `change` | 30 a second per gesture | never to the owner |
 | Action reply | 10 s | `action-timeout`; the handler's late answer dropped |

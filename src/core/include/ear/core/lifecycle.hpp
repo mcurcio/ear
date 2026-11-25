@@ -55,6 +55,7 @@
 #include "ear/core/source.hpp"
 #include "ear/core/store.hpp"
 #include "ear/core/type_spec.hpp"
+#include "ear/core/report.hpp"
 namespace ear {
 
 // ---- Answers ----
@@ -439,6 +440,9 @@ public:
 	/// The configuration's handle (node_handle.hpp: say, lost, log); keep it in a sink's consumer or a thread the
 	/// instance owns.
 	NodeHandle& handle() noexcept { return context_->handle(); }
+	/// The configuration's Report (docs/writing-a-node-type.md#report): its status writes and events, by the spec's
+	/// handles. Copy it into the loop states that write them.
+	Report<Spec> report() noexcept { return Report<Spec>(context_->handle()); }
 	/// `work(state)` on loop `Handle`'s thread (`work()` for a loop with no state), in post order; staged until the
 	/// node is configured (docs/writing-a-node-type.md#loops). The instance's only way to its loops' states: start()
 	/// and stop() post. A loop the spec lacks, or a function of another loop's state, does not compile.

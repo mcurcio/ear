@@ -21,6 +21,7 @@
 #include "ear/core/log.hpp"
 #include "ear/core/loop.hpp"
 #include "ear/core/node_lifecycle.hpp"
+#include "ear/core/node_status.hpp"
 #include "ear/core/program.hpp"
 #include "ear/core/recording.hpp"
 #include "ear/core/sink.hpp"
@@ -357,6 +358,8 @@ inline constexpr std::chrono::milliseconds waitingForPace{1'000};
 /// A hook that ran longer than this on the main loop is ear.hook-slow (docs/writing-a-node-type.md#the-class;
 /// docs/output-records.md#diagnostic).
 inline constexpr std::chrono::milliseconds hookSlowBound{20};
+/// The status tick's pace: at most one tick per 33 ms, all nodes together (docs/architecture.md#rates-and-bounds).
+inline constexpr std::chrono::milliseconds statusTickPace{33};
 class NodeHost final : public DesiredNodeListener,
 					   public NodeOperations,
 					   public NodeCounterSource,
@@ -371,6 +374,9 @@ public:
 	void subscribe(NodeHealthListener& listener);
 	void subscribeNotes(NodeNoteListener& listener);
 	void subscribeDiagnostics(NodeDiagnosticListener& listener);
+	/// Where each node's status and events go (docs/architecture.md#status-and-events): its changes as standard output
+	/// writes them, the wire's coalesced changes, its resets and its events. Main thread, before the first node.
+	void subscribeStatus(NodeStatusListener& listener);
 	void subscribeEngineDiagnostics(EngineDiagnosticListener& listener);
 	/// Where each span of counts begins and ends (docs/engine.md#reporting-the-counters): countsBegan when a node is added,
 	/// its serial the span; countsEnded with its final counts as it goes, before its nodeGone or supersededGone. Main
@@ -474,6 +480,12 @@ public:
 	/// each was first said, each as last said (docs/output-records.md#diagnostic); empty when there is no such node.
 	/// Main thread.
 	std::vector<NodeDiagnostic> diagnosticsOf(const NodeName& node) const;
+	/// The status view of the newest node of this name not yet gone (docs/architecture.md#status-and-events): every
+	/// field in declaration order; empty when there is no such node or it never configured. Main thread.
+	std::vector<FieldValue> statusOf(const NodeName& node) const;
+	/// The status tick now, whatever its pace: every node's records drained and its book's paces judged. The type
+	/// harness's (docs/writing-a-node-type.md#testing-a-type). Main thread.
+	void drainStatus();
 	/// CounterWatch's ear.sink-dropped or ear.source-shortfall (CounterListener), kept on the newest node of the name
 	/// not yet gone and told every NodeDiagnosticListener, as NodeHost's own are. Main thread.
 	void companionFramesLost(const NodeName& node, const CompanionView& companion, std::uint64_t frames,
