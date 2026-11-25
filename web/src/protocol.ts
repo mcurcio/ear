@@ -12,7 +12,15 @@ export type JsonObject = { [key: string]: JsonValue };
 // ----- The graph -----
 
 /** The phase's colour (docs/control-port.md#node-health). */
-export type NodeState = "starting" | "running" | "stopping" | "stopped" | "disabled" | "failed" | (string & {});
+export type NodeState =
+  | "starting"
+  | "running"
+  | "stopping"
+  | "stopped"
+  | "disabled"
+  | "failed"
+  | "reconfiguring"
+  | (string & {});
 /** The exact state; a client explains by it and never colours by it. */
 export type NodePhase =
   | "added"
@@ -24,6 +32,7 @@ export type NodePhase =
   | "stopped"
   | "disabled"
   | "failed"
+  | "reconfiguring"
   | (string & {});
 /** What the graph wants of the node: disabled from ear.conf, stopped while its stop is held, else running. */
 export type Wanted = "running" | "stopped" | "disabled" | (string & {});
@@ -37,6 +46,17 @@ export type CauseKind =
   | "action"
   | "retry"
   | "enabling"
+  | "fell-back"
+  | "reshape"
+  | (string & {});
+/** Why a change in place fell back to a restart (cause.kind fell-back). */
+export type FellBackReason =
+  | "restart-asked"
+  | "deadline"
+  | "resource-refused"
+  | "resource-lost"
+  | "failed"
+  | "restart-requested"
   | (string & {});
 export type RouteStatusName = "pending" | "linked" | "refused" | (string & {});
 export type FailureCode = "engine-refused" | "start-failed" | "lost" | (string & {});
@@ -50,6 +70,8 @@ export type Applied =
   | "enable"
   | "stored"
   | "unchanged"
+  | "reconfigure"
+  | "reshape"
   | (string & {});
 
 export interface FailureReason {
@@ -59,10 +81,23 @@ export interface FailureReason {
 
 export interface NodeCause {
   kind: CauseKind;
-  /** settings: the changed keys. */
+  /** settings, reshape and fell-back: the changed keys. */
   keys?: string[];
-  /** restarting: the restart's own kind (and its keys). */
-  restart?: { kind: CauseKind; keys?: string[] };
+  /** reshape: the public ports the change adds and removes. */
+  added?: string[];
+  removed?: string[];
+  /** fell-back: why, and in words. */
+  reason?: FellBackReason;
+  detail?: string;
+  /** restarting: the restart's own kind (and its members). */
+  restart?: {
+    kind: CauseKind;
+    keys?: string[];
+    added?: string[];
+    removed?: string[];
+    reason?: FellBackReason;
+    detail?: string;
+  };
 }
 
 /** What a node still waits for, once its phase has lasted 2 s. */
@@ -95,6 +130,28 @@ export interface NodeHealth {
   waitingFor?: WaitingFor[];
   /** Present only while failed. */
   reason?: FailureReason;
+  /** reconfiguring only: the keys the change in flight applies. */
+  keys?: string[];
+  /** reconfiguring only: the keys changed since its commit point, which the node takes once it ends. */
+  next?: string[];
+}
+
+/**
+ * node.set's answer: what the plan applied, and when the node's ports change, whether a reshape is in place, the ports
+ * added and removed, and the routes it removed (routesDropped) or, for a dry run, would remove (routes).
+ */
+export interface SetResult {
+  applied: Applied;
+  inPlace?: boolean;
+  ports?: PortsMoved;
+  routesDropped?: RouteEnds[];
+  routes?: RouteEnds[];
+}
+
+/** A change of a node's ports (feature reshape): whole port names. */
+export interface PortsMoved {
+  added: string[];
+  removed: string[];
 }
 
 export interface PortRef {
@@ -166,6 +223,11 @@ export interface Companion {
   /** The inside bank it joins: inside banks appear nowhere else on the wire. */
   bank: string;
   ready: boolean;
+  /**
+   * A companion a change in place replaces make-before-break, until the commit point destroys it: listed just before
+   * its replacement, which shares its name for a moment. Absent otherwise.
+   */
+  retiring?: true;
   /** A sink: frames its ring had no room for, this configuration. */
   dropped?: number;
   /** A source: frames played as zeros while its writer was not idle, this configuration. */
@@ -181,7 +243,7 @@ export interface GraphNode extends NodeHealth {
   outputs: string[];
   /** ear.conf disables it (`disabled true;` in its braces). */
   disabled?: true;
-  /** Feature counters: its counters (a port-caused replace's node.added carries those it carries on). */
+  /** Feature counters: its counters (zero in node.added; a change of ports keeps them). */
   counters?: NodeCounters;
   /** Feature companions: its companion list, in request order ([] in node.added, and for a node with none). */
   companions?: Companion[];
@@ -284,7 +346,11 @@ export interface Methods {
   "levels.subscribe": { params: undefined; result: { windowsPerSecond: number } };
   /** disabled (feature lifecycle): written as `disabled true;` in the node's braces. */
   "node.add": { params: NodeSpec & { disabled?: boolean }; result: Record<string, never> };
-  "node.update": { params: { name: string; settings: JsonObject }; result: Record<string, never> };
+  /** dropRoutes (feature reshape): the routes its new ports strand are removed in the same edit. */
+  "node.update": {
+    params: { name: string; settings: JsonObject; dropRoutes?: boolean };
+    result: Record<string, never>;
+  };
   "node.remove": { params: { name: string }; result: Record<string, never> };
   "route.add": { params: RouteEnds; result: Record<string, never> };
   "route.remove": { params: RouteEnds; result: Record<string, never> };
@@ -304,6 +370,15 @@ export interface Methods {
    * written for; {} once the graph runs it. invalid-text's diagnostics are placed in `text`.
    */
   "node.addText": { params: { text: string; version: string }; result: Record<string, never> };
+  /**
+   * Feature node.set: a JSON merge patch of the node's settings (null removes a key), answered at the commit with what
+   * the plan applied. dryRun (feature dryRun): the same answer, nothing changed; dropRoutes (feature reshape): the routes
+   * its new ports strand are removed in the same edit.
+   */
+  "node.set": {
+    params: { name: string; settings: JsonObject; dryRun?: boolean; dropRoutes?: boolean };
+    result: SetResult;
+  };
   /** The lifecycle (feature lifecycle). Start, stop and restart edit nothing; disable and enable edit ear.conf. */
   "node.start": { params: { name: string }; result: { applied: Applied } };
   "node.stop": { params: { name: string }; result: { applied: Applied } };
@@ -321,8 +396,20 @@ export type Level = [peak: number, rms: number];
 export interface Notifications {
   /** Public ports only; its health from its spec (added, or disabled). */
   "node.added": GraphNode;
-  /** applied: what the change asks of the node; disabled only when true. */
-  "node.updated": { name: string; settings: JsonObject; applied?: Applied; disabled?: true };
+  /**
+   * applied: what the change asks of the node; disabled only when true. Feature reshape: when its ports changed, the
+   * ports added and removed and its new inputs and outputs, and on a reshape whether it is taken in place.
+   */
+  "node.updated": {
+    name: string;
+    settings: JsonObject;
+    applied?: Applied;
+    disabled?: true;
+    inPlace?: boolean;
+    ports?: PortsMoved;
+    inputs?: string[];
+    outputs?: string[];
+  };
   /** After route.removed for each of its routes. */
   "node.removed": { name: string };
   /** Every health member: one absent is absent now. */
@@ -382,6 +469,8 @@ export type ControlErrorCode =
   | "node-disabled"
   /** node.start or node.restart: the block is lost; node.restart: not started yet (data.reason). */
   | "not-restartable"
+  /** node.update without dropRoutes: its new ports drop ports routes name (data.ports, data.routes). */
+  | "ports-in-use"
   | (string & {});
 
 export const rpcErrorCodes = {
@@ -404,6 +493,9 @@ export interface RpcErrorObject {
     column?: number;
     /** not-restartable: "block-lost" or "not-started". */
     reason?: string;
+    /** ports-in-use: the dropped ports routes name, and every such route. */
+    ports?: string[];
+    routes?: RouteEnds[];
     /** invalidParams. */
     pointer?: string;
   };
@@ -463,6 +555,7 @@ const methodSet: { [M in MethodName]: true } = {
   "node.restart": true,
   "node.disable": true,
   "node.enable": true,
+  "node.set": true,
   "node.setText": true,
   "node.addText": true,
 };
@@ -506,9 +599,10 @@ const fileErrorCodeSet: { [C in FileErrorCode]: true } = {
 };
 export const fileErrorCodes = Object.keys(fileErrorCodeSet) as FileErrorCode[];
 
-const controlErrorCodeSet: { [C in "node-disabled" | "not-restartable"]: true } = {
+const controlErrorCodeSet: { [C in "node-disabled" | "not-restartable" | "ports-in-use"]: true } = {
   "node-disabled": true,
   "not-restartable": true,
+  "ports-in-use": true,
 };
 export const controlErrorCodes = Object.keys(controlErrorCodeSet) as ControlErrorCode[];
 
@@ -517,6 +611,9 @@ export const lifecycleFeature = "lifecycle";
 export const countersFeature = "counters";
 export const companionsFeature = "companions";
 export const nodeTextFeature = "node-text";
+export const reshapeFeature = "reshape";
+export const nodeSetFeature = "node.set";
+export const dryRunFeature = "dryRun";
 
 // ----- The conformance fixtures (test/protocol/*.json) -----
 

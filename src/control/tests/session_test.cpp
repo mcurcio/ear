@@ -79,7 +79,8 @@ std::string describe(const Command& command) {
 			else if constexpr (std::is_same_v<C, AddNode>)
 				return "addNode " + c.node.name + " " + c.node.type + " " + c.node.settings.dump() +
 			           (c.node.disabled ? " disabled" : "");
-			else if constexpr (std::is_same_v<C, UpdateNode>) return "updateNode " + c.node + " " + c.settings.dump();
+			else if constexpr (std::is_same_v<C, UpdateNode>)
+				return "updateNode " + c.node + " " + c.settings.dump() + (c.dropRoutes ? " dropRoutes" : "");
 			else if constexpr (std::is_same_v<C, RemoveNode>) return "removeNode " + c.node;
 			else if constexpr (std::is_same_v<C, AddRoute>) return "addRoute " + text(c.route);
 			else if constexpr (std::is_same_v<C, RemoveRoute>) return "removeRoute " + text(c.route);
@@ -90,6 +91,9 @@ std::string describe(const Command& command) {
 			else if constexpr (std::is_same_v<C, EnableNode>) return "enableNode " + c.node;
 			else if constexpr (std::is_same_v<C, SetNodeText>) return "setNodeText " + c.node + " " + c.version;
 			else if constexpr (std::is_same_v<C, AddNodeText>) return "addNodeText " + c.version;
+			else if constexpr (std::is_same_v<C, SetNode>)
+				return "setNode " + c.node + " " + c.settings.dump() + (c.dryRun ? " dryRun" : "") +
+			           (c.dropRoutes ? " dropRoutes" : "");
 			else {
 				static_assert(std::is_same_v<C, SetGraphFile>);
 				return "setGraphFile " + c.version;
@@ -281,21 +285,10 @@ TEST_CASE("snapshot.json: graph.get and graph.subscribe answer with the whole gr
 	CHECK(w.graph.offLoop == 0);
 }
 
-/// A node's counters by name, as NodeHost answers them.
-struct HandCounts final : ear::NodeCounterSource {
-	std::map<ear::NodeName, ear::NodeCounts> nodes;
-	std::optional<ear::NodeCounts> counts(const ear::NodeName& node) const override {
-		const auto it = nodes.find(node);
-		if (it == nodes.end()) return std::nullopt;
-		return it->second;
-	}
-	std::optional<ear::NodeCounts> spanCounts(std::uint64_t) const override { return std::nullopt; }
-	std::vector<ear::CompanionView> spanCompanions(std::uint64_t) const override { return {}; }
-};
-
-TEST_CASE("counters-changed.json: the snapshot's counters, counters.changed replacing what it names, and a port-caused "
-          "replace's node.added carrying the counts it carries on",
-          "[session][protocol][counters]") {
+TEST_CASE(
+	"counters-changed.json: the snapshot's counters, counters.changed replacing what it names, and a change of ports "
+	"keeping the node",
+	"[session][protocol][counters]") {
 	using ear::NamedCounts;
 	using ear::NodeCounts;
 	const json document = fixture("counters-changed");
@@ -314,8 +307,6 @@ TEST_CASE("counters-changed.json: the snapshot's counters, counters.changed repl
 	                              std::nullopt,
 	                              NodeCounts{.missedCycles = 33, .overruns = 2}});
 	w.graph.view.counts = ear::GraphCounts{.cycles = 18750, .cutCycles = 39, .stalls = 1};
-	HandCounts counts;
-	w.gateway.readCounts(counts);
 	RecordingOutbox out;
 	ControlSession session(*w.hub, out);
 
@@ -328,14 +319,15 @@ TEST_CASE("counters-changed.json: the snapshot's counters, counters.changed repl
 		const std::vector<NamedCounts> two{{"desk", {.missedCycles = 12}}, {"ghost", {.missedCycles = 5}}};
 		w.gateway.countersChanged({.cycles = 56250, .cutCycles = 44, .stalls = 2}, 234, two);
 	});
-	// The channel count changes: a port-caused replace. The gateway hears it before NodeHost does, so the name's counts
-	// are still the older node's, which the newer carries on.
-	counts.nodes["desk"] = NodeCounts{.missedCycles = 12};
+	// The channel count changes: a reshape, the same node with the counters it has counted
+	// (docs/control-port.md#changes-of-ports).
 	w.graph.script.push_back({R"(updateNode desk {"card":"MOTU","playback":4})", [&] {
-								  const ear::NodeChange ports{ear::NodeOutcome::restart, {"playback"}, true};
-								  w.gateway.nodeReplacing("desk", ports);
-								  w.gateway.nodeReplaced({"desk", "card", {{"card", "MOTU"}, {"playback", 4}}},
-		                                                 std::make_shared<Config>(cardPorts(4)), ports);
+								  const ear::NodeChange ports{.outcome = ear::NodeOutcome::reshape,
+		                                                      .keys = {"playback"},
+		                                                      .oldPorts = cardPorts(2),
+		                                                      .ports = cardPorts(4)};
+								  w.gateway.nodeChanged({"desk", "card", {{"card", "MOTU"}, {"playback", 4}}},
+		                                                std::make_shared<Config>(cardPorts(4)), ports);
 								  return Result{};
 							  }});
 	w.receive(session, requests[1]);
@@ -347,19 +339,15 @@ TEST_CASE("counters-changed.json: the snapshot's counters, counters.changed repl
 	CHECK(w.graph.script.empty());
 }
 
-TEST_CASE("A replace that is not port-caused, and a node added, carry zero counters whatever the name counted",
-          "[session][counters]") {
+TEST_CASE("A replace (another type), and a node added, carry zero counters", "[session][counters]") {
 	World w;
 	w.graph.view =
 		ear::GraphView{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {"card", "white"}, {}, {}};
-	HandCounts counts;
-	counts.nodes["x"] = ear::NodeCounts{.overruns = 9};
-	w.gateway.readCounts(counts);
 	RecordingOutbox out;
 	ControlSession session(*w.hub, out);
 	w.receive(session, R"({"jsonrpc":"2.0","id":1,"method":"graph.subscribe"})");
 	w.onMain([&] {
-		const ear::NodeChange type{ear::NodeOutcome::restart, {}, false};
+		const ear::NodeChange type{ear::NodeOutcome::restart, {}};
 		w.gateway.nodeReplacing("x", type);
 		w.gateway.nodeReplaced({"x", "white", json::object()},
 		                       std::make_shared<Config>(ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}}),
@@ -493,6 +481,10 @@ TEST_CASE("errors.json: refusals, stopping and envelope errors", "[session][prot
 	w.graph.script.push_back(
 		{"restartNode fpp", refused(ControlRefusal{NotRestartable{"fpp", NotRestartable::Reason::notStarted}})});
 	w.graph.script.push_back({"stopNode ghost", refused(Result(std::unexpected(ear::UnknownNode{"ghost"})))});
+	// A change of ports stranding a route (docs/control-port.md#changes-of-ports).
+	w.graph.script.push_back(
+		{R"(updateNode desk {"card":"MOTU","playback":1})",
+	     refused(ControlRefusal{PortsInUse{"desk", {"play.2"}, {{{"kitchen", "from.left"}, {"desk", "play.2"}}}}})});
 	w.graph.script.push_back({"startNode noise", refused(Result(std::unexpected(ear::Stopping{})))});
 	RecordingOutbox out;
 	ControlSession session(*w.hub, out);
@@ -540,7 +532,7 @@ TEST_CASE("lifecycle.json: a node's whole life, each health change one node.stat
 	using Lifecycle = std::expected<void, ear::CommandError>;
 	const json document = fixture("lifecycle");
 	const auto requests = requestsOf(document);
-	REQUIRE(requests.size() == 26);
+	REQUIRE(requests.size() == 31);
 	World w;
 	const ear::Ports card2{{{ear::Direction::input, "play", {"1", "2"}}}};
 	const ear::Ports noisePorts{{{ear::Direction::output, "noise", {"mono"}}}};
@@ -777,6 +769,89 @@ TEST_CASE("lifecycle.json: a node's whole life, each health change one node.stat
 		w.told(at("fpp", NodePhase::stopped, Wanted::stopped));
 	});
 
+	// Changes in place: node.updated (reconfigure), reconfiguring with its keys, the reply; from stopped it ends
+	// stopped, from running running; a newer change during the commit is next, then a fresh change, which falls back.
+	const auto rtpAt = [&](int port, const char* format) {
+		return json{{"address", "0.0.0.0"}, {"channels", 2}, {"format", format}, {"port", port}};
+	};
+	const auto changing = [](ear::NodeHealth h, std::vector<std::string> keys, std::vector<std::string> next = {}) {
+		h.keys = std::move(keys);
+		h.next = std::move(next);
+		return h;
+	};
+	const auto inPlace = [&](int port, const char* format, std::vector<std::string> keys, ear::NodeHealth told) {
+		const json settings = rtpAt(port, format);
+		w.graph.script.push_back(
+			{"updateNode fpp " + settings.dump(), [&w, settings, keys, told, rtpPorts]() -> CommandResult {
+				 w.gateway.nodeChanged({"fpp", "rtp", settings}, std::make_shared<Config>(rtpPorts),
+			                           ear::NodeChange{ear::NodeOutcome::reconfigure, keys});
+				 w.told(told);
+				 return Lifecycle{};
+			 }});
+	};
+	inPlace(5006, "L24", {"port"}, changing(at("fpp", NodePhase::reconfiguring, Wanted::stopped), {"port"}));
+	w.receive(session, requests[26]);
+	w.onMain([&] { w.told(at("fpp", NodePhase::stopped, Wanted::stopped)); });
+	w.graph.script.push_back({"startNode fpp", [&]() -> CommandResult {
+								  w.told(at("fpp", NodePhase::starting));
+								  return Applied{AppliedKind::start};
+							  }});
+	w.receive(session, requests[27]);
+	w.onMain([&] { w.told(at("fpp", NodePhase::running)); });
+	inPlace(5008, "L24", {"port"}, changing(at("fpp", NodePhase::reconfiguring), {"port"}));
+	w.receive(session, requests[28]);
+	inPlace(5008, "L16", {"format"}, changing(at("fpp", NodePhase::reconfiguring), {"port"}, {"format"}));
+	w.receive(session, requests[29]);
+	w.onMain([&] {
+		w.told(changing(at("fpp", NodePhase::reconfiguring), {"format"}));
+		const ear::NodeCause fellBack{
+			Kind::fellBack, std::nullopt, {"format"}, ear::NodeCause::FellBack::deadline, "deadline 10s passed"};
+		ear::NodeCause restarting = fellBack;
+		restarting.kind = Kind::restarting;
+		restarting.restart = Kind::fellBack;
+		auto stopping = at("fpp", NodePhase::stopping);
+		stopping.cause = restarting;
+		w.told(stopping);
+		auto configuring = at("fpp", NodePhase::configuring);
+		configuring.cause = fellBack;
+		w.told(configuring);
+		w.told(at("fpp", NodePhase::configured));
+		w.told(at("fpp", NodePhase::starting));
+		w.told(at("fpp", NodePhase::running));
+	});
+
+	// A change of ports (docs/control-port.md#changes-of-ports): the same node, its ports redrawn, restarted with the
+	// cause reshape.
+	const ear::Ports card3{{{ear::Direction::input, "play", {"1", "2", "3"}}}};
+	const json porch3 = {{"card", "USB3"}, {"playback", 3}};
+	w.graph.script.push_back({"updateNode porch " + porch3.dump(), [&]() -> CommandResult {
+								  w.gateway.nodeChanged({"porch", "card", porch3}, std::make_shared<Config>(card3),
+		                                                ear::NodeChange{.outcome = ear::NodeOutcome::reshape,
+		                                                                .keys = {"playback"},
+		                                                                .oldPorts = card2,
+		                                                                .ports = card3});
+								  ear::NodeCause reshape{Kind::reshape, std::nullopt, {"playback"}};
+								  reshape.ports = ear::portsMoved(card2, card3);
+								  ear::NodeCause restarting = reshape;
+								  restarting.kind = Kind::restarting;
+								  restarting.restart = Kind::reshape;
+								  auto stopping = at("porch", NodePhase::stopping);
+								  stopping.cause = restarting;
+								  w.told(stopping);
+								  return Lifecycle{};
+							  }});
+	w.receive(session, requests[30]);
+	w.onMain([&] {
+		ear::NodeCause reshape{Kind::reshape, std::nullopt, {"playback"}};
+		reshape.ports = ear::portsMoved(card2, card3);
+		auto configuring = at("porch", NodePhase::configuring);
+		configuring.cause = reshape;
+		w.told(configuring);
+		w.told(at("porch", NodePhase::configured));
+		w.told(at("porch", NodePhase::starting));
+		w.told(at("porch", NodePhase::running));
+	});
+
 	checkMessages(out, document["messages"]);
 	CHECK(w.graph.script.empty());
 	CHECK(w.graph.offLoop == 0);
@@ -832,7 +907,6 @@ TEST_CASE("graph-file.json: file changes come before the events they cause, and 
 	const auto requests = requestsOf(document);
 	REQUIRE(requests.size() == 15);
 	const fx::Texts t;
-	const ear::Route toDesk{{"noise", "noise.mono"}, {"desk", "play.1"}};
 	const ear::Ports card2{{{ear::Direction::input, "play", {"1", "2"}}}};
 	const ear::Ports card4{{{ear::Direction::input, "play", ear::numbered(4)}}};
 	const auto config = [](ear::Ports ports) { return std::make_shared<Config>(std::move(ports)); };
@@ -888,16 +962,23 @@ TEST_CASE("graph-file.json: file changes come before the events they cause, and 
 	w.graph.script.push_back({R"(updateNode desk {"card":"MOTU"})", refused(FileRefusal{SharedDefinition{{8, 5}}})});
 	w.receive(session, requests[8]);
 
-	w.graph.script.push_back({R"(updateNode desk {"card":"MOTU","playback":4})", [&]() -> CommandResult {
-								  w.fileChanged(fx::recordFile("v7", t.t7, "v7"), FileChangeCause::edit);
-								  w.gateway.routeRemoved(toDesk);
-								  w.gateway.nodeRemoved("desk");
-								  w.gateway.nodeRemoved("porch");
-								  w.nodeAdded({"desk", "card", {{"card", "MOTU"}, {"playback", 4}}}, card4);
-								  w.nodeAdded({"porch", "card", {{"card", "USB2"}, {"playback", 4}}}, card4);
-								  w.gateway.routeAdded(toDesk);
-								  return Result{};
-							  }});
+	w.graph.script.push_back(
+		{R"(updateNode desk {"card":"MOTU","playback":4})", [&]() -> CommandResult {
+			 // A reshape of both: the same nodes, the route to desk:play.1 kept
+			 // (docs/control-port.md#changes-of-ports); each failed card configured afresh.
+			 w.fileChanged(fx::recordFile("v7", t.t7, "v7"), FileChangeCause::edit);
+			 const ear::NodeChange reshape{
+				 .outcome = ear::NodeOutcome::reshape, .keys = {"playback"}, .oldPorts = card2, .ports = card4};
+			 w.gateway.nodeChanged({"desk", "card", {{"card", "MOTU"}, {"playback", 4}}}, config(card4), reshape);
+			 w.gateway.nodeChanged({"porch", "card", {{"card", "USB2"}, {"playback", 4}}}, config(card4), reshape);
+			 for (const char* name : {"desk", "porch"}) {
+				 ear::NodeHealth configuring = health(name, NodeState::starting);
+				 configuring.cause = ear::NodeCause{ear::NodeCause::Kind::reshape, std::nullopt, {"playback"}};
+				 configuring.cause->ports = ear::PortsMoved{{"play.3", "play.4"}, {}};
+				 w.told(configuring);
+			 }
+			 return Result{};
+		 }});
 	w.receive(session, requests[9]);
 	w.onMain([&] {
 		w.state("desk", NodeState::failed,
@@ -938,6 +1019,119 @@ TEST_CASE("graph-file.json: file changes come before the events they cause, and 
 	const std::vector<std::string> tail(w.graph.calls.end() - 5, w.graph.calls.end());
 	CHECK(tail ==
 	      std::vector<std::string>{R"(updateNode rec {"path":"take4.wav"})", "read", "read", "readFile", "readFile"});
+}
+
+TEST_CASE("node-set.json: a merge of a node's settings answered with what it applied, dry runs changing nothing, and a "
+          "reshape refused ports-in-use, then with dropRoutes",
+          "[session][protocol][node-set]") {
+	using ear::NodePhase;
+	using Kind = ear::NodeCause::Kind;
+	const json document = fixture("node-set");
+	const auto requests = requestsOf(document);
+	REQUIRE(requests.size() == 12);
+	World w;
+	const ear::Ports card1{{{ear::Direction::input, "play", {"1"}}}};
+	const ear::Ports card2{{{ear::Direction::input, "play", {"1", "2"}}}};
+	const ear::Ports rtpPorts{{{ear::Direction::output, "stream", {"1", "2"}}}};
+	const ear::Route toDesk{{"noise", "noise.mono"}, {"desk", "play.2"}};
+	const ear::Route fppToRec{{"fpp", "stream.1"}, {"rec", "record.left"}};
+	json fpp = {{"address", "0.0.0.0"}, {"channels", 2}, {"format", "L24"}, {"latencyMs", 40}, {"port", 5004}};
+	w.graph.view = ear::GraphView{
+		{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {"card", "file", "rtp", "white"}, {}, {}};
+	w.graph.view.nodes.push_back(
+		{{"desk", "card", {{"card", "MOTU"}, {"playback", 2}}}, card2, at("desk", NodePhase::running)});
+	w.graph.view.nodes.push_back({{"fpp", "rtp", fpp}, rtpPorts, at("fpp", NodePhase::running)});
+	w.graph.view.nodes.push_back({{"noise", "white", json::object()},
+	                              ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}},
+	                              at("noise", NodePhase::running)});
+	w.graph.view.nodes.push_back({{"porch", "card", {{"card", "USB2"}, {"playback", 2}}, true},
+	                              card2,
+	                              at("porch", NodePhase::disabled, ear::Wanted::disabled)});
+	w.graph.view.nodes.push_back({{"rec", "file", {{"path", "take1.wav"}}},
+	                              ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
+	                              at("rec", NodePhase::running)});
+	w.graph.view.routes.push_back({toDesk, ear::RouteMatch::linked, ""});
+	w.graph.view.routes.push_back({fppToRec, ear::RouteMatch::linked, ""});
+	RecordingOutbox out;
+	ControlSession session(*w.hub, out);
+	const auto answer = [](CommandResult result) { return [result] { return result; }; };
+	const auto changing = [](ear::NodeHealth h, std::vector<std::string> keys) {
+		h.keys = std::move(keys);
+		return h;
+	};
+	// A change in place of fpp: node.updated, reconfiguring with its keys, then the reply; running after it.
+	const auto inPlace = [&](const std::string& call, json settings, std::vector<std::string> keys) {
+		w.graph.script.push_back({call, [&w, settings, keys, rtpPorts, changing]() -> CommandResult {
+									  w.gateway.nodeChanged({"fpp", "rtp", settings},
+			                                                std::make_shared<Config>(rtpPorts),
+			                                                ear::NodeChange{ear::NodeOutcome::reconfigure, keys});
+									  w.told(changing(at("fpp", NodePhase::reconfiguring), keys));
+									  return Applied{AppliedKind::reconfigure};
+								  }});
+	};
+
+	w.receive(session, requests[0]); // graph.subscribe
+	w.graph.script.push_back({R"(setNode fpp {"port":5006} dryRun)", answer(Applied{AppliedKind::reconfigure})});
+	w.receive(session, requests[1]);
+	fpp["port"] = 5006;
+	inPlace(R"(setNode fpp {"port":5006})", fpp, {"port"});
+	w.receive(session, requests[2]);
+	w.onMain([&] { w.told(at("fpp", NodePhase::running)); });
+	w.graph.script.push_back({R"(setNode fpp {"port":5006})", answer(Applied{AppliedKind::unchanged})});
+	w.receive(session, requests[3]);
+	w.graph.script.push_back({R"(setNode fpp {"port":5006} dryRun)", answer(Applied{AppliedKind::unchanged})});
+	w.receive(session, requests[4]);
+	fpp.erase("latencyMs");
+	inPlace(R"(setNode fpp {"latencyMs":null})", fpp, {"latencyMs"});
+	w.receive(session, requests[5]);
+	w.onMain([&] { w.told(at("fpp", NodePhase::running)); });
+	w.graph.script.push_back({R"(setNode rec {"path":null})",
+	                          answer(Result(std::unexpected(ear::InvalidSettings{"rec", "path: missing"})))});
+	w.receive(session, requests[6]);
+	w.graph.script.push_back({R"(setNode rec {"path":"take2.wav"} dryRun)", answer(Applied{AppliedKind::restart})});
+	w.receive(session, requests[7]);
+	w.graph.script.push_back(
+		{R"(setNode porch {"playback":4} dryRun)",
+	     answer(Applied{AppliedKind::stored, std::nullopt, ear::PortsMoved{{"play.3", "play.4"}, {}}, std::nullopt,
+	                    std::vector<ear::Route>{}})});
+	w.receive(session, requests[8]);
+	const ear::PortsMoved moved = ear::portsMoved(card2, card1);
+	w.graph.script.push_back(
+		{R"(setNode desk {"playback":1} dryRun)",
+	     answer(Applied{AppliedKind::reshape, false, moved, std::nullopt, std::vector<ear::Route>{toDesk}})});
+	w.receive(session, requests[9]);
+	w.graph.script.push_back(
+		{R"(setNode desk {"playback":1})", answer(ControlRefusal{PortsInUse{"desk", {"play.2"}, {toDesk}}})});
+	w.receive(session, requests[10]);
+	ear::NodeCause reshape{Kind::reshape, std::nullopt, {"playback"}};
+	reshape.ports = moved;
+	w.graph.script.push_back({R"(setNode desk {"playback":1} dropRoutes)", [&]() -> CommandResult {
+								  w.gateway.routeRemoved(toDesk);
+								  w.gateway.nodeChanged({"desk", "card", {{"card", "MOTU"}, {"playback", 1}}},
+		                                                std::make_shared<Config>(card1),
+		                                                ear::NodeChange{.outcome = ear::NodeOutcome::reshape,
+		                                                                .keys = {"playback"},
+		                                                                .oldPorts = card2,
+		                                                                .ports = card1});
+								  ear::NodeCause restarting = reshape;
+								  restarting.kind = Kind::restarting;
+								  restarting.restart = Kind::reshape;
+								  auto stopping = at("desk", NodePhase::stopping);
+								  stopping.cause = restarting;
+								  w.told(stopping);
+								  return Applied{AppliedKind::reshape, false, moved, std::vector<ear::Route>{toDesk}};
+							  }});
+	w.receive(session, requests[11]);
+	w.onMain([&] {
+		auto configuring = at("desk", NodePhase::configuring);
+		configuring.cause = reshape;
+		w.told(configuring);
+		w.told(at("desk", NodePhase::configured));
+		w.told(at("desk", NodePhase::starting));
+		w.told(at("desk", NodePhase::running));
+	});
+	checkMessages(out, document["messages"]);
+	CHECK(w.graph.script.empty());
 }
 
 TEST_CASE("node-text.json: where each node is written, and node.setText's and node.addText's success and refusals",
@@ -1356,6 +1550,15 @@ TEST_CASE("companions.json: each node's list in the snapshot, node.added's [], e
 		w.told(at("rec", NodePhase::running));
 	});
 
+	// An RTP receiver replaced make-before-break: the old one retiring before its replacement, then gone.
+	w.onMain([&] {
+		CompanionView retiring = rtp(true);
+		retiring.retiring = true;
+		list("fpp", {retiring, rtp(false)});
+		list("fpp", {retiring, rtp(true)});
+		list("fpp", {rtp(true)});
+	});
+
 	// A failure past the receiver's deadline: failed, then the empty list.
 	w.graph.script.push_back({"restartNode fpp", [&]() -> CommandResult {
 								  w.told(because(at("fpp", NodePhase::stopping), Kind::restarting, Kind::action));
@@ -1404,7 +1607,7 @@ TEST_CASE("A node added again under a name starts from node.added's []: its firs
 		w.gateway.companionsChanged("x", ready);
 		// Replaced by a node of another type of the same name, as a change of type is: the older one is superseded
 		// (NodeHost tells it nothing more) and the newer one's list is new to the client.
-		const ear::NodeChange type{ear::NodeOutcome::restart, {}, false};
+		const ear::NodeChange type{ear::NodeOutcome::restart, {}};
 		w.gateway.nodeReplacing("x", type);
 		w.gateway.nodeReplaced({"x", "file", {{"path", "b.wav"}}}, std::make_shared<Config>(recPorts), type);
 		w.gateway.companionsChanged("x", ready);

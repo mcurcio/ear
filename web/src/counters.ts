@@ -101,13 +101,13 @@ function lossCounters(graph: GraphState): HeldValues {
 /**
  * The loss counters' last values and their rises, the graph's and each node's, by the mark's one rule (marks.ts): a
  * first sighting (a snapshot's, a new node's), a fall and a counter seen again after the graph dropped it are no rise,
- * and a closed connection forgets everything held. A removed node's values are kept, so a port-caused replace's
- * carried counts continue its mark and a new node under the name (its zeros a fall) starts fresh.
+ * and a closed connection forgets everything held. A removed node's values are kept, so a new node under the name
+ * (its zeros a fall) starts fresh; a change of ports keeps the node, and its counters, as they were.
  */
 export class CounterMoves extends GraphMoves {
   constructor() {
-    // A node's counters never step back while it lives, and only a port-caused replace's node.added carries any:
-    // keeping a removed node's values lets that replace's mark go on, and a new node's zeros are a fall.
+    // A node's counters never step back while it lives, and node.added carries zeros: keeping a removed node's values
+    // makes a new node's zeros a fall, never a rise.
     super(lossCounters, (group) => group.startsWith(nodeGroupPrefix));
   }
 

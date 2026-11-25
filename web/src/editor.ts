@@ -11,7 +11,7 @@ import { CounterMoves } from "./counters";
 import { GraphStore } from "./graph";
 import { GraphFileStore } from "./graphFile";
 import { LevelStore } from "./levels";
-import { noticeOfRefusal, Notices } from "./notices";
+import { noticeOfRefusal, noticeOfState, Notices } from "./notices";
 import type { Methods, Notifications } from "./protocol";
 import { askedOf, Requests, type Asked, type AskedMethod } from "./requests";
 import { RpcClient, RpcError, type ConnectionStatus, type ParamsOf, type RpcClientOptions } from "./rpc";
@@ -56,6 +56,10 @@ export class Editor {
         this.file.apply(message);
         if ("method" in message && message.method === "levels") {
           this.levels.replace((message.params as Notifications["levels"]).nodes);
+        }
+        if ("method" in message && message.method === "node.state") {
+          const notice = noticeOfState(message.params as Notifications["node.state"]);
+          if (notice !== undefined) this.notices.add(notice);
         }
       },
       onStatus: (status) => {

@@ -243,7 +243,10 @@ right; they replace the one error banner.
 - **Show.** A toast for a node or route ear holds has Show, which selects it and pans to it.
 - **Kept.** A closed connection clears none, so a reconnect drops nothing the person has not seen.
 
-Slice 5's node events are designed to feed this queue
+A change in place that could not finish raises a warning toast of its own, about its node, from the `node.state` that
+begins its fallback (`fpp could not apply port in place, so it restarted: fell-back deadline 10s passed`): the node
+restarts with the new settings, which `ear.conf` holds, so the panel keeps the new value. Slice 5's node events are
+designed to feed this queue
 ([control-plane.md](design/control-plane.md#84-status-events-diagnostics-and-actions)).
 
 ### Where a refusal lands
@@ -524,6 +527,11 @@ Slice 5's type-schema cache is designed to use this module too ([control-plane.m
   handle under the pointer grows.
 - **Selection** is a 2 px `--accent` ring outside the border with the lifted shadow. Hover lifts
   the shadow alone.
+- **A change of ports redraws the box in place.** `node.updated` with its new `inputs` and
+  `outputs` ([control-port.md](control-port.md#changes-of-ports)) changes the node the editor holds,
+  not a new one: the box keeps its place, a surviving handle keeps its wires (the routes were never
+  removed, so they never go `pending`), a new handle comes unwired, and the counters and marks go
+  on.
 
 ### Wires
 
@@ -569,11 +577,15 @@ buttons; its tests cover every phase. The rules it follows:
 
 - **Silence the operator asked for is never drawn as a fault.** `stopped` ("stopped until Start or
   a restart of ear") and `disabled` ("disabled in ear.conf") each have their own quiet style, apart
-  from `failed`'s.
+  from `failed`'s. So has `reconfiguring`, a change in place, which is not a warning: its line
+  names the keys it applies and those next ("reconfiguring port; latencyMs next"), and Start is
+  off while it lasts. Stop, Restart and Disable stay on, each saying what it does to the change:
+  "ends the change and stops", "ends the change and restarts", "ends the change and disables".
 - **The box always says why a node is silent:** what it waits for (from `waitingFor`: "waiting for
   fpp.rtp", "waiting for the previous desk to stop", "waiting for the engine"), why it is
-  stopping or configuring (from `cause`: "restarting: settings changed (card)", "configuring:
-  trying again"), or a failure's detail.
+  stopping or configuring (from `cause`: "restarting: settings changed (card)", "restarting: ports
+  changed (playback)", "configuring: trying again", "restarting: could not apply port in place"),
+  or a failure's detail.
 - **Fast phases do not flicker:** a starting phase's line shows only once the editor has seen the
   phase for 250 ms, measured on the browser's clock, never against the server's `since`.
 - **Wires stay drawn in every phase,** since the graph keeps them linked; a wire from a silent
@@ -601,7 +613,9 @@ for ready, its drop count on hover; never boxes or handles of their own. The rul
   name, word, bank, readiness and the total its counter carries since its configuration made it
   ("rec.writer (sink on writer): ready; 4096 frames dropped since it was made"; a source's
   shortfall "... frames played short since it was made"). An engine kind has no counter. A counter
-  member the editor knows is shown whatever the kind; one it does not know is ignored.
+  member the editor knows is shown whatever the kind; one it does not know is ignored. A companion
+  a change in place replaces make-before-break gets its own badge, before its replacement's, and
+  its words end ", retiring" ("fpp.rtp (rtp on from_rtp): ready, retiring").
 - **A mark only while it moves.** A badge carries the warning mark only while its `dropped` or
   `shortfall` rose in the last minute, by the rule of [recent marks](#recent-marks), held per node
   and companion: a value that fell is a new configuration seen without its `[]`, and an entry seen
@@ -654,12 +668,12 @@ happened in the last minute. The rules:
   the last minute, with the last minute's count ("5 dropouts"), which falls as each rise leaves its
   minute; its tooltip says the host held up the audio thread and gives the totals ("44 dropouts
   (234 ms) in 2 stalls since ear started").
-- **A mark lasts across a port-caused replace.** A node's counters never step back while it
-  lives, so the values held for a node are kept when it is removed (until the connection closes).
-  A port-caused replace's `node.added` carries at least what was held, so its carried counts are
-  no rise and a mark the older node showed goes on; a new node under the name comes with zeros, a
-  fall, so its counts start fresh. Companions' entries are still forgotten when their list drops
-  them, as their counters count per configuration.
+- **A mark lasts across a change of ports.** A node's counters never step back while it
+  lives, and a change of its ports keeps the node (`node.updated` with its new ports), so its counts
+  and its mark go on. The values held for a node are kept when it is removed (until the connection
+  closes), so a new node under the name, which comes with zeros, is a fall and its counts start
+  fresh. Companions' entries are still forgotten when their list drops them, as their counters
+  count per configuration.
 - **In text, not colour alone.** Each mark's glyph is hidden from screen readers beside its words
   ("in the last minute: overran 1 time", "3 more in the last minute"); the badge's count is its
   text. Nothing shows without the feature: an ear without it sends no counters.

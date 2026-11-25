@@ -6,7 +6,7 @@
 // place, and what a toast's Show selects. Slice 5's node events are designed to feed this same queue by its rule
 // (docs/editor.md#toasts), so NoticeInput is plain words, a severity and a subject.
 import { edgeId } from "./connect";
-import { rpcErrorCodes, type Graph, type RouteEnds } from "./protocol";
+import { rpcErrorCodes, type Graph, type Notifications, type RouteEnds } from "./protocol";
 import { describeAsked, type Asked } from "./requests";
 import { ConnectionClosedError, RpcError } from "./rpc";
 import type { Selection } from "./selection";
@@ -193,6 +193,25 @@ export function noticeOfRefusal(asked: Asked, error: unknown): NoticeInput {
     else if ("node" in asked) subject = { kind: "node", node: asked.node };
   }
   return { ...parts, what: describeAsked(asked), subject };
+}
+
+/**
+ * The toast a node.state raises, if any: a change in place that could not finish, so the node restarts with the new
+ * settings, which ear.conf holds ("fpp could not apply port in place, so it restarted: fell-back deadline 10s passed",
+ * docs/editor.md#toasts). Only the stopping that begins the fallback raises it.
+ */
+export function noticeOfState(state: Notifications["node.state"]): NoticeInput | undefined {
+  const restart = state.phase === "stopping" && state.cause?.kind === "restarting" ? state.cause.restart : undefined;
+  if (restart?.kind !== "fell-back") return undefined;
+  const keys = restart.keys !== undefined && restart.keys.length > 0 ? restart.keys.join(", ") : "its settings";
+  return {
+    severity: "warning",
+    code: "fell-back",
+    what: state.name,
+    verb: `could not apply ${keys} in place, so it restarted`,
+    detail: restart.detail ?? "",
+    subject: { kind: "node", node: state.name },
+  };
 }
 
 /** The refusals the drawer, the node box and the add form show in place, with no toast. */

@@ -18,11 +18,11 @@
 //   static std::expected<void, std::string> check(const CheckedOf<spec>&);               optional, at parse
 //   explicit Type(NodeOf<spec>&);  or  Type();                                           one of the two
 //   Configured configure(CreateOf<spec>&, const CheckedOf<spec>&);                       required
-//   Changed configure(ChangeOf<spec>&, const CheckedOf<spec>&, const CheckedOf<spec>&);  optional; not called yet
+//   Changed configure(ChangeOf<spec>&, const CheckedOf<spec>&, const CheckedOf<spec>&);  optional: a change in place
 //   void start();  void stop();                                                          optional
 //
-// The change version compiles (its signature checked) but nothing calls it yet: every change of settings restarts the
-// node (changes in place are designed, not built: docs/design/reconfigure.md).
+// The change version is called for a change whose every key's row is marked inPlace, on a node that has rested
+// (docs/architecture.md#changes-in-place); without one, every change of settings restarts the node.
 //
 // Every call here is on the main loop. CreateOf is valid only inside the configure it is handed to (a call after it
 // returned is a std::logic_error naming the call, "<call> outside configure", thrown by NodeHost); NodeOf is valid for
@@ -31,6 +31,7 @@
 // NodeHost implements the erased contexts. SpecConfig, SpecNodeType and makeNodeType, at the end, make a type of the
 // class (docs/writing-a-node-type.md#the-class).
 #pragma once
+#include <array>
 #include <concepts>
 #include <cstdint>
 #include <expected>
@@ -115,20 +116,95 @@ private:
 	std::vector<ErasedLoopState> states_;
 };
 
-/// What the change version of configure answers (docs/writing-a-node-type.md#the-class). Declared only so that neither
-/// answer type can stand for the other: changes in place are not built yet (docs/design/reconfigure.md), which will
-/// define the rest.
-class Changed {
+template <const auto& Spec> class ChangeOf;
+
+namespace detail {
+/// Where a ConfigureDone answers: NodeHost's, posting the answer to the main loop through the change's configuration,
+/// so an answer after the change ended (or the configuration did) lands nowhere. Any thread.
+class ChangeAnswer {
 public:
-	/// Nothing calls the change version yet, so these only let one compile and link.
-	static Changed applied() noexcept { return Changed(); }
-	static Changed restart(std::string reason) {
-		static_cast<void>(reason);
-		return Changed();
+	virtual ~ChangeAnswer() = default;
+	/// `failure` empty: done; else the change fails with it.
+	virtual void answer(std::optional<std::string_view> failure) noexcept = 0;
+};
+} // namespace detail
+
+/// A change in place's token (docs/writing-a-node-type.md#whenready-and-configuredone), handed to the continuation
+/// whenReady posted: move-only; done() or fail(detail) once, from any thread. Destroyed without either (dropped, or
+/// destroyed unrun with its work), it fails the change "the change was dropped". Once the change ended any other way,
+/// both are ignored.
+class ConfigureDone {
+public:
+	explicit ConfigureDone(std::unique_ptr<detail::ChangeAnswer> answer) noexcept : answer_(std::move(answer)) {}
+	ConfigureDone(ConfigureDone&&) noexcept = default;
+	ConfigureDone& operator=(ConfigureDone&& other) noexcept {
+		if (this != &other) {
+			drop();
+			answer_ = std::move(other.answer_);
+		}
+		return *this;
+	}
+	ConfigureDone(const ConfigureDone&) = delete;
+	ConfigureDone& operator=(const ConfigureDone&) = delete;
+	~ConfigureDone() { drop(); }
+	/// The continuation's work is done: the change goes on to its commit point.
+	void done() && {
+		if (const auto answer = std::exchange(answer_, nullptr)) answer->answer(std::nullopt);
+	}
+	/// The change cannot be made: it falls back to a restart with the new settings (reason failed, `detail` its words).
+	void fail(std::string detail) && {
+		if (const auto answer = std::exchange(answer_, nullptr)) answer->answer(std::string_view(detail));
 	}
 
 private:
+	void drop() noexcept {
+		if (const auto answer = std::exchange(answer_, nullptr))
+			answer->answer(std::string_view("the change was dropped"));
+	}
+	std::unique_ptr<detail::ChangeAnswer> answer_;
+};
+
+/// What the change version of configure answers (docs/writing-a-node-type.md#the-change-version): applied, with or
+/// without a new code, made only by its context (`cx.applied(...)`), or a restart the type asks for when it cannot take
+/// this change in place after all, which falls the change back to a restart with the new settings.
+class Changed {
+public:
+	/// The type cannot take this change in place: the node restarts with the new settings (reason restart-asked,
+	/// `reason` its words).
+	static Changed restart(std::string reason) {
+		Changed answer;
+		answer.restart_ = std::move(reason);
+		return answer;
+	}
+	/// For the framework: whether the answer is a restart, and its reason.
+	bool restarts() const noexcept { return restart_.has_value(); }
+	const std::string& reason() const noexcept { return restart_ ? *restart_ : empty(); }
+	/// For the framework, on an applied answer: the new code, if one was given (taken once).
+	std::optional<NodeCode>& code() noexcept { return code_; }
+	/// For the framework: the answer whenReady gave, which goes on in its continuation.
+	bool continues() const noexcept { return continues_; }
+
+private:
+	friend class ErasedInstance;
+	template <const auto&> friend class ChangeOf;
 	Changed() = default;
+	static Changed continued() {
+		Changed answer;
+		answer.continues_ = true;
+		return answer;
+	}
+	static Changed erased(std::optional<NodeCode> code) {
+		Changed answer;
+		answer.code_ = std::move(code);
+		return answer;
+	}
+	static const std::string& empty() noexcept {
+		static const std::string none;
+		return none;
+	}
+	std::optional<std::string> restart_;
+	std::optional<NodeCode> code_;
+	bool continues_ = false;
 };
 
 // ---- The erased contexts NodeHost implements ----
@@ -199,7 +275,7 @@ public:
 	/// A sink on an inside output bank (docs/engine.md#sinks), with its one consumer: made at once (its thread starts);
 	/// its consumer begins once configure answered applied (readiness 4'). A null consumer, or one in the state of a
 	/// loop declared without a state, is a std::logic_error naming the sink's bank, and no sink is made.
-	virtual void sink(std::string_view bank, SinkShape shape, SinkConsumerFrom consumer) = 0;
+	virtual SinkControl& sink(std::string_view bank, SinkShape shape, SinkConsumerFrom consumer) = 0;
 	/// A source on an inside input bank (docs/writing-a-node-type.md#sources): made at once and ready at once; the block
 	/// plays it into the bank before the code every cycle the code runs; its ring's capacity is declared beyond the bank
 	/// (LatencyPlan::beyond, Latency{0, capacity}). A second companion on the bank, `shape.frames == 0` or a call outside
@@ -237,6 +313,60 @@ protected:
 	~CreateContext() = default;
 	/// The FIFO of the pipe receiver on `bank`: what attachEngine returns for one, and nothing else makes.
 	static part::Fifo fifoOf(std::string bank) { return part::Fifo(std::move(bank)); }
+};
+
+/// Which goes first when a change replaces an engine companion (docs/writing-a-node-type.md#make-before-break): the new
+/// one made beside the old one (makeFirst), or the old one destroyed and the new one made in one flush (breakFirst:
+/// one ALSA device opened twice, say).
+enum class Order { makeFirst, breakFirst };
+
+/// What the change version of configure works through: the erased side of ChangeOf<Spec>
+/// (docs/writing-a-node-type.md#the-change-version). NodeHost implements it for one change, valid only inside the
+/// configure it is handed to; a call outside it throws std::logic_error. Banks arrive by name, already checked against
+/// the spec at compile time.
+class ChangeContext {
+public:
+	virtual AudioFormat format() const = 0;
+	virtual const NodeName& node() const = 0;
+	/// The node's ports, to bind a new code written against the spec.
+	virtual const Ports& ports() const = 0;
+	/// Work for declared loop `loop`, staged until the commit point and destroyed unrun if the change ends any other way.
+	virtual void postToLoop(std::size_t loop, std::move_only_function<void(void*)> work) = 0;
+	/// A replacement for the engine companion on `bank` (an RTP receiver or a sound card), behind a hold the framework
+	/// takes, made before break unless `order` says break-first (an RTP receiver on the same port is break-first
+	/// whatever it says): docs/writing-a-node-type.md#make-before-break.
+	virtual void attachEngine(std::string_view bank, EngineCompanionShape shape, Order order) = 0;
+	/// A replacement for the sink on `bank`, made at once beside it, its consumer begun before the commit point; the
+	/// block's tap moves to it in the commit's invoke, and the old one drains to its own consumer and finishes after it
+	/// (docs/writing-a-node-type.md#sinks-and-sources-in-a-change). Its rules are CreateContext::sink's.
+	virtual SinkControl& sink(std::string_view bank, SinkShape shape, SinkConsumerFrom consumer) = 0;
+	/// A replacement for the source on `bank`, made at once (its writer valid at once) and played from the commit's
+	/// invoke; the old one's writer is closed at the commit point. Its rules are CreateContext::source's.
+	virtual SourceWriter& source(std::string_view bank, SourceShape shape, std::unique_ptr<SourceClock> clock) = 0;
+	/// A replacement for `replaced`, a recording the configuration holds: claimed and opened beside it, before the
+	/// change's companions; the old one closed once the commit point completed and every sink the change replaced
+	/// finished (docs/writing-a-node-type.md#recordings-in-a-change).
+	virtual Recording& recording(const Recording& replaced, const RecordingRequest& request) = 0;
+	/// Routable output banks to hold silent from the next cycle, after a fade, until the commit point (or release).
+	virtual void hold(std::span<const std::string_view> banks) = 0;
+	virtual void holdAll() = 0;
+	virtual void release(std::span<const std::string_view> banks) = 0;
+	/// The new configuration's latency on the path from `from` to `to`, carried from the commit point.
+	virtual void declareLatency(std::string_view from, std::string_view to, Latency latency) = 0;
+	/// A port the type's own thread will bind once the change is made (docs/writing-a-node-type.md#claims-in-a-change):
+	/// judged when the change version returns, before any other acquisition; a key the configuration holds is its own.
+	virtual void claim(Claim claim) = 0;
+	/// A port the configuration holds that it no longer needs: released at the commit point, last; a key the change
+	/// also claims stays held. A key it does not hold is a std::logic_error.
+	virtual void unclaim(Claim claim) = 0;
+	/// The change's one later answer (docs/writing-a-node-type.md#whenready-and-configuredone): `work`, called with
+	/// declared loop `loop`'s state (null for a loop with none) and the change's token, is posted to that loop once
+	/// every acquisition of the change is ready and every hold acknowledged; destroyed unrun if the change ends before.
+	/// A second call is a std::logic_error.
+	virtual void whenReady(std::size_t loop, std::move_only_function<void(void*, ConfigureDone)> work) = 0;
+
+protected:
+	~ChangeContext() = default;
 };
 
 // ---- A companion's bank ----
@@ -458,9 +588,9 @@ public:
 	/// the type's own, given whole and owned by the sink (file's WavWriter). Its shape is named (deduced), so a braced
 	/// shape with a null third argument is a source with no clock, never a sink with no consumer.
 	template <class Bank, std::same_as<SinkShape> Shape>
-	void attach(Bank, Shape shape, std::unique_ptr<SinkConsumer> consumer) {
+	SinkControl& attach(Bank, Shape shape, std::unique_ptr<SinkConsumer> consumer) {
 		checkCompanion<Bank, SinkShape>();
-		context_->sink(Bank::name, shape, std::move(consumer));
+		return context_->sink(Bank::name, shape, std::move(consumer));
 	}
 	/// A sink with no consumer does not compile: nothing would ever read it. Its shape is deduced, so a braced shape
 	/// (`cx.attach(bank, {.frames = n})`, a source's) never selects this refusal.
@@ -473,7 +603,7 @@ public:
 	/// does not compile.
 	template <class Bank, class Handle, class State, class Member>
 		requires isLoopHandle<Handle>
-	void attach(Bank, SinkShape shape, Handle, Member State::* member) {
+	SinkControl& attach(Bank, SinkShape shape, Handle, Member State::* member) {
 		checkCompanion<Bank, SinkShape>();
 		static_assert(ownLoop<Handle>, "a sink is consumed by one of its spec's loops");
 		// The member may be one the state inherits (`&Worker::toServer` then names its base), so the state is cast to
@@ -484,7 +614,7 @@ public:
 		if constexpr (Handle::stateful && std::derived_from<typename Handle::State, State> &&
 		              std::derived_from<Member, SinkConsumer>) {
 			using Own = typename Handle::State;
-			context_->sink(
+			return context_->sink(
 				Bank::name, shape,
 				StateSinkConsumer{LoopsOf<Spec>::template indexOf<Handle>, [member](void* state) -> SinkConsumer& {
 									  return static_cast<Own*>(state)->*member;
@@ -494,15 +624,16 @@ public:
 	/// The sink's consumer is loop `Handle`'s state itself.
 	template <class Bank, class Handle>
 		requires isLoopHandle<Handle>
-	void attach(Bank, SinkShape shape, Handle) {
+	SinkControl& attach(Bank, SinkShape shape, Handle) {
 		checkCompanion<Bank, SinkShape>();
 		static_assert(ownLoop<Handle>, "a sink is consumed by one of its spec's loops");
 		using State = typename Handle::State;
 		static_assert(Handle::stateful && std::derived_from<State, SinkConsumer>,
 		              "a loop's state that consumes a sink is a SinkConsumer");
-		context_->sink(Bank::name, shape,
-		               StateSinkConsumer{LoopsOf<Spec>::template indexOf<Handle>,
-		                                 [](void* state) -> SinkConsumer& { return *static_cast<State*>(state); }});
+		return context_->sink(
+			Bank::name, shape,
+			StateSinkConsumer{LoopsOf<Spec>::template indexOf<Handle>,
+		                      [](void* state) -> SinkConsumer& { return *static_cast<State*>(state); }});
 	}
 	/// What is no companion's shape does not compile.
 	template <class Bank, class Shape, class... Rest>
@@ -581,10 +712,186 @@ private:
 	CreateContext* context_;
 };
 
-/// configure for a change (T9; docs/writing-a-node-type.md#the-class): declared, not defined, until changes in place
-/// are built (docs/design/reconfigure.md). A class may write the change version (its signature is checked), and it is
-/// never called: every change restarts the node.
-template <const auto& Spec> class ChangeOf;
+/// configure for a change in place (docs/writing-a-node-type.md#the-change-version): holds, replacement companions and
+/// recordings, claims and unclaims, staged posts, the latency and the answer. It has no state, store, executor or program (a loop's
+/// state lives across a change and already holds what it needs), so a call the mode does not offer does not compile.
+template <const auto& Spec> class ChangeOf {
+	static_assert(linkage::named<Spec>, "a spec is declared in a named namespace, never an unnamed one");
+	using List = BanksOf<Spec>;
+	template <class Bank> static constexpr bool ownBank = isBankHandle<Bank> && List::template has<Bank>;
+	template <class Handle> static constexpr bool ownLoop = isLoopHandle<Handle> && LoopsOf<Spec>::template has<Handle>;
+	template <class Bank> static constexpr bool routableOutput =
+		ownBank<Bank> && Bank::direction == Direction::output && Bank::reach == PortBank::Reach::routable;
+
+public:
+	ChangeOf(const ChangeOf&) = delete;
+	ChangeOf& operator=(const ChangeOf&) = delete;
+	AudioFormat format() const { return context_->format(); }
+	const NodeName& node() const { return context_->node(); }
+
+	/// The applied answer, keeping the node's code: the commit point comes once every replacement is ready.
+	Changed applied() { return Changed::erased(std::nullopt); }
+	/// The applied answer with a new code, swapped in at the commit point between two cycles (a discontinuity unless the
+	/// type carries its state into it). By value, as on creation; it takes no loop's state, which lives across a change.
+	template <class Code> Changed applied(Code code) {
+		static_assert(SpecCode<Code> || std::same_as<Code, PassThroughPairs>,
+		              "configure answers with its code by value: a struct with process, or passThrough(...)");
+		if constexpr (std::same_as<Code, PassThroughPairs>) {
+			if (code.pairs().empty()) throw std::logic_error("applied given a pass-through that was moved from");
+		}
+		NodeCode erased(std::move(code));
+		if constexpr (SpecCode<Code>) {
+			static_assert(static_cast<const void*>(&spec_detail::ProcessOf<decltype(&Code::process)>::spec) ==
+			                  static_cast<const void*>(&Spec),
+			              "configure answers with a code written against its own type's spec");
+			static_cast<spec_detail::BankBoundCode&>(*erased.own()).bindPorts(context_->ports());
+		}
+		return Changed::erased(std::move(erased));
+	}
+
+	/// As CreateOf::post, staged until the commit point; destroyed unrun if the change is superseded or falls back.
+	template <class Handle, class Work> void post(Handle, Work&& work) {
+		static_assert(ownLoop<Handle>, "a context takes only its spec's loops");
+		context_->postToLoop(LoopsOf<Spec>::template indexOf<Handle>,
+		                     spec_detail::loopWork<Handle>(std::forward<Work>(work)));
+	}
+	/// A new RTP receiver for the one on this inside input bank, behind a hold the framework takes on the outputs the
+	/// bank feeds: made before break on a new port, break-first on the same one
+	/// (docs/writing-a-node-type.md#make-before-break).
+	template <class Bank> void attach(Bank, RtpReceiverShape shape) {
+		checkCompanion<Bank, RtpReceiverShape>();
+		context_->attachEngine(Bank::name, std::move(shape), Order::makeFirst);
+	}
+	/// A new sound card for the one on this inside bank, behind a hold the framework takes on what the bank carries;
+	/// made before break, or break-first when `order` says so (one ALSA device opened twice).
+	template <class Bank> void attach(Bank, SoundCardShape shape, Order order = Order::makeFirst) {
+		checkCompanion<Bank, SoundCardShape>();
+		context_->attachEngine(Bank::name, std::move(shape), order);
+	}
+	/// A new source for the one on this inside input bank (docs/writing-a-node-type.md#sinks-and-sources-in-a-change):
+	/// its writer valid at once, played by the block from the commit's invoke on, when the old one's writer is closed.
+	template <class Bank> SourceWriter& attach(Bank, SourceShape shape, std::unique_ptr<SourceClock> clock = nullptr) {
+		checkCompanion<Bank, SourceShape>();
+		return context_->source(Bank::name, shape, std::move(clock));
+	}
+	/// A new sink for the one on this inside output bank, with its own consumer, in creation's three forms: begun before
+	/// the commit point, tapped from the commit's invoke on, the old one draining to its own consumer after it.
+	template <class Bank, std::same_as<SinkShape> Shape>
+	SinkControl& attach(Bank, Shape shape, std::unique_ptr<SinkConsumer> consumer) {
+		checkCompanion<Bank, SinkShape>();
+		return context_->sink(Bank::name, shape, std::move(consumer));
+	}
+	template <class Bank, std::same_as<SinkShape> Shape> void attach(Bank, Shape) {
+		static_assert(sizeof(Bank) == 0, "a sink is given its one consumer: cx.attach(bank, shape, consumer)");
+	}
+	template <class Bank, class Handle, class State, class Member>
+		requires isLoopHandle<Handle>
+	SinkControl& attach(Bank, SinkShape shape, Handle, Member State::* member) {
+		checkCompanion<Bank, SinkShape>();
+		static_assert(ownLoop<Handle>, "a sink is consumed by one of its spec's loops");
+		static_assert(Handle::stateful && std::derived_from<typename Handle::State, State>,
+		              "a sink's consumer is a member of that loop's state");
+		static_assert(std::derived_from<Member, SinkConsumer>, "a sink's consumer is a SinkConsumer");
+		if constexpr (Handle::stateful && std::derived_from<typename Handle::State, State> &&
+		              std::derived_from<Member, SinkConsumer>) {
+			using Own = typename Handle::State;
+			return context_->sink(
+				Bank::name, shape,
+				StateSinkConsumer{LoopsOf<Spec>::template indexOf<Handle>, [member](void* state) -> SinkConsumer& {
+									  return static_cast<Own*>(state)->*member;
+								  }});
+		}
+	}
+	template <class Bank, class Handle>
+		requires isLoopHandle<Handle>
+	SinkControl& attach(Bank, SinkShape shape, Handle) {
+		checkCompanion<Bank, SinkShape>();
+		static_assert(ownLoop<Handle>, "a sink is consumed by one of its spec's loops");
+		using State = typename Handle::State;
+		static_assert(Handle::stateful && std::derived_from<State, SinkConsumer>,
+		              "a loop's state that consumes a sink is a SinkConsumer");
+		return context_->sink(
+			Bank::name, shape,
+			StateSinkConsumer{LoopsOf<Spec>::template indexOf<Handle>,
+		                      [](void* state) -> SinkConsumer& { return *static_cast<State*>(state); }});
+	}
+	/// A pipe receiver is never replaced in a change (its FIFO is its program's), nor is anything that is no companion.
+	template <class Bank, class Shape, class... Rest>
+		requires(!CompanionShape<std::remove_cvref_t<Shape>> ||
+	             std::same_as<std::remove_cvref_t<Shape>, PipeReceiverShape>)
+	void attach(Bank, Shape&&, Rest&&...) {
+		static_assert(sizeof(Bank) == 0, "a change attaches a replacement for a sound card, an RTP receiver, a source "
+		                                 "or a sink");
+	}
+	/// A new recording for `replaced`, one the configuration holds (docs/writing-a-node-type.md#recordings-in-a-change):
+	/// claimed and opened beside it before the change's companions; the old one is closed once the commit point
+	/// completed and every sink the change replaced finished, so a consumer may write it until then.
+	Recording& recording(const Recording& replaced, RecordingRequest request) {
+		return context_->recording(replaced, request);
+	}
+	/// A port the type's own thread binds once the change is made (docs/writing-a-node-type.md#claims-in-a-change):
+	/// judged when this call returns, before any other new acquisition; a refusal falls the change back
+	/// (resource-refused). A port the configuration already holds is its own, granted unprobed.
+	void claim(claim::TcpListen port) { context_->claim(claim::of(port)); }
+	void claim(claim::Udp port) { context_->claim(claim::of(port)); }
+	/// A port the configuration holds and the change no longer needs: released at the commit point, after everything
+	/// the change replaced, so another node can take it only once this one runs without it.
+	void unclaim(claim::TcpListen port) { context_->unclaim(claim::of(port)); }
+	void unclaim(claim::Udp port) { context_->unclaim(claim::of(port)); }
+	/// The new configuration's latency on a path, as CreateOf::declareLatency, carried from the commit point.
+	template <class From, class To> void declareLatency(From, To, Latency latency) {
+		static_assert(ownBank<From> && ownBank<To>, "declareLatency takes its spec's banks");
+		static_assert(From::direction == Direction::input && To::direction == Direction::output,
+		              "declareLatency names a pair: an input bank, then an output bank");
+		context_->declareLatency(From::name, To::name, latency);
+	}
+	/// The change's one later answer, and what configure returns (docs/writing-a-node-type.md#whenready-and-configuredone):
+	/// once every acquisition this call made is ready (claims granted and probed, replacement companions running and
+	/// linked) and every hold acknowledged, `work(state, done)` is posted to loop `Handle` as the node's own work (a loop
+	/// with no state: `work(done)`). If the change ends before that, `work` is destroyed unrun on the main loop; once
+	/// posted it runs, even if a stop, a restart or a removal began after the post. The commit point (staged posts
+	/// released, holds faded in, replaced resources released) comes after its done(). The code stays the node's.
+	template <class Handle, class Work> Changed whenReady(Handle, Work work) {
+		static_assert(ownLoop<Handle>, "a context takes only its spec's loops");
+		if constexpr (Handle::stateful)
+			static_assert(std::invocable<Work&, typename Handle::State&, ConfigureDone>,
+			              "whenReady's work takes the loop's state and the change's ConfigureDone");
+		else static_assert(std::invocable<Work&, ConfigureDone>, "whenReady's work takes the change's ConfigureDone");
+		context_->whenReady(LoopsOf<Spec>::template indexOf<Handle>,
+		                    [work = std::move(work)](void* state, ConfigureDone done) mutable {
+								if constexpr (Handle::stateful)
+									work(*static_cast<typename Handle::State*>(state), std::move(done));
+								else work(std::move(done));
+							});
+		return Changed::continued();
+	}
+	/// Holds these routable output banks silent: from the next cycle each fades to zero over 5 ms and stays there until
+	/// the commit point, which fades it back in (or until release).
+	template <class... Banks> void hold(Banks...) {
+		static_assert(sizeof...(Banks) > 0, "hold names the banks it holds");
+		static_assert((routableOutput<Banks> && ...), "hold names a routable output bank of its spec");
+		const std::array<std::string_view, sizeof...(Banks)> names{Banks::name...};
+		context_->hold(names);
+	}
+	/// Holds every routable output bank.
+	void holdAll() { context_->holdAll(); }
+	/// Releases a hold before the commit point: the banks fade back in.
+	template <class... Banks> void release(Banks...) {
+		static_assert(sizeof...(Banks) > 0, "release names the banks it releases");
+		static_assert((routableOutput<Banks> && ...), "release names a routable output bank of its spec");
+		const std::array<std::string_view, sizeof...(Banks)> names{Banks::name...};
+		context_->release(names);
+	}
+
+private:
+	template <const auto&, class> friend class spec_detail::SpecInstance;
+	explicit ChangeOf(ChangeContext& context) noexcept : context_(&context) {}
+	template <class Bank, class Shape> static constexpr void checkCompanion() noexcept {
+		static_assert(ownBank<Bank>, "a context takes only its spec's banks");
+		CompanionBank<Shape>::template check<Bank>();
+	}
+	ChangeContext* context_;
+};
 
 // ---- The erased instance ----
 
@@ -606,6 +913,20 @@ public:
 	virtual void start() {}
 	/// Once after every start() that returned (docs/writing-a-node-type.md#the-class pairing); timed as `stop`.
 	virtual void stop() {}
+	/// Whether the instance has a change version (docs/writing-a-node-type.md#the-change-version): without one, every
+	/// change restarts the node.
+	virtual bool changes() const noexcept { return false; }
+	/// A change in place to `now` (its config outlives the instance until the change ends), through `cx` (valid only
+	/// during the call); timed as the hook `configure`. The instance's settings stay the applied ones until adopt().
+	virtual Changed change(ChangeContext& cx, const NodeConfig& now) {
+		static_cast<void>(cx);
+		static_cast<void>(now);
+		return Changed::restart("the type has no change version");
+	}
+	/// The commit point: `now`'s settings are the instance's from here (`now` outlives the instance).
+	virtual void adopt(const NodeConfig& now) { static_cast<void>(now); }
+	/// How long a change in place may take before it falls back to a restart (the spec's `.lifecycle`).
+	virtual std::chrono::milliseconds reconfigureDeadline() const noexcept { return Lifecycle{}.reconfigureDeadline; }
 
 protected:
 	/// The applied answer as the erased layer makes it: an instance written by hand (the framework's own tests) answers
@@ -617,6 +938,10 @@ protected:
 	template <std::same_as<ErasedLoopState>... States> static Configured applied(NodeCode code, States... states) {
 		return Configured::erased(std::move(code), std::move(states)...);
 	}
+	/// A change's applied answer as the erased layer makes it, for an instance written by hand: keeping the code, or
+	/// with a new one.
+	static Changed changed() { return Changed::erased(std::nullopt); }
+	static Changed changed(NodeCode code) { return Changed::erased(std::move(code)); }
 };
 
 namespace spec_detail {
@@ -664,8 +989,8 @@ template <const auto& Spec, class Type> class SpecInstance final : public Erased
 	static_assert(
 		requires { static_cast<Configured (Type::*)(CreateOf<Spec>&, const Checked&)>(&Type::configure); },
 		"a type's class has Configured configure(CreateOf<spec>&, const CheckedOf<spec>&)");
-	// The change version: optional and not called yet; once any configure of three parameters is callable (with
-	// a ChangeOf, or with any context), its signature is exactly this.
+	// The change version: optional; once any configure of three parameters is callable (with a ChangeOf, or with
+	// any context), its signature is exactly this.
 	static constexpr bool hasChange = requires(Type& type, ChangeOf<Spec>& change, const Checked& settings) {
 		type.configure(change, settings, settings);
 	} || requires(Type& type, const Checked& settings) { type.configure(AnyContext{}, settings, settings); };
@@ -695,13 +1020,19 @@ template <const auto& Spec, class Type> class SpecInstance final : public Erased
 	static_assert(stopsExactly(), "a type's stop is void stop()");
 
 public:
-	SpecInstance(NodeContext& node, const Checked& settings) : node_(node), settings_(settings), type_(make(node_)) {}
+	SpecInstance(NodeContext& node, const Checked& settings) : node_(node), settings_(&settings), type_(make(node_)) {}
 	std::span<const LoopDeclaration> loops() const noexcept override { return LoopsOf<Spec>::declared; }
 	std::span<const StoreDeclaration> stores() const noexcept override { return StoresOf<Spec>::declared; }
 	Configured configure(CreateContext& cx) override {
 		CreateOf<Spec> create(cx);
-		return type_.configure(create, settings_);
+		return type_.configure(create, *settings_);
 	}
+	bool changes() const noexcept override { return hasChange; }
+	std::chrono::milliseconds reconfigureDeadline() const noexcept override {
+		return Spec.lifecycle.reconfigureDeadline;
+	}
+	Changed change(ChangeContext& cx, const NodeConfig& now) override;
+	void adopt(const NodeConfig& now) override;
 	void start() override {
 		if constexpr (hasStart) type_.start();
 	}
@@ -715,8 +1046,8 @@ private:
 		else return Type();
 	}
 	NodeOf<Spec> node_;
-	const Checked& settings_;
-	Type type_; // after node_, which it may keep
+	const Checked* settings_; // the applied settings' config's, re-pointed at a change's commit point (adopt)
+	Type type_;               // after node_, which it may keep
 };
 
 /// The config makeNodeType's type makes (docs/writing-a-node-type.md#the-class): the checked settings and the ports,
@@ -730,11 +1061,27 @@ public:
 	std::unique_ptr<ErasedInstance> make(NodeContext& node) const override {
 		return std::make_unique<SpecInstance<Spec, Type>>(node, settings_);
 	}
+	const CheckedOf<Spec>& settings() const noexcept { return settings_; }
 
 private:
 	CheckedOf<Spec> settings_;
 	Ports ports_;
 };
+
+/// A change's `now` is always a config of the same type (the plan changes a node in place only within its type), so
+/// it is this type's SpecConfig.
+template <const auto& Spec, class Type>
+Changed SpecInstance<Spec, Type>::change(ChangeContext& cx, const NodeConfig& now) {
+	if constexpr (hasChange) {
+		ChangeOf<Spec> change(cx);
+		return type_.configure(change, *settings_, static_cast<const SpecConfig<Spec, Type>&>(now).settings());
+	} else {
+		return ErasedInstance::change(cx, now);
+	}
+}
+template <const auto& Spec, class Type> void SpecInstance<Spec, Type>::adopt(const NodeConfig& now) {
+	settings_ = &static_cast<const SpecConfig<Spec, Type>&>(now).settings();
+}
 
 /// The type makeNodeType makes. It hands NodeType the spec's table at run time, never as a template argument
 /// (`Spec.settings`): GCC 14 gives a template argument that names a subobject (or a variable template's
@@ -747,9 +1094,12 @@ template <const auto& Spec, class Type> class SpecNodeType final : public NodeTy
 #endif
 	using Checked = CheckedOf<Spec>;
 	static_assert(sizeof(SpecInstance<Spec, Type>) > 0); // the class's checks, at makeNodeType
+	static_assert(Spec.lifecycle.reconfigureDeadline >= reconfigureDeadlineLeast &&
+	                  Spec.lifecycle.reconfigureDeadline <= reconfigureDeadlineMost,
+	              "a type's reconfigureDeadline is 1 s to 60 s");
 
 public:
-	SpecNodeType() noexcept : NodeType(Spec.settings, StoresOf<Spec>::declared) {}
+	SpecNodeType() noexcept : NodeType(Spec.settings, StoresOf<Spec>::declared, Spec.lifecycle.reconfigureDeadline) {}
 
 private:
 	/// The table's walk passed: the class's check, a rule across settings, then the config.

@@ -96,6 +96,14 @@ inline constexpr auto portRow = setting::optional("port", setting::number(1, 655
 
 - `.onlyWithout(above)` refuses the key given together with a row above it: `<key>: only without
   "<above>"`. Neither row may be required.
+- `.inPlace()` marks a key the type can take while the node runs, through its change version of
+  `configure` (`setting::required("port", setting::number(1, 65535)).inPlace()`). Every row is
+  restart-only by default: a change to it restarts the node. The marks are data in the table: the
+  desired graph's plan reads them, and a change whose every changed key is marked is planned
+  `reconfigure` rather than `restart`
+  ([architecture.md](architecture.md#restarts-and-changes-of-settings)). A key whose value builds
+  the node's ports (a channel count) need not be marked: a change of ports is a reshape, in place only
+  when every changed key is marked ([architecture.md](architecture.md#reshapes)).
 - Each key once; `disabled` (the framework's key) cannot be declared; a table's name must be its
   folder's. Each is a compile error.
 - The table is `SettingsTable<row1, row2, ...>{"<type>"}` (`SettingsTable<>{"white"}` for none).
@@ -134,7 +142,7 @@ compile.
 | `Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s)` | yes | Acquire and construct only, on the main loop, then answer with the code and the loops' states: `return cx.applied(code, states...)` |
 | `void start()` | no | Called once its code is driven (the node is then `running`); work that must wait for that is posted to a loop here |
 | `void stop()` | no | Called once before each silence that follows a `start()` that returned; it posts its goodbye to its loops |
-| `Changed configure(ChangeOf<spec>&, const CheckedOf<spec>& old, const CheckedOf<spec>& now)` | no | The change version: its signature is checked, but it is **never called yet**: every change of settings restarts the node, until in-place changes are built |
+| `Changed configure(ChangeOf<spec>&, const CheckedOf<spec>& old, const CheckedOf<spec>& now)` | no | The [change version](#the-change-version): a change of settings in place, on the configuration that already runs |
 
 Settings are read by row: `s.get<playbackRow>()`. A misspelt row, a row of another table, or an
 optional row read as a plain value does not compile.
@@ -149,7 +157,7 @@ optional row read as a plain value does not compile.
 | `cx.attach(bank, RtpReceiverShape{...})` | An RTP receiver, an [engine companion](#engine-companions), `<node>.rtp`; its `latencyMs` is latency beyond the bank | Inside input banks only |
 | `part::Fifo f = cx.attach(bank, PipeReceiverShape{.format, .rate})` | A pipe receiver, an [engine companion](#engine-companions), `<node>.pipe`, reading a FIFO a program of the configuration writes; its module's fixed buffer is latency beyond the bank. It returns that FIFO, as a part of a [program](#programs)'s argument or file: attaching the receiver is the only way to one | Inside input banks only |
 | `SourceWriter& w = cx.attach(bank, SourceShape{.frames = n}, clock)` | A source ([sources](#sources)): what the type's own thread writes, played into the bank before the code; `clock`, a `std::unique_ptr<SourceClock>`, its own clock ([a source's clock](#a-sources-clock)), left out for a source with none | Inside input banks only; `0 < n <= maxSourceFrames` (2^24) |
-| `cx.attach(bank, SinkShape{.frames = n}, std::make_unique<Consumer>(...))` | A sink with its one consumer ([sinks](#sinks)); or `cx.attach(bank, shape, loop, &State::member)` / `cx.attach(bank, shape, loop)`, a consumer that is part of a [loop](#loops)'s state | Inside output banks only; a loop's form names a loop of the spec, declared with a state; the member is the state's own or one it inherits, and a `SinkConsumer`; a sink given no consumer does not compile (each at compile time); a null consumer fails the node |
+| `SinkControl& c = cx.attach(bank, SinkShape{.frames = n}, std::make_unique<Consumer>(...))` | A sink with its one consumer ([sinks](#sinks)), returning its [pause](#pausing-a-sink); or `cx.attach(bank, shape, loop, &State::member)` / `cx.attach(bank, shape, loop)`, a consumer that is part of a [loop](#loops)'s state | Inside output banks only; a loop's form names a loop of the spec, declared with a state; the member is the state's own or one it inherits, and a `SinkConsumer`; a sink given no consumer does not compile (each at compile time); a null consumer fails the node |
 | `const Recording& r = cx.recording(RecordingRequest{path})` | A [recording](#recordings): a file beneath the recordings folder, claimed, then created or truncated off the main loop; give it to the sink's consumer, which reads `r.descriptor()` from `begin()` on | Nothing to answer: a refusal fails the node at its readiness step; one path asked for twice (however spelled) fails it `start-failed` |
 | `cx.declareLatency(from, to, Latency{min, max})` | The code's own latency on the path from an input bank to an output bank, in frames: carried as a path through the block, so it counts in both banks' told latency ([latency](#latency)) | Once per path (a mixer declares each of its inputs' paths into one output); with a pass-through, one of its pairs; a plan that does not fit the ports fails the node `start-failed` |
 | `auto st = cx.state(handle, args...)` | A [loop](#loops)'s state, constructed here from `args` with no I/O and no threads, for the answer (a `LoopState`, move-only) | Only a loop of the spec declared with a state type (compile time) |
@@ -194,6 +202,131 @@ adapter's refusal is: the node fails `start-failed: configure threw: no <kind> i
 host with no runtime folder refuses a pipe receiver or a program the same way (`no runtime folder in this host`); a
 recording fails it `start-failed: cannot open <path>: no recordings folder`. A host with no port probe judges a port
 [claim](#claims) between its nodes only.
+
+### The change version
+
+```cpp
+Changed configure(ChangeOf<spec>& cx, const Checked& old, const Checked& now) {
+	cx.hold(stream);
+	cx.attach(fromRtp, receiverFor(now, cx.format()));
+	return cx.applied();
+}
+```
+
+A type that can take some of its settings while the node runs marks their rows `.inPlace()`
+([settings](#settings-one-table-of-typed-rows)) and writes this second `configure`. `old` is the
+settings the configuration applies, `now` the change's target. It is called for a change whose
+every changed key is marked, on a node that has rested; any other change restarts the node
+([architecture.md](architecture.md#changes-in-place), which says the framework's order). A new
+code's `prepare` runs on the main loop while the old code still runs: it may allocate and build
+its own state, and may touch nothing the old code's `process` reads.
+
+| Call | What | Rules |
+|---|---|---|
+| `cx.format()`, `cx.node()` | As on creation | |
+| `cx.hold(banks...)`, `cx.holdAll()`, `cx.release(banks...)` | Hold routable output banks silent: from the next cycle each fades to zero over 5 ms and stays there until the commit point, which fades it back in; `release` ends a hold sooner | Routable output banks of the spec (compile time) |
+| `cx.attach(bank, RtpReceiverShape{...})`, `cx.attach(bank, SoundCardShape{...}, order)` | A replacement for the RTP receiver or the sound card on that inside bank, made before break or break-first ([make-before-break](#make-before-break)); `order` is `Order::makeFirst` (the default) or `Order::breakFirst` | The bank's rule as on creation (compile time); a pipe receiver is never replaced (it does not compile); a bank with no companion of the kind is a broken rule |
+| `cx.attach(bank, SinkShape{...}, consumer)`, `cx.attach(bank, SourceShape{...}, clock)` | A replacement for the sink or the source on that inside bank, made beside it and swapped in at the commit point ([sinks and sources in a change](#sinks-and-sources-in-a-change)) | As on creation; a bank with no sink or source is a broken rule |
+| `cx.recording(old, RecordingRequest{...})` | A replacement for `old`, a recording the configuration holds, opened beside it ([recordings in a change](#recordings-in-a-change)) | Its own path, or one the configuration holds, is a broken rule |
+| `cx.claim(claim::TcpListen(p))`, `cx.claim(claim::Udp(p))`, `cx.unclaim(...)` | A port to bind once the change is made, judged when the change version returns; a port the configuration holds and no longer needs, released at the commit point, last ([claims in a change](#claims-in-a-change)) | `unclaim` names a port the configuration holds |
+| `cx.post(handle, work)` | Work on a loop, staged until the commit point and destroyed unrun if the change is superseded or falls back | As on creation |
+| `cx.declareLatency(from, to, Latency{...})` | The new configuration's latency on a path, carried from the commit point | As on creation |
+
+Then answer `return cx.applied()` (the code stays), `return cx.whenReady(loop, work)` (the change
+goes on on the node's own thread once it is ready: [whenReady](#whenready-and-configuredone)),
+`return cx.applied(code)` (a new code, swapped
+in at the commit point between two cycles: a discontinuity unless the type carries its state into
+it; it takes no loop's state, which lives across a change; a code given is always swapped, as the
+framework never compares codes, so a type with nothing new answers `cx.applied()`), or `return Changed::restart(reason)`
+when the type cannot take this change in place after all, which restarts the node with the new
+settings. A change version cannot refuse a change: the new settings are committed before it is
+called. `ChangeOf` has no `state`, `store`, `executor` or `program`: each does not
+compile. The spec's `.lifecycle = Lifecycle{.reconfigureDeadline = 30s}` (after `.loops`; 10 s
+by default) is how long a change may take; outside 1 s to 60 s it does not compile.
+
+**A change of ports in place** (a row that shapes the ports, marked `.inPlace()`:
+[architecture.md](architecture.md#reshapes)): the change version runs with the new ports already
+in the engine, `now`'s, while the old code keeps playing on the ports it was laid out for. It must answer `cx.applied(code)`, a code for the new ports, swapped in at the
+commit point (any other answer fails the node `lost`); a hold names a bank the old code has. A
+configuration with a companion takes such a change as a restart.
+
+### whenReady and ConfigureDone
+
+A change whose work must run on the node's own thread once its new acquisitions are ready (a
+library's client swapped on its worker) answers with `cx.whenReady(loop, work)` instead of
+`cx.applied()`: one call, which joins "once ready" and "on my thread", so a type writes neither a
+poll nor a second hook.
+
+```cpp
+Changed configure(ChangeOf<spec>& cx, const Checked& old, const Checked& now) {
+	cx.claim(claim::TcpListen(now.get<portRow>()));
+	cx.unclaim(claim::TcpListen(old.get<portRow>()));
+	return cx.whenReady(worker, [next = settingsFrom(now)](Worker& w, ConfigureDone done) mutable {
+		w.swapClient(std::move(next), std::move(done)); // done.done() or done.fail(detail), later, from any thread
+	});
+}
+```
+
+- **When it runs.** Once every acquisition of the change is ready (its claims granted and
+  probed, its replacement companions running) and every hold acknowledged, `work(state, done)` is
+  posted to the loop as the node's own work (`work(done)` for a loop with no state). The commit
+  point waits for `done.done()`: then the staged posts are released, the holds fade in and what
+  the change replaced is released, last.
+- **Before the post** a newer change supersedes the change, and a refusal, a loss, the deadline, a
+  stop, a removal or `node.restart` ends it: `work` is destroyed unrun on the main loop, with every
+  post the change staged.
+- **From the post on** `work` is the node's own: it runs even if a stop, a restart or a removal
+  began after the post, before the goodbye `stop()` posts behind it, so a goodbye sees a whole
+  state, old or new. A newer change waits for the change to end (as for the commit's invoke) and
+  is then made afresh; a stop, a removal, a restart and the deadline still end the change, and its
+  `done` is then ignored.
+- **`ConfigureDone`** is move-only. `std::move(done).done()` or `std::move(done).fail(detail)` once,
+  from any thread; `fail` falls the change back to a restart (reason `failed`, `detail` its words),
+  and a token destroyed without either (dropped, or destroyed unrun with its work when the loop's
+  state is gone) fails it `the change was dropped`. Once the change ended any other way both are
+  ignored.
+- **The rules:** `whenReady` at most once in a change, its `Changed` the one `configure` returns
+  (a second call, or another answer after it, fails the node `lost`); the code stays the node's
+  (a continuation swaps no code and holds no bank: those are `cx` calls, made before it).
+- **In the harness** the continuation runs at `runLoops()`, as every loop's work does, so a test
+  readies the change's companions, then runs the loops, and the change commits once its token
+  answered.
+
+### Make-before-break
+
+A replacement in a change is **made before break** where it can be: the new companion is made
+beside the one it replaces, both run for a moment, and the old one goes at the commit point. So
+the old one's resources (an RTP receiver's port, a card's device) are held until the new one runs,
+and a replacement that cannot be made costs nothing but the fallback. Every replacement is made
+before break but two:
+
+- **An RTP receiver on the same port** is break-first, whatever the type asks: two bound to one
+  UDP port would split or duplicate its datagrams, so the framework decides, as only it knows how
+  PipeWire binds.
+- **A sound card the type orders break-first**, `cx.attach(bank, SoundCardShape{...},
+  Order::breakFirst)`: only the type knows whether the new card is the ALSA device the old one
+  holds (opened twice, the second open fails), so it says.
+
+Break-first, the old one is destroyed and the new one made in one flush, once the hold below is
+acknowledged; the new one's readiness is bounded by the change's deadline.
+
+- **Held either way.** The framework holds what the bank carries before it makes or breaks
+  anything: for a receiver or a capture card, the public outputs its inside input feeds (through
+  the pass-through, else every routable output), so two into one inside input never mix into what
+  the node sends (that two sources into one inside input mix at all relies on PipeWire's port mixer
+  for a DSP client-node port loading through its `library.name` fallback, since `engine.conf` maps
+  no `audio.mixer*` library: not yet tested, [testing.md](testing.md#tests-still-to-write)); for a playback card, its own inside output bank (`to_card`), so neither card
+  clicks as it goes or comes. The commit point fades it back in.
+- **Retiring.** The old one is listed `retiring: true` in the node's companions just before its
+  replacement, which shares its name for a moment
+  ([control-port.md](control-port.md#companions)); the replacement is `ready: false` until it
+  runs. A retiring companion's loss is said (`ear.retiring-lost`) and never fails the node.
+- **At the commit point** the old one is destroyed in the turn's flush and, last, the ports its
+  replacement does not ask are released ([claims in a change](#claims-in-a-change)), so a node
+  waiting for one probes it once the old one has let go.
+- **A change that ends uncommitted** (superseded, stopped, fallen back) destroys the replacement
+  made, or still to be made, and the old one is the bank's companion again, no longer retiring; a
+  newer change judges its own replacement against it.
 
 ### The node handle
 
@@ -297,6 +430,21 @@ return cx.applied(passThrough(bankPair(play, toCard), bankPair(fromRtp, stream))
   `a second resource named <node>.<name> in one configuration` for two sinks or two sources on one
   bank, or two engine companions of one kind on any banks; `a second companion on bank <bank>` only
   for two of different kinds on one bank.
+- **A replacement in a change** ([the change version](#the-change-version)): `cx.attach(bank,
+  RtpReceiverShape{...})` in a change replaces the RTP receiver on that bank, and `cx.attach(bank,
+  SoundCardShape{...}, order)` the card on it (a bank with none of the kind is a broken rule; a
+  card goes as [make-before-break](#make-before-break) says). Its claims are judged first, with the change's own ([claims in a change](#claims-in-a-change)): a
+  key the configuration already holds (the same port) is its own, granted unprobed; a new port is judged and probed
+  as at the first readiness step, and one refused falls the change back (`resource-refused`) before anything is
+  broken. Then the framework holds the public output banks the bank feeds through the pass-through
+  (every routable output for a code of the type's own) and waits for the acknowledgement. On a new
+  port the new receiver is made beside the old one ([make-before-break](#make-before-break)); on
+  the same port (two receivers on one port would split its datagrams) break-first: the old receiver
+  destroyed and the new one made in one flush. The old one is retiring from the attach on: its loss
+  is said (`ear.retiring-lost`), never a failure.
+  The new one's loss before the commit point falls the change back (`resource-lost`); the change's
+  deadline bounds its readiness. At the commit point the ports the new one no longer asks are
+  released, last, so a node waiting for the old port is granted it then.
 - A receiver's buffer is latency beyond its bank, which the framework adds to the latency plan
   ([latency](#latency)); a type declares none for it: an RTP receiver's `latencyMs`, and a pipe
   receiver's module's fixed 8192 frames at the writer's rate, in graph frames rounded half up
@@ -365,6 +513,32 @@ return cx.applied(passThrough(bankPair(record, writer)));
   lock or atomic the two threads need. The member may be one the state inherits. A loop the spec
   lacks, one declared without a state, a member of another class or one that is not a
   `SinkConsumer` does not compile.
+
+### Pausing a sink
+
+A consumer that writes into something its node swaps (a network library's client, a socket)
+needs a moment when no `consume` runs. Attaching a sink returns its `SinkControl&`, which a
+loop's state keeps (`cx.state(worker, control, ...)` after the attach), so the framework owns the
+one hand-over and no type writes a lock around its target on the sink's thread.
+
+| On a `SinkControl&` | What |
+|---|---|
+| `pause(loop, paused)` | From one of the node's loops. The sink's thread finishes a `consume` in flight, then discards chunks until `resume()`, counting their frames as paused, never as drops; `paused` is posted to `loop` once no `consume` can run. Until `resume()` the consumer's state is the thread's that runs `paused`: the post is the hand-over. Pausing a paused sink posts `paused` at once |
+| `resume()` | From the thread that paused it, once `paused` ran: the next chunk goes to `consume` with its own position, so the consumer sees the gap (a resume before `paused` ran drops it unrun) |
+| `pausedFrames()` | Any thread: the frames discarded while paused, over the sink's life |
+
+- **Discarded, not queued**: a swap is a break in what the node sends, and the chunks' positions
+  say where.
+- **At teardown** a paused sink is drained by discarding, then its consumer's `finish()` is
+  called: a `finish` copes with a pause it never saw resumed.
+- **No lock on the ring's hot path.** The block's tap never reads the pause; the sink's thread
+  reads one atomic before each chunk and takes a lock only to take a request (core's `SinkPause`,
+  `ear/core/sink_ring.hpp`, which the engine's sink and the harness's both run). A request made
+  while no chunk comes wakes the sink's thread, so `paused` never waits for audio. A writer at
+  full rate under 10^4 pauses and resumes sees no `consume` between `paused` and `resume()`, and
+  every frame consumed, paused or dropped (`sink_pause_test.cpp`).
+- **In the harness** a pause is taken at once (no `consume` is ever in flight on the test's
+  thread); `harness.paused(bank)` and `harness.pausedFrames(bank)` read it.
 
 ## Sources
 
@@ -485,6 +659,48 @@ or makes a system call. It reports to its type's threads in a lock-free mailbox 
 read it through the reference the type kept; the source owns the clock and frees it with itself at
 teardown step 5, after the instance and every thread it owns, so that reference never dangles. A
 source with no clock (`cx.attach(bank, shape)`) skips nothing and is never asked.
+
+### Sinks and sources in a change
+
+A change version may replace the sink or the source on a bank (`cx.attach(bank, shape, ...)`, with
+creation's forms and rules), say to give a sink a consumer of new settings or a source a ring of a
+new size:
+
+```cpp
+Changed configure(ChangeOf<spec>& cx, const Checked& old, const Checked& now) {
+	cx.attach(writer, SinkShape{.frames = ...}, std::make_unique<WavWriter>(/* now's */));
+	return cx.applied();
+}
+```
+
+- **Made beside the old one.** The replacement is made in the call (a source's writer is valid at
+  once); a sink's consumer begins once the change's claims and recordings are ready, while the old
+  one's goes on consuming. The commit point waits for that `begin()` (the change's deadline bounds
+  it; a `lost` said in it fails the node). Until the commit point both are listed, the old one
+  `retiring: true` just before its replacement, which shares its name
+  ([control-port.md](control-port.md#companions)); a sink's replacement is `ready: false` until its
+  consumer began.
+- **Swapped in the commit's invoke.** The block takes a ring companion's binding only in an invoke
+  between two cycles, so the commit point swaps the code (the new one, or the same one again) with
+  the replacements' bindings in one invoke ([engine.md](engine.md#holds-and-swaps)): the old sink
+  takes exactly the cycles before it and its replacement those from it, and two sources never play
+  into one bank. A stopped node has nothing driven: its next drive binds the replacements. The
+  framework holds nothing for it: a type that wants no step at the swap holds its outputs itself
+  (`cx.hold`), as a replacement source starts empty and fades in.
+- **What goes.** A replaced sink drains what its ring holds to its own consumer and finishes once
+  the swap completed, on its own thread; its drops are the node's (`dropped=`); it is freed once it
+  finished, so its `SinkControl&` is valid only until the commit point. A replaced source's writer
+  is closed at the commit point (a write waiting returns at once, as at a teardown's), and the
+  source is kept until the configuration is freed, since a thread of the instance may still call
+  it. A teardown waits for a replaced sink still draining as for its own sinks, but counts it
+  among none of them: `ear.close-overdue` names it among the sinks open.
+- **A change that ends uncommitted** closes its replacement sinks (never tapped; a consumer that
+  began is finished) and the writers of its replacement sources; the old ones stay the bank's. One
+  whose [continuation](#whenready-and-configuredone) was posted may hold them, so they are then kept
+  until the configuration is freed.
+- **A consumer of a loop's state** (the two loop forms) may be another member of the state than
+  the old sink's, never the same one: two sinks would call it at once, a broken rule (`the
+  replacement for sink <bank> is consumed by the consumer it replaces`).
 
 ## Loops
 
@@ -712,6 +928,33 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
   `the I/O job open recording <path>` ([architecture.md](architecture.md#faults-by-owner)); any other throw (no
   descriptor, no memory) is a refusal, as the folder's reason is.
 
+### Recordings in a change
+
+`cx.recording(old, RecordingRequest{path})` in a change replaces `old`, a recording the
+configuration holds, with a new file, typically with a sink whose consumer writes it:
+
+```cpp
+Changed configure(ChangeOf<spec>& cx, const Checked& old, const Checked& now) {
+	const Recording& next = cx.recording(*recording_, RecordingRequest{now.get<pathRow>()});
+	cx.attach(writer, SinkShape{.frames = ...}, std::make_unique<WavWriter>(next, ...));
+	return cx.applied();
+}
+```
+
+- **Claimed and opened beside the old one**, by the path rule above: its claim is judged with the
+  change's ([claims in a change](#claims-in-a-change)), then it is opened on the I/O thread before
+  any companion of the change (so a replacement sink's `begin()` reads its descriptor), and the
+  commit point waits for the open. A path the rule refuses, or one the folder cannot open, falls
+  the change back (`resource-refused`, `cannot open <path>: <why>`), and the restart then fails as
+  creation would. `old`'s own path, or a path another recording of the configuration holds, is a
+  broken rule (`recording:<path> claimed twice`).
+- **The old one is closed** once the commit point completed and every sink the configuration
+  replaced has finished, so a consumer may write it until its sink finished; its close is posted
+  to the I/O thread before its claim is released, so a next open of its path comes after the close.
+  Its `Recording&` stays valid, closed (`descriptor()` refuses), until the configuration is freed.
+- **A change that ends uncommitted** closes its replacement recording and releases its claim; the
+  old one stays.
+
 ## Claims
 
 A claim is something ear-wide that one configuration at a time may hold: a listening TCP port (one the type names, or
@@ -790,6 +1033,33 @@ Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>& s) {
   before the old node closed it).
 
 `sendspin` claims its listening port with `cx.claim(claim::TcpListen(port))`, and a dialling node claims nothing.
+
+### Claims in a change
+
+The [change version](#the-change-version) claims a port it will bind with `cx.claim(claim::TcpListen(p))` or
+`cx.claim(claim::Udp(p))`, and gives up one the configuration holds with `cx.unclaim(...)`. So a node moving from 8928
+to 8929 holds both for a moment, and another node can take 8928 only once the first runs on 8929.
+
+- **Judged when the change version returns**, before anything else the change acquires (a replacement companion's own
+  claims are judged with them, and nothing is broken or made until every one is granted). A port the configuration
+  already holds is its own: granted, never probed (the probe would fail against the node itself). Any other is judged
+  and probed as at the first readiness step: held by a configuration that runs, it is refused and the change falls
+  back (`resource-refused`, [architecture.md](architecture.md#changes-in-place)), whose restart claims it afresh;
+  held by one that is closing, it waits (`ear.claim-wait`), against the change's deadline, not its own 15 s, and past
+  that deadline the restart's `configure` waits afresh (so a port held by a closing node can cost a
+  change its deadline and then the restart's own 15 s, about 25 s, before the node fails).
+- **The registry decides at once and the change hears it in a later turn**, so the changes of one edit are judged
+  together: two nodes that swap ports in one edit (`a` from 8928 to 8929, `b` the other way) each find the other's
+  port held by a configuration that runs, both fall back, and each restart's claim then finds the other's old
+  configuration going and waits for it, so both run on their new ports, after a restart each.
+- **Released at the commit point, last**: what the configuration no longer asks (each key `cx.unclaim` named, unless
+  the change claimed it again, and the ports of a replaced companion its replacement does not ask) is released after
+  everything else the commit does, so a node waiting for one is granted it then.
+- **A change that ends uncommitted** (superseded, stopped, fallen back) releases what it was granted and drops its
+  waits; a port a replacement already made asks stays the configuration's, as that replacement does.
+- **The rules:** a key claimed twice in one change, a claim of a store's or a recording's key, and an `unclaim` of a
+  port the configuration does not hold are broken rules (the node fails `lost`). Claiming a key and unclaiming it in
+  one change keeps it (`sendspin` renaming on the same port does both).
 
 ## Programs
 

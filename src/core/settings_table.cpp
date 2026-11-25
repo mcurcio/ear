@@ -107,12 +107,15 @@ std::expected<CheckedSettings, std::string> AnySettingsTable::walk(const NodeSet
 	return CheckedSettings(std::move(slots));
 }
 
-NodeType::NodeType(const AnySettingsTable& table, std::span<const StoreDeclaration> stores) noexcept
-	: table_(&table), stores_(stores) {}
+NodeType::NodeType(const AnySettingsTable& table, std::span<const StoreDeclaration> stores,
+                   std::chrono::milliseconds reconfigureDeadline) noexcept
+	: table_(&table), stores_(stores), reconfigureDeadline_(reconfigureDeadline) {}
 
 std::string_view NodeType::name() const noexcept { return table_->name(); }
 
 std::span<const SettingDeclaration> NodeType::settingKinds() const noexcept { return table_->kinds(); }
+
+bool NodeType::changesInPlace(std::string_view key) const noexcept { return table_->changesInPlace(key); }
 
 std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings> NodeType::parse(const NodeName& node,
                                                                                   const NodeSettings& settings) const {

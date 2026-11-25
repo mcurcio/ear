@@ -59,6 +59,9 @@ public:
 	/// `generation` let go (teardown step 5, or a leaked configuration's late close): every claim it held released and
 	/// its waits dropped. What waited for those is judged again, in arrival order.
 	std::vector<ClaimDecided> release(std::uint64_t generation);
+	/// `generation` lets go of the claim of `key` alone (a change in place's replacement no longer asks it, or a change
+	/// that did not commit asked it), and its wait for that key leaves the queue: what waited for it is judged again.
+	std::vector<ClaimDecided> release(std::uint64_t generation, const std::string& key);
 	/// Whether `generation` holds any claim.
 	bool holds(std::uint64_t generation) const noexcept;
 	/// Whether any configuration, live, going or leaked, holds the claim of this key ("tcp:49152"): an AnyTcp grant

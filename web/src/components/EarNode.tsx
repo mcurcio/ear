@@ -6,7 +6,14 @@
 // companions' badges (companions.ts, docs/editor.md#companions), outside every handle. While a wire is drawn each
 // handle takes its cue from connect.ts's handleCue, the drop rule itself.
 // React Flow's useConnection is a drag in progress; hooks.ts's is the editor's socket.
-import { Handle, Position, useConnection as useFlowConnection, type Node, type NodeProps } from "@xyflow/react";
+import {
+  Handle,
+  Position,
+  useConnection as useFlowConnection,
+  useUpdateNodeInternals,
+  type Node,
+  type NodeProps,
+} from "@xyflow/react";
 import { useEffect, useState } from "react";
 import { handleCue, handleId } from "../connect";
 import { describeHealth, startingLineDelayMs } from "../health";
@@ -60,8 +67,13 @@ function Port({ node, port, direction }: { node: string; port: string; direction
   );
 }
 
-export function EarNode({ data: { node }, selected }: NodeProps<EarFlowNode>) {
+export function EarNode({ id, data: { node }, selected }: NodeProps<EarFlowNode>) {
   const health = describeHealth(node, usePhaseSeen(node.phase, node.since));
+  // A change of ports redraws the same box (docs/editor.md#the-node-box): React Flow measures its handles again, so a
+  // surviving port's wires stay on it and a new port's handle takes wires.
+  const updateInternals = useUpdateNodeInternals();
+  const portsKey = `${node.inputs.join("\n")}\t${node.outputs.join("\n")}`;
+  useEffect(() => updateInternals(id), [id, portsKey, updateInternals]);
   const companions = useCompanionBadges(node);
   const { mark } = useNodeCounters(node);
   return (

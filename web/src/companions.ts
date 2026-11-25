@@ -52,11 +52,14 @@ function counterOf(companion: Companion): { value: number; words: string; recent
   return undefined;
 }
 
-/** "rec.writer (sink on writer): ready; 4096 frames dropped since it was made". */
+/**
+ * "rec.writer (sink on writer): ready; 4096 frames dropped since it was made"; a companion a change replaces
+ * make-before-break "fpp.rtp (rtp on from_rtp): ready, retiring".
+ */
 export function companionDetail(companion: Companion): string {
   const head = `${companion.name} (${companionLabel(companion.kind)} on ${companion.bank}): ${
     companion.ready ? "ready" : "not ready"
-  }`;
+  }${companion.retiring === true ? ", retiring" : ""}`;
   const counter = counterOf(companion);
   if (counter === undefined) return head;
   return `${head}; ${counter.value} ${counter.value === 1 ? "frame" : "frames"} ${counter.words}`;

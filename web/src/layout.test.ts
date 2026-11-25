@@ -64,10 +64,10 @@ describe("the first layout", () => {
   });
 });
 
-// ear replaces a node whose ports change (node.removed, then node.added); the
-// canvas may draw the graph between the two, and the node keeps its place.
+// A node whose ports change stays (node.updated with its new ports, feature reshape), so it keeps its place; a node
+// replaced by another type (node.removed, then node.added) keeps it too, drawn between the two.
 describe("places", () => {
-  it("keeps a replaced node's place, drawn after every message of the graph-file fixture", () => {
+  it("keeps a reshaped node's place, drawn after every message of the graph-file fixture", () => {
     const messages = messagesOf(fixtures.graphFile.messages);
     const places = new Places();
     let state: GraphState = null;
@@ -83,7 +83,7 @@ describe("places", () => {
       }
       if (!state.nodes.some((node) => node.name === "desk")) deskSeenGone = true;
     }
-    expect(deskSeenGone).toBe(true);
+    expect(deskSeenGone).toBe(false); // reshaped, never removed
     expect(state!.nodes.find((node) => node.name === "desk")!.inputs).toHaveLength(4);
     expect(current.get("desk")).toStrictEqual(dragged);
   });

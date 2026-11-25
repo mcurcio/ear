@@ -1,5 +1,5 @@
 {
-  "description": "The feature counters (docs/control-port.md#counters): the snapshot carries the graph's counters and each node's; counters.changed, at most once a second and only when a loss moved, carries the graph's counters whole and the whole counters of each node whose counters changed since the last, and the client replaces the counters it names. A node it names that the client does not hold (ghost, removed and still closing) is ignored. A change of a card's channel count replaces the node, node.removed and node.added, and the node.added carries the counters the newer node carries on from the older (a port-caused replace is the same node to the operator: docs/engine.md#counters), so the next counters.changed moves on from them.",
+  "description": "The feature counters (docs/control-port.md#counters): the snapshot carries the graph's counters and each node's; counters.changed, at most once a second and only when a loss moved, carries the graph's counters whole and the whole counters of each node whose counters changed since the last, and the client replaces the counters it names. A node it names that the client does not hold (ghost, removed and still closing) is ignored. A change of a card's channel count keeps the node (node.updated with its ports, feature reshape), so its counters are kept and the next counters.changed moves on from them.",
   "requests": [
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"node.update\",\"params\":{\"name\":\"desk\",\"settings\":{\"card\":\"MOTU\",\"playback\":4}}}"
@@ -14,7 +14,10 @@
           "lifecycle",
           "counters",
           "companions",
-          "node-text"
+          "node-text",
+          "reshape",
+          "node.set",
+          "dryRun"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -131,20 +134,21 @@
     },
     {
       "jsonrpc": "2.0",
-      "method": "node.removed",
-      "params": {
-        "name": "desk"
-      }
-    },
-    {
-      "jsonrpc": "2.0",
-      "method": "node.added",
+      "method": "node.updated",
       "params": {
         "name": "desk",
-        "type": "card",
         "settings": {
           "card": "MOTU",
           "playback": 4
+        },
+        "applied": "reshape",
+        "inPlace": false,
+        "ports": {
+          "added": [
+            "play.3",
+            "play.4"
+          ],
+          "removed": []
         },
         "inputs": [
           "play.1",
@@ -152,19 +156,7 @@
           "play.3",
           "play.4"
         ],
-        "outputs": [],
-        "state": "starting",
-        "phase": "added",
-        "since": "2026-11-09T10:00:00.000000Z",
-        "wanted": "running",
-        "blockLost": false,
-        "counters": {
-          "missedCycles": 12,
-          "overruns": 0,
-          "repositions": 0,
-          "driverChanges": 0
-        },
-        "companions": []
+        "outputs": []
       }
     },
     {
@@ -199,7 +191,10 @@
       "lifecycle",
       "counters",
       "companions",
-      "node-text"
+      "node-text",
+      "reshape",
+      "node.set",
+      "dryRun"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -225,9 +220,8 @@
           "play.4"
         ],
         "outputs": [],
-        "state": "starting",
-        "phase": "added",
-        "since": "2026-11-09T10:00:00.000000Z",
+        "state": "running",
+        "phase": "running",
         "wanted": "running",
         "blockLost": false,
         "counters": {

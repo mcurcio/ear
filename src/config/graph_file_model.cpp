@@ -1015,6 +1015,36 @@ EditOutcome GraphFileModel::addRoute(const Route& route) const {
 	});
 }
 
+EditOutcome GraphFileModel::removeRoutes(const std::vector<Route>& routes) const {
+	return guarded([&]() -> EditOutcome {
+		const auto& wanted = wantedOf(impl_->read).routes;
+		const Editing editing(impl_->text);
+		std::vector<vw::statement> removals;
+		for (const Route& route : routes) {
+			if (std::find(wanted.begin(), wanted.end(), route) == wanted.end()) return refuse(UnknownRoute{route});
+			const auto found = editing.route(route);
+			if (!found) throw std::logic_error("graph file model: a wanted route is not in its render");
+			if (std::find(removals.begin(), removals.end(), found->written()) == removals.end())
+				removals.push_back(found->written());
+		}
+		for (const auto& statement : removals)
+			if (auto shared = editing.shared(statement)) return refuse(std::move(*shared));
+		removeAll(std::move(removals));
+		return finish(editing, *impl_->catalogue);
+	});
+}
+
+std::optional<Ports> GraphFileModel::portsOf(const NodeName& name) const {
+	if (!impl_->read.wanted) return std::nullopt;
+	const NodeSpec* held = heldNode(*impl_->read.wanted, name);
+	if (held == nullptr) return std::nullopt;
+	const NodeType* type = impl_->catalogue->find(held->type);
+	if (type == nullptr) return std::nullopt;
+	auto config = type->parse(held->name, held->settings);
+	if (!config) return std::nullopt;
+	return (*config)->ports().publicOnly();
+}
+
 EditOutcome GraphFileModel::removeRoute(const Route& route) const {
 	return guarded([&]() -> EditOutcome {
 		const auto& routes = wantedOf(impl_->read).routes;

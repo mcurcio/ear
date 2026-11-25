@@ -159,6 +159,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		explicit FakeBlock(Impl& h) : harness(h) {}
 		~FakeBlock() override { harness.block = nullptr; }
 		void drive(DriveRequest request, std::move_only_function<void(std::uint64_t)> done) override {
+			harness.buffers(request.ports != nullptr ? *request.ports : harness.blockPorts);
 			harness.driven = request.code;
 			harness.bound.assign(request.sinks.begin(), request.sinks.end()); // the taps change with the code
 			harness.boundSources.assign(request.sources.begin(), request.sources.end());
@@ -168,9 +169,35 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			const std::uint64_t cancelled = harness.fade.driven(
 				std::ranges::any_of(harness.fadeMask, [](std::uint8_t faded) { return faded != 0; }));
 			harness.dropFades(cancelled);
+			harness.ackHolds(harness.holdRamp.driven());
 			harness.account.driven();
 			const std::uint64_t taken = harness.account.nextPosition();
 			harness.request(false, [done = std::move(done), taken]() mutable { done(taken); });
+		}
+		/// A hold, by the real block's rule (HoldRamp): acknowledged at once with autoComplete (a block not
+		/// processing), else when a cycle ends it at zero or the test acknowledges it.
+		void hold(std::vector<std::uint8_t> outputs, std::move_only_function<void()> acknowledged) override {
+			harness.holdRamp.hold(outputs);
+			harness.holdAcks.push_back(std::move(acknowledged));
+			if (harness.options.autoComplete) harness.ackHolds(harness.holdRamp.notProcessing());
+		}
+		void release(std::vector<std::uint8_t> outputs) override { harness.holdRamp.release(outputs); }
+		/// As the real block's swap: the code and its taps change, the fade and the holds are kept.
+		void swap(DriveRequest request, std::move_only_function<void(std::uint64_t)> done) override {
+			harness.buffers(request.ports != nullptr ? *request.ports : harness.blockPorts);
+			harness.driven = request.code;
+			harness.bound.assign(request.sinks.begin(), request.sinks.end());
+			harness.boundSources.assign(request.sources.begin(), request.sources.end());
+			harness.account.driven();
+			++harness.swaps;
+			const std::uint64_t taken = harness.account.nextPosition();
+			harness.request(false, [done = std::move(done), taken]() mutable { done(taken); });
+		}
+		/// As the real block's: the code running keeps its view (the new outputs are not the harness's until the code
+		/// for them comes); a silence takes the new ports at once.
+		void reshape(const Ports& next) override {
+			harness.blockPorts = next;
+			if (harness.driven == nullptr) harness.buffers(next);
 		}
 		void fadeOut(std::move_only_function<void()> done) override {
 			harness.fade.fadeOut();
@@ -195,9 +222,11 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	};
 	struct FakeBlocks final : PortBlockFactory {
 		explicit FakeBlocks(Impl& h) : harness(h) {}
-		std::unique_ptr<PortBlock> make(const NodeName&, const Ports&, const AudioFormat&,
+		std::unique_ptr<PortBlock> make(const NodeName&, const Ports& ports, const AudioFormat&,
 		                                PortBlockEvents& events) override {
 			harness.blockEvents = &events;
+			harness.blockPorts = ports;
+			harness.buffers(ports);
 			auto made = std::make_unique<FakeBlock>(harness);
 			harness.block = made.get();
 			return made;
@@ -266,15 +295,18 @@ struct NodeHarness::Impl final : NodeHealthListener,
 				[closed = std::move(closed), dropped = rules.droppedFrames()]() mutable { closed(dropped); });
 		}
 		std::uint64_t droppedFrames() const noexcept override { return rules.droppedFrames(); }
+		SinkControl& control() noexcept override { return pause; }
 		void write(std::span<const std::span<const float>> bank, std::uint32_t frames,
 		           const ChunkStamp& stamp) noexcept override {
 			if (rules.write(bank, frames, stamp)) drain();
 		}
 		/// What the sink's thread does when woken: every chunk to a consumer that began and has not finished, else
-		/// skipped.
+		/// skipped; while paused (SinkPause, its request taken here at once: no consume is ever in flight on the
+		/// test's thread), each chunk discarded and counted.
 		void drain() {
 			if (!began || finished) return rules.discard();
 			rules.drain([&](const Chunk& chunk) {
+				if (pause.holds()) return pause.discarded(chunk.frames);
 				harness.companionList.at(index).chunks.push_back(
 					SeenChunk{{chunk.interleaved.begin(), chunk.interleaved.end()},
 				              chunk.frames,
@@ -290,6 +322,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		Impl& harness;
 		std::size_t index;
 		SinkRing rules;
+		SinkPause pause{[this] { pause.holds(); }};
 		std::unique_ptr<SinkConsumer> consumer;
 		std::move_only_function<void()> begun; // until its consumer begins
 		bool began = false;
@@ -804,8 +837,8 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			harness.recordingList.push_back(request);
 			return create.recording(request);
 		}
-		void sink(std::string_view bank, SinkShape shape, SinkConsumerFrom consumer) override {
-			create.sink(bank, shape, std::move(consumer));
+		SinkControl& sink(std::string_view bank, SinkShape shape, SinkConsumerFrom consumer) override {
+			return create.sink(bank, shape, std::move(consumer));
 		}
 		SourceWriter& source(std::string_view bank, SourceShape shape, std::unique_ptr<SourceClock> clock) override {
 			return create.source(bank, shape, std::move(clock));
@@ -837,6 +870,13 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		std::span<const StoreDeclaration> stores() const noexcept override { return inner->stores(); }
 		void start() override { inner->start(); }
 		void stop() override { inner->stop(); }
+		// A change in place reaches the type's own instance with the type's own config, which the harness's wraps.
+		bool changes() const noexcept override { return inner->changes(); }
+		Changed change(ChangeContext& cx, const NodeConfig& now) override {
+			return inner->change(cx, *static_cast<const SeenConfig&>(now).inner);
+		}
+		void adopt(const NodeConfig& now) override { inner->adopt(*static_cast<const SeenConfig&>(now).inner); }
+		std::chrono::milliseconds reconfigureDeadline() const noexcept override { return inner->reconfigureDeadline(); }
 		Impl& harness;
 		std::unique_ptr<ErasedInstance> inner;
 	};
@@ -860,6 +900,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	                                .recordings = options.noRecordingsFolder ? nullptr : &recordings,
 	                                .loops = &loops,
 	                                .stores = &stores,
+	                                .ports = options.refusedPorts.empty() ? nullptr : &probe,
 	                                .pipeReceivers = &pipes,
 	                                .programs = &programs,
 	                                .runtimeFolder = options.runtimeFolder}),
@@ -890,7 +931,10 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	}
 
 	// ---- Listeners ----
-	void nodeChanged(const NodeHealth& h) override { told = h; }
+	void nodeChanged(const NodeHealth& h) override {
+		told = h;
+		toldList.push_back(h);
+	}
 	void nodeGone(const NodeName&, std::uint64_t dropped) override {
 		wentAway = true;
 		dropped_ = dropped;
@@ -948,6 +992,13 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			--count;
 		}
 	}
+	/// The oldest `count` holds waiting were acknowledged: each posted, never run here.
+	void ackHolds(std::uint64_t count) {
+		for (; count > 0 && !holdAcks.empty(); --count) {
+			executor.post(std::move(holdAcks.front()));
+			holdAcks.pop_front();
+		}
+	}
 	void completeFades(std::uint64_t count) {
 		if (count > 0) finishFades(count, true);
 	}
@@ -963,18 +1014,44 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	void requireAdded() const {
 		if (!added) throw std::logic_error("the harness has added no node");
 	}
-	void buffers() {
-		const Ports& ports = config->ports();
-		inputNames.clear();
-		outputNames.clear();
+	/// The block's buffers laid out for `ports`, the view of the code it runs (docs/engine.md#reshapes), as the real
+	/// block's layout: each kept port keeps its samples, its fade flag, its gain and its hold, by name.
+	void buffers(const Ports& ports) {
+		if (laidOut && view == ports) return;
+		std::vector<PortName> ins;
+		std::vector<PortName> outs;
 		for (const auto* names : {&ports.inputs(), &ports.insideInputs()})
-			inputNames.insert(inputNames.end(), names->begin(), names->end());
+			ins.insert(ins.end(), names->begin(), names->end());
 		for (const auto* names : {&ports.outputs(), &ports.insideOutputs()})
-			outputNames.insert(outputNames.end(), names->begin(), names->end());
-		inputs.assign(inputNames.size(), std::vector<float>(options.format.maxBlock, 0.0F));
-		outputs.assign(outputNames.size(), std::vector<float>(options.format.maxBlock, 0.0F));
-		lastGain.assign(outputNames.size(), 1.0F);
-		fadeMask.assign(outputNames.size(), 0);
+			outs.insert(outs.end(), names->begin(), names->end());
+		const auto from = [](const std::vector<PortName>& was, const PortName& name) -> std::int32_t {
+			const auto found = std::ranges::find(was, name);
+			return found == was.end() ? -1 : static_cast<std::int32_t>(found - was.begin());
+		};
+		std::vector<std::vector<float>> nextInputs(ins.size(), std::vector<float>(options.format.maxBlock, 0.0F));
+		for (std::size_t i = 0; i < ins.size(); ++i)
+			if (const std::int32_t old = from(inputNames, ins[i]); old >= 0)
+				nextInputs[i] = inputs[static_cast<std::size_t>(old)];
+		std::vector<std::int32_t> map(outs.size());
+		std::vector<float> gains(outs.size(), 1.0F);
+		std::vector<std::uint8_t> mask(outs.size(), 0);
+		for (std::size_t o = 0; o < outs.size(); ++o) {
+			map[o] = from(outputNames, outs[o]);
+			if (map[o] < 0) continue;
+			gains[o] = lastGain[static_cast<std::size_t>(map[o])];
+			mask[o] = fadeMask[static_cast<std::size_t>(map[o])];
+		}
+		HoldRamp holds(options.format.rate, outs.size());
+		holds.carry(holdRamp, map);
+		holdRamp = std::move(holds);
+		inputs = std::move(nextInputs);
+		outputs.assign(outs.size(), std::vector<float>(options.format.maxBlock, 0.0F));
+		lastGain = std::move(gains);
+		fadeMask = std::move(mask);
+		inputNames = std::move(ins);
+		outputNames = std::move(outs);
+		view = ports;
+		laidOut = true;
 	}
 	/// What the real block with no peers tells on output port `output` (outputs then insideOutputs; its capture latency)
 	/// and on input port `input` (its playback latency): workOut's, as the plan was last carried
@@ -985,6 +1062,12 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		                          : facts.told.at(ports.inputs().size() + ports.insideInputs().size() + output);
 	}
 	Latency toldOnInput(std::size_t input) const { return facts.told.empty() ? Latency{} : facts.told.at(input); }
+	/// The newest sink made on `bank` that is alive.
+	FakeSink& sinkOn(std::string_view bank) const {
+		for (auto it = sinkFakes.rbegin(); it != sinkFakes.rend(); ++it)
+			if (companionList.at(it->first).bank == bank) return *it->second;
+		throw std::logic_error("no sink on bank " + std::string(bank) + " is alive");
+	}
 	/// The newest source made on `bank`.
 	FakeSource& sourceOn(std::string_view bank) const {
 		for (auto it = sourceList.rbegin(); it != sourceList.rend(); ++it)
@@ -1050,6 +1133,23 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	FakeBlocks blocks;
 	FakeEngineCompanions<SoundCardShape> cards;
 	FakeEngineCompanions<RtpReceiverShape> receivers;
+	/// The port probe, when the options refuse a port: each key listed refused "in use".
+	struct FakeProbe final : PortProbe {
+		explicit FakeProbe(const std::vector<std::string>& r) : refused(r) {}
+		std::expected<void, std::string> judged(std::string key) const {
+			if (std::ranges::find(refused, key) != refused.end()) return std::unexpected(std::string("in use"));
+			return {};
+		}
+		std::expected<void, std::string> tcpListen(std::uint16_t port) override {
+			return judged("tcp:" + std::to_string(port));
+		}
+		std::expected<void, std::string> udp(std::uint16_t port, std::string_view) override {
+			return judged("udp:" + std::to_string(port));
+		}
+		std::expected<std::uint16_t, std::string> freeTcp() override { return std::uint16_t{49152}; }
+		const std::vector<std::string>& refused;
+	};
+	FakeProbe probe{options.refusedPorts};
 	FakeEngineCompanions<PipeReceiverShape> pipes;
 	FakeSinks sinks;
 	FakeSources sources;
@@ -1077,6 +1177,9 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	std::deque<PendingRequest> pending;
 	std::vector<std::uint8_t> fadeMask; // per output, outputs then insideOutputs: the last drive's faded ones
 	BlockFade fade;                     // the real block's fade and its rule for fade-outs
+	HoldRamp holdRamp{SampleRate::fixed<48'000>(), 0};    // the real block's holds, sized with the buffers
+	std::deque<std::move_only_function<void()>> holdAcks; // each hold's acknowledgement not yet posted
+	std::size_t swaps = 0;                                // swaps the block was asked
 	// The fake block's cycles (docs/writing-a-node-type.md#lost-cycles): its graph's cut record, the real block's rule
 	// that states each cycle's facts, and the clock the next process() runs on.
 	HarnessCuts cuts;
@@ -1101,6 +1204,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	std::vector<ProgramEvents*> programEvents;                  // by programList's index: what NodeHost gave its launch
 
 	std::optional<NodeHealth> told;
+	std::vector<NodeHealth> toldList; // every health told, in order
 	bool wentAway = false;
 	std::uint64_t dropped_ = 0;
 	std::vector<std::string> noteList;
@@ -1110,6 +1214,9 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	std::vector<SeenInternalError> internalErrorList;
 
 	std::vector<PortName> inputNames;
+	Ports view;           // the ports the buffers are laid out for: the driven code's view
+	Ports blockPorts;     // the block's own ports: its making's, else its last reshape's
+	bool laidOut = false; // buffers() ran
 	std::vector<PortName> outputNames;
 	std::vector<std::vector<float>> inputs;
 	std::vector<std::vector<float>> outputs;
@@ -1139,7 +1246,7 @@ std::optional<std::string> NodeHarness::parse(const NodeSettings& settings) {
 	if (!parsed) return parsed.error().detail;
 	impl_->settings = settings;
 	impl_->config = std::make_shared<const Impl::SeenConfig>(*impl_, std::move(*parsed));
-	impl_->buffers();
+	impl_->buffers(impl_->config->ports());
 	return std::nullopt;
 }
 
@@ -1209,6 +1316,24 @@ void NodeHarness::acknowledgeFade() {
 
 void NodeHarness::completeBarrier() { impl_->completeOldest(false); }
 
+void NodeHarness::acknowledgeHolds() {
+	// As a block not processing: every held output is at zero now.
+	const std::uint64_t acknowledged = impl_->holdRamp.notProcessing();
+	if (acknowledged == 0) throw std::logic_error("no hold is waiting");
+	impl_->ackHolds(acknowledged);
+	impl_->settle();
+}
+
+bool NodeHarness::held(std::string_view port) const {
+	return impl_->holdRamp.held(Impl::indexOf(impl_->outputNames, port));
+}
+
+float NodeHarness::lastHoldGain(std::string_view port) const {
+	return impl_->holdRamp.gain(Impl::indexOf(impl_->outputNames, port));
+}
+
+std::size_t NodeHarness::swaps() const noexcept { return impl_->swaps; }
+
 void NodeHarness::advance(std::chrono::milliseconds by) {
 	impl_->clock.advance(by);
 	impl_->settle();
@@ -1274,6 +1399,8 @@ void NodeHarness::process(std::uint32_t frames) {
 	// The fade, by the real block's own rule.
 	const BlockFade::Applied faded = h.fade.apply(out, h.fadeMask, frames);
 	for (std::size_t o = 0; o < out.size(); ++o) h.lastGain[o] = h.fadeMask[o] != 0 ? faded.lastGain : 1.0F;
+	// The holds, after the fade and before the sinks, by the real block's own rule.
+	const std::uint64_t holdsAcknowledged = h.holdRamp.apply(out, frames);
 	// Each sink's tap after the fade (a sink's bank is never faded), as the real block writes it, while a code runs.
 	if (h.driven != nullptr)
 		for (const SinkBinding& binding : h.bound) {
@@ -1288,10 +1415,10 @@ void NodeHarness::process(std::uint32_t frames) {
 	h.timeFrames += frames;
 	h.lastFrames = frames;
 	// A cycle that ended a fade-out at zero acknowledged every fade-out waiting.
-	if (faded.acknowledged > 0) {
-		h.completeFades(faded.acknowledged);
-		h.settle();
-	}
+	if (faded.acknowledged > 0) h.completeFades(faded.acknowledged);
+	// A cycle that ended with every held output at zero acknowledged every hold waiting.
+	h.ackHolds(holdsAcknowledged);
+	if (faded.acknowledged > 0 || holdsAcknowledged > 0) h.settle();
 }
 
 void NodeHarness::loseCycles(std::uint32_t count, Lost how) {
@@ -1323,6 +1450,23 @@ NodeCounts NodeHarness::counts() const {
 GraphCounts NodeHarness::graphCounts() const noexcept { return impl_->cuts.counts(); }
 
 NodeOutcome NodeHarness::change(const NodeSettings& settings) {
+	const NodeOutcome outcome = changeTo(settings);
+	impl_->settle();
+	return outcome;
+}
+
+NodeOutcome NodeHarness::acknowledgeHoldsThenChange(const NodeSettings& settings) {
+	const std::uint64_t acknowledged = impl_->holdRamp.notProcessing();
+	if (acknowledged == 0) throw std::logic_error("no hold is waiting");
+	impl_->ackHolds(acknowledged);
+	// The change's input queued behind the acknowledgements, ahead of what their turn posts.
+	std::optional<NodeOutcome> outcome;
+	impl_->executor.post([&] { outcome = changeTo(settings); });
+	impl_->settle();
+	return *outcome;
+}
+
+NodeOutcome NodeHarness::changeTo(const NodeSettings& settings) {
 	impl_->requireAdded();
 	auto parsed = impl_->type.parse(impl_->options.node, settings);
 	if (!parsed) throw std::logic_error("change() with settings the type refuses: " + parsed.error().detail);
@@ -1332,12 +1476,13 @@ NodeOutcome NodeHarness::change(const NodeSettings& settings) {
 	for (const auto& [key, value] : impl_->settings.items())
 		if (!settings.contains(key)) keys.push_back(key);
 	std::ranges::sort(keys);
+	const Ports oldPorts = impl_->config->ports();
 	impl_->settings = settings;
 	impl_->config = std::make_shared<const Impl::SeenConfig>(*impl_, std::move(*parsed));
-	impl_->buffers();
-	const NodeOutcome outcome = impl_->disabled ? NodeOutcome::stored : NodeOutcome::restart;
-	impl_->host->nodeChanged(impl_->spec(impl_->disabled), impl_->config, NodeChange{outcome, keys});
-	impl_->settle();
+	NodeChange change =
+		changeOf(impl_->type, std::move(keys), impl_->disabled, impl_->disabled, oldPorts, impl_->config->ports());
+	const NodeOutcome outcome = change.outcome;
+	impl_->host->nodeChanged(impl_->spec(impl_->disabled), impl_->config, change);
 	return outcome;
 }
 
@@ -1381,6 +1526,8 @@ void NodeHarness::remove() {
 	impl_->host->nodeRemoved(impl_->options.node);
 	impl_->settle();
 }
+
+const std::vector<NodeHealth>& NodeHarness::healths() const noexcept { return impl_->toldList; }
 
 NodeHealth NodeHarness::health() const {
 	if (!impl_->told) throw std::logic_error("nothing was told of the node");
@@ -1447,6 +1594,12 @@ std::uint32_t NodeHarness::feed(std::string_view bank, std::span<const float> in
 SourcePlayed NodeHarness::lastPlayed(std::string_view bank) const { return impl_->sourceOn(bank).lastPlayed; }
 
 std::uint64_t NodeHarness::shortfall(std::string_view bank) const { return impl_->sourceOn(bank).shortfallFrames(); }
+
+bool NodeHarness::paused(std::string_view bank) const { return impl_->sinkOn(bank).pause.paused(); }
+
+std::uint64_t NodeHarness::pausedFrames(std::string_view bank) const {
+	return impl_->sinkOn(bank).pause.pausedFrames();
+}
 
 const std::vector<RecordingRequest>& NodeHarness::recordingRequests() const noexcept { return impl_->recordingList; }
 

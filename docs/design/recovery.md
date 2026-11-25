@@ -66,7 +66,7 @@ another's.
 
 The default is the framework's (3.2) for every type. A type may declare `recovery::none` or a cap on attempts, after
 which the node stays `failed` until `node.start`, `node.restart` or a settings change. Decided here: the policy is a
-member of the spec's `Lifecycle` struct (`reconfigure.md` 4: `Lifecycle{.reconfigureDeadline = ..., .recovery =
+member of the spec's `Lifecycle` struct (built: `type_spec.hpp`'s `Lifecycle{.reconfigureDeadline = ..., .recovery =
 recovery::attempts(5)}`), so `TypeSpec`'s member order (`docs/writing-a-node-type.md#stores`: `.stores`, then `.loops`) does not change. The type schema
 (slice 5) carries it as `recovery` on the type. No built-in type declares one.
 

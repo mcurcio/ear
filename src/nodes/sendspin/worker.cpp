@@ -70,8 +70,9 @@ void PlayerSlot::endStream(SendspinClock& clock) {
 
 Worker::Worker(WorkerParts parts)
 	: toServer(parts.format.rate, *this), handle_(parts.handle), keys_(parts.keys), clock_(parts.clock),
-	  writer_(parts.writer), player_(parts.player), self_(parts.self), settings_(std::move(parts.settings)),
-	  format_(parts.format), scratch_(std::size_t{parts.writer.capacityFrames()} * nodeChannels) {}
+	  writer_(parts.writer), player_(parts.player), self_(parts.self), sink_(parts.sink),
+	  settings_(std::move(parts.settings)), format_(parts.format),
+	  scratch_(std::size_t{parts.writer.capacityFrames()} * nodeChannels) {}
 
 Worker::~Worker() {
 	// The block is gone or silent by now, so no report the clock wakes the notifier for matters, and the sink has
@@ -122,10 +123,14 @@ void Worker::startClient() {
 	auto keys = NodeKeyStore::open(keys_, handle_);
 	if (!keys) return fail(keys.error());
 	keyStore_ = std::move(*keys);
+	if (auto failed = runClient()) fail(std::move(*failed));
+}
+
+std::optional<std::string> Worker::runClient() {
 	auto client = makeClient(*keyStore_);
 	if (!client->start()) {
 		client->stop();
-		return fail("the Sendspin client did not start");
+		return "the Sendspin client did not start";
 	}
 	handle_.say(notes::id(client->client_id()));
 	const std::string clientId = client->client_id();
@@ -137,6 +142,50 @@ void Worker::startClient() {
 	watch_.emplace(settings_.server.has_value());
 	if (!settings_.server) startListening(clientId);
 	turn();
+	return std::nullopt;
+}
+
+void Worker::swapClient(SendspinSettings next, ConfigureDone done) {
+	// The sink's thread hands what reached the inputs to the client until the pause is taken: so write_audio never
+	// reaches a client being destroyed (docs/writing-a-node-type.md#pausing-a-sink).
+	sink_.pause(self_, [this, next = std::move(next), done = std::move(done)]() mutable {
+		replaceClient(std::move(next), std::move(done));
+	});
+}
+
+void Worker::replaceClient(SendspinSettings next, ConfigureDone done) {
+	settings_ = std::move(next);
+	if (client_ == nullptr) {
+		// The tick's first run has not come: it makes the client, of these settings.
+		sink_.resume();
+		return std::move(done).done();
+	}
+	// As the destructor: the mDNS goodbye, the notifier cut off from the player, the Sendspin goodbye (`shutdown`),
+	// the library's threads joined (the old sync thread, the source's one writer, among them), on_stream_end and
+	// on_streaming_stopped delivered; then the client destroyed. The key store stays, with what it holds in memory.
+	advertiser_.reset();
+	askedInstance_.clear();
+	player_.set(nullptr);
+	if (watch_ && watch_->toldConnected()) handle_.say(notes::disconnected());
+	watch_.reset();
+	client_->stop();
+	std::unique_ptr<::sendspin::SendspinClient> old;
+	{
+		const std::scoped_lock lock(clientMutex_);
+		old = std::move(client_);
+	}
+	old.reset();
+	playerRole_ = nullptr;
+	source_ = nullptr;
+	saidDialling_ = false;
+	if (auto failed = runClient()) {
+		// The sink stays paused, so nothing reaches the missing client, and the tick stops, so nothing makes one: the
+		// change falls back to a restart, which tears the configuration down.
+		tick_.reset();
+		return std::move(done).fail(std::move(*failed));
+	}
+	sink_.resume();
+	std::move(done).done();
 }
 
 std::unique_ptr<::sendspin::SendspinClient> Worker::makeClient(NodeKeyStore& keys) {

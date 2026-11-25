@@ -72,7 +72,7 @@ snapshots include every edit the batch made.
 
 ## Protocol and features
 
-`graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions", "node-text"]`. An absent `protocol` is 0 (the
+`graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun"]`. An absent `protocol` is 0 (the
 wire before the lifecycle). The number moves only on a breaking change: removing or renaming a
 method, notification, member or code, changing a member's type, or changing an order guarantee.
 Additive growth is a new **feature** name.
@@ -85,7 +85,10 @@ Additive growth is a new **feature** name.
   ([below](#counters)). `companions` adds `companions` on each node of a snapshot and `node.added`, and
   `node.companionsChanged` ([below](#companions)). `node-text` adds `nodeTexts` on the GraphFile,
   `node.setText`, `node.addText`, and the diagnostic codes `ear/not-one-node` and `ear/node-renamed`
-  ([below](#a-nodes-own-text)).
+  ([below](#a-nodes-own-text)). `reshape` adds `applied: "reshape"`, `node.updated`'s `ports`,
+  `inputs`, `outputs` and `inPlace`, the cause kind `reshape`, `node.update`'s `dropRoutes` and the code
+  `ports-in-use` ([below](#changes-of-ports)). `node.set` adds `node.set`, and `dryRun` its `dryRun`
+  ([below](#nodeset-and-dry-runs)).
 - **Every enum is open.** `state`, `phase`, `cause.kind`, `waitingFor`'s `kind`, a route's `status`,
   `reason.code`, `applied`, `severity`, a companion's `kind` and every code may gain values, and the counters' names
   are an open set. Draw a value you do not know
@@ -102,7 +105,7 @@ Additive growth is a new **feature** name.
 `graph.get` and `graph.subscribe` answer with the Graph (`test/protocol/snapshot.json`):
 
 ```json
-{"protocol": 1, "features": ["lifecycle", "counters", "companions", "node-text"],
+{"protocol": 1, "features": ["lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun"],
  "graphFrequency": 48000, "blockSize": 256, "realtime": true, "scheduling": "SCHED_FIFO 88",
  "types": ["card", "file", "white"],
  "counters": {"cycles": 18750, "cutCycles": 39, "stalls": 1, "lostMs": 208},
@@ -142,12 +145,14 @@ The meaning of each phase and state is [architecture.md](architecture.md#the-nod
 
 | Member | Always | What |
 |---|---|---|
-| `state` | yes | The colour: `starting`, `running`, `stopping`, `stopped`, `disabled`, `failed` |
-| `phase` | yes | The exact state: `added`, `configuring`, `configured`, `starting`, `running`, `stopping`, `stopped`, `disabled`, `failed`. Explain by it; colour by `state` |
+| `state` | yes | The colour: `starting`, `running`, `stopping`, `stopped`, `disabled`, `failed`, `reconfiguring` |
+| `phase` | yes | The exact state: `added`, `configuring`, `configured`, `starting`, `running`, `stopping`, `stopped`, `disabled`, `failed`, `reconfiguring`. Explain by it; colour by `state` |
 | `since` | when known | When this phase began, UTC to the microsecond, stamped as the gateway hears it (a snapshot's is the one its phase had when the graph was read) |
 | `wanted` | yes | `running`, `stopped` (a stop held in memory) or `disabled` (in `ear.conf`) |
 | `blockLost` | yes | The node's block is gone for good; it cannot restart until removed and added, or ear restarts |
-| `cause` | `stopping`; `configuring` after a restart, retry or enable | `{"kind"}`: `stop`, `disabling`, `removing`, `restarting` (with `restart: {"kind"}`, the restart's own kind: `settings` with its `keys`, or `action` for `node.restart`), and for `configuring`: `settings` (with `keys`), `action`, `retry`, `enabling` |
+| `cause` | `stopping`; `configuring` after a restart, retry or enable | `{"kind"}`: `stop`, `disabling`, `removing`, `restarting` (with `restart: {"kind"}`, the restart's own kind: `settings` with its `keys`, `reshape` with its `keys` and the ports it `added` and `removed`, `action` for `node.restart`, or `fell-back` with its `keys`, `reason` and `detail`), and for `configuring`: `settings` (with `keys`), `reshape` (with `keys`, `added`, `removed`), `action`, `retry`, `enabling`, `fell-back` (with `keys`, `reason`, `detail`). `reshape` is a change of settings that changes the node's ports, against the ports of the configuration it ends ([architecture.md](architecture.md#reshapes)). `fell-back` is a change in place that could not finish ([architecture.md](architecture.md#changes-in-place)); its `reason` is `restart-asked`, `deadline`, `resource-refused`, `resource-lost`, `failed` or `restart-requested`, its `detail` the words |
+| `keys` | `reconfiguring` | The keys the change in place applies (a supersession adds its own) |
+| `next` | `reconfiguring`, when any | The keys changed since the change's commit point, which the node takes once it ends |
 | `waitingFor` | once the phase has lasted 2 s | What the node still waits for: a list of `{"kind", "name"?}`, kind `older-node` (a removed or renamed node of its name still closing), `block` (the engine), `companion` (an engine companion, by engine name: `fpp.rtp`), `consumer` (a sink's consumer), `loop` (one of the node's loops not yet running, by its name: `sendspin`), `store` (one of the node's stores not yet opened, by its file's name: `sendspin-kitchen.key`), `recording` (one of the node's recordings not yet opened, by its path: `take1.wav`), `claim` (one of the node's claims not yet granted, by its key: `udp:5004`, while its holder closes), `program` (the node's program not yet started, by the program's name: its executable's last component). Changed at most once a second |
 | `reason` | `failed` | `{"code", "detail"}`, code `engine-refused`, `start-failed` or `lost` |
 
@@ -163,7 +168,8 @@ three or four `node.state`s within milliseconds.
 | `graph.subscribe` | none | Graph; then every graph notification on this connection | none |
 | `levels.subscribe` | none | `{"windowsPerSecond": 30}`; then `levels` notifications | none |
 | `node.add` | `{"name", "type", "settings"?, "disabled"?}` | `{}` | `invalid-name`, `unknown-node-type`, `invalid-settings`, `duplicate-node`, `file-invalid`, `invalid-text`, `stopping` |
-| `node.update` | `{"name", "settings"}`: the node's whole new settings | `{}` | `unknown-node`, `invalid-settings`, `shared-definition`, `file-invalid`, `invalid-text`, `stopping` |
+| `node.update` | `{"name", "settings", "dropRoutes"?}`: the node's whole new settings; `dropRoutes` (feature `reshape`) removes the routes its new ports strand ([below](#changes-of-ports)) | `{}` | `unknown-node`, `invalid-settings`, `shared-definition`, `file-invalid`, `invalid-text`, `ports-in-use`, `stopping` |
+| `node.set` | `{"name", "settings", "dryRun"?, "dropRoutes"?}` (feature `node.set`; `dryRun`, feature `dryRun`): `settings` merged into the node's ([below](#nodeset-and-dry-runs)) | `{"applied"}`, and when its ports change `inPlace` (a reshape's), `ports` and `routesDropped` (a dry run: `routes`) | `unknown-node`, `invalid-settings`, `shared-definition`, `file-invalid`, `invalid-text`, `ports-in-use`, the graph's codes, `stopping` |
 | `node.remove` | `{"name"}` | `{}` | `unknown-node`, `shared-definition`, `file-invalid`, `invalid-text`, `stopping` |
 | `route.add` | `{"from": {"node", "port"}, "to": {"node", "port"}}` | `{}` | `unknown-node`, `unknown-port`, `wrong-direction`, `file-invalid`, `invalid-text`, `stopping` |
 | `route.remove` | `{"from", "to"}` | `{}` | `unknown-route`, `shared-definition`, `file-invalid`, `invalid-text`, `stopping` |
@@ -178,11 +184,10 @@ three or four `node.state`s within milliseconds.
 | `node.setText` | `{"name", "text", "version"}`: the node's whole statement in knobly | `{}` once the graph runs it | `file-changed`, `file-invalid`, `unknown-node`, `shared-definition`, `invalid-text`, any code the graph refuses it with, `stopping` |
 | `node.addText` | `{"text", "version"}`: a new node's whole statement in knobly | `{}` once the graph runs it | `file-changed`, `file-invalid`, `invalid-text`, any code the graph refuses it with (`duplicate-node`, `unknown-node-type`, `invalid-settings`), `stopping` |
 
-**Edits** (`node.add`, `node.update`, `node.remove`, `route.*`, `node.disable`, `node.enable`,
+**Edits** (`node.add`, `node.update`, `node.set`, `node.remove`, `route.*`, `node.disable`, `node.enable`,
 `node.setText`, `node.addText`, `graphFile.set`) are edits of `ear.conf` made at the source, judged before they are kept, and written
 behind ([graph-file.md](graph-file.md#edits-at-the-source)). A node whose ports change (a card's
-channel count) is replaced: `route.removed` for its routes, `node.removed`, then `node.added` and
-`route.added` again. An update with the same settings changes nothing. `disabled` is not a
+channel count) stays the same node: `node.updated` says its new ports ([below](#changes-of-ports)). An update with the same settings changes nothing. `disabled` is not a
 setting: a `disabled` key inside `settings` is `invalid-settings`.
 
 **`node.start`, `node.stop` and `node.restart` edit nothing.** They ride with the other requests
@@ -201,8 +206,8 @@ edit. Their effect shows as `node.updated` (`applied` and `disabled`) and the he
 
 | Notification | Params | When |
 |---|---|---|
-| `node.added` | the node as in the Graph, with its health (`phase` `added`, or `disabled` for a node added disabled), its `counters` (zero, or what a port-caused replace carries on: [below](#counters)) and `"companions": []` | A node was added |
-| `node.updated` | `{"name", "settings", "applied", "disabled"?}`; `applied`: `restart`, `disable`, `enable` or `stored` (a change to a node that stays disabled) | A node's settings or `disabled` changed |
+| `node.added` | the node as in the Graph, with its health (`phase` `added`, or `disabled` for a node added disabled), its `counters` (zero) and `"companions": []` | A node was added |
+| `node.updated` | `{"name", "settings", "applied", "disabled"?}`, and when its ports changed (feature `reshape`) `"ports": {"added", "removed"}` with its new `inputs` and `outputs`, and on a reshape `inPlace` ([below](#changes-of-ports)); `applied`: `restart`, `reconfigure` (every changed key's row is marked in place: [architecture.md](architecture.md#restarts-and-changes-of-settings)), `reshape` (its ports changed), `disable`, `enable` or `stored` (a change to a node that stays disabled). It is the plan's outcome, never rewritten by what the node then does: a node that cannot take it in place restarts, which `node.state` shows | A node's settings or `disabled` changed |
 | `node.removed` | `{"name"}` | A node was removed (after `route.removed` for its routes). The client drops the node now |
 | `node.state` | `{"name"}` and every health member | Any health member changed |
 | `node.stopped` | `{"name", "droppedFrames"}` | Deprecated (removed at protocol 2): everything the node made is gone |
@@ -234,7 +239,12 @@ sends none of the old node's health.
   start: `starting`, the reply, `running`. A disable: `graphFile.changed`, `node.updated`,
   `node.state` `stopping` (cause `disabling`), the reply, then `disabled`. An enable:
   `graphFile.changed`, `node.updated`, `node.state` `configuring` (cause `enabling`), the reply, then
-  as a start.
+  as a start. A change in place: `graphFile.changed`, `node.updated` (`applied: "reconfigure"`),
+  `node.state` `reconfiguring` (with `keys`), the reply, then `running` (or `stopped`) once it ends,
+  or a fallback's `stopping` (cause `restarting`, its own kind `fell-back`) and a restart's
+  sequence. A change of ports: `graphFile.changed`, the dropped routes' `route.removed`, `node.updated`
+  (`applied: "reshape"` with `ports`), then the restart's or the change in place's sequence
+  ([below](#changes-of-ports)).
 - **A refused edit announces nothing**: only its reply carries the refusal. A hand edit gives
   `graphFile.changed` with cause `disk` and the events it causes, and no reply; a hand edit the graph
   refuses is announced with `refusal` set.
@@ -376,6 +386,7 @@ Every refusal is -32000 with `data.code`. Its message is the code and what it na
 | `shared-definition` | The line the edit must change or remove also makes other nodes or routes; `node.setText` on a node written in a snippet | `line`, `column` |
 | `node-disabled` | `node.start`, `node.stop` or `node.restart` on a node `ear.conf` disables | |
 | `not-restartable` | `node.start` or `node.restart` on a node whose block is lost; `node.restart` on a node still `added` | `reason`: `block-lost` or `not-started` |
+| `ports-in-use` | `node.update` or `node.set` whose new ports drop a port a wanted route names, without `dropRoutes` (feature `reshape`); the message names the node, the ports and how many routes (`ports-in-use desk: play.2 (1 route)`) | `ports`: the dropped ports routes name; `routes`: every such route, `{from, to}` |
 
 Examples are in `test/protocol/errors.json`:
 
@@ -383,6 +394,66 @@ Examples are in `test/protocol/errors.json`:
 {"jsonrpc": "2.0", "id": 8, "error": {"code": -32000, "message": "unknown-port rec:FX", "data": {"code": "unknown-port"}}}
 {"jsonrpc": "2.0", "id": 15, "error": {"code": -32000, "message": "not-restartable desk: block-lost", "data": {"code": "not-restartable", "reason": "block-lost"}}}
 {"jsonrpc": "2.0", "id": 18, "error": {"code": -32602, "message": "/colour: unknown key", "data": {"pointer": "/colour"}}}
+```
+
+## Changes of ports
+
+A change of settings that changes a node's ports with its type kept (a card's `playback`, an
+`rtp` node's `channels`) is a **reshape** (feature `reshape`): the node stays, its block is reshaped
+and the links of the ports it keeps never go ([architecture.md](architecture.md#reshapes)).
+
+- **`node.updated`** says `applied: "reshape"`, `inPlace` (`true` when every changed key changes in
+  place and the node takes it so: `node.state` `reconfiguring`; else a restart, `stopping` with cause
+  `restarting`, its own kind `reshape`), `ports: {"added", "removed"}` (whole port names) and the
+  node's new `inputs` and `outputs`. A client redraws the node's ports in place: a surviving port
+  keeps its wires, a new one comes unwired. A change of ports on a disabled node (`stored`,
+  `disable`, `enable`) carries `ports`, `inputs` and `outputs` too, without `inPlace`.
+- **Routes to a port that goes.** `node.update` or `node.set` whose new ports drop a port a wanted route names is
+  refused `ports-in-use`, with `data.ports` (the dropped ports routes name) and `data.routes` (every
+  such route), unless it carries `dropRoutes: true`: then those route lines are removed from
+  `ear.conf` in the same edit, so the routes and the change are one commit and one write, and the
+  dropped routes' `route.removed` come before `node.updated`. A route line that also makes other
+  routes (a snippet `@use`d more than once) is refused `shared-definition`. The keeper judges this
+  on its own thread from the node's ports before and after: only the named node's routes are
+  checked; a shared `@set` that changes another node's ports with it still gets the graph's
+  `unknown-port` for that node's routes, as `graphFile.set`, `node.setText` and a hand edit do.
+- **Counters and companions.** The node keeps its counters; its companion list follows its
+  configuration as for any restart or change in place ([above](#companions)).
+
+```json
+{"jsonrpc": "2.0", "method": "node.updated", "params": {"name": "desk", "settings": {"card": "MOTU", "playback": 4}, "applied": "reshape", "inPlace": false, "ports": {"added": ["play.3", "play.4"], "removed": []}, "inputs": ["play.1", "play.2", "play.3", "play.4"], "outputs": []}}
+{"jsonrpc": "2.0", "id": 21, "error": {"code": -32000, "message": "ports-in-use desk: play.2 (1 route)", "data": {"code": "ports-in-use", "ports": ["play.2"], "routes": [{"from": {"node": "kitchen", "port": "from.left"}, "to": {"node": "desk", "port": "play.2"}}]}}}
+```
+
+## node.set and dry runs
+
+With the feature `node.set` (`test/protocol/node-set.json`), `node.set {"name", "settings"}` sets
+the keys it names and leaves the others: `settings` is a JSON merge patch (RFC 7396) of the node's
+settings, `null` removing a key, which then reads its default. It is `node.update` with the node's
+settings merged, made at the source like every edit, and refused as one: removing a required key is
+`invalid-settings` with the type's text (`invalid-settings rec: path: missing`), a `disabled` key is
+`invalid-settings`, settings that are not an object too.
+
+- **It answers with what it applied**: `{"applied"}`, the plan's outcome for the node at the commit
+  (`reconfigure`, `restart`, `reshape`, `stored`, `unchanged`), never rewritten by what the node then
+  does: a node not yet rested takes any change as a restart, and a type may take a change in place
+  as one; `node.state` (`stopping` with cause `restarting`) says what happened. When the node's
+  ports change it also carries `inPlace` (on a reshape), `ports` (`{"added", "removed"}`) and
+  `routesDropped`, the routes `dropRoutes` removed (`[]` for none). The same settings again are
+  `{"applied": "unchanged"}` and change nothing.
+- **The reply comes at the commit**, after the events it caused, never when the node runs again: a
+  client that must wait for audio waits for the node's next `node.state` (`rpc-call.mjs --until`).
+- **`dryRun: true`** (feature `dryRun`) makes the candidate and has the graph plan it as for the
+  real edit, and answers the same `applied`, changing nothing: no file version, no
+  `graphFile.changed`, no node or route event, no write, no record. Every refusal the real edit would
+  get, it gets, but one: routes a change of ports would strand are not `ports-in-use` but named in
+  the answer's `routes`, the routes the real edit would need `dropRoutes` for. A dry run is advice:
+  the real edit is judged afresh, and another client's edit may land between.
+- **`dropRoutes: true`**: as for `node.update` ([above](#changes-of-ports)).
+
+```json
+{"jsonrpc": "2.0", "id": 10, "method": "node.set", "params": {"name": "desk", "settings": {"playback": 1}, "dryRun": true}}
+{"jsonrpc": "2.0", "id": 10, "result": {"applied": "reshape", "inPlace": false, "ports": {"added": [], "removed": ["play.2"]}, "routes": [{"from": {"node": "noise", "port": "noise.mono"}, "to": {"node": "desk", "port": "play.2"}}]}}
 ```
 
 ## Levels
@@ -408,10 +479,9 @@ state, the graph's and each node's, which never step back and are never reset
 | A node's `counters` | `missedCycles` (cycles its block missed that the driver did not cut), `overruns` (cycles its own work took longer than), `repositions`, `driverChanges`; from its add, across its restarts |
 
 - **On subscribe**, the snapshot carries the graph's counters and each node's, read in the turn
-  that makes it. `node.added` carries the node's: zero for a node added, or, when a node is
-  replaced only because its ports changed (a card's channel count), the counters it carries on
-  from the older node, which is the same node to the operator. So a client holds every node's
-  counters from the moment it holds the node.
+  that makes it. `node.added` carries the node's, zero. A change of its ports keeps the node and its
+  counters ([below](#changes-of-ports)). So a client holds every node's counters from the moment it
+  holds the node.
 - **`counters.changed`** (`test/protocol/counters-changed.json`) carries the graph's counters
   whole and, under `nodes`, the whole counters of each node whose counters changed since the last
   one. It is sent at most once a second, and only when a counter was lost (`cutCycles`, `stalls` or
@@ -446,14 +516,15 @@ which no node's has), never metered. `test/protocol/companions.json` shows a lis
 | `name` | `<node>.playback`, `<node>.capture`, `<node>.rtp`, `<node>.pipe` (the engine node's name, as `waitingFor` names it); a sink's or source's `<node>.<bank>` |
 | `kind` | `card-playback`, `card-capture`, `rtp-receiver`, `pipe-receiver`, `sink`, `source`; an open set |
 | `bank` | The node's inside bank it joins |
-| `ready` | A card or an RTP or pipe receiver once linked and running, a sink once its consumer began, a source always |
+| `ready` | A card or an RTP or pipe receiver once linked and running, a sink once its consumer began, a source always; a companion a change in place is replacing, until its replacement is |
+| `retiring` | `true` on a companion a change in place replaces make-before-break (an engine companion, a sink or a source), until the commit point destroys it or moves its bank to its replacement ([writing-a-node-type.md](writing-a-node-type.md#make-before-break), [#sinks-and-sources-in-a-change](writing-a-node-type.md#sinks-and-sources-in-a-change)): listed just before its replacement, which shares its name for a moment; absent otherwise |
 | `dropped` | A sink only: frames its ring had no room for since this configuration made it |
 | `shortfall` | A source only: frames played as zeros while its writer was not idle, since this configuration made it |
 
 - **Where.** Every node of a snapshot carries `companions`, its list in the order its type asked
   for them, read with the rest; `[]` for a node with none (`white`, `sendspin`), not yet
   configured, failed or disabled. `node.added` always carries `[]`: a node is added before it is
-  configured, a port-caused replace's node too (its companions are new and count from zero).
+  configured.
 - **`node.companionsChanged`** carries the node's whole list and replaces the one the client holds.
   It is sent when an entry is added or removed or its `ready` changes, at once and in order with
   the node's health: after the `configuring` that asked for the list; before the `node.state` a
@@ -462,7 +533,10 @@ which no node's has), never metered. `test/protocol/companions.json` shows a lis
   failure's, disable's), so a failure is never held back for it. A stop keeps the configuration,
   so its list: a stop and a start send none. It is also sent when a `dropped` or `shortfall`
   moved, at most once a second per node and at most 1.1 s behind. The same list is never sent
-  twice for a node.
+  twice for a node. A change in place that replaces a companion sends the list as the replacement
+  is asked for (a make-before-break's old entry `retiring`, the new one not ready), as it becomes
+  ready, and as the commit point drops the retiring entry, all before the `node.state` `running`
+  that ends the change.
 - **Counters per configuration.** `dropped` and `shortfall` count from the configuration that made
   the companion: a restart's next list starts from zero. They are never in `counters` or
   `counters.changed`, whose counters run from the node's add and never step back
@@ -517,13 +591,14 @@ breaking change moves `protocol`; anything else is a new feature name
 |---|---|
 | `snapshot.json` | A Graph with every health shape |
 | `edits.json` | Adds, updates, removals and their statuses |
-| `lifecycle.json` | A node's whole life: start, stop, restart, disable, enable, failure and retry, removal, refusals, `waitingFor` |
+| `lifecycle.json` | A node's whole life: start, stop, restart, disable, enable, failure and retry, removal, refusals, `waitingFor`, changes in place, and a change of ports (`applied: "reshape"`, cause `reshape`) |
 | `graph-file.json` | `graphFile.*`, edits at the source, hand edits, refusals; also its `requests` and final `file` |
+| `node-set.json` | `node.set`: a merge answered `reconfigure`, `unchanged` again, `null` removing a key, a required key removed refused, a dry run of each outcome (`reconfigure`, `unchanged`, `restart`, `stored` with its ports, `reshape` naming its routes) changing nothing, a reshape refused `ports-in-use`, then with `dropRoutes` (`routesDropped`) |
 | `node-text.json` | `nodeTexts` (a comment owned, a snippet's node shared); `node.setText`: success, `file-changed`, `invalid-text` placed in the text, `ear/node-renamed`, `shared-definition`, `ear/not-one-node`; `node.addText`: success, `file-changed`, knobly's error placed in the text, `ear/not-one-node`, `duplicate-node`; the system tests send its requests to the real ear and expect its replies |
 | `errors.json` | Every refusal code and envelope error |
 | `levels.json` | `levels.subscribe` and `levels` |
-| `counters-changed.json` | The counters in a snapshot, `counters.changed`, one naming a node not held, and a port-caused replace's `node.added` carrying its counters |
-| `companions.json` | The companion lists in a snapshot (every engine and ring kind but a source), a file node's list from `node.added` to running, a counter moving, a stop and a start (no list), a restart, a failure past a readiness deadline, a removal (no list after `node.removed`) |
+| `counters-changed.json` | The counters in a snapshot, `counters.changed`, one naming a node not held, and a change of ports keeping the node and its counters |
+| `companions.json` | The companion lists in a snapshot (every engine and ring kind but a source), a file node's list from `node.added` to running, a counter moving, a stop and a start (no list), a restart, an RTP receiver replaced make-before-break (the old one `retiring`), a failure past a readiness deadline, a removal (no list after `node.removed`) |
 | `unknown-values.json` | Values, members and notifications a client does not know, taken or ignored |
 | `output-records.json` | Standard output's records ([output-records.md](output-records.md)) |
 

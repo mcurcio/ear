@@ -250,7 +250,11 @@ public:
 		appeared.push_back(port);
 		waiter_.wake();
 	}
-	void portGone(EnginePortId) override { waiter_.wake(); }
+	void portGone(EnginePortId id) override {
+		gone.push_back(id);
+		waiter_.wake();
+	}
+	bool wentAway(EnginePortId id) const { return std::ranges::find(gone, id) != gone.end(); }
 	std::optional<LivePort> find(const NodeName& node, const PortName& port) const {
 		for (const LivePort& live : appeared) {
 			if (live.port.node == node && live.port.port == port) return live;
@@ -258,6 +262,7 @@ public:
 		return std::nullopt;
 	}
 	std::vector<LivePort> appeared;
+	std::vector<EnginePortId> gone;
 
 private:
 	Waiter& waiter_;
@@ -274,8 +279,12 @@ public:
 		++failed;
 		waiter_.wake();
 	}
-	void linkGone(LinkId) override { waiter_.wake(); }
+	void linkGone(LinkId) override {
+		++gone;
+		waiter_.wake();
+	}
 	int active = 0;
+	int gone = 0;
 	int failed = 0;
 
 private:
@@ -1937,6 +1946,108 @@ TEST_CASE("A fade-out reaches exactly 0 over 5 ms and is acknowledged in the cyc
 	CHECK(cyclesAtAck >= cyclesAtFade + 1);
 }
 
+TEST_CASE("A hold reaches exactly 0 over 5 ms, stays there, is acknowledged, and its release fades back in",
+          "[blocks][hold][async]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Wiring wiring(*engine, waiter);
+	Constant one(waiter, 1.0F);
+	BlockEvents events(waiter);
+	Done done(waiter);
+	ProbeListener listener(waiter, 2);
+	ear::pipewire::testing::Probe probe(*engine, waiter, "listener", 2, 0, listener);
+	auto block = blocks.make("holder", Ports{{{Direction::output, "out", {"a", "b"}}}}, kFormat, events);
+	const bool faded[] = {true, true};
+	block->drive(DriveRequest{&one, faded}, done.drive(1));
+	REQUIRE(wiring.link(waiter, {"holder", "out.a"}, {"listener", "in.1"}));
+	REQUIRE(wiring.link(waiter, {"holder", "out.b"}, {"listener", "in.2"}));
+	std::size_t full = 0;
+	REQUIRE(waiter.until([&] {
+		while (full < listener.count() && (listener.sample(0, full) != 1.0F || listener.sample(1, full) != 1.0F)) {
+			++full;
+		}
+		return full + 4 * kBlock <= listener.count();
+	}));
+
+	block->hold({1, 0}, done.fade(2)); // out.a held, out.b not
+	REQUIRE(waiter.until([&] { return done.has(2); }));
+	const std::size_t ackedBy = listener.count();
+	REQUIRE(waiter.until([&] { return listener.count() >= ackedBy + 4 * kBlock; }));
+	// out.a: (kFade - k) / kFade for k = 0..kFade, then exact zeros, the code still running; out.b untouched.
+	std::size_t start = full;
+	while (start < listener.count() && listener.sample(0, start) == 1.0F) ++start;
+	REQUIRE(start > full);
+	--start;
+	const std::size_t heldTo = listener.count();
+	REQUIRE(start + kFade + 2 * kBlock < heldTo);
+	for (std::uint32_t k = 0; k <= kFade; ++k) {
+		INFO("hold frame " << k);
+		CHECK(listener.sample(0, start + k) == fadeGain(kFade - k));
+	}
+	std::size_t nonzero = 0;
+	for (std::size_t n = start + kFade; n < heldTo; ++n) nonzero += listener.sample(0, n) != 0.0F ? 1 : 0;
+	CHECK(nonzero == 0);
+	std::size_t notFull = 0;
+	for (std::size_t n = full; n < heldTo; ++n) notFull += listener.sample(1, n) != 1.0F ? 1 : 0;
+	CHECK(notFull == 0);
+
+	// The release: from zero back to full gain over 5 ms, frame k at k / kFade.
+	block->release({1, 0});
+	REQUIRE(waiter.until([&] {
+		std::size_t at = heldTo;
+		while (at < listener.count() && listener.sample(0, at) != 1.0F) ++at;
+		return at + kBlock < listener.count();
+	}));
+	std::size_t back = heldTo;
+	while (back < listener.count() && listener.sample(0, back) == 0.0F) ++back;
+	REQUIRE(back > heldTo);
+	--back; // k = 0 of the fade in
+	for (std::uint32_t k = 0; k <= kFade; ++k) {
+		INFO("release frame " << k);
+		CHECK(listener.sample(0, back + k) == fadeGain(k));
+	}
+}
+
+TEST_CASE("A code swap takes effect at one position, with no fade and no gap", "[blocks][hold][async]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Wiring wiring(*engine, waiter);
+	Constant one(waiter, 1.0F);
+	Constant half(waiter, 0.5F);
+	BlockEvents events(waiter);
+	Done done(waiter);
+	ProbeListener listener(waiter, 1);
+	ear::pipewire::testing::Probe probe(*engine, waiter, "listener", 1, 0, listener);
+	auto block = blocks.make("swapper", oneOutput, kFormat, events);
+	const bool faded[] = {true};
+	block->drive(DriveRequest{&one, faded}, done.drive(1));
+	REQUIRE(wiring.link(waiter, {"swapper", "out.a"}, {"listener", "in.1"}));
+	std::size_t full = 0;
+	REQUIRE(waiter.until([&] {
+		while (full < listener.count() && listener.sample(0, full) != 1.0F) ++full;
+		return full + 4 * kBlock <= listener.count();
+	}));
+	block->swap(DriveRequest{&half, faded}, done.drive(2));
+	REQUIRE(waiter.until([&] { return done.has(2); }));
+	const std::size_t swappedBy = listener.count();
+	REQUIRE(waiter.until([&] { return listener.count() >= swappedBy + 4 * kBlock; }));
+	// Every frame after the full gain is the old code's or the new one's, at full gain: one change, nothing between.
+	std::size_t changes = 0;
+	std::size_t other = 0;
+	for (std::size_t n = full + 1; n < listener.count(); ++n) {
+		const float now = listener.sample(0, n);
+		if (now != 1.0F && now != 0.5F) ++other;
+		if (now != listener.sample(0, n - 1)) ++changes;
+	}
+	CHECK(other == 0);
+	CHECK(changes == 1);
+	CHECK(listener.sample(0, listener.count() - 1) == 0.5F);
+}
+
 TEST_CASE("A fade-out on a block that is not processing, or that leaves STREAMING mid-fade, is acknowledged by signal",
           "[blocks][fade][async]") {
 	auto engine = makeEngine();
@@ -3188,4 +3299,186 @@ TEST_CASE("A code that stalls past its cycle moves its node's overruns", "[port_
 	CHECK(counts.overruns >= 3);
 	CHECK(counts.overruns < code.ledger().count()); // the stalls' and any the host held, never every cycle
 	CHECK(counts.missedCycles == 0);
+}
+
+// docs/engine.md#reshapes: a block's ports changed while it streams, its links on kept ports kept.
+
+namespace {
+/// The block's frames at full gain, every one of them its own position's ramp value, from `from` on: what a listener
+/// downstream hears of a code that never stopped (a listener never runs a cycle its upstream did not: S2).
+std::size_t rampBreaks(const ProbeListener& listener, std::size_t input, std::size_t from) {
+	std::size_t breaks = 0;
+	for (std::size_t n = from; n < listener.count(); ++n)
+		breaks += listener.sample(input, n) != rampAt(listener.position(n)) ? 1 : 0;
+	return breaks;
+}
+/// Writes ones.
+class Feeder final : public ear::pipewire::testing::ProbeCode {
+public:
+	void cycle(const spa_io_clock&, std::span<const float* const>, std::span<float* const> outputs,
+	           std::uint32_t frames) noexcept override {
+		for (float* out : outputs) std::fill_n(out, frames, 1.0F);
+	}
+};
+/// The first frame from which `input` carries the ramp at full gain (past the drive's fade-in).
+std::size_t rampSettled(const ProbeListener& listener, std::size_t input) {
+	std::size_t at = 0;
+	while (at < listener.count() && listener.sample(input, at) != rampAt(listener.position(at))) ++at;
+	return at + kFade + 1;
+}
+} // namespace
+
+TEST_CASE("A reshape beside a running code keeps its kept ports' links and audio, zero-fills its new output until the "
+          "code for it comes, and drops the vanished port once that code's layout is in",
+          "[blocks][reshape][async]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Wiring wiring(*engine, waiter);
+	BlockEvents events(waiter);
+	Done done(waiter);
+	ProbeListener listener(waiter, 3);
+	ear::pipewire::testing::Probe probe(*engine, waiter, "listener", 3, 0, listener);
+	const Ports before{{{Direction::output, "out", {"a", "b"}}}};
+	const Ports after{{{Direction::output, "out", {"a", "c"}}}};
+	auto block = blocks.make("shaper", before, kFormat, events);
+	PositionRamp old(waiter);
+	const bool faded[] = {true, true};
+	block->drive(DriveRequest{&old, faded}, done.drive(1));
+	REQUIRE(wiring.link(waiter, {"shaper", "out.a"}, {"listener", "in.1"}));
+	REQUIRE(wiring.link(waiter, {"shaper", "out.b"}, {"listener", "in.2"}));
+	REQUIRE(
+		waiter.until([&] { return listener.count() > 0 && rampSettled(listener, 0) + 4 * kBlock < listener.count(); }));
+	const std::size_t settled = rampSettled(listener, 0);
+	const EnginePortId b = wiring.ports.find("shaper", "out.b")->id;
+
+	// The new port is in the engine and links at once; the old code keeps its view, so out.b still plays and out.c
+	// carries exact zeros.
+	block->reshape(after);
+	REQUIRE(wiring.link(waiter, {"shaper", "out.c"}, {"listener", "in.3"}));
+	const std::size_t linkedC = listener.count();
+	REQUIRE(waiter.until([&] { return listener.count() >= linkedC + 8 * kBlock; }));
+	std::size_t loudC = 0;
+	for (std::size_t n = linkedC; n < listener.count(); ++n) loudC += listener.sample(2, n) != 0.0F ? 1 : 0;
+	CHECK(loudC == 0);
+	CHECK(rampBreaks(listener, 1, linkedC) == 0);
+	CHECK_FALSE(wiring.ports.wentAway(b));
+
+	// The new code, laid out for the new ports, takes the cycles at one position: out.a never breaks, out.c plays from
+	// its first cycle, and out.b and its link go.
+	PositionRamp next(waiter);
+	block->swap(DriveRequest{&next, faded, {}, {}, &after}, done.drive(2));
+	REQUIRE(waiter.until([&] { return done.has(2) && wiring.ports.wentAway(b) && wiring.linkLog.gone >= 1; }));
+	const std::size_t swapped = listener.count();
+	REQUIRE(waiter.until([&] { return next.calls() > 4 && listener.count() >= swapped + 8 * kBlock; }));
+	CHECK(rampBreaks(listener, 0, settled) == 0);
+	CHECK(rampBreaks(listener, 2, swapped + 2 * kBlock) == 0);
+	CHECK(wiring.linkLog.gone == 1); // out.b's alone
+	CHECK(events.lostDetail == std::nullopt);
+}
+
+TEST_CASE("A reshape of a silent block takes the new ports at once and keeps the links of the ports it keeps",
+          "[blocks][reshape][async]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Wiring wiring(*engine, waiter);
+	BlockEvents events(waiter);
+	Done done(waiter);
+	ProbeListener listener(waiter, 2);
+	ear::pipewire::testing::Probe probe(*engine, waiter, "listener", 2, 0, listener);
+	const Ports before{{{Direction::output, "out", {"a", "b"}}, {Direction::input, "in", {"a"}}}};
+	const Ports after{{{Direction::output, "out", {"a"}}, {Direction::input, "in", {"a", "b"}}}};
+	auto block = blocks.make("restarter", before, kFormat, events);
+	REQUIRE(wiring.link(waiter, {"restarter", "out.a"}, {"listener", "in.1"}));
+	REQUIRE(wiring.link(waiter, {"restarter", "out.b"}, {"listener", "in.2"}));
+	const EnginePortId b = wiring.ports.find("restarter", "out.b")->id;
+	block->reshape(after);
+	REQUIRE(waiter.until([&] { return wiring.ports.wentAway(b) && wiring.ports.find("restarter", "in.b"); }));
+	// The code for the new ports, driven, plays through the link kept all along.
+	PositionRamp code(waiter);
+	const bool faded[] = {true};
+	block->drive(DriveRequest{&code, faded}, done.drive(1));
+	REQUIRE(
+		waiter.until([&] { return listener.count() > 0 && rampSettled(listener, 0) + 4 * kBlock < listener.count(); }));
+	CHECK(rampBreaks(listener, 0, rampSettled(listener, 0)) == 0);
+	CHECK(wiring.linkLog.gone == 1);
+}
+
+TEST_CASE("A reshape's new public port is metered from its first window, and a kept port's meter carries on",
+          "[blocks][reshape][levels]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	BlockEvents events(waiter);
+	Done done(waiter);
+	Constant one(waiter, 1.0F);
+	Constant half(waiter, 0.5F);
+	const Ports after{{{Direction::output, "out", {"a", "b"}}}};
+	auto block = blocks.make("meter", oneOutput, kFormat, events);
+	const bool faded[] = {false, false};
+	block->drive(DriveRequest{&one, faded}, done.drive(1));
+	REQUIRE(waiter.until([&] {
+		const auto snapshot = blocks.latestLevels();
+		return find(snapshot, "meter") != nullptr && find(snapshot, "meter")->ports.size() == 1 &&
+		       find(snapshot, "meter")->ports[0].level.peak == 1.0F;
+	}));
+	block->reshape(after);
+	block->swap(DriveRequest{&half, faded, {}, {}, &after}, done.drive(2));
+	REQUIRE(waiter.until([&] { return done.has(2); }));
+	// The first window that lists out.b heard it from the swap on: 0.5 at its peak, never nothing.
+	std::optional<NodeLevels> first;
+	REQUIRE(waiter.until([&] {
+		const auto snapshot = blocks.latestLevels();
+		const NodeLevels* meter = find(snapshot, "meter");
+		if (meter != nullptr && meter->ports.size() == 2) first = *meter;
+		return first.has_value();
+	}));
+	CHECK(first->ports[0].port == "out.a");
+	CHECK(first->ports[1].port == "out.b");
+	CHECK(first->ports[1].level.peak == 0.5F);
+	CHECK(first->ports[0].level.peak >= 0.5F); // the window's part before the swap is carried
+}
+
+TEST_CASE("A reshape grows a block past 32 inputs beside a ramp that never breaks, and the new ports link",
+          "[blocks][reshape][async]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Wiring wiring(*engine, waiter);
+	BlockEvents events(waiter);
+	Done done(waiter);
+	ProbeListener listener(waiter, 1);
+	ear::pipewire::testing::Probe probe(*engine, waiter, "listener", 1, 0, listener);
+	const auto inputs = [](std::size_t count) {
+		std::vector<std::string> members;
+		for (std::size_t i = 1; i <= count; ++i) members.push_back(std::to_string(i));
+		return Ports{{{Direction::input, "in", members}, {Direction::output, "out", {"a"}}}};
+	};
+	const Ports before = inputs(31);
+	const Ports after = inputs(40);
+	Feeder feed;
+	ear::pipewire::testing::Probe feeder(*engine, waiter, "feeder", 0, 1, feed);
+	auto block = blocks.make("wide", before, kFormat, events);
+	PositionRamp old(waiter);
+	const bool faded[] = {true};
+	block->drive(DriveRequest{&old, faded}, done.drive(1));
+	REQUIRE(wiring.link(waiter, {"wide", "out.a"}, {"listener", "in.1"}));
+	REQUIRE(
+		waiter.until([&] { return listener.count() > 0 && rampSettled(listener, 0) + 4 * kBlock < listener.count(); }));
+	const std::size_t settled = rampSettled(listener, 0);
+	block->reshape(after);
+	PositionRamp next(waiter);
+	block->swap(DriveRequest{&next, faded, {}, {}, &after}, done.drive(2));
+	REQUIRE(waiter.until([&] { return done.has(2) && wiring.ports.find("wide", "in.40"); }));
+	// A port added past the 32nd links.
+	REQUIRE(wiring.link(waiter, {"feeder", "out.1"}, {"wide", "in.40"}));
+	const std::size_t grown = listener.count();
+	REQUIRE(waiter.until([&] { return next.calls() > 4 && listener.count() >= grown + 8 * kBlock; }));
+	CHECK(rampBreaks(listener, 0, settled) == 0);
+	CHECK(events.lostDetail == std::nullopt);
 }

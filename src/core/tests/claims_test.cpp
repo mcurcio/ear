@@ -149,3 +149,22 @@ TEST_CASE("A holder leaked on a wedged data loop never closes: its store refuses
 	CHECK(port.outcome == Outcome::probe);
 	CHECK(port.leaked == 0);
 }
+
+TEST_CASE("A per-key release lets go of that key alone and judges again only its waiters", "[claims]") {
+	using namespace ear;
+	using namespace ear::detail;
+	ClaimRegistry registry;
+	const ClaimHolder first{1, 1, "fpp"};
+	const ClaimHolder second{2, 2, "other"};
+	const Claim old = claim::of(claim::Udp(5004));
+	const Claim kept = claim::of(claim::Udp(5006));
+	REQUIRE(registry.claim(first, old).outcome == ClaimJudged::Outcome::probe);
+	REQUIRE(registry.claim(first, kept).outcome == ClaimJudged::Outcome::probe);
+	CHECK(registry.claim(second, old).outcome == ClaimJudged::Outcome::refused);
+	CHECK(registry.release(first.generation, claimKey(old)).empty()); // no one waited
+	CHECK_FALSE(registry.held(claimKey(old)));
+	CHECK(registry.held(claimKey(kept)));
+	CHECK(registry.claim(second, old).outcome == ClaimJudged::Outcome::probe);
+	CHECK(registry.release(first.generation, claimKey(old)).empty()); // another's key: nothing released
+	CHECK(registry.held(claimKey(old)));
+}

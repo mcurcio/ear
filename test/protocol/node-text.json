@@ -72,7 +72,10 @@
           "lifecycle",
           "counters",
           "companions",
-          "node-text"
+          "node-text",
+          "reshape",
+          "node.set",
+          "dryRun"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -477,7 +480,10 @@
       "lifecycle",
       "counters",
       "companions",
-      "node-text"
+      "node-text",
+      "reshape",
+      "node.set",
+      "dryRun"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,

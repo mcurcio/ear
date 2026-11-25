@@ -5,6 +5,7 @@
 // (docs/control-port.md#the-graph-file-over-the-port).
 #include "ear/control/commands.hpp"
 
+#include <format>
 #include <string>
 #include <utility>
 #include <vector>
@@ -32,13 +33,39 @@ std::expected<Command, RpcError> decodeAddNode(const json& params, const JsonPoi
 	return AddNode{std::move(*node)};
 }
 
+/// An optional boolean member, false when absent.
+std::expected<bool, JsonError> optionalFlag(const json& object, const JsonPointer& at, const std::string& key) {
+	const auto found = object.find(key);
+	if (found == object.end()) return false;
+	if (!found->is_boolean())
+		return std::unexpected(JsonError{(at / key).to_string() + ": must be a boolean", (at / key).to_string()});
+	return found->get<bool>();
+}
+
 std::expected<Command, RpcError> decodeUpdateNode(const json& params, const JsonPointer& at) {
-	if (auto checked = requireObject(params, at, {"name", "settings"}); !checked) return refuse(checked.error());
+	if (auto checked = requireObject(params, at, {"name", "settings", "dropRoutes"}); !checked)
+		return refuse(checked.error());
 	auto name = requireName(params, at, "name");
 	if (!name) return refuse(name.error());
 	auto settings = requireMember(params, at, "settings"); // passed through unchecked: the node's type judges it
 	if (!settings) return refuse(settings.error());
-	return UpdateNode{std::move(*name), **settings};
+	auto dropRoutes = optionalFlag(params, at, "dropRoutes");
+	if (!dropRoutes) return refuse(dropRoutes.error());
+	return UpdateNode{std::move(*name), **settings, *dropRoutes};
+}
+
+std::expected<Command, RpcError> decodeSetNode(const json& params, const JsonPointer& at) {
+	if (auto checked = requireObject(params, at, {"name", "settings", "dryRun", "dropRoutes"}); !checked)
+		return refuse(checked.error());
+	auto name = requireName(params, at, "name");
+	if (!name) return refuse(name.error());
+	auto settings = requireMember(params, at, "settings"); // the keeper merges it; the node's type judges the result
+	if (!settings) return refuse(settings.error());
+	auto dryRun = optionalFlag(params, at, "dryRun");
+	if (!dryRun) return refuse(dryRun.error());
+	auto dropRoutes = optionalFlag(params, at, "dropRoutes");
+	if (!dropRoutes) return refuse(dropRoutes.error());
+	return SetNode{std::move(*name), **settings, *dryRun, *dropRoutes};
 }
 
 std::expected<Command, RpcError> decodeRemoveNode(const json& params, const JsonPointer& at) {
@@ -111,6 +138,12 @@ template <class Verb> std::expected<Command, RpcError> decodeNamed(const json& p
 	return Verb{std::move(*name)};
 }
 
+json encodeRoutes(const std::vector<Route>& routes) {
+	json all = json::array();
+	for (const Route& route : routes) all.push_back(encodeRoute(route));
+	return all;
+}
+
 /// {"line", "column"} added to `into`.
 void addPlace(json& into, const TextPlace& place) {
 	into["line"] = place.line;
@@ -148,6 +181,7 @@ constexpr Method methods[] = {
 	{"graph.subscribe", decodeGetGraph},
 	{"node.add", decodeAddNode},
 	{"node.update", decodeUpdateNode},
+	{"node.set", decodeSetNode},
 	{"node.remove", decodeRemoveNode},
 	{"route.add", decodeAddRoute},
 	{"route.remove", decodeRemoveRoute},
@@ -167,6 +201,10 @@ RpcError encodeControlRefusal(const ControlRefusal& refusal) {
 	json data = {{"code", std::string(controlRefusalCode(refusal))}};
 	if (const auto* lost = std::get_if<NotRestartable>(&refusal))
 		data["reason"] = std::string(reasonName(lost->reason));
+	if (const auto* inUse = std::get_if<PortsInUse>(&refusal)) {
+		data["ports"] = inUse->ports;
+		data["routes"] = encodeRoutes(inUse->routes);
+	}
 	return RpcError{commandRefused, describe(refusal), std::move(data)};
 }
 
@@ -187,7 +225,14 @@ std::expected<json, RpcError> encodeCommandResult(const CommandResult& result) {
 	if (const auto* view = std::get_if<GraphView>(&result)) return encodeGraph(*view);
 	if (const auto* file = std::get_if<GraphFile>(&result)) return encodeGraphFile(*file);
 	if (const auto* refusal = std::get_if<FileRefusal>(&result)) return std::unexpected(encodeFileRefusal(*refusal));
-	if (const auto* applied = std::get_if<Applied>(&result)) return json{{"applied", appliedName(applied->kind)}};
+	if (const auto* applied = std::get_if<Applied>(&result)) {
+		json out = {{"applied", appliedName(applied->kind)}};
+		if (applied->inPlace) out["inPlace"] = *applied->inPlace;
+		if (applied->ports) out["ports"] = encodePortsMoved(*applied->ports);
+		if (applied->routesDropped) out["routesDropped"] = encodeRoutes(*applied->routesDropped);
+		if (applied->routes) out["routes"] = encodeRoutes(*applied->routes);
+		return out;
+	}
 	if (const auto* refusal = std::get_if<ControlRefusal>(&result))
 		return std::unexpected(encodeControlRefusal(*refusal));
 	const auto& edit = std::get<std::expected<void, CommandError>>(result);
@@ -243,12 +288,18 @@ std::string_view appliedName(AppliedKind kind) noexcept {
 		return "stored";
 	case AppliedKind::unchanged:
 		return "unchanged";
+	case AppliedKind::reconfigure:
+		return "reconfigure";
+	case AppliedKind::reshape:
+		return "reshape";
 	}
 	return "unchanged";
 }
 
 std::string_view controlRefusalCode(const ControlRefusal& refusal) noexcept {
-	return std::holds_alternative<NodeDisabled>(refusal) ? "node-disabled" : "not-restartable";
+	if (std::holds_alternative<NodeDisabled>(refusal)) return "node-disabled";
+	if (std::holds_alternative<PortsInUse>(refusal)) return "ports-in-use";
+	return "not-restartable";
 }
 
 std::string_view reasonName(NotRestartable::Reason reason) noexcept {
@@ -258,6 +309,13 @@ std::string_view reasonName(NotRestartable::Reason reason) noexcept {
 std::string describe(const ControlRefusal& refusal) {
 	if (const auto* disabled = std::get_if<NodeDisabled>(&refusal))
 		return std::string(controlRefusalCode(refusal)) + " " + disabled->node;
+	if (const auto* inUse = std::get_if<PortsInUse>(&refusal)) {
+		std::string ports;
+		for (const PortName& port : inUse->ports) ports += (ports.empty() ? "" : ", ") + port;
+		const std::size_t n = inUse->routes.size();
+		return std::format("{} {}: {} ({} route{})", controlRefusalCode(refusal), inUse->node, ports, n,
+		                   n == 1 ? "" : "s");
+	}
 	const auto& lost = std::get<NotRestartable>(refusal);
 	return std::string(controlRefusalCode(refusal)) + " " + lost.node + ": " + std::string(reasonName(lost.reason));
 }

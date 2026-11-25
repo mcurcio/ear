@@ -540,6 +540,14 @@ std::unique_ptr<Source> makeSource(EventSources& sources, SendspinClock*& made) 
 	return sources.make("clock", "from_server", 2, kSourceFrames, ear::SampleRate::fixed<kRate>(), std::move(clock));
 }
 
+/// The worker's sink control where no sink is attached: these tests change no setting, so nothing pauses it.
+class NoSink final : public SinkControl {
+public:
+	void pause(Loop&, std::move_only_function<void()>) override { FAIL("the clock tests pause no sink"); }
+	void resume() override {}
+	std::uint64_t pausedFrames() const noexcept override { return 0; }
+};
+
 /// An output block with the real insides, as NodeHost would run them, dialling the real server: the source on
 /// `from_server` with the node's clock, played by the block before the node's pass-through to `from`.
 struct Rig {
@@ -556,6 +564,7 @@ struct Rig {
 		                .writer = source->writer(),
 		                .player = player,
 		                .self = loops.worker(),
+		                .sink = noSink,
 		                .settings = SendspinSettings{ServerUrl::parse(server.url()), defaultListenPort, "clock"},
 		                .format = kFormat});
 		notifier = std::make_unique<Notifier>(loops.notifier(), clock(), player);
@@ -681,6 +690,7 @@ struct Rig {
 	std::unique_ptr<Source> source; // owns the clock; outlives the states and the block's drive
 	std::vector<SourceBinding> bound{SourceBinding{&source->tap(), 2, 2}}; // after `to`'s two inputs
 	PlayerSlot player;
+	NoSink noSink;
 	Notes notes;
 	NodeLoops loops;
 	std::unique_ptr<Worker> worker;

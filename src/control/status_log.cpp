@@ -64,27 +64,46 @@ std::string joinedKeys(const std::vector<std::string>& keys) {
 	return text;
 }
 
-/// A cause as the record carries it (docs/output-records.md#node): {"kind"}, with the restart's own kind under
-/// "restart" and a settings change's keys.
+/// A cause's own members by its kind: a settings change's keys; a reshape's keys and the ports it adds and removes; a
+/// fallback's keys, reason and detail.
+void addCauseFields(Fields& fields, NodeCause::Kind kind, const NodeCause& cause) {
+	if (kind == NodeCause::Kind::settings || kind == NodeCause::Kind::fellBack || kind == NodeCause::Kind::reshape)
+		fields.emplace_back("keys", strings(cause.keys));
+	if (kind == NodeCause::Kind::reshape) {
+		fields.emplace_back("added", strings(cause.ports.added));
+		fields.emplace_back("removed", strings(cause.ports.removed));
+	}
+	if (kind == NodeCause::Kind::fellBack) {
+		if (cause.reason) fields.emplace_back("reason", json(fellBackName(*cause.reason)));
+		fields.emplace_back("detail", json(cause.detail));
+	}
+}
+
+/// A cause as the record carries it (docs/output-records.md#node): {"kind"} with its own members, and the restart's
+/// own kind (with its members) under "restart".
 std::string causeJson(const NodeCause& cause) {
 	Fields fields{{"kind", json(causeName(cause.kind))}};
 	if (cause.kind == NodeCause::Kind::restarting && cause.restart) {
 		Fields restart{{"kind", json(causeName(*cause.restart))}};
-		if (*cause.restart == NodeCause::Kind::settings) restart.emplace_back("keys", strings(cause.keys));
+		addCauseFields(restart, *cause.restart, cause);
 		fields.emplace_back("restart", object(restart));
-	} else if (cause.kind == NodeCause::Kind::settings) {
-		fields.emplace_back("keys", strings(cause.keys));
+	} else {
+		addCauseFields(fields, cause.kind, cause);
 	}
 	return object(fields);
 }
 
 /// A restart's own kind, or a configuring cause, in words (docs/output-records.md#node).
-std::string restartText(NodeCause::Kind kind, const std::vector<std::string>& keys) {
+std::string restartText(NodeCause::Kind kind, const NodeCause& cause) {
 	switch (kind) {
 	case NodeCause::Kind::settings:
-		return keys.empty() ? std::string("settings changed") : "settings changed: " + joinedKeys(keys);
+		return cause.keys.empty() ? std::string("settings changed") : "settings changed: " + joinedKeys(cause.keys);
+	case NodeCause::Kind::reshape:
+		return cause.keys.empty() ? std::string("ports changed") : "ports changed: " + joinedKeys(cause.keys);
 	case NodeCause::Kind::action:
 		return "restart invoked";
+	case NodeCause::Kind::fellBack:
+		return std::format("could not apply {} in place: {}", joinedKeys(cause.keys), cause.detail);
 	default:
 		return std::string(causeName(kind));
 	}
@@ -94,9 +113,9 @@ std::string restartText(NodeCause::Kind kind, const std::vector<std::string>& ke
 /// configuring cause's words.
 std::string causeText(const NodeCause& cause) {
 	if (cause.kind == NodeCause::Kind::restarting)
-		return cause.restart ? std::format("restarting ({})", restartText(*cause.restart, cause.keys))
+		return cause.restart ? std::format("restarting ({})", restartText(*cause.restart, cause))
 		                     : std::string("restarting");
-	return restartText(cause.kind, cause.keys);
+	return restartText(cause.kind, cause);
 }
 
 std::string waitingJson(const std::vector<WaitingFor>& waits) {
@@ -197,6 +216,7 @@ void StatusLog::nodeChanged(const NodeHealth& health) {
 	enum class Write { none, state, still };
 	Write write = Write::none;
 	std::int64_t seconds = 0;
+	std::optional<std::int64_t> afterMs; // a running or stopped that ends a change in place
 	{
 		const std::scoped_lock lock(mutex_);
 		const auto now = pace_();
@@ -213,8 +233,17 @@ void StatusLog::nodeChanged(const NodeHealth& health) {
 			seen.since = now;
 			seen.still.reset();
 			seen.written.clear();
+			// A change in place is timed from its first reconfiguring (a supersession goes on in it) to its end.
+			if (health.phase == NodePhase::reconfiguring) seen.changeBegan = now;
+			else if (seen.changeBegan) {
+				if (health.phase == NodePhase::running || health.phase == NodePhase::stopped)
+					afterMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - *seen.changeBegan).count();
+				seen.changeBegan.reset();
+			}
 		}
-		const bool colour = first || seen.health.state != health.state;
+		// A supersession is a reconfiguring of its own, with the newest keys.
+		const bool colour = first || seen.health.state != health.state ||
+		                    (health.phase == NodePhase::reconfiguring && seen.health.keys != health.keys);
 		const bool reason = health.state == NodeState::failed && !first && seen.health.reason != health.reason;
 		if (colour || reason) {
 			write = Write::state;
@@ -264,8 +293,19 @@ void StatusLog::nodeChanged(const NodeHealth& health) {
 			msg = std::format("node {} failed {}: {}", health.name, code, health.reason->detail);
 		}
 		break;
+	case NodeState::reconfiguring:
+		fields.emplace_back("keys", strings(health.keys));
+		if (!health.next.empty()) fields.emplace_back("next", strings(health.next));
+		msg += ": " + joinedKeys(health.keys);
+		if (!health.next.empty()) msg += std::format("; {} next", joinedKeys(health.next));
+		break;
 	case NodeState::running:
 	case NodeState::stopped:
+		if (afterMs) {
+			fields.emplace_back("afterMs", json(*afterMs));
+			msg += std::format(" after reconfiguring for {} ms", *afterMs);
+		}
+		break;
 	case NodeState::disabled:
 		break;
 	}

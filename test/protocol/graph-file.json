@@ -1,5 +1,5 @@
 {
-  "description": "The graph file over the wire (docs/control-port.md#the-graph-file-over-the-port), one session over the record's example file. graphFile.subscribe answers with the file, then every graphFile.changed; a change's graphFile.changed comes before the node and route events it causes, and those before the request's response. In order: an editor edit (cause edit); graphFile.set on a stale version (file-changed) and with a typo (invalid-text, with the diagnostics); a route the graph refuses (unknown-port, the file unchanged, no graphFile.changed); a hand edit with @include (cause disk, include-unsupported; running stays); node.update while the file has errors (file-invalid); the hand fix (disk); an editor edit, then a hand save over it before it was written (disk, droppedEdits 1: the hand edit wins); removing a setting a shared snippet line makes (shared-definition at that line); playback 4 through @set $ch, which replaces both cards; a write that fails, then succeeds (cause write); an editor edit, then a hand edit the graph refuses (refusal at its line, running unchanged, droppedEdits 1); graphFile.set with rate 44.1khz (pendingRestart); a batch [node.update, graph.subscribe], a batch [graph.subscribe, graphFile.subscribe]; and graphFile.get, answered with the file as it stands. file is the graph file the client holds at the end, graph the graph.",
+  "description": "The graph file over the wire (docs/control-port.md#the-graph-file-over-the-port), one session over the record's example file. graphFile.subscribe answers with the file, then every graphFile.changed; a change's graphFile.changed comes before the node and route events it causes, and those before the request's response. In order: an editor edit (cause edit); graphFile.set on a stale version (file-changed) and with a typo (invalid-text, with the diagnostics); a route the graph refuses (unknown-port, the file unchanged, no graphFile.changed); a hand edit with @include (cause disk, include-unsupported; running stays); node.update while the file has errors (file-invalid); the hand fix (disk); an editor edit, then a hand save over it before it was written (disk, droppedEdits 1: the hand edit wins); removing a setting a shared snippet line makes (shared-definition at that line); playback 4 through @set $ch, which reshapes both cards (node.updated with their ports, the route to desk:play.1 kept; each failed card configured afresh, cause reshape, and failing again); a write that fails, then succeeds (cause write); an editor edit, then a hand edit the graph refuses (refusal at its line, running unchanged, droppedEdits 1); graphFile.set with rate 44.1khz (pendingRestart); a batch [node.update, graph.subscribe], a batch [graph.subscribe, graphFile.subscribe]; and graphFile.get, answered with the file as it stands. file is the graph file the client holds at the end, graph the graph.",
   "requests": [
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graphFile.subscribe\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"graph.subscribe\"}",
@@ -84,7 +84,10 @@
           "lifecycle",
           "counters",
           "companions",
-          "node-text"
+          "node-text",
+          "reshape",
+          "node.set",
+          "dryRun"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -650,105 +653,101 @@
     },
     {
       "jsonrpc": "2.0",
-      "method": "route.removed",
+      "method": "node.updated",
       "params": {
-        "from": {
-          "node": "noise",
-          "port": "noise.mono"
+        "name": "desk",
+        "settings": {
+          "card": "MOTU",
+          "playback": 4
         },
-        "to": {
-          "node": "desk",
-          "port": "play.1"
+        "applied": "reshape",
+        "inPlace": false,
+        "ports": {
+          "added": [
+            "play.3",
+            "play.4"
+          ],
+          "removed": []
+        },
+        "inputs": [
+          "play.1",
+          "play.2",
+          "play.3",
+          "play.4"
+        ],
+        "outputs": []
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.updated",
+      "params": {
+        "name": "porch",
+        "settings": {
+          "card": "USB2",
+          "playback": 4
+        },
+        "applied": "reshape",
+        "inPlace": false,
+        "ports": {
+          "added": [
+            "play.3",
+            "play.4"
+          ],
+          "removed": []
+        },
+        "inputs": [
+          "play.1",
+          "play.2",
+          "play.3",
+          "play.4"
+        ],
+        "outputs": []
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "desk",
+        "state": "starting",
+        "phase": "configuring",
+        "since": "2026-11-09T10:00:00.000000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "cause": {
+          "kind": "reshape",
+          "keys": [
+            "playback"
+          ],
+          "added": [
+            "play.3",
+            "play.4"
+          ],
+          "removed": []
         }
       }
     },
     {
       "jsonrpc": "2.0",
-      "method": "node.removed",
-      "params": {
-        "name": "desk"
-      }
-    },
-    {
-      "jsonrpc": "2.0",
-      "method": "node.removed",
-      "params": {
-        "name": "porch"
-      }
-    },
-    {
-      "jsonrpc": "2.0",
-      "method": "node.added",
-      "params": {
-        "name": "desk",
-        "type": "card",
-        "settings": {
-          "card": "MOTU",
-          "playback": 4
-        },
-        "inputs": [
-          "play.1",
-          "play.2",
-          "play.3",
-          "play.4"
-        ],
-        "outputs": [],
-        "state": "starting",
-        "phase": "added",
-        "since": "2026-11-09T10:00:00.000000Z",
-        "wanted": "running",
-        "blockLost": false,
-        "counters": {
-          "missedCycles": 0,
-          "overruns": 0,
-          "repositions": 0,
-          "driverChanges": 0
-        },
-        "companions": []
-      }
-    },
-    {
-      "jsonrpc": "2.0",
-      "method": "node.added",
+      "method": "node.state",
       "params": {
         "name": "porch",
-        "type": "card",
-        "settings": {
-          "card": "USB2",
-          "playback": 4
-        },
-        "inputs": [
-          "play.1",
-          "play.2",
-          "play.3",
-          "play.4"
-        ],
-        "outputs": [],
         "state": "starting",
-        "phase": "added",
+        "phase": "configuring",
         "since": "2026-11-09T10:00:00.010000Z",
         "wanted": "running",
         "blockLost": false,
-        "counters": {
-          "missedCycles": 0,
-          "overruns": 0,
-          "repositions": 0,
-          "driverChanges": 0
-        },
-        "companions": []
-      }
-    },
-    {
-      "jsonrpc": "2.0",
-      "method": "route.added",
-      "params": {
-        "from": {
-          "node": "noise",
-          "port": "noise.mono"
-        },
-        "to": {
-          "node": "desk",
-          "port": "play.1"
+        "cause": {
+          "kind": "reshape",
+          "keys": [
+            "playback"
+          ],
+          "added": [
+            "play.3",
+            "play.4"
+          ],
+          "removed": []
         }
       }
     },
@@ -1207,7 +1206,10 @@
             "lifecycle",
             "counters",
             "companions",
-            "node-text"
+            "node-text",
+            "reshape",
+            "node.set",
+            "dryRun"
           ],
           "graphFrequency": 48000,
           "blockSize": 256,
@@ -1368,7 +1370,10 @@
             "lifecycle",
             "counters",
             "companions",
-            "node-text"
+            "node-text",
+            "reshape",
+            "node.set",
+            "dryRun"
           ],
           "graphFrequency": 48000,
           "blockSize": 256,
@@ -1644,7 +1649,10 @@
       "lifecycle",
       "counters",
       "companions",
-      "node-text"
+      "node-text",
+      "reshape",
+      "node.set",
+      "dryRun"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,

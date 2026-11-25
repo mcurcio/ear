@@ -319,7 +319,9 @@ inside a named callback (`boundary::throwInCallback`), so the tests prove each o
 
 1. A request reaches the keeper's thread whole (a batch stays whole). For an edit the keeper
    loads the working copy's text afresh and applies the edit at its source, making a
-   *candidate* ([graph-file.md](graph-file.md#edits-at-the-source)).
+   *candidate* ([graph-file.md](graph-file.md#edits-at-the-source)). An edit of a node's settings
+   that strands a route on a port it takes away is refused there, or with `dropRoutes` takes the
+   route lines out of the same candidate ([control-port.md](control-port.md#changes-of-ports)).
 2. The keeper posts the candidate to the main loop, where its main-loop side asks
    `DesiredGraph::plan` for a verdict against the whole wanted graph.
 3. If accepted, in one main-loop turn: the file change is told (gateway, then `StatusLog`), the
@@ -328,7 +330,9 @@ inside a named callback (`boundary::throwInCallback`), so the tests prove each o
    waiting (write-behind): it swaps the new text in and keeps it only if the text it replaced is
    what it last read or wrote.
 5. A refused candidate is dropped; nothing is told or written, and only the reply carries the
-   refusal.
+   refusal. A dry run's candidate (`node.set` with `dryRun`) is planned and answered, then dropped,
+   accepted or not: nothing is committed, told, recorded or written
+   ([control-port.md](control-port.md#nodeset-and-dry-runs)).
 
 A hand edit arrives as an inotify event, is read on the keeper's thread and offered the same way
 (cause `disk`). The graph may refuse it, but the working copy still follows the disk, and the
@@ -513,6 +517,7 @@ standard output show.
 | `stopped` | `stopped` | Silent, keeping its configuration |
 | `disabled` | `disabled` | Silent, with no configuration |
 | `failed` | `failed` | Torn down after a failure; `reason` says why |
+| `reconfiguring` | `reconfiguring` | Applying new settings in place, from `running` or `stopped`, without a restart ([changes in place](#changes-in-place)) |
 
 `added`, `configured` and `starting` normally last milliseconds. **What the graph wants** of a
 node (`wanted`) is `disabled` when its block in `ear.conf` says `disabled true;`, else `stopped`
@@ -538,8 +543,173 @@ refuse a disabled node (`node-disabled`): enable it first.
 to the wanted state (a stopped node is configured again and rests stopped). Every change of a
 node's settings does the same (cause `restarting`, then `configuring` with the changed keys).
 An update that leaves the settings as they are changes nothing, for a failed node too. A change
-of a node's ports (a card's channel count) or of its type replaces the node: its routes and the
-node are removed and added again. A change to a disabled node is stored for when it is enabled.
+of a node's ports (a card's channel count) keeps the node and its block, reshaped
+([below](#reshapes)); a change of its type replaces the node: its routes and the node are removed
+and added again. A change to a disabled node is stored for when it is enabled.
+
+The desired graph's plan says what each edit asks of a node it keeps by name (`NodeOutcome`, told
+through `nodeChanged` with a `NodeChange`): `disable`, `enable` or `stored` by its `disabled`
+before and after; otherwise `reshape` when its ports differ, `unchanged` when no key does (nothing
+is done or told), `reconfigure` when every changed key's row is marked in place
+([writing-a-node-type.md](writing-a-node-type.md#settings-one-table-of-typed-rows)), else
+`restart`. A `reconfigure` is taken in place when the type has a change version
+([below](#changes-in-place)), else as a restart. `changeOf` (`desired_graph.hpp`) is the one rule,
+the plan's and the type harness's.
+
+### Changes in place
+
+A change in place applies new settings to a node's configuration without tearing it down: a
+change the plan says is a `reconfigure`, on a node whose type has a change version of
+`configure` ([writing-a-node-type.md](writing-a-node-type.md#the-change-version)); a type with
+none takes it as a restart. The node shows `reconfiguring`, with `keys` (the keys the change
+applies) and `next` (keys changed since its commit point, which it takes once the change ends).
+
+What NodeHost does, in order:
+
+1. **Calls the change version** on the main loop, timed as `configure`, with `old` the applied
+   settings and `now` the change's target; the configuration still applies the old ones. Its
+   context offers holds, replacements, claims and unclaims, staged posts, a latency declaration
+   and the answer. Its claims are judged as it returns, before anything else
+   ([writing-a-node-type.md](writing-a-node-type.md#claims-in-a-change)).
+2. **Holds** the banks it names: told to the block only while the node is driven (a stopped node
+   is silent already). The commit point waits for each hold's acknowledgement, at most 100 ms
+   (past it `ear.fade-unacknowledged`, and the change goes on).
+3. **Answers.** A new code is prepared now, while the old one runs (when the old one is
+   prepared), and its latency plan worked out; a broken rule, a pass-through or a plan that does
+   not fit fails the node `lost`. An answer `restart`, or a change version that threw, falls back
+   (below).
+4. **The continuation**, when the change version answered `whenReady`
+   ([writing-a-node-type.md](writing-a-node-type.md#whenready-and-configuredone)): once every
+   acquisition is ready and every hold acknowledged it is posted to its loop, and the commit point
+   waits for its `done()`; a `fail(detail)`, or its token dropped, falls back (`failed`).
+5. **The commit point.** The instance adopts the new settings and the configuration holds them;
+   the staged posts are released to their loops, in the order posted; the plan is carried; a new
+   code, or a replaced sink's or source's binding, is swapped in one invoke, its completion the
+   commit's (from `prepared`, or with neither, the commit completes in its own turn); the old code is released once its swap completed;
+   then the holds fade back in; last, the ports the configuration no longer asks are released.
+   The loops and their states go on: nothing is torn down.
+6. **The deadline**, 10 s from the change version's call (a type declares 1 s to 60 s: its spec's
+   `.lifecycle`): past it the change falls back, reason `deadline`.
+
+The hold's fade (5 ms), its acknowledgement's bound (100 ms) and the deadline (10 s, at most 60 s)
+are first choices, not yet tuned on real hardware (the MOTU).
+
+A **replacement** (an RTP receiver or a sound card on the same bank, a sink or a source on it, or
+a recording: [writing-a-node-type.md](writing-a-node-type.md#make-before-break),
+[#sinks-and-sources-in-a-change](writing-a-node-type.md#sinks-and-sources-in-a-change),
+[#recordings-in-a-change](writing-a-node-type.md#recordings-in-a-change)) is readied beside the old
+one, in readiness order, once the change version answered: the change's new claims first, its
+recordings' among them (a refusal falls back, `resource-refused`, before anything breaks), then
+its recordings opened, then its companions: each replacement sink's consumer begun, and, behind a
+hold the framework takes on what its bank carries, each engine companion made beside the old one
+(an RTP receiver on a new port, a sound card), or break-first, the old one destroyed and the new
+one made in one flush (an RTP receiver on the same port, a card the type orders so). The commit
+point waits for every one to be ready (an engine companion's loss first falls back,
+`resource-lost`); then it destroys an old engine companion that still runs, moves each sink's and
+source's bank to its replacement in its invoke (the old sink finishing once that completed, the
+old source's writer closed), closes a replaced recording once every replaced sink finished, and
+releases the ports the old ones held that the new ones do not, last. An old one is retiring
+meanwhile (listed `retiring`): an engine companion's loss is `ear.retiring-lost`.
+
+A change that ends without committing (superseded, stopped, failed or fallen back) destroys its
+staged posts unrun and releases its new code and the ports it was granted, closes its
+replacement sinks, sources and recordings (a replacement made
+break-first stays the bank's companion, its ports the configuration's; one broken but not yet
+made, its flush still to run, is made only if no newer change broke the same bank first: the
+newest break's replacement is the one made; one made before break is destroyed, and the one it
+was made beside is the bank's again);
+its holds stay until the next commit or the silence. A supersession says `ear.reconfigure-superseded`, a fallback
+`ear.reconfigure-fell-back` before its `stopping` (all but `restart-requested`, which the operator's own
+`node.restart` asked for; its `stopping` record names the reason) ([output-records.md](output-records.md#diagnostic)).
+
+The configuration machine has two states for it. **`changing`** begins from `driving`, or from
+`prepared` once the configuration has rested (a change before it first rested is not taken):
+the change version is called (`reconfigure`) while the configuration still applies the old
+settings, and it lasts until the change is ready to commit. A newer change in place in
+`changing` ends the change uncommitted (`dropChange`) and calls the change version again. A
+stop, a teardown or the block's loss ends it uncommitted too, then does what the state it began
+from does (a stop of a change from `prepared` has nothing driven to stop, so the change goes
+on). The **commit point** (`commit`) from `prepared` needs no invoke and returns there at once;
+from `driving` it is one barrier-numbered invoke on the data loop, **`committing`**, which
+cannot be recalled: a stop, a teardown or a newer change waits for its completion, which returns
+to `driving`. Only the block's loss (a silence, as from `driving`) and the invoke's 5 s bound
+(the data loop wedged, the configuration leaked, as for a drive) move the configuration before
+it completes.
+
+The node aggregate decides when a change of settings is taken in place, and what arrives during
+one:
+
+- **Who takes it.** A change the plan says can be made in place is taken in place only by a node
+  that has rested (reached `running` or `stopped` once), with no stop, restart, disable, removal
+  or failure in flight and the data loop not wedged; from `running` or `stopped` at once, and
+  after a start's drive or a stop in flight once it ends (a change that waited for a start's drive
+  begins in the drive's own batch, before `start()` runs; a `start()` that throws there still
+  fails the node `start-failed` with no `stop()`, ending the change). Any other node takes it as a
+  restart-only change: one that has not yet rested restarts (nothing has started, so nothing is
+  gained), a failed one retries, a disabled one stores it, all with cause `settings` as above.
+  Changes that wait together are made in place only if every one of them could be.
+- **The applied settings** become the change's only at the commit point, so a change that ends
+  any other way leaves its keys to apply.
+- **Before the commit point** a newer change in place supersedes the one in flight: the change
+  version is called again with the newest settings and every key not yet applied. A newer
+  restart-only change restarts the node (cause `settings`, naming those keys). A stop ends the
+  change and stops; once stopped, the change is made in place from there. A disable or a
+  removal ends the change and goes on as from `running` or `stopped`. `node.restart` falls back
+  at once.
+- **After the continuation's post** a newer change waits for the change's end, then is made
+  afresh (in place, or a restart if any key of it must restart); a stop, a disable, a removal,
+  `node.restart`, a fault and the deadline still end the change, the continuation running on its
+  loop all the same, its `done` ignored.
+- **After the commit point** (the commit's invoke in flight) a newer change, a stop, a disable, a
+  removal, a fault's teardown or `node.restart` waits for the invoke, then applies: a newer change
+  is a fresh change (in place, or a restart if any key of it must restart), a restart falls back.
+  A fault shows `failed` at once.
+- **The fallback.** A change that cannot finish restarts the node with the newest settings, never
+  the old ones, which `ear.conf` no longer holds: `stopping` with cause `restarting`, its own
+  kind `fell-back`, the change's keys, a `reason` and a `detail`, then `configuring` with that
+  cause. The reasons: `restart-asked` (the change version answered restart), `deadline`,
+  `resource-refused` and `resource-lost` (a replacement refused, or lost before the commit
+  point), `failed` (the change version failed), `restart-requested` (`node.restart`).
+- **A fault** during a change (a kept resource lost, the block lost, a hook that threw) fails the
+  node as in any other phase; it is not a fallback.
+
+### Reshapes
+
+A change of a node's ports with its type kept (a card's `playback` count, an `rtp` node's
+`channels`) is a **reshape**: the node keeps its block, and the block's ports change to the new
+ones, the links on the ports both name kept throughout ([engine.md](engine.md#reshapes) says how
+the block does it). The plan's `NodeChange` carries the ports before and after.
+
+- **Routes.** Every wanted route must name a port the new ports declare, as for any edit (a route
+  to `desk:play.4` while `desk` goes to two channels is refused `unknown-port`), so no wanted route
+  names a vanishing port by the time a reshape commits, and a route kept is never removed or added:
+  routes are removed before nodes change in a commit. A route may name a port that appears; it links
+  once the port is live. Through the control port, the graph file keeper refuses such an edit first
+  as `ports-in-use`, naming every route, or with `dropRoutes` removes those route lines in the same
+  edit ([control-port.md](control-port.md#changes-of-ports)).
+- **As a restart** (the default): the old configuration is torn down as for a restart, then, at the
+  new configuration's start, the block, silent, takes the new ports, and `configure` sees them.
+  Surviving ports keep their links and carry zeros while the node restarts; inside banks are resized
+  with the rest, and their companions are made afresh by the new `configure`. The cause is
+  `reshape`: the changed keys and the public ports added and removed against the ending
+  configuration's (a later change that brings the ports back before the restart is `settings`
+  again).
+- **On a node with no configuration** (disabled, or failed): the block alone is reshaped at the
+  commit, no hook called; an enable later configures it with the ports the block already has.
+- **In place**, when every changed key is `.inPlace()` (`NodeChange::inPlace`), the type has a
+  change version, and the configuration has no companion (an engine companion, a sink, a source, a
+  recording or a program; one on a resized bank would need a replacement made before break on the
+  new ports, which is not built, so such a node restarts): a change in place
+  ([above](#changes-in-place)). The new ports are in the engine before the change version runs; the
+  old code keeps the ports it was laid out for (each
+  drive names them), with the new outputs written zeros, until the commit's swap brings the code for
+  the new ports; the ports that go leave the engine once that swap completed. A hold names a bank the
+  running code has. The change version must give a code: one that does not fails the node `lost`,
+  "configure changed the ports in place and gave no code for them". No built-in type reshapes in
+  place; `reshape_test.cpp` proves it with a test type, channels 1 and 2 playing on through a third
+  added and removed.
+- **On the wire** a change of ports is `node.updated` with `applied: "reshape"`, `inPlace` and the
+  ports added and removed ([control-port.md](control-port.md#changes-of-ports)).
 
 ### Failures
 
@@ -562,7 +732,10 @@ Every node with an output fades its outputs in over 5 ms at every start, and out
 every planned silence: a stop, a restart, a disable, a removal and a failure. A card's playback
 bank fades too, so its speakers never click; a sink's bank (a `file` node's) is never faded, so a
 recording keeps the exact samples of every cycle its code ran, and a node whose only outputs are
-sinks' banks is silenced at once, with no fade before. A lost block cannot be faded.
+sinks' banks is silenced at once, with no fade before. A lost block cannot be faded. A change in
+place holds outputs silent the same way, a second gain after the fade: each held output fades to
+zero over 5 ms, stays there, and fades back in at the change's end
+([engine.md](engine.md#holds-and-swaps)).
 
 ### Bounds, the wedged data loop and the watchdog
 
@@ -621,7 +794,8 @@ the main loop never joins a thread:
    so nothing the realtime thread can reach is freed while it can reach it); the code's `release`.
    What was sent to a loop before the node was configured is destroyed unrun.
 2. Engine companions destroyed (and, for a removal, the block, only after the barrier).
-3. Sinks drained and finished, each on its own thread, and its program reaped (its end now is no
+3. Sinks drained and finished, each on its own thread (a sink a change replaced that is still
+   draining is waited for too, counted apart), and its program reaped (its end now is no
    failure, but the end this step waits for).
 4. Each loop finishes: it runs the work already posted (the goodbye), then destroys its state on
    its own thread; once every loop has, each closes, cancelling any source its state left armed
@@ -806,9 +980,9 @@ of the process: the record, not the process's end, says when ear's stop is done.
 
 ## Not built yet
 
-These are designed or wanted but not in the code: routes naming a whole bank; changing a node's
-settings in place without a restart (a type's change version of `configure` compiles but is
-never called); recovery of failed nodes; sound cards opened off the main loop; an internal
+These are designed or wanted but not in the code: routes naming a whole bank; a reshape in
+place of a configuration with companions ([reshapes](#reshapes): the companions on resized inside banks would be
+replaced make-before-break, each new one handed over in one invoke, so a bank never holds two at once); recovery of failed nodes; sound cards opened off the main loop; an internal
 clock anchored to one card; serving PipeWire's socket (for a program that can only be a PipeWire client; its nodes would be engine companions, marked by the socket's peer credentials); a login on port 7777; automatic card retry and hotplug; `@include`; undo; changing the graph
 frequency or block size while ear runs; arm64 images (which wait on a port added to a running block on the data loop: [engine.md](engine.md#the-one-data-loop-and-invokes)); a fault caught at the callback boundary
 failing only the node that owns it (today it ends the process); the `sendspin` library's log lines attributed to their node;

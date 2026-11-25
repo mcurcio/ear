@@ -75,8 +75,8 @@ function placesKey(positions: ReadonlyMap<string, Position>): string {
 
 /**
  * Where each node name was last placed, loaded from and saved to its keeper (docs/editor.md#what-the-browser-keeps).
- * A node removed and added again under the same name keeps its place: that is how ear replaces a node whose ports
- * change (node.removed, then node.added, from an edit at the source), and the canvas may draw the graph in between.
+ * A node removed and added again under the same name keeps its place: that is how ear replaces a node by another type
+ * (node.removed, then node.added, from an edit at the source), and the canvas may draw the graph in between.
  */
 export class Places {
   private readonly known: Map<string, Position>;

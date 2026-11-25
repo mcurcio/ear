@@ -96,6 +96,12 @@ describe("companionDetail", () => {
     );
   });
 
+  it("says a companion a change replaces make-before-break is retiring", () => {
+    expect(companionDetail({ name: "fpp.rtp", kind: "rtp-receiver", bank: "from_rtp", ready: true, retiring: true })).toBe(
+      "fpp.rtp (rtp on from_rtp): ready, retiring",
+    );
+  });
+
   it("gives an engine kind no counter", () => {
     expect(companionDetail({ name: "desk.playback", kind: "card-playback", bank: "to_card", ready: false })).toBe(
       "desk.playback (card out on to_card): not ready",

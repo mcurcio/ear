@@ -69,4 +69,17 @@ Ports Ports::publicOnly() const {
 	return only;
 }
 
+PortsMoved portsMoved(const Ports& before, const Ports& after) {
+	const auto missing = [](const Ports& from, const Ports& in) {
+		std::vector<PortName> names;
+		for (const auto* list : {&from.inputs(), &from.outputs()})
+			for (const PortName& port : *list)
+				if (std::ranges::find(in.inputs(), port) == in.inputs().end() &&
+				    std::ranges::find(in.outputs(), port) == in.outputs().end())
+					names.push_back(port);
+		return names;
+	};
+	return PortsMoved{missing(after, before), missing(before, after)};
+}
+
 } // namespace ear

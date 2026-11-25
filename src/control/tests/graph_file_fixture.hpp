@@ -45,6 +45,9 @@ inline ear::NodeHealth health(const std::string& node, ear::NodeState state,
 	case ear::NodeState::failed:
 		h.phase = ear::NodePhase::failed;
 		break;
+	case ear::NodeState::reconfiguring:
+		h.phase = ear::NodePhase::reconfiguring;
+		break;
 	}
 	return h;
 }

@@ -58,6 +58,7 @@ struct SettingRow {
 	SettingRule rule;
 	std::optional<std::uint32_t> byDefault = {}; // what the row reads when absent
 	std::string_view onlyWithout = {};           // Row::onlyWithout's
+	bool inPlace = false;                        // Row::inPlace's: a change to it may apply in place
 };
 
 namespace setting {
@@ -119,6 +120,13 @@ public:
 		Row limited = *this;
 		limited.row_.onlyWithout = above.row().key;
 		return limited;
+	}
+	/// A change to this key may apply in place, through the type's change version of configure, while the node keeps
+	/// running (docs/writing-a-node-type.md#settings-one-table-of-typed-rows). Unmarked, a row is restart-only: a change to it restarts the node.
+	consteval Row inPlace() const {
+		Row marked = *this;
+		marked.row_.inPlace = true;
+		return marked;
 	}
 
 private:
@@ -218,6 +226,12 @@ public:
 	constexpr std::string_view name() const noexcept { return name_; }
 	/// NodeType::settingKinds(): every key, each once, in row order; the same span every call.
 	constexpr std::span<const SettingDeclaration> kinds() const noexcept { return kinds_; }
+	/// Whether the row of `key` is marked inPlace (Row::inPlace); false for a key the table lacks.
+	constexpr bool changesInPlace(std::string_view key) const noexcept {
+		for (const SettingRow* row : rows_)
+			if (row->key == key) return row->inPlace;
+		return false;
+	}
 
 protected:
 	/// Refuses at compile time: an empty name, a key given twice, an onlyWithout that names no row above its own.

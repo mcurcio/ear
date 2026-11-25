@@ -1,5 +1,5 @@
 {
-  "description": "Every enum is open from protocol 1 (docs/control-port.md#protocol-and-features): values, members and notifications a client does not know, from a later slice or a newer ear, are taken as they come or ignored, never a failure. After a protocol 1 snapshot: an unknown state and phase (recovering, with an unknown member and an unknown failure code), an unknown cause.kind (fell-back), an unknown waitingFor kind (claim) and phase (reconfiguring, with its keys, not a health member this client keeps), an unknown route status (held), an unknown applied value on node.updated (reshape, with an unknown member ports) and in a reply (retune), an unknown notification, and counters a client does not know on the graph (lateWakes) and a node (underruns), each kept by its name and number as the counters are an open set; and a companion list (feature companions) naming a companion of a kind a client does not know (invented-kind) with a member it does not know (lagFrames), kept as sent and drawn by its kind's own text. The graph is what the reducer keeps: health members it knows, replaced whole by each node.state; the route's status as sent.",
+  "description": "Every enum is open from protocol 1 (docs/control-port.md#protocol-and-features): values, members and notifications a client does not know, from a later slice or a newer ear, are taken as they come or ignored, never a failure. After a protocol 1 snapshot: an unknown state and phase (recovering, with an unknown member and an unknown failure code), an unknown cause.kind (rolled-back), an unknown waitingFor kind (claim) and phase (retuning, with its slots, not a health member this client keeps), an unknown route status (held), an unknown applied value on node.updated (reshape, with an unknown member ports) and in a reply (retune), an unknown notification, and counters a client does not know on the graph (lateWakes) and a node (underruns), each kept by its name and number as the counters are an open set; and a companion list (feature companions) naming a companion of a kind a client does not know (invented-kind) with a member it does not know (lagFrames), kept as sent and drawn by its kind's own text. The graph is what the reducer keeps: health members it knows, replaced whole by each node.state; the route's status as sent.",
   "requests": [
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"node.update\",\"params\":{\"name\":\"noise\",\"settings\":{\"seed\":2}}}"
@@ -14,7 +14,10 @@
           "lifecycle",
           "counters",
           "companions",
-          "node-text"
+          "node-text",
+          "reshape",
+          "node.set",
+          "dryRun"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -123,7 +126,7 @@
           "kind": "restarting",
           "restart": {
             "reason": "resource-refused",
-            "kind": "fell-back",
+            "kind": "rolled-back",
             "detail": "udp:5006 is held by another program"
           }
         }
@@ -140,7 +143,7 @@
         "wanted": "running",
         "blockLost": false,
         "cause": {
-          "kind": "fell-back"
+          "kind": "rolled-back"
         },
         "waitingFor": [
           {
@@ -203,12 +206,12 @@
       "method": "node.state",
       "params": {
         "name": "noise",
-        "state": "reconfiguring",
-        "phase": "reconfiguring",
+        "state": "retuning",
+        "phase": "retuning",
         "since": "2026-11-09T10:00:04.000000Z",
         "wanted": "running",
         "blockLost": false,
-        "keys": [
+        "slots": [
           "seed"
         ]
       }
@@ -259,7 +262,10 @@
       "lifecycle",
       "counters",
       "companions",
-      "node-text"
+      "node-text",
+      "reshape",
+      "node.set",
+      "dryRun"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -280,8 +286,8 @@
         "outputs": [
           "noise.mono"
         ],
-        "state": "reconfiguring",
-        "phase": "reconfiguring",
+        "state": "retuning",
+        "phase": "retuning",
         "since": "2026-11-09T10:00:04.000000Z",
         "wanted": "running",
         "blockLost": false,

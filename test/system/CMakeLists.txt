@@ -4,7 +4,7 @@
 # ear_rtp_tone, play to its sendspin node from the real server with ear_sendspin_server, and play to its airplay node
 # from the scripted AirPlay 1 sender (test/support/airplay_sender.py, in the venv CMakeLists.txt checks for).
 add_executable(ear_system_tests airplay_test.cpp control_port_test.cpp counters_test.cpp graph_file_test.cpp lifecycle_test.cpp rtp_test.cpp
-	sendspin_connections_test.cpp sendspin_floods_test.cpp sendspin_limits_test.cpp sendspin_mdns_test.cpp
+	sendspin_changes_test.cpp sendspin_connections_test.cpp sendspin_floods_test.cpp sendspin_limits_test.cpp sendspin_mdns_test.cpp
 	sendspin_pairing_test.cpp sendspin_ramp_test.cpp sendspin_streams_test.cpp white_to_file_test.cpp)
 target_link_libraries(ear_system_tests PRIVATE ear_catch_main nlohmann_json::nlohmann_json
 	PkgConfig::SNDFILE ear_ws_client ear_rtp_tone ear_sendspin_server ear_temp_folder ear_statistics)

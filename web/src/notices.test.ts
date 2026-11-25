@@ -6,6 +6,7 @@ import {
   coalesceMs,
   noticeMs,
   noticeOfRefusal,
+  noticeOfState,
   Notices,
   placedRefusal,
   refusalParts,
@@ -14,7 +15,7 @@ import {
   trimCode,
   type NoticeInput,
 } from "./notices";
-import type { RouteEnds, RpcErrorObject } from "./protocol";
+import type { Notifications, RouteEnds, RpcErrorObject } from "./protocol";
 import { askedOf, type AskedMethod } from "./requests";
 import { ConnectionClosedError, RpcError } from "./rpc";
 import { fixtures, messagesOf } from "./testFixtures";
@@ -269,5 +270,25 @@ describe("a toast's Show", () => {
     expect(showOf(graph, { kind: "route", ends })).toBeNull();
     expect(showOf(graph, undefined)).toBeNull();
     expect(showOf(null, { kind: "node", node: "rec" })).toBeNull();
+  });
+});
+
+describe("a change in place that fell back", () => {
+  it("raises one warning toast from lifecycle.json's fallback, about its node, and none for any other state", () => {
+    const raised = messagesOf(fixtures.lifecycle.messages).flatMap((message) =>
+      "method" in message && message.method === "node.state"
+        ? [noticeOfState(message.params as Notifications["node.state"])].filter((notice) => notice !== undefined)
+        : [],
+    );
+    expect(raised).toStrictEqual([
+      {
+        severity: "warning",
+        code: "fell-back",
+        what: "fpp",
+        verb: "could not apply format in place, so it restarted",
+        detail: "deadline 10s passed",
+        subject: { kind: "node", node: "fpp" },
+      },
+    ]);
   });
 });

@@ -98,8 +98,22 @@ struct Faulty : NeverStarted {
 	Configured configure(CreateOf<faultySpec>& cx, const CheckedOf<faultySpec>& s) { return never(cx, s); }
 };
 
+constexpr auto portRow = setting::required("port", setting::number(1, 65535)).inPlace();
+constexpr auto gainRow = setting::optional("gain", setting::number(0, 100)).inPlace();
+constexpr auto channelsRow = setting::defaulted("channels", setting::number(1, 8), 1);
+constexpr TypeSpec movableSpec{.settings = SettingsTable<portRow, gainRow, channelsRow>{"movable"},
+                               .banks = Banks<out>{}};
+/// "movable": port and gain change in place; channels makes its ports (outputs out.1..out.<channels>).
+struct Movable : NeverStarted {
+	static Members<movableSpec> ports(const CheckedOf<movableSpec>& settings) {
+		return {out(members(settings.get<channelsRow>()))};
+	}
+	Configured configure(CreateOf<movableSpec>& cx, const CheckedOf<movableSpec>& s) { return never(cx, s); }
+};
+
 std::vector<std::unique_ptr<const NodeType>> testTypes() {
 	std::vector<std::unique_ptr<const NodeType>> types;
+	types.push_back(makeNodeType<movableSpec, Movable>());
 	types.push_back(makeNodeType<cardSpec, CardType>());
 	types.push_back(makeNodeType<sourceSpec, SourceType>());
 	types.push_back(makeNodeType<sinkSpec, SinkType>());
@@ -471,18 +485,19 @@ TEST_CASE("plan with new settings and the same ports updates the node and keeps 
 	CHECK(f.graph.routes() == std::vector<Route>{noiseToDesk1});
 }
 
-TEST_CASE("plan with other ports replaces the node and adds its routes again", "[desired_graph][plan]") {
+TEST_CASE(
+	"plan with other ports and the same type reshapes the node and keeps its routes, and another type replaces it",
+	"[desired_graph][plan][reshape]") {
 	Fixture f;
 	apply(f.graph, {noiseSpec, recSpec, deskSpec(2)}, {noiseToDesk1, noiseToFl});
 	f.log.clear();
 
 	apply(f.graph, {noiseSpec, recSpec, deskSpec(4)}, {noiseToDesk1, noiseToFl});
-	CHECK(f.log == Log{"sub routeRemoved noise:noise.mono -> desk:play.1", "sub nodeRemoved desk", "sub nodeAdded desk",
-	                   "sub routeAdded noise:noise.mono -> desk:play.1"});
-	REQUIRE(f.recorder.nodes.size() == 4);
-	CHECK(f.recorder.nodes[3].second->ports().inputs().size() == 4);
+	CHECK(f.log == Log{"sub nodeUpdated desk"}); // told by nodeChanged, a reshape, whose default is nodeUpdated
+	REQUIRE(f.recorder.updates.size() == 1);
+	CHECK(f.recorder.updates[0].second->ports().inputs().size() == 4);
 
-	SECTION("another type under the same name is a replacement too") {
+	SECTION("another type under the same name is a replacement") {
 		f.log.clear();
 		apply(f.graph, {noiseSpec, recSpec, {"desk", "sink", json::object()}}, {noiseToFl});
 		CHECK(f.log ==
@@ -577,11 +592,17 @@ struct ChangeRecorder final : DesiredNodeListener, DesiredRouteListener {
 		log.push_back("nodeUpdated " + node.name);
 	}
 	void nodeChanged(const NodeSpec& node, std::shared_ptr<const NodeConfig>, const NodeChange& change) override {
-		static constexpr const char* names[] = {"restart", "disable", "enable", "stored"};
+		static constexpr const char* names[] = {"restart",     "disable", "enable",   "stored",
+		                                        "reconfigure", "reshape", "unchanged"};
 		std::string keys;
 		for (const auto& key : change.keys) keys += " " + key;
+		std::string ports;
+		if (change.portsChanged())
+			ports = " ports " + std::to_string(change.oldPorts.inputs().size() + change.oldPorts.outputs().size()) +
+			        "->" + std::to_string(change.ports.inputs().size() + change.ports.outputs().size()) +
+			        (change.inPlace ? " in place" : "");
 		log.push_back("nodeChanged " + node.name + " " + names[static_cast<int>(change.outcome)] +
-		              (node.disabled ? " disabled" : "") + keys);
+		              (node.disabled ? " disabled" : "") + keys + ports);
 	}
 	void nodeRemoved(const NodeName& node) override { log.push_back("nodeRemoved " + node); }
 	void routeAdded(const Route& route) override { log.push_back("routeAdded " + text(route)); }
@@ -652,8 +673,9 @@ TEST_CASE("A changed disabled is a disable, an enable or stored, told by nodeCha
 	}
 }
 
-TEST_CASE("A replace keeps its disabled change's outcome: stored on a node staying disabled, restart on one enabled",
-          "[desired_graph]") {
+TEST_CASE("A change of ports keeps its disabled change's outcome: stored on a node staying disabled, reshape on one "
+          "enabled, each told by nodeChanged with the ports before and after",
+          "[desired_graph][reshape]") {
 	NodeCatalogue catalogue{testTypes()};
 	DesiredGraph graph{catalogue};
 	ChangeRecorder recorder;
@@ -667,14 +689,16 @@ TEST_CASE("A replace keeps its disabled change's outcome: stored on a node stayi
 		REQUIRE(plan.has_value());
 		const auto outcomes = plan->outcomes();
 		REQUIRE(graph.commit(std::move(*plan)).has_value());
-		CHECK(recorder.log == Log{"nodeRemoved desk", std::string("nodeAdded desk") + (now ? " disabled" : "")});
+		REQUIRE(recorder.log.size() == 1);
+		CHECK(recorder.log[0].starts_with("nodeChanged desk"));
+		CHECK(recorder.log[0].ends_with(" playback ports 2->4"));
 		REQUIRE(outcomes.size() == 1);
 		return outcomes[0].second;
 	};
-	CHECK(replaceOutcome(true, true) == NodeOutcome::stored);    // disabled before and after: kept for the enable
-	CHECK(replaceOutcome(false, false) == NodeOutcome::restart); // enabled before and after: the new node starts
-	CHECK(replaceOutcome(false, true) == NodeOutcome::disable);  // the replace disables it
-	CHECK(replaceOutcome(true, false) == NodeOutcome::enable);   // the replace enables it
+	CHECK(replaceOutcome(true, true) == NodeOutcome::stored);    // disabled before and after: its block reshaped alone
+	CHECK(replaceOutcome(false, false) == NodeOutcome::reshape); // enabled before and after: a reshape
+	CHECK(replaceOutcome(false, true) == NodeOutcome::disable);  // the change disables it
+	CHECK(replaceOutcome(true, false) == NodeOutcome::enable);   // the change enables it
 }
 
 TEST_CASE("nodeChanged's default tells nodeUpdated, so a listener that tells no outcome apart sees an update",
@@ -688,8 +712,7 @@ TEST_CASE("nodeChanged's default tells nodeUpdated, so a listener that tells no 
 	CHECK(f.recorder.updates[0].first.disabled);
 }
 
-TEST_CASE("A replace is told through nodeReplacing and nodeReplaced, port-caused when only the ports changed",
-          "[desired_graph]") {
+TEST_CASE("A replace (another type under the name) is told through nodeReplacing and nodeReplaced", "[desired_graph]") {
 	struct ReplaceRecorder final : DesiredNodeListener {
 		Log log;
 		void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig>) override {
@@ -706,7 +729,7 @@ TEST_CASE("A replace is told through nodeReplacing and nodeReplaced, port-caused
 			log.push_back("nodeReplaced " + node.name + text(change));
 		}
 		static std::string text(const NodeChange& change) {
-			std::string line = change.portCaused ? " ports" : " type";
+			std::string line;
 			for (const auto& key : change.keys) line += " " + key;
 			return line;
 		}
@@ -718,8 +741,61 @@ TEST_CASE("A replace is told through nodeReplacing and nodeReplaced, port-caused
 	apply(graph, {deskSpec(2)}, {});
 	recorder.log.clear();
 	apply(graph, {deskSpec(4)}, {});
-	CHECK(recorder.log == Log{"nodeReplacing desk ports playback", "nodeReplaced desk ports playback"});
+	CHECK(recorder.log == Log{"nodeUpdated desk"}); // a reshape is no replace
 	recorder.log.clear();
 	apply(graph, {NodeSpec{"desk", "source", json::object()}}, {});
-	CHECK(recorder.log == Log{"nodeReplacing desk type card playback", "nodeReplaced desk type card playback"});
+	CHECK(recorder.log == Log{"nodeReplacing desk card playback", "nodeReplaced desk card playback"});
+}
+
+TEST_CASE("A change whose every key is marked inPlace is a reconfigure, and one restart-only key makes it a restart",
+          "[desired_graph][inPlace]") {
+	NodeCatalogue catalogue{testTypes()};
+	DesiredGraph graph{catalogue};
+	ChangeRecorder recorder;
+	graph.subscribe(static_cast<DesiredNodeListener&>(recorder));
+	graph.subscribe(static_cast<DesiredRouteListener&>(recorder));
+	const auto movable = [](json settings, bool disabled = false) {
+		return NodeSpec{"fpp", "movable", std::move(settings), disabled};
+	};
+	apply(graph, {movable({{"port", 5004}})}, {});
+	recorder.log.clear();
+	const auto planned = [&](const NodeSpec& spec) {
+		auto plan = graph.plan(std::vector<NodeSpec>{spec}, std::vector<Route>{});
+		REQUIRE(plan.has_value());
+		const Outcomes outcomes = plan->outcomes();
+		REQUIRE(graph.commit(std::move(*plan)).has_value());
+		return outcomes;
+	};
+
+	SECTION("every changed key in place gives reconfigure, with its keys") {
+		CHECK(planned(movable({{"port", 5006}, {"gain", 3}})) == Outcomes{{"fpp", NodeOutcome::reconfigure}});
+		CHECK(recorder.log == Log{"nodeChanged fpp reconfigure gain port"});
+	}
+	SECTION("one restart-only key gives restart") {
+		CHECK(planned(movable({{"port", 5006}, {"channels", 1}})) == Outcomes{{"fpp", NodeOutcome::restart}});
+	}
+	SECTION("a disabled node stays stored, and an enable or disable is still its own") {
+		CHECK(planned(movable({{"port", 5004}}, true)) == Outcomes{{"fpp", NodeOutcome::disable}});
+		CHECK(planned(movable({{"port", 5006}}, true)) == Outcomes{{"fpp", NodeOutcome::stored}});
+		CHECK(planned(movable({{"port", 5008}})) == Outcomes{{"fpp", NodeOutcome::enable}});
+	}
+	SECTION("a change of ports is a reshape, in place only when every changed key is") {
+		CHECK(planned(movable({{"port", 5006}, {"channels", 2}})) == Outcomes{{"fpp", NodeOutcome::reshape}});
+		REQUIRE(recorder.log.size() == 1);
+		CHECK(recorder.log[0] == "nodeChanged fpp reshape channels port ports 1->2");
+		const NodeType& type = *catalogue.find("movable");
+		const Ports one = type.parse("fpp", {{"port", 5004}}).value()->ports();
+		const Ports two = type.parse("fpp", {{"port", 5004}, {"channels", 2}}).value()->ports();
+		CHECK(changeOf(type, {"gain"}, false, false, one, two).inPlace);
+		CHECK_FALSE(changeOf(type, {"channels"}, false, false, one, two).inPlace);
+		CHECK_FALSE(changeOf(type, {}, false, false, one, two).inPlace);
+		CHECK(changeOf(type, {"gain"}, true, true, one, two).outcome == NodeOutcome::stored);
+	}
+	SECTION("outcomeFor is the plan's rule: no key is unchanged, an unknown key is restart-only") {
+		const NodeType& type = *catalogue.find("movable");
+		CHECK(outcomeFor(type, std::vector<std::string>{"gain"}, false, false) == NodeOutcome::reconfigure);
+		CHECK(outcomeFor(type, std::vector<std::string>{}, false, false) == NodeOutcome::unchanged);
+		CHECK(outcomeFor(type, std::vector<std::string>{"gain", "volume"}, false, false) == NodeOutcome::restart);
+		CHECK(outcomeFor(type, std::vector<std::string>{"gain"}, true, true) == NodeOutcome::stored);
+	}
 }
