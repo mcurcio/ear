@@ -1100,21 +1100,13 @@ Built ([editor.md](../editor.md#the-settings-form)).
 New kinds, each with `v`, `seq`, `t`, `kind`, its fields, `msg`, as built. Every change is additive, so `v` stays 1.
 
 ```json
-{"v":1,"seq":120,"t":"2026-11-08T10:01:50.311002Z","kind":"status","node":"kitchen","field":"connection","from":"dialling","to":"connected","msg":"node kitchen connection dialling -> connected"}
-{"v":1,"seq":140,"t":"2026-11-08T10:02:12.000300Z","kind":"status","node":"kitchen","field":"connection","from":"dialling","to":"connected","heldBack":9,"msg":"node kitchen connection now connected (9 changes held back)"}
-{"v":1,"seq":141,"t":"2026-11-08T10:04:00.100000Z","kind":"status","node":"kitchen","reset":true,"msg":"node kitchen status reset"}
-{"v":1,"seq":122,"t":"2026-11-08T10:01:52.004211Z","kind":"event","node":"kitchen","code":"pairing-failed","severity":"warn","args":{"reason":"pairing-code-mismatch"},"msg":"node kitchen pairing failed: pairing-code-mismatch"}
-{"v":1,"seq":123,"t":"2026-11-08T10:02:11.120400Z","kind":"diagnostic","node":"kitchen","code":"ear.status-flapping","subject":"connection","active":true,"count":2,"transitions":14,"windowMs":10000,"msg":"node kitchen connection flapping: 14 changes in 10s"}
 {"v":1,"seq":124,"t":"2026-11-08T10:03:00.500001Z","kind":"param","node":"amp","key":"gainDb","from":-6,"to":-3.5,"cause":"gesture","gesture":"g4","msg":"node amp gainDb -6 -> -3.5"}
 {"v":1,"seq":125,"t":"2026-11-08T10:03:40.000300Z","kind":"param","node":"amp","key":"gainDb","from":-4.25,"to":-6,"cause":"aborted","gesture":"g4","reason":"cancelled","msg":"node amp gainDb gesture g4 aborted (cancelled): back to -6"}
 {"v":1,"seq":128,"t":"2026-11-08T10:05:20.770000Z","kind":"action","node":"kitchen","action":"forget-pairing","result":"action-failed","detail":"no pairing with ma-0000","msg":"node kitchen forget-pairing refused: no pairing with ma-0000"}
 ```
 
-- `status`: every change as written, paced per node and field; a trailing record after held-back changes carries
-  `heldBack`, so the last record of each field matches the view; a reset is one record with `reset: true`. A text value
-  in `msg` is quoted when empty or holding a space; `null` is `unknown`.
-- `event`: `msg` is `node <n> ` and the sentence with its arguments; `t` for a realtime event is its cycle's start.
-- `diagnostic` (built) gains `subject`, `active` and `count`.
+- `status`, `event`, and the diagnostic's `subject`, `active` and `count` are built
+  ([output-records.md](../output-records.md#status)); left: a realtime event's `t` is its cycle's start (5.3).
 - `param`: one per reached node and key at each committed live change (`cause`: `gesture`, `set` for `node.set` and
   `node.update`, `disk` for a hand edit or `graphFile.set`) and at each abort (`cause: aborted`, `reason`; `to` the value
   it returned to, absent for `hand-edit` and `file-saved`). An end ear made for its owner is `cause: gesture` with

@@ -449,6 +449,7 @@ int main(int argc, char** argv) {
 	nodes.subscribeNotes(log);
 	// The node diagnostics NodeHost keeps (docs/output-records.md#diagnostic), CounterWatch's companion losses among them.
 	nodes.subscribeDiagnostics(log);
+	nodes.subscribeStatus(log);            // status records and events (docs/output-records.md#status)
 	nodes.subscribeLog(log);               // a stop() that threw during a teardown; each node handle's log
 	nodes.subscribeInternalErrors(log);    // an adapter's bug NodeHost caught: ear.internal-error, then its node lost
 	nodes.subscribeEngineDiagnostics(log); // ear.data-loop-wedged, as a record with no node

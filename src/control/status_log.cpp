@@ -43,6 +43,26 @@ std::string array(const std::vector<std::string>& values) {
 	return text + ']';
 }
 
+/// A status value as JSON: null, true or false, a number, a string.
+std::string valueJson(const StatusValue& value) {
+	if (std::holds_alternative<std::monostate>(value)) return "null";
+	if (const auto* flag = std::get_if<bool>(&value)) return json(*flag);
+	if (const auto* number = std::get_if<std::int64_t>(&value)) return json(*number);
+	if (const auto* decimal = std::get_if<double>(&value)) return json(*decimal);
+	return json(std::get<std::string>(value));
+}
+
+/// A status value in a msg (docs/output-records.md#status): a text quoted when empty or holding a space, null
+/// `unknown`, a decimal as JSON writes it.
+std::string valueWords(const StatusValue& value) {
+	if (const auto* text = std::get_if<std::string>(&value)) {
+		if (text->empty() || text->find(' ') != std::string::npos) return json(*text);
+		return *text;
+	}
+	if (const auto* decimal = std::get_if<double>(&value)) return json(*decimal);
+	return valueText(value);
+}
+
 /// "<n> <noun>", the noun plural unless n is 1.
 std::string counted(std::uint64_t n, std::string_view one, std::string_view many) {
 	return std::format("{} {}", n, n == 1 ? one : many);
@@ -351,6 +371,35 @@ void StatusLog::nodeDiagnostic(const NodeName& node, const NodeDiagnostic& diagn
 		record.emplace_back(std::string(field.key), json(field.value));
 	record.emplace_back("detail", json(diagnostic.detail));
 	emit("diagnostic", std::move(record), std::format("node {} {}: {}", node, diagnostic.code, diagnostic.detail));
+}
+
+void StatusLog::statusWritten(const NodeName& node, const StatusWrite& write) {
+	Fields record{{"node", json(node)},
+	              {"field", json(write.field)},
+	              {"from", valueJson(write.from)},
+	              {"to", valueJson(write.to)}};
+	std::string msg;
+	if (write.heldBack > 0) {
+		record.emplace_back("heldBack", json(write.heldBack));
+		msg = std::format("node {} {} now {} ({} held back)", node, write.field, valueWords(write.to),
+		                  counted(write.heldBack, "change", "changes"));
+	} else msg = std::format("node {} {} {} -> {}", node, write.field, valueWords(write.from), valueWords(write.to));
+	emit("status", std::move(record), std::move(msg));
+}
+
+void StatusLog::statusReset(const NodeName& node, std::span<const FieldValue>) {
+	emit("status", {{"node", json(node)}, {"reset", json(true)}}, std::format("node {} status reset", node));
+}
+
+void StatusLog::eventRaised(const NodeName& node, const RaisedEvent& event) {
+	Fields args;
+	for (const FieldValue& arg : event.args) args.emplace_back(std::string(arg.name), valueJson(arg.value));
+	emit("event",
+	     {{"node", json(node)},
+	      {"code", json(event.code)},
+	      {"severity", json(severityName(event.severity))},
+	      {"args", object(args)}},
+	     std::format("node {} {}", node, event.msg));
 }
 
 void StatusLog::engineDiagnostic(const EngineDiagnostic& diagnostic) {

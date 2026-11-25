@@ -19,7 +19,7 @@ struct FieldValue {
 	StatusValue value;
 	friend bool operator==(const FieldValue&, const FieldValue&) = default;
 };
-/// One change of a field as standard output writes it (docs/architecture.md#rates-and-bounds): `from` is the value the field's
+/// One change of a field as standard output writes it (docs/output-records.md#status): `from` is the value the field's
 /// last record wrote (its initial value before any), `to` the view's. A trailing record, written once the field's pace
 /// allows after changes it held back, carries their count in `heldBack`, so the field's last record always matches the
 /// view.

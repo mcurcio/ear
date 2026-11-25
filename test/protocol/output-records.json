@@ -1181,10 +1181,99 @@
       }
     },
     {
-      "case": "a stop has done all ear does: every node removed, the control port closed, ear.conf's last write made; ear's last record before it exits 0",
+      "case": "a node's status field changed (docs/output-records.md#status): from the value its last record wrote, to the view's",
       "record": {
         "v": 1,
         "seq": 107,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "status",
+        "node": "kitchen",
+        "field": "connection",
+        "from": "dialling",
+        "to": "connected",
+        "msg": "node kitchen connection dialling -> connected"
+      }
+    },
+    {
+      "case": "a text field's change: a text in msg is quoted when empty or holding a space",
+      "record": {
+        "v": 1,
+        "seq": 108,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "status",
+        "node": "kitchen",
+        "field": "pairingCode",
+        "from": "",
+        "to": "123-456",
+        "msg": "node kitchen pairingCode \"\" -> 123-456"
+      }
+    },
+    {
+      "case": "a field's trailing record once its pace allows, after changes it held back: it matches the view",
+      "record": {
+        "v": 1,
+        "seq": 109,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "status",
+        "node": "kitchen",
+        "field": "connection",
+        "from": "dialling",
+        "to": "connected",
+        "heldBack": 9,
+        "msg": "node kitchen connection now connected (9 changes held back)"
+      }
+    },
+    {
+      "case": "a configuration closed: every field back at its initial value, after its last values",
+      "record": {
+        "v": 1,
+        "seq": 110,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "status",
+        "node": "kitchen",
+        "reset": true,
+        "msg": "node kitchen status reset"
+      }
+    },
+    {
+      "case": "an event a node raised (docs/output-records.md#event): its arguments by name, msg its sentence filled",
+      "record": {
+        "v": 1,
+        "seq": 111,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "event",
+        "node": "kitchen",
+        "code": "pairing-failed",
+        "severity": "warn",
+        "args": {
+          "reason": "pairing-code-mismatch"
+        },
+        "msg": "node kitchen pairing failed: pairing-code-mismatch"
+      }
+    },
+    {
+      "case": "a condition the framework keeps per code and subject: a status field flapping, active, its second time",
+      "record": {
+        "v": 1,
+        "seq": 112,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "node": "kitchen",
+        "code": "ear.status-flapping",
+        "subject": "connection",
+        "active": true,
+        "count": 2,
+        "transitions": 14,
+        "windowMs": 10000,
+        "detail": "connection flapping: 14 changes in 10s",
+        "msg": "node kitchen ear.status-flapping: connection flapping: 14 changes in 10s"
+      }
+    },
+    {
+      "case": "a stop has done all ear does: every node removed, the control port closed, ear.conf's last write made; ear's last record before it exits 0",
+      "record": {
+        "v": 1,
+        "seq": 113,
         "t": "2026-11-07T17:42:03.512094Z",
         "kind": "exit",
         "status": 0,

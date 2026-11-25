@@ -436,6 +436,27 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 		                   "tv.rtp, which a change in place replaces, was lost: the RTP receiver's node went away", {},
 		                   "tv.rtp"));
 		},
+		[](StatusLog& log, Lines&) {
+			log.statusWritten("kitchen", {"connection", std::string("dialling"), std::string("connected")});
+		},
+		[](StatusLog& log, Lines&) {
+			log.statusWritten("kitchen", {"pairingCode", std::string(), std::string("123-456")});
+		},
+		[](StatusLog& log, Lines&) {
+			log.statusWritten("kitchen", {"connection", std::string("dialling"), std::string("connected"), 9});
+		},
+		[](StatusLog& log, Lines&) { log.statusReset("kitchen", {}); },
+		[](StatusLog& log, Lines&) {
+			log.eventRaised("kitchen", {.code = "pairing-failed",
+		                                .severity = ear::EventSeverity::warn,
+		                                .args = {{"reason", std::string("pairing-code-mismatch")}},
+		                                .msg = "pairing failed: pairing-code-mismatch"});
+		},
+		[](StatusLog& log, Lines&) {
+			const std::array fields{ear::DiagnosticField{"transitions", 14}, ear::DiagnosticField{"windowMs", 10000}};
+			log.nodeDiagnostic("kitchen", said("ear.status-flapping", "connection flapping: 14 changes in 10s", fields,
+		                                       "connection", true, 2));
+		},
 		[](StatusLog& log, Lines&) { log.stopped(); },
 	};
 }
@@ -465,7 +486,7 @@ TEST_CASE("Every kind the fixture shows is made, and each record is one line", "
 	for (const Json& entry : records) kinds.insert(entry["record"]["kind"].get<std::string>());
 	CHECK(kinds == std::set<std::string>{"engine", "control", "node", "note", "route", "graph-file",
 	                                     "graph-file-written", "graph-file-write-failed", "log", "exit", "diagnostic",
-	                                     "action"});
+	                                     "action", "status", "event"});
 	Lines lines;
 	StatusLog log(lines, &fixedTime, &pacedTime);
 	for (const auto& call : fixtureCalls()) call(log, lines);

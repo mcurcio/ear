@@ -35,6 +35,8 @@ UTF-8 becomes U+FFFD.
 | `control` | `address`, `port` | `control listening on <address>:<port>` |
 | `node` | `node`, `state`, `phase`, and by case below | below |
 | `note` | `node`, `text` | `node <name> says <text>` |
+| `status` | `node`, `field`, `from`, `to`, `heldBack`?; or `node`, `reset` | below |
+| `event` | `node`, `code`, `severity`, `args` | `node <name> <the event's sentence>` |
 | `route` | `from`, `to`, `status`, `detail`? | `route <node>:<port> -> <node>:<port> pending\|linked\|refused[: <detail>]` |
 | `graph-file` | `cause`, `version`, `running`, `diagnostics`, `refused`?, `droppedEdits`, `pendingRestart`, `writeFailed`? | below |
 | `graph-file-written` | `version` | `graph-file written <version>` |
@@ -95,6 +97,33 @@ state. A type's texts are its own; the `sendspin` node's are listed in
 [node-types.md](node-types.md#notes). Notes reach only standard output, not the control port or the
 editor.
 
+### `status`
+
+A node's status field changed ([architecture.md](architecture.md#status-and-events)): `from` is
+the value the field's last record wrote (its initial value before any), `to` the view's; each is
+`null` when unknown, else a flag, a number or a text (a choice's value is its text).
+
+```
+node <name> <field> <from> -> <to>
+node <name> <field> now <to> (<k> changes held back)
+node <name> status reset
+```
+
+In `msg` a text is quoted when it is empty or holds a space (`node kitchen pairingCode "" ->
+123-456`), and unknown is `unknown`. Records are paced per node and field
+([architecture.md](architecture.md#rates-and-bounds)): 32 at once, then one a second; once the pace
+holds a change back, a **trailing** record with `heldBack`, the count, writes the view's value at
+most 1 s after the last held change, so the last record of each field always matches the view.
+When a configuration closes, fails to start or is leaked, one record with `reset: true` (and no
+`field`) says every field is back at its initial value, after that configuration's last records.
+
+### `event`
+
+Something a node says happened ([writing-a-node-type.md](writing-a-node-type.md#events)): its
+`code`, `severity` (`info`, `warn`, `error`) and `args` by name, and `msg` its sentence with each
+place filled. Paced per node: 32 at once, then one a second, those held back counted in
+`ear.events-dropped`.
+
 ### `graph-file`
 
 One record per change to the graph file, before the node and route records it causes, carrying every
@@ -136,7 +165,7 @@ The framework's own observations. With a node, each is kept on the node per **co
 the node's life, a restart included, and the record carries `subject` (when there is one), `active`
 and `count` after `code`:
 
-- A **condition** code (`ear.claim-wait`) is written `active: true` when it begins and again
+- A **condition** code (`ear.claim-wait`, `ear.status-flapping`) is written `active: true` when it begins and again
   `active: false`, with the same code and subject, when it ends; `count` is how many times it
   became active.
 - Every other code is an **observation**: always `active: false`, `count` how many times the node
@@ -155,6 +184,9 @@ and `count` after `code`:
 | `ear.barrier-overdue` | `ms` | A drive or silence posted to the data loop did not complete within 5 s; the configuration and block are leaked |
 | `ear.hook-slow` | `ms` | A hook (`configure`, `start` or `stop`, its subject and named in `detail`) ran past 20 ms on the main loop; once per node and hook |
 | `ear.loop-slow` | `ms` | One of the node's strand loops (its subject) ran one handler past 100 ms (`detail`: `loop <name> ran one handler for <ms> ms`); once per loop and configuration ([writing-a-node-type.md](writing-a-node-type.md#loops)) |
+| `ear.status-flapping` | `transitions`, `windowMs` | A condition, its subject a status field: the field changed more than its `flapsAbove` times (`transitions`) within `windowMs`; active when it crosses, said again at most once a window while it stays above, inactive once a whole window passed with it at or below ([architecture.md](architecture.md#rates-and-bounds)) |
+| `ear.events-dropped` | `heldBack` | The node's events held back by its event pace since the last such record; at most once a second |
+| `ear.records-dropped` | `count` | Subject `status`: status records held back by a field's pace (a trailing record follows); subject `queue`: records a configuration's full queue had no room for. At most once a second per subject |
 | `ear.loop-source-left` | `sources` | A loop's state (the loop its subject) left timers or watches armed when its configuration closed, a type's bug: its loop cancelled them (`detail`: `<k> sources were still armed on loop <name> when the node's configuration closed`) |
 | `ear.internal-error` | `callback` | Written by its own path, so neither kept nor carrying `subject`, `active` or `count`: ear's own bug in one of the node's adapters, caught: `callback` names the callback or adapter call that threw (`FilterPortBlock::onStateChanged`, `SinkAdapter::make`), `detail` reads `<callback> threw[ during <where>]: <what>`. The node's `failed lost` record follows, unless the node is already being stopped, restarted or removed (the fault is then dropped with the rest of its teardown); the rest of the graph runs on. Said once per callback owner (a block, a companion's lifecycle, body or link), however often its callbacks throw |
 | `ear.node-missed-cycles` | `missed`, `overruns`, `totalMissed`, `totalOverruns` | Likewise neither kept nor carrying the three, since the node's `counters` already say it: the node's block missed cycles the driver did not cut (it was not scheduled), or its own work overran a cycle: `missed` and `overruns` since its last such record, the totals since it was added ([engine.md](engine.md#counters)). Once its misses held still for a beat, at most once per 10 s per node, and at once as the node goes ([engine.md](engine.md#reporting-the-counters)) |

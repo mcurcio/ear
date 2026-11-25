@@ -44,6 +44,10 @@ using PaceClock = std::function<std::chrono::steady_clock::time_point()>;
 ///                       then at most once per 10 s while it changes; each with "phase", and "cause", "failure",
 ///                       "waitingFor" or "droppedFrames" as it has them)
 ///   note                node <n> says <text>
+///   status              node <n> <field> <from> -> <to> | node <n> <field> now <to> (<k> changes held back)
+///                       | node <n> status reset   (docs/output-records.md#status: a field's change as NodeHost paces
+///                       it, its trailing record with "heldBack", a configuration's reset with "reset": true)
+///   event               node <n> <the event's sentence, filled>   ("code", "severity", "args")
 ///   route               route <a>:<p> -> <b>:<q> pending|linked|refused[: <detail>]
 ///   graph-file          one record per change, every diagnostic in it; msg is its lines, joined by newlines:
 ///                         graph-file <edit|disk|write> <version> running=<version|none>
@@ -86,6 +90,7 @@ class StatusLog final : public NodeHealthListener,
 						public RouteStatusListener,
 						public GraphFileListener,
 						public NodeDiagnosticListener,
+						public NodeStatusListener,
 						public EngineDiagnosticListener,
 						public ActionListener,
 						public InternalErrorListener,
@@ -103,6 +108,13 @@ public:
 	void supersededGone(const NodeName& node, std::uint64_t droppedFrames) override;
 	void nodeSays(const NodeName& node, const std::string& text) override;
 	void nodeDiagnostic(const NodeName& node, const NodeDiagnostic& diagnostic) override;
+	/// A node's status records and events (docs/output-records.md#status, docs/output-records.md#event), as NodeHost
+	/// paces them; every node's, a superseded one's included.
+	void statusWritten(const NodeName& node, const StatusWrite& write) override;
+	void statusReset(const NodeName& node, std::span<const FieldValue> fields) override;
+	void eventRaised(const NodeName& node, const RaisedEvent& event) override;
+	/// Standard output hears every node, as its health listener does.
+	bool hearsSuperseded() const noexcept override { return true; }
 	void engineDiagnostic(const EngineDiagnostic& diagnostic) override;
 	void routeChanged(const RouteStatus& status) override;
 	void graphFileChanged(const GraphFileChanged& change) override;
