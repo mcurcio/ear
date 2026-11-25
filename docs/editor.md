@@ -168,13 +168,38 @@ and the scroll. The inspector and the drawer never move each other's content.
 
 ### Narrow windows
 
-Below 900 px the inspector is a sheet over the canvas's right edge. It opens when something is
+Below 760 px the inspector is a sheet over the canvas's right edge. It opens when something is
 selected or from the top bar's Inspector button, and closes on Escape (after the palette and the shortcut sheet,
-before the selection: [Shortcuts](#shortcuts)) or a click on the canvas.
-The drawer keeps its place. Below 600 px the top bar drops the wordmark, the theme switch shows only its icon (its
-label still names the choice) and the `ear.conf` toggle its glyph, so its buttons fit beside the connection pill at
-phone width. `sizes.ts` holds the bounds and the breakpoint, and `sizes.test.ts`
-holds `editor.css` to them.
+before the selection: [Shortcuts](#shortcuts)) or a click on the canvas. 760 rather than a laptop-sized width keeps
+it docked on a foldable phone unfolded (about 890 px wide) and on a tablet in portrait, where the canvas is still
+480 px wide. The drawer keeps its place. Below 600 px (a phone in portrait) the sheet rises from the bottom instead,
+at most 62 % of the workspace and scrolling inside, so the graph stays in sight above it; and the top bar drops the
+wordmark and the engine chip (the Graph subject holds the same facts), the theme switch shows only its icon (its
+label still names the choice) and the `ear.conf` toggle its glyph, so its buttons fit beside the connection pill.
+`sizes.ts` holds the bounds and the breakpoint, and `sizes.test.ts` holds `editor.css` to them.
+
+### Phones and touch
+
+The editor is built to work on a phone, in particular a foldable one whose two screens are about 466 × 678 px
+folded (portrait: the bottom sheet above) and 890 × 626 px unfolded (landscape: the inspector docked). Folding or
+unfolding is a resize, so the layout follows it and the view fits itself again unless the person moved it
+([The canvas](#the-canvas)). For a finger (`(hover: none) and (pointer: coarse)` in `editor.css`):
+
+- **No zoom on focus.** Every text field, the code boxes included, is 16 px, as iOS Safari zooms the page when a
+  smaller field takes the focus. The code size is one token, `--code-size`, shared by the textarea, its highlighted
+  copy and the drawer's gutter, so their glyphs still line up ([Highlighting](#highlighting)).
+- **Targets a finger finds.** The top bar's buttons are at least 36 px tall, the canvas tools and the lifecycle bar
+  40 px. A port handle's hit area is as tall as its port row (so a neighbouring port stays its own) and reaches
+  16 px further out each side, so a wire starts from a fingertip; React Flow's pan and pinch zoom work as they do.
+- **No keyboard.** The palette button shows a search icon instead of its key. The palette, the inspector's buttons
+  and the drawer's Save do everything a shortcut does.
+- **The whole screen.** The page asks for `viewport-fit=cover`; the shell fills `100dvh`, so Safari's toolbar never
+  covers the drawer, and pads its top bar, sides and drawer by the safe-area insets, so a notch, the rounded corners
+  and the home indicator never cover a control.
+
+Hover tooltips (a meter's dBFS, a badge's drop count) do not exist on a touch screen; the inspector shows the
+selected node's or route's facts in words instead. Checked in Chromium's touch emulation at both sizes, not yet on
+the device ([Developing it](#developing-it)).
 
 The sizes, the drawer's open state and the minimap are kept per ear ([What the browser keeps](#what-the-browser-keeps)).
 
@@ -680,8 +705,8 @@ against the same fixtures the server is tested with.
 measured by the build before and after; the shell's design estimated under 15 KB (5 KB gzipped), so it is slightly
 over. The whole shell, from tokens to this, grew the script from 486.58 KB to 531.61 KB (155.24 KB to 169.68 KB
 gzipped) and the styles from 21.25 KB to 37.57 KB; the view's own fit, the segmented lifecycle bar and the theme
-icon, then the palette's and the narrow top bar's fixes, brought them to 532.73 KB (170.15 KB gzipped) and
-38.18 KB. No package was added for any of it.
+icon, the palette's and the narrow top bar's fixes, and then phones and touch, brought them to 533.15 KB (170.25 KB
+gzipped) and 39.17 KB. No package was added for any of it.
 
 React Flow (`@xyflow/react`) was chosen over Rete.js (its own editor framework) and LiteGraph
 (drawn on a canvas, which makes per-port meters custom work).

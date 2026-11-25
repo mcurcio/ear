@@ -79,8 +79,8 @@ describe("editor.css", () => {
   });
 
   it("makes the inspector a sheet below the narrow width", () => {
-    expect(narrowWidth).toBe(900);
-    expect(narrowQuery).toBe("(max-width: 899px)");
+    expect(narrowWidth).toBe(760);
+    expect(narrowQuery).toBe("(max-width: 759px)");
     expect(css).toContain(`@media ${narrowQuery}`);
   });
 });

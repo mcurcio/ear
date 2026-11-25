@@ -13,12 +13,29 @@ body,
   color: var(--text);
 }
 
+/* The code boxes' size, shared by the textarea, its highlighted copy and the drawer's gutter so their glyphs line up;
+   16 px on a touch screen (docs/editor.md#phones-and-touch), where iOS Safari zooms the page on focusing a smaller text
+   field. */
+:root {
+  --code-size: 12px;
+}
+
+/* A phone's screen: the shell fills the visible viewport (dvh, so Safari's toolbar never covers the drawer), and with
+   viewport-fit=cover it keeps its controls inside the safe area (a notch, rounded corners, the home indicator) while
+   its backgrounds run to the edges (docs/editor.md#phones-and-touch). */
+#root {
+  height: 100dvh;
+}
+
 /* The shell: the top bar, the workspace (the canvas and the inspector) and the drawer, which never move each other's
    content. */
 .app {
   display: grid;
-  grid-template-rows: 44px minmax(0, 1fr) auto;
+  grid-template-rows: calc(44px + env(safe-area-inset-top, 0px)) minmax(0, 1fr) auto;
   height: 100%;
+  box-sizing: border-box;
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
 }
 
 /* React Flow's own variables point at the tokens, so its canvas, background and minimap follow the theme; its
@@ -61,7 +78,7 @@ body,
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 0 12px;
+  padding: env(safe-area-inset-top, 0px) 12px 0;
   border-bottom: 1px solid var(--line);
   background: var(--raised);
   min-width: 0;
@@ -658,6 +675,7 @@ body,
   border-top: 1px solid var(--line);
   background: var(--raised);
   min-width: 0;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 .drawer-header {
@@ -1392,7 +1410,7 @@ body,
   border: 1px solid var(--knobly-border);
   border-radius: var(--radius-control);
   font-family: ui-monospace, monospace;
-  font-size: 12px;
+  font-size: var(--code-size);
   line-height: 1.4;
   letter-spacing: normal;
   tab-size: 8;
@@ -1487,7 +1505,7 @@ body,
   pointer-events: none;
   text-align: right;
   font-family: ui-monospace, monospace;
-  font-size: 12px;
+  font-size: var(--code-size);
   line-height: 1.4;
   white-space: pre;
   color: var(--muted);
@@ -1543,7 +1561,7 @@ body,
 
 /* Narrow windows (docs/editor.md#narrow-windows; sizes.ts's narrowQuery, which sizes.test.ts holds equal): the
    inspector is a sheet over the canvas's right edge, shown while open, and is not resized. */
-@media (max-width: 899px) {
+@media (max-width: 759px) {
   .inspector {
     position: absolute;
     top: 0;
@@ -1594,5 +1612,81 @@ body,
 @media (forced-colors: active) {
   .palette-option[aria-selected="true"] {
     outline: 2px solid Highlight;
+  }
+}
+
+/* Phones and touch (docs/editor.md#phones-and-touch). A coarse pointer with no hover is a finger: text fields at 16 px
+   (iOS Safari zooms the page on focusing a smaller one), controls at least 40 px tall, port handles with a hit area a
+   finger can find (as tall as their port row, so a row's neighbour stays its own, and wide outward), and the palette
+   button a search icon, as there is no keyboard to press its key on. */
+.palette-icon {
+  display: none;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  :root {
+    --code-size: 16px;
+  }
+
+  .app input,
+  .app select,
+  .app textarea {
+    font-size: 16px;
+  }
+
+  .topbar button {
+    min-height: 36px;
+  }
+
+  .palette-icon {
+    display: block;
+  }
+
+  .palette-key {
+    display: none;
+  }
+
+  .app .canvas-tools button {
+    width: 40px;
+    height: 40px;
+  }
+
+  .lifecycle-buttons button {
+    height: 40px;
+  }
+
+  .ear-node .react-flow__handle::before {
+    inset: -6px -16px;
+  }
+
+  .palette-option {
+    padding: 10px 8px;
+  }
+}
+
+/* A phone in portrait (below 600 px): the inspector is a sheet from the bottom, over the canvas's lower part, so the
+   graph stays in sight above it; the engine chip gives way (the Graph subject holds the same facts). */
+@media (max-width: 599px) {
+  .topbar .engine-chip {
+    display: none;
+  }
+
+  .inspector {
+    top: auto;
+    left: 0;
+    width: auto;
+    max-height: 62%;
+    border-left: none;
+    border-top: 1px solid var(--line);
+    border-radius: var(--radius-box) var(--radius-box) 0 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* The sheet has only a max height, so its body scrolls as a flex child, not by a height of 100%. */
+  .inspector-body {
+    height: auto;
+    flex: 1 1 auto;
+    min-height: 0;
   }
 }

@@ -4,8 +4,11 @@
 // titles say.
 import { Panel, useReactFlow } from "@xyflow/react";
 
-/** Fit's padding, the same for the button, F and the palette's Fit view. */
-export const fitPadding = 0.1;
+/**
+ * Fit's padding, the same for the view's own fit, the button, F and the palette's Fit view: a tenth of the canvas on
+ * three sides, and at the bottom room for this tool group (at its tallest, on a touch screen) so it never covers a box.
+ */
+export const fitPadding = { top: "10%", right: "10%", bottom: "76px", left: "10%" } as const;
 
 export function CanvasTools({
   minimap,

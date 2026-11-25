@@ -52,6 +52,9 @@ export function keyed(value: number, key: string, growKey: GrowKey, bounds: Boun
   return undefined;
 }
 
-/** Below this width the inspector is a sheet over the canvas (editor.css's @media holds the same). */
-export const narrowWidth = 900;
+/**
+ * Below this width the inspector is a sheet over the canvas (editor.css's @media holds the same). 760 keeps it docked
+ * on a foldable phone unfolded (about 890 px wide) and on a tablet in portrait, with the canvas still 480 px wide.
+ */
+export const narrowWidth = 760;
 export const narrowQuery = `(max-width: ${narrowWidth - 1}px)`;

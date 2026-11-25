@@ -66,7 +66,12 @@ export function TopBar({
             aria-keyshortcuts={paletteLabel.startsWith("⌘") ? "Meta+K" : "Control+K"}
             onClick={onPalette}
           >
-            {paletteLabel}
+            {/* On a touch screen, with no keyboard to press it on, the key gives way to a search icon (editor.css). */}
+            <svg className="palette-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+              <circle cx="7" cy="7" r="4.75" fill="none" stroke="currentColor" strokeWidth="1.5" />
+              <path d="M10.5 10.5 14 14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+            <span className="palette-key">{paletteLabel}</span>
           </button>
         )}
         <ThemeSwitch choice={theme} onChoose={onTheme} />
