@@ -1,6 +1,6 @@
 # Changes in place and reshape: slice 3d of the node framework
 
-Status: design, not built. Slice 3d follows slice 3c (built: it swaps claims and posts to loops, both
+Status: design; steps 1 and 2 of section 11 built (section 2 says what and where). Slice 3d follows slice 3c (built: it swaps claims and posts to loops, both
 3c's, `docs/writing-a-node-type.md#claims`, `#loops`) and comes before slice 6 (`control-plane.md`: a retune is one of the outcomes this slice makes). Its PipeWire
 spike (S4) is run: a reshape goes ahead as designed (7.4). It changes the audio path: holds, code swaps and reshapes. The built lifecycle (states,
 operations, teardown, fades, barriers and their bounds) is described in `docs/architecture.md` and
@@ -25,52 +25,48 @@ The R numbers are the register the node framework's design used.
 
 ## 2. What is built, and what this slice changes
 
-As built (3a, [V]): the change version's signature is checked at compile time and ignored (the owner, 2026-11-09:
-"Accept, ignore until 3d"); `ChangeOf<spec>` is declared for the signature only and `Changed::applied()` and
-`restart(reason)` have trivial bodies (`lifecycle.hpp`). Every change of settings restarts the node
-(`NodeOutcome { restart, disable, enable, stored }`, `desired_graph.hpp`), shown as `stopping` with cause `restarting`
-(`settings`, with the changed keys) and then `configuring`. A change of ports is a replace: the desired graph tells
-`nodeReplacing` then `nodeReplaced` with `NodeChange::portCaused`, and `NodeHost` carries the node's stop, its dropped
-frames and one health stream into the successor, so a client sees `node.removed` and `node.added` and one `stopping`
-(`restarting`). `PortBlock` has `drive`, `fadeOut`, `settle`, `takenAt`, `blockId` and `carryLatency`;
-no per-bank hold, no reshape. The fade of every output the code writes before every planned silence, and the fade-in
-at every drive, are built.
+Built (steps 1 and 2 of section 11), described where they live and not repeated here:
 
-This slice adds:
+- the `.inPlace()` mark and the plan's `reconfigure` outcome
+  ([`docs/writing-a-node-type.md#settings-one-table-of-typed-rows`](../writing-a-node-type.md#settings-one-table-of-typed-rows),
+  [`docs/architecture.md#restarts-and-changes-of-settings`](../architecture.md#restarts-and-changes-of-settings));
+- the pure machines' change states, and NodeHost's change in place: the change version through `ChangeOf`, `Changed`,
+  staged posts, holds and their acknowledgement, a new code swapped at one position, the commit point, the deadline and
+  the spec's `.lifecycle`, supersession, the fallback with its reasons and its diagnostics
+  ([`docs/architecture.md#changes-in-place`](../architecture.md#changes-in-place),
+  [`docs/writing-a-node-type.md#the-change-version`](../writing-a-node-type.md#the-change-version));
+- `PortBlock::hold`, `release` and `swap` ([`docs/engine.md#holds-and-swaps`](../engine.md#holds-and-swaps));
+- an RTP receiver replaced in a change, always break-first behind a framework hold, its claims judged first and a key no
+  longer asked released per key at the commit point
+  ([`docs/writing-a-node-type.md#engine-companions`](../writing-a-node-type.md#engine-companions));
+- `rtp` in place ([`docs/node-types.md#rtp`](../node-types.md#rtp));
+- on the wire: `reconfiguring` with `keys` and `next`, the `fell-back` cause, `applied: "reconfigure"`, the
+  standard-output records and the three diagnostics ([`docs/control-port.md#node-health`](../control-port.md#node-health),
+  [`docs/output-records.md#node`](../output-records.md#node)).
 
-- rows marked `.inPlace()`, and the plan's outcomes `reconfigure`, `reshape` and `unchanged` (the state
-  `reconfiguring` and the pure machines' change states are built:
-  [`docs/architecture.md#changes-in-place`](../architecture.md#changes-in-place));
-- the change version of `configure` with `ChangeOf`, `Changed`, `whenReady` and `ConfigureDone`, staged posts, and
-  the spec's `.lifecycle`;
-- holds with fades and their acknowledgement, make-before-break with retiring resources, break-first behind a
-  framework hold, claims swapped, the code and its layout swapped, the deadline, supersession and the fallback restart;
-- `SinkControl::pause` and `resume`;
-- `PortBlock::reshape` (if the spike passes), turning the port-caused replace into a reshape;
-- `rtp` and `sendspin` changing in place;
-- on the wire (feature `node.set`, `reshape`, `dryRun`): `node.set`, `applied` with the new outcomes, `inPlace`,
-  `ports`, `dryRun`, `dropRoutes`, `ports-in-use`, `keys` and `next` on `node.state`, the `fell-back` cause, three
-  diagnostics, the `reconfiguring` record.
+This page still designs:
+
+- the plan's outcomes `reshape` and `unchanged`, and a change of ports with the same type no longer a replace (3, 7);
+- `whenReady` and `ConfigureDone`, `cx.claim` and `cx.unclaim` in a change, recordings, sinks, sources and cards
+  replaced in a change (4, 6);
+- make-before-break: a replacement made beside the one it replaces, claims swapped (both held, the old released last),
+  and companions' `retiring: true` (5, 6.1); every replacement is break-first today, `rtp`'s on a new port included;
+- `SinkControl::pause` and `resume` (6.4);
+- `PortBlock::reshape` (7);
+- `sendspin` in place (6.6);
+- on the wire: features `node.set`, `reshape` and `dryRun`, `dropRoutes`, `ports-in-use`, and the editor (8).
 
 The transitions this page names are the framework's numbering: **T9** (`running` or `stopped` → `reconfiguring`, the
 change version called), **T10** (the commit point: back to `running` or `stopped`), **T11** (the fallback: `reconfiguring`
 → `stopping`, cause `restarting`, then a restart with the newest settings), **T18** (a newer change supersedes one
-before its commit point). The pure machines carry all four as built
-([`docs/architecture.md#changes-in-place`](../architecture.md#changes-in-place): the configuration machine's
-`changing` and `committing`, and the node aggregate's rules for what arrives mid-change); what this page still designs
-is NodeHost's and the types' side of them.
+before its commit point), all built.
 
 ## 3. What a type declares, and what the plan decides
 
-Every setting row is restart-only by default. A row the type can take while the node runs is marked in its table:
-
-```cpp
-inline constexpr auto portRow = setting::required("port", setting::number(1, 65535)).inPlace();
-```
-
-`.live(...)` (slice 6) implies `.inPlace()`. The marks are data in the table, so `plan` reads them and the type schema
-(slice 5) carries them. `.shapesPorts()` (slice 5) is only the schema's promise; the plan compares the ports `ports()`
-makes. Every row's mark is the one home of "how a change to it applies":
+Built: the `.inPlace()` mark and `reconfigure`
+([`docs/writing-a-node-type.md#settings-one-table-of-typed-rows`](../writing-a-node-type.md#settings-one-table-of-typed-rows)).
+`.live(...)` (slice 6) implies `.inPlace()`. `.shapesPorts()` (slice 5) is only the schema's promise; the plan compares
+the ports `ports()` makes. The outcomes, the built and those still designed:
 
 | Outcome | When | What the node does | Its state |
 |---|---|---|---|
@@ -98,9 +94,13 @@ graph though the same file boots fine, against "hand edits win".
 
 ## 4. The change version of `configure`
 
-```cpp
-// ear/core/lifecycle.hpp: ChangeOf<Spec> defined (declared for the signature in 3a)
+Built: `ChangeOf`'s `format`, `node`, `applied()`, `applied(code)`, `post` (staged), `attach(bank, RtpReceiverShape)`
+(break-first), `declareLatency`, `hold`, `holdAll` and `release`; `Changed::restart`; `Lifecycle`; the rules a compiler
+cannot check, each failing the node `lost`; the new code's `prepare` beside the old code
+([`docs/writing-a-node-type.md#the-change-version`](../writing-a-node-type.md#the-change-version)). Still designed, added
+to `ChangeOf`:
 
+```cpp
 /// An in-place change's token: move-only; done() or fail(detail) once, from any thread. Destroyed without either, it
 /// fails the change ("<node>: the change was dropped"). After teardown began, both are ignored.
 class ConfigureDone {
@@ -108,45 +108,15 @@ public:
 	void done() &&;
 	void fail(std::string detail) &&;
 };
-/// What configure answers for a change. The applied answer is made only by the context (cx.applied, below), as
-/// creation's is, and a "later" answer only by whenReady, so a token and a later answer cannot disagree. (Built with
-/// trivial bodies today, `Changed::applied()` among them, which this slice replaces by cx.applied.)
-class Changed {
-public:
-	static Changed restart(std::string reason);       // the type cannot take this change in place after all (T11)
-};
-/// The spec's lifecycle settings (TypeSpec's `.lifecycle`, after `.stores` and `.loops`). Refused at compile time below 1 s
-/// or above 60 s. The type schema carries it as `reconfigureMs`.
-struct Lifecycle { std::chrono::milliseconds reconfigureDeadline = std::chrono::seconds(10); };
-
-/// configure for a change (T9): replacements, holds, a swap, staged posts, a continuation. Valid only inside the
-/// configure it is handed to.
 template <const auto& Spec> class ChangeOf {
 public:
-	AudioFormat format() const;
-	const NodeName& node() const;
-	/// The answer (as creation's cx.applied, docs/writing-a-node-type.md#configure-and-createof): the commit point
-	/// comes once every replacement is ready. With no code the node's code stays; with one it is always a swap,
-	/// installed with its layout at the commit point, and an in-place reshape, where the Io layout changed, must give
-	/// one. It takes no loop's state: a loop's state lives across a change (6.3).
-	Changed applied();
-	template <class Code> Changed applied(Code code);
-	/// Staged until the commit point; destroyed unrun on supersession (T18) or a fallback (T11).
-	template <class Loop> void post(Loop, std::move_only_function<void(typename Loop::State&)> work);
-	// Replacements, attached as on creation (one call, the kind its shape's): each replaces what the node holds for
-	// the same bank or key, make before break (5.3).
+	// Replacements of the other kinds, made before break (5.3).
 	template <class Bank> void attach(Bank, SoundCardShape, Order = Order::makeFirst);
-	template <class Bank> void attach(Bank, RtpReceiverShape);         // the same port: break-first, by the framework
 	template <class Bank> SourceWriter& attach(Bank, SourceShape);
 	template <class Bank> SinkControl& attach(Bank, SinkShape, /* its consumer, in creation's three forms */);   // 6.4
 	void claim(claim::TcpListen);   void claim(claim::Udp);            // judged when the hook returns (6.1)
 	void unclaim(claim::TcpListen); void unclaim(claim::Udp);          // released at the commit point, last
 	int recording(RecordingRequest);                                   // a replacement, made before break
-	template <class From, class To> void declareLatency(From, To, Latency);
-	// Holds: from the next cycle, after a fade; released with a fade at the commit point.
-	template <class... Banks> void hold(Banks...);      // routable output banks of Spec (static check)
-	void holdAll();
-	template <class... Banks> void release(Banks...);   // earlier than the end, if the node wants
 	/// Once every acquisition this call made is ready (claims granted and probed, recordings open, replacement companions
 	/// running and linked), posts work(state, token) to `loop` as the node's own work; the one later answer.
 	template <class Loop>
@@ -154,22 +124,8 @@ public:
 };
 ```
 
-The type's class gains, optionally, `Changed configure(ChangeOf<spec>&, const CheckedOf<spec>& old, const
-CheckedOf<spec>& now)` (its signature already checked, as built). **A call the mode does not offer does not compile**
-(R33): `CreateOf` has no holds, no `whenReady` and no `unclaim` (built), `ChangeOf` has no `state`, `store` or
-`executor` (a loop's state lives across a change and already holds them), and `Configured` has no `restart` nor
-`Changed` a `failed`.
-
-**The rules a compiler cannot check**, each failing the node with the rule's text, as every built context rule does
-(the built framework records the broken rule on the node and fails it at the hook's return, even when the type caught
-the throw): a change must give the code in its answer when the ports changed (at most once is the answer's shape, as
-on creation); `unclaim` names a key the node holds; `whenReady` is called at most once, and its `Changed` is what `configure` returns; a context is used only
-inside its `configure`. A type bug found in a change fails the node `lost` (it had rested), never takes ear down.
-
-**Staged posts** (D-R17). Work posted with `cx.post` is staged until the commit point: released there, in the order
-posted, after the continuation's `done()` (if any), and destroyed unrun if the change is superseded (T18) or falls back
-(T11), as an unposted `whenReady` continuation is. So nothing a superseded or fallen-back change asked of the node's
-threads has run, and supersession leaves the applied configuration as it was.
+The rules still to build: `unclaim` names a key the node holds; `whenReady` is called at most once, and its `Changed` is
+what `configure` returns. Staged posts are released after the continuation's `done()`, once a continuation exists.
 
 **`whenReady`** joins "act once the new acquisitions are ready" and "act on the node's own thread" (a hook holds no reference to a loop's state, so a post typed by the loop's handle is
 its only way there: [`docs/writing-a-node-type.md#loops`](../writing-a-node-type.md#loops)), so a
@@ -193,61 +149,28 @@ cursors) or anything the old code's `process` reads (D-R13).
 
 ## 5. What the framework does, in order
 
-1. **Calls the change version** on the main loop (T9). The node is `reconfiguring`. Its configuration still applies the
-   old settings; `now` is the change's target. A stopped node takes the change the same way, without audio: nothing is
-   driven, so holds and the code swap cost nothing.
-2. **Holds.** From the next cycle each held bank fades to zero over 5 ms and stays at zero (the block applies it after
-   the code and before metering, so the code needs no branch and the meters show the silence, R30). The data loop
-   acknowledges a hold in the cycle its fade reached zero (an atomic the block sets, a signal to the main loop, as the
-   built fade-out completes); every step that would break a held path waits for that acknowledgement, at most 100 ms
-   (the built fade bound: past it the step goes on, `ear.fade-unacknowledged`). "Null audio frames for a few seconds"
-   (R17) is a hold.
-3. **New acquisitions are readied beside the old ones**, in readiness order: claims first (a refusal ends the change,
-   T11), then files, then companions. Each old resource being replaced is marked **retiring** at once: its loss is a
-   diagnostic (`ear.retiring-lost`), never a failure of the node (a kept resource's loss still fails it). A replacement
-   engine companion is linked to the same inside bank as the one it replaces; two capture cards into one inside input
-   mix for a moment, which a hold covers [U: the port mixer loads, 13]. A replacement ring companion (a sink or a
-   source) is served by the block itself and swapped in the commit point's invoke (`docs/architecture.md#companions`), so two never
-   play into one bank.
-4. **The commit point** (T10), when the hook's work is done (`applied`, or the continuation's `done`) and every new
-   resource is ready: the staged posts are released to their loops; in one data-loop invoke (if the node is driving)
-   the new code, its layout and its ring companions' bindings are handed to the block, which applies them together
-   between two cycles, so a replaced sink takes the cycles before it and its replacement the cycles from it, and a
-   replaced source likewise (`docs/architecture.md#companions`): no chunk lost or doubled at the swap; the latency plan is carried; the old code released.
-   Then the retiring resources are released by the teardown's order for those resources only (a replaced source's
-   writer closed; replaced companions destroyed; replaced sinks drained to their own consumers and finished; replaced
-   recordings closed; `unclaim`ed claims released, last); then holds fade back in over 5 ms; the node is back in
-   `running` or `stopped`, and its applied settings are `now`. The loops and their states go on (no loop step).
-5. **Deadline**: 10 s from step 1 by default; a type may declare up to 60 s (`.lifecycle = Lifecycle{.reconfigureDeadline
-   = 30s}`). Past it, on a replacement refused or lost, or on the token's `fail(detail)`: T11, a restart with the new
-   settings, tearing the whole configuration down, old and new resources alike. A restart that then fails is a failed
-   start like any other. A failure never rolls back to the old settings: the desired graph committed the new ones, and
-   `ear.conf` holds them (D-B4).
-6. **One change at a time, never stuck behind one** (D-B6): a newer change before the commit point supersedes it (T18):
-   uncommitted replacements are released (their claims and companions go), an unposted continuation and every staged
-   post destroyed unrun, its token ignored, holds kept; then the newest settings are classified afresh against the
-   applied ones (a `reconfigure` calls the hook again with `old` the applied settings; a `restart` or `reshape` is
-   T11), and the deadline restarts. After the commit point a newer change, `stop` or `start` waits until T10 or T11.
-   `node.restart` ends a change at once, before or after the commit point (T11; a continuation already posted runs
-   first). A `stop`, a disable or a removal ends it before the commit point as a newer change would, and waits for it
-   after (D-A8).
-7. **Two nodes swapping ports in one edit** (`a` from 8928 to 8929, `b` the other way) cannot each hold both: each new
-   claim is held by the other node's current configuration, so it is refused, and both fall back to restarts; each
-   restart's claim then finds the other's old configuration going and waits for it (`docs/writing-a-node-type.md#claims`). Both
-   come back on their new ports, after a restart each.
+Built: the order (the change version, holds, the commit point, the deadline, supersession and what arrives
+mid-change: [`docs/architecture.md#changes-in-place`](../architecture.md#changes-in-place)). Still designed:
 
-**Break before make**, for a thing that cannot be held twice (one ALSA device opened twice; an RTP receiver on a port
-its node already binds): the old one is released before the new one is made. The framework first holds every public
-output bank the inside bank feeds through the pass-through (or, for a type's own code, every public output bank) and
-the inside output bank that feeds the companion being destroyed (a card's `to_card`, so the device is silent before it
-closes), waits for the acknowledgement, and only then destroys the old resource; so a break-first replacement fades to
-zero, stays silent, and fades back in, whether or not the type held anything. The type asks with `Order::breakFirst`
-where only it can know; the same-port receiver is the framework's own case (G22).
+- **New acquisitions readied beside the old ones**, in readiness order: claims first, then files, then companions, each
+  old resource marked retiring at once. A replacement engine companion linked to the same inside bank as the one it
+  replaces; two capture cards into one inside input mix for a moment, which a hold covers [U: the port mixer loads,
+  13]. A replacement ring companion (a sink or a source) served by the block itself and swapped in the commit point's
+  invoke (`docs/architecture.md#companions`), so two never play into one bank, a replaced sink taking the cycles before
+  the swap and its replacement those from it.
+- **At the commit point**, the retiring resources released by the teardown's order for those resources only (a
+  replaced source's writer closed; replaced companions destroyed; replaced sinks drained to their own consumers and
+  finished; replaced recordings closed; `unclaim`ed claims released, last), after the continuation's `done`.
+- **Two nodes swapping ports in one edit** (`a` from 8928 to 8929, `b` the other way) cannot each hold both: each new
+  claim is held by the other node's current configuration, so it is refused, and both fall back to restarts; each
+  restart's claim then finds the other's old configuration going and waits for it. Both come back on their new ports,
+  after a restart each.
 
-**What arrives mid-change** (with the built rules for every other phase): in `reconfiguring` before the commit point, a
-newer change supersedes (T18); `stop` or a removal ends it and then stops; a disable ends it and then disables; after
-the commit point each of these waits for T10 or T11, then applies; `node.restart` is T11 at once. A retune (slice 6)
-moves the slots at once in every phase and never waits for a change.
+**Break before make** is built for an RTP receiver, always
+([`docs/writing-a-node-type.md#engine-companions`](../writing-a-node-type.md#engine-companions)); still designed: a type
+asking for it with `Order::breakFirst` where only it can know (a card: one ALSA device opened twice), holding the inside
+output bank that feeds the companion being destroyed (a card's `to_card`), and every other replacement made before
+break.
 
 ## 6. The primitives in a change
 
@@ -305,18 +228,9 @@ samples `pausedFrames` beside the companion's drops.
 
 ### 6.5 `rtp` in place
 
-`rtp`'s `address`, `port`, `format`, `rate` and `latencyMs` are `.inPlace()`; `channels` makes its ports (a reshape,
-restart-only).
-
-```cpp
-Changed Rtp::configure(ChangeOf<spec>& cx, const Checked&, const Checked& now) {
-	cx.hold(stream);                                         // null audio until the new receiver runs
-	cx.attach(fromRtp, receiverFor(now, cx.format()));       // replaces it: a new port make-before-break (claims the new
-	                                                         // UDP port, releases the old at the end); the same port
-	                                                         // break-first, by the framework; it declares latencyMs
-	return cx.applied();                                     // no code: the pass-through stays, nothing is swapped
-}
-```
+Built ([`docs/node-types.md#rtp`](../node-types.md#rtp)), break-first on every port. With make-before-break (6.1) a new
+port would be claimed and its receiver made beside the old one, the old port released at the end; the same port stays
+break-first (G22). Since `rtp` holds `stream` across the switch, what is heard is the same either way.
 
 ### 6.6 `sendspin` in place
 
@@ -374,7 +288,7 @@ one already posted runs, and the goodbye behind it stops whichever client exists
 | `white` | — | no settings |
 | `file` | — | `path`: a new file is a new recording (a gapless switch is possible later) |
 | `card` | — | `card`: the same device cannot be opened twice, so break-first only, a restart in all but name; `playback`, `capture`: a reshape |
-| `rtp` | `address`, `port`, `format`, `rate`, `latencyMs` (6.5) | `channels`: a reshape |
+| `rtp` | `address`, `port`, `format`, `rate`, `latencyMs` (built: 6.5) | `channels`: a reshape |
 | `sendspin` | `name`, `port`, `server` (6.6) | — |
 
 No built-in type reshapes in place; this slice proves an in-place reshape with a test type in `ear_core_tests` and the
@@ -556,60 +470,56 @@ the code and before metering.
 
 ## 9. What it changes in the built system
 
+What steps 1 and 2 changed is built (section 2). What is left:
+
 | Built piece | Change |
 |---|---|
-| `NodeOutcome`, `NodeChange`, `DesiredNodeListener` (`desired_graph.hpp`) | outcomes `reconfigure`, `reshape`, `unchanged`; `NodeChange` gains the old and new ports and `inPlace`; a change of ports with the same type is told by `nodeChanged`, not as a replace; `portCaused` goes |
-| `DesiredGraph::plan` | reads each changed key's mark; a dry run is `plan` without `commit` (as built) |
-| `ConfigurationMachine`, `NodeAggregate` (`node_lifecycle.hpp`) | built: [`docs/architecture.md#changes-in-place`](../architecture.md#changes-in-place) |
-| `lifecycle.hpp` | `ChangeOf` defined; `Changed` with real bodies; `ConfigureDone`; `Lifecycle`; `SinkControl` |
-| `NodeHost` | the in-place path: holds and their acknowledgement, retiring resources, the commit point, the deadline, supersession, the fallback; the block's reshape between teardown and `configure`; claims swapped (the claim registry, `docs/writing-a-node-type.md#claims`) |
-| `PortBlock`, `FilterPortBlocks` | `hold(banks)`, `release(banks)` with acknowledgement; `reshape(next)` with layouts swapped whole; levels re-registered |
+| `NodeOutcome`, `NodeChange`, `DesiredNodeListener` (`desired_graph.hpp`) | outcomes `reshape`, `unchanged`; `NodeChange` gains the old and new ports and `inPlace`; a change of ports with the same type is told by `nodeChanged`, not as a replace; `portCaused` goes |
+| `lifecycle.hpp` | `ConfigureDone`, `whenReady`, `claim` and `unclaim` in a change, the other kinds' replacements; `SinkControl` |
+| `NodeHost` | make-before-break with retiring resources and claims swapped; the continuation; the block's reshape between teardown and `configure` |
+| `PortBlock`, `FilterPortBlocks` | `reshape(next)` with layouts swapped whole; levels re-registered |
 | The sink companion | `pause` and `resume` on its thread |
-| `rtp`, `sendspin` | rows marked `.inPlace()`; their change versions |
-| `TypeHarness` | `change()` returns the outcome and steps an in-place change (holds, replacements, the continuation on `runLoops()`, the commit); `held(bank)`, `paused(bank)`, `pausedFrames(bank)`; `state()` stays `reconfiguring` until the token's `done` and every replacement is ready |
+| `sendspin` | rows marked `.inPlace()`; its change version |
+| `TypeHarness` | the continuation on `runLoops()`; `paused(bank)`, `pausedFrames(bank)` |
 | `ear_config` | `node.set`'s merge; `dropRoutes` and `ports-in-use` in the candidate; dry runs posted and dropped |
-| `ear_control`, `web/` | features `node.set`, `reshape`, `dryRun`; `keys`, `next`, the new causes; 8.3's editor |
+| `ear_control`, `web/` | features `node.set`, `reshape`, `dryRun`; 8.3's editor beyond the `reconfiguring` style and line (built) |
 
 ## 10. Tests
 
-- **`ear_core_tests`**: in-place, fallback (each `reason`), deadline, supersession (a newer change before and after the
-  commit point; `restart` and `stop` during a change), a retiring resource lost, holds acknowledged before a break,
-  break-first behind a framework hold, the code swap (a code swap at one position, a sink and its replacement splitting
-  the cycles exactly), staged posts destroyed on supersession and fallback, a continuation run only once every
-  acquisition is ready and on the loop named, a token dropped failing the change, a reshape in place by a test type
-  (channels 1 and 2 keep playing); claims swapped make-before-break (both held, the old released last), a refused new
-  claim destroying the continuation and restarting, two nodes swapping ports both restarting and running, a same-key
-  replacement granted without a probe and made break-first; `keys` and `next` on `node.state`.
-- **`ear_pipewire_tests`**: S4 (built: 7.4); reshape (a port added and removed beside a running ramp, links of surviving ports kept,
-  the layout swapped whole, the transitional layout zero-filling new outputs); holds (the fade, then zeros, then the
-  fade in); a reshape's new port metered from its first window; two sources into one inside input mixed (the port
-  mixer loads).
+Built: what `docs/testing.md` lists for changes in place. Still to write with what they test:
+
+- **`ear_core_tests`**: the code swap with a sink and its replacement splitting the cycles exactly, a continuation run
+  only once every acquisition is ready and on the loop named, a token dropped failing the change, a reshape in place by
+  a test type (channels 1 and 2 keep playing); claims swapped make-before-break (both held, the old released last), a
+  refused new claim destroying the continuation and restarting, two nodes swapping ports both restarting and running.
+- **`ear_pipewire_tests`**: S4 (built: 7.4); reshape (a port added and removed beside a running ramp, links of surviving
+  ports kept, the layout swapped whole, the transitional layout zero-filling new outputs); a reshape's new port metered
+  from its first window; two sources into one inside input mixed (the port mixer loads).
 - **`ear_config_tests`**: `node.set`'s merge; a dry run changes nothing and tells no one; `dropRoutes` removes exactly
   the stranded route lines in one write; a route line inside a snippet refused `shared-definition`; `ports-in-use`
   naming every route.
 - **The sink pause**: waits for a consume in flight, discards and counts, posts `paused`; a paused sink at teardown
   finishes; a writer at full rate while pausing and resuming 10^4 times (U15).
-- **Types**: `rtp`'s and `sendspin`'s in-place cases through the harness; the all-type tests run a change of every
-  in-place row through the change version, ending `running` with the same configuration (no status reset) or in a
-  restart whose cause is `fell-back` with `restart-asked`.
-- **System tests**: an `rtp` port changed in place (`reconfigure`, `node.state` `reconfiguring` with `keys: ["port"]`
-  and back, the WAV it feeds silent and then the tone with no `stopping` record, `levels` showing `fpp:stream.1` and
-  `rec:record.left` silent during the change and back after); an `rtp` format changed on the same port (a fade to
-  exactly 0, silence, a fade in, no step above the fade's slope); a card's `playback` from 2 to 1 on the test card with
-  `dropRoutes`, the surviving route never `pending`; a `sendspin` port, name and server changed in place
-  (`reconfiguring` and never `stopping`, the same client id, the key file not read again, the connection dropped and
-  back), a change to a held port restarting and failing with today's text, dialling to listening and back.
+- **Types**: `sendspin`'s in-place cases through the harness.
+- **System tests**: an `rtp` format changed on the same port (a fade to exactly 0, silence, a fade in, no step above the
+  fade's slope), and `levels` showing `fpp:stream.1` and `rec:record.left` silent during an `rtp` change and back after
+  (the port change itself is built); a card's `playback` from 2 to 1 on the test card with `dropRoutes`, the surviving
+  route never `pending`; a `sendspin` port, name and server changed in place (`reconfiguring` and never `stopping`, the
+  same client id, the key file not read again, the connection dropped and back), a change to a held port restarting and
+  failing with today's text, dialling to listening and back.
 - **Wire fixtures**: `test/protocol/node-set.json` (merge, `null`, a missing required key, each `applied`, `dryRun` for
-  each outcome, a reshape refused `ports-in-use` then with `dropRoutes`); the reconfigure and reshape cases of
-  `lifecycle.json`; `companions.json`'s `retiring`.
+  each outcome, a reshape refused `ports-in-use` then with `dropRoutes`); the reshape cases of `lifecycle.json` (its
+  reconfigure cases are built); `companions.json`'s `retiring`.
 
 ## 11. Order of work
 
 1. S4, the spike (run: 7.4), and the pure machines' new states and transitions (built:
    [`docs/architecture.md#changes-in-place`](../architecture.md#changes-in-place)).
 2. `ChangeOf`, `Changed`, staged posts, holds and their acknowledgement, the commit point, the deadline, supersession,
-   the fallback, with a test type; `rtp` in place.
-3. The primitives in a change: claims swapped, `whenReady`, `ConfigureDone`, the sink's pause, the same-port rule.
+   the fallback, with a test type; `rtp` in place (built, section 2: with an RTP receiver replaced always break-first,
+   the part of step 3 `rtp` needed).
+3. The primitives in a change: claims swapped make-before-break, `whenReady`, `ConfigureDone`, the sink's pause, the
+   other kinds' replacements; `rtp` on a new port moved to make-before-break if wanted.
 4. `PortBlock::reshape` on the plain add (7.4), the 32-port question of section 13 settled first; layouts, levels.
 5. The wire and the editor (features `node.set`, `reshape`, `dryRun`).
 6. `sendspin` in place (skipped if U11 or U12 fails).
