@@ -3196,7 +3196,7 @@ struct NodeHost::Impl {
 			return aggregate_.configuration().changeFrom() == lc::ConfigState::driving;
 		}
 
-		/// The change version (T9): a new change of the configuration, its deadline armed, and the type's change version
+		/// The change version: a new change of the configuration, its deadline armed, and the type's change version
 		/// called through the change's context, timed as `configure`. Its answer, as an input of its own: a rule it broke
 		/// (or a fault of ear's adapter) fails the node; a throw, or a restart it asks for, falls back to a restart with
 		/// the new settings; an applied answer's new code is prepared now, while the old one runs, and the commit point
@@ -3640,7 +3640,7 @@ struct NodeHost::Impl {
 			}
 		}
 
-		/// The commit point (T10): the instance adopts the new settings, the configuration takes them, its staged posts
+		/// The commit point: the instance adopts the new settings, the configuration takes them, its staged posts
 		/// are released to their loops in order, its plan and its code are the change's; driven, the plan is carried and a
 		/// new code swapped in one invoke (its completion the commit's), else the commit completes in this turn; the holds
 		/// fade back in. Undriven, the old code is released now; driven, once the swap completed.
