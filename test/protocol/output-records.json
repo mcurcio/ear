@@ -292,6 +292,8 @@
         "kind": "diagnostic",
         "node": "kitchen",
         "code": "ear.close-overdue",
+        "active": false,
+        "count": 1,
         "detail": "its run did not close within 10 s, so it was leaked",
         "msg": "node kitchen ear.close-overdue: its run did not close within 10 s, so it was leaked"
       }
@@ -305,6 +307,8 @@
         "kind": "diagnostic",
         "node": "desk",
         "code": "ear.fade-unacknowledged",
+        "active": false,
+        "count": 1,
         "ms": 100,
         "detail": "the fade before its silence was not acknowledged within 100 ms, so the silence was taken unfaded",
         "msg": "node desk ear.fade-unacknowledged: the fade before its silence was not acknowledged within 100 ms, so the silence was taken unfaded"
@@ -319,6 +323,8 @@
         "kind": "diagnostic",
         "node": "desk",
         "code": "ear.barrier-overdue",
+        "active": false,
+        "count": 1,
         "ms": 5000,
         "detail": "a barrier posted to the data loop did not complete within 5000 ms, so its configuration and block are leaked",
         "msg": "node desk ear.barrier-overdue: a barrier posted to the data loop did not complete within 5000 ms, so its configuration and block are leaked"
@@ -652,6 +658,9 @@
         "kind": "diagnostic",
         "node": "rec",
         "code": "ear.hook-slow",
+        "subject": "configure",
+        "active": false,
+        "count": 1,
         "ms": 31,
         "detail": "configure ran 31 ms",
         "msg": "node rec ear.hook-slow: configure ran 31 ms"
@@ -780,6 +789,9 @@
         "kind": "diagnostic",
         "node": "rec",
         "code": "ear.sink-dropped",
+        "subject": "rec.writer",
+        "active": false,
+        "count": 1,
         "companion": "rec.writer",
         "frames": 4096,
         "totalFrames": 8192,
@@ -796,6 +808,9 @@
         "kind": "diagnostic",
         "node": "kitchen",
         "code": "ear.source-shortfall",
+        "subject": "kitchen.from_server",
+        "active": false,
+        "count": 1,
         "companion": "kitchen.from_server",
         "frames": 1,
         "totalFrames": 256,
@@ -812,6 +827,9 @@
         "kind": "diagnostic",
         "node": "porch",
         "code": "ear.loop-slow",
+        "subject": "control",
+        "active": false,
+        "count": 1,
         "ms": 140,
         "detail": "loop control ran one handler for 140 ms",
         "msg": "node porch ear.loop-slow: loop control ran one handler for 140 ms"
@@ -826,6 +844,9 @@
         "kind": "diagnostic",
         "node": "kitchen",
         "code": "ear.loop-source-left",
+        "subject": "sendspin",
+        "active": false,
+        "count": 1,
         "sources": 2,
         "detail": "2 sources were still armed on loop sendspin when the node's configuration closed",
         "msg": "node kitchen ear.loop-source-left: 2 sources were still armed on loop sendspin when the node's configuration closed"
@@ -878,6 +899,8 @@
         "kind": "diagnostic",
         "node": "kitchen",
         "code": "ear.close-late",
+        "active": false,
+        "count": 1,
         "ms": 14250,
         "detail": "the configuration leaked at the close deadline closed 14250 ms after its close began",
         "msg": "node kitchen ear.close-late: the configuration leaked at the close deadline closed 14250 ms after its close began"
@@ -911,6 +934,9 @@
         "kind": "diagnostic",
         "node": "fpp2",
         "code": "ear.claim-wait",
+        "subject": "udp:5004",
+        "active": true,
+        "count": 1,
         "detail": "udp:5004 held by node fpp, which is closing",
         "msg": "node fpp2 ear.claim-wait: udp:5004 held by node fpp, which is closing"
       }
@@ -1116,6 +1142,8 @@
         "kind": "diagnostic",
         "node": "tv",
         "code": "ear.reconfigure-superseded",
+        "active": false,
+        "count": 1,
         "detail": "a newer change superseded the change of port before its commit point",
         "msg": "node tv ear.reconfigure-superseded: a newer change superseded the change of port before its commit point"
       }
@@ -1129,6 +1157,8 @@
         "kind": "diagnostic",
         "node": "tv",
         "code": "ear.reconfigure-fell-back",
+        "active": false,
+        "count": 1,
         "elapsedMs": 10000,
         "detail": "could not apply port in place (deadline): deadline 10s passed",
         "msg": "node tv ear.reconfigure-fell-back: could not apply port in place (deadline): deadline 10s passed"
@@ -1143,6 +1173,9 @@
         "kind": "diagnostic",
         "node": "tv",
         "code": "ear.retiring-lost",
+        "subject": "tv.rtp",
+        "active": false,
+        "count": 1,
         "detail": "tv.rtp, which a change in place replaces, was lost: the RTP receiver's node went away",
         "msg": "node tv ear.retiring-lost: tv.rtp, which a change in place replaces, was lost: the RTP receiver's node went away"
       }

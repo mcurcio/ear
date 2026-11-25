@@ -42,6 +42,18 @@ std::chrono::system_clock::time_point fixedTime() {
 	return sys_days{year{2026} / 11 / 7} + 17h + 42min + 3s + 512094us + 999ns;
 }
 
+/// A node diagnostic as NodeHost tells one: an observation seen once, unless said otherwise.
+ear::NodeDiagnostic said(std::string_view code, std::string detail, std::span<const ear::DiagnosticField> fields = {},
+                         std::string subject = {}, bool active = false, std::uint64_t count = 1) {
+	return {.code = code,
+	        .subject = std::move(subject),
+	        .condition = active,
+	        .active = active,
+	        .count = count,
+	        .detail = std::move(detail),
+	        .fields = {fields.begin(), fields.end()}};
+}
+
 /// The pace clock, moved by hand.
 std::chrono::steady_clock::time_point paceNow{};
 std::chrono::steady_clock::time_point pacedTime() { return paceNow; }
@@ -203,22 +215,23 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 		             .text = "pcm.c:2664:(snd_pcm_open_noupdate) Unknown PCM hw:Pro24"});
 		},
 		[](StatusLog& log, Lines&) {
-			log.nodeDiagnostic("kitchen", "ear.close-overdue", "its run did not close within 10 s, so it was leaked",
-		                       {});
+			log.nodeDiagnostic("kitchen",
+		                       said("ear.close-overdue", "its run did not close within 10 s, so it was leaked", {}));
 		},
 		[](StatusLog& log, Lines&) {
 			const std::array fields{ear::DiagnosticField{"ms", 100}};
-			log.nodeDiagnostic("desk", "ear.fade-unacknowledged",
-		                       "the fade before its silence was not acknowledged within 100 ms, so the silence was "
-		                       "taken unfaded",
-		                       fields);
+			log.nodeDiagnostic(
+				"desk", said("ear.fade-unacknowledged",
+		                     "the fade before its silence was not acknowledged within 100 ms, so the silence was "
+		                     "taken unfaded",
+		                     fields));
 		},
 		[](StatusLog& log, Lines&) {
 			const std::array fields{ear::DiagnosticField{"ms", 5000}};
-			log.nodeDiagnostic("desk", "ear.barrier-overdue",
-		                       "a barrier posted to the data loop did not complete within 5000 ms, so its "
-		                       "configuration and block are leaked",
-		                       fields);
+			log.nodeDiagnostic("desk", said("ear.barrier-overdue",
+		                                    "a barrier posted to the data loop did not complete within 5000 ms, so its "
+		                                    "configuration and block are leaked",
+		                                    fields));
 		},
 		[](StatusLog& log, Lines&) {
 			log.engineDiagnostic({"ear.data-loop-wedged",
@@ -283,7 +296,7 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 		},
 		[](StatusLog& log, Lines&) {
 			const std::array fields{ear::DiagnosticField{"ms", 31}};
-			log.nodeDiagnostic("rec", "ear.hook-slow", "configure ran 31 ms", fields);
+			log.nodeDiagnostic("rec", said("ear.hook-slow", "configure ran 31 ms", fields, "configure"));
 		},
 		[](StatusLog& log, Lines&) { log.actionAnswered({"desk", "restart", "ok", std::nullopt}); },
 		[](StatusLog& log, Lines&) { log.actionAnswered({"desk", "restart", "not-restartable", "block-lost"}); },
@@ -311,32 +324,34 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 		                         {.missedCycles = 33, .overruns = 1, .repositions = 1});
 		},
 		[](StatusLog& log, Lines&) {
-			log.companionFramesLost("rec",
-		                            {.name = "rec.writer",
-		                             .kind = ear::CompanionKind::sink,
-		                             .bank = "writer",
-		                             .ready = true,
-		                             .dropped = 8192},
-		                            4096, 8192);
+			const std::array fields{ear::DiagnosticField{"frames", 4096}, ear::DiagnosticField{"totalFrames", 8192}};
+			ear::NodeDiagnostic dropped = said("ear.sink-dropped",
+		                                       "rec.writer dropped 4096 frames its ring had no room for; 8192 since it "
+		                                       "was made",
+		                                       fields, "rec.writer");
+			dropped.texts = {{"companion", "rec.writer"}};
+			log.nodeDiagnostic("rec", dropped);
 		},
 		[](StatusLog& log, Lines&) {
-			log.companionFramesLost("kitchen",
-		                            {.name = "kitchen.from_server",
-		                             .kind = ear::CompanionKind::source,
-		                             .bank = "from_server",
-		                             .ready = true,
-		                             .shortfall = 256},
-		                            1, 256);
+			const std::array fields{ear::DiagnosticField{"frames", 1}, ear::DiagnosticField{"totalFrames", 256}};
+			ear::NodeDiagnostic shortfall = said("ear.source-shortfall",
+		                                         "kitchen.from_server played 1 frame short while its writer was not "
+		                                         "idle; 256 since it was made",
+		                                         fields, "kitchen.from_server");
+			shortfall.texts = {{"companion", "kitchen.from_server"}};
+			log.nodeDiagnostic("kitchen", shortfall);
 		},
 		[](StatusLog& log, Lines&) {
 			const std::array fields{ear::DiagnosticField{"ms", 140}};
-			log.nodeDiagnostic("porch", "ear.loop-slow", "loop control ran one handler for 140 ms", fields);
+			log.nodeDiagnostic("porch",
+		                       said("ear.loop-slow", "loop control ran one handler for 140 ms", fields, "control"));
 		},
 		[](StatusLog& log, Lines&) {
 			const std::array fields{ear::DiagnosticField{"sources", 2}};
-			log.nodeDiagnostic("kitchen", "ear.loop-source-left",
-		                       "2 sources were still armed on loop sendspin when the node's configuration closed",
-		                       fields);
+			log.nodeDiagnostic("kitchen",
+		                       said("ear.loop-source-left",
+		                            "2 sources were still armed on loop sendspin when the node's configuration closed",
+		                            fields, "sendspin"));
 		},
 		[](StatusLog& log, Lines&) {
 			// fpp is still configuring (above); 10 s after its last still record, a new list is written.
@@ -351,9 +366,10 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 		},
 		[](StatusLog& log, Lines&) {
 			const std::array fields{ear::DiagnosticField{"ms", 14250}};
-			log.nodeDiagnostic("kitchen", "ear.close-late",
-		                       "the configuration leaked at the close deadline closed 14250 ms after its close began",
-		                       fields);
+			log.nodeDiagnostic(
+				"kitchen",
+				said("ear.close-late",
+		             "the configuration leaked at the close deadline closed 14250 ms after its close began", fields));
 		},
 		[](StatusLog& log, Lines&) {
 			// Still configuring, 10 s on: now it waits for one of its claims, whose holder is closing, by its key.
@@ -362,7 +378,8 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 				health("fpp", NodePhase::configuring, {}, {}, {{ear::WaitingFor::Kind::claim, "udp:5004"}}));
 		},
 		[](StatusLog& log, Lines&) {
-			log.nodeDiagnostic("fpp2", "ear.claim-wait", "udp:5004 held by node fpp, which is closing", {});
+			log.nodeDiagnostic(
+				"fpp2", said("ear.claim-wait", "udp:5004 held by node fpp, which is closing", {}, "udp:5004", true));
 		},
 		[](StatusLog& log, Lines&) {
 			// Still configuring, 10 s on: now it waits for one of its recordings to open, by its path.
@@ -405,18 +422,19 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 			log.nodeChanged(health("desk", NodePhase::configuring, reshape));
 		},
 		[](StatusLog& log, Lines&) {
-			log.nodeDiagnostic("tv", "ear.reconfigure-superseded",
-		                       "a newer change superseded the change of port before its commit point", {});
+			log.nodeDiagnostic("tv", said("ear.reconfigure-superseded",
+		                                  "a newer change superseded the change of port before its commit point", {}));
 		},
 		[](StatusLog& log, Lines&) {
 			const std::array fields{ear::DiagnosticField{"elapsedMs", 10000}};
-			log.nodeDiagnostic("tv", "ear.reconfigure-fell-back",
-		                       "could not apply port in place (deadline): deadline 10s passed", fields);
+			log.nodeDiagnostic("tv", said("ear.reconfigure-fell-back",
+		                                  "could not apply port in place (deadline): deadline 10s passed", fields));
 		},
 		[](StatusLog& log, Lines&) {
-			log.nodeDiagnostic("tv", "ear.retiring-lost",
-		                       "tv.rtp, which a change in place replaces, was lost: the RTP receiver's node went away",
-		                       {});
+			log.nodeDiagnostic(
+				"tv", said("ear.retiring-lost",
+		                   "tv.rtp, which a change in place replaces, was lost: the RTP receiver's node went away", {},
+		                   "tv.rtp"));
 		},
 		[](StatusLog& log, Lines&) { log.stopped(); },
 	};

@@ -66,12 +66,14 @@ using PaceClock = std::function<std::chrono::steady_clock::time_point()>;
 ///                       | <code>: <detail>   (one that names no node: ear.data-loop-wedged, with no "node" field;
 ///                       ear.main-loop-stalled with "ms" and "in" (the call the main loop is in, when known) and
 ///                       ear.main-loop-resumed with "ms", the stall's length, both from the watchdog's thread)
+///                       with "subject" when the code has one, "active" and "count" (NodeDiagnostic)
 ///                       | ear.internal-error: ear's own bug, caught, with "callback" and, when it fails one, "node"
 ///                       (docs/output-records.md#diagnostic; its detail "<callback> threw[ during <where>]: <what>")
 ///                       | ear.graph-lost-cycles (no node: "cycles", "stalls", "ms" since the last, "totalCycles") and
 ///                       node <n> ear.node-missed-cycles ("missed", "overruns" since the last, "totalMissed",
-///                       "totalOverruns"), and node <n> ear.sink-dropped or ear.source-shortfall ("companion",
-///                       "frames" since the last, "totalFrames"), as CounterWatch paces them
+///                       "totalOverruns"), as CounterWatch paces it, and node <n> ear.sink-dropped or
+///                       ear.source-shortfall ("companion", "frames" since the last, "totalFrames"), which CounterWatch
+///                       paces and NodeHost keeps and tells as its own
 ///                       (docs/engine.md#reporting-the-counters)
 /// Records a full queue dropped are counted: the next record carries "dropped":<n>, and its msg says so.
 /// Log records are paced per node, or per source when unattributed (captured stderr, PipeWire, a library): a burst of
@@ -100,8 +102,7 @@ public:
 	void nodeGone(const NodeName& node, std::uint64_t droppedFrames) override;
 	void supersededGone(const NodeName& node, std::uint64_t droppedFrames) override;
 	void nodeSays(const NodeName& node, const std::string& text) override;
-	void nodeDiagnostic(const NodeName& node, std::string_view code, const std::string& detail,
-	                    std::span<const DiagnosticField> fields) override;
+	void nodeDiagnostic(const NodeName& node, const NodeDiagnostic& diagnostic) override;
 	void engineDiagnostic(const EngineDiagnostic& diagnostic) override;
 	void routeChanged(const RouteStatus& status) override;
 	void graphFileChanged(const GraphFileChanged& change) override;
@@ -119,9 +120,6 @@ public:
 	/// overran, since the last such record.
 	void graphLostCycles(const GraphCounts& total, const GraphCounts& since, std::uint64_t sinceMs) override;
 	void nodeMissedCycles(const NodeName& node, const NodeCounts& total, const NodeCounts& since) override;
-	/// ear.sink-dropped or ear.source-shortfall, by the companion's kind.
-	void companionFramesLost(const NodeName& node, const CompanionView& companion, std::uint64_t frames,
-	                         std::uint64_t totalFrames) override;
 	void mainLoopStalled(std::int64_t ms, std::string_view in);
 	void mainLoopResumed(std::int64_t ms);
 	void engineScheduling(bool realtime, std::string_view detail);

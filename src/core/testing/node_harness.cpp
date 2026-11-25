@@ -945,12 +945,14 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		const std::scoped_lock lock(logMutex);
 		logList.push_back(entry);
 	}
-	void nodeDiagnostic(const NodeName&, std::string_view code, const std::string& detail,
-	                    std::span<const DiagnosticField> fields) override {
-		SeenDiagnostic seen{std::string(code), detail, {}};
-		for (const DiagnosticField& field : fields) seen.fields.emplace_back(std::string(field.key), field.value);
+	void nodeDiagnostic(const NodeName&, const NodeDiagnostic& diagnostic) override {
+		SeenDiagnostic seen{std::string(diagnostic.code), diagnostic.detail, {},
+		                    diagnostic.subject,           diagnostic.active, diagnostic.count};
+		for (const DiagnosticField& field : diagnostic.fields)
+			seen.fields.emplace_back(std::string(field.key), field.value);
 		diagnosticList.push_back(std::move(seen));
-		if (code == "ear.loop-source-left" && !options.allowSourcesLeft) sourcesLeft.push_back(detail);
+		if (diagnostic.code == "ear.loop-source-left" && !options.allowSourcesLeft)
+			sourcesLeft.push_back(diagnostic.detail);
 	}
 	void internalError(const InternalError& error) override {
 		internalErrorList.push_back(SeenInternalError{std::string(error.callback), std::string(error.node),

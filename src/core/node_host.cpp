@@ -339,6 +339,27 @@ struct NodeHost::Impl {
 		}
 		bool superseded() const noexcept { return superseded_; }
 		std::uint64_t dropped() const noexcept { return dropped_; }
+		/// Main thread. Kept by code and subject (docs/output-records.md#diagnostic), stamped, counted, then told:
+		/// a condition said inactive while it is not active is dropped; a condition said active again while active
+		/// keeps its count.
+		void diagnose(NodeDiagnostic diagnostic) {
+			diagnostic.at = host_.timers.now();
+			const auto kept = std::ranges::find_if(diagnostics_, [&](const NodeDiagnostic& each) {
+				return each.code == diagnostic.code && each.subject == diagnostic.subject;
+			});
+			const bool known = kept != diagnostics_.end();
+			const std::uint64_t before = known ? kept->count : 0;
+			if (diagnostic.condition && !diagnostic.active) {
+				if (!known || !kept->active) return;
+				diagnostic.count = before;
+			} else if (diagnostic.condition) diagnostic.count = before + (known && kept->active ? 0 : 1);
+			else diagnostic.count = before + 1;
+			if (known) *kept = diagnostic;
+			else diagnostics_.push_back(diagnostic);
+			host_.toldDiagnostic(name_, diagnostic, superseded_);
+		}
+		/// Every diagnostic this node was told, as last told, in the order each was first said.
+		const std::vector<NodeDiagnostic>& diagnostics() const noexcept { return diagnostics_; }
 		/// The node's counters from its add (docs/engine.md#counters): its block's now, or what it counted before it
 		/// went. Main thread.
 		NodeCounts counts() const noexcept { return block_ ? block_->counts() : blockCounted_; }
@@ -774,6 +795,30 @@ struct NodeHost::Impl {
 			});
 		}
 
+		/// ear.claim-wait, a condition (docs/output-records.md#diagnostic): the claim of `key` waits for its holder.
+		void claimWaits(const std::string& key, const std::string& why) {
+			diagnose({.code = "ear.claim-wait",
+			          .subject = key,
+			          .condition = true,
+			          .active = true,
+			          .detail = key + " " + why});
+		}
+		/// The claim of `key` no longer waits: judged otherwise. Said only when it waited.
+		void claimWaitEnded(const std::string& key) {
+			diagnose({.code = "ear.claim-wait",
+			          .subject = key,
+			          .condition = true,
+			          .active = false,
+			          .detail = key + " no longer waits for its holder"});
+		}
+		/// Every claim that waits no longer does: its configuration's teardown began (or its change was dropped).
+		void claimWaitsEnded() {
+			std::vector<std::string> waiting;
+			for (const NodeDiagnostic& each : diagnostics_)
+				if (each.code == "ear.claim-wait" && each.active) waiting.push_back(each.subject);
+			for (const std::string& key : waiting) claimWaitEnded(key);
+		}
+
 		/// A claim of the configuration of `generation` judged (an input of its own): granted, to probe, refused, or
 		/// waiting for its holder, which is closing.
 		void claimJudged(std::uint64_t generation, const Claim& claim, detail::ClaimJudged judged) {
@@ -782,6 +827,7 @@ struct NodeHost::Impl {
 			const auto found = std::ranges::find(config_->claims, claim, &ClaimSlot::claim);
 			if (found == config_->claims.end()) return;
 			const auto index = static_cast<std::size_t>(found - config_->claims.begin());
+			if (judged.outcome != detail::ClaimJudged::Outcome::waits) claimWaitEnded(claimKey(found->claim));
 			switch (judged.outcome) {
 			case detail::ClaimJudged::Outcome::granted:
 				itemReady(generation, found->item);
@@ -796,8 +842,7 @@ struct NodeHost::Impl {
 				break;
 			case detail::ClaimJudged::Outcome::waits:
 				found->waitingOn = judged.why;
-				host_.diagnosed(name_, "ear.claim-wait",
-				                claimKey(found->claim) + " held by node " + judged.why + ", which is closing", {});
+				claimWaits(claimKey(found->claim), "held by node " + judged.why + ", which is closing");
 				break;
 			}
 		}
@@ -1437,8 +1482,10 @@ struct NodeHost::Impl {
 				host_.inputFor(serial_, [generation = generation_, ms, name = std::string(declared.name)](Node& node) {
 					if (!node.current(generation)) return;
 					const std::array fields{DiagnosticField{"ms", ms}};
-					node.host_.diagnosed(node.name_, "ear.loop-slow",
-					                     "loop " + name + " ran one handler for " + std::to_string(ms) + " ms", fields);
+					node.diagnose({.code = "ear.loop-slow",
+					               .subject = name,
+					               .detail = "loop " + name + " ran one handler for " + std::to_string(ms) + " ms",
+					               .fields = {fields.begin(), fields.end()}});
 				});
 			}
 			/// Through the configuration's Channel, so a leaked configuration's is logged on its record.
@@ -2129,8 +2176,9 @@ struct NodeHost::Impl {
 		/// NodeHost reaches it by the configuration's Channel alone (the Impl outlives it but on an exit through _Exit).
 		class LeakedRecord {
 		public:
-			LeakedRecord(Impl& host, NodeName name, std::unique_ptr<Configuration> config)
-				: host_(host), name_(std::move(name)), generation_(config->generation), config_(std::move(config)) {}
+			LeakedRecord(Impl& host, NodeName name, std::uint64_t serial, std::unique_ptr<Configuration> config)
+				: host_(host), name_(std::move(name)), serial_(serial), generation_(config->generation),
+				  config_(std::move(config)) {}
 			/// Main thread, once, as it is leaked: its closes land here from now on.
 			void repoint() noexcept { config_->channel->repoint(*this); }
 			void sinkClosed(std::size_t index) {
@@ -2154,7 +2202,7 @@ struct NodeHost::Impl {
 			}
 			void loopClosed(std::size_t index) {
 				host_.input([this, index] {
-					if (loopClosedIn(host_, name_, *config_, index)) carryOn();
+					if (loopClosedIn(host_, serial_, name_, *config_, index)) carryOn();
 				});
 			}
 			/// Its program was reaped (or refused): one of the closes its late close waits for.
@@ -2198,10 +2246,12 @@ struct NodeHost::Impl {
 				const auto refused = host_.refusedByLeaked.extract(generation_);
 				const std::int64_t ms = millisecondsBetween(config_->closeBegan, host_.timers.now());
 				const std::array fields{DiagnosticField{"ms", ms}};
-				host_.diagnosed(name_, "ear.close-late",
-				                "the configuration leaked at the close deadline closed " + std::to_string(ms) +
-				                    " ms after its close began" + (held ? "; its claims are released" : ""),
-				                fields);
+				host_.diagnosed(serial_, name_,
+				                {.code = "ear.close-late",
+				                 .detail = "the configuration leaked at the close deadline closed " +
+				                           std::to_string(ms) + " ms after its close began" +
+				                           (held ? "; its claims are released" : ""),
+				                 .fields = {fields.begin(), fields.end()}});
 				if (refused)
 					for (const auto& [serial, generation] : refused.mapped())
 						host_.inputFor(serial, [generation](Node& node) { node.restartRefused(generation); });
@@ -2221,6 +2271,7 @@ struct NodeHost::Impl {
 
 			Impl& host_;
 			const NodeName name_;            // a copy: the node may be gone
+			const std::uint64_t serial_;     // its node's, which keeps its diagnostics while it is not gone
 			const std::uint64_t generation_; // its claims' holder
 			std::unique_ptr<Configuration> config_;
 			bool closed_ = false;
@@ -2364,8 +2415,10 @@ struct NodeHost::Impl {
 			// configuration's threads tell is a fact, as from its silence on.
 			if (config_ && aggregate_.configuration().state() == lc::ConfigState::arming &&
 			    aggregate_.configuration().stopAsked() && aggregate_.intent() != lc::Intent::stop &&
-			    aggregate_.intent() != lc::Intent::none)
+			    aggregate_.intent() != lc::Intent::none) {
 				config_->channel->closing();
+				claimWaitsEnded();
+			}
 			// A hook that threw is a fact once its batch was carried out
 			// (docs/writing-a-node-type.md#rules-the-framework-enforces).
 			if (auto threw = std::exchange(prepareThrew_, std::nullopt))
@@ -2465,19 +2518,19 @@ struct NodeHost::Impl {
 			case Kind::fadeUnacknowledged:
 				if (!synthetic_) {
 					const std::array fields{DiagnosticField{"ms", judgedMs_}};
-					host_.diagnosed(name_, "ear.fade-unacknowledged",
-					                "the fade before its silence was not acknowledged within " +
+					diagnose({.code = "ear.fade-unacknowledged",
+					          .detail = "the fade before its silence was not acknowledged within " +
 					                    std::to_string(judgedMs_) + " ms, so the silence was taken unfaded",
-					                fields);
+					          .fields = {fields.begin(), fields.end()}});
 				}
 				break;
 			case Kind::barrierOverdue:
 				if (!synthetic_) {
 					const std::array fields{DiagnosticField{"ms", judgedMs_}};
-					host_.diagnosed(name_, "ear.barrier-overdue",
-					                "a barrier posted to the data loop did not complete within " +
+					diagnose({.code = "ear.barrier-overdue",
+					          .detail = "a barrier posted to the data loop did not complete within " +
 					                    std::to_string(judgedMs_) + " ms, so its configuration and block are leaked",
-					                fields);
+					          .fields = {fields.begin(), fields.end()}});
 				}
 				break;
 			case Kind::markWedged:
@@ -2617,8 +2670,10 @@ struct NodeHost::Impl {
 				const std::int64_t ms = millisecondsBetween(began, host_.timers.now());
 				if (std::chrono::milliseconds(ms) > hookSlowBound && hooksReportedSlow_.insert(hook.name).second) {
 					const std::array fields{DiagnosticField{"ms", ms}};
-					host_.diagnosed(name_, "ear.hook-slow",
-					                std::string(hook.name) + " ran " + std::to_string(ms) + " ms", fields);
+					diagnose({.code = "ear.hook-slow",
+					          .subject = std::string(hook.name),
+					          .detail = std::string(hook.name) + " ran " + std::to_string(ms) + " ms",
+					          .fields = {fields.begin(), fields.end()}});
 				}
 			}
 			refused_ = nullptr;
@@ -3544,10 +3599,10 @@ struct NodeHost::Impl {
 			const std::array fields{DiagnosticField{"elapsedMs", ms}};
 			std::string keys;
 			for (const std::string& key : ch.keys) keys += (keys.empty() ? "" : ", ") + key;
-			host_.diagnosed(name_, "ear.reconfigure-fell-back",
-			                "could not apply " + keys + " in place (" + std::string(lc::fellBackName(reason)) +
+			diagnose({.code = "ear.reconfigure-fell-back",
+			          .detail = "could not apply " + keys + " in place (" + std::string(lc::fellBackName(reason)) +
 			                    "): " + detail,
-			                fields);
+			          .fields = {fields.begin(), fields.end()}});
 			feed(aggregate_.fellBack(reason, std::move(detail)));
 		}
 
@@ -3606,11 +3661,11 @@ struct NodeHost::Impl {
 						if (!node.inChange(generation, epoch) || !node.holdsWaiting()) return;
 						node.config_->change->holdGaveUp = true;
 						const std::array fields{DiagnosticField{"ms", fadeAcknowledgeBound.count()}};
-						node.host_.diagnosed(node.name_, "ear.fade-unacknowledged",
-						                     "the hold before a change in place was not acknowledged within " +
+						node.diagnose({.code = "ear.fade-unacknowledged",
+						               .detail = "the hold before a change in place was not acknowledged within " +
 						                         std::to_string(fadeAcknowledgeBound.count()) +
 						                         " ms, so the change went on",
-						                     fields);
+						               .fields = {fields.begin(), fields.end()}});
 						node.checkChangeReady();
 					});
 				});
@@ -3920,6 +3975,7 @@ struct NodeHost::Impl {
 			Configuration::Change::Added* added = addedAsking(claim);
 			if (added == nullptr || added->granted || aggregate_.configuration().state() != lc::ConfigState::changing)
 				return false;
+			if (judged.outcome != detail::ClaimJudged::Outcome::waits) claimWaitEnded(claimKey(claim));
 			switch (judged.outcome) {
 			case detail::ClaimJudged::Outcome::granted:
 				changeClaimReady(claim);
@@ -3931,8 +3987,7 @@ struct NodeHost::Impl {
 				fallBack(lc::NodeCause::FellBack::resourceRefused, claimText(claim, judged.why));
 				break;
 			case detail::ClaimJudged::Outcome::waits:
-				host_.diagnosed(name_, "ear.claim-wait",
-				                claimKey(claim) + " held by node " + judged.why + ", which is closing", {});
+				claimWaits(claimKey(claim), "held by node " + judged.why + ", which is closing");
 				break;
 			}
 			return true;
@@ -4150,8 +4205,9 @@ struct NodeHost::Impl {
 			if (retiring) {
 				const std::string companion =
 					index < c.engineAsks.size() ? c.engineAsks[index].target.engineNode : name_;
-				host_.diagnosed(name_, "ear.retiring-lost",
-				                companion + ", which a change in place replaces, was lost: " + detail, {});
+				diagnose({.code = "ear.retiring-lost",
+				          .subject = companion,
+				          .detail = companion + ", which a change in place replaces, was lost: " + detail});
 				return true;
 			}
 			if (c.change && aggregate_.configuration().state() == lc::ConfigState::changing &&
@@ -4345,12 +4401,13 @@ struct NodeHost::Impl {
 		/// changing: a newer change follows at once), ear.reconfigure-superseded says what was abandoned.
 		void dropChange() {
 			if (!config_ || !config_->change) return;
+			claimWaitsEnded();
 			Configuration::Change& ch = *config_->change;
 			if (aggregate_.configuration().state() == lc::ConfigState::changing) {
 				std::string keys;
 				for (const std::string& key : ch.keys) keys += (keys.empty() ? "" : ", ") + key;
-				host_.diagnosed(name_, "ear.reconfigure-superseded",
-				                "a newer change superseded the change of " + keys + " before its commit point", {});
+				diagnose({.code = "ear.reconfigure-superseded",
+				          .detail = "a newer change superseded the change of " + keys + " before its commit point"});
 			}
 			if (ch.code && ch.codePrepared) {
 				const MainLoopActivity::Scope activity("release", name_);
@@ -4473,6 +4530,7 @@ struct NodeHost::Impl {
 		void silence(std::uint64_t barrier) {
 			if (aggregate_.intent() != lc::Intent::stop) {
 				config_->channel->closing();
+				claimWaitsEnded();
 				closeSources();
 			}
 			if (host_.wedged) return overdueAtOnce(barrier, Bound::barrier);
@@ -4753,6 +4811,7 @@ struct NodeHost::Impl {
 		void teardown() {
 			Configuration& c = *config_;
 			c.channel->closing();
+			claimWaitsEnded();
 			closeSources();
 			for (auto& companion : c.engineCompanions)
 				host_.queue(
@@ -4844,7 +4903,8 @@ struct NodeHost::Impl {
 				if (!c.loops[i]->closed) c.loops[i]->made->close(c.channel->loopClosedCall(i));
 		}
 		/// Loop `index` closed; true once every loop has (the step is then closed), with what each left armed said.
-		static bool loopClosedIn(Impl& host, const NodeName& name, Configuration& c, std::size_t index) {
+		static bool loopClosedIn(Impl& host, std::uint64_t serial, const NodeName& name, Configuration& c,
+		                         std::size_t index) {
 			if (c.loopsStep != Configuration::LoopsStep::closing || index >= c.loops.size()) return false;
 			c.loops[index]->closed = true;
 			if (!std::ranges::all_of(c.loops, [](const auto& slot) { return slot->closed; })) return false;
@@ -4853,11 +4913,13 @@ struct NodeHost::Impl {
 			for (const auto& slot : c.loops)
 				if (const std::size_t left = slot->armedLeft(); left > 0) {
 					const std::array fields{DiagnosticField{"sources", static_cast<std::int64_t>(left)}};
-					host.diagnosed(name, "ear.loop-source-left",
-					               std::to_string(left) + (left == 1 ? " source was" : " sources were") +
-					                   " still armed on loop " + std::string(slot->declared.name) +
-					                   " when the node's configuration closed",
-					               fields);
+					host.diagnosed(serial, name,
+					               {.code = "ear.loop-source-left",
+					                .subject = std::string(slot->declared.name),
+					                .detail = std::to_string(left) + (left == 1 ? " source was" : " sources were") +
+					                          " still armed on loop " + std::string(slot->declared.name) +
+					                          " when the node's configuration closed",
+					                .fields = {fields.begin(), fields.end()}});
 				}
 			return true;
 		}
@@ -4870,7 +4932,8 @@ struct NodeHost::Impl {
 		}
 		void loopClosedHeard(std::uint64_t generation, std::size_t index) {
 			host_.inputFor(serial_, [generation, index](Node& node) {
-				if (node.current(generation) && loopClosedIn(node.host_, node.name_, *node.config_, index))
+				if (node.current(generation) &&
+				    loopClosedIn(node.host_, node.serial_, node.name_, *node.config_, index))
 					node.closeLoops();
 			});
 		}
@@ -4941,10 +5004,10 @@ struct NodeHost::Impl {
 			count(sinksOpen, "sinks");
 			count(loopsOpen, "loops");
 			count(programsOpen, "programs");
-			host_.diagnosed(name_, "ear.close-overdue",
-			                "the configuration did not close within " + std::to_string(host_.closeDeadline.count()) +
-			                    " ms and is left running (" + open + ")",
-			                {});
+			diagnose({.code = "ear.close-overdue",
+			          .detail = "the configuration did not close within " +
+			                    std::to_string(host_.closeDeadline.count()) + " ms and is left running (" + open +
+			                    ")"});
 		}
 
 		/// What its threads can reach is leaked, never freed, and the node moves on: nothing the configuration tells
@@ -4966,7 +5029,7 @@ struct NodeHost::Impl {
 			host_.claimsDecided(host_.claims.leaked(c.generation, listening));
 			// Not deleted here: the configuration's threads may still touch any of it. A listening record deletes
 			// itself once they all reported closed (LeakedRecord::closedLate); any other is never deleted.
-			auto* record = new LeakedRecord(host_, name_, std::move(config_));
+			auto* record = new LeakedRecord(host_, name_, serial_, std::move(config_));
 			if (listening) record->repoint();
 			++host_.leaked;
 		}
@@ -4988,6 +5051,7 @@ struct NodeHost::Impl {
 		std::unique_ptr<Timer> phaseTimer_;         // the phase's 2 s
 		std::unique_ptr<Timer> paceTimer_;          // the 1 s pace of a changed list
 		bool superseded_ = false;                   // a newer node of its name was added: standard output alone
+		std::vector<NodeDiagnostic> diagnostics_;   // per code and subject, kept for the node's life (diagnose)
 		std::unique_ptr<Configuration> config_;     // the current configuration (at most one)
 		std::unique_ptr<PortBlock> block_;
 		bool configuring_ = false;         // inside the instance's making and configure: the contexts' calls are valid
@@ -5253,9 +5317,17 @@ struct NodeHost::Impl {
 		for (auto* listener : internalErrorListeners) listener->internalError(error);
 	}
 
-	void diagnosed(const NodeName& node, std::string_view code, const std::string& detail,
-	               std::span<const DiagnosticField> fields) {
-		for (auto* listener : diagnosticListeners) listener->nodeDiagnostic(node, code, detail, fields);
+	/// A diagnostic about the node of `serial`, kept on it while it is not gone (Node::diagnose), else told only to the
+	/// listeners that hear a superseded node, as said once.
+	void diagnosed(std::uint64_t serial, const NodeName& name, NodeDiagnostic diagnostic) {
+		if (Node* node = find(serial); node != nullptr && !node->removed())
+			return node->diagnose(std::move(diagnostic));
+		diagnostic.at = timers.now();
+		toldDiagnostic(name, diagnostic, true);
+	}
+	void toldDiagnostic(const NodeName& name, const NodeDiagnostic& diagnostic, bool superseded) {
+		for (auto* listener : diagnosticListeners)
+			if (!superseded || listener->hearsSuperseded()) listener->nodeDiagnostic(name, diagnostic);
 	}
 
 	/// A barrier of `node` did not complete within `ms`: the data loop runs no invoke. Said once; then every node
@@ -5413,6 +5485,38 @@ std::vector<CompanionView> NodeHost::companionsOf(const NodeName& node) const {
 	for (auto it = impl_->nodes.rbegin(); it != impl_->nodes.rend(); ++it)
 		if ((*it)->name() == node && !(*it)->removed()) return (*it)->companions();
 	return {};
+}
+
+std::vector<NodeDiagnostic> NodeHost::diagnosticsOf(const NodeName& node) const {
+	for (auto it = impl_->nodes.rbegin(); it != impl_->nodes.rend(); ++it)
+		if ((*it)->name() == node && !(*it)->removed()) return (*it)->diagnostics();
+	return {};
+}
+
+namespace {
+std::string framesCounted(std::uint64_t frames) {
+	return std::to_string(frames) + (frames == 1 ? " frame" : " frames");
+}
+} // namespace
+
+void NodeHost::companionFramesLost(const NodeName& node, const CompanionView& companion, std::uint64_t frames,
+                                   std::uint64_t totalFrames) {
+	const bool sink = companion.kind == CompanionKind::sink;
+	NodeDiagnostic diagnostic{.code = sink ? "ear.sink-dropped" : "ear.source-shortfall",
+	                          .subject = companion.name,
+	                          .detail = sink ? companion.name + " dropped " + framesCounted(frames) +
+	                                               " its ring had no room for; " + std::to_string(totalFrames) +
+	                                               " since it was made"
+	                                         : companion.name + " played " + framesCounted(frames) +
+	                                               " short while its writer was not idle; " +
+	                                               std::to_string(totalFrames) + " since it was made",
+	                          .texts = {DiagnosticText{"companion", companion.name}},
+	                          .fields = {DiagnosticField{"frames", static_cast<std::int64_t>(frames)},
+	                                     DiagnosticField{"totalFrames", static_cast<std::int64_t>(totalFrames)}}};
+	for (auto it = impl_->nodes.rbegin(); it != impl_->nodes.rend(); ++it)
+		if ((*it)->name() == node && !(*it)->removed()) return (*it)->diagnose(std::move(diagnostic));
+	diagnostic.at = impl_->timers.now();
+	impl_->toldDiagnostic(node, diagnostic, true);
 }
 
 std::vector<CompanionView> NodeHost::spanCompanions(std::uint64_t span) const {

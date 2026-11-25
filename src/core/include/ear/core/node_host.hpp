@@ -115,21 +115,48 @@ struct DiagnosticField {
 	std::int64_t value;
 	friend bool operator==(const DiagnosticField&, const DiagnosticField&) = default;
 };
-/// What the framework itself observes about a node (docs/output-records.md#diagnostic), by code: "ear.close-overdue" (a
-/// configuration that did not close within the close deadline, leaked past the close deadline; no field),
-/// "ear.close-late" (that configuration closed after all; `ms` since its close began), "ear.claim-wait" (a claim waits
-/// for its holder, which is closing: "<key> held by node <n>, which is closing"; no field), "ear.fade-unacknowledged" (a planned silence's fade not acknowledged within 100 ms, so the barrier was taken
-/// unfaded; `ms`), "ear.barrier-overdue" (a barrier not completed within 5 s: the node's configuration and block are
-/// leaked; `ms`) and "ear.hook-slow" (a hook, named in the detail, "configure ran 31 ms", ran past hookSlowBound on the
-/// main loop; `ms`; once per node and hook for the node's life:
-/// docs/writing-a-node-type.md#rules-the-framework-enforces), "ear.reconfigure-fell-back" (a change in place that falls
-/// back to a restart; `elapsedMs`), "ear.reconfigure-superseded" (one superseded before its commit point; no field) and
-/// "ear.retiring-lost" (an engine companion a change replaces lost while it retired; no field:
-/// docs/architecture.md#changes-in-place). `fields` lives only for the call.
+/// One text field a framework diagnostic carries beside its detail (ear.sink-dropped's `companion`).
+struct DiagnosticText {
+	std::string_view key;
+	std::string value;
+	friend bool operator==(const DiagnosticText&, const DiagnosticText&) = default;
+};
+/// What the framework itself observes about a node (docs/output-records.md#diagnostic), kept per node by code and
+/// subject (docs/output-records.md#diagnostic): "ear.close-overdue" (a configuration that did not close within the
+/// close deadline, leaked past the close deadline; no field), "ear.close-late" (that configuration closed after all;
+/// `ms` since its close began), "ear.claim-wait" (a condition, subject the claim's key: active while a claim waits for
+/// its holder, which is closing, "<key> held by node <n>, which is closing"; inactive once it is judged otherwise or its
+/// configuration's teardown begins), "ear.fade-unacknowledged" (a planned silence's fade not acknowledged within 100
+/// ms, so the barrier was taken unfaded; `ms`), "ear.barrier-overdue" (a barrier not completed within 5 s: the node's
+/// configuration and block are leaked; `ms`), "ear.hook-slow" (subject the hook, "configure ran 31 ms", ran past
+/// hookSlowBound on the main loop; `ms`; once per node and hook for the node's life:
+/// docs/writing-a-node-type.md#rules-the-framework-enforces), "ear.loop-slow" and "ear.loop-source-left" (subject the
+/// loop), "ear.reconfigure-fell-back" (a change in place that falls back to a restart; `elapsedMs`),
+/// "ear.reconfigure-superseded" (one superseded before its commit point; no field), "ear.retiring-lost" (subject the
+/// engine companion a change replaces, lost while it retired: docs/architecture.md#changes-in-place), and
+/// "ear.sink-dropped" and "ear.source-shortfall" (subject the companion, from CounterWatch: `companion`, `frames`,
+/// `totalFrames`). `code` is a string literal. A condition code is said active, then inactive with the same code and
+/// subject; an observation code is never active. `count` is how often a condition became active, or an observation
+/// was seen, for the node's life (a restart keeps it); `at` is when NodeHost said it, on its timers' clock.
+struct NodeDiagnostic {
+	std::string_view code;
+	std::string subject{};
+	bool condition = false;
+	bool active = false;
+	std::uint64_t count = 1;
+	std::string detail{};
+	std::vector<DiagnosticText> texts{};
+	std::vector<DiagnosticField> fields{};
+	std::chrono::steady_clock::time_point at{};
+	friend bool operator==(const NodeDiagnostic&, const NodeDiagnostic&) = default;
+};
 class NodeDiagnosticListener {
 public:
-	virtual void nodeDiagnostic(const NodeName& node, std::string_view code, const std::string& detail,
-	                            std::span<const DiagnosticField> fields) = 0; // main thread
+	virtual void nodeDiagnostic(const NodeName& node, const NodeDiagnostic& diagnostic) = 0; // main thread
+	/// Whether this listener hears a superseded node's (or a gone node's leaked configuration's) diagnostics, as
+	/// NodeHealthListener::hearsSuperseded: standard output does, the wire does not.
+	virtual bool hearsSuperseded() const noexcept { return true; }
+
 protected:
 	~NodeDiagnosticListener() = default;
 };
@@ -330,7 +357,10 @@ inline constexpr std::chrono::milliseconds waitingForPace{1'000};
 /// A hook that ran longer than this on the main loop is ear.hook-slow (docs/writing-a-node-type.md#the-class;
 /// docs/output-records.md#diagnostic).
 inline constexpr std::chrono::milliseconds hookSlowBound{20};
-class NodeHost final : public DesiredNodeListener, public NodeOperations, public NodeCounterSource {
+class NodeHost final : public DesiredNodeListener,
+					   public NodeOperations,
+					   public NodeCounterSource,
+					   public CounterListener {
 public:
 	/// All outlive it. `mainLoop` runs on the thread that calls everything below; a run reaches it through there (its
 	/// events, its sinks' and loops' `closed`). `timers` run there too. Made on that thread, which it marks as
@@ -440,6 +470,14 @@ public:
 	std::vector<CompanionView> companionsOf(const NodeName& node) const;
 	/// The same for the newest node of this span of counts not yet gone.
 	std::vector<CompanionView> spanCompanions(std::uint64_t span) const override;
+	/// The diagnostics the newest node of this name not yet gone has been told, one per code and subject in the order
+	/// each was first said, each as last said (docs/output-records.md#diagnostic); empty when there is no such node.
+	/// Main thread.
+	std::vector<NodeDiagnostic> diagnosticsOf(const NodeName& node) const;
+	/// CounterWatch's ear.sink-dropped or ear.source-shortfall (CounterListener), kept on the newest node of the name
+	/// not yet gone and told every NodeDiagnosticListener, as NodeHost's own are. Main thread.
+	void companionFramesLost(const NodeName& node, const CompanionView& companion, std::uint64_t frames,
+	                         std::uint64_t totalFrames) override;
 	/// What was leaked and may still be reached, never freed: configurations left running past the close deadline or on
 	/// a wedged data loop, and the blocks and engine companions a wedged loop kept. Their threads may still post to
 	/// `mainLoop` or touch engine objects at any time, so while any counts the process must end without destroying

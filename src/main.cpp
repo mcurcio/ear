@@ -447,7 +447,7 @@ int main(int argc, char** argv) {
 	nodes.subscribe(log);
 	nodes.subscribe(gateway);
 	nodes.subscribeNotes(log);
-	// ear.close-overdue, ear.close-late, ear.claim-wait, ear.fade-unacknowledged, ear.barrier-overdue, ear.hook-slow
+	// The node diagnostics NodeHost keeps (docs/output-records.md#diagnostic), CounterWatch's companion losses among them.
 	nodes.subscribeDiagnostics(log);
 	nodes.subscribeLog(log);               // a stop() that threw during a teardown; each node handle's log
 	nodes.subscribeInternalErrors(log);    // an adapter's bug NodeHost caught: ear.internal-error, then its node lost
@@ -458,8 +458,8 @@ int main(int argc, char** argv) {
 	counterWatch.subscribe(gateway);               // counters.changed
 	nodes.subscribeCompanions(gateway);            // node.companionsChanged: a list's entries and readiness
 	counterWatch.subscribeCompanions(gateway);     // and its counters' moves
-	counterWatch.subscribe(
-		log); // ear.graph-lost-cycles, ear.node-missed-cycles, ear.sink-dropped, ear.source-shortfall
+	counterWatch.subscribe(log);                   // ear.graph-lost-cycles, ear.node-missed-cycles
+	counterWatch.subscribe(nodes); // ear.sink-dropped, ear.source-shortfall: kept on the node, told as its own
 	reconciler.subscribe(log);
 	reconciler.subscribe(gateway);
 	live.subscribe(reconciler);

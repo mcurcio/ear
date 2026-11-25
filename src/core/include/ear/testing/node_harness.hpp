@@ -79,10 +79,15 @@ struct CompanionFake {
 };
 
 /// One framework diagnostic the node got (NodeDiagnosticListener), in order.
+/// A node's carries its subject, whether active and its count (docs/output-records.md#diagnostic); one that names no
+/// node has none and is never active.
 struct SeenDiagnostic {
 	std::string code;
 	std::string detail;
 	std::vector<std::pair<std::string, std::int64_t>> fields;
+	std::string subject{};
+	bool active = false;
+	std::uint64_t count = 1;
 };
 
 /// One bug of an adapter's NodeHost caught and told (InternalErrorListener), before its node failed lost, in order.

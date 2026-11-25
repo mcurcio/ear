@@ -341,12 +341,16 @@ void StatusLog::nodeSays(const NodeName& node, const std::string& text) {
 	emit("note", {{"node", json(node)}, {"text", json(text)}}, std::format("node {} says {}", node, text));
 }
 
-void StatusLog::nodeDiagnostic(const NodeName& node, std::string_view code, const std::string& detail,
-                               std::span<const DiagnosticField> fields) {
-	Fields record{{"node", json(node)}, {"code", json(code)}};
-	for (const DiagnosticField& field : fields) record.emplace_back(std::string(field.key), json(field.value));
-	record.emplace_back("detail", json(detail));
-	emit("diagnostic", std::move(record), std::format("node {} {}: {}", node, code, detail));
+void StatusLog::nodeDiagnostic(const NodeName& node, const NodeDiagnostic& diagnostic) {
+	Fields record{{"node", json(node)}, {"code", json(diagnostic.code)}};
+	if (!diagnostic.subject.empty()) record.emplace_back("subject", json(diagnostic.subject));
+	record.emplace_back("active", json(diagnostic.active));
+	record.emplace_back("count", json(diagnostic.count));
+	for (const DiagnosticText& text : diagnostic.texts) record.emplace_back(std::string(text.key), json(text.value));
+	for (const DiagnosticField& field : diagnostic.fields)
+		record.emplace_back(std::string(field.key), json(field.value));
+	record.emplace_back("detail", json(diagnostic.detail));
+	emit("diagnostic", std::move(record), std::format("node {} {}: {}", node, diagnostic.code, diagnostic.detail));
 }
 
 void StatusLog::engineDiagnostic(const EngineDiagnostic& diagnostic) {
@@ -402,25 +406,6 @@ void StatusLog::nodeMissedCycles(const NodeName& node, const NodeCounts& total, 
 	      {"overruns", json(since.overruns)},
 	      {"totalMissed", json(total.missedCycles)},
 	      {"totalOverruns", json(total.overruns)},
-	      {"detail", json(detail)}},
-	     std::format("node {} {}: {}", node, code, detail));
-}
-
-void StatusLog::companionFramesLost(const NodeName& node, const CompanionView& companion, std::uint64_t frames,
-                                    std::uint64_t totalFrames) {
-	const bool sink = companion.kind == CompanionKind::sink;
-	const std::string_view code = sink ? "ear.sink-dropped" : "ear.source-shortfall";
-	const std::string detail =
-		sink ? std::format("{} dropped {} its ring had no room for; {} since it was made", companion.name,
-	                       counted(frames, "frame", "frames"), totalFrames)
-			 : std::format("{} played {} short while its writer was not idle; {} since it was made", companion.name,
-	                       counted(frames, "frame", "frames"), totalFrames);
-	emit("diagnostic",
-	     {{"node", json(node)},
-	      {"code", json(code)},
-	      {"companion", json(companion.name)},
-	      {"frames", json(frames)},
-	      {"totalFrames", json(totalFrames)},
 	      {"detail", json(detail)}},
 	     std::format("node {} {}: {}", node, code, detail));
 }

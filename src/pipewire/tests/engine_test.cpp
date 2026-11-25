@@ -983,9 +983,8 @@ private:
 class Diagnosed final : public NodeDiagnosticListener {
 public:
 	explicit Diagnosed(Waiter& waiter) : waiter_(waiter) {}
-	void nodeDiagnostic(const NodeName&, std::string_view code, const std::string&,
-	                    std::span<const DiagnosticField>) override {
-		codes.emplace_back(code);
+	void nodeDiagnostic(const NodeName&, const NodeDiagnostic& diagnostic) override {
+		codes.emplace_back(diagnostic.code);
 		waiter_.wake();
 	}
 	std::vector<std::string> codes;
