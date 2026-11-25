@@ -1,9 +1,10 @@
 # Processing nodes: level, dynamics, tone and speaker management
 
-Status: proposal, not built, waiting on the owner's answers to the open questions (section 9). It sets out the
+Status: design, not built; the owner answered its questions on 2026-11-25 (section 9), the last of them that every
+adjustment is live and a restart must be justified, which this page now follows. It sets out the
 catalogue of processing node types (transforms, in [the timing model](../architecture.md#the-timing-model)'s words) a
 graph needs besides its sources and sinks, the shared DSP code under them, and the order they can be built in against
-slices 3d, 5 and 6. The `gain` type and the live-parameter machinery it rides on are slice 6's
+slices 5 and 6 (slice 3d, changes in place and reshapes, is built). The `gain` type and the live-parameter machinery it rides on are slice 6's
 ([`control-plane.md`](control-plane.md), sections 5.1, 5.4 and 5.7). This page extends that design and does not
 repeat it.
 
@@ -12,6 +13,8 @@ repeat it.
 | # | The owner's words | Date | What it means here |
 |---|---|---|---|
 | M1 | "add basic mixer nodes, like volume, mute, etc. what are the basic nodes that would be useful when building a graph? compressor? boost? gate?" | 2026-11-24 | A catalogue, a recommended first set and its order (sections 3 and 8); volume and mute first |
+| M2 | Asked whether `gain` should be built restart-only now or wait for slice 6: "I can wait til slice 6" | 2026-11-24 | `gain`, `mix` and `select` come with slice 6 (Q1) |
+| M3 | Asked whether `eq`'s frequency, gain and Q should be live: "Ideally all adjustments are live. Node restarts should be justified." | 2026-11-25 | Every row of every type changes without a restart, live or in place; a row that restarts says why (section 3, decision D9). None does |
 
 ## 2. What a graph can already do, and what it cannot
 
@@ -32,10 +35,23 @@ sub, per-speaker delay, a protecting limiter). Those are the types below.
 
 ## 3. The catalogue
 
-Tiers are ordered by how much a router needs them. "Live" means a slice 6 parameter
-([control-plane.md](control-plane.md), 5.1): it moves without a restart, ramped by the framework. "Restart" means
-today's rule: a change restarts the node behind its block, with a 5 ms fade out, a gap while it reconfigures and a 5 ms
-fade in ([architecture.md](../architecture.md#restarts-and-changes-of-settings)).
+Tiers are ordered by how much a router needs them. Every row changes without a restart (M3, decision D9), in one of
+three ways:
+
+- **Live**: a slice 6 parameter ([control-plane.md](control-plane.md), 5.1). It moves while the audio plays, ramped by
+  the framework, with no hook called.
+- **In place**: a `.inPlace()` row (slice 3d's changes in place, mcurcio/ear#32). The type's change version
+  swaps in a new code at one cycle; the code carries the old one's state and crosses from old to new itself, so nothing
+  is held silent. Used where a change must declare a new latency or resize what the code reads, which a live retune
+  cannot (it calls no hook).
+- **Reshape in place**: a row that changes the ports (`channels`, `inputs`, `key`), marked `.inPlace()`
+  (slice 3d's reshapes, mcurcio/ear#32): the block keeps its surviving ports and their links, and the
+  channels that stay keep playing. A configuration with a companion would restart instead, and none of these types has
+  one.
+
+A **restart** (a 5 ms fade out, a gap while it reconfigures and a 5 ms fade in:
+[architecture.md](../architecture.md#restarts-and-changes-of-settings)) is used only where a row says why. No row
+here does.
 
 | Tier | Type | Ports | What it is for |
 |---|---|---|---|
@@ -75,7 +91,8 @@ the row says otherwise.
 ### 4.1 `gain`
 
 Slice 6's type ([control-plane.md](control-plane.md), 5.7: `channels`, live `gainDb` from -90 to +24 dB with -90 as
-silence, live indexed `trimDb.N` from -24 to +24, and the clipping status, event and trigger), plus:
+silence, live indexed `trimDb.N` from -24 to +24, and the clipping status, event and trigger), with `channels` a
+reshape in place rather than a restart, plus:
 
 | Row | Kind | Default | Change |
 |---|---|---|---|
@@ -97,8 +114,8 @@ route zone1:out.2 motu:play.2;
 
 | Row | Kind | Default | Change |
 |---|---|---|---|
-| `inputs` | whole number, 1 to 8 | 2 | restart, `.shapesPorts()` |
-| `channels` | whole number, 1 to 64 | 2 | restart, `.shapesPorts()` |
+| `inputs` | whole number, 1 to 8 | 2 | reshape in place, `.shapesPorts()`: the inputs that stay keep playing, a new one's level ramps up from silence |
+| `channels` | whole number, 1 to 64 | 2 | reshape in place, `.shapesPorts()` |
 | `levelDb.N` | indexed decimal by `inputs`, -90 to +12 dB (-90 is silence), db taper | 0 | live |
 | `mute.N` | indexed boolean by `inputs` | `false` | live, 10 ms |
 | `masterDb` | decimal, -90 to +12 dB, db taper | 0 | live |
@@ -116,10 +133,10 @@ fader per source. `mix` is the console strip. Fan-in stays the answer for a fixe
 
 | Row | Kind | Default | Change |
 |---|---|---|---|
-| `inputs` | whole number, 2 to 8 | 2 | restart, `.shapesPorts()` |
-| `channels` | whole number, 1 to 64 | 2 | restart, `.shapesPorts()` |
+| `inputs` | whole number, 2 to 8 | 2 | reshape in place, `.shapesPorts()`; removing the selected input fades to none |
+| `channels` | whole number, 1 to 64 | 2 | reshape in place, `.shapesPorts()` |
 | `input` | whole number, 0 to `inputs` (0 is none) | 1 | live, steps |
-| `fadeMs` | whole number, 0 to 2000 | 50 | restart |
+| `fadeMs` | whole number, 0 to 2000 | 50 | live, steps: the next crossfade takes it; one in flight finishes at its own |
 
 The banks are as `mix`'s. When `input` steps, the code runs an equal-power crossfade over `fadeMs` from the old input to
 the new one, and the code owns the crossfade's state. A slot that steps again mid-fade starts a new fade from the
@@ -132,12 +149,14 @@ equal-power, not two linear ramps that dip 3 dB in the middle.
 |---|---|---|---|
 | `ceilingDb` | decimal, -30 to 0 dBFS | -1 | live |
 | `releaseMs` | decimal, 1 to 2000 | 100 | live, steps |
-| `lookaheadMs` | decimal, 0 to 20 | 5 | restart: it sizes the delay line and the latency |
-| `link` | boolean | `true` | restart |
+| `lookaheadMs` | decimal, 0 to 20 | 5 | in place: it changes the declared latency, which only a change version can declare (decision D11) |
+| `link` | boolean | `true` | live, steps: the gain envelope already smooths the switch |
 
 It detects sample peaks. With `link`, it detects across every channel and applies one gain to all of them, so a stereo
 image never shifts. Gain falls to its target within the lookahead, so no sample of the output goes above the ceiling,
 and recovers with a one-pole release. The lookahead is declared as the node's latency on `in` to `out` (decision D6).
+The delay line is sized for 20 ms when the node is configured, so a change of lookahead only moves the read tap, with
+the crossfade `delay` uses (decision D11).
 Its gain reduction becomes an `rt` status field `reductionDb` once slice 5 is built.
 
 ### 4.5 `compressor`
@@ -150,8 +169,8 @@ Its gain reduction becomes an `rt` status field `reductionDb` once slice 5 is bu
 | `attackMs` | decimal, 0.1 to 200 | 10 | live, steps |
 | `releaseMs` | decimal, 1 to 5000 | 150 | live, steps |
 | `makeupDb` | decimal, -24 to +24 | 0 | live |
-| `link` | boolean | `true` | restart |
-| `key` | boolean | `false` | restart, `.shapesPorts()`: adds the `key` bank, `channels` members |
+| `link` | boolean | `true` | live, steps |
+| `key` | boolean | `false` | reshape in place, `.shapesPorts()`: adds the `key` bank, `channels` members; the detector crossfades from `in` to `key` over 20 ms |
 
 It is a feed-forward compressor: the detector is a peak follower with separate attack and release, the gain computer
 has a soft knee, and the work is done in dB. With `key`, the detector reads the `key` bank instead of `in`. That is a
@@ -177,7 +196,7 @@ The code declares a path of no delay from `key` to `out` as well, so the key's s
 | `hysteresisDb` | decimal, 0 to 20 | 3 | live, steps: it closes at `thresholdDb - hysteresisDb` |
 | `rangeDb` | decimal, -90 to 0 (-90 is silence) | -90 | live |
 | `attackMs`, `holdMs`, `releaseMs` | decimal, 0.1 to 50, 0 to 2000 and 1 to 5000 | 1, 50, 200 | live, steps |
-| `link`, `key` | as `compressor`'s | `true`, `false` | restart |
+| `link`, `key` | as `compressor`'s | `true`, `false` | as `compressor`'s |
 
 It uses the same detector as `compressor`. Its gain moves between 0 dB and `rangeDb` with the attack and release, and
 the hold keeps it open for a while after the level falls.
@@ -186,22 +205,27 @@ the hold keeps it open for a while after the level falls.
 
 | Row | Kind | Default | Change |
 |---|---|---|---|
-| `bands` | whole number, 1 to 8 | 1 | restart (it changes no ports) |
-| `type.N` | indexed text by `bands`: `peak`, `lowshelf`, `highshelf`, `lowpass`, `highpass`, `notch`, `bandpass`, `allpass` | `peak` | restart |
-| `freqHz.N` | indexed decimal, 10 to 24000, log taper | 1000 | restart in v1 (Q4) |
-| `gainDb.N` | indexed decimal, -24 to +24 | 0 | restart in v1 (Q4) |
-| `q.N` | indexed decimal, 0.1 to 24, log taper | 0.707 | restart in v1 (Q4) |
+| `bands` | whole number, 1 to 8 | 1 | live, steps: a band added or removed crossfades over 20 ms between its output and its input, so it fades in or out of the chain |
+| `type.N` | indexed text by `bands`: `peak`, `lowshelf`, `highshelf`, `lowpass`, `highpass`, `notch`, `bandpass`, `allpass` | `peak` | live, steps: the band runs the old and new filter for 20 ms and crossfades between them |
+| `freqHz.N` | indexed decimal, 10 to 24000, log taper | 1000 | live |
+| `gainDb.N` | indexed decimal, -24 to +24 | 0 | live |
+| `q.N` | indexed decimal, 0.1 to 24, log taper | 0.707 | live |
 
-Each band is one biquad from the RBJ Audio EQ Cookbook, with coefficients computed in double precision and state kept
-in a transposed direct form II, one per channel. A band's frequency at or above half the graph rate fails the node with
-`start-failed: freqHz.N <f> is at or above half the graph rate <r>`, because only `configure` knows the rate.
+Each band is a state-variable filter in its topology-preserving (TPT) form, one per channel, with the RBJ Audio EQ
+Cookbook's responses (decision D10). Every code is built with all 8 bands, so `bands` only enables them. While a
+frequency, gain or Q ramps, the band's coefficients are recomputed every 32 frames from the ramped values (and once at
+each block's end), which a TPT filter takes without a burst, as a direct-form biquad does not. A text row is not a
+slice 6 live kind, so `type.N` and `bands` are `.inPlace()` until text rows can be live: the change version swaps in a
+code carrying the old one's filter state, and the code makes the crossfade. A frequency at or above half the graph rate
+is clamped just below it, and the band says so in a status field (slice 5), rather than failing the node: a settings
+change must never stop the audio for a value the code can bound.
 
 ### 4.8 `crossover`
 
 | Row | Kind | Default | Change |
 |---|---|---|---|
-| `freqHz` | decimal, 20 to 20000, log taper | 80 | restart |
-| `slope` | text: `lr2`, `lr4`, `lr8` (12, 24 and 48 dB per octave) | `lr4` | restart |
+| `freqHz` | decimal, 20 to 20000, log taper | 80 | live: both outputs' filters move together, so `low` plus `high` stays flat while it ramps |
+| `slope` | text: `lr2`, `lr4`, `lr8` (12, 24 and 48 dB per octave) | `lr4` | in place: a code that runs the old and new slope for 20 ms and crossfades both outputs |
 
 The banks are `in`, `low` and `high`, each with `channels` members. Linkwitz-Riley: `low` plus `high` sums to an
 allpass, flat in magnitude. A sub and its satellites:
@@ -220,16 +244,18 @@ route xo:high.2 motu:play.2;
 
 | Row | Kind | Default | Change |
 |---|---|---|---|
-| `ms.N` | indexed decimal by `channels`, 0 to 1000 | 0 | restart |
+| `ms.N` | indexed decimal by `channels`, 0 to 1000 | 0 | in place (decision D11) |
 
-It delays each channel by the nearest whole frame. Its delay line is sized in `configure`. It declares
-`Latency{min, max}` on `in` to `out`, the smallest and largest of its channels' delays (decision D6). A live change
-would need a varispeed or a crossfade to avoid a click, which waits for a user who needs it.
+It delays each channel by the nearest whole frame. It declares `Latency{min, max}` on `in` to `out`, the smallest and
+largest of its channels' delays (decision D6). A change of delay changes that latency, which only a change version can
+declare, so `ms.N` is `.inPlace()` rather than live. The delay line is sized for the row's maximum when the node is
+configured and kept by the instance, not the code, so the change version swaps in a code that reads the same line from a
+new tap and crossfades from the old tap over 20 ms: no gap and no click (decision D11).
 
 ### 4.10 `tone`
 
 Rows: `freqHz` (decimal, 10 to 24000, default 1000, live with a log ramp), `levelDb` (decimal, -90 to 0, default
--20, live) and `channels`. It is the worked example's sine, made a type, with the same phase rule.
+-20, live) and `channels` (reshape in place). It is the worked example's sine, made a type, with the same phase rule.
 
 ## 5. Shared DSP: the `ear_dsp` package
 
@@ -238,7 +264,7 @@ share goes in a package below them, as `ear_mdns` sits below `sendspin` and `air
 
 | Target | Owns | Never |
 |---|---|---|
-| `ear_dsp` (`src/dsp`) | Realtime-safe building blocks, all `noexcept` and allocation-free after construction: dB and factor conversion; `Biquad` (the RBJ designs, cascades, Linkwitz-Riley as cascaded Butterworth); `PeakFollower` (attack and release coefficients from milliseconds at a `SampleRate`); `GainComputer` (threshold, ratio, soft knee); `DelayLine` (fixed size, given at construction); `EqualPowerFade` | A thread, a clock, PipeWire, or anything of ear's but `ear_core`'s `SampleRate` and `FrameClock` |
+| `ear_dsp` (`src/dsp`) | Realtime-safe building blocks, all `noexcept` and allocation-free after construction: dB and factor conversion; `Svf` (a TPT state-variable filter with the RBJ responses, safe to retune per sub-block; cascades; Linkwitz-Riley as cascaded Butterworth); `TapCrossfade` (two read taps on a `DelayLine`, crossfaded); `PeakFollower` (attack and release coefficients from milliseconds at a `SampleRate`); `GainComputer` (threshold, ratio, soft knee); `DelayLine` (fixed size, given at construction); `EqualPowerFade` | A thread, a clock, PipeWire, or anything of ear's but `ear_core`'s `SampleRate` and `FrameClock` |
 
 The rules that apply to it:
 
@@ -264,8 +290,11 @@ tested through `TypeHarness`. `ear_dsp` has its own unit tests.
 | `compressor`: static curve | Steady sines at levels across the knee come out on the computed curve within 0.1 dB. The `key` bank drives it while `in` is constant |
 | `gate`: open, hold, close, hysteresis | A burst opens it, the hold keeps it open, silence closes it. A level between the two thresholds doesn't chatter |
 | `eq`: each band type | The magnitude at f0 and at two other frequencies matches the analytic response of the cookbook's transfer function within 0.01 dB |
+| `eq`: retuned while playing | A sine through a band swept from 20 Hz to 20 kHz over 1 s, and its Q from 0.1 to 24, never steps by more than the steady response allows and never exceeds the larger of the two steady outputs by more than 0.1 dB; a band added, removed and its type changed each crossfade in 20 ms with no step |
 | `crossover`: flat sum | `low` plus `high` for white noise has a flat magnitude within 0.01 dB. Each output is down 6 dB at the crossover frequency for an LR filter |
 | `delay`: exact frames | An impulse comes out at exactly `round(ms × rate / 1000)` frames on each channel, and the declared latency is `{min, max}` |
+| `delay` and `limiter`: changed in place | A sine through a change of `ms.1` (and of `lookaheadMs`) stays continuous: no sample steps further than the 20 ms crossfade allows, the node goes `reconfiguring` and back to `running`, never `stopping`, and the declared latency moves at the commit point |
+| Reshapes in place | `mix` from 2 inputs to 3 and back, and `gain` from 2 channels to 4 and back: the inputs and channels that stay play on with no gap, never `stopping` |
 | All types | The all-type tests (`test/nodes/`) through `validSettings`: every output written, settings refusals in order |
 
 ## 7. What it changes in the built system
@@ -276,7 +305,8 @@ it draws any type, and from slice 5 on it renders the schema's live rows as fade
 ([control-plane.md](control-plane.md), 8.2). A type folder registers itself
 ([writing-a-node-type.md](../writing-a-node-type.md#layout-and-registration)), so nothing else names it.
 
-The extensions this page makes to the slice 6 design: live booleans (D7), and `gain`'s `mute` and `invert.N` rows.
+The extensions this page makes to the slice 6 design: live booleans (D7), `gain`'s `mute` and `invert.N` rows, and
+`gain`'s `channels` as a reshape in place.
 
 ## 8. Order of work
 
@@ -285,14 +315,18 @@ inputs and channels. Decimals and indexed rows are slice 6.1's row kinds, which 
 Volume, mute and selection only make sense live, which needs all of slice 6 and therefore slices 3d and 5. Proposed
 order:
 
-1. **Row kinds, restart-only.** Pull forward slice 6.1's `setting::decimal` and `setting::indexed`, without `.live`:
+1. **Row kinds, not yet live.** Pull forward slice 6.1's `setting::decimal` and `setting::indexed`, without `.live`:
    the settings walk, `SettingKind::decimal`, the graph file's reading and writing of decimals, `types.get`'s kinds,
    and the compile-fail cases. This touches the wire (a new setting kind), so `docs/control-port.md`, `test/protocol/`
    and `web/src/protocol.ts` change with it ([control-port.md](../control-port.md#changing-the-wire)).
-2. **`ear_dsp` and the set-and-forget types:** `delay`, `crossover`, `eq`, `limiter`, `compressor`, `gate` and `tone`,
-   every row restart-only. This is speaker management: useful now, and a change costs only a 5 ms fade on each side.
-3. **With slice 6:** `gain` (as designed, plus D7), `mix` and `select`. The rows of step 2's types that this page marks
-   live become `.live`. That change is additive: a row that becomes live breaks no graph file and no client.
+2. **`ear_dsp` and the speaker types:** `delay`, `crossover`, `eq`, `limiter`, `compressor`, `gate` and `tone`, with
+   no row restarting (M3). Until slice 6 there are no live rows, so every row this page marks live is `.inPlace()` for
+   now: its change version swaps in a code carrying the old one's state, and the code ramps from the old values to the
+   new over the row's smoothing itself, with no hold. The rows marked in place, and the reshapes, are built as they
+   will stay.
+3. **With slice 6:** `gain` (as designed, plus D7), `mix` and `select`, and step 2's live rows become `.live`, the
+   framework's ramp taking over from the code's. That change is additive: a row that becomes live breaks no graph file
+   and no client.
 
 ## 9. Decisions taken, and open questions
 
@@ -308,13 +342,16 @@ order:
 | D6 | A limiter's lookahead and a delay's delay are declared latency on `in` to `out` | Both really hold audio, and sinks and sources downstream stamp and buffer by declared latency ([engine.md](../engine.md#latency-per-bank-pair)) |
 | D7 | A live boolean ramps from 0 to 1 over its smoothing, and the code multiplies by it | Mute and polarity must be click-free toggles, and a toggle is a boolean in the editor, not a fader |
 | D8 | A sidechain is a `key` input bank that a boolean row adds | A key needs its own routes, and a bank is what routes name |
+| D9 | No row restarts its node: each is live, in place, or a reshape in place, and a row that must restart says why | M3. A restart stops the audio for a change the code can make while it plays |
+| D10 | Filters (`eq`, `crossover`) are TPT state-variable filters with the cookbook's responses, retuned every 32 frames while a parameter ramps | A direct-form biquad whose coefficients move can burst; a TPT filter stays stable and smooth under modulation, with the same steady response |
+| D11 | A change of delay (`delay`'s `ms.N`, `limiter`'s `lookaheadMs`) is in place: a line sized for the maximum, kept by the instance, read from a new tap that crossfades from the old over 20 ms, the new latency declared at the commit point | Declaring latency needs a change version, which a live retune does not call; the crossfade avoids the click a jumping tap makes |
 
-**Open questions for the owner:**
+**The owner's answers (2026-11-24 and 2026-11-25):**
 
-| # | Question | Recommendation |
+| # | Question | Answer |
 |---|---|---|
-| Q1 | Volume and mute are the first thing asked for, and they need slice 6, behind 3d and 5. Should `gain` be built now restart-only (every move of the level is a 5 ms fade out, a gap and a fade in, and the editor shows a number field), or wait for slice 6 while steps 1 and 2 go ahead? | Wait. A restarting fader is a fader nobody wants, and its rows would change kind when slice 6 lands |
-| Q2 | Is 8 the right cap on `mix` and `select` inputs? | 8. More inputs means a second `mix` feeding the first |
-| Q3 | Should `limiter` detect true peaks (4× oversampled, ITU-R BS.1770) rather than sample peaks? | Sample peaks in v1. True peaks matter for lossy re-encoding (`sendspin` out), which can wait for a user |
-| Q4 | Should `eq`'s `freqHz`, `gainDb` and `q` be live (coefficients recomputed per block while they ramp)? | Live `gainDb` only, in step 3. Retuning frequency is a set-up job |
-| Q5 | Should `crossover` be three-way natively (`low`, `mid`, `high`)? | No. Chaining two is exact for Linkwitz-Riley once the low band gets a matching allpass, and that allpass is an `eq` band (`allpass`) |
+| Q1 | Should `gain` be built now restart-only, or wait for slice 6? | Wait for slice 6 (M2) |
+| Q2 | Is 8 the right cap on `mix` and `select` inputs? | 8, as recommended. More inputs means a second `mix` feeding the first |
+| Q3 | Should `limiter` detect true peaks (4× oversampled, ITU-R BS.1770) rather than sample peaks? | No preference; the designer's choice stands: sample peaks in v1. True peaks matter for lossy re-encoding (`sendspin` out), and wait for a user |
+| Q4 | Should `eq`'s `freqHz`, `gainDb` and `q` be live? | All of them, and every other adjustment too: restarts must be justified (M3, D9, D10) |
+| Q5 | Should `crossover` be three-way natively? | No, as recommended. Chaining two is exact for Linkwitz-Riley once the low band gets a matching allpass, which is an `eq` band (`allpass`) |
