@@ -682,9 +682,6 @@ Health derive(const DeriveFacts& f) {
 	if (f.intent == Intent::remove) {
 		h.phase = NodePhase::stopping;
 		h.cause = causeOf(Intent::remove, f.why);
-	} else if (f.predecessor) {
-		h.phase = NodePhase::stopping;
-		h.cause = restarting(f.why);
 	} else if (f.failure || (h.blockLost && !f.disabled)) {
 		h.phase = NodePhase::failed;
 		h.reason = f.failure ? *f.failure : Failure{f.blockLossCode, f.blockLossDetail};
@@ -729,7 +726,6 @@ DeriveFacts NodeAggregate::facts() const {
 	        intent_,
 	        why_,
 	        failure_,
-	        predecessor_,
 	        configuredTold_,
 	        blockLossCode_,
 	        config_.changing() ? changeKeys_ : std::vector<std::string>{},
@@ -868,7 +864,7 @@ void NodeAggregate::converge(Actions& out) {
 		const ConfigState state = config_.state();
 		const BlockState block = block_.state();
 		const bool blockUsable = block == BlockState::made || block == BlockState::ready;
-		if (state == none && !disabled_ && (!failure_ || retryAsked_) && blockUsable && !predecessor_ && !olderNode_ &&
+		if (state == none && !disabled_ && (!failure_ || retryAsked_) && blockUsable && !olderNode_ &&
 		    intent_ != Intent::remove) {
 			retryAsked_ = false;
 			heldFault_.reset();
@@ -934,13 +930,9 @@ Actions NodeAggregate::add(const AddFacts& add) {
 	Actions out;
 	if (block_.state() != BlockState::absent) return out;
 	disabled_ = add.disabled;
-	stopHeld_ = add.stopHeld;
-	predecessor_ = add.predecessor;
 	olderNode_ = add.olderNode;
 	wedged_ = add.wedged;
 	queued_ = add.queued;
-	changedKeys_ = add.keys;
-	if (add.predecessor) why_ = NodeCause{NodeCause::Kind::settings, std::nullopt, add.keys};
 	onBlock(add.wedged       ? BlockEvent::addedWedged
 	        : add.olderBlock ? BlockEvent::addedBehindOlder
 	                         : BlockEvent::added,
@@ -952,21 +944,8 @@ Actions NodeAggregate::add(const AddFacts& add) {
 Actions NodeAggregate::olderDestroyed() {
 	Actions out;
 	if (goneTold_) return out;
-	if (predecessorClosed_) predecessor_ = false;
 	// Told once converged: a successor goes from row 3 straight to configuring.
 	for (BlockAction action : block_.on(BlockEvent::olderDestroyed)) out.emplace_back(action);
-	converge(out);
-	tell(out);
-	return out;
-}
-
-Actions NodeAggregate::predecessorGone() {
-	Actions out;
-	if (goneTold_ || !predecessor_) return out;
-	// Its block's destruction may still be queued: until it ran, this node waits in row 3, never added.
-	predecessorClosed_ = true;
-	if (block_.state() == BlockState::waiting) return out;
-	predecessor_ = false;
 	converge(out);
 	tell(out);
 	return out;
@@ -1150,7 +1129,7 @@ Operated NodeAggregate::restart() {
 		tell(out);
 		return {LifecycleApplied::retry, std::move(out)};
 	}
-	if (intent_ == Intent::restart || predecessor_) return {LifecycleApplied::unchanged, {}};
+	if (intent_ == Intent::restart) return {LifecycleApplied::unchanged, {}};
 	if (health().phase == NodePhase::added)
 		return {std::unexpected(LifecycleRefusal{Code::notRestartable, Reason::notStarted}), {}};
 	// A restart ends a change in place at once, as its fallback; one asked during the commit's invoke waits for it.

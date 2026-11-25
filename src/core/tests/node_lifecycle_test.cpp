@@ -1022,10 +1022,6 @@ TEST_CASE("The phase, state, wanted and cause derived for every combination of t
 	     {.config = ConfigState::fading, .intent = Intent::remove, .failure = failure},
 	     P::stopping,
 	     NodeCause{CK::removing, std::nullopt, {}}},
-		{"a predecessor still tearing down",
-	     {.block = BlockState::waiting, .why = settings, .predecessor = true},
-	     P::stopping,
-	     restarting(settings)},
 		{"a failure, its teardown invisible",
 	     {.config = ConfigState::tearing, .intent = Intent::fail, .failure = failure},
 	     P::failed,
@@ -1120,16 +1116,15 @@ TEST_CASE("The phase, state, wanted and cause derived for every combination of t
 		for (BlockState block : blocks)
 			for (ConfigState config : configs)
 				for (Intent intent : intents)
-					for (int bits = 0; bits < 64; ++bits) {
+					for (int bits = 0; bits < 32; ++bits) {
 						DeriveFacts f{.block = block, .blockLossDetail = "gone", .config = config};
 						f.intent = intent;
 						f.disabled = bits & 1;
 						f.stopHeld = bits & 2;
 						if (bits & 4) f.failure = failure;
-						f.predecessor = bits & 8;
-						f.configuredTold = bits & 16;
-						f.rested = bits & 32;
-						f.stopAsked = config == ConfigState::arming && (bits & 16);
+						f.configuredTold = bits & 8;
+						f.rested = bits & 16;
+						f.stopAsked = config == ConfigState::arming && (bits & 8);
 						const Health h = derive(f);
 						++combinations;
 						INFO("block " << blockStateName(block) << ", configuration " << configStateName(config)
@@ -1150,7 +1145,7 @@ TEST_CASE("The phase, state, wanted and cause derived for every combination of t
 							CHECK((config == ConfigState::changing || config == ConfigState::committing));
 						if (h.phase != NodePhase::reconfiguring) CHECK((h.keys.empty() && h.next.empty()));
 					}
-		CHECK(combinations == 5 * 10 * 6 * 64);
+		CHECK(combinations == 5 * 10 * 6 * 32);
 	}
 }
 
@@ -1866,35 +1861,6 @@ TEST_CASE("A close overdue is leaked, and a restart configures afresh after it",
 	CHECK(p.did(K::closeOverdue));
 	CHECK(p.did(K::leak));
 	CHECK(p.phase() == NodePhase::configuring);
-}
-
-TEST_CASE("A port-caused replace starts in stopping (restarting) and tells no added", "[lifecycle][machines]") {
-	Probe p;
-	p.add({.stopHeld = true, .olderBlock = true, .predecessor = true, .keys = {"channels"}});
-	REQUIRE(p.told.size() == 1);
-	CHECK(p.told[0].phase == NodePhase::stopping);
-	CHECK(p.told[0].cause == NodeCause{NodeCause::Kind::restarting, NodeCause::Kind::settings, {"channels"}});
-	CHECK(p.told[0].wanted == Wanted::stopped); // the predecessor's stop carried
-	CHECK(p.take(p.node.restart()) == ok(LifecycleApplied::unchanged));
-	p.take(p.node.predecessorGone());
-	p.take(p.node.olderDestroyed());
-	CHECK(p.phase() == NodePhase::configuring);
-	CHECK(p.health().cause == NodeCause{NodeCause::Kind::settings, std::nullopt, {"channels"}});
-	p.settle();
-	CHECK(p.phase() == NodePhase::stopped);
-	for (const Health& h : p.told) CHECK(h.phase != NodePhase::added);
-
-	SECTION("its block destroyed before its configuration closed") {
-		Probe q;
-		q.add({.olderBlock = true, .predecessor = true, .keys = {"channels"}});
-		q.take(q.node.olderDestroyed());
-		CHECK(q.didBlock(BlockAction::make));
-		CHECK(q.phase() == NodePhase::stopping);
-		CHECK_FALSE(q.did(K::configure));
-		q.take(q.node.predecessorGone());
-		CHECK(q.phase() == NodePhase::configuring);
-		for (const Health& h : q.told) CHECK(h.phase != NodePhase::added);
-	}
 }
 
 TEST_CASE("An enable during a disable's teardown configures afresh once the old configuration is gone",

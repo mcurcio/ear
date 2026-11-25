@@ -242,7 +242,6 @@ struct DeriveFacts {
 	Intent intent = Intent::none;
 	std::optional<NodeCause> why{}; // a restart's, a retry's or an enable's own kind
 	std::optional<Failure> failure{};
-	bool predecessor = false;
 	bool configuredTold = false;
 	FailureCode blockLossCode = FailureCode::engineRefused; // a block lost by its own bug: lost
 	std::vector<std::string> changeKeys{};                  // changing or committing: the change's keys
@@ -259,12 +258,9 @@ struct Queued {
 };
 struct AddFacts {
 	bool disabled = false;
-	bool stopHeld = false;           // a port-caused replace carries its predecessor's stop
-	bool olderBlock = false;         // an older block of the name still exists (T1)
-	bool predecessor = false;        // this node is a port-caused replace of an older node still tearing down
-	bool olderNode = false;          // an older node of the name is not yet gone: no configure before it is (rule 1)
-	std::vector<std::string> keys{}; // the predecessor's changed keys, for its cause
-	bool wedged = false;             // the data loop was judged wedged
+	bool olderBlock = false; // an older block of the name still exists (T1)
+	bool olderNode = false;  // an older node of the name is not yet gone: no configure before it is (rule 1)
+	bool wedged = false;     // the data loop was judged wedged
 	Queued queued{};
 };
 struct Tell {
@@ -306,9 +302,6 @@ public:
 	Actions add(const AddFacts& facts);
 	// The block's events.
 	Actions olderDestroyed();
-	/// The predecessor of a port-caused replace closed (its configuration none); it is gone once its block, too, is
-	/// destroyed (olderDestroyed), so the successor never shows added.
-	Actions predecessorGone();
 	/// Every older node of the name is gone (its block destroyed and its configuration none): rule 1 may configure.
 	Actions olderNodeGone();
 	Actions blockReady();
@@ -410,8 +403,6 @@ private:
 	bool retryAsked_ = false;
 	std::optional<Failure> heldFault_;
 	FailureCode blockLossCode_ = FailureCode::engineRefused;
-	bool predecessor_ = false;
-	bool predecessorClosed_ = false;
 	bool olderNode_ = false;
 	bool configuredTold_ = false;
 	bool wedged_ = false;
