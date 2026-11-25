@@ -1944,7 +1944,10 @@ struct NodeHost::Impl {
 			std::uint64_t holdsAcked = 0;
 			std::unique_ptr<AudioCode> retiringCode; // the code a change's swap replaces, until the swap completed
 			std::vector<std::uint64_t> retiredIds;   // the engine companions a change replaced: their losses are said
-			bool retiringPrepared = false;           // and whether it was prepared
+			// Per engine companion: the id of the replacement a break last asked for, which its flush item makes. A newer
+			// change that breaks before an older break's flush ran asks for its own; the older item then makes nothing.
+			std::vector<std::uint64_t> replacing;
+			bool retiringPrepared = false; // and whether it was prepared
 
 			Configuration() = default;
 			Configuration(const Configuration&) = delete;
@@ -3547,6 +3550,8 @@ struct NodeHost::Impl {
 								});
 				c.engineAsks[r.index].shape = r.shape;
 				r.id = ++host_.companionIds;
+				if (c.replacing.size() <= r.index) c.replacing.resize(r.index + 1, 0);
+				c.replacing[r.index] = r.id;
 				host_.queue(FlushKind::makeCompanion, name_,
 				            [&host = host_, serial = serial_, generation = c.generation, index = r.index, id = r.id] {
 								if (Node* node = host.find(serial)) node->makeReplacement(generation, index, id);
@@ -3554,10 +3559,12 @@ struct NodeHost::Impl {
 			}
 		}
 
-		/// A flush item: the replacement on engine companion `index` made, unless its configuration moved on.
+		/// A flush item: the replacement on engine companion `index` made, unless its configuration moved on or a newer
+		/// break asked for another in its place (that one's own item makes it, with the shape the ask now has).
 		void makeReplacement(std::uint64_t generation, std::size_t index, std::uint64_t id) {
 			if (host_.wedged || !current(generation) || config_->tearing || !block_ ||
-			    index >= config_->engineCompanions.size() || config_->engineCompanions[index])
+			    index >= config_->engineCompanions.size() || config_->engineCompanions[index] ||
+			    index >= config_->replacing.size() || config_->replacing[index] != id)
 				return;
 			Configuration& c = *config_;
 			auto& companion =

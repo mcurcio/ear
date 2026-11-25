@@ -427,9 +427,11 @@ TEST_CASE("A type's reconfigureDeadline is its spec's", "[reconfigure]") {
 
 namespace reconfigure_test {
 constexpr auto portRow = setting::required("port", setting::number(1, 65535)).inPlace();
+constexpr auto latencyRow = setting::defaulted("latency", setting::number(1, 1000), 100).inPlace();
 constexpr auto fromRtp = bank::insideInput<"from_rtp">;
-constexpr TypeSpec receivingSpec{.settings = SettingsTable<portRow>{"receiving"}, .banks = Banks<out, side, fromRtp>{}};
-constexpr TypeSpec quickSpec{.settings = SettingsTable<portRow>{"quick"},
+constexpr TypeSpec receivingSpec{.settings = SettingsTable<portRow, latencyRow>{"receiving"},
+                                 .banks = Banks<out, side, fromRtp>{}};
+constexpr TypeSpec quickSpec{.settings = SettingsTable<portRow, latencyRow>{"quick"},
                              .banks = Banks<out, side, fromRtp>{},
                              .lifecycle = Lifecycle{.reconfigureDeadline = std::chrono::seconds(30)}};
 
@@ -441,7 +443,7 @@ template <const auto& Spec> struct Receiving {
 		                        .port = static_cast<std::uint16_t>(s.template get<portRow>()),
 		                        .encoding = RtpEncoding::l24,
 		                        .rate = format.rate,
-		                        .latencyMs = 100};
+		                        .latencyMs = static_cast<std::uint32_t>(s.template get<latencyRow>())};
 	}
 	Configured configure(CreateOf<Spec>& cx, const Checked& s) {
 		cx.attach(fromRtp, receiverFor(s, cx.format()));
@@ -564,6 +566,26 @@ TEST_CASE("A change not ready by its deadline falls back: 10 s, or the 30 s its 
 		h->advance(std::chrono::seconds(1));
 		CHECK(fellBackReason(h.node()) == NodeCause::FellBack::deadline);
 	}
+}
+
+TEST_CASE("A newer change that breaks before the older one's flush ran makes only its own replacement, and commits",
+          "[reconfigure][replacement][supersede]") {
+	auto owned = receiving(manual());
+	auto& h = *owned;
+	h.change({{"port", 5006}});
+	REQUIRE(h->phase() == "reconfiguring");
+	// The hold's acknowledgement breaks the first change; the second, on the same port (its claims all the
+	// configuration's), reached the main loop before that break's flush ran, so it breaks at once too.
+	h->acknowledgeHoldsThenChange({{"port", 5006}, {"latency", 200}});
+	CHECK(said(h.node(), "ear.reconfigure-superseded"));
+	REQUIRE(receiversMade(h.node()) == 2); // the first change's replacement is never made
+	CHECK(h->companions()[0].destroyed);
+	const auto& made = h->companion("from_rtp");
+	CHECK(portOf(made) == 5006);
+	CHECK(std::get<RtpReceiverShape>(made.shape).latencyMs == 200);
+	h->ready("from_rtp");
+	CHECK(h->phase() == "running");
+	CHECK_FALSE(fellBackReason(h.node()));
 }
 
 TEST_CASE("Supersession while a replacement is pending makes the newest, keeping the hold",

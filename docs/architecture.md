@@ -588,7 +588,9 @@ not, last. The old one is retiring meanwhile: its loss is `ear.retiring-lost`. M
 
 A change that ends without committing (superseded, stopped, failed or fallen back) destroys its
 staged posts unrun and releases its new code and the ports a replacement not yet made was
-granted (a replacement already made stays the bank's companion, its ports the configuration's);
+granted (a replacement already made stays the bank's companion, its ports the configuration's;
+one broken but not yet made, its flush still to run, is made only if no newer change broke the
+same bank first: the newest break's replacement is the one made);
 its holds stay until the next commit or the silence. A supersession says `ear.reconfigure-superseded`, a fallback
 `ear.reconfigure-fell-back` before its `stopping` ([output-records.md](output-records.md#diagnostic)).
 

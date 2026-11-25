@@ -1402,6 +1402,23 @@ NodeCounts NodeHarness::counts() const {
 GraphCounts NodeHarness::graphCounts() const noexcept { return impl_->cuts.counts(); }
 
 NodeOutcome NodeHarness::change(const NodeSettings& settings) {
+	const NodeOutcome outcome = changeTo(settings);
+	impl_->settle();
+	return outcome;
+}
+
+NodeOutcome NodeHarness::acknowledgeHoldsThenChange(const NodeSettings& settings) {
+	const std::uint64_t acknowledged = impl_->holdRamp.notProcessing();
+	if (acknowledged == 0) throw std::logic_error("no hold is waiting");
+	impl_->ackHolds(acknowledged);
+	// The change's input queued behind the acknowledgements, ahead of what their turn posts.
+	std::optional<NodeOutcome> outcome;
+	impl_->executor.post([&] { outcome = changeTo(settings); });
+	impl_->settle();
+	return *outcome;
+}
+
+NodeOutcome NodeHarness::changeTo(const NodeSettings& settings) {
 	impl_->requireAdded();
 	auto parsed = impl_->type.parse(impl_->options.node, settings);
 	if (!parsed) throw std::logic_error("change() with settings the type refuses: " + parsed.error().detail);
@@ -1416,7 +1433,6 @@ NodeOutcome NodeHarness::change(const NodeSettings& settings) {
 	impl_->buffers();
 	const NodeOutcome outcome = outcomeFor(impl_->type, keys, impl_->disabled, impl_->disabled);
 	impl_->host->nodeChanged(impl_->spec(impl_->disabled), impl_->config, NodeChange{outcome, keys});
-	impl_->settle();
 	return outcome;
 }
 

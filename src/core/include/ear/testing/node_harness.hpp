@@ -307,6 +307,10 @@ public:
 	/// else it waits on what the test completes (acknowledgeHolds, completeBarrier, ready, advance past its deadline).
 	/// std::logic_error for settings the type refuses.
 	NodeOutcome change(const NodeSettings& settings);
+	/// With autoComplete off: every hold waiting acknowledged, as acknowledgeHolds, and a change to `settings`, as
+	/// change, queued on the main loop right behind the acknowledgements, so it runs after them and before anything
+	/// their turn posts (a change that reached the main loop while a hold's acknowledgement was on its way).
+	NodeOutcome acknowledgeHoldsThenChange(const NodeSettings& settings);
 	LifecycleReply stop();    // NodeOperations::stop
 	LifecycleReply start();   // NodeOperations::start
 	LifecycleReply restart(); // NodeOperations::restart
@@ -376,6 +380,7 @@ public:
 	void programExited(std::size_t index, ProgramExit exit);
 
 private:
+	NodeOutcome changeTo(const NodeSettings& settings); // change's, unsettled
 	struct Impl;
 	std::unique_ptr<Impl> impl_;
 };
