@@ -1,5 +1,6 @@
 #include "status_book.hpp"
 #include <algorithm>
+#include <bit>
 #include <format>
 #include <utility>
 namespace ear {
@@ -84,6 +85,95 @@ std::string safeText(std::string_view text, std::size_t maxBytes) {
 } // namespace ear
 
 namespace ear::detail {
+
+StatusValue realtimeValue(const StatusDeclaration& field, std::uint64_t bits) {
+	switch (field.kind) {
+	case ValueKind::flag:
+		return bits != 0;
+	case ValueKind::wholeNumber:
+		return std::bit_cast<std::int64_t>(bits);
+	case ValueKind::decimal:
+		return std::bit_cast<double>(bits);
+	case ValueKind::choice:
+		if (bits < field.values.size()) return std::string(field.values[bits]);
+		return std::monostate{};
+	case ValueKind::text:
+		break;
+	}
+	return std::monostate{};
+}
+
+StatusValue realtimeValue(const ArgDeclaration& arg, std::uint64_t bits) {
+	switch (arg.kind) {
+	case ValueKind::flag:
+		return bits != 0;
+	case ValueKind::wholeNumber:
+		return std::bit_cast<std::int64_t>(bits);
+	case ValueKind::decimal:
+		return std::bit_cast<double>(bits);
+	case ValueKind::choice:
+		if (bits < arg.values.size()) return std::string(arg.values[bits]);
+		return std::monostate{};
+	case ValueKind::text:
+		break;
+	}
+	return std::monostate{};
+}
+
+std::string filledSentence(std::string_view sentence, std::span<const ArgDeclaration> args,
+                           std::span<const StatusValue> values) {
+	std::string filled;
+	for (std::size_t at = 0; at < sentence.size(); ++at) {
+		if (sentence[at] != '{') {
+			filled += sentence[at];
+			continue;
+		}
+		const std::size_t end = sentence.find('}', at);
+		const std::string_view place = sentence.substr(at + 1, end - at - 1);
+		for (std::size_t one = 0; one < args.size() && one < values.size(); ++one)
+			if (args[one].name == place) filled += valueText(values[one], args[one].decimals);
+		at = end;
+	}
+	return filled;
+}
+
+namespace {
+std::string rangeText(const ArgDeclaration& arg, std::uint64_t bits) {
+	if (arg.kind == ValueKind::wholeNumber)
+		return std::format("{} is outside {} to {}", std::bit_cast<std::int64_t>(bits), arg.low, arg.high);
+	if (arg.kind == ValueKind::decimal) return "is not a finite number";
+	return std::format("choice {} is not one of its values", bits);
+}
+} // namespace
+
+std::string brokenRule(const RealtimeBroken& broken, std::span<const StatusDeclaration* const> fields,
+                       std::span<const EventDeclaration> events, std::span<const LogCodeDeclaration> codes) {
+	switch (broken.kind) {
+	case RealtimeRecord::Kind::status: {
+		if (broken.index >= fields.size()) break;
+		const StatusDeclaration& field = *fields[broken.index];
+		const std::string name(field.name);
+		if (field.kind == ValueKind::wholeNumber)
+			return std::format("status {}: {} is outside {} to {}", name, std::bit_cast<std::int64_t>(broken.bits),
+			                   field.low, field.high);
+		if (field.kind == ValueKind::decimal)
+			return std::format("status {}: {} is outside {} to {}", name,
+			                   valueText(std::bit_cast<double>(broken.bits), field.decimals),
+			                   valueText(field.lowDecimal, field.decimals),
+			                   valueText(field.highDecimal, field.decimals));
+		return std::format("status {}: choice {} is not one of its values", name, broken.bits);
+	}
+	case RealtimeRecord::Kind::event:
+		if (broken.index >= events.size() || broken.arg >= events[broken.index].args.size()) break;
+		return std::format("event {}: {} {}", events[broken.index].code, events[broken.index].args[broken.arg].name,
+		                   rangeText(events[broken.index].args[broken.arg], broken.bits));
+	case RealtimeRecord::Kind::log:
+		if (broken.index >= codes.size() || broken.arg >= codes[broken.index].args.size()) break;
+		return std::format("log {}: {} {}", codes[broken.index].code, codes[broken.index].args[broken.arg].name,
+		                   rangeText(codes[broken.index].args[broken.arg], broken.bits));
+	}
+	return "the code wrote a value its spec does not declare";
+}
 
 bool ReportQueue::push(ReportRecord record) {
 	const std::scoped_lock lock(mutex_);
@@ -183,18 +273,7 @@ void StatusBook::raise(const ReportRecord& record, StatusClock::time_point now, 
 	RaisedEvent event{.code = declared.code, .severity = declared.severity, .args = {}, .msg = {}, .at = record.at};
 	for (std::size_t at = 0; at < declared.args.size() && at < record.args.size(); ++at)
 		event.args.push_back({declared.args[at].name, record.args[at]});
-	const std::string_view sentence = declared.sentence;
-	for (std::size_t at = 0; at < sentence.size(); ++at) {
-		if (sentence[at] != '{') {
-			event.msg += sentence[at];
-			continue;
-		}
-		const std::size_t end = sentence.find('}', at);
-		const std::string_view place = sentence.substr(at + 1, end - at - 1);
-		for (std::size_t one = 0; one < declared.args.size() && one < record.args.size(); ++one)
-			if (declared.args[one].name == place) event.msg += valueText(record.args[one], declared.args[one].decimals);
-		at = end;
-	}
+	event.msg = filledSentence(declared.sentence, declared.args, record.args);
 	out.raised(event);
 }
 
@@ -209,13 +288,13 @@ void StatusBook::apply(std::deque<ReportRecord> records, std::uint64_t queueDrop
 			if (field.value == record.value) break; // no change: no record, no transition
 			field.value = std::move(record.value);
 			field.marked = true;
-			written(field, record.at, out);
-			flapped(field, record.at, out);
+			written(field, record.realtime ? now : record.at, out);
+			if (!record.realtime) flapped(field, record.at, out);
 			break;
 		}
 		case ReportRecord::Kind::event:
 			flush(out);
-			raise(record, record.at, out);
+			raise(record, record.realtime ? now : record.at, out);
 			break;
 		case ReportRecord::Kind::lost:
 			flush(out);
@@ -223,7 +302,16 @@ void StatusBook::apply(std::deque<ReportRecord> records, std::uint64_t queueDrop
 			break;
 		}
 	}
-	static_cast<void>(now);
+}
+
+void StatusBook::transitions(std::size_t index, std::uint32_t count, StatusClock::time_point now,
+                             StatusBookEvents& out) {
+	if (index >= fields_.size()) return;
+	for (std::uint32_t one = 0; one < count; ++one) flapped(fields_[index], now, out);
+}
+
+void StatusBook::realtimeDropped(const std::array<std::uint64_t, 3>& dropped) {
+	for (std::size_t kind = 0; kind < dropped.size(); ++kind) realtimeDropped_[kind] += dropped[kind];
 }
 
 void StatusBook::dropsSaid(StatusClock::time_point now, StatusBookEvents& out) {
@@ -246,6 +334,19 @@ void StatusBook::dropsSaid(StatusClock::time_point now, StatusBookEvents& out) {
 		               .detail = std::format("{} status {} held back by a field's pace", held,
 		                                     held == 1 ? "record was" : "records were"),
 		               .fields = {{"count", held}}});
+	}
+	const std::uint64_t realtime = realtimeDropped_[0] + realtimeDropped_[1] + realtimeDropped_[2];
+	if (realtime > 0 && mayTell(realtimeSaid_)) {
+		const std::array<std::uint64_t, 3> dropped = std::exchange(realtimeDropped_, {});
+		realtimeSaid_ = now;
+		out.diagnosed({.code = "ear.records-dropped",
+		               .subject = "realtime",
+		               .detail = std::format("{} {} for the node's realtime ring", realtime,
+		                                     realtime == 1 ? "record had no room" : "records had no room"),
+		               .fields = {{"count", static_cast<std::int64_t>(realtime)},
+		                          {"status", static_cast<std::int64_t>(dropped[0])},
+		                          {"events", static_cast<std::int64_t>(dropped[1])},
+		                          {"logs", static_cast<std::int64_t>(dropped[2])}}});
 	}
 	if (queueDropped_ > 0 && mayTell(queueSaid_)) {
 		const auto dropped = static_cast<std::int64_t>(std::exchange(queueDropped_, 0));
@@ -309,6 +410,8 @@ std::optional<StatusClock::time_point> StatusBook::due() const {
 	if (eventsHeld_ > 0) sooner(eventsSaid_ ? *eventsSaid_ + refill : StatusClock::time_point{});
 	if (statusHeld_ > 0) sooner(statusSaid_ ? *statusSaid_ + refill : StatusClock::time_point{});
 	if (queueDropped_ > 0) sooner(queueSaid_ ? *queueSaid_ + refill : StatusClock::time_point{});
+	if (realtimeDropped_[0] + realtimeDropped_[1] + realtimeDropped_[2] > 0)
+		sooner(realtimeSaid_ ? *realtimeSaid_ + refill : StatusClock::time_point{});
 	return soonest;
 }
 

@@ -72,6 +72,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cassert>
 #include <deque>
 #include <map>
@@ -374,13 +375,15 @@ struct NodeHost::Impl {
 		/// Records of `channel`, the current configuration's, are waiting: drained at once (a loss behind them), or at
 		/// the next tick.
 		void reportsDue(Channel& channel, bool now) {
-			if (now) return drainReports(channel);
+			if (now)
+				return drainReports(channel,
+				                    config_ && config_->channel.get() == &channel ? config_->realtime.get() : nullptr);
 			host_.statusDirty();
 		}
 		/// The tick (Impl::tickStatus): the current configuration's records drained, then the book's own paces.
 		void statusTick(std::chrono::steady_clock::time_point now) {
 			if (!book_) return;
-			if (config_ && config_->channel) drainReports(*config_->channel);
+			if (config_ && config_->channel) drainReports(*config_->channel, config_->realtime.get());
 			BookOut out(*this, nullptr);
 			book_->tick(now, out);
 		}
@@ -603,6 +606,7 @@ struct NodeHost::Impl {
 		AudioFormat format() const override { return host_.format; }
 		const NodeName& node() const override { return name_; }
 		const Ports& ports() const override { return ports_; }
+		RealtimeChannels* realtime() const override { return config_ ? config_->realtime.get() : nullptr; }
 		/// An engine companion (docs/writing-a-node-type.md#engine-companions), its bank's rule its shape's: a sound
 		/// card on an inside bank of either direction, an RTP receiver or a pipe receiver on an inside input bank. A
 		/// pipe receiver's FIFO is the configuration's runtime path "<bank>.fifo", named in what this returns; a host
@@ -856,20 +860,132 @@ struct NodeHost::Impl {
 				if (!superseded_ || listener->hearsSuperseded()) heard.push_back(listener);
 			return heard;
 		}
-		/// Every record `channel` holds, in order, into the book.
-		void drainReports(Channel& channel) {
+		/// Every record `channel` holds, in order, into the book: the realtime ring's first (its log records to the
+		/// log's sinks), then the queue's, then each rt field's word sampled, its transitions since the last sample
+		/// counted, and a value the code broke its declaration with failing the node, last
+		/// (docs/architecture.md#the-realtime-channels).
+		void drainReports(Channel& channel, RealtimeChannels* realtime) {
 			if (!book_) return;
 			BookOut out(*this, &channel);
-			std::deque<detail::ReportRecord> records = channel.queue().take();
+			const auto now = host_.timers.now();
+			std::deque<detail::ReportRecord> records;
+			std::vector<std::pair<std::size_t, std::uint32_t>> transitions;
+			std::optional<RealtimeChannels::Taken> taken;
+			const NodeConfig* declared = config_ ? config_->config.get() : nullptr;
+			if (realtime != nullptr && declared != nullptr) {
+				taken = realtime->take();
+				ringRecords(channel, *declared, taken->records, records);
+			}
+			std::deque<detail::ReportRecord> queued = channel.queue().take();
+			for (detail::ReportRecord& record : queued) records.push_back(std::move(record));
 			const std::uint64_t dropped = channel.queue().takeDropped();
-			if (records.empty() && dropped == 0) return;
-			book_->apply(std::move(records), dropped, host_.timers.now(), out);
+			if (taken) {
+				const std::span<const StatusDeclaration* const> fields = declared->statusDeclared();
+				for (std::size_t field = 0; field < fields.size() && field < realtime->fields(); ++field) {
+					if (fields[field]->writer.kind != writer::Writer::Kind::rt) continue;
+					const std::optional<RealtimeChannels::Sampled> sampled = realtime->sample(field);
+					if (!sampled) continue;
+					records.push_back({.kind = detail::ReportRecord::Kind::status,
+					                   .index = field,
+					                   .value = detail::realtimeValue(*fields[field], sampled->bits),
+					                   .at = now,
+					                   .realtime = true});
+					transitions.emplace_back(field, sampled->transitions);
+				}
+				if (taken->broken)
+					records.push_back({.kind = detail::ReportRecord::Kind::lost,
+					                   .detail = detail::brokenRule(*taken->broken, fields, declared->eventsDeclared(),
+					                                                declared->logCodesDeclared()),
+					                   .at = now});
+				book_->realtimeDropped(taken->dropped);
+			}
+			if (records.empty() && dropped == 0 && transitions.empty()) return;
+			book_->apply(std::move(records), dropped, now, out);
+			for (const auto& [field, count] : transitions) book_->transitions(field, count, now, out);
+		}
+		/// A configuration's realtime channels, when its type's code may write any (an rt field, an event, a log code):
+		/// each rt field's word starting at the field's initial value.
+		static std::unique_ptr<RealtimeChannels> realtimeChannels(const NodeConfig& config, RealtimeBell* bell) {
+			const std::span<const StatusDeclaration* const> fields = config.statusDeclared();
+			const bool rt = std::ranges::any_of(
+				fields, [](const StatusDeclaration* field) { return field->writer.kind == writer::Writer::Kind::rt; });
+			if (!rt && config.eventsDeclared().empty() && config.logCodesDeclared().empty()) return nullptr;
+			std::vector<RealtimeChannels::Initial> initial;
+			initial.reserve(fields.size());
+			for (const StatusDeclaration* field : fields) {
+				RealtimeChannels::Initial one{.known = !field->initialUnknown};
+				switch (field->kind) {
+				case ValueKind::flag:
+					one.bits = field->initialFlag ? 1 : 0;
+					break;
+				case ValueKind::wholeNumber:
+					one.bits = std::bit_cast<std::uint64_t>(field->initialNumber);
+					break;
+				case ValueKind::decimal:
+					one.bits = std::bit_cast<std::uint64_t>(field->initialDecimal);
+					break;
+				case ValueKind::choice:
+					one.bits = field->initialChoice;
+					break;
+				case ValueKind::text:
+					one.known = false;
+					break;
+				}
+				initial.push_back(one);
+			}
+			return std::make_unique<RealtimeChannels>(std::move(initial), bell);
+		}
+		/// The ring's records as the book reads them, each stamped with its cycle's start; a log record written to the
+		/// log's sinks here, through the configuration's handle (its source the type, its topic the code).
+		void ringRecords(Channel& channel, const NodeConfig& declared, const std::vector<RealtimeRecord>& ring,
+		                 std::deque<detail::ReportRecord>& records) {
+			const std::span<const StatusDeclaration* const> fields = declared.statusDeclared();
+			const std::span<const EventDeclaration> events = declared.eventsDeclared();
+			const std::span<const LogCodeDeclaration> codes = declared.logCodesDeclared();
+			for (const RealtimeRecord& record : ring) {
+				const auto at = std::chrono::steady_clock::time_point(std::chrono::nanoseconds(record.startNs));
+				switch (record.kind) {
+				case RealtimeRecord::Kind::status:
+					if (record.index >= fields.size()) break;
+					records.push_back({.kind = detail::ReportRecord::Kind::status,
+					                   .index = record.index,
+					                   .value = detail::realtimeValue(*fields[record.index], record.values[0]),
+					                   .at = at,
+					                   .realtime = true});
+					break;
+				case RealtimeRecord::Kind::event: {
+					if (record.index >= events.size()) break;
+					const EventDeclaration& event = events[record.index];
+					std::vector<StatusValue> args;
+					for (std::size_t one = 0; one < event.args.size() && one < record.count; ++one)
+						args.push_back(detail::realtimeValue(event.args[one], record.values[one]));
+					records.push_back({.kind = detail::ReportRecord::Kind::event,
+					                   .index = record.index,
+					                   .args = std::move(args),
+					                   .at = at,
+					                   .realtime = true});
+					break;
+				}
+				case RealtimeRecord::Kind::log: {
+					if (record.index >= codes.size()) break;
+					const LogCodeDeclaration& code = codes[record.index];
+					std::vector<StatusValue> args;
+					for (std::size_t one = 0; one < code.args.size() && one < record.count; ++one)
+						args.push_back(detail::realtimeValue(code.args[one], record.values[one]));
+					channel.log(LogEntry{.level = code.level,
+					                     .source = {},
+					                     .text = detail::filledSentence(code.sentence, code.args, args),
+					                     .topic = std::string(code.code)});
+					break;
+				}
+				}
+			}
 		}
 		/// The configuration closed (or failed to start, or is leaked): its last records drained, nothing more of it
 		/// reaches the node, then the status view returns to every initial value (docs/architecture.md#status-and-events).
 		/// `repointed`: its channel is detached by its LeakedRecord's repoint instead.
 		void closeStatus(Configuration& c, bool repointed = false) {
-			drainReports(*c.channel);
+			drainReports(*c.channel, c.realtime.get());
 			if (!repointed) c.channel->detach();
 			if (!book_) return;
 			BookOut out(*this, nullptr);
@@ -1054,6 +1170,9 @@ struct NodeHost::Impl {
 			AudioFormat format() const override { return node_.host_.format; }
 			const NodeName& node() const override { return node_.name_; }
 			const Ports& ports() const override { return node_.ports_; }
+			RealtimeChannels* realtime() const override {
+				return node_.config_ ? node_.config_->realtime.get() : nullptr;
+			}
 			void postToLoop(std::size_t loop, std::move_only_function<void(void*)> work) override {
 				checked("post", [&] {
 					if (loop >= node_.config_->loops.size()) throw std::logic_error("a post to a loop not declared");
@@ -2068,6 +2187,10 @@ struct NodeHost::Impl {
 			std::uint64_t generation = 0;
 			std::shared_ptr<const NodeConfig> config;
 			std::shared_ptr<Channel> channel;
+			// What its code writes on the realtime thread (docs/architecture.md#the-realtime-channels): freed after the
+			// code (teardown step 5); a code a change swaps in is bound to the same ones. None for a type whose code
+			// writes nothing there.
+			std::unique_ptr<RealtimeChannels> realtime;
 			std::unique_ptr<Context> context;
 			// Each declared store: a loop's state, a sink's consumer or the instance may hold it, so it goes after all
 			// of them (teardown step 5); its jobs hold only its state.
@@ -2845,6 +2968,7 @@ struct NodeHost::Impl {
 			adoptPorts(); // a restart's reshape: the block, silent, takes the new ports before configure sees them
 			c.ports = ports_;
 			c.channel = std::make_shared<Channel>(*this, host_.mainLoop, host_.timers, name_, type_, host_.logSinks);
+			c.realtime = realtimeChannels(*c.config, host_.realtimeBell);
 			c.context = std::make_unique<Context>(host_.format, name_, *c.channel, c.loops);
 			c.fadedCount = ports_.outputs().size() + ports_.insideOutputs().size();
 			c.faded = std::make_unique<bool[]>(c.fadedCount);
@@ -5210,6 +5334,7 @@ struct NodeHost::Impl {
 	std::vector<NodeNoteListener*> noteListeners;
 	std::vector<NodeDiagnosticListener*> diagnosticListeners;
 	std::vector<NodeStatusListener*> statusListeners;
+	RealtimeBell* realtimeBell = nullptr; // what every configuration's code rings (ringWith); none: the tick alone
 	/// The status tick (docs/architecture.md#status-and-events): at most one per statusTickPace, armed only when a node
 	/// has records waiting or something due.
 	std::unique_ptr<Timer> statusTimer;
@@ -5549,6 +5674,10 @@ void NodeHost::subscribeDiagnostics(NodeDiagnosticListener& listener) {
 }
 
 void NodeHost::subscribeStatus(NodeStatusListener& listener) { impl_->statusListeners.push_back(&listener); }
+
+void NodeHost::ringWith(RealtimeBell& bell) { impl_->realtimeBell = &bell; }
+
+void NodeHost::realtimeRung() { impl_->statusDirty(); }
 
 void NodeHost::drainStatus() {
 	impl_->statusTimer.reset();

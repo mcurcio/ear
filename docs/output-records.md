@@ -122,7 +122,9 @@ When a configuration closes, fails to start or is leaked, one record with `reset
 Something a node says happened ([writing-a-node-type.md](writing-a-node-type.md#events)): its
 `code`, `severity` (`info`, `warn`, `error`) and `args` by name, and `msg` its sentence with each
 place filled. Paced per node: 32 at once, then one a second, those held back counted in
-`ear.events-dropped`.
+`ear.events-dropped`. Its `t`, as every record's, is when it was written; the wire's
+`node.eventRaised` carries when the event was, which for one raised from the node's code is its
+cycle's start ([control-port.md](control-port.md#status)).
 
 ### `graph-file`
 
@@ -148,7 +150,9 @@ write's failure as ear exits, which reaches nowhere else.
 
 Free text from a source: `stdout` and `stderr` (captured, below), `pipewire` (with its `topic`),
 `alsa-lib`, `ear` (a type's hook or consumer that threw during a teardown), a type's name (the boot sweep's report
-of a store's file it could not narrow, such as a `sendspin` key file), or a node's program's name: each line its
+of a store's file it could not narrow, such as a `sendspin` key file, and each line its code writes from `process`
+by a log code, with the code as `topic`: [writing-a-node-type.md](writing-a-node-type.md#log-codes)), or a node's
+program's name: each line its
 [program](writing-a-node-type.md#programs) writes, with `topic` `stdout` (level `info`) or `stderr` (`warn`) and
 `node` set, cut at 1024 bytes. `level` is `debug`, `info`, `warn` or `error`; captured `stderr`
 is `warn`, `stdout` `info`. A line longer than its bound (4096 bytes) is cut and marked `cut`.
@@ -186,7 +190,7 @@ and `count` after `code`:
 | `ear.loop-slow` | `ms` | One of the node's strand loops (its subject) ran one handler past 100 ms (`detail`: `loop <name> ran one handler for <ms> ms`); once per loop and configuration ([writing-a-node-type.md](writing-a-node-type.md#loops)) |
 | `ear.status-flapping` | `transitions`, `windowMs` | A condition, its subject a status field: the field changed more than its `flapsAbove` times (`transitions`) within `windowMs`; active when it crosses, said again at most once a window while it stays above, inactive once a whole window passed with it at or below ([architecture.md](architecture.md#rates-and-bounds)) |
 | `ear.events-dropped` | `heldBack` | The node's events held back by its event pace since the last such record; at most once a second |
-| `ear.records-dropped` | `count` | Subject `status`: status records held back by a field's pace (a trailing record follows); subject `queue`: records a configuration's full queue had no room for. At most once a second per subject |
+| `ear.records-dropped` | `count`; subject `realtime` also `status`, `events`, `logs` | Subject `status`: status records held back by a field's pace (a trailing record follows); subject `queue`: records a configuration's full queue had no room for; subject `realtime`: records its code wrote that the realtime ring had no room for, by kind ([architecture.md](architecture.md#the-realtime-channels)). At most once a second per subject |
 | `ear.loop-source-left` | `sources` | A loop's state (the loop its subject) left timers or watches armed when its configuration closed, a type's bug: its loop cancelled them (`detail`: `<k> sources were still armed on loop <name> when the node's configuration closed`) |
 | `ear.internal-error` | `callback` | Written by its own path, so neither kept nor carrying `subject`, `active` or `count`: ear's own bug in one of the node's adapters, caught: `callback` names the callback or adapter call that threw (`FilterPortBlock::onStateChanged`, `SinkAdapter::make`), `detail` reads `<callback> threw[ during <where>]: <what>`. The node's `failed lost` record follows, unless the node is already being stopped, restarted or removed (the fault is then dropped with the rest of its teardown); the rest of the graph runs on. Said once per callback owner (a block, a companion's lifecycle, body or link), however often its callbacks throw |
 | `ear.node-missed-cycles` | `missed`, `overruns`, `totalMissed`, `totalOverruns` | Likewise neither kept nor carrying the three, since the node's `counters` already say it: the node's block missed cycles the driver did not cut (it was not scheduled), or its own work overran a cycle: `missed` and `overruns` since its last such record, the totals since it was added ([engine.md](engine.md#counters)). Once its misses held still for a beat, at most once per 10 s per node, and at once as the node goes ([engine.md](engine.md#reporting-the-counters)) |

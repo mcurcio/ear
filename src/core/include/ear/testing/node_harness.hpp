@@ -105,6 +105,9 @@ struct SeenEvent {
 	EventSeverity severity;
 	std::vector<std::pair<std::string, StatusValue>> args;
 	std::string msg;
+	/// When it was written: its writer's stamp on the harness's clock, or, raised from process, its cycle's start
+	/// (GraphCycle::startNs on the steady clock).
+	std::chrono::steady_clock::time_point at{};
 };
 
 /// One bug of an adapter's NodeHost caught and told (InternalErrorListener), before its node failed lost, in order.
@@ -370,6 +373,9 @@ public:
 	std::vector<FieldValue> status() const;
 	/// The status tick now, then settled.
 	void drain();
+	/// How many times the node's code rang the realtime bell (docs/architecture.md#the-realtime-channels): a cycle that
+	/// wrote, at most once until the next drain. The harness's bell tells NodeHost at once, and process() settles.
+	std::uint64_t realtimeRings() const noexcept;
 	/// The main loop pumped and settled as after any call.
 	void settle();
 	/// Every adapter bug told about the node (ear.internal-error's record), in order.

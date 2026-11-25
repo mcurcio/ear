@@ -91,6 +91,8 @@ namespace {
 using namespace ear;
 using namespace ear::pipewire;
 using namespace ear::pipewire::testing;
+using ear::testing::countAllocationsOnThisThread;
+using ear::testing::countedAllocations;
 using namespace std::chrono_literals;
 using ear::test::StallLength;
 using ear::test::StallPlan;

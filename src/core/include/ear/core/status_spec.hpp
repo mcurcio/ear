@@ -250,6 +250,15 @@ template <ValueKind K> struct Arg {
 	static constexpr ValueKind kind = K;
 	using Value = typename ValueOf<K>::Type;
 	ArgDeclaration declared;
+	/// A choice argument's value by its text, made at compile time (`mode("fast")`): what Io::raise takes for it, so a
+	/// misspelt value does not compile.
+	consteval Choice operator()(std::string_view value) const
+		requires(K == ValueKind::choice)
+	{
+		for (std::size_t at = 0; at < declared.values.size(); ++at)
+			if (declared.values[at] == value) return Choice{at};
+		throw "not one of the choice argument's values";
+	}
 };
 template <class T> inline constexpr bool isArg = false;
 template <ValueKind K> inline constexpr bool isArg<Arg<K>> = true;
@@ -316,6 +325,8 @@ public:
 	static constexpr std::size_t arity = sizeof...(Args);
 	/// What raise takes, in order.
 	using Values = std::tuple<typename Args::Value...>;
+	/// Its arguments' makers' types, in order: what Io::raise reads each argument's kind from.
+	using ArgTypes = std::tuple<Args...>;
 	constexpr EventDeclaration declaration() const noexcept { return {code_, severity_, sentence_, args_}; }
 	constexpr std::string_view code() const noexcept { return code_; }
 
@@ -343,19 +354,12 @@ consteval Event<Args...> of(EventSeverity severity, std::string_view sentence, A
 }
 } // namespace event
 
-/// One realtime log code as the framework reads it (slice 5.3's Io::log).
-struct LogCodeDeclaration {
-	std::string_view code;
-	LogLevel level;
-	std::string_view sentence;
-	std::span<const ArgDeclaration> args;
-};
-
 namespace log {
 /// One log code, made only by log::code: numbers, decimals and flags, at most four.
 template <class... Args> class LogCode {
 public:
 	static constexpr std::size_t arity = sizeof...(Args);
+	using ArgTypes = std::tuple<Args...>;
 	constexpr LogCodeDeclaration declaration() const noexcept { return {code_, level_, sentence_, args_}; }
 	constexpr std::string_view code() const noexcept { return code_; }
 
@@ -448,6 +452,7 @@ struct LogCodes {
 	              "a type's log codes are unique");
 	template <const auto& Code> static constexpr bool has =
 		((static_cast<const void*>(&Code) == static_cast<const void*>(&Codes)) || ...);
+	template <const auto& Code> static constexpr std::size_t indexOf = spec_detail::referenceIndex<Code, Codes...>();
 	static constexpr std::array<LogCodeDeclaration, count> declared{Codes.declaration()...};
 };
 template <class T> inline constexpr bool isLogCodes = false;

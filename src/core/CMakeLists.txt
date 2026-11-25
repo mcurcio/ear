@@ -22,6 +22,7 @@ add_library(ear_core STATIC
 	node_lifecycle.cpp
 	note_gate.cpp
 	pass_through.cpp
+	realtime_channels.cpp
 	program.cpp
 	rate_text.cpp
 	ports.cpp
@@ -71,6 +72,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/program.hpp
 	include/ear/core/rate_text.hpp
 	include/ear/core/ready_events.hpp
+	include/ear/core/realtime_channels.hpp
 	include/ear/core/reconciler.hpp
 	include/ear/core/recording.hpp
 	include/ear/core/report.hpp
@@ -132,6 +134,7 @@ if(BUILD_TESTS)
 		tests/program_test.cpp
 		tests/rate_text_test.cpp
 		tests/readiness_test.cpp
+		tests/realtime_test.cpp
 		tests/report_test.cpp
 		tests/reconfigure_test.cpp
 		tests/reshape_test.cpp
@@ -145,7 +148,7 @@ if(BUILD_TESTS)
 		tests/store_test.cpp
 		tests/type_spec_test.cpp)
 	target_link_libraries(ear_core_tests PRIVATE ear_core ear_type_harness ear_latency_table ear_cycle_table ear_inducers
-		ear_catch_main)
+		ear_allocation_count ear_catch_main)
 	# The readiness list, the note gate, a configuration's completions and the claim registry are private to ear_core
 	# (readiness.hpp, note_gate.hpp, completions.hpp, claims.hpp), and their rows test them directly.
 	target_include_directories(ear_core_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -261,6 +264,26 @@ if(BUILD_TESTS)
 	ear_status_spec_compile_fail(log-code-five-args "a log code has at most four arguments")
 	ear_status_spec_compile_fail(status-in-unnamed-namespace "status fields are declared in a named namespace")
 	ear_status_spec_compile_fail(event-in-unnamed-namespace "events are declared in a named namespace")
+
+	# What must not compile about what a code writes on the realtime thread through Io, and what Report takes
+	# (docs/writing-a-node-type.md#reporting-from-the-code): tests/compile_fail/realtime_bad.cpp says what each case is.
+	set(bad_realtime "${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail/realtime_bad.cpp")
+	ear_compile_check(ear_realtime_compile_fail_control "${bad_realtime}")
+	function(ear_realtime_compile_fail case regex)
+		ear_compile_fail(ear_realtime_compile_fail_${case} "${bad_realtime}" ${case} "${regex}")
+	endfunction()
+	ear_realtime_compile_fail(set-field-not-in-spec "io.set takes only its spec's status fields")
+	ear_realtime_compile_fail(set-field-not-rt "io.set takes only a writer::rt field")
+	ear_realtime_compile_fail(raise-text-arg-from-process "an event with a text argument is never raised from process")
+	ear_realtime_compile_fail(raise-wrong-arg-count "io.raise takes one value per argument of the event")
+	ear_realtime_compile_fail(raise-event-not-in-spec "io.raise takes only its spec's events")
+	ear_realtime_compile_fail(raise-choice-by-text "a choice argument from process is a value made at compile time")
+	ear_realtime_compile_fail(log-code-not-in-spec "io.log takes only its spec's log codes")
+	ear_realtime_compile_fail(choice-arg-misspelt "not one of the choice argument's values")
+	ear_realtime_compile_fail(report-set-rt-field "a writer::rt field is written by the node's code, through Io")
+	ear_realtime_compile_fail(report-of-other-spec "set takes only its spec's status fields")
+	ear_realtime_compile_fail(report-constructed "Report<.*>::Report\\(.*is private within this context")
+	ear_realtime_compile_fail(pass-through-with-rt "answers with a code of its own, never a pass-through")
 
 	# What must not compile about a type spec, its class, the contexts its configure is handed, Io and the harness
 	# (docs/writing-a-node-type.md#the-class; docs/writing-a-node-type.md#rules-the-framework-enforces):

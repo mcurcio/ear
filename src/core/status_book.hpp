@@ -2,6 +2,7 @@
 // writers fill from any thread, and the book the main loop keeps per node, which holds the status view and paces what
 // it tells. Private to ear_core: NodeHost's.
 #pragma once
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -10,9 +11,11 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 #include "ear/core/node_host.hpp"
 #include "ear/core/node_status.hpp"
+#include "ear/core/realtime_channels.hpp"
 #include "ear/core/status_spec.hpp"
 namespace ear::detail {
 using StatusClock = std::chrono::steady_clock;
@@ -27,7 +30,21 @@ struct ReportRecord {
 	std::vector<StatusValue> args{};
 	std::string detail{};
 	StatusClock::time_point at{};
+	/// From the realtime ring or a sampled word (docs/architecture.md#the-realtime-channels): `at` is its cycle's start,
+	/// it is paced at the drain's time, and a status write counts no transition (the word's counter does).
+	bool realtime = false;
 };
+
+/// A value from the realtime channels' 64 bits (realtimeBits, type_spec.hpp), as its field or argument declares it: a
+/// flag 0 or 1, a whole number or a decimal its bits, a choice its index (its text here).
+StatusValue realtimeValue(const StatusDeclaration& field, std::uint64_t bits);
+StatusValue realtimeValue(const ArgDeclaration& arg, std::uint64_t bits);
+/// A sentence with each {place} filled by its argument's text (an event's msg, a log code's line).
+std::string filledSentence(std::string_view sentence, std::span<const ArgDeclaration> args,
+                           std::span<const StatusValue> values);
+/// The rule a value the code broke breaks, as Report words it: "status level: 11 is outside 0 to 10".
+std::string brokenRule(const RealtimeBroken& broken, std::span<const StatusDeclaration* const> fields,
+                       std::span<const EventDeclaration> events, std::span<const LogCodeDeclaration> codes);
 
 /// One configuration's queue (docs/architecture.md#status-and-events): any thread pushes, the main loop takes. Bounded
 /// at `bound` records; a full queue drops a status write or an event and counts it, never a loss.
@@ -76,6 +93,12 @@ public:
 	/// marked fields, then is told. `queueDropped` records the queue had no room for are counted.
 	void apply(std::deque<ReportRecord> records, std::uint64_t queueDropped, StatusClock::time_point now,
 	           StatusBookEvents& out);
+	/// Field `index` changed `count` times on the realtime thread since its last sample: each a transition, for
+	/// flapping.
+	void transitions(std::size_t index, std::uint32_t count, StatusClock::time_point now, StatusBookEvents& out);
+	/// The ring refused these records since the last drain, by kind (status, event, log): counted in
+	/// ear.records-dropped, subject realtime.
+	void realtimeDropped(const std::array<std::uint64_t, 3>& dropped);
 	/// The tick: the marked fields sent, trailing records the pace allows written, flapping judged, drops said.
 	void tick(StatusClock::time_point now, StatusBookEvents& out);
 	/// When the book next needs a tick for itself (a trailing record, a flapping field to settle, a drop to say); none
@@ -118,6 +141,8 @@ private:
 	std::optional<StatusClock::time_point> statusSaid_;
 	std::uint64_t queueDropped_ = 0;
 	std::optional<StatusClock::time_point> queueSaid_;
+	std::array<std::uint64_t, 3> realtimeDropped_{}; // status, event, log
+	std::optional<StatusClock::time_point> realtimeSaid_;
 };
 
 } // namespace ear::detail

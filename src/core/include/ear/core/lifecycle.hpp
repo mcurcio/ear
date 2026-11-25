@@ -256,6 +256,9 @@ public:
 	virtual const NodeName& node() const = 0;
 	/// The node's ports (its config's), to bind a code written against the spec.
 	virtual const Ports& ports() const = 0;
+	/// The configuration's realtime channels (docs/architecture.md#the-realtime-channels), to bind the code to; null
+	/// for a type whose code writes nothing on the realtime thread.
+	virtual RealtimeChannels* realtime() const = 0;
 	/// An engine companion on an inside bank (docs/writing-a-node-type.md#engine-companions), its kind its shape's: a
 	/// sound card (playback on an inside output bank, `<node>.playback`, capture on an inside input bank,
 	/// `<node>.capture`: the bank's direction is the card's, and a playback card's bank is faded with the public
@@ -331,6 +334,8 @@ public:
 	virtual const NodeName& node() const = 0;
 	/// The node's ports, to bind a new code written against the spec.
 	virtual const Ports& ports() const = 0;
+	/// The configuration's realtime channels, to bind a new code to the same ones its code writes.
+	virtual RealtimeChannels* realtime() const = 0;
 	/// Work for declared loop `loop`, staged until the commit point and destroyed unrun if the change ends any other way.
 	virtual void postToLoop(std::size_t loop, std::move_only_function<void(void*)> work) = 0;
 	/// A replacement for the engine companion on `bank` (an RTP receiver or a sound card), behind a hold the framework
@@ -542,7 +547,10 @@ public:
 				static_assert(static_cast<const void*>(&spec_detail::ProcessOf<decltype(&Code::process)>::spec) ==
 				                  static_cast<const void*>(&Spec),
 				              "configure answers with a code written against its own type's spec");
-				static_cast<spec_detail::BankBoundCode&>(*erased.own()).bindPorts(context_->ports());
+				static_cast<spec_detail::BankBoundCode&>(*erased.own()).bind(context_->ports(), context_->realtime());
+			} else {
+				static_assert(!spec_detail::needsCode<Spec>, "a spec with writer::rt fields or log codes answers with "
+				                                             "a code of its own, never a pass-through");
 			}
 			return Configured::erased(std::move(erased),
 			                          ErasedLoopState::of(LoopsOf<Spec>::template indexOf<typename States::Loop>,
@@ -748,7 +756,10 @@ public:
 			static_assert(static_cast<const void*>(&spec_detail::ProcessOf<decltype(&Code::process)>::spec) ==
 			                  static_cast<const void*>(&Spec),
 			              "configure answers with a code written against its own type's spec");
-			static_cast<spec_detail::BankBoundCode&>(*erased.own()).bindPorts(context_->ports());
+			static_cast<spec_detail::BankBoundCode&>(*erased.own()).bind(context_->ports(), context_->realtime());
+		} else {
+			static_assert(!spec_detail::needsCode<Spec>, "a spec with writer::rt fields or log codes answers with "
+			                                             "a code of its own, never a pass-through");
 		}
 		return Changed::erased(std::move(erased));
 	}
@@ -1068,6 +1079,7 @@ public:
 	const CheckedOf<Spec>& settings() const noexcept { return settings_; }
 	std::span<const StatusDeclaration* const> statusDeclared() const override { return StatusOf<Spec>::declared; }
 	std::span<const EventDeclaration> eventsDeclared() const override { return EventsOf<Spec>::declared; }
+	std::span<const LogCodeDeclaration> logCodesDeclared() const override { return LogCodesOf<Spec>::declared; }
 
 private:
 	CheckedOf<Spec> settings_;

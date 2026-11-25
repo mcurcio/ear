@@ -207,8 +207,8 @@ consteval, so a misspelt value does not compile.
 Each field has one **writer**: `writer::loop(handle)`, one of the spec's own loops (the spec does not
 compile when a field names another), which writes it through `Report` from that loop's thread;
 `writer::rt`, the node's code on the realtime thread (a flag, number, decimal or choice, one atomic
-word each, never a text; at most 64 per type; its writes through `Io` are not built yet,
-[design](design/control-plane.md)); or `writer::companion`, a companion kind's adapter (not built
+word each, never a text; at most 64 per type; written through `Io`,
+[below](#reporting-from-the-code)); or `writer::companion`, a companion kind's adapter (not built
 yet). A library thread with something to report posts to the loop that owns the
 field.
 
@@ -259,9 +259,14 @@ queue, and nothing is written. Writes land on the configuration that made the Re
 closed, so a goodbye written during its teardown is heard; an older configuration's Report reaches
 nothing.
 
+#### Log codes
+
 `log::code<"code">(level, sentence, args...)` declares a log line the realtime thread may write, in
-`.logCodes` (its writing is not built yet, [design](design/control-plane.md)): numbers, decimals and
-flags only, at most four.
+`.logCodes`: numbers, decimals and flags only, at most four, the code kebab-case and unique in the
+spec. The code writes it with `io.log<code>(values...)` ([below](#reporting-from-the-code)); it
+becomes a `log` record of the node, its `source` the type, its `topic` the code, its `level` the
+code's and its `text` the sentence with each place filled
+([output-records.md](output-records.md#log)).
 
 `StatusTable`, `EventTable` and `LogCodes` take references to the constants (`const auto&...`, as
 `SettingsTable` does: their entries hold views, so they cannot be template arguments by value), and
@@ -524,7 +529,46 @@ struct MyCode {
 - **The pass-through.** `passThrough(bankPair(fromBank, toBank), ...)` copies each input bank's
   ports to an output bank's, member for member, and silences every output no pair names; it takes
   one pair or more. Banks of a pair must be the same size, an output bank written once. `card` and `rtp` write no audio code
-  of their own: they pass between their inside and public banks.
+  of their own: they pass between their inside and public banks. A spec with `writer::rt` fields
+  or log codes answers with a code of its own: a pass-through could never write them, so it does
+  not compile.
+
+### Reporting from the code
+
+The code reports through `io` too, by the spec's own handles, each call into its configuration's
+realtime channels ([architecture.md](architecture.md#the-realtime-channels)): it never allocates,
+locks, formats or waits.
+
+```cpp
+inline constexpr auto clipping = status::flag<"clipping">(writer::rt);
+inline constexpr std::string_view modes[] = {"quiet", "loud"};
+inline constexpr auto modeArg = arg::choice<"mode">(modes);
+inline constexpr auto clipped = event::of<"clipped">(EventSeverity::warn, "clipped {samples} samples in {mode}",
+                                                     arg::number<"samples">(0, 100000), modeArg);
+inline constexpr auto overrun = log::code<"overrun">(LogLevel::debug, "overrun by {frames} frames",
+                                                     arg::number<"frames">(0, 1 << 20));
+
+void process(Io<spec> io, const GraphCycle&) noexcept {
+	// ... write every output ...
+	io.set<clipping>(clips > 0);
+	if (clips > 0) io.raise<clipped>(clips, modeArg("loud"));
+	if (late > 0) io.log<overrun>(late);
+}
+```
+
+| Call | What | Rules |
+|---|---|---|
+| `io.set<field>(value)` | A `writer::rt` field now `value`: a flag `bool`, a number a whole number, a decimal a number, a choice its `Choice` (`field("value")`) | Only the spec's own `writer::rt` fields (a loop's field, or another spec's, does not compile). One atomic word: a value that differs from the last one the code wrote (its initial value before any) is also a status record |
+| `io.raise<event>(values...)` | One of the spec's events, one value per argument in order: a choice argument its `Choice`, made at compile time by the argument (`modeArg("loud")`) | At most four arguments, none a text, and the right count (each at compile time) |
+| `io.log<code>(values...)` | One of the spec's log codes | The right count, at compile time |
+
+Every record is stamped with its cycle's start (`GraphCycle::startNs`), so an event's `t` is when
+its cycle began. A value outside its declaration (a number outside its range, a decimal that is
+not finite or outside its range) is the type's bug, as through `Report`: the node fails `lost`
+with the rule's text (`status level: 101 is outside 0 to 100`), and nothing is written. The
+channels belong to the configuration: a code a change swaps in writes the same ones, so a field
+keeps the value the old code last wrote, and a new configuration's fields start at their initial
+values again.
 
 ## Engine companions
 
@@ -1415,7 +1459,7 @@ fakes allow. Banks are named by the spec's handles.
 | `h.runLoops()`, `h->advance(ms)`, `h.armed(loop)`, `h.readable(fd)`, `h.loopsReady()`, `h->loops()` | The loops ([loops](#loops)), on the test's thread with their kind kept: `runLoops()` runs what was posted and each watch rung (a source's clock wake rung by `process()`, a descriptor marked `readable(fd)`) until all are idle, never a timer; `advance` fires their timers in time order with the framework's (an `every` once per period passed: a handler takes no time); `armed(loop)` counts the sources armed on it whose handles live. Loops start when the framework asks (with `holdLoops`, at `loopsReady()`; with `refuseLoops = "<why>"`, never); a teardown turns each loop until it finished and closed; a source a state left armed fails the call that tore it down unless `allowSourcesLeft` (then only `ear.loop-source-left` in `diagnostics()`). `loops()` lists each loop made: its name, kind, and whether it closed to others, finished and closed |
 | `h.presetStore(store, text, mode)`, `h.storeText(store)`, `h.storeMode(store)`, `h.failStoreOpen(store, why)`, `h.failNextWrite(store, why)`, `h.runIo()`, `h->ioJobs()`, `h->storeCalls()`, `h->breakStores(what)` | The [stores](#stores), by the spec's handle, on an in-memory disk under the framework's own store rules: a file put there before the node opens it, what it holds and its mode now, every open's read refused or the next write refused with `<file>: <why>`. Each open and write is a job on the harness's I/O executor, run as each call settles (with the option `holdIo`, only at `runIo()`); a blocking `replace` runs its job inside the call. `ioJobs()` names every job run (`open store <file>`, `write store <file>`, and `release store <file>` for a dropped open's handle), `storeCalls()` every disk call in order (`readNarrowed`, `read`, `narrow`, `replace`), `breakStores(what)` makes every disk call throw, an adapter's bug, and `overdueNextWrite(ran)` makes the next `replace`'s wait give up, after its job ran (`unconfirmed`, and it landed) or before it began (`refused`) |
 | `h.programs()`, `h.programStarted(i)`, `h.programRefused(i, why)`, `h.feedProgram(i, bytes)`, `h.programSays(i, level, line)`, `h.programExited(i, exit)` | The [programs](#programs), on a fake adapter: every launch in order over every configuration (`ProgramFake`: the `ProgramLaunch` NodeHost resolved, and whether it was told started, stopped, ended and its `RunningProgram` destroyed). Each is told started at its launch, and a stopped one exited at once (killed by `SIGTERM`), unless `holdPrograms`, when the test tells each; the test's calls feed its report feed, write a line on its standard output (`info`) or error (`warn`), refuse it or end it. Every runtime path begins with `runtimeFolder` (`/ear-runtime`; empty: none, and pipe receivers and programs are refused). The harness has no probe, so `claim::AnyTcp` grants 49152, 49153 and so on |
-| `h.status<field>()`, `h.status()`, `h.statusRecord()`, `h.events()`, `h.drain()`, `h->reported()` | Its [status and events](#report): a field's value and the whole view after the last drain; standard output's status records in order (`SeenStatus`: `field`, `from`, `to`, `heldBack`, and each `reset`); its events past the node's pace (`SeenEvent`: `code`, `severity`, `args`, `msg`); the tick now. Each call settles with the tick run (with the option `holdStatus`, only at `drain()` and as `advance` reaches its timer). `reported()` is what the wire would hear, in order with the node's phases: `changed <field>=<value> ...`, `reset ...`, `event <code>: <msg>`, `node <phase>`; `clearReported()` empties it and the two lists |
+| `h.status<field>()`, `h.status()`, `h.statusRecord()`, `h.events()`, `h.drain()`, `h.realtimeRings()`, `h->reported()` | Its [status and events](#report), from its loops and [from its code](#reporting-from-the-code): a field's value and the whole view after the last drain; standard output's status records in order (`SeenStatus`: `field`, `from`, `to`, `heldBack`, and each `reset`); its events past the node's pace (`SeenEvent`: `code`, `severity`, `args`, `msg`, and `at`, its writer's stamp, or its cycle's start when raised from `process`); the tick now; how often the code rang the realtime bell (a `process()` whose code wrote rings it, at most once until the next drain; NodeHost hears it at once, and `process()` settles). Log codes' lines are among `h->logs()`, each with its code as `topic`. Each call settles with the tick run (with the option `holdStatus`, only at `drain()` and as `advance` reaches its timer). `reported()` is what the wire would hear, in order with the node's phases: `changed <field>=<value> ...`, `reset ...`, `event <code>: <msg>`, `node <phase>`; `clearReported()` empties it and the two lists |
 | `h->internalErrors()` | Every adapter bug told about the node (the `ear.internal-error` record's callback, node, where and what), in order |
 
 The harness does not see a class's `start()` and `stop()`; their pairing is tested in

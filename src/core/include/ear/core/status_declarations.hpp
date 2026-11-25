@@ -1,6 +1,6 @@
 // What a type's status fields and events are, as the framework reads them (docs/writing-a-node-type.md#status-and-events):
 // the declarations status_spec.hpp's makers fill in, which NodeType's schema and NodeHost read. Only the standard
-// library, so node_type.hpp can name them.
+// library and the log's levels, so node_type.hpp can name them.
 #pragma once
 #include <cstddef>
 #include <cstdint>
@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 #include <variant>
+#include "ear/core/log.hpp"
 namespace ear {
 /// Where a client shows a status field (docs/writing-a-node-type.md#status-fields): only in the node's panel, also on
 /// its box, or as a banner while it is not at its initial value.
@@ -83,6 +84,14 @@ struct EventDeclaration {
 	std::string_view code;
 	EventSeverity severity;
 	std::string_view sentence; // its record's msg and the editor's line, with {arg} places
+	std::span<const ArgDeclaration> args;
+};
+
+/// One realtime log code as the framework reads it (docs/writing-a-node-type.md#log-codes): what Io::log writes.
+struct LogCodeDeclaration {
+	std::string_view code;
+	LogLevel level;
+	std::string_view sentence;
 	std::span<const ArgDeclaration> args;
 };
 

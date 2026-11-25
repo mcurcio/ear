@@ -23,6 +23,7 @@
 #include "ear/core/node_lifecycle.hpp"
 #include "ear/core/node_status.hpp"
 #include "ear/core/program.hpp"
+#include "ear/core/realtime_channels.hpp"
 #include "ear/core/recording.hpp"
 #include "ear/core/sink.hpp"
 #include "ear/core/source.hpp"
@@ -377,6 +378,12 @@ public:
 	/// Where each node's status and events go (docs/architecture.md#status-and-events): its changes as standard output
 	/// writes them, the wire's coalesced changes, its resets and its events. Main thread, before the first node.
 	void subscribeStatus(NodeStatusListener& listener);
+	/// The bell every configuration's realtime channels ring after a cycle its code wrote in
+	/// (docs/architecture.md#the-realtime-channels); it outlives the host. Main thread, before the first node.
+	void ringWith(RealtimeBell& bell);
+	/// The bell rang (its owner's call, on the main loop): the tick is armed, which drains every node's realtime
+	/// channels with its queue.
+	void realtimeRung();
 	void subscribeEngineDiagnostics(EngineDiagnosticListener& listener);
 	/// Where each span of counts begins and ends (docs/engine.md#reporting-the-counters): countsBegan when a node is added,
 	/// its serial the span; countsEnded with its final counts as it goes, before its nodeGone or supersededGone. Main

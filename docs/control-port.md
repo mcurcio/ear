@@ -648,7 +648,7 @@ not fetch the schema to show a new node. A node's status belongs to its configur
   value and replaces the node's status: the configuration closed (a restart, a failure, a removal,
   a disable).
 - **`node.eventRaised`** `{"name", "code", "severity", "t", "args", "msg"}`: something the node says
-  happened, `severity` `info`, `warn` or `error` (open), `t` when it was written (UTC, microseconds),
+  happened, `severity` `info`, `warn` or `error` (open), `t` when it was written (UTC, microseconds; raised from the node's code, when its cycle began),
   `args` by name and `msg` the type's sentence with each place filled. It changes nothing in the
   graph. Paced per node: 32 at once, then one a second; those held back are counted in the node's
   `ear.events-dropped` diagnostic.

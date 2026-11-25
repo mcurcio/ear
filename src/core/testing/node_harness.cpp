@@ -836,6 +836,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		AudioFormat format() const override { return create.format(); }
 		const NodeName& node() const override { return create.node(); }
 		const Ports& ports() const override { return create.ports(); }
+		RealtimeChannels* realtime() const override { return create.realtime(); }
 		std::optional<part::Fifo> attachEngine(std::string_view bank, EngineCompanionShape shape) override {
 			return create.attachEngine(bank, std::move(shape));
 		}
@@ -894,6 +895,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		}
 		std::span<const StatusDeclaration* const> statusDeclared() const override { return inner->statusDeclared(); }
 		std::span<const EventDeclaration> eventsDeclared() const override { return inner->eventsDeclared(); }
+		std::span<const LogCodeDeclaration> logCodesDeclared() const override { return inner->logCodesDeclared(); }
 		Impl& harness;
 		std::unique_ptr<const NodeConfig> inner;
 	};
@@ -921,6 +923,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		host->subscribeStatus(*this);
 		host->subscribeEngineDiagnostics(*this);
 		host->subscribeInternalErrors(*this);
+		host->ringWith(bell);
 		clock.setOthers(FakeClock::Others{
 			.nextDue = [this]() -> std::optional<std::chrono::milliseconds> {
 				std::optional<std::chrono::milliseconds> next;
@@ -963,7 +966,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	}
 	void eventRaised(const NodeName&, const RaisedEvent& event) override {
 		reportedList.push_back("event " + std::string(event.code) + ": " + event.msg);
-		SeenEvent seen{std::string(event.code), event.severity, {}, event.msg};
+		SeenEvent seen{std::string(event.code), event.severity, {}, event.msg, event.at};
 		for (const FieldValue& arg : event.args) seen.args.emplace_back(std::string(arg.name), arg.value);
 		eventList.push_back(std::move(seen));
 	}
@@ -1267,6 +1270,13 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	std::vector<std::vector<float>> outputs;
 	std::vector<float> lastGain;
 	std::uint32_t lastFrames = 0;
+	/// The realtime bell the node's code rings after a cycle it wrote in: counted, and told to NodeHost once process()
+	/// returns.
+	struct FakeBell final : RealtimeBell {
+		void ring() noexcept override { rings.fetch_add(1, std::memory_order_relaxed); }
+		std::atomic<std::uint64_t> rings{0};
+	};
+	FakeBell bell;
 	// Last, so it goes first: its nodes' blocks, engine companions and instances tell the members above as they go.
 	std::unique_ptr<NodeHost> host;
 };
@@ -1438,6 +1448,7 @@ void NodeHarness::process(std::uint32_t frames) {
 			binding.tap->play(bank,
 			                  sourceTick(cycle, frames, h.options.format.rate, h.toldOnInput(binding.firstInput)));
 		}
+	const std::uint64_t ringsBefore = h.bell.rings.load(std::memory_order_relaxed);
 	if (h.driven != nullptr) h.driven->process(in, out, frames, cycle);
 	else
 		for (auto& span : out) std::ranges::fill(span, 0.0F);
@@ -1463,8 +1474,13 @@ void NodeHarness::process(std::uint32_t frames) {
 	if (faded.acknowledged > 0) h.completeFades(faded.acknowledged);
 	// A cycle that ended with every held output at zero acknowledged every hold waiting.
 	h.ackHolds(holdsAcknowledged);
-	if (faded.acknowledged > 0 || holdsAcknowledged > 0) h.settle();
+	// The code rang the realtime bell: NodeHost hears it on the main loop, as the real bell's dispatch tells it.
+	const bool rang = h.bell.rings.load(std::memory_order_relaxed) != ringsBefore;
+	if (rang) h.host->realtimeRung();
+	if (faded.acknowledged > 0 || holdsAcknowledged > 0 || rang) h.settle();
 }
+
+std::uint64_t NodeHarness::realtimeRings() const noexcept { return impl_->bell.rings.load(std::memory_order_relaxed); }
 
 void NodeHarness::loseCycles(std::uint32_t count, Lost how) {
 	Impl& h = *impl_;

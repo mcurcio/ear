@@ -7,7 +7,10 @@ events and log codes in the spec, `Report`, the per-node queue, the tick and its
 the feature `status` with `node.statusChanged`, `node.eventRaised` and `node.diagnostic`, `rpc-call.mjs --follow`, the
 editor's status list, badges and activity: `docs/writing-a-node-type.md#status-and-events`,
 `docs/architecture.md#status-and-events`, `docs/output-records.md#status`, `docs/control-port.md#status`,
-`docs/editor.md#status-events-and-diagnostics`); the rest not built. Slice 5 (the
+`docs/editor.md#status-events-and-diagnostics`), step 5.3's realtime channels built (`rt` fields, `io.set`, `io.raise`,
+`io.log`, the ring with its log budget, cycle stamps and the gated bell, bound when the code is prepared and rebound at a
+swap: `docs/writing-a-node-type.md#reporting-from-the-code`, `docs/architecture.md#the-realtime-channels`; left of it:
+the bell on the main loop in `ear_pipewire`); the rest not built. Slice 5 (the
 control plane: status, events, node diagnostics on the wire, actions, the realtime coded ring, sendspin's notes split)
 follows slice 3c (built: the node
 handle and loops, `docs/writing-a-node-type.md#the-node-handle`, `#loops`). Slice 6 (parameters: decimal, indexed and live rows, parameter slots and their ramps, retunes,
@@ -493,8 +496,9 @@ consteval Smoothing smooth(std::uint32_t ms);
 
 Built: the declarations, `StatusTable` and the spec's `.status`
 ([writing-a-node-type.md](../writing-a-node-type.md#status-fields)). The tables take `const auto&...`, as
-`SettingsTable` does, since their entries hold views. What is left is the realtime writer's side (`writer::rt` through
-`Io`, 5.4 below) and `writer::companion` (slice 8).
+`SettingsTable` does, since their entries hold views. The realtime writer's side is built too
+([writing-a-node-type.md](../writing-a-node-type.md#reporting-from-the-code)). What is left is `writer::companion`
+(slice 8).
 
 ### 5.3 Events, log codes, `Report<spec>`
 
@@ -509,20 +513,16 @@ enum class EventSeverity { info, warn, error };
 
 - `TypeSpec` gains `.actions` between `.events` and `.logCodes` (the rest are built:
   [writing-a-node-type.md](../writing-a-node-type.md#the-spec)).
-- From `process`, a choice argument is a consteval-made index only (off the realtime thread it is built: its text,
-  checked at run time). `NodeHandle::say` stays for `sendspin` until step 5.5 removes it.
+- `NodeHandle::say` stays for `sendspin` until step 5.5 removes it.
 
 ### 5.4 What `process` gets: `Io<spec>` grows
 
 ```cpp
 template <const auto& Spec> class Io {
 public:
-	// built: operator[](bank), frames()
+	// built: operator[](bank), frames(), set, raise, log (docs/writing-a-node-type.md#reporting-from-the-code)
 	template <const auto& Row> Smoothed param() const noexcept;                         // a live, non-indexed row
 	template <const auto& Row> Smoothed param(std::size_t member) const noexcept;       // a live indexed row, from 0
-	template <const auto& Field> void set(typename FieldOf<Field>::Value value) const noexcept;   // writer::rt only
-	template <const auto& Event, class... N> void raise(N... values) const noexcept;    // numbers, decimals, flags, choice indexes
-	template <const auto& Code, class... N> void log(N... values) const noexcept;       // a LogCodes entry
 	template <const auto& Trigger> bool triggered() const noexcept;                    // true once per invoke
 };
 class Smoothed {   // one live row's values for this block, in the row's own unit
@@ -553,10 +553,8 @@ public:
 - **Members of one reach change together only by chance**: the main loop writes a reach's slots one at a time, so one
   block may see channel 1's new target and channel 2's old one (at most one block of ramp, about 0.07 dB for 2.5 dB over
   20 ms); a seqlock per node was judged not worth its cost.
-- `io.set` stores one atomic word, and when the value differs from the last one the code wrote, puts a record in the
-  node's ring and counts a transition. `io.raise` and `io.log` put one fixed-size record in the ring, stamped with the
-  cycle's start (`GraphCycle::startNs`). `io.triggered` compares the trigger's counter with the last the code saw. Every
-  handle resolves to an index when the code is prepared, as banks do.
+- `io.triggered` compares the trigger's counter with the last the code saw. Every handle resolves to an index when the
+  code is prepared, as banks do.
 
 ### 5.5 Actions
 
@@ -582,10 +580,9 @@ template <auto... Actions> struct ActionTable {};
 
 ### 5.6 How the framework carries them
 
-- **Per configuration** (made when `configure` is called from empty, freed at teardown step 5): the node handle's
-  channel with the off-realtime queue (6.3), the realtime ring (6.1), one `std::atomic<double>` slot per live member,
-  one `std::atomic<std::uint64_t>` per `rt` field with the last value the realtime side wrote and an
-  `std::atomic<std::uint32_t>` transition counter, one `std::atomic<std::uint32_t>` per trigger, each live member's ramp
+- **Per configuration** (made when `configure` is called from empty, freed at teardown step 5), beside the realtime
+  channels, which are built and bound this way ([architecture.md](../architecture.md#the-realtime-channels)): one
+  `std::atomic<double>` slot per live member, one `std::atomic<std::uint32_t>` per trigger, each live member's ramp
   state. All of it is the node's, not the code's: the code is bound to it when prepared, and a code an in-place change
   swaps in is bound to the same objects before its barrier. A stop, a start and an in-place change keep all of it; a
   reshape in place resizes an indexed family's slots (survivors keep their ramps, new members start at the committed
@@ -595,8 +592,9 @@ template <auto... Actions> struct ActionTable {};
 - **Erased for the rest of ear**: `NodeType::schema()` returns a plain `TypeSchema` (core, nlohmann only), encoded once
   by `ear_control`. `NodeConfig::liveValues()` gives each live key's checked value, for retunes.
   `NodeType::checkLive(config, key, value)` runs the row's rule then the type's `check` with that value in place.
-- **New core interfaces**, implemented outside core: `RealtimeBell` (an eventfd the main loop watches, in
-  `ear_pipewire`), `NodeStatusListener` (`statusChanged`, `statusReset`, `eventRaised`), `NodeDiagnosticListener`
+- **New core interfaces**, implemented outside core: `RealtimeBell` (built in core,
+  [architecture.md](../architecture.md#the-realtime-channels); left: its `ear_pipewire` side, a `pw_loop` event on the
+  main loop), `NodeStatusListener` (`statusChanged`, `statusReset`, `eventRaised`), `NodeDiagnosticListener`
   (built, gaining subject, `active`, `count`), and `GestureListener` (carrying the owning session so the gateway can
   leave out own echoes), implemented by the gateway and `StatusLog`.
 
@@ -696,21 +694,21 @@ report_.raise<pairingFailed>(abortReasonName(reason));      // checked against p
 Each a case in `src/core/tests/compile_fail/`, matched against GCC 14's wording: `live-text-row`, `live-optional-row`,
 `live-whole-smoothed`, `get-live-row`, `indexed-count-below`, `indexed-count-not-number`, `indexed-no-default`,
 `decimal-low-above-high`, `decimal-default-outside`, `log-taper-nonpositive`, `db-taper-range`, `param-not-live`,
-`param-row-not-in-spec`, `param-indexed-without-member`, `param-member-of-plain-row`, `set-field-not-in-spec`,
-`set-field-not-rt`, `report-set-rt-field`, `call-loop-not-in-spec`, `raise-text-arg-from-process`, `raise-wrong-arg-count`,
-`raise-event-not-in-spec`, `report-of-other-spec`, `report-constructed`, `triggered-not-a-trigger`,
-`action-named-lifecycle` (the status and event declarations' cases are built:
-`src/core/tests/compile_fail/status_spec_bad.cpp`).
+`param-row-not-in-spec`, `param-indexed-without-member`, `param-member-of-plain-row`, `call-loop-not-in-spec`,
+`triggered-not-a-trigger`, `action-named-lifecycle` (the status and event declarations' cases are built,
+`src/core/tests/compile_fail/status_spec_bad.cpp`, and so are `Io`'s and `Report`'s,
+`src/core/tests/compile_fail/realtime_bad.cpp`).
 
 ### 5.9 The harness
 
-`TypeHarness` (built over a real `NodeHost`; 3c adds loops and its clock) gains, on the test's thread:
+`TypeHarness` (built over a real `NodeHost`; 3c adds loops and its clock; the status and event captures and the
+realtime bell's count are built: [writing-a-node-type.md](../writing-a-node-type.md#its-own-tests)) gains, on the test's
+thread:
 
 | Call | Does |
 |---|---|
 | `h.live<row>(value)`, `h.live<row>(member, value)` | moves the slot, as a gesture tick (runs `checkLive`, failing the test on a refusal) |
 | `h.retune(settings)` | a change of live rows only: slots move, no restart (asserts the plan would retune) |
-| `h.logs()` | the realtime log codes' lines, in order (the status and event captures are built: [writing-a-node-type.md](../writing-a-node-type.md#its-own-tests)) |
 | `h.trigger<action>()`, `h.invoke<action>(args)` | a trigger; a call, on the harness's loops |
 | `h.outcome(settings)` | the plan's outcome of a change, without applying it |
 
@@ -726,16 +724,14 @@ is of its kind or null, and that the status view survives every in-place change,
 |---|---|---|---|---|
 | Parameter slot | in | one `std::atomic<double>` per live member, written by the main loop, loaded once a block | 256 live members per node | — |
 | Trigger | in | one `std::atomic<std::uint32_t>` counter per trigger | — | several invokes in one block are one |
-| `rt` status field | out | one `std::atomic<std::uint64_t>` per field, sampled at the drain; a transition counter beside it | 64 `rt` fields per type | — |
-| Realtime ring | out | per node, single producer (the code), single consumer (the drain), fixed 48-byte records: kind, code, field, up to four 8-byte values, `startNs` | 256 records per node; log records refused once 192 are in use, so status and events keep the last quarter | dropped, counted per kind (`ear.records-dropped`, subject `realtime`) |
-| Bell | out | `RealtimeBell::ring()`, an eventfd write gated by an atomic exchange on the window, as the level bell is | at most one per level window per block (30 a second) | — |
 
-`std::atomic<double>` and `std::atomic<std::uint64_t>` are lock-free on x86-64 and arm64; a `static_assert` on
-`is_always_lock_free` makes it a build failure elsewhere [U: no arm64 build yet].
+The outward channels (`rt` fields, the ring, the bell) are built
+([architecture.md](../architecture.md#the-realtime-channels)); `rt` fields are stored as 64-bit words, so only the
+parameter slots need `std::atomic<double>`, lock-free on x86-64 and arm64; a `static_assert` on `is_always_lock_free`
+makes it a build failure elsewhere [U: no arm64 build yet].
 
-It loads each live slot once a block, advances each ramp, stores `rt` fields, writes ring records, and rings the bell
-at most once per window, after `process`, only when an `rt` field changed or the ring holds records. It never
-allocates, locks, formats, or makes a syscall other than the bell's write.
+It loads each live slot once a block and advances each ramp, before `process`. It never allocates, locks, formats, or
+makes a syscall.
 
 ### 6.2 Off the realtime thread: one queue per node
 
@@ -743,16 +739,15 @@ Built ([architecture.md](../architecture.md#status-and-events)).
 
 ### 6.3 The drain and the tick, on the main loop
 
-Built for the queue ([architecture.md](../architecture.md#status-and-events)). Left: the realtime ring is drained first,
-before the queue, and the bell and a gesture tick taken mark a node dirty too; after the queue, `rt` fields are sampled
-and a value that differs from the view's is marked for the wire (its transitions counted between samples, for
-flapping); one `gesture.changed` `change` per gesture moved.
+Built for the queue and the realtime channels ([architecture.md](../architecture.md#status-and-events),
+[#the-realtime-channels](../architecture.md#the-realtime-channels)). Left: a gesture tick taken marks a node dirty too;
+one `gesture.changed` `change` per gesture moved.
 
 ### 6.4 Rates and bounds
 
 | What | Bound | Policy |
 |---|---|---|
-| The tick, `status` records, events and flapping | built | [architecture.md](../architecture.md#rates-and-bounds); flapping also counts an `rt` field's transitions between samples (5.3) |
+| The tick, `status` records, events and flapping | built | [architecture.md](../architecture.md#rates-and-bounds) |
 | Gesture ticks into the main loop | one pending per gesture | the control thread keeps the newest until the main loop took the last |
 | `gesture.changed` `change` | 30 a second per gesture | never to the owner |
 | Action reply | 10 s | `action-timeout`; the handler's late answer dropped |
@@ -784,17 +779,19 @@ and its owner, drops a stale `seq`, stops for a keep-alive, checks the value aga
 
 ### 6.6 The channels across the lifecycle
 
-| Moment | What happens to this page's channels |
+The outward channels (`rt` words and counters, the ring, the queue, the `Report`) are built across the lifecycle this
+way ([architecture.md](../architecture.md#the-realtime-channels)); what is left is the slots' and triggers':
+
+| Moment | What happens to the slots and triggers |
 |---|---|
-| `configure` from empty | the channels are made: slots (seeded from the committed values or the node's held live values), `rt` words, counters, the ring, the queue; the status view at its initial values; the `Report` |
+| `configure` from empty | made: slots seeded from the committed values or the node's held live values, trigger counters |
 | configured | the code is prepared and bound to them; nothing runs on the realtime thread yet |
-| the code drives | the first block starts every ramp at its slot's value; the code may write from its first cycle; then `start()` |
+| the code drives | the first block starts every ramp at its slot's value; then `start()` |
 | a retune, in any phase | the slots move at once, wait-free; with no configuration only the node's live value moves and seeds the next one; while `stopped` the slots move and the code ramps from them at the next start |
-| an in-place change (3d) | the code keeps running and writing; a hold is applied after the code, so a held bank's `rt` fields and events are the code's own, and the meters show the silence |
-| a code swap (3d) | the new code is bound to the same channels; each ramp goes on, each `rt` field's last value is kept, an unseen trigger is seen once by the new code |
-| a stop | the code stops; the ring is drained; the channels and the status stay |
-| a restart, a failure, a removal, a disable | the ring and queue are drained until the configuration closed; then the reset |
-| teardown step 5 | the channels are freed, after the code and the loops' states |
+| an in-place change (3d) | the code keeps running and ramping |
+| a code swap (3d) | the new code is bound to the same slots and counters; each ramp goes on, an unseen trigger is seen once by the new code |
+| a stop | the code stops; the slots stay |
+| teardown step 5 | freed, after the code and the loops' states |
 
 No channel is allocated, freed or resized on the realtime thread or while the code that uses it can run. One node's
 transition never touches another's channels (the owner, 2026-11-08: "it should be per-node. Some node
@@ -1059,7 +1056,8 @@ New kinds, each with `v`, `seq`, `t`, `kind`, its fields, `msg`, as built. Every
 ```
 
 - `status`, `event`, and the diagnostic's `subject`, `active` and `count` are built
-  ([output-records.md](../output-records.md#status)); left: a realtime event's `t` is its cycle's start (5.3).
+  ([output-records.md](../output-records.md#status)), and so is a realtime event's cycle start, carried as the wire's
+`t` ([control-port.md](../control-port.md#status)).
 - `param`: one per reached node and key at each committed live change (`cause`: `gesture`, `set` for `node.set` and
   `node.update`, `disk` for a hand edit or `graphFile.set`) and at each abort (`cause: aborted`, `reason`; `to` the value
   it returned to, absent for `hand-edit` and `file-saved`). An end ear made for its owner is `cause: gesture` with
@@ -1110,11 +1108,10 @@ stop and a start, the queue's bound, flapping and settling on the harness's cloc
 record within 1 s and matching the view); `status.json`, `diagnostics.json`; the editor's status list and badges; a
 system test of ten chatty nodes and a slowly reading client.
 
-**5.3 The realtime ring.** The ring with its log budget, `rt` fields, `io.set`, `io.raise`, `io.log`, cycle stamps, the
-gated bell; the channels bound when the code is prepared and rebound at a swap. Tests: records in order, the bound, log
-records refused past 192 while events pass, transitions counted between samples, an event's `t` from its cycle, a swap
-keeping an `rt` field's last value; `ear_pipewire_tests` (a test block's code sets a field and raises an event; an
-idle block rings nothing); `process` allocates nothing while writing.
+**5.3 The realtime ring** is built in core ([architecture.md](../architecture.md#the-realtime-channels),
+[writing-a-node-type.md](../writing-a-node-type.md#reporting-from-the-code)). Left: the bell in `ear_pipewire`, a
+`pw_loop` event on the main loop that tells NodeHost, and `main.cpp`'s wiring. Tests: `ear_pipewire_tests` (a test
+block's code sets a field and raises an event, and both are drained; an idle block rings nothing).
 
 **5.4 Actions.** `ActionTable`, triggers, calls on a loop of the spec, `node.invoke` through the keeper, `not-running`,
 deferred batch replies with their deadline, the `action` record for type actions, the editor's buttons; sendspin's

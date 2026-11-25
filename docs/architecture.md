@@ -437,6 +437,48 @@ A node diagnostic of these is the node's, kept per code and subject as the frame
 ([output-records.md](output-records.md#diagnostic)): `ear.status-flapping` is a condition,
 `ear.events-dropped` and `ear.records-dropped` observations.
 
+### The realtime channels
+
+A node's code reports from `process` through `Io`
+([writing-a-node-type.md](writing-a-node-type.md#reporting-from-the-code)), into channels its
+configuration owns (`ear/core/realtime_channels.hpp`). *Why:* the owner's rule that the
+framework's primitives for events, diagnostics and logging "should be real-time safe for any audio
+loops that need them", and that the audio threads only read inputs and write outputs, so the code
+never touches a queue, a lock or a clock of its own.
+
+| Channel | Mechanism | Bound | On overflow |
+|---|---|---|---|
+| An `rt` status field | one `std::atomic<std::uint64_t>` per field (a flag 0 or 1, a number or decimal its bits, a choice its index) and an `std::atomic<std::uint32_t>` transition counter beside it, both stored by the code, sampled by the drain | 64 `rt` fields per type | none: the word always holds the last value |
+| The ring | single producer (the code), single consumer (the drain), fixed 48-byte records: kind, index, count, the cycle's `startNs`, up to four 8-byte values | 256 records per configuration; a log record is refused once 192 are in use, so status and events keep the last quarter | dropped, counted per kind: `ear.records-dropped`, subject `realtime` (`count`, `status`, `events`, `logs`) |
+| The bell | `RealtimeBell::ring()`, gated by one atomic exchange per configuration: rung after a `process` that wrote anything, unless it was rung since the last drain | at most once per drain, and the drain is the tick's, so at most 30 a second per node | — |
+| A broken value | the first value outside its declaration, kept once | one | the node fails `lost` with the rule |
+
+`io.set` stores the word and, when the value differs from the last one the code wrote (its
+initial value before any), counts a transition and puts a status record in the ring. `io.raise` and
+`io.log` put one record each. The code's side is all stores and one exchange: no allocation, lock,
+format or system call but the bell's (`ear_core_tests` counts the allocations of a code writing every
+kind, none).
+
+**The drain**, on the main loop, is part of the tick's: the bell's dispatch arms the tick as a
+queue's wake does (`NodeHost::realtimeRung`), and each node's drain reads its configuration's ring
+first, then its queue, then samples each `rt` word the code wrote since the last sample. A ring
+status record is a status write as `Report`'s is; a sampled word whose value differs from the view
+(its record had no room) is one too; an event is an event; a log record is written to the log's
+sinks there, a `log` record of the node with the code as its `topic`. A realtime record is paced at
+the drain's time, but carries its cycle's start: an event's `t` is when its cycle began. A
+field's transitions for flapping are its counter's moves between samples, so changes whose records
+had no room still count. A broken value fails the node after everything else drained.
+
+**Across the lifecycle.** The channels are made with the configuration (each `rt` word at its
+field's initial value) and freed at teardown step 5, after the code; nothing is allocated, freed or
+resized on the realtime thread or while a code that uses them can run. The code is bound to them
+when `configure` answers (`CreateOf::applied`), and a code a change swaps in is bound to the same
+ones (`ChangeOf::applied`), so each `rt` field keeps the value the old code last wrote. A stop and a
+start keep them; a restart, a failure or a removal drains them with the queue as the
+configuration closes, and its successor starts from new ones. One node's channels are never
+another's. A type whose code writes nothing on the realtime thread (no `rt` field, event or log
+code) has none.
+
 ## Companions
 
 A type's realtime code reads its input banks and writes its output banks, and nothing else. *Why:*

@@ -222,6 +222,9 @@ public:
 	/// a spec.
 	virtual std::span<const StatusDeclaration* const> statusDeclared() const { return {}; }
 	virtual std::span<const EventDeclaration> eventsDeclared() const { return {}; }
+	/// Its realtime log codes (docs/writing-a-node-type.md#log-codes), in declaration order: what the drain reads the
+	/// ring's log records by.
+	virtual std::span<const LogCodeDeclaration> logCodesDeclared() const { return {}; }
 };
 /// How one setting is written in the graph file: the keeper reads it with knobly's reader of this
 /// kind and writes a JSON value of this kind back. The one home of each key's kind.

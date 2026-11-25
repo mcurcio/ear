@@ -76,6 +76,7 @@ public:
 	const std::vector<SeenStatus>& statusRecord() const noexcept { return node_->statusRecord(); }
 	const std::vector<SeenEvent>& events() const noexcept { return node_->events(); }
 	void drain() { node_->drain(); }
+	std::uint64_t realtimeRings() const noexcept { return node_->realtimeRings(); }
 
 	void runLoops() { node_->runLoops(); }
 	void loopsReady() { node_->loopsReady(); }

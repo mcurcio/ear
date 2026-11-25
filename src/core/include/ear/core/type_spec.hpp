@@ -27,21 +27,26 @@
 #pragma once
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
+#include <cmath>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
 #include "ear/core/loop.hpp"
 #include "ear/core/node_type.hpp"
+#include "ear/core/realtime_channels.hpp"
 #include "ear/core/settings_table.hpp"
 #include "ear/core/status_spec.hpp"
 #include "ear/core/store.hpp"
@@ -201,6 +206,58 @@ template <const auto& Spec> using StatusOf = std::remove_cvref_t<decltype(Spec.s
 template <const auto& Spec> using EventsOf = std::remove_cvref_t<decltype(Spec.events)>;
 template <const auto& Spec> using LogCodesOf = std::remove_cvref_t<decltype(Spec.logCodes)>;
 
+namespace spec_detail {
+/// How many of a spec's status fields its code writes (writer::rt).
+template <class Fields> consteval std::size_t rtFieldCount() {
+	std::size_t count = 0;
+	for (const StatusDeclaration* field : Fields::declared)
+		if (field->writer.kind == writer::Writer::Kind::rt) ++count;
+	return count;
+}
+/// Whether a spec's code may write anything on the realtime thread (an rt field, an event, a log code), and so has
+/// realtime channels (docs/architecture.md#the-realtime-channels).
+template <const auto& Spec> inline constexpr bool writesRealtime =
+	rtFieldCount<std::remove_cvref_t<decltype(Spec.status)>>() > 0 ||
+	std::remove_cvref_t<decltype(Spec.events)>::count > 0 || std::remove_cvref_t<decltype(Spec.logCodes)>::count > 0;
+/// Whether only the code could serve what a spec declares: an rt field or a log code, which a pass-through never
+/// writes.
+template <const auto& Spec> inline constexpr bool needsCode =
+	rtFieldCount<std::remove_cvref_t<decltype(Spec.status)>>() > 0 ||
+	std::remove_cvref_t<decltype(Spec.logCodes)>::count > 0;
+/// Whether an argument list holds a text, which the realtime thread never writes.
+template <class ArgTypes> struct HasText;
+template <class... Args> struct HasText<std::tuple<Args...>> {
+	static constexpr bool value = ((Args::kind == ValueKind::text) || ...);
+};
+/// One argument of an event or a log code from process, as its 64 bits (realtimeBits): true when it fits its
+/// declaration.
+template <class ArgType, class Given>
+constexpr bool argumentBits(const ArgDeclaration& declared, Given given, std::uint64_t& bits) noexcept {
+	if constexpr (ArgType::kind == ValueKind::flag) {
+		static_assert(std::same_as<Given, bool>, "a flag argument takes a bool");
+		bits = given ? 1 : 0;
+		return true;
+	} else if constexpr (ArgType::kind == ValueKind::wholeNumber) {
+		static_assert(std::is_integral_v<Given> && !std::same_as<Given, bool>,
+		              "a whole-number argument takes a whole number");
+		const auto number = static_cast<std::int64_t>(given);
+		bits = std::bit_cast<std::uint64_t>(number);
+		return number >= declared.low && number <= declared.high;
+	} else if constexpr (ArgType::kind == ValueKind::decimal) {
+		static_assert(std::is_arithmetic_v<Given> && !std::same_as<Given, bool>, "a decimal argument takes a number");
+		const auto number = static_cast<double>(given);
+		bits = std::bit_cast<std::uint64_t>(number);
+		return std::isfinite(number);
+	} else {
+		static_assert(ArgType::kind == ValueKind::choice);
+		static_assert(std::same_as<Given, Choice>,
+		              "a choice argument from process is a value made at compile time: arg(\"value\")");
+		bits = given.index;
+		return given.index < declared.values.size();
+	}
+}
+} // namespace spec_detail
+
 /// Every bank of a spec with its members: what a type's ports() returns, {stream(members(n)), from(members(n))}.
 /// Each bank of the spec once, in any order; a bank of another spec, or one left out, does not compile.
 template <const auto& Spec> class Members {
@@ -240,6 +297,9 @@ private:
 /// One cycle's audio, by bank (docs/writing-a-node-type.md#the-code): io[bank] is the bank's members, each a span of
 /// exactly frames() samples, an output's to write (every sample), an input's to read (an unlinked input reads zeros).
 /// Only the spec's own banks are taken. The layout is resolved once, before the first cycle, so io[bank] is an index.
+/// And what the code reports on the realtime thread (docs/writing-a-node-type.md#reporting-from-the-code): set an rt
+/// field, raise an event, write a log code, each by the spec's own handle, each into the configuration's realtime
+/// channels, stamped with the cycle's start; none allocates, locks or waits.
 template <const auto& Spec> class Io {
 	static_assert(linkage::named<Spec>, "a spec is declared in a named namespace, never an unnamed one");
 	using List = BanksOf<Spec>;
@@ -268,10 +328,13 @@ public:
 		}
 		return layout;
 	}
-	/// `inputs` are inputs then inside inputs, `outputs` outputs then inside outputs, as AudioCode::process gets them.
+	/// `inputs` are inputs then inside inputs, `outputs` outputs then inside outputs, as AudioCode::process gets them;
+	/// `channels` the configuration's realtime channels (null only for a spec that writes nothing on the realtime
+	/// thread), `startNs` the cycle's start.
 	Io(const Layout& layout, std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
-	   std::uint32_t frames) noexcept
-		: layout_(&layout), inputs_(inputs), outputs_(outputs), frames_(frames) {}
+	   std::uint32_t frames, RealtimeChannels* channels = nullptr, std::int64_t startNs = 0) noexcept
+		: layout_(&layout), inputs_(inputs), outputs_(outputs), frames_(frames), channels_(channels),
+		  startNs_(startNs) {}
 	/// The bank's members, in order.
 	template <class Handle> std::span<const std::span<typename Handle::Sample>> operator[](Handle) const noexcept {
 		static_assert(isBankHandle<Handle>, "Io takes a bank handle");
@@ -283,11 +346,78 @@ public:
 	}
 	std::uint32_t frames() const noexcept { return frames_; }
 
+	/// Field `Field`, a writer::rt field of the spec, now `value`: a flag bool, a number std::int64_t, a decimal double,
+	/// a choice its Choice (`field("value")`). One atomic word: a value that differs from the last one the code wrote
+	/// is also a status record. A value outside the field's declaration fails the node, and nothing is written.
+	template <const auto& Field> void set(typename std::remove_cvref_t<decltype(Field)>::Value value) const noexcept {
+		using Kind = std::remove_cvref_t<decltype(Field)>;
+		static_assert(StatusOf<Spec>::template has<Field>, "io.set takes only its spec's status fields");
+		static_assert(Field.declaration().writer.kind == writer::Writer::Kind::rt,
+		              "io.set takes only a writer::rt field: a loop's field is written through Report");
+		constexpr auto index = static_cast<std::uint16_t>(StatusOf<Spec>::template indexOf<Field>);
+		const StatusDeclaration& declared = Field.declaration();
+		std::uint64_t bits = 0;
+		bool fits = true;
+		if constexpr (Kind::kind == ValueKind::flag) bits = value ? 1 : 0;
+		else if constexpr (Kind::kind == ValueKind::wholeNumber) {
+			bits = std::bit_cast<std::uint64_t>(static_cast<std::int64_t>(value));
+			fits = value >= declared.low && value <= declared.high;
+		} else if constexpr (Kind::kind == ValueKind::decimal) {
+			bits = std::bit_cast<std::uint64_t>(static_cast<double>(value));
+			fits = std::isfinite(value) && value >= declared.lowDecimal && value <= declared.highDecimal;
+		} else {
+			bits = value.index;
+			fits = value.index < declared.values.size();
+		}
+		if (!fits) return channels_->broke({.kind = RealtimeRecord::Kind::status, .index = index, .bits = bits});
+		channels_->setWord(index, bits, startNs_);
+	}
+	/// Event `Event` of the spec, with one value per argument in its declared order (at most four, none a text): a
+	/// number a whole number, a decimal a number, a flag a bool, a choice its Choice (`arg("value")`). One record in the
+	/// ring; a value outside its argument's declaration fails the node.
+	template <const auto& Event, class... Values> void raise(Values... values) const noexcept {
+		using Declared = std::remove_cvref_t<decltype(Event)>;
+		static_assert(EventsOf<Spec>::template has<Event>, "io.raise takes only its spec's events");
+		static_assert(sizeof...(Values) == Declared::arity, "io.raise takes one value per argument of the event");
+		static_assert(!spec_detail::HasText<typename Declared::ArgTypes>::value,
+		              "an event with a text argument is never raised from process: the realtime thread writes no text");
+		static_assert(Declared::arity <= 4, "an event raised from process has at most four arguments");
+		put<typename Declared::ArgTypes>(RealtimeRecord::Kind::event,
+		                                 static_cast<std::uint16_t>(EventsOf<Spec>::template indexOf<Event>),
+		                                 Event.declaration().args, values...);
+	}
+	/// Log code `Code` of the spec (its numbers, decimals and flags in order): one record in the ring, refused once the
+	/// ring is three quarters full, so status and events keep the rest.
+	template <const auto& Code, class... Values> void log(Values... values) const noexcept {
+		using Declared = std::remove_cvref_t<decltype(Code)>;
+		static_assert(LogCodesOf<Spec>::template has<Code>, "io.log takes only its spec's log codes");
+		static_assert(sizeof...(Values) == Declared::arity, "io.log takes one value per argument of the log code");
+		put<typename Declared::ArgTypes>(RealtimeRecord::Kind::log,
+		                                 static_cast<std::uint16_t>(LogCodesOf<Spec>::template indexOf<Code>),
+		                                 Code.declaration().args, values...);
+	}
+
 private:
+	template <class ArgTypes, class... Values> void put(RealtimeRecord::Kind kind, std::uint16_t index,
+	                                                    std::span<const ArgDeclaration> declared,
+	                                                    Values... values) const noexcept {
+		RealtimeRecord record{
+			.kind = kind, .count = static_cast<std::uint8_t>(sizeof...(Values)), .index = index, .startNs = startNs_};
+		const std::array<bool, sizeof...(Values)> fits = [&]<std::size_t... At>(std::index_sequence<At...>) {
+			return std::array<bool, sizeof...(Values)>{spec_detail::argumentBits<std::tuple_element_t<At, ArgTypes>>(
+				declared[At], values, record.values[At])...};
+		}(std::index_sequence_for<Values...>{});
+		for (std::uint8_t at = 0; at < fits.size(); ++at)
+			if (!fits[at])
+				return channels_->broke({.kind = kind, .index = index, .arg = at, .bits = record.values[at]});
+		channels_->put(record);
+	}
 	const Layout* layout_;
 	std::span<const std::span<const float>> inputs_;
 	std::span<const std::span<float>> outputs_;
 	std::uint32_t frames_;
+	RealtimeChannels* channels_;
+	std::int64_t startNs_;
 };
 
 /// One pass-through pair by handle: an input bank's ports copied to an output bank's.
@@ -306,10 +436,11 @@ template <class Process> struct ProcessOf {
 template <class Code, const auto& S> struct ProcessOf<void (Code::*)(Io<S>, const GraphCycle&) noexcept> {
 	static constexpr const auto& spec = S;
 };
-/// A code whose layout the type's config hands over: CreateOf::applied binds it to the node's ports.
+/// A code whose layout the type's config hands over: CreateOf::applied (and ChangeOf::applied, for a code swapped in)
+/// binds it to the node's ports and to its configuration's realtime channels.
 class BankBoundCode : public AudioCode {
 public:
-	virtual void bindPorts(const Ports& ports) noexcept = 0;
+	virtual void bind(const Ports& ports, RealtimeChannels* channels) noexcept = 0;
 };
 template <const auto& Spec, class Code> class ErasedSpecCode final : public BankBoundCode {
 	// Found by name, then held to its exact signature, so a misspelt signature is refused rather than never called.
@@ -330,16 +461,25 @@ template <const auto& Spec, class Code> class ErasedSpecCode final : public Bank
 
 public:
 	explicit ErasedSpecCode(Code code) : code_(std::move(code)) {}
-	void bindPorts(const Ports& ports) noexcept override { ports_ = &ports; }
+	void bind(const Ports& ports, RealtimeChannels* channels) noexcept override {
+		ports_ = &ports;
+		channels_ = channels;
+	}
 	void prepare(const AudioFormat& format) override {
 		if (ports_ == nullptr)
 			throw std::logic_error("a code written against a spec runs only in a type made by makeNodeType");
+		if constexpr (writesRealtime<Spec>) {
+			if (channels_ == nullptr || channels_->fields() != StatusOf<Spec>::count)
+				throw std::logic_error("a code that writes on the realtime thread runs only in a type made by "
+				                       "makeNodeType");
+		}
 		layout_ = Io<Spec>::resolve(*ports_);
 		if constexpr (hasPrepare) code_.prepare(format);
 	}
 	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
 	             std::uint32_t frames, const GraphCycle& cycle) noexcept override {
-		code_.process(Io<Spec>(layout_, inputs, outputs, frames), cycle);
+		code_.process(Io<Spec>(layout_, inputs, outputs, frames, channels_, cycle.startNs), cycle);
+		if constexpr (writesRealtime<Spec>) channels_->cycleEnded();
 	}
 	void release() noexcept override {
 		if constexpr (hasRelease) code_.release();
@@ -348,6 +488,8 @@ public:
 private:
 	Code code_;
 	const Ports* ports_ = nullptr; // the config's, which outlives the code (teardown step 5)
+	// The configuration's, freed after the code (teardown step 5); a code swapped in is bound to the same ones.
+	RealtimeChannels* channels_ = nullptr;
 	typename Io<Spec>::Layout layout_;
 };
 } // namespace spec_detail

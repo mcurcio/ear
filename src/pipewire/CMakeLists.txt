@@ -61,7 +61,6 @@ configure_file(engine.conf "${PROJECT_BINARY_DIR}/engine.conf" COPYONLY)
 
 if(BUILD_TESTS)
 	add_executable(ear_pipewire_tests
-		tests/allocation_count.cpp
 		tests/callback_boundary_test.cpp
 		tests/engine_log_test.cpp
 		tests/engine_properties_test.cpp
@@ -82,9 +81,10 @@ if(BUILD_TESTS)
 	# ledger (docs/testing.md#making-the-rare-event); ear_cycle_judge: the one judge of lost cycles
 	# (docs/testing.md#the-cycle-judge); ear_latency_table and ear_cycle_table: the latency model's rows and the cycle
 	# facts' rows, run through a real block; ear_runtime: real loops under NodeHost on the real engine (a configuration
-	# leaked at the close deadline that closes late).
+	# leaked at the close deadline that closes late); ear_allocation_count: allocations counted on the data thread.
 	target_link_libraries(ear_pipewire_tests PRIVATE ear_pipewire ear_catch_main PkgConfig::PIPEWIRE ear_rtp_tone
-		ear_temp_folder ear_type_harness ear_output ear_inducers ear_cycle_judge ear_latency_table ear_cycle_table ear_runtime)
+		ear_temp_folder ear_type_harness ear_output ear_inducers ear_cycle_judge ear_latency_table ear_cycle_table ear_runtime
+		ear_allocation_count)
 	# The tests run the engine on the source tree's engine.conf; the sound card tests point
 	# ALSA_CONFIG_PATH into tests/alsa, a test ALSA configuration (slice E2 writes it). The property table's tests read
 	# docs/engine.md, whose tables must list its rows.

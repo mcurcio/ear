@@ -33,7 +33,7 @@ void* realloc(void* memory, std::size_t size) noexcept {
 }
 }
 
-namespace ear::pipewire::testing {
+namespace ear::testing {
 std::uint64_t countedAllocations() noexcept { return allocations.load(std::memory_order_relaxed); }
 void countAllocationsOnThisThread(bool on) noexcept { counting = on; }
-} // namespace ear::pipewire::testing
+} // namespace ear::testing
