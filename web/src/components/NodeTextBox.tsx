@@ -2,6 +2,7 @@
 // editable, in the pane's textarea style with its diagnostics under it (a click puts the caret there) and Save
 // (node.setText), which says Saving… while its request is on its way (docs/editor.md#requests-in-flight). The logic is
 // nodeText.ts; ear judges every text.
+import { Button } from "@mcurcio/patchbay/primitives";
 import { useEffect, useReducer, useRef } from "react";
 import { placedRefusal } from "../notices";
 import { boxFrom, boxNote, boxReduce, canSave, saveRequest } from "../nodeText";
@@ -11,7 +12,6 @@ import { isAsking } from "../requests";
 import { RpcError } from "../rpc";
 import { useEditor, useRequests } from "./hooks";
 import { KnoblyText } from "./KnoblyText";
-import { Spinner } from "@mcurcio/patchbay/primitives";
 
 export function NodeTextBox({ node, file }: { node: string; file: GraphFile }) {
   const editor = useEditor();
@@ -75,10 +75,9 @@ export function NodeTextBox({ node, file }: { node: string; file: GraphFile }) {
           ))}
         </ul>
       )}
-      <button type="button" disabled={saving || !canSave(box)} aria-busy={saving || undefined} onClick={save}>
-        {saving && <Spinner />}
-        {saving ? "Saving…" : "Save"}
-      </button>
+      <Button busy={saving} busyLabel="Saving…" disabled={!saving && !canSave(box)} onClick={save}>
+        Save
+      </Button>
     </div>
   );
 }

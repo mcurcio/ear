@@ -464,8 +464,13 @@ body,
   padding-top: 0;
 }
 
-.inspector label {
+.inspector label:not(.pb-field-label) {
   display: block;
+  margin-bottom: 6px;
+}
+
+/* patchbay's Field (docs/editor.md#adding-a-node) wires and lays out its label; the inspector spaces the fields. */
+.inspector .pb-field {
   margin-bottom: 6px;
 }
 
@@ -481,7 +486,7 @@ body,
   color: var(--pb-muted);
 }
 
-.inspector-delete {
+.app .inspector-delete {
   margin-top: 8px;
 }
 
@@ -625,10 +630,10 @@ body,
   resize: none;
 }
 
-/* The base controls, everywhere in the shell. */
+/* ear's own base controls, everywhere in the shell; patchbay's TextInput and Select (a pb- class) draw themselves. */
 .app textarea,
-.app input,
-.app select {
+.app input:not(:where([class^="pb-"], [class*=" pb-"])),
+.app select:not(:where([class^="pb-"], [class*=" pb-"])) {
   width: 100%;
   box-sizing: border-box;
   font-family: var(--pb-font-code);
@@ -655,8 +660,8 @@ body,
   cursor: default;
 }
 
-.app input,
-.app select,
+.app input:not(:where([class^="pb-"], [class*=" pb-"])),
+.app select:not(:where([class^="pb-"], [class*=" pb-"])),
 .app textarea:not(.knobly-text-input) {
   color: var(--pb-text);
   background: var(--pb-raised);
@@ -1493,8 +1498,8 @@ body,
 }
 
 @media (hover: none) and (pointer: coarse) {
-  .app input,
-  .app select,
+  .app input:not(:where([class^="pb-"], [class*=" pb-"])),
+  .app select:not(:where([class^="pb-"], [class*=" pb-"])),
   .app textarea {
     font-size: 16px;
   }

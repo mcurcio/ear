@@ -106,7 +106,7 @@ patchbay takes the drawing and the generic mechanics; ear keeps what knows about
 | Splitters | `Splitter.tsx`, `sizes.ts` dragged, keyed, clamp | Splitter, `edge="start"` | Bounds stay in `sizes.ts` until A5. `edge` becomes logical in a later patchbay (owner, 2026-11-26: start and end follow the text direction); the editor is left-to-right, so `start` stays its left and top | built |
 | Canvas tools | `CanvasTools.tsx`, a plain `role=toolbar` | ToolGroup and IconButton, inside React Flow's `<Panel>` | Roving tab stop (new); `fitPadding` still reserves 76 px for 40 px touch tools | built |
 | Shortcut sheet | `ShortcutSheet.tsx` on `.palette-backdrop` | Dialog | Gains a Close button and a scrim press | to build |
-| Forms and busy buttons | AddNodeJson, AddNodeText's select, lifecycle bar, Delete, the two Saves | Field, TextInput, Select, Button `busy`, `tone="danger"` | Busy stays focusable, its words in `busyLabel` (D4) | to build |
+| Forms and busy buttons | AddNodeJson, AddNodeText's select, lifecycle bar, Delete, the two Saves | Field, TextInput, Select, Button `busy`, `tone="danger"` | Busy stays focusable, its words in `busyLabel` (D4); the lifecycle row keeps its segmented CSS, its words under the spinner | built |
 | Pills, chips, facts | `StatePill.tsx`, `.chip tone-*`, EngineFactsSection's `<dl>` | Pill, Badge, KeyValue | Pill and Badge `accent` and `muted`, a filled Badge (D3) | to build |
 | Narrow inspector | CSS-only sheet in `editor.css` | Sheet (right below 760 px, bottom below 600 px) | Workspace becomes `position: relative` | to build |
 | Kept sizes | `prefs.ts` width, drawer, minimap | `usePersistentState` with the same keys and checks | Places stay `prefs.ts`'s | to build |

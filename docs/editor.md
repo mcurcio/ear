@@ -228,11 +228,15 @@ does a closed connection, at once.
   `route.added` draws the route, and goes on the reply. A refused one turns `--pb-err` for 1 s (timed on the monotonic
   clock) before it goes. *Why:* the owner chose a ghost while a route request is in flight, drawn as a request and
   never as a route.
-- **Buttons.** A lifecycle button shows a spinner and is disabled while its own request is on its way; the others
-  stay as `health.ts` says. Save in the drawer and in the node box say `Saving…`, and Add in the form says
-  `Adding…`. The spinner is patchbay's `Spinner`
-  ([its docs](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#state)), which stops turning under
-  reduced motion and keeps its open ring.
+- **Buttons.** Every button that sends a request is patchbay's `Button` with `busy` while its own request is on its
+  way: a spinner, `aria-busy`, and presses ignored, but it stays focusable, so the focus is never lost mid-request
+  ([patchbay's](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#actions)). Save in the drawer and
+  in the node box show `Saving…` beside the spinner, and Add in the form `Adding…` (their `busyLabel`, announced
+  politely); a lifecycle button keeps its word under the spinner, so the segmented row's widths hold. A button is
+  disabled only while idle: a lifecycle button as `health.ts` says, Save and Add while there is nothing to send.
+  Delete and Remove are `tone="danger"`. *Why:* the owner chose patchbay's model, focusable while busy (D4,
+  2026-11-26), over ear's old disabled button that dropped the focus. The spinner stops turning under reduced motion
+  and keeps its open ring.
 
 ### Toasts
 
@@ -339,7 +343,9 @@ refusals through it); `components/AddNodeText.tsx` draws it. With the `node-text
 takes a whole statement, `node <type> <name> { ... }`, in the drawer's textarea style, and Add sends
 `node.addText` ([control-port.md](control-port.md#a-nodes-own-text)): ear appends it where
 `node.add` would, reads it with the whole file (so `$ch` and `@use card_out MOTU;` work as by
-hand), and places its diagnostics in the form's text. The rules:
+hand), and places its diagnostics in the form's text. Its type list is patchbay's `Field` and `Select`; an ear
+without the feature gets the JSON form instead (`AddNodePanel.tsx`): a name (`TextInput`), the type list and the
+settings as JSON, each in a `Field`, which names its control and spaces the form. The rules:
 
 - **A template per type.** Choosing a type writes `node <type> <name> {\n}`, the name the type's
   word and the first number no node holds (`file1`, `white2`); the block starts empty, since a

@@ -2,6 +2,7 @@
 // pane's textarea style, its diagnostics under it (a click puts the caret there) and Add (node.addText). The logic is
 // addText.ts; ear judges every text. Add says Adding… while its request is on its way
 // (docs/editor.md#requests-in-flight).
+import { Button, Field, Select } from "@mcurcio/patchbay/primitives";
 import { useEffect, useReducer, useRef, useState } from "react";
 import { addFrom, addReduce, addRequest, canAdd } from "../addText";
 import { placedRefusal } from "../notices";
@@ -12,7 +13,6 @@ import { RpcError } from "../rpc";
 import { useEditor, useRequests } from "./hooks";
 import type { AddIntent } from "./Inspector";
 import { KnoblyText } from "./KnoblyText";
-import { Spinner } from "@mcurcio/patchbay/primitives";
 
 export function AddNodeText({
   types,
@@ -81,14 +81,13 @@ export function AddNodeText({
   return (
     <section className="inspector-section node-text">
       <h2>Add a node</h2>
-      <label>
-        Type{" "}
-        <select value={chosenType} onChange={(event) => setType(event.target.value)}>
+      <Field label="Type">
+        <Select font="code" value={chosenType} onChange={(event) => setType(event.target.value)}>
           {types.map((t) => (
             <option key={t}>{t}</option>
           ))}
-        </select>
-      </label>
+        </Select>
+      </Field>
       <label htmlFor="add-node-text">Its text in ear.conf</label>
       {form.raced && (
         <div className="banner banner-warn" role="status">
@@ -113,10 +112,9 @@ export function AddNodeText({
           ))}
         </ul>
       )}
-      <button type="button" disabled={adding || !canAdd(form)} aria-busy={adding || undefined} onClick={add}>
-        {adding && <Spinner />}
-        {adding ? "Adding…" : "Add"}
-      </button>
+      <Button busy={adding} busyLabel="Adding…" disabled={!adding && !canAdd(form)} onClick={add}>
+        Add
+      </Button>
     </section>
   );
 }

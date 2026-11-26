@@ -1,6 +1,7 @@
 // The inspector's Route subject (docs/editor.md#the-inspector): its two ends as node:port buttons that select their
 // node, its status in words (wires.ts's wireStatusWords, its colour editor.css's over the state tokens, the word
 // always shown), its from port's level meter, and Remove, which is a request to ear.
+import { Button } from "@mcurcio/patchbay/primitives";
 import { wirePort } from "../levels";
 import type { GraphRoute, PortRef, RouteEnds } from "../protocol";
 import type { Selection } from "../selection";
@@ -49,9 +50,9 @@ export function RoutePanel({
           </dd>
         </div>
       </dl>
-      <button type="button" className="inspector-delete" onClick={() => onRemove(route)}>
+      <Button tone="danger" className="inspector-delete" onClick={() => onRemove(route)}>
         Remove route
-      </button>
+      </Button>
     </section>
   );
 }

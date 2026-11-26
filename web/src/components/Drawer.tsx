@@ -4,7 +4,7 @@
 // Closed, the body is hidden but stays mounted, so the draft, the caret and the scroll are kept.
 import type { CSSProperties } from "react";
 import { drawerBounds } from "../sizes";
-import { Spinner, Splitter } from "@mcurcio/patchbay/primitives";
+import { Button, Splitter } from "@mcurcio/patchbay/primitives";
 import { TextPane } from "./TextPane";
 import type { DrawerModel } from "./useDrawer";
 
@@ -39,16 +39,16 @@ export function Drawer({ drawer }: { drawer: DrawerModel }) {
             </li>
           ))}
         </ul>
-        <button
-          type="button"
+        <Button
+          size="sm"
           className="drawer-save"
-          disabled={!drawer.canSave}
-          aria-busy={drawer.saving || undefined}
+          busy={drawer.saving}
+          busyLabel="Saving…"
+          disabled={!drawer.saving && !drawer.canSave}
           onClick={drawer.save}
         >
-          {drawer.saving && <Spinner />}
-          {drawer.saving ? "Saving…" : "Save"}
-        </button>
+          Save
+        </Button>
       </header>
       <div
         id="drawer-body"

@@ -2,9 +2,10 @@
 // draws it and its line (health.ts, docs/editor.md#a-nodes-health), the lifecycle bar (Start, Stop, Restart, Disable
 // and Enable when ear has the lifecycle feature, each enabled by health.ts), its text in knobly (with the node-text
 // feature, docs/editor.md#the-node-panels-text; else its settings as JSON), its counters, its companions in words and
-// Delete. Every change is a request to ear; the canvas changes only when ear announces it. A lifecycle button spins
+// Delete. Every change is a request to ear; the canvas changes only when ear announces it. A lifecycle button is busy
 // while its own request is on its way, and a refusal shows under the bar as well as in a toast
 // (docs/editor.md#where-a-refusal-lands).
+import { Button, Field } from "@mcurcio/patchbay/primitives";
 import { useEffect, useState } from "react";
 import { describeHealth, type ActionAvailability, type HealthView } from "../health";
 import { refusalParts, type RefusalParts } from "../notices";
@@ -15,7 +16,6 @@ import { CompanionList } from "./CompanionStrip";
 import { CounterTable } from "./Counters";
 import { useCompanionBadges, useEditor, useGraphFile, useNodeCounters, useRequests } from "./hooks";
 import { NodeTextBox } from "./NodeTextBox";
-import { Spinner } from "@mcurcio/patchbay/primitives";
 import { StatePill } from "./StatePill";
 
 /** The lifecycle bar's buttons, in order, each enabled by its action in health.ts. */
@@ -40,16 +40,10 @@ function LifecycleButton({
   onClick: () => void;
 }) {
   return (
-    <button
-      type="button"
-      disabled={!availability.enabled || busy}
-      aria-busy={busy || undefined}
-      title={availability.why}
-      onClick={onClick}
-    >
-      {busy && <Spinner />}
+    // Busy: the spinner over the word, which keeps the width and the name; still focusable, presses ignored.
+    <Button busy={busy} disabled={!busy && !availability.enabled} title={availability.why} onClick={onClick}>
       {label}
-    </button>
+    </Button>
   );
 }
 
@@ -128,20 +122,19 @@ export function NodePanel({
         <NodeTextBox key={node.name} node={node.name} file={file.file} />
       ) : (
         <>
-          <label>
-            Settings (JSON)
+          <Field label="Settings (JSON)">
             <textarea rows={5} value={settings} onChange={(event) => setSettings(event.target.value)} />
-          </label>
-          <button type="button" disabled={settings === shown} onClick={save}>
+          </Field>
+          <Button disabled={settings === shown} onClick={save}>
             Save settings
-          </button>
+          </Button>
         </>
       )}
       <CounterTable heading="Counters since it was added" rows={counters.rows} />
       <CompanionList badges={companions} />
-      <button type="button" className="inspector-delete" onClick={() => onRemove(node.name)}>
+      <Button tone="danger" className="inspector-delete" onClick={() => onRemove(node.name)}>
         Delete node
-      </button>
+      </Button>
     </section>
   );
 }

@@ -3,7 +3,7 @@
 // all. Resized by its left edge; below the narrow width it is a sheet over the canvas (docs/editor.md#narrow-windows,
 // editor.css). Every change is a request to ear. An Add command (docs/editor.md#the-palette) reaches the add-node form
 // as an intent: its type chosen and the form focused.
-import { Splitter } from "@mcurcio/patchbay/primitives";
+import { Button, Splitter } from "@mcurcio/patchbay/primitives";
 import type { CSSProperties } from "react";
 import type { Graph, RouteEnds } from "../protocol";
 import { subjectTitle, type InspectorSubject, type Selection } from "../selection";
@@ -80,8 +80,8 @@ function Subject({
               );
             })}
           </ul>
-          <button
-            type="button"
+          <Button
+            tone="danger"
             className="inspector-delete"
             onClick={() =>
               onRemove(
@@ -91,7 +91,7 @@ function Subject({
             }
           >
             Delete all
-          </button>
+          </Button>
         </section>
       );
   }

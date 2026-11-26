@@ -2,6 +2,7 @@
 // the node-text feature (AddNodeText), else a type list and JSON settings for an ear without it. Every change is a
 // request to ear; the canvas changes only when ear announces it, and Add says Adding… while its request is on its way
 // (docs/editor.md#requests-in-flight).
+import { Button, Field, Select, TextInput } from "@mcurcio/patchbay/primitives";
 import { useEffect, useRef, useState } from "react";
 import { nodeTextFeature } from "../protocol";
 import { isAsking } from "../requests";
@@ -9,7 +10,6 @@ import { parseSettings } from "../settings";
 import { AddNodeText } from "./AddNodeText";
 import { useEditor, useGraphFile, useRequests } from "./hooks";
 import type { AddIntent } from "./Inspector";
-import { Spinner } from "@mcurcio/patchbay/primitives";
 
 export function AddNodePanel({
   types,
@@ -58,30 +58,28 @@ function AddNodeJson({ types, intent }: { types: string[]; intent: AddIntent | n
   return (
     <section className="inspector-section">
       <h2>Add a node</h2>
-      <label>
-        Name <input ref={nameInput} value={name} onChange={(event) => setName(event.target.value)} />
-      </label>
-      <label>
-        Type{" "}
-        <select value={chosenType} onChange={(event) => setType(event.target.value)}>
+      <Field label="Name">
+        <TextInput ref={nameInput} font="code" value={name} onChange={(event) => setName(event.target.value)} />
+      </Field>
+      <Field label="Type">
+        <Select font="code" value={chosenType} onChange={(event) => setType(event.target.value)}>
           {types.map((t) => (
             <option key={t}>{t}</option>
           ))}
-        </select>
-      </label>
-      <label>
-        Settings (JSON)
+        </Select>
+      </Field>
+      <Field label="Settings (JSON)">
         <textarea rows={3} value={settings} onChange={(event) => setSettings(event.target.value)} />
-      </label>
-      <button
-        type="button"
-        disabled={adding || name === "" || chosenType === ""}
-        aria-busy={adding || undefined}
+      </Field>
+      {/* Busy stays focusable and ignores presses (docs/editor.md#requests-in-flight), so it is disabled only idle. */}
+      <Button
+        busy={adding}
+        busyLabel="Adding…"
+        disabled={!adding && (name === "" || chosenType === "")}
         onClick={add}
       >
-        {adding && <Spinner />}
-        {adding ? "Adding…" : "Add"}
-      </button>
+        Add
+      </Button>
     </section>
   );
 }
