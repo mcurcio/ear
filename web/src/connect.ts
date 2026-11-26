@@ -4,7 +4,7 @@
 // handle whose id says its direction, so the rule needs nothing but the handles. It is patchbay's useConnectHints's
 // rule (canConnect), so the hints on the handles while a wire is drawn and the drop itself are judged by one rule
 // (docs/editor.md#the-node-box), and a hint never promises what the drop refuses.
-import type { CanConnect } from "@mcurcio/patchbay/graph";
+import type { CanConnect, PortSide } from "@mcurcio/patchbay/graph";
 import type { PortRef, RouteEnds } from "./protocol";
 
 export type Direction = "in" | "out";
@@ -56,18 +56,12 @@ export function edgeId(route: RouteEnds): string {
 export const canConnect: CanConnect = (from, to) =>
   isValidConnection({ source: from.nodeId, sourceHandle: from.handleId, target: to.nodeId, targetHandle: to.handleId });
 
-/** What droppedOnPane reads of React Flow's onConnectEnd state (its FinalConnectionState). */
-export interface DragEnd {
-  isValid: boolean | null;
-  toNode: unknown | null;
-  fromHandle: { id?: string | null } | null;
-}
-
 /**
- * A wire dropped on empty canvas (docs/editor.md#adding-on-the-canvas): a drag from an output that ended on no node and
- * no valid handle. A drag from an input is not one: quick add follows an output's wire.
+ * Which quick add patchbay's useAddAt asked for (docs/editor.md#adding-on-the-canvas): `pane` for a double-click on
+ * empty canvas (no `from`), `wire` for a wire from an output dropped there, and none for a wire from an input, as quick
+ * add follows an output's wire.
  */
-export function droppedOnPane(state: DragEnd): boolean {
-  if (state.isValid === true || state.toNode !== null || state.fromHandle === null) return false;
-  return parseHandleId(state.fromHandle.id)?.direction === "out";
+export function quickAddKind(from?: { side: PortSide }): "pane" | "wire" | null {
+  if (from === undefined) return "pane";
+  return from.side === "output" ? "wire" : null;
 }

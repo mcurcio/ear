@@ -92,7 +92,7 @@ along the bottom ([below](#the-shell)).
 
 ## The shell
 
-`App.tsx` composes it: `TopBar`, `Canvas` (with `CanvasTools`), `Inspector` and `Drawer`, with the
+`App.tsx` composes it: `TopBar`, `Canvas` (with patchbay's `CanvasTools`), `Inspector` and `Drawer`, with the
 canvas's state in `useCanvas` and the drawer's in `useDrawer`, so the top bar and the drawer's
 header read one status.
 
@@ -122,23 +122,37 @@ and the dot, or the text and the edge, in the tone.
 
 ### The canvas
 
-It fills the rest, a quiet dot grid in the theme's colours. React Flow's `Controls` give way to one
-floating tool group, bottom left: zoom out, zoom in, fit, tidy and the minimap toggle (`CanvasTools.tsx`, patchbay's
-`ToolGroup` of `IconButton`s in React Flow's `Panel`). The group is one Tab stop, the arrow keys, Home and End move
-between its tools, and the minimap tool is pressed while the minimap shows; 28 px tools, 40 px on touch
-([patchbay's](https://github.com/mcurcio/patchbay/blob/v0.7.0/docs/components.md#layout)). Fit leaves 76 px at the
-bottom so the group, at its touch size, never covers a box. Tidy lays
-every node out again with dagre, as on first placement, and they slide there over
-`--pb-motion-slow` (180 ms); moves are the browser's, so nothing is sent (`layout.ts`'s `relayout`), and the new
-places are kept ([below](#what-the-browser-keeps)). The minimap is React Flow's `MiniMap`, off by default, its boxes
-in their state's token. Fit, tidy and the minimap are also `F`, `L` and `M` ([below](#shortcuts)), which the tools'
-titles carry, and the palette's `Fit view`, `Tidy layout` and `Show minimap`. A double-click on empty canvas opens
-quick add instead of zooming ([below](#adding-on-the-canvas)). The view fits itself (`fit.ts`, `fit.test.ts`) once the
-boxes are measured, and again whenever the nodes on the canvas or its size change (a node added, the drawer opened),
-until the person pans, zooms or jumps to a node (a palette `Go to` or a toast's Show); Fit lets it fit itself again.
-*Why:* a single fit at React Flow's first measurement fitted boxes not yet laid out and clipped the graph, and a view
-that follows the graph is what a person expects until they move it themselves. Toasts sit at its bottom right
-([below](#toasts)), and a route request on its way is a ghost wire ([below](#requests-in-flight)).
+It fills the rest, a quiet dot grid in the theme's colours. `components/Canvas.tsx` renders React Flow's own
+`<ReactFlow>`, so every React Flow prop stays ear's to pass, and adds patchbay's canvas pieces beside it, each
+handing its handlers to `<ReactFlow>` through `mergeFlowProps`
+([patchbay's](https://github.com/mcurcio/patchbay/blob/v0.7.0/docs/graph.md#canvastools)). *Why:* the owner chose no
+canvas wrapper, patchbay's sugar beside the app's own `<ReactFlow>` (D1, 2026-11-25), and patchbay's model where it
+has the concept (2026-11-26).
+
+- **The tools.** patchbay's `CanvasTools`, bottom left in React Flow's `Panel`: zoom in, zoom out, fit the view, tidy
+  the layout and the minimap, in patchbay's words and glyphs. The group is one Tab stop, the arrow keys, Home and End
+  move between its tools, and the minimap tool is pressed while the minimap shows; 28 px tools, 40 px on touch. Zoom
+  and the fit move over `--pb-motion-slow` (180 ms, at once under reduced motion). Fit, tidy and the minimap are also
+  `F`, `L` and `M` ([below](#shortcuts)), which the tools' tooltips and `aria-keyshortcuts` carry, and the palette's
+  `Fit view`, `Tidy layout` and `Show minimap`.
+- **Tidy** lays every node out again with dagre, as on first placement, and they slide there over
+  `--pb-motion-slow`; moves are the browser's, so nothing is sent (`layout.ts`'s `relayout`), and the new places are
+  kept ([below](#what-the-browser-keeps)).
+- **The minimap** is React Flow's `MiniMap` as `CanvasTools` draws it, off by default, framed by patchbay, its boxes in
+  their state's token; `editor.css` lifts it from patchbay's bottom right to the top right, as the toasts are at the
+  bottom right ([below](#toasts)).
+- **The view follows the graph** (patchbay's `useFollowFit` in `App.tsx`): it fits once the boxes are measured, and
+  again whenever the nodes on the canvas (its key, their names) or the canvas's size change (a node added, the drawer
+  opened), until the person pans or zooms, or jumps to a node (a palette `Go to` or a toast's Show, which stop it as
+  a pan does). Fit (the tool, `F`, the palette) fits and follows again. Every fit leaves a tenth of the canvas on three
+  sides and 76 px at the bottom, so the tools, at their touch size, never cover a box. *Why:* a single fit at React
+  Flow's first measurement fitted boxes not yet laid out and clipped the graph, and a view that follows the graph is
+  what a person expects until they move it themselves.
+- **Quick add.** A double-click on empty canvas opens quick add instead of zooming, as does an output's wire dropped
+  there ([below](#adding-on-the-canvas)).
+
+Toasts sit at its bottom right ([below](#toasts)), and a route request on its way is a ghost wire
+([below](#requests-in-flight)).
 
 ### The inspector
 
@@ -389,8 +403,10 @@ settings as JSON, each in a `Field`, which names its control and spaces the form
 ## Adding on the canvas
 
 - **Quick add.** A double-click on empty canvas (in place of React Flow's zoom), or a wire from an output dropped on
-  empty canvas (`connect.ts`'s `droppedOnPane`), opens the palette's `Add` commands at the pointer, kept inside the
-  window. Choosing a type opens the inspector's add-node form with its template, as `Add <type>` does; ear still
+  empty canvas where no handle took it, opens the palette's `Add` commands at the pointer, kept inside the window.
+  Both are patchbay's `useAddAt`
+  ([its docs](https://github.com/mcurcio/patchbay/blob/v0.7.0/docs/graph.md#useaddat)), which finds the place on the
+  flow; `connect.ts`'s `quickAddKind` keeps ear's rule that a wire from an input opens nothing. Choosing a type opens the inspector's add-node form with its template, as `Add <type>` does; ear still
   judges the text, and the node still appears only on `node.added`.
 - **Placement hints.** The pointer's place is kept for the template's name (with no template, the JSON form, for
   the next node added). When `node.added` brings that name, `Places` puts it there (`layout.ts`'s `quickPlace`: the
@@ -514,9 +530,9 @@ class (inside `:where()`, so they weigh no more), so patchbay's controls draw as
 - **Type:** `--pb-font-ui` and `--pb-text-md` (13 px) for the page, `--pb-text-sm` (12 px) for
   small text, `--pb-font-code` for code, names and numbers as sent, and `--pb-code-size` for the
   code boxes and the gutter ([Phones and touch](#phones-and-touch)). The other sizes stay
-  literal, as patchbay has no token for them: 15 px (the wordmark, the canvas tools' glyphs, the
+  literal, as patchbay has no token for them: 15 px (the wordmark, the
   palette's field, the shortcut sheet's title), 14 px (the inspector's title), 11 px (the node box's
-  health line and port rows), 10 px (the type label, a wire's label, a companion's badge) and
+  health line and port rows), 10 px (the type label, a companion's badge) and
   16 px (text fields under a coarse pointer).
 - **Corners and motion:** 8 px on boxes, 6 px on controls and text boxes, pills fully round; 120 ms
   for hover and selection, 180 ms for what slides, `--pb-motion-pulse` (2 s, the configuring dot),
@@ -821,7 +837,7 @@ port. Node.js comes from `web/.nvmrc` and the packages from `web/package-lock.js
 The tests cover the reducer against every `test/protocol` fixture, the graph file's state and the
 pane's logic (drafts, stale files, Save, refusals), the node panel's knobly box (`nodeText.ts`), the add-node
 form (`addText.ts`), the highlighting (`highlight.ts`, and that it never changes the text sent), the reconnecting client with a fake socket,
-the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (a meter's words, and patchbay's scale pinned as stated here), the handles' rule (`connect.ts`'s `canConnect`), the box's sizes against patchbay's exported geometry (`layout.test.ts`), and the tokens and the theme's first paint (`theme.test.ts`: every `var()` names a token, and `index.html` inlines patchbay's theme script), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the sizes and the breakpoint against `editor.css` (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight and the ghosts (`requests.ts`), the toast store on patchbay's queue and a refusal's words (`notices.ts`, replaying `errors.json`), the gutter (`gutter.ts`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands as patchbay's `CommandPalette` takes and ranks them, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the key bindings as patchbay's `findShortcut` runs them (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), the wire dropped on the pane (`connect.ts`), and when the view fits itself (`fit.ts`). patchbay's modules import their own stylesheets, which Node cannot load, so `vite.config.ts` has Vitest inline the package (and blank its styles) for the tests that call its pure helpers. There is no browser test runner:
+the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (a meter's words, and patchbay's scale pinned as stated here), the handles' rule (`connect.ts`'s `canConnect`), the box's sizes against patchbay's exported geometry (`layout.test.ts`), and the tokens and the theme's first paint (`theme.test.ts`: every `var()` names a token, and `index.html` inlines patchbay's theme script), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the sizes and the breakpoint against `editor.css` (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight and the ghosts (`requests.ts`), the toast store on patchbay's queue and a refusal's words (`notices.ts`, replaying `errors.json`), the gutter (`gutter.ts`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands as patchbay's `CommandPalette` takes and ranks them, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the key bindings as patchbay's `findShortcut` runs them (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), and which quick add a double-click or a dropped wire asks for (`connect.ts`'s `quickAddKind`). patchbay's modules import their own stylesheets, which Node cannot load, so `vite.config.ts` has Vitest inline the package (and blank its styles) for the tests that call its pure helpers. There is no browser test runner:
 rendering is checked by eye. *Why:* a Playwright leg costs about 150 MB of browsers and a minute
 or two a CI run, while the logic sits in the reducer, client and rules, which Vitest covers
 against the same fixtures the server is tested with.

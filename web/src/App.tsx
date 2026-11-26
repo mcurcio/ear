@@ -15,6 +15,7 @@ import {
   useShortcuts,
   useTheme,
 } from "@mcurcio/patchbay/hooks";
+import { useFollowFit } from "@mcurcio/patchbay/graph";
 import { useReactFlow, type Connection } from "@xyflow/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { freeName } from "./addText";
@@ -27,8 +28,6 @@ import { nodeTextFeature, type RouteEnds } from "./protocol";
 import { nothingSelected, removals, selectionKey, subjectOf } from "./selection";
 import { inspectorWidth } from "./sizes";
 import { Canvas } from "./components/Canvas";
-import { fitPadding } from "./components/CanvasTools";
-import { AutoFit } from "./fit";
 import { Drawer } from "./components/Drawer";
 import { useEditor, useGraph, useGraphFile } from "./components/hooks";
 import { Inspector, type AddIntent } from "./components/Inspector";
@@ -36,6 +35,13 @@ import { TopBar } from "./components/TopBar";
 import { useCanvas } from "./components/useCanvas";
 import { useCommands } from "./components/useCommands";
 import { useDrawer } from "./components/useDrawer";
+
+/**
+ * Fit's padding, the same for the view's own fit, the Fit tool, F and the palette's Fit view: a tenth of the canvas on
+ * three sides, and at the bottom room for the canvas tools (at their tallest, on a touch screen) so they never cover a
+ * box.
+ */
+const fitPadding = { top: "10%", right: "10%", bottom: "76px", left: "10%" } as const;
 
 /** The open palette: all commands or only Add; for quick add, the screen point it opens at and the node's place. */
 interface PaletteOpen {
@@ -116,20 +122,26 @@ export function App({ prefs }: { prefs: Prefs }) {
     canvas.hint(null);
   }, [onGraph, canvas.hint]);
 
-  // The view fits by itself until the person moves it (fit.ts); Fit lets it go again, a jump to a node holds it.
-  const [autoFit] = useState(() => new AutoFit());
-  const fit = useCallback(() => {
-    autoFit.release();
-    void flow.fitView({ padding: fitPadding });
-  }, [autoFit, flow]);
+  // The view follows the graph (patchbay's useFollowFit, docs/editor.md#the-canvas): it fits again whenever the nodes
+  // on the canvas or its size change, until the person moves it; Fit follows again, a jump to a node stops it.
+  const nodeIds = canvas.nodes.map((node) => node.id).join("\n");
+  const follow = useFollowFit({ key: nodeIds, fitOptions: { padding: fitPadding } });
+  const { fit } = follow;
+  const followProps = follow.flowProps;
+  // A jump to a node (a palette Go to, a toast's Show) is the person's own move, made by code: it stops following as
+  // the person's pan does, through useFollowFit's own handler for a move with an event.
+  const holdView = useCallback(
+    () => followProps.onMoveStart(new MouseEvent("mousemove"), flow.getViewport()),
+    [followProps, flow],
+  );
   // As a toast's Show does.
   const goTo = useCallback(
     (name: string) => {
       canvas.select({ nodes: [name], routes: [] });
-      autoFit.hold();
+      holdView();
       void flow.fitView({ nodes: [{ id: name }], padding: 0.4, duration: 180 });
     },
-    [autoFit, canvas.select, flow],
+    [holdView, canvas.select, flow],
   );
 
   // An Add command: the Graph subject's form with that type's template; quick add's place is kept as a hint for the
@@ -233,8 +245,9 @@ export function App({ prefs }: { prefs: Prefs }) {
           onToggleMinimap={toggleMinimap}
           onShow={canvas.select}
           onQuickAdd={onQuickAdd}
-          autoFit={autoFit}
+          follow={followProps}
           onFit={fit}
+          onHoldView={holdView}
         />
         {graph !== null && subject !== null && (
           <Inspector

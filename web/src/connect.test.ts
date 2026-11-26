@@ -3,11 +3,11 @@
 import { describe, expect, it } from "vitest";
 import {
   canConnect,
-  droppedOnPane,
   edgeId,
   handleId,
   isValidConnection,
   parseHandleId,
+  quickAddKind,
   routeFromConnection,
 } from "./connect";
 import { fixtures } from "./testFixtures";
@@ -102,15 +102,12 @@ describe("the rule the hints and the drop share", () => {
   });
 });
 
-// Quick add from a wire (docs/editor.md#adding-on-the-canvas): an output's drag that ended on empty canvas.
-describe("droppedOnPane", () => {
-  it("is a drag from an output that ended on no node and no valid handle", () => {
-    const from = { id: out("noise.mono") };
-    expect(droppedOnPane({ isValid: null, toNode: null, fromHandle: from })).toBe(true);
-    expect(droppedOnPane({ isValid: false, toNode: null, fromHandle: from })).toBe(true);
-    expect(droppedOnPane({ isValid: false, toNode: { id: "rec" }, fromHandle: from })).toBe(false);
-    expect(droppedOnPane({ isValid: true, toNode: null, fromHandle: from })).toBe(false);
-    expect(droppedOnPane({ isValid: null, toNode: null, fromHandle: { id: inp("record.left") } })).toBe(false);
-    expect(droppedOnPane({ isValid: null, toNode: null, fromHandle: null })).toBe(false);
+// Quick add (docs/editor.md#adding-on-the-canvas): patchbay's useAddAt finds the double-click or the drop on empty
+// canvas; ear follows an output's wire only.
+describe("quickAddKind", () => {
+  it("is the pane's for a double-click and a wire's for an output's drop, and none for an input's", () => {
+    expect(quickAddKind()).toBe("pane");
+    expect(quickAddKind({ side: "output" })).toBe("wire");
+    expect(quickAddKind({ side: "input" })).toBeNull();
   });
 });

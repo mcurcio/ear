@@ -36,10 +36,11 @@ body,
   color: var(--pb-muted);
 }
 
-.react-flow__minimap {
-  border: 1px solid var(--pb-line);
-  border-radius: var(--pb-radius-control);
-  box-shadow: var(--pb-shadow);
+/* patchbay's CanvasTools frames the minimap and puts it at the bottom right, where the toasts are
+   (docs/editor.md#the-canvas); ear lifts it to the top right. */
+.react-flow__panel.react-flow__minimap.pb-canvas-minimap {
+  top: 0;
+  bottom: auto;
 }
 
 /* A minimap box takes its node's state class (Canvas.tsx), so it is drawn in --state. */
