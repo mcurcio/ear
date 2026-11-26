@@ -1,8 +1,7 @@
 // React's view of the editor session: the graph, the graph file, the connection (its status, and the view the top
 // bar's pill draws, docs/editor.md#the-top-bar) and one port's level, each read from its store with
 // useSyncExternalStore, so a levels message re-renders only the meters and wires of the ports that changed; a node's
-// companion badges and the counters' marks at the browser's time; a media query (the narrow window,
-// docs/editor.md#narrow-windows); the requests in flight (docs/editor.md#requests-in-flight) and the toast queue
+// companion badges and the counters' marks at the browser's time; the requests in flight (docs/editor.md#requests-in-flight) and the toast queue
 // (docs/editor.md#toasts), with a timer for their expiries.
 import { createContext, useCallback, useContext, useEffect, useState, useSyncExternalStore } from "react";
 import { companionBadges, type CompanionBadge } from "../companions";
@@ -61,22 +60,6 @@ export function useConnectionView(): ConnectionView {
   return useSyncExternalStore(
     useCallback((listener) => editor.subscribeConnection(listener), [editor]),
     () => editor.connectionView(),
-  );
-}
-
-/** Whether `query` matches the window now; false without window.matchMedia. */
-export function useMediaQuery(query: string): boolean {
-  const subscribe = useCallback(
-    (listener: () => void) => {
-      if (typeof window === "undefined" || typeof window.matchMedia !== "function") return () => {};
-      const media = window.matchMedia(query);
-      media.addEventListener("change", listener);
-      return () => media.removeEventListener("change", listener);
-    },
-    [query],
-  );
-  return useSyncExternalStore(subscribe, () =>
-    typeof window !== "undefined" && typeof window.matchMedia === "function" ? window.matchMedia(query).matches : false,
   );
 }
 

@@ -999,7 +999,7 @@ body,
   }
 }
 
-@media (max-width: 599px) {
+@media (max-width: 599.98px) {
   .topbar .wordmark {
     display: none;
   }
@@ -1056,8 +1056,8 @@ body,
   }
 }
 
-/* A phone in portrait (sizes.ts's phoneQuery): the engine chip gives way (the Graph subject holds the same facts). */
-@media (max-width: 599px) {
+/* A phone in portrait (patchbay's mediaQueries.phone): the engine chip gives way (the Graph subject holds the same facts). */
+@media (max-width: 599.98px) {
   .topbar .engine-chip {
     display: none;
   }

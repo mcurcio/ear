@@ -162,15 +162,16 @@ Each waits for the patchbay release carrying it.
 ### 3.6 A5: the shell
 
 `App.tsx`, `TopBar.tsx`, `Inspector.tsx` and `Drawer.tsx` compose AppShell; ear's words fill its slots. The drawer's
-body stays mounted while closed (draft, caret and scroll kept), as now. `hooks.ts`'s `useMediaQuery` becomes
-`useMediaBreakpoint`; `sizes.ts` keeps only ear's defaults. The change that lands A5 deletes this page.
+body stays mounted while closed (draft, caret and scroll kept), as now. `hooks.ts`'s `useMediaQuery` is already
+`useMediaBreakpoint` (built, with A4: `App.tsx` reads its width class, and `editor.css`'s phone and touch queries are
+its `mediaQueries`); `sizes.ts` keeps only ear's defaults. The change that lands A5 deletes this page.
 
 ### 3.7 Tests that move
 
 | Test | What happens to it |
 |---|---|
 | `theme.test.ts` | Done in A1: token sets, contrast and the cycle cases went to patchbay (its `tokens.test.ts` and `useTheme`'s tests); it keeps "no colour in `editor.css` and components", and holds every `var()` to a token and `index.html`'s theme script to patchbay's |
-| `sizes.test.ts` | Drag and key cases went in A2 (built: patchbay's Splitter tests them); the `editor.css` clamp and breakpoint cases go to patchbay's AppShell tests in A5 |
+| `sizes.test.ts` | Drag and key cases went in A2 (built: patchbay's Splitter tests them); the breakpoint case reads patchbay's `useMediaBreakpoint` widths and `mediaQueries` (built); the `editor.css` clamp and breakpoint cases go to patchbay's AppShell tests in A5 |
 | `layout.test.ts` | Placement stays; the CSS half checks NodeBox's exported geometry (A3) |
 | `prefs.test.ts` | Split in A2 (built): it reads the simple values as `usePersistentState` does, with ear's keys and checks; the hook is tested in patchbay |
 | `keys.test.ts`, `palette.test.ts` | Split in A4 (built): ear's bindings, run through patchbay's `findShortcut`, and its catalogue, handed to `rankCommands`, stay; the parsing, ranking and anchoring cases went to patchbay |

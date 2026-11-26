@@ -1,5 +1,6 @@
 // The shell's sizes (docs/editor.md#the-shell): the bounds, and that editor.css holds the same bounds and breakpoint.
 // A splitter's drag and keys are patchbay's Splitter's, tested there.
+import { mediaQueries, narrowBelow, phoneBelow, widthOf } from "@mcurcio/patchbay/hooks";
 import { describe, expect, it } from "vitest";
 import editorCss from "./editor.css?raw";
 import {
@@ -8,10 +9,6 @@ import {
   drawerHeight,
   inspectorBounds,
   inspectorWidth,
-  narrowQuery,
-  narrowWidth,
-  phoneQuery,
-  phoneWidth,
 } from "./sizes";
 
 describe("the bounds", () => {
@@ -50,11 +47,14 @@ describe("editor.css", () => {
   });
 
   it("makes the inspector a sheet below the narrow width, from the bottom below the phone width", () => {
-    expect(narrowWidth).toBe(760);
-    expect(narrowQuery).toBe("(max-width: 759px)");
-    expect(phoneWidth).toBe(600);
-    expect(phoneQuery).toBe("(max-width: 599px)");
-    // The sheet is patchbay's, chosen in TS (App.tsx); editor.css narrows the top bar and palette at the phone width.
-    expect(css).toContain(`@media ${phoneQuery}`);
+    // patchbay's useMediaBreakpoint picks the width class App.tsx reads; docs/editor.md states its widths.
+    expect(narrowBelow).toBe(760);
+    expect(phoneBelow).toBe(600);
+    expect([widthOf(890), widthOf(759), widthOf(600), widthOf(599)]).toStrictEqual(["wide", "narrow", "narrow", "phone"]);
+    // The sheet is patchbay's, chosen in TS (App.tsx); editor.css narrows the top bar at the phone width and grows its
+    // targets for a finger, by the same queries.
+    expect(css).toContain(`@media ${mediaQueries.phone}`);
+    expect(css).not.toMatch(/@media \(max-width: 599px\)/);
+    expect(css).toContain(`@media ${mediaQueries.touch}`);
   });
 });

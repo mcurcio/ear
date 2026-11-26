@@ -7,7 +7,14 @@
 // (docs/editor.md#adding-on-the-canvas) are held here. Node places, the selection, the sizes and the theme are the
 // browser's own; places, sizes, the minimap and the theme outlive the page (docs/editor.md#what-the-browser-keeps).
 import { CommandPalette, ShortcutSheet } from "@mcurcio/patchbay/composites";
-import { detectPlatform, keyLabel, usePersistentState, useShortcuts, useTheme } from "@mcurcio/patchbay/hooks";
+import {
+  detectPlatform,
+  keyLabel,
+  useMediaBreakpoint,
+  usePersistentState,
+  useShortcuts,
+  useTheme,
+} from "@mcurcio/patchbay/hooks";
 import { useReactFlow, type Connection } from "@xyflow/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { freeName } from "./addText";
@@ -18,12 +25,12 @@ import { paletteItems, type PaletteScope } from "./palette";
 import { checkFlag, checkWidth, themeKey, type Prefs } from "./prefs";
 import { nodeTextFeature, type RouteEnds } from "./protocol";
 import { nothingSelected, removals, selectionKey, subjectOf } from "./selection";
-import { inspectorWidth, narrowQuery, phoneQuery } from "./sizes";
+import { inspectorWidth } from "./sizes";
 import { Canvas } from "./components/Canvas";
 import { fitPadding } from "./components/CanvasTools";
 import { AutoFit } from "./fit";
 import { Drawer } from "./components/Drawer";
-import { useEditor, useGraph, useGraphFile, useMediaQuery } from "./components/hooks";
+import { useEditor, useGraph, useGraphFile } from "./components/hooks";
 import { Inspector, type AddIntent } from "./components/Inspector";
 import { TopBar } from "./components/TopBar";
 import { useCanvas } from "./components/useCanvas";
@@ -64,8 +71,9 @@ export function App({ prefs }: { prefs: Prefs }) {
 
   // Below the narrow width the inspector is a sheet: it opens on a selection and closes on Escape, its close button or
   // the canvas; below the phone width it rises from the bottom.
-  const narrow = useMediaQuery(narrowQuery);
-  const phone = useMediaQuery(phoneQuery);
+  const { width } = useMediaBreakpoint();
+  const narrow = width !== "wide";
+  const phone = width === "phone";
   const [sheetOpen, setSheetOpen] = useState(false);
   const key = selectionKey(canvas.selection);
   useEffect(() => {

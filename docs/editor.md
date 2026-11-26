@@ -194,9 +194,11 @@ the canvas is still 480 px wide. The drawer keeps its place. Below 600 px (a pho
 the bottom instead, the full width and at most 62 % of the workspace, scrolling inside, so the graph stays in sight
 above it; and the top bar drops the wordmark and the engine chip (the Graph subject holds the same facts),
 patchbay's theme switch shows only its icon (its label still names the choice) and the `ear.conf` toggle its glyph,
-so its buttons fit beside the connection pill. `App.tsx` picks docked, right or bottom from `sizes.ts`'s
-`narrowQuery` and `phoneQuery`; `sizes.ts` holds the bounds (which it passes to the splitters) and both widths, and
-`sizes.test.ts` holds `editor.css`'s bounds and phone width to them.
+so its buttons fit beside the connection pill. `App.tsx` picks docked, right or bottom from patchbay's
+`useMediaBreakpoint` (wide, narrow below 760 px, phone below 600 px:
+[its docs](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#usemediabreakpoint)), and `editor.css`
+narrows the top bar and grows the targets by the same queries (patchbay's `mediaQueries`); `sizes.ts` holds the
+bounds, which it passes to the splitters, and `sizes.test.ts` holds `editor.css`'s bounds and its queries to them.
 
 ### Phones and touch
 
