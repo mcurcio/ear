@@ -69,7 +69,13 @@ struct RtpType : NeverStarted {
 constexpr auto xRow = setting::optional("x", setting::boolean()).restarts("a test type restarts on it");
 constexpr auto levelRow =
 	setting::optional("level", setting::decimal(-90.0, 24.0, "dB")).restarts("a test type restarts on it");
-constexpr TypeSpec lampSpec{.settings = SettingsTable<xRow, levelRow>{"lamp"}, .banks = Banks<>{}};
+constexpr auto bulbsRow = setting::defaulted("bulbs", setting::number(1, 16), 2).restarts("a test type restarts on it");
+constexpr auto trimFamily = setting::indexed("trimDb", bulbsRow, setting::decimal(-24.0, 24.0, "dB"), 0.0)
+                                .restarts("a test type restarts on it");
+constexpr auto litFamily =
+	setting::indexed("lit", bulbsRow, setting::boolean(), false).restarts("a test type restarts on it");
+constexpr TypeSpec lampSpec{.settings = SettingsTable<xRow, levelRow, bulbsRow, trimFamily, litFamily>{"lamp"},
+                            .banks = Banks<>{}};
 struct LampType : NeverStarted {
 	static Members<lampSpec> ports(const CheckedOf<lampSpec>&) { return {}; }
 	Configured configure(CreateOf<lampSpec>& cx, const CheckedOf<lampSpec>& s) { return never(cx, s); }

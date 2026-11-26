@@ -92,6 +92,7 @@ inline constexpr auto portRow = setting::optional("port", setting::number(1, 655
 | `setting::required(key, rule)` | the value | `<key>: missing` |
 | `setting::optional(key, rule)` | `std::optional` of the value | empty |
 | `setting::defaulted(key, rule, default)` | the value | the default, of the rule's kind: a whole number, a [decimal](#decimal-rows) or a boolean. A default outside the range, or a default on a text or rate row, does not compile. The default is not deduced, so `defaulted("playback", number(0, 64), 0)` takes the literal `0` as the rule's value |
+| `setting::indexed(key, countRow, rule, default)` | each member by its number: `s.get<row>(i)` | the default, as `defaulted`'s ([below](#indexed-families)) |
 
 | Rule | A good value | Refused with |
 |---|---|---|
@@ -123,7 +124,8 @@ inline constexpr auto portRow = setting::optional("port", setting::number(1, 655
   when it has neither a default nor `defaultFrom` (`sendspin`'s `server`: "absent: ear listens on port
   for the server to dial it"), which the all-type tests require, or anything `mustBe` does not say.
 - Each key once; `disabled` (the framework's key) cannot be declared; a table's name must be its
-  folder's. Each is a compile error.
+  folder's. Each is a compile error. A plain row spelt as a family's member (`trimDb.2` beside the
+  family `trimDb`) does not compile either.
 - The table is `SettingsTable<row1, row2, ...>{"<type>"}` (`SettingsTable<>{"white"}` for none).
   It gives the type's name, its settings' kinds (text, whole number, rate, boolean or decimal, which is
   how `ear.conf` is read and written: `NodeType::kindOf(key)`) and the whole check, so the graph file reader cannot disagree with `parse`.
@@ -157,6 +159,50 @@ any JSON number in the range, an integer too (`-6` is `-6.0`), and never a strin
 does not round, so a value with more places than `decimals` is taken as given. In `ear.conf` a
 decimal is written as the shortest text that reads back the same, in fixed notation
 ([graph-file.md](graph-file.md#settings-and-their-kinds)).
+
+#### Indexed families
+
+```cpp
+inline constexpr auto channelsRow =
+	setting::defaulted("channels", setting::number(1, 64, "channels"), 2).shapesPorts().inPlace();
+inline constexpr auto trimRow =
+	setting::indexed("trimDb", channelsRow, setting::decimal(-24.0, 24.0, "dB", {.decimals = 1}), 0.0).inPlace();
+// in ports(), configure or check:
+for (std::uint32_t c = 0; c < s.count<trimRow>(); ++c) apply(c, s.get<trimRow>(c));
+```
+
+A family is one row declaring the members `<key>.1` to `<key>.<n>`, `n` the value of its **count
+row**: a required or defaulted whole-number row above it in the table (an optional count row, one of
+another kind, one whose high is 0, and one below the family or not in its table do not compile).
+Several families may share one count row. Each member is read by the family's rule and reads the
+family's default when absent, so a family always reads a value; it takes `.inPlace()` or
+`.restarts(why)` and `.help()`, its mark every member's, and never `.shapesPorts()` or
+`.onlyWithout()`.
+
+- **One spelling per member.** A member's key is `<key>.<n>`, `n` written in decimal from 1 with no
+  sign and no leading zero (`trimDb.1`, `trimDb.12`): the one grammar, `setting::memberNumber`, by
+  which the walk, `NodeType::kindOf` and `NodeType::changeOf` find a key's row
+  (`AnySettingsTable::rowOf`). Every other spelling (`trimDb.0`, `trimDb.01`, `trimDb.+1`,
+  `trimDb.1.5`) is no member and is refused `unknown key <key>`, so one member has one spelling in
+  a JSON object and in `ear.conf`, where it is one directive name
+  ([graph-file.md](graph-file.md#settings-and-their-kinds)).
+- **Members up to the count row's maximum are taken**, whatever the count is now. One above the
+  current count is kept, inactive: the code does not use it, the editor greys it, and it is active
+  again when the count rises, so lowering a count never refuses a file that holds `trimDb.3`. One
+  above the maximum is refused `trimDb.65: no such member (channels is at most 64)`. An inactive
+  member is no graph-file warning.
+- **Reading.** `s.get<family>(i)` gives member `i` from 0 (key `<key>.<i+1>`), the file's value or
+  the default, active or not; `s.count<family>()` gives the active members, the count row's value.
+  `s.get<family>()` and `s.get<row>(i)` of a plain row do not compile; a member at or above the
+  maximum throws `std::out_of_range`, a type bug.
+- **The walk** checks a family in its place in the table, member by member in number order (not the
+  object's sorted order, which puts `trimDb.10` before `trimDb.2`); each refusal names the member's
+  full key, as `data.key` too.
+- **The plan** judges a member's change by its family's mark: a change of `trimDb.2` alone in an
+  in-place family is a `reconfigure`, in a restart family a `restart`.
+- The type schema's `indexed` says it is a family ([control-port.md](control-port.md#type-schemas)),
+  and the editor draws a field per member ([editor.md](editor.md#the-settings-form)). A call's
+  arguments ([actions](#actions)) are a fixed set of keys: a family among them does not compile.
 
 #### Change marks
 
@@ -200,14 +246,16 @@ twice) and a restart with an empty reason do not compile. A call's arguments
 
 `NodeType::schema()` is the type as the control port describes it: its name, its rows in the walk's
 order (each with its key, rule, required, default of its kind, `onlyWithout`, its [change mark](#change-marks) and its
-reason, and the marks above), its banks in
+reason, a [family](#indexed-families)'s count row and maximum, and the marks above; `settingKinds()` names a family
+by its family's key), its banks in
 declaration order, its in-place deadline (`.lifecycle`), and its status fields and events in
 declaration order ([status and events](#status-and-events)). Everything in it views the spec's static
 storage, so it is the same every call. Nothing but the table and the spec makes it: a type writes no
 schema of its own.
 
 A refusal of the walk names its key (`InvalidSettings::key`: `port` for `port: must be a whole
-number, 1-65535`, the unknown key for `unknown key colour`); a refusal of the type's `check` or
+number, 1-65535`, the unknown key for `unknown key colour`, a family member's full key for `trimDb.2: must be a
+number of dB from -24 to 24`); a refusal of the type's `check` or
 `ports` names none, since a rule across settings has no one key.
 
 ### Banks: the ports

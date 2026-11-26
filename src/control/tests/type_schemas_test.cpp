@@ -74,9 +74,16 @@ inline constexpr auto cutoffRow =
 		.restarts("the filter is designed at start");
 inline constexpr auto spreadRow = setting::optional("spread", setting::decimal(0, 1)).inPlace();
 inline constexpr auto onRow = setting::defaulted("on", setting::boolean(), true).inPlace();
+inline constexpr auto channelsRow =
+	setting::defaulted("channels", setting::number(1, 64, "channels"), 2).shapesPorts().inPlace();
+inline constexpr auto trimFamily =
+	setting::indexed("trimDb", channelsRow, setting::decimal(-24.0, 24.0, "dB", {.decimals = 1}), 0.0).inPlace();
+inline constexpr auto invertFamily =
+	setting::indexed("invert", channelsRow, setting::boolean(), false).restarts("the polarity is set at start");
 inline constexpr auto out = bank::output<"out">;
-inline constexpr TypeSpec spec{.settings = SettingsTable<levelRow, cutoffRow, spreadRow, onRow>{"rows"},
-                               .banks = Banks<out>{}};
+inline constexpr TypeSpec spec{
+	.settings = SettingsTable<levelRow, cutoffRow, spreadRow, onRow, channelsRow, trimFamily, invertFamily>{"rows"},
+	.banks = Banks<out>{}};
 struct Rows {
 	static Members<spec> ports(const CheckedOf<spec>&) { return {out(members("mono"))}; }
 	Configured configure(CreateOf<spec>&, const CheckedOf<spec>&) {
@@ -152,7 +159,8 @@ TEST_CASE("Each row kind and mark is on the wire as the control port takes the k
 	  "status": [], "events": [], "actions": []})"));
 }
 
-TEST_CASE("The row vocabulary no built-in type has is on the wire as rows.json says", "[types][protocol][decimal]") {
+TEST_CASE("The row vocabulary no built-in type has is on the wire as rows.json says",
+          "[types][protocol][decimal][indexed]") {
 	std::ifstream file(std::string(EAR_PROTOCOL_DIR) + "/rows.json");
 	REQUIRE(file.good());
 	const json fixture = json::parse(file);

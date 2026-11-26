@@ -105,9 +105,14 @@ constexpr auto portRow = setting::required("port", setting::number(1, 65535)).in
 constexpr auto gainRow = setting::optional("gain", setting::number(0, 100)).inPlace();
 constexpr auto channelsRow =
 	setting::defaulted("channels", setting::number(1, 8), 1).restarts("a test type restarts on it");
-constexpr TypeSpec movableSpec{.settings = SettingsTable<portRow, gainRow, channelsRow>{"movable"},
+constexpr auto levelFamily = setting::indexed("level", channelsRow, setting::number(0, 100), 50).inPlace();
+constexpr auto holdFamily =
+	setting::indexed("hold", channelsRow, setting::boolean(), false).restarts("a test type restarts on it");
+constexpr TypeSpec movableSpec{.settings =
+                                   SettingsTable<portRow, gainRow, channelsRow, levelFamily, holdFamily>{"movable"},
                                .banks = Banks<out>{}};
-/// "movable": port and gain change in place; channels makes its ports (outputs out.1..out.<channels>).
+/// "movable": port, gain and each level.<n> change in place; channels makes its ports (outputs
+/// out.1..out.<channels>); each hold.<n> restarts it.
 struct Movable : NeverStarted {
 	static Members<movableSpec> ports(const CheckedOf<movableSpec>& settings) {
 		return {out(members(settings.get<channelsRow>()))};
@@ -794,6 +799,21 @@ TEST_CASE("A change whose every key is marked inPlace is a reconfigure, and one 
 		CHECK_FALSE(changeOf(type, {"channels"}, false, false, one, two).inPlace);
 		CHECK_FALSE(changeOf(type, {}, false, false, one, two).inPlace);
 		CHECK(changeOf(type, {"gain"}, true, true, one, two).outcome == NodeOutcome::stored);
+	}
+	SECTION("a family member's change is planned by its family's mark") {
+		CHECK(planned(movable({{"port", 5004}, {"level.1", 10}})) == Outcomes{{"fpp", NodeOutcome::reconfigure}});
+		CHECK(recorder.log == Log{"nodeChanged fpp reconfigure level.1"});
+		// A member above the count is kept and planned alike: inactive is only the code's view.
+		CHECK(planned(movable({{"port", 5004}, {"level.1", 10}, {"level.8", 20}})) ==
+		      Outcomes{{"fpp", NodeOutcome::reconfigure}});
+		CHECK(planned(movable({{"port", 5004}, {"level.1", 10}, {"level.8", 20}, {"hold.2", true}})) ==
+		      Outcomes{{"fpp", NodeOutcome::restart}});
+		const NodeType& type = *catalogue.find("movable");
+		CHECK(type.changeOf("level.8") == setting::Change::inPlace);
+		CHECK(type.changeOf("hold.1") == setting::Change::restart);
+		CHECK(type.changeOf("level.9") == setting::Change::restart); // above the maximum: no member
+		CHECK(type.kindOf("hold.3") == SettingKind::boolean);
+		CHECK_FALSE(type.kindOf("level.01").has_value());
 	}
 	SECTION("outcomeFor is the plan's rule: no key is unchanged, an unknown key is restart-only") {
 		const NodeType& type = *catalogue.find("movable");

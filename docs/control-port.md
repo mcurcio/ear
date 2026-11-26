@@ -533,6 +533,7 @@ encoding, never through the graph's keeper, so it waits on no edit.
 | `values`, `pattern`, `maxLength` | A text's hints for a control: every value it takes (a select), an ECMAScript pattern every good value matches, its most bytes. Hints only: ear judges every value |
 | `onlyWithout` | The key it is refused beside |
 | `help` | One line a control shows beside the field |
+| `indexed` | `{"by", "from", "max"}`: the row is an [indexed family](writing-a-node-type.md#indexed-families). Its members' keys are `<key>.<n>`, `n` in decimal from `from` (1) to `max` (its count row's maximum) with no sign and no leading zero; the one rule by which a client maps any key ear sends (a node's `settings`, an `invalid-settings` `data.key`) to the family's field. The row's other members are each member's; the count row `by` names how many are active, and a member above it is kept, inactive. Needs no feature, as a kind does |
 
 ```json
 {"jsonrpc": "2.0", "id": 3, "method": "types.get", "params": {"ifNoneMatch": "fnv1a64:0123456789abcdef"}}
@@ -784,7 +785,7 @@ breaking change moves `protocol`; anything else is a new feature name
 | `node-set.json` | `node.set`: a merge answered `reconfigure`, `unchanged` again, `null` removing a key, a required key removed refused, a dry run of each outcome (`reconfigure`, `unchanged`, `restart`, `stored` with its ports, `reshape` naming its routes) changing nothing, a reshape refused `ports-in-use`, then with `dropRoutes` (`routesDropped`) |
 | `node-text.json` | `nodeTexts` (a comment owned, a snippet's node shared); `node.setText`: success, `file-changed`, `invalid-text` placed in the text, `ear/node-renamed`, `shared-definition`, `ear/not-one-node`; `node.addText`: success, `file-changed`, knobly's error placed in the text, `ear/not-one-node`, `duplicate-node`; the system tests send its requests to the real ear and expect its replies |
 | `errors.json` | Every refusal code and envelope error, `invalid-settings` with its `key` and `detail` |
-| `rows.json` | Schemas of test types, not the real ear's: the row vocabulary no built-in type has yet (decimal rows of each taper, typed defaults), as `src/control/tests/type_schemas_test.cpp` encodes its test specs and the editor's form tests draw them. Not a wire fixture: `{"description", "typeSchemas"}` |
+| `rows.json` | Schemas of test types, not the real ear's: the row vocabulary no built-in type has yet (decimal rows of each taper, typed defaults, indexed families), as `src/control/tests/type_schemas_test.cpp` encodes its test specs and the editor's form tests draw them. Not a wire fixture: `{"description", "typeSchemas"}` |
 | `types.json` | `types.get` with no hash, a stale hash and the current one, and with an unknown member; every built-in type's schema (each row's `change`, `restartReason`, `shapes`, `defaultFrom` and hints) and its hash; the system tests send its requests to the real ear and expect its replies |
 | `levels.json` | `levels.subscribe` and `levels` |
 | `counters-changed.json` | The counters in a snapshot, `counters.changed`, one naming a node not held, and a change of ports keeping the node and its counters |

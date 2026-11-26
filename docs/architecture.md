@@ -665,7 +665,9 @@ through `nodeChanged` with a `NodeChange`): `disable`, `enable` or `stored` by i
 before and after; otherwise `reshape` when its ports differ, `unchanged` when no key does (nothing
 is done or told), `reconfigure` when every changed key's row is marked in place
 ([writing-a-node-type.md](writing-a-node-type.md#change-marks)), else `restart` (every other row
-is marked to restart, with the reason the type schema carries). A `reconfigure` is taken in place when the type has a change version
+is marked to restart, with the reason the type schema carries). A family member's key (`trimDb.2`)
+is judged by its family's mark (`NodeType::changeOf(key)`, through the table's one key lookup:
+[writing-a-node-type.md](writing-a-node-type.md#indexed-families)). A `reconfigure` is taken in place when the type has a change version
 ([below](#changes-in-place)), else as a restart. `changeOf` (`desired_graph.hpp`) is the one rule,
 the plan's and the type harness's.
 

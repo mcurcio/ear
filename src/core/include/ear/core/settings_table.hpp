@@ -16,6 +16,7 @@
 #include <optional>
 #include <ranges>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -104,7 +105,28 @@ struct SettingRow {
 	std::optional<setting::DefaultFrom> defaultFrom = {}; // Row::defaultFrom's: where an absent value comes from
 	bool shapesPorts = false;                             // Row::shapesPorts's: a change to it may change the ports
 	std::string_view help = {};                           // Row::help's: one line for controls
+	/// An indexed family's (setting::indexed, docs/writing-a-node-type.md#indexed-families): the key of its count row,
+	/// and that row's high, the most members it takes. Empty and 0 for a plain row.
+	std::string_view indexedBy = {};
+	std::uint32_t maxMembers = 0;
 };
+namespace setting {
+/// A family member's number in `key` (docs/writing-a-node-type.md#indexed-families): `key` is `<family>.<n>`, n
+/// written in decimal from 1 with no sign and no leading zero; nothing for any other spelling. A number too large for
+/// 32 bits is the largest there is, so it is above every family's maximum.
+constexpr std::optional<std::uint32_t> memberNumber(std::string_view key, std::string_view family) noexcept {
+	if (key.size() < family.size() + 2 || !key.starts_with(family) || key[family.size()] != '.') return std::nullopt;
+	const std::string_view digits = key.substr(family.size() + 1);
+	if (digits.front() < '1' || digits.front() > '9') return std::nullopt;
+	std::uint64_t number = 0;
+	for (const char digit : digits) {
+		if (digit < '0' || digit > '9') return std::nullopt;
+		number = std::min<std::uint64_t>(number * 10 + static_cast<std::uint64_t>(digit - '0'),
+		                                 std::numeric_limits<std::uint32_t>::max());
+	}
+	return static_cast<std::uint32_t>(number);
+}
+} // namespace setting
 
 namespace setting {
 template <class Result> inline constexpr bool isOwningOptional = false;
@@ -119,6 +141,7 @@ concept TextParser = std::invocable<decltype(Parse), std::string_view> &&
 template <auto Parse> using ParsedBy = typename std::invoke_result_t<decltype(Parse), std::string_view>::value_type;
 
 template <class T> class Rule;
+template <class T> class IndexedRow;
 /// The range is not optional; low above high does not compile.
 consteval Rule<std::uint32_t> number(std::uint32_t low, std::uint32_t high, std::string_view unit = {});
 /// A finite real in [low, high], read as double: a JSON number on the control port (an integer is taken), a number word
@@ -238,8 +261,51 @@ private:
 	friend consteval Row<V, true> defaulted(std::string_view key, Rule<V> rule, std::type_identity_t<V> byDefault);
 	SettingRow row_;
 };
+template <class V, class C, bool A> consteval IndexedRow<V> indexed(std::string_view key, const Row<C, A>& count,
+                                                                    Rule<V> rule, std::type_identity_t<V> byDefault);
+/// An indexed family (docs/writing-a-node-type.md#indexed-families): one row declaring the members `<key>.1` to
+/// `<key>.<n>`, n its count row's value, each read as T and as the family's default when absent. Members up to the
+/// count row's high are taken; those above its value are kept, inactive. Only indexed makes one.
+template <class T> class IndexedRow {
+public:
+	using Value = T;
+	constexpr const SettingRow& row() const noexcept { return row_; }
+	/// As Row's: the family's mark is every member's.
+	constexpr bool marked() const noexcept {
+		return row_.change != setting::Change::restart || !row_.restartReason.empty();
+	}
+	consteval IndexedRow inPlace() const {
+		if (marked()) throw "a row has one change mark: inPlace or restarts, never both and never twice";
+		IndexedRow mark = *this;
+		mark.row_.change = setting::Change::inPlace;
+		return mark;
+	}
+	consteval IndexedRow restarts(std::string_view why) const {
+		if (marked()) throw "a row has one change mark: inPlace or restarts, never both and never twice";
+		if (why.empty()) throw "a restart states why: restarts takes a reason, never an empty one";
+		IndexedRow mark = *this;
+		mark.row_.restartReason = why;
+		return mark;
+	}
+	consteval IndexedRow help(std::string_view line) const {
+		if (line.empty()) throw "a row's help is a line, never empty";
+		IndexedRow marked = *this;
+		marked.row_.help = line;
+		return marked;
+	}
+
+private:
+	consteval explicit IndexedRow(SettingRow row) : row_(row) {}
+	template <class V, class C, bool A> friend consteval IndexedRow<V>
+	indexed(std::string_view key, const Row<C, A>& count, Rule<V> rule, std::type_identity_t<V> byDefault);
+	SettingRow row_;
+};
+/// The rows a table lists: plain rows and indexed families.
 template <class T> inline constexpr bool isRow = false;
 template <class T, bool Always> inline constexpr bool isRow<Row<T, Always>> = true;
+template <class T> inline constexpr bool isRow<IndexedRow<T>> = true;
+template <class T> inline constexpr bool isIndexed = false;
+template <class T> inline constexpr bool isIndexed<IndexedRow<T>> = true;
 
 template <auto Parse> std::any readParsed(std::string_view text) {
 	auto parsed = std::invoke(Parse, text);
@@ -302,6 +368,24 @@ consteval Row<V, true> defaulted(std::string_view key, Rule<V> rule, std::type_i
 		throw "only a whole number, decimal or boolean row takes a default: a text or rate row is required or optional";
 	}
 }
+/// A family `<key>.1` .. `<key>.<n>` (docs/writing-a-node-type.md#indexed-families): n the value of `count`, a required
+/// or defaulted whole-number row above it in its table; each member reads `byDefault` when absent, which is checked as
+/// defaulted's is. A count row of another kind, an optional one, or one whose high is 0 does not compile.
+template <class V, class C, bool A> consteval IndexedRow<V> indexed(std::string_view key, const Row<C, A>& count,
+                                                                    Rule<V> rule, std::type_identity_t<V> byDefault) {
+	if constexpr (!std::same_as<C, std::uint32_t>) {
+		throw "a family's count row is a whole number";
+	} else {
+		if (!A) throw "a family's count row always reads a value: required or defaulted, never optional";
+		const auto* range = std::get_if<WholeNumberRule>(&count.row().rule);
+		if (range == nullptr) throw "a family's count row is a whole number";
+		if (range->high == 0) throw "a family's count row reaches 1 or more: a family of no member is none";
+		SettingRow row = defaulted(key, rule, byDefault).row();
+		row.indexedBy = count.row().key;
+		row.maxMembers = range->high;
+		return IndexedRow<V>(row);
+	}
+}
 constexpr SettingDeclaration declarationOf(const SettingRow& row) {
 	if (std::holds_alternative<TextRule>(row.rule)) return {row.key, SettingKind::text};
 	if (std::holds_alternative<RateRule>(row.rule)) return {row.key, SettingKind::rate};
@@ -331,6 +415,8 @@ template <const auto& Object> inline constexpr bool named =
 	spelling<Object>().find("(anonymous namespace)") == std::string_view::npos;
 } // namespace linkage
 
+/// A family's slot in CheckedSettings: its given members, (number from 1, value), in number order.
+template <class V> using FamilyValues = std::vector<std::pair<std::uint32_t, V>>;
 /// What the walk made: one slot per row. No public constructor and no public read: only the walk makes one, and only
 /// Checked reads it. It owns its values, so it borrows neither the settings nor the table.
 class CheckedSettings {
@@ -353,17 +439,33 @@ public:
 	constexpr std::span<const SettingDeclaration> kinds() const noexcept { return kinds_; }
 	/// Every row, in the walk's order: what the type schema is made from (NodeType::schema).
 	constexpr std::span<const SettingRow* const> rows() const noexcept { return rows_; }
-	/// The kind of `key`'s row (NodeType::kindOf); nothing for a key the table lacks.
-	constexpr std::optional<SettingKind> kindOf(std::string_view key) const noexcept {
-		for (const SettingDeclaration& declared : kinds_)
-			if (declared.key == key) return declared.kind;
+	/// The row a key is read by: a plain row's own key (member 0), or a family's member `<family>.<n>` with n from 1 to
+	/// the family's maximum (docs/writing-a-node-type.md#indexed-families). The one lookup of a key: the walk, kindOf
+	/// and changeOf all go through it.
+	struct RowOf {
+		const SettingRow* row;
+		std::uint32_t member; // 0 for a plain row; a family member's number, from 1
+	};
+	constexpr std::optional<RowOf> rowOf(std::string_view key) const noexcept {
+		for (const SettingRow* row : rows_) {
+			if (row->maxMembers == 0) {
+				if (row->key == key) return RowOf{row, 0};
+			} else if (const auto member = setting::memberNumber(key, row->key)) {
+				if (*member <= row->maxMembers) return RowOf{row, *member};
+			}
+		}
 		return std::nullopt;
 	}
-	/// Whether the row of `key` is marked inPlace (Row::inPlace); false for a key the table lacks.
-	constexpr bool changesInPlace(std::string_view key) const noexcept {
-		for (const SettingRow* row : rows_)
-			if (row->key == key) return row->change == setting::Change::inPlace;
-		return false;
+	/// The kind of `key`'s row (NodeType::kindOf), a family member's by its family; nothing for a key the table lacks.
+	constexpr std::optional<SettingKind> kindOf(std::string_view key) const noexcept {
+		if (const auto found = rowOf(key)) return setting::declarationOf(*found->row).kind;
+		return std::nullopt;
+	}
+	/// The change mark of `key`'s row, a family member's by its family (docs/writing-a-node-type.md#change-marks);
+	/// restart for a key the table lacks.
+	constexpr setting::Change changeOf(std::string_view key) const noexcept {
+		if (const auto found = rowOf(key)) return found->row->change;
+		return setting::Change::restart;
 	}
 	/// A refusal's text, and the key it names (empty for "settings: must be an object"): InvalidSettings's `key`
 	/// (docs/control-port.md#error-codes), and an action's invalid-args.
@@ -376,18 +478,32 @@ public:
 	std::expected<CheckedSettings, Refusal> checkArgs(const NodeSettings& args) const { return walk(args); }
 
 protected:
-	/// Refuses at compile time: an empty name, a key given twice, an onlyWithout that names no row above its own.
+	/// Refuses at compile time: an empty name, a key given twice, an onlyWithout that names no row above its own, a
+	/// family whose count row is not the row above it that indexed was given, and a plain row whose key is a family's
+	/// member's spelling.
 	consteval AnySettingsTable(std::string_view name, std::span<const SettingRow* const> rows,
 	                           std::span<const SettingDeclaration> kinds)
 		: name_(name), rows_(rows), kinds_(kinds) {
 		if (name.empty()) throw "a table's name is empty";
 		for (std::size_t at = 0; at < rows.size(); ++at) {
 			bool aboveFound = false;
+			bool countFound = false;
 			for (std::size_t earlier = 0; earlier < at; ++earlier) {
 				if (rows[earlier]->key == rows[at]->key) throw "a setting's key is given twice";
 				if (rows[earlier]->key == rows[at]->onlyWithout) aboveFound = true;
+				const auto* count = std::get_if<WholeNumberRule>(&rows[earlier]->rule);
+				if (rows[at]->maxMembers > 0 && rows[earlier]->key == rows[at]->indexedBy &&
+				    rows[earlier]->maxMembers == 0 && count != nullptr && count->high == rows[at]->maxMembers &&
+				    (rows[earlier]->required || rows[earlier]->byDefault))
+					countFound = true;
 			}
 			if (!rows[at]->onlyWithout.empty() && !aboveFound) throw "an onlyWithout must name a row above its own";
+			if (rows[at]->maxMembers > 0 && !countFound) throw "a family's count row is a row above it in its table";
+			for (const SettingRow* family : rows) {
+				if (family->maxMembers == 0 || rows[at]->maxMembers > 0) continue;
+				if (setting::memberNumber(rows[at]->key, family->key))
+					throw "a row's key is a family member's spelling: <family>.<n> belongs to the family";
+			}
 		}
 	}
 	/// The first failure is the refusal's text, in this order:
@@ -423,20 +539,51 @@ public:
 	/// arguments must not (action::call): docs/writing-a-node-type.md#change-marks.
 	static constexpr bool everyRowMarked = (Rows.marked() && ...);
 	static constexpr bool anyRowMarked = (Rows.marked() || ...);
+	/// Whether any row is an indexed family, as a call's arguments must not have (action::call).
+	static constexpr bool anyRowIndexed = (setting::isIndexed<std::remove_cvref_t<decltype(Rows)>> || ...);
 	/// Settings this table passed. A row not listed in this table cannot be read: get's constraint fails at compile time.
 	class Checked {
+		template <const auto& Row> static constexpr bool listed =
+			((static_cast<const void*>(&Row) == static_cast<const void*>(&Rows)) || ...);
+		template <const auto& Row> static constexpr bool family =
+			setting::isIndexed<std::remove_cvref_t<decltype(Row)>>;
+		template <const auto& Row> static constexpr std::size_t slotOf() {
+			return static_cast<std::size_t>(std::ranges::find(rows_, &Row.row()) - rows_.begin());
+		}
+
 	public:
+		/// A plain row's value; a family is read by member (get<family>(member)).
 		template <const auto& Row>
-			requires((static_cast<const void*>(&Row) == static_cast<const void*>(&Rows)) || ...)
+			requires(listed<Row> && !family<Row>)
 		[[nodiscard]] typename std::remove_cvref_t<decltype(Row)>::Reads get() const {
 			using Read = std::remove_cvref_t<decltype(Row)>;
-			constexpr auto slot = std::ranges::find(rows_, &Row.row()) - rows_.begin();
-			const auto* value = std::any_cast<typename Read::Value>(&settings_.slots_[static_cast<std::size_t>(slot)]);
+			const auto* value = std::any_cast<typename Read::Value>(&settings_.slots_[slotOf<Row>()]);
 			if constexpr (std::same_as<typename Read::Reads, typename Read::Value>) {
 				return *value; // the walk filled it: a required row was given, a defaulted one has its default
 			} else {
 				return value != nullptr ? typename Read::Reads(*value) : std::nullopt;
 			}
+		}
+		/// A family's member, from 0 (its key's number less 1): the file's value, or the family's default when absent,
+		/// active or not. A member at or above the family's maximum is a type bug: std::out_of_range.
+		template <const auto& Family>
+			requires(listed<Family> && family<Family>)
+		[[nodiscard]] typename std::remove_cvref_t<decltype(Family)>::Value get(std::size_t member) const {
+			using Value = typename std::remove_cvref_t<decltype(Family)>::Value;
+			if (member >= Family.row().maxMembers)
+				throw std::out_of_range(std::string(Family.row().key) + ": no member " + std::to_string(member + 1));
+			const auto& given = std::any_cast<const FamilyValues<Value>&>(settings_.slots_[slotOf<Family>()]);
+			for (const auto& [number, value] : given)
+				if (number == member + 1) return value;
+			return std::get<Value>(*Family.row().byDefault);
+		}
+		/// A family's active members: its count row's value. Members above it are kept, inactive.
+		template <const auto& Family>
+			requires(listed<Family> && family<Family>)
+		[[nodiscard]] std::uint32_t count() const {
+			constexpr std::size_t slot = static_cast<std::size_t>(
+				std::ranges::find(rows_, Family.row().indexedBy, &SettingRow::key) - rows_.begin());
+			return std::any_cast<std::uint32_t>(settings_.slots_[slot]);
 		}
 
 	private:

@@ -92,7 +92,9 @@ function Field({
     }
   })();
   return (
-    <div className={`settings-field${field.drafted ? " settings-field-drafted" : ""}`}>
+    <div
+      className={`settings-field${field.drafted ? " settings-field-drafted" : ""}${field.inactive === true ? " settings-field-inactive" : ""}`}
+    >
       <label htmlFor={id}>
         {field.key}
         {field.unit !== undefined && <span className="settings-unit"> ({field.unit})</span>}

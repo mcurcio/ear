@@ -65,6 +65,50 @@ std::string notWithinRange(std::string_view key, const DecimalRule& rule) {
 	return refusal + " from " + decimalText(rule.low) + " to " + decimalText(rule.high);
 }
 
+/// One value read by `rule` for `key` (a plain row's, or a family member's full key): what the slot holds, or the
+/// refusal's text.
+std::expected<std::any, std::string> readValue(const SettingRule& rule, std::string_view key,
+                                               const NodeSettings& value) {
+	if (const auto* number = std::get_if<WholeNumberRule>(&rule)) {
+		if (!isWholeNumberWithin(value, number->low, number->high))
+			return std::unexpected(notWithinRange(key, *number));
+		return value.get<std::uint32_t>();
+	}
+	if (const auto* rate = std::get_if<RateRule>(&rule)) {
+		const auto read = rateOfSetting(value);
+		if (!read || *read < rate->low || *read > rate->high) {
+			return std::unexpected(std::string(key) + ": must be a rate from " +
+			                       rangeText(RateRange{rate->low, rate->high}) +
+			                       " (on the control port, a whole number of Hz)");
+		}
+		return *read;
+	}
+	if (const auto* decimal = std::get_if<DecimalRule>(&rule)) {
+		// Any JSON number, an integer too; never a boolean, which nlohmann does not count as one.
+		const bool taken = value.is_number() && std::isfinite(value.get<double>()) &&
+		                   value.get<double>() >= decimal->low && value.get<double>() <= decimal->high;
+		if (!taken) return std::unexpected(notWithinRange(key, *decimal));
+		return value.get<double>();
+	}
+	if (std::holds_alternative<BooleanRule>(rule)) {
+		if (!value.is_boolean()) return std::unexpected(std::string(key) + ": must be true or false");
+		return value.get<bool>();
+	}
+	const TextRule& text = std::get<TextRule>(rule);
+	std::any read;
+	if (value.is_string()) read = text.read(value.get_ref<const std::string&>());
+	if (!read.has_value()) return std::unexpected(std::string(key) + ": must be " + std::string(text.mustBe));
+	return read;
+}
+
+/// A family's slot: its given members in number order, as FamilyValues of the rule's value.
+template <class V> std::any familySlot(const std::vector<std::pair<std::uint32_t, std::any>>& members) {
+	FamilyValues<V> values;
+	values.reserve(members.size());
+	for (const auto& [number, value] : members) values.emplace_back(number, std::any_cast<V>(value));
+	return values;
+}
+
 } // namespace
 
 std::expected<CheckedSettings, AnySettingsTable::Refusal> AnySettingsTable::walk(const NodeSettings& settings) const {
@@ -72,22 +116,46 @@ std::expected<CheckedSettings, AnySettingsTable::Refusal> AnySettingsTable::walk
 		return std::unexpected(Refusal{notAnObject(rows_), {}});
 
 	for (const auto& [key, value] : settings.items()) {
-		if (std::ranges::find(rows_, std::string_view(key), &SettingRow::key) == rows_.end()) {
-			if (!rows_.empty()) return std::unexpected(Refusal{"unknown key " + key, key});
-			return std::unexpected(
-				Refusal{"unknown key " + key + " (" + std::string(name_) + " takes no settings)", key});
+		if (rowOf(key)) continue;
+		// A family member's spelling above the family's maximum is no member, and says why.
+		for (const SettingRow* row : rows_) {
+			if (row->maxMembers == 0 || !setting::memberNumber(key, row->key)) continue;
+			return std::unexpected(Refusal{key + ": no such member (" + std::string(row->indexedBy) + " is at most " +
+			                                   std::to_string(row->maxMembers) + ")",
+			                               key});
 		}
+		if (!rows_.empty()) return std::unexpected(Refusal{"unknown key " + key, key});
+		return std::unexpected(Refusal{"unknown key " + key + " (" + std::string(name_) + " takes no settings)", key});
 	}
 
 	std::vector<std::any> slots;
 	slots.reserve(rows_.size());
 	for (const SettingRow* row : rows_) {
+		std::any& slot = slots.emplace_back();
+		if (row->maxMembers > 0) {
+			// A family walks in its place, member by member in number order; each refusal names the member's key.
+			std::vector<std::pair<std::uint32_t, std::string_view>> given;
+			for (const auto& [key, value] : settings.items()) {
+				const auto member = setting::memberNumber(key, row->key);
+				if (member && *member <= row->maxMembers) given.emplace_back(*member, key);
+			}
+			std::ranges::sort(given);
+			std::vector<std::pair<std::uint32_t, std::any>> members;
+			members.reserve(given.size());
+			for (const auto& [number, key] : given) {
+				auto read = readValue(row->rule, key, settings.at(std::string(key)));
+				if (!read) return std::unexpected(Refusal{std::move(read.error()), std::string(key)});
+				members.emplace_back(number, std::move(*read));
+			}
+			if (std::holds_alternative<WholeNumberRule>(row->rule)) slot = familySlot<std::uint32_t>(members);
+			else if (std::holds_alternative<DecimalRule>(row->rule)) slot = familySlot<double>(members);
+			else slot = familySlot<bool>(members);
+			continue;
+		}
 		// Every refusal from here on names this row's key.
 		const auto refuse = [row](std::string text) {
 			return std::unexpected(Refusal{std::move(text), std::string(row->key)});
 		};
-		std::any& slot = slots.emplace_back();
-		const auto* number = std::get_if<WholeNumberRule>(&row->rule);
 		const auto value = settings.find(row->key);
 		if (value == settings.end()) {
 			if (row->required) return refuse(std::string(row->key) + ": missing");
@@ -97,33 +165,9 @@ std::expected<CheckedSettings, AnySettingsTable::Refusal> AnySettingsTable::walk
 		if (!row->onlyWithout.empty() && settings.contains(row->onlyWithout)) {
 			return refuse(std::string(row->key) + R"(: only without ")" + std::string(row->onlyWithout) + '"');
 		}
-		if (number != nullptr) {
-			if (!isWholeNumberWithin(*value, number->low, number->high)) {
-				return refuse(notWithinRange(row->key, *number));
-			}
-			slot = value->get<std::uint32_t>();
-		} else if (const auto* rate = std::get_if<RateRule>(&row->rule)) {
-			const auto read = rateOfSetting(*value);
-			if (!read || *read < rate->low || *read > rate->high) {
-				return refuse(std::string(row->key) + ": must be a rate from " +
-				              rangeText(RateRange{rate->low, rate->high}) +
-				              " (on the control port, a whole number of Hz)");
-			}
-			slot = *read;
-		} else if (const auto* decimal = std::get_if<DecimalRule>(&row->rule)) {
-			// Any JSON number, an integer too; never a boolean, which nlohmann does not count as one.
-			const bool taken = value->is_number() && std::isfinite(value->get<double>()) &&
-			                   value->get<double>() >= decimal->low && value->get<double>() <= decimal->high;
-			if (!taken) return refuse(notWithinRange(row->key, *decimal));
-			slot = value->get<double>();
-		} else if (std::holds_alternative<BooleanRule>(row->rule)) {
-			if (!value->is_boolean()) return refuse(std::string(row->key) + ": must be true or false");
-			slot = value->get<bool>();
-		} else {
-			const TextRule& text = std::get<TextRule>(row->rule);
-			if (value->is_string()) slot = text.read(value->get_ref<const std::string&>());
-			if (!slot.has_value()) return refuse(std::string(row->key) + ": must be " + std::string(text.mustBe));
-		}
+		auto read = readValue(row->rule, row->key, *value);
+		if (!read) return refuse(std::move(read.error()));
+		slot = std::move(*read);
 	}
 	return CheckedSettings(std::move(slots));
 }
@@ -149,7 +193,7 @@ std::span<const SettingDeclaration> NodeType::settingKinds() const noexcept { re
 
 std::optional<SettingKind> NodeType::kindOf(std::string_view key) const noexcept { return table_->kindOf(key); }
 
-bool NodeType::changesInPlace(std::string_view key) const noexcept { return table_->changesInPlace(key); }
+setting::Change NodeType::changeOf(std::string_view key) const noexcept { return table_->changeOf(key); }
 
 std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings> NodeType::parse(const NodeName& node,
                                                                                   const NodeSettings& settings) const {

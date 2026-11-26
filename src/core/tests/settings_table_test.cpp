@@ -439,10 +439,10 @@ TEST_CASE("A row has one change mark: inPlace, or restarts with its reason", "[s
 	STATIC_REQUIRE(stuckRow.marked());
 	STATIC_REQUIRE(stuckRow.row().change == setting::Change::restart);
 	STATIC_REQUIRE(stuckRow.row().restartReason == "the device reads it at open");
-	STATIC_REQUIRE_FALSE(inPlaceTable.changesInPlace("fixed"));
-	STATIC_REQUIRE(inPlaceTable.changesInPlace("moving"));
-	STATIC_REQUIRE_FALSE(inPlaceTable.changesInPlace("unknown"));
-	STATIC_REQUIRE_FALSE(markedTable.changesInPlace("stuck"));
+	STATIC_REQUIRE(inPlaceTable.changeOf("fixed") == setting::Change::restart);
+	STATIC_REQUIRE(inPlaceTable.changeOf("moving") == setting::Change::inPlace);
+	STATIC_REQUIRE(inPlaceTable.changeOf("unknown") == setting::Change::restart);
+	STATIC_REQUIRE(markedTable.changeOf("stuck") == setting::Change::restart);
 	// What TypeSpec requires of its settings and action::call refuses in its arguments.
 	STATIC_REQUIRE(decltype(markedTable)::everyRowMarked);
 	STATIC_REQUIRE(decltype(markedTable)::anyRowMarked);
@@ -542,4 +542,117 @@ TEST_CASE("A refusal of the walk names its key, and one of the type's check name
 	const auto byCheck = keyOf({{"plain", 3}});
 	refuse = false;
 	CHECK(byCheck == std::pair<std::string, std::string>{"", "check says no to 3"});
+}
+
+namespace settings_table_test_families {
+using namespace settings_table_test;
+using ear::NodeSettings;
+constexpr auto bandsRow = setting::defaulted("bands", setting::number(0, 16), 2).inPlace();
+constexpr auto trimFamily =
+	setting::indexed("trimDb", bandsRow, setting::decimal(-24.0, 24.0, "dB", {.decimals = 1}), 0.0).inPlace();
+constexpr auto onFamily =
+	setting::indexed("on", bandsRow, setting::boolean(), true).restarts("a test type restarts on it");
+constexpr auto stepFamily =
+	setting::indexed("step", bandsRow, setting::number(1, 9), 1).inPlace().help("one step per band");
+constexpr auto zetaRow = setting::optional("zeta", setting::number(0, 9)).inPlace();
+constexpr SettingsTable<bandsRow, trimFamily, onFamily, stepFamily, zetaRow> families{"families"};
+using Checked = decltype(families)::Checked;
+
+// A member's one spelling: <family>.<n>, n in decimal from 1, no sign and no leading zero.
+static_assert(ear::setting::memberNumber("trimDb.1", "trimDb") == 1u);
+static_assert(ear::setting::memberNumber("trimDb.12", "trimDb") == 12u);
+static_assert(!ear::setting::memberNumber("trimDb.0", "trimDb"));
+static_assert(!ear::setting::memberNumber("trimDb.01", "trimDb"));
+static_assert(!ear::setting::memberNumber("trimDb.+1", "trimDb"));
+static_assert(!ear::setting::memberNumber("trimDb.1.5", "trimDb"));
+static_assert(!ear::setting::memberNumber("trimDb.", "trimDb"));
+static_assert(!ear::setting::memberNumber("trimDb", "trimDb"));
+static_assert(!ear::setting::memberNumber("trimDbx.1", "trimDb"));
+static_assert(ear::setting::memberNumber("trimDb.99999999999", "trimDb") == std::numeric_limits<std::uint32_t>::max());
+// The row knows its count row and its maximum; the lookups go by the grammar.
+static_assert(trimFamily.row().indexedBy == "bands" && trimFamily.row().maxMembers == 16);
+static_assert(trimFamily.row().byDefault == ear::SettingValue(0.0) && !trimFamily.row().required);
+static_assert(bandsRow.row().maxMembers == 0 && bandsRow.row().indexedBy.empty());
+static_assert(families.rowOf("trimDb.12")->row == &trimFamily.row() && families.rowOf("trimDb.12")->member == 12);
+static_assert(families.rowOf("zeta")->row == &zetaRow.row() && families.rowOf("zeta")->member == 0);
+static_assert(!families.rowOf("trimDb") && !families.rowOf("trimDb.17") && !families.rowOf("trimDb.01"));
+static_assert(families.kindOf("trimDb.16") == decimal && families.kindOf("on.1") == boolean);
+static_assert(families.kindOf("step.3") == wholeNumber && !families.kindOf("on.17"));
+static_assert(families.changeOf("trimDb.2") == setting::Change::inPlace);
+static_assert(families.changeOf("on.2") == setting::Change::restart);
+static_assert(families.kinds()[1].key == "trimDb" && families.kinds()[1].kind == decimal); // by its family's key
+static_assert(decltype(families)::anyRowIndexed && !decltype(numbers)::anyRowIndexed);
+static_assert(decltype(families)::everyRowMarked);
+
+std::string told(const NodeSettings& settings) { return refusal(families, settings); }
+Checked read(const NodeSettings& settings) {
+	auto checked = families.check(settings);
+	REQUIRE(checked.has_value());
+	return std::move(*checked);
+}
+} // namespace settings_table_test_families
+
+TEST_CASE("A family's members read their values, or the family's default when absent", "[settings-table][indexed]") {
+	using namespace settings_table_test_families;
+	const Checked none = read(NodeSettings::object());
+	CHECK(none.count<trimFamily>() == 2);
+	CHECK(none.get<trimFamily>(0) == 0.0);
+	CHECK(none.get<onFamily>(15));
+	CHECK(none.get<stepFamily>(3) == 1);
+	const Checked some = read({{"bands", 3}, {"trimDb.1", -3.5}, {"trimDb.3", 6}, {"on.2", false}, {"step.16", 9}});
+	CHECK(some.count<trimFamily>() == 3);
+	CHECK(some.count<onFamily>() == 3);
+	CHECK(some.get<trimFamily>(0) == -3.5);
+	CHECK(some.get<trimFamily>(1) == 0.0);
+	CHECK(some.get<trimFamily>(2) == 6.0);
+	CHECK_FALSE(some.get<onFamily>(1));
+	CHECK(some.get<onFamily>(0));
+	CHECK(some.get<stepFamily>(15) == 9);
+	CHECK_THROWS_AS(some.get<trimFamily>(16), std::out_of_range); // member 17: above the maximum, a type bug
+}
+
+TEST_CASE("Members above the count are taken and kept, inactive, and members above the maximum are refused",
+          "[settings-table][indexed]") {
+	using namespace settings_table_test_families;
+	const Checked kept = read({{"bands", 1}, {"trimDb.5", -6}, {"trimDb.16", 24}});
+	CHECK(kept.count<trimFamily>() == 1);
+	CHECK(kept.get<trimFamily>(4) == -6.0);
+	CHECK(kept.get<trimFamily>(15) == 24.0);
+	CHECK(read({{"bands", 0}, {"on.1", false}}).count<onFamily>() == 0);
+	CHECK(told({{"trimDb.17", 0}}) == "trimDb.17: no such member (bands is at most 16)");
+	CHECK(told({{"on.99999999999", true}}) == "on.99999999999: no such member (bands is at most 16)");
+	const auto refused = families.checkArgs({{"step.17", 1}});
+	REQUIRE_FALSE(refused.has_value());
+	CHECK(refused.error().key == "step.17");
+}
+
+TEST_CASE("Every other spelling of a member is an unknown key, and unknown keys beside a family are unknown",
+          "[settings-table][indexed]") {
+	using namespace settings_table_test_families;
+	for (const char* key : {"trimDb.0", "trimDb.01", "trimDb.+1", "trimDb.1.5", "trimDb.", "trimDb", "trimDb.-1",
+	                        "trimDb.1x", "trimDb-1", "TrimDb.1"}) {
+		INFO(key);
+		CHECK(told({{key, 0}}) == std::string("unknown key ") + key);
+	}
+	CHECK(told({{"trimDb.1", 0}, {"other", 1}}) == "unknown key other");
+	const auto refused = families.checkArgs({{"trimDb.2", 0}, {"trimDb.02", 0}});
+	REQUIRE_FALSE(refused.has_value());
+	CHECK(refused.error().key == "trimDb.02");
+}
+
+TEST_CASE("A family walks in its place, member by member in number order, each refusal naming the member",
+          "[settings-table][indexed]") {
+	using namespace settings_table_test_families;
+	// The object's own order is "trimDb.10" before "trimDb.2"; the walk's is by number.
+	CHECK(told({{"trimDb.10", "x"}, {"trimDb.2", 99}}) == "trimDb.2: must be a number of dB from -24 to 24");
+	CHECK(told({{"trimDb.10", "x"}}) == "trimDb.10: must be a number of dB from -24 to 24");
+	// Rows in table order: the count row, then each family, then the plain row after them.
+	CHECK(told({{"bands", 17}, {"trimDb.1", "x"}}) == "bands: must be a whole number, 0-16");
+	CHECK(told({{"zeta", 99}, {"on.4", 1}}) == "on.4: must be true or false");
+	CHECK(told({{"zeta", 99}, {"step.4", 0}}) == "step.4: must be a whole number, 1-9");
+	CHECK(told({{"zeta", 99}, {"step.4", 2}}) == "zeta: must be a whole number, 0-9");
+	const auto refused = families.checkArgs({{"on.3", "yes"}});
+	REQUIRE_FALSE(refused.has_value());
+	CHECK(refused.error().key == "on.3");
+	CHECK(refused.error().text == "on.3: must be true or false");
 }

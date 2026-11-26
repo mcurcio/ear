@@ -340,6 +340,11 @@ export interface SettingSchema {
   /** Refused when the key named is given too. */
   onlyWithout?: string;
   help?: string;
+  /**
+   * An indexed family (docs/control-port.md#type-schemas): its members' keys are `<key>.<n>`, n in decimal from `from`
+   * (1) to `max`, no sign and no leading zero; members above the count row's (`by`) value are kept, inactive.
+   */
+  indexed?: { by: string; from: number; max: number };
 }
 
 /** One status field of a type (feature status). */
@@ -369,7 +374,7 @@ export interface EventSchema {
 }
 
 /** An action's argument: a setting row without what only a setting has (change, restartReason, shapes). */
-export type ActionArgSchema = Omit<SettingSchema, "change" | "restartReason" | "shapes">;
+export type ActionArgSchema = Omit<SettingSchema, "change" | "restartReason" | "shapes" | "indexed">;
 
 /**
  * One type action (feature actions, docs/control-port.md#actions): a trigger (target code, no args) or a call (target

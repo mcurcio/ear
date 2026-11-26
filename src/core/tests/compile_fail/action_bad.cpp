@@ -30,6 +30,13 @@ constexpr auto markedRow = setting::required("server", setting::number(1, 100)).
 constexpr SettingsTable<markedRow> markedArgs{"marked"};
 constexpr auto marked = action::call<"marked", markedArgs, worker>("forget a server");
 #endif
+#ifdef EAR_CASE_action_arg_indexed
+// A call's arguments are a fixed set of keys: no family (docs/writing-a-node-type.md#indexed-families).
+constexpr auto countArg = setting::defaulted("count", setting::number(1, 4), 1);
+constexpr auto familyArg = setting::indexed("server", countArg, setting::number(1, 100), 1);
+constexpr SettingsTable<countArg, familyArg> familyArgs{"family"};
+constexpr auto family = action::call<"family", familyArgs, worker>("forget servers");
+#endif
 #ifdef EAR_CASE_action_named_lifecycle
 // start, stop, restart, disable and enable are the framework's requests.
 constexpr auto restartAction = action::trigger<"restart">("restart it");

@@ -209,7 +209,10 @@ private:
 	std::vector<BankPair> pairs_;
 };
 class AnySettingsTable; // settings_table.hpp
-struct SettingRow;      // settings_table.hpp
+namespace setting {
+enum class Change; // settings_table.hpp: a row's change mark
+} // namespace setting
+struct SettingRow; // settings_table.hpp
 /// One action of a type (docs/writing-a-node-type.md#actions), as its spec's ActionTable declares it: a trigger into the
 /// code, or a call into a loop's state with its arguments' table. Views static storage (the spec's).
 struct ActionDeclaration {
@@ -300,12 +303,13 @@ public:
 	                                                                        const NodeSettings& settings) const;
 	/// Every key parse() accepts, each once, with its kind, in row order; the same span every call; pure.
 	std::span<const SettingDeclaration> settingKinds() const noexcept;
-	/// The kind of `key`'s row, the one answer the graph file reads and writes the key's value by
-	/// (docs/graph-file.md#settings-and-their-kinds); nothing for a key the type lacks.
+	/// The kind of `key`'s row, a family member's by its family (docs/writing-a-node-type.md#indexed-families): the one
+	/// answer the graph file reads and writes the key's value by (docs/graph-file.md#settings-and-their-kinds); nothing
+	/// for a key the type lacks.
 	std::optional<SettingKind> kindOf(std::string_view key) const noexcept;
-	/// Whether a change to `key` may apply in place (its row marked inPlace: docs/writing-a-node-type.md#change-marks);
-	/// false for a key the type lacks.
-	bool changesInPlace(std::string_view key) const noexcept;
+	/// The change mark of `key`'s row, a family member's by its family (docs/writing-a-node-type.md#change-marks):
+	/// what the plan splits a change's keys by; restart for a key the type lacks.
+	setting::Change changeOf(std::string_view key) const noexcept;
 	/// The stores every node of the type has (docs/writing-a-node-type.md#stores), from its spec, in declaration
 	/// order: the boot sweep reads them before any node exists.
 	std::span<const StoreDeclaration> stores() const noexcept { return stores_; }

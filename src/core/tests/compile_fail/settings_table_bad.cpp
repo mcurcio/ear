@@ -46,6 +46,14 @@ std::string good(const Checked& settings) {
 	return std::string(text.value_or("none")) + std::to_string(number);
 }
 
+// The control holds a family too, read by member and counted (docs/writing-a-node-type.md#indexed-families).
+constexpr auto countRow = setting::defaulted("c", setting::number(1, 8), 2).inPlace();
+constexpr auto familyRow = setting::indexed("f", countRow, setting::decimal(-1, 1), 0).inPlace();
+constexpr SettingsTable<countRow, familyRow> familyTable{"f"};
+double goodFamily(const decltype(familyTable)::Checked& settings) {
+	return settings.get<familyRow>(0) + settings.count<familyRow>();
+}
+
 #ifdef EAR_CASE_key_empty
 constexpr auto bad = setting::required("", setting::number(1, 2));
 #endif
@@ -297,6 +305,35 @@ constexpr auto bad = setting::optional("o", setting::number(1, 2)).inPlace().res
 
 #ifdef EAR_CASE_restarts_empty_reason
 constexpr auto bad = setting::optional("o", setting::number(1, 2)).restarts("");
+#endif
+
+// Indexed families (docs/writing-a-node-type.md#indexed-families).
+#ifdef EAR_CASE_indexed_count_below
+constexpr auto laterCount = setting::defaulted("later", setting::number(1, 8), 2).inPlace();
+constexpr auto earlyFamily = setting::indexed("e", laterCount, setting::number(0, 9), 0).inPlace();
+constexpr SettingsTable<earlyFamily, laterCount> bad{"t"};
+#endif
+
+#ifdef EAR_CASE_indexed_count_not_whole
+constexpr auto flagCount = setting::defaulted("c", setting::boolean(), true);
+constexpr auto bad = setting::indexed("e", flagCount, setting::number(0, 9), 0);
+#endif
+
+#ifdef EAR_CASE_indexed_count_optional
+constexpr auto bad = setting::indexed("e", optionalNumberRow, setting::number(0, 9), 0);
+#endif
+
+#ifdef EAR_CASE_indexed_collides_with_row
+constexpr auto memberSpelled = setting::optional("f.2", setting::number(0, 9)).inPlace();
+constexpr SettingsTable<countRow, familyRow, memberSpelled> bad{"t"};
+#endif
+
+#ifdef EAR_CASE_read_family_without_member
+double bad(const decltype(familyTable)::Checked& settings) { return settings.get<familyRow>(); }
+#endif
+
+#ifdef EAR_CASE_read_member_of_plain_row
+std::uint32_t bad(const Checked& settings) { return settings.get<numberRow>(0); }
 #endif
 
 } // namespace settings_table_bad

@@ -1,8 +1,9 @@
 # Parameters: slice 6 of the node framework
 
-Status: design; steps 6.1 (change marks and restart reasons) and 6.2 (decimal rows and typed defaults) are built and
-in the library docs ([writing-a-node-type.md](../writing-a-node-type.md#change-marks),
-[#decimal-rows](../writing-a-node-type.md#decimal-rows)), the rest is not. Revised on 2026-11-26 against the code slices 3d (changes in place and reshapes, on
+Status: design; steps 6.1 (change marks and restart reasons), 6.2 (decimal rows and typed defaults) and 6.3 (indexed
+families) are built and in the library docs ([writing-a-node-type.md](../writing-a-node-type.md#change-marks),
+[#decimal-rows](../writing-a-node-type.md#decimal-rows), [#indexed-families](../writing-a-node-type.md#indexed-families)),
+the rest is not. Revised on 2026-11-26 against the code slices 3d (changes in place and reshapes, on
 `master` since v4.3.0) and 5 (the control plane, on `claude/slice-5`) built, and against the owner's rule M3 from
 `processing-nodes.md` (on `claude/admiring-hamilton-26crw1`), whose slice-6 extensions this page folds in as general
 mechanisms. Slice 6 gives a node type decimal, choice and indexed rows, rows that change **live** (ramped or stepped
@@ -59,7 +60,9 @@ Built, and used here as it is:
 
 - **Rows and the walk**: required, optional and defaulted rows of `text`, whole number, rate, boolean and decimal
   ([#decimal-rows](../writing-a-node-type.md#decimal-rows), its default of its rule's kind), one change
-  mark per row (`.inPlace()` or `.restarts(why)`, [#change-marks](../writing-a-node-type.md#change-marks)), `.shapesPorts()`, `.defaultFrom()`, `.help()`, the refusal's `key` and `detail`
+  mark per row (`.inPlace()` or `.restarts(why)`, [#change-marks](../writing-a-node-type.md#change-marks)), indexed
+  families with their member grammar and the one key lookup `rowOf` ([#indexed-families](../writing-a-node-type.md#indexed-families)),
+  `.shapesPorts()`, `.defaultFrom()`, `.help()`, the refusal's `key` and `detail`
   ([writing-a-node-type.md](../writing-a-node-type.md#settings-one-table-of-typed-rows)). The boolean kind (`flag` on
   the wire) exists, so a live boolean needs only the live mark.
 - **The plan's outcomes** and `changeOf`, the one rule the plan and the type harness share
@@ -80,13 +83,13 @@ What it adds, by layer:
 
 | Layer | Adds |
 |---|---|
-| `ear_core` rows | the `choice` rule; indexed families; the third change mark, `.live(ramp/step)` |
+| `ear_core` rows | the `choice` rule; the third change mark, `.live(ramp/step)`, on plain rows and families |
 | `ear_core` reads | `io.param<row>()` (a `Smoothed` or a `Stepped<V>`), `io.count<family>()`; `s.liveValue<row>()` and `s.liveCount<family>()` for `check` and the change version; `forSegments` |
 | `ear_core` realtime | Slots, ramp and step state and one generation word (writes and snaps) in `RealtimeChannels`; the advance before `process`; the snap at a drive |
 | `ear_core` plan and host | `NodeOutcome::retune`, `NodeChange::retuned`; `NodeHost`'s live values and `setLive`; retunes in every phase; `Gestures` with its silence timer |
-| `ear_config` | Family lookups in `declaredKind`; the reach index; `OfferKind`; the related-change rule; the main-loop side's working-copy state |
+| `ear_config` | The reach index; `OfferKind`; the related-change rule; the main-loop side's working-copy state |
 | `ear_control`, `ear_server` | Schema members; `applied: "retune"` and `retuned`; `gesture.*` and `GestureRequests`; per-session addressing; read-ahead |
-| `web` | Decimal, choice and family fields; live toggles and selects; faders and knobs; `gesture.ts` |
+| `web` | Choice fields; the compact strip for a family above 8 members; live toggles and selects; faders and knobs; `gesture.ts` |
 | Types | `gain` (new) |
 | Fixtures | `test/protocol/rows.json` (built with decimal rows): test types' schemas, for the row vocabulary no built type has before `gain`, extended by each step |
 
@@ -255,25 +258,13 @@ owner accepted under M3 with a small follow-on slice to make both in place (deci
 
 ### 4.4 Indexed families
 
-A family is one row declaring members `<key>.1` to `<key>.<n>`, `n` the value of its **count row**, a required or
-defaulted whole-number row above it in the table. Several families may share one count row (`mix`'s `levelDb.N` and
-`mute.N` by `inputs`; `eq`'s four by `bands`). Two-dimensional families are not designed (`matrix` is not proposed).
+Built ([writing-a-node-type.md](../writing-a-node-type.md#indexed-families)): the family row, its count row, the member
+grammar, members up to the maximum taken and those above the count kept inactive, the refusal above the maximum. What
+live rows add to them:
 
-- **A member's key** is `<family key>.<n>`, `n` from 1 written in decimal with no sign and no leading zero:
-  `trimDb.1`, `trimDb.12`. Every other spelling (`trimDb.0`, `trimDb.01`, `trimDb.+1`, `trimDb.1.5`) is not a member
-  and is refused `unknown key <key>`, so one member has one spelling in a JSON object and in `ear.conf`. It is a
-  directive name with a `.`, which knobly reads as one word and ear's `writableKey` accepts, so the first design's
-  fallback spelling `trimDb-1` is dropped. Step 6.3's test writes and reads one through the C++ binding. Clients map a
-  member's key to its family's field by the same rule (9.2).
-- **Members up to the count row's maximum are accepted**, whatever the count is now. A member above the current count
-  is kept, inactive: the code does not read it, the editor greys it, and it is active again when the count rises. So
-  lowering `channels` or `bands` never refuses a file that holds `trimDb.3`, and a band turned off keeps its settings.
-  A member above the maximum is `"trimDb.65: no such member (channels is at most 64)"`. An inactive member is not
-  a graph-file warning (decision O3).
 - **Inactive is only the code's view.** Every live member up to the maximum, active or not, is seeded at configure,
   written on a retune and kept ramping by the advance, so a member that becomes active (a reshape raising `channels`,
   a live `bands` stepped up) plays its file value from its first sample.
-- An absent member reads the family's default.
 - The slots of a live family are made for the count row's maximum (section 6.1), so no count change, live or by reshape,
   allocates or resizes anything.
 
@@ -312,10 +303,7 @@ namespace ear::setting {
 /// not a writable word or string does not compile. Refused: "<key>: must be one of <names>".
 template <class E> consteval Rule<E> choice(std::initializer_list<std::pair<std::string_view, E>> names);
 
-/// A family <key>.1 .. <key>.<n>, n the checked value of `count`, a required or defaulted whole-number row above it.
-template <class V, bool A>
-consteval IndexedRow<V> indexed(std::string_view key, const Row<std::uint32_t, A>& count, Rule<V> rule,
-                                std::type_identity_t<V> byDefault);
+// Built (docs/writing-a-node-type.md#indexed-families): IndexedRow<V> and indexed(key, count, rule, byDefault).
 
 struct Ramp { std::uint32_t ms; };     // 1 to 1000 ms; ramp(0) does not compile: write step
 consteval Ramp ramp(std::uint32_t ms);
@@ -329,24 +317,22 @@ enum class Change { restart, inPlace, live };
   a call's arguments ([writing-a-node-type.md](../writing-a-node-type.md#change-marks)). Slice 6 adds `.live(ramp(ms))`
   and `.live(step)` as the third mark, on `Row` and `IndexedRow` alike, under the same one-mark rule. `.live` needs a
   row that always reads a value (required, defaulted or indexed) of a live kind (4.2); a ramp needs a decimal or a
-  boolean. `setting::Change` (built: `restart`, `inPlace`) gains `live`. An `indexed` row in a call's arguments does
-  not compile either.
-- **`SettingRow`** (the erased row) changes: its built `change`, `restartReason` and `byDefault`
-  (`std::optional<SettingValue>`, built as `std::variant<std::uint32_t, double, bool>`) stay; `SettingValue` gains
-  `ChoiceIndex`; the row gains `transition` (`step`, or a ramp's ms), and `indexedBy` (the count row's key) with
-  `maxMembers`; `SettingRule` (with its built `DecimalRule`) gains `ChoiceRule`. `SettingKind` (with its built
-  `decimal`) gains `choice`.
-- **`SettingsTable`** accepts `IndexedRow`s beside `Row`s (`setting::isRow` widened), checks that no plain row is named
-  `<family>.<n>` and that a family's count row is above it, and counts live members (each family's maximum): over 256
-  does not compile.
+  boolean. `setting::Change` (built: `restart`, `inPlace`) gains `live`. A family in a call's arguments does not
+  compile (built).
+- **`SettingRow`** (the erased row) changes: its built `change`, `restartReason`, `byDefault`
+  (`std::optional<SettingValue>`, built as `std::variant<std::uint32_t, double, bool>`), `indexedBy` and `maxMembers`
+  stay; `SettingValue` gains `ChoiceIndex`; the row gains `transition` (`step`, or a ramp's ms); `SettingRule` (with
+  its built `DecimalRule`) gains `ChoiceRule`. `SettingKind` (with its built `decimal`) gains `choice`.
+- **`SettingsTable`** (taking `IndexedRow`s beside `Row`s, as built) counts live members (each family's maximum): over
+  256 does not compile.
 
 ### 5.2 Reading settings
 
 | Read | Where | Gives |
 |---|---|---|
-| `s.get<row>()`, `s.get<family>(i)` (member `i` from 0, keys from 1) | everywhere `CheckedOf` is handed | a row that is not live: as built; on a live row it does not compile ("a live row is read through io.param, or liveValue in check and the change version") |
+| `s.get<row>()`, `s.get<family>(i)` (built: member `i` from 0, keys from 1) | everywhere `CheckedOf` is handed | a row that is not live: as built; on a live row it does not compile ("a live row is read through io.param, or liveValue in check and the change version") |
 | `s.liveValue<row>()`, `s.liveValue<family>(i)` | `check`, the change version, a test | a live row's value as the node's live values hold it now (4.5), not as the config was parsed |
-| `s.count<family>()` | everywhere | the family's active members, when its count row is not live; on a live count row it does not compile (`count-live-row`), as `get` does not |
+| `s.count<family>()` (built) | everywhere | the family's active members, when its count row is not live; on a live count row it does not compile (`count-live-row`), as `get` does not |
 | `s.liveCount<family>()` | where `liveValue` is | the active members of a family whose count row is live |
 | `io.param<row>()`, `io.param<family>(i)` | `process` | the realtime view (5.3) |
 | `io.count<family>()` | `process` | the active members this block, whether the count row is live (its stepped view) or not |
@@ -401,27 +387,21 @@ successive blocks restart it from the second edge, the `before` then being the f
 ### 5.4 Compile-time refusals
 
 Each a case in `src/core/tests/compile_fail/`, matched against GCC 14's wording: `choice-empty`,
-`choice-repeated-name`, `choice-unwritable-name`, `indexed-count-below`,
-`indexed-count-not-whole`, `indexed-count-optional`, `indexed-collides-with-row`, `live-text-row`, `live-rate-row`,
+`choice-repeated-name`, `choice-unwritable-name`, `live-text-row`, `live-rate-row`,
 `live-optional-row`, `ramp-whole-number`, `ramp-choice`, `ramp-zero`, `live-members-over-256`, `get-live-row`,
 `count-live-row`, `live-value-not-live`, `param-not-live`, `param-row-not-in-spec`, `param-family-without-member`,
-`param-member-of-plain-row`. That is 21 cases at about 1.3 s each (the marks' four and the decimals' and defaults'
-seven, `decimal-*`, `log-taper-nonpositive`, `db-taper-range`, `default-text-row`, `default-rate-row`, with the
-control's int-literal defaults, are built).
+`param-member-of-plain-row`. That is 17 cases at about 1.3 s each (the marks', the decimals' and defaults', and the
+families' seven, `indexed-*`, `read-family-without-member`, `read-member-of-plain-row` and `action-arg-indexed`, are
+built).
 
 `needsCode` and `hasChannels` (`type_spec.hpp`) count live rows, so a type with live rows always has channels and a
 `configure` that answers a pass-through for it breaks the built rule that only a code can serve what the spec declares.
 
 ### 5.5 The erased side
 
-- **One lookup for a key**: `AnySettingsTable::rowOf(key)` gives the row and, for a family member, its number, by the
-  grammar of 4.4; it replaces every exact match on `row->key`. Its users: the walk; `changesInPlace(key)`, which becomes
-  `changeOf(key) -> setting::Change`; `NodeType::kindOf(key)` (built, an exact match), which the graph file's
-  `declaredKind` calls for reading and writing (so `trimDb.1 0.5;` is read as a decimal, not text); and `checkLive`.
-- **The walk**: a family's members walk in the family's place in the fixed order,
-  member by member; an unknown key is skipped only when `rowOf` finds nothing; each refusal carries its full key.
-- **The graph file** reads and writes a decimal as built
-  ([graph-file.md](../graph-file.md#settings-and-their-kinds)); a family member's by its family's kind.
+- **One lookup for a key**: `AnySettingsTable::rowOf(key)` is built, and with it the walk, `NodeType::changeOf(key)`
+  and `NodeType::kindOf(key)` ([writing-a-node-type.md](../writing-a-node-type.md#indexed-families)); `checkLive`
+  (6.5, 6.6) finds a key's row through it too.
 - **`NodeType::schema()`** sends the rows as 9.2 shows; `NodeConfig::liveValues()` gives each live member's parsed
   value, every member up to the maximum, which seeds a node's live values when it is added and is compared by the plan
   to find retuned keys; after that the live values, not the config, are what slots and `liveValue` read (4.5).
@@ -843,17 +823,13 @@ Every change below goes in one commit with `docs/control-port.md`, `test/protoco
 
 | Feature | Step | Adds |
 |---|---|---|
-| — (under `types`) | 6.2 (built) to 6.4 | kinds `decimal` (built) and `choice`, `decimals`, `taper` and `minIsSilence` (built), typed `default`s (built), `indexed` |
+| — (under `types`) | 6.2 (built) to 6.4 | kinds `decimal` (built) and `choice`, `decimals`, `taper` and `minIsSilence` (built), typed `default`s (built), `indexed` (built) |
 | `live` | 6.6 | `change: "live"` with `live`, `applied: "retune"`, `retuned`, `alsoChanged` |
 | `gestures` | 6.8 | `gesture.begin`, `change`, `end`, `cancel`; `gesture.changed`; the graph's per-node `gestures`; the new codes |
 
 Slice 5 put its new schema members under features (`status`, `actions`); this page adds the row vocabulary under none,
 since a client reads it from the schema it asked for and every enum is open, so an old client draws an unknown kind as
 JSON. The owner accepted that (decision O9).
-
-**An editor older than step 6.3** draws a family as one field it cannot fill (an Apply of it is `unknown key`). The
-editor ships in the image with ear and is served by it, so only third-party clients can be older, and those gate on
-`live` before drawing a live row; a family before 6.6 is a feature-free addition all the same, which this page accepts.
 
 ### 9.2 Type schemas
 
@@ -866,7 +842,7 @@ A row gains, as it applies:
 | `live` | `{"transition": "ramp", "ms": 20}` or `{"transition": "step"}` |
 | `values` | a choice's names, in order; a closed set (a text row's `values` stay hints) |
 | `default` | of the row's kind (built for a whole number, a decimal and a flag), and a choice's name |
-| `indexed` | `{"by": "<count key>", "from": 1, "max": <the count row's max>}`: the row is a family; a member's key is `<key>.<n>`, `n` in decimal from 1, no sign, no leading zero (4.4), the rule by which a client maps any key ear sends (`settings`, `retuned`, `invalid-settings`'s `data.key`) to the family's field |
+| `indexed` | built ([control-port.md](../control-port.md#type-schemas)); a `retuned` entry maps to its family's field by the same rule |
 
 ```json
 {"name":"gain","inputs":["in"],"outputs":["out"],"reconfigureMs":10000,"settings":[
@@ -986,7 +962,7 @@ One per abort (`cause: aborted`, `reason`, `to` absent after a related change). 
 
 | File | Covers |
 |---|---|
-| `rows.json` (built with its decimal rows and typed defaults: [control-port.md](../control-port.md#fixtures)) | schemas of test types (not the real ear's), held by `src/control/tests/type_schemas_test.cpp` encoding test specs and read by vitest's form tests: a family (6.3), a choice (6.4), live ramped and stepped rows (6.6); each step extends it, so the row vocabulary has a fixture before any built type uses it |
+| `rows.json` (built with its decimal rows and typed defaults: [control-port.md](../control-port.md#fixtures)) | schemas of test types (not the real ear's), held by `src/control/tests/type_schemas_test.cpp` encoding test specs and read by vitest's form tests: a family (built), a choice (6.4), live ramped and stepped rows (6.6); each step extends it, so the row vocabulary has a fixture before any built type uses it |
 | `types.json` | `gain`'s schema whole (6.7); every built row's `change` and `restartReason` are built |
 | `edits.json`, `node-set.json` | a retune, a mixed reshape with `retuned`, a dry run of each; `retuned: []` on a reconfigure; a disabled node's `stored` with `retuned`; `alsoChanged` on a shared definition |
 | `gestures.json` (new) | begin with no echo to the owner and `begin` to another first; ticks (one stale); end with its order; reaches of two keys and of 64; `reach-mismatch` with `with`; `parameter-held` with `silentMs`; a silent holder released `stale`; a begin on a failed node; cancel; `tick-refused` to the owner only; an end refused `invalid-settings`, aborted `refused`; an end from another session by id (the reconnect); an unsubscribed owner getting `aborted`; aborts by a related hand edit, `graphFile.set`, `node.set`, `node.addText` and `node.setText`; `node.setText` of a held key refused; a live count retune inactivating a held member (`key-removed`); an unrelated hand edit and a route edit left open; `session-closed` after a queued end; `unknown-gesture` after an abort; `not-in-batch` for each method; `notification-only` |
@@ -1000,7 +976,7 @@ One per abort (`cause: aborted`, `reason`, `to` absent after a related change). 
 |---|---|---|
 | `protocol.ts` | section 9's types; `ControlErrorCode`'s new codes | typecheck |
 | `graph.ts` | each node's `gestures`; `retuned` on `node.updated`; `gesture.changed` | vitest, every fixture |
-| `form.ts` | `choice -> select` in `controlOf`; families expanded in `fieldsOf` with inactive members, keys mapped by 4.4's grammar; live rows committed at once; `asksFirst` passing `retune`, `confirmWords` for it; the "restarts: why" hint | vitest, from `rows.json` until `gain` is in `types.json` |
+| `form.ts` | `choice -> select` in `controlOf`; live rows committed at once; `asksFirst` passing `retune`, `confirmWords` for it (families with inactive members and the "restarts: why" hint are built) | vitest, from `rows.json` until `gain` is in `types.json` |
 | `rpc.ts` | `notify()`: a message with no id | vitest |
 | `gesture.ts` (new, pure) | one state machine per control (10.3), the taper mapping, the ids it holds across a reconnect | vitest, a fake client |
 | `keys.ts` | a focused fader's or knob's range input, or anything in `.nokey`, counts as a text target for the editor's shortcuts (`f`, `l`, `m`, `a`, `?`, Escape), though not for the input's own keys; today a range input is deliberately not a text target, and only the controls of 10.3 change that | vitest |
@@ -1017,7 +993,7 @@ without `live`, every row is drawn as today.
 | live boolean | a switch | `node.set` at once; when its answer's `alsoChanged` is not empty, a notice "also changed amp2, amp3" |
 | live choice | a select | as a live boolean |
 | live whole number, live stepped decimal | steppers and a number field | `node.set` on Enter or a step |
-| family | one control per member to the count row's value; members above it greyed ("kept; not used while channels is 2"); above 8 members, a compact strip behind a disclosure | as its kind |
+| family | one control per member to the count row's value, those above it greyed (built: [editor.md](../editor.md#the-settings-form)); above 8 members, a compact strip behind a disclosure | as its kind |
 | restart row | as today, its hint "restarts the node: <restartReason>" | Apply, which asks first |
 
 The box shows a knob for each live ramped decimal that is not in a family when the type has one or two (`gain`:
@@ -1089,7 +1065,7 @@ specs and vitest's form tests read; `types.json` stays what the real ear sends.
 |---|---|---|---|---|
 | 6.1 | Change marks and restart reasons: **built** | slice 5 | `restartReason`; every built row's `change` | writing-a-node-type.md#change-marks, control-port.md#type-schemas |
 | 6.2 | Decimal rows, typed defaults: **built** | 6.1 | kind `decimal`; `rows.json` | writing-a-node-type.md#decimal-rows, graph-file.md, editor.md#the-settings-form |
-| 6.3 | Indexed families | 6.2 | `indexed` | the same |
+| 6.3 | Indexed families: **built** | 6.2 | `indexed` | the same |
 | 6.4 | Choice rows | 6.2 | kind `choice` for settings | the same |
 | 6.5 | Slots, ramps, steps, live values, `io.param` | 6.2, 6.3, 6.4 | none | writing-a-node-type.md, architecture.md#the-realtime-channels |
 | 6.6 | Retunes | 6.5 | feature `live` | architecture.md#restarts-and-changes-of-settings and #failures, control-port.md, output-records.md |
@@ -1104,12 +1080,10 @@ and [control-port.md](../control-port.md#type-schemas) say how.
 [graph-file.md](../graph-file.md#settings-and-their-kinds), [control-port.md](../control-port.md#type-schemas) and
 [editor.md](../editor.md#the-settings-form) say how.
 
-**6.3 Indexed families.** `IndexedRow`, `rowOf` with 4.4's member grammar in the walk, `changeOf(key)`, `kindOf` and
-`checkLive`'s path, `get<family>(i)`, `count<family>()`, inactive members, the schema's `indexed`, the form's member
-fields. Tests: walk order with a family; members above the count accepted and inactive, above the maximum refused;
-`trimDb.0`, `trimDb.01`, `trimDb.+1` and `trimDb.1.5` refused as unknown keys; unknown keys beside a family; a
-member's change planned by its family's mark (a restart family restarts, an in-place one reconfigures); the graph file
-reading `trimDb.1 0.5;` as a decimal and writing it back; compile-fail `indexed-*`.
+**6.3 Indexed families** is built: [writing-a-node-type.md](../writing-a-node-type.md#indexed-families),
+[graph-file.md](../graph-file.md#settings-and-their-kinds), [control-port.md](../control-port.md#type-schemas) and
+[editor.md](../editor.md#the-settings-form) say how. The compact strip for a family above 8 members (10.2) is left to
+step 6.9, with the other controls.
 
 **6.4 Choice rows.** `choice<E>`, `ChoiceRule`, its schema as kind `choice` with `values` and its default by name,
 `choice -> select` in the form. Tests: a name refused with its list; compile-fail `choice-*`; the form's select from
@@ -1301,4 +1275,4 @@ decisions O1 to O12.
   block only.
 - **Ticks run the type's `check`** on the main loop, at most once per gesture per turn.
 - **Touch capture** stays unverified until 6.9's hand check (decision O10).
-- **More compile-time machinery**: 21 more compile-fail cases at about 1.3 s each.
+- **More compile-time machinery**: 17 more compile-fail cases at about 1.3 s each.

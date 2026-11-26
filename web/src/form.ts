@@ -60,6 +60,11 @@ export interface FieldView {
   drafted: boolean;
   /** ear's value changed under the draft: offer to take ear's (docs/editor.md#the-settings-form). */
   changedOnEar: boolean;
+  /** A family member's: its family's key and its number, from 1. */
+  family?: string;
+  member?: number;
+  /** A family member above its count row's value: kept, not used (drawn greyed). */
+  inactive?: boolean;
   /** Why the draft cannot be sent as it is (checked here; ear still judges), or ear's refusal placed here. */
   problem?: string;
 }
@@ -101,6 +106,77 @@ export function placeholderOf(row: SettingSchema): string {
   return "absent";
 }
 
+// ----- Indexed families -----
+
+/**
+ * A family member's number in `key`, by the one grammar (docs/control-port.md#type-schemas): `<family>.<n>`, n in
+ * decimal from 1, no sign and no leading zero; undefined for any other spelling.
+ */
+export function memberNumber(key: string, family: string): number | undefined {
+  if (!key.startsWith(`${family}.`)) return undefined;
+  const digits = key.slice(family.length + 1);
+  if (!/^[1-9]\d*$/.test(digits)) return undefined;
+  return Number(digits);
+}
+
+/** The row `key` is read by: a plain row's own key, or a family's member within its range; undefined for none. */
+export function rowOfKey(schema: TypeSchema, key: string): SettingSchema | undefined {
+  for (const row of schema.settings) {
+    if (row.indexed === undefined) {
+      if (row.key === key) return row;
+      continue;
+    }
+    const member = memberNumber(key, row.key);
+    if (member !== undefined && member >= row.indexed.from && member <= row.indexed.max) return memberRow(row, member);
+  }
+  return undefined;
+}
+
+/** A family's row as one member's field reads it: the member's key, the family's rule. */
+function memberRow(family: SettingSchema, member: number): SettingSchema {
+  const row: SettingSchema = { ...family, key: `${family.key}.${member}` };
+  delete row.indexed;
+  return row;
+}
+
+/** A count row's value as the form has it: the draft when it is a whole number, else the node's, else its default. */
+function countOf(schema: TypeSchema, by: string, settings: JsonObject, drafts: Drafts): number {
+  const draft = drafts.get(by);
+  if (draft !== undefined && /^\d+$/.test(String(draft.value).trim())) return Number(String(draft.value).trim());
+  const value = draft === undefined ? settings[by] : undefined;
+  if (typeof value === "number") return value;
+  const row = schema.settings.find((one) => one.key === by);
+  return typeof row?.default === "number" ? row.default : 0;
+}
+
+/**
+ * Every row as its fields: a plain row once, a family as members 1 to its count row's value, and any member above it
+ * that the node or a draft gives, kept and marked inactive (docs/editor.md#the-settings-form).
+ */
+function expandedRows(
+  schema: TypeSchema,
+  settings: JsonObject,
+  drafts: Drafts,
+): Array<{ row: SettingSchema; family?: SettingSchema; member?: number; inactive?: boolean; count?: number }> {
+  const expanded: Array<{ row: SettingSchema; family?: SettingSchema; member?: number; inactive?: boolean; count?: number }> =
+    [];
+  for (const row of schema.settings) {
+    if (row.indexed === undefined) {
+      expanded.push({ row });
+      continue;
+    }
+    const count = Math.min(countOf(schema, row.indexed.by, settings, drafts), row.indexed.max);
+    let last = count;
+    for (const key of [...Object.keys(settings), ...drafts.keys()]) {
+      const member = memberNumber(key, row.key);
+      if (member !== undefined && member <= row.indexed.max) last = Math.max(last, member);
+    }
+    for (let member = row.indexed.from; member <= last; ++member)
+      expanded.push({ row: memberRow(row, member), family: row, member, inactive: member > count, count });
+  }
+  return expanded;
+}
+
 /** The fields of `schema` over the node's `settings`, with `drafts`; `refusal` is ear's last, placed under its key. */
 export function fieldsOf(
   schema: TypeSchema,
@@ -108,19 +184,27 @@ export function fieldsOf(
   drafts: Drafts,
   refusal?: { key: string; detail: string },
 ): FieldView[] {
-  return schema.settings.map((row) => {
+  return expandedRows(schema, settings, drafts).map(({ row, family, member, inactive, count }) => {
     const draft = drafts.get(row.key);
     const control = controlOf(row);
+    const hints = hintsOf(row);
+    if (inactive === true && family?.indexed !== undefined)
+      hints.unshift(`kept; not used while ${family.indexed.by} is ${count ?? 0}`);
     const field: FieldView = {
       key: row.key,
       control,
       value: draft !== undefined ? draft.value : shownValue(row, settings[row.key]),
       placeholder: placeholderOf(row),
       required: row.required,
-      hints: hintsOf(row),
+      hints,
       drafted: draft !== undefined,
       changedOnEar: draft !== undefined && !sameJson(draft.base, settings[row.key]),
     };
+    if (family !== undefined && member !== undefined) {
+      field.family = family.key;
+      field.member = member;
+      if (inactive === true) field.inactive = true;
+    }
     if (control === "select") field.options = row.required ? [...(row.values ?? [])] : ["", ...(row.values ?? [])];
     if (control === "number" || control === "decimal") {
       if (row.min !== undefined) field.min = row.min;
@@ -159,7 +243,7 @@ export function edit(
   value: FieldValue,
 ): Map<string, Draft> {
   const next = new Map(drafts);
-  const row = schema.settings.find((one) => one.key === key);
+  const row = rowOfKey(schema, key);
   if (row === undefined) return next;
   const before = drafts.get(key);
   if (before === undefined && value === shownValue(row, settings[key])) return next;
@@ -243,12 +327,12 @@ export function patchOf(
 ): { patch: JsonObject } | { problems: Map<string, string> } {
   const patch: JsonObject = {};
   const problems = new Map<string, string>();
-  for (const row of schema.settings) {
-    const draft = drafts.get(row.key);
-    if (draft === undefined) continue;
+  for (const [key, draft] of drafts) {
+    const row = rowOfKey(schema, key);
+    if (row === undefined) continue;
     const problem = problemOf(row, draft.value);
-    if (problem !== undefined) problems.set(row.key, problem);
-    else patch[row.key] = valueOf(row, draft.value, settings[row.key]);
+    if (problem !== undefined) problems.set(key, problem);
+    else patch[key] = valueOf(row, draft.value, settings[key]);
   }
   return problems.size > 0 ? { problems } : { patch };
 }

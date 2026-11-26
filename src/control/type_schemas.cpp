@@ -90,6 +90,8 @@ json encodeRow(const SettingRow& row) {
 	if (!row.onlyWithout.empty()) out["onlyWithout"] = row.onlyWithout;
 	if (!row.help.empty()) out["help"] = row.help;
 	if (row.shapesPorts) out["shapes"] = true;
+	// A family: its members' keys are <key>.<n>, n from 1 to its count row's high (docs/control-port.md#type-schemas).
+	if (row.maxMembers > 0) out["indexed"] = {{"by", row.indexedBy}, {"from", 1}, {"max", row.maxMembers}};
 	return out;
 }
 

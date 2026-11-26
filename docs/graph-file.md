@@ -130,7 +130,10 @@ is a number word, read with knobly's number reader (`-3.5`, `-6`, `0.25`, `1e3`,
 holding one; `-.5` and `1.` are not number words, knobly's E4004), and any JSON number on the
 control port; an edit writes the shortest text in fixed notation that reads back as the same
 number (`-3.5`, `-6` for `-6.0`, `1000` for `1e3`, `0` for a negative zero), never rounding it. Its
-range, like a rate's, is the type's to judge, not the reader's. A key the type does not declare is invalid settings. The
+range, like a rate's, is the type's to judge, not the reader's. A member of an indexed family
+(`trimDb.1 0.5;`, [writing-a-node-type.md](writing-a-node-type.md#indexed-families)) is one
+directive name with a `.`, read and written as its family's kind; another spelling (`trimDb.01`) or
+a member above the family's maximum is no member, read as text for the type to refuse. A key the type does not declare is invalid settings. The
 keys, ranges and defaults of each type are in [node-types.md](node-types.md). A text setting, node
 name or port holding a control character other than newline, tab and carriage return cannot be
 written in `ear.conf` and is refused.

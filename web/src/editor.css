@@ -1430,6 +1430,11 @@ body,
   border-left-color: var(--warn);
 }
 
+/* A family member above its count: kept in ear.conf, not used (docs/editor.md#the-settings-form). */
+.settings-field-inactive {
+  opacity: 0.55;
+}
+
 .settings-field input[type="text"],
 .settings-field input[type="number"],
 .settings-field select {

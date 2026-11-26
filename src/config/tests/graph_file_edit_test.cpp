@@ -457,6 +457,20 @@ TEST_CASE("A decimal setting is written back as its shortest fixed text, and onl
 	}
 }
 
+TEST_CASE("A family member is written back by its family's kind, added beside the others and read again",
+          "[graph_file_edit][indexed]") {
+	const Fixture f;
+	const std::string head = "graph {\n    rate 48khz;\n    block_size 256;\n}\n";
+	const auto model = f.load(head + "node lamp a { trimDb.1 0.5; }\n");
+	REQUIRE(model.read().wanted.has_value());
+	const auto changed = candidate(model.updateNode("a", {{"trimDb.1", -3.5}, {"trimDb.12", 6}, {"lit.2", true}}));
+	CHECK(changed.text() == head + "node lamp a { trimDb.1 -3.5;\nlit.2 true;\ntrimDb.12 6; }\n");
+	CHECK(nodeIn(changed, "a").settings == json{{"trimDb.1", -3.5}, {"trimDb.12", 6.0}, {"lit.2", true}});
+	CHECK(commandDetail(model.updateNode("a", {{"trimDb.2", "x"}})) ==
+	      "invalid-settings a: trimDb.2: expected a number");
+	CHECK(commandDetail(model.updateNode("a", {{"lit.1", 1}})) == "invalid-settings a: lit.1: expected true or false");
+}
+
 TEST_CASE("No edit touches the graph block", "[graph_file_model][graph-block]") {
 	const Fixture f;
 	const std::string block = "graph {   # the engine\n    rate 44.1khz;   # the MOTU's\n    block_size 128;\n}\n";

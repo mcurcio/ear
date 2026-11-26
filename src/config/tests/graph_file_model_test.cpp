@@ -413,6 +413,29 @@ TEST_CASE("A decimal setting is read with knobly's number reader, bare or throug
 	}
 }
 
+TEST_CASE("A family member is read by its family's kind, its dotted key one directive name",
+          "[graph_file_model][indexed]") {
+	const Fixture f;
+	const auto model = f.load(formatLines + "@set $t -1.5;\n"
+	                                        "node lamp a { bulbs 3; trimDb.1 0.5; trimDb.12 $t; lit.2 true; }\n");
+	CHECK(model.read().diagnostics.empty());
+	REQUIRE(model.read().wanted.has_value());
+	const auto& settings = model.read().wanted->nodes[0].settings;
+	CHECK(settings == json{{"bulbs", 3}, {"trimDb.1", 0.5}, {"trimDb.12", -1.5}, {"lit.2", true}});
+	CHECK(settings["trimDb.1"].is_number_float());
+	SECTION("a spelling that is no member is read as text, for the plan to refuse as an unknown key") {
+		const auto other = f.load(formatLines + "node lamp a { trimDb.01 \"x\"; trimDb.17 \"y\"; }\n");
+		CHECK(other.read().diagnostics.empty());
+		REQUIRE(other.read().wanted.has_value());
+		CHECK(other.read().wanted->nodes[0].settings == json{{"trimDb.01", "x"}, {"trimDb.17", "y"}});
+	}
+	SECTION("a member's value of the wrong kind is knobly's wrong kind") {
+		const auto quoted = f.load(formatLines + "node lamp a { trimDb.1 \"0.5\"; }\n");
+		CHECK(placed(quoted.read()) == std::vector<Placed>{{"E4002", 5, 24}});
+		CHECK_FALSE(quoted.read().wanted.has_value());
+	}
+}
+
 TEST_CASE("A rate setting is read with its unit into a JSON number of Hz, and its range is the plan's",
           "[graph_file_model][graph-block]") {
 	const Fixture f;

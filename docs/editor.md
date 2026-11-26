@@ -415,6 +415,12 @@ text over JSON, so the toggle's other side is the node's own statement.
   default (`default 0 channels`), where it comes from (`the graph's frequency`, `the node's name`), or
   `absent`; a row's `help` and its unit are beside it, and a row that is `onlyWithout` a given key
   (a draft included) is disabled, saying so.
+- **An indexed family** (`indexed`, [control-port.md](control-port.md#type-schemas)) is one field per
+  member, `<key>.1` to its count row's value (a whole-number draft of the count row included), each
+  drawn by the family's kind and range with the family's default as its placeholder. A member above
+  the count that the node or a draft gives is drawn too, greyed, its hint first: "kept; not used
+  while channels is 2". A key is mapped to its family's field only by the member grammar (`trimDb.01`
+  is no member), for drafts, the patch and ear's refusal's `data.key` alike.
 - **Hints from the schema alone**, beside each field: "applies in place" for `change: inPlace`,
   "restarts the node" for `restart`, followed by its `restartReason` ("restarts the node: card has no
   change in place yet"), "changes the ports" for `shapes`; a `change` it does not know says

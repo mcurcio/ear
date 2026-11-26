@@ -4,6 +4,7 @@
 // fixed order (docs/graph-file.md); every change is told to the observers first, then to
 // the subscribers (rule 4), and close() shuts it to edits before the node framework stops (rule 5).
 #include "ear/core/desired_graph.hpp"
+#include "ear/core/settings_table.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -42,7 +43,8 @@ NodeOutcome outcomeFor(const NodeType& type, std::span<const std::string> keys, 
 	const NodeOutcome outcome = outcomeOf(wasDisabled, isDisabled);
 	if (outcome != NodeOutcome::restart) return outcome;
 	if (keys.empty()) return NodeOutcome::unchanged;
-	return std::ranges::all_of(keys, [&](const std::string& key) { return type.changesInPlace(key); })
+	return std::ranges::all_of(keys,
+	                           [&](const std::string& key) { return type.changeOf(key) == setting::Change::inPlace; })
 	           ? NodeOutcome::reconfigure
 	           : NodeOutcome::restart;
 }
