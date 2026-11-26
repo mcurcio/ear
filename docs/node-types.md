@@ -729,7 +729,7 @@ takes up to 3 s.
   `aiosendspin`, Music Assistant's pinned server.
 
 Not built: actions (forgetting one server's pairing waits on the protocol library, which has no
-way to forget one pairing: [control-plane.md](design/control-plane.md#11-the-cut-buildable-steps)),
+way to forget one pairing: [control-plane.md](design/control-plane.md#sendspins-first-action)),
 volume and mute, line sense, IPv6, `wss://`,
 several servers at once, choosing the advertised interface, RFC 6762 probing, more than stereo; a
 pairing hold that survives a restart (the 20 rounds are counted in the library's memory, so any

@@ -152,9 +152,9 @@ Home and End) between 280 and 560 px. It shows one subject, chosen by the select
 A name or route the graph does not hold is ignored, so the inspector shows only what ear announced.
 Delete asks `node.remove` for each node and `route.remove` only for routes between kept nodes, as
 the delete key does. The add-node form lives only in the Graph subject, so selecting something
-drops a half-typed statement; a new template is written when it shows again. Slice 5's status list
-is designed to land in the Node subject, under the settings form
-([control-plane.md](design/control-plane.md#8-the-editor)).
+drops a half-typed statement; a new template is written when it shows again. Slice 6's live
+controls are designed to land in the Node subject's settings form
+([parameters.md](design/parameters.md#10-the-editor)).
 
 ### The drawer
 
@@ -324,7 +324,7 @@ even with the focus in the node panel's box. While the palette or the sheet is o
 *Why that filter:* React Flow 12.12.0 skips input, select, textarea, contenteditable and anything inside `.nokey`
 for Delete by the same rule (its `isInputDOMNode`, checked in the pinned package), so its keys and the editor's
 coexist with the focus in the inspector's text. Slice 6's knobs are designed to carry `nodrag`, `nowheel`, `nopan`
-and `nokey` ([control-plane.md](design/control-plane.md#83-gestures-from-pointer-and-keyboard)).
+and `nokey` ([parameters.md](design/parameters.md#103-gesturets)).
 
 ## Adding a node
 

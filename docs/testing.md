@@ -523,7 +523,7 @@ test's backlog, about 2,900 messages behind after 10 s, so the queue never fille
 with the counters alone; a client that falls behind for longer still reaches 1008 once those
 buffers are full, which is the bound's purpose. So a node's `node.statusChanged` is not coalesced
 in the queue (the design's fallback,
-[control-plane.md](design/control-plane.md#12-costs-risks-and-open-items), is not built).
+[control-plane.md](design/control-plane.md#status-coalesced-in-a-clients-queue), is not built).
 
 ## How the suites are built
 
