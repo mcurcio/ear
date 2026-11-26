@@ -82,28 +82,7 @@ body,
   letter-spacing: 0.08em;
 }
 
-.pill,
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 8px;
-  line-height: 22px;
-  border-radius: var(--pb-radius-pill);
-  background: var(--pb-sunken);
-  border: 1px solid var(--pb-line);
-  white-space: nowrap;
-}
-
-.pill-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: var(--pb-radius-pill);
-  background: currentColor;
-}
-
-/* The tone classes colour a chip's or a status word's text from the state tokens; the pill keeps its word in --pb-text
-   and colours its dot. */
+/* The tone classes colour the drawer's status words from the state tokens (docs/editor.md#the-drawer). */
 .tone-ok {
   color: var(--pb-ok);
 }
@@ -120,34 +99,13 @@ body,
   color: var(--pb-muted);
 }
 
-.pill {
-  color: var(--pb-text);
-}
-
-.pill.tone-ok .pill-dot {
-  background: var(--pb-ok);
-}
-
-.pill.tone-warn .pill-dot {
-  background: var(--pb-warn);
-}
-
-.pill.tone-err .pill-dot {
-  background: var(--pb-err);
-}
-
+/* The engine chip is patchbay's Badge (docs/editor.md#the-top-bar); its numbers keep their width as they change. */
 .engine-chip {
-  color: var(--pb-text);
   font-variant-numeric: tabular-nums;
 }
 
-.engine-realtime {
-  color: var(--pb-muted);
-}
-
-.topbar-drawer .chip {
+.topbar-drawer .pb-badge {
   margin-left: 6px;
-  line-height: 18px;
 }
 
 /* The workspace: the canvas fills what the inspector leaves. */
@@ -497,35 +455,9 @@ body,
   font-size: var(--pb-text-sm);
 }
 
-.facts {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 2px 12px;
-  margin: 0 0 6px;
-  font-size: var(--pb-text-sm);
-}
-
-.facts > div {
-  display: contents;
-}
-
-.facts dt {
-  color: var(--pb-muted);
-}
-
-.facts dd {
-  margin: 0;
-  font-variant-numeric: tabular-nums;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.facts .tone-err dd {
-  color: var(--pb-err);
-}
-
-.facts .tone-warn dd {
-  color: var(--pb-warn);
+/* patchbay's KeyValue draws the facts (docs/editor.md#the-inspector); the inspector spaces them. */
+.inspector .facts {
+  margin-bottom: 6px;
 }
 
 .port-ref {
@@ -694,15 +626,6 @@ body,
   color: var(--pb-err);
 }
 
-.badge-not-realtime {
-  display: inline-block;
-  padding: 1px 6px;
-  border-radius: var(--pb-radius-pill);
-  background: var(--pb-err);
-  color: var(--pb-on-strong);
-  font-weight: 600;
-}
-
 /* The node box (docs/editor.md#the-node-box): a stripe down its left edge and a pill in the state's token (--state),
    the word always beside the colour. Its width is layout.ts's nodeWidth, which layout.test.ts holds equal. */
 .ear-node {
@@ -814,42 +737,6 @@ body,
   display: flex;
   align-items: center;
   margin: 3px 0 2px;
-}
-
-.ear-node-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0 7px 0 5px;
-  border-radius: var(--pb-radius-pill);
-  background: var(--pb-sunken);
-  color: var(--state);
-  font-size: 11px;
-  line-height: 18px;
-  font-weight: 600;
-}
-
-.ear-node-pill-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: var(--pb-radius-pill);
-  background: var(--state);
-}
-
-.ear-node-reason {
-  font-family: var(--pb-font-code);
-  font-weight: normal;
-}
-
-/* configuring pulses the dot only, never the word. */
-.phase-configuring .ear-node-pill-dot {
-  animation: pulse var(--pb-motion-pulse) ease-in-out infinite;
-}
-
-@keyframes pulse {
-  50% {
-    opacity: 0.4;
-  }
 }
 
 .ear-node-line {
@@ -1080,14 +967,10 @@ body,
   color: var(--pb-muted);
 }
 
-/* The durations are already 0 under reduced motion (patchbay's tokens.css); the configuring pulse and the wires' flow
-   are infinite animations, which a 0 s duration would churn rather than stop, so they stop here (patchbay's Spinner
-   stops its own). The peak tick's fall is data, not decoration, and stays. */
+/* The durations are already 0 under reduced motion (patchbay's tokens.css); the wires' flow is an infinite animation,
+   which a 0 s duration would churn rather than stop, so it stops here (patchbay's Spinner and Pill stop their own).
+   The peak tick's fall is data, not decoration, and stays. */
 @media (prefers-reduced-motion: reduce) {
-  .phase-configuring .ear-node-pill-dot {
-    animation: none;
-  }
-
   .ear-wire-flow {
     display: none;
   }
@@ -1207,16 +1090,6 @@ body,
    counter's name in monospace as sent. */
 .counter-mark {
   margin-left: 4px;
-}
-
-.badge-dropouts {
-  display: inline-block;
-  padding: 0 6px 0 3px;
-  border: 1px solid var(--pb-warn);
-  border-radius: var(--pb-radius-pill);
-  background: var(--pb-warn-soft);
-  color: var(--pb-warn);
-  font-weight: 600;
 }
 
 .counter-table h3 {

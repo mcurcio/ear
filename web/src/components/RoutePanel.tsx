@@ -1,7 +1,7 @@
 // The inspector's Route subject (docs/editor.md#the-inspector): its two ends as node:port buttons that select their
 // node, its status in words (wires.ts's wireStatusWords, its colour editor.css's over the state tokens, the word
 // always shown), its from port's level meter, and Remove, which is a request to ear.
-import { Button } from "@mcurcio/patchbay/primitives";
+import { Button, KeyValue } from "@mcurcio/patchbay/primitives";
 import { wirePort } from "../levels";
 import type { GraphRoute, PortRef, RouteEnds } from "../protocol";
 import type { Selection } from "../selection";
@@ -30,26 +30,27 @@ export function RoutePanel({
   );
   return (
     <section className="inspector-section">
-      <dl className="facts">
-        <div>
-          <dt>From</dt>
-          <dd>{end(route.from)}</dd>
-        </div>
-        <div>
-          <dt>To</dt>
-          <dd>{end(route.to)}</dd>
-        </div>
-        <div>
-          <dt>Status</dt>
-          <dd className={`wire-status ${wireView(route, 0, false).statusClass}`}>{wireStatusWords(route)}</dd>
-        </div>
-        <div>
-          <dt>Level</dt>
-          <dd className="route-level">
-            <Meter node={level.node} port={level.port} />
-          </dd>
-        </div>
-      </dl>
+      <KeyValue
+        className="facts"
+        rows={[
+          { key: "From", value: end(route.from) },
+          { key: "To", value: end(route.to) },
+          {
+            key: "Status",
+            value: (
+              <span className={`wire-status ${wireView(route, 0, false).statusClass}`}>{wireStatusWords(route)}</span>
+            ),
+          },
+          {
+            key: "Level",
+            value: (
+              <span className="route-level">
+                <Meter node={level.node} port={level.port} />
+              </span>
+            ),
+          },
+        ]}
+      />
       <Button tone="danger" className="inspector-delete" onClick={() => onRemove(route)}>
         Remove route
       </Button>

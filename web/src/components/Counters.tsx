@@ -2,7 +2,7 @@
 // badge beside "not realtime", and the panel's tables of every total, an unknown counter by its name and number. What
 // each shows is counters.ts's; every mark has its words, never colour alone.
 import type { CounterMark, CounterRow, DropoutBadge } from "../counters";
-import { WarnMark } from "@mcurcio/patchbay/primitives";
+import { Badge, WarnMark } from "@mcurcio/patchbay/primitives";
 
 /** The mark alone, where its words are the text beside it. */
 function Glyph() {
@@ -27,9 +27,10 @@ export function NodeCounterMark({ mark }: { mark: CounterMark }) {
 export function DropoutsBadge({ badge }: { badge: DropoutBadge | undefined }) {
   if (badge === undefined) return null;
   return (
-    <span className="badge-dropouts" title={badge.title}>
-      <Glyph /> {badge.text}
-    </span>
+    <Badge tone="warn" title={badge.title}>
+      <Glyph />
+      {badge.text}
+    </Badge>
   );
 }
 

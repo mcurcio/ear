@@ -31,6 +31,33 @@ export const startingLineDelayMs = 250;
 
 const knownStates = new Set(["starting", "running", "stopping", "stopped", "disabled", "failed", "reconfiguring"]);
 
+/** The state pill's tone (patchbay's Pill); its stripe and minimap box take the same tone from the style class. */
+export type StateTone = "ok" | "warn" | "err" | "quiet" | "off" | "accent";
+
+const stateTones: Record<string, StateTone> = {
+  running: "ok",
+  starting: "warn",
+  stopping: "warn",
+  failed: "err",
+  stopped: "quiet",
+  disabled: "off",
+  reconfiguring: "accent",
+};
+
+/**
+ * The pill's tone: running ok; starting and stopping warn; failed err; stopped quiet and disabled off (the silence
+ * asked for, never a fault); reconfiguring the accent (a change in place, not a warning); a state this editor does not
+ * know warn, as its style class is.
+ */
+export function stateTone(node: GraphNode): StateTone {
+  return (knownStates.has(node.state) ? stateTones[node.state] : undefined) ?? "warn";
+}
+
+/** The pill's dot pulses while the node configures (the word never does). */
+export function statePulses(node: GraphNode): boolean {
+  return node.phase === "configuring";
+}
+
 const on: ActionAvailability = { enabled: true };
 const off = (why: string): ActionAvailability => ({ enabled: false, why });
 

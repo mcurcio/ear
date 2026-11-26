@@ -4,22 +4,21 @@
 // ear.conf toggle with the drawer's status words, and below the narrow width the inspector's button. The words are
 // shell.ts's and drawer.ts's.
 import type { ThemeChoice } from "@mcurcio/patchbay/hooks";
-import { ThemeSwitch } from "@mcurcio/patchbay/primitives";
+import { Badge, Pill, ThemeSwitch } from "@mcurcio/patchbay/primitives";
 import { drawerChip, type DrawerWord } from "../drawer";
 import type { Graph } from "../protocol";
 import { connectionPill, nextPillChange } from "../shell";
 import { GraphChips } from "./EngineFacts";
 import { useConnectionView, useRecentNow } from "./hooks";
 
-/** The connection pill, drawn again each time its countdown's seconds drop. */
+/** The connection pill, drawn again each time its countdown's seconds drop; a status region, so a change is read. */
 function ConnectionPill() {
   const view = useConnectionView();
   const now = useRecentNow((t) => nextPillChange(view, t));
   const pill = connectionPill(view, now);
   return (
-    <span className={`pill tone-${pill.tone}`} role="status" title={pill.title}>
-      <span className="pill-dot" aria-hidden="true" />
-      {pill.word}
+    <span className="connection-pill" role="status">
+      <Pill tone={pill.tone} label={pill.word} title={pill.title} />
     </span>
   );
 }
@@ -88,7 +87,7 @@ export function TopBar({
               ▤
             </span>{" "}
             ear.conf
-            {chip !== undefined && <span className={`chip tone-${chip.tone}`}>{chip.text}</span>}
+            {chip !== undefined && <Badge tone={chip.tone}>{chip.text}</Badge>}
           </button>
         )}
         {narrow && (

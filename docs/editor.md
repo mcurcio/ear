@@ -102,19 +102,22 @@ header read one status.
 to right:
 
 - the wordmark (hidden below 600 px);
-- the connection pill: `live`, `connecting…` or `lost: retrying in 4 s`, a word beside its dot,
-  the seconds counted down to the client's next socket, as `rpc.ts` tells the editor (`onRetry`);
-- the engine chip: the rate and block size, then `realtime` or the "not realtime" badge, its
-  tooltip the scheduling;
-- the dropouts badge ([Counters](#counters));
-- a `protocol N` chip while ear speaks a newer protocol than this editor's, its tooltip saying
+- the connection pill: `live` (ok), `connecting…` (warn) or `lost: retrying in 4 s` (err), a word beside its dot,
+  the seconds counted down to the client's next socket, as `rpc.ts` tells the editor (`onRetry`), in a status
+  region so a change is read out;
+- the engine chip, a muted badge: the rate and block size, then `realtime` or the "not realtime" badge, filled in
+  the error tone so it stands out, its tooltip the scheduling;
+- the dropouts badge, in the warn tone ([Counters](#counters));
+- a `protocol N` badge in the warn tone while ear speaks a newer protocol than this editor's, its tooltip saying
   some of it is not shown;
 - on the right, the palette button, its key (`⌘K` or `Ctrl+K`) as its text
   ([below](#the-palette)), the theme switch and the `ear.conf` toggle with the drawer's status words as a
-  chip;
+  badge in the first word's tone;
 - below 900 px, an Inspector button ([below](#narrow-windows)).
 
-`shell.ts` holds the words (`shell.test.ts`).
+`shell.ts` holds the words and their tones (`shell.test.ts`). The pill is patchbay's `Pill` and the chips its
+`Badge` ([its docs](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#state)), which colour the word
+and the dot, or the text and the edge, in the tone.
 
 ### The canvas
 
@@ -143,12 +146,12 @@ On the right, 320 px, resized between 280 and 560 px by patchbay's `Splitter` on
 are [patchbay's](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#layout)). It shows one subject, chosen by the selection
 (`selection.ts`, `selection.test.ts`):
 
-- nothing selected: **Graph**: the engine facts in full, the graph's counters and the add-node
-  form;
+- nothing selected: **Graph**: the engine facts in full (patchbay's `KeyValue`, a wrong or newer fact in the err
+  or warn tone), the graph's counters and the add-node form;
 - one node: **Node**: its name and type, its state pill as the box draws it, its line, the
   lifecycle bar (one segmented row; a refusal shown under it as well as in a toast), its knobly box (or JSON settings), its counters, its companions and Delete;
 - one route: **Route**: from and to as `node:port` buttons that select that node, its status in
-  words, its level meter and Remove;
+  words, its level meter (a `KeyValue` too) and Remove;
 - several: a count ("3 nodes, 2 routes") and Delete for them all.
 
 A name or route the graph does not hold is ignored, so the inspector shows only what ear announced.
@@ -471,8 +474,8 @@ class (inside `:where()`, so they weigh no more), so patchbay's controls draw as
 - **Surfaces:** `--pb-surface` the canvas, `--pb-raised` boxes, panels and controls, `--pb-sunken` meter
   tracks, badges and read-only text; `--pb-line` and `--pb-line-strong` the borders and the dot grid.
 - **Text:** `--pb-text`, `--pb-muted` (type labels, the health line, counter labels), `--pb-accent`
-  (selection, focus) and `--pb-on-strong` (text on a filled chip: the "not realtime" badge, the
-  warning mark).
+  (selection, focus, the reconfiguring pill) and `--pb-on-strong` (text on a filled badge: the "not realtime" badge,
+  the warning mark).
 - **States:** `--pb-ok` running, linked and ready; `--pb-warn` starting, stopping, pending, an unknown
   state and the warning mark; `--pb-err` failed, refused and the diagnostics' errors; `--pb-quiet`
   stopped; `--pb-off` disabled and a companion not ready. Asked-for silence is never `--pb-err`
@@ -480,14 +483,14 @@ class (inside `:where()`, so they weigh no more), so patchbay's controls draw as
 - **Soft surfaces** under banners and the dropouts badge (`--pb-warn-soft`, `--pb-err-soft`), the
   meters' (`--pb-meter-low`, `--pb-meter-mid`, `--pb-meter-hot`, `--pb-meter-peak`), the shadows
   (`--pb-shadow`, `--pb-shadow-lifted`) and the code tokens (`--pb-code-*`, [above](#highlighting)).
-- **Tones:** the classes `tone-ok`, `tone-warn`, `tone-err` and `tone-muted` colour the
-  connection pill's dot, the top bar's chips and the drawer's status words from the state tokens.
+- **Tones:** patchbay's `Pill`, `Badge` and `KeyValue` take a tone by name; the classes `tone-ok`, `tone-warn`,
+  `tone-err` and `tone-muted` colour the drawer's status words from the state tokens.
 - **Type:** `--pb-font-ui` and `--pb-text-md` (13 px) for the page, `--pb-text-sm` (12 px) for
   small text, `--pb-font-code` for code, names and numbers as sent, and `--pb-code-size` for the
   code boxes and the gutter ([Phones and touch](#phones-and-touch)). The other sizes stay
   literal, as patchbay has no token for them: 15 px (the wordmark, the canvas tools' glyphs, the
   palette's field, the shortcut sheet's title), 14 px (the inspector's title), 11 px (the node box's
-  pill, health line and port rows), 10 px (the type label, a wire's label, a companion's badge) and
+  health line and port rows), 10 px (the type label, a wire's label, a companion's badge) and
   16 px (text fields under a coarse pointer).
 - **Corners and motion:** 8 px on boxes, 6 px on controls and text boxes, pills fully round; 120 ms
   for hover and selection, 180 ms for what slides, `--pb-motion-pulse` (2 s, the configuring dot),
@@ -556,13 +559,12 @@ Slice 5's type-schema cache is designed to use this module too ([control-plane.m
 
 `components/EarNode.tsx` draws it; the handles' rule is `web/src/connect.ts`'s `handleCue`.
 
-- **The state is a stripe and a pill.** A 4 px stripe down the box's left edge and a pill (a dot
-  and the word, with a failure's code in monospace) take the state's token: `--pb-ok` running,
-  `--pb-warn` starting, stopping and an unknown state, `--pb-err` failed, `--pb-quiet` stopped, `--pb-off`
-  disabled. The word is always there, so the state is never colour alone. A failed box also has an
-  `--pb-err` border. A disabled one has a dashed border and a hatched stripe, and its text stays at
-  full contrast. `configuring` pulses the dot only, never the text, and not at all under reduced
-  motion.
+- **The state is a stripe and a pill.** A 4 px stripe down the box's left edge and a pill (patchbay's `Pill`: a dot
+  and the word, with a failure's code after it in monospace, `StatePill.tsx`) take the state's tone (`health.ts`'s
+  `stateTone`): ok running, warn starting, stopping and an unknown state, err failed, quiet stopped, off disabled,
+  and the accent reconfiguring. The word is always there, so the state is never colour alone. A failed box also has
+  an `--pb-err` border. A disabled one has a dashed border and a hatched stripe, and its text stays at full contrast.
+  `configuring` pulses the dot only, never the text, and not at all under reduced motion (the Pill's `pulse`).
 - **The type label** is the type's word as sent, in `--pb-muted`. Nothing in `web/` names a node type,
   so there are no per-type icons or colours.
 - **220 px wide.** `layout.ts`'s `nodeWidth` and `portHeight` are the box's CSS width and port-row
@@ -620,8 +622,8 @@ Slice 5's type-schema cache is designed to use this module too ([control-plane.m
 ## A node's health
 
 `web/src/health.ts` is the one place that turns a node's health members
-([control-port.md](control-port.md#node-health)) into the box's pill word, stripe style, line and enabled
-buttons; its tests cover every phase. The rules it follows:
+([control-port.md](control-port.md#node-health)) into the box's pill word and tone, stripe style, line and
+enabled buttons; its tests cover every phase. The rules it follows:
 
 - **Silence the operator asked for is never drawn as a fault.** `stopped` ("stopped until Start or
   a restart of ear") and `disabled` ("disabled in ear.conf") each have their own quiet style, apart

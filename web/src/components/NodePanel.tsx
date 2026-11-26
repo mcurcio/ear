@@ -88,8 +88,7 @@ export function NodePanel({
 
   return (
     <section className="inspector-section">
-      {/* The health's style class sets --state, so the pill takes the box's colours. */}
-      <header className={`inspector-node ${health.styleClass} phase-${node.phase}`}>
+      <header className="inspector-node">
         <h2>
           {node.name} <span className="ear-node-type">{node.type}</span>
         </h2>

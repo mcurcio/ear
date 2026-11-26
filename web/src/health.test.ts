@@ -1,7 +1,7 @@
 // health.ts against docs/editor.md#a-nodes-health: every phase's word, style, line and enabled actions; a starting
 // phase's line hidden for the first 250 ms the editor shows it; an unknown state and phase drawn by their word.
 import { describe, expect, it } from "vitest";
-import { describeHealth, startingLineDelayMs } from "./health";
+import { describeHealth, startingLineDelayMs, statePulses, stateTone } from "./health";
 import type { GraphNode } from "./protocol";
 
 const since = "2026-11-09T10:00:00.000000Z";
@@ -171,5 +171,28 @@ describe("describeHealth", () => {
     expect(describeHealth(node({ state: "stopping", phase: "stopping", cause: { kind: "restarting", restart: fellBack } }), long).line).toBe(
       "restarting: could not apply port in place",
     );
+  });
+});
+
+describe("stateTone and statePulses", () => {
+  it("give each state its pill tone: silence asked for quiet or off, a change in place the accent", () => {
+    expect(stateTone(node({ state: "running", phase: "running" }))).toBe("ok");
+    expect(stateTone(node({ state: "starting" }))).toBe("warn");
+    expect(stateTone(node({ state: "stopping", phase: "stopping" }))).toBe("warn");
+    expect(stateTone(node({ state: "failed", phase: "failed" }))).toBe("err");
+    expect(stateTone(node({ state: "stopped", phase: "stopped" }))).toBe("quiet");
+    expect(stateTone(node({ state: "disabled", phase: "disabled" }))).toBe("off");
+    expect(stateTone(node({ state: "reconfiguring", phase: "reconfiguring" }))).toBe("accent");
+  });
+
+  it("draw a state this editor does not know in warn, as its style class does", () => {
+    expect(stateTone(node({ state: "hibernating" }))).toBe("warn");
+    expect(stateTone(node({ state: "toString" }))).toBe("warn");
+  });
+
+  it("pulse the dot only while configuring", () => {
+    expect(statePulses(node({ phase: "configuring" }))).toBe(true);
+    expect(statePulses(node({ phase: "added" }))).toBe(false);
+    expect(statePulses(node({ state: "running", phase: "running" }))).toBe(false);
   });
 });
