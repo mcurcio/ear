@@ -1,11 +1,12 @@
 # The graph editor on patchbay: what is still to build
 
 Status: designed; A1 is built (the package, the rename onto its tokens, the theme through `useTheme` and ThemeSwitch),
-and A2 all but the shortcut sheet on Dialog (section 3.3 marks each change built or to build).
+A2 all but the shortcut sheet on Dialog (section 3.3 marks each change built or to build), and of A4 the banners and
+status words (section 3.5 marks each).
 The graph editor (`web/`, [docs/editor.md](../editor.md)) draws with patchbay's `--pb-*` tokens, theme switch and
 built primitives and hooks (its spinner and warning mark, splitters, canvas tools, form fields and buttons, pills,
-badges and facts, narrow sheet and kept values), but still draws its node boxes, wires, meters, palette, toasts, code
-boxes, shortcut sheet and shell itself: `web/src/components/`, its styles in `web/src/editor.css`.
+badges and facts, narrow sheet and kept values) and its banners and status words, but still draws its node boxes,
+wires, meters, palette, toasts, code boxes, shortcut sheet and shell itself: `web/src/components/`, its styles in `web/src/editor.css`.
 `@mcurcio/patchbay` (npm, 0.5.0) is a component library extracted from this editor: its `tokens.css` is the editor's
 old `theme.css` renamed, and its built primitives and hooks are generic versions of the editor's leaves. This page designs moving the
 editor onto it, one area per change, so that the editor keeps its behaviour and ear keeps everything that is not
@@ -17,7 +18,7 @@ meters) is still only designed in patchbay; those steps wait on patchbay's relea
 | **A1** | The package, the rename and the theme (section 3.2): built | — |
 | **A2** | The built primitives and hooks, one area per change (section 3.3): in part | nothing (D2, D3, D4 given) |
 | **A3** | The node box, wires, meters and the canvas sugar (section 3.4) | patchbay's graph layer, released |
-| **A4** | Feedback, the palette and keys, the code editor (section 3.5) | patchbay's composites and hooks, released |
+| **A4** | Feedback, the palette and keys, the code editor (section 3.5): in part | the code editor waits on patchbay's CodeEditor; the rest on nothing (0.5.0) |
 | **A5** | The shell, and deleting this page (section 3.6) | patchbay's `AppShell`, released |
 
 [V] = verified in the file named (patchbay's files by their path in its repository); [U] = unverified, with the step
@@ -138,8 +139,9 @@ Each waits for the patchbay release carrying it.
 
 ### 3.5 A4: feedback, the palette and keys, the code editor
 
-- **Banners and status words.** `TextPane.tsx`'s banners become Banner; the drawer header's words become StatusWords,
-  with `drawer.ts`'s tones.
+- **Banners and status words** (built). `TextPane.tsx`'s banners, the node box's and the add form's are Banner; the
+  drawer header's words are StatusWords, with `drawer.ts`'s tones (its `muted` is drawn as StatusWords' neutral tone)
+  ([editor.md](../editor.md#the-drawer)).
 - **Palette and keys.** `Palette.tsx` becomes CommandPalette (centred for ⌘K, anchored at the pointer for quick add);
   `palette.ts` keeps the catalogue and loses `rank` and `anchoredAt`. `useShortcuts.ts` becomes patchbay's, with ⌘K and
   ⌘S still acting while typing; `keys.ts` keeps the bindings and takes `keyLabel` and `isTextTarget` from patchbay.

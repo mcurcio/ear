@@ -82,23 +82,6 @@ body,
   letter-spacing: 0.08em;
 }
 
-/* The tone classes colour the drawer's status words from the state tokens (docs/editor.md#the-drawer). */
-.tone-ok {
-  color: var(--pb-ok);
-}
-
-.tone-warn {
-  color: var(--pb-warn);
-}
-
-.tone-err {
-  color: var(--pb-err);
-}
-
-.tone-muted {
-  color: var(--pb-muted);
-}
-
 /* The engine chip is patchbay's Badge (docs/editor.md#the-top-bar); its numbers keep their width as they change. */
 .engine-chip {
   font-variant-numeric: tabular-nums;
@@ -505,23 +488,13 @@ body,
   box-sizing: border-box;
 }
 
-.drawer-status {
-  display: flex;
+/* The header's words are patchbay's StatusWords (docs/editor.md#the-drawer), kept to one line that fills the space
+   between the toggle and Save and is cut short there. */
+.drawer-header .drawer-status {
   flex: 1;
-  gap: 0;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  font-size: var(--pb-text-sm);
+  flex-wrap: nowrap;
   min-width: 0;
   overflow: hidden;
-  white-space: nowrap;
-}
-
-.drawer-word + .drawer-word::before {
-  content: " · ";
-  white-space: pre;
-  color: var(--pb-muted);
 }
 
 .drawer-body {
@@ -610,20 +583,11 @@ body,
   outline-offset: 1px;
 }
 
-.banner {
-  padding: 6px 8px;
+/* The pane's, the node box's and the add form's banners are patchbay's Banner (docs/editor.md#the-drawer); ear only
+   spaces them from the text below. */
+.text-pane > .pb-banner,
+.node-text > .pb-banner {
   margin-bottom: 8px;
-  border-radius: var(--pb-radius-control);
-}
-
-.banner-warn {
-  background: var(--pb-warn-soft);
-  color: var(--pb-text);
-}
-
-.banner-error {
-  background: var(--pb-err-soft);
-  color: var(--pb-err);
 }
 
 /* The node box (docs/editor.md#the-node-box): a stripe down its left edge and a pill in the state's token (--state),

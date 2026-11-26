@@ -166,7 +166,13 @@ form and status list are designed to land in the Node subject, under the lifecyc
 Full width along the bottom, holding the pane whole. Its 32 px header stays when the drawer is
 closed and says in words what the file needs, most urgent first: `refused`, `write failed`,
 `stale: reload`, `unsaved`, `n errors` or `applies at restart` (`drawer.ts`, `drawer.test.ts`),
-with Save beside them, which says `Saving…` while its request is on its way. The header's toggle, and the top bar's, opens and closes it. It opens by
+with Save beside them, which says `Saving…` while its request is on its way. The words are patchbay's
+`StatusWords` ([its docs](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#news-and-state)): each in its
+tone (`applies at restart` in the neutral one), a dot between two, the row one polite live region, kept to one line
+and cut short before Save. The pane's banners above the text (the file changed under the draft, with Reload; ear
+refused the file; a write failed; editor edits were dropped, with a close button; a setting applies at restart) are
+patchbay's `Banner`, as are the node box's stale banner and the add form's: a stripe and a soft surface in the tone,
+an error one read at once (`role="alert"`) and the others when the reader is free. The header's toggle, and the top bar's, opens and closes it. It opens by
 itself only when ear refuses the file or a write fails, each newly (the same refusal sent again
 does not reopen it), or when a Save is refused; never on a hand edit. *Why a drawer:* the owner
 chose a full-width bottom drawer over a third column, so lines need not scroll sideways and the

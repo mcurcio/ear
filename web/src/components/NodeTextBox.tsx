@@ -2,6 +2,7 @@
 // editable, in the pane's textarea style with its diagnostics under it (a click puts the caret there) and Save
 // (node.setText), which says Saving… while its request is on its way (docs/editor.md#requests-in-flight). The logic is
 // nodeText.ts; ear judges every text.
+import { Banner } from "@mcurcio/patchbay/composites";
 import { Button } from "@mcurcio/patchbay/primitives";
 import { useEffect, useReducer, useRef } from "react";
 import { placedRefusal } from "../notices";
@@ -48,12 +49,16 @@ export function NodeTextBox({ node, file }: { node: string; file: GraphFile }) {
         Its text in ear.conf{box.base.text.kind !== "own" && " (read-only)"}
       </label>
       {box.stale && (
-        <div className="banner banner-warn" role="status">
-          {node} changed in ear.conf; reload{" "}
-          <button type="button" onClick={() => dispatch({ kind: "reload" })}>
-            Reload
-          </button>
-        </div>
+        <Banner
+          tone="warn"
+          actions={
+            <Button size="sm" onClick={() => dispatch({ kind: "reload" })}>
+              Reload
+            </Button>
+          }
+        >
+          {node} changed in ear.conf; reload
+        </Banner>
       )}
       {note !== "" && <div className="node-text-note">{note}</div>}
       <KnoblyText

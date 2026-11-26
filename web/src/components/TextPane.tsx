@@ -1,9 +1,11 @@
-// The ear.conf drawer's body (docs/editor.md#the-drawer): banners for what a person must know (the file changed under
+// The ear.conf drawer's body (docs/editor.md#the-drawer): patchbay's Banners for what a person must know (the file changed under
 // the draft, the graph refused the file, a write failed, editor edits were dropped, a setting applies only at
 // restart), the file's text, editable, with a gutter of line numbers and a dot on each line a diagnostic names
 // (docs/editor.md#the-drawers-gutter), and its diagnostics (a click puts the caret there). The pane's state and Save
 // are useDrawer's, so the drawer's header and the top bar read the same status; the logic is pane.ts and drawer.ts,
 // and ear judges every text.
+import { Banner } from "@mcurcio/patchbay/composites";
+import { Button } from "@mcurcio/patchbay/primitives";
 import { useMemo, useRef } from "react";
 import { formatNames } from "../drawer";
 import type { FileNotice } from "../graphFile";
@@ -44,39 +46,32 @@ export function TextPane({ drawer }: { drawer: DrawerModel }) {
   return (
     <div className="text-pane">
       {pane.stale && (
-        <div className="banner banner-warn" role="status">
-          ear.conf changed; reload{" "}
-          <button type="button" onClick={() => dispatch({ kind: "reload" })}>
-            Reload
-          </button>
-        </div>
+        <Banner
+          tone="warn"
+          actions={
+            <Button size="sm" onClick={() => dispatch({ kind: "reload" })}>
+              Reload
+            </Button>
+          }
+        >
+          ear.conf changed; reload
+        </Banner>
       )}
       {file.refusal !== undefined && (
-        <div className="banner banner-error" role="alert">
+        <Banner tone="err">
           ear refused this file
           {file.refusal.line !== undefined && ` at ${place(file.refusal.line, file.refusal.column ?? 1)}`}:{" "}
           {file.refusal.message}. The graph keeps running{" "}
           {file.running !== undefined ? `version ${file.running}` : "nothing"}.
-        </div>
+        </Banner>
       )}
-      {file.writeFailed !== undefined && (
-        <div className="banner banner-error" role="alert">
-          ear could not write ear.conf: {file.writeFailed}
-        </div>
-      )}
+      {file.writeFailed !== undefined && <Banner tone="err">ear could not write ear.conf: {file.writeFailed}</Banner>}
       {notices.map((notice, index) => (
-        <div key={index} className="banner banner-error" role="alert">
-          {noticeText(notice)}{" "}
-          <button type="button" onClick={() => store.dismiss(notice)}>
-            Dismiss
-          </button>
-        </div>
+        <Banner key={index} tone="err" onDismiss={() => store.dismiss(notice)}>
+          {noticeText(notice)}
+        </Banner>
       ))}
-      {pending.length > 0 && (
-        <div className="banner banner-warn" role="status">
-          {pending.join(" and ")} change applies at restart
-        </div>
-      )}
+      {pending.length > 0 && <Banner tone="warn">{pending.join(" and ")} change applies at restart</Banner>}
       <KnoblyText
         ref={text}
         rows={20}

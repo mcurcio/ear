@@ -2,6 +2,7 @@
 // pane's textarea style, its diagnostics under it (a click puts the caret there) and Add (node.addText). The logic is
 // addText.ts; ear judges every text. Add says Adding… while its request is on its way
 // (docs/editor.md#requests-in-flight).
+import { Banner } from "@mcurcio/patchbay/composites";
 import { Button, Field, Select } from "@mcurcio/patchbay/primitives";
 import { useEffect, useReducer, useRef, useState } from "react";
 import { addFrom, addReduce, addRequest, canAdd } from "../addText";
@@ -90,9 +91,7 @@ export function AddNodeText({
       </Field>
       <label htmlFor="add-node-text">Its text in ear.conf</label>
       {form.raced && (
-        <div className="banner banner-warn" role="status">
-          ear.conf changed while adding; press Add again
-        </div>
+        <Banner tone="warn">ear.conf changed while adding; press Add again</Banner>
       )}
       <KnoblyText
         id="add-node-text"
