@@ -255,7 +255,7 @@ export function App({ prefs }: { prefs: Prefs }) {
         onClose={closePalette}
         commands={items}
         at={palette?.at}
-        placeholder={palette?.scope === "add" ? "Add a node of type…" : "Type a command or a node's name"}
+        labels={{ placeholder: palette?.scope === "add" ? "Add a node of type…" : "Type a command or a node's name" }}
         platform={platform}
       />
       <ShortcutSheet

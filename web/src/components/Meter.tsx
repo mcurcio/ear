@@ -22,5 +22,5 @@ export function PortMeter({ node, port, label }: { node: string; port: string; l
     if (status === "closed") meter.current?.reset();
   }, [status]);
 
-  return <Meter ref={meter} className="port-meter" subscribe={subscribe} read={read} label={label} title={meterTitle} />;
+  return <Meter ref={meter} className="port-meter" subscribe={subscribe} read={read} label={label} labels={{ title: meterTitle }} />;
 }

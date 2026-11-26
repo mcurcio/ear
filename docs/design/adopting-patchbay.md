@@ -8,7 +8,7 @@ built primitives and hooks (its spinner and warning mark, splitters, canvas tool
 badges and facts, narrow sheet and kept values) and composites and hooks (banners, status words, the command palette,
 the shortcut sheet, the key bindings and the toasts) and its graph layer's meters, but still draws its node boxes,
 wires, code boxes and shell itself: `web/src/components/`, its styles in `web/src/editor.css`.
-`@mcurcio/patchbay` (npm, 0.5.0) is a component library extracted from this editor: its `tokens.css` is the editor's
+`@mcurcio/patchbay` (npm, 0.7.0) is a component library extracted from this editor: its `tokens.css` is the editor's
 old `theme.css` renamed, and its built primitives and hooks are generic versions of the editor's leaves. This page designs moving the
 editor onto it, one area per change, so that the editor keeps its behaviour and ear keeps everything that is not
 drawing. Most of what the editor would take (the shell, the palette, toasts, the code editor, the node box, wires and
@@ -18,7 +18,7 @@ meters) is still only designed in patchbay; those steps wait on patchbay's relea
 |---|---|---|
 | **A1** | The package, the rename and the theme (section 3.2): built | — |
 | **A2** | The built primitives and hooks, one area per change (section 3.3): built | — |
-| **A3** | The node box, wires, meters and the canvas sugar (section 3.4): the meters built | the rest of patchbay's graph layer, released |
+| **A3** | The node box, wires, meters and the canvas sugar (section 3.4): the meters built | nothing: patchbay's graph layer is released (0.6.0) |
 | **A4** | Feedback, the palette and keys, the code editor (section 3.5): in part | the code editor waits on patchbay's CodeEditor; the rest on nothing (0.5.0) |
 | **A5** | The shell, and deleting this page (section 3.6) | patchbay's `AppShell`, released |
 
@@ -31,7 +31,7 @@ that checks it.
 precious to me. They should be reworked when patchbay has a matching concept." Where the editor differs from patchbay
 in look or behaviour, it takes patchbay's model; nothing of ear's look or behaviour is kept for its own sake.
 
-The choice still open is in section 6; each answer goes in this table with its date when it is given. D6, D7, D8 and
+Every decision is taken; a later one goes in this table with its date. D6, D7, D8 and
 D15 are rasl's and change nothing here; they are listed so the numbers match patchbay's and rasl's records.
 
 | # | The owner's words or decision | Date | What it means here |
@@ -49,6 +49,7 @@ D15 are rasl's and change nothing here; they are listed so the numbers match pat
 | D11 | patchbay's toast model (built in 0.5.0) | 2026-11-26 | `notices.ts`'s store runs on the pure queue `useToasts` holds and Toaster draws it (A4); ear keeps the wording |
 | D12 | NodeBox's geometry as exported constants, mirrored by tokens a brand may not change | 2026-11-26 | `layout.ts` reads them in A3 |
 | D13 | SchemaForm deferred | 2026-11-26 | The JSON settings form stays ear's |
+| D14 | Every component takes its own words (the visible text and accessible names it supplies itself) through one `labels` prop, a partial object with English defaults; the per-word props (`closeLabel`, `dismissLabel`, ...) are gone (built in 0.7.0). No app-wide provider for now | 2026-11-26 | ear sets two: the palette's placeholder (`labels.placeholder`) and the meters' tooltip (`labels.title`); every other word is patchbay's default |
 | D15 | rasl gets patchbay's theme switch, as ear does | 2026-11-26 | rasl's; nothing here |
 
 ## 2. What is built
@@ -57,16 +58,18 @@ D15 are rasl's and change nothing here; they are listed so the numbers match pat
   Storybook): logic tests, plus tests that read `editor.css` (and patchbay's `tokens.css`) as text to hold CSS equal to
   TS constants and every `var()` to a token (`theme.test.ts`, `sizes.test.ts`, `layout.test.ts`). knobly comes from its GitHub Release tarball, pinned by
   `cmake/knobly.json` ([AGENTS.md](../../AGENTS.md), [editor.md](../editor.md#highlighting)).
-- **patchbay 0.5.0.** Peer dependencies `react` and `react-dom` `^19`, and optionally `@xyflow/react` `^12` and
+- **patchbay 0.7.0.** Peer dependencies `react` and `react-dom` `^19`, and optionally `@xyflow/react` `^12.1.0` and
   `knobly` `^1.0.0` [V: `package.json`]; ear meets every range. Subpaths `./tokens.css`, `./base.css`, `./primitives`,
-  `./hooks`, `./composites`, `./graph`; `./shell` resolves but exports nothing yet [V: `dist/*.js`'s exports].
+  `./hooks`, `./composites`, `./graph`, `./testing` (the brand contrast check); `./shell` resolves but exports nothing
+  yet [V: `dist/*.js`'s exports]. Every component takes its own words through one `labels` prop (D14).
   Built: the `--pb-` tokens with a light set, a system-dark set and a chosen-dark set and React Flow's `--xy-*`
   variables mapped onto them, the type tokens (`--pb-font-*`, `--pb-text-*`, `--pb-code-size`); Button, IconButton,
   Spinner, Pill, Badge, WarnMark, KeyValue, SectionTitle, Field, TextInput, Select, Checkbox, RadioGroup, Splitter,
   Toolbar, ToolGroup, Panel, Dialog, Sheet, ThemeSwitch; Banner, CommandPalette, DiffView, ShortcutSheet, StatusWords,
-  Toaster; Meter; `useTheme` and `themeScript`, `usePersistentState`, `useShortcuts`, `useToasts`,
+  Toaster; Meter, NodeBox, PortRow, Wire, GhostWire, `useConnectHints`, CanvasTools, `useAddAt`, `useFollowFit`;
+  `useTheme` and `themeScript`, `usePersistentState`, `useShortcuts`, `useToasts`,
   `useMediaBreakpoint`, `useLiveValue`. It releases by semantic-release; while it is 0.x a breaking change is a minor release.
-- **The editor draws with it.** `web/package.json` pins `@mcurcio/patchbay` 0.5.0 exactly, and `npm ci` takes the
+- **The editor draws with it.** `web/package.json` pins `@mcurcio/patchbay` 0.7.0 exactly, and `npm ci` takes the
   tarball-installed knobly 1.0.0 as meeting its `^1.0.0` peer [V: `npm ls` dedupes it]. `theme.css` is gone: every
   colour in it had the same value in `tokens.css`, in light and both dark sets [V: compared before the rename], so
   the rename (`--X` → `--pb-X`, `--knobly-Y` → `--pb-code-Y`, `--code-size` → `--pb-code-size`, the faces and the 13
@@ -107,7 +110,7 @@ patchbay takes the drawing and the generic mechanics; ear keeps what knows about
 | Change | ear today | patchbay | Notes | Status |
 |---|---|---|---|---|
 | Spinner and WarnMark | `Spinner.tsx`, `WarnMark.tsx`, raw `warn-mark` spans in `Counters.tsx` and `CompanionStrip.tsx` | Spinner, WarnMark (`label`) | | built |
-| Splitters | `Splitter.tsx`, `sizes.ts` dragged, keyed, clamp | Splitter, `edge="start"` | Bounds stay in `sizes.ts` until A5. `edge` becomes logical in a later patchbay (owner, 2026-11-26: start and end follow the text direction); the editor is left-to-right, so `start` stays its left and top | built |
+| Splitters | `Splitter.tsx`, `sizes.ts` dragged, keyed, clamp | Splitter, `edge="start"` | Bounds stay in `sizes.ts` until A5. `edge` is logical since 0.7.0 (owner, 2026-11-26: start and end follow the text direction); the editor sets no `dir` and is left-to-right, so `start` is the inspector's left and the drawer's top | built |
 | Canvas tools | `CanvasTools.tsx`, a plain `role=toolbar` | ToolGroup and IconButton, inside React Flow's `<Panel>` | Roving tab stop (new); `fitPadding` still reserves 76 px for 40 px touch tools | built |
 | Shortcut sheet | `ShortcutSheet.tsx` on `.palette-backdrop` | Dialog, through patchbay's ShortcutSheet | Gains a Close button and a scrim press; built with A4's palette and keys, which replaced this step | built |
 | Top bar and drawer buttons | plain `<button>`s for the palette, `ear.conf` and Inspector toggles, shorter than ThemeSwitch, and the drawer's toggle beside a small Button | Button (the drawer's toggle `size="sm"`, as its Save) | The same height as the theme switch, and 36 px under a coarse pointer from patchbay's own rule | built |
@@ -121,7 +124,7 @@ box's stripe keeps its `--state` class until A3.
 
 ### 3.4 A3: the node box, wires, meters, the canvas
 
-Each waits for the patchbay release carrying it.
+patchbay's graph layer carrying each is released (0.6.0).
 
 - **The node box.** `EarNode.tsx` wraps NodeBox and PortRow: the stripe tone and Pill from `health.ts`, the companions
   in the footer, a meter as each port's trailing slot, the handle ids from `connect.ts` passed through. `layout.ts`
@@ -212,9 +215,4 @@ Component behaviour is tested in patchbay (jsdom and Storybook); ear keeps logic
 
 ## 6. Open
 
-Every decision but D14 is taken (section 1). D14 is still open in patchbay's record; the shape it is leaning to is
-written down there, and nothing here waits on it.
-
-| Question | Options | Leaning | Blocks |
-|---|---|---|---|
-| D14: how a component takes its own words | one `labels` prop per component (a partial object with English defaults, replacing per-word props such as `closeLabel`, a breaking change while 0.x), with no app-wide provider for now; or a provider | one `labels` prop, no provider yet | nothing: ear overrides none of the English defaults (D5 took ThemeSwitch's words; Sheet and Dialog keep "Close"), so either answer only renames props ear does not set |
+Nothing: every decision is taken (section 1).

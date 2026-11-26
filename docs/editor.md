@@ -117,7 +117,7 @@ to right:
 
 `shell.ts` holds the words and their tones (`shell.test.ts`). The palette, `ear.conf` and Inspector buttons are
 patchbay's `Button`, as tall as the theme switch beside them. The pill is patchbay's `Pill` and the chips its
-`Badge` ([its docs](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#state)), which colour the word
+`Badge` ([its docs](https://github.com/mcurcio/patchbay/blob/v0.7.0/docs/components.md#state)), which colour the word
 and the dot, or the text and the edge, in the tone.
 
 ### The canvas
@@ -126,7 +126,7 @@ It fills the rest, a quiet dot grid in the theme's colours. React Flow's `Contro
 floating tool group, bottom left: zoom out, zoom in, fit, tidy and the minimap toggle (`CanvasTools.tsx`, patchbay's
 `ToolGroup` of `IconButton`s in React Flow's `Panel`). The group is one Tab stop, the arrow keys, Home and End move
 between its tools, and the minimap tool is pressed while the minimap shows; 28 px tools, 40 px on touch
-([patchbay's](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#layout)). Fit leaves 76 px at the
+([patchbay's](https://github.com/mcurcio/patchbay/blob/v0.7.0/docs/components.md#layout)). Fit leaves 76 px at the
 bottom so the group, at its touch size, never covers a box. Tidy lays
 every node out again with dagre, as on first placement, and they slide there over
 `--pb-motion-slow` (180 ms); moves are the browser's, so nothing is sent (`layout.ts`'s `relayout`), and the new
@@ -143,8 +143,8 @@ that follows the graph is what a person expects until they move it themselves. T
 ### The inspector
 
 On the right, 320 px, resized between 280 and 560 px by patchbay's `Splitter` on its left edge
-(`edge="start"`: dragged, or focused and moved by the arrow keys, Home and End; its keys, drag and 36 px touch hit area
-are [patchbay's](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#layout)). It shows one subject, chosen by the selection
+(`edge="start"`, its inline start, which is its left as the editor is left-to-right: dragged, or focused and moved by the arrow keys, Home and End; its keys, drag and 36 px touch hit area
+are [patchbay's](https://github.com/mcurcio/patchbay/blob/v0.7.0/docs/components.md#layout)). It shows one subject, chosen by the selection
 (`selection.ts`, `selection.test.ts`):
 
 - nothing selected: **Graph**: the engine facts in full (patchbay's `KeyValue`, a wrong or newer fact in the err
@@ -168,7 +168,7 @@ Full width along the bottom, holding the pane whole. Its 32 px header stays when
 closed and says in words what the file needs, most urgent first: `refused`, `write failed`,
 `stale: reload`, `unsaved`, `n errors` or `applies at restart` (`drawer.ts`, `drawer.test.ts`),
 with Save beside them, which says `Saving…` while its request is on its way. The words are patchbay's
-`StatusWords` ([its docs](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#news-and-state)): each in its
+`StatusWords` ([its docs](https://github.com/mcurcio/patchbay/blob/v0.7.0/docs/components.md#news-and-state)): each in its
 tone (`applies at restart` in the neutral one), a dot between two, the row one polite live region, kept to one line
 and cut short before Save. The pane's banners above the text (the file changed under the draft, with Reload; ear
 refused the file; a write failed; editor edits were dropped, with a close button; a setting applies at restart) are
@@ -184,7 +184,7 @@ and the scroll. The inspector and the drawer never move each other's content.
 ### Narrow windows
 
 Below 760 px the inspector is patchbay's `Sheet` over the canvas's right edge
-([its docs](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#overlays)), titled "Inspector", at the
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.7.0/docs/components.md#overlays)), titled "Inspector", at the
 width kept for the docked inspector (within 280 to 560 px and 48 px short of the canvas) and not resized. It opens
 when something is selected or from the top bar's Inspector button, and closes on its close button, Escape (before the
 selection: [Shortcuts](#shortcuts)) or a click on the canvas; it is not
@@ -197,7 +197,7 @@ above it; and the top bar drops the wordmark and the engine chip (the Graph subj
 patchbay's theme switch shows only its icon (its label still names the choice) and the `ear.conf` toggle its glyph,
 so its buttons fit beside the connection pill. `App.tsx` picks docked, right or bottom from patchbay's
 `useMediaBreakpoint` (wide, narrow below 760 px, phone below 600 px:
-[its docs](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#usemediabreakpoint)), and `editor.css`
+[its docs](https://github.com/mcurcio/patchbay/blob/v0.7.0/docs/components.md#usemediabreakpoint)), and `editor.css`
 narrows the top bar and grows the targets by the same queries (patchbay's `mediaQueries`); `sizes.ts` holds the
 bounds, which it passes to the splitters, and `sizes.test.ts` holds `editor.css`'s bounds and its queries to them.
 
@@ -247,7 +247,7 @@ does a closed connection, at once.
   never as a route.
 - **Buttons.** Every button that sends a request is patchbay's `Button` with `busy` while its own request is on its
   way: a spinner, `aria-busy`, and presses ignored, but it stays focusable, so the focus is never lost mid-request
-  ([patchbay's](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#actions)). Save in the drawer and
+  ([patchbay's](https://github.com/mcurcio/patchbay/blob/v0.7.0/docs/components.md#actions)). Save in the drawer and
   in the node box show `Saving…` beside the spinner, and Add in the form `Adding…` (their `busyLabel`, announced
   politely); a lifecycle button keeps its word under the spinner, so the segmented row's widths hold. A button is
   disabled only while idle: a lifecycle button as `health.ts` says, Save and Add while there is nothing to send.
@@ -260,8 +260,8 @@ does a closed connection, at once.
 `web/src/notices.ts` (`notices.test.ts`) is the session's store over patchbay's toast queue, so a refusal made
 outside React (the session's `ask`, a `node.state`) is a toast, and `components/Toasts.tsx` draws it with patchbay's
 `Toaster`, inline in a React Flow panel at the canvas's bottom right so Show can move the view
-([its docs](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#news-and-state); the queue:
-[`useToasts`](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#usetoasts)). *Why patchbay's:* the
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.7.0/docs/components.md#news-and-state); the queue:
+[`useToasts`](https://github.com/mcurcio/patchbay/blob/v0.7.0/docs/components.md#usetoasts)). *Why patchbay's:* the
 owner chose patchbay's toast model (D11, 2026-11-26); ear keeps the words, the key and Show.
 
 - **What a toast says.** A refusal says what was asked and why, with the code in monospace
@@ -305,7 +305,7 @@ line height and top inset, so [Highlighting](#highlighting)'s rules are untouche
 
 `web/src/palette.ts` (`palette.test.ts`) builds the palette's commands from the graph, the selection, the features
 and the shell's state, so a command ear cannot take is never offered, and hands them to patchbay's `CommandPalette`
-([its docs](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#commands-and-keys)), which draws, ranks
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.7.0/docs/components.md#commands-and-keys)), which draws, ranks
 and places them; `components/useCommands.ts` turns each into its request or its change of view. Cmd+K (Ctrl+K off
 macOS) or the top bar's button opens it, centred near the top of the window. Its commands:
 
@@ -323,7 +323,8 @@ macOS) or the top bar's button opens it, centred near the top of the window. Its
 With nothing typed, the selection's commands come first (each selected node's lifecycle calls and Remove, then each
 selected route's Remove), then Go to, Add, `ear.conf`'s, the view's, and every other node's and route's, each under
 its group's heading. An option shows its hint (a lifecycle command's why) as a quieter second line and, where it has
-one, its key.
+one, its key. Its one word of ear's own is the field's placeholder, "Type a command or a node's name" (for
+quick add, "Add a node of type…"), given through the palette's `labels`; every other word is patchbay's default.
 
 - **patchbay's palette.** Matching, ranking, the marked letters, the keys (the arrows, Page Up and Page Down, Home and
   End, Enter; Escape, Tab, a press outside or the focus leaving close it) and where it sits are `CommandPalette`'s:
@@ -339,7 +340,7 @@ one, its key.
 `web/src/keys.ts` (`keys.test.ts`) is the editor's table of bindings, in patchbay's key strings (`Mod+K`), and the
 shortcut sheet's lines; patchbay's `useShortcuts` binds the table on the window and its `ShortcutSheet`, the dialog `?`
 opens, lists the lines in three groups (Commands, View, Selection) with the keys drawn for the platform
-([its docs](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#useshortcuts)).
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.7.0/docs/components.md#useshortcuts)).
 
 | Key | Does |
 |---|---|
@@ -482,7 +483,7 @@ The editor draws with patchbay's tokens (`@mcurcio/patchbay`, pinned exactly in 
 every colour, radius, shadow, duration, face and type size in `editor.css` and the components is a
 `--pb-*` custom property from its `tokens.css`, and ear defines none of its own. patchbay documents
 the tokens, their light and dark values and the contrast rules on
-[its tokens page](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/tokens.md#the-tokens); this
+[its tokens page](https://github.com/mcurcio/patchbay/blob/v0.7.0/docs/tokens.md#the-tokens); this
 section says only how ear uses them.
 
 **The order the styles load.** `main.tsx` loads React Flow's `style.css`, then
@@ -535,7 +536,7 @@ choice with `useTheme` under ear's own key (`themeKey()` in `prefs.ts`, `ear-edi
 writes `data-theme="light"` or `"dark"` on `<html>` (system removes it) and keeps the choice, and the
 top bar draws patchbay's ThemeSwitch, with its words ([above](#the-top-bar)). The switch's cycle,
 tooltip and label are patchbay's, documented with
-[its hooks](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#usetheme). The palette has a
+[its hooks](https://github.com/mcurcio/patchbay/blob/v0.7.0/docs/components.md#usetheme). The palette has a
 `Theme:` command for each other choice ([above](#the-palette)).
 
 **No flash on the first paint.** `index.html` inlines patchbay's `themeScript(themeKey())` in its
@@ -560,7 +561,7 @@ Forced colours keep the system's colours, as [Highlighting](#highlighting) says.
 `web/src/prefs.ts` (`prefs.test.ts`) holds ear's keys and the check of every kept value, and keeps the node places;
 patchbay keeps the rest under those keys: the inspector's width and the minimap (`App.tsx`) and the drawer
 (`useDrawer.ts`) are its `usePersistentState`, the theme its `useTheme`
-([its hooks](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#usepersistentstate)). All of it is
+([its hooks](https://github.com/mcurcio/patchbay/blob/v0.7.0/docs/components.md#usepersistentstate)). All of it is
 in `localStorage` as JSON, every read and write in `try` (so a private window, blocked storage or a full one keeps an
 editor that remembers for the page's life), and every value is checked on read, a bad one ignored in favour of the
 default; a value is written only when the person changes it. `main.tsx` makes one `Prefs` for the page.
@@ -631,7 +632,7 @@ Slice 5's type-schema cache is designed to use this module too ([control-plane.m
 ### Meters
 
 Each port's meter is patchbay's `Meter`
-([its docs](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/graph.md#meter)), fed by the level store:
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.7.0/docs/graph.md#meter)), fed by the level store:
 `components/Meter.tsx` gives it the port's level and a reset, and `web/src/meters.ts` (`meters.test.ts`) its
 tooltip's words. *Why patchbay's:* the owner chose that patchbay's Meter owns the dB scale (D10, 2026-11-26); ear
 takes its defaults, which `meters.test.ts` pins to what this section says.
@@ -643,8 +644,8 @@ takes its defaults, which `meters.test.ts` pins to what this section says.
   live peak, and is hidden at the floor.
 - **Clip lamp.** A peak at or over 0 dBFS (linear 1) lights a square at the meter's right end for 2 s, and the
   tooltip says "clipped".
-- **Its words.** The tooltip says the peak and the rms in dBFS ("peak -6.0 dBFS, rms -12.0 dBFS"), or "silent" with
-  nothing above the floor, refreshed at most four times a second while hovered. The meter is an image named for its
+- **Its words.** The tooltip, ear's through the meter's `labels.title`, says the peak and the rms in dBFS ("peak -6.0
+  dBFS, rms -12.0 dBFS"), or "silent" with nothing above the floor, refreshed at most four times a second while hovered. The meter is an image named for its
   port (`<node>:<port> level` in the inspector's route panel, `<port> level` in a node box); the numbers are never announced.
 - **Outside React.** The meter subscribes to the level store and paints the bar, the tick, the lamp and the tooltip
   through refs, animating on animation frames only while the tick is above the live peak or the lamp is lit. A
@@ -765,7 +766,7 @@ happened in the last minute. The rules:
 `web/src/marks.ts` is the one rule both marks follow, companions' badges and the counters'
 (`marks.test.ts`): each reads its counters from the graph, and `GraphMoves` keeps their last values
 and rises. The mark is patchbay's `WarnMark`, an "!" in a circle
-([its docs](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#state)): named by its words where it
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.7.0/docs/components.md#state)): named by its words where it
 stands alone (a box's counter mark, a companion badge), and hidden from screen readers where its words are already the
 text beside it (the dropouts badge, the panel's companion list and counter tables).
 
