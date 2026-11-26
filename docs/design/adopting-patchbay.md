@@ -194,7 +194,10 @@ Component behaviour is tested in patchbay (jsdom and Storybook); ear keeps logic
   [highlighting](../editor.md#highlighting) and [the drawer's gutter](../editor.md#the-drawers-gutter) in A4; the shell
   again in A5. `make docs-check` holds the anchors comments cite.
 - Visible changes, each confirmed (section 1): the canvas tools' roving tab stop, busy buttons staying focusable,
-  the shortcut sheet's Close button and scrim, the theme script, and small shifts in pills and chips.
+  the shortcut sheet's Close button and scrim, the theme script, and small shifts in pills and chips; in A3 and A4
+  the banners' stripe and close button, the palette's grouped list with each hint on a second line and patchbay's
+  ranking (D9), no binding acting while the shortcut sheet is open, a chord matching its modifiers exactly, Show
+  dismissing its toast (D11), and the meters' lamp as a square beside the bar and their accessible names (D10).
 - Nothing on the wire changes: `protocol.ts`, `rpc.ts` and the fixtures in `test/protocol/` are untouched.
 
 ## 5. Decisions already taken
