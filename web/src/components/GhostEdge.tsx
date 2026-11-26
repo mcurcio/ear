@@ -1,5 +1,5 @@
 // A route request's ghost wire while it is on its way (docs/editor.md#requests-in-flight): plainly a request, never a
-// route. One thin dashed --muted path between the two handles, turning --err for a second when ear refuses it; no
+// route. One thin dashed --pb-muted path between the two handles, turning --pb-err for a second when ear refuses it; no
 // status, no meter, no tooltip and no hit path. It has no react-flow__edge-path class, so React Flow's stroke and
 // selection styles never reach it, and useCanvas makes its edge unselectable, unfocusable and undeletable.
 import { getBezierPath, type Edge, type EdgeProps } from "@xyflow/react";

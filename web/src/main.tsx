@@ -1,10 +1,9 @@
 // The graph editor's entry point (docs/editor.md): one editor session on the
 // page's own host (ear serves the page and its control socket on the same port), then the canvas.
-// React Flow's styles first, then patchbay's tokens (which point React Flow's --xy-* variables at them), then ear's
-// tokens (theme.css), then the styles that use them (docs/editor.md#tokens-and-themes).
+// React Flow's styles first, then patchbay's tokens (which point React Flow's --xy-* variables at them), then the
+// styles that use them (docs/editor.md#tokens-and-themes).
 import "@xyflow/react/dist/style.css";
 import "@mcurcio/patchbay/tokens.css";
-import "./theme.css";
 import "./editor.css";
 import { ReactFlowProvider } from "@xyflow/react";
 import { StrictMode } from "react";

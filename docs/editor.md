@@ -121,7 +121,7 @@ to right:
 It fills the rest, a quiet dot grid in the theme's colours. React Flow's `Controls` give way to one
 floating tool group, bottom left: zoom out, zoom in, fit, tidy and the minimap toggle. Tidy lays
 every node out again with dagre, as on first placement, and they slide there over
-`--motion-slow` (180 ms); moves are the browser's, so nothing is sent (`layout.ts`'s `relayout`), and the new
+`--pb-motion-slow` (180 ms); moves are the browser's, so nothing is sent (`layout.ts`'s `relayout`), and the new
 places are kept ([below](#what-the-browser-keeps)). The minimap is React Flow's `MiniMap`, off by default, its boxes
 in their state's token. Fit, tidy and the minimap are also `F`, `L` and `M` ([below](#shortcuts)), which the tools'
 titles carry, and the palette's `Fit view`, `Tidy layout` and `Show minimap`. A double-click on empty canvas opens
@@ -186,7 +186,7 @@ unfolding is a resize, so the layout follows it and the view fits itself again u
 ([The canvas](#the-canvas)). For a finger (`(hover: none) and (pointer: coarse)` in `editor.css`):
 
 - **No zoom on focus.** Every text field, the code boxes included, is 16 px, as iOS Safari zooms the page when a
-  smaller field takes the focus. The code size is one token, `--code-size`, shared by the textarea, its highlighted
+  smaller field takes the focus. The code size is one patchbay token, `--pb-code-size` (16 px under a coarse pointer), shared by the textarea, its highlighted
   copy and the drawer's gutter, so their glyphs still line up ([Highlighting](#highlighting)).
 - **Targets a finger finds.** The top bar's buttons are at least 36 px tall, the canvas tools and the lifecycle bar
   40 px. A port handle's hit area is as tall as its port row (so a neighbouring port stays its own) and reaches
@@ -217,9 +217,9 @@ what asked for it: a route's two ends, a node's name and the button, or the draw
 does a closed connection, at once.
 
 - **The ghost wire.** While a route request is on its way, a ghost wire joins the two handles
-  (`components/GhostEdge.tsx`): a thin dashed `--muted` line, with no status colour, no meter and no tooltip, which
+  (`components/GhostEdge.tsx`): a thin dashed `--pb-muted` line, with no status colour, no meter and no tooltip, which
   cannot be selected, focused or deleted (Delete never sends `route.remove` for it). It is hidden once
-  `route.added` draws the route, and goes on the reply. A refused one turns `--err` for 1 s (timed on the monotonic
+  `route.added` draws the route, and goes on the reply. A refused one turns `--pb-err` for 1 s (timed on the monotonic
   clock) before it goes. *Why:* the owner chose a ghost while a route request is in flight, drawn as a request and
   never as a route.
 - **Buttons.** A lifecycle button shows a spinner and is disabled while its own request is on its way; the others
@@ -258,7 +258,7 @@ a toast. Everything else is a toast. A refused Save still opens the drawer.
 ### The drawer's gutter
 
 `web/src/gutter.ts` (`gutter.test.ts`) gives each line the textarea shows its number, and a dot on each line a
-diagnostic names: `--err`, else `--warn`, and neutral for a severity this editor does not know. A line past the end
+diagnostic names: `--pb-err`, else `--pb-warn`, and neutral for a severity this editor does not know. A line past the end
 marks the last line. Hovering a dot shows its messages, and a click puts the caret there, as the list under the text
 does; the list stays the keyboard's and screen readers' way in, as the gutter is hidden from them. The gutter is a
 second `pre` beside the box, never inside it, following the textarea's vertical scroll with the same font, size,
@@ -412,9 +412,9 @@ the browser's knobly never accepts, refuses or diagnoses a text. The rules:
   box's Save and Add get the caller's text unchanged, CRLF and non-ASCII text included.
 - **knobly's classes, the editor's palette.** Each token is drawn by knobly's highlight class
   (`directive`, `keyword`, `word`, `variable`, `number`, `string`, `comment`, `punctuation`,
-  `space`, `error`), each a token (`--knobly-directive`, ...) in `theme.css`, light and dark
+  `space`, `error`), each a patchbay code token (`--pb-code-directive`, ...), light and dark
   ([below](#tokens-and-themes)), each shade at 4.5:1 or better on the box's surface and on the
-  read-only one in both themes, which `theme.test.ts` checks. A class this
+  read-only one in both themes, which patchbay's tokens test checks. A class this
   editor does not know is drawn plainly. An `error` span is a token that does not lex (a stray
   character, an unterminated string), never a diagnostic: those are ear's, listed under the box.
 
@@ -437,41 +437,54 @@ so with one version on both sides it matches what ear's reader parses.
 
 ## Tokens and themes
 
-`web/src/theme.css` holds every colour, radius, shadow and duration the editor draws with, as
-custom properties on `:root`, and is loaded before `editor.css`. `editor.css`, the components (the
-wires' status colours are `editor.css`'s wire classes) and the knobly tokens use only these, and
-ear's values live in `theme.css` alone.
+The editor draws with patchbay's tokens (`@mcurcio/patchbay`, pinned exactly in `web/package.json`):
+every colour, radius, shadow, duration, face and type size in `editor.css` and the components is a
+`--pb-*` custom property from its `tokens.css`, and ear defines none of its own. patchbay documents
+the tokens, their light and dark values and the contrast rules on
+[its tokens page](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/tokens.md#the-tokens); this
+section says only how ear uses them.
 
 **The order the styles load.** `main.tsx` loads React Flow's `style.css`, then
-`@mcurcio/patchbay/tokens.css`, then `theme.css`, then `editor.css`. patchbay's tokens come first:
-they hold the same values under `--pb-` names (`--knobly-*` as `--pb-code-*`) and point React
-Flow's own variables (`--xy-*`) at them on `.react-flow`, after React Flow's defaults, so its canvas,
-dot grid and minimap follow the theme without its `colorMode` prop (which would fight
-`data-theme`). patchbay (`@mcurcio/patchbay`, pinned exactly in `web/package.json`) documents that
-mapping and its tokens on
-[its tokens page](https://github.com/mcurcio/patchbay/blob/v0.2.0/docs/tokens.md#the-tokens). Until the
-editor draws with the `--pb-` names, both sets load and hold the same values. The groups:
+`@mcurcio/patchbay/tokens.css`, then `editor.css`. patchbay's tokens point React Flow's own
+variables (`--xy-*`) at them on `.react-flow`, after React Flow's defaults, so its canvas, dot grid
+and minimap follow the theme without its `colorMode` prop (which would fight `data-theme`).
 
-- **Surfaces:** `--surface` the canvas, `--raised` boxes, panels and controls, `--sunken` meter
-  tracks, badges and read-only text; `--line` and `--line-strong` the borders and the dot grid.
-- **Text:** `--text`, `--muted` (type labels, the health line, counter labels), `--accent`
-  (selection, focus) and `--on-strong` (text on a filled chip: the "not realtime" badge, the
+**What ear draws with which.**
+
+- **Surfaces:** `--pb-surface` the canvas, `--pb-raised` boxes, panels and controls, `--pb-sunken` meter
+  tracks, badges and read-only text; `--pb-line` and `--pb-line-strong` the borders and the dot grid.
+- **Text:** `--pb-text`, `--pb-muted` (type labels, the health line, counter labels), `--pb-accent`
+  (selection, focus) and `--pb-on-strong` (text on a filled chip: the "not realtime" badge, the
   warning mark).
-- **States:** `--ok` running, linked and ready; `--warn` starting, stopping, pending, an unknown
-  state and the warning mark; `--err` failed, refused and the diagnostics' errors; `--quiet`
-  stopped; `--off` disabled and a companion not ready. Asked-for silence is never `--err`
+- **States:** `--pb-ok` running, linked and ready; `--pb-warn` starting, stopping, pending, an unknown
+  state and the warning mark; `--pb-err` failed, refused and the diagnostics' errors; `--pb-quiet`
+  stopped; `--pb-off` disabled and a companion not ready. Asked-for silence is never `--pb-err`
   ([above](#a-nodes-health)).
-- **Soft surfaces** under banners and the dropouts badge (`--warn-soft`, `--err-soft`), the
-  meters' (`--meter-low`, `--meter-mid`, `--meter-hot`, `--meter-peak`), the shadows (`--shadow`,
-  `--shadow-lifted`) and the knobly tokens ([above](#highlighting)).
+- **Soft surfaces** under banners and the dropouts badge (`--pb-warn-soft`, `--pb-err-soft`), the
+  meters' (`--pb-meter-low`, `--pb-meter-mid`, `--pb-meter-hot`, `--pb-meter-peak`), the shadows
+  (`--pb-shadow`, `--pb-shadow-lifted`) and the code tokens (`--pb-code-*`, [above](#highlighting)).
 - **Tones:** the classes `tone-ok`, `tone-warn`, `tone-err` and `tone-muted` colour the
   connection pill's dot, the top bar's chips and the drawer's status words from the state tokens.
+- **Type:** `--pb-font-ui` and `--pb-text-md` (13 px) for the page, `--pb-text-sm` (12 px) for
+  small text, `--pb-font-code` for code, names and numbers as sent, and `--pb-code-size` for the
+  code boxes and the gutter ([Phones and touch](#phones-and-touch)). The other sizes stay
+  literal, as patchbay has no token for them: 15 px (the wordmark, the canvas tools' glyphs, the
+  palette's field, the shortcut sheet's title), 14 px (the inspector's title), 11 px (the node box's
+  pill, health line and port rows), 10 px (the type label, a wire's label, a companion's badge) and
+  16 px (text fields under a coarse pointer).
 - **Corners and motion:** 8 px on boxes, 6 px on controls and text boxes, pills fully round; 120 ms
-  for hover and selection, 180 ms for what slides, `--motion-pulse` (2 s, the configuring dot),
-  `--motion-flow` (1 s, the wires' flow) and `--motion-spin` (0.8 s, the busy spinner). The first two are 0 under
+  for hover and selection, 180 ms for what slides, `--pb-motion-pulse` (2 s, the configuring dot),
+  `--pb-motion-flow` (1 s, the wires' flow) and `--pb-motion-spin` (0.8 s, the busy spinner). The first two are 0 under
   `prefers-reduced-motion: reduce`, which also stops the configuring pulse, the wires' flow and the spinner
   (`editor.css`: an infinite animation at 0 s would churn rather than stop), and leaves the peak
   tick's fall, which is data, not decoration.
+
+**ear's own variables.** Besides the tokens, `editor.css` reads a few variables that hold no value of
+their own design, only a token picked per state or a number a component sets: `--state` (a node's
+state class picks its tone), `--toast-tone`, `--wire-colour` (a wire's status class),
+`--wire-width` (`LevelEdge.tsx`), `--meter-mid-at`, `--meter-hot-at`, `--meter-rms-at` and
+`--meter-peak-at` (`Meter.tsx`), `--inspector-width` (`Inspector.tsx`), `--drawer-height`
+(`Drawer.tsx`) and `--gutter-digits` (`KnoblyText.tsx`).
 
 **The theme.** It is `system` by default, following `prefers-color-scheme`. *Why:* the owner chose
 that the editor follows the system until the person chooses. The switch cycles system, light and
@@ -481,13 +494,14 @@ the system before the styles arrive. The switch sits in the top bar ([above](#th
 the palette has a `Theme:` command for each other choice ([above](#the-palette)); the choice is kept per browser
 ([What the browser keeps](#what-the-browser-keeps)) and applied before the first render.
 
-**Contrast is a test.** `theme.test.ts` reads `theme.css` and fails naming the theme and the pair
-when any text, state, on-strong or knobly token falls below 4.5:1 on a surface it is drawn on, in
-either theme. It also fails when the two copies of the dark set (the system's and the chosen one)
-differ, when a colour lacks its dark value, or when `editor.css` or a component holds a colour of
-its own. A failing pair changes the value, not the rule. The dark set is written twice rather than
-with `light-dark()`, because the build's CSS minifier may rewrite that function. Vitest blanks
-stylesheets by default, so `vite.config.ts` lets it read these two as text.
+**Tokens are a test.** `theme.test.ts` reads `editor.css`, every source in `web/src` but the tests,
+and patchbay's `tokens.css`, and fails naming the file and the name when a `var()` names neither a
+patchbay token nor one of ear's own variables (a missed rename would otherwise draw nothing,
+silently), when `editor.css` declares any other variable, or when `editor.css` or a component holds
+a colour of its own. Contrast is patchbay's to keep: its tokens test fails when a text, state, on-strong
+or code token falls below 4.5:1 on a surface it is drawn on, in either theme, or when its two copies
+of the dark set differ. Vitest blanks stylesheets by default, so `vite.config.ts` lets it read
+`editor.css` and `tokens.css` as text.
 
 Forced colours keep the system's colours, as [Highlighting](#highlighting) says.
 
@@ -517,23 +531,23 @@ Slice 5's type-schema cache is designed to use this module too ([control-plane.m
 `components/EarNode.tsx` draws it; the handles' rule is `web/src/connect.ts`'s `handleCue`.
 
 - **The state is a stripe and a pill.** A 4 px stripe down the box's left edge and a pill (a dot
-  and the word, with a failure's code in monospace) take the state's token: `--ok` running,
-  `--warn` starting, stopping and an unknown state, `--err` failed, `--quiet` stopped, `--off`
+  and the word, with a failure's code in monospace) take the state's token: `--pb-ok` running,
+  `--pb-warn` starting, stopping and an unknown state, `--pb-err` failed, `--pb-quiet` stopped, `--pb-off`
   disabled. The word is always there, so the state is never colour alone. A failed box also has an
-  `--err` border. A disabled one has a dashed border and a hatched stripe, and its text stays at
+  `--pb-err` border. A disabled one has a dashed border and a hatched stripe, and its text stays at
   full contrast. `configuring` pulses the dot only, never the text, and not at all under reduced
   motion.
-- **The type label** is the type's word as sent, in `--muted`. Nothing in `web/` names a node type,
+- **The type label** is the type's word as sent, in `--pb-muted`. Nothing in `web/` names a node type,
   so there are no per-type icons or colours.
 - **220 px wide.** `layout.ts`'s `nodeWidth` and `portHeight` are the box's CSS width and port-row
   height, which `layout.test.ts` holds equal. `headerHeight` is dagre's estimate of the three
   header rows. Port names are monospace and numbers use tabular figures.
 - **Handles** are a 10 px dot with a 20 px hit area. While a wire is drawn, `handleCue` rings in
-  `--accent` every handle a drop on would make a route and dims every other: from an output, every
+  `--pb-accent` every handle a drop on would make a route and dims every other: from an output, every
   input; from an input, every output (the editor accepts a drag from either end). It is
   `isValidConnection`'s own rule, so the ring never promises what the drop refuses. The ringed
   handle under the pointer grows.
-- **Selection** is a 2 px `--accent` ring outside the border with the lifted shadow. Hover lifts
+- **Selection** is a 2 px `--pb-accent` ring outside the border with the lifted shadow. Hover lifts
   the shadow alone.
 - **A change of ports redraws the box in place.** `node.updated` with its new `inputs` and
   `outputs` ([control-port.md](control-port.md#changes-of-ports)) changes the node the editor holds,
@@ -545,18 +559,18 @@ Slice 5's type-schema cache is designed to use this module too ([control-plane.m
 
 `web/src/wires.ts` holds the rules (`wires.test.ts`); `components/LevelEdge.tsx` draws them.
 
-- **Colour by status, size by level.** Colour comes from the status class over `--ok`, `--warn`
-  and `--err`; an unknown status is drawn as pending. Width is 1.5 px plus 5 px at full scale, and
+- **Colour by status, size by level.** Colour comes from the status class over `--pb-ok`, `--pb-warn`
+  and `--pb-err`; an unknown status is drawn as pending. Width is 1.5 px plus 5 px at full scale, and
   1.5 px more when selected. Opacity is 0.45 plus 0.55 at full scale. Every status but `linked` is
   dashed and still.
 - **The flow.** A linked wire whose from port's rms is above the -60 dBFS floor shows a dash moving
-  from the output to the input at a fixed speed (`--motion-flow`). It means "signal", not how
+  from the output to the input at a fixed speed (`--pb-motion-flow`). It means "signal", not how
   loud. There is none under reduced motion, and none on pending, refused or an unknown status.
   Not measured yet: the moving dash's cost at 30 level messages a second on a 20-wire graph. It
   is owed in a browser's performance panel on the system test's graph; if it costs, the flow is
   drawn only on the selected and hovered wires (`wires.ts`'s `flowing`).
 - **The status in words.** A refused wire carries `refused` at its midpoint (React Flow's
-  `EdgeLabelRenderer`). A status this editor does not know carries its own word, in `--muted`.
+  `EdgeLabelRenderer`). A status this editor does not know carries its own word, in `--pb-muted`.
 - **Hover** thickens the wire by 1 px. Its tooltip names the two ends
   (`noise:noise.mono → rec:record.right`) and, for a refused route, ear's detail.
 
@@ -565,8 +579,8 @@ Slice 5's type-schema cache is designed to use this module too ([control-plane.m
 `web/src/meters.ts` holds the rules (`meters.test.ts`); `components/Meter.tsx` paints them.
 
 - **The scale is unchanged:** an rms bar and a peak tick, dBFS down to -60 (`levels.ts`).
-- **Three zones.** The bar uncovers three fixed zones on that scale: `--meter-low` below -18 dBFS,
-  `--meter-mid` from -18 to -6, `--meter-hot` above.
+- **Three zones.** The bar uncovers three fixed zones on that scale: `--pb-meter-low` below -18 dBFS,
+  `--pb-meter-mid` from -18 to -6, `--pb-meter-hot` above.
 - **Peak hold.** The tick holds its highest peak for 1.5 s, then falls at 20 dB/s, never below the
   live peak and never below the floor.
 - **Clip lamp.** A peak at or over 0 dBFS (linear 1) lights the meter's right end for 2 s, and the
@@ -717,7 +731,7 @@ port. Node.js comes from `web/.nvmrc` and the packages from `web/package-lock.js
 The tests cover the reducer against every `test/protocol` fixture, the graph file's state and the
 pane's logic (drafts, stale files, Save, refusals), the node panel's knobly box (`nodeText.ts`), the add-node
 form (`addText.ts`), the highlighting (`highlight.ts`, and that it never changes the text sent), the reconnecting client with a fake socket,
-the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (the hold, the fall, the lamp and the reset on a fake clock), the handles' cue (`connect.ts`), the box's sizes against `editor.css` (`layout.test.ts`), and the theme (`theme.ts`, and the contrast of every pair in both themes in `theme.test.ts`), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the sizes and the breakpoint against `editor.css` (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight and the ghosts (`requests.ts`), the toast queue and a refusal's words (`notices.ts`, replaying `errors.json`), the gutter (`gutter.ts`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands and ranking, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the shortcuts (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), the wire dropped on the pane (`connect.ts`), and when the view fits itself (`fit.ts`). There is no browser test runner:
+the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (the hold, the fall, the lamp and the reset on a fake clock), the handles' cue (`connect.ts`), the box's sizes against `editor.css` (`layout.test.ts`), and the theme (`theme.ts`, and in `theme.test.ts` that every `var()` names a token), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the sizes and the breakpoint against `editor.css` (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight and the ghosts (`requests.ts`), the toast queue and a refusal's words (`notices.ts`, replaying `errors.json`), the gutter (`gutter.ts`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands and ranking, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the shortcuts (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), the wire dropped on the pane (`connect.ts`), and when the view fits itself (`fit.ts`). There is no browser test runner:
 rendering is checked by eye. *Why:* a Playwright leg costs about 150 MB of browsers and a minute
 or two a CI run, while the logic sits in the reducer, client and rules, which Vitest covers
 against the same fixtures the server is tested with.

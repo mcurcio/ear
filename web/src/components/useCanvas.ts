@@ -16,7 +16,7 @@ import type { GhostFlowEdge } from "./GhostEdge";
 import { useEditor, useExpiry, useRequests } from "./hooks";
 import type { LevelFlowEdge } from "./LevelEdge";
 
-/** How long Tidy's slide lasts: theme.css's --motion-slow (0 under reduced motion, where the CSS does not slide). */
+/** How long Tidy's slide lasts: patchbay's --pb-motion-slow (0 under reduced motion, where the CSS does not slide). */
 const tidyMs = 180;
 
 /** A route's wire, or a route request's ghost. */

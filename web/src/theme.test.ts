@@ -1,9 +1,10 @@
-// The theme's tokens (docs/editor.md#tokens-and-themes): theme.css's three sets (light, the system's dark, the chosen
-// dark), every text, state and knobly pair at 4.5:1 in both themes, no colour of its own in editor.css or a
-// component; and the switch's logic.
+// The editor's tokens (docs/editor.md#tokens-and-themes): every var() in editor.css and the editor's sources names a
+// token in patchbay's tokens.css or one of ear's own variables, and neither editor.css nor a component holds a colour
+// of its own. patchbay's tokens test holds its sets, the two dark copies equal and every text pair at 4.5:1; and the
+// switch's logic.
+import tokensCss from "@mcurcio/patchbay/tokens.css?raw";
 import { describe, expect, it } from "vitest";
 import editorCss from "./editor.css?raw";
-import themeCss from "./theme.css?raw";
 import { applyTheme, defaultTheme, nextTheme, themeChoices, themeTitle } from "./theme";
 
 const components = import.meta.glob("./components/*.tsx", { query: "?raw", import: "default", eager: true }) as Record<
@@ -11,177 +12,91 @@ const components = import.meta.glob("./components/*.tsx", { query: "?raw", impor
   string
 >;
 
+/** Every source of the editor's but its tests, as text. */
+const sources = import.meta.glob(["./**/*.ts", "./**/*.tsx", "!./**/*.test.ts", "!./**/*.test.tsx"], {
+  query: "?raw",
+  import: "default",
+  eager: true,
+}) as Record<string, string>;
+
 function stripComments(text: string): string {
   return text.replace(/\/\*[\s\S]*?\*\//g, "");
 }
 
-type Block = { media: string | null; selector: string; declarations: Map<string, string> };
+/**
+ * ear's own variables (docs/editor.md#tokens-and-themes): never a colour, radius, shadow, duration or type size of
+ * their own, only a value one rule or one component sets, or a token picked per state. Each is listed with where it is
+ * set.
+ */
+const earVariables = new Map<string, string>([
+  ["--state", "editor.css: a node's state class picks its tone"],
+  ["--toast-tone", "editor.css: a toast's kind picks its tone"],
+  ["--wire-colour", "editor.css: a wire's status class picks its tone"],
+  ["--wire-width", "LevelEdge.tsx: the wire's width from its level"],
+  ["--meter-mid-at", "Meter.tsx: where the mid zone starts"],
+  ["--meter-hot-at", "Meter.tsx: where the hot zone starts"],
+  ["--meter-rms-at", "Meter.tsx: the bar's level"],
+  ["--meter-peak-at", "Meter.tsx: the peak tick's level"],
+  ["--inspector-width", "Inspector.tsx: the inspector's width"],
+  ["--drawer-height", "Drawer.tsx: the drawer's height"],
+  ["--gutter-digits", "KnoblyText.tsx: the gutter's width in digits"],
+]);
 
-/** theme.css's rule sets: a plain rule or one rule inside an @media (the file holds nothing else). */
-function blocks(css: string): Block[] {
-  const found: Block[] = [];
-  const pattern = /(@media[^{]+)\{\s*([^{}@]+)\{([^{}]*)\}|([^{}@]+)\{([^{}]*)\}/g;
-  for (const match of stripComments(css).matchAll(pattern)) {
-    const media = match[1]?.trim() ?? null;
-    const selector = (match[2] ?? match[4]).trim();
-    const body = match[3] ?? match[5];
-    const declarations = new Map<string, string>();
-    for (const declaration of body.split(";")) {
-      const colon = declaration.indexOf(":");
-      if (colon < 0) continue;
-      declarations.set(declaration.slice(0, colon).trim(), declaration.slice(colon + 1).trim());
+/** The custom properties a stylesheet declares. */
+function declared(css: string): Set<string> {
+  return new Set([...stripComments(css).matchAll(/(?<![\w-])(--[\w-]+)\s*:/g)].map((match) => match[1]));
+}
+
+/** The custom properties a text reads with var(). */
+function used(text: string): Set<string> {
+  return new Set([...text.matchAll(/var\(\s*(--[\w-]+)/g)].map((match) => match[1]));
+}
+
+describe("the editor's tokens", () => {
+  const tokens = declared(tokensCss);
+
+  it("reads patchbay's tokens", () => {
+    for (const name of ["--pb-surface", "--pb-text", "--pb-code-size", "--pb-font-ui", "--pb-text-md"]) {
+      expect(tokens.has(name), name).toBe(true);
     }
-    found.push({ media, selector, declarations });
-  }
-  return found;
-}
-
-function tokensOf(block: Block): Map<string, string> {
-  return new Map([...block.declarations].filter(([name]) => name.startsWith("--")));
-}
-
-const parsed = blocks(themeCss);
-
-function block(media: RegExp | null, selector: string): Block {
-  const found = parsed.find(
-    (candidate) =>
-      candidate.selector === selector &&
-      (media === null ? candidate.media === null : candidate.media !== null && media.test(candidate.media)),
-  );
-  if (found === undefined) throw new Error(`theme.css has no ${selector} rule${media === null ? "" : ` in ${media}`}`);
-  return found;
-}
-
-const lightBlock = () => block(null, ":root");
-const systemDarkBlock = () => block(/prefers-color-scheme:\s*dark/, ':root:not([data-theme="light"])');
-const chosenDarkBlock = () => block(null, ':root[data-theme="dark"]');
-
-function theme(name: "light" | "dark"): Map<string, string> {
-  const light = tokensOf(lightBlock());
-  if (name === "light") return light;
-  return new Map([...light, ...tokensOf(chosenDarkBlock())]);
-}
-
-function resolve(tokens: Map<string, string>, value: string): string {
-  const seen = new Set<string>();
-  let current = value;
-  for (let reference = /^var\((--[\w-]+)\)$/.exec(current); reference !== null; ) {
-    const name = reference[1];
-    if (seen.has(name)) throw new Error(`a var() cycle through ${name}`);
-    seen.add(name);
-    const next = tokens.get(name);
-    if (next === undefined) throw new Error(`${name} is not defined`);
-    current = next;
-    reference = /^var\((--[\w-]+)\)$/.exec(current);
-  }
-  return current;
-}
-
-function hex(value: string): [number, number, number] | null {
-  const short = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(value);
-  if (short !== null) return [1, 2, 3].map((i) => parseInt(short[i] + short[i], 16)) as [number, number, number];
-  const long = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(value);
-  if (long !== null) return [1, 2, 3].map((i) => parseInt(long[i], 16)) as [number, number, number];
-  return null;
-}
-
-/** WCAG 2's relative luminance of an sRGB colour. */
-function luminance([r, g, b]: [number, number, number]): number {
-  const channel = (c: number) => {
-    const s = c / 255;
-    return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
-  };
-  return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
-}
-
-function ratio(a: [number, number, number], b: [number, number, number]): number {
-  const [high, low] = [luminance(a), luminance(b)].sort((x, y) => y - x);
-  return (high + 0.05) / (low + 0.05);
-}
-
-/** Each text token and the surfaces it is drawn on. */
-const pairs: { fg: string[]; on: string[] }[] = [
-  { fg: ["--text", "--muted"], on: ["--surface", "--raised", "--sunken"] },
-  { fg: ["--text"], on: ["--warn-soft", "--err-soft"] },
-  { fg: ["--accent"], on: ["--surface", "--raised"] },
-  { fg: ["--ok", "--warn", "--err", "--quiet", "--off"], on: ["--surface", "--raised", "--sunken"] },
-  { fg: ["--warn"], on: ["--warn-soft"] },
-  { fg: ["--err"], on: ["--err-soft"] },
-  { fg: ["--on-strong"], on: ["--accent", "--err", "--warn"] },
-  {
-    fg: [
-      "--knobly-text",
-      "--knobly-directive",
-      "--knobly-keyword",
-      "--knobly-variable",
-      "--knobly-number",
-      "--knobly-string",
-      "--knobly-comment",
-      "--knobly-punctuation",
-      "--knobly-error",
-    ],
-    on: ["--knobly-surface", "--knobly-surface-readonly"],
-  },
-  { fg: ["--knobly-error"], on: ["--knobly-error-surface"] },
-];
-
-describe("the theme's tokens", () => {
-  it("has a light set, a system dark set and a chosen dark set", () => {
-    expect(tokensOf(lightBlock()).size).toBeGreaterThan(0);
-    expect(tokensOf(systemDarkBlock()).size).toBeGreaterThan(0);
-    expect(tokensOf(chosenDarkBlock()).size).toBeGreaterThan(0);
   });
 
-  it("writes the dark set the same both times", () => {
-    expect(tokensOf(systemDarkBlock())).toEqual(tokensOf(chosenDarkBlock()));
-    expect(systemDarkBlock().declarations.get("color-scheme")).toBe("dark");
-    expect(chosenDarkBlock().declarations.get("color-scheme")).toBe("dark");
-  });
-
-  it("redefines every colour in the dark set and nothing else", () => {
-    const light = tokensOf(lightBlock());
-    const dark = tokensOf(chosenDarkBlock());
-    const unknown = [...dark.keys()].filter((name) => !light.has(name));
-    const missing = [...light]
-      .filter(([, value]) => !value.startsWith("var(") && (hex(value) !== null || /\brgb\(/.test(value)))
-      .map(([name]) => name)
-      .filter((name) => !dark.has(name));
-    expect({ unknown, missing }).toEqual({ unknown: [], missing: [] });
-  });
-
-  it("keeps every text at 4.5:1 on what it is drawn on, in both themes", () => {
-    const failures: string[] = [];
-    for (const name of ["light", "dark"] as const) {
-      const tokens = theme(name);
-      for (const pair of pairs) {
-        for (const fg of pair.fg) {
-          for (const on of pair.on) {
-            const fgValue = resolve(tokens, tokens.get(fg) ?? `undefined ${fg}`);
-            const onValue = resolve(tokens, tokens.get(on) ?? `undefined ${on}`);
-            const fgColour = hex(fgValue);
-            const onColour = hex(onValue);
-            if (fgColour === null || onColour === null) {
-              failures.push(`${name}: ${fg} (${fgValue}) on ${on} (${onValue}) is not two hex colours`);
-              continue;
-            }
-            const measured = ratio(fgColour, onColour);
-            if (measured < 4.5) failures.push(`${name}: ${fg} on ${on} is ${measured.toFixed(2)}:1`);
-          }
-        }
+  it("names only patchbay's tokens and ear's own variables in every var()", () => {
+    const texts: [string, string][] = [["editor.css", stripComments(editorCss)], ...Object.entries(sources)];
+    expect(texts.length).toBeGreaterThan(10);
+    const unknown: string[] = [];
+    for (const [file, text] of texts) {
+      for (const name of used(text)) {
+        if (!tokens.has(name) && !earVariables.has(name)) unknown.push(`${file}: ${name}`);
       }
     }
-    expect(failures).toEqual([]);
+    expect(unknown).toEqual([]);
+  });
+
+  it("sets each of ear's own variables somewhere, and none in patchbay's names", () => {
+    const set = declared(editorCss);
+    const everywhere = [editorCss, ...Object.values(sources)].join("\n");
+    for (const name of earVariables.keys()) {
+      expect(name.startsWith("--pb-"), name).toBe(false);
+      expect(tokens.has(name), name).toBe(false);
+      expect(set.has(name) || everywhere.includes(`"${name}"`), `${name} is never set`).toBe(true);
+    }
+  });
+
+  it("declares in editor.css only ear's own variables and patchbay's tokens", () => {
+    const unknown = [...declared(editorCss)].filter((name) => !tokens.has(name) && !earVariables.has(name));
+    expect(unknown).toEqual([]);
   });
 
   it("leaves the editor's styles and components no colour of their own", () => {
-    const sources: [string, string][] = [
+    const texts: [string, string][] = [
       ["editor.css", stripComments(editorCss)],
       ...Object.entries(components).map(([file, text]): [string, string] => [file, text]),
     ];
-    expect(sources.length).toBeGreaterThan(1);
+    expect(texts.length).toBeGreaterThan(1);
     const patterns = [/#[0-9a-fA-F]{3,8}\b/g, /\b(rgba?|hsla?)\(/g, /(?<![-\w])(white|black)(?![-\w])/g];
     const failures: string[] = [];
-    for (const [file, text] of sources) {
+    for (const [file, text] of texts) {
       for (const pattern of patterns) {
         for (const match of text.matchAll(pattern)) failures.push(`${file}: ${match[0]}`);
       }

@@ -4,9 +4,9 @@
 import { floorDb, fractionOfDb, meterFraction, toDbfs } from "./levels";
 import type { Level } from "./protocol";
 
-/** --meter-low below this, --meter-mid from here. */
+/** --pb-meter-low below this, --pb-meter-mid from here. */
 export const midZoneDb = -18;
-/** --meter-hot above this. */
+/** --pb-meter-hot above this. */
 export const hotZoneDb = -6;
 /** How long the tick holds its highest peak before it falls. */
 export const peakHoldMs = 1500;

@@ -1,18 +1,18 @@
 # The graph editor on patchbay: what is still to build
 
-Status: designed; of A1 only the package and its tokens are built. The graph editor (`web/`,
-[docs/editor.md](../editor.md)) draws everything itself: its tokens in `web/src/theme.css`, its controls in
-`web/src/components/`, its styles in `web/src/editor.css` (1677 lines).
-`@mcurcio/patchbay` (npm, 0.2.0) is a component library extracted from this editor: its `tokens.css` is `theme.css`
-renamed, and its built primitives and hooks are generic versions of the editor's leaves. This page designs moving the
+Status: designed; of A1 the package and the rename onto its tokens are built (the theme choice is not). The graph
+editor (`web/`, [docs/editor.md](../editor.md)) draws with patchbay's `--pb-*` tokens, but still draws its controls
+itself: `web/src/components/`, its styles in `web/src/editor.css`.
+`@mcurcio/patchbay` (npm, 0.5.0) is a component library extracted from this editor: its `tokens.css` is the editor's
+old `theme.css` renamed, and its built primitives and hooks are generic versions of the editor's leaves. This page designs moving the
 editor onto it, one area per change, so that the editor keeps its behaviour and ear keeps everything that is not
 drawing. Most of what the editor would take (the shell, the palette, toasts, the code editor, the node box, wires and
 meters) is still only designed in patchbay; those steps wait on patchbay's releases.
 
 | Step | What | Waits on |
 |---|---|---|
-| **A1** | The rename and the theme (section 3.2); the package and its tokens are in | nothing |
-| **A2** | The built primitives and hooks, one area per change (section 3.3) | the confirmations in section 6 |
+| **A1** | The rename and the theme (section 3.2); the package, its tokens and the rename are in | nothing |
+| **A2** | The built primitives and hooks, one area per change (section 3.3) | nothing (D2, D3, D4 given) |
 | **A3** | The node box, wires, meters and the canvas sugar (section 3.4) | patchbay's graph layer, released |
 | **A4** | Feedback, the palette and keys, the code editor (section 3.5) | patchbay's composites and hooks, released |
 | **A5** | The shell, and deleting this page (section 3.6) | patchbay's `AppShell`, released |
@@ -22,11 +22,29 @@ that checks it.
 
 ## 1. The owner's words that bind it
 
-The choices still open are in section 6; each answer goes in this table with its date when it is given.
+**The principle** (owner, 2026-11-26): "build the correct model on patchbay primitives. Ear and rasl UIs are not
+precious to me. They should be reworked when patchbay has a matching concept." Where the editor differs from patchbay
+in look or behaviour, it takes patchbay's model; nothing of ear's look or behaviour is kept for its own sake.
+
+The choice still open is in section 6; each answer goes in this table with its date when it is given. D6, D7, D8 and
+D15 are rasl's and change nothing here; they are listed so the numbers match patchbay's and rasl's records.
 
 | # | The owner's words or decision | Date | What it means here |
 |---|---|---|---|
-| D1 | No GraphCanvas wrapper: patchbay ships node and edge types and adds sugar beside the app's own `<ReactFlow>` (`CanvasTools`, `useAddAt`, `useFollowFit`), so every React Flow prop and later feature stays reachable | 2026-11-25 | `Canvas.tsx` keeps rendering `<ReactFlow>` itself and takes patchbay's three pieces one by one (3.4); patchbay's pb-nx9.15 is settled |
+| D1 | No GraphCanvas wrapper: patchbay ships node and edge types and adds sugar beside the app's own `<ReactFlow>` (`CanvasTools`, `useAddAt`, `useFollowFit` with `onFitted`), so every React Flow prop and later feature stays reachable | 2026-11-25 | `Canvas.tsx` keeps rendering `<ReactFlow>` itself and takes patchbay's pieces one by one (3.4); patchbay's pb-nx9.15 is settled |
+| D2 | patchbay's six builder choices confirmed: WarnMark's `label`, Button `type="button"` by default, a busy button stays focusable, Toolbar wraps, Dialog and Sheet bodies are tab stops, Badge outlined | 2026-11-26 | A2 takes the primitives as they are |
+| D3 | Pill and Badge `accent` and `muted` tones; Badge's change tones and `filled` variant (built in 0.4.0) | 2026-11-26 | The state pill, chips and "not realtime" badge map onto them (3.3) |
+| D4 | Busy buttons stay focusable with a spinner and a `busyLabel` (built in 0.5.0); a tool group keeps one Tab stop | 2026-11-26 | The Saves and lifecycle buttons stop disabling while busy; the canvas tools get a roving tab stop |
+| D5 | ear inlines patchbay's `themeScript` in `index.html` and takes patchbay's ThemeSwitch wording | 2026-11-26 | No first-paint flash for a kept choice; no `labels` override (A1's theme step) |
+| D6 | rasl takes patchbay's base look: no rasl brand stylesheet | 2026-11-26 | rasl's; nothing here |
+| D7 | rasl takes patchbay's Dialog, Pill, resizable inspector and Sheet behaviour | 2026-11-26 | rasl's; ear takes the same components in A2 |
+| D8 | Delete `@rasl/ui` | 2026-11-26 | rasl's; nothing here |
+| D9 | patchbay's keyboard model: a chord acts in a text field only when its binding opts in; Tab closes the palette; palette items have a hint line | 2026-11-26 | ⌘K and ⌘S opt in; A4's palette and keys |
+| D10 | patchbay's Meter owns the dB scale (built in 0.5.0) | 2026-11-26 | `meters.ts`'s scale, zones, hold and fall go with Meter in A3 |
+| D11 | patchbay's toast model (built in 0.5.0) | 2026-11-26 | `notices.ts`'s queue becomes `useToasts` and Toaster in A4; ear keeps the wording |
+| D12 | NodeBox's geometry as exported constants, mirrored by tokens a brand may not change | 2026-11-26 | `layout.ts` reads them in A3 |
+| D13 | SchemaForm deferred | 2026-11-26 | The JSON settings form stays ear's |
+| D15 | rasl gets patchbay's theme switch, as ear does | 2026-11-26 | rasl's; nothing here |
 
 ## 2. What is built
 
@@ -34,19 +52,21 @@ The choices still open are in section 6; each answer goes in this table with its
   Storybook): logic tests, plus tests that read `theme.css` and `editor.css` as text to hold CSS equal to TS constants
   (`theme.test.ts`, `sizes.test.ts`, `layout.test.ts`). knobly comes from its GitHub Release tarball, pinned by
   `cmake/knobly.json` ([AGENTS.md](../../AGENTS.md), [editor.md](../editor.md#highlighting)).
-- **patchbay 0.2.0.** Peer dependencies `react` and `react-dom` `^19`, and optionally `@xyflow/react` `^12` and
+- **patchbay 0.5.0.** Peer dependencies `react` and `react-dom` `^19`, and optionally `@xyflow/react` `^12` and
   `knobly` `^1.0.0` [V: `package.json`]; ear meets every range. Subpaths `./tokens.css`, `./base.css`, `./primitives`,
-  `./hooks`; `./composites`, `./shell` and `./graph` resolve but export nothing yet [V: `src/*/index.ts`].
+  `./hooks`, `./composites`, `./graph`; `./shell` resolves but exports nothing yet [V: `dist/*.js`'s exports].
   Built: the `--pb-` tokens with a light set, a system-dark set and a chosen-dark set and React Flow's `--xy-*`
-  variables mapped onto them; Button, IconButton, Spinner, Pill, Badge, WarnMark, KeyValue, SectionTitle, Field,
-  TextInput, Select, Checkbox, Splitter, Toolbar, ToolGroup, Panel, Dialog, Sheet, ThemeSwitch; `useTheme` and
-  `usePersistentState`. It releases by semantic-release; while it is 0.x a breaking change is a minor release.
-- **The values match.** Every colour in `theme.css` is the same in `tokens.css`, in light and both dark sets; the names
-  change (`--X` → `--pb-X`, `--knobly-Y` → `--pb-code-Y`). patchbay's system-dark rule is `:root:not([data-theme])`
-  where ear's is `:root:not([data-theme="light"])`; they agree for every value `applyTheme` writes.
-- **The editor loads it.** `web/package.json` pins `@mcurcio/patchbay` 0.2.0 exactly, and `npm ci` takes the
-  tarball-installed knobly 1.0.0 as meeting its `^1.0.0` peer [V: `npm ls` dedupes it]. The order the styles load in,
-  and patchbay's mapping of React Flow's `--xy-*` variables, are in [editor.md](../editor.md#tokens-and-themes).
+  variables mapped onto them, the type tokens (`--pb-font-*`, `--pb-text-*`, `--pb-code-size`); Button, IconButton,
+  Spinner, Pill, Badge, WarnMark, KeyValue, SectionTitle, Field, TextInput, Select, Checkbox, RadioGroup, Splitter,
+  Toolbar, ToolGroup, Panel, Dialog, Sheet, ThemeSwitch; Banner, CommandPalette, DiffView, ShortcutSheet, StatusWords,
+  Toaster; Meter; `useTheme` and `themeScript`, `usePersistentState`, `useShortcuts`, `useToasts`,
+  `useMediaBreakpoint`, `useLiveValue`. It releases by semantic-release; while it is 0.x a breaking change is a minor release.
+- **The editor draws with it.** `web/package.json` pins `@mcurcio/patchbay` 0.5.0 exactly, and `npm ci` takes the
+  tarball-installed knobly 1.0.0 as meeting its `^1.0.0` peer [V: `npm ls` dedupes it]. `theme.css` is gone: every
+  colour in it had the same value in `tokens.css`, in light and both dark sets [V: compared before the rename], so
+  the rename (`--X` → `--pb-X`, `--knobly-Y` → `--pb-code-Y`, `--code-size` → `--pb-code-size`, the faces and the 13
+  and 12 px sizes → `--pb-font-*` and `--pb-text-*`) changed no value. How the editor uses the tokens, its own
+  variables and the test that every `var()` resolves are in [editor.md](../editor.md#tokens-and-themes).
 
 ## 3. The design
 
@@ -65,18 +85,15 @@ patchbay takes the drawing and the generic mechanics; ear keeps what knows about
 
 ### 3.2 A1: the package, the tokens, the theme
 
-The package and its tokens are in: patchbay 0.2.0 pinned exactly, `tokens.css` loaded before `theme.css`, and
-React Flow's `--xy-*` variables mapped by patchbay ([editor.md](../editor.md#tokens-and-themes)). `base.css` is
-optional and waits for A5. What A1 still has to do:
-
-1. **The rename.** One mechanical change: every `var(--X)` in `editor.css` and the components becomes `var(--pb-X)`,
-   `--knobly-*` becomes `--pb-code-*`, the font literals become `--pb-font-*` and `--pb-text-*`, and `theme.css` is
-   deleted. A missed name fails silently, so the same change adds a test that every `var(--…)` in `web/src` names a
-   token in patchbay's `tokens.css` or a variable ear declares (`--state`, `--inspector-width`, `--gutter-digits`,
-   `--code-size`).
-2. **The theme.** `useTheme({ key: "ear-editor/1/theme" })`, so the choice people kept is read where it is; patchbay's
-   ThemeSwitch with `labels` carrying ear's tooltip words if they stay. `themeScript` inline in `index.html` would end
-   the first-paint flash (section 6).
+1. **The package and its tokens** (built). patchbay pinned exactly, `tokens.css` loaded first, React Flow's `--xy-*`
+   variables mapped by patchbay ([editor.md](../editor.md#tokens-and-themes)). `base.css` is optional and waits for
+   A5.
+2. **The rename** (built). Every `var(--X)` in `editor.css` and the components is `var(--pb-X)`, and `theme.css` is
+   deleted; `theme.test.ts` fails on any `var()` that names neither a patchbay token nor one of ear's own variables
+   ([editor.md](../editor.md#tokens-and-themes)).
+3. **The theme** (to build). `useTheme({ key: "ear-editor/1/theme" })`, so the choice people kept is read where it is;
+   patchbay's ThemeSwitch with its own words, and `themeScript` inline in `index.html`, ending the first-paint flash
+   (D5).
 
 ### 3.3 A2: the built primitives, one area per change
 
@@ -86,8 +103,8 @@ optional and waits for A5. What A1 still has to do:
 | Splitters | `Splitter.tsx`, `sizes.ts` dragged, keyed, clamp | Splitter, `edge="start"` | Bounds stay in `sizes.ts` until A5 |
 | Canvas tools | `CanvasTools.tsx`, a plain `role=toolbar` | ToolGroup and IconButton, inside React Flow's `<Panel>` | Roving tab stop (new); `fitPadding` still reserves 76 px for 40 px touch tools |
 | Shortcut sheet | `ShortcutSheet.tsx` on `.palette-backdrop` | Dialog | Gains a Close button and a scrim press |
-| Forms and busy buttons | AddNodeJson, AddNodeText's select, lifecycle bar, Delete, the two Saves | Field, TextInput, Select, Button `busy`, `tone="danger"` | Busy stays focusable; ear's "Saving…" words passed as children if kept |
-| Pills, chips, facts | `StatePill.tsx`, `.chip tone-*`, EngineFactsSection's `<dl>` | Pill, Badge, KeyValue | Needs Pill and Badge `accent` and `muted`, a filled Badge |
+| Forms and busy buttons | AddNodeJson, AddNodeText's select, lifecycle bar, Delete, the two Saves | Field, TextInput, Select, Button `busy`, `tone="danger"` | Busy stays focusable, its words in `busyLabel` (D4) |
+| Pills, chips, facts | `StatePill.tsx`, `.chip tone-*`, EngineFactsSection's `<dl>` | Pill, Badge, KeyValue | Pill and Badge `accent` and `muted`, a filled Badge (D3) |
 | Narrow inspector | CSS-only sheet in `editor.css` | Sheet (right below 760 px, bottom below 600 px) | Workspace becomes `position: relative` |
 | Kept sizes | `prefs.ts` width, drawer, minimap | `usePersistentState` with the same keys and checks | Places stay `prefs.ts`'s |
 
@@ -108,8 +125,8 @@ Each waits for the patchbay release carrying it.
   `connect.ts`'s `handleCue` becomes `useConnectHints` over `isValidConnection`. The per-port `useLevel` path stays,
   and a profile at about 30 level messages a second shows no more rendering than today [U: checked in that change].
 - **Meters.** `Meter.tsx` becomes patchbay's Meter fed by `levels.subscribe` and `levels.get`, reset when the
-  connection closes. Whether the dBFS scale, zones, hold, fall and clip lamp (`meters.ts`) move or stay ear's is open
-  (section 6).
+  connection closes. The dBFS scale, zones, hold, fall and clip lamp move with it: patchbay's Meter owns the scale
+  (D10), and `meters.ts` goes.
 - **The canvas.** `Canvas.tsx` keeps its own `<ReactFlow>` (D1) and takes patchbay's sugar beside it: `CanvasTools`
   inside the flow replaces `CanvasTools.tsx`, `useAddAt` serves both quick-add paths, and `useFollowFit` replaces
   `fit.ts`. Every React Flow prop stays ear's to pass: delete stays a request (`onBeforeDelete` returns false), the
@@ -158,7 +175,7 @@ Component behaviour is tested in patchbay (jsdom and Storybook); ear keeps logic
   [feedback](../editor.md#feedback), [the palette and the keyboard](../editor.md#the-palette-and-the-keyboard),
   [highlighting](../editor.md#highlighting) and [the drawer's gutter](../editor.md#the-drawers-gutter) in A4; the shell
   again in A5. `make docs-check` holds the anchors comments cite.
-- Visible changes, each confirmed before its step: the canvas tools' roving tab stop, busy buttons staying focusable,
+- Visible changes, each confirmed (section 1): the canvas tools' roving tab stop, busy buttons staying focusable,
   the shortcut sheet's Close button and scrim, the theme script, and small shifts in pills and chips.
 - Nothing on the wire changes: `protocol.ts`, `rpc.ts` and the fixtures in `test/protocol/` are untouched.
 
@@ -174,12 +191,4 @@ Component behaviour is tested in patchbay (jsdom and Storybook); ear keeps logic
 
 | Question | Options | Leaning | Blocks |
 |---|---|---|---|
-| Inline `themeScript` in `index.html`? | yes (no flash, new behaviour); no | yes | A1's theme change |
-| Keep ear's tooltip words on the theme switch? | ear's via `labels`; patchbay's | ear's | A1's theme change |
-| Busy buttons: stay focusable with words kept (patchbay), or disabled with "Saving…" (ear)? | patchbay's; ear's words as children | focusable, ear's words as children | A2 forms |
-| The canvas tools' roving tab stop | accept; keep Tab to each tool | accept | A2 canvas tools |
-| Pill and Badge `accent`, `muted`, filled Badge in patchbay, or neutral tones here? | ask patchbay; accept neutral | ask patchbay | A2 pills and chips |
-| patchbay's six builder choices (its pb-nx9.29), WarnMark's `label` among them | confirm; reverse | confirm | A2 |
-| Meter's scale: patchbay's props with ear's values as defaults, or fractions from `meters.ts`? | props; fractions | props | A3 meters |
-| How much of the toast queue patchbay takes | all mechanics as options; the thin design | all | A4 toasts |
-| Chords while typing and Tab in the palette | per-binding opt-in, Tab closes; strict | opt-in, Tab closes | A4 palette and keys |
+| D14: a library-wide words provider in patchbay | a provider; words as props | none yet | nothing: until it is decided, components take words as props, and ear passes its own where they differ |
