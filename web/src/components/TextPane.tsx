@@ -1,18 +1,16 @@
 // The ear.conf drawer's body (docs/editor.md#the-drawer): patchbay's Banners for what a person must know (the file changed under
 // the draft, the graph refused the file, a write failed, editor edits were dropped, a setting applies only at
-// restart), the file's text, editable, with a gutter of line numbers and a dot on each line a diagnostic names
-// (docs/editor.md#the-drawers-gutter), and its diagnostics (a click puts the caret there). The pane's state and Save
+// restart), the file's text, editable, in patchbay's CodeEditor (docs/editor.md#highlighting), its gutter marking each
+// line a diagnostic names, and its diagnostics listed (a click puts the caret there). The pane's state and Save
 // are useDrawer's, so the drawer's header and the top bar read the same status; the logic is pane.ts and drawer.ts,
 // and ear judges every text.
-import { Banner } from "@mcurcio/patchbay/composites";
+import { Banner, CodeEditor } from "@mcurcio/patchbay/composites";
 import { Button } from "@mcurcio/patchbay/primitives";
-import { useMemo, useRef } from "react";
+import { useRef } from "react";
 import { formatNames } from "../drawer";
 import type { FileNotice } from "../graphFile";
-import { gutterLines } from "../gutter";
 import { offsetOf, shownDiagnostics } from "../pane";
 import { useEditor } from "./hooks";
-import { KnoblyText } from "./KnoblyText";
 import type { DrawerModel } from "./useDrawer";
 
 function place(line: number, column: number): string {
@@ -38,9 +36,8 @@ export function TextPane({ drawer }: { drawer: DrawerModel }) {
     area.setSelectionRange(offset, offset);
   };
 
+  // Marked in the gutter and read with the text, and listed under it, where a click puts the caret.
   const diagnostics = shownDiagnostics(pane);
-  // The list under the text stays the keyboard's and screen readers' way in; the gutter is hidden from them.
-  const lines = useMemo(() => gutterLines(pane.draft, diagnostics), [pane.draft, diagnostics]);
   const pending = file.pendingRestart.map((key) => formatNames[key]);
 
   return (
@@ -72,13 +69,14 @@ export function TextPane({ drawer }: { drawer: DrawerModel }) {
         </Banner>
       ))}
       {pending.length > 0 && <Banner tone="warn">{pending.join(" and ")} change applies at restart</Banner>}
-      <KnoblyText
+      <CodeEditor
         ref={text}
-        rows={20}
+        className="text-pane-code"
+        aria-label="ear.conf"
+        language="knobly"
         value={pane.draft}
-        onEdit={(draft) => dispatch({ kind: "edit", text: draft })}
-        gutter={lines}
-        onGutterGo={goTo}
+        onChange={(draft) => dispatch({ kind: "edit", text: draft })}
+        diagnostics={diagnostics}
       />
       {diagnostics.length > 0 && (
         <ul className="diagnostics">

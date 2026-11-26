@@ -1,8 +1,8 @@
 // The node panel's knobly box (docs/editor.md#the-node-panels-text): the node's own statement as ear.conf has it,
-// editable, in the pane's textarea style with its diagnostics under it (a click puts the caret there) and Save
-// (node.setText), which says Saving… while its request is on its way (docs/editor.md#requests-in-flight). The logic is
-// nodeText.ts; ear judges every text.
-import { Banner } from "@mcurcio/patchbay/composites";
+// editable, in patchbay's CodeEditor as the pane's is, with its diagnostics under it (a click puts the caret there)
+// and Save (node.setText), which says Saving… while its request is on its way
+// (docs/editor.md#requests-in-flight). The logic is nodeText.ts; ear judges every text.
+import { Banner, CodeEditor } from "@mcurcio/patchbay/composites";
 import { Button } from "@mcurcio/patchbay/primitives";
 import { useEffect, useReducer, useRef } from "react";
 import { placedRefusal } from "../notices";
@@ -12,7 +12,6 @@ import type { GraphFile, RpcErrorCode } from "../protocol";
 import { isAsking } from "../requests";
 import { RpcError } from "../rpc";
 import { useEditor, useRequests } from "./hooks";
-import { KnoblyText } from "./KnoblyText";
 
 export function NodeTextBox({ node, file }: { node: string; file: GraphFile }) {
   const editor = useEditor();
@@ -61,13 +60,15 @@ export function NodeTextBox({ node, file }: { node: string; file: GraphFile }) {
         </Banner>
       )}
       {note !== "" && <div className="node-text-note">{note}</div>}
-      <KnoblyText
+      <CodeEditor
         id={`node-text-${node}`}
         ref={text}
         rows={lines}
+        language="knobly"
         readOnly={box.base.text.kind !== "own"}
         value={box.draft}
-        onEdit={(draft) => dispatch({ kind: "edit", text: draft })}
+        onChange={(draft) => dispatch({ kind: "edit", text: draft })}
+        diagnostics={box.errors}
       />
       {box.errors.length > 0 && (
         <ul className="diagnostics">

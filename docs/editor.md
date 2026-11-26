@@ -39,8 +39,8 @@ along the bottom ([below](#the-shell)).
   the pointer, and the new node lands where it was asked for ([below](#adding-on-the-canvas)).
 - **Kept in the browser:** node places, the inspector's width, the drawer's height and open state, the minimap and
   the theme survive a reload ([below](#what-the-browser-keeps)).
-- **The ear.conf drawer** holds the pane: `ear.conf`, highlighted ([below](#highlighting)), with a gutter with
-  line numbers and a dot on each line a diagnostic names ([below](#the-drawers-gutter)), its diagnostics (a click
+- **The ear.conf drawer** holds the pane: `ear.conf` in patchbay's code editor, highlighted, with line numbers and a
+  mark on each line a diagnostic names ([below](#highlighting)), its diagnostics listed under it (a click
   puts the caret there) and Save (`graphFile.set`, based on the version
   the draft started from). Banners say
   when the graph refused the file, a write failed, editor edits were dropped by a hand edit, or a
@@ -192,7 +192,7 @@ itself only when ear refuses the file or a write fails, each newly (the same ref
 does not reopen it), or when a Save is refused; never on a hand edit. *Why a drawer:* the owner
 chose a full-width bottom drawer over a third column, so lines need not scroll sideways and the
 canvas keeps its width for a left-to-right graph. Its body is resized by the same `Splitter` on its top edge between
-120 px and 70 % of the window. The text has a gutter ([below](#the-drawers-gutter)). Closing it hides the body but keeps it, with the draft, the caret
+120 px and 70 % of the window. The text fills the body ([below](#highlighting)). Closing it hides the body but keeps it, with the draft, the caret
 and the scroll. The inspector and the drawer never move each other's content.
 
 ### Narrow windows
@@ -223,8 +223,8 @@ unfolding is a resize, so the layout follows it and the view fits itself again u
 ([The canvas](#the-canvas)). For a finger (`(hover: none) and (pointer: coarse)` in `editor.css`):
 
 - **No zoom on focus.** Every text field, the code boxes included, is 16 px, as iOS Safari zooms the page when a
-  smaller field takes the focus. The code size is one patchbay token, `--pb-code-size` (16 px under a coarse pointer), shared by the textarea, its highlighted
-  copy and the drawer's gutter, so their glyphs still line up ([Highlighting](#highlighting)).
+  smaller field takes the focus. The code size is one patchbay token, `--pb-code-size` (16 px under a coarse pointer), shared by patchbay's code
+  editor's textarea, its highlighted copy and its gutter, so their glyphs still line up ([Highlighting](#highlighting)).
 - **Targets a finger finds.** The top bar's buttons are at least 36 px tall (patchbay's Button and ThemeSwitch under a coarse pointer), the canvas tools and the lifecycle bar
   40 px. A port handle's hit area grows under a coarse pointer (patchbay's PortRow,
   [above](#the-node-box)), so a wire starts from a fingertip; React Flow's pan and pinch zoom work as they do.
@@ -305,15 +305,6 @@ designed to feed this queue
 refused route shows on its ghost and in a toast. A lifecycle refusal shows under the inspector's lifecycle bar and in
 a toast. Everything else is a toast. A refused Save still opens the drawer.
 
-### The drawer's gutter
-
-`web/src/gutter.ts` (`gutter.test.ts`) gives each line the textarea shows its number, and a dot on each line a
-diagnostic names: `--pb-err`, else `--pb-warn`, and neutral for a severity this editor does not know. A line past the end
-marks the last line. Hovering a dot shows its messages, and a click puts the caret there, as the list under the text
-does; the list stays the keyboard's and screen readers' way in, as the gutter is hidden from them. The gutter is a
-second `pre` beside the box, never inside it, following the textarea's vertical scroll with the same font, size,
-line height and top inset, so [Highlighting](#highlighting)'s rules are untouched. Only the drawer has one.
-
 ## The palette and the keyboard
 
 ### The palette
@@ -383,7 +374,7 @@ keys and the editor's coexist with the focus in the inspector's text. Slice 6's 
 
 `web/src/addText.ts` is the add-node form's logic (`addText.test.ts` replays `node-text.json`'s
 refusals through it); `components/AddNodeText.tsx` draws it. With the `node-text` feature the form
-takes a whole statement, `node <type> <name> { ... }`, in the drawer's textarea style, and Add sends
+takes a whole statement, `node <type> <name> { ... }`, in a code editor as the drawer's is, and Add sends
 `node.addText` ([control-port.md](control-port.md#a-nodes-own-text)): ear appends it where
 `node.add` would, reads it with the whole file (so `$ch` and `@use card_out MOTU;` work as by
 hand), and places its diagnostics in the form's text. Its type list is patchbay's `Field` and `Select`; an ear
@@ -427,7 +418,7 @@ through it); `components/NodeTextBox.tsx` draws it. The node panel is the inspec
 ([above](#the-inspector)). With the `node-text` feature
 ([control-port.md](control-port.md#a-nodes-own-text)) the inspector's Node subject holds its
 statement as `ear.conf` has it, units, `@use` lines, `$variables` and the comments it owns included
-(`# the take` above `node file rec { path "take1.wav"; }`), in the drawer's textarea style, with Save
+(`# the take` above `node file rec { path "take1.wav"; }`), in a code editor as the drawer's is, with Save
 and its diagnostics under it. *Why:* asked why the box was raw JSON when knobly is the canonical raw
 language, the owner chose the node's own knobly statement, checked by ear's reader and replacing
 only that statement. The rules:
@@ -446,40 +437,39 @@ only that statement. The rules:
   `file-changed`, the box goes stale ("rec changed in ear.conf; reload") and keeps the draft until
   the person reloads.
 - **Read-only when it cannot be replaced.** A node written in a snippet (`shared`) shows that
-  statement on the sunken surface, its label saying "(read-only)", with where it is and that the pane
+  statement read-only, on the code editor's read-only surface, its label saying "(read-only)", with where it is and that the pane
   edits it; while `ear.conf` has errors there are no `nodeTexts` and the box says to fix them in
   the pane. Neither offers Save. The text keeps its full contrast: it is never dimmed.
 
 ## Highlighting
 
-The pane, the node panel's box and the add-node form draw their knobly highlighted, in one component,
-`components/KnoblyText.tsx`, over the pure `web/src/highlight.ts`. *Why display only:* the owner
-decided that ear's C++ reader stays the one judge of an edit and the source of every diagnostic, so
-the browser's knobly never accepts, refuses or diagnoses a text. The rules:
+The pane, the node panel's box and the add-node form are patchbay's `CodeEditor` with `language="knobly"`
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.8.0/docs/components.md#code)): a native textarea holding the
+text, the caret, the selection and every edit, a highlighted copy of what it shows drawn behind it, line numbers in a
+gutter beside it, and a mark on each line a diagnostic names. How it draws, highlights, marks, indents and reads its
+diagnostics is patchbay's, at its defaults: ear passes it the text, the edit handler, its diagnostics and, for the
+node box and the add form, `rows`, and sets none of its words. *Why display only:* the owner decided that ear's C++
+reader stays the one judge of an edit and the source of every diagnostic, so the browser's knobly never accepts,
+refuses or diagnoses a text. What ear keeps:
 
-- **The textarea holds everything.** Each box is still a plain textarea: the text, the caret, the
-  selection, every edit, and so the diagnostics' caret placement, the CRLF handling, the drafts'
-  stale and dirty logic and what Save and Add send are as above. Its glyphs are transparent; a
-  highlighted copy of what it shows is drawn behind it (a `pre`, hidden from screen readers) with
-  the same font, size, line height, padding, border and tabs and no wrapping, and follows its
-  scroll. No editor library is added. The drawer's gutter sits beside the box, not in it
-  ([above](#the-drawers-gutter)). Under forced colours (Windows high contrast) the copy is
-  hidden and the textarea draws its text in the system's colours.
-- **The copy is what the textarea shows.** A textarea holds `\n` only, so the copy is the value
-  with each `\r\n` and lone `\r` as `\n`; the value itself is never changed. `highlight.test.tsx`
-  checks that the runs drawn join to exactly that text and that the textarea, the pane's Save, the
-  box's Save and Add get the caller's text unchanged, CRLF and non-ASCII text included.
-- **knobly's classes, the editor's palette.** Each token is drawn by knobly's highlight class
-  (`directive`, `keyword`, `word`, `variable`, `number`, `string`, `comment`, `punctuation`,
-  `space`, `error`), each a patchbay code token (`--pb-code-directive`, ...), light and dark
-  ([below](#tokens-and-themes)), each shade at 4.5:1 or better on the box's surface and on the
-  read-only one in both themes, which patchbay's tokens test checks. A class this
-  editor does not know is drawn plainly. An `error` span is a token that does not lex (a stray
-  character, an unterminated string), never a diagnostic: those are ear's, listed under the box.
+- **The diagnostics are ear's.** Each box hands `CodeEditor` the diagnostics ear placed in its text (the pane's
+  `shownDiagnostics`, the box's and the form's `errors`), as they come off the wire: knobly's and ear's codes, a
+  severity it may not know (drawn with patchbay's neutral mark). They are marked in the gutter and under the text and
+  read with the textarea, and are also listed under the box as buttons, where a click puts the caret at the place
+  (`pane.ts`'s `offsetOf`), as a press on a gutter mark does. An `error` span in the highlighting is a token that does
+  not lex (a stray character, an unterminated string), never a diagnostic.
+- **What is sent is the text as typed.** A textarea holds `\n` only, so a CRLF file is shown, and edited, with
+  `\n`; the drafts' stale and dirty logic and what Save and Add send are as above, and an unedited draft is never
+  changed. `sent.test.ts` checks that the pane's Save, the box's Save and Add send the caller's text unchanged, CRLF
+  and non-ASCII text included.
+- **The drawer's box fills its body**, which the drawer's splitter sizes, so its own resize corner is off
+  (`editor.css`'s `.text-pane-code`); it is named "ear.conf" for screen readers. The node box and the add form size
+  by `rows` (3 to 12, the text's lines and one more) and keep the corner. A read-only node box is drawn on the code
+  editor's read-only surface, never dimmed.
 
 **The package.** `knobly/highlight` from knobly's first release, v1.0.0 (MIT): a scanner generated
-from knobly's grammar, with no parser runtime; with `KnoblyText` it adds about 3.4 KB to the
-editor's script (1.5 KB gzipped) and 2 KB to its styles.
+from knobly's grammar, with no parser runtime. patchbay's `CodeEditor` imports it the first time a box is drawn, so
+the build puts it in a chunk of its own (2.56 KB, 1.15 KB gzipped) and a box shows plain text until it has loaded.
 `web/package.json` names the release's npm tarball by URL,
 `https://github.com/mcurcio/knobly/releases/download/v1.0.0/knobly-1.0.0.tgz`, and
 `web/package-lock.json` records its SHA-512, so `npm ci` installs exactly that file, from npm's
@@ -492,7 +482,9 @@ holds none of it.
 That URL and SHA-512 are copies of knobly's one pin, `cmake/knobly.json`, which ear's reader is
 built from too: one version for both, checked and moved as
 [AGENTS.md](../AGENTS.md#build-run-and-test) says. The highlighter tokenises by knobly's grammar,
-so with one version on both sides it matches what ear's reader parses.
+so with one version on both sides it matches what ear's reader parses. patchbay takes knobly as an optional peer
+(`^1.0.0` in 0.8.0); npm counts the tarball's 1.0.0 as meeting it (`npm ls knobly` shows one copy, deduped), and a
+knobly bump through `scripts/knobly-pin.mjs` must stay inside that range.
 
 ## Tokens and themes
 
@@ -543,8 +535,8 @@ class (inside `:where()`, so they weigh no more), so patchbay's controls draw as
 
 **ear's own variables.** Besides the tokens, `editor.css` reads a few variables that hold no value of
 their own design, only a token picked per state or a number a component sets: `--state` (a node's
-state class picks its tone, for its minimap box), `--inspector-width` (`Inspector.tsx`), `--drawer-height`
-(`Drawer.tsx`) and `--gutter-digits` (`KnoblyText.tsx`).
+state class picks its tone, for its minimap box), `--inspector-width` (`Inspector.tsx`) and `--drawer-height`
+(`Drawer.tsx`).
 
 **The theme.** It is `system` by default, following `prefers-color-scheme`. *Why:* the owner chose
 that the editor follows the system until the person chooses. It is patchbay's: `App.tsx` holds the
@@ -837,8 +829,8 @@ port. Node.js comes from `web/.nvmrc` and the packages from `web/package-lock.js
 
 The tests cover the reducer against every `test/protocol` fixture, the graph file's state and the
 pane's logic (drafts, stale files, Save, refusals), the node panel's knobly box (`nodeText.ts`), the add-node
-form (`addText.ts`), the highlighting (`highlight.ts`, and that it never changes the text sent), the reconnecting client with a fake socket,
-the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (a meter's words, and patchbay's scale pinned as stated here), the handles' rule (`connect.ts`'s `canConnect`), the box's sizes against patchbay's exported geometry (`layout.test.ts`), and the tokens and the theme's first paint (`theme.test.ts`: every `var()` names a token, and `index.html` inlines patchbay's theme script), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the sizes and the breakpoint against `editor.css` (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight and the ghosts (`requests.ts`), the toast store on patchbay's queue and a refusal's words (`notices.ts`, replaying `errors.json`), the gutter (`gutter.ts`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands as patchbay's `CommandPalette` takes and ranks them, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the key bindings as patchbay's `findShortcut` runs them (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), and which quick add a double-click or a dropped wire asks for (`connect.ts`'s `quickAddKind`). patchbay's modules import their own stylesheets, which Node cannot load, so `vite.config.ts` has Vitest inline the package (and blank its styles) for the tests that call its pure helpers. There is no browser test runner:
+form (`addText.ts`), what the knobly boxes send (`sent.test.ts`), the reconnecting client with a fake socket,
+the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (a meter's words, and patchbay's scale pinned as stated here), the handles' rule (`connect.ts`'s `canConnect`), the box's sizes against patchbay's exported geometry (`layout.test.ts`), and the tokens and the theme's first paint (`theme.test.ts`: every `var()` names a token, and `index.html` inlines patchbay's theme script), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the sizes and the breakpoint against `editor.css` (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight and the ghosts (`requests.ts`), the toast store on patchbay's queue and a refusal's words (`notices.ts`, replaying `errors.json`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands as patchbay's `CommandPalette` takes and ranks them, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the key bindings as patchbay's `findShortcut` runs them (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), and which quick add a double-click or a dropped wire asks for (`connect.ts`'s `quickAddKind`). patchbay's modules import their own stylesheets, which Node cannot load, so `vite.config.ts` has Vitest inline the package (and blank its styles) for the tests that call its pure helpers. There is no browser test runner:
 rendering is checked by eye. *Why:* a Playwright leg costs about 150 MB of browsers and a minute
 or two a CI run, while the logic sits in the reducer, client and rules, which Vitest covers
 against the same fixtures the server is tested with.
@@ -852,7 +844,9 @@ icon, the palette's and the narrow top bar's fixes, and then phones and touch, b
 gzipped) and 39.17 KB. No package was added for any of it. patchbay was the first: with the node box, wires,
 meters and canvas tools on it, the build is 565.23 KB (181.55 KB gzipped) and 73.70 KB of styles, patchbay's own
 stylesheets among them, and Vite warns that the script is over 500 KB. patchbay 0.8.0, whose stylesheets carry its
-code editor and shell before the editor uses them, brought them to 565.36 KB (181.58 KB gzipped) and 78.17 KB.
+code editor and shell before the editor uses them, brought them to 565.36 KB (181.58 KB gzipped) and 78.17 KB. The
+knobly boxes on its `CodeEditor` made them 569.24 KB (182.55 KB gzipped), with knobly's highlighter in its own
+2.56 KB chunk, and 75.63 KB.
 
 React Flow (`@xyflow/react`) was chosen over Rete.js (its own editor framework) and LiteGraph
 (drawn on a canvas, which makes per-port meters custom work).

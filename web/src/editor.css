@@ -266,24 +266,21 @@ body,
   min-height: 0;
 }
 
-/* The drawer's text is its gutter beside the box (docs/editor.md#the-drawers-gutter), filling the body. */
-.text-pane .knobly-text-row {
+/* The drawer's text is patchbay's CodeEditor (docs/editor.md#highlighting), filling the body, which the drawer's
+   splitter sizes, so the textarea is not resized by its own corner. */
+.text-pane-code {
   flex: 1;
   min-height: 80px;
 }
 
-.text-pane .knobly-text-row .knobly-text {
-  flex: 1;
-  min-width: 0;
-}
-
-.app .text-pane .knobly-text-input {
+.text-pane-code .pb-code-input {
   height: 100%;
   resize: none;
 }
 
-/* ear's own base controls, everywhere in the shell; patchbay's TextInput and Select (a pb- class) draw themselves. */
-.app textarea,
+/* ear's own base controls, everywhere in the shell; patchbay's TextInput, Select and CodeEditor (a pb- class) draw
+   themselves. */
+.app textarea:not(:where([class^="pb-"], [class*=" pb-"])),
 .app input:not(:where([class^="pb-"], [class*=" pb-"])),
 .app select:not(:where([class^="pb-"], [class*=" pb-"])) {
   width: 100%;
@@ -314,7 +311,7 @@ body,
 
 .app input:not(:where([class^="pb-"], [class*=" pb-"])),
 .app select:not(:where([class^="pb-"], [class*=" pb-"])),
-.app textarea:not(.knobly-text-input) {
+.app textarea:not(:where([class^="pb-"], [class*=" pb-"])) {
   color: var(--pb-text);
   background: var(--pb-raised);
   border: 1px solid var(--pb-line-strong);
@@ -421,22 +418,7 @@ body,
   width: auto;
 }
 
-/* Forced colours (Windows high contrast): the gutter's dots stay visible in the system's text colour. */
-@media (forced-colors: active) {
-  .gutter-dot {
-    background: CanvasText;
-  }
-}
-
-/* The ear.conf drawer's text: unwrapped (lines and columns match the diagnostics), and its
-   diagnostics as buttons that put the caret at their place. */
-.text-pane-text {
-  white-space: pre;
-  overflow-wrap: normal;
-  overflow-x: auto;
-  font-size: var(--pb-text-sm);
-}
-
+/* The knobly boxes' diagnostics, listed under the text as buttons that put the caret at their place. */
 .diagnostics {
   list-style: none;
   margin: 4px 0;
@@ -542,188 +524,17 @@ body,
   font-family: var(--pb-font-code);
 }
 
-/* The inspector's Node subject's knobly box (docs/editor.md#the-node-panels-text): the drawer's text style; a
-   read-only one (a snippet's node, a file with errors) is on the sunken surface at full contrast, its label saying
-   "(read-only)" and the note why. */
+/* The inspector's Node subject's knobly box (docs/editor.md#the-node-panels-text): a read-only one (a snippet's node, a
+   file with errors) is on CodeEditor's read-only surface at full contrast, its label saying "(read-only)" and the note
+   why. */
 .node-text {
   margin: 8px 0 4px;
-}
-
-.node-text .knobly-text-readonly {
-  --pb-code-surface: var(--pb-code-surface-readonly);
 }
 
 .node-text-note {
   font-size: var(--pb-text-sm);
   color: var(--pb-muted);
   margin-bottom: 4px;
-}
-
-/* knobly's highlighting (docs/editor.md#highlighting), display only: the textarea on top holds the text, caret and
-   selection with its glyphs transparent; the highlighted copy behind it draws them. Both boxes share every metric
-   (font, size, line height, padding, border, corners, tabs, no wrapping), so each glyph lies under its caret
-   position. The colours are patchbay's code tokens (--pb-code-*), light and dark, each at 4.5:1 or better on
-   both the box's surface and the read-only one, which patchbay's tokens test checks. */
-.knobly-text {
-  position: relative;
-  background: var(--pb-code-surface);
-  border-radius: var(--pb-radius-control);
-}
-
-.knobly-text-shown,
-.knobly-text .knobly-text-input {
-  margin: 0;
-  padding: 4px;
-  border: 1px solid var(--pb-code-border);
-  border-radius: var(--pb-radius-control);
-  font-family: var(--pb-font-code);
-  font-size: var(--pb-code-size);
-  line-height: 1.4;
-  letter-spacing: normal;
-  tab-size: 8;
-  white-space: pre;
-  overflow-wrap: normal;
-}
-
-.knobly-text-shown {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  pointer-events: none;
-  color: var(--pb-code-text);
-  border-color: transparent;
-}
-
-/* Room past the text's end, so the copy can always scroll as far as the textarea (its scrollbars take room). */
-.knobly-text-shown code {
-  display: inline-block;
-  vertical-align: top;
-  padding: 0 32px 32px 0;
-  font: inherit;
-}
-
-.knobly-text .knobly-text-input {
-  position: relative;
-  display: block;
-  resize: vertical;
-  background: transparent;
-  color: transparent;
-  caret-color: var(--pb-code-text);
-}
-
-.knobly-text-input::selection {
-  color: transparent;
-  background: color-mix(in srgb, var(--pb-code-directive) 30%, transparent);
-}
-
-.hl-directive {
-  color: var(--pb-code-directive);
-}
-
-.hl-keyword {
-  color: var(--pb-code-keyword);
-}
-
-.hl-word {
-  color: var(--pb-code-text);
-}
-
-.hl-variable {
-  color: var(--pb-code-variable);
-}
-
-.hl-number {
-  color: var(--pb-code-number);
-}
-
-.hl-string {
-  color: var(--pb-code-string);
-}
-
-.hl-comment {
-  color: var(--pb-code-comment);
-}
-
-.hl-punctuation {
-  color: var(--pb-code-punctuation);
-}
-
-.hl-error {
-  color: var(--pb-code-error);
-  background: var(--pb-code-error-surface);
-}
-
-/* The drawer's gutter (docs/editor.md#the-drawers-gutter): a second pre beside the box, never inside it, with the
-   box's font, size and line height and a top inset of the textarea's border and padding, so row n lies beside line
-   n; it follows the textarea's vertical scroll, and its bottom room lets it scroll as far. Only the dots take the
-   pointer. */
-.knobly-text-row {
-  display: flex;
-  min-height: 0;
-}
-
-.knobly-gutter {
-  margin: 0;
-  flex: none;
-  box-sizing: border-box;
-  width: calc(var(--gutter-digits) * 1ch + 22px);
-  padding: 5px 6px 0 4px;
-  overflow: hidden;
-  pointer-events: none;
-  text-align: right;
-  font-family: var(--pb-font-code);
-  font-size: var(--pb-code-size);
-  line-height: 1.4;
-  white-space: pre;
-  color: var(--pb-muted);
-  background: var(--pb-sunken);
-  border-radius: var(--pb-radius-control) 0 0 var(--pb-radius-control);
-  font-variant-numeric: tabular-nums;
-}
-
-.knobly-gutter code {
-  display: inline-block;
-  padding-bottom: 32px;
-  font: inherit;
-}
-
-.gutter-dot {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  margin-left: 4px;
-  border-radius: var(--pb-radius-pill);
-  vertical-align: 0.05em;
-}
-
-.gutter-dot-error {
-  background: var(--pb-err);
-  pointer-events: auto;
-  cursor: pointer;
-}
-
-.gutter-dot-warning {
-  background: var(--pb-warn);
-  pointer-events: auto;
-  cursor: pointer;
-}
-
-.gutter-dot-other {
-  background: var(--pb-muted);
-  pointer-events: auto;
-  cursor: pointer;
-}
-
-/* Forced colours (Windows high contrast): the plain textarea in the system's colours, no copy behind it. */
-@media (forced-colors: active) {
-  .knobly-text-shown {
-    display: none;
-  }
-
-  .knobly-text .knobly-text-input {
-    color: CanvasText;
-    background: Canvas;
-  }
 }
 
 @media (max-width: 599.98px) {
@@ -757,7 +568,7 @@ body,
 @media (hover: none) and (pointer: coarse) {
   .app input:not(:where([class^="pb-"], [class*=" pb-"])),
   .app select:not(:where([class^="pb-"], [class*=" pb-"])),
-  .app textarea {
+  .app textarea:not(:where([class^="pb-"], [class*=" pb-"])) {
     font-size: 16px;
   }
 

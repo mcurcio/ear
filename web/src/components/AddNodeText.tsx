@@ -1,8 +1,8 @@
 // The add-node form in knobly (docs/editor.md#adding-a-node): a type list that writes a template, the statement in the
-// pane's textarea style, its diagnostics under it (a click puts the caret there) and Add (node.addText). The logic is
+// pane's CodeEditor, its diagnostics under it (a click puts the caret there) and Add (node.addText). The logic is
 // addText.ts; ear judges every text. Add says Adding… while its request is on its way
 // (docs/editor.md#requests-in-flight).
-import { Banner } from "@mcurcio/patchbay/composites";
+import { Banner, CodeEditor } from "@mcurcio/patchbay/composites";
 import { Button, Field, Select } from "@mcurcio/patchbay/primitives";
 import { useEffect, useReducer, useRef, useState } from "react";
 import { addFrom, addReduce, addRequest, canAdd } from "../addText";
@@ -13,7 +13,6 @@ import { isAsking } from "../requests";
 import { RpcError } from "../rpc";
 import { useEditor, useRequests } from "./hooks";
 import type { AddIntent } from "./Inspector";
-import { KnoblyText } from "./KnoblyText";
 
 export function AddNodeText({
   types,
@@ -93,12 +92,14 @@ export function AddNodeText({
       {form.raced && (
         <Banner tone="warn">ear.conf changed while adding; press Add again</Banner>
       )}
-      <KnoblyText
+      <CodeEditor
         id="add-node-text"
         ref={text}
         rows={lines}
+        language="knobly"
         value={form.text}
-        onEdit={(typed) => dispatch({ kind: "edit", text: typed })}
+        onChange={(typed) => dispatch({ kind: "edit", text: typed })}
+        diagnostics={form.errors}
       />
       {form.errors.length > 0 && (
         <ul className="diagnostics">

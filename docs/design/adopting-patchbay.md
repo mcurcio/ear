@@ -1,24 +1,24 @@
 # The graph editor on patchbay: what is still to build
 
 Status: designed; A1 is built (the package, the rename onto its tokens, the theme through `useTheme` and ThemeSwitch),
-A2 (section 3.3 marks each change), A3 (section 3.4), and of A4 all but the code editor (section 3.5 marks each).
+A2 (section 3.3 marks each change), A3 (section 3.4) and A4 (section 3.5 marks each).
 The graph editor (`web/`, [docs/editor.md](../editor.md)) draws with patchbay's `--pb-*` tokens, theme switch and
 built primitives and hooks (its spinner and warning mark, splitters, form fields and buttons, pills,
 badges and facts, narrow sheet and kept values) and composites and hooks (banners, status words, the command palette,
-the shortcut sheet, the key bindings and the toasts) and its whole graph layer (node boxes, port rows, wires, ghost
+the shortcut sheet, the key bindings, the toasts and the knobly code editor) and its whole graph layer (node boxes, port rows, wires, ghost
 wires, connect hints, meters, the canvas tools, quick add's `useAddAt` and the view's `useFollowFit`), but still draws
-its code boxes and shell itself: `web/src/components/`, its styles in `web/src/editor.css`.
+its shell itself: `web/src/components/`, its styles in `web/src/editor.css`.
 `@mcurcio/patchbay` (npm, 0.8.0) is a component library extracted from this editor: its `tokens.css` is the editor's
 old `theme.css` renamed, and its built primitives and hooks are generic versions of the editor's leaves. This page designs moving the
 editor onto it, one area per change, so that the editor keeps its behaviour and ear keeps everything that is not
-drawing. What the editor has still to take (the code editor and the shell) is released (0.8.0).
+drawing. What the editor has still to take (the shell) is released (0.8.0).
 
 | Step | What | Waits on |
 |---|---|---|
 | **A1** | The package, the rename and the theme (section 3.2): built | — |
 | **A2** | The built primitives and hooks, one area per change (section 3.3): built | — |
 | **A3** | The node box, wires, meters and the canvas sugar (section 3.4): built | — |
-| **A4** | Feedback, the palette and keys, the code editor (section 3.5): in part | nothing: CodeEditor and CodeText are released (0.8.0) |
+| **A4** | Feedback, the palette and keys, the code editor (section 3.5): built | — |
 | **A5** | The shell, and deleting this page (section 3.6) | nothing: `AppShell` is released (0.8.0) |
 
 [V] = verified in the file named (patchbay's files by their path in its repository); [U] = unverified, with the step
@@ -87,7 +87,7 @@ patchbay takes the drawing and the generic mechanics; ear keeps what knows about
 | Spinner, WarnMark, ThemeSwitch, Splitter, the canvas tools' frame, the narrow sheet, form controls, busy buttons | The rules: `health.ts`, `companions.ts`, `counters.ts`, `marks.ts`, `selection.ts`, `requests.ts`, `wires.ts` (as the adapter onto Wire's props) |
 | The theme choice and kept values (`useTheme`, `usePersistentState`) | Storage keys and checks (`prefs.ts`: `ear-editor/1/…`, per host, places pruning) |
 | The node box, port rows, wires, ghost wires, connect hints, meters, the canvas tools, `useAddAt` and `useFollowFit` (once built) | The protocol, the session and stores: `protocol.ts`, `rpc.ts`, `editor.ts`, `graph.ts`, `graphFile.ts`, `levels.ts` |
-| The toast queue's mechanics, palette ranking and anchoring, key labels, knobly highlighting and the gutter (once built) | The command catalogue (`palette.ts`), the key bindings (`keys.ts`), first placement (`layout.ts`, dagre) |
+| The toast queue's mechanics, palette ranking and anchoring, key labels, knobly highlighting and the gutter | The command catalogue (`palette.ts`), the key bindings (`keys.ts`), first placement (`layout.ts`, dagre) |
 | The shell's grid, sheets and drawer (once built) | Which subject the inspector shows; Escape's order among ear's own surfaces; the `<ReactFlow>` element and its props (D1) |
 
 ### 3.2 A1: the package, the tokens, the theme
@@ -169,9 +169,14 @@ patchbay's graph layer carrying each is released (0.6.0).
   code and subject, with patchbay's defaults (D11). It is not `useToasts` itself, since the session raises toasts outside
   React (its `ask`, a `node.state`) and its tests read them without React. `notices.ts` keeps the refusal wording,
   `showOf` and `placedRefusal` ([editor.md](../editor.md#toasts)).
-- **The code editor.** `KnoblyText.tsx`, `highlight.ts` and `gutter.ts` become CodeEditor and CodeText with
-  `language="knobly"`. knobly stays pinned by `cmake/knobly.json`; a bump through `scripts/knobly-pin.mjs` must stay in
-  patchbay's peer range.
+- **The code editor** (built). `KnoblyText.tsx`, `highlight.ts` and `gutter.ts` are gone: the pane, the node box and
+  the add form are CodeEditor with `language="knobly"` and ear's diagnostics as they come off the wire (its
+  `Diagnostic` is CodeEditor's shape), so the node box and the add form gain the line numbers, gutter marks and
+  underlines the drawer's text alone had. No knobly text is shown outside an editable box, so nothing is on
+  CodeText yet; the read-only node box stays a read-only CodeEditor, as it flips with the node's text. ear tracks no
+  caret, so it passes no `onCaret`, and sets none of CodeEditor's `labels`. knobly stays pinned by
+  `cmake/knobly.json`; patchbay 0.8.0's peer range is `^1.0.0`, which the pinned 1.0.0 meets, and a bump through
+  `scripts/knobly-pin.mjs` must stay inside it ([editor.md](../editor.md#highlighting)).
 
 ### 3.6 A5: the shell
 
@@ -192,7 +197,7 @@ its `mediaQueries`); `sizes.ts` keeps only ear's defaults. The change that lands
 | `notices.test.ts` | Kept in A4 (built): its queue cases run on patchbay's queue through ear's store and pin patchbay's defaults; the wording cases stay |
 | `meters.test.ts` | Split in A3 (built): the tooltip's words stay, and a case pins Meter's defaults to editor.md; the hold, fall, lamp and reset cases went with `PeakHold` (patchbay's Meter tests them) |
 | `fit.test.ts` | Gone with `fit.ts` in A3 (built): patchbay's `useFollowFit` tests the following, the stop and Fit |
-| `gutter.test.ts`, `highlight.test.tsx` | Go with their modules, except `highlight.test.tsx`'s last case (what the pane, the node box and the add form send), which stays |
+| `gutter.test.ts`, `highlight.test.tsx` | Gone with their modules in A4 (built): patchbay's CodeEditor tests the runs, the gutter and the marks; `highlight.test.tsx`'s last case (what the pane, the node box and the add form send) stays, as `sent.test.ts` |
 | `wires.test.ts`, `connect.test.ts` | Stay (built in A3): `wires.test.ts` checks `wireData`, its width and opacity cases gone with ear's own stroke (Wire draws the emphasis); `connect.test.ts` checks `canConnect` against the drop rule, the origin, ok and no hints gone to patchbay's `useConnectHints` tests, and `quickAddKind`, `droppedOnPane`'s pane and drop cases gone to `useAddAt`'s |
 | `health` and the other rule tests | Stay |
 
@@ -207,7 +212,7 @@ Component behaviour is tested in patchbay (jsdom and Storybook); ear keeps logic
   [the shell](../editor.md#the-shell) and [what the browser keeps](../editor.md#what-the-browser-keeps) in A2;
   [the node box, wires and meters](../editor.md#the-node-box-wires-and-meters) in A3;
   [feedback](../editor.md#feedback), [the palette and the keyboard](../editor.md#the-palette-and-the-keyboard),
-  [highlighting](../editor.md#highlighting) and [the drawer's gutter](../editor.md#the-drawers-gutter) in A4; the shell
+  [highlighting](../editor.md#highlighting) (which took in the drawer's gutter) in A4; the shell
   again in A5. `make docs-check` holds the anchors comments cite.
 - Visible changes, each confirmed (section 1): the canvas tools' roving tab stop, busy buttons staying focusable,
   the shortcut sheet's Close button and scrim, the theme script, the top bar's and drawer's buttons matching patchbay's,
@@ -218,7 +223,10 @@ Component behaviour is tested in patchbay (jsdom and Storybook); ear keeps logic
   ghost wire in `--pb-quiet`, the canvas tools' words, glyphs and order (zoom in first) and their animated zoom and
   fit, a minimap that no longer pans or zooms the view, the banners' stripe and close button, the palette's grouped list with each hint on a second line and patchbay's
   ranking (D9), no binding acting while the shortcut sheet is open, a chord matching its modifiers exactly, Show
-  dismissing its toast (D11), and the meters' lamp as a square beside the bar and their accessible names (D10).
+  dismissing its toast (D11), the meters' lamp as a square beside the bar and their accessible names (D10), and the
+  knobly boxes as CodeEditor draws them (line numbers and diagnostic marks in the node box and the add form too, a
+  diamond for a warning and a ring for an unknown severity, a wavy underline at each diagnostic, Tab indenting with
+  Escape then Tab to move on, a 4-column tab, line height 1.5, and the accent as the selection's colour).
 - Nothing on the wire changes: `protocol.ts`, `rpc.ts` and the fixtures in `test/protocol/` are untouched.
 
 ## 5. Decisions already taken
