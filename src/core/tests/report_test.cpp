@@ -331,4 +331,21 @@ TEST_CASE("A node's events pass 32 at once, then one a second, and those held ba
 	CHECK(h.events().back().msg == "hello cy at 3.0");
 }
 
+/// A type of the same spec whose configure fails.
+struct Refuser {
+	static Members<spec> ports(const CheckedOf<spec>&) { return {out(members("mono"))}; }
+	Configured configure(CreateOf<spec>&, const CheckedOf<spec>&) { return Configured::failed("nothing to report"); }
+};
+
+TEST_CASE("A configuration whose configure failed resets the status once", "[report]") {
+	testing::TypeHarness<spec, Refuser> h;
+	REQUIRE_FALSE(h.parse(NodeSettings::object()));
+	h.add();
+	h.blockReady();
+	REQUIRE(h.phase() == "failed");
+	h.drain();
+	CHECK(std::ranges::count_if(h->reported(), [](const std::string& line) { return line.starts_with("reset"); }) == 1);
+	CHECK(std::ranges::count_if(h.statusRecord(), [](const SeenStatus& record) { return record.reset; }) == 1);
+}
+
 } // namespace report_test

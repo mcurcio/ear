@@ -1096,7 +1096,9 @@ struct NodeHost::Impl {
 		/// The configuration closed (or failed to start, or is leaked): its last records drained, nothing more of it
 		/// reaches the node, then the status view returns to every initial value (docs/architecture.md#status-and-events).
 		/// `repointed`: its channel is detached by its LeakedRecord's repoint instead.
+		/// Once per configuration: one that failed to start closes at the failure and again at step 5 would reset twice.
 		void closeStatus(Configuration& c, bool repointed = false) {
+			if (std::exchange(c.statusClosed, true)) return;
 			drainReports(*c.channel, c.realtime.get());
 			if (!repointed) c.channel->detach();
 			if (!book_) return;
@@ -2374,6 +2376,7 @@ struct NodeHost::Impl {
 			std::vector<DeclaredLatency> latency; // what configure declared, one per path
 			LatencyPlan plan;                     // worked out at configure's return; carried with each drive
 			bool startFailed = false;     // configure failed, threw or broke a rule: nothing to make, prepare or drive
+			bool statusClosed = false;    // closeStatus ran: its records drained and the status reset, once
 			bool companionsAsked = false; // its engine companions' making is queued
 			bool readyTold = false;       // T3: the machine was told every resource is ready
 			bool prepared = false;
