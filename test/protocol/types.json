@@ -4,7 +4,7 @@
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"types.get\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"types.get\",\"params\":{\"ifNoneMatch\":\"fnv1a64:0123456789abcdef\"}}",
-    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"types.get\",\"params\":{\"ifNoneMatch\":\"fnv1a64:9ba5780da72f8f1d\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"types.get\",\"params\":{\"ifNoneMatch\":\"fnv1a64:cad4a00399572da9\"}}",
     "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"types.get\",\"params\":{\"since\":\"yesterday\"}}"
   ],
   "messages": [
@@ -37,7 +37,7 @@
         "realtime": false,
         "routes": [],
         "scheduling": "SCHED_OTHER",
-        "typeSchemaHash": "fnv1a64:9ba5780da72f8f1d",
+        "typeSchemaHash": "fnv1a64:cad4a00399572da9",
         "types": [
           "airplay",
           "card",
@@ -52,7 +52,7 @@
       "jsonrpc": "2.0",
       "id": 2,
       "result": {
-        "hash": "fnv1a64:9ba5780da72f8f1d",
+        "hash": "fnv1a64:cad4a00399572da9",
         "protocol": 1,
         "typeSchemas": [
           {
@@ -309,6 +309,7 @@
                 "help": "absent: ear listens on port for the server to dial it",
                 "key": "server",
                 "kind": "text",
+                "maxLength": 512,
                 "mustBe": "ws://<host>[:<port>]/<path>",
                 "pattern": "^ws://[A-Za-z0-9.-]+(:[0-9]{1,5})?/[A-Za-z0-9/._~-]*$",
                 "required": false
@@ -546,7 +547,7 @@
       "jsonrpc": "2.0",
       "id": 3,
       "result": {
-        "hash": "fnv1a64:9ba5780da72f8f1d",
+        "hash": "fnv1a64:cad4a00399572da9",
         "protocol": 1,
         "typeSchemas": [
           {
@@ -803,6 +804,7 @@
                 "help": "absent: ear listens on port for the server to dial it",
                 "key": "server",
                 "kind": "text",
+                "maxLength": 512,
                 "mustBe": "ws://<host>[:<port>]/<path>",
                 "pattern": "^ws://[A-Za-z0-9.-]+(:[0-9]{1,5})?/[A-Za-z0-9/._~-]*$",
                 "required": false
@@ -1041,7 +1043,7 @@
       "id": 4,
       "result": {
         "protocol": 1,
-        "hash": "fnv1a64:9ba5780da72f8f1d",
+        "hash": "fnv1a64:cad4a00399572da9",
         "notModified": true
       }
     },
@@ -1083,7 +1085,7 @@
     "realtime": false,
     "routes": [],
     "scheduling": "SCHED_OTHER",
-    "typeSchemaHash": "fnv1a64:9ba5780da72f8f1d",
+    "typeSchemaHash": "fnv1a64:cad4a00399572da9",
     "types": [
       "airplay",
       "card",

@@ -42,7 +42,7 @@ inline constexpr auto connection = status::choice<"connection">(writer::loop(wor
                                        .display(Display::box)
                                        .help("dialling or listening until a server is connected");
 inline constexpr auto url =
-	status::text<"url">(writer::loop(worker), 512).help("the server it dials; empty: it listens");
+	status::text<"url">(writer::loop(worker), maxServerUrlBytes).help("the server it dials; empty: it listens");
 inline constexpr auto listenPort =
 	status::number<"listenPort">(writer::loop(worker), 0, 65535, "").help("the port it listens on; 0: it dials");
 inline constexpr auto instance =

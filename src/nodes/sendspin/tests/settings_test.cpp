@@ -9,6 +9,7 @@
 #include "settings.hpp"
 
 using ear::NodeSettings;
+using ear::nodes::sendspin::maxServerUrlBytes;
 using ear::nodes::sendspin::ServerUrl;
 
 namespace {
@@ -80,6 +81,10 @@ TEST_CASE("ServerUrl refuses anything else", "[sendspin][settings]") {
 	}
 	CHECK(ServerUrl::parse("ws://" + std::string(253, 'a') + "/b").has_value());
 	CHECK_FALSE(ServerUrl::parse("ws://" + std::string(254, 'a') + "/b").has_value());
+	// At most 512 bytes in all, what the `url` status field holds whole.
+	const std::string longest = "ws://a/" + std::string(maxServerUrlBytes - 7, 'p');
+	CHECK(ServerUrl::parse(longest).has_value());
+	CHECK_FALSE(ServerUrl::parse(longest + "p").has_value());
 }
 
 TEST_CASE("A name is 1 to 64 bytes of UTF-8 with no control characters, and absent, the node's",

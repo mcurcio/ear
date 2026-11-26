@@ -28,7 +28,7 @@ bool validPort(std::string_view text) noexcept {
 } // namespace
 
 std::optional<ServerUrl> ServerUrl::parse(std::string_view text) {
-	if (!text.starts_with(scheme)) return std::nullopt;
+	if (!text.starts_with(scheme) || text.size() > maxServerUrlBytes) return std::nullopt;
 	const std::string_view rest = text.substr(scheme.size());
 	const std::size_t slash = rest.find('/');
 	if (slash == std::string_view::npos) return std::nullopt;

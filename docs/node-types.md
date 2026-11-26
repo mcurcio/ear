@@ -217,7 +217,7 @@ node sendspin study;                                                            
 
 | Key | Kind | Rule | Default | Refused with |
 |---|---|---|---|---|
-| `server` | text | `ws://<host>[:<port>]/<path>`: host a dotted quad or letters, digits, `-` and `.` (at most 253); path of `/` and `[A-Za-z0-9._~-]`; no `wss://`, user, query or fragment | none: listen | `server: must be ws://<host>[:<port>]/<path>` |
+| `server` | text | `ws://<host>[:<port>]/<path>`: host a dotted quad or letters, digits, `-` and `.` (at most 253); path of `/` and `[A-Za-z0-9._~-]`; at most 512 bytes in all; no `wss://`, user, query or fragment | none: listen | `server: must be ws://<host>[:<port>]/<path>` |
 | `port` | whole number | 1 to 65535, only without `server` | 8928 | `port: must be a whole number, 1-65535`; `port: only without "server"` |
 | `name` | text | 1 to 64 bytes of UTF-8, no control characters | the node's name | `name: must be 1 to 64 bytes of UTF-8 with no control characters` |
 
