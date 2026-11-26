@@ -2,13 +2,13 @@
 // features and the shell's state, so a command ear cannot take is never offered; a subsequence ranking of their
 // labels; and where a popover anchored at the pointer sits. A command only names a request or a change of the
 // browser's own view: ear judges every request and draws every result (docs/editor.md#its-rules).
+import { themeChoices, type ThemeChoice } from "@mcurcio/patchbay/hooks";
 import { edgeId } from "./connect";
 import { describeHealth, type HealthView } from "./health";
 import type { ShortcutAction } from "./keys";
 import { lifecycleFeature, type Graph, type GraphNode, type RouteEnds } from "./protocol";
 import { lifecycleLabels, type LifecycleMethod } from "./requests";
 import type { Selection } from "./selection";
-import { themeChoices, type ThemeChoice } from "./theme";
 import { wireEnds } from "./wires";
 
 export type CommandAction =

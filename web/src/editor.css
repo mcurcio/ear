@@ -145,17 +145,6 @@ body,
   color: var(--pb-muted);
 }
 
-.theme-switch {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  white-space: nowrap;
-}
-
-.theme-icon {
-  flex: none;
-}
-
 .topbar-drawer .chip {
   margin-left: 6px;
   line-height: 18px;
@@ -727,7 +716,9 @@ body,
   font-family: var(--pb-font-code);
 }
 
-.app button {
+/* ear's own buttons. patchbay's controls (a pb- class) draw themselves from their own stylesheet, so these rules pass
+   them by; :where keeps the exclusion from adding to the rules' weight. */
+.app button:not(:where([class^="pb-"], [class*=" pb-"])) {
   font: inherit;
   color: var(--pb-text);
   background: var(--pb-raised);
@@ -737,11 +728,11 @@ body,
   transition: background-color var(--pb-motion-fast);
 }
 
-.app button:hover:not(:disabled) {
+.app button:not(:where([class^="pb-"], [class*=" pb-"])):hover:not(:disabled) {
   background: var(--pb-sunken);
 }
 
-.app button:disabled {
+.app button:not(:where([class^="pb-"], [class*=" pb-"])):disabled {
   color: var(--pb-muted);
   cursor: default;
 }
@@ -1565,8 +1556,8 @@ body,
     display: none;
   }
 
-  /* At phone width the top bar's buttons fit beside the pill: the theme switch keeps its icon (its label says the
-     choice), the drawer toggle its words and chip. */
+  /* At phone width the top bar's buttons fit beside the pill: the drawer toggle keeps its words and chip (patchbay's
+     theme switch drops its word itself, keeping its icon; its label says the choice). */
   .topbar {
     gap: 6px;
     padding: 0 8px;
@@ -1576,7 +1567,6 @@ body,
     gap: 6px;
   }
 
-  .theme-word,
   .topbar-drawer-glyph {
     display: none;
   }

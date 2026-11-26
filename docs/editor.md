@@ -174,7 +174,7 @@ before the selection: [Shortcuts](#shortcuts)) or a click on the canvas. 760 rat
 it docked on a foldable phone unfolded (about 890 px wide) and on a tablet in portrait, where the canvas is still
 480 px wide. The drawer keeps its place. Below 600 px (a phone in portrait) the sheet rises from the bottom instead,
 at most 62 % of the workspace and scrolling inside, so the graph stays in sight above it; and the top bar drops the
-wordmark and the engine chip (the Graph subject holds the same facts), the theme switch shows only its icon (its
+wordmark and the engine chip (the Graph subject holds the same facts), patchbay's theme switch shows only its icon (its
 label still names the choice) and the `ear.conf` toggle its glyph, so its buttons fit beside the connection pill.
 `sizes.ts` holds the bounds and the breakpoint, and `sizes.test.ts` holds `editor.css` to them.
 
@@ -448,6 +448,9 @@ section says only how ear uses them.
 `@mcurcio/patchbay/tokens.css`, then `editor.css`. patchbay's tokens point React Flow's own
 variables (`--xy-*`) at them on `.react-flow`, after React Flow's defaults, so its canvas, dot grid
 and minimap follow the theme without its `colorMode` prop (which would fight `data-theme`).
+A patchbay component brings its own stylesheet (importing `@mcurcio/patchbay/primitives` loads
+`primitives.css`), and `editor.css`'s rules for ear's own buttons pass by any element with a `pb-`
+class (inside `:where()`, so they weigh no more), so patchbay's controls draw as patchbay draws them.
 
 **What ear draws with which.**
 
@@ -487,12 +490,19 @@ state class picks its tone), `--toast-tone`, `--wire-colour` (a wire's status cl
 (`Drawer.tsx`) and `--gutter-digits` (`KnoblyText.tsx`).
 
 **The theme.** It is `system` by default, following `prefers-color-scheme`. *Why:* the owner chose
-that the editor follows the system until the person chooses. The switch cycles system, light and
-dark and writes `data-theme="light"` or `"dark"` on `<html>`; system removes the attribute.
-`web/src/theme.ts` is its logic, and `index.html`'s `color-scheme` meta lets the first paint follow
-the system before the styles arrive. The switch sits in the top bar ([above](#the-top-bar)), and
-the palette has a `Theme:` command for each other choice ([above](#the-palette)); the choice is kept per browser
-([What the browser keeps](#what-the-browser-keeps)) and applied before the first render.
+that the editor follows the system until the person chooses. It is patchbay's: `App.tsx` holds the
+choice with `useTheme` under ear's own key (`themeKey()` in `prefs.ts`, `ear-editor/1/theme`), which
+writes `data-theme="light"` or `"dark"` on `<html>` (system removes it) and keeps the choice, and the
+top bar draws patchbay's ThemeSwitch, with its words ([above](#the-top-bar)). The switch's cycle,
+tooltip and label are patchbay's, documented with
+[its hooks](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#usetheme). The palette has a
+`Theme:` command for each other choice ([above](#the-palette)).
+
+**No flash on the first paint.** `index.html` inlines patchbay's `themeScript(themeKey())` in its
+`<head>`, before any stylesheet or module, so a kept light or dark choice is on `<html>` before the
+page draws; `theme.test.ts` holds the inlined text equal to what patchbay generates for ear's key.
+Without a kept choice, `index.html`'s `color-scheme` meta lets the first paint follow the system.
+*Why:* the owner chose patchbay's script and its wording for the switch (2026-11-26).
 
 **Tokens are a test.** `theme.test.ts` reads `editor.css`, every source in `web/src` but the tests,
 and patchbay's `tokens.css`, and fails naming the file and the name when a `var()` names neither a
@@ -507,14 +517,16 @@ Forced colours keep the system's colours, as [Highlighting](#highlighting) says.
 
 ## What the browser keeps
 
-`web/src/prefs.ts` (`prefs.test.ts`) is the only module that touches the browser's storage. It uses `localStorage`,
+`web/src/prefs.ts` (`prefs.test.ts`) is the only module of ear's that touches the browser's storage; patchbay's
+`useTheme` keeps the theme itself, under the key `prefs.ts` names. It uses `localStorage`,
 every read and write in `try` (so a private window, blocked storage or a full one keeps an editor that remembers for
 the page's life), and checks every value on read, ignoring a bad one. `main.tsx` makes one for the page.
 
 - **Per ear**, keyed by the page's `location.host` (`ear-editor/1/<host>/…`): node places, the inspector's width
   (clamped to its bounds), the drawer's height (clamped to the window) and whether it is open, and the minimap.
-- **Per browser** (`ear-editor/1/theme`): the theme, applied before the first render, so a kept dark choice never
-  flashes light.
+- **Per browser** (`ear-editor/1/theme`): the theme, kept by patchbay's `useTheme` as JSON (as `prefs.ts` kept it
+  before, so a choice made then still holds) and applied by `index.html`'s inline script before the first paint, so
+  a kept dark choice never flashes light ([Tokens and themes](#tokens-and-themes)).
 - **Places** are written when a drag ends (or a keyboard move), when new nodes are placed and on Tidy (which forgets
   the absent ones too), never on a state change. A name not in the graph keeps its place for 30 days from when it
   was last seen, timed on the wall clock (it outlives the page; every other editor clock is monotonic), so a node
@@ -731,7 +743,7 @@ port. Node.js comes from `web/.nvmrc` and the packages from `web/package-lock.js
 The tests cover the reducer against every `test/protocol` fixture, the graph file's state and the
 pane's logic (drafts, stale files, Save, refusals), the node panel's knobly box (`nodeText.ts`), the add-node
 form (`addText.ts`), the highlighting (`highlight.ts`, and that it never changes the text sent), the reconnecting client with a fake socket,
-the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (the hold, the fall, the lamp and the reset on a fake clock), the handles' cue (`connect.ts`), the box's sizes against `editor.css` (`layout.test.ts`), and the theme (`theme.ts`, and in `theme.test.ts` that every `var()` names a token), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the sizes and the breakpoint against `editor.css` (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight and the ghosts (`requests.ts`), the toast queue and a refusal's words (`notices.ts`, replaying `errors.json`), the gutter (`gutter.ts`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands and ranking, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the shortcuts (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), the wire dropped on the pane (`connect.ts`), and when the view fits itself (`fit.ts`). There is no browser test runner:
+the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (the hold, the fall, the lamp and the reset on a fake clock), the handles' cue (`connect.ts`), the box's sizes against `editor.css` (`layout.test.ts`), and the tokens and the theme's first paint (`theme.test.ts`: every `var()` names a token, and `index.html` inlines patchbay's theme script), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the sizes and the breakpoint against `editor.css` (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight and the ghosts (`requests.ts`), the toast queue and a refusal's words (`notices.ts`, replaying `errors.json`), the gutter (`gutter.ts`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands and ranking, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the shortcuts (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), the wire dropped on the pane (`connect.ts`), and when the view fits itself (`fit.ts`). There is no browser test runner:
 rendering is checked by eye. *Why:* a Playwright leg costs about 150 MB of browsers and a minute
 or two a CI run, while the logic sits in the reducer, client and rules, which Vitest covers
 against the same fixtures the server is tested with.

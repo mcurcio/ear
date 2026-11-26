@@ -1,15 +1,15 @@
 // The top bar (docs/editor.md#the-top-bar): what is about the whole graph and never about a selection. The wordmark and
 // the connection pill; the engine chip, the dropouts badge and the newer-protocol chip; then the palette button with
-// its key (docs/editor.md#the-palette), the theme switch, the
+// its key (docs/editor.md#the-palette), patchbay's theme switch, the
 // ear.conf toggle with the drawer's status words, and below the narrow width the inspector's button. The words are
 // shell.ts's and drawer.ts's.
+import type { ThemeChoice } from "@mcurcio/patchbay/hooks";
+import { ThemeSwitch } from "@mcurcio/patchbay/primitives";
 import { drawerChip, type DrawerWord } from "../drawer";
 import type { Graph } from "../protocol";
 import { connectionPill, nextPillChange } from "../shell";
-import type { ThemeChoice } from "../theme";
 import { GraphChips } from "./EngineFacts";
 import { useConnectionView, useRecentNow } from "./hooks";
-import { ThemeSwitch } from "./ThemeSwitch";
 
 /** The connection pill, drawn again each time its countdown's seconds drop. */
 function ConnectionPill() {

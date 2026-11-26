@@ -1,8 +1,8 @@
 # The graph editor on patchbay: what is still to build
 
-Status: designed; of A1 the package and the rename onto its tokens are built (the theme choice is not). The graph
-editor (`web/`, [docs/editor.md](../editor.md)) draws with patchbay's `--pb-*` tokens, but still draws its controls
-itself: `web/src/components/`, its styles in `web/src/editor.css`.
+Status: designed; A1 is built (the package, the rename onto its tokens, the theme through `useTheme` and ThemeSwitch).
+The graph editor (`web/`, [docs/editor.md](../editor.md)) draws with patchbay's `--pb-*` tokens and theme switch, but
+still draws its other controls itself: `web/src/components/`, its styles in `web/src/editor.css`.
 `@mcurcio/patchbay` (npm, 0.5.0) is a component library extracted from this editor: its `tokens.css` is the editor's
 old `theme.css` renamed, and its built primitives and hooks are generic versions of the editor's leaves. This page designs moving the
 editor onto it, one area per change, so that the editor keeps its behaviour and ear keeps everything that is not
@@ -11,7 +11,7 @@ meters) is still only designed in patchbay; those steps wait on patchbay's relea
 
 | Step | What | Waits on |
 |---|---|---|
-| **A1** | The rename and the theme (section 3.2); the package, its tokens and the rename are in | nothing |
+| **A1** | The package, the rename and the theme (section 3.2): built | — |
 | **A2** | The built primitives and hooks, one area per change (section 3.3) | nothing (D2, D3, D4 given) |
 | **A3** | The node box, wires, meters and the canvas sugar (section 3.4) | patchbay's graph layer, released |
 | **A4** | Feedback, the palette and keys, the code editor (section 3.5) | patchbay's composites and hooks, released |
@@ -91,9 +91,11 @@ patchbay takes the drawing and the generic mechanics; ear keeps what knows about
 2. **The rename** (built). Every `var(--X)` in `editor.css` and the components is `var(--pb-X)`, and `theme.css` is
    deleted; `theme.test.ts` fails on any `var()` that names neither a patchbay token nor one of ear's own variables
    ([editor.md](../editor.md#tokens-and-themes)).
-3. **The theme** (to build). `useTheme({ key: "ear-editor/1/theme" })`, so the choice people kept is read where it is;
-   patchbay's ThemeSwitch with its own words, and `themeScript` inline in `index.html`, ending the first-paint flash
-   (D5).
+3. **The theme** (built). `useTheme({ key: themeKey() })` (`ear-editor/1/theme`), so the choice people kept is read
+   where it is; patchbay's ThemeSwitch with its own words, and `themeScript` inline in `index.html`, ending the
+   first-paint flash (D5). `theme.ts` and ear's `ThemeSwitch.tsx` are gone; ear's generic button rules in
+   `editor.css` pass patchbay's controls by (any `pb-` class), so each draws from its own stylesheet
+   ([editor.md](../editor.md#tokens-and-themes)).
 
 ### 3.3 A2: the built primitives, one area per change
 
@@ -155,7 +157,7 @@ body stays mounted while closed (draft, caret and scroll kept), as now. `hooks.t
 
 | Test | What happens to it |
 |---|---|
-| `theme.test.ts` | Token sets and contrast go (patchbay's `tokens.test.ts` holds them); "no colour in `editor.css` and components" stays, for `--pb-*`; the new var-resolution test joins it; the cycle cases go with `theme.ts` |
+| `theme.test.ts` | Done in A1: token sets, contrast and the cycle cases went to patchbay (its `tokens.test.ts` and `useTheme`'s tests); it keeps "no colour in `editor.css` and components", and holds every `var()` to a token and `index.html`'s theme script to patchbay's |
 | `sizes.test.ts` | Drag and key cases go in A2; the `editor.css` clamp and breakpoint cases go to patchbay's AppShell tests in A5 |
 | `layout.test.ts` | Placement stays; the CSS half checks NodeBox's exported geometry (A3) |
 | `prefs.test.ts`, `keys.test.ts`, `palette.test.ts`, `notices.test.ts`, `meters.test.ts` | Split: ear's keys, bindings, catalogue and wording stay; the generic mechanics' cases go with them |

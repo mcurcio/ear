@@ -12,7 +12,6 @@ import { App } from "./App";
 import { EditorContext } from "./components/hooks";
 import { Editor } from "./editor";
 import { browserStorage, Prefs } from "./prefs";
-import { applyTheme, defaultTheme } from "./theme";
 
 const root = document.getElementById("root");
 if (root === null) {
@@ -23,10 +22,9 @@ const scheme = window.location.protocol === "https:" ? "wss" : "ws";
 const editor = new Editor({ url: `${scheme}://${window.location.host}/rpc` });
 editor.client.start();
 
-// What the browser keeps (docs/editor.md#what-the-browser-keeps): places and sizes per ear (this page's host), the
-// theme per browser, applied before the first render so a kept dark choice never flashes light.
+// What the browser keeps (docs/editor.md#what-the-browser-keeps): places and sizes per ear (this page's host). The
+// theme is kept per browser by App's useTheme, and index.html's inline script applies it before the first paint.
 const prefs = new Prefs(browserStorage(), window.location.host);
-applyTheme(document.documentElement, prefs.theme() ?? defaultTheme);
 
 createRoot(root).render(
   <StrictMode>

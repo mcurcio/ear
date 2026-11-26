@@ -1,11 +1,11 @@
-// What the browser keeps (docs/editor.md#what-the-browser-keeps), and the only module that touches its storage. Every
-// read and write is in try, so a private window or blocked storage keeps a page's-life editor; every value is checked
-// on read and a bad one ignored. Places, sizes and the minimap are kept per ear (keyed by the page's host), the theme
-// per browser. Places are never sent to ear (docs/editor.md#its-rules). Times here are the wall clock (Date.now),
-// since they outlive the page; every other clock in the editor is monotonic.
+// What the browser keeps (docs/editor.md#what-the-browser-keeps), and the only module of ear's that touches its
+// storage: patchbay's useTheme keeps the theme itself, under themeKey(). Every read and write is in try, so a private
+// window or blocked storage keeps a page's-life editor; every value is checked on read and a bad one ignored. Places,
+// sizes and the minimap are kept per ear (keyed by the page's host), the theme per browser. Places are never sent to
+// ear (docs/editor.md#its-rules). Times here are the wall clock (Date.now), since they outlive the page; every other
+// clock in the editor is monotonic.
 import type { PlaceKeeper, Position } from "./layout";
 import { clamp, inspectorBounds } from "./sizes";
-import { themeChoices, type ThemeChoice } from "./theme";
 
 /** What Prefs needs of window.localStorage. */
 export interface StorageLike {
@@ -30,7 +30,8 @@ export const prefsPrefix = "ear-editor/1";
 /** What is kept per ear. */
 export type EarPref = "places" | "inspector-width" | "drawer" | "minimap";
 
-/** The theme's key: one per browser. */
+/** The theme's key: one per browser. App's useTheme (patchbay's) keeps the choice under it, and index.html's inline
+ * script reads it (docs/editor.md#tokens-and-themes). */
 export function themeKey(): string {
   return `${prefsPrefix}/theme`;
 }
@@ -59,10 +60,6 @@ function isFiniteNumber(value: unknown): value is number {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-export function checkTheme(value: unknown): ThemeChoice | undefined {
-  return themeChoices.find((choice) => choice === value);
 }
 
 /** A finite number, clamped to the inspector's bounds. */
@@ -150,13 +147,6 @@ export class Prefs {
     } catch {
       // A full or blocked storage: the page keeps the value for its life.
     }
-  }
-
-  theme(): ThemeChoice | undefined {
-    return checkTheme(this.read(themeKey()));
-  }
-  setTheme(choice: ThemeChoice): void {
-    this.write(themeKey(), choice);
   }
 
   inspectorWidth(): number | undefined {

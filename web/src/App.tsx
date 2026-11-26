@@ -6,6 +6,7 @@
 // shortcuts and the palette (docs/editor.md#the-palette-and-the-keyboard) and quick add on the canvas
 // (docs/editor.md#adding-on-the-canvas) are held here. Node places, the selection, the sizes and the theme are the
 // browser's own; places, sizes, the minimap and the theme outlive the page (docs/editor.md#what-the-browser-keeps).
+import { useTheme } from "@mcurcio/patchbay/hooks";
 import { useReactFlow, type Connection } from "@xyflow/react";
 import { useCallback, useEffect, useState } from "react";
 import { freeName } from "./addText";
@@ -13,11 +14,10 @@ import { routeFromConnection } from "./connect";
 import { isMac, keyLabel, type ShortcutAction } from "./keys";
 import type { PlaceHint, Position } from "./layout";
 import type { Command, PaletteScope } from "./palette";
-import type { Prefs } from "./prefs";
+import { themeKey, type Prefs } from "./prefs";
 import { nodeTextFeature, type RouteEnds } from "./protocol";
 import { nothingSelected, removals, selectionKey, subjectOf } from "./selection";
 import { inspectorWidth, narrowQuery } from "./sizes";
-import { applyTheme, defaultTheme, type ThemeChoice } from "./theme";
 import { Canvas } from "./components/Canvas";
 import { fitPadding } from "./components/CanvasTools";
 import { AutoFit } from "./fit";
@@ -52,11 +52,9 @@ export function App({ prefs }: { prefs: Prefs }) {
   const flow = useReactFlow();
   const [mac] = useState(() => isMac(platform()));
 
-  const [theme, setTheme] = useState<ThemeChoice>(() => prefs.theme() ?? defaultTheme);
-  useEffect(() => {
-    applyTheme(document.documentElement, theme);
-    prefs.setTheme(theme);
-  }, [prefs, theme]);
+  // The theme is patchbay's useTheme under ear's own key (docs/editor.md#tokens-and-themes); index.html's inline
+  // script applies a kept choice before the first paint.
+  const [theme, setTheme] = useTheme({ key: themeKey() });
 
   const [keeper] = useState(() => prefs.placeKeeper());
   const canvas = useCanvas(graph, keeper);

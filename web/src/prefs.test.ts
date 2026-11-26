@@ -1,12 +1,12 @@
 // What the browser keeps (docs/editor.md#what-the-browser-keeps): storage that throws, values of the wrong shape, the
-// 30-day expiry of places and the keys per ear.
+// 30-day expiry of places, the keys per ear, and the theme's key, where patchbay's useTheme keeps the choice.
+import { checkTheme, readKept, writeKept } from "@mcurcio/patchbay/hooks";
 import { describe, expect, it } from "vitest";
 import { Places, placeNodes, type Position } from "./layout";
 import {
   checkDrawer,
   checkFlag,
   checkPlaces,
-  checkTheme,
   checkWidth,
   earKey,
   maxPlaces,
@@ -50,13 +50,11 @@ describe("storage that throws", () => {
   it("keeps today's behaviour", () => {
     for (const storage of [new ThrowingStorage(), null]) {
       const prefs = new Prefs(storage, host);
-      expect(prefs.theme()).toBeUndefined();
       expect(prefs.inspectorWidth()).toBeUndefined();
       expect(prefs.drawer()).toBeUndefined();
       expect(prefs.minimap()).toBeUndefined();
       expect(prefs.places()).toStrictEqual(new Map());
       expect(() => {
-        prefs.setTheme("dark");
         prefs.setInspectorWidth(400);
         prefs.setDrawer({ open: true, height: 300 });
         prefs.setMinimap(true);
@@ -74,9 +72,11 @@ describe("values of the wrong shape", () => {
     const storage = new MapStorage();
     const prefs = new Prefs(storage, host, () => 1000);
     storage.setItem(themeKey(), "not json");
-    expect(prefs.theme()).toBeUndefined();
-    for (const value of ["Dark", 3]) expect(checkTheme(value)).toBeUndefined();
-    expect(checkTheme("dark")).toBe("dark");
+    expect(readKept(storage, themeKey(), checkTheme)).toBeUndefined();
+    for (const value of ["Dark", 3]) {
+      storage.setItem(themeKey(), JSON.stringify(value));
+      expect(readKept(storage, themeKey(), checkTheme)).toBeUndefined();
+    }
     for (const value of ["320", null, Infinity]) expect(checkWidth(value)).toBeUndefined();
     storage.setItem(earKey(host, "inspector-width"), "1e999");
     expect(prefs.inspectorWidth()).toBeUndefined();
@@ -107,12 +107,10 @@ describe("values of the wrong shape", () => {
 describe("each preference", () => {
   it("round-trips", () => {
     const prefs = new Prefs(new MapStorage(), host, () => 1000);
-    prefs.setTheme("light");
     prefs.setInspectorWidth(400);
     prefs.setDrawer({ open: true, height: 333 });
     prefs.setMinimap(true);
     prefs.savePlaces(new Map([["rec", at(-5, 7.5)]]), false);
-    expect(prefs.theme()).toBe("light");
     expect(prefs.inspectorWidth()).toBe(400);
     expect(prefs.drawer()).toStrictEqual({ open: true, height: 333 });
     expect(prefs.minimap()).toBe(true);
@@ -167,15 +165,22 @@ describe("the keys", () => {
     a.setInspectorWidth(400);
     a.setDrawer({ open: true, height: 300 });
     a.setMinimap(true);
-    a.setTheme("dark");
+    writeKept(storage, themeKey(), "dark");
     expect(b.places()).toStrictEqual(new Map());
     expect(b.inspectorWidth()).toBeUndefined();
     expect(b.drawer()).toBeUndefined();
     expect(b.minimap()).toBeUndefined();
-    expect(b.theme()).toBe("dark");
+    expect(readKept(storage, themeKey(), checkTheme)).toBe("dark");
     expect(storage.items.has("ear-editor/1/a:7777/places")).toBe(true);
     expect(storage.items.has("ear-editor/1/theme")).toBe(true);
     expect(earKey("a:7777", "places")).toBe("ear-editor/1/a:7777/places");
     expect(themeKey()).toBe("ear-editor/1/theme");
+  });
+
+  it("reads a theme kept before the editor took patchbay's useTheme", () => {
+    // ear kept the choice as JSON under the same key, as patchbay's useTheme does, so a choice made before still holds.
+    const storage = new MapStorage();
+    storage.setItem("ear-editor/1/theme", JSON.stringify("light"));
+    expect(readKept(storage, themeKey(), checkTheme)).toBe("light");
   });
 });

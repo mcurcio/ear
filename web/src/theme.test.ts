@@ -1,11 +1,13 @@
 // The editor's tokens (docs/editor.md#tokens-and-themes): every var() in editor.css and the editor's sources names a
 // token in patchbay's tokens.css or one of ear's own variables, and neither editor.css nor a component holds a colour
-// of its own. patchbay's tokens test holds its sets, the two dark copies equal and every text pair at 4.5:1; and the
-// switch's logic.
+// of its own. patchbay's tokens test holds its sets, the two dark copies equal and every text pair at 4.5:1. And the
+// theme's first paint: index.html inlines patchbay's themeScript for ear's key.
+import { themeScript } from "@mcurcio/patchbay/hooks";
 import tokensCss from "@mcurcio/patchbay/tokens.css?raw";
 import { describe, expect, it } from "vitest";
 import editorCss from "./editor.css?raw";
-import { applyTheme, defaultTheme, nextTheme, themeChoices, themeTitle } from "./theme";
+import indexHtml from "../index.html?raw";
+import { themeKey } from "./prefs";
 
 const components = import.meta.glob("./components/*.tsx", { query: "?raw", import: "default", eager: true }) as Record<
   string,
@@ -105,31 +107,11 @@ describe("the editor's tokens", () => {
   });
 });
 
-describe("the theme switch", () => {
-  it("starts at system", () => {
-    expect(defaultTheme).toBe("system");
-    expect(themeChoices).toEqual(["system", "light", "dark"]);
-  });
-
-  it("cycles system, light, dark and back", () => {
-    expect(nextTheme("system")).toBe("light");
-    expect(nextTheme("light")).toBe("dark");
-    expect(nextTheme("dark")).toBe("system");
-  });
-
-  it("writes data-theme for light and dark and removes it for system", () => {
-    const root = { dataset: {} as DOMStringMap };
-    applyTheme(root, "light");
-    expect(root.dataset.theme).toBe("light");
-    applyTheme(root, "dark");
-    expect(root.dataset.theme).toBe("dark");
-    applyTheme(root, "system");
-    expect("theme" in root.dataset).toBe(false);
-  });
-
-  it("says what the theme is and what a click does", () => {
-    expect(themeTitle("system")).toBe("Theme: system (follows the system's setting); click for light");
-    expect(themeTitle("light")).toBe("Theme: light; click for dark");
-    expect(themeTitle("dark")).toBe("Theme: dark; click for system");
+describe("the theme's first paint", () => {
+  it("inlines patchbay's themeScript for ear's key in index.html, before any stylesheet or module", () => {
+    const script = themeScript(themeKey());
+    const inline = /<script>([\s\S]*?)<\/script>/.exec(indexHtml);
+    expect(inline?.[1]).toBe(script);
+    expect(indexHtml.indexOf(script)).toBeLessThan(indexHtml.indexOf('<script type="module"'));
   });
 });
