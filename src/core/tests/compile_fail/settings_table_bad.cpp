@@ -130,6 +130,23 @@ constexpr auto bad = setting::text<anyText>("anything", {.values = withEmpty});
 constexpr auto bad = setting::defaulted("k", setting::text<anyText>("anything"), std::string("x"));
 #endif
 
+// A text row is refused by its rule, whatever its parse returns: one that reads a bool or a whole number has no default
+// either.
+#ifdef EAR_CASE_default_text_row_bool
+std::optional<bool> yesNo(std::string_view text) { return text == "yes"; }
+constexpr auto bad = setting::defaulted("k", setting::text<yesNo>("yes or no"), true);
+#endif
+
+#ifdef EAR_CASE_default_text_row_whole
+std::optional<std::uint32_t> anyCount(std::string_view) { return 1u; }
+constexpr auto bad = setting::defaulted("k", setting::text<anyCount>("a count"), 1u);
+#endif
+
+#ifdef EAR_CASE_indexed_text_family
+std::optional<bool> yesNo(std::string_view text) { return text == "yes"; }
+constexpr auto bad = setting::indexed("e", countRow, setting::text<yesNo>("yes or no"), true);
+#endif
+
 #ifdef EAR_CASE_default_rate_row
 constexpr auto bad = setting::defaulted("k", setting::rate(SampleRate::fixed<8'000>(), SampleRate::fixed<96'000>()),
                                         SampleRate::fixed<48'000>());
@@ -326,6 +343,11 @@ constexpr SettingsTable<earlyFamily, laterCount> bad{"t"};
 #ifdef EAR_CASE_indexed_count_not_whole
 constexpr auto flagCount = setting::defaulted("c", setting::boolean(), true);
 constexpr auto bad = setting::indexed("e", flagCount, setting::number(0, 9), 0);
+#endif
+
+#ifdef EAR_CASE_indexed_count_high_zero
+constexpr auto zeroCount = setting::defaulted("z", setting::number(0, 0), 0);
+constexpr auto bad = setting::indexed("e", zeroCount, setting::number(0, 9), 0);
 #endif
 
 #ifdef EAR_CASE_indexed_count_optional

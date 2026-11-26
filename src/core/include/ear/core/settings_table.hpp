@@ -421,6 +421,11 @@ template <class V> consteval Row<V, false> optional(std::string_view key, Rule<V
 /// `defaulted("playback", number(0, 64), 0)` takes the int literal as the rule's value.
 template <class V>
 consteval Row<V, true> defaulted(std::string_view key, Rule<V> rule, std::type_identity_t<V> byDefault) {
+	// A text rule's parse may return any value type, a bool or a whole number among them, so the kind is read from the
+	// rule itself, never from V.
+	if (std::holds_alternative<TextRule>(rule.held()) || std::holds_alternative<RateRule>(rule.held()))
+		throw "only a whole number, decimal, boolean or choice row takes a default: a text or rate row is required or "
+			  "optional";
 	if constexpr (std::same_as<V, std::uint32_t>) {
 		const WholeNumberRule range = std::get<WholeNumberRule>(rule.held());
 		if (byDefault < range.low || byDefault > range.high) throw "a whole number's byDefault is outside its range";
