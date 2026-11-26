@@ -238,8 +238,9 @@ Pairing by a code is required, for good: a server that approves the node without
 roles and no audio (`connection` `connected` with `paired` false). To pair: get the node connected
 (Music Assistant offers pairing only to a connected client, whichever side dialled), start pairing
 in Music Assistant, read the code from the node's `pairingCode` and type it there. The code is a
-callout: the editor shows it on the node with a copy button, and standard output has it as a
-`status` record (`node kitchen pairingCode "" -> 123-456`); from a script,
+callout: the editor shows it on the node as a banner
+([editor.md](editor.md#status-events-and-diagnostics)), and standard output has it as a `status`
+record (`node kitchen pairingCode "" -> 123-456`); from a script,
 
 ```bash
 ear | jq -r 'select(.kind == "status" and .field == "pairingCode" and .to != "") | "\(.node) \(.to)"'
