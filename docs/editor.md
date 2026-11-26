@@ -185,8 +185,8 @@ and the scroll. The inspector and the drawer never move each other's content.
 Below 760 px the inspector is patchbay's `Sheet` over the canvas's right edge
 ([its docs](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#overlays)), titled "Inspector", at the
 width kept for the docked inspector (within 280 to 560 px and 48 px short of the canvas) and not resized. It opens
-when something is selected or from the top bar's Inspector button, and closes on its close button, Escape (after the
-palette and the shortcut sheet, before the selection: [Shortcuts](#shortcuts)) or a click on the canvas; it is not
+when something is selected or from the top bar's Inspector button, and closes on its close button, Escape (before the
+selection: [Shortcuts](#shortcuts)) or a click on the canvas; it is not
 modal, so the canvas stays live, and closing it with the focus inside gives the focus back. Escape with the focus
 inside the sheet is the sheet's own and closes it, even from a text field (patchbay's model). 760 rather than a
 laptop-sized width keeps it docked on a foldable phone unfolded (about 890 px wide) and on a tablet in portrait, where
@@ -295,9 +295,10 @@ line height and top inset, so [Highlighting](#highlighting)'s rules are untouche
 ### The palette
 
 `web/src/palette.ts` (`palette.test.ts`) builds the palette's commands from the graph, the selection, the features
-and the shell's state, so a command ear cannot take is never offered; `components/Palette.tsx` draws it and
-`components/useCommands.ts` turns each into its request or its change of view. Cmd+K (Ctrl+K off macOS) or the top
-bar's button opens it, centred near the top of the window. Its commands:
+and the shell's state, so a command ear cannot take is never offered, and hands them to patchbay's `CommandPalette`
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#commands-and-keys)), which draws, ranks
+and places them; `components/useCommands.ts` turns each into its request or its change of view. Cmd+K (Ctrl+K off
+macOS) or the top bar's button opens it, centred near the top of the window. Its commands:
 
 | Command | Does |
 |---|---|
@@ -311,24 +312,25 @@ bar's button opens it, centred near the top of the window. Its commands:
 | `Keyboard shortcuts` | the shortcut sheet ([below](#shortcuts)) |
 
 With nothing typed, the selection's commands come first (each selected node's lifecycle calls and Remove, then each
-selected route's Remove), then Go to, Add, `ear.conf`'s, the view's, and every other node's and route's. An option
-shows its group, its hint and, where it has one, its key. A long hint is cut short, its whole text in its tooltip,
-so the command's own words always keep their width.
+selected route's Remove), then Go to, Add, `ear.conf`'s, the view's, and every other node's and route's, each under
+its group's heading. An option shows its hint (a lifecycle command's why) as a quieter second line and, where it has
+one, its key.
 
-- **Ranking.** A subsequence match on the label: every typed character, case-insensitive and ignoring spaces, must
-  appear in order. A character at a word start scores most and one right after the previous match next; a gap
-  between two matches costs a little. Ties go to the shorter label, then the list's order; at most 50 are shown.
-- **A combobox.** It is a WAI-ARIA combobox over a listbox in a modal dialog: the arrows move (wrapping), Page Up and
-  Page Down move by 8, Enter or a click runs one, Escape, Tab or a click outside closes it, and the matched letters
-  are marked. The keys it handles never reach the editor's shortcuts, and focus goes back where it was when it closes.
-  Hand-written, no package.
+- **patchbay's palette.** Matching, ranking, the marked letters, the keys (the arrows, Page Up and Page Down, Home and
+  End, Enter; Escape, Tab, a press outside or the focus leaving close it) and where it sits are `CommandPalette`'s:
+  a query's letters in order in a label, word starts and runs scoring most, each group's matches best first and the
+  groups by their best; the focus stays in its field and goes back where it was when it closes. *Why:* the owner chose
+  patchbay's model for the palette (D9, 2026-11-26), Tab closing it as a combobox's list closes and each item having a
+  hint line; its ranking and grouping replace ear's own, which listed at most 50 in one ranked list.
 - **Nothing of its own.** Everything it does is a request ear judges, drawn when ear announces it
   ([above](#its-rules)), or a change of the browser's own view.
 
 ### Shortcuts
 
-`web/src/keys.ts` (`keys.test.ts`) maps a key to a shortcut, by the platform and by whether the focus is in a text
-field; `components/useShortcuts.ts` is the one listener, and `components/ShortcutSheet.tsx` the sheet `?` opens.
+`web/src/keys.ts` (`keys.test.ts`) is the editor's table of bindings, in patchbay's key strings (`Mod+K`), and the
+shortcut sheet's lines; patchbay's `useShortcuts` binds the table on the window and its `ShortcutSheet`, the dialog `?`
+opens, lists the lines in three groups (Commands, View, Selection) with the keys drawn for the platform
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#useshortcuts)).
 
 | Key | Does |
 |---|---|
@@ -338,17 +340,19 @@ field; `components/useShortcuts.ts` is the one listener, and `components/Shortcu
 | `F`, `L`, `M` | fit the view, tidy the layout, show or hide the minimap |
 | `A` | the palette, with only its `Add` commands; the node is then laid out as any other |
 | `?` | the shortcut sheet |
-| Escape | closes the palette, else the shortcut sheet, else the narrow inspector's sheet, else clears the selection |
+| Escape | closes the narrow inspector's sheet, else clears the selection; the palette and the shortcut sheet close on their own Escape |
 | Delete, Backspace | React Flow's: removes the selection, asking ear ([above](#the-inspector)) |
 
-Single keys and Escape act only when the focus is not in a text field (an input of a text kind, a textarea, a select
-or contenteditable) and with no modifier but Shift (which `?` needs on most layouts). The three chords act
-everywhere, since they type nothing, so `⌘S` saves the drawer's draft while typing in it; it saves only that draft,
-even with the focus in the node panel's box. While the palette or the sheet is open, only `⌘K` and Escape act.
-*Why that filter:* React Flow 12.12.0 skips input, select, textarea, contenteditable and anything inside `.nokey`
-for Delete by the same rule (its `isInputDOMNode`, checked in the pinned package), so its keys and the editor's
-coexist with the focus in the inspector's text. Slice 6's knobs are designed to carry `nodrag`, `nowheel`, `nopan`
-and `nokey` ([control-plane.md](design/control-plane.md#83-gestures-from-pointer-and-keyboard)).
+Single keys and Escape act only when the focus is not in a text field (an input of a text kind, a textarea, a select,
+contenteditable, or anything inside `.nokey`) and with no modifier but the Shift a character needs (`?`); a key must
+match its modifiers exactly, so `⌘⇧K` is not `⌘K`. The three chords opt in to acting in a text field, since they type
+nothing, so `⌘S` saves the drawer's draft while typing in it; it saves only that draft, even with the focus in the
+node panel's box. While the palette is open only `⌘K` acts (closing it); while the shortcut sheet is open none do, as
+its dialog holds the focus and Escape, its close button or a press on the scrim closes it. *Why that filter:* it is
+patchbay's keyboard model (D9, 2026-11-26), and React Flow 12.12.0 skips input, select, textarea, contenteditable and
+anything inside `.nokey` for Delete by the same rule (its `isInputDOMNode`, checked in the pinned package), so its
+keys and the editor's coexist with the focus in the inspector's text. Slice 6's knobs are designed to carry `nodrag`,
+`nowheel`, `nopan` and `nokey` ([control-plane.md](design/control-plane.md#83-gestures-from-pointer-and-keyboard)).
 
 ## Adding a node
 
@@ -776,7 +780,7 @@ port. Node.js comes from `web/.nvmrc` and the packages from `web/package-lock.js
 The tests cover the reducer against every `test/protocol` fixture, the graph file's state and the
 pane's logic (drafts, stale files, Save, refusals), the node panel's knobly box (`nodeText.ts`), the add-node
 form (`addText.ts`), the highlighting (`highlight.ts`, and that it never changes the text sent), the reconnecting client with a fake socket,
-the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (the hold, the fall, the lamp and the reset on a fake clock), the handles' cue (`connect.ts`), the box's sizes against `editor.css` (`layout.test.ts`), and the tokens and the theme's first paint (`theme.test.ts`: every `var()` names a token, and `index.html` inlines patchbay's theme script), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the sizes and the breakpoint against `editor.css` (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight and the ghosts (`requests.ts`), the toast queue and a refusal's words (`notices.ts`, replaying `errors.json`), the gutter (`gutter.ts`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands and ranking, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the shortcuts (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), the wire dropped on the pane (`connect.ts`), and when the view fits itself (`fit.ts`). There is no browser test runner:
+the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (the hold, the fall, the lamp and the reset on a fake clock), the handles' cue (`connect.ts`), the box's sizes against `editor.css` (`layout.test.ts`), and the tokens and the theme's first paint (`theme.test.ts`: every `var()` names a token, and `index.html` inlines patchbay's theme script), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the sizes and the breakpoint against `editor.css` (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight and the ghosts (`requests.ts`), the toast queue and a refusal's words (`notices.ts`, replaying `errors.json`), the gutter (`gutter.ts`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands as patchbay's `CommandPalette` takes and ranks them, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the key bindings as patchbay's `findShortcut` runs them (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), the wire dropped on the pane (`connect.ts`), and when the view fits itself (`fit.ts`). patchbay's modules import their own stylesheets, which Node cannot load, so `vite.config.ts` has Vitest inline the package (and blank its styles) for the tests that call its pure helpers. There is no browser test runner:
 rendering is checked by eye. *Why:* a Playwright leg costs about 150 MB of browsers and a minute
 or two a CI run, while the logic sits in the reducer, client and rules, which Vitest covers
 against the same fixtures the server is tested with.

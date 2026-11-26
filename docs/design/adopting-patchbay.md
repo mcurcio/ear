@@ -1,12 +1,13 @@
 # The graph editor on patchbay: what is still to build
 
 Status: designed; A1 is built (the package, the rename onto its tokens, the theme through `useTheme` and ThemeSwitch),
-A2 all but the shortcut sheet on Dialog (section 3.3 marks each change built or to build), and of A4 the banners and
-status words (section 3.5 marks each).
+A2 (section 3.3 marks each change), and of A4 the banners and status words, the palette, the shortcut sheet and the
+keys (section 3.5 marks each).
 The graph editor (`web/`, [docs/editor.md](../editor.md)) draws with patchbay's `--pb-*` tokens, theme switch and
 built primitives and hooks (its spinner and warning mark, splitters, canvas tools, form fields and buttons, pills,
-badges and facts, narrow sheet and kept values) and its banners and status words, but still draws its node boxes,
-wires, meters, palette, toasts, code boxes, shortcut sheet and shell itself: `web/src/components/`, its styles in `web/src/editor.css`.
+badges and facts, narrow sheet and kept values) and composites and hooks (banners, status words, the command palette,
+the shortcut sheet and the key bindings), but still draws its node boxes, wires, meters, toasts, code boxes and shell
+itself: `web/src/components/`, its styles in `web/src/editor.css`.
 `@mcurcio/patchbay` (npm, 0.5.0) is a component library extracted from this editor: its `tokens.css` is the editor's
 old `theme.css` renamed, and its built primitives and hooks are generic versions of the editor's leaves. This page designs moving the
 editor onto it, one area per change, so that the editor keeps its behaviour and ear keeps everything that is not
@@ -16,7 +17,7 @@ meters) is still only designed in patchbay; those steps wait on patchbay's relea
 | Step | What | Waits on |
 |---|---|---|
 | **A1** | The package, the rename and the theme (section 3.2): built | — |
-| **A2** | The built primitives and hooks, one area per change (section 3.3): in part | nothing (D2, D3, D4 given) |
+| **A2** | The built primitives and hooks, one area per change (section 3.3): built | — |
 | **A3** | The node box, wires, meters and the canvas sugar (section 3.4) | patchbay's graph layer, released |
 | **A4** | Feedback, the palette and keys, the code editor (section 3.5): in part | the code editor waits on patchbay's CodeEditor; the rest on nothing (0.5.0) |
 | **A5** | The shell, and deleting this page (section 3.6) | patchbay's `AppShell`, released |
@@ -108,7 +109,7 @@ patchbay takes the drawing and the generic mechanics; ear keeps what knows about
 | Spinner and WarnMark | `Spinner.tsx`, `WarnMark.tsx`, raw `warn-mark` spans in `Counters.tsx` and `CompanionStrip.tsx` | Spinner, WarnMark (`label`) | | built |
 | Splitters | `Splitter.tsx`, `sizes.ts` dragged, keyed, clamp | Splitter, `edge="start"` | Bounds stay in `sizes.ts` until A5. `edge` becomes logical in a later patchbay (owner, 2026-11-26: start and end follow the text direction); the editor is left-to-right, so `start` stays its left and top | built |
 | Canvas tools | `CanvasTools.tsx`, a plain `role=toolbar` | ToolGroup and IconButton, inside React Flow's `<Panel>` | Roving tab stop (new); `fitPadding` still reserves 76 px for 40 px touch tools | built |
-| Shortcut sheet | `ShortcutSheet.tsx` on `.palette-backdrop` | Dialog | Gains a Close button and a scrim press | to build |
+| Shortcut sheet | `ShortcutSheet.tsx` on `.palette-backdrop` | Dialog, through patchbay's ShortcutSheet | Gains a Close button and a scrim press; built with A4's palette and keys, which replaced this step | built |
 | Forms and busy buttons | AddNodeJson, AddNodeText's select, lifecycle bar, Delete, the two Saves | Field, TextInput, Select, Button `busy`, `tone="danger"` | Busy stays focusable, its words in `busyLabel` (D4); the lifecycle row keeps its segmented CSS, its words under the spinner | built |
 | Pills, chips, facts | `StatePill.tsx`, `.chip tone-*`, EngineFactsSection's `<dl>` | Pill, Badge, KeyValue | Pill and Badge `accent` and `muted`, a filled Badge (D3); the counter tables stay ear's markup | built |
 | Narrow inspector | CSS-only sheet in `editor.css` | Sheet (right below 760 px, bottom below 600 px) | The workspace was already `position: relative`; the sheet is titled "Inspector" and keeps the docked width | built |
@@ -142,9 +143,12 @@ Each waits for the patchbay release carrying it.
 - **Banners and status words** (built). `TextPane.tsx`'s banners, the node box's and the add form's are Banner; the
   drawer header's words are StatusWords, with `drawer.ts`'s tones (its `muted` is drawn as StatusWords' neutral tone)
   ([editor.md](../editor.md#the-drawer)).
-- **Palette and keys.** `Palette.tsx` becomes CommandPalette (centred for ⌘K, anchored at the pointer for quick add);
-  `palette.ts` keeps the catalogue and loses `rank` and `anchoredAt`. `useShortcuts.ts` becomes patchbay's, with ⌘K and
-  ⌘S still acting while typing; `keys.ts` keeps the bindings and takes `keyLabel` and `isTextTarget` from patchbay.
+- **Palette and keys** (built). `Palette.tsx` is CommandPalette (centred for ⌘K, anchored at the pointer for quick
+  add); `palette.ts` keeps the catalogue, hands it over with `paletteItems`, and lost `rank` and `anchoredAt`.
+  `useShortcuts.ts` is patchbay's `useShortcuts`, with ⌘K, ⌘E and ⌘S opting into text fields (D9); `keys.ts` keeps the
+  bindings as key strings and the sheet's lines, and takes `keyLabel`, `detectPlatform` and the text-field rule from
+  patchbay. `ShortcutSheet.tsx` is patchbay's ShortcutSheet; while it is open no binding acts, as its Dialog holds the
+  focus ([editor.md](../editor.md#the-palette-and-the-keyboard)).
 - **Toasts.** `Toasts.tsx` and `notices.ts`'s queue become Toaster and `useToasts`, keyed by code and subject.
   `notices.ts` keeps the refusal wording, `showOf` and `placedRefusal`.
 - **The code editor.** `KnoblyText.tsx`, `highlight.ts` and `gutter.ts` become CodeEditor and CodeText with
@@ -165,7 +169,8 @@ body stays mounted while closed (draft, caret and scroll kept), as now. `hooks.t
 | `sizes.test.ts` | Drag and key cases went in A2 (built: patchbay's Splitter tests them); the `editor.css` clamp and breakpoint cases go to patchbay's AppShell tests in A5 |
 | `layout.test.ts` | Placement stays; the CSS half checks NodeBox's exported geometry (A3) |
 | `prefs.test.ts` | Split in A2 (built): it reads the simple values as `usePersistentState` does, with ear's keys and checks; the hook is tested in patchbay |
-| `keys.test.ts`, `palette.test.ts`, `notices.test.ts`, `meters.test.ts` | Split: ear's keys, bindings, catalogue and wording stay; the generic mechanics' cases go with them |
+| `keys.test.ts`, `palette.test.ts` | Split in A4 (built): ear's bindings, run through patchbay's `findShortcut`, and its catalogue, handed to `rankCommands`, stay; the parsing, ranking and anchoring cases went to patchbay |
+| `notices.test.ts`, `meters.test.ts` | Split: ear's wording stays; the generic mechanics' cases go with them |
 | `fit.test.ts`, `gutter.test.ts`, `highlight.test.tsx` | Go with their modules, except `highlight.test.tsx`'s last case (what the pane, the node box and the add form send), which stays |
 | `wires.test.ts`, `connect.test.ts`, `health` and the other rule tests | Stay |
 

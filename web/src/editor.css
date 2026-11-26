@@ -185,171 +185,6 @@ body,
   }
 }
 
-/* The command palette and the shortcut sheet (docs/editor.md#the-palette-and-the-keyboard): a raised frame over the
-   canvas, centred near the top, or at the pointer for quick add. The backdrop catches a pointer outside and has no
-   colour, so no scrim token is needed. */
-.palette-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 20;
-}
-
-.palette,
-.shortcut-sheet {
-  position: fixed;
-  top: 12vh;
-  left: 50%;
-  transform: translateX(-50%);
-  width: min(560px, calc(100vw - 32px));
-  max-height: 60vh;
-  display: flex;
-  flex-direction: column;
-  background: var(--pb-raised);
-  color: var(--pb-text);
-  border: 1px solid var(--pb-line-strong);
-  border-radius: var(--pb-radius-box);
-  box-shadow: var(--pb-shadow-lifted);
-  animation: palette-in var(--pb-motion-fast) ease-out;
-}
-
-/* Its size is Palette.tsx's anchoredBox, which keeps it inside the window. */
-.palette[data-anchored] {
-  transform: none;
-  width: 320px;
-  max-height: 360px;
-}
-
-.palette-input {
-  border: 0;
-  border-bottom: 1px solid var(--pb-line);
-  border-radius: var(--pb-radius-box) var(--pb-radius-box) 0 0;
-  padding: 10px 12px;
-  font: inherit;
-  font-size: 15px;
-  background: transparent;
-  color: inherit;
-}
-
-.palette-input:focus {
-  outline: none;
-}
-
-.palette-list {
-  list-style: none;
-  margin: 0;
-  padding: 4px;
-  overflow-y: auto;
-}
-
-/* The label keeps its width; a long hint gives way, cut short, its whole text in its tooltip. */
-.palette-option {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 8px;
-  align-items: baseline;
-  padding: 6px 8px;
-  border-radius: var(--pb-radius-control);
-  cursor: pointer;
-}
-
-.palette-option[aria-selected="true"] {
-  background: var(--pb-sunken);
-  box-shadow: inset 2px 0 0 var(--pb-accent);
-}
-
-.palette-label {
-  overflow-wrap: anywhere;
-}
-
-/* Overrides the browser's own mark colours. */
-.palette-label mark {
-  background: none;
-  color: var(--pb-accent);
-  font-weight: 600;
-}
-
-.palette-meta {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  min-width: 0;
-}
-
-.palette-group,
-.palette-hint {
-  color: var(--pb-muted);
-  font-size: var(--pb-text-sm);
-  white-space: nowrap;
-}
-
-.palette-hint {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.palette-group {
-  flex: none;
-}
-
-.palette-empty {
-  margin: 0;
-  padding: 12px;
-  color: var(--pb-muted);
-}
-
-.shortcut-sheet {
-  width: min(440px, calc(100vw - 32px));
-  padding: 16px;
-  overflow-y: auto;
-}
-
-.shortcut-sheet h2 {
-  margin: 0;
-  font-size: 15px;
-}
-
-.shortcut-list {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 6px 16px;
-  margin: 12px 0;
-}
-
-.shortcut-row {
-  display: contents;
-}
-
-.shortcut-list dd {
-  margin: 0;
-}
-
-.shortcut-note {
-  margin: 0 0 12px;
-  color: var(--pb-muted);
-}
-
-.shortcut-sheet button {
-  align-self: flex-end;
-}
-
-.app kbd {
-  font-family: var(--pb-font-code);
-  font-size: var(--pb-text-sm);
-  padding: 1px 5px;
-  border: 1px solid var(--pb-line-strong);
-  border-radius: 4px;
-  background: var(--pb-sunken);
-  color: var(--pb-text);
-}
-
-/* A 0 ms duration under reduced motion is harmless here: the animation is finite. */
-@keyframes palette-in {
-  from {
-    opacity: 0;
-  }
-}
-
 /* A route request's ghost wire (docs/editor.md#requests-in-flight): thin, dashed and muted, plainly not a route; never
    under the pointer, so it cannot be hovered or clicked; the error colour for its second when ear refuses it. */
 .react-flow__edge.ear-ghost-edge {
@@ -1290,18 +1125,6 @@ body,
   .topbar-drawer-glyph {
     display: none;
   }
-
-  .palette,
-  .shortcut-sheet {
-    top: 8px;
-  }
-}
-
-/* Forced colours: the palette's active option by the system's highlight, as its background is not drawn. */
-@media (forced-colors: active) {
-  .palette-option[aria-selected="true"] {
-    outline: 2px solid Highlight;
-  }
 }
 
 /* Phones and touch (docs/editor.md#phones-and-touch). A coarse pointer with no hover is a finger: text fields at 16 px
@@ -1337,10 +1160,6 @@ body,
 
   .ear-node .react-flow__handle::before {
     inset: -6px -16px;
-  }
-
-  .palette-option {
-    padding: 10px 8px;
   }
 }
 

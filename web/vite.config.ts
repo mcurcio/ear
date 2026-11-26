@@ -18,5 +18,8 @@ export default defineConfig({
     // Vitest blanks every stylesheet by default, even one imported "?raw"; theme.test.ts reads editor.css and
     // patchbay's tokens.css as text (docs/editor.md#tokens-and-themes).
     css: { include: [/\/src\/editor\.css/, /\/@mcurcio\/patchbay\/dist\/tokens\.css/] },
+    // patchbay's component modules import their own stylesheets, which Node cannot load; inlined, Vite takes the
+    // imports (and blanks them), so the logic tests can call patchbay's pure helpers (rankCommands, findShortcut).
+    server: { deps: { inline: [/@mcurcio\/patchbay/] } },
   },
 });

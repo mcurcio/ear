@@ -6,14 +6,15 @@
 // shortcuts and the palette (docs/editor.md#the-palette-and-the-keyboard) and quick add on the canvas
 // (docs/editor.md#adding-on-the-canvas) are held here. Node places, the selection, the sizes and the theme are the
 // browser's own; places, sizes, the minimap and the theme outlive the page (docs/editor.md#what-the-browser-keeps).
-import { usePersistentState, useTheme } from "@mcurcio/patchbay/hooks";
+import { CommandPalette, ShortcutSheet } from "@mcurcio/patchbay/composites";
+import { detectPlatform, keyLabel, usePersistentState, useShortcuts, useTheme } from "@mcurcio/patchbay/hooks";
 import { useReactFlow, type Connection } from "@xyflow/react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { freeName } from "./addText";
 import { routeFromConnection } from "./connect";
-import { isMac, keyLabel, type ShortcutAction } from "./keys";
+import { shortcutKeys, shortcutLines, shortcutTable, type ShortcutAction } from "./keys";
 import type { PlaceHint, Position } from "./layout";
-import type { Command, PaletteScope } from "./palette";
+import { paletteItems, type PaletteScope } from "./palette";
 import { checkFlag, checkWidth, themeKey, type Prefs } from "./prefs";
 import { nodeTextFeature, type RouteEnds } from "./protocol";
 import { nothingSelected, removals, selectionKey, subjectOf } from "./selection";
@@ -24,13 +25,10 @@ import { AutoFit } from "./fit";
 import { Drawer } from "./components/Drawer";
 import { useEditor, useGraph, useGraphFile, useMediaQuery } from "./components/hooks";
 import { Inspector, type AddIntent } from "./components/Inspector";
-import { Palette } from "./components/Palette";
-import { ShortcutSheet } from "./components/ShortcutSheet";
 import { TopBar } from "./components/TopBar";
 import { useCanvas } from "./components/useCanvas";
 import { useCommands } from "./components/useCommands";
 import { useDrawer } from "./components/useDrawer";
-import { useShortcuts } from "./components/useShortcuts";
 
 /** The open palette: all commands or only Add; for quick add, the screen point it opens at and the node's place. */
 interface PaletteOpen {
@@ -39,18 +37,12 @@ interface PaletteOpen {
   place?: Position;
 }
 
-/** navigator.userAgentData is not in every browser, nor in TypeScript's DOM types. */
-function platform(): string {
-  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
-  return nav.userAgentData?.platform ?? nav.platform ?? "";
-}
-
 export function App({ prefs }: { prefs: Prefs }) {
   const editor = useEditor();
   const graph = useGraph();
   const fileState = useGraphFile();
   const flow = useReactFlow();
-  const [mac] = useState(() => isMac(platform()));
+  const [platform] = useState(detectPlatform);
 
   // The theme is patchbay's useTheme under ear's own key (docs/editor.md#tokens-and-themes); index.html's inline
   // script applies a kept choice before the first paint.
@@ -173,13 +165,14 @@ export function App({ prefs }: { prefs: Prefs }) {
     (at: { x: number; y: number }, place: Position) => setPalette({ scope: "add", at, place }),
     [],
   );
-  const onRun = useCallback((command: Command) => run(command.action, palette?.place), [run, palette]);
+  const place = palette?.place;
+  const items = useMemo(() => paletteItems(commands, (action) => run(action, place)), [commands, run, place]);
+  const closePalette = useCallback(() => setPalette(null), []);
 
-  // The shortcuts (docs/editor.md#shortcuts). While the palette or the sheet is open only the palette's toggle and
-  // Escape act; the palette handles its own Escape.
-  useShortcuts(mac, (action: ShortcutAction) => {
-    const modal = palette !== null || shortcutSheet;
-    if (modal && action !== "palette" && action !== "escape") return;
+  // The shortcuts (docs/editor.md#shortcuts), on patchbay's useShortcuts. While the palette is open only its toggle
+  // acts (the palette handles its own Escape and Tab); while the shortcut sheet is open none do, since its Dialog owns
+  // the keys and the focus.
+  const onShortcut = (action: ShortcutAction) => {
     switch (action) {
       case "palette":
         return setPalette((open) => (open !== null ? null : { scope: "all" }));
@@ -201,13 +194,12 @@ export function App({ prefs }: { prefs: Prefs }) {
       case "shortcuts":
         return setShortcutSheet(true);
       case "escape":
-        if (palette !== null) return setPalette(null);
-        if (shortcutSheet) return setShortcutSheet(false);
         if (narrow && sheetOpen) return setSheetOpen(false);
         if (key !== "") canvas.select(nothingSelected);
         return;
     }
-  });
+  };
+  useShortcuts(shortcutTable(onShortcut, { palette: palette !== null }), { enabled: !shortcutSheet, platform });
 
   return (
     <div className="app">
@@ -221,7 +213,7 @@ export function App({ prefs }: { prefs: Prefs }) {
         sheetOpen={sheetOpen}
         onToggleSheet={() => setSheetOpen((open) => !open)}
         onPalette={() => setPalette({ scope: "all" })}
-        paletteLabel={keyLabel("palette", mac)}
+        paletteLabel={keyLabel(shortcutKeys.palette, { platform })}
       />
       <div className="workspace">
         <Canvas
@@ -250,17 +242,22 @@ export function App({ prefs }: { prefs: Prefs }) {
         )}
       </div>
       {drawer !== null && <Drawer drawer={drawer} />}
-      {palette !== null && (
-        <Palette
-          commands={commands}
-          at={palette.at}
-          placeholder={palette.scope === "add" ? "Add a node of type…" : "Type a command or a node's name"}
-          mac={mac}
-          onRun={onRun}
-          onClose={() => setPalette(null)}
-        />
-      )}
-      {shortcutSheet && <ShortcutSheet mac={mac} onClose={() => setShortcutSheet(false)} />}
+      <CommandPalette
+        open={palette !== null}
+        onClose={closePalette}
+        commands={items}
+        at={palette?.at}
+        placeholder={palette?.scope === "add" ? "Add a node of type…" : "Type a command or a node's name"}
+        platform={platform}
+      />
+      <ShortcutSheet
+        open={shortcutSheet}
+        onClose={() => setShortcutSheet(false)}
+        shortcuts={shortcutLines}
+        platform={platform}
+      >
+        Single keys act only when the focus is not in a text field.
+      </ShortcutSheet>
     </div>
   );
 }
