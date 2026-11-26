@@ -14,7 +14,9 @@ swap: `docs/writing-a-node-type.md#reporting-from-the-code`, `docs/architecture.
 state, `NodeActions::invoke` with its refusals and its 10 s deadline, the harness's `trigger` and `invoke`:
 `docs/writing-a-node-type.md#actions`; the feature `actions` with `node.invoke`, its six codes, the schema's `actions`,
 the batch reply held for its actions and the `action` record for type actions: `docs/control-port.md#actions`,
-`docs/output-records.md#action`; the editor's action buttons: `docs/editor.md#actions`); the rest not built. Slice 5 (the
+`docs/output-records.md#action`; the editor's action buttons: `docs/editor.md#actions`), step 5.5 built (sendspin's
+notes split into status fields and events: `docs/node-types.md#status-and-events`); left of slice 5, the test of ten
+chatty nodes and a slowly reading client (section 11, 5.2) and sendspin's first action (5.4). Slice 5 (the
 control plane: status, events, node diagnostics on the wire, actions, the realtime coded ring, sendspin's notes split)
 follows slice 3c (built: the node
 handle and loops, `docs/writing-a-node-type.md#the-node-handle`, `#loops`). Slice 6 (parameters: decimal, indexed and live rows, parameter slots and their ramps, retunes,
@@ -123,22 +125,9 @@ the keeper writes `gainDb -3.5;`; other clients get `gesture.changed {"phase":"e
 standard output has `node amp gainDb -6 -> -3.5` with `"reason":"idle"`. Had the socket closed first, the same end
 would have come at once, with reason `session-closed`. When the laptop reconnects, the snapshot shows `-3.5`.
 
-**A node flaps.** `kitchen`'s connection drops and comes back every few hundred milliseconds. Its worker loop writes
-`connection`; standard output has a `status` record per change up to the field's pace (32 at once, then one a second),
-then a trailing record with the value the field now has and how many were held back, so `kubectl logs` always ends on
-the true value. Fourteen changes in ten seconds pass the field's threshold: `ear.status-flapping` with subject
-`connection`, `active: true`, as a `node.diagnostic` and a `diagnostic` record. The editor badges "flapping:
-connection"; when a whole window passes at or below the threshold, the same code and subject with `active: false`
-removes it.
-
-**A node reports a pairing code.** The worker writes `connection = connected`, `serverName = "Music Assistant"`,
-`paired = false`, then `pairingCode = "123-456"`, which the schema marks a **callout**. The editor shows "Pairing code
-123-456: type it into Music Assistant" with a copy button, announced politely; standard output has `node kitchen
-pairingCode "" -> "123-456"`. Once paired, the worker raises the event `paired {"server":"ma-7f3c"}` and writes
-`paired = true`, `pairingCode = ""`; the callout goes. A wrong code raises `pairing-failed {"reason":"pairing-code-
-mismatch"}` (severity `warn`), also shown as a notice. If the node's configuration is torn down, the server sends the
-node's status reset (4.3), and box status and callouts stay hidden while the node is neither `running`, `stopped` nor
-`reconfiguring`.
+**A node flaps, or reports a pairing code.** Built: the paces, the trailing record and `ear.status-flapping`
+([architecture.md](../architecture.md#rates-and-bounds)), and `sendspin`'s `connection`, `pairingCode` (a callout),
+`paired` and its events ([node-types.md](../node-types.md#status-and-events)).
 
 ### 2.2 The script author
 
@@ -216,7 +205,7 @@ anew).
 | **Action** | A command into a node that changes no desired state | an `ActionTable` entry (the lifecycle verbs are the framework's, built, and reserved names) | a client, ordered by the keeper | not kept | `node.invoke` | `action` record |
 | **Node diagnostic** | What the framework observes about a node's machinery | the framework's code list (4.6) | the framework alone | per code and subject: the latest, whether active, a count | node `diagnostics`; `node.diagnostic` | `diagnostic` record |
 | **Log** | Free text for people debugging | levels; `LogCodes` for the realtime thread | any node code; captured output | not kept | later (`log.subscribe`) | `log` record |
-| **Note** | Retired: today's `say` sentence; about 11 of sendspin's 17 are state, the rest edges | `notes.hpp` | sendspin | — | — | `note` record, until step 5.5 |
+| **Note** | Retired: a `say` sentence, which `sendspin` no longer writes (built, [node-types.md](../node-types.md#status-and-events)); `file` and `airplay` still do, until each moves | each type's notes | those types | — | — | `note` record |
 | **Health** | The lifecycle's judgement (built) | the framework | `NodeHost` alone | memory | built | built |
 
 A **node diagnostic** is not a **graph-file diagnostic** (a problem in `ear.conf`'s text at a line and column). They
@@ -239,21 +228,6 @@ Ask in order; the first yes decides.
    either.
 6. **For a person debugging, in words?** A **log** line.
 7. **Up or down?** **Health**, the framework's alone.
-
-| Today (sendspin's note) | Becomes |
-|---|---|
-| `id <client id>` | status `clientId` |
-| `dialling <url>`, `listening <port> as <instance>` | status `connection` (`dialling`, `listening`, `connected`; unknown until written), `url`, `listenPort`, `instance` |
-| `connected "<name>" paired\|unpaired`, `disconnected` | status `connection`, `serverName`, `paired` |
-| `pairing-code <c>`, `pairing-code-cleared` | status `pairingCode`, a callout |
-| `paired <server id>` | event `paired {server}`, and status `paired = true` |
-| `pairing-failed <reason>` | event `pairing-failed {reason}`, severity `warn` |
-| `pairing-held` | status `pairingHeld` (a flag) |
-| `stream <codec> <rate> <ch> <bits>`, `stream-ended` | status `stream` (`none`, `flac`, `pcm`), `streamRate`, `streamChannels`, `streamBits` |
-| `sending <rate> 2 24`, `sending-stopped` | status `sending` (flag), `sendingRate` |
-| `key-write-failed <detail>` | event `key-write-failed {detail}`, severity `error` |
-| `advertise-failed <detail>` | event `advertise-failed {detail}`, severity `warn` |
-| `notes-dropped <n>` | gone: the framework's `ear.events-dropped` |
 
 Other examples: a card's PCM state (slice 8) is status; `rtp`'s `receiving` is status written by its companion (slice
 8); "a configuration did not close in 10 s" is `ear.close-overdue`; a library's warning text is a log line.
@@ -498,7 +472,7 @@ enum class EventSeverity { info, warn, error };
 }
 ```
 
-- `NodeHandle::say` stays for `sendspin` until step 5.5 removes it.
+- `NodeHandle::say` stays for the `file` and `airplay` nodes' notes (`sendspin`'s moved to `Report`, built).
 
 ### 5.4 What `process` gets: `Io<spec>` grows
 
@@ -635,24 +609,6 @@ public:
 `src/nodes/gain/CMakeLists.txt` is `ear_node_type(SOURCES gain.cpp TESTS tests/gain_test.cpp)`; `validSettings` gains
 `{"gain", {{{"channels", 2}, {"gainDb", -6.0}, {"trimDb.1", 0.5}, {"trimDb.2", -0.5}}}}`. Nothing else names the type
 (`docs/writing-a-node-type.md`).
-
-A type with a loop's state writes status and events from that loop through the `Report` its `configure` hands the
-state. Sendspin's worker after step 5.5:
-
-```cpp
-inline constexpr std::string_view connections[] = {"dialling", "listening", "connected"};
-inline constexpr auto connection =
-	status::choice<"connection">(writer::loop(worker), connections).display(Display::box);   // starts unknown
-inline constexpr auto pairingCode = status::text<"pairingCode">(writer::loop(worker), 16).display(Display::callout)
-                                        .help("type it into Music Assistant to pair");
-inline constexpr std::string_view pairReasons[] = {"attempt-timeout", "concurrent-attempt", "method-not-supported",
-                                                   "pairing-code-mismatch", "user-cancelled", "unknown"};
-inline constexpr auto pairingFailed =
-	event::of<"pairing-failed">(EventSeverity::warn, "pairing failed: {reason}", arg::choice<"reason">(pairReasons));
-// In a worker loop handler:
-report_.set<connection>(connection("connected"));
-report_.raise<pairingFailed>(abortReasonName(reason));      // checked against pairReasons at run time
-```
 
 ### 5.8 Compile-time refusals
 
@@ -1012,27 +968,8 @@ New kinds, each with `v`, `seq`, `t`, `kind`, its fields, `msg`, as built. Every
   it returned to, absent for `hand-edit` and `file-saved`). An end ear made for its owner is `cause: gesture` with
   `reason`.
 - `action` for type actions is built ([output-records.md](../output-records.md#action)).
-- `note`: written only by `sendspin` until step 5.5; then the kind is removed from the encoder. Operators grep `says
-  pairing-code` (the `ear-on-talos` skill), so step 5.5's commit carries a `BREAKING CHANGE:` footer naming the
-  replacement, and the release notes say it.
-
-## 10. Migrating sendspin's notes (step 5.5)
-
-- `notes.hpp` and `notes::printable` go (3c already moved note pacing into core): the framework makes text safe and
-  paces events.
-- The worker and key store write through the `Report<spec>` that `configure` hands the worker's state, with every field
-  `writer::loop(worker)`, instead of `NodeHandle::say`.
-- **`stream` and `sending` come from the loop's state**: sendspin has no realtime code after 3c. The worker writes
-  `stream*` when the library starts or ends a stream, and `sending*` when the library asks for audio and when the sink's
-  consumer first gets a chunk after it (a fact the consumer posts to the worker).
-- **A rename, a port change or a listen/dial switch keeps the configuration** (3d): the status stays, and the worker
-  rewrites the fields the change touches (`instance`, `listenPort`, `url`, `connection`).
-- `NodeHandle::say`, core's note pacing and `StatusLog::nodeSays` go once nothing calls them.
-- The system tests that match `says` lines match the new `msg` lines (`node kitchen pairingCode "" -> "123-456"`); the
-  pairing test reads the code from the `status` record's `to`.
-- `docs/node-types.md#notes`, the `sendspin` notes list, becomes its status fields and events; the `sendspin` and `ear-on-talos` skills'
-  "what its notes mean" sections name fields and events (the operator's grep becomes `jq -r 'select(.field=="pairingCode")
-  | .to'`).
+- `note`: `sendspin` no longer writes it (built); the `file` and `airplay` nodes still do, so the kind stays in the
+  encoder until they move.
 
 ## 11. The cut: buildable steps
 
@@ -1057,12 +994,15 @@ system test of ten chatty nodes and a slowly reading client ([testing.md](../tes
 
 **5.4 Actions.** Built but for sendspin's first call ([writing-a-node-type.md](../writing-a-node-type.md#actions),
 [control-port.md](../control-port.md#actions), [editor.md](../editor.md#actions)). Left: sendspin's `forget-pairing`
-as the first call, which the pinned sendspin-cpp cannot serve
-(it has no way to forget one server's pairing): the owner chooses a carried patch, `open-pairing-window` (which opens
-pairing without the device gesture to any control-port client), or no sendspin action yet.
+as the first call: a call into the worker's loop ([writing-a-node-type.md](../writing-a-node-type.md#actions)) that
+forgets one server's pairing (its record in the key file and the
+library's memory), so a server that lost its own side can pair again without the node's identity being wiped. The
+pinned sendspin-cpp cannot serve it: its pairing API has no way to forget one server's pairing. The owner decided
+(2026-11-26): no sendspin action yet, and no `open-pairing-window` call either (it would open pairing without the
+device gesture to any control-port client). It waits for a library that can forget one pairing, upstream or by a
+carried patch the owner chooses.
 
-**5.5 Sendspin's notes split** (section 10). Tests: the sendspin system tests rewritten to read records; each field and
-event; a rename through the in-place `configure` keeping `clientId`. The commit carries the `BREAKING CHANGE:` footer.
+**5.5 Sendspin's notes split** is built ([node-types.md](../node-types.md#status-and-events)).
 
 **6.1 Decimal rows.** The rule, the walk, knobly's `number()` reader and the fixed writer, the schema's `decimal`,
 tapers and `minIsSilence`, the editor's number field. Tests: range, integer taken, NaN impossible; compile-fail

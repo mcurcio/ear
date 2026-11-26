@@ -1,11 +1,11 @@
 ---
 name: sendspin
-description: The sendspin node in EAR, Music Assistant's audio in and out over the Sendspin protocol - dialling or listening per node, pairing by a code, the key file, mDNS, what each `says` line means, its threads and clock (the feed, the notifier, GraphCycle), what the spike learned, the protocol library sendspin-cpp's traps, the carried patches and bumping the pin, trying it against the real-server test tool, and the real Music Assistant check still owed. Use when configuring or pairing a sendspin node, when it is silent, is not found, keeps asking for a code, or fails with `cannot listen on port`, or when changing src/nodes/sendspin/, cmake/SendspinDeps.cmake, cmake/sendspin-listener.patch, cmake/sendspin-starved-floor.patch, cmake/sendspin-late-chunk.patch, cmake/ixwebsocket-limits.patch or test/support/sendspin_server.py.
+description: The sendspin node in EAR, Music Assistant's audio in and out over the Sendspin protocol - dialling or listening per node, pairing by a code, the key file, mDNS, what each status field and event means, its threads and clock (the feed, the notifier, GraphCycle), what the spike learned, the protocol library sendspin-cpp's traps, the carried patches and bumping the pin, trying it against the real-server test tool, and the real Music Assistant check still owed. Use when configuring or pairing a sendspin node, when it is silent, is not found, keeps asking for a code, or fails with `cannot listen on port`, or when changing src/nodes/sendspin/, cmake/SendspinDeps.cmake, cmake/sendspin-listener.patch, cmake/sendspin-starved-floor.patch, cmake/sendspin-late-chunk.patch, cmake/ixwebsocket-limits.patch or test/support/sendspin_server.py.
 ---
 
 # The `sendspin` node
 
-Its reference (settings, notes, failures, clock, threads, library facts) is `docs/node-types.md#sendspin`. This is how to
+Its reference (settings, status fields and events, failures, clock, threads, library facts) is `docs/node-types.md#sendspin`. This is how to
 operate it, and what bites.
 
 ## Connecting and pairing
@@ -13,18 +13,23 @@ operate it, and what bites.
 - **With `server` it dials; without, it listens and advertises `_sendspin._tcp`.** Never both: the spec forbids a client
   dialling while it advertises, and a dialling node opens no listening socket.
 - **Pairing is required, for good.** Unpaired access is off, so a server that approves the node without pairing gets no
-  roles: `says connected "<server>" unpaired`, and no audio. Start pairing in Music Assistant, read `says pairing-code
-  <123-456>`, type it there. `says paired`, then `says connected "<server>" paired`, with no `disconnected` between. A wrong
-  code keeps the same code showing.
-- **20 wrong rounds hold pairing back** (`says pairing-failed pairing-code-mismatch`, `says pairing-held`), for this
+  roles: `connection` `connected` with `paired` false, and no audio. Start pairing in Music Assistant, read `pairingCode`
+  (`123-456`, a callout in the editor; on standard output `jq -r 'select(.field=="pairingCode" and .to!="") | .to'`),
+  type it there. The `paired` event, `pairingCode` back to `""` and `paired` true follow, with `connection` never leaving
+  `connected`. A wrong code keeps the same code showing.
+- **20 wrong rounds hold pairing back** (the `pairing-failed` event, reason `pairing-code-mismatch`, and `pairingHeld`
+  true), for this
   client's life: the count is in memory. `node.restart` (or changing a setting, or restarting ear) makes a new client and
   releases it; `node.stop` and `node.start` do not. Any network peer
   can burn these rounds (spec: not partitioned by server or address).
-- **The code is on standard output only.** Notes never reach the control port or the editor (deferred), so whoever pairs
-  needs ear's log open.
+- **The code is status, on the wire and on standard output alike** (`docs/node-types.md#status-and-events`): the editor
+  shows it, and `rpc-call.mjs --follow` prints `node.statusChanged`. Status belongs to the configuration: a restart resets it
+  (`node <n> status reset`), a stop, a start and a change in place keep it.
+- **No action yet** (the owner, 2026-11-26): forgetting one server's pairing needs a per-server forget the pinned library
+  lacks, and no open-pairing-window call is offered (it would open pairing to any control-port client).
 - **What Music Assistant does** (read in its `providers/sendspin/{provider,player}.py`, never run): `start_pin_pairing` for a
   client that `is_connected`, whichever side dialled, and a dynamic code when digits are offered. So a node must be connected
-  before Music Assistant can offer pairing: `says connected "<server>" unpaired` comes first.
+  before Music Assistant can offer pairing: `connection` `connected`, `paired` false, comes first.
 - **The same settings change nothing.** `node.update` with what the node already has is no restart, for a failed node too.
   To retry, `node.restart` or `node.start` (a failed node is configured again only when asked).
 - **A server that dialled by hand may not come back after a restart or a change of the node.** After a `node.update` or
@@ -54,17 +59,17 @@ operate it, and what bites.
   if it shows the new record, else `key-write-failed`, though it may still land.
 - No file at all and a folder it cannot write fails the node too, rather than run a fresh identity each boot.
 
-## What a line means
+## What a field or event means
 
 | You see | It means |
 |---|---|
-| `running`, meters silent, `says dialling` | No server yet. Not a failure: the graph keeps running whatever the server does |
-| `says disconnected` | `is_connected()` read false for 5 s (it reads false through a re-handshake, hence the 5 s). A dialling node redials then, and every 31 s until connected. A server back after the first redial can take up to 31 s to be heard |
+| `running`, meters silent, `connection` `dialling` | No server yet. Not a failure: the graph keeps running whatever the server does |
+| `connection connected -> dialling` (or `-> listening`) | `is_connected()` read false for 5 s (it reads false through a re-handshake, hence the 5 s), or a change in place swapped the client. A dialling node redials then, and every 31 s until connected. A server back after the first redial can take up to 31 s to be heard |
 | `failed start-failed: cannot listen on port <p>: held by node <n>` / `: Address already in use` | Another `sendspin` node, or another program. `node.update` to a free port. A program taking the port just after the check is not caught: the library only logs, and retries every 5 s |
-| `says listening`, no `says connected` | Nobody dialled. See mDNS, below |
-| `says advertise-failed <detail>` | Listening, not advertising. Give the server `ws://<address>:<port>/sendspin` |
-| `says stream <codec> ...` and silence | A format ear did not ask for breaks the spec: the sink stays full, and the library closes the connection when its ring pins |
-| `says key-write-failed <detail>` | Pairing holds this run only. Fix the folder, pair again. A key file something else changed is left as it is; `not confirmed within 5 s` is a slow disk, and the write may still land |
+| `connection` `listening`, never `connected` | Nobody dialled. See mDNS, below |
+| The `advertise-failed` event, `instance` `""` | Listening, not advertising. Give the server `ws://<address>:<port>/sendspin` |
+| `stream` not `none` and silence | A format ear did not ask for breaks the spec (`streamRate`, `streamChannels`, `streamBits` say what came): the sink stays full, and the library closes the connection when its ring pins |
+| The `key-write-failed` event | Pairing holds this run only. Fix the folder, pair again. A key file something else changed is left as it is; `not confirmed within 5 s` is a slow disk, and the write may still land |
 
 ## Lifecycle: the type's class
 
@@ -116,7 +121,7 @@ client is the configuration's. What that means to an operator (the owner's answe
   time it asks.
 - The instance is `ear-<first 50 bytes of node>-<first 8 of client id>`, a DNS label's 63 at most, stable, and unique wherever
   client ids are. It is probed before it is announced (about 0.5 to 1 s after `listening`), and renamed if another responder
-  holds it (`says renamed <asked> to <published>`; docs/node-types.md#mdns). Music Assistant shows `name`, from the hello.
+  holds it (the `renamed` event, `instance` the published name; docs/node-types.md#mdns). Music Assistant shows `name`, from the hello.
 - One interface, the one the kernel routes 224.0.0.251 through, and its address is read once at the node's start. A pod on an
   overlay network cannot advertise (`ear-on-talos`).
 - Goodbye goes out when the worker's state is destroyed (a restart, a disable, a removal; never a stop). A crash leaves
@@ -381,8 +386,8 @@ out/ear --config-dir /tmp/c --recordings-dir /tmp/r --control-port 0 > /tmp/ear.
 /opt/sendspin-server/bin/python test/support/sendspin_server.py --listen 0 --dial ws://127.0.0.1:8928/sendspin
 ```
 
-The server reads commands from its standard input. On `connected <id>`, type `pair`; `/tmp/ear.log` then says `pairing-code
-123-456`; type `code 123456`, then `play 2`, then `quit`. Stop ear with `kill %1`, and `/tmp/r/ma.wav` holds the ramp.
+The server reads commands from its standard input. On `connected <id>`, type `pair`; `/tmp/ear.log` then has the record
+`node ma pairingCode "" -> 123-456`; type `code 123456`, then `play 2`, then `quit`. Stop ear with `kill %1`, and `/tmp/r/ma.wav` holds the ramp.
 
 ## Tests
 
@@ -391,11 +396,14 @@ The server reads commands from its standard input. On `connected <id>`, type `pa
 - **`--hold-activate` stops a real server between its hellos and its first `server/activate`,** the one place a server can sit
   unadmitted. `activate-ended close` is what a socket giving way looks like from the server: no goodbye.
 - **Every 127/8 address is this host's, so one test can be peers on many addresses** (`connectFrom` binds its source). Peers on 127.0.0.1 share the server's own.
-- **`ChildProcess::waitForLine` finds a line an earlier wait already saw.** A second `says connected ... paired` needs `waitForNthLine`.
+- **The system tests read records, not lines** (`sendspin_system.hpp`: `waitForStatus`, `waitForEvent`, `lastStatus`, each
+  by field or code). A wait finds a record an earlier wait already saw, so a second connection needs its index
+  (`waitForStatus(ear, "connection", "connected", 1)`). A field records only changes: a swap that keeps the client id
+  writes no `clientId`, and a held pairing asked again writes no `pairingHeld`.
 - **A stream started right after a role change joins the ramp late** (at frame 16608 of 72000, each run), so `play` waits for
   the role, by a 5 ms poll: `aiosendspin` has no event for it. Under load it can still join late, by however much the host delayed
   it, so a system test plays a 60 s stream until the WAV holds the second of exact ramp it needs (`waitForRamp`), then ends it
-  (`end`, then `says stream-ended`), never a fixed length (`docs/testing.md#waiting-for-what-ear-wrote`). A stream that plays
+  (`end`, then `stream` back to `none`), never a fixed length (`docs/testing.md#waiting-for-what-ear-wrote`). A stream that plays
   out ends short too: the encoder holds back its tail, so 68607 of 72000 frames arrive.
 - **The clock tests judge every cycle through the one cycle judge** (`docs/testing.md#the-cycle-judge`). A cycle's timing
   is judged when the judge judged it whole, 3 s into the ramp, outside a library settle and a loss of sync the library

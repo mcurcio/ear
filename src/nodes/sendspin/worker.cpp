@@ -10,7 +10,6 @@
 #include <utility>
 
 #include "advertiser.hpp"
-#include "notes.hpp"
 #include "pcm.hpp"
 
 namespace ear::nodes::sendspin {
@@ -69,7 +68,7 @@ void PlayerSlot::endStream(SendspinClock& clock) {
 }
 
 Worker::Worker(WorkerParts parts)
-	: toServer(parts.format.rate, *this), handle_(parts.handle), keys_(parts.keys), clock_(parts.clock),
+	: toServer(parts.format.rate, *this), report_(parts.report), keys_(parts.keys), clock_(parts.clock),
 	  writer_(parts.writer), player_(parts.player), self_(parts.self), sink_(parts.sink),
 	  settings_(std::move(parts.settings)), format_(parts.format),
 	  scratch_(std::size_t{parts.writer.capacityFrames()} * nodeChannels) {}
@@ -115,12 +114,15 @@ void Worker::tick() {
 
 void Worker::fail(std::string detail) {
 	tick_.reset();
-	handle_.lost(std::move(detail));
+	report_.handle().lost(std::move(detail));
 }
 
 void Worker::startClient() {
 	// The store's rule trusted the text before any of this loop's work ran, so this only fails on a bug.
-	auto keys = NodeKeyStore::open(keys_, handle_);
+	// A failed write is the worker's event; the store may tell it from a library thread, and an event has no one writer
+	// (docs/writing-a-node-type.md#report).
+	auto keys = NodeKeyStore::open(
+		keys_, [report = report_](std::string_view detail) { report.raise<events::keyWriteFailed>(detail); });
 	if (!keys) return fail(keys.error());
 	keyStore_ = std::move(*keys);
 	if (auto failed = runClient()) fail(std::move(*failed));
@@ -132,8 +134,11 @@ std::optional<std::string> Worker::runClient() {
 		client->stop();
 		return "the Sendspin client did not start";
 	}
-	handle_.say(notes::id(client->client_id()));
 	const std::string clientId = client->client_id();
+	report_.set<fields::clientId>(clientId);
+	report_.set<fields::url>(settings_.server ? settings_.server->text() : "");
+	report_.set<fields::listenPort>(settings_.server ? 0 : std::int64_t{settings_.port});
+	unconnected();
 	{
 		const std::scoped_lock lock(clientMutex_);
 		client_ = std::move(client);
@@ -166,7 +171,6 @@ void Worker::replaceClient(SendspinSettings next, ConfigureDone done) {
 	advertiser_.reset();
 	askedInstance_.clear();
 	player_.set(nullptr);
-	if (watch_ && watch_->toldConnected()) handle_.say(notes::disconnected());
 	watch_.reset();
 	client_->stop();
 	std::unique_ptr<::sendspin::SendspinClient> old;
@@ -177,7 +181,13 @@ void Worker::replaceClient(SendspinSettings next, ConfigureDone done) {
 	old.reset();
 	playerRole_ = nullptr;
 	source_ = nullptr;
-	saidDialling_ = false;
+	// What the old client told of its connection and its pairing went with it; its stream and its sending were ended
+	// by its stop. A new client starts with no attempt held back (docs/node-types.md#pairing).
+	report_.set<fields::instance>("");
+	report_.set<fields::serverName>("");
+	report_.set<fields::paired>(false);
+	report_.set<fields::pairingCode>("");
+	report_.set<fields::pairingHeld>(false);
 	if (auto failed = runClient()) {
 		// The sink stays paused, so nothing reaches the missing client, and the tick stops, so nothing makes one: the
 		// change falls back to a restart, which tears the configuration down.
@@ -236,8 +246,7 @@ std::unique_ptr<::sendspin::SendspinClient> Worker::makeClient(NodeKeyStore& key
 /// The library is listening by now. Its advertiser, or none with `advertise-failed`: the node still listens, and an
 /// operator can give the server its URL.
 void Worker::startListening(std::string_view clientId) {
-	std::string instance = advertisedInstance(handle_.node(), clientId);
-	handle_.say(notes::listening(settings_.port, instance));
+	std::string instance = advertisedInstance(report_.handle().node(), clientId);
 	auto advertiser =
 		ear::mdns::Advertiser::open(ear::mdns::Listing{.service = "_sendspin._tcp",
 	                                                   .instance = instance,
@@ -245,10 +254,11 @@ void Worker::startListening(std::string_view clientId) {
 	                                                   .port = settings_.port,
 	                                                   .txt = {"path=/sendspin", "name=" + settings_.name}});
 	if (!advertiser) {
-		handle_.say(notes::advertiseFailed(advertiser.error()));
+		report_.raise<events::advertiseFailed>(advertiser.error());
 		return;
 	}
 	advertiser_ = std::move(*advertiser);
+	report_.set<fields::instance>(instance);
 	askedInstance_ = std::move(instance);
 }
 
@@ -259,25 +269,36 @@ void Worker::turn() {
 	const bool paired = client.is_paired();
 	const bool connected = client.is_connected();
 	const auto told = watch_->read({paired, connected}, std::chrono::steady_clock::now());
-	if (told.disconnected) handle_.say(notes::disconnected());
+	if (told.disconnected) {
+		report_.set<fields::serverName>("");
+		report_.set<fields::paired>(false);
+		unconnected();
+	}
 	if (told.connected) {
-		saidDialling_ = false;
+		// The name and the pairing before the connection, so a reader that sees `connected` has them.
 		const auto server = client.get_server_information();
-		handle_.say(notes::connected(server ? server->name : "", paired));
+		report_.set<fields::serverName>(server ? server->name : "");
+		report_.set<fields::paired>(paired);
+		report_.set<fields::connection>(fields::connection("connected"));
 	}
-	if (told.dial) {
-		if (!std::exchange(saidDialling_, true)) handle_.say(notes::dialling(settings_.server->text()));
-		client.connect_to(settings_.server->text());
-	}
+	if (told.dial) client.connect_to(settings_.server->text());
 	if (advertiser_ == nullptr) return;
 	// Probed, then announced (docs/node-types.md#mdns): a rename only if another responder held its instance.
 	auto mdns = advertiser_->turn();
-	if (mdns.announced && mdns.announced->instance != askedInstance_)
-		handle_.say(notes::renamed(askedInstance_, mdns.announced->instance));
+	if (mdns.announced && mdns.announced->instance != askedInstance_) {
+		report_.set<fields::instance>(mdns.announced->instance);
+		report_.raise<events::renamed>(askedInstance_, mdns.announced->instance);
+	}
 	if (mdns.failed) {
-		handle_.say(notes::advertiseFailed(*mdns.failed));
+		report_.set<fields::instance>("");
+		report_.raise<events::advertiseFailed>(*mdns.failed);
 		advertiser_.reset();
 	}
+}
+
+void Worker::unconnected() {
+	report_.set<fields::connection>(settings_.server ? fields::connection("dialling")
+	                                                 : fields::connection("listening"));
 }
 
 // PlayerRoleListener. The library's sync thread; up to 20 ms. A partial write is whole frames.
@@ -302,43 +323,60 @@ void Worker::on_stream_start() {
 	                       bits == playerBytesPerSample * 8,
 	                   std::memory_order_release);
 	streaming_ = true;
-	handle_.say(notes::stream(codecName(*stream.codec), *stream.sample_rate, *stream.channels, bits));
+	report_.set<fields::stream>(codecName(*stream.codec));
+	report_.set<fields::streamRate>(std::int64_t{*stream.sample_rate});
+	report_.set<fields::streamChannels>(std::int64_t{*stream.channels});
+	report_.set<fields::streamBits>(std::int64_t{bits});
 }
 
 /// The spec: "MUST stop output and clear its buffers". Gone at the next cycle, and not counted played, since the
 /// library zeroed its count. Heard from stop() too, whatever was streaming.
 void Worker::on_stream_end() {
 	player_.endStream(clock_);
-	if (std::exchange(streaming_, false)) handle_.say(notes::streamEnded());
+	if (!std::exchange(streaming_, false)) return;
+	report_.set<fields::stream>(fields::stream("none"));
+	report_.set<fields::streamRate>(0);
+	report_.set<fields::streamChannels>(0);
+	report_.set<fields::streamBits>(0);
 }
 
-void Worker::on_pairing_succeeded(const std::string& server_id) { handle_.say(notes::paired(server_id)); }
+/// The code is spent; the connection reads paired at the next turn too, which writes the same.
+void Worker::on_pairing_succeeded(const std::string& server_id) {
+	report_.raise<events::paired>(server_id);
+	report_.set<fields::pairingCode>("");
+	report_.set<fields::paired>(true);
+}
 
 /// Only a dynamic code is offered, so a mismatch reaches here when the library ended the attempt at its round limit
 /// (`connection_manager_pairing.cpp`), which holds later attempts back for the client's life.
 void Worker::on_pairing_failed(const std::string&, ::sendspin::SendspinPairAbortReason reason) {
-	handle_.say(notes::pairingFailed(abortReasonName(reason)));
-	if (reason == ::sendspin::SendspinPairAbortReason::PAIRING_CODE_MISMATCH) handle_.say(notes::pairingHeld());
+	report_.raise<events::pairingFailed>(abortReasonName(reason));
+	if (reason == ::sendspin::SendspinPairAbortReason::PAIRING_CODE_MISMATCH) report_.set<fields::pairingHeld>(true);
 }
 
+/// Six digits, grouped as an operator reads them.
 void Worker::on_display_pairing_code(const std::string& code, ::sendspin::SendspinPairingCodeFormat) {
-	handle_.say(notes::pairingCode(code));
+	const std::string_view digits(code);
+	const std::size_t half = digits.size() / 2;
+	report_.set<fields::pairingCode>(std::string(digits.substr(0, half)) + "-" + std::string(digits.substr(half)));
 }
 
-void Worker::on_clear_pairing_code() { handle_.say(notes::pairingCodeCleared()); }
+void Worker::on_clear_pairing_code() { report_.set<fields::pairingCode>(""); }
 
 /// A dynamic code asks for this only for an attempt the round limit held back, and ear offers no gesture to confirm it:
 /// the remedy (docs/node-types.md#failures) is a new client.
-void Worker::on_open_pairing_window() { handle_.say(notes::pairingHeld()); }
+void Worker::on_open_pairing_window() { report_.set<fields::pairingHeld>(true); }
 
 void Worker::on_streaming_started() {
 	toServer.streaming(true);
-	handle_.say(notes::sending(format_.rate.hz(), nodeChannels, sourceBits));
+	report_.set<fields::sendingRate>(std::int64_t{format_.rate.hz()});
+	report_.set<fields::sending>(true);
 }
 
 void Worker::on_streaming_stopped() {
 	toServer.streaming(false);
-	handle_.say(notes::sendingStopped());
+	report_.set<fields::sending>(false);
+	report_.set<fields::sendingRate>(0);
 }
 
 void Worker::writeAudio(const std::uint8_t* pcm, std::size_t bytes, std::int64_t stampUs) {

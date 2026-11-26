@@ -17,6 +17,7 @@ namespace ear {
 template <const auto& Spec> class NodeOf;
 namespace testing {
 template <const auto& Spec, class Type> class TypeHarness;
+struct ReportSeam;
 } // namespace testing
 
 /// The typed control-plane face of one configuration, over its NodeHandle: status writes and events by the spec's
@@ -92,6 +93,7 @@ public:
 private:
 	friend class NodeOf<Spec>;
 	template <const auto&, class> friend class testing::TypeHarness;
+	friend struct testing::ReportSeam;
 	explicit Report(NodeHandle& handle) noexcept : handle_(&handle) {}
 	template <const auto& Field> static constexpr void checkField() {
 		static_assert(Fields::template has<Field>, "set takes only its spec's status fields");

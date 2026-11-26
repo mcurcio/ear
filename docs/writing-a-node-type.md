@@ -250,8 +250,9 @@ struct WorkerState {
 A write never blocks but on the configuration's queue's one short mutex, and goes in order with
 the handle's `lost`: a status write before an event is drained before it, a `lost` after the last
 status after it ([architecture.md](architecture.md#status-and-events)). A text is made safe on the
-writer's thread: bytes that are not UTF-8 become U+FFFD, a tab, newline or carriage return a space
-and another control character U+FFFD, and a text past `maxBytes` is cut at a character so that,
+writer's thread: bytes that are not UTF-8 become U+FFFD, a tab, newline, carriage return, line
+separator (U+2028) or paragraph separator (U+2029) a space and another control character (C0, DEL
+and C1, U+0080 to U+009F) U+FFFD, and a text past `maxBytes` is cut at a character so that,
 with `…` appended, it fits. A value that breaks its declaration (a choice's text not among its
 values, a number outside its range, a decimal that is not finite) is the type's bug: the node fails
 `lost` with the rule's text (`status link: "sideways" is not one of its values`), through the same
@@ -486,7 +487,7 @@ log sink's) and never waits on the main loop.
 | Call | What | Order and rate |
 |---|---|---|
 | `node()` | The node's name | |
-| `say(text)` | A note, `node <n> says <text>` on standard output (a `note` record, [output-records.md](output-records.md)). Never a state | Crosses to the main loop in the order said, so it is ordered with the node's states. Paced per configuration: 32 at once, then one a second; the framework says `notes-dropped <n>`, the count held back, as the configuration's own note just before the next that passes. Judged on the thread that says, so a note held back is never queued |
+| `say(text)` | A note, `node <n> says <text>` on standard output (a `note` record, [output-records.md](output-records.md)). Never a state. Only standard output hears it, so a new type reports [status and events](#status-and-events) instead (the `sendspin` node does; `file` and `airplay` still write notes) | Crosses to the main loop in the order said, so it is ordered with the node's states. Paced per configuration: 32 at once, then one a second; the framework says `notes-dropped <n>`, the count held back, as the configuration's own note just before the next that passes. Judged on the thread that says, so a note held back is never queued |
 | `lost(detail)` | The node fails, `start-failed: <detail>` before it first rested `running` or `stopped`, `lost: <detail>` after; ignored once the configuration's teardown began | In order with notes; never held back by their rate |
 | `log(entry)`, `debug(text)`, `info(text)`, `warn(text)`, `error(text)` | A `log` record ([output-records.md](output-records.md)): the framework sets its `node`, and an empty `source` becomes the type's name (a library's own lines give its name, and a `topic`) | Straight to the log sinks on the calling thread, unordered with notes and states, as captured output is; paced per node by standard output's encoder |
 

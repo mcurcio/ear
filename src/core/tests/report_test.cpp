@@ -181,6 +181,9 @@ TEST_CASE("A text is made safe and cut at its bound on the writer's thread", "[r
 	CHECK(safeText("h\xC3\xA9llo!", 6) == "h\xC3\xA9\xE2\x80\xA6");
 	CHECK(safeText("bad \xFF byte", 64) == "bad \xEF\xBF\xBD byte");
 	CHECK(safeText("ok", 2) == "ok");
+	// C1 controls are controls; the line and paragraph separators break lines.
+	CHECK(safeText("csi\xC2\x9B[2J nel\xC2\x85 nbsp\xC2\xA0", 64) == "csi\xEF\xBF\xBD[2J nel\xEF\xBF\xBD nbsp\xC2\xA0");
+	CHECK(safeText("ls\xE2\x80\xA8ps\xE2\x80\xA9 dash\xE2\x80\x94", 64) == "ls ps  dash\xE2\x80\x94");
 }
 
 TEST_CASE("A value that breaks its declaration fails the node with the rule's text, and writes nothing", "[report]") {

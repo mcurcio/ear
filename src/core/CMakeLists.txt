@@ -104,6 +104,7 @@ if(BUILD_TESTS)
 		include/ear/testing/erased.hpp
 		include/ear/testing/harness_cuts.hpp
 		include/ear/testing/node_harness.hpp
+		include/ear/testing/report_on.hpp
 		include/ear/testing/type_harness.hpp)
 	set_target_properties(ear_type_harness PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)
 	# ear_sleeps: drive_now.hpp polls through its role call; and the raw sleeps poisoned here, as in every test program

@@ -1,5 +1,6 @@
-// What a character of someone else's text may be on one status line (docs/node-types.md#sendspin). The one
-// judge, for a `name` setting and for what a peer sends. Pure.
+// What a character of a `name` setting may be (docs/node-types.md#sendspin): UTF-8 with no control character, as a
+// server shows it. What a peer sends is made safe by the framework's Report instead
+// (docs/writing-a-node-type.md#report). Pure.
 #pragma once
 #include <cstddef>
 #include <optional>

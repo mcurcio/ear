@@ -71,8 +71,24 @@ TEST_CASE("A missing key file is created as an empty key record at 0600 before t
 	CHECK(h->armed(worker) == 1);   // the tick, whose first run would make the client
 	CHECK(h->armed(notifier) == 1); // the watch on the clock's wake
 	CHECK(h->node().notes().empty());
+	CHECK(h->statusRecord().empty()); // every field at its initial value until the client is made
 	h->remove();
 	CHECK(h->node().diagnostics().empty()); // every source the states armed went with them
+}
+
+TEST_CASE("Its status fields and events are the worker's, each field at its initial value until written",
+          "[sendspin][type]") {
+	auto h = running();
+	CHECK(h->status<fields::connection>() == ear::StatusValue{});
+	CHECK(h->status<fields::stream>() == ear::StatusValue{std::string("none")});
+	CHECK(h->status<fields::paired>() == ear::StatusValue{false});
+	CHECK(h->status<fields::pairingCode>() == ear::StatusValue{std::string()});
+	CHECK(h->status<fields::listenPort>() == ear::StatusValue{std::int64_t{0}});
+	for (const ear::StatusDeclaration* field : ear::StatusOf<spec>::declared)
+		CHECK(field->writer.kind == ear::writer::Writer::Kind::loop);
+	CHECK(ear::StatusOf<spec>::count == 15);
+	CHECK(ear::EventsOf<spec>::count == 5);
+	h->remove();
 }
 
 TEST_CASE("A key file that is no key record fails the node start-failed before it ever ran, unchanged but for its "

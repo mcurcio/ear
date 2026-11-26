@@ -62,9 +62,14 @@ std::string safeText(std::string_view text, std::size_t maxBytes) {
 			++at;
 			continue;
 		}
+		const std::string_view character = text.substr(at, length);
 		if (length == 1 && (lead < 0x20 || lead == 0x7F))
 			safe += (lead == '\t' || lead == '\n' || lead == '\r') ? " " : replacement;
-		else safe.append(text.substr(at, length));
+		// The C1 controls, U+0080 to U+009F (a terminal may read U+009B as CSI), are control characters too; the line and
+		// paragraph separators, U+2028 and U+2029, break a line as a newline does.
+		else if (length == 2 && lead == 0xC2 && static_cast<unsigned char>(character[1]) < 0xA0) safe += replacement;
+		else if (character == "\xE2\x80\xA8" || character == "\xE2\x80\xA9") safe += " ";
+		else safe.append(character);
 		at += length;
 	}
 	if (safe.size() <= maxBytes) return safe;

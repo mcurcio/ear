@@ -31,10 +31,11 @@ public:
 	/// `source` becomes the type's name. Straight to the log sinks, unordered with notes and states; dropped once the
 	/// configuration has ended (but for one racing the end).
 	virtual void log(LogEntry entry) = 0;
-	/// Until slice 5 splits notes into status and events: `node <n> says <text>` (a `note` record), on the main loop
-	/// in the order said, so a note is ordered with the node's states. Never a state. Paced per configuration: 32 at
-	/// once, then one a second; the next note that passes is preceded by `notes-dropped <n>`. Heard until the
-	/// configuration has ended, so a goodbye said during its teardown is heard.
+	/// A note, for a type that has not moved to status and events (docs/writing-a-node-type.md#the-node-handle):
+	/// `node <n> says <text>` (a `note` record), on the main loop in the order said, so a note is ordered with the
+	/// node's states. Never a state. Paced per configuration: 32 at once, then one a second; the next note that passes
+	/// is preceded by `notes-dropped <n>`. Heard until the configuration has ended, so a goodbye said during its
+	/// teardown is heard.
 	virtual void say(std::string text) = 0;
 
 	void debug(std::string text) { log(LogEntry{.level = LogLevel::debug, .source = {}, .text = std::move(text)}); }

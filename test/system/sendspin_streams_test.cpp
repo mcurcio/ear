@@ -142,15 +142,18 @@ TEST_CASE("Paired, routed noise reaches the server on the routed channel, with e
 	                                            "route noise:noise.mono ma:to.left;\n",
 	                                        graphFrequency, blockSize));
 	auto ear = runEar(directory);
-	const bool ready = ear.waitForLine("route noise:noise.mono -> ma:to.left linked", deadline) &&
-	                   ear.waitForLine(connectedUnpaired, deadline);
+	const bool ready =
+		ear.waitForLine("route noise:noise.mono -> ma:to.left linked", deadline) && connectedUnpaired(ear);
 	INFO("ear printed:\n" << ear.output());
 	INFO("the server printed:\n" << server.events());
 	REQUIRE(ready);
 	pairOnce(ear, server);
 
 	server.send("source-start");
-	REQUIRE(ear.waitForLine("node ma says sending 48000 2 24", playDeadline));
+	const auto sending = waitForStatus(ear, "sending", true, 0, playDeadline);
+	REQUIRE(sending);
+	CHECK(sending->value("msg", "") == "node ma sending false -> true");
+	CHECK(lastStatus(ear, "sendingRate") == json(graphFrequency));
 	const auto started = server.waitForEvent("source-started ", deadline);
 	REQUIRE(started);
 	CHECK(*started == "source-started 48000 2 24");
@@ -173,7 +176,8 @@ TEST_CASE("Paired, routed noise reaches the server on the routed channel, with e
 		stamps.take(frames, stampUs, lagUs, wallNow());
 	}
 	server.send("source-stop");
-	REQUIRE(ear.waitForLine("node ma says sending-stopped", deadline));
+	REQUIRE(waitForStatus(ear, "sending", false));
+	CHECK(lastStatus(ear, "sendingRate") == json(0));
 	const auto ended = server.waitForEvent("source-ended ", deadline);
 	REQUIRE(ended);
 
@@ -242,22 +246,26 @@ TEST_CASE("A server lost mid-stream leaves the node running, and restarted with 
 	};
 	{
 		SendspinTestServer server({"--dial", url, "--state", state.string()});
-		REQUIRE_SEEN(ear, ear.waitForLine(connectedUnpaired, deadline));
+		REQUIRE_SEEN(ear, connectedUnpaired(ear));
 		pairOnce(ear, server);
 		server.send("play 30");
 		REQUIRE_SEEN(ear, heard("ma", "from.right")); // the ramp's high half: mid-stream, past its first 1.4 s
 	}
-	REQUIRE_SEEN(ear, ear.waitForLine("node ma says disconnected", playDeadline));
+	REQUIRE_SEEN(ear, waitForDisconnected(ear, 0, playDeadline));
+	// No server: its name and pairing gone with it, listening again, and the stream it played ended.
+	CHECK(lastStatus(ear, "connection") == json("listening"));
+	CHECK(lastStatus(ear, "serverName") == json(""));
+	CHECK(lastStatus(ear, "paired") == json(false));
+	CHECK(lastStatus(ear, "stream") == json("none"));
 	CHECK_FALSE(ear.lineStartingWith("node ma failed"));
 	CHECK_FALSE(ear.lineStartingWith("node ma stopping"));
 	CHECK(heard("other", "record.left"));
 
-	const std::size_t connectsBefore = countLines(ear, "node ma says connected ");
+	const std::size_t connectsBefore = countStatus(ear, "connection", "connected");
 	SendspinTestServer server({"--dial", url, "--state", state.string()});
-	const auto back = waitForNthLine(ear, "node ma says connected ", connectsBefore, playDeadline);
-	REQUIRE(back);
-	CHECK(*back == connectedPaired);
-	CHECK(countLines(ear, pairingCodePrefix) == 1);
+	REQUIRE(waitForStatus(ear, "connection", "connected", connectsBefore, playDeadline));
+	CHECK(waitForConnected(ear, true, connectsBefore)); // paired as it connected
+	CHECK(countPairingCodes(ear) == 1);
 	// The new stream's ramp, in what is written from here on.
 	const std::size_t mark = wavFramesSoFar(directory.recordings() / "rec.wav");
 	server.send(playLong);
@@ -281,7 +289,7 @@ TEST_CASE("A server cannot change the depth of a running stream: asked for 16 bi
 	TempDirectory directory;
 	writeGraphFile(directory, dialToRec(server.url()));
 	auto ear = runEar(directory);
-	const bool ready = waitForLines(ear, runningAndLinked) && ear.waitForLine(connectedUnpaired, deadline);
+	const bool ready = waitForLines(ear, runningAndLinked) && connectedUnpaired(ear);
 	INFO("ear printed:\n" << ear.output());
 	REQUIRE(ready);
 	pairOnce(ear, server);
@@ -302,8 +310,8 @@ TEST_CASE("A server cannot change the depth of a running stream: asked for 16 bi
 	REQUIRE_SEEN(ear, endStream(ear, server));
 	ear.signal(SIGTERM);
 	REQUIRE(waitForStop(ear) == 0);
-	CHECK(countLines(ear, "node ma says stream ") == 1);
-	CHECK(ear.hasLine("node ma says stream flac 48000 2 24"));
+	CHECK(countStreams(ear) == 1);
+	CHECK(streamedFlac24(ear));
 	const RampCheck ramp = checkRamp(readWav(directory.recordings() / "rec.wav"), lostSyncUs(ear));
 	INFO(ramp);
 	CHECK(ramp.lastRunFrames >= graphFrequency * 5 / 2);
@@ -316,7 +324,7 @@ TEST_CASE("A large block raises the lead the player reports to what still plays 
 	writeGraphFile(directory,
 	               graphFileText("node sendspin ma { server \"" + server.url() + "\"; }\n", graphFrequency, 4096));
 	auto ear = runEar(directory);
-	REQUIRE_SEEN(ear, ear.waitForLine(connectedUnpaired, deadline));
+	REQUIRE_SEEN(ear, connectedUnpaired(ear));
 	pairOnce(ear, server);
 	server.send("lead");
 	const auto lead = server.waitForEvent("lead ", playDeadline);

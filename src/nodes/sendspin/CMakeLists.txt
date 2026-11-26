@@ -16,7 +16,6 @@ ear_node_type(
 		tests/clock_test.cpp
 		tests/code_test.cpp
 		tests/keys_test.cpp
-		tests/notes_test.cpp
 		tests/pcm_test.cpp
 		tests/settings_test.cpp
 		tests/swap_test.cpp

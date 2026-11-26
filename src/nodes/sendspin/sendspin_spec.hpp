@@ -1,5 +1,5 @@
-// The "sendspin" node type's spec and class (docs/node-types.md#sendspin; docs/writing-a-node-type.md#the-class):
-// private to the type, shared by sendspin.cpp and its tests, which run it through ear::testing::TypeHarness<spec,
+// The "sendspin" node type's class on its spec (spec.hpp; docs/node-types.md#sendspin,
+// docs/writing-a-node-type.md#the-class): private to the type, shared by sendspin.cpp and its tests, which run it through ear::testing::TypeHarness<spec,
 // Sendspin> by the same handles. In the type's own named namespace, never an unnamed one (type_spec.hpp says why).
 //
 // Its ports are fixed; the connection is the worker's, so an absent server is no failure: the node runs and its outputs
@@ -19,29 +19,11 @@
 #include "key_store.hpp"
 #include "sendspin_clock.hpp"
 #include "settings.hpp"
+#include "spec.hpp"
 #include "worker.hpp"
 
 namespace ear::nodes::sendspin {
 
-inline constexpr auto to = bank::input<"to">;
-inline constexpr auto from = bank::output<"from">;
-/// The sink's bank: `to` passed straight through, read by ToServer on the sink's thread; never faded.
-inline constexpr auto toServer = bank::insideOutput<"to_server">;
-/// What the server sends: a source the library's sync thread writes through the node's clock (sendspin_clock.hpp),
-/// passed to `from`.
-inline constexpr auto fromServer = bank::insideInput<"from_server">;
-/// `sendspin-<node>.key` in the graph file folder: mode 0600, at most 64 KiB, created as an empty key record, trusted
-/// only as one (docs/node-types.md#the-identity-file).
-inline constexpr auto keyFile = store::file<"key">(
-	{.mode = 0600, .maxBytes = maxKeyFileBytes, .initial = &emptyKeyRecord, .distrust = &whyNotKeyRecord});
-/// The library's main loop: its client, pairing, the time filter, mDNS (`ear-sendspin <node>`).
-inline constexpr auto worker = loop::dedicated<"sendspin", Worker>;
-/// What played, told to the library apart from the worker (`ear-notify <node>`).
-inline constexpr auto notifier = loop::dedicated<"notify", Notifier>;
-inline constexpr TypeSpec spec{.settings = settingsTable,
-                               .banks = Banks<to, from, toServer, fromServer>{},
-                               .stores = Stores<keyFile>{},
-                               .loops = Loops<worker, notifier>{}};
 using Checked = CheckedOf<spec>;
 
 /// The source's ring: small, so a correction lands within a chunk: the next power of two at or above 40 ms and two

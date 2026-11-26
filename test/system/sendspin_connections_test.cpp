@@ -83,8 +83,7 @@ void checkHeldDial(const TempDirectory& directory, const std::string& url) {
 	writeGraphFile(directory, dialToRec(url));
 	{
 		auto ear = runEar(directory);
-		const bool ready =
-			waitForLines(ear, runningAndLinked) && ear.waitForLine("node ma says dialling " + url, deadline);
+		const bool ready = waitForLines(ear, runningAndLinked) && waitForDialling(ear, url);
 		INFO("ear printed:\n" << ear.output());
 		REQUIRE(ready);
 		const std::uint16_t port = controlPort(ear);
@@ -117,7 +116,7 @@ TEST_CASE("With no server at all the sendspin node runs, its meters silent, and 
 	const std::string url = "ws://127.0.0.1:" + std::to_string(freeTcpPort()) + "/sendspin";
 	writeGraphFile(directory, dialToRec(url));
 	auto ear = runEar(directory);
-	const bool ready = waitForLines(ear, runningAndLinked) && ear.waitForLine("node ma says dialling " + url, deadline);
+	const bool ready = waitForLines(ear, runningAndLinked) && waitForDialling(ear, url);
 	INFO("ear printed:\n" << ear.output());
 	REQUIRE(ready);
 	{
@@ -161,8 +160,7 @@ TEST_CASE("A slow upgrade sees one connection and no another_server, then connec
 	TempDirectory directory;
 	writeGraphFile(directory, dialToRec(server.url()));
 	auto ear = runEar(directory);
-	const bool ready =
-		waitForLines(ear, runningAndLinked) && ear.waitForLine(std::string(connectedUnpaired), playDeadline);
+	const bool ready = waitForLines(ear, runningAndLinked) && connectedUnpaired(ear, playDeadline);
 	INFO("ear printed:\n" << ear.output());
 	INFO("the server printed:\n" << server.events());
 	REQUIRE(ready);
@@ -181,10 +179,11 @@ TEST_CASE("A listening node says how it is known, and a server that dials it pai
 	INFO("ear printed:\n" << ear.output());
 	REQUIRE(ready);
 	waitForInstance(ear, "ma", port);
-	CHECK_FALSE(ear.lineStartingWith("node ma says dialling"));
+	CHECK_FALSE(everDialled(ear));
+	CHECK(lastStatus(ear, "url") == std::nullopt); // empty, its initial value
 
 	SendspinTestServer server({"--dial", "ws://127.0.0.1:" + std::to_string(port) + "/sendspin"});
-	REQUIRE_SEEN(ear, ear.waitForLine(connectedUnpaired, deadline));
+	REQUIRE_SEEN(ear, connectedUnpaired(ear));
 	pairOnce(ear, server);
 	server.send(playLong);
 	REQUIRE_SEEN(ear, waitForRampFrames(directory.recordings() / "rec.wav"));
@@ -223,7 +222,8 @@ TEST_CASE("A port another program holds fails the node with the kernel's reason,
 	                    waitForLines(ear, {"node rec running", "route noise:noise.mono -> rec:record.left linked"});
 	INFO("ear printed:\n" << ear.output());
 	REQUIRE(failed);
-	CHECK_FALSE(ear.lineStartingWith("node ma says listening"));
+	CHECK_FALSE(everListened(ear));
+	CHECK_FALSE(anyStatus(ear, "instance"));
 
 	Rpc rpc(controlPort(ear));
 	const std::uint16_t freePort = freeTcpPort();
@@ -241,7 +241,6 @@ TEST_CASE("Two sendspin nodes on one port: the second fails naming the first, an
           "recovers it",
           "[system][sendspin]") {
 	const std::uint16_t port = freeTcpPort();
-	const std::string saying = " says listening " + std::to_string(port) + " as ";
 	TempDirectory directory;
 	writeGraphFile(directory, graphFileText("node sendspin a { port " + std::to_string(port) +
 	                                            "; }\n"
@@ -263,7 +262,7 @@ TEST_CASE("Two sendspin nodes on one port: the second fails naming the first, an
 	const std::string loser = refused->substr(5, 1);
 	const std::string winner = loser == "a" ? "b" : "a";
 	CHECK(*refused == "node " + loser + " " + refusal + winner);
-	REQUIRE_SEEN(ear, ear.waitForLineStartingWith("node " + winner + saying, deadline));
+	waitForInstance(ear, winner, port);
 	REQUIRE_SEEN(ear, ear.waitForLine("node " + winner + " running", deadline));
 
 	Rpc rpc(controlPort(ear));
@@ -288,16 +287,16 @@ TEST_CASE("A new name while a server is connected keeps the port: the node still
 	auto ear = runEar(directory);
 	waitForInstance(ear, "ma", port);
 	SendspinTestServer server({"--dial", "ws://127.0.0.1:" + std::to_string(port) + "/sendspin"});
-	REQUIRE_SEEN(ear, ear.waitForLine(connectedUnpaired, deadline));
+	REQUIRE_SEEN(ear, connectedUnpaired(ear));
 
 	Rpc rpc(controlPort(ear));
-	const std::string saying = "node ma says listening " + std::to_string(port) + " as ";
+	const std::string instance = *lastStatus(ear, "instance");
 	const json update = rpc.call("node.update", {{"name", "ma"}, {"settings", {{"port", port}, {"name", "Other"}}}});
 	INFO(update.dump());
 	REQUIRE(update.contains("result"));
-	const auto again = waitForNthLine(ear, saying, 1, playDeadline);
-	REQUIRE_SEEN(ear, again);
-	CHECK(*again == *ear.lineStartingWith(saying)); // the same key file, so the same instance
+	CHECK(waitForInstance(ear, "ma", port, 1, playDeadline) == instance); // the same key store, so the same instance
+	REQUIRE_SEEN(ear, waitForDisconnected(ear));
+	CHECK(countRecords(ear, [](const json& r) { return isStatus(r, "clientId"); }) == 1); // the same client id
 	CHECK_FALSE(ear.lineStartingWith("node ma failed"));
 	const auto gone = server.waitForEvent("disconnected ", deadline);
 	INFO("the server printed:\n" << server.events());
@@ -305,7 +304,7 @@ TEST_CASE("A new name while a server is connected keeps the port: the node still
 	// The goodbye is `shutdown`, and this server does not redial by itself after it, so the test asks. One that browses
 	// hears the new announcement.
 	server.send("dial ws://127.0.0.1:" + std::to_string(port) + "/sendspin");
-	REQUIRE_SEEN(ear, waitForNthLine(ear, "node ma says connected ", 1, playDeadline));
+	REQUIRE_SEEN(ear, waitForConnected(ear, false, 1, playDeadline));
 	ear.signal(SIGTERM);
 	CHECK(rpc.readUntilClosed() == 1001);
 	CHECK(waitForStop(ear) == 0);
@@ -316,11 +315,12 @@ TEST_CASE("A dialling node opens no listening socket", "[system][sendspin]") {
 	const std::string url = "ws://127.0.0.1:" + std::to_string(freeTcpPort()) + "/sendspin";
 	writeGraphFile(directory, dialToRec(url));
 	auto ear = runEar(directory);
-	const bool ready = waitForLines(ear, runningAndLinked) && ear.waitForLine("node ma says dialling " + url, deadline);
+	const bool ready = waitForLines(ear, runningAndLinked) && waitForDialling(ear, url);
 	INFO("ear printed:\n" << ear.output());
 	REQUIRE(ready);
 	CHECK(connectRefused(8928)); // the library's default, and no test here listens on it
-	CHECK_FALSE(ear.lineStartingWith("node ma says listening"));
+	CHECK_FALSE(everListened(ear));
+	CHECK_FALSE(anyStatus(ear, "instance"));
 	ear.signal(SIGTERM);
 	CHECK(waitForStop(ear) == 0);
 }
@@ -336,7 +336,7 @@ TEST_CASE("A node removed and added back while a server is connected takes its p
 	auto ear = runEar(directory);
 	waitForInstance(ear, "ma", port);
 	SendspinTestServer server({"--dial", url});
-	REQUIRE_SEEN(ear, ear.waitForLine(connectedUnpaired, deadline));
+	REQUIRE_SEEN(ear, connectedUnpaired(ear));
 
 	Rpc rpc(controlPort(ear));
 	REQUIRE(rpc.call("node.remove", {{"name", "ma"}}).contains("result"));
@@ -344,14 +344,19 @@ TEST_CASE("A node removed and added back while a server is connected takes its p
 	INFO(added.dump());
 	REQUIRE(added.contains("result"));
 
-	const std::string saying = "node ma says listening " + std::to_string(port) + " as ";
-	REQUIRE_SEEN(ear, waitForNthLine(ear, saying, 1, playDeadline));
+	waitForInstance(ear, "ma", port, 1, playDeadline);
 	REQUIRE_SEEN(ear, waitForNthLine(ear, "node ma running", 1, deadline));
 	CHECK_FALSE(ear.lineStartingWith("node ma failed"));
-	const std::string printed = ear.output();
-	CHECK(printed.find("node ma removed") < printed.rfind(saying)); // the old one was gone first
+	// The old one was gone first, and its status with it: a reset, then the new node's own from the start.
+	const auto removed = indexOf(ear, [](const json& r) { return r.value("msg", "").starts_with("node ma removed"); });
+	std::size_t seen = 0;
+	const auto listedAgain = indexOf(ear, [&](const json& r) { return instanceListed()(r) && seen++ == 1; });
+	REQUIRE(removed);
+	REQUIRE(listedAgain);
+	CHECK(*removed < *listedAgain);
+	CHECK(countRecords(ear, [](const json& r) { return r.value("kind", "") == "status" && r.contains("reset"); }) == 1);
 	server.send("dial " + url);
-	REQUIRE_SEEN(ear, waitForNthLine(ear, "node ma says connected ", 1, playDeadline));
+	REQUIRE_SEEN(ear, waitForConnected(ear, false, 1, playDeadline));
 	ear.signal(SIGTERM);
 	CHECK(rpc.readUntilClosed() == 1001);
 	CHECK(waitForStop(ear) == 0);
@@ -366,13 +371,13 @@ TEST_CASE("A stopped node stays connected and paired: the server still holds its
 	TempDirectory directory;
 	writeGraphFile(directory, dialToRec(server.url()));
 	auto ear = runEar(directory);
-	REQUIRE_SEEN(ear, waitForLines(ear, runningAndLinked) && ear.waitForLine(connectedUnpaired, deadline));
+	REQUIRE_SEEN(ear, waitForLines(ear, runningAndLinked) && connectedUnpaired(ear));
 	pairOnce(ear, server);
 	const auto wav = directory.recordings() / "rec.wav";
 	server.send(playLong);
 	REQUIRE_SEEN(ear, waitForRampFrames(wav));
 	REQUIRE_SEEN(ear, endStream(ear, server));
-	const std::size_t connectedBefore = countLines(ear, "node ma says connected ");
+	const std::size_t connectedBefore = countStatus(ear, "connection", "connected");
 
 	Rpc rpc(controlPort(ear));
 	REQUIRE(rpc.call("graph.subscribe").contains("result"));
@@ -394,9 +399,12 @@ TEST_CASE("A stopped node stays connected and paired: the server still holds its
 	REQUIRE_SEEN(ear, endStream(ear, server));
 	// One connection throughout: no goodbye heard, nothing redialled, no code asked again.
 	CHECK(server.events().find("disconnected") == std::string::npos);
-	CHECK(countLines(ear, "node ma says connected ") == connectedBefore);
-	CHECK_FALSE(ear.lineStartingWith("node ma says disconnected"));
-	CHECK(countLines(ear, pairingCodePrefix) == 1);
+	CHECK(countStatus(ear, "connection", "connected") == connectedBefore);
+	CHECK_FALSE(everDisconnected(ear));
+	CHECK(countPairingCodes(ear) == 1);
+	// A stop and a start keep the configuration, and its status (docs/architecture.md#status-and-events).
+	CHECK(countRecords(ear, [](const json& r) { return r.value("kind", "") == "status" && r.contains("reset"); }) == 0);
+	CHECK(lastStatus(ear, "paired") == json(true));
 	ear.signal(SIGTERM);
 	CHECK(rpc.readUntilClosed() == 1001);
 	CHECK(waitForStop(ear) == 0);
@@ -429,9 +437,9 @@ TEST_CASE("A node stopped while the server streams stays connected, and a start 
 	TempDirectory directory;
 	writeGraphFile(directory, dialToRec(server.url()));
 	auto ear = runEar(directory);
-	REQUIRE_SEEN(ear, waitForLines(ear, runningAndLinked) && ear.waitForLine(connectedUnpaired, deadline));
+	REQUIRE_SEEN(ear, waitForLines(ear, runningAndLinked) && connectedUnpaired(ear));
 	pairOnce(ear, server);
-	const std::size_t connectedBefore = countLines(ear, "node ma says connected ");
+	const std::size_t connectedBefore = countStatus(ear, "connection", "connected");
 
 	Rpc rpc(controlPort(ear));
 	REQUIRE(rpc.call("graph.subscribe").contains("result"));
@@ -458,9 +466,12 @@ TEST_CASE("A node stopped while the server streams stays connected, and a start 
 		ear, waitForRamp(wav, [](const RampSoFar& ramp) { return ramp.rampFrames >= rampFramesAtLeast; }, resumedAt));
 	REQUIRE_SEEN(ear, endStream(ear, server));
 	CHECK(server.events().find("disconnected") == std::string::npos);
-	CHECK(countLines(ear, "node ma says connected ") == connectedBefore);
-	CHECK_FALSE(ear.lineStartingWith("node ma says disconnected"));
-	CHECK(countLines(ear, pairingCodePrefix) == 1);
+	CHECK(countStatus(ear, "connection", "connected") == connectedBefore);
+	CHECK_FALSE(everDisconnected(ear));
+	CHECK(countPairingCodes(ear) == 1);
+	// A stop and a start keep the configuration, and its status (docs/architecture.md#status-and-events).
+	CHECK(countRecords(ear, [](const json& r) { return r.value("kind", "") == "status" && r.contains("reset"); }) == 0);
+	CHECK(lastStatus(ear, "paired") == json(true));
 	ear.signal(SIGTERM);
 	CHECK(rpc.readUntilClosed() == 1001);
 	CHECK(waitForStop(ear) == 0);

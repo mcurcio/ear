@@ -92,10 +92,11 @@ records apart from the newer one's.
 
 ### `note`
 
-A note from a node's insides (`node kitchen says connected "Music Assistant" unpaired`), never a
-state. A type's texts are its own; the `sendspin` node's are listed in
-[node-types.md](node-types.md#notes). Notes reach only standard output, not the control port or the
-editor.
+A note from a node's insides (`node rec says write-short rec.wav: <reason>`), never a state: the
+`file` and `airplay` nodes' texts, each listed on its type's page
+([node-types.md](node-types.md#file), [node-types.md](node-types.md#airplay)). Notes reach only
+standard output, not the control port or the editor. A type that reports status and events
+writes none (the `sendspin` node: [node-types.md](node-types.md#status-and-events)).
 
 ### `status`
 
@@ -159,8 +160,8 @@ is `warn`, `stdout` `info`. A line longer than its bound (4096 bytes) is cut and
 
 **Pacing.** Log records are paced per node, or per source when unattributed: 32 at once, then one a
 second. The next record that passes after a flood carries `heldBack` and its `msg` ends `(<n> more
-held back before this: over 32 at once)`. *Why:* a flooding library cannot push states, routes or
-notes (a pairing code) out of the output queue.
+held back before this: over 32 at once)`. *Why:* a flooding library cannot push states, routes,
+status (a pairing code) or notes out of the output queue.
 
 ### `diagnostic`
 

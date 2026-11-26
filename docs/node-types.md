@@ -229,23 +229,29 @@ node sendspin study;                                                            
   opens no listening socket. A host name is looked up on the library's transport thread, never on
   the main loop.
 - **The connection is not the node's health.** The node is `running` with no server, its outputs
-  silent; the graph keeps running whatever the server does. The connection is told in notes
-  (below).
+  silent; the graph keeps running whatever the server does. The connection is its status
+  ([below](#status-and-events)).
 
 ### Pairing
 
 Pairing by a code is required, for good: a server that approves the node without pairing gets no
-roles and no audio (`says connected "<server>" unpaired`). To pair: get the node connected (Music
-Assistant offers pairing only to a connected client, whichever side dialled), start pairing in
-Music Assistant, read the code from `says pairing-code 123-456` on ear's standard output, and type
-it there. `says paired`, then `says connected "<server>" paired` follows. A wrong code keeps the
-same code showing.
+roles and no audio (`connection` `connected` with `paired` false). To pair: get the node connected
+(Music Assistant offers pairing only to a connected client, whichever side dialled), start pairing
+in Music Assistant, read the code from the node's `pairingCode` and type it there. The code is a
+callout: the editor shows it on the node with a copy button, and standard output has it as a
+`status` record (`node kitchen pairingCode "" -> 123-456`); from a script,
 
-The code is on standard output only: notes never reach the control port or the editor, so whoever
-pairs needs ear's log open. 20 wrong rounds hold pairing back (`says pairing-held`) for this
-client's life; the count is in memory, so `node.restart` (or a change of settings, or restarting
-ear) releases it, while `node.stop` and `node.start` do not. Any network peer can burn these
-rounds (the spec does not partition them by server or address).
+```bash
+ear | jq -r 'select(.kind == "status" and .field == "pairingCode" and .to != "") | "\(.node) \(.to)"'
+```
+
+Once paired: the `paired` event, `pairingCode` back to `""` and `paired` true. A wrong code keeps
+the same code showing.
+
+20 wrong rounds hold pairing back (`pairingHeld` true, a callout) for this client's life; the
+count is in memory, so `node.restart` (or a change of settings, or restarting ear) releases it,
+while `node.stop` and `node.start` do not. Any network peer can burn these rounds (the spec does
+not partition them by server or address).
 
 ### The identity file
 
@@ -268,49 +274,56 @@ file never runs.
   mode: fix or delete it. No new identity is minted over it, or the server's trust would be lost
   silently. A missing file in a folder it cannot write fails the node too.
 - A key file something else changed or removed since it was read fails the write
-  (`key-write-failed`), and theirs stands. A write the disk has not finished within 5 s is judged
+  (the `key-write-failed` event), and theirs stands. A write the disk has not finished within 5 s is judged
   by what the store then holds: written if it shows the new record, else `key-write-failed`
   (`not confirmed within 5 s`), though it may still land; the pairing holds for this run either
   way.
 
-### Notes
+### Status and events
 
-A note is `node <n> says <text>` on standard output (a `note` record), never a state. Notes pass
-32 at once, then one a second, the framework's rate for every node's notes
-([writing-a-node-type.md](writing-a-node-type.md#the-node-handle)); `notes-dropped <n>` says how
-many were held back, before the next that passes.
+The node reports through the framework
+([writing-a-node-type.md](writing-a-node-type.md#status-and-events)): its status fields are on
+the wire (a node's `status`, `node.statusChanged`) and on standard output as `status` records, one
+per change of a field, paced per field ([output-records.md](output-records.md#status)); its events
+are `node.eventRaised` and `event` records. Every field is the worker's. They belong to the
+configuration: a restart, a failure, a disable or a removal resets them (`node <n> status reset`),
+while a stop, a start and a change in place keep them, the worker rewriting what the change
+touched. The node writes no `note` records.
 
-| Note | Means |
-|---|---|
-| `id <client id>` | First, once: the node's client id |
-| `dialling <url>` | Dialling, until connected. With `running` and silent meters: no server yet, not a failure |
-| `listening <port> as ear-<node, first 50 bytes>-<client id, first 8>` | Listening; the mDNS instance name |
-| `connected "<server name>" paired\|unpaired` | Connected (the name made printable: control characters, bad UTF-8 and quotes become `?`, at most 64 bytes) |
-| `disconnected` | The connection read lost for 5 s (it reads lost through a re-handshake, hence the 5 s). A dialling node redials then, and every 31 s until connected, so a server back after the first redial can take up to 31 s to be heard |
-| `pairing-code <123-456>` | The code to type into Music Assistant, shown until cleared |
-| `pairing-code-cleared` | The code is no longer valid |
-| `paired <server id>` | Paired |
-| `pairing-failed <reason>` | `attempt-timeout`, `concurrent-attempt`, `method-not-supported`, `pairing-code-mismatch`, `user-cancelled` or `unknown` |
-| `pairing-held` | 20 wrong rounds: attempts held back |
-| `stream <flac\|pcm> <rate> <channels> <bits>` | A stream from the server began. A format ear did not list leaves the sink full and silent, and the library closes the connection when its ring pins |
-| `stream-ended` | The stream ended |
-| `sending <rate> 2 24` | Sending to the server |
-| `sending-stopped` | Sending stopped |
-| `key-write-failed <detail>` | The pairing holds for this run only: fix the folder and pair again |
-| `advertise-failed <detail>` | Listening but not advertising: give the server `ws://<address>:<port>/sendspin` |
-| `renamed <asked> to <published>` | Another responder held its instance, so it is listed as the second ([its listing](#its-listing)) |
-| `notes-dropped <n>` | Notes held back by the rate |
+| Field | Kind | Means |
+|---|---|---|
+| `clientId` | text | The node's Sendspin client id, from its key file. A change in place keeps the id, so it writes no record |
+| `connection` | `dialling`, `listening` or `connected`; unknown until the client is made | On the node's box. Back to `dialling` or `listening` once the connection read lost for 5 s (it reads lost through a re-handshake, hence the 5 s), and at a change in place. A dialling node redials then, and every 31 s until connected, so a server back after the first redial can take up to 31 s to be heard. With `running` and silent meters, `dialling` is no server yet, not a failure |
+| `url` | text | The server it dials; `""` while it listens |
+| `listenPort` | number | The port it listens on; 0 while it dials |
+| `instance` | text | Its mDNS instance (`ear-<node, first 50 bytes>-<client id, first 8>`, or what probing renamed it to: [its listing](#its-listing)) while it listens and advertises; `""` otherwise |
+| `serverName` | text | The connected server's name, made safe by the framework, at most 64 bytes; `""` with no server |
+| `paired` | flag | The connected server is paired: only a paired one gets roles and audio. Written before `connection`, as `serverName` is, so a reader that sees `connected` has both |
+| `pairingCode` | text, a callout | The code to type into Music Assistant (`123-456`), until the library clears it or pairing succeeds; `""` otherwise |
+| `pairingHeld` | flag, a callout | 20 wrong rounds: attempts held back until a new client ([pairing](#pairing)) |
+| `stream` | `none`, `flac`, `pcm` or `opus`; `none` at first | The codec of the stream the server plays to it. A format ear did not list leaves the sink full and silent, and the library closes the connection when its ring pins |
+| `streamRate`, `streamChannels`, `streamBits` | numbers | The stream's format as the server announced it; 0 with no stream |
+| `sending` | flag | The server asked for what is routed to `to`. While the node is stopped nothing reaches it all the same ([stop, restart, disable](#stop-restart-disable)) |
+| `sendingRate` | number | What it sends at, the graph frequency, while `sending`; 0 otherwise |
+
+| Event | Severity | Sentence |
+|---|---|---|
+| `paired` | `info` | `paired with server {server}`, the server's id made safe |
+| `pairing-failed` | `warn` | `pairing failed: {reason}`, the reason `attempt-timeout`, `concurrent-attempt`, `method-not-supported`, `pairing-code-mismatch`, `user-cancelled` or `unknown`; a mismatch the library ended at its round limit also sets `pairingHeld` |
+| `key-write-failed` | `error` | `its key file was not written, so the pairing holds for this run only: {detail}`: fix the folder and pair again. Raised on the thread that wrote, the worker's or one of the library's |
+| `advertise-failed` | `warn` | `listening but not advertised over mDNS: {detail}`: give the server `ws://<address>:<port>/sendspin` |
+| `renamed` | `info` | `listed over mDNS as {published}, as another responder holds {asked}` ([its listing](#its-listing)) |
 
 ### Failures
 
 | What | The node | What to do |
 |---|---|---|
-| No server, or the server gone | `running`, outputs silent, inputs dropped; `says disconnected` | Nothing: it redials |
+| No server, or the server gone | `running`, outputs silent, inputs dropped; `connection` back to `dialling` or `listening` | Nothing: it redials |
 | The listening port is held by another program or another `sendspin` node | `failed start-failed: cannot listen on port <p>: held by node <n>` or `: <reason>` | `node.update` to a free port. A program taking the port just after the check is not caught: the library only logs, and retries every 5 s |
 | A key file it cannot trust | `failed start-failed: sendspin-<node>.key: <detail>`, before it ran | Fix or delete the file, then `node.restart` or `node.start`; a change of settings or a restart of ear also retries |
 | The library dying | `failed lost: the Sendspin client died: <what>` (or `the Sendspin client did not start`) | `node.restart` or `node.start` |
-| The mDNS socket cannot open | Listening, not advertising; `says advertise-failed` | Give the server the URL |
-| A later key write fails | `says key-write-failed` | Fix the folder; pair again |
+| The mDNS socket cannot open | Listening, not advertising; the `advertise-failed` event | Give the server the URL |
+| A later key write fails | The `key-write-failed` event | Fix the folder; pair again |
 
 ### Stop, restart, disable
 
@@ -362,19 +375,22 @@ worker:
    node porch`); one held by a node still closing is waited for against the change's 10 s.
 2. Once that is granted, the worker [pauses](writing-a-node-type.md#pausing-a-sink) the sink to
    the server (what reaches `to` meanwhile is discarded), cuts the notifier off from the player,
-   says the mDNS goodbye and `disconnected` (if it had said `connected`), and stops and destroys
-   the client as a teardown does: the Sendspin goodbye (`shutdown`), the library's threads
-   joined, its stream ended (`stream-ended`), so the source fades out and the old sync thread,
-   the source's one writer, is gone before the new one starts.
+   says the mDNS goodbye, and stops and destroys the client as a teardown does: the Sendspin
+   goodbye (`shutdown`), the library's threads joined, its stream ended (`stream` back to
+   `none`), so the source fades out and the old sync thread, the source's one writer, is gone
+   before the new one starts. What the old client told goes with it: `instance`, `serverName`
+   and `pairingCode` back to `""`, `paired` and `pairingHeld` to false.
 3. It makes a client of the new settings over the same key store, which reads the identity and
-   pairings from what it holds in memory, not from the file: the same client id (`id <same id>`
-   again) and the same pairings, so a server it was paired with connects paired, with no code.
-   A listening client listens and advertises (`listening <port> as ...`), a dialling one dials
-   (`dialling <url>`). Then the sink resumes and the change is made.
+   pairings from what it holds in memory, not from the file: the same client id (so `clientId`
+   writes no record) and the same pairings, so a server it was paired with connects paired, with
+   no code. It writes `url` and `listenPort`; a listening client listens and advertises
+   (`connection` `listening`, `instance`), a dialling one dials (`connection` `dialling`). Then
+   the sink resumes and the change is made.
 
 What the operator sees for `kitchen` moving from 8928 to 8929: `node kitchen reconfiguring:
-port`, `says disconnected`, `says id <the same id>`, `says listening 8929 as ear-kitchen-<id>`,
-`node kitchen running after reconfiguring for 302 ms`, then a server finds it again.
+port`, `node kitchen connection connected -> listening`, `node kitchen listenPort 8928 -> 8929`,
+`node kitchen instance ear-kitchen-<id> -> ""` and back, `node kitchen running after
+reconfiguring for 302 ms`, then a server finds it again.
 
 - **The audio drops either way.** The connection and the stream end with the old client; the
   server streams again once it is connected to the new one.
@@ -403,8 +419,8 @@ rules](#mdns)): probed first, then announced.
 - The instance name is `ear-<first 50 bytes of node>-<first 8 of client id>`, a DNS label's 63 bytes at
   most, stable, and unique wherever client ids are; its host label is the same made a DNS host label
   (`mdns::hostLabelOf`: each `_` a `-`, no `-` at either end). Should another responder hold it,
-  probing renames it and the node says `renamed <asked> to <published>` (the instance's `(2)`, `(3)`, ...);
-  a renamed host label is not said. Music Assistant shows `name`, from the hello.
+  probing renames it: the `renamed` event, and `instance` the published name (the instance's
+  `(2)`, `(3)`, ...); a renamed host label is not said. Music Assistant shows `name`, from the hello.
 - A goodbye goes out when the worker's state goes (a restart, a disable or a removal, never a
   stop); a crash leaves the record until its TTL.
 
@@ -708,7 +724,9 @@ takes up to 3 s.
   run: **pairing with a real Music Assistant has not been tested.** Every test runs against
   `aiosendspin`, Music Assistant's pinned server.
 
-Not built: volume and mute, line sense, the editor showing notes and the code, IPv6, `wss://`,
+Not built: actions (forgetting one server's pairing waits on the protocol library, which has no
+way to forget one pairing: [control-plane.md](design/control-plane.md#11-the-cut-buildable-steps)),
+volume and mute, line sense, IPv6, `wss://`,
 several servers at once, choosing the advertised interface, RFC 6762 probing, more than stereo; a
 pairing hold that survives a restart (the 20 rounds are counted in the library's memory, so any
 restart, a crash a peer caused included, gives another 20 guesses at the 6-digit code). Not

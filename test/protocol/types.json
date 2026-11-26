@@ -4,7 +4,7 @@
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"types.get\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"types.get\",\"params\":{\"ifNoneMatch\":\"fnv1a64:0123456789abcdef\"}}",
-    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"types.get\",\"params\":{\"ifNoneMatch\":\"fnv1a64:04362f4cdc2ee9af\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"types.get\",\"params\":{\"ifNoneMatch\":\"fnv1a64:9ba5780da72f8f1d\"}}",
     "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"types.get\",\"params\":{\"since\":\"yesterday\"}}"
   ],
   "messages": [
@@ -37,7 +37,7 @@
         "realtime": false,
         "routes": [],
         "scheduling": "SCHED_OTHER",
-        "typeSchemaHash": "fnv1a64:04362f4cdc2ee9af",
+        "typeSchemaHash": "fnv1a64:9ba5780da72f8f1d",
         "types": [
           "airplay",
           "card",
@@ -52,7 +52,7 @@
       "jsonrpc": "2.0",
       "id": 2,
       "result": {
-        "hash": "fnv1a64:04362f4cdc2ee9af",
+        "hash": "fnv1a64:9ba5780da72f8f1d",
         "protocol": 1,
         "typeSchemas": [
           {
@@ -221,7 +221,80 @@
             "actions": []
           },
           {
-            "events": [],
+            "events": [
+              {
+                "args": [
+                  {
+                    "kind": "text",
+                    "maxBytes": 64,
+                    "name": "server"
+                  }
+                ],
+                "code": "paired",
+                "sentence": "paired with server {server}",
+                "severity": "info"
+              },
+              {
+                "args": [
+                  {
+                    "kind": "choice",
+                    "name": "reason",
+                    "values": [
+                      "attempt-timeout",
+                      "concurrent-attempt",
+                      "method-not-supported",
+                      "pairing-code-mismatch",
+                      "user-cancelled",
+                      "unknown"
+                    ]
+                  }
+                ],
+                "code": "pairing-failed",
+                "sentence": "pairing failed: {reason}",
+                "severity": "warn"
+              },
+              {
+                "args": [
+                  {
+                    "kind": "text",
+                    "maxBytes": 256,
+                    "name": "detail"
+                  }
+                ],
+                "code": "key-write-failed",
+                "sentence": "its key file was not written, so the pairing holds for this run only: {detail}",
+                "severity": "error"
+              },
+              {
+                "args": [
+                  {
+                    "kind": "text",
+                    "maxBytes": 256,
+                    "name": "detail"
+                  }
+                ],
+                "code": "advertise-failed",
+                "sentence": "listening but not advertised over mDNS: {detail}",
+                "severity": "warn"
+              },
+              {
+                "args": [
+                  {
+                    "kind": "text",
+                    "maxBytes": 63,
+                    "name": "asked"
+                  },
+                  {
+                    "kind": "text",
+                    "maxBytes": 63,
+                    "name": "published"
+                  }
+                ],
+                "code": "renamed",
+                "sentence": "listed over mDNS as {published}, as another responder holds {asked}",
+                "severity": "info"
+              }
+            ],
             "inputs": [
               "to"
             ],
@@ -260,7 +333,198 @@
                 "required": false
               }
             ],
-            "status": [],
+            "status": [
+              {
+                "display": "panel",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "help": "its Sendspin client id, kept in its key file",
+                "initial": "",
+                "kind": "text",
+                "maxBytes": 64,
+                "name": "clientId"
+              },
+              {
+                "display": "box",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "help": "dialling or listening until a server is connected",
+                "initial": null,
+                "kind": "choice",
+                "name": "connection",
+                "values": [
+                  "dialling",
+                  "listening",
+                  "connected"
+                ]
+              },
+              {
+                "display": "panel",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "help": "the server it dials; empty: it listens",
+                "initial": "",
+                "kind": "text",
+                "maxBytes": 512,
+                "name": "url"
+              },
+              {
+                "display": "panel",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "help": "the port it listens on; 0: it dials",
+                "initial": 0,
+                "kind": "wholeNumber",
+                "max": 65535,
+                "min": 0,
+                "name": "listenPort"
+              },
+              {
+                "display": "panel",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "help": "its mDNS instance name while it listens and advertises",
+                "initial": "",
+                "kind": "text",
+                "maxBytes": 63,
+                "name": "instance"
+              },
+              {
+                "display": "panel",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "help": "the connected server's name",
+                "initial": "",
+                "kind": "text",
+                "maxBytes": 64,
+                "name": "serverName"
+              },
+              {
+                "display": "panel",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "help": "the connected server is paired: only a paired one gets audio",
+                "initial": false,
+                "kind": "flag",
+                "name": "paired"
+              },
+              {
+                "display": "callout",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "help": "type it into Music Assistant to pair",
+                "initial": "",
+                "kind": "text",
+                "maxBytes": 16,
+                "name": "pairingCode"
+              },
+              {
+                "display": "callout",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "help": "20 wrong codes hold pairing back: restart the node to pair again",
+                "initial": false,
+                "kind": "flag",
+                "name": "pairingHeld"
+              },
+              {
+                "display": "panel",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "help": "the codec of the stream the server plays to it",
+                "initial": "none",
+                "kind": "choice",
+                "name": "stream",
+                "values": [
+                  "none",
+                  "flac",
+                  "pcm",
+                  "opus"
+                ]
+              },
+              {
+                "display": "panel",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "initial": 0,
+                "kind": "wholeNumber",
+                "max": 4294967295,
+                "min": 0,
+                "name": "streamRate",
+                "unit": "Hz"
+              },
+              {
+                "display": "panel",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "initial": 0,
+                "kind": "wholeNumber",
+                "max": 4294967295,
+                "min": 0,
+                "name": "streamChannels"
+              },
+              {
+                "display": "panel",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "initial": 0,
+                "kind": "wholeNumber",
+                "max": 4294967295,
+                "min": 0,
+                "name": "streamBits",
+                "unit": "bits"
+              },
+              {
+                "display": "panel",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "help": "the server asked for what is routed to its inputs",
+                "initial": false,
+                "kind": "flag",
+                "name": "sending"
+              },
+              {
+                "display": "panel",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "initial": 0,
+                "kind": "wholeNumber",
+                "max": 4294967295,
+                "min": 0,
+                "name": "sendingRate",
+                "unit": "Hz"
+              }
+            ],
             "actions": []
           },
           {
@@ -282,7 +546,7 @@
       "jsonrpc": "2.0",
       "id": 3,
       "result": {
-        "hash": "fnv1a64:04362f4cdc2ee9af",
+        "hash": "fnv1a64:9ba5780da72f8f1d",
         "protocol": 1,
         "typeSchemas": [
           {
@@ -451,7 +715,80 @@
             "actions": []
           },
           {
-            "events": [],
+            "events": [
+              {
+                "args": [
+                  {
+                    "kind": "text",
+                    "maxBytes": 64,
+                    "name": "server"
+                  }
+                ],
+                "code": "paired",
+                "sentence": "paired with server {server}",
+                "severity": "info"
+              },
+              {
+                "args": [
+                  {
+                    "kind": "choice",
+                    "name": "reason",
+                    "values": [
+                      "attempt-timeout",
+                      "concurrent-attempt",
+                      "method-not-supported",
+                      "pairing-code-mismatch",
+                      "user-cancelled",
+                      "unknown"
+                    ]
+                  }
+                ],
+                "code": "pairing-failed",
+                "sentence": "pairing failed: {reason}",
+                "severity": "warn"
+              },
+              {
+                "args": [
+                  {
+                    "kind": "text",
+                    "maxBytes": 256,
+                    "name": "detail"
+                  }
+                ],
+                "code": "key-write-failed",
+                "sentence": "its key file was not written, so the pairing holds for this run only: {detail}",
+                "severity": "error"
+              },
+              {
+                "args": [
+                  {
+                    "kind": "text",
+                    "maxBytes": 256,
+                    "name": "detail"
+                  }
+                ],
+                "code": "advertise-failed",
+                "sentence": "listening but not advertised over mDNS: {detail}",
+                "severity": "warn"
+              },
+              {
+                "args": [
+                  {
+                    "kind": "text",
+                    "maxBytes": 63,
+                    "name": "asked"
+                  },
+                  {
+                    "kind": "text",
+                    "maxBytes": 63,
+                    "name": "published"
+                  }
+                ],
+                "code": "renamed",
+                "sentence": "listed over mDNS as {published}, as another responder holds {asked}",
+                "severity": "info"
+              }
+            ],
             "inputs": [
               "to"
             ],
@@ -490,7 +827,198 @@
                 "required": false
               }
             ],
-            "status": [],
+            "status": [
+              {
+                "display": "panel",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "help": "its Sendspin client id, kept in its key file",
+                "initial": "",
+                "kind": "text",
+                "maxBytes": 64,
+                "name": "clientId"
+              },
+              {
+                "display": "box",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "help": "dialling or listening until a server is connected",
+                "initial": null,
+                "kind": "choice",
+                "name": "connection",
+                "values": [
+                  "dialling",
+                  "listening",
+                  "connected"
+                ]
+              },
+              {
+                "display": "panel",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "help": "the server it dials; empty: it listens",
+                "initial": "",
+                "kind": "text",
+                "maxBytes": 512,
+                "name": "url"
+              },
+              {
+                "display": "panel",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "help": "the port it listens on; 0: it dials",
+                "initial": 0,
+                "kind": "wholeNumber",
+                "max": 65535,
+                "min": 0,
+                "name": "listenPort"
+              },
+              {
+                "display": "panel",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "help": "its mDNS instance name while it listens and advertises",
+                "initial": "",
+                "kind": "text",
+                "maxBytes": 63,
+                "name": "instance"
+              },
+              {
+                "display": "panel",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "help": "the connected server's name",
+                "initial": "",
+                "kind": "text",
+                "maxBytes": 64,
+                "name": "serverName"
+              },
+              {
+                "display": "panel",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "help": "the connected server is paired: only a paired one gets audio",
+                "initial": false,
+                "kind": "flag",
+                "name": "paired"
+              },
+              {
+                "display": "callout",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "help": "type it into Music Assistant to pair",
+                "initial": "",
+                "kind": "text",
+                "maxBytes": 16,
+                "name": "pairingCode"
+              },
+              {
+                "display": "callout",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "help": "20 wrong codes hold pairing back: restart the node to pair again",
+                "initial": false,
+                "kind": "flag",
+                "name": "pairingHeld"
+              },
+              {
+                "display": "panel",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "help": "the codec of the stream the server plays to it",
+                "initial": "none",
+                "kind": "choice",
+                "name": "stream",
+                "values": [
+                  "none",
+                  "flac",
+                  "pcm",
+                  "opus"
+                ]
+              },
+              {
+                "display": "panel",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "initial": 0,
+                "kind": "wholeNumber",
+                "max": 4294967295,
+                "min": 0,
+                "name": "streamRate",
+                "unit": "Hz"
+              },
+              {
+                "display": "panel",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "initial": 0,
+                "kind": "wholeNumber",
+                "max": 4294967295,
+                "min": 0,
+                "name": "streamChannels"
+              },
+              {
+                "display": "panel",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "initial": 0,
+                "kind": "wholeNumber",
+                "max": 4294967295,
+                "min": 0,
+                "name": "streamBits",
+                "unit": "bits"
+              },
+              {
+                "display": "panel",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "help": "the server asked for what is routed to its inputs",
+                "initial": false,
+                "kind": "flag",
+                "name": "sending"
+              },
+              {
+                "display": "panel",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "initial": 0,
+                "kind": "wholeNumber",
+                "max": 4294967295,
+                "min": 0,
+                "name": "sendingRate",
+                "unit": "Hz"
+              }
+            ],
             "actions": []
           },
           {
@@ -513,7 +1041,7 @@
       "id": 4,
       "result": {
         "protocol": 1,
-        "hash": "fnv1a64:04362f4cdc2ee9af",
+        "hash": "fnv1a64:9ba5780da72f8f1d",
         "notModified": true
       }
     },
@@ -555,7 +1083,7 @@
     "realtime": false,
     "routes": [],
     "scheduling": "SCHED_OTHER",
-    "typeSchemaHash": "fnv1a64:04362f4cdc2ee9af",
+    "typeSchemaHash": "fnv1a64:9ba5780da72f8f1d",
     "types": [
       "airplay",
       "card",

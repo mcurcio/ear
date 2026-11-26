@@ -243,7 +243,7 @@ struct ListeningEar {
 
 /// The whole of what the silent sockets are meant to prevent: the server gets in, pairs and plays.
 void checkPairsAndPlays(ChildProcess& ear, const TempDirectory& directory, SendspinTestServer& server) {
-	REQUIRE_SEEN(ear, ear.waitForLine(connectedUnpaired, deadline));
+	REQUIRE_SEEN(ear, connectedUnpaired(ear));
 	pairOnce(ear, server);
 	server.send(playLong);
 	REQUIRE_SEEN(ear, waitForRampFrames(directory.recordings() / "rec.wav"));
@@ -344,7 +344,7 @@ TEST_CASE("Bare sockets filling an address's share and renewed before their upgr
 	SilentPeers peers(node.port, {{"127.0.0.1"}, 10, false, 2s, true});
 	REQUIRE(peers.waitForRoundsOpened(1));
 	SendspinTestServer server({"--dial", node.url()});
-	REQUIRE_SEEN(node.ear, node.ear.waitForLine(connectedUnpaired, deadline));
+	REQUIRE_SEEN(node.ear, connectedUnpaired(node.ear));
 }
 
 // The library's own ConnectionLifecycle.JunkProbeDoesNotBlockRealServer, against ear's patched tree and a real server:
@@ -355,7 +355,7 @@ TEST_CASE("A server gets in beside two bare sockets held open from its own addre
 	SilentPeers peers(node.port, {{"127.0.0.1"}, 2, false, 10min, false});
 	REQUIRE(peers.waitForRoundsOpened(1));
 	SendspinTestServer server({"--dial", node.url()});
-	REQUIRE_SEEN(node.ear, node.ear.waitForLine(connectedUnpaired, deadline));
+	REQUIRE_SEEN(node.ear, connectedUnpaired(node.ear));
 	CHECK(server.count("disconnected ") == 0);
 }
 
@@ -366,7 +366,7 @@ TEST_CASE("Bare sockets from many addresses filling every socket and renewed kee
 	SilentPeers peers(node.port, {sources, 8, false, 2s, true});
 	REQUIRE(peers.waitForRoundsOpened(1));
 	SendspinTestServer server({"--dial", node.url()});
-	REQUIRE_SEEN(node.ear, node.ear.waitForLine(connectedUnpaired, deadline));
+	REQUIRE_SEEN(node.ear, connectedUnpaired(node.ear));
 }
 
 TEST_CASE("A server gets in beside a flood of silent upgrades from one other address", "[system][sendspin]") {
@@ -374,7 +374,7 @@ TEST_CASE("A server gets in beside a flood of silent upgrades from one other add
 	SilentPeers peers(node.port, {{"127.0.0.2"}, 8, true, 1ms, false});
 	REQUIRE(peers.waitForRoundsOpened(10));
 	SendspinTestServer server({"--dial", node.url()});
-	REQUIRE_SEEN(node.ear, node.ear.waitForLine(connectedUnpaired, deadline));
+	REQUIRE_SEEN(node.ear, connectedUnpaired(node.ear));
 	CHECK(server.count("disconnected ") == 0);
 }
 
@@ -404,22 +404,22 @@ TEST_CASE("A server waiting for its code is not displaced by silent sockets and 
           "[system][sendspin]") {
 	ListeningEar node;
 	SendspinTestServer server({"--dial", node.url()});
-	REQUIRE_SEEN(node.ear, node.ear.waitForLine(connectedUnpaired, deadline));
+	REQUIRE_SEEN(node.ear, connectedUnpaired(node.ear));
 	server.send("pair");
-	const auto code = node.ear.waitForLineStartingWith(pairingCodePrefix, deadline);
+	const auto code = waitForPairingCode(node.ear);
 	REQUIRE_SEEN(node.ear, code);
 
 	// The human takes their time: the code goes in only once the room has turned over many times.
 	SilentPeers peers(node.port, flood({"127.0.0.1", "127.0.0.2"}));
 	REQUIRE(peers.waitForRoundsOpened(20));
 	server.send("code " + digitsOf(*code));
-	REQUIRE_SEEN(node.ear, node.ear.waitForLine(connectedPaired, deadline));
+	REQUIRE_SEEN(node.ear, waitForPaired(node.ear));
 	server.send("play 1.5");
-	REQUIRE_SEEN(node.ear, node.ear.waitForLine("node ma says stream-ended", playDeadline));
+	REQUIRE_SEEN(node.ear, waitForStatus(node.ear, "stream", "none", 0, playDeadline));
 	INFO("the server printed:\n" << server.events());
 	CHECK(server.count("disconnected ") == 0);
 	CHECK(server.count("pair-failed") == 0);
-	CHECK_FALSE(node.ear.hasLine("node ma says disconnected"));
+	CHECK_FALSE(everDisconnected(node.ear));
 }
 
 TEST_CASE("A paired server that has proved itself and not yet activated is never displaced by a "
@@ -429,10 +429,10 @@ TEST_CASE("A paired server that has proved itself and not yet activated is never
 	TempDirectory state;
 	{
 		SendspinTestServer first({"--dial", node.url(), "--state", state.path().string()});
-		REQUIRE_SEEN(node.ear, node.ear.waitForLine(connectedUnpaired, deadline));
+		REQUIRE_SEEN(node.ear, connectedUnpaired(node.ear));
 		pairOnce(node.ear, first);
 	}
-	REQUIRE_SEEN(node.ear, node.ear.waitForLine("node ma says disconnected", deadline));
+	REQUIRE_SEEN(node.ear, waitForDisconnected(node.ear));
 
 	SendspinTestServer server({"--dial", node.url(), "--state", state.path().string(), "--hold-activate"});
 	REQUIRE(server.waitForEvent("activate-held", deadline));
@@ -444,8 +444,7 @@ TEST_CASE("A paired server that has proved itself and not yet activated is never
 		SilentPeers peers(node.port, flood({"127.0.0.1", "127.0.0.2"}));
 		REQUIRE(peers.waitForRoundsOpened(20));
 		server.send("activate-release");
-		REQUIRE_SEEN(node.ear, waitForNthLine(node.ear, std::string(connectedPaired), 1,
-		                                      deadline)); // the first was the pairing
+		REQUIRE_SEEN(node.ear, waitForPaired(node.ear, 1, deadline)); // the first was the pairing
 	}
 	INFO("the server printed:\n" << server.events());
 	CHECK(server.count("activate-held") == 1);
@@ -459,7 +458,7 @@ TEST_CASE("An unpaired server that has finished its Noise handshake outlasts soc
 	SilentPeers peers(node.port, flood({"127.0.0.2", "127.0.0.3"}));
 	REQUIRE(peers.waitForRoundsOpened(20));
 	server.send("activate-release");
-	REQUIRE_SEEN(node.ear, node.ear.waitForLine(connectedUnpaired, deadline));
+	REQUIRE_SEEN(node.ear, connectedUnpaired(node.ear));
 	INFO("the server printed:\n" << server.events());
 	CHECK(server.count("activate-held") == 1);
 }
@@ -471,7 +470,7 @@ TEST_CASE("Two peers that do speak and never activate keep a third server out of
 	SendspinTestServer heldTwo({"--dial", node.url(), "--hold-activate"});
 	REQUIRE(heldTwo.waitForEvent("activate-held", deadline));
 	SendspinTestServer server({"--dial", node.url()});
-	REQUIRE_SEEN(node.ear, node.ear.waitForLine(connectedUnpaired, deadline));
+	REQUIRE_SEEN(node.ear, connectedUnpaired(node.ear));
 	// The oldest gave way with no goodbye: another_server would tell an honest server not to come back.
 	const auto ended = heldOne.waitForEvent("activate-ended", deadline);
 	INFO("the server that gave way printed:\n" << heldOne.events());
@@ -483,17 +482,17 @@ TEST_CASE("A paired server playing keeps its socket while bare sockets fill its 
           "[system][sendspin]") {
 	ListeningEar node;
 	SendspinTestServer server({"--dial", node.url()});
-	REQUIRE_SEEN(node.ear, node.ear.waitForLine(connectedUnpaired, deadline));
+	REQUIRE_SEEN(node.ear, connectedUnpaired(node.ear));
 	pairOnce(node.ear, server);
 	// More than the 8 an address may hold, so the oldest of its still upgrading gives way each time, and the server, older
 	// than all of them, goes first unless having upgraded takes it out of the running.
 	SilentPeers peers(node.port, {{"127.0.0.1"}, 10, false, 20ms, false});
 	REQUIRE(peers.waitForRoundsOpened(10));
 	server.send("play 1.5");
-	REQUIRE_SEEN(node.ear, node.ear.waitForLine("node ma says stream-ended", playDeadline));
+	REQUIRE_SEEN(node.ear, waitForStatus(node.ear, "stream", "none", 0, playDeadline));
 	INFO("the server printed:\n" << server.events());
 	CHECK(server.count("disconnected ") == 0);
-	CHECK_FALSE(node.ear.hasLine("node ma says disconnected"));
+	CHECK_FALSE(everDisconnected(node.ear));
 }
 
 TEST_CASE("One address holding all it may of upgraded sockets leaves other addresses their upgrades",

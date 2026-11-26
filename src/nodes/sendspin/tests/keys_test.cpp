@@ -8,6 +8,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -25,14 +26,9 @@ namespace {
 using ear::nodes::sendspin::NodeKeyStore;
 using nlohmann::json;
 
-class Heard final : public ear::NodeHandle {
-public:
-	const ear::NodeName& node() const noexcept override { return name; }
-	void log(ear::LogEntry) override {}
-	void say(std::string text) override { said.push_back(std::move(text)); }
-	void lost(std::string detail) override { said.push_back("LOST " + std::move(detail)); }
+/// What the store tells of its failed writes, as the worker raises `key-write-failed` with it.
+struct Heard {
 	std::vector<std::string> said;
-	ear::NodeName name = "ma";
 };
 
 /// A store whose writes go as the test scripts them, its text as the framework keeps it: the last write that committed.
@@ -85,7 +81,8 @@ const std::string oldRecord =
  "changedBy": "someone", "blobs": {}})";
 
 std::unique_ptr<NodeKeyStore> opened(ear::Store& store, Heard& heard) {
-	auto keys = NodeKeyStore::open(store, heard);
+	auto keys = NodeKeyStore::open(
+		store, [&heard](std::string_view detail) { heard.said.push_back("key-write-failed " + std::string(detail)); });
 	INFO((keys ? std::string("opened") : keys.error()));
 	REQUIRE(keys.has_value());
 	return std::move(*keys);

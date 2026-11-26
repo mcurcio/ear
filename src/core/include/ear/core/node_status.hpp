@@ -44,8 +44,8 @@ struct RaisedEvent {
 std::string valueText(const StatusValue& value, std::uint8_t decimals = 2);
 
 /// A text value made safe on its writer's thread (docs/writing-a-node-type.md#status-fields): bytes that are not UTF-8
-/// become U+FFFD, a tab, newline or carriage return a space and any other control character U+FFFD, and a text past
-/// `maxBytes` is cut at a character's boundary so that with "…" appended it fits.
+/// become U+FFFD, a tab, newline, carriage return, U+2028 or U+2029 a space and any other control character (C0, DEL
+/// and C1) U+FFFD, and a text past `maxBytes` is cut at a character's boundary so that with "…" appended it fits.
 std::string safeText(std::string_view text, std::size_t maxBytes);
 
 class NodeStatusListener {
