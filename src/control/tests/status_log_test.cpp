@@ -170,7 +170,7 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 				health("desk", NodePhase::failed, {}, FailureReason{FailureReason::Code::engineRefused, "card lost"}));
 		},
 		[](StatusLog& log, Lines&) { log.nodeGone("rec", 0); },
-		[](StatusLog& log, Lines&) { log.nodeSays("kitchen", "connected \"Music Assistant\" unpaired"); },
+		[](StatusLog& log, Lines&) { log.nodeSays("rec", "write-short rec.wav: No space left on device"); },
 		[toRec](StatusLog& log, Lines&) { log.routeChanged({toRec, RouteMatch::linked, ""}); },
 		[toDesk](StatusLog& log, Lines&) { log.routeChanged({toDesk, RouteMatch::refused, "link failed"}); },
 		[](StatusLog& log, Lines&) { log.graphFileChanged({file("v2", "v2"), FileChangeCause::edit, 0}); },

@@ -88,9 +88,9 @@
         "seq": 7,
         "t": "2026-11-07T17:42:03.512094Z",
         "kind": "note",
-        "node": "kitchen",
-        "text": "connected \"Music Assistant\" unpaired",
-        "msg": "node kitchen says connected \"Music Assistant\" unpaired"
+        "node": "rec",
+        "text": "write-short rec.wav: No space left on device",
+        "msg": "node rec says write-short rec.wav: No space left on device"
       }
     },
     {

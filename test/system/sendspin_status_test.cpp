@@ -39,7 +39,8 @@ TEST_CASE("Ten sendspin nodes restarted together reach a slowly reading client w
 	auto ear = runEar(directory);
 	const std::uint16_t control = controlPort(ear);
 
-	// The slow client, subscribed before any node has written: its snapshot holds every field at its initial value.
+	// The slow client, subscribed while the nodes may already be writing: the fold starts from whatever its snapshot
+	// holds, and every change after it arrives as a notification.
 	WsClient slow(control, WsOptions().receiveBuffer(4096));
 	slow.send(R"({"jsonrpc":"2.0","id":1,"method":"graph.subscribe"})");
 	const json snapshot = json::parse(slow.read());

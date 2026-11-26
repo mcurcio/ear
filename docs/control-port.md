@@ -740,8 +740,10 @@ the wire; its records still reach standard output.
   WebSocket code 1008. Reconnect and subscribe again (the editor does, after 1 s doubling to 30 s).
   Whole graph file texts in the queue fill it sooner. Status counts like any notification, at most
   one `node.statusChanged` per node per tick and 30 ticks a second; the socket's buffers take a
-  slow client's backlog before the queue does, so ten nodes at that rate close no client reading a
-  sixth as fast for as long as they hold it ([testing.md](testing.md#the-client-queue-under-status)).
+  slow client's backlog before the queue does, which delays the bound but does not remove it: ten
+  nodes at that rate closed no client reading a sixth as fast over 10 s, and one that falls behind
+  for longer is still closed with 1008 once those buffers are full
+  ([testing.md](testing.md#the-client-queue-under-status)).
 - There are no timers: a connection stays until its peer or ear ends it.
 - **Stopping** (SIGINT or SIGTERM): every edit and lifecycle verb, including one already queued,
   gets `stopping`, while `graph.get` and `graphFile.get` still answer and node events (`stopping`,
