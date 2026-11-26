@@ -114,24 +114,6 @@ body,
   font-family: var(--pb-font-code);
 }
 
-/* A route request's ghost wire (docs/editor.md#requests-in-flight): thin, dashed and muted, plainly not a route; never
-   under the pointer, so it cannot be hovered or clicked; the error colour for its second when ear refuses it. */
-.react-flow__edge.ear-ghost-edge {
-  pointer-events: none;
-}
-
-.ear-ghost {
-  stroke: var(--pb-muted);
-  stroke-width: 1.5px;
-  stroke-dasharray: 4 4;
-  fill: none;
-  transition: stroke var(--pb-motion-fast);
-}
-
-.ear-ghost-refused {
-  stroke: var(--pb-err);
-}
-
 /* The inspector (docs/editor.md#the-inspector): one subject, docked and resized by its left edge between sizes.ts's
    bounds, which sizes.test.ts holds equal; on a narrow window its body is patchbay's Sheet's instead. */
 .inspector {
@@ -436,84 +418,6 @@ body,
 .route-level .port-meter {
   flex: 1;
   width: auto;
-}
-
-/* Wires (docs/editor.md#wires): the colour is the status class's, the width and brightness the level's (set inline as
-   --wire-width and stroke-opacity). The selector outweighs React Flow's selected-edge stroke, so a selected wire keeps
-   its status colour and shows selection by its width. */
-.ear-wire.wire-linked,
-.ear-wire-flow.wire-linked {
-  --wire-colour: var(--pb-ok);
-}
-
-.wire-pending,
-.wire-unknown {
-  --wire-colour: var(--pb-warn);
-}
-
-.wire-refused {
-  --wire-colour: var(--pb-err);
-}
-
-.react-flow .react-flow__edge .react-flow__edge-path.ear-wire {
-  stroke: var(--wire-colour);
-  stroke-width: var(--wire-width);
-  transition: stroke-width var(--pb-motion-fast);
-}
-
-.react-flow .react-flow__edge .ear-wire-dashed {
-  stroke-dasharray: 6 4;
-}
-
-.react-flow .react-flow__edge:hover .react-flow__edge-path.ear-wire {
-  stroke-width: calc(var(--wire-width) + 1px);
-}
-
-/* The flow: a dash moving from the output toward the input at a fixed speed (16 px a period), saying "signal", not how
-   loud. */
-.ear-wire-flow {
-  stroke: var(--pb-raised);
-  stroke-opacity: 0.75;
-  stroke-width: max(1px, calc(var(--wire-width) * 0.4));
-  stroke-dasharray: 3 13;
-  stroke-linecap: round;
-  pointer-events: none;
-  animation: wire-flow var(--pb-motion-flow) linear infinite;
-}
-
-@keyframes wire-flow {
-  to {
-    stroke-dashoffset: -16;
-  }
-}
-
-.wire-label {
-  position: absolute;
-  pointer-events: none;
-  padding: 0 6px;
-  border: 1px solid currentColor;
-  border-radius: var(--pb-radius-pill);
-  background: var(--pb-raised);
-  font-size: 10px;
-  line-height: 14px;
-  font-weight: 600;
-}
-
-.wire-label.wire-refused {
-  color: var(--pb-err);
-}
-
-.wire-label.wire-unknown {
-  color: var(--pb-muted);
-}
-
-/* The durations are already 0 under reduced motion (patchbay's tokens.css); the wires' flow is an infinite animation,
-   which a 0 s duration would churn rather than stop, so it stops here (patchbay's Spinner and Pill stop their own).
-   The peak tick's fall is data, not decoration, and stays. */
-@media (prefers-reduced-motion: reduce) {
-  .ear-wire-flow {
-    display: none;
-  }
 }
 
 /* Forced colours (Windows high contrast): the gutter's dots stay visible in the system's text colour. */

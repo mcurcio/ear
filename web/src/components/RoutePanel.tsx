@@ -5,7 +5,7 @@ import { Button, KeyValue } from "@mcurcio/patchbay/primitives";
 import { wirePort } from "../levels";
 import type { GraphRoute, PortRef, RouteEnds } from "../protocol";
 import type { Selection } from "../selection";
-import { wireStatusWords, wireView } from "../wires";
+import { wireStatusClass, wireStatusWords } from "../wires";
 import { PortMeter } from "./Meter";
 
 export function RoutePanel({
@@ -38,7 +38,7 @@ export function RoutePanel({
           {
             key: "Status",
             value: (
-              <span className={`wire-status ${wireView(route, 0, false).statusClass}`}>{wireStatusWords(route)}</span>
+              <span className={`wire-status ${wireStatusClass(route)}`}>{wireStatusWords(route)}</span>
             ),
           },
           {

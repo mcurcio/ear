@@ -2,9 +2,9 @@
 // output → output) is refused.
 import { describe, expect, it } from "vitest";
 import {
+  canConnect,
   droppedOnPane,
   edgeId,
-  handleCue,
   handleId,
   isValidConnection,
   parseHandleId,
@@ -72,45 +72,33 @@ describe("the connection rules", () => {
   });
 });
 
-describe("the cue while a wire is drawn", () => {
+// The rule patchbay's useConnectHints judges each handle by while a wire is drawn, and React Flow the drop by
+// (docs/editor.md#the-node-box): the origin, ok and no hints are patchbay's, the verdicts ear's.
+describe("the rule the hints and the drop share", () => {
   const handles = fixtures.snapshot.graph.nodes.flatMap((node) => [
-    ...node.inputs.map((port) => ({ node: node.name, id: inp(port) })),
-    ...node.outputs.map((port) => ({ node: node.name, id: out(port) })),
+    ...node.inputs.map((port) => ({ nodeId: node.name, handleId: inp(port) })),
+    ...node.outputs.map((port) => ({ nodeId: node.name, handleId: out(port) })),
   ]);
 
-  it("leaves every handle idle with no drag", () => {
-    for (const handle of handles) expect(handleCue(null, handle.node, handle.id)).toBe("idle");
-  });
-
-  it("marks the drag's own handle, rings where a drop makes a route and dims the rest", () => {
-    const fromNoise = { nodeId: "noise", id: out("noise.mono") };
-    expect(handleCue(fromNoise, "noise", out("noise.mono"))).toBe("origin");
-    expect(handleCue(fromNoise, "rec", inp("record.left"))).toBe("target");
-    expect(handleCue(fromNoise, "quiet", out("noise.mono"))).toBe("dimmed");
-    expect(handleCue(fromNoise, "noise", out("other"))).toBe("dimmed");
-
-    const fromRec = { nodeId: "rec", id: inp("record.left") };
-    expect(handleCue(fromRec, "noise", out("noise.mono"))).toBe("target");
-    expect(handleCue(fromRec, "tape", inp("record.right"))).toBe("dimmed");
-    expect(handleCue(fromRec, "rec", inp("record.right"))).toBe("dimmed");
+  it("accepts an output joined to an input, and refuses two outputs or two inputs", () => {
+    expect(canConnect({ nodeId: "noise", handleId: out("noise.mono") }, { nodeId: "rec", handleId: inp("record.left") })).toBe(true);
+    expect(canConnect({ nodeId: "noise", handleId: out("noise.mono") }, { nodeId: "quiet", handleId: out("noise.mono") })).toBe(false);
+    expect(canConnect({ nodeId: "rec", handleId: inp("record.left") }, { nodeId: "tape", handleId: inp("record.right") })).toBe(false);
+    expect(canConnect({ nodeId: "noise", handleId: null }, { nodeId: "rec", handleId: inp("record.left") })).toBe(false);
   });
 
   it("is the drop rule for every pair of the snapshot's handles", () => {
     expect(handles.length).toBeGreaterThan(4);
     for (const from of handles) {
       for (const to of handles) {
-        if (from.node === to.node && from.id === to.id) continue;
-        const pair = { source: from.node, sourceHandle: from.id, target: to.node, targetHandle: to.id };
-        const valid = isValidConnection(pair);
-        expect(handleCue({ nodeId: from.node, id: from.id }, to.node, to.id) === "target").toBe(valid);
+        const pair = { source: from.nodeId, sourceHandle: from.handleId, target: to.nodeId, targetHandle: to.handleId };
+        expect(canConnect(from, to)).toBe(isValidConnection(pair));
       }
     }
   });
 
   it("keeps dotted and colon names whole", () => {
-    const from = { nodeId: "kitchen", id: out("from.left") };
-    expect(handleCue(from, "desk", inp("odd:port.1"))).toBe("target");
-    expect(handleCue({ nodeId: "desk", id: inp("odd:port.1") }, "desk", inp("odd:port.1"))).toBe("origin");
+    expect(canConnect({ nodeId: "kitchen", handleId: out("from.left") }, { nodeId: "desk", handleId: inp("odd:port.1") })).toBe(true);
   });
 });
 

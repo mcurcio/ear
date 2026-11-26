@@ -239,11 +239,12 @@ show in place.
 what asked for it: a route's two ends, a node's name and the button, or the drawer or form. A reply clears it, and so
 does a closed connection, at once.
 
-- **The ghost wire.** While a route request is on its way, a ghost wire joins the two handles
-  (`components/GhostEdge.tsx`): a thin dashed `--pb-muted` line, with no status colour, no meter and no tooltip, which
-  cannot be selected, focused or deleted (Delete never sends `route.remove` for it). It is hidden once
-  `route.added` draws the route, and goes on the reply. A refused one turns `--pb-err` for 1 s (timed on the monotonic
-  clock) before it goes. *Why:* the owner chose a ghost while a route request is in flight, drawn as a request and
+- **The ghost wire.** While a route request is on its way, a ghost wire joins the two handles: patchbay's
+  `GhostWire` ([its docs](https://github.com/mcurcio/patchbay/blob/v0.7.0/docs/graph.md#ghostwire),
+  `components/GhostEdge.tsx`), a thin dashed `--pb-quiet` line, dimmed, with no status colour, no meter and no
+  tooltip, which takes no pointer and cannot be selected, focused or deleted (Delete never sends `route.remove` for
+  it). It is hidden once `route.added` draws the route, and goes on the reply. A refused one is GhostWire's
+  `refused` tone, `--pb-err` at full opacity, for 1 s (`requests.ts`, timed on the monotonic clock) before it goes. *Why:* the owner chose a ghost while a route request is in flight, drawn as a request and
   never as a route.
 - **Buttons.** Every button that sends a request is patchbay's `Button` with `busy` while its own request is on its
   way: a spinner, `aria-busy`, and presses ignored, but it stays focusable, so the focus is never lost mid-request
@@ -520,14 +521,13 @@ class (inside `:where()`, so they weigh no more), so patchbay's controls draw as
 - **Corners and motion:** 8 px on boxes, 6 px on controls and text boxes, pills fully round; 120 ms
   for hover and selection, 180 ms for what slides, `--pb-motion-pulse` (2 s, the configuring dot),
   and `--pb-motion-flow` (1 s, the wires' flow); patchbay's Spinner turns on `--pb-motion-spin` and stops itself. The
-  first two are 0 under `prefers-reduced-motion: reduce`, which also stops the configuring pulse and the wires' flow
-  (`editor.css`: an infinite animation at 0 s would churn rather than stop), and leaves the peak
+  first two are 0 under `prefers-reduced-motion: reduce`, which also stops the configuring pulse and hides the wires'
+  flow (patchbay's Pill and Wire: an infinite animation at 0 s would churn rather than stop), and leaves the peak
   tick's fall, which is data, not decoration.
 
 **ear's own variables.** Besides the tokens, `editor.css` reads a few variables that hold no value of
 their own design, only a token picked per state or a number a component sets: `--state` (a node's
-state class picks its tone, for its minimap box), `--wire-colour` (a wire's status class),
-`--wire-width` (`LevelEdge.tsx`), `--inspector-width` (`Inspector.tsx`), `--drawer-height`
+state class picks its tone, for its minimap box), `--inspector-width` (`Inspector.tsx`), `--drawer-height`
 (`Drawer.tsx`) and `--gutter-digits` (`KnoblyText.tsx`).
 
 **The theme.** It is `system` by default, following `prefers-color-scheme`. *Why:* the owner chose
@@ -586,7 +586,7 @@ Slice 5's type-schema cache is designed to use this module too ([control-plane.m
 
 `components/EarNode.tsx` draws it with patchbay's `NodeBox`, one `PortRow` per port
 ([its docs](https://github.com/mcurcio/patchbay/blob/v0.7.0/docs/graph.md#nodebox)); ear gives it the words, the
-tone and the handle ids, and the handles' rule is `web/src/connect.ts`'s `handleCue`. *Why patchbay's:* the owner's
+tone and the handle ids, and the handles' rule is `web/src/connect.ts`'s `canConnect`. *Why patchbay's:* the owner's
 principle is to take patchbay's model where it has the concept (2026-11-26), and its geometry is exported so layout
 code sizes boxes by it (D12).
 
@@ -612,11 +612,16 @@ code sizes boxes by it (D12).
   height, not its place.
 - **Handles** are PortRow's: a dot with a larger hit area, both patchbay's sizes (`HANDLE_SIZE`, `HANDLE_HIT`; the hit
   area larger again under a coarse pointer). Each handle's id is `connect.ts`'s `handleId` (`in:<port>`,
-  `out:<port>`), passed through unchanged. While a wire is drawn, `handleCue` gives every port its PortRow hint: the
-  handle the drag started at `origin` (ringed in `--pb-accent`), every handle a drop on would make a route `ok` (grown,
-  in `--pb-ok`), and every other `no` (in `--pb-off`, its row muted): from an output, every input accepts; from an
-  input, every output (the editor accepts a drag from either end). It is `isValidConnection`'s own rule, so a hint
-  never promises what the drop refuses. The drag's start is read as one string, so a pointer move redraws no box.
+  `out:<port>`), passed through unchanged.
+- **Hints while a wire is drawn** are patchbay's `useConnectHints`
+  ([its docs](https://github.com/mcurcio/patchbay/blob/v0.7.0/docs/graph.md#useconnecthints)) over `connect.ts`'s
+  `canConnect`, handed to every PortRow by `<ConnectHints>` around the canvas: the handle the drag started at is
+  `origin` (ringed in `--pb-accent`), every handle on the other side a drop on would make a route `ok` (grown, in
+  `--pb-ok`) and every other there `no` (in `--pb-off`, its row muted); the handles on the drag's own side show
+  nothing. From an output every input accepts, from an input every output (the editor accepts a drag from either
+  end). React Flow's own check on the drop is the same hook's, so a hint never promises what the drop refuses. The
+  hints change at a drag's start and end only, so a pointer move redraws no box. *Why patchbay's:* the owner's
+  principle (2026-11-26); before it, ear also marked the drag's own side `no`.
 - **Selection** is NodeBox's 2 px `--pb-accent` outline outside the border.
 - **A change of ports redraws the box in place.** `node.updated` with its new `inputs` and
   `outputs` ([control-port.md](control-port.md#changes-of-ports)) changes the node the editor holds,
@@ -626,22 +631,28 @@ code sizes boxes by it (D12).
 
 ### Wires
 
-`web/src/wires.ts` holds the rules (`wires.test.ts`); `components/LevelEdge.tsx` draws them.
+Each route is patchbay's `Wire` ([its docs](https://github.com/mcurcio/patchbay/blob/v0.7.0/docs/graph.md#wire)):
+`components/LevelEdge.tsx` gives it what `web/src/wires.ts`'s `wireData` (`wires.test.ts`) makes of the route and its
+from port's level. *Why patchbay's:* the owner's principle is to take patchbay's model where it has the concept
+(2026-11-26).
 
-- **Colour by status, size by level.** Colour comes from the status class over `--pb-ok`, `--pb-warn`
-  and `--pb-err`; an unknown status is drawn as pending. Width is 1.5 px plus 5 px at full scale, and
-  1.5 px more when selected. Opacity is 0.45 plus 0.55 at full scale. Every status but `linked` is
-  dashed and still.
-- **The flow.** A linked wire whose from port's rms is above the -60 dBFS floor shows a dash moving
-  from the output to the input at a fixed speed (`--pb-motion-flow`). It means "signal", not how
-  loud. There is none under reduced motion, and none on pending, refused or an unknown status.
-  Not measured yet: the moving dash's cost at 30 level messages a second on a 20-wire graph. It
-  is owed in a browser's performance panel on the system test's graph; if it costs, the flow is
-  drawn only on the selected and hovered wires (`wires.ts`'s `flowing`).
-- **The status in words.** A refused wire carries `refused` at its midpoint (React Flow's
-  `EdgeLabelRenderer`). A status this editor does not know carries its own word, in `--pb-muted`.
-- **Hover** thickens the wire by 1 px. Its tooltip names the two ends
-  (`noise:noise.mono → rec:record.right`) and, for a refused route, ear's detail.
+- **Colour by status.** Its tone: `ok` linked, `warn` pending, `err` refused; a status this editor does not know is
+  drawn as pending. Selected, the wire is `--pb-accent` whatever its status.
+- **Size by level.** Its emphasis is the from port's rms on the meters' scale (`levels.ts`'s `meterFraction`, the
+  -60 dBFS floor): 1.5 px to 3.5 px wide and from 45 % to full opacity. Every status but `linked` is dashed.
+- **The flow.** A linked wire whose from port's rms is above the floor shows dots moving from the output to the
+  input at a fixed speed (`--pb-motion-flow`). It means "signal", not how loud. There is none under reduced motion,
+  and none on pending, refused or an unknown status.
+- **The level without a rebuild.** A level message (about 30 a second) redraws each wire whose from port it moves,
+  and only that: Wire keeps its path, its flow and its hit path, and takes the level as a CSS variable on its group,
+  so a new level restyles the stroke and never rebuilds the path. Measured in headless Chromium on the `snapshot`
+  fixture's graph at 30 level messages a second, against ear's own wire before it: no path's `d` changed either way,
+  the style changes on the edges over 3 s fell from 635 to 270, the layouts over 5 s from 338 to 198, and script
+  time from 93 ms to 81 ms.
+- **The status in words.** A refused wire carries `refused` at its midpoint, and a status this editor does not know
+  its own word, on Wire's label.
+- **The tooltip**, on the wire's hit path, names the two ends (`noise:noise.mono → rec:record.right`) and, for a
+  refused route, ear's detail.
 
 ### Meters
 
@@ -810,7 +821,7 @@ port. Node.js comes from `web/.nvmrc` and the packages from `web/package-lock.js
 The tests cover the reducer against every `test/protocol` fixture, the graph file's state and the
 pane's logic (drafts, stale files, Save, refusals), the node panel's knobly box (`nodeText.ts`), the add-node
 form (`addText.ts`), the highlighting (`highlight.ts`, and that it never changes the text sent), the reconnecting client with a fake socket,
-the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (a meter's words, and patchbay's scale pinned as stated here), the handles' cue (`connect.ts`), the box's sizes against patchbay's exported geometry (`layout.test.ts`), and the tokens and the theme's first paint (`theme.test.ts`: every `var()` names a token, and `index.html` inlines patchbay's theme script), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the sizes and the breakpoint against `editor.css` (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight and the ghosts (`requests.ts`), the toast store on patchbay's queue and a refusal's words (`notices.ts`, replaying `errors.json`), the gutter (`gutter.ts`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands as patchbay's `CommandPalette` takes and ranks them, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the key bindings as patchbay's `findShortcut` runs them (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), the wire dropped on the pane (`connect.ts`), and when the view fits itself (`fit.ts`). patchbay's modules import their own stylesheets, which Node cannot load, so `vite.config.ts` has Vitest inline the package (and blank its styles) for the tests that call its pure helpers. There is no browser test runner:
+the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (a meter's words, and patchbay's scale pinned as stated here), the handles' rule (`connect.ts`'s `canConnect`), the box's sizes against patchbay's exported geometry (`layout.test.ts`), and the tokens and the theme's first paint (`theme.test.ts`: every `var()` names a token, and `index.html` inlines patchbay's theme script), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the sizes and the breakpoint against `editor.css` (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight and the ghosts (`requests.ts`), the toast store on patchbay's queue and a refusal's words (`notices.ts`, replaying `errors.json`), the gutter (`gutter.ts`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands as patchbay's `CommandPalette` takes and ranks them, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the key bindings as patchbay's `findShortcut` runs them (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), the wire dropped on the pane (`connect.ts`), and when the view fits itself (`fit.ts`). patchbay's modules import their own stylesheets, which Node cannot load, so `vite.config.ts` has Vitest inline the package (and blank its styles) for the tests that call its pure helpers. There is no browser test runner:
 rendering is checked by eye. *Why:* a Playwright leg costs about 150 MB of browsers and a minute
 or two a CI run, while the logic sits in the reducer, client and rules, which Vitest covers
 against the same fixtures the server is tested with.

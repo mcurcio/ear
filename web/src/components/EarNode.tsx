@@ -4,12 +4,12 @@
 // silent or what it waits for (health.ts, docs/editor.md#a-nodes-health); then its ports stacked (layout.ts's
 // nodePorts), the inputs' rows with their handles on the left and then the outputs' on the right, each a PortRow with its handle (connect.ts's handle id) and its level meter in the
 // trailing slot, in every phase; and in the footer the strip of its companions' badges (companions.ts,
-// docs/editor.md#companions), outside every handle. While a wire is drawn each port takes its hint from connect.ts's
-// handleCue, the drop rule itself. React Flow's useConnection is a drag in progress; hooks.ts's is the editor's socket.
-import { NodeBox, type PortHint, type PortSpec } from "@mcurcio/patchbay/graph";
-import { useConnection as useFlowConnection, type Node, type NodeProps } from "@xyflow/react";
+// docs/editor.md#companions), outside every handle. While a wire is drawn each PortRow takes its hint from the canvas's
+// ConnectHints (patchbay's useConnectHints over connect.ts's canConnect, the drop rule itself).
+import { NodeBox, type PortSpec } from "@mcurcio/patchbay/graph";
+import type { Node, NodeProps } from "@xyflow/react";
 import { useEffect, useState } from "react";
-import { handleCue, handleId, type Direction, type DragStart, type HandleCue } from "../connect";
+import { handleId, type Direction } from "../connect";
 import { describeHealth, startingLineDelayMs, stateTone } from "../health";
 import { nodePorts } from "../layout";
 import type { GraphNode } from "../protocol";
@@ -40,29 +40,12 @@ function usePhaseSeen(phase: string, since: string | undefined): number {
 export type EarNodeData = { node: GraphNode };
 export type EarFlowNode = Node<EarNodeData, "ear">;
 
-/** handleCue's words in PortRow's: a handle a drop on would make a route accepts it, every other refuses it. */
-const hints: Record<HandleCue, PortHint> = { idle: null, origin: "origin", target: "ok", dimmed: "no" };
-
-/**
- * The handle a drag in progress started from, as one string, so a pointer move during a drag redraws no box: only a
- * drag's start and end do.
- */
-function useDragStart(): DragStart | null {
-  const key = useFlowConnection((connection) =>
-    connection.inProgress ? JSON.stringify([connection.fromHandle.nodeId, connection.fromHandle.id ?? null]) : "",
-  );
-  if (key === "") return null;
-  const [nodeId, id] = JSON.parse(key) as [string, string | null];
-  return { nodeId, id };
-}
-
-function ports(node: GraphNode, direction: Direction, from: DragStart | null): PortSpec[] {
+function ports(node: GraphNode, direction: Direction): PortSpec[] {
   return (direction === "in" ? node.inputs : node.outputs).map((port) => {
     const id = handleId(direction, port);
     return {
       id,
       label: port,
-      hint: hints[handleCue(from, node.name, id)],
       trailing: <PortMeter node={node.name} port={port} label={`${port} level`} />,
     };
   });
@@ -72,7 +55,6 @@ export function EarNode({ data: { node }, selected }: NodeProps<EarFlowNode>) {
   const health = describeHealth(node, usePhaseSeen(node.phase, node.since));
   const companions = useCompanionBadges(node);
   const { mark } = useNodeCounters(node);
-  const from = useDragStart();
   // A change of ports redraws the same box (docs/editor.md#the-node-box): NodeBox has React Flow measure its handles
   // again, so a surviving port's wires stay on it and a new port's handle takes wires.
   return (
@@ -89,8 +71,8 @@ export function EarNode({ data: { node }, selected }: NodeProps<EarFlowNode>) {
         </>
       }
       line={health.line === "" ? undefined : health.line}
-      inputs={ports(node, "in", from)}
-      outputs={ports(node, "out", from)}
+      inputs={ports(node, "in")}
+      outputs={ports(node, "out")}
       ports={nodePorts}
       footer={companions.length === 0 ? undefined : <CompanionStrip badges={companions} />}
       selected={selected}

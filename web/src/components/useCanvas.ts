@@ -95,7 +95,6 @@ export function useCanvas(graph: GraphState, keeper?: PlaceKeeper): CanvasModel 
         focusable: false,
         deletable: false,
         interactionWidth: 0,
-        className: "ear-ghost-edge",
         data: { refused },
       }),
     );

@@ -1,28 +1,13 @@
-// What a route's wire draws (docs/editor.md#wires): its status's colour class, a thickness and brightness by its from
-// port's level, a flow while a linked wire carries signal, its status in words where colour is not enough, and a
-// tooltip naming its two ends; and the inspector's Route subject's status in words (wireStatusWords). A status this
-// editor does not know is drawn as pending, neutrally, and by its own word
-// (docs/control-port.md#protocol-and-features).
+// What a route's wire draws (docs/editor.md#wires), as patchbay's Wire takes it: its status's tone, an emphasis by its
+// from port's level, dashes on every status but linked, a flow while a linked wire carries signal, its status in words
+// where colour is not enough, and a tooltip naming its two ends; and the inspector's Route subject's status in words
+// (wireStatusWords) and class (wireStatusClass). A status this editor does not know is drawn as pending, and by its
+// own word (docs/control-port.md#protocol-and-features).
+import type { WireData } from "@mcurcio/patchbay/graph";
 import { floorDb, meterFraction, toDbfs } from "./levels";
 import type { GraphRoute, RouteEnds } from "./protocol";
 
 export type WireStatusClass = "wire-linked" | "wire-pending" | "wire-refused" | "wire-unknown";
-
-export interface WireView {
-  statusClass: WireStatusClass;
-  /** Stroke width in px: 1.5 + 5 at full scale, + 1.5 when selected (hover adds 1 px in editor.css). */
-  width: number;
-  /** 0.45 + 0.55 at full scale. */
-  opacity: number;
-  /** Every status but linked is dashed and still. */
-  dashed: boolean;
-  /** A linked wire whose from port's rms is above the floor shows the flow; no other status ever does. */
-  flowing: boolean;
-  /** The status in words at the midpoint: "refused", an unknown status's own word, or none. */
-  label: string | undefined;
-  /** The hover tooltip: the two ends, and a refused route's detail on a second line. */
-  title: string;
-}
 
 const statusClasses: Record<string, WireStatusClass> = {
   linked: "wire-linked",
@@ -30,14 +15,15 @@ const statusClasses: Record<string, WireStatusClass> = {
   refused: "wire-refused",
 };
 
-function statusClassOf(route: GraphRoute): WireStatusClass {
+/** The status's class: the Route subject colours its status words by it. */
+export function wireStatusClass(route: GraphRoute): WireStatusClass {
   const status: string = route.status;
   return Object.hasOwn(statusClasses, status) ? statusClasses[status]! : "wire-unknown";
 }
 
 /** The Route subject's status in words (docs/editor.md#the-inspector): an unknown status by its own word, as sent. */
 export function wireStatusWords(route: GraphRoute): string {
-  switch (statusClassOf(route)) {
+  switch (wireStatusClass(route)) {
     case "wire-linked":
       return "linked";
     case "wire-pending":
@@ -54,22 +40,31 @@ export function wireEnds(route: RouteEnds): string {
   return `${route.from.node}:${route.from.port} → ${route.to.node}:${route.to.port}`;
 }
 
-/** What the wire of `route` draws while its from port's rms is `rms`. */
-export function wireView(route: GraphRoute, rms: number, selected: boolean): WireView {
+/** Each status's tone on Wire: an unknown one as pending's. */
+const tones: Record<WireStatusClass, "ok" | "warn" | "err"> = {
+  "wire-linked": "ok",
+  "wire-pending": "warn",
+  "wire-unknown": "warn",
+  "wire-refused": "err",
+};
+
+/**
+ * What the wire of `route` draws while its from port's rms is `rms`: Wire's data. The emphasis is the meter's fraction
+ * of the level, which Wire takes as a CSS variable, so a new level restyles the wire without rebuilding its path.
+ */
+export function wireData(route: GraphRoute, rms: number): WireData {
   const status: string = route.status;
-  const statusClass = statusClassOf(route);
-  const level = meterFraction(rms);
+  const statusClass = wireStatusClass(route);
   const linked = statusClass === "wire-linked";
   let label: string | undefined;
   if (statusClass === "wire-refused") label = "refused";
   else if (statusClass === "wire-unknown") label = status;
   const ends = wireEnds(route);
   return {
-    statusClass,
-    width: 1.5 + 5 * level + (selected ? 1.5 : 0),
-    opacity: 0.45 + 0.55 * level,
+    tone: tones[statusClass],
+    emphasis: meterFraction(rms),
     dashed: !linked,
-    flowing: linked && toDbfs(rms) > floorDb,
+    flow: linked && toDbfs(rms) > floorDb,
     label,
     title: statusClass === "wire-refused" && route.detail !== undefined ? `${ends}\nrefused: ${route.detail}` : ends,
   };
