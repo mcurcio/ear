@@ -6,6 +6,7 @@
 #include "graph_file_model.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <format>
 #include <limits>
@@ -18,6 +19,7 @@
 #include <knobly/rendered.hpp>
 #include <knobly/written.hpp>
 
+#include "ear/core/decimal_text.hpp"
 #include "ear/core/rate_text.hpp"
 #include "place.hpp"
 
@@ -115,10 +117,8 @@ ByteRange rangeOf(const vr::directive& directive) {
 
 /// The kind `type` declares for `key`; nothing when it declares none or the type is unknown.
 std::optional<SettingKind> declaredKind(const NodeType* type, std::string_view key) {
-	if (type != nullptr)
-		for (const auto& declared : type->settingKinds())
-			if (declared.key == key) return declared.kind;
-	return std::nullopt;
+	if (type == nullptr) return std::nullopt;
+	return type->kindOf(key);
 }
 
 /// `<node>:<port>`, split at its first ':', each part non-empty; nothing otherwise.
@@ -370,6 +370,9 @@ private:
 				} else if (kind == SettingKind::boolean) { // knobly's boolean, as disabled's
 					if (const auto flag = attempt([&] { return value.boolean(); })) settings[key] = *flag;
 					else ok = false;
+				} else if (kind == SettingKind::decimal) { // any number word knobly reads: the range is the row's
+					if (const auto number = attempt([&] { return value.number(); })) settings[key] = *number;
+					else ok = false;
 				} else {
 					if (const auto text = attempt([&] { return value.string(); })) settings[key] = *text;
 					else ok = false;
@@ -510,8 +513,8 @@ std::expected<std::string, InvalidSettings> textValue(const NodeName& node, cons
 }
 
 /// One setting's value as knobly text: text is knobly's quote of the JSON string, a whole number the
-/// bare integer, a rate its unit form (rateText: 44.1khz), a boolean the bare word true or false; an undeclared key
-/// takes a string (quoted) or an integer (bare).
+/// bare integer, a rate its unit form (rateText: 44.1khz), a boolean the bare word true or false, a decimal its
+/// shortest fixed text (decimalText: -3.5, -6); an undeclared key takes a string (quoted) or an integer (bare).
 std::expected<std::string, InvalidSettings> valueText(const NodeName& node, const NodeType* type,
                                                       const std::string& key, const json& value) {
 	if (!writableKey(key)) return std::unexpected(InvalidSettings{node, key + ": cannot be written", key});
@@ -530,6 +533,11 @@ std::expected<std::string, InvalidSettings> valueText(const NodeName& node, cons
 			if (!value.is_boolean())
 				return std::unexpected(InvalidSettings{node, key + ": expected true or false", key});
 			return std::string(value.get<bool>() ? "true" : "false");
+		}
+		if (*kind == SettingKind::decimal) { // the shortest fixed text; the row's range is the plan's to judge
+			if (!value.is_number() || !std::isfinite(value.get<double>()))
+				return std::unexpected(InvalidSettings{node, key + ": expected a number", key});
+			return decimalText(value.get<double>());
 		}
 		if (!value.is_number_integer())
 			return std::unexpected(InvalidSettings{node, key + ": expected a whole number", key});

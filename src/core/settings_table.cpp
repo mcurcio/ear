@@ -1,9 +1,11 @@
 #include "ear/core/settings_table.hpp"
 
 #include "caught.hpp"
+#include "ear/core/decimal_text.hpp"
 #include "ear/core/rate_text.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -57,6 +59,12 @@ std::string notWithinRange(std::string_view key, const WholeNumberRule& rule) {
 	return refusal + ", " + std::to_string(rule.low) + "-" + std::to_string(rule.high);
 }
 
+std::string notWithinRange(std::string_view key, const DecimalRule& rule) {
+	std::string refusal = std::string(key) + ": must be a number";
+	if (!rule.unit.empty()) refusal += " of " + std::string(rule.unit);
+	return refusal + " from " + decimalText(rule.low) + " to " + decimalText(rule.high);
+}
+
 } // namespace
 
 std::expected<CheckedSettings, AnySettingsTable::Refusal> AnySettingsTable::walk(const NodeSettings& settings) const {
@@ -83,7 +91,7 @@ std::expected<CheckedSettings, AnySettingsTable::Refusal> AnySettingsTable::walk
 		const auto value = settings.find(row->key);
 		if (value == settings.end()) {
 			if (row->required) return refuse(std::string(row->key) + ": missing");
-			if (row->byDefault) slot = *row->byDefault;
+			if (row->byDefault) std::visit([&slot](const auto value) { slot = value; }, *row->byDefault);
 			continue;
 		}
 		if (!row->onlyWithout.empty() && settings.contains(row->onlyWithout)) {
@@ -102,6 +110,12 @@ std::expected<CheckedSettings, AnySettingsTable::Refusal> AnySettingsTable::walk
 				              " (on the control port, a whole number of Hz)");
 			}
 			slot = *read;
+		} else if (const auto* decimal = std::get_if<DecimalRule>(&row->rule)) {
+			// Any JSON number, an integer too; never a boolean, which nlohmann does not count as one.
+			const bool taken = value->is_number() && std::isfinite(value->get<double>()) &&
+			                   value->get<double>() >= decimal->low && value->get<double>() <= decimal->high;
+			if (!taken) return refuse(notWithinRange(row->key, *decimal));
+			slot = value->get<double>();
 		} else if (std::holds_alternative<BooleanRule>(row->rule)) {
 			if (!value->is_boolean()) return refuse(std::string(row->key) + ": must be true or false");
 			slot = value->get<bool>();
@@ -132,6 +146,8 @@ std::expected<void, std::string> NodeConfig::runCall(std::size_t action, void*, 
 std::string_view NodeType::name() const noexcept { return table_->name(); }
 
 std::span<const SettingDeclaration> NodeType::settingKinds() const noexcept { return table_->kinds(); }
+
+std::optional<SettingKind> NodeType::kindOf(std::string_view key) const noexcept { return table_->kindOf(key); }
 
 bool NodeType::changesInPlace(std::string_view key) const noexcept { return table_->changesInPlace(key); }
 

@@ -20,7 +20,7 @@ import { wireEnds } from "./wires";
 // ----- Fields -----
 
 /** How a field is drawn: by its row's kind and hints; a kind this editor does not know is typed as JSON. */
-export type FieldControl = "select" | "text" | "number" | "flag" | "json";
+export type FieldControl = "select" | "text" | "number" | "decimal" | "flag" | "json";
 
 /** What a field shows while no draft is typed: the node's value as text (a flag as a boolean). */
 export type FieldValue = string | boolean;
@@ -42,7 +42,7 @@ export interface FieldView {
   value: FieldValue;
   /** A select's values; for an optional row the first is "" (absent). */
   options?: string[];
-  /** A number's bounds and step, or a text's most characters. */
+  /** A number's or a decimal's bounds, or a text's most characters. */
   min?: number;
   max?: number;
   maxLength?: number;
@@ -68,6 +68,7 @@ export interface FieldView {
 export function controlOf(row: SettingSchema): FieldControl {
   if (row.kind === "text") return row.values !== undefined && row.values.length > 0 ? "select" : "text";
   if (row.kind === "wholeNumber") return "number";
+  if (row.kind === "decimal") return "decimal";
   if (row.kind === "flag") return "flag";
   return "json";
 }
@@ -121,7 +122,7 @@ export function fieldsOf(
       changedOnEar: draft !== undefined && !sameJson(draft.base, settings[row.key]),
     };
     if (control === "select") field.options = row.required ? [...(row.values ?? [])] : ["", ...(row.values ?? [])];
-    if (control === "number") {
+    if (control === "number" || control === "decimal") {
       if (row.min !== undefined) field.min = row.min;
       if (row.max !== undefined) field.max = row.max;
     }
@@ -191,6 +192,18 @@ export function problemOf(row: SettingSchema, value: FieldValue): string | undef
       return `must be a whole number${range}`;
     return undefined;
   }
+  if (control === "decimal") {
+    // ear's own words (docs/writing-a-node-type.md#decimal-rows): a JSON number, an integer too, in the range.
+    const unit = row.unit !== undefined ? ` of ${row.unit}` : "";
+    const range = row.min !== undefined && row.max !== undefined ? ` from ${row.min} to ${row.max}` : "";
+    const words = `must be a number${unit}${range}`;
+    const trimmed = text.trim();
+    if (!/^-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?$/.test(trimmed)) return words;
+    const number = Number(trimmed);
+    if (!Number.isFinite(number)) return words;
+    if ((row.min !== undefined && number < row.min) || (row.max !== undefined && number > row.max)) return words;
+    return undefined;
+  }
   if (control === "json") {
     try {
       JSON.parse(text);
@@ -217,7 +230,7 @@ export function valueOf(row: SettingSchema, draft: FieldValue, current: JsonValu
   if (control === "flag") return draft === false && !row.required && current === undefined ? null : draft;
   const text = String(draft);
   if (text === "") return null;
-  if (control === "number") return Number(text.trim());
+  if (control === "number" || control === "decimal") return Number(text.trim());
   if (control === "json") return JSON.parse(text) as JsonValue;
   return text;
 }

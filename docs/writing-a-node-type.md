@@ -91,12 +91,13 @@ inline constexpr auto portRow = setting::optional("port", setting::number(1, 655
 |---|---|---|
 | `setting::required(key, rule)` | the value | `<key>: missing` |
 | `setting::optional(key, rule)` | `std::optional` of the value | empty |
-| `setting::defaulted(key, number, default)` | the value | the default (numbers only; a default outside the range does not compile) |
+| `setting::defaulted(key, rule, default)` | the value | the default, of the rule's kind: a whole number, a [decimal](#decimal-rows) or a boolean. A default outside the range, or a default on a text or rate row, does not compile. The default is not deduced, so `defaulted("playback", number(0, 64), 0)` takes the literal `0` as the rule's value |
 
 | Rule | A good value | Refused with |
 |---|---|---|
 | `setting::number(low, high, unit = {})` | a JSON integer in [low, high] (not a float, bool or string) | `<key>: must be a whole number[ of <unit>], <low>-<high>` |
 | `setting::rate(low, high)` | a JSON integer of hertz in [low, high], read as a `SampleRate`; in `ear.conf` written with its unit (`44.1khz`, [graph-file.md](graph-file.md#rates)) | `<key>: must be a rate from <low> to <high> (on the control port, a whole number of Hz)`, the ends as ear writes them (`8khz`) |
+| `setting::decimal(low, high, unit = {}, hints = {})` | a finite JSON number in [low, high], an integer taken, read as `double`; in `ear.conf` a number word (`-3.5`, `0.25`, `1e3`) ([below](#decimal-rows)) | `<key>: must be a number[ of <unit>] from <low> to <high>`, the ends as ear writes a decimal (`-90`, `0.25`) |
 | `setting::boolean()` | JSON `true` or `false` (not a string, number or null), read as `bool`; in `ear.conf` the bare word `true` or `false`, or a variable ([graph-file.md](graph-file.md#settings-and-their-kinds)) | `<key>: must be true or false` |
 | `setting::text<Parse>(mustBe)` | a JSON string `Parse` accepts; `Parse` is `std::optional<T>(std::string_view)`, and `T` (what the row reads) must own what it holds | `<key>: must be <mustBe>` |
 
@@ -124,10 +125,38 @@ inline constexpr auto portRow = setting::optional("port", setting::number(1, 655
 - Each key once; `disabled` (the framework's key) cannot be declared; a table's name must be its
   folder's. Each is a compile error.
 - The table is `SettingsTable<row1, row2, ...>{"<type>"}` (`SettingsTable<>{"white"}` for none).
-  It gives the type's name, its settings' kinds (text, whole number, rate or boolean, which is how
-  `ear.conf` is read and written) and the whole check, so the graph file reader cannot disagree with `parse`.
+  It gives the type's name, its settings' kinds (text, whole number, rate, boolean or decimal, which is
+  how `ear.conf` is read and written: `NodeType::kindOf(key)`) and the whole check, so the graph file reader cannot disagree with `parse`.
 - A parsed value is parsed once: a text row reads as what its parse function made (a `CardId`, an
   `RtpAddress`, a path).
+
+#### Decimal rows
+
+```cpp
+inline constexpr auto levelRow =
+	setting::defaulted("levelDb", setting::decimal(-90.0, 24.0, "dB", {.decimals = 1, .taper = setting::Taper::db,
+	                                                                   .minIsSilence = true}), 0.0)
+		.inPlace();
+inline constexpr auto cutoffRow =
+	setting::required("cutoffHz", setting::decimal(20, 20'000, "Hz", {.decimals = 0, .taper = setting::Taper::log}))
+		.inPlace();
+```
+
+A decimal row reads as `double`. Its range is two finite bounds, low not above high, and its hints
+(`setting::DecimalHints`) are for controls only, never for the walk:
+
+| Hint | Default | What |
+|---|---|---|
+| `decimals` | 2 | the places a control shows |
+| `taper` | `linear` | how a control maps its travel to the value: `linear`; `log`, on the value's logarithm (a frequency), which needs a low above 0; `db`, a level, which needs a range from -60 dB or lower to 0 dB or higher |
+| `minIsSilence` | `false` | the row's low end means silence: a control shows -inf there |
+
+A bound that is not finite, low above high, a log taper with a low of 0 or less, a dB taper that
+does not reach from -60 to 0, and a default outside the range each do not compile. The walk takes
+any JSON number in the range, an integer too (`-6` is `-6.0`), and never a string or a boolean; it
+does not round, so a value with more places than `decimals` is taken as given. In `ear.conf` a
+decimal is written as the shortest text that reads back the same, in fixed notation
+([graph-file.md](graph-file.md#settings-and-their-kinds)).
 
 #### Change marks
 
@@ -170,7 +199,7 @@ twice) and a restart with an empty reason do not compile. A call's arguments
 ### The type schema
 
 `NodeType::schema()` is the type as the control port describes it: its name, its rows in the walk's
-order (each with its key, rule, required, default, `onlyWithout`, its [change mark](#change-marks) and its
+order (each with its key, rule, required, default of its kind, `onlyWithout`, its [change mark](#change-marks) and its
 reason, and the marks above), its banks in
 declaration order, its in-place deadline (`.lifecycle`), and its status fields and events in
 declaration order ([status and events](#status-and-events)). Everything in it views the spec's static

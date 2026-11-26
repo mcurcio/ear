@@ -521,13 +521,14 @@ encoding, never through the graph's keeper, so it waits on no edit.
 
 | Member | What |
 |---|---|
-| `kind` | What the control port takes for the key: `text` (a JSON string), `wholeNumber` (a JSON integer; a rate is one, in Hz, with `unit` `Hz`, whatever `ear.conf` writes), `flag` (JSON `true` or `false`). Open: a client draws a kind it does not know as a JSON value |
+| `kind` | What the control port takes for the key: `text` (a JSON string), `wholeNumber` (a JSON integer; a rate is one, in Hz, with `unit` `Hz`, whatever `ear.conf` writes), `decimal` (a JSON number, an integer taken), `flag` (JSON `true` or `false`). Open: a client draws a kind it does not know as a JSON value. A kind needs no feature: a client reads it from the schema it asked for |
 | `change` | What a change to the key alone asks of the node, from its row's [change mark](writing-a-node-type.md#change-marks): `inPlace` (taken [in place](architecture.md#changes-in-place)) or `restart`. Open |
 | `restartReason` | A `restart` row's reason, one line: what cannot change while the node runs (`shairport-sync reads it only at start`, `card has no change in place yet`). Every built-in type's restart row has one |
 | `shapes` | `true` when a change to the key may change the node's ports ([below](#changes-of-ports)) |
-| `default` | What an absent key reads |
+| `default` | What an absent key reads, of the row's kind: a whole number, a decimal or a flag |
 | `defaultFrom` | Where an absent key's value comes from instead: `graphFrequency` or `nodeName`. Open |
-| `min`, `max`, `unit` | A whole number's range, and its unit when it has one (`channels`, `milliseconds`, `Hz`) |
+| `min`, `max`, `unit` | A whole number's or a decimal's range, and its unit when it has one (`channels`, `milliseconds`, `Hz`, `dB`) |
+| `decimals`, `taper`, `minIsSilence` | A decimal's hints for a control ([writing-a-node-type.md](writing-a-node-type.md#decimal-rows)), always but `minIsSilence`: the places it shows; how its travel maps to the value, `linear`, `log` or `db` (open); `true` when `min` is silence, shown as -inf |
 | `mustBe` | A text's rule in its own words, as its refusal says it |
 | `values`, `pattern`, `maxLength` | A text's hints for a control: every value it takes (a select), an ECMAScript pattern every good value matches, its most bytes. Hints only: ear judges every value |
 | `onlyWithout` | The key it is refused beside |
@@ -783,6 +784,7 @@ breaking change moves `protocol`; anything else is a new feature name
 | `node-set.json` | `node.set`: a merge answered `reconfigure`, `unchanged` again, `null` removing a key, a required key removed refused, a dry run of each outcome (`reconfigure`, `unchanged`, `restart`, `stored` with its ports, `reshape` naming its routes) changing nothing, a reshape refused `ports-in-use`, then with `dropRoutes` (`routesDropped`) |
 | `node-text.json` | `nodeTexts` (a comment owned, a snippet's node shared); `node.setText`: success, `file-changed`, `invalid-text` placed in the text, `ear/node-renamed`, `shared-definition`, `ear/not-one-node`; `node.addText`: success, `file-changed`, knobly's error placed in the text, `ear/not-one-node`, `duplicate-node`; the system tests send its requests to the real ear and expect its replies |
 | `errors.json` | Every refusal code and envelope error, `invalid-settings` with its `key` and `detail` |
+| `rows.json` | Schemas of test types, not the real ear's: the row vocabulary no built-in type has yet (decimal rows of each taper, typed defaults), as `src/control/tests/type_schemas_test.cpp` encodes its test specs and the editor's form tests draw them. Not a wire fixture: `{"description", "typeSchemas"}` |
 | `types.json` | `types.get` with no hash, a stale hash and the current one, and with an unknown member; every built-in type's schema (each row's `change`, `restartReason`, `shapes`, `defaultFrom` and hints) and its hash; the system tests send its requests to the real ear and expect its replies |
 | `levels.json` | `levels.subscribe` and `levels` |
 | `counters-changed.json` | The counters in a snapshot, `counters.changed`, one naming a node not held, and a change of ports keeping the node and its counters |

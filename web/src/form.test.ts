@@ -2,7 +2,8 @@
 // marked when ear changes under them, the merge patch, and Apply asking first against a fake client
 // (docs/control-port.md#nodeset-and-dry-runs): a reconfigure sent at once, a restart and a reshape asking first,
 // dropRoutes sent exactly when the dry run named routes, a ports-in-use refusal asking again, a refusal placed by
-// data.key. Every built-in type's schema in types.json makes a form.
+// data.key. Every built-in type's schema in types.json makes a form, and so does rows.json's row vocabulary (decimals and
+// typed defaults) that no built-in type has yet.
 import { describe, expect, it } from "vitest";
 import {
   ApplyFlow,
@@ -20,6 +21,7 @@ import {
 import type { GraphNode, Methods, RouteEnds, SetResult, TypeSchema, TypesResult } from "./protocol";
 import { RpcError } from "./rpc";
 import { fixtures, messagesOf } from "./testFixtures";
+import rowsFixture from "../../test/protocol/rows.json";
 
 /** A card-like type: a required text with a pattern, two whole numbers that shape the ports, an in-place select. */
 const card: TypeSchema = {
@@ -324,5 +326,44 @@ describe("every built-in type makes a form", () => {
         expect(field.hints.length).toBeGreaterThan(0);
       }
     }
+  });
+});
+
+describe("the row vocabulary no built-in type has yet", () => {
+  const schema = (rowsFixture as unknown as { typeSchemas: TypeSchema[] }).typeSchemas[0];
+
+  it("draws rows.json's decimals as decimal fields with their range, unit and typed default", () => {
+    const fields = fieldsOf(schema, { cutoffHz: 1000 }, none);
+    expect(fields.map((field) => [field.key, field.control, field.value])).toStrictEqual([
+      ["levelDb", "decimal", ""],
+      ["cutoffHz", "decimal", "1000"],
+      ["spread", "decimal", ""],
+      ["on", "flag", false],
+    ]);
+    expect([fields[0].min, fields[0].max, fields[0].unit]).toStrictEqual([-90, 24, "dB"]);
+    expect(fields.map((field) => field.placeholder)).toStrictEqual(["default -6 dB", "required", "absent", "default true"]);
+    expect(fields[1].hints).toStrictEqual(["restarts the node: the filter is designed at start"]);
+  });
+
+  it("checks a decimal in ear's words: a number, an integer taken, within the range", () => {
+    for (const good of ["-3.5", "-6", "0", "24", "-90", " 1e1 ", "0.25"]) {
+      const drafts = edit(schema, { cutoffHz: 1000 }, none, "levelDb", good);
+      expect(fieldsOf(schema, { cutoffHz: 1000 }, drafts)[0].problem).toBeUndefined();
+    }
+    for (const bad of ["-90.5", "25", "abc", "-.5", "1.", "1e400", "--1", "Infinity"]) {
+      const drafts = edit(schema, { cutoffHz: 1000 }, none, "levelDb", bad);
+      expect(fieldsOf(schema, { cutoffHz: 1000 }, drafts)[0].problem).toBe("must be a number of dB from -90 to 24");
+    }
+    const spread = edit(schema, { cutoffHz: 1000 }, none, "spread", "2");
+    expect(fieldsOf(schema, { cutoffHz: 1000 }, spread)[2].problem).toBe("must be a number from 0 to 1");
+  });
+
+  it("sends a decimal as a JSON number, and an emptied optional one as null", () => {
+    let drafts = edit(schema, { cutoffHz: 1000, spread: 0.5 }, none, "levelDb", "-3.5");
+    drafts = edit(schema, { cutoffHz: 1000, spread: 0.5 }, drafts, "cutoffHz", "440");
+    drafts = edit(schema, { cutoffHz: 1000, spread: 0.5 }, drafts, "spread", "");
+    expect(patchOf(schema, { cutoffHz: 1000, spread: 0.5 }, drafts)).toStrictEqual({
+      patch: { levelDb: -3.5, cutoffHz: 440, spread: null },
+    });
   });
 });

@@ -8,6 +8,7 @@
 #include <chrono>
 #include <optional>
 #include <expected>
+#include <fstream>
 #include <string>
 #include <string_view>
 
@@ -59,6 +60,33 @@ struct Every {
 };
 
 } // namespace type_schemas_test
+
+// The row vocabulary no built-in type has yet: test/protocol/rows.json's schemas.
+namespace rows {
+using namespace ear;
+inline constexpr auto levelRow =
+	setting::defaulted(
+		"levelDb",
+		setting::decimal(-90.0, 24.0, "dB", {.decimals = 1, .taper = setting::Taper::db, .minIsSilence = true}), -6.0)
+		.inPlace();
+inline constexpr auto cutoffRow =
+	setting::required("cutoffHz", setting::decimal(20.0, 20'000.0, "Hz", {.decimals = 0, .taper = setting::Taper::log}))
+		.restarts("the filter is designed at start");
+inline constexpr auto spreadRow = setting::optional("spread", setting::decimal(0, 1)).inPlace();
+inline constexpr auto onRow = setting::defaulted("on", setting::boolean(), true).inPlace();
+inline constexpr auto out = bank::output<"out">;
+inline constexpr TypeSpec spec{.settings = SettingsTable<levelRow, cutoffRow, spreadRow, onRow>{"rows"},
+                               .banks = Banks<out>{}};
+struct Rows {
+	static Members<spec> ports(const CheckedOf<spec>&) { return {out(members("mono"))}; }
+	Configured configure(CreateOf<spec>&, const CheckedOf<spec>&) {
+		return Configured::failed("not started in these tests");
+	}
+	Changed configure(ChangeOf<spec>&, const CheckedOf<spec>&, const CheckedOf<spec>&) {
+		return Changed::restart("not changed in these tests");
+	}
+};
+} // namespace rows
 
 namespace reporting {
 using namespace ear;
@@ -122,6 +150,19 @@ TEST_CASE("Each row kind and mark is on the wire as the control port takes the k
 	    {"key": "port", "kind": "wholeNumber", "required": false, "change": "restart", "restartReason": "the port is bound at start", "min": 1, "max": 9,
 	     "onlyWithout": "shape"}],
 	  "status": [], "events": [], "actions": []})"));
+}
+
+TEST_CASE("The row vocabulary no built-in type has is on the wire as rows.json says", "[types][protocol][decimal]") {
+	std::ifstream file(std::string(EAR_PROTOCOL_DIR) + "/rows.json");
+	REQUIRE(file.good());
+	const json fixture = json::parse(file);
+	const auto type = ear::makeNodeType<rows::spec, rows::Rows>();
+	const ear::TypeSchema schemas[] = {type->schema()};
+	CHECK(ear::control::encodeTypeSchemas(schemas).typeSchemas == fixture.at("typeSchemas"));
+	// A decimal default is a JSON number, whole or not; a flag's is a JSON boolean.
+	const json encoded = ear::control::encodeTypeSchema(type->schema());
+	CHECK(encoded["settings"][0]["default"].is_number_float());
+	CHECK(encoded["settings"][3]["default"].is_boolean());
 }
 
 TEST_CASE("A type's actions are on the wire in declaration order, a call's arguments as setting rows",

@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <expected>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -42,6 +43,17 @@ struct TextHints {
 	std::string_view pattern = {};
 	std::uint32_t maxLength = 0;
 };
+/// How a control maps its travel to a decimal row's value (docs/writing-a-node-type.md#decimal-rows): evenly, on the
+/// value's logarithm (a frequency), or as a level in dB.
+enum class Taper { linear, log, db };
+/// What a control needs to draw a decimal row (docs/writing-a-node-type.md#decimal-rows): the places it shows, its
+/// taper, and whether the row's low end means silence (a control shows -inf there). Hints only: the walk judges by the
+/// range.
+struct DecimalHints {
+	std::uint8_t decimals = 2;
+	Taper taper = Taper::linear;
+	bool minIsSilence = false;
+};
 } // namespace setting
 /// One whole-number rule. A good value is a JSON integer (a float, a bool and a string are not) in [low, high]; an integer
 /// above INT64_MAX is above every range. Otherwise "<key>: must be a whole number[ of <unit>], <low>-<high>".
@@ -49,6 +61,14 @@ struct WholeNumberRule {
 	std::uint32_t low;
 	std::uint32_t high;
 	std::string_view unit;
+};
+/// One decimal rule. A good value is a JSON number (an integer is taken), finite, in [low, high]. Otherwise "<key>:
+/// must be a number[ of <unit>] from <low> to <high>", the ends in decimalText's form.
+struct DecimalRule {
+	double low;
+	double high;
+	std::string_view unit;
+	setting::DecimalHints hints = {};
 };
 /// One rate rule (docs/graph-file.md#rates). A good value is a JSON whole number of hertz (rateOfSetting) in [low, high];
 /// in ear.conf it is written with its unit (44.1khz). Otherwise "<key>: must be a rate from <low> to <high> (on the
@@ -68,14 +88,16 @@ struct TextRule {
 /// true or false. Otherwise "<key>: must be true or false".
 struct BooleanRule {};
 /// Any one rule, as a row holds it.
-using SettingRule = std::variant<WholeNumberRule, TextRule, RateRule, BooleanRule>;
+using SettingRule = std::variant<WholeNumberRule, TextRule, RateRule, BooleanRule, DecimalRule>;
+/// A defaulted row's default, of its rule's kind: a whole number, a decimal or a boolean.
+using SettingValue = std::variant<std::uint32_t, double, bool>;
 /// One row as the walk reads it. A key given with any value, null included, is given. Anyone can fill one in, but a table
 /// lists only typed rows, and a typed row gives its SettingRow to read, never to change.
 struct SettingRow {
 	std::string_view key;
 	bool required; // absent: "<key>: missing"
 	SettingRule rule;
-	std::optional<std::uint32_t> byDefault = {};          // what the row reads when absent
+	std::optional<SettingValue> byDefault = {};           // what the row reads when absent
 	std::string_view onlyWithout = {};                    // Row::onlyWithout's
 	setting::Change change = setting::Change::restart;    // the row's change mark: Row::inPlace or Row::restarts
 	std::string_view restartReason = {};                  // Row::restarts's: why a change to it restarts the node
@@ -99,6 +121,10 @@ template <auto Parse> using ParsedBy = typename std::invoke_result_t<decltype(Pa
 template <class T> class Rule;
 /// The range is not optional; low above high does not compile.
 consteval Rule<std::uint32_t> number(std::uint32_t low, std::uint32_t high, std::string_view unit = {});
+/// A finite real in [low, high], read as double: a JSON number on the control port (an integer is taken), a number word
+/// in ear.conf (-3.5, 0.25, 1e3). A bound not finite, low above high, a log taper's low not above 0, or a dB taper not
+/// reaching from -60 dB or lower to 0 dB or higher does not compile.
+consteval Rule<double> decimal(double low, double high, std::string_view unit = {}, DecimalHints hints = {});
 /// A rate, read as SampleRate: written with its unit in ear.conf, a whole number of hertz on the control port. Low above
 /// high does not compile.
 consteval Rule<SampleRate> rate(SampleRate low, SampleRate high);
@@ -120,6 +146,7 @@ public:
 private:
 	consteval explicit Rule(SettingRule rule) : rule_(rule) {}
 	friend consteval Rule<std::uint32_t> number(std::uint32_t low, std::uint32_t high, std::string_view unit);
+	friend consteval Rule<double> decimal(double low, double high, std::string_view unit, DecimalHints hints);
 	friend consteval Rule<SampleRate> rate(SampleRate low, SampleRate high);
 	friend consteval Rule<bool> boolean();
 	template <auto Parse>
@@ -197,7 +224,7 @@ public:
 private:
 	// A throw in a consteval function is what stops the compile; the text is what the compiler shows.
 	consteval Row(std::string_view key, bool required, SettingRule rule,
-	              std::optional<std::uint32_t> byDefault = std::nullopt)
+	              std::optional<SettingValue> byDefault = std::nullopt)
 		: row_{key, required, rule, byDefault} {
 		if (key.empty()) throw "a setting's key is empty";
 		// The framework's key on every node (docs/architecture.md#the-node-lifecycle): never a type's, nor an indexed
@@ -207,8 +234,8 @@ private:
 	}
 	template <class V> friend consteval Row<V, true> required(std::string_view key, Rule<V> rule);
 	template <class V> friend consteval Row<V, false> optional(std::string_view key, Rule<V> rule);
-	friend consteval Row<std::uint32_t, true> defaulted(std::string_view key, Rule<std::uint32_t> rule,
-	                                                    std::uint32_t byDefault);
+	template <class V>
+	friend consteval Row<V, true> defaulted(std::string_view key, Rule<V> rule, std::type_identity_t<V> byDefault);
 	SettingRow row_;
 };
 template <class T> inline constexpr bool isRow = false;
@@ -223,6 +250,18 @@ template <auto Parse> std::any readParsed(std::string_view text) {
 consteval Rule<std::uint32_t> number(std::uint32_t low, std::uint32_t high, std::string_view unit) {
 	if (low > high) throw "a whole number's low is above its high";
 	return Rule<std::uint32_t>(WholeNumberRule{low, high, unit});
+}
+consteval bool isFiniteNumber(double value) {
+	return value == value && value <= std::numeric_limits<double>::max() &&
+	       value >= std::numeric_limits<double>::lowest();
+}
+consteval Rule<double> decimal(double low, double high, std::string_view unit, DecimalHints hints) {
+	if (!isFiniteNumber(low) || !isFiniteNumber(high)) throw "a decimal's bounds are finite numbers";
+	if (low > high) throw "a decimal's low is above its high";
+	if (hints.taper == Taper::log && !(low > 0)) throw "a log taper's low is above 0: a logarithm of 0 or less is none";
+	if (hints.taper == Taper::db && !(low <= -60 && high >= 0))
+		throw "a dB taper reaches from -60 dB or lower to 0 dB or higher";
+	return Rule<double>(DecimalRule{low, high, unit, hints});
 }
 consteval Rule<SampleRate> rate(SampleRate low, SampleRate high) {
 	if (low > high) throw "a rate's low is above its high";
@@ -243,16 +282,31 @@ template <class V> consteval Row<V, true> required(std::string_view key, Rule<V>
 template <class V> consteval Row<V, false> optional(std::string_view key, Rule<V> rule) {
 	return Row<V, false>(key, false, rule.held());
 }
-/// Numbers only; a default outside the range does not compile.
-consteval Row<std::uint32_t, true> defaulted(std::string_view key, Rule<std::uint32_t> rule, std::uint32_t byDefault) {
-	const WholeNumberRule range = std::get<WholeNumberRule>(rule.held());
-	if (byDefault < range.low || byDefault > range.high) throw "a whole number's byDefault is outside its range";
-	return Row<std::uint32_t, true>(key, false, rule.held(), byDefault);
+/// A whole number, decimal or boolean row that reads `byDefault` when absent; a default outside the range does not
+/// compile, nor a text or rate row with a default (docs/writing-a-node-type.md#settings-one-table-of-typed-rows). The
+/// default is not deduced, so `defaulted("playback", number(0, 64), 0)` takes the int literal as the rule's value.
+template <class V>
+consteval Row<V, true> defaulted(std::string_view key, Rule<V> rule, std::type_identity_t<V> byDefault) {
+	if constexpr (std::same_as<V, std::uint32_t>) {
+		const WholeNumberRule range = std::get<WholeNumberRule>(rule.held());
+		if (byDefault < range.low || byDefault > range.high) throw "a whole number's byDefault is outside its range";
+		return Row<V, true>(key, false, rule.held(), SettingValue(byDefault));
+	} else if constexpr (std::same_as<V, double>) {
+		const DecimalRule range = std::get<DecimalRule>(rule.held());
+		if (!isFiniteNumber(byDefault) || byDefault < range.low || byDefault > range.high)
+			throw "a decimal's byDefault is outside its range";
+		return Row<V, true>(key, false, rule.held(), SettingValue(byDefault));
+	} else if constexpr (std::same_as<V, bool>) {
+		return Row<V, true>(key, false, rule.held(), SettingValue(byDefault));
+	} else {
+		throw "only a whole number, decimal or boolean row takes a default: a text or rate row is required or optional";
+	}
 }
 constexpr SettingDeclaration declarationOf(const SettingRow& row) {
 	if (std::holds_alternative<TextRule>(row.rule)) return {row.key, SettingKind::text};
 	if (std::holds_alternative<RateRule>(row.rule)) return {row.key, SettingKind::rate};
 	if (std::holds_alternative<BooleanRule>(row.rule)) return {row.key, SettingKind::boolean};
+	if (std::holds_alternative<DecimalRule>(row.rule)) return {row.key, SettingKind::decimal};
 	return {row.key, SettingKind::wholeNumber};
 }
 } // namespace setting
@@ -299,6 +353,12 @@ public:
 	constexpr std::span<const SettingDeclaration> kinds() const noexcept { return kinds_; }
 	/// Every row, in the walk's order: what the type schema is made from (NodeType::schema).
 	constexpr std::span<const SettingRow* const> rows() const noexcept { return rows_; }
+	/// The kind of `key`'s row (NodeType::kindOf); nothing for a key the table lacks.
+	constexpr std::optional<SettingKind> kindOf(std::string_view key) const noexcept {
+		for (const SettingDeclaration& declared : kinds_)
+			if (declared.key == key) return declared.kind;
+		return std::nullopt;
+	}
 	/// Whether the row of `key` is marked inPlace (Row::inPlace); false for a key the table lacks.
 	constexpr bool changesInPlace(std::string_view key) const noexcept {
 		for (const SettingRow* row : rows_)

@@ -5,6 +5,7 @@
 #include <expected>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -260,6 +261,9 @@ enum class SettingKind {
 	/// JSON true or false; in ear.conf the bare word true or false, read with knobly's boolean reader as disabled's is
 	/// (a variable allowed).
 	boolean,
+	/// JSON number (an integer taken); written as the shortest text that reads back the same, in fixed notation
+	/// (decimalText: -3.5, -6, 0.25), read with knobly's number reader (-3.5, 0.25, 1e3).
+	decimal,
 };
 struct SettingDeclaration {
 	std::string_view key;
@@ -296,6 +300,9 @@ public:
 	                                                                        const NodeSettings& settings) const;
 	/// Every key parse() accepts, each once, with its kind, in row order; the same span every call; pure.
 	std::span<const SettingDeclaration> settingKinds() const noexcept;
+	/// The kind of `key`'s row, the one answer the graph file reads and writes the key's value by
+	/// (docs/graph-file.md#settings-and-their-kinds); nothing for a key the type lacks.
+	std::optional<SettingKind> kindOf(std::string_view key) const noexcept;
 	/// Whether a change to `key` may apply in place (its row marked inPlace: docs/writing-a-node-type.md#change-marks);
 	/// false for a key the type lacks.
 	bool changesInPlace(std::string_view key) const noexcept;

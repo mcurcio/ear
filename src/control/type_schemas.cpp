@@ -29,6 +29,18 @@ std::string_view defaultFromName(setting::DefaultFrom from) noexcept {
 	return "nodeName";
 }
 
+std::string_view taperName(setting::Taper taper) noexcept {
+	switch (taper) {
+	case setting::Taper::linear:
+		return "linear";
+	case setting::Taper::log:
+		return "log";
+	case setting::Taper::db:
+		return "db";
+	}
+	return "linear";
+}
+
 json encodeRow(const SettingRow& row) {
 	json out = {{"key", row.key},
 	            {"required", row.required},
@@ -51,6 +63,15 @@ json encodeRow(const SettingRow& row) {
 				out["unit"] = "Hz";
 			} else if constexpr (std::is_same_v<Rule, BooleanRule>) {
 				out["kind"] = "flag";
+			} else if constexpr (std::is_same_v<Rule, DecimalRule>) {
+				// Named as a decimal status field's are (docs/control-port.md#type-schemas).
+				out["kind"] = "decimal";
+				out["min"] = rule.low;
+				out["max"] = rule.high;
+				if (!rule.unit.empty()) out["unit"] = rule.unit;
+				out["decimals"] = rule.hints.decimals;
+				out["taper"] = taperName(rule.hints.taper);
+				if (rule.hints.minIsSilence) out["minIsSilence"] = true;
 			} else {
 				out["kind"] = "text";
 				out["mustBe"] = rule.mustBe;
@@ -64,7 +85,7 @@ json encodeRow(const SettingRow& row) {
 			}
 		},
 		row.rule);
-	if (row.byDefault) out["default"] = *row.byDefault;
+	if (row.byDefault) std::visit([&out](const auto value) { out["default"] = value; }, *row.byDefault);
 	if (row.defaultFrom) out["defaultFrom"] = defaultFromName(*row.defaultFrom);
 	if (!row.onlyWithout.empty()) out["onlyWithout"] = row.onlyWithout;
 	if (!row.help.empty()) out["help"] = row.help;

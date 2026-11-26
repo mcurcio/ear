@@ -278,6 +278,10 @@ TEST_CASE("Each type's setting kinds are what its parse checks", "[nodes][settin
 				bad[spelled] = 5.5;
 				CHECK(answer(name, bad).starts_with(spelled + ": must be a whole number"));
 			}
+			if (kind == ear::SettingKind::decimal) { // a JSON number, never a boolean
+				bad[spelled] = true;
+				CHECK(answer(name, bad).starts_with(spelled + ": must be a number"));
+			}
 			if (kind == ear::SettingKind::rate) { // a whole number of Hz on the wire, never ear.conf's unit form
 				bad[spelled] = "48khz";
 				CHECK(answer(name, bad).starts_with(spelled + ": must be a rate from "));

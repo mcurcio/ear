@@ -84,8 +84,8 @@ std::optional<ear::Ports> portsOf(const ear::NodeType& type, const ear::NodeSett
 }
 
 /// Other values a row can take, to change one key of valid settings at a time: a whole number's ends, middle and
-/// neighbours, a rate's ends, a boolean's other value, a text row's offered values, the value every other valid
-/// object gives it, and absence for a row that is not required.
+/// neighbours, a rate's ends, a decimal's ends and middle, a boolean's other value, a text row's offered values, the
+/// value every other valid object gives it, and absence for a row that is not required.
 std::vector<std::optional<ear::NodeSettings>> otherValues(const ear::SettingRow& row,
                                                           const std::vector<ear::NodeSettings>& valid) {
 	std::vector<std::optional<ear::NodeSettings>> values;
@@ -97,6 +97,10 @@ std::vector<std::optional<ear::NodeSettings>> otherValues(const ear::SettingRow&
 	} else if (const auto* rate = std::get_if<ear::RateRule>(&row.rule)) {
 		values.emplace_back(rate->low.hz());
 		values.emplace_back(rate->high.hz());
+	} else if (const auto* decimal = std::get_if<ear::DecimalRule>(&row.rule)) {
+		values.emplace_back(decimal->low);
+		values.emplace_back(decimal->high);
+		values.emplace_back((decimal->low + decimal->high) / 2);
 	} else if (std::holds_alternative<ear::BooleanRule>(row.rule)) {
 		values.emplace_back(true);
 		values.emplace_back(false);

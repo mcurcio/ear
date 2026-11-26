@@ -4,6 +4,7 @@
 #include <any>
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -28,6 +29,15 @@ constexpr SettingsTable<numberRow, textRow, optionalNumberRow> table{"t"};
 constexpr SettingsTable<otherRow> otherTable{"o"};
 
 using Checked = decltype(table)::Checked;
+
+// The control also holds defaults that must compile: an int literal on a whole number's and on a decimal's rule, the
+// default not deduced from it.
+constexpr auto intDefault = setting::defaulted("i", setting::number(0, 64, "channels"), 0);
+constexpr auto decimalIntDefault = setting::defaulted("g", setting::decimal(-90, 24, "dB"), 0);
+constexpr auto flagDefault = setting::defaulted("f", setting::boolean(), false);
+static_assert(intDefault.row().byDefault == SettingValue(0u) &&
+              decimalIntDefault.row().byDefault == SettingValue(0.0) &&
+              flagDefault.row().byDefault == SettingValue(false));
 
 // The control: checked settings read the only way there is, each row as what it is.
 std::string good(const Checked& settings) {
@@ -98,8 +108,36 @@ inline constexpr std::array<std::string_view, 2> withEmpty{"a", ""};
 constexpr auto bad = setting::text<anyText>("anything", {.values = withEmpty});
 #endif
 
-#ifdef EAR_CASE_default_on_text
-constexpr auto bad = setting::defaulted("k", setting::text<anyText>("anything"), 1);
+// A text or a rate is required or optional: its absence has no one value a default could name.
+#ifdef EAR_CASE_default_text_row
+constexpr auto bad = setting::defaulted("k", setting::text<anyText>("anything"), std::string("x"));
+#endif
+
+#ifdef EAR_CASE_default_rate_row
+constexpr auto bad = setting::defaulted("k", setting::rate(SampleRate::fixed<8'000>(), SampleRate::fixed<96'000>()),
+                                        SampleRate::fixed<48'000>());
+#endif
+
+#ifdef EAR_CASE_decimal_low_above_high
+constexpr auto bad = setting::decimal(2.0, 1.0);
+#endif
+
+#ifdef EAR_CASE_decimal_bound_not_finite
+constexpr auto bad = setting::decimal(0.0, std::numeric_limits<double>::infinity());
+#endif
+
+#ifdef EAR_CASE_decimal_default_outside
+constexpr auto bad = setting::defaulted("k", setting::decimal(0.0, 1.0), 1.5);
+#endif
+
+// A log taper maps travel on ln(v): 0 and below have none.
+#ifdef EAR_CASE_log_taper_nonpositive
+constexpr auto bad = setting::decimal(0.0, 20'000.0, "Hz", {.taper = setting::Taper::log});
+#endif
+
+// A dB taper draws a level from near silence to unity at least.
+#ifdef EAR_CASE_db_taper_range
+constexpr auto bad = setting::decimal(-20.0, 6.0, "dB", {.taper = setting::Taper::db});
 #endif
 
 #ifdef EAR_CASE_default_on_required

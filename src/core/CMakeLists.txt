@@ -24,6 +24,7 @@ add_library(ear_core STATIC
 	pass_through.cpp
 	realtime_channels.cpp
 	program.cpp
+	decimal_text.cpp
 	rate_text.cpp
 	ports.cpp
 	readiness.cpp
@@ -71,6 +72,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/node_type.hpp
 	include/ear/core/pass_through.hpp
 	include/ear/core/program.hpp
+	include/ear/core/decimal_text.hpp
 	include/ear/core/rate_text.hpp
 	include/ear/core/ready_events.hpp
 	include/ear/core/realtime_channels.hpp
@@ -135,6 +137,7 @@ if(BUILD_TESTS)
 		tests/note_gate_test.cpp
 		tests/ports_test.cpp
 		tests/program_test.cpp
+		tests/decimal_text_test.cpp
 		tests/rate_text_test.cpp
 		tests/readiness_test.cpp
 		tests/realtime_test.cpp
@@ -176,7 +179,13 @@ if(BUILD_TESTS)
 	ear_settings_table_compile_fail(number-without-range "too few arguments")
 	ear_settings_table_compile_fail(number-with-mustBe "too many arguments")
 	ear_settings_table_compile_fail(default-outside-range "byDefault is outside its range")
-	ear_settings_table_compile_fail(default-on-text "could not convert")
+	ear_settings_table_compile_fail(default-text-row "only a whole number, decimal or boolean row takes a default")
+	ear_settings_table_compile_fail(default-rate-row "only a whole number, decimal or boolean row takes a default")
+	ear_settings_table_compile_fail(decimal-low-above-high "a decimal's low is above its high")
+	ear_settings_table_compile_fail(decimal-bound-not-finite "a decimal's bounds are finite numbers")
+	ear_settings_table_compile_fail(decimal-default-outside "a decimal's byDefault is outside its range")
+	ear_settings_table_compile_fail(log-taper-nonpositive "a log taper's low is above 0")
+	ear_settings_table_compile_fail(db-taper-range "a dB taper reaches from -60 dB or lower")
 	ear_settings_table_compile_fail(default-from-on-required "only an optional row takes defaultFrom")
 	ear_settings_table_compile_fail(default-from-on-defaulted "only an optional row takes defaultFrom")
 	ear_settings_table_compile_fail(text-hint-empty-value "a text setting's values are never empty")

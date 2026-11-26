@@ -385,6 +385,34 @@ TEST_CASE("A boolean setting is read as knobly's boolean, bare or through a vari
 	}
 }
 
+TEST_CASE("A decimal setting is read with knobly's number reader, bare or through a variable, into a JSON number",
+          "[graph_file_model][decimal]") {
+	const Fixture f;
+	const auto model = f.load(formatLines + "@set $v -12.25;\n"
+	                                        "node lamp a { level -3.5; }\nnode lamp b { level -6; }\n"
+	                                        "node lamp c { level 0.25; }\nnode lamp d { level 1e3; }\n"
+	                                        "node lamp e { level $v; }\n");
+	CHECK(model.read().diagnostics.empty());
+	REQUIRE(model.read().wanted.has_value());
+	const auto& nodes = model.read().wanted->nodes;
+	CHECK(nodes[0].settings == json{{"level", -3.5}});
+	CHECK(nodes[1].settings == json{{"level", -6.0}});
+	CHECK(nodes[1].settings["level"].is_number());
+	CHECK(nodes[2].settings == json{{"level", 0.25}});
+	CHECK(nodes[3].settings == json{{"level", 1000.0}}); // out of the row's range: read, for the plan to refuse
+	CHECK(nodes[4].settings == json{{"level", -12.25}});
+	SECTION("-.5 and 1. are no number words: knobly's E4004 on the value, and nothing is read") {
+		const auto bad = f.load(formatLines + "node lamp a { level -.5; }\nnode lamp b { level 1.; }\n");
+		CHECK(placed(bad.read()) == std::vector<Placed>{{"E4004", 5, 21}, {"E4004", 6, 21}});
+		CHECK_FALSE(bad.read().wanted.has_value());
+	}
+	SECTION("a quoted number is knobly's wrong kind") {
+		const auto quoted = f.load(formatLines + "node lamp a { level \"-3.5\"; }\n");
+		CHECK(placed(quoted.read()) == std::vector<Placed>{{"E4002", 5, 21}});
+		CHECK_FALSE(quoted.read().wanted.has_value());
+	}
+}
+
 TEST_CASE("A rate setting is read with its unit into a JSON number of Hz, and its range is the plan's",
           "[graph_file_model][graph-block]") {
 	const Fixture f;

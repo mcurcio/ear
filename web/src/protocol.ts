@@ -302,8 +302,10 @@ export interface Graph {
 
 // ----- The node types' schemas (feature types, docs/control-port.md#type-schemas) -----
 
-/** A setting's value kind, as the control port takes it: a rate is a whole number of Hz there. */
-export type SettingValueKind = "text" | "wholeNumber" | "flag" | (string & {});
+/** A setting's value kind, as the control port takes it: a rate is a whole number of Hz there; a decimal any JSON number. */
+export type SettingValueKind = "text" | "wholeNumber" | "decimal" | "flag" | (string & {});
+/** How a decimal's control maps its travel to the value: evenly, on the logarithm, or as a level in dB. */
+export type DecimalTaper = "linear" | "log" | "db" | (string & {});
 /** What a change to the row asks of the node: from its row's marks. */
 export type SettingChange = "inPlace" | "restart" | (string & {});
 /** Where an optional row's value comes from when absent. */
@@ -319,12 +321,17 @@ export interface SettingSchema {
   restartReason?: string;
   /** A change to it may change the node's ports. */
   shapes?: true;
+  /** What an absent key reads, of the row's kind: a whole number, a decimal or a flag. */
   default?: JsonValue;
   defaultFrom?: DefaultFrom;
-  /** wholeNumber: its range, and its unit when it has one. */
+  /** wholeNumber and decimal: its range, and its unit when it has one. */
   min?: number;
   max?: number;
   unit?: string;
+  /** decimal: the places a control shows, its taper, and whether `min` is silence (shown as -inf). */
+  decimals?: number;
+  taper?: DecimalTaper;
+  minIsSilence?: true;
   /** text: what it must be, in the row's own words, and the hints for its control (ear stays the judge). */
   mustBe?: string;
   values?: string[];

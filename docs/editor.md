@@ -408,8 +408,10 @@ text over JSON, so the toggle's other side is the node's own statement.
   ([above](#what-the-browser-keeps)). Until it holds that set the panel shows the text box.
 - **One field per row**, in the table's order: a select for a text with `values` (an optional one
   starts with its absent choice), a text field (checked against `pattern` and `maxLength` as typed),
-  a number field with the range for a whole number (a rate in Hz), a checkbox for a flag, and a JSON
-  field for a kind the editor does not know. An empty field's placeholder says what absent means: the
+  a number field with the range for a whole number (a rate in Hz), a decimal field with its range and
+  unit for a decimal (it takes any number in the range, an integer too, with as many places as typed,
+  and says "must be a number of dB from -90 to 24" in ear's words otherwise; it is sent as a JSON
+  number), a checkbox for a flag, and a JSON field for a kind the editor does not know. An empty field's placeholder says what absent means: the
   default (`default 0 channels`), where it comes from (`the graph's frequency`, `the node's name`), or
   `absent`; a row's `help` and its unit are beside it, and a row that is `onlyWithout` a given key
   (a draft included) is disabled, saying so.

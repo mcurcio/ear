@@ -8,6 +8,7 @@
 #include <concepts>
 #include <cstdint>
 #include <expected>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -70,6 +71,22 @@ constexpr auto quietRow = setting::optional("quiet", setting::boolean());
 constexpr SettingsTable<loudRow, quietRow> booleans{"t"};
 static_assert(booleans.kinds()[0].key == "loud" && booleans.kinds()[0].kind == boolean);
 static_assert(booleans.kinds()[1].kind == boolean);
+constexpr auto levelRow = setting::defaulted(
+	"levelDb", setting::decimal(-90.0, 24.0, "dB", {.decimals = 1, .taper = setting::Taper::db, .minIsSilence = true}),
+	-6.0);
+constexpr auto ratioRow = setting::required("ratio", setting::decimal(1, 20));
+constexpr auto spreadRow = setting::optional("spread", setting::decimal(0.0, 1.0));
+constexpr auto onRow = setting::defaulted("on", setting::boolean(), true);
+constexpr SettingsTable<levelRow, ratioRow, spreadRow, onRow> decimals{"t"};
+static_assert(decimals.kinds()[0].key == "levelDb" && decimals.kinds()[0].kind == decimal);
+static_assert(decimals.kinds()[3].kind == boolean);
+static_assert(decimals.kindOf("ratio") == decimal && !decimals.kindOf("absent"));
+// A default is of its rule's kind, and an int literal still makes a whole number's.
+static_assert(levelRow.row().byDefault == ear::SettingValue(-6.0));
+static_assert(onRow.row().byDefault == ear::SettingValue(true));
+static_assert(measuredRow.row().byDefault == ear::SettingValue(5u));
+static_assert(std::get<ear::DecimalRule>(levelRow.row().rule).hints.taper == setting::Taper::db);
+static_assert(std::get<ear::DecimalRule>(ratioRow.row().rule).hints.decimals == 2); // the hints' own defaults
 
 // The table is a constant, and so is what it declares.
 static_assert(numbers.kinds().size() == 3);
@@ -239,6 +256,42 @@ TEST_CASE("A boolean is JSON true or false, read as bool", "[settings-table]") {
 		CHECK(refusal(booleans, {{"loud", parsed(bad)}}) == "loud: must be true or false");
 	}
 	CHECK(refusal(booleans, NodeSettings::object()) == "loud: missing");
+}
+
+TEST_CASE("A decimal is a finite JSON number within the row's range, an integer taken, read as double",
+          "[settings-table][decimal]") {
+	const auto checked = decimals.check(NodeSettings{{"ratio", 4}});
+	REQUIRE(checked.has_value());
+	static_assert(std::same_as<decltype(checked->get<levelRow>()), double>);
+	static_assert(std::same_as<decltype(checked->get<spreadRow>()), std::optional<double>>);
+	static_assert(std::same_as<decltype(checked->get<onRow>()), bool>);
+	CHECK(checked->get<levelRow>() == -6.0); // its default
+	CHECK(checked->get<ratioRow>() == 4.0);  // an integer, taken
+	CHECK_FALSE(checked->get<spreadRow>().has_value());
+	CHECK(checked->get<onRow>()); // a boolean's default
+	const auto given = decimals.check(parsed(R"({"levelDb": -3.5, "ratio": 1e1, "spread": 0.25, "on": false})"));
+	REQUIRE(given.has_value());
+	CHECK(given->get<levelRow>() == -3.5);
+	CHECK(given->get<ratioRow>() == 10.0);
+	CHECK(given->get<spreadRow>() == std::optional<double>(0.25));
+	CHECK_FALSE(given->get<onRow>());
+	for (const std::string_view good : {"-90", "24", "-90.0", "0", "-0.0", "23.99"}) {
+		INFO(good);
+		CHECK(decimals.check(NodeSettings{{"ratio", 1}, {"levelDb", parsed(good)}}).has_value());
+	}
+	for (const std::string_view bad : {"-90.001", "24.5", R"("-3.5")", "true", "null", "[]", "{}"}) {
+		INFO(bad);
+		CHECK(refusal(decimals, {{"ratio", 1}, {"levelDb", parsed(bad)}}) ==
+		      "levelDb: must be a number of dB from -90 to 24");
+	}
+	CHECK(refusal(decimals, {{"ratio", 0.5}}) == "ratio: must be a number from 1 to 20");
+	CHECK(refusal(decimals, {{"ratio", 1}, {"spread", 1.5}}) == "spread: must be a number from 0 to 1");
+	// Built in C++, not parsed: JSON text cannot spell either.
+	CHECK(refusal(decimals, {{"ratio", std::numeric_limits<double>::quiet_NaN()}}) ==
+	      "ratio: must be a number from 1 to 20");
+	CHECK(refusal(decimals, {{"ratio", std::numeric_limits<double>::infinity()}}) ==
+	      "ratio: must be a number from 1 to 20");
+	CHECK(refusal(decimals, NodeSettings::object()) == "ratio: missing");
 }
 
 TEST_CASE("kinds() is every key once, in row order", "[settings-table]") {
@@ -437,7 +490,7 @@ struct Schemed {
 TEST_CASE("The marks for the type schema keep each other and the row's own", "[settings-table][schema]") {
 	using namespace settings_table_test_schema;
 	STATIC_REQUIRE(countRow.row().shapesPorts);
-	STATIC_REQUIRE(countRow.row().byDefault == 2u);
+	STATIC_REQUIRE(countRow.row().byDefault == ear::SettingValue(2u));
 	STATIC_REQUIRE_FALSE(countRow.row().defaultFrom.has_value());
 	STATIC_REQUIRE_FALSE(sizeRow.row().shapesPorts);
 	STATIC_REQUIRE(labelRow.row().defaultFrom == setting::DefaultFrom::nodeName);

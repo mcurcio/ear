@@ -62,6 +62,21 @@ function Field({
             onChange={(event) => onChange(event.target.value)}
           />
         );
+      case "decimal":
+        return (
+          <input
+            id={id}
+            type="number"
+            inputMode="decimal"
+            step="any"
+            min={field.min}
+            max={field.max}
+            placeholder={field.placeholder}
+            value={String(field.value)}
+            disabled={disabled}
+            onChange={(event) => onChange(event.target.value)}
+          />
+        );
       default:
         return (
           <input

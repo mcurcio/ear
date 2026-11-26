@@ -120,12 +120,17 @@ setting's range is its type's.
 ### Settings and their kinds
 
 Each setting is read and written as the kind its node type declares: **text** (a bare word or a
-quoted string), a **whole number**, a **rate** ([rates](#rates)), or a **boolean**. A rate setting is written
+quoted string), a **whole number**, a **rate** ([rates](#rates)), a **boolean**, or a **decimal**. A rate setting is written
 with its unit in `ear.conf` and is a whole number of hertz in the node's settings on the control
 port (`rate 44.1khz;` is `"rate": 44100`); an edit that changes it writes ear's form, and one that
 does not leaves its spelling as written. A boolean setting is the bare word `true` or `false` in
 `ear.conf`, or a variable holding one, read as `disabled` is (a quoted `"true"` is knobly's wrong-kind
-error), and JSON `true` or `false` on the control port; an edit writes it bare. A key the type does not declare is invalid settings. The
+error), and JSON `true` or `false` on the control port; an edit writes it bare. A decimal setting
+is a number word, read with knobly's number reader (`-3.5`, `-6`, `0.25`, `1e3`, or a variable
+holding one; `-.5` and `1.` are not number words, knobly's E4004), and any JSON number on the
+control port; an edit writes the shortest text in fixed notation that reads back as the same
+number (`-3.5`, `-6` for `-6.0`, `1000` for `1e3`, `0` for a negative zero), never rounding it. Its
+range, like a rate's, is the type's to judge, not the reader's. A key the type does not declare is invalid settings. The
 keys, ranges and defaults of each type are in [node-types.md](node-types.md). A text setting, node
 name or port holding a control character other than newline, tab and carriage return cannot be
 written in `ear.conf` and is refused.

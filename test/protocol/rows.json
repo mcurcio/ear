@@ -1,0 +1,20 @@
+{
+  "description": "Schemas of test types, not the real ear's (docs/control-port.md#type-schemas): the row vocabulary before any built-in type uses it. src/control/tests/type_schemas_test.cpp encodes its test specs and expects these schemas; the editor's form tests draw them. Holds a decimal row of each taper (a defaulted dB level whose minimum is silence, a required log-tapered frequency, an optional linear one with no unit) and a defaulted flag.",
+  "typeSchemas": [
+    {
+      "name": "rows",
+      "inputs": [],
+      "outputs": ["out"],
+      "reconfigureMs": 10000,
+      "settings": [
+        {"key": "levelDb", "kind": "decimal", "required": false, "change": "inPlace", "min": -90, "max": 24, "unit": "dB", "decimals": 1, "taper": "db", "minIsSilence": true, "default": -6},
+        {"key": "cutoffHz", "kind": "decimal", "required": true, "change": "restart", "restartReason": "the filter is designed at start", "min": 20, "max": 20000, "unit": "Hz", "decimals": 0, "taper": "log"},
+        {"key": "spread", "kind": "decimal", "required": false, "change": "inPlace", "min": 0, "max": 1, "decimals": 2, "taper": "linear"},
+        {"key": "on", "kind": "flag", "required": false, "change": "inPlace", "default": true}
+      ],
+      "status": [],
+      "events": [],
+      "actions": []
+    }
+  ]
+}
