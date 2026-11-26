@@ -15,8 +15,9 @@ state, `NodeActions::invoke` with its refusals and its 10 s deadline, the harnes
 `docs/writing-a-node-type.md#actions`; the feature `actions` with `node.invoke`, its six codes, the schema's `actions`,
 the batch reply held for its actions and the `action` record for type actions: `docs/control-port.md#actions`,
 `docs/output-records.md#action`; the editor's action buttons: `docs/editor.md#actions`), step 5.5 built (sendspin's
-notes split into status fields and events: `docs/node-types.md#status-and-events`); left of slice 5, the test of ten
-chatty nodes and a slowly reading client (section 11, 5.2) and sendspin's first action (5.4). Slice 5 (the
+notes split into status fields and events: `docs/node-types.md#status-and-events`), and 5.2's test of ten chatty nodes
+and a slowly reading client (`docs/testing.md#the-client-queue-under-status`): slice 5 is wholly built but for
+sendspin's first action, which waits on its library (section 11, 5.4); slice 6 is not built. Slice 5 (the
 control plane: status, events, node diagnostics on the wire, actions, the realtime coded ring, sendspin's notes split)
 follows slice 3c (built: the node
 handle and loops, `docs/writing-a-node-type.md#the-node-handle`, `#loops`). Slice 6 (parameters: decimal, indexed and live rows, parameter slots and their ramps, retunes,
@@ -986,8 +987,8 @@ Each step keeps every test green, adds its feature to `features`, and changes no
 **5.2 Status and events off the realtime thread** is built
 ([writing-a-node-type.md](../writing-a-node-type.md#status-and-events),
 [architecture.md](../architecture.md#status-and-events), [output-records.md](../output-records.md#status),
-[control-port.md](../control-port.md#status), [editor.md](../editor.md#status-events-and-diagnostics)). Left: the
-system test of ten chatty nodes and a slowly reading client ([testing.md](../testing.md#tests-still-to-write)).
+[control-port.md](../control-port.md#status), [editor.md](../editor.md#status-events-and-diagnostics)), and so are its
+tests of ten chatty nodes and a slowly reading client ([testing.md](../testing.md#the-client-queue-under-status)).
 
 **5.3 The realtime ring** is built ([architecture.md](../architecture.md#the-realtime-channels),
 [writing-a-node-type.md](../writing-a-node-type.md#reporting-from-the-code), [engine.md](../engine.md#the-realtime-bell)).
@@ -1041,10 +1042,11 @@ formulas and their inverses; Backspace on a focused knob sends no `node.remove`.
 ## 12. Costs, risks and open items
 
 - **More compile-time machinery**: about 35 compile-fail cases at about 1.3 s each.
-- **A wider wire**: four notifications, six requests, eleven codes. The client's queue bound (256 messages) now also
-  holds status at up to 30 a second per node; a slow client with many chatty nodes reaches 1008 sooner. If it bites,
-  coalesce a node's `node.statusChanged` in the client's queue when it is the last queued message. [U: step 5.2's
-  system test.]
+- **A wider wire**: four notifications, six requests, eleven codes. Status in the client's queue (256 messages) was
+  measured and does not bite ([testing.md](../testing.md#the-client-queue-under-status)). Not built, should a client
+  ever need it: a node's `node.statusChanged` coalesced in the client's queue with that node's own still queued, when
+  only other nodes' status follows it (never past another message of the node, nor past another notification), as
+  the literal "the last queued message" coalesces nothing with ten nodes interleaved.
 - **A behaviour change**: `node.update` of only live rows no longer restarts.
 - **The session reads ahead**, a change to the one-in-flight rule for two notifications; the ending mark exists so a
   tick never lands after its gesture's end was read.
