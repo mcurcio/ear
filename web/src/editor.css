@@ -579,37 +579,6 @@ body,
   min-width: 120px;
 }
 
-/* A splitter: transparent until hovered or focused, when its fill is the cue (so focus needs no outline of its own). */
-.splitter {
-  position: absolute;
-  z-index: 5;
-  background: transparent;
-  touch-action: none;
-  transition: background-color var(--pb-motion-fast);
-}
-
-.splitter-vertical {
-  left: -3px;
-  top: 0;
-  bottom: 0;
-  width: 6px;
-  cursor: col-resize;
-}
-
-.splitter-horizontal {
-  left: 0;
-  right: 0;
-  top: -3px;
-  height: 6px;
-  cursor: row-resize;
-}
-
-.splitter:hover,
-.splitter:focus-visible {
-  background: var(--pb-accent);
-  outline: none;
-}
-
 /* The ear.conf drawer (docs/editor.md#the-drawer): a 32 px header that stays when closed, and a body resized by its top
    edge between sizes.ts's bounds, which sizes.test.ts holds equal. */
 .drawer {
@@ -1507,7 +1476,7 @@ body,
     display: none;
   }
 
-  .inspector .splitter {
+  .inspector .pb-splitter {
     display: none;
   }
 }

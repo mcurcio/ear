@@ -103,7 +103,7 @@ patchbay takes the drawing and the generic mechanics; ear keeps what knows about
 | Change | ear today | patchbay | Notes | Status |
 |---|---|---|---|---|
 | Spinner and WarnMark | `Spinner.tsx`, `WarnMark.tsx`, raw `warn-mark` spans in `Counters.tsx` and `CompanionStrip.tsx` | Spinner, WarnMark (`label`) | | built |
-| Splitters | `Splitter.tsx`, `sizes.ts` dragged, keyed, clamp | Splitter, `edge="start"` | Bounds stay in `sizes.ts` until A5 | to build |
+| Splitters | `Splitter.tsx`, `sizes.ts` dragged, keyed, clamp | Splitter, `edge="start"` | Bounds stay in `sizes.ts` until A5. `edge` becomes logical in a later patchbay (owner, 2026-11-26: start and end follow the text direction); the editor is left-to-right, so `start` stays its left and top | built |
 | Canvas tools | `CanvasTools.tsx`, a plain `role=toolbar` | ToolGroup and IconButton, inside React Flow's `<Panel>` | Roving tab stop (new); `fitPadding` still reserves 76 px for 40 px touch tools | to build |
 | Shortcut sheet | `ShortcutSheet.tsx` on `.palette-backdrop` | Dialog | Gains a Close button and a scrim press | to build |
 | Forms and busy buttons | AddNodeJson, AddNodeText's select, lifecycle bar, Delete, the two Saves | Field, TextInput, Select, Button `busy`, `tone="danger"` | Busy stays focusable, its words in `busyLabel` (D4) | to build |
@@ -159,7 +159,7 @@ body stays mounted while closed (draft, caret and scroll kept), as now. `hooks.t
 | Test | What happens to it |
 |---|---|
 | `theme.test.ts` | Done in A1: token sets, contrast and the cycle cases went to patchbay (its `tokens.test.ts` and `useTheme`'s tests); it keeps "no colour in `editor.css` and components", and holds every `var()` to a token and `index.html`'s theme script to patchbay's |
-| `sizes.test.ts` | Drag and key cases go in A2; the `editor.css` clamp and breakpoint cases go to patchbay's AppShell tests in A5 |
+| `sizes.test.ts` | Drag and key cases went in A2 (built: patchbay's Splitter tests them); the `editor.css` clamp and breakpoint cases go to patchbay's AppShell tests in A5 |
 | `layout.test.ts` | Placement stays; the CSS half checks NodeBox's exported geometry (A3) |
 | `prefs.test.ts`, `keys.test.ts`, `palette.test.ts`, `notices.test.ts`, `meters.test.ts` | Split: ear's keys, bindings, catalogue and wording stay; the generic mechanics' cases go with them |
 | `fit.test.ts`, `gutter.test.ts`, `highlight.test.tsx` | Go with their modules, except `highlight.test.tsx`'s last case (what the pane, the node box and the add form send), which stays |

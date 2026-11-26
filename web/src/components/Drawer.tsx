@@ -4,8 +4,7 @@
 // Closed, the body is hidden but stays mounted, so the draft, the caret and the scroll are kept.
 import type { CSSProperties } from "react";
 import { drawerBounds } from "../sizes";
-import { Spinner } from "@mcurcio/patchbay/primitives";
-import { Splitter } from "./Splitter";
+import { Spinner, Splitter } from "@mcurcio/patchbay/primitives";
 import { TextPane } from "./TextPane";
 import type { DrawerModel } from "./useDrawer";
 
@@ -18,8 +17,8 @@ export function Drawer({ drawer }: { drawer: DrawerModel }) {
           orientation="horizontal"
           label="Resize ear.conf"
           value={height}
-          bounds={drawerBounds(window.innerHeight)}
-          growKey="ArrowUp"
+          {...drawerBounds(window.innerHeight)}
+          edge="start"
           onChange={drawer.setHeight}
         />
       )}

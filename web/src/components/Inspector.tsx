@@ -3,6 +3,7 @@
 // all. Resized by its left edge; below the narrow width it is a sheet over the canvas (docs/editor.md#narrow-windows,
 // editor.css). Every change is a request to ear. An Add command (docs/editor.md#the-palette) reaches the add-node form
 // as an intent: its type chosen and the form focused.
+import { Splitter } from "@mcurcio/patchbay/primitives";
 import type { CSSProperties } from "react";
 import type { Graph, RouteEnds } from "../protocol";
 import { subjectTitle, type InspectorSubject, type Selection } from "../selection";
@@ -12,7 +13,6 @@ import { AddNodePanel } from "./AddNodePanel";
 import { EngineFactsSection } from "./EngineFacts";
 import { NodePanel } from "./NodePanel";
 import { RoutePanel } from "./RoutePanel";
-import { Splitter } from "./Splitter";
 
 /** An Add command's type for the add-node form; a new nonce each time, so the same type asked twice acts twice. */
 export interface AddIntent {
@@ -125,8 +125,9 @@ export function Inspector({
         orientation="vertical"
         label="Resize the inspector"
         value={width}
-        bounds={inspectorBounds}
-        growKey="ArrowLeft"
+        min={inspectorBounds.min}
+        max={inspectorBounds.max}
+        edge="start"
         onChange={onResize}
       />
       <div className="inspector-body">

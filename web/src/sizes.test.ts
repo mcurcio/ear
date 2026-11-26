@@ -1,16 +1,13 @@
-// The shell's sizes (docs/editor.md#the-shell): the bounds, a splitter's drag and keys, and that editor.css holds the
-// same bounds and breakpoint.
+// The shell's sizes (docs/editor.md#the-shell): the bounds, and that editor.css holds the same bounds and breakpoint.
+// A splitter's drag and keys are patchbay's Splitter's, tested there.
 import { describe, expect, it } from "vitest";
 import editorCss from "./editor.css?raw";
 import {
   clamp,
-  dragged,
   drawerBounds,
   drawerHeight,
   inspectorBounds,
   inspectorWidth,
-  keyStep,
-  keyed,
   narrowQuery,
   narrowWidth,
 } from "./sizes";
@@ -28,34 +25,6 @@ describe("the bounds", () => {
     expect(drawerHeight.initial).toBe(280);
     expect(drawerBounds(1000)).toStrictEqual({ min: 120, max: 700 });
     expect(drawerBounds(100)).toStrictEqual({ min: 120, max: 120 });
-  });
-});
-
-describe("a splitter", () => {
-  it("grows the inspector as its left edge is dragged left, clamped at both ends", () => {
-    expect(dragged(320, -40, -1, inspectorBounds)).toBe(360);
-    expect(dragged(320, 40, -1, inspectorBounds)).toBe(280);
-    expect(dragged(320, -1000, -1, inspectorBounds)).toBe(560);
-    expect(dragged(320, 1000, -1, inspectorBounds)).toBe(280);
-  });
-
-  it("moves by keys: the grow arrow, its opposite, Home and End", () => {
-    expect(keyStep).toBe(16);
-    expect(keyed(320, "ArrowLeft", "ArrowLeft", inspectorBounds)).toBe(336);
-    expect(keyed(320, "ArrowRight", "ArrowLeft", inspectorBounds)).toBe(304);
-    expect(keyed(550, "ArrowLeft", "ArrowLeft", inspectorBounds)).toBe(560);
-    expect(keyed(320, "Home", "ArrowLeft", inspectorBounds)).toBe(280);
-    expect(keyed(320, "End", "ArrowLeft", inspectorBounds)).toBe(560);
-    expect(keyed(320, "a", "ArrowLeft", inspectorBounds)).toBeUndefined();
-    expect(keyed(320, "ArrowUp", "ArrowLeft", inspectorBounds)).toBeUndefined();
-
-    const drawer = drawerBounds(1000);
-    expect(keyed(280, "ArrowUp", "ArrowUp", drawer)).toBe(296);
-    expect(keyed(280, "ArrowDown", "ArrowUp", drawer)).toBe(264);
-    expect(keyed(130, "ArrowDown", "ArrowUp", drawer)).toBe(120);
-    expect(keyed(280, "Home", "ArrowUp", drawer)).toBe(120);
-    expect(keyed(280, "End", "ArrowUp", drawer)).toBe(700);
-    expect(keyed(280, "ArrowLeft", "ArrowUp", drawer)).toBeUndefined();
   });
 });
 

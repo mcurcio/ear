@@ -134,8 +134,9 @@ that follows the graph is what a person expects until they move it themselves. T
 
 ### The inspector
 
-On the right, 320 px, dragged by its left edge (or, focused, its separator with the arrow keys,
-Home and End) between 280 and 560 px. It shows one subject, chosen by the selection
+On the right, 320 px, resized between 280 and 560 px by patchbay's `Splitter` on its left edge
+(`edge="start"`: dragged, or focused and moved by the arrow keys, Home and End; its keys, drag and 36 px touch hit area
+are [patchbay's](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#layout)). It shows one subject, chosen by the selection
 (`selection.ts`, `selection.test.ts`):
 
 - nothing selected: **Graph**: the engine facts in full, the graph's counters and the add-node
@@ -162,7 +163,7 @@ with Save beside them, which says `Saving…` while its request is on its way. T
 itself only when ear refuses the file or a write fails, each newly (the same refusal sent again
 does not reopen it), or when a Save is refused; never on a hand edit. *Why a drawer:* the owner
 chose a full-width bottom drawer over a third column, so lines need not scroll sideways and the
-canvas keeps its width for a left-to-right graph. Its body is dragged by its top edge between
+canvas keeps its width for a left-to-right graph. Its body is resized by the same `Splitter` on its top edge between
 120 px and 70 % of the window. The text has a gutter ([below](#the-drawers-gutter)). Closing it hides the body but keeps it, with the draft, the caret
 and the scroll. The inspector and the drawer never move each other's content.
 
@@ -176,7 +177,8 @@ it docked on a foldable phone unfolded (about 890 px wide) and on a tablet in po
 at most 62 % of the workspace and scrolling inside, so the graph stays in sight above it; and the top bar drops the
 wordmark and the engine chip (the Graph subject holds the same facts), patchbay's theme switch shows only its icon (its
 label still names the choice) and the `ear.conf` toggle its glyph, so its buttons fit beside the connection pill.
-`sizes.ts` holds the bounds and the breakpoint, and `sizes.test.ts` holds `editor.css` to them.
+`sizes.ts` holds the bounds (which it passes to the splitters) and the breakpoint, and `sizes.test.ts` holds
+`editor.css` to them.
 
 ### Phones and touch
 

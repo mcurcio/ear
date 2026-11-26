@@ -1,6 +1,6 @@
 // The shell's sizes, pure (docs/editor.md#the-shell): the inspector's width and the drawer's height with their bounds,
-// a splitter's drag and keys, and the width below which the inspector is a sheet over the canvas. editor.css holds
-// the same bounds and breakpoint, which sizes.test.ts checks.
+// which patchbay's Splitter keeps a drag or a key within, and the width below which the inspector is a sheet over the
+// canvas. editor.css holds the same bounds and breakpoint, which sizes.test.ts checks.
 
 export interface Bounds {
   min: number;
@@ -22,34 +22,6 @@ export function drawerBounds(windowHeight: number): Bounds {
 /** `value` within `bounds`, in whole px. */
 export function clamp(value: number, bounds: Bounds): number {
   return Math.round(Math.min(bounds.max, Math.max(bounds.min, value)));
-}
-
-/**
- * A drag: the size at the drag's start plus the pointer's travel times `sign` (-1 for a splitter on the leading edge,
- * where moving left or up grows), clamped.
- */
-export function dragged(start: number, travel: number, sign: 1 | -1, bounds: Bounds): number {
-  return clamp(start + sign * travel, bounds);
-}
-
-/** How far one arrow key moves a focused splitter. */
-export const keyStep = 16;
-
-/** The arrow that grows: left for the inspector's left edge, up for the drawer's top edge. */
-export type GrowKey = "ArrowLeft" | "ArrowUp";
-
-const shrinkKeys: Record<GrowKey, string> = { ArrowLeft: "ArrowRight", ArrowUp: "ArrowDown" };
-
-/**
- * A key on a focused splitter: `growKey` adds keyStep and its opposite takes it away, clamped; Home goes to the min
- * and End to the max; any other key gives undefined (the key is not the splitter's).
- */
-export function keyed(value: number, key: string, growKey: GrowKey, bounds: Bounds): number | undefined {
-  if (key === growKey) return clamp(value + keyStep, bounds);
-  if (key === shrinkKeys[growKey]) return clamp(value - keyStep, bounds);
-  if (key === "Home") return bounds.min;
-  if (key === "End") return bounds.max;
-  return undefined;
 }
 
 /**
