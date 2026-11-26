@@ -32,8 +32,6 @@ function stripComments(text: string): string {
  */
 const earVariables = new Map<string, string>([
   ["--state", "editor.css: a node's state class picks its tone"],
-  ["--inspector-width", "Inspector.tsx: the inspector's width"],
-  ["--drawer-height", "Drawer.tsx: the drawer's height"],
 ]);
 
 /** The custom properties a stylesheet declares. */

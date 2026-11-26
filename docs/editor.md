@@ -90,27 +90,66 @@ along the bottom ([below](#the-shell)).
   flight (the requests in flight are forgotten with it; the toasts are kept), and the new socket subscribes again (graph, graph file, levels), so the editor starts
   over from a fresh snapshot.
 
+## What patchbay draws
+
+The editor draws with `@mcurcio/patchbay` (npm), a component library extracted from this editor: its tokens and
+themes, primitives, composites, shell, graph layer and UI hooks. *Why:* the owner's principle (2026-11-26): "build
+the correct model on patchbay primitives. Ear and rasl UIs are not precious to me. They should be reworked when
+patchbay has a matching concept." Where the editor differed from patchbay in look or behaviour, it took patchbay's
+model; nothing of ear's look was kept for its own sake.
+
+| patchbay's (drawn from props) | ear's |
+|---|---|
+| Colours, radii, shadows, durations, faces and type sizes ([below](#tokens-and-themes)) | The words: `shell.ts`, `drawer.ts`, `pane.ts`, `notices.ts`'s refusal wording, `health.ts`'s, `meters.ts`'s tooltip |
+| The shell's layout, sheets, splitters and bounds; buttons, pills, badges, facts, fields, banners, status words, the palette, the shortcut sheet, the toasts, the code editor | The rules: `health.ts`, `companions.ts`, `counters.ts`, `marks.ts`, `selection.ts`, `requests.ts`, `wires.ts` (as the adapter onto Wire's props), `connect.ts`'s `canConnect` |
+| The node box, port rows, wires, ghost wires, connect hints, meters, the canvas tools, `useAddAt`, `useFollowFit` | The protocol, the session and its stores: `protocol.ts`, `rpc.ts`, `editor.ts`, `graph.ts`, `graphFile.ts`, `levels.ts` |
+| Kept values and the theme (`usePersistentState`, `useTheme`), key labels and matching (`useShortcuts`), palette ranking, the toast queue's mechanics, knobly highlighting | Storage keys and checks (`prefs.ts`), the command catalogue (`palette.ts`), the key bindings (`keys.ts`), first placement (`layout.ts`, dagre), the subject the inspector shows, Escape's order among ear's own surfaces |
+
+- **ear's own `<ReactFlow>`.** There is no canvas wrapper: `Canvas.tsx` renders React Flow's `<ReactFlow>` and adds
+  patchbay's pieces beside it ([The canvas](#the-canvas)), so every React Flow prop stays ear's (owner, 2026-11-25).
+- **Words.** Every patchbay component takes the words it supplies itself (visible text and accessible names)
+  through one `labels` prop, a partial object with English defaults (owner, 2026-11-26), with no app-wide provider.
+  ear sets three: the palette's placeholder, the meters' tooltip (`labels.title`) and AppShell's drawer words
+  (`ear.conf`, "Show ear.conf", "Hide ear.conf", "Resize ear.conf"); every other word is patchbay's default.
+- **The pin.** `web/package.json` pins `@mcurcio/patchbay` exactly, and every bump is its own `build(deps)` change
+  (a patch release of ear). Its links here name the release pinned.
+- **What ear still draws itself,** each because patchbay has no matching concept: the counters' tables
+  (`Counters.tsx`, a plain table), the lifecycle bar's segmented row (patchbay's Buttons in ear's row), the
+  diagnostics listed under each knobly box (plain buttons that put the caret, as CodeEditor marks but does not list
+  them), the route panel's `node:port` buttons, the JSON settings textareas for an ear without `node-text` (a schema
+  form waits for slice 5's type schema; the owner deferred patchbay's), the inspector's several-selected list, the
+  companions' list in the node panel, the minimap's state colours and the wordmark. `editor.css` gives these plain
+  controls ear's base rules, which pass by every `pb-` element.
+- **Tests.** Component behaviour is tested in patchbay (jsdom and Storybook); ear keeps logic tests, plus the tests
+  that hold `editor.css` and `index.html` to patchbay's exports ([Developing it](#developing-it)).
+
 ## The shell
 
-`App.tsx` composes it: `TopBar`, `Canvas` (with patchbay's `CanvasTools`), `Inspector` and `Drawer`, with the
-canvas's state in `useCanvas` and the drawer's in `useDrawer`, so the top bar and the drawer's
-header read one status.
+The layout is patchbay's `AppShell`
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.8.0/docs/components.md#appshell)): the top bar, the canvas,
+the inspector at its right and the drawer along the bottom, the narrow and phone layouts, the splitters and the
+sizes' bounds, filling the screen. `App.tsx` fills its slots with ear's: the top bar's slots from `TopBar.tsx`'s
+`topBar`, `Canvas` (with patchbay's `CanvasTools`) as its child, `Inspector` as the inspector's content, and the
+drawer's header and pane from `Drawer.tsx`'s `drawerSlots`, with the canvas's state in `useCanvas` and the drawer's in
+`useDrawer`, so the top bar and the drawer's header read one status. AppShell keeps no data: the inspector's width,
+the drawer's height and whether each is open are ear's, kept per ear ([What the browser keeps](#what-the-browser-keeps)).
+*Why patchbay's:* the owner's principle is to take patchbay's model where it has the concept (2026-11-26).
 
 ### The top bar
 
-44 px across the top, holding what is about the whole graph and never about a selection, from left
-to right:
+AppShell's bar, 44 px across the top, holding what is about the whole graph and never about a selection, from left
+to right in its four slots:
 
-- the wordmark (hidden below 600 px);
-- the connection pill: `live` (ok), `connecting…` (warn) or `lost: retrying in 4 s` (err), a word beside its dot,
+- the brand: the wordmark (dropped below 600 px);
+- the status: the connection pill, `live` (ok), `connecting…` (warn) or `lost: retrying in 4 s` (err), a word beside its dot,
   the seconds counted down to the client's next socket, as `rpc.ts` tells the editor (`onRetry`), in a status
   region so a change is read out;
-- the engine chip, a muted badge: the rate and block size, then `realtime` or the "not realtime" badge, filled in
+- the start, taking the free width and cut short at its end: the engine chip, a muted badge: the rate and block size, then `realtime` or the "not realtime" badge, filled in
   the error tone so it stands out, its tooltip the scheduling;
 - the dropouts badge, in the warn tone ([Counters](#counters));
 - a `protocol N` badge in the warn tone while ear speaks a newer protocol than this editor's, its tooltip saying
   some of it is not shown;
-- on the right, the palette button, its key (`⌘K` or `Ctrl+K`) as its text
+- the end: the palette button, its key (`⌘K` or `Ctrl+K`) as its text
   ([below](#the-palette)), the theme switch and the `ear.conf` toggle with the drawer's status words as a
   badge in the first word's tone;
 - below 760 px, an Inspector button ([below](#narrow-windows)).
@@ -126,7 +165,7 @@ It fills the rest, a quiet dot grid in the theme's colours. `components/Canvas.t
 `<ReactFlow>`, so every React Flow prop stays ear's to pass, and adds patchbay's canvas pieces beside it, each
 handing its handlers to `<ReactFlow>` through `mergeFlowProps`
 ([patchbay's](https://github.com/mcurcio/patchbay/blob/v0.8.0/docs/graph.md#canvastools)). *Why:* the owner chose no
-canvas wrapper, patchbay's sugar beside the app's own `<ReactFlow>` (D1, 2026-11-25), and patchbay's model where it
+canvas wrapper, patchbay's sugar beside the app's own `<ReactFlow>` (2026-11-25), and patchbay's model where it
 has the concept (2026-11-26).
 
 - **The tools.** patchbay's `CanvasTools`, bottom left in React Flow's `Panel`: zoom in, zoom out, fit the view, tidy
@@ -156,10 +195,11 @@ Toasts sit at its bottom right ([below](#toasts)), and a route request on its wa
 
 ### The inspector
 
-On the right, 320 px, resized between 280 and 560 px by patchbay's `Splitter` on its left edge
-(`edge="start"`, its inline start, which is its left as the editor is left-to-right: dragged, or focused and moved by the arrow keys, Home and End; its keys, drag and 36 px touch hit area
-are [patchbay's](https://github.com/mcurcio/patchbay/blob/v0.8.0/docs/components.md#layout)). It shows one subject, chosen by the selection
-(`selection.ts`, `selection.test.ts`):
+AppShell's inspector, on the right, 320 px at first (`sizes.ts`), resized between 280 and 560 px by the splitter on
+its left edge (dragged, or focused and moved by the arrow keys, Home and End; its keys, drag and 36 px touch hit area
+are patchbay's). On a wide window it is always open. Its content is `Inspector.tsx`: patchbay's `Panel`, which pads
+and scrolls its body, named by its subject inside the shell's region named "Inspector". It shows one subject, chosen
+by the selection (`selection.ts`, `selection.test.ts`):
 
 - nothing selected: **Graph**: the engine facts in full (patchbay's `KeyValue`, a wrong or newer fact in the err
   or warn tone), the graph's counters and the add-node form;
@@ -178,8 +218,8 @@ form and status list are designed to land in the Node subject, under the lifecyc
 
 ### The drawer
 
-Full width along the bottom, holding the pane whole. Its 32 px header stays when the drawer is
-closed and says in words what the file needs, most urgent first: `refused`, `write failed`,
+AppShell's drawer, full width along the bottom, holding the pane whole. Its header (AppShell's, 44 px) stays when
+the drawer is closed: `ear.conf`, then in words what the file needs, most urgent first: `refused`, `write failed`,
 `stale: reload`, `unsaved`, `n errors` or `applies at restart` (`drawer.ts`, `drawer.test.ts`),
 with Save beside them, which says `Saving…` while its request is on its way. The words are patchbay's
 `StatusWords` ([its docs](https://github.com/mcurcio/patchbay/blob/v0.8.0/docs/components.md#news-and-state)): each in its
@@ -187,19 +227,20 @@ tone (`applies at restart` in the neutral one), a dot between two, the row one p
 and cut short before Save. The pane's banners above the text (the file changed under the draft, with Reload; ear
 refused the file; a write failed; editor edits were dropped, with a close button; a setting applies at restart) are
 patchbay's `Banner`, as are the node box's stale banner and the add form's: a stripe and a soft surface in the tone,
-an error one read at once (`role="alert"`) and the others when the reader is free. The header's toggle (patchbay's small `Button`, as Save is), and the top bar's, opens and closes it. It opens by
+an error one read at once (`role="alert"`) and the others when the reader is free. The shell's chevron button at the header's end ("Show ear.conf" or "Hide ear.conf"), and the top bar's `ear.conf`
+toggle, open and close it. It opens by
 itself only when ear refuses the file or a write fails, each newly (the same refusal sent again
 does not reopen it), or when a Save is refused; never on a hand edit. *Why a drawer:* the owner
 chose a full-width bottom drawer over a third column, so lines need not scroll sideways and the
-canvas keeps its width for a left-to-right graph. Its body is resized by the same `Splitter` on its top edge between
-120 px and 70 % of the window. The text fills the body ([below](#highlighting)). Closing it hides the body but keeps it, with the draft, the caret
-and the scroll. The inspector and the drawer never move each other's content.
+canvas keeps its width for a left-to-right graph. It is resized by the shell's splitter on its top edge, its height (320 px at first,
+`sizes.ts`) the whole drawer's, header included, drawn between 120 px and 70 % of the window as the window is: a
+height kept from a taller window comes back there. The text fills the body ([below](#highlighting)). Closing it hides the body but AppShell keeps it mounted, with the draft, the
+caret and the scroll. The inspector and the drawer never move each other's content.
 
 ### Narrow windows
 
-Below 760 px the inspector is patchbay's `Sheet` over the canvas's right edge
-([its docs](https://github.com/mcurcio/patchbay/blob/v0.8.0/docs/components.md#overlays)), titled "Inspector", at the
-width kept for the docked inspector (within 280 to 560 px and 48 px short of the canvas) and not resized. It opens
+Below 760 px AppShell draws the inspector as patchbay's `Sheet` over the canvas's right edge, titled "Inspector", at
+the width kept for the docked inspector (within 280 to 560 px and 48 px short of the canvas) and not resized. `App.tsx` holds whether it is open: it opens
 when something is selected or from the top bar's Inspector button, and closes on its close button, Escape (before the
 selection: [Shortcuts](#shortcuts)) or a click on the canvas; it is not
 modal, so the canvas stays live, and closing it with the focus inside gives the focus back. Escape with the focus
@@ -208,12 +249,15 @@ laptop-sized width keeps it docked on a foldable phone unfolded (about 890 px wi
 the canvas is still 480 px wide. The drawer keeps its place. Below 600 px (a phone in portrait) the sheet rises from
 the bottom instead, the full width and at most 62 % of the workspace, scrolling inside, so the graph stays in sight
 above it; and the top bar drops the wordmark and the engine chip (the Graph subject holds the same facts),
-patchbay's theme switch shows only its icon (its label still names the choice) and the `ear.conf` toggle its glyph,
-so its buttons fit beside the connection pill. `App.tsx` picks docked, right or bottom from patchbay's
+patchbay's theme switch shows only its icon (its label still names the choice) and the `ear.conf` toggle drops its glyph,
+so its buttons fit beside the connection pill. AppShell picks docked, right or bottom from patchbay's
 `useMediaBreakpoint` (wide, narrow below 760 px, phone below 600 px:
-[its docs](https://github.com/mcurcio/patchbay/blob/v0.8.0/docs/components.md#usemediabreakpoint)), and `editor.css`
-narrows the top bar and grows the targets by the same queries (patchbay's `mediaQueries`); `sizes.ts` holds the
-bounds, which it passes to the splitters, and `sizes.test.ts` holds `editor.css`'s bounds and its queries to them.
+[its docs](https://github.com/mcurcio/patchbay/blob/v0.8.0/docs/components.md#usemediabreakpoint)), which `App.tsx`
+reads too for the Inspector button and the wordmark, and `editor.css` hides the engine chip and the toggle's glyph
+and grows the targets by the same queries (patchbay's `mediaQueries`); `sizes.test.ts` holds `editor.css`'s queries
+to them and `sizes.ts`'s first sizes to AppShell's bounds. Crossing 760 px moves the inspector between the region and
+the sheet, which draws its content afresh: a half-typed add-node statement is dropped, as when the selection
+changes.
 
 ### Phones and touch
 
@@ -230,7 +274,7 @@ unfolding is a resize, so the layout follows it and the view fits itself again u
   [above](#the-node-box)), so a wire starts from a fingertip; React Flow's pan and pinch zoom work as they do.
 - **No keyboard.** The palette button shows a search icon instead of its key. The palette, the inspector's buttons
   and the drawer's Save do everything a shortcut does.
-- **The whole screen.** The page asks for `viewport-fit=cover`; the shell fills `100dvh`, so Safari's toolbar never
+- **The whole screen.** The page asks for `viewport-fit=cover`; AppShell fills `100dvh`, so Safari's toolbar never
   covers the drawer, and pads its top bar, sides and drawer by the safe-area insets, so a notch, the rounded corners
   and the home indicator never cover a control.
 
@@ -266,8 +310,8 @@ does a closed connection, at once.
   in the node box show `Saving…` beside the spinner, and Add in the form `Adding…` (their `busyLabel`, announced
   politely); a lifecycle button keeps its word under the spinner, so the segmented row's widths hold. A button is
   disabled only while idle: a lifecycle button as `health.ts` says, Save and Add while there is nothing to send.
-  Delete and Remove are `tone="danger"`. *Why:* the owner chose patchbay's model, focusable while busy (D4,
-  2026-11-26), over ear's old disabled button that dropped the focus. The spinner stops turning under reduced motion
+  Delete and Remove are `tone="danger"`. *Why:* the owner chose patchbay's model, focusable while busy
+  (2026-11-26), over ear's old disabled button that dropped the focus. The spinner stops turning under reduced motion
   and keeps its open ring.
 
 ### Toasts
@@ -277,7 +321,7 @@ outside React (the session's `ask`, a `node.state`) is a toast, and `components/
 `Toaster`, inline in a React Flow panel at the canvas's bottom right so Show can move the view
 ([its docs](https://github.com/mcurcio/patchbay/blob/v0.8.0/docs/components.md#news-and-state); the queue:
 [`useToasts`](https://github.com/mcurcio/patchbay/blob/v0.8.0/docs/components.md#usetoasts)). *Why patchbay's:* the
-owner chose patchbay's toast model (D11, 2026-11-26); ear keeps the words, the key and Show.
+owner chose patchbay's toast model (2026-11-26); ear keeps the words, the key and Show.
 
 - **What a toast says.** A refusal says what was asked and why, with the code in monospace
   (`route noise:noise.mono → rec:FX refused: unknown-port rec:FX`). A call the closed connection left unanswered says
@@ -336,7 +380,7 @@ quick add, "Add a node of type…"), given through the palette's `labels`; every
   End, Enter; Escape, Tab, a press outside or the focus leaving close it) and where it sits are `CommandPalette`'s:
   a query's letters in order in a label, word starts and runs scoring most, each group's matches best first and the
   groups by their best; the focus stays in its field and goes back where it was when it closes. *Why:* the owner chose
-  patchbay's model for the palette (D9, 2026-11-26), Tab closing it as a combobox's list closes and each item having a
+  patchbay's model for the palette (2026-11-26), Tab closing it as a combobox's list closes and each item having a
   hint line; its ranking and grouping replace ear's own, which listed at most 50 in one ranked list.
 - **Nothing of its own.** Everything it does is a request ear judges, drawn when ear announces it
   ([above](#its-rules)), or a change of the browser's own view.
@@ -365,7 +409,7 @@ match its modifiers exactly, so `⌘⇧K` is not `⌘K`. The three chords opt in
 nothing, so `⌘S` saves the drawer's draft while typing in it; it saves only that draft, even with the focus in the
 node panel's box. While the palette is open only `⌘K` acts (closing it); while the shortcut sheet is open none do, as
 its dialog holds the focus and Escape, its close button or a press on the scrim closes it. *Why that filter:* it is
-patchbay's keyboard model (D9, 2026-11-26), and React Flow 12.12.0 skips input, select, textarea, contenteditable and
+patchbay's keyboard model (2026-11-26), and React Flow 12.12.0 skips input, select, textarea, contenteditable and
 anything inside `.nokey` for Delete by the same rule (its `isInputDOMNode`, checked in the pinned package), so its
 keys and the editor's coexist with the focus in the inspector's text. Slice 6's knobs are designed to carry `nodrag`,
 `nowheel`, `nopan` and `nokey` ([control-plane.md](design/control-plane.md#83-gestures-from-pointer-and-keyboard)).
@@ -496,7 +540,8 @@ the tokens, their light and dark values and the contrast rules on
 section says only how ear uses them.
 
 **The order the styles load.** `main.tsx` loads React Flow's `style.css`, then
-`@mcurcio/patchbay/tokens.css`, then `editor.css`. patchbay's tokens point React Flow's own
+`@mcurcio/patchbay/tokens.css` and patchbay's optional `base.css` (the page's box sizing, body colours and type, and
+the accent focus ring), then `editor.css`. patchbay's tokens point React Flow's own
 variables (`--xy-*`) at them on `.react-flow`, after React Flow's defaults, so its canvas, dot grid
 and minimap follow the theme without its `colorMode` prop (which would fight `data-theme`).
 A patchbay component brings its own stylesheet (importing `@mcurcio/patchbay/primitives` loads
@@ -534,9 +579,8 @@ class (inside `:where()`, so they weigh no more), so patchbay's controls draw as
   tick's fall, which is data, not decoration.
 
 **ear's own variables.** Besides the tokens, `editor.css` reads a few variables that hold no value of
-their own design, only a token picked per state or a number a component sets: `--state` (a node's
-state class picks its tone, for its minimap box), `--inspector-width` (`Inspector.tsx`) and `--drawer-height`
-(`Drawer.tsx`).
+their own design, only a token picked per state: `--state` (a node's state class picks its tone, for its minimap
+box).
 
 **The theme.** It is `system` by default, following `prefers-color-scheme`. *Why:* the owner chose
 that the editor follows the system until the person chooses. It is patchbay's: `App.tsx` holds the
@@ -575,7 +619,8 @@ editor that remembers for the page's life), and every value is checked on read, 
 default; a value is written only when the person changes it. `main.tsx` makes one `Prefs` for the page.
 
 - **Per ear**, keyed by the page's `location.host` (`ear-editor/1/<host>/…`): node places, the inspector's width
-  (clamped to its bounds), the drawer's height (clamped to the window) and whether it is open, and the minimap.
+  (clamped to AppShell's bounds), the drawer's height (as set: AppShell draws it within the window as it is) and
+  whether it is open, and the minimap.
 - **Per browser** (`ear-editor/1/theme`): the theme, kept by patchbay's `useTheme` as JSON (as `prefs.ts` kept it
   before, so a choice made then still holds) and applied by `index.html`'s inline script before the first paint, so
   a kept dark choice never flashes light ([Tokens and themes](#tokens-and-themes)).
@@ -596,7 +641,8 @@ Slice 5's type-schema cache is designed to use this module too ([control-plane.m
 ([its docs](https://github.com/mcurcio/patchbay/blob/v0.8.0/docs/graph.md#nodebox)); ear gives it the words, the
 tone and the handle ids, and the handles' rule is `web/src/connect.ts`'s `canConnect`. *Why patchbay's:* the owner's
 principle is to take patchbay's model where it has the concept (2026-11-26), and its geometry is exported so layout
-code sizes boxes by it (D12).
+code sizes boxes by it (owner, 2026-11-26: NodeBox's geometry as exported constants, mirrored by tokens a brand
+may not change).
 
 - **The state is a stripe and a pill.** NodeBox's 4 px stripe down the box's left edge and a pill in its status slot
   (patchbay's `Pill`: a dot and the word, with a failure's code after it in monospace, `StatePill.tsx`) take the
@@ -668,7 +714,7 @@ from port's level. *Why patchbay's:* the owner's principle is to take patchbay's
 Each port's meter is patchbay's `Meter`
 ([its docs](https://github.com/mcurcio/patchbay/blob/v0.8.0/docs/graph.md#meter)), fed by the level store:
 `components/Meter.tsx` gives it the port's level and a reset, and `web/src/meters.ts` (`meters.test.ts`) its
-tooltip's words. *Why patchbay's:* the owner chose that patchbay's Meter owns the dB scale (D10, 2026-11-26); ear
+tooltip's words. *Why patchbay's:* the owner chose that patchbay's Meter owns the dB scale (2026-11-26); ear
 takes its defaults, which `meters.test.ts` pins to what this section says.
 
 - **The scale:** an rms bar and a peak tick, dBFS down to -60, the same floor as the wires' (`levels.ts`).
@@ -830,7 +876,7 @@ port. Node.js comes from `web/.nvmrc` and the packages from `web/package-lock.js
 The tests cover the reducer against every `test/protocol` fixture, the graph file's state and the
 pane's logic (drafts, stale files, Save, refusals), the node panel's knobly box (`nodeText.ts`), the add-node
 form (`addText.ts`), what the knobly boxes send (`sent.test.ts`), the reconnecting client with a fake socket,
-the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (a meter's words, and patchbay's scale pinned as stated here), the handles' rule (`connect.ts`'s `canConnect`), the box's sizes against patchbay's exported geometry (`layout.test.ts`), and the tokens and the theme's first paint (`theme.test.ts`: every `var()` names a token, and `index.html` inlines patchbay's theme script), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the sizes and the breakpoint against `editor.css` (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight and the ghosts (`requests.ts`), the toast store on patchbay's queue and a refusal's words (`notices.ts`, replaying `errors.json`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands as patchbay's `CommandPalette` takes and ranks them, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the key bindings as patchbay's `findShortcut` runs them (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), and which quick add a double-click or a dropped wire asks for (`connect.ts`'s `quickAddKind`). patchbay's modules import their own stylesheets, which Node cannot load, so `vite.config.ts` has Vitest inline the package (and blank its styles) for the tests that call its pure helpers. There is no browser test runner:
+the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (a meter's words, and patchbay's scale pinned as stated here), the handles' rule (`connect.ts`'s `canConnect`), the box's sizes against patchbay's exported geometry (`layout.test.ts`), and the tokens and the theme's first paint (`theme.test.ts`: every `var()` names a token, and `index.html` inlines patchbay's theme script), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the first sizes against AppShell's bounds and `editor.css`'s queries against patchbay's (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight and the ghosts (`requests.ts`), the toast store on patchbay's queue and a refusal's words (`notices.ts`, replaying `errors.json`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands as patchbay's `CommandPalette` takes and ranks them, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the key bindings as patchbay's `findShortcut` runs them (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), and which quick add a double-click or a dropped wire asks for (`connect.ts`'s `quickAddKind`). patchbay's modules import their own stylesheets, which Node cannot load, so `vite.config.ts` has Vitest inline the package (and blank its styles) for the tests that call its pure helpers. There is no browser test runner:
 rendering is checked by eye. *Why:* a Playwright leg costs about 150 MB of browsers and a minute
 or two a CI run, while the logic sits in the reducer, client and rules, which Vitest covers
 against the same fixtures the server is tested with.
@@ -846,7 +892,8 @@ meters and canvas tools on it, the build is 565.23 KB (181.55 KB gzipped) and 73
 stylesheets among them, and Vite warns that the script is over 500 KB. patchbay 0.8.0, whose stylesheets carry its
 code editor and shell before the editor uses them, brought them to 565.36 KB (181.58 KB gzipped) and 78.17 KB. The
 knobly boxes on its `CodeEditor` made them 569.24 KB (182.55 KB gzipped), with knobly's highlighter in its own
-2.56 KB chunk, and 75.63 KB.
+2.56 KB chunk, and 75.63 KB. The shell on its `AppShell`, with patchbay's `base.css`, made them 572.17 KB (183.34 KB
+gzipped) and 77.12 KB.
 
 React Flow (`@xyflow/react`) was chosen over Rete.js (its own editor framework) and LiteGraph
 (drawn on a canvas, which makes per-port meters custom work).

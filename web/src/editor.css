@@ -1,37 +1,8 @@
-/* The graph editor's styles: the shell (docs/editor.md#the-shell: the top bar, the canvas and its tools, the inspector,
-   the ear.conf drawer, the narrow window's sheet), the node boxes, wires and meters
+/* The graph editor's styles: what ear puts in patchbay's AppShell (docs/editor.md#the-shell: the top bar's slots, the
+   canvas and its tools, the inspector's subjects, the ear.conf drawer's header and pane), the node boxes, wires and meters
    (docs/editor.md#the-node-box-wires-and-meters). Colours, radii, shadows, durations and type are patchbay's tokens
    (--pb-*) or a variable declared here or set by a component (docs/editor.md#tokens-and-themes), which theme.test.ts
    checks. */
-html,
-body,
-#root {
-  margin: 0;
-  height: 100%;
-  font-family: var(--pb-font-ui);
-  font-size: var(--pb-text-md);
-  background: var(--pb-surface);
-  color: var(--pb-text);
-}
-
-/* A phone's screen: the shell fills the visible viewport (dvh, so Safari's toolbar never covers the drawer), and with
-   viewport-fit=cover it keeps its controls inside the safe area (a notch, rounded corners, the home indicator) while
-   its backgrounds run to the edges (docs/editor.md#phones-and-touch). */
-#root {
-  height: 100dvh;
-}
-
-/* The shell: the top bar, the workspace (the canvas and the inspector) and the drawer, which never move each other's
-   content. */
-.app {
-  display: grid;
-  grid-template-rows: calc(44px + env(safe-area-inset-top, 0px)) minmax(0, 1fr) auto;
-  height: 100%;
-  box-sizing: border-box;
-  padding-left: env(safe-area-inset-left, 0px);
-  padding-right: env(safe-area-inset-right, 0px);
-}
-
 .react-flow__attribution a {
   color: var(--pb-muted);
 }
@@ -48,25 +19,8 @@ body,
   fill: var(--state);
 }
 
-/* The top bar (docs/editor.md#the-top-bar): about the whole graph, never a selection. */
-.topbar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: env(safe-area-inset-top, 0px) 12px 0;
-  border-bottom: 1px solid var(--pb-line);
-  background: var(--pb-raised);
-  min-width: 0;
-}
-
-.topbar-start,
-.topbar-end {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: none;
-}
-
+/* The top bar (docs/editor.md#the-top-bar): AppShell's slots; the graph's chips fill the start slot on one line and are
+   cut short there. */
 .topbar-facts {
   display: flex;
   align-items: center;
@@ -88,18 +42,6 @@ body,
   font-variant-numeric: tabular-nums;
 }
 
-/* The workspace: the canvas fills what the inspector leaves. */
-.workspace {
-  position: relative;
-  display: flex;
-  min-height: 0;
-}
-
-.workspace > .react-flow {
-  flex: 1;
-  min-width: 0;
-}
-
 /* Tidy slides each node to its new place (docs/editor.md#the-canvas); --pb-motion-slow is 0 under reduced motion. */
 .react-flow.tidying .react-flow__node {
   transition: transform var(--pb-motion-slow) ease-out;
@@ -115,23 +57,8 @@ body,
   font-family: var(--pb-font-code);
 }
 
-/* The inspector (docs/editor.md#the-inspector): one subject, docked and resized by its left edge between sizes.ts's
-   bounds, which sizes.test.ts holds equal; on a narrow window its body is patchbay's Sheet's instead. */
-.inspector {
-  position: relative;
-  flex: none;
-  width: clamp(280px, var(--inspector-width), 560px);
-  border-left: 1px solid var(--pb-line);
-  background: var(--pb-raised);
-}
-
-.inspector > .inspector-body {
-  height: 100%;
-  overflow-y: auto;
-  padding: 8px 12px;
-  box-sizing: border-box;
-}
-
+/* The inspector (docs/editor.md#the-inspector): one subject on patchbay's Panel, which pads and scrolls its body, in
+   AppShell's docked inspector or its sheet. */
 .inspector-body h2 {
   font-size: 14px;
   margin: 0 0 6px;
@@ -147,7 +74,7 @@ body,
   border-top: 1px solid var(--pb-line);
 }
 
-.inspector-body > .inspector-section:first-child {
+.inspector-body .pb-panel-body > .inspector-section:first-child {
   border-top: none;
   padding-top: 0;
 }
@@ -216,47 +143,30 @@ body,
   min-width: 120px;
 }
 
-/* The ear.conf drawer (docs/editor.md#the-drawer): a 32 px header that stays when closed, and a body resized by its top
-   edge between sizes.ts's bounds, which sizes.test.ts holds equal. */
-.drawer {
-  position: relative;
-  border-top: 1px solid var(--pb-line);
-  background: var(--pb-raised);
-  min-width: 0;
-  padding-bottom: env(safe-area-inset-bottom, 0px);
-}
-
-.drawer-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  height: 32px;
-  padding: 0 12px;
-  box-sizing: border-box;
+/* The ear.conf drawer (docs/editor.md#the-drawer): what ear puts in AppShell's drawer, its header's title, words and
+   Save, and its pane. */
+.drawer-title {
+  font-weight: 600;
 }
 
 /* The header's words are patchbay's StatusWords (docs/editor.md#the-drawer), kept to one line that fills the space
-   between the toggle and Save and is cut short there. */
-.drawer-header .drawer-status {
+   between the title and Save and is cut short there. */
+.app .drawer-status {
   flex: 1;
   flex-wrap: nowrap;
   min-width: 0;
   overflow: hidden;
 }
 
+/* The pane fills the body AppShell sizes. */
 .drawer-body {
-  height: clamp(120px, var(--drawer-height), 70vh);
+  flex: 1;
+  min-height: 0;
   overflow: auto;
-  padding: 0 12px 8px;
+  padding: 8px 12px;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-}
-
-/* The body stays mounted while closed (the draft, the caret and the scroll are kept); its display: flex would otherwise
-   beat the hidden attribute. */
-.drawer-body[hidden] {
-  display: none;
 }
 
 .text-pane {
@@ -320,11 +230,6 @@ body,
 
 .app .port-ref {
   padding: 0 4px;
-}
-
-:focus-visible {
-  outline: 2px solid var(--pb-accent);
-  outline-offset: 1px;
 }
 
 /* The pane's, the node box's and the add form's banners are patchbay's Banner (docs/editor.md#the-drawer); ear only
@@ -537,22 +442,11 @@ body,
   margin-bottom: 4px;
 }
 
+/* A phone in portrait (patchbay's mediaQueries.phone): the top bar's buttons fit beside the pill. The engine chip gives
+   way (the Graph subject holds the same facts) and the ear.conf toggle keeps its words and chip but not its glyph
+   (patchbay's theme switch drops its word itself, keeping its icon; its label says the choice). */
 @media (max-width: 599.98px) {
-  .topbar .wordmark {
-    display: none;
-  }
-
-  /* At phone width the top bar's buttons fit beside the pill: the drawer toggle keeps its words and chip (patchbay's
-     theme switch drops its word itself, keeping its icon; its label says the choice). */
-  .topbar {
-    gap: 6px;
-    padding: 0 8px;
-  }
-
-  .topbar-end {
-    gap: 6px;
-  }
-
+  .app .engine-chip,
   .topbar-drawer-glyph {
     display: none;
   }
@@ -582,12 +476,5 @@ body,
 
   .lifecycle-buttons button {
     height: 40px;
-  }
-}
-
-/* A phone in portrait (patchbay's mediaQueries.phone): the engine chip gives way (the Graph subject holds the same facts). */
-@media (max-width: 599.98px) {
-  .topbar .engine-chip {
-    display: none;
   }
 }

@@ -1,13 +1,11 @@
 // The inspector (docs/editor.md#the-inspector): one subject, chosen by the selection (selection.ts): the Graph (the
 // engine facts in full, the graph's counters, the add-node form), one Node, one Route, or several with Delete for them
-// all. Docked and resized by its left edge; below the narrow width it is patchbay's Sheet over the canvas, from its
-// right edge and below the phone width from its bottom (docs/editor.md#narrow-windows). Every change is a request to ear. An Add command (docs/editor.md#the-palette) reaches the add-node form
-// as an intent: its type chosen and the form focused.
-import { Button, Sheet, Splitter, type SheetSide } from "@mcurcio/patchbay/primitives";
-import type { CSSProperties } from "react";
+// all. It is the content of AppShell's inspector, which docks and resizes it, or below the narrow width puts it in a
+// sheet (docs/editor.md#narrow-windows). Every change is a request to ear. An Add command (docs/editor.md#the-palette)
+// reaches the add-node form as an intent: its type chosen and the form focused.
+import { Button, Panel } from "@mcurcio/patchbay/primitives";
 import type { Graph, RouteEnds } from "../protocol";
 import { subjectTitle, type InspectorSubject, type Selection } from "../selection";
-import { inspectorBounds } from "../sizes";
 import { wireEnds } from "../wires";
 import { AddNodePanel } from "./AddNodePanel";
 import { EngineFactsSection } from "./EngineFacts";
@@ -97,62 +95,24 @@ function Subject({
   }
 }
 
-/** A narrow window's sheet: the side it comes from, whether it is open, and its close (Escape inside it, its button). */
-export interface InspectorSheet {
-  side: SheetSide;
-  open: boolean;
-  onClose: () => void;
-}
-
 export function Inspector({
   graph,
   subject,
-  width,
-  onResize,
   onSelect,
   onRemove,
   addIntent,
-  sheet,
 }: {
   graph: Graph;
   subject: InspectorSubject;
   addIntent: AddIntent | null;
-  width: number;
-  onResize: (px: number) => void;
   onSelect: (selection: Selection) => void;
   onRemove: (nodes: readonly string[], routes: readonly RouteEnds[]) => void;
-  /** null: docked beside the canvas. */
-  sheet: InspectorSheet | null;
 }) {
-  const body = (
-    <Subject graph={graph} subject={subject} onSelect={onSelect} onRemove={onRemove} addIntent={addIntent} />
-  );
-  if (sheet !== null)
-    return (
-      // The sheet keeps the docked width the person chose; its own body scrolls and pads.
-      <Sheet open={sheet.open} onClose={sheet.onClose} side={sheet.side} title="Inspector" width={width}>
-        <div id="inspector" className="inspector-body">
-          {body}
-        </div>
-      </Sheet>
-    );
+  // patchbay's Panel, whose body pads and scrolls; the shell names the region (or the sheet) "Inspector", and the
+  // panel is named by its subject.
   return (
-    <aside
-      id="inspector"
-      className="inspector"
-      aria-label={`Inspector: ${subjectTitle(subject)}`}
-      style={{ "--inspector-width": `${width}px` } as CSSProperties}
-    >
-      <Splitter
-        orientation="vertical"
-        label="Resize the inspector"
-        value={width}
-        min={inspectorBounds.min}
-        max={inspectorBounds.max}
-        edge="start"
-        onChange={onResize}
-      />
-      <div className="inspector-body">{body}</div>
-    </aside>
+    <Panel id="inspector" className="inspector-body" aria-label={subjectTitle(subject)}>
+      <Subject graph={graph} subject={subject} onSelect={onSelect} onRemove={onRemove} addIntent={addIntent} />
+    </Panel>
   );
 }

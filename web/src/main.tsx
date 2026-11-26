@@ -1,9 +1,11 @@
 // The graph editor's entry point (docs/editor.md): one editor session on the
 // page's own host (ear serves the page and its control socket on the same port), then the canvas.
-// React Flow's styles first, then patchbay's tokens (which point React Flow's --xy-* variables at them), then the
-// styles that use them (docs/editor.md#tokens-and-themes).
+// React Flow's styles first, then patchbay's tokens (which point React Flow's --xy-* variables at them) and its base
+// stylesheet (the page's box sizing, type, colours and focus ring), then the styles that use them
+// (docs/editor.md#tokens-and-themes).
 import "@xyflow/react/dist/style.css";
 import "@mcurcio/patchbay/tokens.css";
+import "@mcurcio/patchbay/base.css";
 import "./editor.css";
 import { browserStorage } from "@mcurcio/patchbay/hooks";
 import { ReactFlowProvider } from "@xyflow/react";

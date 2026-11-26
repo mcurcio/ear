@@ -12,7 +12,7 @@ import { dirty, paneFrom, saveRequest, type PaneEvent, type PaneState } from "..
 import type { GraphFile, RpcErrorCode } from "../protocol";
 import { isAsking } from "../requests";
 import { RpcError } from "../rpc";
-import { clamp, drawerBounds, drawerHeight } from "../sizes";
+import { drawerInitialHeight } from "../sizes";
 import { checkDrawer, type Prefs } from "../prefs";
 import { useEditor, useRequests } from "./hooks";
 
@@ -24,9 +24,8 @@ export interface DrawerModel {
   status: DrawerWord[];
   open: boolean;
   setOpen: (open: boolean) => void;
-  /** The body's height in px. */
+  /** The drawer's height in px while open, its header included; AppShell draws it within its bounds. */
   height: number;
-  /** Clamped to the drawer's bounds in the window as it is now. */
   setHeight: (px: number) => void;
   saving: boolean;
   canSave: boolean;
@@ -34,12 +33,6 @@ export interface DrawerModel {
 }
 
 /** The drawer's state; null until ear has sent a graph file (an ear without one shows no drawer). */
-/** A kept drawer, its height clamped to the bounds in the window as it is when read. */
-function checkKeptDrawer(value: unknown): { open: boolean; height: number } | undefined {
-  const kept = checkDrawer(value);
-  return kept && { open: kept.open, height: clamp(kept.height, drawerBounds(window.innerHeight)) };
-}
-
 export function useDrawer(state: GraphFileState | null, prefs: Prefs): DrawerModel | null {
   const editor = useEditor();
   const saving = isAsking(useRequests(), "graphFile.set");
@@ -50,8 +43,8 @@ export function useDrawer(state: GraphFileState | null, prefs: Prefs): DrawerMod
   // Kept per ear by patchbay's usePersistentState, under prefs.ts's key (docs/editor.md#what-the-browser-keeps).
   const [kept, setKept] = usePersistentState(
     prefs.key("drawer"),
-    { open: false, height: clamp(drawerHeight.initial, drawerBounds(window.innerHeight)) },
-    checkKeptDrawer,
+    { open: false, height: drawerInitialHeight },
+    checkDrawer,
     { storage: prefs.storage },
   );
   const { open, height } = kept;
@@ -68,10 +61,9 @@ export function useDrawer(state: GraphFileState | null, prefs: Prefs): DrawerMod
     previous.current = file;
   }, [file]);
 
-  const setHeight = useCallback(
-    (px: number) => setKept((was) => ({ ...was, height: clamp(px, drawerBounds(window.innerHeight)) })),
-    [setKept],
-  );
+  // Kept as the person set it: AppShell draws it within the bounds of the window as it is, so a height kept from a
+  // taller window comes back there.
+  const setHeight = useCallback((px: number) => setKept((was) => ({ ...was, height: px })), [setKept]);
 
   const save = useCallback(() => {
     if (pane === null) return;

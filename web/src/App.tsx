@@ -1,5 +1,6 @@
-// The graph editor's shell (docs/editor.md#the-shell): the top bar, the canvas with the inspector on its right, and the
-// full-width ear.conf drawer along the bottom; below the narrow width the inspector is a sheet over the canvas. Nodes
+// The graph editor's shell (docs/editor.md#the-shell): patchbay's AppShell, with the top bar, the canvas with the
+// inspector on its right, and the full-width ear.conf drawer along the bottom; below the narrow width the inspector is
+// a sheet over the canvas. Nodes
 // and wires are exactly what ear announced; dragging a wire between ports, the inspector, the drawer's Save, the
 // delete key and the command palette's commands send requests (through the session's ask, so each shows while on its
 // way and a refusal becomes a toast, docs/editor.md#feedback), and the canvas changes when ear's events arrive. The
@@ -16,6 +17,7 @@ import {
   useTheme,
 } from "@mcurcio/patchbay/hooks";
 import { useFollowFit } from "@mcurcio/patchbay/graph";
+import { AppShell } from "@mcurcio/patchbay/shell";
 import { useReactFlow, type Connection } from "@xyflow/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { freeName } from "./addText";
@@ -26,12 +28,12 @@ import { paletteItems, type PaletteScope } from "./palette";
 import { checkFlag, checkWidth, themeKey, type Prefs } from "./prefs";
 import { nodeTextFeature, type RouteEnds } from "./protocol";
 import { nothingSelected, removals, selectionKey, subjectOf } from "./selection";
-import { inspectorWidth } from "./sizes";
+import { inspectorInitialWidth } from "./sizes";
 import { Canvas } from "./components/Canvas";
-import { Drawer } from "./components/Drawer";
+import { drawerSlots } from "./components/Drawer";
 import { useEditor, useGraph, useGraphFile } from "./components/hooks";
 import { Inspector, type AddIntent } from "./components/Inspector";
-import { TopBar } from "./components/TopBar";
+import { topBar } from "./components/TopBar";
 import { useCanvas } from "./components/useCanvas";
 import { useCommands } from "./components/useCommands";
 import { useDrawer } from "./components/useDrawer";
@@ -68,18 +70,17 @@ export function App({ prefs }: { prefs: Prefs }) {
   const kept = { storage: prefs.storage };
   const [inspectorPx, setInspectorPx] = usePersistentState(
     prefs.key("inspector-width"),
-    inspectorWidth.initial,
+    inspectorInitialWidth,
     checkWidth,
     kept,
   );
   const [minimap, setMinimap] = usePersistentState(prefs.key("minimap"), false, checkFlag, kept);
   const toggleMinimap = useCallback(() => setMinimap((shown) => !shown), []);
 
-  // Below the narrow width the inspector is a sheet: it opens on a selection and closes on Escape, its close button or
-  // the canvas; below the phone width it rises from the bottom.
+  // Below the narrow width AppShell draws the inspector as a sheet: it opens on a selection and closes on Escape, its
+  // close button or the canvas; below the phone width it rises from the bottom. Docked, it is always open.
   const { width } = useMediaBreakpoint();
   const narrow = width !== "wide";
-  const phone = width === "phone";
   const [sheetOpen, setSheetOpen] = useState(false);
   const key = selectionKey(canvas.selection);
   useEffect(() => {
@@ -219,20 +220,48 @@ export function App({ prefs }: { prefs: Prefs }) {
   useShortcuts(shortcutTable(onShortcut, { palette: palette !== null }), { enabled: !shortcutSheet, platform });
 
   return (
-    <div className="app">
+    <>
       <h1 className="visually-hidden">EAR graph editor</h1>
-      <TopBar
-        graph={graph}
-        theme={theme}
-        onTheme={setTheme}
-        drawer={drawerToggle}
-        narrow={narrow}
-        sheetOpen={sheetOpen}
-        onToggleSheet={() => setSheetOpen((open) => !open)}
-        onPalette={() => setPalette({ scope: "all" })}
-        paletteLabel={keyLabel(shortcutKeys.palette, { platform })}
-      />
-      <div className="workspace">
+      <AppShell
+        className="app"
+        topBar={topBar({
+          graph,
+          theme,
+          onTheme: setTheme,
+          drawer: drawerToggle,
+          width,
+          sheetOpen,
+          onToggleSheet: () => setSheetOpen((open) => !open),
+          onPalette: () => setPalette({ scope: "all" }),
+          paletteLabel: keyLabel(shortcutKeys.palette, { platform }),
+        })}
+        inspector={
+          graph === null || subject === null
+            ? undefined
+            : {
+                content: (
+                  <Inspector
+                    graph={graph}
+                    subject={subject}
+                    addIntent={addIntent}
+                    onSelect={canvas.select}
+                    onRemove={onRemove}
+                  />
+                ),
+                open: !narrow || sheetOpen,
+                onOpen: setSheetOpen,
+                width: inspectorPx,
+                onWidth: setInspectorPx,
+              }
+        }
+        drawer={drawer === null ? undefined : drawerSlots(drawer)}
+        labels={{
+          drawer: "ear.conf",
+          resizeDrawer: "Resize ear.conf",
+          showDrawer: "Show ear.conf",
+          hideDrawer: "Hide ear.conf",
+        }}
+      >
         <Canvas
           canvas={canvas}
           onConnect={onConnect}
@@ -246,20 +275,7 @@ export function App({ prefs }: { prefs: Prefs }) {
           onFit={fit}
           onHoldView={holdView}
         />
-        {graph !== null && subject !== null && (
-          <Inspector
-            graph={graph}
-            subject={subject}
-            addIntent={addIntent}
-            width={inspectorPx}
-            onResize={setInspectorPx}
-            onSelect={canvas.select}
-            onRemove={onRemove}
-            sheet={narrow ? { side: phone ? "bottom" : "right", open: sheetOpen, onClose: closeSheet } : null}
-          />
-        )}
-      </div>
-      {drawer !== null && <Drawer drawer={drawer} />}
+      </AppShell>
       <CommandPalette
         open={palette !== null}
         onClose={closePalette}
@@ -276,6 +292,6 @@ export function App({ prefs }: { prefs: Prefs }) {
       >
         Single keys act only when the focus is not in a text field.
       </ShortcutSheet>
-    </div>
+    </>
   );
 }

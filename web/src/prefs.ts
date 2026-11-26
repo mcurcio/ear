@@ -6,8 +6,8 @@
 // are never sent to ear (docs/editor.md#its-rules). Times here are the wall clock (Date.now), since they outlive the
 // page; every other clock in the editor is monotonic.
 import { readKept, writeKept, type StorageLike } from "@mcurcio/patchbay/hooks";
+import { clampInspectorWidth } from "@mcurcio/patchbay/shell";
 import type { PlaceKeeper, Position } from "./layout";
-import { clamp, inspectorBounds } from "./sizes";
 
 /** Every key's start; the number moves if a value's shape ever changes. */
 export const prefsPrefix = "ear-editor/1";
@@ -47,12 +47,12 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** A finite number, clamped to the inspector's bounds. */
+/** A finite number, clamped to AppShell's inspector bounds. */
 export function checkWidth(value: unknown): number | undefined {
-  return isFiniteNumber(value) ? clamp(value, inspectorBounds) : undefined;
+  return isFiniteNumber(value) ? clampInspectorWidth(value) : undefined;
 }
 
-/** A boolean open and a finite height above 0; the drawer clamps the height to the window it finds. */
+/** A boolean open and a finite height above 0; AppShell draws the height within the window it finds. */
 export function checkDrawer(value: unknown): { open: boolean; height: number } | undefined {
   if (!isPlainObject(value)) return undefined;
   const { open, height } = value;
