@@ -119,7 +119,11 @@ to right:
 ### The canvas
 
 It fills the rest, a quiet dot grid in the theme's colours. React Flow's `Controls` give way to one
-floating tool group, bottom left: zoom out, zoom in, fit, tidy and the minimap toggle. Tidy lays
+floating tool group, bottom left: zoom out, zoom in, fit, tidy and the minimap toggle (`CanvasTools.tsx`, patchbay's
+`ToolGroup` of `IconButton`s in React Flow's `Panel`). The group is one Tab stop, the arrow keys, Home and End move
+between its tools, and the minimap tool is pressed while the minimap shows; 28 px tools, 40 px on touch
+([patchbay's](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#layout)). Fit leaves 76 px at the
+bottom so the group, at its touch size, never covers a box. Tidy lays
 every node out again with dagre, as on first placement, and they slide there over
 `--pb-motion-slow` (180 ms); moves are the browser's, so nothing is sent (`layout.ts`'s `relayout`), and the new
 places are kept ([below](#what-the-browser-keeps)). The minimap is React Flow's `MiniMap`, off by default, its boxes

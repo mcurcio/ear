@@ -167,36 +167,6 @@ body,
   transition: transform var(--pb-motion-slow) ease-out;
 }
 
-/* The canvas's floating tools, in place of React Flow's Controls. */
-.canvas-tools [role="toolbar"] {
-  display: flex;
-  gap: 2px;
-  padding: 3px;
-  background: var(--pb-raised);
-  border: 1px solid var(--pb-line);
-  border-radius: var(--pb-radius-box);
-  box-shadow: var(--pb-shadow);
-}
-
-.app .canvas-tools button {
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: none;
-  background: transparent;
-  font-size: 15px;
-  line-height: 1;
-}
-
-.app .canvas-tools button:hover:not(:disabled),
-.app .canvas-tools button[aria-pressed="true"] {
-  background: var(--pb-sunken);
-}
-
-.app .canvas-tools button[aria-pressed="true"] {
-  color: var(--pb-accent);
-}
-
 /* The toasts at the canvas's bottom right (docs/editor.md#toasts): the newest four, each edged in its severity's
    token, its code in monospace and its count in tabular figures. */
 .toasts {
@@ -1539,11 +1509,6 @@ body,
 
   .palette-key {
     display: none;
-  }
-
-  .app .canvas-tools button {
-    width: 40px;
-    height: 40px;
   }
 
   .lifecycle-buttons button {

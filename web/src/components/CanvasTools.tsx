@@ -1,7 +1,8 @@
 // The canvas's floating tool group (docs/editor.md#the-canvas), in place of React Flow's Controls: zoom out, zoom in,
-// fit, tidy (every node laid out again, nothing sent) and the minimap toggle. Each glyph is hidden from screen readers
-// beside its button's label. Fit, tidy and the minimap are also F, L and M (docs/editor.md#shortcuts), which their
-// titles say.
+// fit, tidy (every node laid out again, nothing sent) and the minimap toggle, as patchbay's ToolGroup of IconButtons
+// (one tab stop, the arrow keys between tools). Fit, tidy and the minimap are also F, L and M
+// (docs/editor.md#shortcuts), which their titles say.
+import { IconButton, ToolGroup } from "@mcurcio/patchbay/primitives";
 import { Panel, useReactFlow } from "@xyflow/react";
 
 /**
@@ -24,37 +25,30 @@ export function CanvasTools({
 }) {
   const { zoomIn, zoomOut } = useReactFlow();
   return (
-    <Panel position="bottom-left" className="canvas-tools">
-      <div role="toolbar" aria-label="Canvas" aria-orientation="horizontal">
-        <button type="button" aria-label="Zoom out" title="Zoom out" onClick={() => void zoomOut()}>
-          <span aria-hidden="true">−</span>
-        </button>
-        <button type="button" aria-label="Zoom in" title="Zoom in" onClick={() => void zoomIn()}>
-          <span aria-hidden="true">+</span>
-        </button>
-        <button
-          type="button"
-          aria-label="Fit view"
-          title="Fit view (F)"
-          aria-keyshortcuts="f"
-          onClick={onFit}
-        >
-          <span aria-hidden="true">⤢</span>
-        </button>
-        <button type="button" aria-label="Tidy layout" title="Tidy layout (L)" aria-keyshortcuts="l" onClick={onTidy}>
-          <span aria-hidden="true">⊞</span>
-        </button>
-        <button
-          type="button"
-          aria-label="Minimap"
+    <Panel position="bottom-left">
+      <ToolGroup label="Canvas">
+        <IconButton label="Zoom out" onClick={() => void zoomOut()}>
+          −
+        </IconButton>
+        <IconButton label="Zoom in" onClick={() => void zoomIn()}>
+          +
+        </IconButton>
+        <IconButton label="Fit view" title="Fit view (F)" aria-keyshortcuts="f" onClick={onFit}>
+          ⤢
+        </IconButton>
+        <IconButton label="Tidy layout" title="Tidy layout (L)" aria-keyshortcuts="l" onClick={onTidy}>
+          ⊞
+        </IconButton>
+        <IconButton
+          label="Minimap"
           title="Minimap (M)"
           aria-keyshortcuts="m"
           aria-pressed={minimap}
           onClick={onToggleMinimap}
         >
-          <span aria-hidden="true">▦</span>
-        </button>
-      </div>
+          ▦
+        </IconButton>
+      </ToolGroup>
     </Panel>
   );
 }
