@@ -276,6 +276,20 @@ TEST_CASE("A queued call is answered restarted by a restart, and stopping by a s
 	}
 }
 
+TEST_CASE("A call queued across a change in place runs on its loop and is answered", "[actions][swap]") {
+	Harness h;
+	running(h);
+	const testing::ActionAnswer queued = h->invoke("add", {{"amount", 4}});
+	REQUIRE_FALSE(queued.answered());
+	// The change's commit drops the configuration the call was checked against: the call holds it until it ran.
+	h.change({{"gain", 10}});
+	REQUIRE(h->swaps() == 1);
+	h.runLoops();
+	REQUIRE(queued.answered());
+	CHECK(queued.reply());
+	CHECK(counted == 4);
+}
+
 TEST_CASE("A call not answered in 10 s is answered timeout, and its late answer is dropped", "[actions]") {
 	Harness h;
 	running(h);

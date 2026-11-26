@@ -546,7 +546,9 @@ struct NodeHost::Impl {
 		/// A type action (docs/writing-a-node-type.md#actions): checked against the type's declarations and arguments,
 		/// then a trigger's counter moved, or a call posted to its loop as outside work.
 		void invoke(std::string_view action, const NodeSettings& args, NodeActions::ActionAnswered& answered) {
-			const NodeConfig* declared = config_ && config_->config ? config_->config.get() : queued_.get();
+			// Held, not borrowed: a call runs later on its loop, after a change in place may have dropped this config.
+			std::shared_ptr<const NodeConfig> held = config_ && config_->config ? config_->config : queued_;
+			const NodeConfig* declared = held.get();
 			const NodePhase phase = aggregate_.health().phase;
 			const auto refuse = [&](ActionRefusal refusal) { answered(std::unexpected(std::move(refusal))); };
 			const auto notRunning = [&] { refuse({.code = ActionRefusal::Code::notRunning, .phase = phase}); };
@@ -585,7 +587,7 @@ struct NodeHost::Impl {
 			pending->deadline = host_.timers.after(actionDeadline, [weak = std::weak_ptr<PendingAction>(pending)] {
 				if (auto held = weak.lock()) held->answer(std::unexpected(ActionRefusal{ActionRefusal::Code::timeout}));
 			});
-			(*slot)->postOutsideState([guard = CallGuard(host_, std::move(pending)), config = declared, index,
+			(*slot)->postOutsideState([guard = CallGuard(host_, std::move(pending)), config = std::move(held), index,
 			                           args = std::move(*walked)](void* state) mutable {
 				std::expected<void, std::string> answer;
 				try {

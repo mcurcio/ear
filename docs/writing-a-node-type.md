@@ -637,7 +637,9 @@ The rules, each refused at compile time (`src/core/tests/compile_fail/action_bad
 | `timeout` | the handler did not answer within `actionDeadline` (10 s); its late answer is dropped |
 
 A call is posted as work from outside (`NodeLoop::postFromOutside`), behind the loop's own work: a
-running handler finishes and answers before the goodbye `stop()` posted behind it. The triggers'
+running handler finishes and answers before the goodbye `stop()` posted behind it. A queued call
+holds the configuration it was checked against, so a change in place that commits before it runs
+(and drops that configuration) still runs it with that configuration's handler. The triggers'
 counters live in the configuration's realtime channels
 ([architecture.md](architecture.md#the-realtime-channels)) with the code's last-seen value beside
 each, so a code a change swaps in sees once a trigger its predecessor did not, and never one it did.
