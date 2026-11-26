@@ -8,8 +8,11 @@ RealtimeChannels::RealtimeChannels(std::vector<Initial> fields, RealtimeBell* be
 	  seen_(std::make_unique<std::uint32_t[]>(triggers)) {}
 
 RealtimeChannels::Taken RealtimeChannels::take() {
-	// Cleared before the read: a write after it rings again, so nothing the code writes waits for a later write.
-	pending_.store(false, std::memory_order_release);
+	// Cleared before the read: a write after it rings again, so nothing the code writes waits for a later write. The
+	// fence pairs with cycleEnded's: without both, the clear can wait in a store buffer while the read below sees the
+	// old head, and the code's exchange still sees the bell pending, so a write is neither read nor rung for.
+	pending_.store(false, std::memory_order_relaxed);
+	std::atomic_thread_fence(std::memory_order_seq_cst);
 	Taken taken;
 	const std::uint32_t tail = tail_.load(std::memory_order_relaxed);
 	const std::uint32_t head = head_.load(std::memory_order_acquire);

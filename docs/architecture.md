@@ -464,9 +464,13 @@ never touches a queue, a lock or a clock of its own.
 
 `io.set` stores the word and, when the value differs from the last one the code wrote (its
 initial value before any), counts a transition and puts a status record in the ring. `io.raise` and
-`io.log` put one record each. The code's side is all stores and one exchange: no allocation, lock,
+`io.log` put one record each. The code's side is all stores, one fence and one exchange: no allocation, lock,
 format or system call but the bell's (`ear_core_tests` counts the allocations of a code writing every
-kind, none).
+kind, none). The bell's gate is cleared by the drain before it reads the ring, and a sequentially
+consistent fence on each side (after the clear; after the cycle's writes, before the exchange) makes
+the two meet: either the drain reads the cycle's writes or the exchange sees the clear and rings.
+Without them a store buffer can hold the clear while the drain reads the old head, and the write is
+neither drained nor rung for until the code writes again.
 
 **The drain**, on the main loop, is part of the tick's: the bell's dispatch arms the tick as a
 queue's wake does (`NodeHost::realtimeRung`), and each node's drain reads its configuration's ring

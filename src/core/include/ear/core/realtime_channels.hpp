@@ -109,9 +109,12 @@ public:
 	}
 	/// After each process: when the code wrote anything this cycle, the bell is rung, unless it already was since the
 	/// last drain.
+	/// The fence pairs with take()'s: either the drain's read of the ring sees this cycle's writes, or this exchange
+	/// sees the drain's clear and rings (docs/architecture.md#the-realtime-channels).
 	void cycleEnded() noexcept {
 		if (!wrote_) return;
 		wrote_ = false;
+		std::atomic_thread_fence(std::memory_order_seq_cst);
 		if (!pending_.exchange(true, std::memory_order_acq_rel) && bell_ != nullptr) bell_->ring();
 	}
 

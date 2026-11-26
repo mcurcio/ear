@@ -3,11 +3,13 @@
 // realtime channels, drained on the main loop, on a test type whose code runs what each test scripts, by the type
 // harness over a real NodeHost.
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -15,6 +17,7 @@
 #include "allocation_count.hpp"
 #include "catch2/catch.hpp"
 #include "ear/core/lifecycle.hpp"
+#include "ear/core/realtime_channels.hpp"
 #include "ear/testing/type_harness.hpp"
 
 namespace realtime_test {
@@ -320,6 +323,60 @@ TEST_CASE("Process allocates nothing while it writes status, events and log line
 	CHECK(allocations == 0);
 	h.drain();
 	CHECK(h.status<gainDb>() == StatusValue(-1.5));
+}
+
+/// A bell that counts its rings, from the code's thread.
+struct CountingBell final : RealtimeBell {
+	std::atomic<std::uint32_t> rings{0};
+	void ring() noexcept override { rings.fetch_add(1, std::memory_order_relaxed); }
+};
+
+/// Waits for `flag` to reach `value`, yielding: the two threads may share a core on a loaded host.
+void awaitRound(const std::atomic<std::uint32_t>& flag, std::uint32_t value) {
+	while (flag.load(std::memory_order_acquire) != value) std::this_thread::yield();
+}
+
+// The drain's clear of the bell's gate and its read of the ring, against the code's write and its exchange of the gate
+// (docs/architecture.md#the-realtime-channels): in each round the gate is set (the code wrote and rang), then the drain
+// takes while the code writes once more. The write must be in what the drain took, or the code must ring for it.
+TEST_CASE("A record put while the drain takes is taken by that drain or rung for, never neither",
+          "[realtime][bell][race]") {
+	CountingBell bell;
+	RealtimeChannels channels({}, &bell);
+	constexpr std::uint32_t rounds = 200'000;
+	std::atomic<std::uint32_t> armed{0};      // the code's: this round's first write was rung for
+	std::atomic<std::uint32_t> afterSetup{0}; // the rings by then
+	std::atomic<std::uint32_t> written{0};    // the code's: this round's second write and its exchange are done
+	std::atomic<std::uint32_t> drained{0};    // the drain's: this round is checked and the gate cleared
+	std::thread code([&] {
+		for (std::uint32_t round = 1; round <= rounds; ++round) {
+			awaitRound(drained, round - 1);
+			channels.put(RealtimeRecord{.kind = RealtimeRecord::Kind::event, .index = 0});
+			channels.cycleEnded();
+			afterSetup.store(bell.rings.load(std::memory_order_relaxed), std::memory_order_relaxed);
+			armed.store(round, std::memory_order_release);
+			// A delay that sweeps the drain's clear and read: the write lands at a different point of it each round.
+			for (std::uint32_t spin = round % 512; spin > 0; --spin)
+				std::atomic_signal_fence(std::memory_order_seq_cst);
+			channels.put(RealtimeRecord{.kind = RealtimeRecord::Kind::event, .index = 1});
+			channels.cycleEnded();
+			written.store(round, std::memory_order_release);
+		}
+	});
+	std::uint32_t lost = 0;
+	for (std::uint32_t round = 1; round <= rounds; ++round) {
+		awaitRound(armed, round);
+		const std::uint32_t rungBefore = afterSetup.load(std::memory_order_relaxed);
+		const RealtimeChannels::Taken raced = channels.take();
+		awaitRound(written, round);
+		const bool rung = bell.rings.load(std::memory_order_relaxed) != rungBefore;
+		const bool taken = std::ranges::any_of(raced.records, [](const RealtimeRecord& r) { return r.index == 1; });
+		if (!taken && !rung) ++lost;
+		static_cast<void>(channels.take()); // the drain the bell asks for: the gate is clear for the next round
+		drained.store(round, std::memory_order_release);
+	}
+	code.join();
+	CHECK(lost == 0);
 }
 
 } // namespace realtime_test
