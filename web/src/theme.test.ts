@@ -32,7 +32,6 @@ function stripComments(text: string): string {
  */
 const earVariables = new Map<string, string>([
   ["--state", "editor.css: a node's state class picks its tone"],
-  ["--toast-tone", "editor.css: a toast's kind picks its tone"],
   ["--wire-colour", "editor.css: a wire's status class picks its tone"],
   ["--wire-width", "LevelEdge.tsx: the wire's width from its level"],
   ["--meter-mid-at", "Meter.tsx: where the mid zone starts"],

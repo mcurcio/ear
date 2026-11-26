@@ -254,19 +254,25 @@ does a closed connection, at once.
 
 ### Toasts
 
-`web/src/notices.ts` (`notices.test.ts`) is the queue and `components/Toasts.tsx` draws it in the canvas's bottom
-right; they replace the one error banner.
+`web/src/notices.ts` (`notices.test.ts`) is the session's store over patchbay's toast queue, so a refusal made
+outside React (the session's `ask`, a `node.state`) is a toast, and `components/Toasts.tsx` draws it with patchbay's
+`Toaster`, inline in a React Flow panel at the canvas's bottom right so Show can move the view
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#news-and-state); the queue:
+[`useToasts`](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#usetoasts)). *Why patchbay's:* the
+owner chose patchbay's toast model (D11, 2026-11-26); ear keeps the words, the key and Show.
 
 - **What a toast says.** A refusal says what was asked and why, with the code in monospace
   (`route noise:noise.mono → rec:FX refused: unknown-port rec:FX`). A call the closed connection left unanswered says
   `had no answer: not-connected`, one toast for all of them. JSON settings that do not parse say `not sent:
-  invalid-json` with the parse's words, a code of the editor's own that ear never sends.
-- **How long.** A toast lasts 8 s on the monotonic clock, and none expires while the toasts are hovered or focused;
-  Dismiss, or Escape on a focused toast, closes one.
-- **How many.** At most four show; older ones fold into "and n more". The same code for the same subject within 5 s
-  counts up ("×3") instead of stacking.
-- **Announced.** A refusal is a `role="alert"` toast, anything else `role="status"`.
-- **Show.** A toast for a node or route ear holds has Show, which selects it and pans to it.
+  invalid-json` with the parse's words, a code of the editor's own that ear never sends. A refusal is an `err` toast,
+  an unanswered call or a fallback a `warn` one.
+- **The queue's rules, patchbay's defaults.** A toast lasts 8 s on the monotonic clock, and none expires while the
+  toasts are hovered or focused; at most four show, older ones folded into "and n more". ear keys a toast by its code
+  and its subject, so the same code for the same subject within 5 s counts up ("×3") instead of stacking.
+- **The Toaster's.** Dismiss, or Escape on a focused toast, closes one, and the focus moves to its neighbour. Each is
+  read once from a live region beside the stack (a refusal at once, anything else when the reader is free), not again
+  when it is drawn again.
+- **Show.** A toast for a node or route ear holds has Show, which selects it and pans to it, then dismisses the toast.
 - **Kept.** A closed connection clears none, so a reconnect drops nothing the person has not seen.
 
 A change in place that could not finish raises a warning toast of its own, about its node, from the `node.state` that
@@ -516,7 +522,7 @@ class (inside `:where()`, so they weigh no more), so patchbay's controls draw as
 
 **ear's own variables.** Besides the tokens, `editor.css` reads a few variables that hold no value of
 their own design, only a token picked per state or a number a component sets: `--state` (a node's
-state class picks its tone), `--toast-tone`, `--wire-colour` (a wire's status class),
+state class picks its tone), `--wire-colour` (a wire's status class),
 `--wire-width` (`LevelEdge.tsx`), `--meter-mid-at`, `--meter-hot-at`, `--meter-rms-at` and
 `--meter-peak-at` (`Meter.tsx`), `--inspector-width` (`Inspector.tsx`), `--drawer-height`
 (`Drawer.tsx`) and `--gutter-digits` (`KnoblyText.tsx`).
@@ -780,7 +786,7 @@ port. Node.js comes from `web/.nvmrc` and the packages from `web/package-lock.js
 The tests cover the reducer against every `test/protocol` fixture, the graph file's state and the
 pane's logic (drafts, stale files, Save, refusals), the node panel's knobly box (`nodeText.ts`), the add-node
 form (`addText.ts`), the highlighting (`highlight.ts`, and that it never changes the text sent), the reconnecting client with a fake socket,
-the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (the hold, the fall, the lamp and the reset on a fake clock), the handles' cue (`connect.ts`), the box's sizes against `editor.css` (`layout.test.ts`), and the tokens and the theme's first paint (`theme.test.ts`: every `var()` names a token, and `index.html` inlines patchbay's theme script), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the sizes and the breakpoint against `editor.css` (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight and the ghosts (`requests.ts`), the toast queue and a refusal's words (`notices.ts`, replaying `errors.json`), the gutter (`gutter.ts`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands as patchbay's `CommandPalette` takes and ranks them, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the key bindings as patchbay's `findShortcut` runs them (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), the wire dropped on the pane (`connect.ts`), and when the view fits itself (`fit.ts`). patchbay's modules import their own stylesheets, which Node cannot load, so `vite.config.ts` has Vitest inline the package (and blank its styles) for the tests that call its pure helpers. There is no browser test runner:
+the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (the hold, the fall, the lamp and the reset on a fake clock), the handles' cue (`connect.ts`), the box's sizes against `editor.css` (`layout.test.ts`), and the tokens and the theme's first paint (`theme.test.ts`: every `var()` names a token, and `index.html` inlines patchbay's theme script), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the sizes and the breakpoint against `editor.css` (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight and the ghosts (`requests.ts`), the toast store on patchbay's queue and a refusal's words (`notices.ts`, replaying `errors.json`), the gutter (`gutter.ts`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands as patchbay's `CommandPalette` takes and ranks them, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the key bindings as patchbay's `findShortcut` runs them (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), the wire dropped on the pane (`connect.ts`), and when the view fits itself (`fit.ts`). patchbay's modules import their own stylesheets, which Node cannot load, so `vite.config.ts` has Vitest inline the package (and blank its styles) for the tests that call its pure helpers. There is no browser test runner:
 rendering is checked by eye. *Why:* a Playwright leg costs about 150 MB of browsers and a minute
 or two a CI run, while the logic sits in the reducer, client and rules, which Vitest covers
 against the same fixtures the server is tested with.

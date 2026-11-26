@@ -108,81 +108,14 @@ body,
   transition: transform var(--pb-motion-slow) ease-out;
 }
 
-/* The toasts at the canvas's bottom right (docs/editor.md#toasts): the newest four, each edged in its severity's
-   token, its code in monospace and its count in tabular figures. */
+/* The toasts at the canvas's bottom right are patchbay's Toaster, inline in a React Flow panel
+   (docs/editor.md#toasts); ear sets the panel's margin and a toast's code in monospace. */
 .toasts {
-  max-width: 420px;
   margin: 12px;
-}
-
-.toast-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.toast {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-  padding: 8px 10px;
-  background: var(--pb-raised);
-  color: var(--pb-text);
-  border: 1px solid var(--pb-line);
-  border-left: 4px solid var(--toast-tone);
-  border-radius: var(--pb-radius-box);
-  box-shadow: var(--pb-shadow-lifted);
-  animation: toast-in var(--pb-motion-slow) ease-out;
-}
-
-.toast-error {
-  --toast-tone: var(--pb-err);
-}
-
-.toast-warning {
-  --toast-tone: var(--pb-warn);
-}
-
-.toast-info {
-  --toast-tone: var(--pb-muted);
-}
-
-.toast-text {
-  margin: 0;
-  flex: 1;
-  overflow-wrap: anywhere;
 }
 
 .toast-code {
   font-family: var(--pb-font-code);
-}
-
-.toast-count {
-  color: var(--pb-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.toast-actions {
-  display: flex;
-  gap: 4px;
-  flex: none;
-}
-
-.toast-more {
-  margin: 0 0 6px;
-  color: var(--pb-muted);
-  text-align: right;
-}
-
-/* A 0 ms duration under reduced motion is harmless here: the animation is finite. */
-@keyframes toast-in {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
 }
 
 /* A route request's ghost wire (docs/editor.md#requests-in-flight): thin, dashed and muted, plainly not a route; never

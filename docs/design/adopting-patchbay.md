@@ -1,13 +1,12 @@
 # The graph editor on patchbay: what is still to build
 
 Status: designed; A1 is built (the package, the rename onto its tokens, the theme through `useTheme` and ThemeSwitch),
-A2 (section 3.3 marks each change), and of A4 the banners and status words, the palette, the shortcut sheet and the
-keys (section 3.5 marks each).
+A2 (section 3.3 marks each change), and of A4 all but the code editor (section 3.5 marks each).
 The graph editor (`web/`, [docs/editor.md](../editor.md)) draws with patchbay's `--pb-*` tokens, theme switch and
 built primitives and hooks (its spinner and warning mark, splitters, canvas tools, form fields and buttons, pills,
 badges and facts, narrow sheet and kept values) and composites and hooks (banners, status words, the command palette,
-the shortcut sheet and the key bindings), but still draws its node boxes, wires, meters, toasts, code boxes and shell
-itself: `web/src/components/`, its styles in `web/src/editor.css`.
+the shortcut sheet, the key bindings and the toasts), but still draws its node boxes, wires, meters, code boxes and
+shell itself: `web/src/components/`, its styles in `web/src/editor.css`.
 `@mcurcio/patchbay` (npm, 0.5.0) is a component library extracted from this editor: its `tokens.css` is the editor's
 old `theme.css` renamed, and its built primitives and hooks are generic versions of the editor's leaves. This page designs moving the
 editor onto it, one area per change, so that the editor keeps its behaviour and ear keeps everything that is not
@@ -149,8 +148,11 @@ Each waits for the patchbay release carrying it.
   bindings as key strings and the sheet's lines, and takes `keyLabel`, `detectPlatform` and the text-field rule from
   patchbay. `ShortcutSheet.tsx` is patchbay's ShortcutSheet; while it is open no binding acts, as its Dialog holds the
   focus ([editor.md](../editor.md#the-palette-and-the-keyboard)).
-- **Toasts.** `Toasts.tsx` and `notices.ts`'s queue become Toaster and `useToasts`, keyed by code and subject.
-  `notices.ts` keeps the refusal wording, `showOf` and `placedRefusal`.
+- **Toasts** (built). `Toasts.tsx` is Toaster, inline in a React Flow panel; `notices.ts`'s `Notices` is the session's
+  store over the pure queue `useToasts` holds (`addToast`, `holdToasts`, `expireToasts`, `visibleToasts`), keyed by
+  code and subject, with patchbay's defaults (D11). It is not `useToasts` itself, since the session raises toasts outside
+  React (its `ask`, a `node.state`) and its tests read them without React. `notices.ts` keeps the refusal wording,
+  `showOf` and `placedRefusal` ([editor.md](../editor.md#toasts)).
 - **The code editor.** `KnoblyText.tsx`, `highlight.ts` and `gutter.ts` become CodeEditor and CodeText with
   `language="knobly"`. knobly stays pinned by `cmake/knobly.json`; a bump through `scripts/knobly-pin.mjs` must stay in
   patchbay's peer range.
@@ -170,7 +172,8 @@ body stays mounted while closed (draft, caret and scroll kept), as now. `hooks.t
 | `layout.test.ts` | Placement stays; the CSS half checks NodeBox's exported geometry (A3) |
 | `prefs.test.ts` | Split in A2 (built): it reads the simple values as `usePersistentState` does, with ear's keys and checks; the hook is tested in patchbay |
 | `keys.test.ts`, `palette.test.ts` | Split in A4 (built): ear's bindings, run through patchbay's `findShortcut`, and its catalogue, handed to `rankCommands`, stay; the parsing, ranking and anchoring cases went to patchbay |
-| `notices.test.ts`, `meters.test.ts` | Split: ear's wording stays; the generic mechanics' cases go with them |
+| `notices.test.ts` | Kept in A4 (built): its queue cases run on patchbay's queue through ear's store and pin patchbay's defaults; the wording cases stay |
+| `meters.test.ts` | Split: ear's wording stays; the generic mechanics' cases go with them |
 | `fit.test.ts`, `gutter.test.ts`, `highlight.test.tsx` | Go with their modules, except `highlight.test.tsx`'s last case (what the pane, the node box and the add form send), which stays |
 | `wires.test.ts`, `connect.test.ts`, `health` and the other rule tests | Stay |
 
