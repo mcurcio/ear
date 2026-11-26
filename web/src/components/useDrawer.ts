@@ -3,7 +3,8 @@
 // height, Save (saving while its request is on its way, docs/editor.md#requests-in-flight), and opening by itself only
 // on a refusal or a write failure the person has not been shown (drawer.ts). Whether it is open and its height are
 // kept per ear (prefs.ts, docs/editor.md#what-the-browser-keeps).
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type Dispatch } from "react";
+import { usePersistentState } from "@mcurcio/patchbay/hooks";
+import { useCallback, useEffect, useMemo, useReducer, useRef, type Dispatch } from "react";
 import { drawerOpens, drawerReduce, drawerStatus, type DrawerWord } from "../drawer";
 import type { GraphFileState } from "../graphFile";
 import { placedRefusal } from "../notices";
@@ -12,7 +13,7 @@ import type { GraphFile, RpcErrorCode } from "../protocol";
 import { isAsking } from "../requests";
 import { RpcError } from "../rpc";
 import { clamp, drawerBounds, drawerHeight } from "../sizes";
-import type { Prefs } from "../prefs";
+import { checkDrawer, type Prefs } from "../prefs";
 import { useEditor, useRequests } from "./hooks";
 
 export interface DrawerModel {
@@ -33,19 +34,28 @@ export interface DrawerModel {
 }
 
 /** The drawer's state; null until ear has sent a graph file (an ear without one shows no drawer). */
-export function useDrawer(state: GraphFileState | null, prefs?: Prefs): DrawerModel | null {
+/** A kept drawer, its height clamped to the bounds in the window as it is when read. */
+function checkKeptDrawer(value: unknown): { open: boolean; height: number } | undefined {
+  const kept = checkDrawer(value);
+  return kept && { open: kept.open, height: clamp(kept.height, drawerBounds(window.innerHeight)) };
+}
+
+export function useDrawer(state: GraphFileState | null, prefs: Prefs): DrawerModel | null {
   const editor = useEditor();
   const saving = isAsking(useRequests(), "graphFile.set");
   const file = state?.file ?? null;
   const [pane, dispatch] = useReducer(drawerReduce, file, (first: GraphFile | null) =>
     first === null ? null : paneFrom(first),
   );
-  const [kept] = useState(() => prefs?.drawer());
-  const [open, setOpen] = useState(kept?.open ?? false);
-  const [height, setRawHeight] = useState<number>(() =>
-    clamp(kept?.height ?? drawerHeight.initial, drawerBounds(window.innerHeight)),
+  // Kept per ear by patchbay's usePersistentState, under prefs.ts's key (docs/editor.md#what-the-browser-keeps).
+  const [kept, setKept] = usePersistentState(
+    prefs.key("drawer"),
+    { open: false, height: clamp(drawerHeight.initial, drawerBounds(window.innerHeight)) },
+    checkKeptDrawer,
+    { storage: prefs.storage },
   );
-  useEffect(() => prefs?.setDrawer({ open, height }), [prefs, open, height]);
+  const { open, height } = kept;
+  const setOpen = useCallback((next: boolean) => setKept((was) => ({ ...was, open: next })), [setKept]);
   const previous = useRef<GraphFile | null>(null);
 
   useEffect(() => {
@@ -58,7 +68,10 @@ export function useDrawer(state: GraphFileState | null, prefs?: Prefs): DrawerMo
     previous.current = file;
   }, [file]);
 
-  const setHeight = useCallback((px: number) => setRawHeight(clamp(px, drawerBounds(window.innerHeight))), []);
+  const setHeight = useCallback(
+    (px: number) => setKept((was) => ({ ...was, height: clamp(px, drawerBounds(window.innerHeight)) })),
+    [setKept],
+  );
 
   const save = useCallback(() => {
     if (pane === null) return;
@@ -71,7 +84,7 @@ export function useDrawer(state: GraphFileState | null, prefs?: Prefs): DrawerMo
       // A refused Save opens the drawer, so its diagnostics or the stale banner are in view.
       setOpen(true);
     });
-  }, [editor, pane]);
+  }, [editor, pane, setOpen]);
 
   return useMemo(() => {
     if (state === null || pane === null) return null;
@@ -88,5 +101,5 @@ export function useDrawer(state: GraphFileState | null, prefs?: Prefs): DrawerMo
       canSave: !saving && !pane.stale && dirty(pane),
       save,
     };
-  }, [state, pane, open, height, setHeight, saving, save]);
+  }, [state, pane, open, setOpen, height, setHeight, saving, save]);
 }

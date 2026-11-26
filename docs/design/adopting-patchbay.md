@@ -1,9 +1,11 @@
 # The graph editor on patchbay: what is still to build
 
 Status: designed; A1 is built (the package, the rename onto its tokens, the theme through `useTheme` and ThemeSwitch),
-and A2 in part (section 3.3 marks each change built or to build).
-The graph editor (`web/`, [docs/editor.md](../editor.md)) draws with patchbay's `--pb-*` tokens and theme switch, but
-still draws its other controls itself: `web/src/components/`, its styles in `web/src/editor.css`.
+and A2 all but the shortcut sheet on Dialog (section 3.3 marks each change built or to build).
+The graph editor (`web/`, [docs/editor.md](../editor.md)) draws with patchbay's `--pb-*` tokens, theme switch and
+built primitives and hooks (its spinner and warning mark, splitters, canvas tools, form fields and buttons, pills,
+badges and facts, narrow sheet and kept values), but still draws its node boxes, wires, meters, palette, toasts, code
+boxes, shortcut sheet and shell itself: `web/src/components/`, its styles in `web/src/editor.css`.
 `@mcurcio/patchbay` (npm, 0.5.0) is a component library extracted from this editor: its `tokens.css` is the editor's
 old `theme.css` renamed, and its built primitives and hooks are generic versions of the editor's leaves. This page designs moving the
 editor onto it, one area per change, so that the editor keeps its behaviour and ear keeps everything that is not
@@ -109,7 +111,7 @@ patchbay takes the drawing and the generic mechanics; ear keeps what knows about
 | Forms and busy buttons | AddNodeJson, AddNodeText's select, lifecycle bar, Delete, the two Saves | Field, TextInput, Select, Button `busy`, `tone="danger"` | Busy stays focusable, its words in `busyLabel` (D4); the lifecycle row keeps its segmented CSS, its words under the spinner | built |
 | Pills, chips, facts | `StatePill.tsx`, `.chip tone-*`, EngineFactsSection's `<dl>` | Pill, Badge, KeyValue | Pill and Badge `accent` and `muted`, a filled Badge (D3); the counter tables stay ear's markup | built |
 | Narrow inspector | CSS-only sheet in `editor.css` | Sheet (right below 760 px, bottom below 600 px) | The workspace was already `position: relative`; the sheet is titled "Inspector" and keeps the docked width | built |
-| Kept sizes | `prefs.ts` width, drawer, minimap | `usePersistentState` with the same keys and checks | Places stay `prefs.ts`'s | to build |
+| Kept sizes | `prefs.ts` width, drawer, minimap | `usePersistentState` with the same keys and checks | Places stay `prefs.ts`'s, read and written with patchbay's `readKept` and `writeKept` | built |
 
 The health-to-tone map for Pill is built (`health.ts`'s `stateTone`, [editor.md](../editor.md#the-node-box)). The node
 box's stripe keeps its `--state` class until A3.
@@ -160,7 +162,8 @@ body stays mounted while closed (draft, caret and scroll kept), as now. `hooks.t
 | `theme.test.ts` | Done in A1: token sets, contrast and the cycle cases went to patchbay (its `tokens.test.ts` and `useTheme`'s tests); it keeps "no colour in `editor.css` and components", and holds every `var()` to a token and `index.html`'s theme script to patchbay's |
 | `sizes.test.ts` | Drag and key cases went in A2 (built: patchbay's Splitter tests them); the `editor.css` clamp and breakpoint cases go to patchbay's AppShell tests in A5 |
 | `layout.test.ts` | Placement stays; the CSS half checks NodeBox's exported geometry (A3) |
-| `prefs.test.ts`, `keys.test.ts`, `palette.test.ts`, `notices.test.ts`, `meters.test.ts` | Split: ear's keys, bindings, catalogue and wording stay; the generic mechanics' cases go with them |
+| `prefs.test.ts` | Split in A2 (built): it reads the simple values as `usePersistentState` does, with ear's keys and checks; the hook is tested in patchbay |
+| `keys.test.ts`, `palette.test.ts`, `notices.test.ts`, `meters.test.ts` | Split: ear's keys, bindings, catalogue and wording stay; the generic mechanics' cases go with them |
 | `fit.test.ts`, `gutter.test.ts`, `highlight.test.tsx` | Go with their modules, except `highlight.test.tsx`'s last case (what the pane, the node box and the add form send), which stays |
 | `wires.test.ts`, `connect.test.ts`, `health` and the other rule tests | Stay |
 

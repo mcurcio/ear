@@ -1,6 +1,8 @@
 // What the browser keeps (docs/editor.md#what-the-browser-keeps): storage that throws, values of the wrong shape, the
-// 30-day expiry of places, the keys per ear, and the theme's key, where patchbay's useTheme keeps the choice.
-import { checkTheme, readKept, writeKept } from "@mcurcio/patchbay/hooks";
+// 30-day expiry of places, the keys per ear, and the theme's key, where patchbay's useTheme keeps the choice. The
+// simple values are read here as patchbay's usePersistentState reads them (readKept, with prefs.ts's key and check);
+// the hook's own state and writes are tested in patchbay.
+import { checkTheme, readKept, writeKept, type StorageLike } from "@mcurcio/patchbay/hooks";
 import { describe, expect, it } from "vitest";
 import { Places, placeNodes, type Position } from "./layout";
 import {
@@ -13,7 +15,6 @@ import {
   placeKeepMs,
   Prefs,
   themeKey,
-  type StorageLike,
 } from "./prefs";
 import { fixtures } from "./testFixtures";
 
@@ -50,14 +51,14 @@ describe("storage that throws", () => {
   it("keeps today's behaviour", () => {
     for (const storage of [new ThrowingStorage(), null]) {
       const prefs = new Prefs(storage, host);
-      expect(prefs.inspectorWidth()).toBeUndefined();
-      expect(prefs.drawer()).toBeUndefined();
-      expect(prefs.minimap()).toBeUndefined();
+      expect(readKept(prefs.storage, prefs.key("inspector-width"), checkWidth)).toBeUndefined();
+      expect(readKept(prefs.storage, prefs.key("drawer"), checkDrawer)).toBeUndefined();
+      expect(readKept(prefs.storage, prefs.key("minimap"), checkFlag)).toBeUndefined();
       expect(prefs.places()).toStrictEqual(new Map());
       expect(() => {
-        prefs.setInspectorWidth(400);
-        prefs.setDrawer({ open: true, height: 300 });
-        prefs.setMinimap(true);
+        writeKept(prefs.storage, prefs.key("inspector-width"), 400);
+        writeKept(prefs.storage, prefs.key("drawer"), { open: true, height: 300 });
+        writeKept(prefs.storage, prefs.key("minimap"), true);
         prefs.savePlaces(new Map([["rec", at(1, 2)]]), false);
         prefs.savePlaces(new Map(), true);
       }).not.toThrow();
@@ -79,7 +80,7 @@ describe("values of the wrong shape", () => {
     }
     for (const value of ["320", null, Infinity]) expect(checkWidth(value)).toBeUndefined();
     storage.setItem(earKey(host, "inspector-width"), "1e999");
-    expect(prefs.inspectorWidth()).toBeUndefined();
+    expect(readKept(prefs.storage, prefs.key("inspector-width"), checkWidth)).toBeUndefined();
     for (const value of [{ open: "yes", height: 200 }, { open: true, height: -1 }, null, [true, 200]]) {
       expect(checkDrawer(value)).toBeUndefined();
     }
@@ -107,13 +108,13 @@ describe("values of the wrong shape", () => {
 describe("each preference", () => {
   it("round-trips", () => {
     const prefs = new Prefs(new MapStorage(), host, () => 1000);
-    prefs.setInspectorWidth(400);
-    prefs.setDrawer({ open: true, height: 333 });
-    prefs.setMinimap(true);
+    writeKept(prefs.storage, prefs.key("inspector-width"), 400);
+    writeKept(prefs.storage, prefs.key("drawer"), { open: true, height: 333 });
+    writeKept(prefs.storage, prefs.key("minimap"), true);
     prefs.savePlaces(new Map([["rec", at(-5, 7.5)]]), false);
-    expect(prefs.inspectorWidth()).toBe(400);
-    expect(prefs.drawer()).toStrictEqual({ open: true, height: 333 });
-    expect(prefs.minimap()).toBe(true);
+    expect(readKept(prefs.storage, prefs.key("inspector-width"), checkWidth)).toBe(400);
+    expect(readKept(prefs.storage, prefs.key("drawer"), checkDrawer)).toStrictEqual({ open: true, height: 333 });
+    expect(readKept(prefs.storage, prefs.key("minimap"), checkFlag)).toBe(true);
     expect(prefs.places()).toStrictEqual(new Map([["rec", at(-5, 7.5)]]));
   });
 });
@@ -162,18 +163,19 @@ describe("the keys", () => {
     const a = new Prefs(storage, "a:7777", () => 1000);
     const b = new Prefs(storage, "b:7777", () => 1000);
     a.savePlaces(new Map([["rec", at(1, 1)]]), false);
-    a.setInspectorWidth(400);
-    a.setDrawer({ open: true, height: 300 });
-    a.setMinimap(true);
+    writeKept(storage, a.key("inspector-width"), 400);
+    writeKept(storage, a.key("drawer"), { open: true, height: 300 });
+    writeKept(storage, a.key("minimap"), true);
     writeKept(storage, themeKey(), "dark");
     expect(b.places()).toStrictEqual(new Map());
-    expect(b.inspectorWidth()).toBeUndefined();
-    expect(b.drawer()).toBeUndefined();
-    expect(b.minimap()).toBeUndefined();
+    expect(readKept(storage, b.key("inspector-width"), checkWidth)).toBeUndefined();
+    expect(readKept(storage, b.key("drawer"), checkDrawer)).toBeUndefined();
+    expect(readKept(storage, b.key("minimap"), checkFlag)).toBeUndefined();
     expect(readKept(storage, themeKey(), checkTheme)).toBe("dark");
     expect(storage.items.has("ear-editor/1/a:7777/places")).toBe(true);
     expect(storage.items.has("ear-editor/1/theme")).toBe(true);
     expect(earKey("a:7777", "places")).toBe("ear-editor/1/a:7777/places");
+    expect(a.key("inspector-width")).toBe("ear-editor/1/a:7777/inspector-width");
     expect(themeKey()).toBe("ear-editor/1/theme");
   });
 

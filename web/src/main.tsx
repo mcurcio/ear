@@ -5,13 +5,14 @@
 import "@xyflow/react/dist/style.css";
 import "@mcurcio/patchbay/tokens.css";
 import "./editor.css";
+import { browserStorage } from "@mcurcio/patchbay/hooks";
 import { ReactFlowProvider } from "@xyflow/react";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { EditorContext } from "./components/hooks";
 import { Editor } from "./editor";
-import { browserStorage, Prefs } from "./prefs";
+import { Prefs } from "./prefs";
 
 const root = document.getElementById("root");
 if (root === null) {

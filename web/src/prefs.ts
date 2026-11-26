@@ -1,28 +1,13 @@
-// What the browser keeps (docs/editor.md#what-the-browser-keeps), and the only module of ear's that touches its
-// storage: patchbay's useTheme keeps the theme itself, under themeKey(). Every read and write is in try, so a private
-// window or blocked storage keeps a page's-life editor; every value is checked on read and a bad one ignored. Places,
-// sizes and the minimap are kept per ear (keyed by the page's host), the theme per browser. Places are never sent to
-// ear (docs/editor.md#its-rules). Times here are the wall clock (Date.now), since they outlive the page; every other
-// clock in the editor is monotonic.
+// What the browser keeps (docs/editor.md#what-the-browser-keeps): ear's keys and the checks of every kept value, and
+// its places. The simple values (the inspector's width, the drawer, the minimap) are patchbay's usePersistentState
+// under these keys and checks, the theme its useTheme under themeKey(), and the places are read and written here with
+// patchbay's readKept and writeKept, so a private window or blocked storage keeps a page's-life editor and a bad value
+// is ignored. Places, sizes and the minimap are kept per ear (keyed by the page's host), the theme per browser. Places
+// are never sent to ear (docs/editor.md#its-rules). Times here are the wall clock (Date.now), since they outlive the
+// page; every other clock in the editor is monotonic.
+import { readKept, writeKept, type StorageLike } from "@mcurcio/patchbay/hooks";
 import type { PlaceKeeper, Position } from "./layout";
 import { clamp, inspectorBounds } from "./sizes";
-
-/** What Prefs needs of window.localStorage. */
-export interface StorageLike {
-  getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
-  removeItem(key: string): void;
-}
-
-/** window.localStorage, or null without a window or where its accessor throws (blocked storage). */
-export function browserStorage(): StorageLike | null {
-  try {
-    if (typeof window === "undefined") return null;
-    return window.localStorage ?? null;
-  } catch {
-    return null;
-  }
-}
 
 /** Every key's start; the number moves if a value's shape ever changes. */
 export const prefsPrefix = "ear-editor/1";
@@ -123,55 +108,22 @@ export function mergePlaces(
   return capped(merged);
 }
 
-/** The editor's kept preferences over one storage, for one ear. */
+/** The editor's kept values over one storage, for one ear: the keys of its simple values, and its places. */
 export class Prefs {
   constructor(
-    private readonly storage: StorageLike | null,
+    /** Where everything is kept; null keeps nothing. */
+    readonly storage: StorageLike | null,
     private readonly host: string,
     private readonly now: () => number = Date.now,
   ) {}
 
-  private read(key: string): unknown {
-    try {
-      const text = this.storage?.getItem(key);
-      if (text === null || text === undefined) return undefined;
-      return JSON.parse(text) as unknown;
-    } catch {
-      return undefined;
-    }
-  }
-
-  private write(key: string, value: unknown): void {
-    try {
-      this.storage?.setItem(key, JSON.stringify(value));
-    } catch {
-      // A full or blocked storage: the page keeps the value for its life.
-    }
-  }
-
-  inspectorWidth(): number | undefined {
-    return checkWidth(this.read(earKey(this.host, "inspector-width")));
-  }
-  setInspectorWidth(px: number): void {
-    this.write(earKey(this.host, "inspector-width"), px);
-  }
-
-  drawer(): { open: boolean; height: number } | undefined {
-    return checkDrawer(this.read(earKey(this.host, "drawer")));
-  }
-  setDrawer(value: { open: boolean; height: number }): void {
-    this.write(earKey(this.host, "drawer"), { open: value.open, height: value.height });
-  }
-
-  minimap(): boolean | undefined {
-    return checkFlag(this.read(earKey(this.host, "minimap")));
-  }
-  setMinimap(shown: boolean): void {
-    this.write(earKey(this.host, "minimap"), shown);
+  /** This ear's key for `pref`, for usePersistentState with its check (checkWidth, checkDrawer, checkFlag). */
+  key(pref: EarPref): string {
+    return earKey(this.host, pref);
   }
 
   private keptPlaces(): Map<string, KeptPlace> {
-    return checkPlaces(this.read(earKey(this.host, "places")), this.now());
+    return readKept(this.storage, this.key("places"), (value) => checkPlaces(value, this.now())) ?? new Map();
   }
 
   /** The kept places, checked and unexpired. */
@@ -182,7 +134,7 @@ export class Prefs {
   /** Reads, merges `present` in (mergePlaces) and writes. */
   savePlaces(present: ReadonlyMap<string, Position>, forgetAbsent: boolean): void {
     const merged = mergePlaces(this.keptPlaces(), present, this.now(), forgetAbsent);
-    this.write(earKey(this.host, "places"), Object.fromEntries(merged));
+    writeKept(this.storage, this.key("places"), Object.fromEntries(merged));
   }
 
   /** layout.ts's Places keeps its places through this. */

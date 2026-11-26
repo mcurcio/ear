@@ -539,10 +539,13 @@ Forced colours keep the system's colours, as [Highlighting](#highlighting) says.
 
 ## What the browser keeps
 
-`web/src/prefs.ts` (`prefs.test.ts`) is the only module of ear's that touches the browser's storage; patchbay's
-`useTheme` keeps the theme itself, under the key `prefs.ts` names. It uses `localStorage`,
-every read and write in `try` (so a private window, blocked storage or a full one keeps an editor that remembers for
-the page's life), and checks every value on read, ignoring a bad one. `main.tsx` makes one for the page.
+`web/src/prefs.ts` (`prefs.test.ts`) holds ear's keys and the check of every kept value, and keeps the node places;
+patchbay keeps the rest under those keys: the inspector's width and the minimap (`App.tsx`) and the drawer
+(`useDrawer.ts`) are its `usePersistentState`, the theme its `useTheme`
+([its hooks](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#usepersistentstate)). All of it is
+in `localStorage` as JSON, every read and write in `try` (so a private window, blocked storage or a full one keeps an
+editor that remembers for the page's life), and every value is checked on read, a bad one ignored in favour of the
+default; a value is written only when the person changes it. `main.tsx` makes one `Prefs` for the page.
 
 - **Per ear**, keyed by the page's `location.host` (`ear-editor/1/<host>/…`): node places, the inspector's width
   (clamped to its bounds), the drawer's height (clamped to the window) and whether it is open, and the minimap.

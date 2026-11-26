@@ -6,7 +6,7 @@
 // shortcuts and the palette (docs/editor.md#the-palette-and-the-keyboard) and quick add on the canvas
 // (docs/editor.md#adding-on-the-canvas) are held here. Node places, the selection, the sizes and the theme are the
 // browser's own; places, sizes, the minimap and the theme outlive the page (docs/editor.md#what-the-browser-keeps).
-import { useTheme } from "@mcurcio/patchbay/hooks";
+import { usePersistentState, useTheme } from "@mcurcio/patchbay/hooks";
 import { useReactFlow, type Connection } from "@xyflow/react";
 import { useCallback, useEffect, useState } from "react";
 import { freeName } from "./addText";
@@ -14,7 +14,7 @@ import { routeFromConnection } from "./connect";
 import { isMac, keyLabel, type ShortcutAction } from "./keys";
 import type { PlaceHint, Position } from "./layout";
 import type { Command, PaletteScope } from "./palette";
-import { themeKey, type Prefs } from "./prefs";
+import { checkFlag, checkWidth, themeKey, type Prefs } from "./prefs";
 import { nodeTextFeature, type RouteEnds } from "./protocol";
 import { nothingSelected, removals, selectionKey, subjectOf } from "./selection";
 import { inspectorWidth, narrowQuery, phoneQuery } from "./sizes";
@@ -59,10 +59,15 @@ export function App({ prefs }: { prefs: Prefs }) {
   const [keeper] = useState(() => prefs.placeKeeper());
   const canvas = useCanvas(graph, keeper);
   const drawer = useDrawer(fileState, prefs);
-  const [inspectorPx, setInspectorPx] = useState<number>(() => prefs.inspectorWidth() ?? inspectorWidth.initial);
-  useEffect(() => prefs.setInspectorWidth(inspectorPx), [prefs, inspectorPx]);
-  const [minimap, setMinimap] = useState(() => prefs.minimap() ?? false);
-  useEffect(() => prefs.setMinimap(minimap), [prefs, minimap]);
+  // Kept per ear by patchbay's usePersistentState, under prefs.ts's keys and checks (docs/editor.md#what-the-browser-keeps).
+  const kept = { storage: prefs.storage };
+  const [inspectorPx, setInspectorPx] = usePersistentState(
+    prefs.key("inspector-width"),
+    inspectorWidth.initial,
+    checkWidth,
+    kept,
+  );
+  const [minimap, setMinimap] = usePersistentState(prefs.key("minimap"), false, checkFlag, kept);
   const toggleMinimap = useCallback(() => setMinimap((shown) => !shown), []);
 
   // Below the narrow width the inspector is a sheet: it opens on a selection and closes on Escape, its close button or
