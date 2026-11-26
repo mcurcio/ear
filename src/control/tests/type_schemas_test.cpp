@@ -80,10 +80,26 @@ inline constexpr auto trimFamily =
 	setting::indexed("trimDb", channelsRow, setting::decimal(-24.0, 24.0, "dB", {.decimals = 1}), 0.0).inPlace();
 inline constexpr auto invertFamily =
 	setting::indexed("invert", channelsRow, setting::boolean(), false).restarts("the polarity is set at start");
+enum class Shape { peak, lowShelf, highShelf };
+inline constexpr auto shapeRow =
+	setting::defaulted(
+		"shape",
+		setting::choice<Shape>({{"peak", Shape::peak}, {"lowShelf", Shape::lowShelf}, {"highShelf", Shape::highShelf}}),
+		Shape::peak)
+		.inPlace();
+enum class Mode { fast, twoPass };
+inline constexpr auto modeRow =
+	setting::optional("mode", setting::choice<Mode>({{"fast", Mode::fast}, {"two pass", Mode::twoPass}}))
+		.restarts("the mode is chosen at start");
+enum class Curve { linear, smooth };
+inline constexpr auto curveFamily =
+	setting::indexed("curve", channelsRow,
+                     setting::choice<Curve>({{"linear", Curve::linear}, {"smooth", Curve::smooth}}), Curve::linear)
+		.inPlace();
 inline constexpr auto out = bank::output<"out">;
-inline constexpr TypeSpec spec{
-	.settings = SettingsTable<levelRow, cutoffRow, spreadRow, onRow, channelsRow, trimFamily, invertFamily>{"rows"},
-	.banks = Banks<out>{}};
+inline constexpr TypeSpec spec{.settings = SettingsTable<levelRow, cutoffRow, spreadRow, onRow, channelsRow, trimFamily,
+                                                         invertFamily, shapeRow, modeRow, curveFamily>{"rows"},
+                               .banks = Banks<out>{}};
 struct Rows {
 	static Members<spec> ports(const CheckedOf<spec>&) { return {out(members("mono"))}; }
 	Configured configure(CreateOf<spec>&, const CheckedOf<spec>&) {

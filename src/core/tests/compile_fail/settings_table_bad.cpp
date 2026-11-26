@@ -54,6 +54,15 @@ double goodFamily(const decltype(familyTable)::Checked& settings) {
 	return settings.get<familyRow>(0) + settings.count<familyRow>();
 }
 
+// The control holds a choice too, read as its enumeration, its default named by an enumerator
+// (docs/writing-a-node-type.md#choice-rows).
+enum class Shape { peak, shelf };
+constexpr auto choiceRow =
+	setting::defaulted("s", setting::choice<Shape>({{"peak", Shape::peak}, {"low shelf", Shape::shelf}}), Shape::shelf)
+		.inPlace();
+constexpr SettingsTable<choiceRow> choiceTable{"c"};
+Shape goodChoice(const decltype(choiceTable)::Checked& settings) { return settings.get<choiceRow>(); }
+
 #ifdef EAR_CASE_key_empty
 constexpr auto bad = setting::required("", setting::number(1, 2));
 #endif
@@ -334,6 +343,42 @@ double bad(const decltype(familyTable)::Checked& settings) { return settings.get
 
 #ifdef EAR_CASE_read_member_of_plain_row
 std::uint32_t bad(const Checked& settings) { return settings.get<numberRow>(0); }
+#endif
+
+// Choice rows (docs/writing-a-node-type.md#choice-rows).
+#ifdef EAR_CASE_choice_empty
+constexpr auto bad = setting::choice<Shape>({});
+#endif
+
+#ifdef EAR_CASE_choice_repeated_name
+constexpr auto bad = setting::choice<Shape>({{"peak", Shape::peak}, {"peak", Shape::shelf}});
+#endif
+
+#ifdef EAR_CASE_choice_repeated_value
+constexpr auto bad = setting::choice<Shape>({{"peak", Shape::peak}, {"top", Shape::peak}});
+#endif
+
+#ifdef EAR_CASE_choice_unwritable_name
+constexpr auto bad = setting::choice<Shape>({{"peak", Shape::peak}, {"shelf\x01", Shape::shelf}});
+#endif
+
+#ifdef EAR_CASE_choice_too_many
+enum class Many : int {};
+constexpr auto bad = setting::choice<Many>(
+	{{"a", Many{0}},  {"b", Many{1}},  {"c", Many{2}},  {"d", Many{3}},  {"e", Many{4}},  {"f", Many{5}},
+     {"g", Many{6}},  {"h", Many{7}},  {"i", Many{8}},  {"j", Many{9}},  {"k", Many{10}}, {"l", Many{11}},
+     {"m", Many{12}}, {"n", Many{13}}, {"o", Many{14}}, {"p", Many{15}}, {"q", Many{16}}, {"r", Many{17}},
+     {"s", Many{18}}, {"t", Many{19}}, {"u", Many{20}}, {"v", Many{21}}, {"w", Many{22}}, {"x", Many{23}},
+     {"y", Many{24}}, {"z", Many{25}}, {"A", Many{26}}, {"B", Many{27}}, {"C", Many{28}}, {"D", Many{29}},
+     {"E", Many{30}}, {"F", Many{31}}, {"G", Many{32}}});
+#endif
+
+#ifdef EAR_CASE_choice_default_unnamed
+constexpr auto bad = setting::defaulted("k", setting::choice<Shape>({{"peak", Shape::peak}}), Shape::shelf);
+#endif
+
+#ifdef EAR_CASE_choice_not_enum
+constexpr auto bad = setting::choice<int>({{"one", 1}});
 #endif
 
 } // namespace settings_table_bad

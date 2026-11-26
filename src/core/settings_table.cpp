@@ -94,6 +94,17 @@ std::expected<std::any, std::string> readValue(const SettingRule& rule, std::str
 		if (!value.is_boolean()) return std::unexpected(std::string(key) + ": must be true or false");
 		return value.get<bool>();
 	}
+	if (const auto* choice = std::get_if<ChoiceRule>(&rule)) {
+		// A name exactly as declared: no case folding, no trimming, never a number for its index.
+		if (value.is_string()) {
+			const std::string& given = value.get_ref<const std::string&>();
+			for (std::uint32_t at = 0; at < choice->count; ++at)
+				if (choice->names[at] == given) return ChoiceIndex{at};
+		}
+		const std::span<const std::string_view> names = choice->taken();
+		return std::unexpected(std::string(key) + ": must be one of " +
+		                       quotedList(std::vector<std::string_view>(names.begin(), names.end())));
+	}
 	const TextRule& text = std::get<TextRule>(rule);
 	std::any read;
 	if (value.is_string()) read = text.read(value.get_ref<const std::string&>());
@@ -149,6 +160,7 @@ std::expected<CheckedSettings, AnySettingsTable::Refusal> AnySettingsTable::walk
 			}
 			if (std::holds_alternative<WholeNumberRule>(row->rule)) slot = familySlot<std::uint32_t>(members);
 			else if (std::holds_alternative<DecimalRule>(row->rule)) slot = familySlot<double>(members);
+			else if (std::holds_alternative<ChoiceRule>(row->rule)) slot = familySlot<ChoiceIndex>(members);
 			else slot = familySlot<bool>(members);
 			continue;
 		}

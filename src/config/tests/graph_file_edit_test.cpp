@@ -457,6 +457,27 @@ TEST_CASE("A decimal setting is written back as its shortest fixed text, and onl
 	}
 }
 
+TEST_CASE("A choice setting is written back bare when its name is a word, quoted otherwise, and read again",
+          "[graph_file_edit][choice]") {
+	const Fixture f;
+	const std::string head = "graph {\n    rate 48khz;\n    block_size 256;\n}\n";
+	const auto model = f.load(head + "node lamp a { shape peak; }\n");
+	REQUIRE(model.read().wanted.has_value());
+	for (const auto& [name, written] : std::vector<std::pair<std::string, std::string>>{
+			 {"low shelf", "\"low shelf\""}, {"2nd", "\"2nd\""}, {"lowShelf", "lowShelf"}, {"a-b_c", "a-b_c"}}) {
+		INFO(name);
+		const auto changed = candidate(model.updateNode("a", {{"shape", name}}));
+		CHECK(changed.text() == head + "node lamp a { shape " + written + "; }\n");
+		CHECK(nodeIn(changed, "a").settings == json{{"shape", name}});
+	}
+	for (const json& bad : {json(1), json(true), json(nullptr), json::array({"peak"})}) {
+		INFO(bad.dump());
+		CHECK(commandDetail(model.updateNode("a", {{"shape", bad}})) == "invalid-settings a: shape: expected a name");
+	}
+	CHECK(commandDetail(model.updateNode("a", {{"shape", "a\x01"}})) ==
+	      "invalid-settings a: shape: holds a control character ear.conf cannot hold");
+}
+
 TEST_CASE("A family member is written back by its family's kind, added beside the others and read again",
           "[graph_file_edit][indexed]") {
 	const Fixture f;

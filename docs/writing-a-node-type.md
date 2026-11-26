@@ -91,7 +91,7 @@ inline constexpr auto portRow = setting::optional("port", setting::number(1, 655
 |---|---|---|
 | `setting::required(key, rule)` | the value | `<key>: missing` |
 | `setting::optional(key, rule)` | `std::optional` of the value | empty |
-| `setting::defaulted(key, rule, default)` | the value | the default, of the rule's kind: a whole number, a [decimal](#decimal-rows) or a boolean. A default outside the range, or a default on a text or rate row, does not compile. The default is not deduced, so `defaulted("playback", number(0, 64), 0)` takes the literal `0` as the rule's value |
+| `setting::defaulted(key, rule, default)` | the value | the default, of the rule's kind: a whole number, a [decimal](#decimal-rows), a boolean or a [choice](#choice-rows)'s enumerator. A default outside the range, an enumerator the choice does not name, or a default on a text or rate row, does not compile. The default is not deduced, so `defaulted("playback", number(0, 64), 0)` takes the literal `0` as the rule's value |
 | `setting::indexed(key, countRow, rule, default)` | each member by its number: `s.get<row>(i)` | the default, as `defaulted`'s ([below](#indexed-families)) |
 
 | Rule | A good value | Refused with |
@@ -99,6 +99,7 @@ inline constexpr auto portRow = setting::optional("port", setting::number(1, 655
 | `setting::number(low, high, unit = {})` | a JSON integer in [low, high] (not a float, bool or string) | `<key>: must be a whole number[ of <unit>], <low>-<high>` |
 | `setting::rate(low, high)` | a JSON integer of hertz in [low, high], read as a `SampleRate`; in `ear.conf` written with its unit (`44.1khz`, [graph-file.md](graph-file.md#rates)) | `<key>: must be a rate from <low> to <high> (on the control port, a whole number of Hz)`, the ends as ear writes them (`8khz`) |
 | `setting::decimal(low, high, unit = {}, hints = {})` | a finite JSON number in [low, high], an integer taken, read as `double`; in `ear.conf` a number word (`-3.5`, `0.25`, `1e3`) ([below](#decimal-rows)) | `<key>: must be a number[ of <unit>] from <low> to <high>`, the ends as ear writes a decimal (`-90`, `0.25`) |
+| `setting::choice<E>({{"peak", E::peak}, ...})` | a JSON string equal to one of its names, read as the enumeration `E`; in `ear.conf` a word or a quoted string ([below](#choice-rows)) | `<key>: must be one of "peak", "lowShelf" and "highShelf"` |
 | `setting::boolean()` | JSON `true` or `false` (not a string, number or null), read as `bool`; in `ear.conf` the bare word `true` or `false`, or a variable ([graph-file.md](graph-file.md#settings-and-their-kinds)) | `<key>: must be true or false` |
 | `setting::text<Parse>(mustBe)` | a JSON string `Parse` accepts; `Parse` is `std::optional<T>(std::string_view)`, and `T` (what the row reads) must own what it holds | `<key>: must be <mustBe>` |
 
@@ -127,7 +128,7 @@ inline constexpr auto portRow = setting::optional("port", setting::number(1, 655
   folder's. Each is a compile error. A plain row spelt as a family's member (`trimDb.2` beside the
   family `trimDb`) does not compile either.
 - The table is `SettingsTable<row1, row2, ...>{"<type>"}` (`SettingsTable<>{"white"}` for none).
-  It gives the type's name, its settings' kinds (text, whole number, rate, boolean or decimal, which is
+  It gives the type's name, its settings' kinds (text, whole number, rate, boolean, decimal or choice, which is
   how `ear.conf` is read and written: `NodeType::kindOf(key)`) and the whole check, so the graph file reader cannot disagree with `parse`.
 - A parsed value is parsed once: a text row reads as what its parse function made (a `CardId`, an
   `RtpAddress`, a path).
@@ -159,6 +160,38 @@ any JSON number in the range, an integer too (`-6` is `-6.0`), and never a strin
 does not round, so a value with more places than `decimals` is taken as given. In `ear.conf` a
 decimal is written as the shortest text that reads back the same, in fixed notation
 ([graph-file.md](graph-file.md#settings-and-their-kinds)).
+
+#### Choice rows
+
+```cpp
+enum class Shape { peak, lowShelf, highShelf };
+inline constexpr auto shapeRow =
+	setting::defaulted("shape",
+	                   setting::choice<Shape>({{"peak", Shape::peak}, {"lowShelf", Shape::lowShelf},
+	                                           {"highShelf", Shape::highShelf}}),
+	                   Shape::peak)
+		.inPlace();
+// in check, ports or configure:
+if (s.get<shapeRow>() == Shape::lowShelf) ...
+```
+
+A choice is a closed set of names, each paired with the enumerator it reads as, so a row reads as
+the enumeration itself (`Shape`, or `std::optional<Shape>` for an optional row), never as text. A
+name's index is its place in the list; the enumerators need not be in order nor start at 0. The
+walk takes a JSON string equal to one of the names exactly (no case folding, no trimming, never an
+index or a number) and refuses anything else `<key>: must be one of "peak", "lowShelf" and
+"highShelf"`, every name in declaration order. On the wire it is kind `choice` with its names as
+`values` and its default by name ([control-port.md](control-port.md#type-schemas)), so a client
+tells it from a text row's hints; in `ear.conf` it is a word or a quoted string
+([graph-file.md](graph-file.md#settings-and-their-kinds)). A choice can be an [indexed
+family](#indexed-families)'s rule and an action's argument.
+
+`E` must be an enumeration, and the set is checked at compile time: an empty set, more than 32
+names, a name given twice, one enumerator under two names (it would read back as two values), a
+name that is empty or holds a control character, and a default the set does not name each do not
+compile. The names are kept in the rule itself (`ChoiceRule`), so a row made from a braced list
+owns them; the walk keeps a value as its index (`ChoiceIndex`), which `get` maps back to its
+enumerator.
 
 #### Indexed families
 

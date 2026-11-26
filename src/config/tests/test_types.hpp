@@ -2,7 +2,7 @@
 // kinds: "white" (output noise.mono, no settings), "file" (inputs record.left and record.right; path: text) and "card"
 // (card: text; playback and capture: whole numbers, inputs play.1..play.N), "rtp" (rate: a rate, 8khz to 192khz;
 // output stream.1) and "lamp" (x: a boolean; level: a decimal; bulbs: a whole number, the count row of the families
-// trimDb.<n>, decimals, and lit.<n>, booleans; no ports).
+// trimDb.<n>, decimals, and lit.<n>, booleans; shape: a choice of "peak", "low shelf" and "2nd"; no ports).
 #pragma once
 #include <memory>
 #include <vector>

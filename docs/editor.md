@@ -406,8 +406,10 @@ text over JSON, so the toggle's other side is the node's own statement.
 - **Schemas once per hash.** `web/src/types.ts` (`types.test.ts`) holds the set the Graph's
   `typeSchemaHash` names, fetched with the held hash as `ifNoneMatch`, and kept per ear
   ([above](#what-the-browser-keeps)). Until it holds that set the panel shows the text box.
-- **One field per row**, in the table's order: a select for a text with `values` (an optional one
-  starts with its absent choice), a text field (checked against `pattern` and `maxLength` as typed),
+- **One field per row**, in the table's order: a select for a choice (kind `choice`: its names and
+  nothing else, sent as the name; a name not among them says "must be one of "peak", "lowShelf" and
+  "highShelf"" in ear's words) and for a text with `values` (an optional one of either starts with its
+  absent choice), a text field (checked against `pattern` and `maxLength` as typed),
   a number field with the range for a whole number (a rate in Hz), a decimal field with its range and
   unit for a decimal (it takes any number in the range, an integer too, with as many places as typed,
   and says "must be a number of dB from -90 to 24" in ear's words otherwise; it is sent as a JSON

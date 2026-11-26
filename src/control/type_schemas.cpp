@@ -6,6 +6,8 @@
 #include <array>
 #include <cstdint>
 #include <format>
+#include <span>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -72,6 +74,11 @@ json encodeRow(const SettingRow& row) {
 				out["decimals"] = rule.hints.decimals;
 				out["taper"] = taperName(rule.hints.taper);
 				if (rule.hints.minIsSilence) out["minIsSilence"] = true;
+			} else if constexpr (std::is_same_v<Rule, ChoiceRule>) {
+				// A closed set, as a choice status field's (docs/control-port.md#type-schemas).
+				out["kind"] = "choice";
+				const std::span<const std::string_view> names = rule.taken();
+				out["values"] = json(std::vector<std::string_view>(names.begin(), names.end()));
 			} else {
 				out["kind"] = "text";
 				out["mustBe"] = rule.mustBe;
@@ -85,7 +92,16 @@ json encodeRow(const SettingRow& row) {
 			}
 		},
 		row.rule);
-	if (row.byDefault) std::visit([&out](const auto value) { out["default"] = value; }, *row.byDefault);
+	if (row.byDefault) {
+		std::visit(
+			[&](const auto value) {
+				// A choice's default by its name.
+				if constexpr (std::is_same_v<decltype(value), const ChoiceIndex>)
+					out["default"] = std::get<ChoiceRule>(row.rule).names[value.index];
+				else out["default"] = value;
+			},
+			*row.byDefault);
+	}
 	if (row.defaultFrom) out["defaultFrom"] = defaultFromName(*row.defaultFrom);
 	if (!row.onlyWithout.empty()) out["onlyWithout"] = row.onlyWithout;
 	if (!row.help.empty()) out["help"] = row.help;

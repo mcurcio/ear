@@ -413,6 +413,23 @@ TEST_CASE("A decimal setting is read with knobly's number reader, bare or throug
 	}
 }
 
+TEST_CASE("A choice setting is read as a word or a quoted string, and which names it takes is the plan's",
+          "[graph_file_model][choice]") {
+	const Fixture f;
+	const auto model = f.load(formatLines + "@set $s peak;\n"
+	                                        "node lamp a { shape peak; }\nnode lamp b { shape \"low shelf\"; }\n"
+	                                        "node lamp c { shape $s; }\nnode lamp d { shape notch; }\n"
+	                                        "node lamp e { shape 2; }\n");
+	CHECK(model.read().diagnostics.empty());
+	REQUIRE(model.read().wanted.has_value());
+	const auto& nodes = model.read().wanted->nodes;
+	CHECK(nodes[0].settings == json{{"shape", "peak"}});
+	CHECK(nodes[1].settings == json{{"shape", "low shelf"}});
+	CHECK(nodes[2].settings == json{{"shape", "peak"}});
+	CHECK(nodes[3].settings == json{{"shape", "notch"}}); // no name of the row: read, for the plan to refuse
+	CHECK(nodes[4].settings == json{{"shape", "2"}});     // a word, read as its text, never a number
+}
+
 TEST_CASE("A family member is read by its family's kind, its dotted key one directive name",
           "[graph_file_model][indexed]") {
 	const Fixture f;

@@ -656,3 +656,84 @@ TEST_CASE("A family walks in its place, member by member in number order, each r
 	CHECK(refused.error().key == "on.3");
 	CHECK(refused.error().text == "on.3: must be true or false");
 }
+
+// Choice rows (docs/writing-a-node-type.md#choice-rows): a closed set of names, each read as its enumerator.
+namespace settings_table_test_choices {
+using namespace settings_table_test;
+enum class Shape { peak, lowShelf, highShelf };
+// Enumerators need not be in order, nor start at 0: a name's index is its place in the list, its value its own.
+enum class Mode : std::uint8_t { twoPass = 7, fast = 2 };
+constexpr auto shapeRow =
+	setting::defaulted(
+		"shape",
+		setting::choice<Shape>({{"peak", Shape::peak}, {"lowShelf", Shape::lowShelf}, {"highShelf", Shape::highShelf}}),
+		Shape::lowShelf)
+		.inPlace();
+constexpr auto modeRow =
+	setting::optional("mode", setting::choice<Mode>({{"two pass", Mode::twoPass}, {"fast", Mode::fast}})).inPlace();
+constexpr auto pickRow = setting::required("pick", setting::choice<Shape>({{"peak", Shape::peak}})).inPlace();
+constexpr auto bandsRow = setting::defaulted("bands", setting::number(0, 4), 2).inPlace();
+constexpr auto typeFamily =
+	setting::indexed(
+		"type", bandsRow,
+		setting::choice<Shape>({{"peak", Shape::peak}, {"lowShelf", Shape::lowShelf}, {"highShelf", Shape::highShelf}}),
+		Shape::peak)
+		.inPlace();
+constexpr SettingsTable<shapeRow, modeRow, pickRow, bandsRow, typeFamily> choices{"t"};
+using Checked = decltype(choices)::Checked;
+
+static_assert(choices.kinds()[0].kind == choice && choices.kindOf("mode") == choice);
+static_assert(choices.kindOf("type.4") == choice && !choices.kindOf("type.5"));
+static_assert(shapeRow.row().byDefault == ear::SettingValue(ear::ChoiceIndex{1})); // by its place: lowShelf
+static_assert(typeFamily.row().byDefault == ear::SettingValue(ear::ChoiceIndex{0}));
+static_assert(std::get<ear::ChoiceRule>(modeRow.row().rule).count == 2);
+static_assert(std::get<ear::ChoiceRule>(modeRow.row().rule).taken()[0] == "two pass");
+static_assert(std::get<ear::ChoiceRule>(modeRow.row().rule).values[0] == 7);
+
+Checked read(const NodeSettings& settings) {
+	auto checked = choices.check(settings);
+	REQUIRE(checked.has_value());
+	return std::move(*checked);
+}
+} // namespace settings_table_test_choices
+
+TEST_CASE("A choice is one of its names, read as its enumerator", "[settings-table][choice]") {
+	using namespace settings_table_test_choices;
+	const Checked none = read({{"pick", "peak"}});
+	static_assert(std::same_as<decltype(none.get<shapeRow>()), Shape>);
+	static_assert(std::same_as<decltype(none.get<modeRow>()), std::optional<Mode>>);
+	static_assert(std::same_as<decltype(none.get<typeFamily>(0)), Shape>);
+	CHECK(none.get<shapeRow>() == Shape::lowShelf); // its default
+	CHECK_FALSE(none.get<modeRow>().has_value());
+	CHECK(none.get<pickRow>() == Shape::peak);
+	CHECK(none.get<typeFamily>(3) == Shape::peak); // a member's default
+	const Checked given = read({{"shape", "highShelf"},
+	                            {"mode", "two pass"},
+	                            {"pick", "peak"},
+	                            {"type.2", "lowShelf"},
+	                            {"type.4", "highShelf"}});
+	CHECK(given.get<shapeRow>() == Shape::highShelf);
+	CHECK(given.get<modeRow>() == Mode::twoPass);
+	CHECK(given.get<typeFamily>(0) == Shape::peak);
+	CHECK(given.get<typeFamily>(1) == Shape::lowShelf);
+	CHECK(given.get<typeFamily>(3) == Shape::highShelf);
+	CHECK(read({{"pick", "peak"}, {"mode", "fast"}}).get<modeRow>() == Mode::fast);
+}
+
+TEST_CASE("A choice refuses anything but one of its names, and names them", "[settings-table][choice]") {
+	using namespace settings_table_test_choices;
+	// Exactly as declared: no case folding, no trimming, never its index or its enumerator's value.
+	for (const std::string_view bad :
+	     {R"("Peak")", R"(" peak")", R"("")", "0", "1", "true", "null", "[]", R"(["peak"])"}) {
+		INFO(bad);
+		CHECK(refusal(choices, {{"pick", "peak"}, {"shape", parsed(bad)}}) ==
+		      R"(shape: must be one of "peak", "lowShelf" and "highShelf")");
+	}
+	CHECK(refusal(choices, {{"pick", "peak"}, {"mode", 7}}) == R"(mode: must be one of "two pass" and "fast")");
+	CHECK(refusal(choices, {{"pick", "lowShelf"}}) == R"(pick: must be one of "peak")");
+	CHECK(refusal(choices, NodeSettings::object()) == "pick: missing");
+	const auto refused = choices.checkArgs({{"pick", "peak"}, {"type.3", "notch"}});
+	REQUIRE_FALSE(refused.has_value());
+	CHECK(refused.error().key == "type.3");
+	CHECK(refused.error().text == R"(type.3: must be one of "peak", "lowShelf" and "highShelf")");
+}

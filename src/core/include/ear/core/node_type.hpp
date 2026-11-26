@@ -267,6 +267,9 @@ enum class SettingKind {
 	/// JSON number (an integer taken); written as the shortest text that reads back the same, in fixed notation
 	/// (decimalText: -3.5, -6, 0.25), read with knobly's number reader (-3.5, 0.25, 1e3).
 	decimal,
+	/// JSON string, one of the row's names (docs/writing-a-node-type.md#choice-rows); written bare when it is a word
+	/// (a letter, then letters, digits, _ and -), otherwise quoted, and read with knobly's string reader as text is.
+	choice,
 };
 struct SettingDeclaration {
 	std::string_view key;

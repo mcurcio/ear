@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <expected>
 #include <functional>
+#include <initializer_list>
 #include <limits>
 #include <optional>
 #include <ranges>
@@ -88,10 +89,27 @@ struct TextRule {
 /// One boolean rule. A good value is JSON true or false (not a string, a number or null); in ear.conf it is the bare word
 /// true or false. Otherwise "<key>: must be true or false".
 struct BooleanRule {};
+/// One choice rule (docs/writing-a-node-type.md#choice-rows): a closed set of names, each read as its enumerator. A good
+/// value is a JSON string equal to one of the names. Otherwise "<key>: must be one of "<a>", "<b>" and "<c>"". The
+/// names are held in the rule itself, so a row made from a braced list owns them; a name's index is its place here.
+struct ChoiceRule {
+	/// The most names one choice holds.
+	static constexpr std::size_t capacity = 32;
+	std::array<std::string_view, capacity> names{};
+	/// Each name's enumerator, as its underlying value.
+	std::array<std::int64_t, capacity> values{};
+	std::uint32_t count = 0;
+	constexpr std::span<const std::string_view> taken() const noexcept { return {names.data(), count}; }
+};
 /// Any one rule, as a row holds it.
-using SettingRule = std::variant<WholeNumberRule, TextRule, RateRule, BooleanRule, DecimalRule>;
-/// A defaulted row's default, of its rule's kind: a whole number, a decimal or a boolean.
-using SettingValue = std::variant<std::uint32_t, double, bool>;
+using SettingRule = std::variant<WholeNumberRule, TextRule, RateRule, BooleanRule, DecimalRule, ChoiceRule>;
+/// A choice's value without its enumeration: its name's index in its rule (ChoiceRule::names).
+struct ChoiceIndex {
+	std::uint32_t index;
+	friend constexpr bool operator==(ChoiceIndex, ChoiceIndex) = default;
+};
+/// A defaulted row's default, of its rule's kind: a whole number, a decimal, a boolean or a choice's index.
+using SettingValue = std::variant<std::uint32_t, double, bool, ChoiceIndex>;
 /// One row as the walk reads it. A key given with any value, null included, is given. Anyone can fill one in, but a table
 /// lists only typed rows, and a typed row gives its SettingRow to read, never to change.
 struct SettingRow {
@@ -142,6 +160,8 @@ template <auto Parse> using ParsedBy = typename std::invoke_result_t<decltype(Pa
 
 template <class T> class Rule;
 template <class T> class IndexedRow;
+/// A pair a choice is made of: a name and the enumerator it reads as.
+template <class E> using Named = std::pair<std::string_view, E>;
 /// The range is not optional; low above high does not compile.
 consteval Rule<std::uint32_t> number(std::uint32_t low, std::uint32_t high, std::string_view unit = {});
 /// A finite real in [low, high], read as double: a JSON number on the control port (an integer is taken), a number word
@@ -153,14 +173,29 @@ consteval Rule<double> decimal(double low, double high, std::string_view unit = 
 consteval Rule<SampleRate> rate(SampleRate low, SampleRate high);
 /// JSON true or false, read as bool: the bare word true or false in ear.conf.
 consteval Rule<bool> boolean();
+/// A closed set of names read as E (docs/writing-a-node-type.md#choice-rows): a JSON string equal to one of them on the
+/// control port, a word or a quoted string in ear.conf; a name's index is its place here. An empty set, more than
+/// ChoiceRule::capacity names, a name repeated, an enumerator named twice, or a name that is empty or holds a control
+/// character does not compile.
+template <class E>
+	requires std::is_enum_v<E>
+consteval Rule<E> choice(std::initializer_list<Named<E>> names);
+/// A choice's value read back as its enumerator, from the row's own rule.
+template <class E> constexpr E choiceValue(const SettingRow& row, ChoiceIndex index) noexcept {
+	return static_cast<E>(static_cast<std::underlying_type_t<E>>(std::get<ChoiceRule>(row.rule).values[index.index]));
+}
+/// Whether a row reads by a choice rule: by the rule, never the value's type, since a text row may read an enumeration.
+constexpr bool isChoice(const SettingRow& row) noexcept { return std::holds_alternative<ChoiceRule>(row.rule); }
+/// What the walk keeps for a value read as V by a row: a choice's its index, every other kind the value itself.
+template <class V, bool Choice> using SlotOf = std::conditional_t<Choice, ChoiceIndex, V>;
 /// Parse: std::optional<T>(std::string_view), T not a view. T is what the row reads. An empty mustBe does not compile,
 /// nor an empty value among the hints' `values`.
 template <auto Parse>
 	requires TextParser<Parse>
 consteval Rule<ParsedBy<Parse>> text(std::string_view mustBe, TextHints hints = {});
 
-/// A checked rule whose value reads as T. Only number, rate, boolean and text make one, so T is always what the rule's
-/// reader gives.
+/// A checked rule whose value reads as T. Only number, decimal, rate, boolean, choice and text make one, so T is always
+/// what the rule's reader gives.
 template <class T> class Rule {
 public:
 	using Value = T;
@@ -172,6 +207,9 @@ private:
 	friend consteval Rule<double> decimal(double low, double high, std::string_view unit, DecimalHints hints);
 	friend consteval Rule<SampleRate> rate(SampleRate low, SampleRate high);
 	friend consteval Rule<bool> boolean();
+	template <class E>
+		requires std::is_enum_v<E>
+	friend consteval Rule<E> choice(std::initializer_list<Named<E>> names);
 	template <auto Parse>
 		requires TextParser<Parse>
 	friend consteval Rule<ParsedBy<Parse>> text(std::string_view mustBe, TextHints hints);
@@ -334,6 +372,35 @@ consteval Rule<SampleRate> rate(SampleRate low, SampleRate high) {
 	return Rule<SampleRate>(RateRule{low, high});
 }
 consteval Rule<bool> boolean() { return Rule<bool>(BooleanRule{}); }
+/// A name ear.conf can hold as a word or a quoted string, as a type author would write it: not empty, and no control
+/// character (U+0000 to U+001F, U+007F).
+consteval bool writableName(std::string_view name) {
+	if (name.empty()) return false;
+	for (const char c : name)
+		if (static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) == 0x7F) return false;
+	return true;
+}
+template <class E>
+	requires std::is_enum_v<E>
+consteval Rule<E> choice(std::initializer_list<Named<E>> names) {
+	if (names.size() == 0) throw "a choice names one value or more: an empty set takes nothing";
+	if (names.size() > ChoiceRule::capacity) throw "a choice holds at most 32 names";
+	ChoiceRule rule;
+	for (const auto& [name, value] : names) {
+		if (!writableName(name))
+			throw "a choice's name is a word or a string ear.conf can hold: never empty, no control character";
+		const auto underlying = static_cast<std::int64_t>(std::to_underlying(value));
+		for (std::uint32_t earlier = 0; earlier < rule.count; ++earlier) {
+			if (rule.names[earlier] == name) throw "a choice names a value twice";
+			if (rule.values[earlier] == underlying)
+				throw "a choice names one enumerator twice: each name reads as its own value";
+		}
+		rule.names[rule.count] = name;
+		rule.values[rule.count] = underlying;
+		++rule.count;
+	}
+	return Rule<E>(rule);
+}
 template <auto Parse>
 	requires TextParser<Parse>
 consteval Rule<ParsedBy<Parse>> text(std::string_view mustBe, TextHints hints) {
@@ -348,9 +415,10 @@ template <class V> consteval Row<V, true> required(std::string_view key, Rule<V>
 template <class V> consteval Row<V, false> optional(std::string_view key, Rule<V> rule) {
 	return Row<V, false>(key, false, rule.held());
 }
-/// A whole number, decimal or boolean row that reads `byDefault` when absent; a default outside the range does not
-/// compile, nor a text or rate row with a default (docs/writing-a-node-type.md#settings-one-table-of-typed-rows). The
-/// default is not deduced, so `defaulted("playback", number(0, 64), 0)` takes the int literal as the rule's value.
+/// A whole number, decimal, boolean or choice row that reads `byDefault` when absent; a default outside the range, or
+/// an enumerator the choice does not name, does not compile, nor a text or rate row with a default
+/// (docs/writing-a-node-type.md#settings-one-table-of-typed-rows). The default is not deduced, so
+/// `defaulted("playback", number(0, 64), 0)` takes the int literal as the rule's value.
 template <class V>
 consteval Row<V, true> defaulted(std::string_view key, Rule<V> rule, std::type_identity_t<V> byDefault) {
 	if constexpr (std::same_as<V, std::uint32_t>) {
@@ -364,8 +432,18 @@ consteval Row<V, true> defaulted(std::string_view key, Rule<V> rule, std::type_i
 		return Row<V, true>(key, false, rule.held(), SettingValue(byDefault));
 	} else if constexpr (std::same_as<V, bool>) {
 		return Row<V, true>(key, false, rule.held(), SettingValue(byDefault));
+	} else if constexpr (std::is_enum_v<V>) {
+		if (!std::holds_alternative<ChoiceRule>(rule.held()))
+			throw "only a whole number, decimal, boolean or choice row takes a default";
+		const ChoiceRule& set = std::get<ChoiceRule>(rule.held());
+		const auto underlying = static_cast<std::int64_t>(std::to_underlying(byDefault));
+		for (std::uint32_t at = 0; at < set.count; ++at)
+			if (set.values[at] == underlying)
+				return Row<V, true>(key, false, rule.held(), SettingValue(ChoiceIndex{at}));
+		throw "a choice's byDefault is an enumerator it names";
 	} else {
-		throw "only a whole number, decimal or boolean row takes a default: a text or rate row is required or optional";
+		throw "only a whole number, decimal, boolean or choice row takes a default: a text or rate row is required or "
+			  "optional";
 	}
 }
 /// A family `<key>.1` .. `<key>.<n>` (docs/writing-a-node-type.md#indexed-families): n the value of `count`, a required
@@ -391,6 +469,7 @@ constexpr SettingDeclaration declarationOf(const SettingRow& row) {
 	if (std::holds_alternative<RateRule>(row.rule)) return {row.key, SettingKind::rate};
 	if (std::holds_alternative<BooleanRule>(row.rule)) return {row.key, SettingKind::boolean};
 	if (std::holds_alternative<DecimalRule>(row.rule)) return {row.key, SettingKind::decimal};
+	if (std::holds_alternative<ChoiceRule>(row.rule)) return {row.key, SettingKind::choice};
 	return {row.key, SettingKind::wholeNumber};
 }
 } // namespace setting
@@ -415,7 +494,8 @@ template <const auto& Object> inline constexpr bool named =
 	spelling<Object>().find("(anonymous namespace)") == std::string_view::npos;
 } // namespace linkage
 
-/// A family's slot in CheckedSettings: its given members, (number from 1, value), in number order.
+/// A family's slot in CheckedSettings: its given members, (number from 1, value), in number order; a choice's value is
+/// its ChoiceIndex (setting::SlotOf).
 template <class V> using FamilyValues = std::vector<std::pair<std::uint32_t, V>>;
 /// What the walk made: one slot per row. No public constructor and no public read: only the walk makes one, and only
 /// Checked reads it. It owns its values, so it borrows neither the settings nor the table.
@@ -557,11 +637,18 @@ public:
 			requires(listed<Row> && !family<Row>)
 		[[nodiscard]] typename std::remove_cvref_t<decltype(Row)>::Reads get() const {
 			using Read = std::remove_cvref_t<decltype(Row)>;
-			const auto* value = std::any_cast<typename Read::Value>(&settings_.slots_[slotOf<Row>()]);
-			if constexpr (std::same_as<typename Read::Reads, typename Read::Value>) {
-				return *value; // the walk filled it: a required row was given, a defaulted one has its default
+			using Value = typename Read::Value;
+			constexpr bool choice = setting::isChoice(Row.row());
+			using Slot = setting::SlotOf<Value, choice>;
+			const auto* slot = std::any_cast<Slot>(&settings_.slots_[slotOf<Row>()]);
+			const auto value = [](const Slot& held) -> Value {
+				if constexpr (choice) return setting::choiceValue<Value>(Row.row(), held);
+				else return held;
+			};
+			if constexpr (std::same_as<typename Read::Reads, Value>) {
+				return value(*slot); // the walk filled it: a required row was given, a defaulted one has its default
 			} else {
-				return value != nullptr ? typename Read::Reads(*value) : std::nullopt;
+				return slot != nullptr ? typename Read::Reads(value(*slot)) : std::nullopt;
 			}
 		}
 		/// A family's member, from 0 (its key's number less 1): the file's value, or the family's default when absent,
@@ -570,12 +657,18 @@ public:
 			requires(listed<Family> && family<Family>)
 		[[nodiscard]] typename std::remove_cvref_t<decltype(Family)>::Value get(std::size_t member) const {
 			using Value = typename std::remove_cvref_t<decltype(Family)>::Value;
+			constexpr bool choice = setting::isChoice(Family.row());
+			using Slot = setting::SlotOf<Value, choice>;
 			if (member >= Family.row().maxMembers)
 				throw std::out_of_range(std::string(Family.row().key) + ": no member " + std::to_string(member + 1));
-			const auto& given = std::any_cast<const FamilyValues<Value>&>(settings_.slots_[slotOf<Family>()]);
-			for (const auto& [number, value] : given)
-				if (number == member + 1) return value;
-			return std::get<Value>(*Family.row().byDefault);
+			const auto value = [](const Slot& held) -> Value {
+				if constexpr (choice) return setting::choiceValue<Value>(Family.row(), held);
+				else return held;
+			};
+			const auto& given = std::any_cast<const FamilyValues<Slot>&>(settings_.slots_[slotOf<Family>()]);
+			for (const auto& [number, held] : given)
+				if (number == member + 1) return value(held);
+			return value(std::get<Slot>(*Family.row().byDefault));
 		}
 		/// A family's active members: its count row's value. Members above it are kept, inactive.
 		template <const auto& Family>

@@ -74,8 +74,13 @@ constexpr auto trimFamily = setting::indexed("trimDb", bulbsRow, setting::decima
                                 .restarts("a test type restarts on it");
 constexpr auto litFamily =
 	setting::indexed("lit", bulbsRow, setting::boolean(), false).restarts("a test type restarts on it");
-constexpr TypeSpec lampSpec{.settings = SettingsTable<xRow, levelRow, bulbsRow, trimFamily, litFamily>{"lamp"},
-                            .banks = Banks<>{}};
+enum class Shape { peak, lowShelf, second };
+constexpr auto shapeRow =
+	setting::optional("shape", setting::choice<Shape>(
+								   {{"peak", Shape::peak}, {"low shelf", Shape::lowShelf}, {"2nd", Shape::second}}))
+		.restarts("a test type restarts on it");
+constexpr TypeSpec lampSpec{
+	.settings = SettingsTable<xRow, levelRow, bulbsRow, trimFamily, litFamily, shapeRow>{"lamp"}, .banks = Banks<>{}};
 struct LampType : NeverStarted {
 	static Members<lampSpec> ports(const CheckedOf<lampSpec>&) { return {}; }
 	Configured configure(CreateOf<lampSpec>& cx, const CheckedOf<lampSpec>& s) { return never(cx, s); }

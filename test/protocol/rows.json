@@ -1,5 +1,5 @@
 {
-  "description": "Schemas of test types, not the real ear's (docs/control-port.md#type-schemas): the row vocabulary before any built-in type uses it. src/control/tests/type_schemas_test.cpp encodes its test specs and expects these schemas; the editor's form tests draw them. Holds a decimal row of each taper (a defaulted dB level whose minimum is silence, a required log-tapered frequency, an optional linear one with no unit), a defaulted flag, and two indexed families by one count row: a decimal trimDb.<n> applied in place and a flag invert.<n> that restarts the node, each member's key <key>.<n> from 1 to the count row's max.",
+  "description": "Schemas of test types, not the real ear's (docs/control-port.md#type-schemas): the row vocabulary before any built-in type uses it. src/control/tests/type_schemas_test.cpp encodes its test specs and expects these schemas; the editor's form tests draw them. Holds a decimal row of each taper (a defaulted dB level whose minimum is silence, a required log-tapered frequency, an optional linear one with no unit), a defaulted flag, and two indexed families by one count row: a decimal trimDb.<n> applied in place and a flag invert.<n> that restarts the node, each member's key <key>.<n> from 1 to the count row's max, and three choices, each a closed set of names in declaration order: a defaulted shape applied in place, its default by name; an optional mode that restarts the node, one of its names holding a space; and a family curve.<n>.",
   "typeSchemas": [
     {
       "name": "rows",
@@ -13,7 +13,10 @@
         {"key": "on", "kind": "flag", "required": false, "change": "inPlace", "default": true},
         {"key": "channels", "kind": "wholeNumber", "required": false, "change": "inPlace", "shapes": true, "min": 1, "max": 64, "unit": "channels", "default": 2},
         {"key": "trimDb", "kind": "decimal", "required": false, "change": "inPlace", "min": -24, "max": 24, "unit": "dB", "decimals": 1, "taper": "linear", "default": 0, "indexed": {"by": "channels", "from": 1, "max": 64}},
-        {"key": "invert", "kind": "flag", "required": false, "change": "restart", "restartReason": "the polarity is set at start", "default": false, "indexed": {"by": "channels", "from": 1, "max": 64}}
+        {"key": "invert", "kind": "flag", "required": false, "change": "restart", "restartReason": "the polarity is set at start", "default": false, "indexed": {"by": "channels", "from": 1, "max": 64}},
+        {"key": "shape", "kind": "choice", "required": false, "change": "inPlace", "values": ["peak", "lowShelf", "highShelf"], "default": "peak"},
+        {"key": "mode", "kind": "choice", "required": false, "change": "restart", "restartReason": "the mode is chosen at start", "values": ["fast", "two pass"]},
+        {"key": "curve", "kind": "choice", "required": false, "change": "inPlace", "values": ["linear", "smooth"], "default": "linear", "indexed": {"by": "channels", "from": 1, "max": 64}}
       ],
       "status": [],
       "events": [],

@@ -72,6 +72,8 @@ export interface FieldView {
 /** The control a row is drawn with. */
 export function controlOf(row: SettingSchema): FieldControl {
   if (row.kind === "text") return row.values !== undefined && row.values.length > 0 ? "select" : "text";
+  // A closed set (docs/control-port.md#type-schemas): a select of its names, and nothing else is sent.
+  if (row.kind === "choice") return "select";
   if (row.kind === "wholeNumber") return "number";
   if (row.kind === "decimal") return "decimal";
   if (row.kind === "flag") return "flag";
@@ -296,6 +298,11 @@ export function problemOf(row: SettingSchema, value: FieldValue): string | undef
       return "must be JSON";
     }
   }
+  if (row.kind === "choice") {
+    // ear's own words (docs/writing-a-node-type.md#choice-rows): one of its names, exactly.
+    const names = row.values ?? [];
+    return names.includes(text) ? undefined : `must be one of ${quotedList(names)}`;
+  }
   const mustBe = row.mustBe !== undefined ? `must be ${row.mustBe}` : "is not taken";
   if (row.maxLength !== undefined && new TextEncoder().encode(text).length > row.maxLength) return mustBe;
   if (row.pattern !== undefined) {
@@ -306,6 +313,12 @@ export function problemOf(row: SettingSchema, value: FieldValue): string | undef
     }
   }
   return undefined;
+}
+
+/** `"a", "b" and "c"`, as ear lists names in a refusal. */
+function quotedList(names: string[]): string {
+  const quoted = names.map((name) => `"${name}"`);
+  return quoted.length <= 1 ? quoted.join("") : `${quoted.slice(0, -1).join(", ")} and ${quoted[quoted.length - 1]}`;
 }
 
 /** The value `draft` sends for `row`: an empty optional field (or a cleared optional flag) removes the key. */

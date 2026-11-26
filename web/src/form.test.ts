@@ -3,7 +3,7 @@
 // (docs/control-port.md#nodeset-and-dry-runs): a reconfigure sent at once, a restart and a reshape asking first,
 // dropRoutes sent exactly when the dry run named routes, a ports-in-use refusal asking again, a refusal placed by
 // data.key. Every built-in type's schema in types.json makes a form, and so does rows.json's row vocabulary (decimals,
-// typed defaults and indexed families) that no built-in type has yet.
+// typed defaults, indexed families and choices) that no built-in type has yet.
 import { describe, expect, it } from "vitest";
 import {
   ApplyFlow,
@@ -20,7 +20,7 @@ import {
   type Draft,
   type SetClient,
 } from "./form";
-import type { GraphNode, Methods, RouteEnds, SetResult, TypeSchema, TypesResult } from "./protocol";
+import type { GraphNode, JsonObject, Methods, RouteEnds, SetResult, TypeSchema, TypesResult } from "./protocol";
 import { RpcError } from "./rpc";
 import { fixtures, messagesOf } from "./testFixtures";
 import rowsFixture from "../../test/protocol/rows.json";
@@ -370,6 +370,60 @@ describe("the row vocabulary no built-in type has yet", () => {
   });
 });
 
+describe("choices", () => {
+  const schema = (rowsFixture as unknown as { typeSchemas: TypeSchema[] }).typeSchemas[0];
+  const field = (key: string, settings = { cutoffHz: 1000 } as JsonObject, drafts = none) =>
+    fieldsOf(schema, settings, drafts).find((one) => one.key === key);
+
+  it("draws a choice as a select of its names, an optional one with absent first", () => {
+    const shape = field("shape");
+    expect([shape?.control, shape?.value, shape?.placeholder, shape?.options]).toStrictEqual([
+      "select",
+      "",
+      "default peak",
+      ["", "peak", "lowShelf", "highShelf"],
+    ]);
+    expect(field("shape", { cutoffHz: 1000, shape: "highShelf" })?.value).toBe("highShelf");
+    const mode = field("mode");
+    expect([mode?.options, mode?.placeholder, mode?.hints]).toStrictEqual([
+      ["", "fast", "two pass"],
+      "absent",
+      ["restarts the node: the mode is chosen at start"],
+    ]);
+    const member = field("curve.2");
+    expect([member?.control, member?.options, member?.family, member?.placeholder]).toStrictEqual([
+      "select",
+      ["", "linear", "smooth"],
+      "curve",
+      "default linear",
+    ]);
+  });
+
+  it("sends a name as it is, and an emptied optional choice as null", () => {
+    const settings = { cutoffHz: 1000, mode: "fast" };
+    let drafts = edit(schema, settings, none, "shape", "lowShelf");
+    drafts = edit(schema, settings, drafts, "mode", "");
+    drafts = edit(schema, settings, drafts, "curve.1", "smooth");
+    expect(patchOf(schema, settings, drafts)).toStrictEqual({
+      patch: { shape: "lowShelf", mode: null, "curve.1": "smooth" },
+    });
+    expect(patchOf(schema, settings, edit(schema, settings, none, "mode", "two pass"))).toStrictEqual({
+      patch: { mode: "two pass" },
+    });
+  });
+
+  it("refuses anything but one of its names, in ear's words", () => {
+    for (const bad of ["Peak", " peak", "notch"]) {
+      const drafts = edit(schema, { cutoffHz: 1000 }, none, "shape", bad);
+      expect(field("shape", { cutoffHz: 1000 }, drafts)?.problem).toBe(
+        'must be one of "peak", "lowShelf" and "highShelf"',
+      );
+    }
+    const mode = edit(schema, { cutoffHz: 1000 }, none, "mode", "slow");
+    expect(field("mode", { cutoffHz: 1000 }, mode)?.problem).toBe('must be one of "fast" and "two pass"');
+  });
+});
+
 describe("indexed families", () => {
   const schema = (rowsFixture as unknown as { typeSchemas: TypeSchema[] }).typeSchemas[0];
   const familyKeys = (fields: ReturnType<typeof fieldsOf>) =>
@@ -382,6 +436,8 @@ describe("indexed families", () => {
       ["trimDb.2", false],
       ["invert.1", false],
       ["invert.2", false],
+      ["curve.1", false],
+      ["curve.2", false],
     ]);
     const trim = fields.find((field) => field.key === "trimDb.2");
     expect([trim?.control, trim?.min, trim?.max, trim?.unit, trim?.placeholder, trim?.family, trim?.member]).toStrictEqual(
@@ -400,6 +456,7 @@ describe("indexed families", () => {
       ["trimDb.2", true],
       ["trimDb.3", true],
       ["invert.1", false],
+      ["curve.1", false],
     ]);
     const kept = fields.find((field) => field.key === "trimDb.3");
     expect(kept?.value).toBe("-6");

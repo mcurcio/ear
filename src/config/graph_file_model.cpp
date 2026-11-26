@@ -373,7 +373,7 @@ private:
 				} else if (kind == SettingKind::decimal) { // any number word knobly reads: the range is the row's
 					if (const auto number = attempt([&] { return value.number(); })) settings[key] = *number;
 					else ok = false;
-				} else {
+				} else { // text, and a choice's name: a word or a string; the row judges the name
 					if (const auto text = attempt([&] { return value.string(); })) settings[key] = *text;
 					else ok = false;
 				}
@@ -514,7 +514,8 @@ std::expected<std::string, InvalidSettings> textValue(const NodeName& node, cons
 
 /// One setting's value as knobly text: text is knobly's quote of the JSON string, a whole number the
 /// bare integer, a rate its unit form (rateText: 44.1khz), a boolean the bare word true or false, a decimal its
-/// shortest fixed text (decimalText: -3.5, -6); an undeclared key takes a string (quoted) or an integer (bare).
+/// shortest fixed text (decimalText: -3.5, -6), a choice its name, bare when it is a word that starts with a letter
+/// (lowShelf) and otherwise quoted; an undeclared key takes a string (quoted) or an integer (bare).
 std::expected<std::string, InvalidSettings> valueText(const NodeName& node, const NodeType* type,
                                                       const std::string& key, const json& value) {
 	if (!writableKey(key)) return std::unexpected(InvalidSettings{node, key + ": cannot be written", key});
@@ -533,6 +534,14 @@ std::expected<std::string, InvalidSettings> valueText(const NodeName& node, cons
 			if (!value.is_boolean())
 				return std::unexpected(InvalidSettings{node, key + ": expected true or false", key});
 			return std::string(value.get<bool>() ? "true" : "false");
+		}
+		if (*kind == SettingKind::choice) { // the name; whether it is one of the row's is the plan's to judge
+			if (!value.is_string()) return std::unexpected(InvalidSettings{node, key + ": expected a name", key});
+			const std::string& name = value.get_ref<const std::string&>();
+			const bool letterFirst =
+				!name.empty() && ((name[0] >= 'A' && name[0] <= 'Z') || (name[0] >= 'a' && name[0] <= 'z'));
+			if (letterFirst && bareWord(name)) return name;
+			return textValue(node, key, name);
 		}
 		if (*kind == SettingKind::decimal) { // the shortest fixed text; the row's range is the plan's to judge
 			if (!value.is_number() || !std::isfinite(value.get<double>()))

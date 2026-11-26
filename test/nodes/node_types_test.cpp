@@ -53,7 +53,8 @@ TEST_CASE("Each built-in type declares every key once, and a value of each decla
 			CHECK(std::ranges::none_of(keys, [&](const auto& seen) { return seen.first == spelled; }));
 			const auto giving = std::ranges::find_if(valid, [&](const auto& one) { return one.contains(spelled); });
 			REQUIRE(giving != valid.end());
-			CHECK((kind == ear::SettingKind::text) == giving->at(spelled).is_string());
+			CHECK((kind == ear::SettingKind::text || kind == ear::SettingKind::choice) ==
+			      giving->at(spelled).is_string());
 			keys.emplace_back(key, kind);
 		}
 	}
@@ -84,8 +85,8 @@ std::optional<ear::Ports> portsOf(const ear::NodeType& type, const ear::NodeSett
 }
 
 /// Other values a row can take, to change one key of valid settings at a time: a whole number's ends, middle and
-/// neighbours, a rate's ends, a decimal's ends and middle, a boolean's other value, a text row's offered values, the
-/// value every other valid object gives it, and absence for a row that is not required.
+/// neighbours, a rate's ends, a decimal's ends and middle, a boolean's other value, a choice's every name, a text row's
+/// offered values, the value every other valid object gives it, and absence for a row that is not required.
 std::vector<std::optional<ear::NodeSettings>> otherValues(const ear::SettingRow& row,
                                                           const std::vector<ear::NodeSettings>& valid) {
 	std::vector<std::optional<ear::NodeSettings>> values;
@@ -104,6 +105,8 @@ std::vector<std::optional<ear::NodeSettings>> otherValues(const ear::SettingRow&
 	} else if (std::holds_alternative<ear::BooleanRule>(row.rule)) {
 		values.emplace_back(true);
 		values.emplace_back(false);
+	} else if (const auto* choice = std::get_if<ear::ChoiceRule>(&row.rule)) {
+		for (const std::string_view name : choice->taken()) values.emplace_back(std::string(name));
 	} else {
 		for (const std::string_view value : std::get<ear::TextRule>(row.rule).hints.values)
 			values.emplace_back(std::string(value));

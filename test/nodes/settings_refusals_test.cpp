@@ -271,12 +271,17 @@ TEST_CASE("Each type's setting kinds are what its parse checks", "[nodes][settin
 			const std::string spelled(key);
 			INFO(spelled);
 			NodeSettings bad = good;
-			bad[spelled] = kind == ear::SettingKind::text ? NodeSettings(5) : NodeSettings("5");
+			const bool string = kind == ear::SettingKind::text || kind == ear::SettingKind::choice;
+			bad[spelled] = string ? NodeSettings(5) : NodeSettings("5");
 			const std::string told = answer(name, bad);
 			CHECK(told.starts_with(spelled + ": must be "));
 			if (kind == ear::SettingKind::wholeNumber) {
 				bad[spelled] = 5.5;
 				CHECK(answer(name, bad).starts_with(spelled + ": must be a whole number"));
+			}
+			if (kind == ear::SettingKind::choice) { // a string, and only one of its names
+				bad[spelled] = "not one of its names";
+				CHECK(answer(name, bad).starts_with(spelled + ": must be one of "));
 			}
 			if (kind == ear::SettingKind::decimal) { // a JSON number, never a boolean
 				bad[spelled] = true;
