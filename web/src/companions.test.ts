@@ -8,6 +8,7 @@ import {
   companionBadges,
   companionDetail,
   companionLabel,
+  hasCompanionStrip,
   type CompanionBadge,
 } from "./companions";
 import { recentMarkMs } from "./marks";
@@ -141,6 +142,15 @@ describe("companionBadges", () => {
     expect(companionBadges(node(list, { state: "disabled", phase: "disabled" }), none, 0)).toEqual([]);
     expect(drawn(companionBadges(node(list, { state: "stopped", phase: "stopped" }), none, 0))).toEqual(["sink ●"]);
     expect(drawn(companionBadges(node(list, { state: "running", phase: "rebinding" }), none, 0))).toEqual(["sink ●"]);
+  });
+
+  it("says whether the box has a strip by the same rule, for the box's size (layout.ts)", () => {
+    const list = [sink(0)];
+    expect(hasCompanionStrip(node(undefined))).toBe(false);
+    expect(hasCompanionStrip(node([]))).toBe(false);
+    expect(hasCompanionStrip(node(list, { state: "failed", phase: "failed" }))).toBe(false);
+    expect(hasCompanionStrip(node(list, { state: "disabled", phase: "disabled" }))).toBe(false);
+    expect(hasCompanionStrip(node(list, { state: "stopped", phase: "stopped" }))).toBe(true);
   });
 });
 

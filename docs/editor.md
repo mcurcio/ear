@@ -10,19 +10,19 @@ Vitest); it shares no code with the C++, only the wire format and the fixtures i
 The page is a top bar, the canvas with an inspector on its right, and a full-width `ear.conf` drawer
 along the bottom ([below](#the-shell)).
 
-- **Nodes** are 220 px boxes ([below](#the-node-box)): a stripe down the left edge and a pill (a
-  dot and the word) in the state's colour, the type as a small label beside the name, the line
-  that says why the node is silent or what it waits for ([below](#a-nodes-health)), and beside the
-  pill a warning mark while the node lost cycles in the last minute ([below](#counters)). Then one
-  row per port, inputs on the left and outputs on the right, each with its handle and a live level
-  meter ([below](#meters)), and along the bottom edge a badge per companion ([below](#companions)).
+- **Nodes** are patchbay's 240 px node boxes ([below](#the-node-box)): a stripe down the left edge and a pill (a
+  dot and the word) in the state's colour, the type under the name, the line that says why the node is silent or
+  what it waits for ([below](#a-nodes-health)), and beside the pill a warning mark while the node lost cycles in the
+  last minute ([below](#counters)). Then one row per port, the inputs' with their handles on the left and then the
+  outputs' with theirs on the right, each with a live level meter ([below](#meters)), and in the footer a badge per
+  companion ([below](#companions)).
 - **Routes** are wires coloured by status (`linked`, `pending`, `refused`) and drawn by their
   from port's level: louder is thicker and brighter. A linked wire carrying signal shows a slow
   flow, a refused one says `refused` at its midpoint, and hovering a wire names its two ends
   ([below](#wires)).
 - **Editing:** a drag from an output to an input adds a route (any other drag is refused before
-  it reaches ear); while a wire is drawn, every handle it can be dropped on is ringed and the rest
-  dimmed ([below](#the-node-box)); the delete key removes the selected wire or node; the inspector
+  it reaches ear); while a wire is drawn, every handle it can be dropped on grows in the ok colour and the
+  rest turn grey ([below](#the-node-box)); the delete key removes the selected wire or node; the inspector
   adds nodes from a statement in knobly (its Graph subject, [below](#adding-a-node)), edits the
   selected node's own text in knobly (its Node subject, [below](#the-node-panels-text)), both as
   JSON settings from an ear without `node-text`, and offers Start, Stop, Restart, Disable and
@@ -212,8 +212,8 @@ unfolding is a resize, so the layout follows it and the view fits itself again u
   smaller field takes the focus. The code size is one patchbay token, `--pb-code-size` (16 px under a coarse pointer), shared by the textarea, its highlighted
   copy and the drawer's gutter, so their glyphs still line up ([Highlighting](#highlighting)).
 - **Targets a finger finds.** The top bar's buttons are at least 36 px tall (patchbay's Button and ThemeSwitch under a coarse pointer), the canvas tools and the lifecycle bar
-  40 px. A port handle's hit area is as tall as its port row (so a neighbouring port stays its own) and reaches
-  16 px further out each side, so a wire starts from a fingertip; React Flow's pan and pinch zoom work as they do.
+  40 px. A port handle's hit area grows under a coarse pointer (patchbay's PortRow,
+  [above](#the-node-box)), so a wire starts from a fingertip; React Flow's pan and pinch zoom work as they do.
 - **No keyboard.** The palette button shows a search icon instead of its key. The palette, the inspector's buttons
   and the drawer's Save do everything a shortcut does.
 - **The whole screen.** The page asks for `viewport-fit=cover`; the shell fills `100dvh`, so Safari's toolbar never
@@ -526,7 +526,7 @@ class (inside `:where()`, so they weigh no more), so patchbay's controls draw as
 
 **ear's own variables.** Besides the tokens, `editor.css` reads a few variables that hold no value of
 their own design, only a token picked per state or a number a component sets: `--state` (a node's
-state class picks its tone), `--wire-colour` (a wire's status class),
+state class picks its tone, for its minimap box), `--wire-colour` (a wire's status class),
 `--wire-width` (`LevelEdge.tsx`), `--inspector-width` (`Inspector.tsx`), `--drawer-height`
 (`Drawer.tsx`) and `--gutter-digits` (`KnoblyText.tsx`).
 
@@ -584,31 +584,45 @@ Slice 5's type-schema cache is designed to use this module too ([control-plane.m
 
 ### The node box
 
-`components/EarNode.tsx` draws it; the handles' rule is `web/src/connect.ts`'s `handleCue`.
+`components/EarNode.tsx` draws it with patchbay's `NodeBox`, one `PortRow` per port
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.7.0/docs/graph.md#nodebox)); ear gives it the words, the
+tone and the handle ids, and the handles' rule is `web/src/connect.ts`'s `handleCue`. *Why patchbay's:* the owner's
+principle is to take patchbay's model where it has the concept (2026-11-26), and its geometry is exported so layout
+code sizes boxes by it (D12).
 
-- **The state is a stripe and a pill.** A 4 px stripe down the box's left edge and a pill (patchbay's `Pill`: a dot
-  and the word, with a failure's code after it in monospace, `StatePill.tsx`) take the state's tone (`health.ts`'s
-  `stateTone`): ok running, warn starting, stopping and an unknown state, err failed, quiet stopped, off disabled,
-  and the accent reconfiguring. The word is always there, so the state is never colour alone. A failed box also has
-  an `--pb-err` border. A disabled one has a dashed border and a hatched stripe, and its text stays at full contrast.
-  `configuring` pulses the dot only, never the text, and not at all under reduced motion (the Pill's `pulse`).
-- **The type label** is the type's word as sent, in `--pb-muted`. Nothing in `web/` names a node type,
-  so there are no per-type icons or colours.
-- **220 px wide.** `layout.ts`'s `nodeWidth` and `portHeight` are the box's CSS width and port-row
-  height, which `layout.test.ts` holds equal. `headerHeight` is dagre's estimate of the three
-  header rows. Port names are monospace and numbers use tabular figures.
-- **Handles** are a 10 px dot with a 20 px hit area. While a wire is drawn, `handleCue` rings in
-  `--pb-accent` every handle a drop on would make a route and dims every other: from an output, every
-  input; from an input, every output (the editor accepts a drag from either end). It is
-  `isValidConnection`'s own rule, so the ring never promises what the drop refuses. The ringed
-  handle under the pointer grows.
-- **Selection** is a 2 px `--pb-accent` ring outside the border with the lifted shadow. Hover lifts
-  the shadow alone.
+- **The state is a stripe and a pill.** NodeBox's 4 px stripe down the box's left edge and a pill in its status slot
+  (patchbay's `Pill`: a dot and the word, with a failure's code after it in monospace, `StatePill.tsx`) take the
+  state's tone (`health.ts`'s `stateTone`): ok running, warn starting, stopping and an unknown state, err failed,
+  quiet stopped, off disabled, and the accent reconfiguring. The word is always there, so the state is never colour
+  alone. A failed box (`failed`) has an `--pb-err` border and its header on `--pb-err-soft`, its line in `--pb-err`. A
+  disabled one (`disabled`) has a dashed border, a hatched stripe and muted words. `configuring` pulses the dot only,
+  never the text, and not at all under reduced motion (the Pill's `pulse`).
+- **The name and the type.** The name is the box's title, cut with an ellipsis and whole in its tooltip; the type is
+  its subtitle, the type's word as sent, in `--pb-muted`. Nothing in `web/` names a node type, so there are no
+  per-type icons or colours.
+- **The line** under the header is `health.ts`'s ([below](#a-nodes-health)), and the box has none while there is
+  nothing to say.
+- **The ports are stacked:** the inputs' rows, their handles on the left edge, then the outputs', theirs on the right,
+  each row the box's width with the port's name toward its handle and its meter ([below](#meters)) in PortRow's
+  trailing slot. Side by side, a name and a meter (at least 48 px) do not fit in half the box.
+- **Its size is patchbay's.** The box is NodeBox's default width, `NODE_WIDTH` (240 px); `layout.ts`'s `nodeSize` is
+  patchbay's `nodeBoxSize` for its ports, its line (as `health.ts` would show it) and its footer (while it has a
+  companion strip), which dagre places by, and quick add places by `NODE_HEADER`, `NODE_PAD` and `NODE_ROW`.
+  `layout.test.ts` checks both against those exports. A line or strip that comes or goes later changes the box's
+  height, not its place.
+- **Handles** are PortRow's: a dot with a larger hit area, both patchbay's sizes (`HANDLE_SIZE`, `HANDLE_HIT`; the hit
+  area larger again under a coarse pointer). Each handle's id is `connect.ts`'s `handleId` (`in:<port>`,
+  `out:<port>`), passed through unchanged. While a wire is drawn, `handleCue` gives every port its PortRow hint: the
+  handle the drag started at `origin` (ringed in `--pb-accent`), every handle a drop on would make a route `ok` (grown,
+  in `--pb-ok`), and every other `no` (in `--pb-off`, its row muted): from an output, every input accepts; from an
+  input, every output (the editor accepts a drag from either end). It is `isValidConnection`'s own rule, so a hint
+  never promises what the drop refuses. The drag's start is read as one string, so a pointer move redraws no box.
+- **Selection** is NodeBox's 2 px `--pb-accent` outline outside the border.
 - **A change of ports redraws the box in place.** `node.updated` with its new `inputs` and
   `outputs` ([control-port.md](control-port.md#changes-of-ports)) changes the node the editor holds,
-  not a new one: the box keeps its place, a surviving handle keeps its wires (the routes were never
-  removed, so they never go `pending`), a new handle comes unwired, and the counters and marks go
-  on.
+  not a new one: the box keeps its place, NodeBox has React Flow measure its handles again, a surviving handle keeps
+  its wires (the routes were never removed, so they never go `pending`), a new handle comes unwired, and the counters
+  and marks go on.
 
 ### Wires
 
@@ -655,7 +669,7 @@ takes its defaults, which `meters.test.ts` pins to what this section says.
 ## A node's health
 
 `web/src/health.ts` is the one place that turns a node's health members
-([control-port.md](control-port.md#node-health)) into the box's pill word and tone, stripe style, line and
+([control-port.md](control-port.md#node-health)) into the box's pill word and tone (the stripe's too), the minimap's state class, line and
 enabled buttons; its tests cover every phase. The rules it follows:
 
 - **Silence the operator asked for is never drawn as a fault.** `stopped` ("stopped until Start or
@@ -687,11 +701,12 @@ through the reducer into the badges drawn. *Why badges:* asked what the editor s
 hidden helpers, the owner chose small badges in the node's box, one per helper, its kind and a dot
 for ready, its drop count on hover; never boxes or handles of their own. The rules:
 
-- **A badge per companion,** in list order, along the box's bottom edge under the ports: its kind
-  as a short word (`card-playback` "card out", `card-capture` "card in", `rtp-receiver` "rtp",
-  `sink`, `source`) and a dot, filled (●) when `ready`, hollow (○) with dimmed text when not. A
-  kind this editor does not know is drawn by its own text, in the same neutral style. No list, or
-  an empty one, draws no strip (`white`, `sendspin`, a node from an ear without the feature).
+- **A badge per companion,** in list order, in the box's footer under the ports (NodeBox's `footer`), each
+  patchbay's `Badge`: its kind as a short word (`card-playback` "card out", `card-capture` "card in", `rtp-receiver`
+  "rtp", `sink`, `source`) and a dot, filled (●) in the ok tone when `ready`, hollow (○) in the off tone when not. A
+  kind this editor does not know is drawn by its own text, in the same style. The footer is one row and cuts badges
+  that do not fit. No list, or an empty one, draws no strip and no footer (`white`, `sendspin`, a node from an ear
+  without the feature).
 - **Totals in words.** The badge's tooltip and the node panel's "Companions" list give each one's
   name, word, bank, readiness and the total its counter carries since its configuration made it
   ("rec.writer (sink on writer): ready; 4096 frames dropped since it was made"; a source's
@@ -742,7 +757,7 @@ happened in the last minute. The rules:
   unknown counter may count anything (a total like `cycles`), so it is shown and never marked.
 - **A node's mark sits after its state word** in the box's header, while one of its own loss
   counters rose in the last minute: what happened to that node beyond the graph's losses. It is
-  apart from the companion strip at the box's bottom edge, whose badges mark their own counters
+  apart from the companion strip in the box's footer, whose badges mark their own counters
   (a sink's drops), so a mark in the header is the node's and one in the strip a helper's. Its
   tooltip gives the last minute's and the totals in words ("In the last minute: overran 1 time.
   Since it was added: missed 33 cycles, overran 3 times."). The graph's cuts never mark a node:
@@ -795,7 +810,7 @@ port. Node.js comes from `web/.nvmrc` and the packages from `web/package-lock.js
 The tests cover the reducer against every `test/protocol` fixture, the graph file's state and the
 pane's logic (drafts, stale files, Save, refusals), the node panel's knobly box (`nodeText.ts`), the add-node
 form (`addText.ts`), the highlighting (`highlight.ts`, and that it never changes the text sent), the reconnecting client with a fake socket,
-the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (a meter's words, and patchbay's scale pinned as stated here), the handles' cue (`connect.ts`), the box's sizes against `editor.css` (`layout.test.ts`), and the tokens and the theme's first paint (`theme.test.ts`: every `var()` names a token, and `index.html` inlines patchbay's theme script), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the sizes and the breakpoint against `editor.css` (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight and the ghosts (`requests.ts`), the toast store on patchbay's queue and a refusal's words (`notices.ts`, replaying `errors.json`), the gutter (`gutter.ts`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands as patchbay's `CommandPalette` takes and ranks them, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the key bindings as patchbay's `findShortcut` runs them (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), the wire dropped on the pane (`connect.ts`), and when the view fits itself (`fit.ts`). patchbay's modules import their own stylesheets, which Node cannot load, so `vite.config.ts` has Vitest inline the package (and blank its styles) for the tests that call its pure helpers. There is no browser test runner:
+the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (a meter's words, and patchbay's scale pinned as stated here), the handles' cue (`connect.ts`), the box's sizes against patchbay's exported geometry (`layout.test.ts`), and the tokens and the theme's first paint (`theme.test.ts`: every `var()` names a token, and `index.html` inlines patchbay's theme script), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the sizes and the breakpoint against `editor.css` (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight and the ghosts (`requests.ts`), the toast store on patchbay's queue and a refusal's words (`notices.ts`, replaying `errors.json`), the gutter (`gutter.ts`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands as patchbay's `CommandPalette` takes and ranks them, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the key bindings as patchbay's `findShortcut` runs them (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), the wire dropped on the pane (`connect.ts`), and when the view fits itself (`fit.ts`). patchbay's modules import their own stylesheets, which Node cannot load, so `vite.config.ts` has Vitest inline the package (and blank its styles) for the tests that call its pure helpers. There is no browser test runner:
 rendering is checked by eye. *Why:* a Playwright leg costs about 150 MB of browsers and a minute
 or two a CI run, while the logic sits in the reducer, client and rules, which Vitest covers
 against the same fixtures the server is tested with.

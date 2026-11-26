@@ -354,45 +354,8 @@ body,
   margin-bottom: 8px;
 }
 
-/* The node box (docs/editor.md#the-node-box): a stripe down its left edge and a pill in the state's token (--state),
-   the word always beside the colour. Its width is layout.ts's nodeWidth, which layout.test.ts holds equal. */
-.ear-node {
-  --state: var(--pb-warn);
-  position: relative;
-  width: 220px;
-  background: var(--pb-raised);
-  border: 1px solid var(--pb-line-strong);
-  border-radius: var(--pb-radius-box);
-  box-shadow: var(--pb-shadow);
-  font-variant-numeric: tabular-nums;
-  transition:
-    box-shadow var(--pb-motion-fast),
-    border-color var(--pb-motion-fast);
-}
-
-.ear-node::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 4px;
-  background: var(--state);
-  border-radius: calc(var(--pb-radius-box) - 1px) 0 0 calc(var(--pb-radius-box) - 1px);
-  pointer-events: none;
-}
-
-.ear-node:hover {
-  box-shadow: var(--pb-shadow-lifted);
-}
-
-/* The ring sits outside the border, so a failed box keeps its --pb-err border while selected. */
-.ear-node.selected {
-  box-shadow:
-    0 0 0 2px var(--pb-accent),
-    var(--pb-shadow-lifted);
-}
-
+/* A node's state colour (--state), for its minimap box (Canvas.tsx); the node box itself is patchbay's NodeBox, its
+   stripe in health.ts's stateTone (docs/editor.md#the-node-box). */
 .state-running {
   --state: var(--pb-ok);
 }
@@ -413,12 +376,8 @@ body,
   --state: var(--pb-err);
 }
 
-.ear-node.state-failed {
-  border-color: var(--pb-err);
-}
-
 /* Silence the operator asked for is quiet, never a fault (docs/editor.md#a-nodes-health); stopped and disabled apart.
-   A disabled box is never dimmed: its text keeps full contrast. */
+   */
 .state-stopped {
   --state: var(--pb-quiet);
 }
@@ -427,52 +386,10 @@ body,
   --state: var(--pb-off);
 }
 
-.ear-node.state-disabled {
-  border-style: dashed;
-}
-
-.ear-node.state-disabled::before {
-  background: repeating-linear-gradient(135deg, var(--pb-off) 0 3px, transparent 3px 6px);
-}
-
-.ear-node-header {
-  padding: 6px 8px 6px 12px;
-  border-bottom: 1px solid var(--pb-line);
-}
-
-.ear-node-title {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-}
-
-.ear-node-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .ear-node-type {
   font-size: 10px;
   color: var(--pb-muted);
   font-weight: normal;
-  white-space: nowrap;
-}
-
-.ear-node-status {
-  display: flex;
-  align-items: center;
-  margin: 3px 0 2px;
-}
-
-.ear-node-line {
-  font-size: 11px;
-  color: var(--pb-muted);
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -513,74 +430,9 @@ body,
   font-family: var(--pb-font-code);
 }
 
-.ear-node-ports {
-  display: flex;
-  justify-content: space-between;
-  padding: 2px 0;
-}
-
-.ports-in,
-.ports-out {
-  width: 50%;
-}
-
-/* A port row's height is layout.ts's portHeight, which layout.test.ts holds equal. */
-.port {
-  position: relative;
-  height: 22px;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0 10px;
-  font-size: 11px;
-}
-
-.port-out {
-  flex-direction: row-reverse;
-}
-
-.port-name {
-  font-family: var(--pb-font-code);
-}
-
-/* Handles: a 10 px dot with a 20 px hit area (its ::before is part of the handle's pointer target). While a wire is
-   drawn, connect.ts's handleCue rings every handle a drop on would make a route and dims the rest; the ringed one under
-   the pointer grows, by size alone, so React Flow's own translate keeps it centred on the edge. */
-.ear-node .react-flow__handle {
-  box-sizing: border-box;
-  width: 10px;
-  height: 10px;
-  background: var(--pb-text);
-  border: 2px solid var(--pb-raised);
-  transition:
-    width var(--pb-motion-fast),
-    height var(--pb-motion-fast),
-    opacity var(--pb-motion-fast);
-}
-
-.ear-node .react-flow__handle::before {
-  content: "";
-  position: absolute;
-  inset: -7px;
-  border-radius: var(--pb-radius-pill);
-}
-
-.ear-node .react-flow__handle.handle-target {
-  box-shadow: 0 0 0 3px var(--pb-accent);
-}
-
-.ear-node .react-flow__handle.handle-dimmed {
-  opacity: 0.3;
-}
-
-.ear-node .react-flow__handle.handle-target.connectingto {
-  width: 14px;
-  height: 14px;
-}
-
 /* A port's meter is patchbay's Meter (docs/editor.md#meters); in a port row and the route panel it takes the room left
-   beside the port's name. */
-.port .port-meter,
+   beside the port's name (PortRow's trailing slot). */
+.pb-port-trailing .port-meter,
 .route-level .port-meter {
   flex: 1;
   width: auto;
@@ -664,12 +516,8 @@ body,
   }
 }
 
-/* Forced colours (Windows high contrast): the stripe stays visible in the system's text colour. */
+/* Forced colours (Windows high contrast): the gutter's dots stay visible in the system's text colour. */
 @media (forced-colors: active) {
-  .ear-node::before {
-    background: CanvasText;
-  }
-
   .gutter-dot {
     background: CanvasText;
   }
@@ -707,42 +555,20 @@ body,
   color: var(--pb-warn);
 }
 
-/* A node's companions (docs/editor.md#companions): small badges along the box's bottom edge, a known kind and an
-   unknown one alike; not ready is a hollow dot and dimmed text, never colour alone. */
+/* A node's companions (docs/editor.md#companions): patchbay's Badges in one row in NodeBox's footer, which cuts what
+   does not fit; not ready is a hollow dot and the off tone, never colour alone. In the node panel's list the dot is
+   in the ok tone. */
 .companion-strip {
   display: flex;
-  flex-wrap: wrap;
   gap: 4px;
+  min-width: 0;
   margin: 0;
-  padding: 4px 8px 6px;
+  padding: 0;
   list-style: none;
-  border-top: 1px solid var(--pb-line);
 }
 
-.companion-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 0 6px;
-  border: 1px solid var(--pb-line-strong);
-  border-radius: var(--pb-radius-pill);
-  background: var(--pb-sunken);
-  font-size: 10px;
-  line-height: 16px;
-  color: var(--pb-text);
-}
-
-.companion-dot {
+.companion-list .companion-dot {
   color: var(--pb-ok);
-}
-
-.companion-not-ready {
-  color: var(--pb-off);
-  border-style: dashed;
-}
-
-.companion-not-ready .companion-dot {
-  color: var(--pb-off);
 }
 
 /* patchbay's WarnMark (docs/editor.md#recent-marks), set a little apart from the word or dot before it. */
@@ -1017,9 +843,8 @@ body,
 }
 
 /* Phones and touch (docs/editor.md#phones-and-touch). A coarse pointer with no hover is a finger: text fields at 16 px
-   (iOS Safari zooms the page on focusing a smaller one), controls at least 40 px tall, port handles with a hit area a
-   finger can find (as tall as their port row, so a row's neighbour stays its own, and wide outward), and the palette
-   button a search icon, as there is no keyboard to press its key on. */
+   (iOS Safari zooms the page on focusing a smaller one), controls at least 40 px tall (port handles' hit areas are
+   patchbay's PortRow's), and the palette button a search icon, as there is no keyboard to press its key on. */
 .palette-icon {
   display: none;
 }
@@ -1041,10 +866,6 @@ body,
 
   .lifecycle-buttons button {
     height: 40px;
-  }
-
-  .ear-node .react-flow__handle::before {
-    inset: -6px -16px;
   }
 }
 

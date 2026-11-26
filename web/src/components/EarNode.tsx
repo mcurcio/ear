@@ -1,22 +1,17 @@
-// A node box (docs/editor.md#the-node-box): a stripe down its left edge and a pill (a dot and the word) in its state's
-// colour, with the counters' mark after the pill while a loss counter of its own rose in the last minute (counters.ts,
-// docs/editor.md#counters); its name with its type as a small label, as sent; the line that says why it is silent or
-// what it waits for (health.ts, docs/editor.md#a-nodes-health); then one row per port, inputs on the left and outputs
-// on the right, each with its handle and its level meter, in every phase; and along its bottom edge the strip of its
-// companions' badges (companions.ts, docs/editor.md#companions), outside every handle. While a wire is drawn each
-// handle takes its cue from connect.ts's handleCue, the drop rule itself.
-// React Flow's useConnection is a drag in progress; hooks.ts's is the editor's socket.
-import {
-  Handle,
-  Position,
-  useConnection as useFlowConnection,
-  useUpdateNodeInternals,
-  type Node,
-  type NodeProps,
-} from "@xyflow/react";
+// A node box (docs/editor.md#the-node-box): patchbay's NodeBox, its stripe and its state pill in the state's tone
+// (health.ts's stateTone), with the counters' mark after the pill while a loss counter of its own rose in the last
+// minute (counters.ts, docs/editor.md#counters); its name with its type under it, as sent; the line that says why it is
+// silent or what it waits for (health.ts, docs/editor.md#a-nodes-health); then its ports stacked (layout.ts's
+// nodePorts), the inputs' rows with their handles on the left and then the outputs' on the right, each a PortRow with its handle (connect.ts's handle id) and its level meter in the
+// trailing slot, in every phase; and in the footer the strip of its companions' badges (companions.ts,
+// docs/editor.md#companions), outside every handle. While a wire is drawn each port takes its hint from connect.ts's
+// handleCue, the drop rule itself. React Flow's useConnection is a drag in progress; hooks.ts's is the editor's socket.
+import { NodeBox, type PortHint, type PortSpec } from "@mcurcio/patchbay/graph";
+import { useConnection as useFlowConnection, type Node, type NodeProps } from "@xyflow/react";
 import { useEffect, useState } from "react";
-import { handleCue, handleId } from "../connect";
-import { describeHealth, startingLineDelayMs } from "../health";
+import { handleCue, handleId, type Direction, type DragStart, type HandleCue } from "../connect";
+import { describeHealth, startingLineDelayMs, stateTone } from "../health";
+import { nodePorts } from "../layout";
 import type { GraphNode } from "../protocol";
 import { CompanionStrip } from "./CompanionStrip";
 import { NodeCounterMark } from "./Counters";
@@ -45,69 +40,60 @@ function usePhaseSeen(phase: string, since: string | undefined): number {
 export type EarNodeData = { node: GraphNode };
 export type EarFlowNode = Node<EarNodeData, "ear">;
 
-function Port({ node, port, direction }: { node: string; port: string; direction: "in" | "out" }) {
-  const isInput = direction === "in";
-  const id = handleId(direction, port);
-  // A string selector, so a pointer move during a drag redraws only the handles whose cue changed.
-  const cue = useFlowConnection((connection) => {
-    const from = connection.inProgress ? { nodeId: connection.fromHandle.nodeId, id: connection.fromHandle.id } : null;
-    return handleCue(from, node, id);
-  });
-  return (
-    <div className={`port port-${direction}`}>
-      <Handle
-        type={isInput ? "target" : "source"}
-        position={isInput ? Position.Left : Position.Right}
-        id={id}
-        className={`handle-${cue}`}
-      />
-      <span className="port-name">{port}</span>
-      <PortMeter node={node} port={port} label={`${port} level`} />
-    </div>
+/** handleCue's words in PortRow's: a handle a drop on would make a route accepts it, every other refuses it. */
+const hints: Record<HandleCue, PortHint> = { idle: null, origin: "origin", target: "ok", dimmed: "no" };
+
+/**
+ * The handle a drag in progress started from, as one string, so a pointer move during a drag redraws no box: only a
+ * drag's start and end do.
+ */
+function useDragStart(): DragStart | null {
+  const key = useFlowConnection((connection) =>
+    connection.inProgress ? JSON.stringify([connection.fromHandle.nodeId, connection.fromHandle.id ?? null]) : "",
   );
+  if (key === "") return null;
+  const [nodeId, id] = JSON.parse(key) as [string, string | null];
+  return { nodeId, id };
 }
 
-export function EarNode({ id, data: { node }, selected }: NodeProps<EarFlowNode>) {
+function ports(node: GraphNode, direction: Direction, from: DragStart | null): PortSpec[] {
+  return (direction === "in" ? node.inputs : node.outputs).map((port) => {
+    const id = handleId(direction, port);
+    return {
+      id,
+      label: port,
+      hint: hints[handleCue(from, node.name, id)],
+      trailing: <PortMeter node={node.name} port={port} label={`${port} level`} />,
+    };
+  });
+}
+
+export function EarNode({ data: { node }, selected }: NodeProps<EarFlowNode>) {
   const health = describeHealth(node, usePhaseSeen(node.phase, node.since));
-  // A change of ports redraws the same box (docs/editor.md#the-node-box): React Flow measures its handles again, so a
-  // surviving port's wires stay on it and a new port's handle takes wires.
-  const updateInternals = useUpdateNodeInternals();
-  const portsKey = `${node.inputs.join("\n")}\t${node.outputs.join("\n")}`;
-  useEffect(() => updateInternals(id), [id, portsKey, updateInternals]);
   const companions = useCompanionBadges(node);
   const { mark } = useNodeCounters(node);
+  const from = useDragStart();
+  // A change of ports redraws the same box (docs/editor.md#the-node-box): NodeBox has React Flow measure its handles
+  // again, so a surviving port's wires stay on it and a new port's handle takes wires.
   return (
-    <div className={`ear-node ${health.styleClass} phase-${node.phase}${selected ? " selected" : ""}`}>
-      <div className="ear-node-header">
-        <div className="ear-node-title">
-          <strong className="ear-node-name" title={node.name}>
-            {node.name}
-          </strong>
-          <span className="ear-node-type">{node.type}</span>
-        </div>
-        <div className="ear-node-status">
+    <NodeBox
+      title={node.name}
+      subtitle={node.type}
+      tone={stateTone(node)}
+      disabled={node.state === "disabled"}
+      failed={node.state === "failed"}
+      status={
+        <>
           <StatePill node={node} health={health} />
           <NodeCounterMark mark={mark} />
-        </div>
-        {health.line !== "" && (
-          <div className="ear-node-line" title={health.line}>
-            {health.line}
-          </div>
-        )}
-      </div>
-      <div className="ear-node-ports">
-        <div className="ports-in">
-          {node.inputs.map((port) => (
-            <Port key={port} node={node.name} port={port} direction="in" />
-          ))}
-        </div>
-        <div className="ports-out">
-          {node.outputs.map((port) => (
-            <Port key={port} node={node.name} port={port} direction="out" />
-          ))}
-        </div>
-      </div>
-      <CompanionStrip badges={companions} />
-    </div>
+        </>
+      }
+      line={health.line === "" ? undefined : health.line}
+      inputs={ports(node, "in", from)}
+      outputs={ports(node, "out", from)}
+      ports={nodePorts}
+      footer={companions.length === 0 ? undefined : <CompanionStrip badges={companions} />}
+      selected={selected}
+    />
   );
 }

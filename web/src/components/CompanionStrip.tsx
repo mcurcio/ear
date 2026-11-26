@@ -1,8 +1,9 @@
-// A node's companions (docs/editor.md#companions): the box's strip of badges, each its kind's word, a dot filled when
-// ready and hollow when not, and a warning mark while its counter rose in the last minute; and the node panel's list
-// of each one's detail. What each shows is companions.ts's; every state is in text, never in colour alone.
+// A node's companions (docs/editor.md#companions): the box's strip of badges in NodeBox's footer, each patchbay's Badge
+// with its kind's word, in the ok tone with a filled dot when ready and the off tone with a hollow one when not, and a
+// warning mark while its counter rose in the last minute; and the node panel's list of each one's detail. What each
+// shows is companions.ts's; every state is in text, never in colour alone.
 import type { CompanionBadge } from "../companions";
-import { WarnMark } from "@mcurcio/patchbay/primitives";
+import { Badge, WarnMark } from "@mcurcio/patchbay/primitives";
 
 function Dot({ badge }: { badge: CompanionBadge }) {
   return (
@@ -28,19 +29,17 @@ function Glyph() {
   );
 }
 
-/** The strip along the box's bottom edge; nothing when the node has no companions to draw. */
+/** The strip in the box's footer; nothing when the node has no companions to draw. */
 export function CompanionStrip({ badges }: { badges: CompanionBadge[] }) {
   if (badges.length === 0) return null;
   return (
     <ul className="companion-strip" aria-label="companions">
       {badges.map((badge) => (
-        <li
-          key={badge.key}
-          className={`companion-badge${badge.ready ? "" : " companion-not-ready"}`}
-          title={badge.title}
-        >
-          {badge.label} <Dot badge={badge} />
-          <Mark badge={badge} />
+        <li key={badge.key}>
+          <Badge tone={badge.ready ? "ok" : "off"} className="companion-badge" title={badge.title}>
+            {badge.label} <Dot badge={badge} />
+            <Mark badge={badge} />
+          </Badge>
         </li>
       ))}
     </ul>
