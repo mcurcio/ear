@@ -115,7 +115,8 @@ to right:
   badge in the first word's tone;
 - below 760 px, an Inspector button ([below](#narrow-windows)).
 
-`shell.ts` holds the words and their tones (`shell.test.ts`). The pill is patchbay's `Pill` and the chips its
+`shell.ts` holds the words and their tones (`shell.test.ts`). The palette, `ear.conf` and Inspector buttons are
+patchbay's `Button`, as tall as the theme switch beside them. The pill is patchbay's `Pill` and the chips its
 `Badge` ([its docs](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#state)), which colour the word
 and the dot, or the text and the edge, in the tone.
 
@@ -172,7 +173,7 @@ tone (`applies at restart` in the neutral one), a dot between two, the row one p
 and cut short before Save. The pane's banners above the text (the file changed under the draft, with Reload; ear
 refused the file; a write failed; editor edits were dropped, with a close button; a setting applies at restart) are
 patchbay's `Banner`, as are the node box's stale banner and the add form's: a stripe and a soft surface in the tone,
-an error one read at once (`role="alert"`) and the others when the reader is free. The header's toggle, and the top bar's, opens and closes it. It opens by
+an error one read at once (`role="alert"`) and the others when the reader is free. The header's toggle (patchbay's small `Button`, as Save is), and the top bar's, opens and closes it. It opens by
 itself only when ear refuses the file or a write fails, each newly (the same refusal sent again
 does not reopen it), or when a Save is refused; never on a hand edit. *Why a drawer:* the owner
 chose a full-width bottom drawer over a third column, so lines need not scroll sideways and the
@@ -210,7 +211,7 @@ unfolding is a resize, so the layout follows it and the view fits itself again u
 - **No zoom on focus.** Every text field, the code boxes included, is 16 px, as iOS Safari zooms the page when a
   smaller field takes the focus. The code size is one patchbay token, `--pb-code-size` (16 px under a coarse pointer), shared by the textarea, its highlighted
   copy and the drawer's gutter, so their glyphs still line up ([Highlighting](#highlighting)).
-- **Targets a finger finds.** The top bar's buttons are at least 36 px tall, the canvas tools and the lifecycle bar
+- **Targets a finger finds.** The top bar's buttons are at least 36 px tall (patchbay's Button and ThemeSwitch under a coarse pointer), the canvas tools and the lifecycle bar
   40 px. A port handle's hit area is as tall as its port row (so a neighbouring port stays its own) and reaches
   16 px further out each side, so a wire starts from a fingertip; React Flow's pan and pinch zoom work as they do.
 - **No keyboard.** The palette button shows a search icon instead of its key. The palette, the inspector's buttons

@@ -87,10 +87,6 @@ body,
   font-variant-numeric: tabular-nums;
 }
 
-.topbar-drawer .pb-badge {
-  margin-left: 6px;
-}
-
 /* The workspace: the canvas fills what the inspector leaves. */
 .workspace {
   position: relative;
@@ -1033,10 +1029,6 @@ body,
   .app select:not(:where([class^="pb-"], [class*=" pb-"])),
   .app textarea {
     font-size: 16px;
-  }
-
-  .topbar button {
-    min-height: 36px;
   }
 
   .palette-icon {

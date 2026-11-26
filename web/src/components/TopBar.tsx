@@ -1,10 +1,10 @@
 // The top bar (docs/editor.md#the-top-bar): what is about the whole graph and never about a selection. The wordmark and
 // the connection pill; the engine chip, the dropouts badge and the newer-protocol chip; then the palette button with
-// its key (docs/editor.md#the-palette), patchbay's theme switch, the
-// ear.conf toggle with the drawer's status words, and below the narrow width the inspector's button. The words are
-// shell.ts's and drawer.ts's.
+// its key (docs/editor.md#the-palette), patchbay's theme switch, the ear.conf toggle with the drawer's status words,
+// and below the narrow width the inspector's button. The three buttons are patchbay's Button, so they stand as tall as
+// the theme switch beside them. The words are shell.ts's and drawer.ts's.
 import type { ThemeChoice } from "@mcurcio/patchbay/hooks";
-import { Badge, Pill, ThemeSwitch } from "@mcurcio/patchbay/primitives";
+import { Badge, Button, Pill, ThemeSwitch } from "@mcurcio/patchbay/primitives";
 import { drawerChip, type DrawerWord } from "../drawer";
 import type { Graph } from "../protocol";
 import { connectionPill, nextPillChange } from "../shell";
@@ -57,8 +57,7 @@ export function TopBar({
       <div className="topbar-facts">{graph !== null && <GraphChips graph={graph} />}</div>
       <div className="topbar-end">
         {onPalette !== undefined && (
-          <button
-            type="button"
+          <Button
             className="topbar-palette"
             aria-label="Command palette"
             title={`Command palette (${paletteLabel})`}
@@ -71,12 +70,11 @@ export function TopBar({
               <path d="M10.5 10.5 14 14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
             </svg>
             <span className="palette-key">{paletteLabel}</span>
-          </button>
+          </Button>
         )}
         <ThemeSwitch choice={theme} onChoose={onTheme} />
         {drawer !== null && (
-          <button
-            type="button"
+          <Button
             className="topbar-drawer"
             aria-expanded={drawer.open}
             aria-controls="drawer-body"
@@ -85,21 +83,20 @@ export function TopBar({
           >
             <span className="topbar-drawer-glyph" aria-hidden="true">
               ▤
-            </span>{" "}
+            </span>
             ear.conf
             {chip !== undefined && <Badge tone={chip.tone}>{chip.text}</Badge>}
-          </button>
+          </Button>
         )}
         {narrow && (
-          <button
-            type="button"
+          <Button
             className="topbar-inspector"
             aria-expanded={sheetOpen}
             aria-controls="inspector"
             onClick={onToggleSheet}
           >
             Inspector
-          </button>
+          </Button>
         )}
       </div>
     </header>

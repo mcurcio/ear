@@ -46,7 +46,7 @@ D15 are rasl's and change nothing here; they are listed so the numbers match pat
 | D8 | Delete `@rasl/ui` | 2026-11-26 | rasl's; nothing here |
 | D9 | patchbay's keyboard model: a chord acts in a text field only when its binding opts in; Tab closes the palette; palette items have a hint line | 2026-11-26 | ⌘K and ⌘S opt in; A4's palette and keys |
 | D10 | patchbay's Meter owns the dB scale (built in 0.5.0) | 2026-11-26 | `meters.ts`'s scale, zones, hold and fall go with Meter in A3 |
-| D11 | patchbay's toast model (built in 0.5.0) | 2026-11-26 | `notices.ts`'s queue becomes `useToasts` and Toaster in A4; ear keeps the wording |
+| D11 | patchbay's toast model (built in 0.5.0) | 2026-11-26 | `notices.ts`'s store runs on the pure queue `useToasts` holds and Toaster draws it (A4); ear keeps the wording |
 | D12 | NodeBox's geometry as exported constants, mirrored by tokens a brand may not change | 2026-11-26 | `layout.ts` reads them in A3 |
 | D13 | SchemaForm deferred | 2026-11-26 | The JSON settings form stays ear's |
 | D15 | rasl gets patchbay's theme switch, as ear does | 2026-11-26 | rasl's; nothing here |
@@ -54,8 +54,8 @@ D15 are rasl's and change nothing here; they are listed so the numbers match pat
 ## 2. What is built
 
 - **The editor.** React 19.3, `@xyflow/react` 12.12, dagre, Vite 8, Vitest in its default environment (no DOM, no
-  Storybook): logic tests, plus tests that read `theme.css` and `editor.css` as text to hold CSS equal to TS constants
-  (`theme.test.ts`, `sizes.test.ts`, `layout.test.ts`). knobly comes from its GitHub Release tarball, pinned by
+  Storybook): logic tests, plus tests that read `editor.css` (and patchbay's `tokens.css`) as text to hold CSS equal to
+  TS constants and every `var()` to a token (`theme.test.ts`, `sizes.test.ts`, `layout.test.ts`). knobly comes from its GitHub Release tarball, pinned by
   `cmake/knobly.json` ([AGENTS.md](../../AGENTS.md), [editor.md](../editor.md#highlighting)).
 - **patchbay 0.5.0.** Peer dependencies `react` and `react-dom` `^19`, and optionally `@xyflow/react` `^12` and
   `knobly` `^1.0.0` [V: `package.json`]; ear meets every range. Subpaths `./tokens.css`, `./base.css`, `./primitives`,
@@ -110,6 +110,7 @@ patchbay takes the drawing and the generic mechanics; ear keeps what knows about
 | Splitters | `Splitter.tsx`, `sizes.ts` dragged, keyed, clamp | Splitter, `edge="start"` | Bounds stay in `sizes.ts` until A5. `edge` becomes logical in a later patchbay (owner, 2026-11-26: start and end follow the text direction); the editor is left-to-right, so `start` stays its left and top | built |
 | Canvas tools | `CanvasTools.tsx`, a plain `role=toolbar` | ToolGroup and IconButton, inside React Flow's `<Panel>` | Roving tab stop (new); `fitPadding` still reserves 76 px for 40 px touch tools | built |
 | Shortcut sheet | `ShortcutSheet.tsx` on `.palette-backdrop` | Dialog, through patchbay's ShortcutSheet | Gains a Close button and a scrim press; built with A4's palette and keys, which replaced this step | built |
+| Top bar and drawer buttons | plain `<button>`s for the palette, `ear.conf` and Inspector toggles, shorter than ThemeSwitch, and the drawer's toggle beside a small Button | Button (the drawer's toggle `size="sm"`, as its Save) | The same height as the theme switch, and 36 px under a coarse pointer from patchbay's own rule | built |
 | Forms and busy buttons | AddNodeJson, AddNodeText's select, lifecycle bar, Delete, the two Saves | Field, TextInput, Select, Button `busy`, `tone="danger"` | Busy stays focusable, its words in `busyLabel` (D4); the lifecycle row keeps its segmented CSS, its words under the spinner | built |
 | Pills, chips, facts | `StatePill.tsx`, `.chip tone-*`, EngineFactsSection's `<dl>` | Pill, Badge, KeyValue | Pill and Badge `accent` and `muted`, a filled Badge (D3); the counter tables stay ear's markup | built |
 | Narrow inspector | CSS-only sheet in `editor.css` | Sheet (right below 760 px, bottom below 600 px) | The workspace was already `position: relative`; the sheet is titled "Inspector" and keeps the docked width | built |
@@ -194,7 +195,8 @@ Component behaviour is tested in patchbay (jsdom and Storybook); ear keeps logic
   [highlighting](../editor.md#highlighting) and [the drawer's gutter](../editor.md#the-drawers-gutter) in A4; the shell
   again in A5. `make docs-check` holds the anchors comments cite.
 - Visible changes, each confirmed (section 1): the canvas tools' roving tab stop, busy buttons staying focusable,
-  the shortcut sheet's Close button and scrim, the theme script, and small shifts in pills and chips; in A3 and A4
+  the shortcut sheet's Close button and scrim, the theme script, the top bar's and drawer's buttons matching patchbay's,
+  and small shifts in pills and chips; in A3 and A4
   the banners' stripe and close button, the palette's grouped list with each hint on a second line and patchbay's
   ranking (D9), no binding acting while the shortcut sheet is open, a chord matching its modifiers exactly, Show
   dismissing its toast (D11), and the meters' lamp as a square beside the bar and their accessible names (D10).

@@ -1,6 +1,7 @@
 // The ear.conf drawer (docs/editor.md#the-drawer): full width along the bottom, a header that never goes away and says
-// in patchbay's StatusWords what the file needs (drawer.ts), its toggle and Save (Saving… while its request is on its way,
-// docs/editor.md#requests-in-flight), and the pane as its body, resized by its top edge.
+// in patchbay's StatusWords what the file needs (drawer.ts), its toggle and Save (both patchbay's small Button; Save
+// shows Saving… while its request is on its way, docs/editor.md#requests-in-flight), and the pane as its body, resized
+// by its top edge.
 // Closed, the body is hidden but stays mounted, so the draft, the caret and the scroll are kept.
 import type { CSSProperties } from "react";
 import { drawerBounds } from "../sizes";
@@ -24,15 +25,16 @@ export function Drawer({ drawer }: { drawer: DrawerModel }) {
         />
       )}
       <header className="drawer-header">
-        <button
-          type="button"
+        <Button
+          size="sm"
           className="drawer-toggle"
           aria-expanded={open}
           aria-controls="drawer-body"
           onClick={() => setOpen(!open)}
         >
-          <span aria-hidden="true">{open ? "▾" : "▴"}</span> ear.conf
-        </button>
+          <span aria-hidden="true">{open ? "▾" : "▴"}</span>
+          ear.conf
+        </Button>
         <StatusWords
           className="drawer-status"
           items={status.map((word) => ({ tone: word.tone, label: word.text, title: word.title }))}
