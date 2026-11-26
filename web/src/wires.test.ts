@@ -30,9 +30,9 @@ describe("a wire", () => {
     expect(wireStatusClass(held)).toBe("wire-unknown");
     expect([linked, pending, refused, held].map((route) => wireData(route, 0).tone)).toEqual([
       "ok",
-      "warn",
-      "err",
-      "warn",
+      "pending",
+      "refused",
+      "pending",
     ]);
   });
 

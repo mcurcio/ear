@@ -199,7 +199,7 @@ body,
 }
 
 .wire-status.wire-pending {
-  color: var(--pb-warn);
+  color: var(--pb-quiet);
 }
 
 .wire-status.wire-unknown {

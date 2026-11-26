@@ -3,7 +3,7 @@
 // where colour is not enough, and a tooltip naming its two ends; and the inspector's Route subject's status in words
 // (wireStatusWords) and class (wireStatusClass). A status this editor does not know is drawn as pending, and by its
 // own word (docs/control-port.md#protocol-and-features).
-import type { WireData } from "@mcurcio/patchbay/graph";
+import type { WireData, WireTone } from "@mcurcio/patchbay/graph";
 import { floorDb, meterFraction, toDbfs } from "./levels";
 import type { GraphRoute, RouteEnds } from "./protocol";
 
@@ -40,12 +40,12 @@ export function wireEnds(route: RouteEnds): string {
   return `${route.from.node}:${route.from.port} → ${route.to.node}:${route.to.port}`;
 }
 
-/** Each status's tone on Wire: an unknown one as pending's. */
-const tones: Record<WireStatusClass, "ok" | "warn" | "err"> = {
+/** Each status's tone on Wire, patchbay's route tones: an unknown one as pending's. */
+const tones: Record<WireStatusClass, WireTone> = {
   "wire-linked": "ok",
-  "wire-pending": "warn",
-  "wire-unknown": "warn",
-  "wire-refused": "err",
+  "wire-pending": "pending",
+  "wire-unknown": "pending",
+  "wire-refused": "refused",
 };
 
 /**

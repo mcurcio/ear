@@ -131,8 +131,8 @@ patchbay's graph layer carrying each is released (0.6.0).
   stacked, as a name and a meter do not fit side by side in 240 px. `layout.ts` sizes boxes by `nodeBoxSize` and
   places quick add by `NODE_HEADER`, `NODE_PAD` and `NODE_ROW` instead of its own constants (220, 68, 22), and
   `layout.test.ts` checks those exports instead of reading `editor.css` ([editor.md](../editor.md#the-node-box)).
-- **Wires** (built). `LevelEdge.tsx` wraps Wire; `wires.ts`'s `wireData` computes its tone (`ok`, `warn`, `err`, as
-  the statuses were coloured), emphasis, dashes, flow, label and title. `GhostEdge.tsx` wraps GhostWire with its
+- **Wires** (built). `LevelEdge.tsx` wraps Wire; `wires.ts`'s `wireData` computes its tone (patchbay's route tones:
+  `ok` linked, `pending`, `refused`), emphasis, dashes, flow, label and title. `GhostEdge.tsx` wraps GhostWire with its
   refused tone; `requests.ts` keeps a refused request one more second. `connect.ts`'s `handleCue` is gone:
   `useConnectHints` over `canConnect` (ear's rule) gives the hints and React Flow's drop check, merged with the canvas's
   other handlers by `mergeFlowProps`. The per-port `useLevel` path stays; at 30 level messages a second no path is
@@ -212,7 +212,7 @@ Component behaviour is tested in patchbay (jsdom and Storybook); ear keeps logic
   the shortcut sheet's Close button and scrim, the theme script, the top bar's and drawer's buttons matching patchbay's,
   and small shifts in pills and chips; in A3 and A4
   the node box's look (240 px wide, the pill beside the name, the type under it, the ports stacked, the companions
-  as Badges, PortRow's handle hints), the wires' look (Wire's 1.5 to 3.5 px by level, the accent when selected, no
+  as Badges, PortRow's handle hints), the wires' look (Wire's 1.5 to 3.5 px by level, a pending route in `--pb-quiet` rather than `--pb-warn`, the accent when selected, no
   hover thickening, the round flow dots, the status word on a neutral label, and no hint on the drag's own side), the
   ghost wire in `--pb-quiet`, the canvas tools' words, glyphs and order (zoom in first) and their animated zoom and
   fit, a minimap that no longer pans or zooms the view, the banners' stripe and close button, the palette's grouped list with each hint on a second line and patchbay's

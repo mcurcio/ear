@@ -518,9 +518,9 @@ class (inside `:where()`, so they weigh no more), so patchbay's controls draw as
 - **Text:** `--pb-text`, `--pb-muted` (type labels, the health line, counter labels), `--pb-accent`
   (selection, focus, the reconfiguring pill) and `--pb-on-strong` (text on a filled badge: the "not realtime" badge,
   the warning mark).
-- **States:** `--pb-ok` running, linked and ready; `--pb-warn` starting, stopping, pending, an unknown
+- **States:** `--pb-ok` running, linked and ready; `--pb-warn` starting, stopping, an unknown
   state and the warning mark; `--pb-err` failed, refused and the diagnostics' errors; `--pb-quiet`
-  stopped; `--pb-off` disabled and a companion not ready. Asked-for silence is never `--pb-err`
+  stopped and a pending route; `--pb-off` disabled and a companion not ready. Asked-for silence is never `--pb-err`
   ([above](#a-nodes-health)).
 - **Soft surfaces** under banners and the dropouts badge (`--pb-warn-soft`, `--pb-err-soft`), the
   meters' (`--pb-meter-low`, `--pb-meter-mid`, `--pb-meter-hot`, `--pb-meter-peak`), the shadows
@@ -652,8 +652,9 @@ Each route is patchbay's `Wire` ([its docs](https://github.com/mcurcio/patchbay/
 from port's level. *Why patchbay's:* the owner's principle is to take patchbay's model where it has the concept
 (2026-11-26).
 
-- **Colour by status.** Its tone: `ok` linked, `warn` pending, `err` refused; a status this editor does not know is
-  drawn as pending. Selected, the wire is `--pb-accent` whatever its status.
+- **Colour by status.** Its tone is patchbay's for a route: `ok` linked (`--pb-ok`), `pending` (`--pb-quiet`) and
+  `refused` (`--pb-err`); a status this editor does not know is drawn as pending. The Route subject's words for
+  those three statuses take the same colours. Selected, the wire is `--pb-accent` whatever its status.
 - **Size by level.** Its emphasis is the from port's rms on the meters' scale (`levels.ts`'s `meterFraction`, the
   -60 dBFS floor): 1.5 px to 3.5 px wide and from 45 % to full opacity. Every status but `linked` is dashed.
 - **The flow.** A linked wire whose from port's rms is above the floor shows dots moving from the output to the
