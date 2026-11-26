@@ -22,7 +22,8 @@ enum class ValueKind { flag, wholeNumber, decimal, choice, text };
 std::string_view valueKindName(ValueKind kind) noexcept; // "flag" | "wholeNumber" | "decimal" | "choice" | "text"
 
 namespace writer {
-/// Who writes a status field: the node's code on the realtime thread (through Io, slice 5.3), one of the spec's loops
+/// Who writes a status field: the node's code on the realtime thread (through Io:
+/// docs/writing-a-node-type.md#reporting-from-the-code), one of the spec's loops
 /// (through Report, from that loop's thread), or a companion kind's adapter (slice 8).
 struct Writer {
 	enum class Kind { rt, loop, companion };

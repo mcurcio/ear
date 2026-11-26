@@ -1046,15 +1046,11 @@ Each step keeps every test green, adds its feature to `features`, and changes no
 **5.1 The schema on the wire** is built ([control-port.md](../control-port.md#type-schemas),
 [writing-a-node-type.md](../writing-a-node-type.md#the-type-schema), [editor.md](../editor.md#the-settings-form)).
 
-**5.2 Status and events off the realtime thread.** `StatusTable`, `EventTable`, `LogCodes` in `TypeSpec`; `Report` and
-`NodeOf::report`; the per-node queue, the drain and the tick; `node.statusChanged` with its reset, `node.eventRaised`,
-the `status` and `event` records; `status` in snapshots and `node.added`; `node.diagnostic` with subject, `active` and
-`count`; flapping, `ear.events-dropped`, `ear.records-dropped`, and 3b's, 3c's and 3d's diagnostics on the wire; the
-harness's captures; `rpc-call.mjs --follow`. Tests: `ear_core_tests` with a test type (status before event, a `lost`
-after the last status, a closed configuration's write dropped, the reset after the last values, status kept through a
-stop and a start, the queue's bound, flapping and settling on the harness's clock, the tick's 33 ms cap, the trailing
-record within 1 s and matching the view); `status.json`, `diagnostics.json`; the editor's status list and badges; a
-system test of ten chatty nodes and a slowly reading client.
+**5.2 Status and events off the realtime thread** is built
+([writing-a-node-type.md](../writing-a-node-type.md#status-and-events),
+[architecture.md](../architecture.md#status-and-events), [output-records.md](../output-records.md#status),
+[control-port.md](../control-port.md#status), [editor.md](../editor.md#status-events-and-diagnostics)). Left: the
+system test of ten chatty nodes and a slowly reading client ([testing.md](../testing.md#tests-still-to-write)).
 
 **5.3 The realtime ring** is built ([architecture.md](../architecture.md#the-realtime-channels),
 [writing-a-node-type.md](../writing-a-node-type.md#reporting-from-the-code), [engine.md](../engine.md#the-realtime-bell)).
@@ -1118,9 +1114,6 @@ formulas and their inverses; Backspace on a focused knob sends no `node.remove`.
 - **A dropped connection writes its last value** (R32), 30 s later at most; the `param` record says so.
 - **Rounding at the end** can differ from the last live value by half a step (0.05 dB at one decimal).
 - **Ticks run the type's `check`** on the main loop, once per gesture per turn at most.
-- [U] Aggregate deduction of `TypeSpec` with designated initialisers and defaulted parameters on GCC 14: it holds for
-  `.stores` and `.loops` (every subset spelling compiles, `type_spec_test.cpp`) and is still to check for this page's
-  members; fallback a consteval `makeSpec` with the same members in the same order.
 - [U] knobly reads `-3.5` as one number word in a setting's place, and a directive name may hold `.`; fallback `trimDb-1`.
 - [U] `std::atomic<double>` lock-free on arm64.
 - [U] Browsers' pointer capture on touch screens (`lostpointercapture` after a cancelled touch), checked by hand in 6.5.

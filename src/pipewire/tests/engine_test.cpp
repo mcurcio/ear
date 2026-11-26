@@ -1491,6 +1491,8 @@ constexpr TypeSpec spec{
 /// What the code does, set by the test: nothing, one write and one event, or a write every cycle.
 enum class Writes { none, once, everyCycle };
 std::atomic<Writes> writes{Writes::none};
+/// Whether the one event was raised: once holds its value every cycle, but raises only in the first.
+std::atomic<bool> raised{false};
 std::atomic<std::int64_t> cycles{0};
 /// Woken by the code at every cycle (an eventfd write, safe on the data loop), so a test waits on cycles run.
 std::atomic<Waiter*> waking{nullptr};
@@ -1504,7 +1506,7 @@ struct Code {
 			break;
 		case Writes::once:
 			io.set<level>(5);
-			io.raise<hello>(7);
+			if (!raised.exchange(true, std::memory_order_relaxed)) io.raise<hello>(7);
 			break;
 		case Writes::everyCycle:
 			io.set<level>(cycle % 1000000);
@@ -1558,6 +1560,7 @@ TEST_CASE("A code's status and event from the real data loop ring the main loop'
           "[engine][realtime-bell]") {
 	using namespace engine_bell_test;
 	writes = Writes::none;
+	raised = false;
 	cycles = 0;
 	auto engine = makeEngine();
 	Waiter waiter(*engine);

@@ -4907,7 +4907,7 @@ struct NodeHost::Impl {
 			// Its claims are going: a claimant waits for step 5 rather than being refused; its own waits leave.
 			host_.claims.going(config_->generation);
 			for (SourceSlot& slot : config_->sources) slot.source->close();
-			// Its loops refuse outside work from here (slice 5's actions, a program's feed), keeping the node's own.
+			// Its loops refuse outside work from here (a type's calls, a program's feed), keeping the node's own.
 			for (const auto& slot : config_->loops)
 				if (slot->made) slot->made->closeToOthers();
 			// Its program is told to end; teardown step 3 waits for its reaping.

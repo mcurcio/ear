@@ -152,7 +152,8 @@ protected:
 };
 
 /// A loop as the framework drives it, made by its adapter. Its handlers' work arrives through Loop (the node's own,
-/// staged by NodeHost until the node is configured) and through postFromOutside (slice 5's actions).
+/// staged by NodeHost until the node is configured) and through postFromOutside (a type's calls:
+/// docs/writing-a-node-type.md#actions).
 class NodeLoop : public Loop {
 public:
 	/// Main thread, at teardown step 5, once closed: frees what is left (a dedicated loop's thread joined: it already
