@@ -113,7 +113,7 @@ to right:
 - on the right, the palette button, its key (`⌘K` or `Ctrl+K`) as its text
   ([below](#the-palette)), the theme switch and the `ear.conf` toggle with the drawer's status words as a
   badge in the first word's tone;
-- below 900 px, an Inspector button ([below](#narrow-windows)).
+- below 760 px, an Inspector button ([below](#narrow-windows)).
 
 `shell.ts` holds the words and their tones (`shell.test.ts`). The pill is patchbay's `Pill` and the chips its
 `Badge` ([its docs](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#state)), which colour the word
@@ -176,16 +176,21 @@ and the scroll. The inspector and the drawer never move each other's content.
 
 ### Narrow windows
 
-Below 760 px the inspector is a sheet over the canvas's right edge. It opens when something is
-selected or from the top bar's Inspector button, and closes on Escape (after the palette and the shortcut sheet,
-before the selection: [Shortcuts](#shortcuts)) or a click on the canvas. 760 rather than a laptop-sized width keeps
-it docked on a foldable phone unfolded (about 890 px wide) and on a tablet in portrait, where the canvas is still
-480 px wide. The drawer keeps its place. Below 600 px (a phone in portrait) the sheet rises from the bottom instead,
-at most 62 % of the workspace and scrolling inside, so the graph stays in sight above it; and the top bar drops the
-wordmark and the engine chip (the Graph subject holds the same facts), patchbay's theme switch shows only its icon (its
-label still names the choice) and the `ear.conf` toggle its glyph, so its buttons fit beside the connection pill.
-`sizes.ts` holds the bounds (which it passes to the splitters) and the breakpoint, and `sizes.test.ts` holds
-`editor.css` to them.
+Below 760 px the inspector is patchbay's `Sheet` over the canvas's right edge
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#overlays)), titled "Inspector", at the
+width kept for the docked inspector (within 280 to 560 px and 48 px short of the canvas) and not resized. It opens
+when something is selected or from the top bar's Inspector button, and closes on its close button, Escape (after the
+palette and the shortcut sheet, before the selection: [Shortcuts](#shortcuts)) or a click on the canvas; it is not
+modal, so the canvas stays live, and closing it with the focus inside gives the focus back. Escape with the focus
+inside the sheet is the sheet's own and closes it, even from a text field (patchbay's model). 760 rather than a
+laptop-sized width keeps it docked on a foldable phone unfolded (about 890 px wide) and on a tablet in portrait, where
+the canvas is still 480 px wide. The drawer keeps its place. Below 600 px (a phone in portrait) the sheet rises from
+the bottom instead, the full width and at most 62 % of the workspace, scrolling inside, so the graph stays in sight
+above it; and the top bar drops the wordmark and the engine chip (the Graph subject holds the same facts),
+patchbay's theme switch shows only its icon (its label still names the choice) and the `ear.conf` toggle its glyph,
+so its buttons fit beside the connection pill. `App.tsx` picks docked, right or bottom from `sizes.ts`'s
+`narrowQuery` and `phoneQuery`; `sizes.ts` holds the bounds (which it passes to the splitters) and both widths, and
+`sizes.test.ts` holds `editor.css`'s bounds and phone width to them.
 
 ### Phones and touch
 

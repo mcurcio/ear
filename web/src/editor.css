@@ -385,8 +385,8 @@ body,
   stroke: var(--pb-err);
 }
 
-/* The inspector (docs/editor.md#the-inspector): one subject, resized by its left edge between sizes.ts's bounds, which
-   sizes.test.ts holds equal. */
+/* The inspector (docs/editor.md#the-inspector): one subject, docked and resized by its left edge between sizes.ts's
+   bounds, which sizes.test.ts holds equal; on a narrow window its body is patchbay's Sheet's instead. */
 .inspector {
   position: relative;
   flex: none;
@@ -395,19 +395,19 @@ body,
   background: var(--pb-raised);
 }
 
-.inspector-body {
+.inspector > .inspector-body {
   height: 100%;
   overflow-y: auto;
   padding: 8px 12px;
   box-sizing: border-box;
 }
 
-.inspector h2 {
+.inspector-body h2 {
   font-size: 14px;
   margin: 0 0 6px;
 }
 
-.inspector h3 {
+.inspector-body h3 {
   font-size: var(--pb-text-sm);
   margin: 6px 0 2px;
 }
@@ -422,13 +422,13 @@ body,
   padding-top: 0;
 }
 
-.inspector label:not(.pb-field-label) {
+.inspector-body label:not(.pb-field-label) {
   display: block;
   margin-bottom: 6px;
 }
 
 /* patchbay's Field (docs/editor.md#adding-a-node) wires and lays out its label; the inspector spaces the fields. */
-.inspector .pb-field {
+.inspector-body .pb-field {
   margin-bottom: 6px;
 }
 
@@ -456,7 +456,7 @@ body,
 }
 
 /* patchbay's KeyValue draws the facts (docs/editor.md#the-inspector); the inspector spaces them. */
-.inspector .facts {
+.inspector-body .facts {
   margin-bottom: 6px;
 }
 
@@ -1307,28 +1307,6 @@ body,
   }
 }
 
-/* Narrow windows (docs/editor.md#narrow-windows; sizes.ts's narrowQuery, which sizes.test.ts holds equal): the
-   inspector is a sheet over the canvas's right edge, shown while open, and is not resized. */
-@media (max-width: 759px) {
-  .inspector {
-    position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 10;
-    width: min(clamp(280px, var(--inspector-width), 560px), calc(100% - 48px));
-    box-shadow: var(--pb-shadow-lifted);
-  }
-
-  .app[data-sheet="closed"] .inspector {
-    display: none;
-  }
-
-  .inspector .pb-splitter {
-    display: none;
-  }
-}
-
 @media (max-width: 599px) {
   .topbar .wordmark {
     display: none;
@@ -1402,29 +1380,9 @@ body,
   }
 }
 
-/* A phone in portrait (below 600 px): the inspector is a sheet from the bottom, over the canvas's lower part, so the
-   graph stays in sight above it; the engine chip gives way (the Graph subject holds the same facts). */
+/* A phone in portrait (sizes.ts's phoneQuery): the engine chip gives way (the Graph subject holds the same facts). */
 @media (max-width: 599px) {
   .topbar .engine-chip {
     display: none;
-  }
-
-  .inspector {
-    top: auto;
-    left: 0;
-    width: auto;
-    max-height: 62%;
-    border-left: none;
-    border-top: 1px solid var(--pb-line);
-    border-radius: var(--pb-radius-box) var(--pb-radius-box) 0 0;
-    display: flex;
-    flex-direction: column;
-  }
-
-  /* The sheet has only a max height, so its body scrolls as a flex child, not by a height of 100%. */
-  .inspector-body {
-    height: auto;
-    flex: 1 1 auto;
-    min-height: 0;
   }
 }

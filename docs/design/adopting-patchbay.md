@@ -108,7 +108,7 @@ patchbay takes the drawing and the generic mechanics; ear keeps what knows about
 | Shortcut sheet | `ShortcutSheet.tsx` on `.palette-backdrop` | Dialog | Gains a Close button and a scrim press | to build |
 | Forms and busy buttons | AddNodeJson, AddNodeText's select, lifecycle bar, Delete, the two Saves | Field, TextInput, Select, Button `busy`, `tone="danger"` | Busy stays focusable, its words in `busyLabel` (D4); the lifecycle row keeps its segmented CSS, its words under the spinner | built |
 | Pills, chips, facts | `StatePill.tsx`, `.chip tone-*`, EngineFactsSection's `<dl>` | Pill, Badge, KeyValue | Pill and Badge `accent` and `muted`, a filled Badge (D3); the counter tables stay ear's markup | built |
-| Narrow inspector | CSS-only sheet in `editor.css` | Sheet (right below 760 px, bottom below 600 px) | Workspace becomes `position: relative` | to build |
+| Narrow inspector | CSS-only sheet in `editor.css` | Sheet (right below 760 px, bottom below 600 px) | The workspace was already `position: relative`; the sheet is titled "Inspector" and keeps the docked width | built |
 | Kept sizes | `prefs.ts` width, drawer, minimap | `usePersistentState` with the same keys and checks | Places stay `prefs.ts`'s | to build |
 
 The health-to-tone map for Pill is built (`health.ts`'s `stateTone`, [editor.md](../editor.md#the-node-box)). The node

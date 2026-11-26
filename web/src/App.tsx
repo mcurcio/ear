@@ -17,7 +17,7 @@ import type { Command, PaletteScope } from "./palette";
 import { themeKey, type Prefs } from "./prefs";
 import { nodeTextFeature, type RouteEnds } from "./protocol";
 import { nothingSelected, removals, selectionKey, subjectOf } from "./selection";
-import { inspectorWidth, narrowQuery } from "./sizes";
+import { inspectorWidth, narrowQuery, phoneQuery } from "./sizes";
 import { Canvas } from "./components/Canvas";
 import { fitPadding } from "./components/CanvasTools";
 import { AutoFit } from "./fit";
@@ -65,8 +65,10 @@ export function App({ prefs }: { prefs: Prefs }) {
   useEffect(() => prefs.setMinimap(minimap), [prefs, minimap]);
   const toggleMinimap = useCallback(() => setMinimap((shown) => !shown), []);
 
-  // Below the narrow width the inspector is a sheet: it opens on a selection and closes on Escape or the canvas.
+  // Below the narrow width the inspector is a sheet: it opens on a selection and closes on Escape, its close button or
+  // the canvas; below the phone width it rises from the bottom.
   const narrow = useMediaQuery(narrowQuery);
+  const phone = useMediaQuery(phoneQuery);
   const [sheetOpen, setSheetOpen] = useState(false);
   const key = selectionKey(canvas.selection);
   useEffect(() => {
@@ -203,7 +205,7 @@ export function App({ prefs }: { prefs: Prefs }) {
   });
 
   return (
-    <div className="app" data-narrow={narrow || undefined} data-sheet={sheetOpen ? "open" : "closed"}>
+    <div className="app">
       <h1 className="visually-hidden">EAR graph editor</h1>
       <TopBar
         graph={graph}
@@ -238,6 +240,7 @@ export function App({ prefs }: { prefs: Prefs }) {
             onResize={setInspectorPx}
             onSelect={canvas.select}
             onRemove={onRemove}
+            sheet={narrow ? { side: phone ? "bottom" : "right", open: sheetOpen, onClose: closeSheet } : null}
           />
         )}
       </div>

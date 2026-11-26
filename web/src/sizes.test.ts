@@ -10,6 +10,8 @@ import {
   inspectorWidth,
   narrowQuery,
   narrowWidth,
+  phoneQuery,
+  phoneWidth,
 } from "./sizes";
 
 describe("the bounds", () => {
@@ -47,9 +49,12 @@ describe("editor.css", () => {
     );
   });
 
-  it("makes the inspector a sheet below the narrow width", () => {
+  it("makes the inspector a sheet below the narrow width, from the bottom below the phone width", () => {
     expect(narrowWidth).toBe(760);
     expect(narrowQuery).toBe("(max-width: 759px)");
-    expect(css).toContain(`@media ${narrowQuery}`);
+    expect(phoneWidth).toBe(600);
+    expect(phoneQuery).toBe("(max-width: 599px)");
+    // The sheet is patchbay's, chosen in TS (App.tsx); editor.css narrows the top bar and palette at the phone width.
+    expect(css).toContain(`@media ${phoneQuery}`);
   });
 });

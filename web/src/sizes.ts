@@ -1,6 +1,7 @@
 // The shell's sizes, pure (docs/editor.md#the-shell): the inspector's width and the drawer's height with their bounds,
-// which patchbay's Splitter keeps a drag or a key within, and the width below which the inspector is a sheet over the
-// canvas. editor.css holds the same bounds and breakpoint, which sizes.test.ts checks.
+// which patchbay's Splitter keeps a drag or a key within, and the widths below which the inspector is patchbay's Sheet
+// over the canvas, from its right edge and then from its bottom. editor.css holds the same bounds and the phone
+// width, which sizes.test.ts checks.
 
 export interface Bounds {
   min: number;
@@ -30,3 +31,10 @@ export function clamp(value: number, bounds: Bounds): number {
  */
 export const narrowWidth = 760;
 export const narrowQuery = `(max-width: ${narrowWidth - 1}px)`;
+
+/**
+ * Below this width (a phone in portrait) the sheet rises from the bottom instead, so the graph stays in sight above
+ * it, and the top bar drops its wordmark and engine chip (editor.css's @media holds the same).
+ */
+export const phoneWidth = 600;
+export const phoneQuery = `(max-width: ${phoneWidth - 1}px)`;
