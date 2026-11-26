@@ -413,12 +413,14 @@ text over JSON, so the toggle's other side is the node's own statement.
   a number field with the range for a whole number (a rate in Hz), a decimal field with its range and
   unit for a decimal (it takes any number in the range, an integer too, with as many places as typed,
   and says "must be a number of dB from -90 to 24" in ear's words otherwise; it is sent as a JSON
-  number), a checkbox for a flag, and a JSON field for a kind the editor does not know. An empty field's placeholder says what absent means: the
+  number), a checkbox for a flag (an absent one drawn at its default; set against the default it is sent, and set back
+  to what absence reads it is no edit), and a JSON field for a kind the editor does not know. An empty field's placeholder says what absent means: the
   default (`default 0 channels`), where it comes from (`the graph's frequency`, `the node's name`), or
   `absent`; a row's `help` and its unit are beside it, and a row that is `onlyWithout` a given key
   (a draft included) is disabled, saying so.
 - **An indexed family** (`indexed`, [control-port.md](control-port.md#type-schemas)) is one field per
-  member, `<key>.1` to its count row's value (a whole-number draft of the count row included), each
+  member, `<key>.1` to its count row's value (a whole-number draft of the count row included; a draft still being
+  typed, `4.`, keeps the node's value, and a cleared one reads the default), each
   drawn by the family's kind and range with the family's default as its placeholder. A member above
   the count that the node or a draft gives is drawn too, greyed, its hint first: "kept; not used
   while channels is 2". A key is mapped to its family's field only by the member grammar (`trimDb.01`

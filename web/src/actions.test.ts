@@ -45,6 +45,19 @@ describe("a node's actions", () => {
     }
   });
 
+  it("starts a flag argument at its default and sends it unchecked when it defaults to true", () => {
+    const loud: ActionSchema = {
+      name: "play",
+      by: "type",
+      target: "code",
+      help: "play a tone",
+      args: [{ key: "loud", kind: "flag", required: false, default: true }],
+    };
+    expect(argFields(loud, new Map()).map((field) => field.value)).toEqual([true]);
+    expect(argsOf(loud, new Map())).toEqual({ args: {} });
+    expect(argsOf(loud, new Map([["loud", false]]))).toEqual({ args: { loud: false } });
+  });
+
   it("draws a call's arguments as setting fields and makes its args, an empty optional one left out", () => {
     const fields = argFields(add, new Map());
     expect(fields.map((field) => [field.key, field.control, field.problem])).toEqual([

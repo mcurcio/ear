@@ -80,10 +80,10 @@ export function controlOf(row: SettingSchema): FieldControl {
   return "json";
 }
 
-/** The node's value of `row` as its field shows it; absent is "" (a flag: false). */
+/** The node's value of `row` as its field shows it; absent is "" (a flag: its default, else false). */
 export function shownValue(row: SettingSchema, value: JsonValue | undefined): FieldValue {
   const control = controlOf(row);
-  if (control === "flag") return value === true;
+  if (control === "flag") return typeof value === "boolean" ? value : row.default === true;
   if (value === undefined || value === null) return "";
   if (control === "json") return JSON.stringify(value);
   return typeof value === "string" ? value : String(value);
@@ -141,11 +141,15 @@ function memberRow(family: SettingSchema, member: number): SettingSchema {
   return row;
 }
 
-/** A count row's value as the form has it: the draft when it is a whole number, else the node's, else its default. */
+/**
+ * A count row's value as the form has it: the draft when it is a whole number, else the node's, else its default; a
+ * cleared draft removes the key, so it reads the default. A draft still being typed ("4.") keeps the node's count.
+ */
 function countOf(schema: TypeSchema, by: string, settings: JsonObject, drafts: Drafts): number {
   const draft = drafts.get(by);
-  if (draft !== undefined && /^\d+$/.test(String(draft.value).trim())) return Number(String(draft.value).trim());
-  const value = draft === undefined ? settings[by] : undefined;
+  const typed = draft === undefined ? undefined : String(draft.value).trim();
+  if (typed !== undefined && /^\d+$/.test(typed)) return Number(typed);
+  const value = typed === "" ? undefined : settings[by];
   if (typeof value === "number") return value;
   const row = schema.settings.find((one) => one.key === by);
   return typeof row?.default === "number" ? row.default : 0;
@@ -321,10 +325,14 @@ function quotedList(names: string[]): string {
   return quoted.length <= 1 ? quoted.join("") : `${quoted.slice(0, -1).join(", ")} and ${quoted[quoted.length - 1]}`;
 }
 
-/** The value `draft` sends for `row`: an empty optional field (or a cleared optional flag) removes the key. */
+/**
+ * The value `draft` sends for `row`: an empty optional field removes the key, and so does an optional flag left at what
+ * its absence reads (its default, else false) when the node gives none; a flag set against its default is sent.
+ */
 export function valueOf(row: SettingSchema, draft: FieldValue, current: JsonValue | undefined): JsonValue {
   const control = controlOf(row);
-  if (control === "flag") return draft === false && !row.required && current === undefined ? null : draft;
+  if (control === "flag")
+    return draft === (row.default === true) && !row.required && current === undefined ? null : draft;
   const text = String(draft);
   if (text === "") return null;
   if (control === "number" || control === "decimal") return Number(text.trim());

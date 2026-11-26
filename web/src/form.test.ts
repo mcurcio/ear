@@ -340,11 +340,26 @@ describe("the row vocabulary no built-in type has yet", () => {
       ["levelDb", "decimal", ""],
       ["cutoffHz", "decimal", "1000"],
       ["spread", "decimal", ""],
-      ["on", "flag", false],
+      ["on", "flag", true],
     ]);
     expect([fields[0].min, fields[0].max, fields[0].unit]).toStrictEqual([-90, 24, "dB"]);
     expect(fields.map((field) => field.placeholder)).toStrictEqual(["default -6 dB", "required", "absent", "default true"]);
     expect(fields[1].hints).toStrictEqual(["restarts the node: the filter is designed at start"]);
+  });
+
+  it("draws an absent flag at its default, and sends one set against it", () => {
+    const settings = { cutoffHz: 1000 };
+    const on = (fields: ReturnType<typeof fieldsOf>) => fields.find((field) => field.key === "on")?.value;
+    expect(on(fieldsOf(schema, { ...settings, on: false }, none))).toBe(false);
+    const off = edit(schema, settings, none, "on", false);
+    expect(on(fieldsOf(schema, settings, off))).toBe(false);
+    expect(patchOf(schema, settings, off)).toStrictEqual({ patch: { on: false } });
+    // Back at what absence reads: nothing to send.
+    expect(edit(schema, settings, off, "on", true).size).toBe(0);
+    // A flag defaulted false, as before: checked is sent, unchecked again is no edit.
+    const inverted = edit(schema, settings, none, "invert.1", true);
+    expect(patchOf(schema, settings, inverted)).toStrictEqual({ patch: { "invert.1": true } });
+    expect(edit(schema, settings, inverted, "invert.1", false).size).toBe(0);
   });
 
   it("checks a decimal in ear's words: a number, an integer taken, within the range", () => {
@@ -463,6 +478,26 @@ describe("indexed families", () => {
     expect(kept?.hints[0]).toBe("kept; not used while channels is 1");
     const raised = edit(schema, settings, none, "channels", "3");
     expect(familyKeys(fieldsOf(schema, settings, raised)).filter(([, inactive]) => inactive)).toStrictEqual([]);
+  });
+
+  it("keeps the node's count while the count's draft is not yet a whole number, and a cleared one reads the default", () => {
+    const settings = { cutoffHz: 1000, channels: 4 };
+    for (const typing of ["4.", "-", "4x"]) {
+      const drafts = edit(schema, settings, none, "channels", typing);
+      const trims = familyKeys(fieldsOf(schema, settings, drafts)).filter(([key]) => String(key).startsWith("trimDb."));
+      expect(trims, typing).toStrictEqual([
+        ["trimDb.1", false],
+        ["trimDb.2", false],
+        ["trimDb.3", false],
+        ["trimDb.4", false],
+      ]);
+    }
+    const cleared = edit(schema, settings, none, "channels", "");
+    const trims = familyKeys(fieldsOf(schema, settings, cleared)).filter(([key]) => String(key).startsWith("trimDb."));
+    expect(trims).toStrictEqual([
+      ["trimDb.1", false],
+      ["trimDb.2", false],
+    ]);
   });
 
   it("edits and sends a member by its full key, and places ear's refusal under it", () => {
