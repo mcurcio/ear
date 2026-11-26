@@ -466,12 +466,12 @@ TEST_CASE("A sink's tap allocates nothing", "[sink]") {
 	std::thread writer([&] {
 		std::vector<std::vector<float>> planes(2, std::vector<float>(kBlock, 0.25F));
 		const std::vector<std::span<const float>> views{planes[0], planes[1]};
-		const std::uint64_t before = ear::pipewire::testing::countedAllocations();
-		ear::pipewire::testing::countAllocationsOnThisThread(true);
+		const std::uint64_t before = ear::testing::countedAllocations();
+		ear::testing::countAllocationsOnThisThread(true);
 		for (std::uint32_t b = 0; b < kBlocks; ++b)
 			sink->tap().write(views, kBlock, stampAt(std::uint64_t{b} * kBlock));
-		ear::pipewire::testing::countAllocationsOnThisThread(false);
-		allocations = ear::pipewire::testing::countedAllocations() - before;
+		ear::testing::countAllocationsOnThisThread(false);
+		allocations = ear::testing::countedAllocations() - before;
 	});
 	writer.join();
 	REQUIRE(shared.waitFor([&] { return shared.frames == kBlock * kBlocks; }));

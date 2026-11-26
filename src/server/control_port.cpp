@@ -466,7 +466,8 @@ void awaitBell(const std::shared_ptr<Shared>& shared) {
 using Opened = std::expected<std::shared_ptr<Shared>, ControlPortError>;
 
 /// On the control thread.
-Opened open(const ControlPortSettings& settings, control::GraphGateway& graph, LevelReader& levels, LevelBell& bell) {
+Opened open(const ControlPortSettings& settings, control::GraphGateway& graph, LevelReader& levels, LevelBell& bell,
+            control::TypeSchemas types) {
 	auto shared = std::make_shared<Shared>(settings, currentControlContext());
 	const std::string where = settings.address + ":" + std::to_string(settings.port);
 	error_code ec;
@@ -480,7 +481,7 @@ Opened open(const ControlPortSettings& settings, control::GraphGateway& graph, L
 	if (ec) return std::unexpected(ControlPortError{"cannot listen on " + where + ": " + ec.message()});
 	shared->port = shared->acceptor.local_endpoint().port();
 	if (shared->bell.assign(bell.fd(), ec); ec) return std::unexpected(ControlPortError{"level bell: " + ec.message()});
-	shared->hub = std::make_unique<control::ControlHub>(graph, levels);
+	shared->hub = std::make_unique<control::ControlHub>(graph, levels, std::move(types));
 	acceptNext(shared);
 	awaitBell(shared);
 	return shared;
@@ -513,16 +514,15 @@ struct ControlPort::Impl {
 	std::atomic<bool> stopped = false;
 };
 
-std::expected<std::unique_ptr<ControlPort>, ControlPortError> ControlPort::start(const ControlPortSettings& settings,
-                                                                                 ControlThread& thread,
-                                                                                 control::GraphGateway& graph,
-                                                                                 LevelReader& levels, LevelBell& bell) {
+std::expected<std::unique_ptr<ControlPort>, ControlPortError>
+ControlPort::start(const ControlPortSettings& settings, ControlThread& thread, control::GraphGateway& graph,
+                   LevelReader& levels, LevelBell& bell, control::TypeSchemas types) {
 	// The promise lives only in the work: work the thread destroys unrun breaks it.
 	std::promise<Opened> promise;
 	auto opened = promise.get_future();
-	thread.post([promise = std::move(promise), &settings, &graph, &levels, &bell]() mutable {
+	thread.post([promise = std::move(promise), &settings, &graph, &levels, &bell, types = std::move(types)]() mutable {
 		try {
-			promise.set_value(open(settings, graph, levels, bell));
+			promise.set_value(open(settings, graph, levels, bell, std::move(types)));
 		} catch (...) {
 			promise.set_exception(std::current_exception());
 		}

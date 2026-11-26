@@ -319,15 +319,15 @@ TEST_CASE("A source's play allocates nothing, a writer waiting and its clock's w
 	std::uint64_t allocations = ~0ULL;
 	std::thread realtime([&] {
 		Bank bank(64);
-		const std::uint64_t before = ear::pipewire::testing::countedAllocations();
-		ear::pipewire::testing::countAllocationsOnThisThread(true);
+		const std::uint64_t before = ear::testing::countedAllocations();
+		ear::testing::countAllocationsOnThisThread(true);
 		for (std::uint64_t cycle = 0; cycle < 2000; ++cycle) {
 			playAt(*source, bank, cycle * 64, 64);
 			if (cycle % 7 == 0) writer.clear();
 			if (cycle % 5 == 0) writer.clockWake().answer();
 		}
-		ear::pipewire::testing::countAllocationsOnThisThread(false);
-		allocations = ear::pipewire::testing::countedAllocations() - before;
+		ear::testing::countAllocationsOnThisThread(false);
+		allocations = ear::testing::countedAllocations() - before;
 	});
 	realtime.join();
 	stop.store(true);
@@ -485,7 +485,7 @@ public:
 	void prepare(const AudioFormat&) override {}
 	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
 	             std::uint32_t frames, const GraphCycle& cycle) noexcept override {
-		ear::pipewire::testing::countAllocationsOnThisThread(countHere.load(std::memory_order_acquire));
+		ear::testing::countAllocationsOnThisThread(countHere.load(std::memory_order_acquire));
 		std::ranges::copy(inputs[kInside].first(frames), outputs[0].begin());
 		if (!started.load(std::memory_order_relaxed)) {
 			firstPosition.store(cycle.position, std::memory_order_relaxed);
@@ -904,7 +904,7 @@ TEST_CASE("A bound source, its clock and its writer's room allocate nothing on t
 	code.countHere.store(true);
 	const std::uint64_t armedAt = code.calls.load();
 	REQUIRE(waiter.until([&] { return code.calls.load() > armedAt; }));
-	const std::uint64_t before = ear::pipewire::testing::countedAllocations();
+	const std::uint64_t before = ear::testing::countedAllocations();
 	for (int round = 0; round < 50; ++round) {
 		block->drive(DriveRequest{&code, {}, {}, bound}, [&](std::uint64_t) {
 			++completed;
@@ -913,7 +913,7 @@ TEST_CASE("A bound source, its clock and its writer's room allocate nothing on t
 		const std::uint64_t calls = code.calls.load();
 		REQUIRE(waiter.until([&] { return completed == round + 2 && code.calls.load() > calls + 1; }));
 	}
-	const std::uint64_t counted = ear::pipewire::testing::countedAllocations() - before;
+	const std::uint64_t counted = ear::testing::countedAllocations() - before;
 	code.countHere.store(false);
 	const std::uint64_t calls = code.calls.load();
 	REQUIRE(waiter.until([&] { return code.calls.load() > calls + 1; }));

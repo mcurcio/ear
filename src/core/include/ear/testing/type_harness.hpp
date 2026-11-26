@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 #include "ear/core/lifecycle.hpp"
+#include "ear/core/report.hpp"
 #include "ear/testing/node_harness.hpp"
 namespace ear::testing {
 
@@ -39,6 +40,21 @@ public:
 	void disable() { node_->disable(); }
 	void enable() { node_->enable(); }
 	void remove() { node_->remove(); }
+	/// Trigger `Trigger` of the spec (docs/writing-a-node-type.md#actions): answered at once.
+	template <const auto& Trigger> ActionReply trigger() {
+		static_assert(ActionsOf<Spec>::template has<Trigger>, "trigger takes only its spec's actions");
+		static_assert(!std::remove_cvref_t<decltype(Trigger)>::isCall, "trigger takes a trigger; a call is invoke's");
+		return node_->invoke(Trigger.declaration().name).reply();
+	}
+	/// Call `Call` of the spec with `args`, its handler run on the harness's loops (runLoops): its answer, which is
+	/// empty while the node's loops hold it (the call queued behind work the test has not run).
+	template <const auto& Call> ActionAnswer invoke(const NodeSettings& args = nullptr) {
+		static_assert(ActionsOf<Spec>::template has<Call>, "invoke takes only its spec's actions");
+		static_assert(std::remove_cvref_t<decltype(Call)>::isCall, "invoke takes a call; a trigger is trigger's");
+		ActionAnswer answer = node_->invoke(Call.declaration().name, args);
+		node_->runLoops();
+		return answer;
+	}
 	std::string_view phase() const { return node_->phase(); }
 	NodeHealth health() const { return node_->health(); }
 	bool gone() const noexcept { return node_->gone(); }
@@ -63,6 +79,19 @@ public:
 		node_->programSays(index, level, std::move(line));
 	}
 	void programExited(std::size_t index, ProgramExit exit) { node_->programExited(index, std::move(exit)); }
+
+	/// Field `Field`'s value in the status view after the last drain.
+	template <const auto& Field> StatusValue status() const {
+		static_assert(StatusOf<Spec>::template has<Field>, "status takes only its spec's fields");
+		for (const FieldValue& field : node_->status())
+			if (field.name == Field.declaration().name) return field.value;
+		return Field.declaration().initial(); // never configured yet
+	}
+	std::vector<FieldValue> status() const { return node_->status(); }
+	const std::vector<SeenStatus>& statusRecord() const noexcept { return node_->statusRecord(); }
+	const std::vector<SeenEvent>& events() const noexcept { return node_->events(); }
+	void drain() { node_->drain(); }
+	std::uint64_t realtimeRings() const noexcept { return node_->realtimeRings(); }
 
 	void runLoops() { node_->runLoops(); }
 	void loopsReady() { node_->loopsReady(); }

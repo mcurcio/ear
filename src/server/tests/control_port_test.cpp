@@ -4,12 +4,14 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <filesystem>
 #include <fstream>
 #include <future>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -23,7 +25,9 @@
 
 #include "catch2/catch.hpp"
 #include "ear/control/rpc.hpp"
+#include "ear/core/node_status.hpp"
 #include "ear/server/control_port.hpp"
+#include "sleeps.hpp"
 #include "temp_folder.hpp"
 #include "ws_client.hpp"
 
@@ -394,6 +398,79 @@ TEST_CASE("A client that never reads is closed with 1008 and the others keep eve
 
 	fixture.gateway.emit(removed("after"));
 	CHECK(json::parse(reader.read()) == removedNotification("after"));
+}
+
+TEST_CASE("A slow client under ten nodes' status at 30 a second: never closed, every message in order",
+          "[control-port][status]") {
+	Fixture fixture;
+	// A small window, so the socket's buffers hold little and the port's queue takes the rest.
+	WsClient slow(fixture.number(), WsOptions().receiveBuffer(4096));
+	subscribe(slow);
+	// The busiest the hub is told by the main loop (docs/architecture.md#rates-and-bounds): one node.statusChanged per
+	// node per tick at 30 ticks a second, and each node's events at their pace, 32 at once and then one a second. The
+	// event of a tick follows its status, and the next tick's status follows the event.
+	constexpr int nodes = 10;
+	constexpr int ticks = 300; // 10 s
+	const auto name = [](int node) { return "n" + std::to_string(node); };
+	std::atomic<bool> emitted{false};
+	std::thread emitter([&] {
+		auto next = std::chrono::steady_clock::now();
+		for (int tick = 1; tick <= ticks; ++tick) {
+			for (int node = 0; node < nodes; ++node)
+				fixture.gateway.emit(ear::control::NodeStatusChanged{
+					name(node),
+					{{"tick", ear::StatusValue{std::int64_t{tick}}}, {"odd", ear::StatusValue{tick % 2 == 1}}}});
+			if (tick <= 32 || tick % 30 == 0) {
+				for (int node = 0; node < nodes; ++node)
+					fixture.gateway.emit(ear::control::NodeEventRaised{
+						name(node),
+						ear::RaisedEvent{
+							"beat", ear::EventSeverity::info, {{"at", ear::StatusValue{std::int64_t{tick}}}}, "beat"},
+						std::chrono::system_clock::now()});
+			}
+			next += std::chrono::milliseconds(33);
+			ear::sleeps::pace(next, "the main loop's tick: at most 30 a second");
+		}
+		fixture.gateway.emit(removed("end"));
+		emitted = true;
+	});
+	// While the nodes write, it reads one message every 20 ms: 50 a second, a sixth of the status alone. The socket's
+	// buffers take what it has not read (docs/testing.md#the-client-queue-under-status); then it reads the rest at once.
+	std::vector<std::int64_t> last(nodes, 0);
+	int statusMessages = 0;
+	int events = 0;
+	std::optional<std::uint16_t> closedWith;
+	try {
+		for (;;) {
+			const json message = json::parse(slow.read());
+			const std::string method = message.value("method", "");
+			if (method == "node.removed") break;
+			const int node = std::stoi(message["params"]["name"].get<std::string>().substr(1));
+			if (method == "node.statusChanged") {
+				++statusMessages;
+				const json& fields = message["params"]["fields"];
+				const std::int64_t tick = fields["tick"].get<std::int64_t>();
+				CHECK(tick == last[node] + 1);           // every one, in order
+				CHECK(fields["odd"] == (tick % 2 == 1)); // every field at its latest value
+				last[node] = tick;
+			} else if (method == "node.eventRaised") {
+				++events;
+				// In order with the node's status: after its tick's, before the next.
+				CHECK(message["params"]["args"]["at"].get<std::int64_t>() == last[node]);
+			}
+			if (!emitted) ear::sleeps::pace(std::chrono::milliseconds(20), "a client reading slowly");
+		}
+	} catch (const Closed& closed) {
+		closedWith = closed.code;
+	}
+	emitter.join();
+	INFO(statusMessages << " status messages and " << events << " events read");
+	CHECK_FALSE(closedWith.has_value());
+	int raised = 0;
+	for (int tick = 1; tick <= ticks; ++tick) raised += (tick <= 32 || tick % 30 == 0) ? nodes : 0;
+	CHECK(events == raised);
+	for (int node = 0; node < nodes; ++node) CHECK(last[node] == ticks);
+	CHECK(statusMessages == nodes * ticks); // nothing coalesced, nothing lost
 }
 
 TEST_CASE("A client that resets while the port writes to it leaves the port running", "[control-port]") {

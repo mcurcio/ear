@@ -63,7 +63,10 @@ src/nodes/<type>/
 ## The spec
 
 In the type's private header, inside its own named namespace `ear::nodes::<type>` (never an
-unnamed one), every constant `inline constexpr`. The header includes `ear/core/lifecycle.hpp`,
+unnamed one), every constant `inline constexpr`. A `TypeSpec`'s members come in this order, and
+designated initialisers follow it: `.settings`, `.banks`, `.stores`, `.loops`, `.lifecycle`,
+`.status`, `.events`, `.actions`, `.logCodes`. Only the first two are required; a spec gives any of the rest it
+uses, in that order, and deduces the others empty. The header includes `ear/core/lifecycle.hpp`,
 which brings in `type_spec.hpp` and `settings_table.hpp`.
 
 *Why a named namespace:* GCC 14 gives a template instantiated on a reference to an object external
@@ -104,6 +107,23 @@ inline constexpr auto portRow = setting::optional("port", setting::number(1, 655
   ([architecture.md](architecture.md#restarts-and-changes-of-settings)). A key whose value builds
   the node's ports (a channel count) need not be marked: a change of ports is a reshape, in place only
   when every changed key is marked ([architecture.md](architecture.md#reshapes)).
+- `.shapesPorts()` marks a key whose value may change the node's ports (`card`'s `playback` and
+  `capture`, `rtp`'s `channels`). The plan never reads it (it compares the ports themselves); the
+  all-type tests hold it to the type's `ports()` both ways: a row that changes the ports for a value
+  they try must be marked, and a marked row must change them for one ([below](#what-every-type-must-also-pass)).
+- `.defaultFrom(setting::DefaultFrom::graphFrequency)` or `(...::nodeName)` says where an optional
+  row's value comes from when `ear.conf` gives none (`rtp`'s `rate` the graph's frequency; `sendspin`'s
+  and `airplay`'s `name` the node's name). It is documentation for controls: the type's code still
+  reads the row as absent and applies the default itself. On a required or defaulted row it does not
+  compile.
+- `setting::text<Parse>(mustBe, {.values, .pattern, .maxLength})` gives a text row hints for
+  controls: every value it takes (a select: `rtp`'s `format`), an ECMAScript pattern every good value
+  matches, its most bytes. They are hints: `Parse` stays the judge. The all-type tests check that
+  each offered value parses and that every valid setting they hold matches the pattern and fits. An
+  empty value among `values` does not compile.
+- `.help("<one line>")` is what a control shows beside the row: what an absent optional row means
+  when it has neither a default nor `defaultFrom` (`sendspin`'s `server`: "absent: ear listens on port
+  for the server to dial it"), which the all-type tests require, or anything `mustBe` does not say.
 - Each key once; `disabled` (the framework's key) cannot be declared; a table's name must be its
   folder's. Each is a compile error.
 - The table is `SettingsTable<row1, row2, ...>{"<type>"}` (`SettingsTable<>{"white"}` for none).
@@ -111,6 +131,19 @@ inline constexpr auto portRow = setting::optional("port", setting::number(1, 655
   `ear.conf` is read and written) and the whole check, so the graph file reader cannot disagree with `parse`.
 - A parsed value is parsed once: a text row reads as what its parse function made (a `CardId`, an
   `RtpAddress`, a path).
+
+### The type schema
+
+`NodeType::schema()` is the type as the control port describes it: its name, its rows in the walk's
+order (each with its key, rule, required, default, `onlyWithout` and the marks above), its banks in
+declaration order, its in-place deadline (`.lifecycle`), and its status fields and events in
+declaration order ([status and events](#status-and-events)). Everything in it views the spec's static
+storage, so it is the same every call. Nothing but the table and the spec makes it: a type writes no
+schema of its own.
+
+A refusal of the walk names its key (`InvalidSettings::key`: `port` for `port: must be a whole
+number, 1-65535`, the unknown key for `unknown key colour`); a refusal of the type's `check` or
+`ports` names none, since a rule across settings has no one key.
 
 ### Banks: the ports
 
@@ -126,6 +159,121 @@ inline constexpr TypeSpec spec{.settings = SettingsTable<cardRow, playbackRow, c
 A bank handle is only its name, direction and reach, fixed at compile time; a name is one or more
 of `[A-Za-z0-9_-]`, unique in the spec. A public port's whole name is `<bank>.<member>`, made in
 one place (`portName`). Members come from settings, in the class's `ports()`.
+
+### Status and events
+
+What a node reports about itself, declared in the spec like its rows and banks, each an `inline
+constexpr` in the type's named namespace (`ear/core/status_spec.hpp`, which `lifecycle.hpp`
+brings in). The rule for choosing: a fact with a value right now is a **status field**; something
+that happened at an instant, with nothing to read once it passed, is an **event**; if it also
+leaves a value behind, write both (`paired`, the event, and `paired = true`). Settings, health and
+node diagnostics are not the type's to write.
+
+```cpp
+inline constexpr auto worker = loop::strand<"worker", WorkerState>;
+inline constexpr std::string_view connections[] = {"dialling", "listening", "connected"};
+inline constexpr auto connection =
+	status::choice<"connection">(writer::loop(worker), connections).display(Display::box);   // starts unknown
+inline constexpr auto pairingCode = status::text<"pairingCode">(writer::loop(worker), 16)
+                                        .display(Display::callout).help("type it into Music Assistant to pair");
+inline constexpr std::string_view reasons[] = {"attempt-timeout", "pairing-code-mismatch", "unknown"};
+inline constexpr auto pairingFailed =
+	event::of<"pairing-failed">(EventSeverity::warn, "pairing failed: {reason}", arg::choice<"reason">(reasons));
+inline constexpr TypeSpec spec{.settings = table,
+                               .banks = Banks<toServer>{},
+                               .loops = Loops<worker>{},
+                               .status = StatusTable<connection, pairingCode>{},
+                               .events = EventTable<pairingFailed>{}};
+```
+
+#### Status fields
+
+| Maker | Value | Starts |
+|---|---|---|
+| `status::flag<"name">(writer)` | `bool` | `false` |
+| `status::number<"name">(writer, low, high, unit = {})` | `std::int64_t` in `[low, high]` | `0`, or the end of the range nearer it |
+| `status::decimal<"name">(writer, low, high, unit = {}, decimals = 2)` | `double` in `[low, high]` | `0`, likewise |
+| `status::choice<"name">(writer, values)` | one of `values` (each named once, never empty) | unknown (`null`) |
+| `status::text<"name">(writer, maxBytes = 256)` | text of at most `maxBytes` bytes | `""` |
+
+A name is camelCase (`[a-z][A-Za-z0-9]*`), unique in the spec. Every field takes
+`.display(Display::panel | box | callout)` (where a client shows it: only in the node's panel, also
+on its box, or as a banner while it is not at its initial value), `.help(line)`,
+`.flapsAbove(transitions, windowMs)` (default 10 changes in 10 000 ms: more is
+`ear.status-flapping`) and `.initially(value)` (of its kind and within its range, or
+`status::unknown`). A choice's values are named once, in the field: `connection("connected")` is
+consteval, so a misspelt value does not compile.
+
+Each field has one **writer**: `writer::loop(handle)`, one of the spec's own loops (the spec does not
+compile when a field names another), which writes it through `Report` from that loop's thread;
+`writer::rt`, the node's code on the realtime thread (a flag, number, decimal or choice, one atomic
+word each, never a text; at most 64 per type; written through `Io`,
+[below](#reporting-from-the-code)); or `writer::companion`, a companion kind's adapter (not built
+yet). A library thread with something to report posts to the loop that owns the
+field.
+
+A field belongs to the configuration: the framework keeps the node's **status view**, every field at
+its initial value until written, and puts it back to every initial value when a configuration
+closes (a restart, a failure, a removal), while a stop, a start and a change in place keep it.
+
+#### Events
+
+`event::of<"code">(severity, sentence, args...)`: the code is kebab-case (`[a-z][a-z0-9-]*`, so
+never one of the framework's `ear.` codes), unique in the spec; the severity `info`, `warn` or
+`error`; the sentence names each argument once as `{name}`, and is both the record's `msg` and the
+editor's line (a place that names no argument, or an argument with no place, does not compile).
+Arguments are `arg::number<"n">(low, high)`, `arg::decimal<"n">(decimals = 2)`, `arg::flag<"n">()`,
+`arg::choice<"n">(values)` and `arg::text<"n">(maxBytes = 256)`. A decimal fills its place with
+`decimals` places; a flag with `true` or `false`.
+
+#### Report
+
+`NodeOf<spec>::report()` gives the configuration's `Report<spec>` (`ear/core/report.hpp`), which
+the instance copies into the loop states that write: `report.set<field>(value)` and
+`report.raise<event>(values...)` take only the spec's own handles (another spec's field or event,
+a `writer::rt` field, or the wrong count of arguments, does not compile). A choice's value is
+`field("value")` (checked at compile time) or its text (checked at run time); `set<field>(status::unknown)`
+makes it null. Write a field from the loop it names: Report does not check the thread. A library
+thread with something to report posts to that loop.
+
+```cpp
+struct WorkerState {
+	ear::Report<spec> report;
+	void connected(std::string_view server) {
+		report.set<connection>(connection("connected"));
+		report.set<serverName>(server);                     // made safe and cut at its maxBytes
+		report.raise<pairingFailed>(reasonName(why));         // a text not among its values fails the node
+	}
+};
+```
+
+A write never blocks but on the configuration's queue's one short mutex, and goes in order with
+the handle's `lost`: a status write before an event is drained before it, a `lost` after the last
+status after it ([architecture.md](architecture.md#status-and-events)). A text is made safe on the
+writer's thread: bytes that are not UTF-8 become U+FFFD, a tab, newline, carriage return, line
+separator (U+2028) or paragraph separator (U+2029) a space and another control character (C0, DEL
+and C1, U+0080 to U+009F) U+FFFD, and a text past `maxBytes` is cut at a character so that,
+with `…` appended, it fits. A value that breaks its declaration (a choice's text not among its
+values, a number outside its range, a decimal that is not finite) is the type's bug: the node fails
+`lost` with the rule's text (`status link: "sideways" is not one of its values`), through the same
+queue, and nothing is written. Writes land on the configuration that made the Report until it
+closed, so a goodbye written during its teardown is heard; an older configuration's Report reaches
+nothing.
+
+#### Log codes
+
+`log::code<"code">(level, sentence, args...)` declares a log line the realtime thread may write, in
+`.logCodes`: numbers, decimals and flags only, at most four, the code kebab-case and unique in the
+spec. The code writes it with `io.log<code>(values...)` ([below](#reporting-from-the-code)); it
+becomes a `log` record of the node, its `source` the type, its `topic` the code, its `level` the
+code's and its `text` the sentence with each place filled
+([output-records.md](output-records.md#log)).
+
+`StatusTable`, `EventTable` and `LogCodes` take references to the constants (`const auto&...`, as
+`SettingsTable` does: their entries hold views, so they cannot be template arguments by value), and
+each refuses one declared in an unnamed namespace. `NodeType::schema()` carries the fields and
+events in declaration order, and each node's config gives them (`statusDeclared()`,
+`eventsDeclared()`).
 
 ## The class
 
@@ -339,7 +487,7 @@ log sink's) and never waits on the main loop.
 | Call | What | Order and rate |
 |---|---|---|
 | `node()` | The node's name | |
-| `say(text)` | A note, `node <n> says <text>` on standard output (a `note` record, [output-records.md](output-records.md)). Never a state | Crosses to the main loop in the order said, so it is ordered with the node's states. Paced per configuration: 32 at once, then one a second; the framework says `notes-dropped <n>`, the count held back, as the configuration's own note just before the next that passes. Judged on the thread that says, so a note held back is never queued |
+| `say(text)` | A note, `node <n> says <text>` on standard output (a `note` record, [output-records.md](output-records.md)). Never a state. Only standard output hears it, so a new type reports [status and events](#status-and-events) instead (the `sendspin` node does; `file` and `airplay` still write notes) | Crosses to the main loop in the order said, so it is ordered with the node's states. Paced per configuration: 32 at once, then one a second; the framework says `notes-dropped <n>`, the count held back, as the configuration's own note just before the next that passes. Judged on the thread that says, so a note held back is never queued |
 | `lost(detail)` | The node fails, `start-failed: <detail>` before it first rested `running` or `stopped`, `lost: <detail>` after; ignored once the configuration's teardown began | In order with notes; never held back by their rate |
 | `log(entry)`, `debug(text)`, `info(text)`, `warn(text)`, `error(text)` | A `log` record ([output-records.md](output-records.md)): the framework sets its `node`, and an empty `source` becomes the type's name (a library's own lines give its name, and a `topic`) | Straight to the log sinks on the calling thread, unordered with notes and states, as captured output is; paced per node by standard output's encoder |
 
@@ -382,7 +530,120 @@ struct MyCode {
 - **The pass-through.** `passThrough(bankPair(fromBank, toBank), ...)` copies each input bank's
   ports to an output bank's, member for member, and silences every output no pair names; it takes
   one pair or more. Banks of a pair must be the same size, an output bank written once. `card` and `rtp` write no audio code
-  of their own: they pass between their inside and public banks.
+  of their own: they pass between their inside and public banks. A spec with `writer::rt` fields
+  or log codes answers with a code of its own: a pass-through could never write them, so it does
+  not compile.
+
+### Reporting from the code
+
+The code reports through `io` too, by the spec's own handles, each call into its configuration's
+realtime channels ([architecture.md](architecture.md#the-realtime-channels)): it never allocates,
+locks, formats or waits.
+
+```cpp
+inline constexpr auto clipping = status::flag<"clipping">(writer::rt);
+inline constexpr std::string_view modes[] = {"quiet", "loud"};
+inline constexpr auto modeArg = arg::choice<"mode">(modes);
+inline constexpr auto clipped = event::of<"clipped">(EventSeverity::warn, "clipped {samples} samples in {mode}",
+                                                     arg::number<"samples">(0, 100000), modeArg);
+inline constexpr auto overrun = log::code<"overrun">(LogLevel::debug, "overrun by {frames} frames",
+                                                     arg::number<"frames">(0, 1 << 20));
+
+void process(Io<spec> io, const GraphCycle&) noexcept {
+	// ... write every output ...
+	io.set<clipping>(clips > 0);
+	if (clips > 0) io.raise<clipped>(clips, modeArg("loud"));
+	if (late > 0) io.log<overrun>(late);
+}
+```
+
+| Call | What | Rules |
+|---|---|---|
+| `io.set<field>(value)` | A `writer::rt` field now `value`: a flag `bool`, a number a whole number, a decimal a number, a choice its `Choice` (`field("value")`) | Only the spec's own `writer::rt` fields (a loop's field, or another spec's, does not compile). One atomic word: a value that differs from the last one the code wrote (its initial value before any) is also a status record |
+| `io.raise<event>(values...)` | One of the spec's events, one value per argument in order: a choice argument its `Choice`, made at compile time by the argument (`modeArg("loud")`) | At most four arguments, none a text, and the right count (each at compile time) |
+| `io.log<code>(values...)` | One of the spec's log codes | The right count, at compile time |
+
+Every record is stamped with its cycle's start (`GraphCycle::startNs`), so an event's `t` is when
+its cycle began. A value outside its declaration (a number outside its range, a decimal that is
+not finite or outside its range) is the type's bug, as through `Report`: the node fails `lost`
+with the rule's text (`status level: 101 is outside 0 to 100`), and nothing is written. The
+channels belong to the configuration: a code a change swaps in writes the same ones, so a field
+keeps the value the old code last wrote, and a new configuration's fields start at their initial
+values again.
+
+## Actions
+
+What a client may ask a node to do now, which nothing redoes after a restart: a request that
+changes no setting (`ear/core/action_spec.hpp`, which `lifecycle.hpp` brings in). Each is an
+`inline constexpr` in the type's named namespace, listed in the spec's `.actions` (after `.events`,
+before `.logCodes`). A **trigger** reaches the code, wait-free and with no arguments; a **call**
+reaches one loop's state, with arguments, and its handler's answer is the reply.
+
+```cpp
+struct Worker; // a loop's state, defined below: its handler names the call
+inline constexpr auto worker = loop::dedicated<"worker", Worker>;
+inline constexpr auto serverRow = setting::required("server", setting::number(1, 100));
+inline constexpr SettingsTable<serverRow> forgetArgs{"forget-pairing"};
+inline constexpr auto resetClip = action::trigger<"reset-clip">("clear the clipping flag");
+inline constexpr auto forget = action::call<"forget-pairing", forgetArgs, worker>("forget one server's pairing");
+inline constexpr TypeSpec spec{.settings = table,
+                               .banks = Banks<in, out>{},
+                               .loops = Loops<worker>{},
+                               .actions = ActionTable<resetClip, forget>{}};
+
+struct Worker {
+	std::expected<void, std::string> act(Invoked<forget>, const CheckedOf<forgetArgs>& args) {
+		if (!known(args.get<serverRow>())) return std::unexpected(std::string("no pairing with that server"));
+		return {};
+	}
+};
+struct Code {
+	bool latched = false;
+	void process(Io<spec> io, const GraphCycle&) noexcept {
+		if (io.triggered<resetClip>()) latched = false;
+		// ...
+	}
+};
+```
+
+The rules, each refused at compile time (`src/core/tests/compile_fail/action_bad.cpp`):
+
+- An action's name is kebab-case and never `start`, `stop`, `restart`, `disable` or `enable`, the
+  framework's lifecycle requests ([control-port.md](control-port.md#methods)); its help is one line.
+- A call names a loop its spec lists, declared with a state, and its arguments are a
+  `SettingsTable`: the same walk as settings, so a call's arguments are checked as a node's
+  settings are. `CheckedOf<table>` is what that table passed.
+- A call's handler is a member of its loop's state found by its tag, `Invoked<call>`, and held to
+  exactly `std::expected<void, std::string> act(Invoked<call>, const CheckedOf<args>&)`; one per
+  call, overloaded by the tag.
+- `io.triggered<trigger>()` takes only the spec's triggers (a call reaches its loop, never the
+  code). It is true once for every invoke since the code last saw it: several invokes before a
+  block are one, and asking twice in one block is true once. A trigger is lossy by design; an action
+  that must count is a call.
+- A spec with a trigger answers `configure` with a code of its own, never a pass-through, as a
+  spec with `rt` fields or log codes does: nothing would read it.
+
+**What NodeHost answers** (`NodeActions::invoke`, on the main loop):
+
+| Answer | When |
+|---|---|
+| done | a trigger: once its counter moved, at once; a call: when its handler answered `{}` |
+| `unknownNode` | no wanted node has the name |
+| `unknownAction` | the node's type has no action of the name |
+| `invalidArgs` | the arguments fail the call's table (its key and the walk's text, `args:` for `settings:`), or a trigger is given any |
+| `notRunning` (its phase) | a trigger while the code does not drive (any phase but `running` and `reconfiguring`); a call before the node is configured (`added`, `configuring`), while its configuration tears down, or with none (failed, disabled). A `stopped` node takes calls: its loops run on |
+| `restarted` | a call queued when its configuration was torn down: teardown step 1 closes the loop to outside work and destroys it unrun, and its reply object answers from its destructor |
+| `stopping` | ear is stopping: before the node is asked, or for a queued call torn down by the stop |
+| `failed` | the handler answered an error: its text. A handler that throws answers `failed` (`the handler threw: <what>`) and fails the node, as any handler that throws ([loops](#loops)) |
+| `timeout` | the handler did not answer within `actionDeadline` (10 s); its late answer is dropped |
+
+A call is posted as work from outside (`NodeLoop::postFromOutside`), behind the loop's own work: a
+running handler finishes and answers before the goodbye `stop()` posted behind it. A queued call
+holds the configuration it was checked against, so a change in place that commits before it runs
+(and drops that configuration) still runs it with that configuration's handler. The triggers'
+counters live in the configuration's realtime channels
+([architecture.md](architecture.md#the-realtime-channels)) with the code's last-seen value beside
+each, so a code a change swaps in sees once a trigger its predecessor did not, and never one it did.
 
 ## Engine companions
 
@@ -1265,7 +1526,8 @@ fakes allow. Banks are named by the spec's handles.
 | `h->facts()`, `h->cuts()` | The last cycle's `CycleFacts`, and the cut record the block's account reads |
 | `h.feed(bank, interleaved)`, `h.lastPlayed(bank)`, `h.shortfall(bank)` | A source's writer, never waiting (it takes what fits and returns the frames taken); what the last `process()` did with its ring (the `SourcePlayed` its clock was told, all zero before the first); its shortfall |
 | `h.input(bank, i)`, `h.output(bank, i)` | A port's buffer |
-| `h.stop()`, `h.start()`, `h.restart()`, `h.change(settings)`, `h.disable()`, `h.enable()`, `h.remove()` | The operations |
+| `h.stop()`, `h.start()`, `h.restart()`, `h.change(settings)`, `h.disable()`, `h.enable()`, `h.remove()`, `h->stopAll()` | The operations; `stopAll()` is ear's stop, run to the end (what the harness's destructor does) |
+| `h.trigger<trigger>()`, `h.invoke<call>(args)`, `h->invoke(name, args)` | The [actions](#actions): a trigger, answered at once (an `ActionReply`); a call, its handler run by `runLoops()` before it returns (an `ActionAnswer`: `answered()`, `reply()`); by name, unchecked and without running the loops, so a test can hold a call queued (behind a restart, past its deadline) |
 | `h.phase()`, `h.health()`, `h.gone()`, `h.droppedFrames()`, `h.companionList()` | What the node shows; its companion list as a client will see it ([engine.md](engine.md#companions-in-a-nodes-list)), read now |
 | `h->unwritten()`, `h->notes()`, `h->logs()`, `h->diagnostics()`, `h->latencyPlan()`, `h->ports()` | Through `->`, the underlying `NodeHarness`; `notes()` as the main loop heard them (after the [note rate](#the-node-handle)), `logs()` every log entry attributed to the node |
 | `h.companion(bank)` | What was made on a bank (an engine companion's bank as `NodeHost` named it): its `kind` (`CompanionKind`: a card's by its bank's direction), `name`, `shape`, `made`, `ready`, `destroyed`, a pipe receiver's `fifo`, and a sink's `chunks` as its consumer got them, one per call (a chunk split at the ring's end is two) |
@@ -1273,6 +1535,7 @@ fakes allow. Banks are named by the spec's handles.
 | `h.runLoops()`, `h->advance(ms)`, `h.armed(loop)`, `h.readable(fd)`, `h.loopsReady()`, `h->loops()` | The loops ([loops](#loops)), on the test's thread with their kind kept: `runLoops()` runs what was posted and each watch rung (a source's clock wake rung by `process()`, a descriptor marked `readable(fd)`) until all are idle, never a timer; `advance` fires their timers in time order with the framework's (an `every` once per period passed: a handler takes no time); `armed(loop)` counts the sources armed on it whose handles live. Loops start when the framework asks (with `holdLoops`, at `loopsReady()`; with `refuseLoops = "<why>"`, never); a teardown turns each loop until it finished and closed; a source a state left armed fails the call that tore it down unless `allowSourcesLeft` (then only `ear.loop-source-left` in `diagnostics()`). `loops()` lists each loop made: its name, kind, and whether it closed to others, finished and closed |
 | `h.presetStore(store, text, mode)`, `h.storeText(store)`, `h.storeMode(store)`, `h.failStoreOpen(store, why)`, `h.failNextWrite(store, why)`, `h.runIo()`, `h->ioJobs()`, `h->storeCalls()`, `h->breakStores(what)` | The [stores](#stores), by the spec's handle, on an in-memory disk under the framework's own store rules: a file put there before the node opens it, what it holds and its mode now, every open's read refused or the next write refused with `<file>: <why>`. Each open and write is a job on the harness's I/O executor, run as each call settles (with the option `holdIo`, only at `runIo()`); a blocking `replace` runs its job inside the call. `ioJobs()` names every job run (`open store <file>`, `write store <file>`, and `release store <file>` for a dropped open's handle), `storeCalls()` every disk call in order (`readNarrowed`, `read`, `narrow`, `replace`), `breakStores(what)` makes every disk call throw, an adapter's bug, and `overdueNextWrite(ran)` makes the next `replace`'s wait give up, after its job ran (`unconfirmed`, and it landed) or before it began (`refused`) |
 | `h.programs()`, `h.programStarted(i)`, `h.programRefused(i, why)`, `h.feedProgram(i, bytes)`, `h.programSays(i, level, line)`, `h.programExited(i, exit)` | The [programs](#programs), on a fake adapter: every launch in order over every configuration (`ProgramFake`: the `ProgramLaunch` NodeHost resolved, and whether it was told started, stopped, ended and its `RunningProgram` destroyed). Each is told started at its launch, and a stopped one exited at once (killed by `SIGTERM`), unless `holdPrograms`, when the test tells each; the test's calls feed its report feed, write a line on its standard output (`info`) or error (`warn`), refuse it or end it. Every runtime path begins with `runtimeFolder` (`/ear-runtime`; empty: none, and pipe receivers and programs are refused). The harness has no probe, so `claim::AnyTcp` grants 49152, 49153 and so on |
+| `h.status<field>()`, `h.status()`, `h.statusRecord()`, `h.events()`, `h.drain()`, `h.realtimeRings()`, `h->reported()` | Its [status and events](#report), from its loops and [from its code](#reporting-from-the-code): a field's value and the whole view after the last drain; standard output's status records in order (`SeenStatus`: `field`, `from`, `to`, `heldBack`, and each `reset`); its events past the node's pace (`SeenEvent`: `code`, `severity`, `args`, `msg`, and `at`, its writer's stamp, or its cycle's start when raised from `process`); the tick now; how often the code rang the realtime bell (a `process()` whose code wrote rings it, at most once until the next drain; NodeHost hears it at once, and `process()` settles). Log codes' lines are among `h->logs()`, each with its code as `topic`. Each call settles with the tick run (with the option `holdStatus`, only at `drain()` and as `advance` reaches its timer). `reported()` is what the wire would hear, in order with the node's phases: `changed <field>=<value> ...`, `reset ...`, `event <code>: <msg>`, `node <phase>`; `clearReported()` empties it and the two lists |
 | `h->internalErrors()` | Every adapter bug told about the node (the `ear.internal-error` record's callback, node, where and what), in order |
 
 The harness does not see a class's `start()` and `stop()`; their pairing is tested in
@@ -1339,6 +1602,12 @@ harness's own record, its cycles, cut cycles and stalls.
   type whose loops start a network library (`sendspin`) is run with no network.
 - **Refusals.** Add a test case to `test/nodes/settings_refusals_test.cpp` giving each refusal's
   exact text and which of several problems is told first.
+- **The schema.** The same valid settings hold the type's schema to the type
+  (`test/nodes/node_types_test.cpp`): each row is changed alone to its range's ends and middle, its
+  offered values, the value every other valid object gives it, and absence; a change that changes
+  the public ports needs `.shapesPorts()` on the row, and a marked row must change them once. The
+  routable banks are the ones `ports()` makes, the text hints hold, and every optional row without a
+  default has `defaultFrom` or `help` ([above](#settings-one-table-of-typed-rows)).
 
 ### Removing a type
 

@@ -5,6 +5,7 @@
 // type writes no audio code. Every setting is checked by the table, so nothing reaches PipeWire unparsed: the address
 // is an RtpAddress, the format a closed enum, every number ranged.
 #pragma once
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -28,14 +29,21 @@ inline std::optional<RtpEncoding> encodingOf(std::string_view format) {
 inline constexpr auto addressRow =
 	setting::required("address",
                       setting::text<RtpAddress::parse>(
-						  R"("0.0.0.0" or an IPv4 multicast group (224.0.0.0-239.255.255.255), as a dotted quad)"))
+						  R"("0.0.0.0" or an IPv4 multicast group (224.0.0.0-239.255.255.255), as a dotted quad)",
+						  {.pattern = R"(^[0-9]{1,3}(\.[0-9]{1,3}){3}$)", .maxLength = 15}))
 		.inPlace();
 // Every key but channels changes in place (docs/node-types.md#rtp): channels makes the ports.
 inline constexpr auto portRow = setting::required("port", setting::number(1, 65535)).inPlace();
-inline constexpr auto formatRow = setting::required("format", setting::text<encodingOf>(R"("L16" or "L24")")).inPlace();
-inline constexpr auto channelsRow = setting::required("channels", setting::number(1, 64));
+/// The formats' names as a control offers them: encodingOf's, in its order.
+inline constexpr std::array<std::string_view, 2> formatNames{"L16", "L24"};
+inline constexpr auto formatRow =
+	setting::required("format", setting::text<encodingOf>(R"("L16" or "L24")", {.values = formatNames})).inPlace();
+inline constexpr auto channelsRow = setting::required("channels", setting::number(1, 64)).shapesPorts();
+// Absent: the graph's frequency (receiverFor below).
 inline constexpr auto rateRow =
-	setting::optional("rate", setting::rate(SampleRate::fixed<8'000>(), SampleRate::fixed<192'000>())).inPlace();
+	setting::optional("rate", setting::rate(SampleRate::fixed<8'000>(), SampleRate::fixed<192'000>()))
+		.defaultFrom(setting::DefaultFrom::graphFrequency)
+		.inPlace();
 inline constexpr auto latencyRow =
 	setting::defaulted("latencyMs", setting::number(1, 1000, "milliseconds"), defaultLatencyMs).inPlace();
 inline constexpr auto stream = bank::output<"stream">;

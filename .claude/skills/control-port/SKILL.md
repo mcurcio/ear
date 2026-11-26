@@ -1,6 +1,6 @@
 ---
 name: control-port
-description: How to talk to EAR's control port (7777, HTTP for the graph editor plus JSON-RPC 2.0 over WebSocket at /rpc), its flags, the Host and Origin rules, protocol 1 and its features (lifecycle, counters, companions and node.companionsChanged), the lifecycle requests (node.start, node.stop, node.restart, node.disable, node.enable), node health and node.gone, the graphFile.* calls that read and replace ear.conf, rpc-call.mjs --until, write-behind and hand edits, how it runs on its own thread and reaches the graph through the graph file keeper and the gateway, per-client queues, levels, stopping, and the traps found while building it. Use when calling ear from a script, test or browser, when a request gets 403, file-changed, file-invalid or shared-definition, a socket closes with 1008 or a reset, levels never arrive, an edit is lost or not written, stop hangs, or when changing src/server/, src/control/ (rpc, commands, events, gateway, session), src/config/ or web/src/rpc.ts.
+description: How to talk to EAR's control port (7777, HTTP for the graph editor plus JSON-RPC 2.0 over WebSocket at /rpc), its flags, the Host and Origin rules, protocol 1 and its features (lifecycle, counters, companions and node.companionsChanged, status with node.statusChanged, node.eventRaised and node.diagnostic, actions with node.invoke), the lifecycle requests (node.start, node.stop, node.restart, node.disable, node.enable), node health and node.gone, the graphFile.* calls that read and replace ear.conf, rpc-call.mjs --until and --follow, write-behind and hand edits, how it runs on its own thread and reaches the graph through the graph file keeper and the gateway, per-client queues, levels, stopping, and the traps found while building it. Use when calling ear from a script, test or browser, when a request gets 403, file-changed, file-invalid or shared-definition, a socket closes with 1008 or a reset, levels never arrive, an edit is lost or not written, stop hangs, or when changing src/server/, src/control/ (rpc, commands, events, gateway, session), src/config/ or web/src/rpc.ts.
 ---
 
 # EAR's control port
@@ -33,7 +33,11 @@ use`).
   default; 10 without `--until`): `node scripts/rpc-call.mjs $U --until 'porch running'
   node.start '{"name":"porch"}'`. Exit codes: 0 done, 1 an error reply, a `failed` node or a
   lost socket, 2 the state did not come in time, 3 bad arguments, 4 no answer in time (without
-  `--until`). Inside the image: `scripts/dev.sh node scripts/rpc-call.mjs ...`.
+  `--until`). `--follow` (no `--until`) sends `graph.subscribe` (or the method given), prints
+  its result and then every notification as one line `{"method","params"}` until interrupted or
+  `--timeout`: `node scripts/rpc-call.mjs $U --follow | jq -c 'select(.method ==
+  "node.eventRaised")'` watches a node's events, `node.statusChanged` its status. Inside the
+  image: `scripts/dev.sh node scripts/rpc-call.mjs ...`.
 - **From a browser:** `http://<host>:7777/`. In development, `EAR_DEV_PUBLISH=5173:5173
   scripts/dev.sh bash -c 'cd web && npm run dev -- --host 0.0.0.0'` serves the editor with hot
   reload and forwards `/rpc` to an `ear` on `localhost:7777` (run `ear` in the same container,
@@ -48,7 +52,7 @@ use`).
 
 ## The frame and the lifecycle (protocol 1)
 
-- **The frame.** `graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun"]`; an absent
+- **The frame.** `graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun", "types", "status", "actions"]`; an absent
   `protocol` is 0. Gate every method and request member on its feature, never on a -32601
   probe. Every enum is open: draw a value you do not know neutrally, never fail on it.
 - **Health.** Each node of a snapshot, `node.added` and every `node.state` carries `state` (the
@@ -67,6 +71,12 @@ use`).
   records it causes (`node porch stop invoked`). Refusals: `node-disabled` (enable it first),
   `not-restartable` (`data.reason` `block-lost`, or `not-started` for a restart of a node still
   `added`), `unknown-node`, `stopping`.
+- **`node.invoke {"name", "action", "args"?}`** (feature `actions`, `docs/control-port.md#actions`) runs one of the
+  node's type actions: a trigger into its code (`{}` at once; `not-running` with `data.phase` unless it runs) or a call
+  into a loop's state (`{}` when its handler did it, `action-failed` with its text, `restarted`, `action-timeout` after
+  10 s). It rides the keeper's order like a verb, but the keeper never waits for a handler: the reply (a batch's too)
+  is held on the main loop until the action answered, so a slow handler holds only that client's later requests. Each
+  answer writes an `action` record. No built-in type has an action yet; `types.get` lists each type's `actions`.
 - **`node.disable`, `node.enable`** are edits of the node's own `disabled` line (`node white
   noise { disabled true; }`), written behind like any edit: `node.updated` with `applied`
   (`disable`, `enable`; `stored` for a change to a disabled node) and `disabled: true` when
@@ -78,6 +88,14 @@ use`).
   strands a route is `ports-in-use` unless the edit carries `dropRoutes: true`
   (`docs/control-port.md#nodeset-and-dry-runs`, `#changes-of-ports`).
 - Every -32602 carries `data.pointer`, the JSON pointer its message names.
+- **Type schemas** (feature `types`, `docs/control-port.md#type-schemas`): `types.get {"ifNoneMatch"?}` answers every
+  type's schema (rows with `kind`, `required`, `change`, `shapes`, `default`/`defaultFrom`, ranges and text hints;
+  `inputs`, `outputs`, `reconfigureMs`) and its `hash`, or `notModified` for the hash given. It is answered by the hub
+  on the control thread from the encoding `main.cpp` makes at boot (`control::encodeTypeSchemas`), never through the
+  keeper; the session stamps that hash on every Graph as `typeSchemaHash`. `invalid-settings` carries `data.detail`
+  and, when the settings walk refused one key, `data.key`. `test/protocol/types.json` is the real ear's answer: a
+  change to any type's rows regenerates it (the system test `types.get answers types.json's replies` says what
+  differs).
 - **Counters** (feature `counters`): the Graph carries the graph's `counters` (`cycles`, `cutCycles`,
   `stalls`, `lostMs`) and each node of a snapshot and `node.added` its own (`missedCycles`,
   `overruns`, `repositions`, `driverChanges`); `counters.changed` to `graph.subscribe` clients, at
@@ -272,6 +290,6 @@ record, status 0) says the stop is done; a script waiting on ear's exit judges t
 - `ear_system_tests` (`test/system/control_port_test.cpp`, `graph_file_test.cpp`): the real
   `out/ear`, end to end, edits written back and hand edits winning; `node-text.json`'s requests
   are sent to the real ear and its replies must be the fixture's.
-- `scripts/image-smoke.sh`: the run image serves `/` and answers `graph.get` and
+- `scripts/image-smoke.sh`: the run image serves `/`, answers `types.get` for the hash `graph.get` names, and answers `graph.get` and
   `graphFile.get`.
 - `web/` vitest: the editor's client and reducer against the same fixtures.

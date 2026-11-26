@@ -141,7 +141,10 @@ Home and End) between 280 and 560 px. It shows one subject, chosen by the select
 - nothing selected: **Graph**: the engine facts in full, the graph's counters and the add-node
   form;
 - one node: **Node**: its name and type, its state pill as the box draws it, its line, the
-  lifecycle bar (one segmented row; a refusal shown under it as well as in a toast), its knobly box (or JSON settings), its counters, its companions and Delete;
+  lifecycle bar (one segmented row; a refusal shown under it as well as in a toast), its type's
+  actions ([below](#actions)), its settings form
+  ([below](#the-settings-form)) or, by the Form/Text toggle, its knobly box (or JSON settings), its counters, its
+  companions and Delete;
 - one route: **Route**: from and to as `node:port` buttons that select that node, its status in
   words, its level meter and Remove;
 - several: a count ("3 nodes, 2 routes") and Delete for them all.
@@ -149,8 +152,8 @@ Home and End) between 280 and 560 px. It shows one subject, chosen by the select
 A name or route the graph does not hold is ignored, so the inspector shows only what ear announced.
 Delete asks `node.remove` for each node and `route.remove` only for routes between kept nodes, as
 the delete key does. The add-node form lives only in the Graph subject, so selecting something
-drops a half-typed statement; a new template is written when it shows again. Slice 5's settings
-form and status list are designed to land in the Node subject, under the lifecycle bar and its refusal line
+drops a half-typed statement; a new template is written when it shows again. Slice 5's status list
+is designed to land in the Node subject, under the settings form
 ([control-plane.md](design/control-plane.md#8-the-editor)).
 
 ### The drawer
@@ -245,9 +248,8 @@ right; they replace the one error banner.
 
 A change in place that could not finish raises a warning toast of its own, about its node, from the `node.state` that
 begins its fallback (`fpp could not apply port in place, so it restarted: fell-back deadline 10s passed`): the node
-restarts with the new settings, which `ear.conf` holds, so the panel keeps the new value. Slice 5's node events are
-designed to feed this queue
-([control-plane.md](design/control-plane.md#84-status-events-diagnostics-and-actions)).
+restarts with the new settings, which `ear.conf` holds, so the panel keeps the new value. A node's `warn` and `error`
+events feed this queue too ([status, events and diagnostics](#status-events-and-diagnostics)).
 
 ### Where a refusal lands
 
@@ -391,6 +393,49 @@ only that statement. The rules:
   edits it; while `ear.conf` has errors there are no `nodeTexts` and the box says to fix them in
   the pane. Neither offers Save. The text keeps its full contrast: it is never dimmed.
 
+## The settings form
+
+With the `types` and `node.set` features the inspector's Node subject draws the node's settings
+as a form made from its type's schema (`types.get`, [control-port.md](control-port.md#type-schemas)):
+`web/src/form.ts` is its logic (`form.test.ts`, against a fake client and the fixtures),
+`components/SettingsForm.tsx` draws it, and nothing in `web/` names a node type. A Form/Text toggle
+above it shows the node's knobly box instead ([above](#the-node-panels-text); JSON for an ear
+without `node-text`), for what the form cannot say. *Why:* the owner chose knobly as the person's raw
+text over JSON, so the toggle's other side is the node's own statement.
+
+- **Schemas once per hash.** `web/src/types.ts` (`types.test.ts`) holds the set the Graph's
+  `typeSchemaHash` names, fetched with the held hash as `ifNoneMatch`, and kept per ear
+  ([above](#what-the-browser-keeps)). Until it holds that set the panel shows the text box.
+- **One field per row**, in the table's order: a select for a text with `values` (an optional one
+  starts with its absent choice), a text field (checked against `pattern` and `maxLength` as typed),
+  a number field with the range for a whole number (a rate in Hz), a checkbox for a flag, and a JSON
+  field for a kind the editor does not know. An empty field's placeholder says what absent means: the
+  default (`default 0 channels`), where it comes from (`the graph's frequency`, `the node's name`), or
+  `absent`; a row's `help` and its unit are beside it, and a row that is `onlyWithout` a given key
+  (a draft included) is disabled, saying so.
+- **Hints from the schema alone**, beside each field: "applies in place" for `change: inPlace`,
+  "restarts the node" for `restart`, "changes the ports" for `shapes`; a `change` it does not know says
+  nothing. A drafted key that a node changing in place is applying (`keys`) or will take next (`next`)
+  also says "applies after this change".
+- **Drafts.** A field keeps what the person typed until Apply is answered or Discard; typing the
+  node's value back drops its draft. When ear's value changes under a draft (another editor, a hand
+  edit), the field says "changed on ear" with "Take ear's value"; a change elsewhere leaves it
+  alone. The fields without a draft follow ear.
+- **Apply asks first** (feature `dryRun`). Apply sends the drafted keys as one `node.set` merge
+  patch (an emptied optional field removes its key) with `dryRun: true`. `reconfigure`, `unchanged`
+  and `stored` are then sent at once, since nothing stops; `restart`, `reshape`, an answer naming
+  routes, or an outcome the editor does not know show what will happen first ("Restarts desk: its
+  audio stops for a moment.", "Restarts desk and removes 1 route: kitchen:from.left → desk:play.2",
+  "Changes fpp's ports.") with Apply and Cancel. The confirmed send carries `dropRoutes: true` exactly
+  when the dry run named routes, so the routes and the change are one save of `ear.conf` or neither; if
+  it is refused `ports-in-use` anyway (another edit landed between), the question is asked again with
+  the refusal's routes. Without `dryRun` Apply sends at once. *Why:* the owner, asked what happens to a
+  change that removes wired ports: the editor lists the wires that would go before applying, and Apply
+  removes them and changes the setting in one step, or neither.
+- **Refusals in place.** A value outside the hints is refused before sending, under its field. ear's
+  refusal is shown under the field its `data.key` names, in `data.detail`'s words, or at the form's
+  top when it names none; it raises no toast (a lost answer still does).
+
 ## Highlighting
 
 The pane, the node panel's box and the add-node form draw their knobly highlighted, in one component,
@@ -500,7 +545,9 @@ the page's life), and checks every value on read, ignoring a bad one. `main.tsx`
   ([above](#its-rules)). *Why:* the owner wanted node places kept across reloads in the browser, per ear, so a
   reload no longer scatters a hand-placed graph and places stay the browser's own.
 
-Slice 5's type-schema cache is designed to use this module too ([control-plane.md](design/control-plane.md#81-stores)).
+- **Type schemas**, per ear (`types`): the last set `types.get` answered and its hash (`types.ts`,
+  [below](#the-settings-form)), so a reload draws the settings forms before ear answers. A kept set
+  is drawn only while the Graph names its hash; a kept value that fails the check is ignored whole.
 
 ## The node box, wires and meters
 
@@ -635,6 +682,49 @@ for ready, its drop count on hover; never boxes or handles of their own. The rul
   "played short in the last minute"); the strip is a list labelled "companions".
 - **Not part of editing.** A badge is no handle and no node: clicking it selects its node and
   dragging it moves the box, as any part of the box does; nothing in it sends a request.
+
+## Status, events and diagnostics
+
+`web/src/activity.ts` is the one place that turns a node's status, events and diagnostics
+([control-port.md](control-port.md#status), [#node-diagnostics](control-port.md#node-diagnostics))
+into what the editor draws; `activity.test.ts` replays the `status` and `diagnostics` fixtures
+through it. Nothing in it names a type or a code: where a field shows is its schema's `display`, and
+a diagnostic is drawn by its own words.
+
+- **The box** shows its `box` fields after the state line, their values joined by ` · `
+  ("connected · 48000"), and a banner per `callout` field while it is not at its initial value
+  (a pairing code), only while the node is `running`, `reconfiguring` or `stopped` and never for a
+  `null`; without the type's schema held, none. A banner is a polite live region, so a screen
+  reader hears it change.
+- **A badge per active diagnostic** on the box, its words from its code and subject ("flapping:
+  connection"; an unknown code by its own name with the `ear.` dropped), its tooltip the
+  diagnostic's sentence, how often, and for flapping its threshold. An observation is never
+  badged. The warning sign is hidden from screen readers; the list is labelled "diagnostics", so
+  flapping is never shown by colour alone.
+- **The node panel** lists every status field in words (a flag yes or no, `null` unknown) in the
+  schema's order, every diagnostic the node was told with its count, and the node's **activity**:
+  its events and diagnostics since this page connected, newest first, at most 100.
+- **Toasts.** A `warn` or `error` event is also a notice in the toast queue ([toasts](#toasts)),
+  `<node> says: <code> <sentence>`, coalesced by node and code as every notice is, and at most one
+  new notice per node per 5 s; the toast queue's own live region announces it.
+
+## Actions
+
+With the feature `actions` and the node's type schema held, the Node subject draws one button per
+type action after the lifecycle bar ([control-port.md](control-port.md#actions)), labelled by its
+name in words (`reset-clip`: "Reset clip"), its tooltip the action's `help`. `web/src/actions.ts`
+holds the rules, `actions.test.ts` tests them; `components/ActionBar.tsx` draws them.
+
+- **Enabled by the phase**, as ear judges it: a trigger only while the code drives (`running`,
+  `reconfiguring`), a call while the node has a configuration that is configured and not tearing
+  down (`configured`, `starting`, `running`, `stopped`, `reconfiguring`); otherwise disabled, its
+  tooltip saying why. ear stays the judge: `not-running` is still shown as a refusal.
+- **A trigger** is sent at once. **A call with arguments** opens a small form under the bar, each
+  argument drawn and checked as the settings form draws a field ([the settings form](#the-settings-form)): a
+  problem disables the send, an empty optional argument is left out, and Cancel closes it.
+- **While in flight** its button spins and is disabled; its answer can take up to 10 s.
+- **A refusal** shows under the bar as well as in a toast, as a lifecycle refusal does
+  ([where a refusal lands](#where-a-refusal-lands)).
 
 ## Counters
 

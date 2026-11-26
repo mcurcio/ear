@@ -7,6 +7,7 @@
 #include <csignal>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -146,7 +147,8 @@ void checkFoundOverMdns(const std::string& node, const std::string& settings, co
 	auto ear = runEar(directory);
 	const std::string instance = waitForInstance(ear, node, port);
 	CHECK(instance.size() <= 63);
-	CHECK_FALSE(ear.lineStartingWith("node " + node + " says advertise-failed"));
+	CHECK(countEvents(ear, "advertise-failed", node) == 0);
+	CHECK(countEvents(ear, "renamed", node) == 0);
 
 	// Tests side by side advertise on one network, so this server looks only for its own.
 	SendspinTestServer server({"--discover", instance});
@@ -155,15 +157,12 @@ void checkFoundOverMdns(const std::string& node, const std::string& settings, co
 	REQUIRE_SEEN(ear, found);
 	CHECK(*found == "discovered " + instance + " port=" + std::to_string(port) + " path=/sendspin name=" + name);
 
-	const std::string prefix = "node " + node + " says ";
-	REQUIRE_SEEN(ear, ear.waitForLine(prefix + "connected \"ear-test-server\" unpaired", playDeadline));
+	REQUIRE_SEEN(ear, connectedUnpaired(ear, playDeadline, node));
 	server.send("pair");
-	const auto code = ear.waitForLineStartingWith(prefix + "pairing-code ", deadline);
+	const auto code = waitForPairingCode(ear, 0, deadline, node);
 	REQUIRE(code);
-	std::string digits = code->substr((prefix + "pairing-code ").size());
-	std::erase(digits, '-');
-	server.send("code " + digits);
-	REQUIRE_SEEN(ear, ear.waitForLine(prefix + "connected \"ear-test-server\" paired", deadline));
+	server.send("code " + digitsOf(*code));
+	REQUIRE_SEEN(ear, waitForPaired(ear, 0, deadline, node));
 
 	ear.signal(SIGTERM);
 	CHECK(waitForStop(ear) == 0);
@@ -195,14 +194,13 @@ TEST_CASE("A server browsing mDNS comes back by itself after a new name swaps th
 	auto ear = runEar(directory);
 	const std::string instance = waitForInstance(ear, "back", port);
 	SendspinTestServer server({"--discover", instance});
-	const std::string connected = "node back says connected ";
-	REQUIRE_SEEN(ear, ear.waitForLineStartingWith(connected, playDeadline));
+	REQUIRE_SEEN(ear, waitForStatus(ear, "connection", "connected", 0, playDeadline, "back"));
 
 	Rpc rpc(controlPort(ear));
 	const json update = rpc.call("node.update", {{"name", "back"}, {"settings", {{"port", port}, {"name", "Other"}}}});
 	INFO(update.dump());
 	REQUIRE(update.contains("result"));
-	const auto again = waitForNthLine(ear, connected, 1, playDeadline);
+	const auto again = waitForStatus(ear, "connection", "connected", 1, playDeadline, "back");
 	INFO("the server printed:\n" << server.events());
 	REQUIRE_SEEN(ear, again);
 	ear.signal(SIGTERM);
@@ -217,7 +215,7 @@ TEST_CASE("A listening node announces itself unasked, with its PTR, SRV, TXT and
 	writeGraphFile(directory, listenToRec(port));
 	auto ear = runEar(directory);
 	const std::string instance = waitForInstance(ear, "ma", port);
-	CHECK_FALSE(ear.lineStartingWith("node ma says advertise-failed"));
+	CHECK(countEvents(ear, "advertise-failed") == 0);
 	const auto announcement = browser.nextResponse(instance, deadline);
 	REQUIRE_SEEN(ear, announcement);
 	CHECK(announcement->find("path=/sendspin") != std::string::npos);
@@ -231,6 +229,45 @@ TEST_CASE("A listening node announces itself unasked, with its PTR, SRV, TXT and
 	CHECK(count(10) >= 3); // the SRV, the A and the TXT
 	ear.signal(SIGTERM);
 	CHECK(waitForStop(ear) == 0);
+}
+
+TEST_CASE("A listening node whose instance another responder holds is listed renamed, and says so",
+          "[system][sendspin]") {
+	MdnsSocket browser(true); // before the first ear: its announcement says it holds the name
+	const std::uint16_t firstPort = freeTcpPort();
+	std::uint16_t secondPort = freeTcpPort();
+	while (secondPort == firstPort) secondPort = freeTcpPort();
+	TempDirectory first;
+	writeGraphFile(first, listenToRec(firstPort));
+	auto holder = runEar(first);
+	const std::string instance = waitForInstance(holder, "ma", firstPort);
+	REQUIRE_SEEN(holder, browser.nextResponse(instance, deadline));
+
+	// A second ear with the same node name and a copy of its key file has the same client id, so it asks for the same
+	// instance, and probing finds it held (docs/node-types.md#its-listing).
+	TempDirectory second;
+	writeGraphFile(second, listenToRec(secondPort));
+	std::filesystem::copy_file(first.config() / "sendspin-ma.key", second.config() / "sendspin-ma.key");
+	auto ear = runEar(second);
+	const auto renamed = waitForEvent(ear, "renamed", 0, playDeadline);
+	REQUIRE_SEEN(ear, renamed);
+	const std::string published = (*renamed)["args"]["published"].get<std::string>();
+	CHECK((*renamed)["args"]["asked"] == instance);
+	CHECK(published == instance + " (2)");
+	CHECK(renamed->value("severity", "") == "info");
+	CHECK(renamed->value("msg", "") ==
+	      "node ma listed over mDNS as " + published + ", as another responder holds " + instance);
+	// The field names only what the node holds: the published name is its first, never the held one.
+	const auto listed = waitForNth(ear, instanceListed(), 0);
+	REQUIRE(listed);
+	CHECK((*listed)["to"] == published);
+	CHECK(lastStatus(ear, "listenPort") == json(secondPort));
+	CHECK(lastStatus(ear, "clientId") == lastStatus(holder, "clientId"));
+	CHECK(countEvents(holder, "renamed") == 0);
+	ear.signal(SIGTERM);
+	CHECK(waitForStop(ear) == 0);
+	holder.signal(SIGTERM);
+	CHECK(waitForStop(holder) == 0);
 }
 
 TEST_CASE("One datagram of many questions gets one answer, and a response or a runt gets none", "[system][sendspin]") {

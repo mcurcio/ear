@@ -5,9 +5,13 @@
 #pragma once
 #include <string>
 #include <utility>
+#include <cstddef>
+#include <vector>
 #include "ear/core/graph_spec.hpp"
 #include "ear/core/log.hpp"
+#include "ear/core/status_declarations.hpp"
 namespace ear {
+template <const auto& Spec> class Report;
 /// One configuration's handle (NodeOf::handle(), NodeContext::handle()). Called from any of the configuration's own
 /// threads (the main loop, its workers, its sink consumers), never from the realtime thread (`process`): a call takes
 /// brief locks (the note rate's, an executor's queue, a log sink's) and never waits on the main loop. It may be kept
@@ -27,10 +31,11 @@ public:
 	/// `source` becomes the type's name. Straight to the log sinks, unordered with notes and states; dropped once the
 	/// configuration has ended (but for one racing the end).
 	virtual void log(LogEntry entry) = 0;
-	/// Until slice 5 splits notes into status and events: `node <n> says <text>` (a `note` record), on the main loop
-	/// in the order said, so a note is ordered with the node's states. Never a state. Paced per configuration: 32 at
-	/// once, then one a second; the next note that passes is preceded by `notes-dropped <n>`. Heard until the
-	/// configuration has ended, so a goodbye said during its teardown is heard.
+	/// A note, for a type that has not moved to status and events (docs/writing-a-node-type.md#the-node-handle):
+	/// `node <n> says <text>` (a `note` record), on the main loop in the order said, so a note is ordered with the
+	/// node's states. Never a state. Paced per configuration: 32 at once, then one a second; the next note that passes
+	/// is preceded by `notes-dropped <n>`. Heard until the configuration has ended, so a goodbye said during its
+	/// teardown is heard.
 	virtual void say(std::string text) = 0;
 
 	void debug(std::string text) { log(LogEntry{.level = LogLevel::debug, .source = {}, .text = std::move(text)}); }
@@ -40,5 +45,18 @@ public:
 
 protected:
 	~NodeHandle() = default;
+	/// Report<spec>'s way in (report.hpp, docs/writing-a-node-type.md#report): status field `field` (its index in the
+	/// spec's StatusTable) now `value`, and event `event` (its index in the EventTable) with its arguments, both
+	/// checked and made safe by Report. Into the configuration's queue, in order with `lost`; dropped once the
+	/// configuration has ended. A handle no NodeHost made (a test's own) drops them.
+	virtual void reportStatus(std::size_t field, StatusValue value) {
+		static_cast<void>(field);
+		static_cast<void>(value);
+	}
+	virtual void reportEvent(std::size_t event, std::vector<StatusValue> args) {
+		static_cast<void>(event);
+		static_cast<void>(args);
+	}
+	template <const auto&> friend class Report;
 };
 } // namespace ear

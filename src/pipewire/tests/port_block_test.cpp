@@ -162,7 +162,7 @@ public:
 	void prepare(const AudioFormat&) override {}
 	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs, std::uint32_t,
 	             const ear::GraphCycle&) noexcept override {
-		ear::pipewire::testing::countAllocationsOnThisThread(countHere.load(std::memory_order_acquire));
+		ear::testing::countAllocationsOnThisThread(countHere.load(std::memory_order_acquire));
 		for (const std::span<float> out : outputs) std::ranges::fill(out, value_);
 		calls_.fetch_add(1, std::memory_order_release);
 		waiter_.wake();
@@ -605,7 +605,7 @@ TEST_CASE("Processing, metering and publishing allocate nothing on the realtime 
 
 	// From the source's next process() on, the realtime thread counts its allocations, over
 	// several published windows.
-	const std::uint64_t before = ear::pipewire::testing::countedAllocations();
+	const std::uint64_t before = ear::testing::countedAllocations();
 	source.countHere.store(true);
 	const std::uint64_t armedAt = source.calls();
 	std::uint64_t firstWindow = 0;
@@ -618,7 +618,7 @@ TEST_CASE("Processing, metering and publishing allocate nothing on the realtime 
 	source.countHere.store(false);
 	const std::uint64_t disarmedAt = source.calls();
 	REQUIRE(waiter.until([&] { return source.calls() > disarmedAt; }));
-	CHECK(ear::pipewire::testing::countedAllocations() - before == 0);
+	CHECK(ear::testing::countedAllocations() - before == 0);
 }
 
 // The blocking drive is gone; its two cases ("drive returns only when the old code can no longer run" and
@@ -2442,7 +2442,7 @@ TEST_CASE("Drives, fades, their completions and a bound sink's tap allocate noth
 	b.countHere.store(true);
 	const std::uint64_t armedAt = a.calls();
 	REQUIRE(waiter.until([&] { return a.calls() > armedAt; }));
-	const std::uint64_t before = ear::pipewire::testing::countedAllocations();
+	const std::uint64_t before = ear::testing::countedAllocations();
 	int tag = 1;
 	for (int round = 0; round < 50; ++round) {
 		block->drive(DriveRequest{round % 2 == 0 ? &b : &a, faded, sinks}, done.drive(tag++));
@@ -2451,7 +2451,7 @@ TEST_CASE("Drives, fades, their completions and a bound sink's tap allocate noth
 		const std::size_t want = done.order.size() + 2; // the fade between the two drives is cancelled, or acknowledged
 		REQUIRE(waiter.until([&] { return done.order.size() >= want && done.has(tag - 1); }));
 	}
-	const std::uint64_t counted = ear::pipewire::testing::countedAllocations() - before;
+	const std::uint64_t counted = ear::testing::countedAllocations() - before;
 	a.countHere.store(false);
 	b.countHere.store(false);
 	const std::uint64_t calls = a.calls() + b.calls();

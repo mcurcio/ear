@@ -1,5 +1,7 @@
 // The graph notifications and levels (docs/control-port.md): each
 // encoder gives exactly the fixtures' texts.
+#include <cstdio>
+#include <deque>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -155,4 +157,69 @@ TEST_CASE("node.companionsChanged and node.added's companions encode as companio
 	            .ready = true,
 	            .retiring = true},
 	           {.name = "fpp.rtp", .kind = CompanionKind::rtpReceiver, .bank = "from_rtp", .ready = false}}}) == m[25]);
+}
+
+TEST_CASE("node.statusChanged, node.eventRaised and node.diagnostic encode as status.json and diagnostics.json have "
+          "them",
+          "[events][protocol][status]") {
+	std::deque<std::string> names; // the views a FieldValue, an event and a diagnostic keep
+	const auto view = [&](const std::string& text) -> std::string_view { return names.emplace_back(text); };
+	const auto valueOf = [](const json& value) -> ear::StatusValue {
+		if (value.is_null()) return std::monostate{};
+		if (value.is_boolean()) return value.get<bool>();
+		if (value.is_number_integer()) return value.get<std::int64_t>();
+		if (value.is_number()) return value.get<double>();
+		return value.get<std::string>();
+	};
+	const auto fieldsOf = [&](const json& object) {
+		std::vector<ear::FieldValue> fields;
+		for (const auto& [key, value] : object.items()) fields.push_back({view(key), valueOf(value)});
+		return fields;
+	};
+	/// "2026-11-08T10:01:52.004211Z" as a time point.
+	const auto timeOf = [](const std::string& text) {
+		int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0, micros = 0;
+		REQUIRE(std::sscanf(text.c_str(), "%d-%d-%dT%d:%d:%d.%dZ", &year, &month, &day, &hour, &minute, &second,
+		                    &micros) == 7);
+		using namespace std::chrono;
+		return time_point_cast<system_clock::duration>(sys_days{std::chrono::year{year} / month / day} + hours{hour} +
+		                                               minutes{minute} + seconds{second} + microseconds{micros});
+	};
+	std::size_t checked = 0;
+	for (const std::string name : {"status", "diagnostics"}) {
+		const json document = fixture(name);
+		for (const json& message : document["messages"]) {
+			if (!message.contains("method")) continue;
+			const json& params = message["params"];
+			const std::string method = message["method"];
+			if (method == "node.statusChanged") {
+				ear::control::NodeStatusChanged event{params["name"], fieldsOf(params["fields"]),
+				                                      params.value("reset", false)};
+				CHECK(encoded(event) == message);
+				++checked;
+			} else if (method == "node.eventRaised") {
+				ear::RaisedEvent raised{.code = view(params["code"]),
+				                        .severity = params["severity"] == "warn"    ? ear::EventSeverity::warn
+				                                    : params["severity"] == "error" ? ear::EventSeverity::error
+				                                                                    : ear::EventSeverity::info,
+				                        .args = fieldsOf(params["args"]),
+				                        .msg = params["msg"]};
+				CHECK(encoded(ear::control::NodeEventRaised{params["name"], raised, timeOf(params["t"])}) == message);
+				++checked;
+			} else if (method == "node.diagnostic") {
+				ear::NodeDiagnostic diagnostic{.code = view(params["code"]),
+				                               .subject = params["subject"],
+				                               .condition = true,
+				                               .active = params["active"],
+				                               .count = params["count"],
+				                               .detail = params["detail"]};
+				for (const auto& [key, value] : params.items())
+					if (value.is_number_integer() && key != "count")
+						diagnostic.fields.push_back({view(key), value.get<std::int64_t>()});
+				CHECK(encoded(ear::control::NodeDiagnosed{params["name"], diagnostic, timeOf(params["t"])}) == message);
+				++checked;
+			}
+		}
+	}
+	CHECK(checked == 15);
 }

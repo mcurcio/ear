@@ -31,6 +31,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -79,10 +80,35 @@ struct CompanionFake {
 };
 
 /// One framework diagnostic the node got (NodeDiagnosticListener), in order.
+/// A node's carries its subject, whether active and its count (docs/output-records.md#diagnostic); one that names no
+/// node has none and is never active.
 struct SeenDiagnostic {
 	std::string code;
 	std::string detail;
 	std::vector<std::pair<std::string, std::int64_t>> fields;
+	std::string subject{};
+	bool active = false;
+	std::uint64_t count = 1;
+};
+
+/// One status record standard output would write (NodeStatusListener::statusWritten), or a reset (`reset`, no
+/// field), in order (docs/writing-a-node-type.md#testing-a-type).
+struct SeenStatus {
+	std::string field;
+	StatusValue from;
+	StatusValue to;
+	std::uint64_t heldBack = 0;
+	bool reset = false;
+};
+/// One event the node raised, past its event pace, in order: its arguments by name and its sentence filled.
+struct SeenEvent {
+	std::string code;
+	EventSeverity severity;
+	std::vector<std::pair<std::string, StatusValue>> args;
+	std::string msg;
+	/// When it was written: its writer's stamp on the harness's clock, or, raised from process, its cycle's start
+	/// (GraphCycle::startNs on the steady clock).
+	std::chrono::steady_clock::time_point at{};
 };
 
 /// One bug of an adapter's NodeHost caught and told (InternalErrorListener), before its node failed lost, in order.
@@ -118,7 +144,9 @@ struct HarnessOptions {
 	/// A host with no recordings folder: every recording is refused ("cannot open <path>: no recordings folder").
 	bool noRecordingsFolder = false;
 	bool autoComplete = true; // fades acknowledged and barriers completed as soon as posted
-	bool holdSinks = false;   // each sink's consumer begins only at ready(bank), not at configure's return
+	/// The status tick runs only at drain() and as the fake clock reaches it, not as each call settles.
+	bool holdStatus = false;
+	bool holdSinks = false; // each sink's consumer begins only at ready(bank), not at configure's return
 	/// Each sink's ring in frames, in place of the size the type asked for (rounded up to a power of two, as the
 	/// engine's is): a ring that a test's cycles do not divide makes the sink hand chunks split at its end, as the
 	/// engine's does (docs/engine.md#sinks).
@@ -149,6 +177,25 @@ struct AddOptions {
 };
 
 /// Any NodeType, by names.
+/// One type action's answer (NodeHarness::invoke): empty until NodeHost answered it, on the main loop.
+class ActionAnswer {
+public:
+	ActionAnswer() : slot_(std::make_shared<std::optional<ActionReply>>()) {}
+	bool answered() const noexcept { return slot_->has_value(); }
+	/// The answer; std::logic_error while there is none.
+	const ActionReply& reply() const {
+		if (!*slot_) throw std::logic_error("the action is not answered yet");
+		return **slot_;
+	}
+	/// Where NodeHost's answer lands.
+	NodeActions::ActionAnswered teller() const {
+		return [slot = slot_](const ActionReply& reply) { *slot = reply; };
+	}
+
+private:
+	std::shared_ptr<std::optional<ActionReply>> slot_;
+};
+
 class NodeHarness {
 public:
 	using Options = HarnessOptions;
@@ -318,6 +365,11 @@ public:
 	void disable();           // nodeChanged, outcome disable (spec.disabled true)
 	void enable();            // nodeChanged, outcome enable
 	void remove();            // nodeRemoved
+	/// NodeHost::stopAll, to the end: what the harness's destructor does, earlier, for a test of what a stop answers.
+	void stopAll();
+	/// NodeActions::invoke, settled: a trigger or a refusal is answered at once; a call's handler runs at the next
+	/// runLoops().
+	ActionAnswer invoke(std::string_view action, const NodeSettings& args = nullptr);
 
 	// What the node shows.
 	NodeHealth health() const;                               // as last told; std::logic_error before anything was told
@@ -334,6 +386,23 @@ public:
 	/// as a type's own thread may log while it is read.
 	std::vector<LogEntry> logs() const;
 	const std::vector<SeenDiagnostic>& diagnostics() const noexcept;
+	/// The node's status and events as the wire would hear them, in order, with its phases between
+	/// (docs/writing-a-node-type.md#testing-a-type): "changed <field>=<value> ...", "reset <field>=<value> ...",
+	/// "event <code>: <msg>", and "node <phase>" at each change of phase. clearReported() empties it and the two below.
+	const std::vector<std::string>& reported() const noexcept;
+	void clearReported();
+	/// Standard output's status records, each reset among them, in order.
+	const std::vector<SeenStatus>& statusRecord() const noexcept;
+	const std::vector<SeenEvent>& events() const noexcept;
+	/// The status view now (NodeHost::statusOf).
+	std::vector<FieldValue> status() const;
+	/// The status tick now, then settled.
+	void drain();
+	/// How many times the node's code rang the realtime bell (docs/architecture.md#the-realtime-channels): a cycle that
+	/// wrote, at most once until the next drain. The harness's bell tells NodeHost at once, and process() settles.
+	std::uint64_t realtimeRings() const noexcept;
+	/// The main loop pumped and settled as after any call.
+	void settle();
 	/// Every adapter bug told about the node (ear.internal-error's record), in order.
 	const std::vector<SeenInternalError>& internalErrors() const noexcept;
 

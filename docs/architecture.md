@@ -334,6 +334,13 @@ inside a named callback (`boundary::throwInCallback`), so the tests prove each o
    accepted or not: nothing is committed, told, recorded or written
    ([control-port.md](control-port.md#nodeset-and-dry-runs)).
 
+**A type action** (`node.invoke`, [control-port.md](control-port.md#actions)) rides the keeper's
+order as a lifecycle verb does: it needs no file, and its step hands it to `NodeHost` on the main
+loop (`MainLoopSide::invoke`, `NodeActions::invoke`) and ends there. The keeper never waits for a
+handler. The batch's reply is held on the main loop (the keeper's `Waiting`) until every action in it
+answered, at once for a trigger or a refusal, later for a call, at most 10 s
+([rates](#rates-and-bounds)), so it goes behind every event before it.
+
 A hand edit arrives as an inotify event, is read on the keeper's thread and offered the same way
 (cause `disk`). The graph may refuse it, but the working copy still follows the disk, and the
 graph keeps running what it ran.
@@ -378,6 +385,112 @@ engine refused the link. A wire never depends on a node's state.
 8. **Levels.** Each block meters its public ports and publishes a window every 1/30 s of graph
    time; the control thread sends the newest to subscribers
    ([control-port.md](control-port.md#levels)).
+
+## Status and events
+
+A node reports what it observes as **status** (fields with a current value) and **events**
+(things that happened), declared in its spec
+([writing-a-node-type.md](writing-a-node-type.md#status-and-events)) and written off the realtime
+thread through `Report<spec>` ([writing-a-node-type.md](writing-a-node-type.md#report)). *Why:* the
+owner's rule, "Nodes should not have direct access to stdout or stderr. The core framework should
+expose the necessary primitives for events, diagnostics, and logging", and status is "view +
+change record": a live view on the wire, coalesced, and every change on standard output, paced so
+each field's last record is its value.
+
+- **One queue per configuration.** `Report`'s writes and the handle's `lost` go into the
+  configuration's queue, on its channel ([teardown](#teardown-by-dependency)), under one short
+  mutex: bounded at 1024 records, a full queue drops a status write or an event and counts it
+  (`ear.records-dropped`, subject `queue`), never a loss. A text is made safe there, on the
+  writer's thread. One writer's records stay in its order, so a status write before an event is
+  drained before it, and a `lost` after the last status after it.
+- **The wake.** The first record into an empty queue posts one wake to the main loop, which marks
+  the node dirty and arms the **tick** on the main loop's timers: 33 ms after the last tick, or at
+  once if that has passed, so at most 30 ticks a second for all nodes together, and none while
+  nothing is written. A `lost` is never paced: it posts a drain of its own, which drains the queue
+  up to it at once.
+- **The drain**, at each tick, node by node in arrival order: a status write updates the node's
+  **status view** (a write of the value a field holds is no change), is offered to standard
+  output's per-field pace and marked for the wire; an event first sends the node's marked fields,
+  then is offered to the node's event pace; a `lost` first sends the marked fields, then fails the
+  node as built (dropped once its configuration's teardown began). At the tick's end, one
+  `statusChanged` per node with the fields marked since the last.
+- **What the view belongs to.** The view is the node's, held by NodeHost: every field at its
+  initial value until written. It belongs to the configuration: when a configuration closes,
+  fails to start or is leaked, its last records are drained, nothing more of it lands (its channel
+  is detached), and the view returns to every initial value, told as one reset after those last
+  values. On a restart that falls between the old configuration's `stopping` and the new one's
+  `configuring`. A stop, a start and a change in place keep the configuration, so they keep the
+  view and send no reset. A write lands until the configuration closed, so a goodbye written
+  during its teardown is heard.
+
+NodeHost tells its `NodeStatusListener`s each change as standard output writes it
+(`statusWritten`), the wire's coalesced changes (`statusChanged`), each reset (`statusReset`) and
+each event (`eventRaised`); a superseded node's only to listeners that hear one. Core reads no wall
+clock: each is stamped on the main loop's steady clock, and each listener maps it to UTC.
+
+### Rates and bounds
+
+| What | Bound | Policy |
+|---|---|---|
+| The tick | 30 a second, all nodes together | armed only when something is written or due |
+| `statusChanged` | one per node per tick | the latest values |
+| A node's queue | 1024 records | a status write or an event dropped and counted (`ear.records-dropped`, subject `queue`); a `lost` never |
+| Standard output's status records | per node and field: 32 at once, then one a second | once the pace holds a change back, every later change of the field is held too, until a **trailing** record writes the view's value with `heldBack`, the count, at the first tick the pace allows (at most 1 s after the last held change); so the last record of each field always matches the view. The held changes are also counted in `ear.records-dropped`, subject `status` |
+| Events (wire and standard output alike) | per node: 32 at once, then one a second | held back ones counted in `ear.events-dropped` (`heldBack`) |
+| `ear.events-dropped`, `ear.records-dropped` | at most one a second per node (and subject) | the count since the last |
+| Flapping | a field with more than its `flapsAbove` changes (default 10 in 10 s) within the window | `ear.status-flapping`, subject the field, active (`transitions`, `windowMs`) when it crosses, said again at most once a window while it stays above; inactive once a whole window passed with it at or below |
+| A call's answer | 10 s (`actionDeadline`), timed by NodeHost on the main loop's timers | answered `timeout`; the handler's late answer dropped ([writing-a-node-type.md](writing-a-node-type.md#actions)) |
+
+A node diagnostic of these is the node's, kept per code and subject as the framework's own
+([output-records.md](output-records.md#diagnostic)): `ear.status-flapping` is a condition,
+`ear.events-dropped` and `ear.records-dropped` observations.
+
+### The realtime channels
+
+A node's code reports from `process` through `Io`
+([writing-a-node-type.md](writing-a-node-type.md#reporting-from-the-code)), into channels its
+configuration owns (`ear/core/realtime_channels.hpp`). *Why:* the owner's rule that the
+framework's primitives for events, diagnostics and logging "should be real-time safe for any audio
+loops that need them", and that the audio threads only read inputs and write outputs, so the code
+never touches a queue, a lock or a clock of its own.
+
+| Channel | Mechanism | Bound | On overflow |
+|---|---|---|---|
+| An `rt` status field | one `std::atomic<std::uint64_t>` per field (a flag 0 or 1, a number or decimal its bits, a choice its index) and an `std::atomic<std::uint32_t>` transition counter beside it, both stored by the code, sampled by the drain | 64 `rt` fields per type | none: the word always holds the last value |
+| The ring | single producer (the code), single consumer (the drain), fixed 48-byte records: kind, index, count, the cycle's `startNs`, up to four 8-byte values | 256 records per configuration; a log record is refused once 192 are in use, so status and events keep the last quarter | dropped, counted per kind: `ear.records-dropped`, subject `realtime` (`count`, `status`, `events`, `logs`) |
+| The bell | `RealtimeBell::ring()` (ear_pipewire's: [engine.md](engine.md#the-realtime-bell)), gated by one atomic exchange per configuration: rung after a `process` that wrote anything, unless it was rung since the last drain | at most once per drain, and the drain is the tick's, so at most 30 a second per node | — |
+| A broken value | the first value outside its declaration, kept once | one | the node fails `lost` with the rule |
+| A trigger (in) | one `std::atomic<std::uint32_t>` counter per trigger, moved by the main loop; beside it the last value the code saw, the code's alone ([writing-a-node-type.md](writing-a-node-type.md#actions)) | — | several invokes before a block are one |
+
+`io.set` stores the word and, when the value differs from the last one the code wrote (its
+initial value before any), counts a transition and puts a status record in the ring. `io.raise` and
+`io.log` put one record each. The code's side is all stores, one fence and one exchange: no allocation, lock,
+format or system call but the bell's (`ear_core_tests` counts the allocations of a code writing every
+kind, none). The bell's gate is cleared by the drain before it reads the ring, and a sequentially
+consistent fence on each side (after the clear; after the cycle's writes, before the exchange) makes
+the two meet: either the drain reads the cycle's writes or the exchange sees the clear and rings.
+Without them a store buffer can hold the clear while the drain reads the old head, and the write is
+neither drained nor rung for until the code writes again.
+
+**The drain**, on the main loop, is part of the tick's: the bell's dispatch arms the tick as a
+queue's wake does (`NodeHost::realtimeRung`), and each node's drain reads its configuration's ring
+first, then its queue, then samples each `rt` word the code wrote since the last sample. A ring
+status record is a status write as `Report`'s is; a sampled word whose value differs from the view
+(its record had no room) is one too; an event is an event; a log record is written to the log's
+sinks there, a `log` record of the node with the code as its `topic`. A realtime record is paced at
+the drain's time, but carries its cycle's start: an event's `t` is when its cycle began. A
+field's transitions for flapping are its counter's moves between samples, so changes whose records
+had no room still count. A broken value fails the node after everything else drained.
+
+**Across the lifecycle.** The channels are made with the configuration (each `rt` word at its
+field's initial value) and freed at teardown step 5, after the code; nothing is allocated, freed or
+resized on the realtime thread or while a code that uses them can run. The code is bound to them
+when `configure` answers (`CreateOf::applied`), and a code a change swaps in is bound to the same
+ones (`ChangeOf::applied`), so each `rt` field keeps the value the old code last wrote. A stop and a
+start keep them; a restart, a failure or a removal drains them with the queue as the
+configuration closes, and its successor starts from new ones. One node's channels are never
+another's. A type whose code writes nothing on the realtime thread and reads no trigger (no `rt`
+field, event, log code or trigger) has none.
 
 ## Companions
 

@@ -4,7 +4,6 @@
 #include <format>
 #include <utility>
 
-#include "notes.hpp"
 #include "sendspin/persistence_codec.h"
 
 namespace ear::nodes::sendspin {
@@ -57,14 +56,14 @@ std::optional<std::string> whyNotKeyRecord(std::string_view text) {
 	return std::nullopt;
 }
 
-std::expected<std::unique_ptr<NodeKeyStore>, std::string> NodeKeyStore::open(Store& store, NodeHandle& events) {
+std::expected<std::unique_ptr<NodeKeyStore>, std::string> NodeKeyStore::open(Store& store, WriteFailed writeFailed) {
 	const std::string text = store.text();
 	if (const auto why = whyNotKeyRecord(text)) return std::unexpected(store.fileName() + ": " + *why);
-	return std::unique_ptr<NodeKeyStore>(new NodeKeyStore(store, events, json::parse(text)));
+	return std::unique_ptr<NodeKeyStore>(new NodeKeyStore(store, std::move(writeFailed), json::parse(text)));
 }
 
-NodeKeyStore::NodeKeyStore(Store& store, NodeHandle& events, nlohmann::json record) noexcept
-	: store_(store), events_(events), record_(std::move(record)) {}
+NodeKeyStore::NodeKeyStore(Store& store, WriteFailed writeFailed, nlohmann::json record) noexcept
+	: store_(store), writeFailed_(std::move(writeFailed)), record_(std::move(record)) {}
 
 std::optional<std::vector<std::uint8_t>> NodeKeyStore::load_blob(const std::string& key) {
 	const json& blobs = record_["blobs"];
@@ -86,7 +85,7 @@ bool NodeKeyStore::save_blob(const std::string& key, const std::uint8_t* data, s
 	if (written.error().kind == StoreWriteError::Kind::unconfirmed && store_.text() == text) return true;
 	// Refused: someone changed or removed it, and theirs stands (deleting it and restarting wipes the identity:
 	// docs/node-types.md#the-identity-file); or the disk refused.
-	events_.say(notes::keyWriteFailed(written.error().detail));
+	writeFailed_(written.error().detail);
 	return false;
 }
 

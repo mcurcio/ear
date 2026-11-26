@@ -46,7 +46,10 @@
           "node-text",
           "reshape",
           "node.set",
-          "dryRun"
+          "dryRun",
+          "types",
+          "status",
+          "actions"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -58,6 +61,7 @@
           "rtp",
           "white"
         ],
+        "typeSchemaHash": "fnv1a64:0123456789abcdef",
         "nodes": [
           {
             "name": "desk",
@@ -82,7 +86,9 @@
               "repositions": 0,
               "driverChanges": 0
             },
-            "companions": []
+            "companions": [],
+            "status": {},
+            "diagnostics": []
           },
           {
             "name": "porch",
@@ -107,7 +113,9 @@
               "repositions": 0,
               "driverChanges": 0
             },
-            "companions": []
+            "companions": [],
+            "status": {},
+            "diagnostics": []
           }
         ],
         "routes": [],
@@ -141,7 +149,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       }
     },
     {
@@ -634,7 +644,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       }
     },
     {
@@ -679,7 +691,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       }
     },
     {
@@ -940,7 +954,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       }
     },
     {
@@ -1108,7 +1124,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       }
     },
     {
@@ -1578,7 +1596,10 @@
       "node-text",
       "reshape",
       "node.set",
-      "dryRun"
+      "dryRun",
+      "types",
+      "status",
+      "actions"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -1590,6 +1611,7 @@
       "rtp",
       "white"
     ],
+    "typeSchemaHash": "fnv1a64:0123456789abcdef",
     "nodes": [
       {
         "name": "desk",
@@ -1618,7 +1640,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       },
       {
         "name": "fpp",
@@ -1645,7 +1669,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       },
       {
         "name": "porch",
@@ -1671,7 +1697,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       },
       {
         "name": "quiet",
@@ -1693,7 +1721,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       },
       {
         "name": "tape",
@@ -1717,7 +1747,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       }
     ],
     "routes": [],

@@ -16,9 +16,10 @@
 #   pipewire/rtp_receivers.cpp              the RTP receiver's audio.rate, the sender's own rate;
 #   pipewire/pipe_receivers.cpp             the pipe receiver's audio.rate, the program's own rate;
 #   nodes/file/file.cpp                     libsndfile's samplerate;
-#   nodes/sendspin/worker.cpp               sendspin-cpp's formats, its source's sample_rate and the says notes;
+#   nodes/sendspin/worker.cpp               sendspin-cpp's formats, its source's sample_rate and its sendingRate status;
 #   nodes/sendspin/worker.hpp               the stream's byte rate the feed's undrained bound is derived from;
-#   control/events.cpp                      the wire's graphFrequency.
+#   control/events.cpp                      the wire's graphFrequency;
+#   control/type_schemas.cpp                a rate row's range on the wire, in Hz (docs/control-port.md#type-schemas).
 # It fails, too, when a listed file is not there, and when ROOT and GLOB leave it no file to check.
 cmake_policy(VERSION 3.28)
 if(NOT DEFINED ROOT)
@@ -40,7 +41,8 @@ if(NOT DEFINED ALLOWED)
 		nodes/file/file.cpp
 		nodes/sendspin/worker.cpp
 		nodes/sendspin/worker.hpp
-		control/events.cpp)
+		control/events.cpp
+		control/type_schemas.cpp)
 endif()
 
 set(patterns)

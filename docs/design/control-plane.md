@@ -1,7 +1,25 @@
 # The control plane and parameters: slices 5 and 6 of the node framework
 
-Status: design, not built. Slice 5 (the control plane: the type schema on the wire, status, events, node diagnostics on
-the wire, actions, the realtime coded ring, sendspin's notes split) follows slice 3c (built: the node
+Status: design, step 5.1 built (the type schema on the wire, `types.get`, `typeSchemaHash`, `invalid-settings`' `key` and
+`detail`, and the editor's settings form with Apply asking first: `docs/control-port.md#type-schemas`,
+`docs/writing-a-node-type.md#the-type-schema`, `docs/editor.md#the-settings-form`), step 5.2 built (status fields,
+events and log codes in the spec, `Report`, the per-node queue, the tick and its paces, the `status` and `event` records,
+the feature `status` with `node.statusChanged`, `node.eventRaised` and `node.diagnostic`, `rpc-call.mjs --follow`, the
+editor's status list, badges and activity: `docs/writing-a-node-type.md#status-and-events`,
+`docs/architecture.md#status-and-events`, `docs/output-records.md#status`, `docs/control-port.md#status`,
+`docs/editor.md#status-events-and-diagnostics`), step 5.3's realtime channels built (`rt` fields, `io.set`, `io.raise`,
+`io.log`, the ring with its log budget, cycle stamps and the gated bell, bound when the code is prepared and rebound at a
+swap: `docs/writing-a-node-type.md#reporting-from-the-code`, `docs/architecture.md#the-realtime-channels`,
+`docs/engine.md#the-realtime-bell`), step 5.4's core built (`ActionTable`, triggers into the code, calls into a loop's
+state, `NodeActions::invoke` with its refusals and its 10 s deadline, the harness's `trigger` and `invoke`:
+`docs/writing-a-node-type.md#actions`; the feature `actions` with `node.invoke`, its six codes, the schema's `actions`,
+the batch reply held for its actions and the `action` record for type actions: `docs/control-port.md#actions`,
+`docs/output-records.md#action`; the editor's action buttons: `docs/editor.md#actions`), step 5.5 built (sendspin's
+notes split into status fields and events: `docs/node-types.md#status-and-events`), and 5.2's test of ten chatty nodes
+and a slowly reading client (`docs/testing.md#the-client-queue-under-status`): slice 5 is wholly built but for
+sendspin's first action, which waits on its library (section 11, 5.4); slice 6 is not built. Slice 5 (the
+control plane: status, events, node diagnostics on the wire, actions, the realtime coded ring, sendspin's notes split)
+follows slice 3c (built: the node
 handle and loops, `docs/writing-a-node-type.md#the-node-handle`, `#loops`). Slice 6 (parameters: decimal, indexed and live rows, parameter slots and their ramps, retunes,
 gestures, the `gain` type, the editor's faders) follows slice 3d (built: the plan's outcomes, `docs/architecture.md#restarts-and-changes-of-settings`, and `node.set`,
 `docs/control-port.md#nodeset-and-dry-runs`)
@@ -108,22 +126,9 @@ the keeper writes `gainDb -3.5;`; other clients get `gesture.changed {"phase":"e
 standard output has `node amp gainDb -6 -> -3.5` with `"reason":"idle"`. Had the socket closed first, the same end
 would have come at once, with reason `session-closed`. When the laptop reconnects, the snapshot shows `-3.5`.
 
-**A node flaps.** `kitchen`'s connection drops and comes back every few hundred milliseconds. Its worker loop writes
-`connection`; standard output has a `status` record per change up to the field's pace (32 at once, then one a second),
-then a trailing record with the value the field now has and how many were held back, so `kubectl logs` always ends on
-the true value. Fourteen changes in ten seconds pass the field's threshold: `ear.status-flapping` with subject
-`connection`, `active: true`, as a `node.diagnostic` and a `diagnostic` record. The editor badges "flapping:
-connection"; when a whole window passes at or below the threshold, the same code and subject with `active: false`
-removes it.
-
-**A node reports a pairing code.** The worker writes `connection = connected`, `serverName = "Music Assistant"`,
-`paired = false`, then `pairingCode = "123-456"`, which the schema marks a **callout**. The editor shows "Pairing code
-123-456: type it into Music Assistant" with a copy button, announced politely; standard output has `node kitchen
-pairingCode "" -> "123-456"`. Once paired, the worker raises the event `paired {"server":"ma-7f3c"}` and writes
-`paired = true`, `pairingCode = ""`; the callout goes. A wrong code raises `pairing-failed {"reason":"pairing-code-
-mismatch"}` (severity `warn`), also shown as a notice. If the node's configuration is torn down, the server sends the
-node's status reset (4.3), and box status and callouts stay hidden while the node is neither `running`, `stopped` nor
-`reconfiguring`.
+**A node flaps, or reports a pairing code.** Built: the paces, the trailing record and `ear.status-flapping`
+([architecture.md](../architecture.md#rates-and-bounds)), and `sendspin`'s `connection`, `pairingCode` (a callout),
+`paired` and its events ([node-types.md](../node-types.md#status-and-events)).
 
 ### 2.2 The script author
 
@@ -201,7 +206,7 @@ anew).
 | **Action** | A command into a node that changes no desired state | an `ActionTable` entry (the lifecycle verbs are the framework's, built, and reserved names) | a client, ordered by the keeper | not kept | `node.invoke` | `action` record |
 | **Node diagnostic** | What the framework observes about a node's machinery | the framework's code list (4.6) | the framework alone | per code and subject: the latest, whether active, a count | node `diagnostics`; `node.diagnostic` | `diagnostic` record |
 | **Log** | Free text for people debugging | levels; `LogCodes` for the realtime thread | any node code; captured output | not kept | later (`log.subscribe`) | `log` record |
-| **Note** | Retired: today's `say` sentence; about 11 of sendspin's 17 are state, the rest edges | `notes.hpp` | sendspin | — | — | `note` record, until step 5.5 |
+| **Note** | Retired: a `say` sentence, which `sendspin` no longer writes (built, [node-types.md](../node-types.md#status-and-events)); `file` and `airplay` still do, until each moves | each type's notes | those types | — | — | `note` record |
 | **Health** | The lifecycle's judgement (built) | the framework | `NodeHost` alone | memory | built | built |
 
 A **node diagnostic** is not a **graph-file diagnostic** (a problem in `ear.conf`'s text at a line and column). They
@@ -225,21 +230,6 @@ Ask in order; the first yes decides.
 6. **For a person debugging, in words?** A **log** line.
 7. **Up or down?** **Health**, the framework's alone.
 
-| Today (sendspin's note) | Becomes |
-|---|---|
-| `id <client id>` | status `clientId` |
-| `dialling <url>`, `listening <port> as <instance>` | status `connection` (`dialling`, `listening`, `connected`; unknown until written), `url`, `listenPort`, `instance` |
-| `connected "<name>" paired\|unpaired`, `disconnected` | status `connection`, `serverName`, `paired` |
-| `pairing-code <c>`, `pairing-code-cleared` | status `pairingCode`, a callout |
-| `paired <server id>` | event `paired {server}`, and status `paired = true` |
-| `pairing-failed <reason>` | event `pairing-failed {reason}`, severity `warn` |
-| `pairing-held` | status `pairingHeld` (a flag) |
-| `stream <codec> <rate> <ch> <bits>`, `stream-ended` | status `stream` (`none`, `flac`, `pcm`), `streamRate`, `streamChannels`, `streamBits` |
-| `sending <rate> 2 24`, `sending-stopped` | status `sending` (flag), `sendingRate` |
-| `key-write-failed <detail>` | event `key-write-failed {detail}`, severity `error` |
-| `advertise-failed <detail>` | event `advertise-failed {detail}`, severity `warn` |
-| `notes-dropped <n>` | gone: the framework's `ear.events-dropped` |
-
 Other examples: a card's PCM state (slice 8) is status; `rtp`'s `receiving` is status written by its companion (slice
 8); "a configuration did not close in 10 s" is `ear.close-overdue`; a library's warning text is a log line.
 
@@ -262,8 +252,9 @@ Other examples: a card's PCM state (slice 8) is status; `rtp`'s `receiving` is s
 
 The frame is built: an absent `protocol` is 0, the number moves only on a breaking change, additive growth is announced
 in `features`, every enum is open, members ear sends are additive and members a client sends exist only from the
-feature that adds them (ear's decoders refuse an unknown key, -32602 with `data.pointer`). These slices add the
-features `types` (5.1), `status` (5.2: status, events, node diagnostics), `actions` (5.4), `live` (6.3: decimal,
+feature that adds them (ear's decoders refuse an unknown key, -32602 with `data.pointer`). Step 5.1 built the feature
+`types` ([control-port.md](../control-port.md#type-schemas)) and step 5.2 the feature `status` (status, events, node
+diagnostics: [control-port.md](../control-port.md#status)); these slices add the features `actions` (5.4), `live` (6.3: decimal,
 indexed and live rows, `applied: "retune"`) and `gestures` (6.4).
 
 Names: requests are `<entity>.<verb>`, notifications say what happened; object keys, status field names and setting
@@ -281,16 +272,17 @@ as any refusal does.
 
 | Method | Feature | Params | Result | Refusals (`data.code`) | Path |
 |---|---|---|---|---|---|
-| `types.get` | `types` | `{"ifNoneMatch"?}` | `{"protocol","hash","typeSchemas"}`, or `{"protocol","hash","notModified": true}` | none | control thread (fixed at boot) |
 | `gesture.begin` | `gestures` | `{"name", "key"}` | `{"gesture", "value", "reach", "min", "max", "decimals"}` | `unknown-node`, `not-live`, `shared-definition`, `parameter-held`, `file-invalid`, `file-refused`, `stopping` | control thread, then the main loop (7.2) |
 | `gesture.change` | `gestures` | `{"gesture", "seq", "value"}` | `{}` if sent with an id | `unknown-gesture`, `invalid-settings`, `not-in-batch` | control thread, then the main loop directly |
 | `gesture.end` | `gestures` | `{"gesture", "value"?}` | `{"value"}`: what was committed | `unknown-gesture`, `invalid-settings` (the gesture stays open), `stopping`, the desired graph's (the gesture is aborted) | keeper |
 | `gesture.cancel` | `gestures` | `{"gesture"}` | `{}` if sent with an id | `unknown-gesture`, `not-in-batch` | control thread, then the main loop directly |
-| `node.invoke` | `actions` | `{"name", "action", "args"?}` | `{}` | `unknown-node`, `unknown-action`, `invalid-args`, `not-running`, `restarted`, `stopping`, `action-failed`, `action-timeout` | keeper, then the node's loop |
 
 `node.set` and `node.update` (3d) gain `parameter-held` and the outcome `retune` from feature `live`.
 
-**`types.get`**
+**`types.get`** is built ([control-port.md](../control-port.md#type-schemas)), with each type's `status` and `events`
+(5.2) and `actions` (5.4, [control-port.md](../control-port.md#actions)). Slice 6 adds to rows the kind `decimal` with `decimals`, `taper` (`linear`, `log`, `db`, 8.3)
+and `minIsSilence`, `live` (`{"smoothingMs"}`, with `change` `live`) and `indexed` (`{"by": <the count row's key>,
+"from": 1}`) (slice 6), as this example of slice 6's `gain` shows:
 
 ```json
 {"jsonrpc":"2.0","id":7,"result":{"protocol":1,"hash":"fnv1a64:9c2e41f07a3b5d18","typeSchemas":[
@@ -314,26 +306,6 @@ as any refusal does.
    "inputs":[],"outputs":["stream"],"reconfigureMs":10000,"status":[],"events":[],"actions":[]}]}}
 ```
 
-- A setting row: `key`, `kind` (`text`, `wholeNumber`, `decimal`), `required`, and as they apply `default` or
-  `defaultFrom` (an open enum: `graphFrequency`, `nodeName`), `min`, `max`, `unit`, `decimals`, `taper` (`linear`,
-  `log`, `db`, 8.3), `minIsSilence`, `live` (`{"smoothingMs"}`), `indexed` (`{"by": <the count row's key>, "from":
-  1}`), `onlyWithout`, `mustBe` (the row's own prose), and the text hints `values`, `pattern`, `maxLength`, `help`.
-  Text hints are documentation for controls: the row's parse function stays the judge.
-- **`change`** (`live`, `inPlace`, `restart`, from 3d's and 6's marks) and **`shapes: true`** (`.shapesPorts()`, 5.1)
-  on every row: the editor's hints come from these alone. `reconfigureMs` on the type: its in-place deadline (3d's
-  `.lifecycle`).
-- `inputs` and `outputs` are the public banks' names, in declaration order; inside banks are never on the wire.
-- No type's `settings` lists `disabled`: it is the framework's reserved key (built), never a row.
-- A status field: `name`, `kind` (`flag`, `wholeNumber`, `decimal`, `choice`, `text`), `initial` (`null` when it starts
-  unknown), `display` (`panel`, `box`, `callout`), `flapsAbove`, and as they apply `min`, `max`, `unit`, `values`,
-  `maxBytes`, `help`. Its writer is not on the wire.
-- An event: `code`, `severity` (`info`, `warn`, `error`), `sentence` (with `{arg}` places), `args` (each `name`, `kind`,
-  `min`, `max`, `values`).
-- An action: `name`, `by` (`type`; open), `target` (`code` for a trigger, `loop` for a call), `help`, `args` (setting
-  rows).
-- The hash is opaque: FNV-1a 64 over the exact bytes of the `typeSchemas` encoding made at boot, written
-  `fnv1a64:<16 hex>`; one hash for the whole set, since types are compiled in and change only with ear. The graph's
-  `types` (a sorted list of names, built) stays.
 
 **`gesture.begin`** opens a gesture on one live row of one node. Its reach is every node and key whose value is defined
 at the same place in `ear.conf` (G1): `amp2`'s `trimDb.1` and `trimDb.2` share `@set $trim 0;`, so a gesture on either
@@ -362,35 +334,19 @@ refusal aborts it (`refused`). An end whose value equals the committed one write
 
 **`gesture.cancel`** aborts the caller's own gesture: every reached slot returns to the committed value.
 
-**`node.invoke`** runs one of the type's actions. A trigger is answered once handed to the code; a call with its
-handler's outcome.
-
-```json
-{"jsonrpc":"2.0","id":13,"method":"node.invoke","params":{"name":"amp","action":"reset-clip"}}
-{"jsonrpc":"2.0","id":13,"result":{}}
-{"jsonrpc":"2.0","id":14,"method":"node.invoke","params":{"name":"kitchen","action":"forget-pairing","args":{"server":"ma-7f3c"}}}
-```
+`node.invoke` is built ([control-port.md](../control-port.md#actions)).
 
 ### 4.3 The graph, and notifications
 
-`graph.get` and `graph.subscribe` gain `typeSchemaHash` at the top and, per node, `status` (every declared field, each
-at its initial value until written; always present, `{}` for a type with none), `gestures` (the open gestures moving
-one of this node's keys, with their live value; always present) and `diagnostics` (one entry per code and subject, each
-with `active`, `count`, `t`, `msg` and its fields; always present). `node.added` carries the same, so a client need not
-fetch the schema to show a new node. One main-loop turn makes the whole snapshot, so status, health, gestures,
-diagnostics and companions agree.
+`graph.get` and `graph.subscribe` carry, per node, `status` and `diagnostics` (built:
+[control-port.md](../control-port.md#status)), and gain `gestures` (the open gestures moving one of this node's keys,
+with their live value; always present, in `node.added` too).
 
 | Notification | Params | Rate |
 |---|---|---|
-| `node.statusChanged` | `{"name","fields":{name: value},"reset"?: true}`: the fields changed since the last; with `reset`, every field at its initial value | at most 30 a second per node |
-| `node.eventRaised` | `{"name","code","severity","t","args":{...},"msg"}` | 32 at once, then 1 a second per node |
-| `node.diagnostic` | `{"name","code","subject","active","count","t","msg", the code's fields}` | per code (4.6) |
 | `gesture.changed` | `{"gesture","phase", and by phase: "reach","value","reason","code","key","detail"}` | `change`: at most 30 a second per gesture |
 
 ```json
-{"jsonrpc":"2.0","method":"node.statusChanged","params":{"name":"kitchen","fields":{"pairingCode":"123-456"}}}
-{"jsonrpc":"2.0","method":"node.eventRaised","params":{"name":"kitchen","code":"pairing-failed","severity":"warn","t":"2026-11-08T10:01:52.004211Z","args":{"reason":"pairing-code-mismatch"},"msg":"pairing failed: pairing-code-mismatch"}}
-{"jsonrpc":"2.0","method":"node.diagnostic","params":{"name":"kitchen","code":"ear.status-flapping","subject":"connection","active":true,"count":2,"t":"2026-11-08T10:02:11.120400Z","transitions":14,"windowMs":10000,"msg":"node kitchen connection flapping: 14 changes in 10s"}}
 {"jsonrpc":"2.0","method":"gesture.changed","params":{"gesture":"g4","phase":"begin","value":-6,"reach":[{"name":"amp","key":"gainDb"}]}}
 {"jsonrpc":"2.0","method":"gesture.changed","params":{"gesture":"g4","phase":"end","value":-3.5,"reason":"session-closed"}}
 {"jsonrpc":"2.0","method":"gesture.changed","params":{"gesture":"g4","phase":"aborted","reason":"cancelled","value":-6}}
@@ -404,16 +360,10 @@ diagnostics and companions agree.
   `reason`: `hand-edit`, `file-saved`, `cancelled`, `refused`, `node-removed`, `key-removed` (a reshape removed a key it
   reaches), and `value` (the committed value the slots returned to) except on `hand-edit` and `file-saved`, where the
   following `node.updated` gives the new value.
-- **A configuration's status reset.** When a configuration closes (or leaks), the node's status view returns to every
-  field's initial value, and the drain sends one `node.statusChanged` with `reset: true` and every field, after that
-  configuration's last values. A stop, a start and an in-place change send none.
 
-**Order**, added to the built rules (a change's notification before the statuses it causes):
+**Order**, added to the built rules (status before the event it precedes and the reset are built:
+[control-port.md](../control-port.md#order)):
 
-1. Within a node, a `node.statusChanged` with the fields written so far precedes any `node.eventRaised` that followed
-   them in the same writer's order, so `connection = connected` reaches a client before `paired`.
-2. A configuration's last status values reach a client before the `node.state` its loss causes, and its reset follows
-   its last values; on a restart, the reset comes between `stopping` and `configuring`.
 3. A gesture's begin: `gesture.changed` `begin` to the others, then the reply, in one turn. Its end: `graphFile.changed`,
    `node.updated` (`applied: "retune"`), `gesture.changed` `end`, the reply.
 4. An abort by a related save: `gesture.changed` `aborted` for each related gesture, then `graphFile.changed`, then the
@@ -423,9 +373,6 @@ diagnostics and companions agree.
 
 | Notification | Changes | Ignored when |
 |---|---|---|
-| `node.statusChanged` | with `reset`: `status` replaced; otherwise merged | the node is unknown |
-| `node.eventRaised` | nothing in the graph; the activity list | the node is unknown |
-| `node.diagnostic` | the entry of the same `code` and `subject` replaced, `count` as sent | the node is unknown |
 | `gesture.changed` | `begin` adds `{gesture, key, value}` to each reached node's `gestures`; `change` sets `value` wherever the id is; `end` and `aborted` remove it everywhere; `tick-refused` changes nothing | no node holds the id (except `begin`) |
 
 ### 4.5 Error codes
@@ -434,59 +381,28 @@ All -32000 with `data.code`; every new code is a case in `test/protocol/errors.j
 
 | `data.code` | When | `data` also has |
 |---|---|---|
-| `invalid-settings` (extended) | a value a row or the type's `check` refuses, from the plan or from `Gestures` | `key` (the full key, `trimDb.2`; absent for a rule naming none), `detail` |
+| `invalid-settings` (extended) | a value a row or the type's `check` refuses, from `Gestures` too | `key` (an indexed member's full key, `trimDb.2`), `detail`, as built ([control-port.md](../control-port.md#error-codes)) |
 | `parameter-held` | `node.set`, `node.update`, `gesture.begin`: a key it would change is held by an open gesture (another session's, or the caller's own) | `gesture`, `key` |
 | `not-live` | `gesture.begin`: the key is not a live row (or not declared) | `key` |
 | `shared-definition` (extended) | `gesture.begin`: the reach holds a key that is not live, rows of another kind or unit, or ranges that do not meet | `place`, `with` |
 | `file-refused` | `gesture.begin`: the graph refused the working copy's last hand edit, so the running version is not the file's | |
 | `unknown-gesture` | no open gesture of this session by that id | |
 | `not-in-batch` | `gesture.change` or `gesture.cancel` inside a batch | |
-| `unknown-action` | `node.invoke`: no such action | `action` |
-| `invalid-args` | `node.invoke`: the arguments fail the action's table | `key`, `detail` |
-| `not-running` | `node.invoke`: the node cannot take it now (no configuration, one tearing down, or one not yet configured); a `stopped` node takes actions | `phase` |
-| `restarted` | `node.invoke`: the node's configuration was torn down before the action ran | |
-| `action-failed` | the handler refused; message: its text | `detail` |
-| `action-timeout` | the handler did not answer in 10 s | |
 
-`InvalidSettings` (`command_error.hpp`) gains `key`, set by the settings walk; `describe` keeps today's text. The editor
-places a refusal under its field by `data.key` and never parses the message.
 
 ### 4.6 Node diagnostics on the wire
 
-Built: `diagnostic` records on standard output with `code`, fields and `detail` (`ear.close-overdue`,
-`ear.fade-unacknowledged`, `ear.barrier-overdue`, `ear.hook-slow`, and node-less `ear.data-loop-wedged`,
-`ear.main-loop-stalled`, `ear.main-loop-resumed`). Slice 5 puts node diagnostics on the wire as `node.diagnostic`,
-keeps each per **code and subject** (a field, a loop, a claim, a hook or a companion; empty when the code has none), and
-gives each `active` and `count`: a condition code (flapping, a claim wait) becomes active and later inactive with the
-same code and subject; an observation code (a drop, a slow handler) is sent with `active: false` and only joins the list.
-The editor badges active entries and lists all, needing no per-code knowledge. The node-less ones stay standard-output
-only (a stalled main loop cannot answer the wire in time).
-
-| Code | Subject | Fields | Owner |
-|---|---|---|---|
-| `ear.close-overdue` | — | `detail` | built; 3c adds counts |
-| `ear.fade-unacknowledged`, `ear.barrier-overdue` | — | `ms` | built |
-| `ear.hook-slow` | the hook | `ms` | built |
-| `ear.loop-slow`, `ear.loop-source-left`, `ear.claim-wait`, `ear.close-late` | the loop, the claim | `ms`, `sources`, `holder`/`waitedMs`, `detail` | 3c (built: `docs/output-records.md`) |
-| `ear.sink-dropped`, `ear.source-shortfall` | the companion | `companion`, `frames`, `totalFrames` | built as records (`docs/output-records.md#diagnostic`); on the wire with `node.diagnostic` |
-| `ear.reconfigure-fell-back`, `ear.reconfigure-superseded`, `ear.retiring-lost` | —, —, the companion | built as records (`docs/output-records.md#diagnostic`) | 3d |
-| `ear.status-flapping` | the field | `transitions`, `windowMs` | here: active once a field changes more than its `flapsAbove` within the window; inactive once a whole window passes at or below it; at most once per window while active |
-| `ear.events-dropped` | — | `heldBack` | here: events held back by the per-node rate (replaces 3c's `notes-dropped` note); at most once a second |
-| `ear.records-dropped` | `status`, `realtime` or `queue` | `count` | here: `status` records held back on stdout, or records a node's ring or queue had no room for; at most once a second per subject |
-| `ear.realtime-overrun` | — | `codeUs`, `cycleUs` | reserved, not built |
-
+Built ([control-port.md](../control-port.md#node-diagnostics), [output-records.md](../output-records.md#diagnostic)):
+`node.diagnostic`, kept per code and subject with `active` and `count`, and `detail` beside `msg`, and
+`ear.records-dropped`'s subject `realtime`. `ear.realtime-overrun` (`codeUs`, `cycleUs`) stays reserved.
 Slice 8 adds `ear.health-flapping`, `ear.recovery-attempt` and `ear.readiness-missed` in the same shape
-(`recovery.md`). There are no framework status fields: a companion's counts are members of its entry in `companions`.
+(`recovery.md`).
 
 ### 4.7 Fixtures
 
 | File | Covers |
 |---|---|
-| `test/protocol/types.json` | `types.get` with no hash, a stale hash and the current one; every built-in type's schema, each row's `change` and `shapes`, a `defaultFrom` row |
-| `test/protocol/status.json` | a snapshot with status (a choice at `null`); merges; an event after a flush, with `severity`; a reset and a new configuration's first fields; status kept across a stop and a start |
-| `test/protocol/diagnostics.json` | two fields flapping at once, one settling while the other stays; `count` as sent; an observation code; an unknown code drawn generically |
 | `test/protocol/gestures.json` | begin (no echo to the owner, `begin` to another first, then the reply), changes (one stale, one keep-alive), end with its order; a reach of two keys and of 64; a reach refused `shared-definition`; `parameter-held`; a begin on a failed node; cancel; `tick-refused` to the owner only; an end refused `invalid-settings` leaving the gesture open; aborts by a related hand edit and a related `graphFile.set`; an unrelated hand edit and `graphFile.set` leaving it open; ends for a closed and a silent session; `unknown-gesture` after an abort; `not-in-batch` |
-| `test/protocol/actions.json` | a trigger; a call; `not-running` with its `phase`; every refusal an action can get |
 | `unknown-values.json`, `errors.json`, `snapshot.json`, `edits.json`, `output-records.json` | extended with this page's members, codes and records |
 
 ## 5. The C++ SPI
@@ -495,23 +411,23 @@ Everything extends `type_spec.hpp`, `settings_table.hpp`, `lifecycle.hpp` and `n
 Every new constant is `inline constexpr` in the type's named namespace, and every new template keyed on a constant
 refuses one in an unnamed namespace (`linkage::named`, as built).
 
-### 5.1 New row kinds: decimal, indexed, live; `.shapesPorts()`
+### 5.1 New row kinds: decimal, indexed, live
+
+`.shapesPorts()`, `.defaultFrom(DefaultFrom)` and a text row's hints (`TextHints`) are built
+([writing-a-node-type.md](../writing-a-node-type.md#settings-one-table-of-typed-rows)), and so is `NodeType::schema()`
+([#the-type-schema](../writing-a-node-type.md#the-type-schema)).
 
 ```cpp
 namespace ear::setting {
 enum class Taper { linear, log, db };            // how a control maps its travel (8.3); log also ramps geometrically
-enum class DefaultFrom { graphFrequency, nodeName };
 struct DecimalHints {
 	std::uint8_t decimals = 2;                       // display precision, and what a gesture's end rounds to
 	Taper taper = Taper::linear;                     // log: low > 0; db: low <= -60 and high >= 0 (else no compile)
 	bool minIsSilence = false;                       // the control shows `low` as -inf
 };
-struct TextHints { std::span<const std::string_view> values = {}; std::string_view pattern = {}; std::uint32_t maxLength = 0; };
 /// A real number in [low, high]: a JSON number (an integer is taken too), never NaN. Otherwise
 /// "<key>: must be a number[ of <unit>] from <low> to <high>". low above high, or a non-finite bound, does not compile.
 consteval Rule<double> decimal(double low, double high, std::string_view unit = {}, DecimalHints hints = {});
-template <auto Parse> requires TextParser<Parse>
-consteval Rule<ParsedBy<Parse>> text(std::string_view mustBe, TextHints hints);   // today's text(), with hints
 /// A family <key>.1 .. <key>.<n>, n being the checked value of `count`, a whole-number row above it in the table.
 template <class V, bool A> consteval IndexedRow<V> indexed(std::string_view key, const Row<std::uint32_t, A>& count,
                                                            Rule<V> rule, V byDefault);
@@ -523,12 +439,9 @@ consteval Smoothing smooth(std::uint32_t ms);
 - `Row::live(Smoothing)` and `IndexedRow::live(Smoothing)` mark a row live (implying `.inPlace()`). Only a row that
   always reads a value (required, defaulted or indexed) of a whole number or a decimal can be live; a live whole-number
   row must have `smooth(0)` (it steps).
-- An optional row takes `.defaultFrom(DefaultFrom)`: documentation for controls and the schema.
-- `.shapesPorts()`: a change to the row may change the node's ports; the schema's `shapes`. The plan never reads it (it
-  compares real ports, 3d); the all-type tests hold it to `ports()`. An indexed family's count row is `.shapesPorts()`
-  only when `ports()` reads it.
-- `SettingRow` gains `liveMs`, `indexedBy`, a `DecimalRule`, the text hints, `defaultFrom` and `shapesPorts`;
-  `SettingKind` gains `decimal`; `SettingDeclaration` gains `live`, `indexed` and `shapesPorts` beside 3d's `inPlace`.
+- An indexed family's count row is `.shapesPorts()` only when `ports()` reads it.
+- `SettingRow` gains `liveMs`, `indexedBy` and a `DecimalRule`; `SettingKind` gains `decimal`; `SettingDeclaration`
+  gains `live` and `indexed`.
 - The walk: a decimal is a JSON number in range, an integer kept as given. An indexed family's keys are `<key>.<i>`, 1
   to the count; another member number is `"<key>.<i>: no such member (<count key> is <n>)"`, placed where the family's
   row sits in the walk's fixed order; unknown keys skip any key whose part before its last `.` names a family. Each
@@ -543,92 +456,34 @@ consteval Smoothing smooth(std::uint32_t ms);
 
 ### 5.2 Status fields
 
-```cpp
-namespace ear {
-enum class Display { panel, box, callout };   // callout: a banner while not at its initial value
-namespace writer {
-struct Writer { enum class Kind { rt, loop, companion } kind; LoopName loop = {}; };
-inline constexpr Writer rt{Writer::Kind::rt};               // the node's code, through Io
-template <class Handle> consteval Writer loop(Handle);      // a loop of the spec (docs/writing-a-node-type.md#loops)
-inline constexpr Writer companion{Writer::Kind::companion}; // a companion kind's adapter (slice 8: rtp's receiving)
-}
-namespace status {
-inline constexpr struct Unknown {} unknown;   // `.initially(status::unknown)`: the field starts null
-template <spec_detail::Name N> consteval FlagField<N> flag(writer::Writer w);
-template <spec_detail::Name N> consteval NumberField<N> number(writer::Writer w, std::int64_t low, std::int64_t high, std::string_view unit = {});
-template <spec_detail::Name N> consteval DecimalField<N> decimal(writer::Writer w, double low, double high, std::string_view unit = {}, std::uint8_t decimals = 2);
-template <spec_detail::Name N, std::size_t K> consteval ChoiceField<N, K> choice(writer::Writer w, const std::string_view (&values)[K]);   // starts unknown
-template <spec_detail::Name N> consteval TextField<N> text(writer::Writer w, std::uint32_t maxBytes = 256);   // never rt
-}
-template <auto... Fields> struct StatusTable { /* unique names */ };
-}
-```
-
-- Every field has `.display(Display)`, `.help(text)`, `.flapsAbove(transitions, windowMs)` (default 10 in 10 000 ms) and
-  `.initially(value)`. Defaults: a flag `false`, a number `0`, a text `""`, a choice unknown (`null`).
-- A choice's values are named once; `field("connected")` is consteval, so a misspelt value does not compile.
-- `rt` fields are flag, number, decimal and choice only (one atomic word each); a text field marked `writer::rt` does not
-  compile.
-- `writer::loop(worker)` takes a loop handle the spec lists in `.loops`; `Report::set` of a loop field asserts
-  `Loop::inLoop()` in debug builds. A library thread with something to report posts to the loop that owns the field;
-  there is no `writer::thread`.
-- `writer::companion`: a field a companion kind's adapter writes for its node (slice 8's `receiving`); the framework
-  binds it to the companion of that kind the node acquired.
+Built: the declarations, `StatusTable` and the spec's `.status`
+([writing-a-node-type.md](../writing-a-node-type.md#status-fields)). The tables take `const auto&...`, as
+`SettingsTable` does, since their entries hold views. The realtime writer's side is built too
+([writing-a-node-type.md](../writing-a-node-type.md#reporting-from-the-code)). What is left is `writer::companion`
+(slice 8).
 
 ### 5.3 Events, log codes, `Report<spec>`
 
 ```cpp
 namespace ear {
 enum class EventSeverity { info, warn, error };
-namespace arg { /* number<N>(low, high), decimal<N>(), flag<N>(), choice<N>(values), text<N>(maxBytes) (never from process) */ }
-namespace event {
-/// `sentence` names each argument once as {name}; a place that names no argument, or an argument with no place, does
-/// not compile. It is the record's msg and the editor's line.
-template <spec_detail::Name Code, class... Args>
-consteval Event<Code, Args...> of(EventSeverity severity, std::string_view sentence, Args... args);
-}
-namespace log {   // numbers, decimals and flags only, at most four
-template <spec_detail::Name Code, class... Args> consteval LogCode<Code, Args...> code(LogLevel level, std::string_view sentence, Args... args);
-}
-template <auto... Events> struct EventTable {};
-template <auto... Codes> struct LogCodes {};
+// event::of, arg::*, log::code, EventTable and LogCodes are built (docs/writing-a-node-type.md#events).
 
-/// The typed control-plane face of one node, over 3c's NodeHandle: status writes and events by the spec's handles, from
-/// the loops its fields name. Copyable; never blocks but on one short mutex; a write after the configuration began
-/// closing is dropped. A text value is UTF-8 checked, control characters replaced, cut at its bound.
-template <const auto& Spec> class Report {
-public:
-	template <const auto& Field> void set(typename FieldOf<Field>::Value value);   // a writer::loop field
-	template <const auto& Event> void raise(typename ArgsOf<Event>::Values... values);
-	NodeHandle& handle() const noexcept;
-private:
-	explicit Report(NodeHandle& handle);   // made by the framework (NodeOf<Spec>::report) and the harness only
-};
-// NodeOf<Spec> gains: Report<Spec> report();
+// Report<spec> and NodeOf::report() are built (docs/writing-a-node-type.md#report).
 }
 ```
 
-- `TypeSpec` gains `.status`, `.events`, `.actions` and `.logCodes`, in that order after 3d's `.lifecycle`
-  (after `.stores` and `.loops`, `docs/writing-a-node-type.md#stores`), each defaulting to an empty list.
-- A choice argument off the realtime thread takes a `std::string_view`, checked at run time (a value not among them is a
-  type bug: the node fails with the rule's text); from `process` a consteval-made index only.
-- `Report` carries its writes in the same per-node channel as `NodeHandle::lost`, so a status write, an event and a
-  `lost` keep one writer's order. `NodeHandle::say` stays for `sendspin` until step 5.5 removes it.
-- The `Report` exists from `configure`; loops' work runs once configured, so in practice writes come from `configured`
-  on. A write during an in-place change or while stopped lands on the same configuration.
+- `NodeHandle::say` stays for the `file` and `airplay` nodes' notes (`sendspin`'s moved to `Report`, built).
 
 ### 5.4 What `process` gets: `Io<spec>` grows
 
 ```cpp
 template <const auto& Spec> class Io {
 public:
-	// built: operator[](bank), frames()
+	// built: operator[](bank), frames(), set, raise, log, triggered (docs/writing-a-node-type.md#reporting-from-the-code,
+	// #actions)
 	template <const auto& Row> Smoothed param() const noexcept;                         // a live, non-indexed row
 	template <const auto& Row> Smoothed param(std::size_t member) const noexcept;       // a live indexed row, from 0
-	template <const auto& Field> void set(typename FieldOf<Field>::Value value) const noexcept;   // writer::rt only
-	template <const auto& Event, class... N> void raise(N... values) const noexcept;    // numbers, decimals, flags, choice indexes
-	template <const auto& Code, class... N> void log(N... values) const noexcept;       // a LogCodes entry
-	template <const auto& Trigger> bool triggered() const noexcept;                    // true once per invoke
 };
 class Smoothed {   // one live row's values for this block, in the row's own unit
 public:
@@ -658,40 +513,18 @@ public:
 - **Members of one reach change together only by chance**: the main loop writes a reach's slots one at a time, so one
   block may see channel 1's new target and channel 2's old one (at most one block of ramp, about 0.07 dB for 2.5 dB over
   20 ms); a seqlock per node was judged not worth its cost.
-- `io.set` stores one atomic word, and when the value differs from the last one the code wrote, puts a record in the
-  node's ring and counts a transition. `io.raise` and `io.log` put one fixed-size record in the ring, stamped with the
-  cycle's start (`GraphCycle::startNs`). `io.triggered` compares the trigger's counter with the last the code saw. Every
-  handle resolves to an index when the code is prepared, as banks do.
+- Every handle resolves to an index when the code is prepared, as banks do.
 
 ### 5.5 Actions
 
-```cpp
-namespace ear::action {
-/// Into the node's code, wait-free: no arguments, answered {} once handed over; io.triggered<t>() true once in the next
-/// block. Several invokes before a block are one.
-template <spec_detail::Name N> consteval Trigger<N> trigger(std::string_view help);
-/// Into a loop's state, posted to `Loop` (a handle the spec lists): arguments checked by `Args`, a SettingsTable; the
-/// handler's std::expected<void, std::string> is the reply.
-template <spec_detail::Name N, const auto& Args, const auto& Loop> consteval Call<N, Args, Loop> call(std::string_view help);
-}
-template <auto... Actions> struct ActionTable {};
-```
-
-- `start`, `stop`, `restart`, `disable` and `enable` are the framework's lifecycle requests (built); a type action of
-  one of those names does not compile.
-- A call's handler is a member of the loop's state, `std::expected<void, std::string> act(Invoked<forgetPairing>, const
-  CheckedOf<forgetArgs>&)`, found by its argument type and held to that signature. It is posted with 3c's
-  `NodeLoop::postFromOutside`; a queued call whose configuration is torn down first is destroyed unrun at teardown step 1
-  and its reply object answers `restarted` (or `stopping`) from its destructor.
-- An action's arguments are a `SettingsTable`: one checker for settings, arguments and parameters.
+Built ([writing-a-node-type.md](../writing-a-node-type.md#actions)).
 
 ### 5.6 How the framework carries them
 
-- **Per configuration** (made when `configure` is called from empty, freed at teardown step 5): the node handle's
-  channel with the off-realtime queue (6.3), the realtime ring (6.1), one `std::atomic<double>` slot per live member,
-  one `std::atomic<std::uint64_t>` per `rt` field with the last value the realtime side wrote and an
-  `std::atomic<std::uint32_t>` transition counter, one `std::atomic<std::uint32_t>` per trigger, each live member's ramp
-  state. All of it is the node's, not the code's: the code is bound to it when prepared, and a code an in-place change
+- **Per configuration** (made when `configure` is called from empty, freed at teardown step 5), beside the realtime
+  channels, which are built and bound this way ([architecture.md](../architecture.md#the-realtime-channels)): one
+  `std::atomic<double>` slot per live member and each live member's ramp state (the triggers' counters are built there:
+  [writing-a-node-type.md](../writing-a-node-type.md#actions)). All of it is the node's, not the code's: the code is bound to it when prepared, and a code an in-place change
   swaps in is bound to the same objects before its barrier. A stop, a start and an in-place change keep all of it; a
   reshape in place resizes an indexed family's slots (survivors keep their ramps, new members start at the committed
   value, vanished ones are dropped after the swap's barrier).
@@ -700,8 +533,8 @@ template <auto... Actions> struct ActionTable {};
 - **Erased for the rest of ear**: `NodeType::schema()` returns a plain `TypeSchema` (core, nlohmann only), encoded once
   by `ear_control`. `NodeConfig::liveValues()` gives each live key's checked value, for retunes.
   `NodeType::checkLive(config, key, value)` runs the row's rule then the type's `check` with that value in place.
-- **New core interfaces**, implemented outside core: `RealtimeBell` (an eventfd the main loop watches, in
-  `ear_pipewire`), `NodeStatusListener` (`statusChanged`, `statusReset`, `eventRaised`), `NodeDiagnosticListener`
+- **New core interfaces**, implemented outside core: `RealtimeBell` (built:
+  [engine.md](../engine.md#the-realtime-bell)), `NodeStatusListener` (`statusChanged`, `statusReset`, `eventRaised`), `NodeDiagnosticListener`
   (built, gaining subject, `active`, `count`), and `GestureListener` (carrying the owning session so the gateway can
   leave out own echoes), implemented by the gateway and `StatusLog`.
 
@@ -778,56 +611,31 @@ public:
 `{"gain", {{{"channels", 2}, {"gainDb", -6.0}, {"trimDb.1", 0.5}, {"trimDb.2", -0.5}}}}`. Nothing else names the type
 (`docs/writing-a-node-type.md`).
 
-A type with a loop's state writes status and events from that loop through the `Report` its `configure` hands the
-state. Sendspin's worker after step 5.5:
-
-```cpp
-inline constexpr std::string_view connections[] = {"dialling", "listening", "connected"};
-inline constexpr auto connection =
-	status::choice<"connection">(writer::loop(worker), connections).display(Display::box);   // starts unknown
-inline constexpr auto pairingCode = status::text<"pairingCode">(writer::loop(worker), 16).display(Display::callout)
-                                        .help("type it into Music Assistant to pair");
-inline constexpr std::string_view pairReasons[] = {"attempt-timeout", "concurrent-attempt", "method-not-supported",
-                                                   "pairing-code-mismatch", "user-cancelled", "unknown"};
-inline constexpr auto pairingFailed =
-	event::of<"pairing-failed">(EventSeverity::warn, "pairing failed: {reason}", arg::choice<"reason">(pairReasons));
-// In a worker loop handler:
-report_.set<connection>(connection("connected"));
-report_.raise<pairingFailed>(abortReasonName(reason));      // checked against pairReasons at run time
-```
-
 ### 5.8 Compile-time refusals
 
 Each a case in `src/core/tests/compile_fail/`, matched against GCC 14's wording: `live-text-row`, `live-optional-row`,
 `live-whole-smoothed`, `get-live-row`, `indexed-count-below`, `indexed-count-not-number`, `indexed-no-default`,
 `decimal-low-above-high`, `decimal-default-outside`, `log-taper-nonpositive`, `db-taper-range`, `param-not-live`,
-`param-row-not-in-spec`, `param-indexed-without-member`, `param-member-of-plain-row`, `set-field-not-in-spec`,
-`set-field-not-rt`, `report-set-rt-field`, `rt-text-field`, `writer-loop-not-in-spec`, `call-loop-not-in-spec`,
-`choice-value-misspelt`, `initially-not-a-value`, `raise-text-arg-from-process`, `raise-wrong-arg-count`,
-`raise-event-not-in-spec`, `sentence-unknown-place`, `sentence-missing-arg`, `report-of-other-spec`,
-`report-constructed`, `triggered-not-a-trigger`, `action-named-lifecycle`, `duplicate-status-name`,
-`duplicate-event-code`, `status-in-unnamed-namespace`, `event-in-unnamed-namespace`.
+`param-row-not-in-spec`, `param-indexed-without-member`, `param-member-of-plain-row` (the actions' cases are built,
+`src/core/tests/compile_fail/action_bad.cpp`; the status and event declarations' cases are built,
+`src/core/tests/compile_fail/status_spec_bad.cpp`, and so are `Io`'s and `Report`'s,
+`src/core/tests/compile_fail/realtime_bad.cpp`).
 
 ### 5.9 The harness
 
-`TypeHarness` (built over a real `NodeHost`; 3c adds loops and its clock) gains, on the test's thread:
+`TypeHarness` (built over a real `NodeHost`; 3c adds loops and its clock; the status and event captures and the
+realtime bell's count are built: [writing-a-node-type.md](../writing-a-node-type.md#its-own-tests)) gains, on the test's
+thread:
 
 | Call | Does |
 |---|---|
 | `h.live<row>(value)`, `h.live<row>(member, value)` | moves the slot, as a gesture tick (runs `checkLive`, failing the test on a refusal) |
 | `h.retune(settings)` | a change of live rows only: slots move, no restart (asserts the plan would retune) |
-| `h.status<field>()`, `h.status()` | the live view after the last drain |
-| `h.statusRecord()` | every change in order, `{field, from, to}`, and each reset |
-| `h.events()`, `h.logs()`, `h.diagnostics()` | in order, each with its formatted `msg` |
-| `h.trigger<action>()`, `h.invoke<action>(args)` | a trigger; a call, on the harness's loops |
-| `h.drain()` | runs the tick now (the harness drains after every `process` and operation by default) |
 | `h.outcome(settings)` | the plan's outcome of a change, without applying it |
 
-The all-type tests gain: every type's schema encodes; every status field's initial value is of its kind or null; every
-`values` entry parses with its row's parse function; every optional row without a `default` has a `defaultFrom` or a
-`help`; every live row ramps from its default to another value with no sample unwritten; for every row, changing it
-alone from its `validSettings` value changes the ports only if the row is `.shapesPorts()`, and every `.shapesPorts()`
-row changes them for some value; the status view survives every in-place change.
+The all-type tests gain (the schema's checks are built: [writing-a-node-type.md](../writing-a-node-type.md#what-every-type-must-also-pass)):
+every live row ramps from its default to another value with no sample unwritten (that every status field's initial value
+is of its kind or null, and that the status view survives every in-place change, are built).
 
 ## 6. The realtime contract
 
@@ -836,56 +644,32 @@ row changes them for some value; the status view survives every in-place change.
 | Channel | Direction | Mechanism | Bound | On overflow |
 |---|---|---|---|---|
 | Parameter slot | in | one `std::atomic<double>` per live member, written by the main loop, loaded once a block | 256 live members per node | — |
-| Trigger | in | one `std::atomic<std::uint32_t>` counter per trigger | — | several invokes in one block are one |
-| `rt` status field | out | one `std::atomic<std::uint64_t>` per field, sampled at the drain; a transition counter beside it | 64 `rt` fields per type | — |
-| Realtime ring | out | per node, single producer (the code), single consumer (the drain), fixed 48-byte records: kind, code, field, up to four 8-byte values, `startNs` | 256 records per node; log records refused once 192 are in use, so status and events keep the last quarter | dropped, counted per kind (`ear.records-dropped`, subject `realtime`) |
-| Bell | out | `RealtimeBell::ring()`, an eventfd write gated by an atomic exchange on the window, as the level bell is | at most one per level window per block (30 a second) | — |
 
-`std::atomic<double>` and `std::atomic<std::uint64_t>` are lock-free on x86-64 and arm64; a `static_assert` on
-`is_always_lock_free` makes it a build failure elsewhere [U: no arm64 build yet].
+The outward channels (`rt` fields, the ring, the bell) and the triggers' counters are built
+([architecture.md](../architecture.md#the-realtime-channels)); `rt` fields are stored as 64-bit words, so only the
+parameter slots need `std::atomic<double>`, lock-free on x86-64 and arm64; a `static_assert` on `is_always_lock_free`
+makes it a build failure elsewhere [U: no arm64 build yet].
 
-It loads each live slot once a block, advances each ramp, stores `rt` fields, writes ring records, and rings the bell
-at most once per window, after `process`, only when an `rt` field changed or the ring holds records. It never
-allocates, locks, formats, or makes a syscall other than the bell's write.
+It loads each live slot once a block and advances each ramp, before `process`. It never allocates, locks, formats, or
+makes a syscall.
 
 ### 6.2 Off the realtime thread: one queue per node
 
-- `Report<spec>` writes and the handle's `lost` go into the node's queue: records (status change, event, lost) under one
-  mutex, bounded at 1024 (a `lost` is never dropped); a full queue drops and counts (`ear.records-dropped`, subject
-  `queue`). The handle's `log` goes straight to the log sink, as 3c defines it.
-- The first record into an empty queue posts one wake to the main loop (an atomic flag gates it).
-- Each writer's records stay in its order, so a status write before an event is drained before it, and a `lost` after
-  the last status is drained after it.
-- Text is made safe at the write, on the writer's thread: UTF-8 checked, control characters replaced, cut at the
-  field's `maxBytes` and marked.
+Built ([architecture.md](../architecture.md#status-and-events)).
 
 ### 6.3 The drain and the tick, on the main loop
 
-1. A wake, the bell, a gesture tick taken, or a trailing record due marks the node dirty and, if no tick is due, arms
-   one on `Timers` for 33 ms after the last tick, or now if that has passed.
-2. The tick drains every dirty node: its realtime ring first, then its queue. A status change updates the view, is
-   offered to `StatusLog` (paced per field), counts a transition and marks the field for the wire; an event first sends
-   the node's marked fields as one `node.statusChanged`, then `node.eventRaised` and an `event` record (its `t` the
-   record's cycle start mapped to UTC for a realtime event, the write's time otherwise); a `lost` fails the node as
-   built.
-3. `rt` fields are sampled: a value that differs from the view's is marked for the wire.
-4. One `node.statusChanged` per node with marked fields; one `gesture.changed` `change` per gesture moved; flapping is
-   judged; drops become `ear.events-dropped` or `ear.records-dropped`; trailing status records due are written.
-5. A `lost` from a configuration whose teardown began is dropped; its status and events are still drained until it
-   closed, so a goodbye is heard; then its reset is sent.
+Built for the queue and the realtime channels ([architecture.md](../architecture.md#status-and-events),
+[#the-realtime-channels](../architecture.md#the-realtime-channels)). Left: a gesture tick taken marks a node dirty too;
+one `gesture.changed` `change` per gesture moved.
 
 ### 6.4 Rates and bounds
 
 | What | Bound | Policy |
 |---|---|---|
-| The tick | 30 a second, all nodes together | armed only when something is dirty |
-| `node.statusChanged` | 30 a second per node | the latest values |
-| `status` records | per node and field: 32 at once, then 1 a second | when the pace held changes back, a **trailing** record with the current value at the next tick the pace allows (at most 1 s after the last held change), carrying `heldBack`; so the last `status` record of each field always matches the view (G9) |
-| Events (wire and stdout) | 32 at once, then 1 a second per node | held back counted in `ear.events-dropped` |
-| Flapping | a field above its `flapsAbove` (default 10 in 10 s) | counted at each write and by the transition counter, so changes between samples count |
+| The tick, `status` records, events and flapping | built | [architecture.md](../architecture.md#rates-and-bounds) |
 | Gesture ticks into the main loop | one pending per gesture | the control thread keeps the newest until the main loop took the last |
 | `gesture.changed` `change` | 30 a second per gesture | never to the owner |
-| Action reply | 10 s | `action-timeout`; the handler's late answer dropped |
 | Gesture idle | 30 s with no message about it from its owner (keep-alives included), timed on the control thread | ended as released, keeping the last value heard (R32, G15) |
 | A session's queued requests | 16 messages with an id (or batches) read ahead | at 16, the socket is not read until one is answered |
 
@@ -914,17 +698,20 @@ and its owner, drops a stale `seq`, stops for a keep-alive, checks the value aga
 
 ### 6.6 The channels across the lifecycle
 
-| Moment | What happens to this page's channels |
+The outward channels (`rt` words and counters, the ring, the queue, the `Report`) are built across the lifecycle this
+way ([architecture.md](../architecture.md#the-realtime-channels)), and so are the triggers' counters; what is left is
+the slots':
+
+| Moment | What happens to the slots |
 |---|---|
-| `configure` from empty | the channels are made: slots (seeded from the committed values or the node's held live values), `rt` words, counters, the ring, the queue; the status view at its initial values; the `Report` |
+| `configure` from empty | made: slots seeded from the committed values or the node's held live values |
 | configured | the code is prepared and bound to them; nothing runs on the realtime thread yet |
-| the code drives | the first block starts every ramp at its slot's value; the code may write from its first cycle; then `start()` |
+| the code drives | the first block starts every ramp at its slot's value; then `start()` |
 | a retune, in any phase | the slots move at once, wait-free; with no configuration only the node's live value moves and seeds the next one; while `stopped` the slots move and the code ramps from them at the next start |
-| an in-place change (3d) | the code keeps running and writing; a hold is applied after the code, so a held bank's `rt` fields and events are the code's own, and the meters show the silence |
-| a code swap (3d) | the new code is bound to the same channels; each ramp goes on, each `rt` field's last value is kept, an unseen trigger is seen once by the new code |
-| a stop | the code stops; the ring is drained; the channels and the status stay |
-| a restart, a failure, a removal, a disable | the ring and queue are drained until the configuration closed; then the reset |
-| teardown step 5 | the channels are freed, after the code and the loops' states |
+| an in-place change (3d) | the code keeps running and ramping |
+| a code swap (3d) | the new code is bound to the same slots; each ramp goes on |
+| a stop | the code stops; the slots stay |
+| teardown step 5 | freed, after the code and the loops' states |
 
 No channel is allocated, freed or resized on the realtime thread or while the code that uses it can run. One node's
 transition never touches another's channels (the owner, 2026-11-08: "it should be per-node. Some node
@@ -1057,19 +844,7 @@ live value; a gesture on it is allowed as on a failed node.
 
 ### 7.5 Actions
 
-- `node.invoke` reaches the keeper's thread in order with every other request, needs no file, and posts a step to the
-  main loop at once, as the built lifecycle verbs do. There `NodeHost::invoke(node, action, args, reply)` checks the
-  action and its arguments against the type's table.
-- A trigger: the counter is incremented and the reply posted at once; `not-running` (with the `phase`) when the code is
-  not driving (any phase but `running` and `reconfiguring`).
-- A call: posted with `postFromOutside` to the loop it names; the reply when the handler returns. A queued call gets
-  `restarted` (or `stopping`) when the configuration is torn down; a running one finishes and replies before the goodbye
-  `stop()` posted behind it. A stopped node's loops take calls.
-- **The keeper never waits for a handler.** Its step completes when the action is dispatched; the batch's reply is held
-  on the main loop until every action in it answered (or its 10 s deadline passed), then posted behind every event
-  before it. A slow handler holds that client's later requests with an id (the FIFO), never its ticks and never the
-  keeper's queue.
-- An `action` record on standard output (built for the lifecycle verbs) says who asked for what.
+Built ([control-port.md](../control-port.md#actions), [architecture.md](../architecture.md#how-a-change-moves)).
 
 ## 8. The editor
 
@@ -1082,13 +857,11 @@ The node panel this section names is the inspector's Node subject
 |---|---|---|
 | `protocol.ts` | the wire types of section 4; `ControlErrorCode`; `NodeDiagnostic`, `EventSeverity` | typecheck |
 | `graph.ts` | each node's `status`, `gestures`, `diagnostics`; handlers for the new notifications | vitest, every fixture |
-| `types.ts` (new) | the type schemas by hash; `types.get` with `ifNoneMatch`; cached in `localStorage` through `prefs.ts`, its keys per ear ([editor.md](../editor.md#what-the-browser-keeps)) | vitest |
 | `gesture.ts` (new, pure) | the session's own gestures as a state machine; what to send for each input; the control mapping | vitest, a fake client |
-| `form.ts` (new, pure) | the settings form's per-field drafts; the Apply flow (8.6) | vitest |
 | `activity.ts` (new) | per node, the last 100 events and diagnostics since connecting; notices, coalesced per node and code | vitest |
 
-Features gate the UI: without `gestures` live rows render as plain number fields committed by `node.set`; without
-`types` the panel is today's JSON area. Nothing in `web/` names a node type.
+`types.ts` and `form.ts` are built ([editor.md](../editor.md#the-settings-form)). Features gate the UI: without
+`gestures` live rows render as plain number fields committed by `node.set`. Nothing in `web/` names a node type.
 
 `gesture.ts`'s states and edges:
 
@@ -1113,27 +886,20 @@ Features gate the UI: without `gestures` live rows render as plain number fields
 
 ### 8.2 How each row kind renders
 
+The settings form is built for today's kinds, with its hints, drafts, refusals in place and Apply
+([editor.md](../editor.md#the-settings-form)); every non-live field is sent by Apply. Slice 6 adds:
+
 | Row | Control | Commits |
 |---|---|---|
-| text with `values` | a select | on change |
-| text with `pattern` or `maxLength` | a text field, checked as typed (ear still judges) | on Enter or blur |
-| whole number | a number field with steppers, `min`, `max`, unit | on Enter or blur |
-| decimal | a number field with `decimals`, unit | on Enter or blur |
-| optional with `defaultFrom` | empty, its placeholder saying where the default comes from | as its kind |
+| decimal | a number field with `decimals`, unit | by Apply |
 | live decimal | a fader in the panel, mapped by `taper`, with a number field beside it | a gesture; the field by `node.set` |
 | live whole number | steppers and a number field (it steps) | `node.set` |
 | indexed family | one control per member, `n` from the count row's value; above 8, a compact strip behind a disclosure | as its kind |
-| `onlyWithout` | disabled while the other key is set, its tooltip naming it | — |
 
 - **The box** shows a knob for each live, non-indexed row when the type declares one or two of them (`gain` shows
   `gainDb`).
-- **Hints from the schema alone**, beside each non-live field: "applies in place" for `inPlace`, "restarts the node" for
-  `restart`, and "changes the ports" for `shapes`.
-- **Drafts.** Each form field keeps its own draft once typed in; a server change to a field with a draft marks it
-  "changed on ear" and offers to take ear's value, as the text pane does (today `Panels.tsx` resets every field on each
-  update). Live controls follow the server, except one the operator holds.
-- A refusal is shown under the field `data.key` names, or at the form's top. Live controls are disabled while the graph
-  file has errors or was refused, and while the connection is not open.
+- Live controls follow the server, except one the operator holds. They are disabled while the graph file has errors or
+  was refused, and while the connection is not open.
 
 ### 8.3 Gestures from pointer and keyboard
 
@@ -1172,89 +938,39 @@ A value is shown and sent rounded to `decimals`; `minIsSilence` shows the minimu
 
 ### 8.4 Status, events, diagnostics and actions
 
-- **Status**: `box` fields on the box after the state line ("connected · Music Assistant"); every field in the panel (a
-  flag as yes or no, `null` as "unknown"); `callout` fields as a banner on the box and in the panel while not initial,
-  with a copy button for text. Box and callout fields show only while the node is `running`, `reconfiguring` or
-  `stopped` and the value is not `null`.
-- **Events**: the node's activity list (since this page connected); `warn` and `error` also as a notice in the editor's
-  toast queue ([`editor.md`](../editor.md#toasts)), coalesced per node and code by its rule ("pairing failed ×3"), at
-  most one new notice per node per 5 s.
-- **Diagnostics**: a badge on the box for each active entry ("flapping: connection"), its tooltip giving the count and,
-  for flapping, `flapsAbove`; the panel lists every entry. An unknown code is shown by its `msg`.
-- **Actions**: one button per type action after the built lifecycle buttons; a call with arguments opens a small form;
-  disabled while in flight and when the node has no configuration.
+- Status, events and diagnostics are built ([editor.md](../editor.md#status-events-and-diagnostics)).
+- Actions are built ([editor.md](../editor.md#actions)).
 
 ### 8.5 Accessibility
 
 Faders and knobs are `role="slider"` with `aria-valuemin`, `aria-valuemax`, `aria-valuenow`, `aria-valuetext` ("-3.5
 dB", "-inf dB") and a label from the key, keyboard per the WAI-ARIA slider pattern; held by another editor:
-`aria-disabled` with the reason. A polite live region announces callout fields when they change, aborted gestures and
-flapping starting, at most one per node per 5 s; `error` events assertively. Flapping is never shown by colour alone.
+`aria-disabled` with the reason. A polite live region announces aborted gestures (callouts are built as one; flapping and events reach the toast
+queue's). Flapping is never shown by colour alone.
 
 ### 8.6 Apply asks first
 
-Slice 3d built the wire this needs (`node.set`, `dryRun`, `ports-in-use`, `dropRoutes`:
-`docs/control-port.md#nodeset-and-dry-runs`, `#changes-of-ports`); the editor waits for this slice's settings form,
-since today it edits a node by its knobly text through `node.setText`, which has no dry run.
-
-- **Apply asks first** (feature `dryRun`): non-live rows edited in the form are sent together with one `node.set`.
-  Apply sends it with `dryRun: true`, and when the answer is `restart` or `reshape` (or names routes) shows what will
-  happen before sending ("Restarts desk: its audio stops for a moment." or "Restarts desk and removes 1 route:
-  kitchen:from.left → desk:play.2", with Apply and Cancel); `reconfigure` is sent at once, since nothing stops. The
-  confirmed send carries `dropRoutes: true` exactly when the dry run named routes; if the real edit is refused
-  `ports-in-use` anyway (another edit landed between), the prompt is shown again with the refusal's routes. Per-field
-  hints come from the schema (8.2).
-- **An edit to a key in `keys` or `next`** of a node that is `reconfiguring` says "applies after this change".
-- The owner's answer that binds it (2026-11-08, asked what happens to a change that removes ports that are wired): the editor lists the wires that would go before applying; Apply
-  removes them and changes the setting in one step (one save of `ear.conf`) or neither.
+Built ([editor.md](../editor.md#the-settings-form)).
 
 ## 9. Standard-output records
 
 New kinds, each with `v`, `seq`, `t`, `kind`, its fields, `msg`, as built. Every change is additive, so `v` stays 1.
 
 ```json
-{"v":1,"seq":120,"t":"2026-11-08T10:01:50.311002Z","kind":"status","node":"kitchen","field":"connection","from":"dialling","to":"connected","msg":"node kitchen connection dialling -> connected"}
-{"v":1,"seq":140,"t":"2026-11-08T10:02:12.000300Z","kind":"status","node":"kitchen","field":"connection","from":"dialling","to":"connected","heldBack":9,"msg":"node kitchen connection now connected (9 changes held back)"}
-{"v":1,"seq":141,"t":"2026-11-08T10:04:00.100000Z","kind":"status","node":"kitchen","reset":true,"msg":"node kitchen status reset"}
-{"v":1,"seq":122,"t":"2026-11-08T10:01:52.004211Z","kind":"event","node":"kitchen","code":"pairing-failed","severity":"warn","args":{"reason":"pairing-code-mismatch"},"msg":"node kitchen pairing failed: pairing-code-mismatch"}
-{"v":1,"seq":123,"t":"2026-11-08T10:02:11.120400Z","kind":"diagnostic","node":"kitchen","code":"ear.status-flapping","subject":"connection","active":true,"count":2,"transitions":14,"windowMs":10000,"msg":"node kitchen connection flapping: 14 changes in 10s"}
 {"v":1,"seq":124,"t":"2026-11-08T10:03:00.500001Z","kind":"param","node":"amp","key":"gainDb","from":-6,"to":-3.5,"cause":"gesture","gesture":"g4","msg":"node amp gainDb -6 -> -3.5"}
 {"v":1,"seq":125,"t":"2026-11-08T10:03:40.000300Z","kind":"param","node":"amp","key":"gainDb","from":-4.25,"to":-6,"cause":"aborted","gesture":"g4","reason":"cancelled","msg":"node amp gainDb gesture g4 aborted (cancelled): back to -6"}
-{"v":1,"seq":128,"t":"2026-11-08T10:05:20.770000Z","kind":"action","node":"kitchen","action":"forget-pairing","result":"action-failed","detail":"no pairing with ma-0000","msg":"node kitchen forget-pairing refused: no pairing with ma-0000"}
 ```
 
-- `status`: every change as written, paced per node and field; a trailing record after held-back changes carries
-  `heldBack`, so the last record of each field matches the view; a reset is one record with `reset: true`. A text value
-  in `msg` is quoted when empty or holding a space; `null` is `unknown`.
-- `event`: `msg` is `node <n> ` and the sentence with its arguments; `t` for a realtime event is its cycle's start.
-- `diagnostic` (built) gains `subject`, `active` and `count`.
+- `status`, `event`, and the diagnostic's `subject`, `active` and `count` are built
+  ([output-records.md](../output-records.md#status)), and so is a realtime event's cycle start, carried as the wire's
+`t` ([control-port.md](../control-port.md#status)).
 - `param`: one per reached node and key at each committed live change (`cause`: `gesture`, `set` for `node.set` and
   `node.update`, `disk` for a hand edit or `graphFile.set`) and at each abort (`cause: aborted`, `reason`; `to` the value
   it returned to, absent for `hand-edit` and `file-saved`). An end ear made for its owner is `cause: gesture` with
   `reason`.
-- `action` (built for the lifecycle verbs) gains one per `node.invoke` answered, with `result` (`ok` or the refusal's
-  code) and `detail` for a refusal.
-- `note`: written only by `sendspin` until step 5.5; then the kind is removed from the encoder. Operators grep `says
-  pairing-code` (the `ear-on-talos` skill), so step 5.5's commit carries a `BREAKING CHANGE:` footer naming the
-  replacement, and the release notes say it.
-
-## 10. Migrating sendspin's notes (step 5.5)
-
-- `notes.hpp` and `notes::printable` go (3c already moved note pacing into core): the framework makes text safe and
-  paces events.
-- The worker and key store write through the `Report<spec>` that `configure` hands the worker's state, with every field
-  `writer::loop(worker)`, instead of `NodeHandle::say`.
-- **`stream` and `sending` come from the loop's state**: sendspin has no realtime code after 3c. The worker writes
-  `stream*` when the library starts or ends a stream, and `sending*` when the library asks for audio and when the sink's
-  consumer first gets a chunk after it (a fact the consumer posts to the worker).
-- **A rename, a port change or a listen/dial switch keeps the configuration** (3d): the status stays, and the worker
-  rewrites the fields the change touches (`instance`, `listenPort`, `url`, `connection`).
-- `NodeHandle::say`, core's note pacing and `StatusLog::nodeSays` go once nothing calls them.
-- The system tests that match `says` lines match the new `msg` lines (`node kitchen pairingCode "" -> "123-456"`); the
-  pairing test reads the code from the `status` record's `to`.
-- `docs/node-types.md#notes`, the `sendspin` notes list, becomes its status fields and events; the `sendspin` and `ear-on-talos` skills'
-  "what its notes mean" sections name fields and events (the operator's grep becomes `jq -r 'select(.field=="pairingCode")
-  | .to'`).
+- `action` for type actions is built ([output-records.md](../output-records.md#action)).
+- `note`: `sendspin` no longer writes it (built); the `file` and `airplay` nodes still do, so the kind stays in the
+  encoder until they move.
 
 ## 11. The cut: buildable steps
 
@@ -1265,39 +981,29 @@ Each step keeps every test green, adds its feature to `features`, and changes no
 | 5.1 to 5.5 | 3c; 3d for `change` in the schema | `types`, `status`, `actions` | no |
 | 6.1 to 6.5 | 3d, 5.1, 5.2 | `live`, `gestures` | 6.3 (a live change ramps instead of restarting) |
 
-**5.1 The schema on the wire.** `NodeType::schema()` from the settings table (text hints and `defaultFrom` added to
-`rtp`'s, `card`'s and `sendspin`'s rows; `change` from 3d's marks; `.shapesPorts()` on `card`'s `playback` and `capture`
-and `rtp`'s `channels`); `types.get` answered on the control thread from an encoding made at boot; `typeSchemaHash`;
-`InvalidSettings::key`, `data.key`, `data.detail`; `types.ts`; the settings form rendered from the schema with drafts,
-hints, the JSON toggle and Apply asking first (8.6). Tests: `types.json`, `errors.json`; `form.ts`'s drafts and its Apply
-flow against a fake client (a `reconfigure` sent at once, a `restart` and a `reshape` asking first, `dropRoutes` sent
-exactly when the dry run named routes, a `ports-in-use` refusal asking again); the all-type schema checks;
-`image-smoke.sh` calls `types.get`; a system test that `graph.get`'s hash matches `types.get`'s.
+**5.1 The schema on the wire** is built ([control-port.md](../control-port.md#type-schemas),
+[writing-a-node-type.md](../writing-a-node-type.md#the-type-schema), [editor.md](../editor.md#the-settings-form)).
 
-**5.2 Status and events off the realtime thread.** `StatusTable`, `EventTable`, `LogCodes` in `TypeSpec`; `Report` and
-`NodeOf::report`; the per-node queue, the drain and the tick; `node.statusChanged` with its reset, `node.eventRaised`,
-the `status` and `event` records; `status` in snapshots and `node.added`; `node.diagnostic` with subject, `active` and
-`count`; flapping, `ear.events-dropped`, `ear.records-dropped`, and 3b's, 3c's and 3d's diagnostics on the wire; the
-harness's captures; `rpc-call.mjs --follow`. Tests: `ear_core_tests` with a test type (status before event, a `lost`
-after the last status, a closed configuration's write dropped, the reset after the last values, status kept through a
-stop and a start, the queue's bound, flapping and settling on the harness's clock, the tick's 33 ms cap, the trailing
-record within 1 s and matching the view); `status.json`, `diagnostics.json`; the editor's status list and badges; a
-system test of ten chatty nodes and a slowly reading client.
+**5.2 Status and events off the realtime thread** is built
+([writing-a-node-type.md](../writing-a-node-type.md#status-and-events),
+[architecture.md](../architecture.md#status-and-events), [output-records.md](../output-records.md#status),
+[control-port.md](../control-port.md#status), [editor.md](../editor.md#status-events-and-diagnostics)), and so are its
+tests of ten chatty nodes and a slowly reading client ([testing.md](../testing.md#the-client-queue-under-status)).
 
-**5.3 The realtime ring.** The ring with its log budget, `rt` fields, `io.set`, `io.raise`, `io.log`, cycle stamps, the
-gated bell; the channels bound when the code is prepared and rebound at a swap. Tests: records in order, the bound, log
-records refused past 192 while events pass, transitions counted between samples, an event's `t` from its cycle, a swap
-keeping an `rt` field's last value; `ear_pipewire_tests` (a test block's code sets a field and raises an event; an
-idle block rings nothing); `process` allocates nothing while writing.
+**5.3 The realtime ring** is built ([architecture.md](../architecture.md#the-realtime-channels),
+[writing-a-node-type.md](../writing-a-node-type.md#reporting-from-the-code), [engine.md](../engine.md#the-realtime-bell)).
 
-**5.4 Actions.** `ActionTable`, triggers, calls on a loop of the spec, `node.invoke` through the keeper, `not-running`,
-deferred batch replies with their deadline, the `action` record for type actions, the editor's buttons; sendspin's
-`forget-pairing` as the first call. Tests: `actions.json`; an invoke ordered between two edits in one batch; the keeper
-taking the next batch while a handler is slow; a trigger seen once; a call refused before the node is configured; a
-call taken while stopped; a queued call answered `restarted`.
+**5.4 Actions.** Built but for sendspin's first call ([writing-a-node-type.md](../writing-a-node-type.md#actions),
+[control-port.md](../control-port.md#actions), [editor.md](../editor.md#actions)). Left: sendspin's `forget-pairing`
+as the first call: a call into the worker's loop ([writing-a-node-type.md](../writing-a-node-type.md#actions)) that
+forgets one server's pairing (its record in the key file and the
+library's memory), so a server that lost its own side can pair again without the node's identity being wiped. The
+pinned sendspin-cpp cannot serve it: its pairing API has no way to forget one server's pairing. The owner decided
+(2026-11-26): no sendspin action yet, and no `open-pairing-window` call either (it would open pairing without the
+device gesture to any control-port client). It waits for a library that can forget one pairing, upstream or by a
+carried patch the owner chooses.
 
-**5.5 Sendspin's notes split** (section 10). Tests: the sendspin system tests rewritten to read records; each field and
-event; a rename through the in-place `configure` keeping `clientId`. The commit carries the `BREAKING CHANGE:` footer.
+**5.5 Sendspin's notes split** is built ([node-types.md](../node-types.md#status-and-events)).
 
 **6.1 Decimal rows.** The rule, the walk, knobly's `number()` reader and the fixed writer, the schema's `decimal`,
 tapers and `minIsSilence`, the editor's number field. Tests: range, integer taken, NaN impossible; compile-fail
@@ -1336,10 +1042,11 @@ formulas and their inverses; Backspace on a focused knob sends no `node.remove`.
 ## 12. Costs, risks and open items
 
 - **More compile-time machinery**: about 35 compile-fail cases at about 1.3 s each.
-- **A wider wire**: four notifications, six requests, eleven codes. The client's queue bound (256 messages) now also
-  holds status at up to 30 a second per node; a slow client with many chatty nodes reaches 1008 sooner. If it bites,
-  coalesce a node's `node.statusChanged` in the client's queue when it is the last queued message. [U: step 5.2's
-  system test.]
+- **A wider wire**: four notifications, six requests, eleven codes. Status in the client's queue (256 messages) was
+  measured and does not bite ([testing.md](../testing.md#the-client-queue-under-status)). Not built, should a client
+  ever need it: a node's `node.statusChanged` coalesced in the client's queue with that node's own still queued, when
+  only other nodes' status follows it (never past another message of the node, nor past another notification), as
+  the literal "the last queued message" coalesces nothing with ten nodes interleaved.
 - **A behaviour change**: `node.update` of only live rows no longer restarts.
 - **The session reads ahead**, a change to the one-in-flight rule for two notifications; the ending mark exists so a
   tick never lands after its gesture's end was read.
@@ -1349,10 +1056,6 @@ formulas and their inverses; Backspace on a focused knob sends no `node.remove`.
 - **A dropped connection writes its last value** (R32), 30 s later at most; the `param` record says so.
 - **Rounding at the end** can differ from the last live value by half a step (0.05 dB at one decimal).
 - **Ticks run the type's `check`** on the main loop, once per gesture per turn at most.
-- **Triggers are lossy by design**: several invokes in one block are one; an action that must count is a call.
-- [U] Aggregate deduction of `TypeSpec` with designated initialisers and defaulted parameters on GCC 14: it holds for
-  `.stores` and `.loops` (every subset spelling compiles, `type_spec_test.cpp`) and is still to check for this page's
-  members; fallback a consteval `makeSpec` with the same members in the same order.
 - [U] knobly reads `-3.5` as one number word in a setting's place, and a directive name may hold `.`; fallback `trimDb-1`.
 - [U] `std::atomic<double>` lock-free on arm64.
 - [U] Browsers' pointer capture on touch screens (`lostpointercapture` after a cancelled touch), checked by hand in 6.5.
@@ -1412,7 +1115,6 @@ Each is the designer's unless marked the owner's; the owner can overturn any.
 | G15 | A tab silent for 30 s about its gesture is treated as released, like a closed one | A Wi-Fi drop usually shows as silence before TCP closes; the two must agree with R32 |
 | G16 | The idle timer and the end on the owner's behalf live in the session; a stop of ear commits no open gesture | The session sees every message; a stop is nobody's release |
 | K1 | No framework status fields; a companion's counts are on its `companions` entry | Counts belong to the crossing |
-| X1 | The schema's per-row `change` and `shapes`; `.shapesPorts()` held to `ports()` by the all-type tests | The hint beside each field needs no round trip |
 | X5 | A fader only on `.live` rows | A drag over an in-place row would chop the audio into holds |
 | X6 | Values applied off the realtime thread are `.inPlace()` rows the type posts to its loop; no `watch` hook until a type needs one | Covers every built-in need with 3d's machinery |
 | W1 (built) | One `node.state` whenever any health member changes | — |

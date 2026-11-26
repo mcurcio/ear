@@ -40,6 +40,7 @@ struct SessionState {
 struct Hub {
 	GraphGateway& graph;
 	LevelReader& levels;
+	TypeSchemas types;                                   // made at boot (docs/control-port.md#type-schemas)
 	std::vector<std::shared_ptr<SessionState>> sessions; // attach order
 
 	/// A copy: a send may close a connection and so detach its session.
@@ -125,6 +126,14 @@ void ControlSession::received(std::string text, std::move_only_function<void()> 
 		auto refuse = [&](const RpcError& error) {
 			if (request.id) slots.push_back({Slot::Kind::fixed, request.id, encodeError(*request.id, error)});
 		};
+		if (request.method == "types.get") { // answered here from the encoding made at boot, without the main loop
+			auto ifNoneMatch = decodeGetTypes(request.params);
+			if (!ifNoneMatch) refuse(ifNoneMatch.error());
+			else if (request.id)
+				slots.push_back({Slot::Kind::fixed, request.id,
+				                 encodeResult(*request.id, typesResult(state->hub->types, *ifNoneMatch))});
+			continue;
+		}
 		if (request.method == "levels.subscribe") { // answered here, without the main loop
 			if (!request.params.is_null())
 				if (auto checked = requireObject(request.params, JsonPointer{}, {}); !checked) {
@@ -163,6 +172,9 @@ void ControlSession::received(std::string text, std::move_only_function<void()> 
 	                       done = std::move(done)](std::vector<CommandResult> results) mutable {
 							  const auto alive = weak.lock();
 							  if (!alive || alive->out == nullptr) return; // the session closed meanwhile
+							  for (CommandResult& result : results)
+								  if (auto* view = std::get_if<GraphView>(&result))
+									  view->typeSchemaHash = alive->hub->types.hash;
 							  answer(*alive, batch, slots, results, done);
 						  });
 }
@@ -171,8 +183,8 @@ struct ControlHub::Impl {
 	Hub hub;
 };
 
-ControlHub::ControlHub(GraphGateway& graph, LevelReader& levels)
-	: impl_(std::make_unique<Impl>(Impl{Hub{graph, levels, {}}})) {
+ControlHub::ControlHub(GraphGateway& graph, LevelReader& levels, TypeSchemas types)
+	: impl_(std::make_unique<Impl>(Impl{Hub{graph, levels, std::move(types), {}}})) {
 	hubs.emplace(this, &impl_->hub);
 	graph.watch(*this);
 }

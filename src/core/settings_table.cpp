@@ -4,6 +4,8 @@
 #include "ear/core/rate_text.hpp"
 
 #include <algorithm>
+#include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -57,59 +59,75 @@ std::string notWithinRange(std::string_view key, const WholeNumberRule& rule) {
 
 } // namespace
 
-std::expected<CheckedSettings, std::string> AnySettingsTable::walk(const NodeSettings& settings) const {
-	if (!settings.is_object() && !(rows_.empty() && settings.is_null())) return std::unexpected(notAnObject(rows_));
+std::expected<CheckedSettings, AnySettingsTable::Refusal> AnySettingsTable::walk(const NodeSettings& settings) const {
+	if (!settings.is_object() && !(rows_.empty() && settings.is_null()))
+		return std::unexpected(Refusal{notAnObject(rows_), {}});
 
 	for (const auto& [key, value] : settings.items()) {
 		if (std::ranges::find(rows_, std::string_view(key), &SettingRow::key) == rows_.end()) {
-			if (!rows_.empty()) return std::unexpected("unknown key " + key);
-			return std::unexpected("unknown key " + key + " (" + std::string(name_) + " takes no settings)");
+			if (!rows_.empty()) return std::unexpected(Refusal{"unknown key " + key, key});
+			return std::unexpected(
+				Refusal{"unknown key " + key + " (" + std::string(name_) + " takes no settings)", key});
 		}
 	}
 
 	std::vector<std::any> slots;
 	slots.reserve(rows_.size());
 	for (const SettingRow* row : rows_) {
+		// Every refusal from here on names this row's key.
+		const auto refuse = [row](std::string text) {
+			return std::unexpected(Refusal{std::move(text), std::string(row->key)});
+		};
 		std::any& slot = slots.emplace_back();
 		const auto* number = std::get_if<WholeNumberRule>(&row->rule);
 		const auto value = settings.find(row->key);
 		if (value == settings.end()) {
-			if (row->required) return std::unexpected(std::string(row->key) + ": missing");
+			if (row->required) return refuse(std::string(row->key) + ": missing");
 			if (row->byDefault) slot = *row->byDefault;
 			continue;
 		}
 		if (!row->onlyWithout.empty() && settings.contains(row->onlyWithout)) {
-			return std::unexpected(std::string(row->key) + R"(: only without ")" + std::string(row->onlyWithout) + '"');
+			return refuse(std::string(row->key) + R"(: only without ")" + std::string(row->onlyWithout) + '"');
 		}
 		if (number != nullptr) {
 			if (!isWholeNumberWithin(*value, number->low, number->high)) {
-				return std::unexpected(notWithinRange(row->key, *number));
+				return refuse(notWithinRange(row->key, *number));
 			}
 			slot = value->get<std::uint32_t>();
 		} else if (const auto* rate = std::get_if<RateRule>(&row->rule)) {
 			const auto read = rateOfSetting(*value);
 			if (!read || *read < rate->low || *read > rate->high) {
-				return std::unexpected(std::string(row->key) + ": must be a rate from " +
-				                       rangeText(RateRange{rate->low, rate->high}) +
-				                       " (on the control port, a whole number of Hz)");
+				return refuse(std::string(row->key) + ": must be a rate from " +
+				              rangeText(RateRange{rate->low, rate->high}) +
+				              " (on the control port, a whole number of Hz)");
 			}
 			slot = *read;
 		} else if (std::holds_alternative<BooleanRule>(row->rule)) {
-			if (!value->is_boolean()) return std::unexpected(std::string(row->key) + ": must be true or false");
+			if (!value->is_boolean()) return refuse(std::string(row->key) + ": must be true or false");
 			slot = value->get<bool>();
 		} else {
 			const TextRule& text = std::get<TextRule>(row->rule);
 			if (value->is_string()) slot = text.read(value->get_ref<const std::string&>());
-			if (!slot.has_value())
-				return std::unexpected(std::string(row->key) + ": must be " + std::string(text.mustBe));
+			if (!slot.has_value()) return refuse(std::string(row->key) + ": must be " + std::string(text.mustBe));
 		}
 	}
 	return CheckedSettings(std::move(slots));
 }
 
 NodeType::NodeType(const AnySettingsTable& table, std::span<const StoreDeclaration> stores,
-                   std::chrono::milliseconds reconfigureDeadline) noexcept
-	: table_(&table), stores_(stores), reconfigureDeadline_(reconfigureDeadline) {}
+                   std::chrono::milliseconds reconfigureDeadline, std::span<const BankDeclaration> banks,
+                   std::span<const StatusDeclaration* const> status, std::span<const EventDeclaration> events,
+                   std::span<const ActionDeclaration> actions) noexcept
+	: table_(&table), stores_(stores), reconfigureDeadline_(reconfigureDeadline), banks_(banks), status_(status),
+	  events_(events), actions_(actions) {}
+
+TypeSchema NodeType::schema() const noexcept {
+	return TypeSchema{table_->name(), table_->rows(), banks_, reconfigureDeadline_, status_, events_, actions_};
+}
+
+std::expected<void, std::string> NodeConfig::runCall(std::size_t action, void*, CheckedSettings&&) const {
+	throw std::logic_error("node config: action " + std::to_string(action) + " is no call of its type");
+}
 
 std::string_view NodeType::name() const noexcept { return table_->name(); }
 
@@ -122,13 +140,18 @@ std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings> NodeType::pars
 	// The type's own code (a text row's parse, its check, its ports) runs here, on the main loop
 	// as an edit is planned: what it throws refuses the edit as an invalid setting would, never reaching the callback
 	// boundary (docs/writing-a-node-type.md#rules-the-framework-enforces).
+	std::string refusedKey;
 	auto made = detail::caughtFrom([&]() -> MadeConfig {
 		auto walked = table_->walk(settings);
-		if (!walked) return std::unexpected(std::move(walked.error()));
+		if (!walked) {
+			refusedKey = std::move(walked.error().key);
+			return std::unexpected(std::move(walked.error().text));
+		}
 		return makeConfig(node, std::move(*walked));
 	});
 	if (!made) return std::unexpected(InvalidSettings{node, std::string(name()) + " threw: " + made.error()});
-	if (!*made) return std::unexpected(InvalidSettings{node, std::move(made->error())});
+	// A refusal of the walk names its key; the type's check and make name none (docs/control-port.md#error-codes).
+	if (!*made) return std::unexpected(InvalidSettings{node, std::move(made->error()), std::move(refusedKey)});
 	return std::move(**made);
 }
 

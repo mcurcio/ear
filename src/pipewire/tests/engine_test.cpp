@@ -42,6 +42,7 @@
 #include "ear/pipewire/live_graph.hpp"
 #include "ear/pipewire/main_loop_executor.hpp"
 #include "ear/pipewire/port_blocks.hpp"
+#include "ear/pipewire/realtime_bell.hpp"
 #include "ear/pipewire/rtp_receivers.hpp"
 #include "ear/pipewire/sinks.hpp"
 #include "ear/pipewire/sound_cards.hpp"
@@ -983,9 +984,8 @@ private:
 class Diagnosed final : public NodeDiagnosticListener {
 public:
 	explicit Diagnosed(Waiter& waiter) : waiter_(waiter) {}
-	void nodeDiagnostic(const NodeName&, std::string_view code, const std::string&,
-	                    std::span<const DiagnosticField>) override {
-		codes.emplace_back(code);
+	void nodeDiagnostic(const NodeName&, const NodeDiagnostic& diagnostic) override {
+		codes.emplace_back(diagnostic.code);
 		waiter_.wake();
 	}
 	std::vector<std::string> codes;
@@ -1472,4 +1472,160 @@ TEST_CASE(
 	// Each cycle the code runs after the count was read started after it, but for the first.
 	REQUIRE(waiter.until([&] { return code.cycles() >= ticks + 9; }));
 	CHECK(keptStarts.load() >= counted + 8);
+}
+
+// The realtime bell on the real engine (docs/engine.md#the-realtime-bell): a test type's code, writing through Io on
+// the real data loop, rings the main loop's bell after a cycle it wrote in; its dispatch tells NodeHost, whose tick
+// drains the channels, so the status and the event reach a status listener. An idle code rings nothing, and a code
+// that writes every cycle rings at most once per drain, the drain being the 33 ms tick.
+namespace engine_bell_test {
+using namespace ear;
+
+constexpr SettingsTable<> table{"chatty"};
+constexpr auto out = bank::output<"out">;
+constexpr auto level = status::number<"level">(writer::rt, 0, 1000000);
+constexpr auto hello = event::of<"hello">(EventSeverity::info, "hello at {cycle}", arg::number<"cycle">(0, 1000000));
+constexpr TypeSpec spec{
+	.settings = table, .banks = Banks<out>{}, .status = StatusTable<level>{}, .events = EventTable<hello>{}};
+
+/// What the code does, set by the test: nothing, one write and one event, or a write every cycle.
+enum class Writes { none, once, everyCycle };
+std::atomic<Writes> writes{Writes::none};
+/// Whether the one event was raised: once holds its value every cycle, but raises only in the first.
+std::atomic<bool> raised{false};
+std::atomic<std::int64_t> cycles{0};
+/// Woken by the code at every cycle (an eventfd write, safe on the data loop), so a test waits on cycles run.
+std::atomic<Waiter*> waking{nullptr};
+
+struct Code {
+	void process(Io<spec> io, const GraphCycle&) noexcept {
+		for (const auto member : io[out]) std::ranges::fill(member, 0.0F);
+		const std::int64_t cycle = cycles.fetch_add(1, std::memory_order_relaxed) + 1;
+		switch (writes.load(std::memory_order_relaxed)) {
+		case Writes::none:
+			break;
+		case Writes::once:
+			io.set<level>(5);
+			if (!raised.exchange(true, std::memory_order_relaxed)) io.raise<hello>(7);
+			break;
+		case Writes::everyCycle:
+			io.set<level>(cycle % 1000000);
+			break;
+		}
+		if (Waiter* waiter = waking.load(std::memory_order_acquire)) waiter->wake();
+	}
+};
+struct Chatty {
+	static Members<spec> ports(const CheckedOf<spec>&) { return {out(members("mono"))}; }
+	Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>&) { return cx.applied(Code{}); }
+};
+
+/// The bell, counted, ringing the real one.
+class CountedBell final : public RealtimeBell {
+public:
+	explicit CountedBell(RealtimeBell& bell) : bell_(bell) {}
+	void ring() noexcept override {
+		rings.fetch_add(1, std::memory_order_relaxed);
+		bell_.ring();
+	}
+	std::atomic<std::uint64_t> rings{0};
+
+private:
+	RealtimeBell& bell_;
+};
+
+/// What the main loop heard of the node's status and events, each waking the waiter.
+template <class W> class Heard final : public NodeStatusListener {
+public:
+	explicit Heard(W& waiter) : waiter_(waiter) {}
+	void statusChanged(const NodeName&, std::span<const FieldValue> fields) override {
+		for (const FieldValue& field : fields)
+			if (field.name == "level") last = field.value;
+		waiter_.wake();
+	}
+	void eventRaised(const NodeName&, const RaisedEvent& event) override {
+		events.push_back(event.msg);
+		waiter_.wake();
+	}
+	StatusValue last{};
+	std::vector<std::string> events;
+
+private:
+	W& waiter_;
+};
+} // namespace engine_bell_test
+
+TEST_CASE("A code's status and event from the real data loop ring the main loop's bell and are drained, and an idle "
+          "code rings nothing",
+          "[engine][realtime-bell]") {
+	using namespace engine_bell_test;
+	writes = Writes::none;
+	raised = false;
+	cycles = 0;
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	waking = &waiter;
+	NoLevelWake wake;
+	FilterPortBlocks blocks(*engine, wake);
+	AlsaSoundCards cards(*engine);
+	RtpReceivers receivers(*engine);
+	MainLoopExecutor mainLoop(*engine);
+	ThreadSinks sinks(mainLoop);
+	EventSources sources;
+	ResourceRegistry resources(cards, receivers, sinks, sources);
+	NodeCatalogue catalogue{{}};
+	DesiredGraph graph(catalogue);
+	HealthWake health(waiter);
+	NodeHost* told = nullptr;
+	MainLoopRealtimeBell real(*engine, [&] {
+		if (told != nullptr) told->realtimeRung();
+		waiter.wake();
+	});
+	CountedBell bell(real);
+	NodeHost host(kFormat, blocks, resources, mainLoop, mainLoop);
+	told = &host;
+	host.subscribe(health);
+	Heard<Waiter> heard(waiter);
+	host.subscribeStatus(heard);
+	host.ringWith(bell);
+	const auto type = makeNodeType<spec, Chatty>();
+	auto config = type->parse("chatty", NodeSettings::object());
+	REQUIRE(config);
+	host.nodeAdded(NodeSpec{"chatty", "chatty", {}}, std::shared_ptr<const NodeConfig>(std::move(*config)));
+	REQUIRE(waiter.until(
+		[&] {
+			const auto all = host.health();
+			return all.size() == 1 && all[0].state == NodeState::running && cycles.load() >= 50;
+		},
+		10s));
+	CHECK(bell.rings.load() == 0);
+
+	writes = Writes::once;
+	REQUIRE(waiter.until([&] { return heard.last == StatusValue(std::int64_t{5}) && heard.events.size() == 1; }, 10s));
+	CHECK(heard.events[0] == "hello at 7");
+	CHECK(bell.rings.load() >= 1);
+
+	// A write every cycle: at most one ring per drain, and the drains are the tick's, at most one per 33 ms.
+	const std::uint64_t before = bell.rings.load();
+	const std::int64_t from = cycles.load();
+	const auto began = std::chrono::steady_clock::now();
+	writes = Writes::everyCycle;
+	REQUIRE(waiter.until([&] { return cycles.load() >= from + 200; }, 10s));
+	writes = Writes::none;
+	const auto elapsed = std::chrono::steady_clock::now() - began;
+	const std::uint64_t rang = bell.rings.load() - before;
+	const auto ticks = static_cast<std::uint64_t>(elapsed / statusTickPace) + 2;
+	INFO("rang " << rang << " times in " << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()
+	             << " ms");
+	CHECK(rang >= 1);
+	CHECK(rang <= ticks);
+
+	bool gone = false;
+	host.stopAll(graph.close(), [&] {
+		gone = true;
+		waiter.wake();
+	});
+	REQUIRE(waiter.until([&] { return gone; }, 10s));
+	CHECK(host.leaked() == 0);
+	waking = nullptr; // no code runs once every node is gone
 }

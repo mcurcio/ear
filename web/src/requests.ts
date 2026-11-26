@@ -21,7 +21,8 @@ export const lifecycleLabels: Record<LifecycleMethod, string> = {
 /** What asked for a request: a route's two ends, a node's name (and so its button), or the drawer or the form. */
 export type Asked =
   | { method: "route.add" | "route.remove"; ends: RouteEnds }
-  | { method: "node.add" | "node.remove" | "node.update" | "node.setText" | LifecycleMethod; node: string }
+  | { method: "node.add" | "node.remove" | "node.update" | "node.set" | "node.setText" | LifecycleMethod; node: string }
+  | { method: "node.invoke"; node: string; action: string }
   | { method: "node.addText" | "graphFile.set" };
 
 export type AskedMethod = Asked["method"];
@@ -37,6 +38,10 @@ export function askedOf<M extends AskedMethod>(method: M, params: Methods[M]["pa
     case "node.addText":
     case "graphFile.set":
       return { method } as Asked;
+    case "node.invoke": {
+      const { name, action } = params as { name: string; action: string };
+      return { method, node: name, action };
+    }
     default:
       return { method, node: (params as { name: string }).name } as Asked;
   }
@@ -56,11 +61,14 @@ export function describeAsked(asked: Asked): string {
     case "node.remove":
       return `remove ${asked.node}`;
     case "node.update":
+    case "node.set":
       return `${asked.node}'s settings`;
     case "node.setText":
       return `save ${asked.node}'s text`;
     case "graphFile.set":
       return "save ear.conf";
+    case "node.invoke":
+      return `${asked.action} ${asked.node}`;
     default:
       return `${lifecycleLabels[asked.method]} ${asked.node}`;
   }

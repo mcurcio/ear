@@ -34,6 +34,13 @@ std::string_view errorCode(const CommandError& error) noexcept {
 		error);
 }
 
+std::string_view refusalWords(const InvalidSettings& error) noexcept {
+	const std::string_view detail = error.detail;
+	if (error.key.empty() || !detail.starts_with(error.key)) return detail;
+	const std::string_view rest = detail.substr(error.key.size());
+	return rest.starts_with(": ") ? rest.substr(2) : detail;
+}
+
 std::string describe(const CommandError& error) {
 	const std::string_view code = errorCode(error);
 	return std::visit(

@@ -7,6 +7,7 @@
 #pragma once
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -34,21 +35,33 @@ public:
 	std::optional<std::string> finalWriteFailure() const; // the last write's detail, after stop
 
 private:
+	/// A batch's actions still to answer (docs/control-port.md#actions), on the main loop only: what answered before
+	/// the batch's last step, and once that step ran, the batch's results and reply, held until the last answer.
+	struct Waiting {
+		std::size_t outstanding = 0;
+		std::vector<std::pair<std::size_t, control::CommandResult>> early;
+		std::vector<std::optional<control::CommandResult>> results;
+		control::BatchReply reply;
+		bool held = false; // the last step ran: results and reply are here
+	};
 	struct Batch {
 		std::vector<control::Command> commands;
 		std::size_t next = 0; // the first command not yet taken
 		std::vector<std::optional<control::CommandResult>> results;
 		control::BatchReply reply;
+		std::shared_ptr<Waiting> waiting = std::make_shared<Waiting>(); // touched on the main loop only
 	};
 	struct FirstOffer {};
 	struct DiskCheck {};
 	using Input = std::variant<FirstOffer, DiskCheck, Batch>;
-	/// A command answered on the main loop with no candidate, in index order with the batch's edits: a read, or a
-	/// lifecycle verb (start, stop, restart), which needs no file and works while it has errors and once stopped.
+	/// A command answered on the main loop with no candidate, in index order with the batch's edits: a read, a
+	/// lifecycle verb (start, stop, restart) or a type action, which need no file and work while it has errors and
+	/// once stopped.
 	struct Read {
 		std::size_t index;
 		std::variant<std::monostate /* GetGraph */, FileState /* GetGraphFile */,
-		             std::pair<control::LifecycleVerb, NodeName> /* StartNode, StopNode, RestartNode */>
+		             std::pair<control::LifecycleVerb, NodeName> /* StartNode, StopNode, RestartNode */,
+		             control::InvokeNode>
 			what;
 	};
 	/// How an edit's reply answers (docs/control-port.md#methods): `{}`, or by the plan's change of `node` (node.disable,
@@ -67,6 +80,8 @@ private:
 
 	void pump();
 	void advance(Batch batch);
+	/// Main loop: one of a batch's actions answered; the last one, once the batch's last step ran, sends its reply.
+	static void answered(Waiting& waiting, std::size_t index, control::CommandResult result);
 	/// A keeper-made answer to command `index`, or nothing when it made a candidate (left in candidate_).
 	std::optional<control::CommandResult> take(const control::Command& command);
 	/// answer: how the reply to the edit whose candidate this offer is answers.

@@ -15,6 +15,7 @@
 #include "ear/core/latency.hpp" // Latency, BankPair
 #include "ear/core/node_handle.hpp"
 #include "ear/core/sample_rate.hpp"
+#include "ear/core/status_declarations.hpp"
 #include "ear/core/store_rule.hpp"
 namespace ear {
 /// One named group of a node's ports, all one way. Each is "<name>.<member>" (portName). A routable bank's ports are
@@ -27,6 +28,13 @@ struct PortBank {
 	std::string_view name;
 	std::vector<std::string> members;
 	Reach reach = Reach::routable;
+};
+/// One bank as a type's spec declares it (Banks, type_spec.hpp), before any node gives it members: what the type schema
+/// names (docs/writing-a-node-type.md#the-type-schema).
+struct BankDeclaration {
+	std::string_view name;
+	Direction direction;
+	PortBank::Reach reach;
 };
 /// A port's whole name, the one place it is made: "<bank>.<member>", each part 1 or more of [A-Za-z0-9_-]. Throws
 /// std::logic_error otherwise: a type bug, not a user error.
@@ -199,8 +207,24 @@ private:
 	std::unique_ptr<AudioCode> code_;
 	std::vector<BankPair> pairs_;
 };
-class ErasedInstance; // lifecycle.hpp
-class NodeContext;    // lifecycle.hpp
+class AnySettingsTable; // settings_table.hpp
+struct SettingRow;      // settings_table.hpp
+/// One action of a type (docs/writing-a-node-type.md#actions), as its spec's ActionTable declares it: a trigger into the
+/// code, or a call into a loop's state with its arguments' table. Views static storage (the spec's).
+struct ActionDeclaration {
+	/// `code` for a trigger, `loop` for a call: the schema's `target`.
+	enum class Target { code, loop };
+	std::string_view name;
+	Target target;
+	std::string_view help;
+	std::span<const SettingRow* const> args{}; // a call's arguments' rows, in the walk's order; none for a trigger
+	const AnySettingsTable* table = nullptr;   // a call's arguments' table
+	std::string_view loop{};                   // a call's loop
+	std::size_t trigger = 0;                   // a trigger's index among the spec's triggers
+};
+class ErasedInstance;  // lifecycle.hpp
+class NodeContext;     // lifecycle.hpp
+class CheckedSettings; // settings_table.hpp
 /// One node's checked settings; made only by its type's parse().
 class NodeConfig {
 public:
@@ -209,6 +233,19 @@ public:
 	/// Main thread, at T2: one configuration's instance, which NodeHost drives (lifecycle.hpp); `node` outlives it.
 	/// makeNodeType's config makes the type's class.
 	virtual std::unique_ptr<ErasedInstance> make(NodeContext& node) const = 0;
+	/// The type's status fields and events (docs/writing-a-node-type.md#status-and-events), in declaration order: what
+	/// NodeHost's status view starts from and its events are read by. Static storage; none for a type written without
+	/// a spec.
+	virtual std::span<const StatusDeclaration* const> statusDeclared() const { return {}; }
+	virtual std::span<const EventDeclaration> eventsDeclared() const { return {}; }
+	/// Its realtime log codes (docs/writing-a-node-type.md#log-codes), in declaration order: what the drain reads the
+	/// ring's log records by.
+	virtual std::span<const LogCodeDeclaration> logCodesDeclared() const { return {}; }
+	/// Its actions (docs/writing-a-node-type.md#actions), in declaration order: what NodeHost's invoke finds by name.
+	virtual std::span<const ActionDeclaration> actionsDeclared() const { return {}; }
+	/// Call `action` (its index in actionsDeclared, a call), on its loop's thread with the loop's state and the
+	/// arguments its table's walk made: the handler's answer. NodeHost calls it only for a call.
+	virtual std::expected<void, std::string> runCall(std::size_t action, void* state, CheckedSettings&& args) const;
 };
 /// How one setting is written in the graph file: the keeper reads it with knobly's reader of this
 /// kind and writes a JSON value of this kind back. The one home of each key's kind.
@@ -228,11 +265,21 @@ struct SettingDeclaration {
 	std::string_view key;
 	SettingKind kind;
 };
-class AnySettingsTable; // settings_table.hpp
+/// What a type declares, as the control port's types.get says it (docs/writing-a-node-type.md#the-type-schema): its name, its
+/// setting rows in the walk's order, its banks in declaration order, its in-place deadline, and its status fields,
+/// events and actions in declaration order. Every member views static storage (the type's spec), so a schema outlives nothing.
+struct TypeSchema {
+	std::string_view name;
+	std::span<const SettingRow* const> settings;
+	std::span<const BankDeclaration> banks;
+	std::chrono::milliseconds reconfigureDeadline;
+	std::span<const StatusDeclaration* const> status{};
+	std::span<const EventDeclaration> events{};
+	std::span<const ActionDeclaration> actions{};
+};
 namespace spec_detail {
 template <const auto& Spec, class Type> class SpecNodeType; // lifecycle.hpp
 } // namespace spec_detail
-class CheckedSettings; // settings_table.hpp
 /// What a type makes of one node's checked settings: its config, or the whole text of a refusal. parse names the node.
 using MadeConfig = std::expected<std::unique_ptr<const NodeConfig>, std::string>;
 /// One node type. Its name, its settings' kinds and their checking all answer from the one table makeNodeType
@@ -258,15 +305,25 @@ public:
 	/// How long a change in place may take before it falls back to a restart (the spec's `.lifecycle`:
 	/// docs/architecture.md#changes-in-place).
 	std::chrono::milliseconds reconfigureDeadline() const noexcept { return reconfigureDeadline_; }
+	/// The type's schema, from its spec's table and banks: the same every call; pure.
+	TypeSchema schema() const noexcept;
 
 private:
 	template <const auto& Spec, class Type> friend class spec_detail::SpecNodeType; // nothing else can derive
 	explicit NodeType(const AnySettingsTable& table, std::span<const StoreDeclaration> stores = {},
-	                  std::chrono::milliseconds reconfigureDeadline = std::chrono::seconds(10)) noexcept;
+	                  std::chrono::milliseconds reconfigureDeadline = std::chrono::seconds(10),
+	                  std::span<const BankDeclaration> banks = {},
+	                  std::span<const StatusDeclaration* const> status = {},
+	                  std::span<const EventDeclaration> events = {},
+	                  std::span<const ActionDeclaration> actions = {}) noexcept;
 	/// The one customisation point. Called only with what the table's walk made.
 	virtual MadeConfig makeConfig(const NodeName& node, CheckedSettings settings) const = 0;
 	const AnySettingsTable* table_;            // static storage: the spec's table
 	std::span<const StoreDeclaration> stores_; // static storage: the spec's Stores::declared
 	std::chrono::milliseconds reconfigureDeadline_;
+	std::span<const BankDeclaration> banks_;           // static storage: the spec's Banks::declared
+	std::span<const StatusDeclaration* const> status_; // static storage: the spec's StatusTable::declared
+	std::span<const EventDeclaration> events_;         // static storage: the spec's EventTable::declared
+	std::span<const ActionDeclaration> actions_;       // static storage: the spec's ActionTable::declared
 };
 } // namespace ear

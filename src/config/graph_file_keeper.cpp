@@ -76,6 +76,8 @@ void GraphFileKeeper::subscribe(control::GraphFileListener& listener) { impl_->s
 
 void GraphFileKeeper::subscribeActions(control::ActionListener& listener) { impl_->side.subscribeActions(listener); }
 
+void GraphFileKeeper::answerActions(NodeActions& actions) { impl_->side.answerActions(actions); }
+
 void GraphFileKeeper::stampSnapshots(const control::SnapshotStamp& stamp) { impl_->side.stampSnapshots(stamp); }
 
 std::expected<void, std::string> GraphFileKeeper::start() {

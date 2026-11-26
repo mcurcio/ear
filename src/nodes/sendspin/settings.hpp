@@ -9,7 +9,9 @@
 #include "ear/core/settings_table.hpp"
 namespace ear::nodes::sendspin {
 /// ws://<host>[:<port>]/<path>: a host of letters, digits, '-' and '.' (a dotted quad among them), at most 253; a port
-/// of 1-65535; a path of '/' and [A-Za-z0-9._~-]. No wss://, no user, query or fragment. Only parse() makes one.
+/// of 1-65535; a path of '/' and [A-Za-z0-9._~-]; at most maxServerUrlBytes in all, so the `url` status field shows it
+/// whole. No wss://, no user, query or fragment. Only parse() makes one.
+inline constexpr std::uint32_t maxServerUrlBytes = 512;
 class ServerUrl {
 public:
 	static std::optional<ServerUrl> parse(std::string_view text);
@@ -34,11 +36,20 @@ std::optional<std::string> parseName(std::string_view text);
 /// (docs/node-types.md#changes-in-place).
 namespace rows {
 inline constexpr auto server =
-	setting::optional("server", setting::text<ServerUrl::parse>("ws://<host>[:<port>]/<path>")).inPlace();
+	setting::optional(
+		"server", setting::text<ServerUrl::parse>("ws://<host>[:<port>]/<path>",
+                                                  {.pattern = "^ws://[A-Za-z0-9.-]+(:[0-9]{1,5})?/[A-Za-z0-9/._~-]*$",
+                                                   .maxLength = maxServerUrlBytes}))
+		.help("absent: ear listens on port for the server to dial it")
+		.inPlace();
 inline constexpr auto port =
 	setting::defaulted("port", setting::number(1, 65535), defaultListenPort).onlyWithout(server).inPlace();
+// Absent: the node's name (settingsFrom).
 inline constexpr auto name =
-	setting::optional("name", setting::text<parseName>("1 to 64 bytes of UTF-8 with no control characters")).inPlace();
+	setting::optional("name",
+                      setting::text<parseName>("1 to 64 bytes of UTF-8 with no control characters", {.maxLength = 64}))
+		.defaultFrom(setting::DefaultFrom::nodeName)
+		.inPlace();
 } // namespace rows
 inline constexpr SettingsTable<rows::server, rows::port, rows::name> settingsTable{"sendspin"};
 /// Pure. `node`: the node's name, the default of "name".

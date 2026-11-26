@@ -505,7 +505,7 @@ bool writableKey(std::string_view key) {
 std::expected<std::string, InvalidSettings> textValue(const NodeName& node, const std::string& key,
                                                       const std::string& text) {
 	if (!writable(text))
-		return std::unexpected(InvalidSettings{node, key + ": holds a control character ear.conf cannot hold"});
+		return std::unexpected(InvalidSettings{node, key + ": holds a control character ear.conf cannot hold", key});
 	return knoblyQuoted(text);
 }
 
@@ -514,28 +514,30 @@ std::expected<std::string, InvalidSettings> textValue(const NodeName& node, cons
 /// takes a string (quoted) or an integer (bare).
 std::expected<std::string, InvalidSettings> valueText(const NodeName& node, const NodeType* type,
                                                       const std::string& key, const json& value) {
-	if (!writableKey(key)) return std::unexpected(InvalidSettings{node, key + ": cannot be written"});
+	if (!writableKey(key)) return std::unexpected(InvalidSettings{node, key + ": cannot be written", key});
 	if (const auto kind = declaredKind(type, key)) {
 		if (*kind == SettingKind::text) {
-			if (!value.is_string()) return std::unexpected(InvalidSettings{node, key + ": expected text"});
+			if (!value.is_string()) return std::unexpected(InvalidSettings{node, key + ": expected text", key});
 			return textValue(node, key, value.get<std::string>());
 		}
 		if (*kind == SettingKind::rate) { // written with its unit; the row's range is the plan's to judge
 			const auto rate = rateOfSetting(value);
-			if (!rate) return std::unexpected(InvalidSettings{node, key + ": expected a whole number of Hz above 0"});
+			if (!rate)
+				return std::unexpected(InvalidSettings{node, key + ": expected a whole number of Hz above 0", key});
 			return rateText(*rate);
 		}
 		if (*kind == SettingKind::boolean) {
-			if (!value.is_boolean()) return std::unexpected(InvalidSettings{node, key + ": expected true or false"});
+			if (!value.is_boolean())
+				return std::unexpected(InvalidSettings{node, key + ": expected true or false", key});
 			return std::string(value.get<bool>() ? "true" : "false");
 		}
 		if (!value.is_number_integer())
-			return std::unexpected(InvalidSettings{node, key + ": expected a whole number"});
+			return std::unexpected(InvalidSettings{node, key + ": expected a whole number", key});
 		return value.dump();
 	}
 	if (value.is_string()) return textValue(node, key, value.get<std::string>());
 	if (value.is_number_integer()) return value.dump();
-	return std::unexpected(InvalidSettings{node, key + ": cannot be written"});
+	return std::unexpected(InvalidSettings{node, key + ": cannot be written", key});
 }
 
 /// `<key> <value>; ...` for every key of `settings`, in JSON order.
@@ -858,7 +860,8 @@ EditOutcome GraphFileModel::updateNode(const NodeName& name, const NodeSettings&
 		const NodeSpec* held = heldNode(wantedOf(impl_->read), name);
 		if (held == nullptr) return refuse(UnknownNode{name});
 		if (!settings.is_object()) return refuse(InvalidSettings{name, "settings: must be an object"});
-		if (settings.contains(disabledKey)) return refuse(InvalidSettings{name, std::string(disabledNotASetting)});
+		if (settings.contains(disabledKey))
+			return refuse(InvalidSettings{name, std::string(disabledNotASetting), std::string(disabledKey)});
 		if (held->settings == settings) return std::optional<GraphFileModel>{};
 		const NodeType* type = impl_->catalogue->find(held->type);
 		std::map<std::string, std::string> written; // every key's value as knobly text, checked before any edit
@@ -918,7 +921,7 @@ EditOutcome GraphFileModel::addNode(const NodeSpec& node) const {
 		if (!writable(node.name)) return refuse(InvalidName{node.name});
 		if (!node.settings.is_object()) return refuse(InvalidSettings{node.name, "settings: must be an object"});
 		if (node.settings.contains(disabledKey))
-			return refuse(InvalidSettings{node.name, std::string(disabledNotASetting)});
+			return refuse(InvalidSettings{node.name, std::string(disabledNotASetting), std::string(disabledKey)});
 		auto settings = settingsText(node.name, impl_->catalogue->find(node.type), node.settings);
 		if (!settings) return refuse(settings.error());
 		if (node.disabled) // the reserved key first, so the state reads before the settings

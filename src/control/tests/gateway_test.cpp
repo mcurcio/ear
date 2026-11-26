@@ -359,3 +359,55 @@ TEST_CASE("A snapshot's since is stamped when the graph is read: the one its pha
 	CHECK(encodeGraph(got)["nodes"][0]["since"] == "2026-11-09T10:00:00.007000Z");
 	CHECK_FALSE(got.nodes[1].since.has_value()); // never told
 }
+
+TEST_CASE("A held node's status, events and diagnostics are posted in order, a node not held's never, each t moved "
+          "onto the wall clock",
+          "[gateway][status]") {
+	Loops loops;
+	FakeRequests requests{loops};
+	std::chrono::steady_clock::time_point steadyAt{std::chrono::seconds{500}};
+	MainLoopGateway gateway{loops.main, loops.control, requests, [] { return testEpoch; },
+	                        [&steadyAt] { return steadyAt; }};
+	requests.gateway = &gateway;
+	Sink sink{loops};
+	gateway.watch(sink);
+	loops.main.runAll();
+	loops.running = &loops.main;
+	gateway.nodeAdded({"kitchen", "sendspin", json::object()}, std::make_shared<Config>(ear::Ports{}));
+	const ear::FieldValue connected{"connection", std::string("connected")};
+	gateway.statusChanged("kitchen", std::span(&connected, 1));
+	gateway.eventRaised("kitchen", {.code = "paired",
+	                                .severity = ear::EventSeverity::info,
+	                                .args = {{"server", std::string("ma-7f3c")}},
+	                                .msg = "paired with ma-7f3c",
+	                                .at = steadyAt - std::chrono::milliseconds(250)});
+	gateway.nodeDiagnostic("kitchen", {.code = "ear.status-flapping",
+	                                   .subject = "connection",
+	                                   .condition = true,
+	                                   .active = true,
+	                                   .count = 2,
+	                                   .detail = "connection flapping: 14 changes in 10s",
+	                                   .fields = {{"transitions", 14}, {"windowMs", 10000}},
+	                                   .at = steadyAt});
+	const ear::FieldValue unknown{"connection", std::monostate{}};
+	gateway.statusReset("kitchen", std::span(&unknown, 1));
+	gateway.statusChanged("ghost", std::span(&connected, 1)); // no client holds it
+	gateway.nodeRemoved("kitchen");
+	gateway.statusChanged("kitchen", std::span(&connected, 1)); // removed: no longer held
+	loops.running = nullptr;
+	loops.control.runAll();
+	REQUIRE(sink.seen.size() == 6);
+	CHECK(json::parse(sink.seen[0])["params"]["status"] == json::object());
+	CHECK(json::parse(sink.seen[1]) == json::parse(R"({"jsonrpc":"2.0","method":"node.statusChanged",
+		"params":{"name":"kitchen","fields":{"connection":"connected"}}})"));
+	CHECK(json::parse(sink.seen[2]) == json::parse(R"({"jsonrpc":"2.0","method":"node.eventRaised",
+		"params":{"name":"kitchen","code":"paired","severity":"info","t":"2026-11-09T09:59:59.750000Z",
+		"args":{"server":"ma-7f3c"},"msg":"paired with ma-7f3c"}})"));
+	CHECK(json::parse(sink.seen[3]) == json::parse(R"({"jsonrpc":"2.0","method":"node.diagnostic",
+		"params":{"name":"kitchen","code":"ear.status-flapping","subject":"connection","active":true,"count":2,
+		"t":"2026-11-09T10:00:00.000000Z","msg":"node kitchen ear.status-flapping: connection flapping: 14 changes in 10s",
+		"transitions":14,"windowMs":10000,"detail":"connection flapping: 14 changes in 10s"}})"));
+	CHECK(json::parse(sink.seen[4]) == json::parse(R"({"jsonrpc":"2.0","method":"node.statusChanged",
+		"params":{"name":"kitchen","fields":{"connection":null},"reset":true}})"));
+	CHECK(method(sink.seen[5]) == "node.removed");
+}

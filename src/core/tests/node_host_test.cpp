@@ -621,14 +621,19 @@ struct TestDiagnostics final : NodeDiagnosticListener, EngineDiagnosticListener 
 	Log& log;
 	std::vector<std::string> details;
 	explicit TestDiagnostics(Log& l) : log(l) {}
-	void nodeDiagnostic(const NodeName& node, std::string_view code, const std::string& detail,
-	                    std::span<const DiagnosticField> fields) override {
-		std::string line = "diagnostic " + node + " " + std::string(code);
-		for (const DiagnosticField& field : fields)
+	/// A condition that ended is "diagnostic-ended <node> <code> <subject>", so a count of "diagnostic <node> <code>"
+	/// lines counts what was said active or seen.
+	void nodeDiagnostic(const NodeName& node, const NodeDiagnostic& diagnostic) override {
+		const bool ended = diagnostic.condition && !diagnostic.active;
+		std::string line = (ended ? "diagnostic-ended " : "diagnostic ") + node + " " + std::string(diagnostic.code);
+		if (ended) line += " " + diagnostic.subject;
+		for (const DiagnosticField& field : diagnostic.fields)
 			line += " " + std::string(field.key) + "=" + std::to_string(field.value);
 		log.push_back(line);
-		details.push_back(detail);
+		details.push_back(diagnostic.detail);
+		said.push_back(diagnostic);
 	}
+	std::vector<NodeDiagnostic> said;
 	void engineDiagnostic(const EngineDiagnostic& diagnostic) override {
 		std::string line = "engine diagnostic " + std::string(diagnostic.code);
 		for (const DiagnosticField& field : diagnostic.fields)
@@ -2911,8 +2916,17 @@ TEST_CASE("A removed file node and an added one on its path in one plan: the new
 	CHECK(newestOf(f, "b").waitingFor == std::vector<WaitingFor>{{WaitingFor::Kind::claim, "recording:take.wav"},
 	                                                             {WaitingFor::Kind::recording, "take.wav"},
 	                                                             {WaitingFor::Kind::consumer, ""}});
+	REQUIRE(f.host.diagnosticsOf("b").size() == 1);
+	CHECK(f.host.diagnosticsOf("b")[0].active);
+	CHECK(f.host.diagnosticsOf("b")[0].subject == "recording:take.wav");
 	finishEverySink(f); // a's teardown finishes: its step 5 closes the file and releases the path
 	CHECK(indexOf(f.log, "node a gone dropped=0") < indexOf(f.log, "recording b take.wav"));
+	// The wait is a condition: it ends at the grant, the same code and subject, its count kept.
+	CHECK(linesOf(f.log, "diagnostic-ended b ear.claim-wait recording:take.wav") == 1);
+	REQUIRE(f.host.diagnosticsOf("b").size() == 1);
+	CHECK_FALSE(f.host.diagnosticsOf("b")[0].active);
+	CHECK(f.host.diagnosticsOf("b")[0].count == 1);
+	CHECK(f.host.diagnosticsOf("b")[0].detail == "recording:take.wav no longer waits for its holder");
 	CHECK(indexOf(f.log, "io close recording take.wav") < indexOf(f.log, "io open recording take.wav"));
 	CHECK(newestOf(f, "b").state == NodeState::running);
 	f.stopAll();
@@ -4406,6 +4420,18 @@ TEST_CASE("A hook past 20 ms on the main loop is ear.hook-slow, naming the hook,
 	f.settle();
 	CHECK(countOf(f.log, "diagnostic rec ear.hook-slow ms=25") == 1);
 	CHECK(f.diagnostics.details.back() == "stop ran 25 ms");
+	// Kept per code and subject across the restarts (docs/output-records.md#diagnostic): two subjects, two
+	// entries, each an observation seen once.
+	const std::vector<NodeDiagnostic> kept = f.host.diagnosticsOf("rec");
+	REQUIRE(kept.size() == 2);
+	CHECK(kept[0].code == "ear.hook-slow");
+	CHECK(kept[0].subject == "configure");
+	CHECK(kept[1].subject == "stop");
+	CHECK_FALSE(kept[0].condition);
+	CHECK_FALSE(kept[1].active);
+	CHECK(kept[0].count == 1);
+	CHECK(kept[1].count == 1);
+	CHECK(kept[1] == f.diagnostics.said.back());
 	f.stopAll();
 	f.settle();
 }

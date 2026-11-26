@@ -75,7 +75,10 @@
           "node-text",
           "reshape",
           "node.set",
-          "dryRun"
+          "dryRun",
+          "types",
+          "status",
+          "actions"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -85,6 +88,7 @@
           "file",
           "white"
         ],
+        "typeSchemaHash": "fnv1a64:0123456789abcdef",
         "counters": {
           "cycles": 0,
           "cutCycles": 0,
@@ -110,7 +114,9 @@
               "repositions": 0,
               "driverChanges": 0
             },
-            "companions": []
+            "companions": [],
+            "status": {},
+            "diagnostics": []
           },
           {
             "name": "rec",
@@ -133,7 +139,9 @@
               "repositions": 0,
               "driverChanges": 0
             },
-            "companions": []
+            "companions": [],
+            "status": {},
+            "diagnostics": []
           },
           {
             "name": "t1",
@@ -153,7 +161,9 @@
               "repositions": 0,
               "driverChanges": 0
             },
-            "companions": []
+            "companions": [],
+            "status": {},
+            "diagnostics": []
           }
         ],
         "routes": [
@@ -403,7 +413,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       }
     },
     {
@@ -483,7 +495,10 @@
       "node-text",
       "reshape",
       "node.set",
-      "dryRun"
+      "dryRun",
+      "types",
+      "status",
+      "actions"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -493,6 +508,7 @@
       "file",
       "white"
     ],
+    "typeSchemaHash": "fnv1a64:0123456789abcdef",
     "counters": {
       "cycles": 0,
       "cutCycles": 0,
@@ -518,7 +534,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       },
       {
         "name": "rec",
@@ -541,7 +559,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       },
       {
         "name": "rec2",
@@ -565,7 +585,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       },
       {
         "name": "t1",
@@ -585,7 +607,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       }
     ],
     "routes": [

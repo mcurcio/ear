@@ -1000,6 +1000,30 @@ body,
   border-left: 1px solid var(--line);
 }
 
+/* A node's type actions after the lifecycle bar: buttons that wrap, and a call's small form under them
+   (docs/editor.md#actions). */
+.action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 6px 0;
+}
+
+.action-buttons button {
+  height: 30px;
+}
+
+.action-args {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0 6px;
+}
+
+.action-args .field-problem {
+  color: var(--err);
+}
+
 /* A lifecycle refusal under the bar, beside the button that asked (docs/editor.md#where-a-refusal-lands). */
 .lifecycle-refusal {
   margin: 4px 0 0;
@@ -1380,6 +1404,66 @@ body,
   font-family: ui-monospace, monospace;
 }
 
+/* The inspector's settings form (docs/editor.md#the-settings-form): one field per row of the type's schema, its hints
+   and a refusal under it; a drafted field's edge marks it; Apply's question on the warning banner. The Form/Text
+   toggle is a segmented pair like the lifecycle bar. */
+.settings-toggle {
+  display: inline-flex;
+  margin: 8px 0 4px;
+}
+
+.settings-toggle button[aria-pressed="true"] {
+  font-weight: 600;
+}
+
+.settings-form {
+  margin: 4px 0;
+}
+
+.settings-field {
+  margin-bottom: 8px;
+  padding-left: 6px;
+  border-left: 2px solid transparent;
+}
+
+.settings-field-drafted {
+  border-left-color: var(--warn);
+}
+
+.settings-field input[type="text"],
+.settings-field input[type="number"],
+.settings-field select {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.settings-field label {
+  margin-bottom: 2px;
+  font-family: ui-monospace, monospace;
+}
+
+.settings-unit,
+.settings-required,
+.settings-hint {
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.settings-hint {
+  margin: 2px 0 0;
+}
+
+.settings-problem {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--err);
+}
+
+.settings-confirm p {
+  margin: 0 0 6px;
+}
+
 /* The inspector's Node subject's knobly box (docs/editor.md#the-node-panels-text): the drawer's text style; a
    read-only one (a snippet's node, a file with errors) is on the sunken surface at full contrast, its label saying
    "(read-only)" and the note why. */
@@ -1656,7 +1740,8 @@ body,
     height: 40px;
   }
 
-  .lifecycle-buttons button {
+  .lifecycle-buttons button,
+  .action-buttons button {
     height: 40px;
   }
 
@@ -1694,4 +1779,57 @@ body,
     flex: 1 1 auto;
     min-height: 0;
   }
+}
+
+/* A node's status on its box and its diagnostics' badges (docs/editor.md#status-events-and-diagnostics). */
+.ear-node-fields {
+  font-size: 0.75rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ear-node-callout {
+  margin-top: 0.25rem;
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  font-size: 0.75rem;
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.ear-node-callout-name {
+  font-weight: 600;
+}
+.ear-node-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin: 0.25rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+.ear-node-badge {
+  font-size: 0.6875rem;
+  padding: 0 0.375rem;
+  border-radius: 0.5rem;
+  border: 1px solid currentColor;
+}
+.node-status dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0 0.75rem;
+  margin: 0;
+}
+.node-status dl > div {
+  display: contents;
+}
+.node-status dd {
+  margin: 0;
+}
+.node-activity ol,
+.node-diagnostics ul {
+  margin: 0;
+  padding-left: 1.25rem;
+  max-height: 12rem;
+  overflow-y: auto;
 }

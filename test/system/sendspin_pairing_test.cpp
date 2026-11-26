@@ -34,27 +34,39 @@ TEST_CASE("A wrong code then the right one pairs in band, and a ramp the server 
 	TempDirectory directory;
 	writeGraphFile(directory, dialToRec(server.url()));
 	auto ear = runEar(directory);
-	const bool ready = waitForLines(ear, runningAndLinked) && ear.waitForLine(connectedUnpaired, deadline);
+	const bool ready = waitForLines(ear, runningAndLinked) && connectedUnpaired(ear);
 	INFO("ear printed:\n" << ear.output());
 	INFO("the server printed:\n" << server.events());
 	REQUIRE(ready);
-	CHECK(ear.hasLine("node ma says dialling " + server.url()));
-	const auto id = ear.lineStartingWith("node ma says id ");
+	// Who it is and how it is reached, before it dials (docs/node-types.md#status-and-events).
+	CHECK(lastStatus(ear, "url") == json(server.url()));
+	CHECK_FALSE(anyStatus(ear, "listenPort")); // 0, its initial value: it dials
+	CHECK_FALSE(anyStatus(ear, "instance"));
+	const auto id = waitForClientId(ear);
 	REQUIRE(id);
-	CHECK(ear.output().find(*id) < ear.output().find("node ma says dialling"));
+	CHECK(id->size() > 8);
+	CHECK(indexOf(ear, statusTo("clientId", *id)) < indexOf(ear, statusTo("connection", "dialling")));
+	CHECK(indexOf(ear, statusTo("connection", "dialling")) < indexOf(ear, statusTo("connection", "connected")));
 
 	server.send("pair");
-	const auto code = ear.waitForLineStartingWith(pairingCodePrefix, deadline);
+	const auto code = waitForPairingCode(ear);
 	REQUIRE(code);
-	CHECK(code->size() == pairingCodePrefix.size() + 7);
+	CHECK(code->size() == 7);
+	CHECK((*code)[3] == '-');
+	const auto codeRecord = ear.waitForRecord(codeOffered(), deadline);
+	CHECK(codeRecord->value("msg", "") == "node ma pairingCode \"\" -> " + *code);
 	server.send("code " + wrongCode(digitsOf(*code)));
 	server.send("code " + digitsOf(*code));
-	REQUIRE(ear.waitForLineStartingWith("node ma says paired ", deadline));
-	REQUIRE(ear.waitForLine(connectedPaired, deadline));
-	CHECK(ear.hasLine("node ma says pairing-code-cleared"));
-	CHECK(countLines(ear, pairingCodePrefix) == 1); // the wrong round kept the code
-	CHECK_FALSE(ear.lineStartingWith("node ma says pairing-failed"));
-	CHECK_FALSE(ear.hasLine("node ma says disconnected"));
+	const auto paired = waitForEvent(ear, "paired");
+	REQUIRE(paired);
+	CHECK(paired->value("severity", "") == "info");
+	CHECK((*paired)["args"]["server"].get<std::string>().size() > 0);
+	REQUIRE(waitForPaired(ear));
+	CHECK(lastStatus(ear, "paired") == json(true));
+	CHECK(countStatus(ear, "pairingCode", "") == 1); // the code spent once paired
+	CHECK(countPairingCodes(ear) == 1);              // the wrong round kept the code
+	CHECK(countEvents(ear, "pairing-failed") == 0);
+	CHECK_FALSE(everDisconnected(ear));
 
 	server.send(playLong);
 	REQUIRE_SEEN(ear, waitForRampFrames(directory.recordings() / "rec.wav"));
@@ -64,7 +76,9 @@ TEST_CASE("A wrong code then the right one pairs in band, and a ramp the server 
 	const auto exitStatus = waitForStop(ear);
 	REQUIRE(exitStatus == 0);
 	CHECK(ear.hasLine("node rec removed dropped=0"));
-	CHECK(ear.hasLine("node ma says stream flac 48000 2 24"));
+	CHECK(streamedFlac24(ear));
+	CHECK(countStreams(ear) == 1);
+	CHECK(countStreamEnds(ear) == 1);
 
 	const Wav wav = readWav(directory.recordings() / "rec.wav");
 	CHECK(wav.info.samplerate == static_cast<int>(graphFrequency));
@@ -88,8 +102,8 @@ TEST_CASE("A restarted ear keeps its identity and its pairing, at 0600, and is a
 	std::string id;
 	{
 		auto ear = runEar(directory);
-		REQUIRE(ear.waitForLine(connectedUnpaired, deadline));
-		id = ear.lineStartingWith("node ma says id ").value_or("");
+		REQUIRE(connectedUnpaired(ear));
+		id = waitForClientId(ear).value_or("");
 		pairOnce(ear, server);
 		ear.signal(SIGTERM);
 		REQUIRE(waitForStop(ear) == 0);
@@ -99,12 +113,13 @@ TEST_CASE("A restarted ear keeps its identity and its pairing, at 0600, and is a
 	CHECK(readText(keyFile).find("\"createdBy\"") != std::string::npos);
 
 	auto ear = runEar(directory);
-	const bool resumed = ear.waitForLine(connectedPaired, playDeadline);
+	const bool resumed = waitForConnected(ear, true, 0, playDeadline);
 	INFO("ear printed:\n" << ear.output());
 	REQUIRE(resumed);
 	REQUIRE_FALSE(id.empty());
-	CHECK(ear.hasLine(id));
-	CHECK_FALSE(ear.lineStartingWith(pairingCodePrefix));
+	CHECK(waitForClientId(ear) == id);
+	CHECK(countPairingCodes(ear) == 0);
+	CHECK(countEvents(ear, "paired") == 0); // paired before, by its key file
 	CHECK(modeOf(keyFile) == std::filesystem::perms(0600));
 	ear.signal(SIGTERM);
 	CHECK(waitForStop(ear) == 0);
@@ -115,7 +130,7 @@ TEST_CASE("A server that trusts without pairing gets no stream and no source rol
 	TempDirectory directory;
 	writeGraphFile(directory, dialToRec(server.url()));
 	auto ear = runEar(directory);
-	REQUIRE(ear.waitForLine(connectedUnpaired, deadline));
+	REQUIRE(connectedUnpaired(ear));
 
 	server.send("trust");
 	REQUIRE(server.waitForEvent("trusted", deadline));
@@ -125,10 +140,10 @@ TEST_CASE("A server that trusts without pairing gets no stream and no source rol
 	INFO("the server printed:\n" << server.events());
 	REQUIRE(roles);
 	CHECK(*roles == "roles none");
-	CHECK_FALSE(ear.lineStartingWith("node ma says stream"));
-	CHECK_FALSE(ear.lineStartingWith("node ma says sending"));
-	CHECK_FALSE(ear.lineStartingWith("node ma says paired"));
-	CHECK_FALSE(ear.hasLine(std::string(connectedPaired)));
+	CHECK_FALSE(anyStatus(ear, "stream"));
+	CHECK_FALSE(anyStatus(ear, "sending"));
+	CHECK(countEvents(ear, "paired") == 0);
+	CHECK_FALSE(anyStatus(ear, "paired"));
 	CHECK(server.count("disconnected ") == 0);
 	ear.signal(SIGTERM);
 	CHECK(waitForStop(ear) == 0);
@@ -141,7 +156,7 @@ TEST_CASE("20 wrong rounds hold pairing back: an update with the same settings l
 	TempDirectory directory;
 	writeGraphFile(directory, dialToRec(server.url()));
 	auto ear = runEar(directory);
-	const bool ready = waitForLines(ear, runningAndLinked) && ear.waitForLine(connectedUnpaired, deadline);
+	const bool ready = waitForLines(ear, runningAndLinked) && connectedUnpaired(ear);
 	INFO("ear printed:\n" << ear.output());
 	INFO("the server printed:\n" << server.events());
 	REQUIRE(ready);
@@ -149,11 +164,17 @@ TEST_CASE("20 wrong rounds hold pairing back: an update with the same settings l
 	REQUIRE(rpc.call("graph.subscribe").contains("result"));
 
 	server.send("pair");
-	const auto code = ear.waitForLineStartingWith(pairingCodePrefix, deadline);
+	const auto code = waitForPairingCode(ear);
 	REQUIRE(code);
 	for (int round = 0; round < 20; ++round) server.send("code " + wrongCode(digitsOf(*code)));
-	REQUIRE(ear.waitForLine("node ma says pairing-failed pairing-code-mismatch", playDeadline));
-	REQUIRE(ear.waitForLine("node ma says pairing-held", deadline));
+	const auto failed = waitForEvent(ear, "pairing-failed", 0, playDeadline);
+	REQUIRE(failed);
+	CHECK((*failed)["args"]["reason"] == "pairing-code-mismatch");
+	CHECK(failed->value("severity", "") == "warn");
+	CHECK(failed->value("msg", "") == "node ma pairing failed: pairing-code-mismatch");
+	const auto held = waitForStatus(ear, "pairingHeld", true);
+	REQUIRE(held);
+	CHECK(held->value("msg", "") == "node ma pairingHeld false -> true");
 	REQUIRE(server.waitForEvent("pair-failed ", deadline));
 
 	// The same settings change nothing, so the hold stands: the next attempt is held back, and shows no code.
@@ -162,29 +183,58 @@ TEST_CASE("20 wrong rounds hold pairing back: an update with the same settings l
 	REQUIRE(same.contains("result"));
 	server.send("pair");
 	REQUIRE(server.waitForEvent("pair-pending", deadline));
-	CHECK(countLines(ear, pairingCodePrefix) == 1);
-	// The attempt held back says why no code appears.
-	REQUIRE_SEEN(ear, waitForNthLine(ear, "node ma says pairing-held", 1, deadline));
+	// The attempt held back shows no code, and pairingHeld still says why.
+	CHECK(countPairingCodes(ear) == 1);
+	CHECK(lastStatus(ear, "pairingHeld") == json(true));
 
-	// A new name is a new client, on the same key file, and the round limit lives in memory.
-	const std::size_t idsBefore = countLines(ear, "node ma says id ");
-	const std::size_t connectsBefore = countLines(ear, "node ma says connected ");
+	// A new name is a new client, in place on the same key store, and the round limit lives in memory: the hold is
+	// released, and the client id is kept, so its field writes nothing new.
+	const std::size_t connectsBefore = countStatus(ear, "connection", "connected");
 	const json renamed =
 		rpc.call("node.update", {{"name", "ma"}, {"settings", {{"server", server.url()}, {"name", "Other"}}}});
 	INFO(renamed.dump());
 	REQUIRE(renamed.contains("result"));
-	REQUIRE(waitForNthLine(ear, "node ma says id ", idsBefore, deadline));
-	REQUIRE(waitForNthLine(ear, "node ma says connected ", connectsBefore, playDeadline));
-	CHECK(*ear.lineStartingWith("node ma says id ") == *waitForNthLine(ear, "node ma says id ", idsBefore, deadline));
+	REQUIRE(waitForStatus(ear, "pairingHeld", false));
+	REQUIRE(waitForStatus(ear, "connection", "connected", connectsBefore, playDeadline));
+	CHECK(countRecords(ear, [](const json& r) { return isStatus(r, "clientId"); }) == 1);
+	CHECK(countRecords(ear, [](const json& r) { return r.value("reset", false); }) == 0);
 
 	server.send("pair");
-	const auto fresh = waitForNthLine(ear, pairingCodePrefix, 1, deadline);
+	const auto fresh = waitForPairingCode(ear, 1);
 	REQUIRE(fresh);
 	server.send("code " + digitsOf(*fresh));
-	REQUIRE(ear.waitForLine(connectedPaired, deadline));
+	REQUIRE(waitForPaired(ear));
 
 	ear.signal(SIGTERM);
 	CHECK(rpc.readUntilClosed() == 1001);
+	CHECK(waitForStop(ear) == 0);
+}
+
+TEST_CASE("A key file changed by something else is left as it is: the pairing's write fails, told as an event, and "
+          "the pairing holds for this run",
+          "[system][sendspin]") {
+	SendspinTestServer server;
+	TempDirectory directory;
+	writeGraphFile(directory, dialToRec(server.url()));
+	auto ear = runEar(directory);
+	REQUIRE_SEEN(ear, connectedUnpaired(ear));
+	// The identity is written before the client connects; a hand edit since makes the store refuse the next write
+	// (docs/node-types.md#the-identity-file).
+	const auto keyFile = directory.config() / "sendspin-ma.key";
+	const std::string edited = readText(keyFile) + "\n";
+	std::ofstream(keyFile, std::ios::trunc | std::ios::binary) << edited;
+
+	pairOnce(ear, server);
+	const auto failed = waitForEvent(ear, "key-write-failed");
+	REQUIRE_SEEN(ear, failed);
+	CHECK(failed->value("severity", "") == "error");
+	const std::string detail = (*failed)["args"]["detail"].get<std::string>();
+	CHECK(detail == "sendspin-ma.key: changed by something else");
+	CHECK(failed->value("msg", "") ==
+	      "node ma its key file was not written, so the pairing holds for this run only: " + detail);
+	CHECK(readText(keyFile) == edited); // theirs stands
+	CHECK(lastStatus(ear, "paired") == json(true));
+	ear.signal(SIGTERM);
 	CHECK(waitForStop(ear) == 0);
 }
 
@@ -214,7 +264,7 @@ TEST_CASE("A corrupt key file fails the node, unchanged, and the rest of the gra
 	REQUIRE(others);
 	CHECK(readText(keyFile) == corrupt);
 	CHECK(modeOf(keyFile) == std::filesystem::perms(0600)); // a refused file may still hold a private key
-	CHECK_FALSE(ear.lineStartingWith("node ma says id "));
+	CHECK_FALSE(anyStatus(ear, "clientId"));
 
 	{
 		WsClient ws(controlPort(ear));
@@ -253,25 +303,22 @@ TEST_CASE("One dialling and one listening node have separate identities, on one 
 	const std::string instance = waitForInstance(ear, "in", port);
 
 	const auto pair = [&](const std::string& node) {
-		const std::string says = "node " + node + " says ";
 		const auto connected = server.waitForEvent("connected ", deadline);
 		REQUIRE(connected);
-		REQUIRE_SEEN(ear, ear.waitForLine(says + "connected \"ear-test-server\" unpaired", deadline));
+		REQUIRE_SEEN(ear, connectedUnpaired(ear, deadline, node));
 		server.send("pair");
-		const auto code = ear.waitForLineStartingWith(says + "pairing-code ", deadline);
+		const auto code = waitForPairingCode(ear, 0, deadline, node);
 		REQUIRE(code);
-		std::string digits = code->substr((says + "pairing-code ").size());
-		std::erase(digits, '-');
-		server.send("code " + digits);
-		REQUIRE_SEEN(ear, ear.waitForLine(says + "connected \"ear-test-server\" paired", deadline));
+		server.send("code " + digitsOf(*code));
+		REQUIRE_SEEN(ear, waitForPaired(ear, 0, deadline, node));
 		return connected->substr(std::string("connected ").size());
 	};
 	const std::string outId = pair("out");
 	server.send("dial ws://127.0.0.1:" + std::to_string(port) + "/sendspin");
 	const std::string inId = pair("in");
 	CHECK(outId != inId);
-	CHECK(ear.hasLine("node out says id " + outId));
-	CHECK(ear.hasLine("node in says id " + inId));
+	CHECK(waitForClientId(ear, 0, deadline, "out") == outId);
+	CHECK(waitForClientId(ear, 0, deadline, "in") == inId);
 	CHECK(instance == "ear-in-" + inId.substr(0, 8));
 	CHECK(std::filesystem::exists(directory.config() / "sendspin-out.key"));
 	CHECK(std::filesystem::exists(directory.config() / "sendspin-in.key"));

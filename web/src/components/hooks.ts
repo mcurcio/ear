@@ -4,6 +4,7 @@
 // companion badges and the counters' marks at the browser's time; a media query (the narrow window,
 // docs/editor.md#narrow-windows); the requests in flight (docs/editor.md#requests-in-flight) and the toast queue
 // (docs/editor.md#toasts), with a timer for their expiries.
+import type { ActivityEntry } from "../activity";
 import { createContext, useCallback, useContext, useEffect, useState, useSyncExternalStore } from "react";
 import { companionBadges, type CompanionBadge } from "../companions";
 import {
@@ -20,8 +21,9 @@ import type { GraphState } from "../graph";
 import type { GraphFileState } from "../graphFile";
 import type { NoticesView } from "../notices";
 import type { RequestsView } from "../requests";
-import type { Graph, GraphNode, Level } from "../protocol";
+import type { Graph, GraphNode, Level, TypeSchema } from "../protocol";
 import type { ConnectionStatus } from "../rpc";
+import type { TypeSchemaSet } from "../types";
 
 export const EditorContext = createContext<Editor | null>(null);
 
@@ -36,6 +38,15 @@ export function useGraph(): GraphState {
   return useSyncExternalStore(
     useCallback((listener) => graph.subscribe(listener), [graph]),
     () => graph.get(),
+  );
+}
+
+/** The node types' schemas held (types.ts): re-renders when a new set arrives. */
+export function useTypeSchemas(): TypeSchemaSet | null {
+  const { types } = useEditor();
+  return useSyncExternalStore(
+    useCallback((listener) => types.subscribe(listener), [types]),
+    () => types.get(),
   );
 }
 
@@ -102,6 +113,22 @@ export function useRecentNow(nextChange: (now: number) => number | undefined): n
     return () => clearTimeout(timer);
   }, [leaves]);
   return now;
+}
+
+/** The node's events and diagnostics since this page connected (activity.ts), newest last. */
+export function useActivity(node: string): readonly ActivityEntry[] {
+  const { activity } = useEditor();
+  return useSyncExternalStore(
+    useCallback((listener) => activity.subscribe(listener), [activity]),
+    () => activity.of(node),
+  );
+}
+
+/** The node's type's schema, when the editor holds the set the Graph names (types.ts); undefined otherwise. */
+export function useNodeSchema(node: GraphNode): TypeSchema | undefined {
+  const { types } = useEditor();
+  useTypeSchemas();
+  return types.schemaOf(useGraph(), node.type);
 }
 
 /** The node's companion badges (companions.ts) at the browser's time. */

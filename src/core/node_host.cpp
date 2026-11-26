@@ -72,6 +72,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cassert>
 #include <deque>
 #include <map>
@@ -98,6 +99,7 @@
 #include "io_opens.hpp"
 #include "note_gate.hpp"
 #include "readiness.hpp"
+#include "status_book.hpp"
 #include "stores.hpp"
 
 namespace ear {
@@ -286,7 +288,59 @@ std::string_view waitingKindName(WaitingFor::Kind kind) noexcept {
 	return "unknown";
 }
 
+namespace {
+/// One call's answer, on the main loop only: told once, by its handler's answer, its guard's restarted or stopping, or
+/// its deadline.
+struct PendingAction {
+	explicit PendingAction(NodeActions::ActionAnswered told) : answered(std::move(told)) {}
+	void answer(const ActionReply& reply) {
+		if (done) return;
+		done = true;
+		deadline.reset(); // allowed inside the deadline's own due (Timers::after)
+		auto tell = std::move(answered);
+		tell(reply);
+	}
+	NodeActions::ActionAnswered answered;
+	std::unique_ptr<Timer> deadline;
+	bool done = false;
+};
+} // namespace
+
 struct NodeHost::Impl {
+	/// A call's work as its loop holds it (docs/writing-a-node-type.md#actions): its answer posted to the main loop; work
+	/// destroyed unrun (its configuration torn down first: NodeLoop::closeToOthers) answers restarted, or stopping once
+	/// stopAll began. Destroyed on the loop's thread; it holds the pending answer only until it posts it.
+	class CallGuard {
+	public:
+		CallGuard(Impl& host, std::shared_ptr<PendingAction> pending)
+			: host_(&host), alive_(host.alive), pending_(std::move(pending)) {}
+		CallGuard(CallGuard&& other) noexcept
+			: host_(other.host_), alive_(std::move(other.alive_)), pending_(std::move(other.pending_)) {}
+		CallGuard& operator=(CallGuard&&) = delete;
+		~CallGuard() {
+			if (pending_) post(std::nullopt);
+		}
+		void answer(std::expected<void, std::string> answer) { post(std::move(answer)); }
+
+	private:
+		void post(std::optional<std::expected<void, std::string>> answer) {
+			if (!pending_) return;
+			host_->mainLoop.post(
+				[host = host_, alive = std::move(alive_), pending = std::move(pending_), answer = std::move(answer)] {
+					if (alive.expired()) return;
+					if (!answer)
+						return pending->answer(std::unexpected(ActionRefusal{
+							host->stopRequested ? ActionRefusal::Code::stopping : ActionRefusal::Code::restarted}));
+					if (*answer) return pending->answer({});
+					pending->answer(
+						std::unexpected(ActionRefusal{.code = ActionRefusal::Code::failed, .detail = answer->error()}));
+				});
+		}
+		Impl* host_;
+		std::weak_ptr<char> alive_;
+		std::shared_ptr<PendingAction> pending_;
+	};
+
 	/// PipeWire's object changes a turn queues, in the order a flush runs them: destroys (engine companions, then
 	/// blocks), then makes (blocks, then engine companions).
 	enum class FlushKind { destroyCompanion, destroyBlock, makeBlock, makeCompanion };
@@ -339,6 +393,55 @@ struct NodeHost::Impl {
 		}
 		bool superseded() const noexcept { return superseded_; }
 		std::uint64_t dropped() const noexcept { return dropped_; }
+		/// Main thread. Kept by code and subject (docs/output-records.md#diagnostic), stamped, counted, then told:
+		/// a condition said inactive while it is not active is dropped; a condition said active again while active
+		/// keeps its count.
+		void diagnose(NodeDiagnostic diagnostic) {
+			diagnostic.at = host_.timers.now();
+			const auto kept = std::ranges::find_if(diagnostics_, [&](const NodeDiagnostic& each) {
+				return each.code == diagnostic.code && each.subject == diagnostic.subject;
+			});
+			const bool known = kept != diagnostics_.end();
+			const std::uint64_t before = known ? kept->count : 0;
+			if (diagnostic.condition && !diagnostic.active) {
+				if (!known || !kept->active) return;
+				diagnostic.count = before;
+			} else if (diagnostic.condition) diagnostic.count = before + (known && kept->active ? 0 : 1);
+			else diagnostic.count = before + 1;
+			if (known) *kept = diagnostic;
+			else diagnostics_.push_back(diagnostic);
+			host_.toldDiagnostic(name_, diagnostic, superseded_);
+		}
+		/// Every diagnostic this node was told, as last told, in the order each was first said.
+		const std::vector<NodeDiagnostic>& diagnostics() const noexcept { return diagnostics_; }
+
+	private:
+		class Channel;
+		struct Configuration;
+
+	public:
+		// ---- Status and events (docs/architecture.md#status-and-events) ----
+
+		/// The status view, every field in declaration order; empty before the node first configured.
+		std::vector<FieldValue> status() const { return book_ ? book_->view() : std::vector<FieldValue>{}; }
+		/// Records of `channel`, the current configuration's, are waiting: drained at once (a loss behind them), or at
+		/// the next tick.
+		void reportsDue(Channel& channel, bool now) {
+			if (now)
+				return drainReports(channel,
+				                    config_ && config_->channel.get() == &channel ? config_->realtime.get() : nullptr);
+			host_.statusDirty();
+		}
+		/// The tick (Impl::tickStatus): the current configuration's records drained, then the book's own paces.
+		void statusTick(std::chrono::steady_clock::time_point now) {
+			if (!book_) return;
+			if (config_ && config_->channel) drainReports(*config_->channel, config_->realtime.get());
+			BookOut out(*this, nullptr);
+			book_->tick(now, out);
+		}
+		std::optional<std::chrono::steady_clock::time_point> statusDue() const {
+			return book_ ? book_->due() : std::nullopt;
+		}
 		/// The node's counters from its add (docs/engine.md#counters): its block's now, or what it counted before it
 		/// went. Main thread.
 		NodeCounts counts() const noexcept { return block_ ? block_->counts() : blockCounted_; }
@@ -438,6 +541,63 @@ struct NodeHost::Impl {
 			if (judged) judged(operated.reply);
 			feed(std::move(operated.actions));
 			return operated.reply;
+		}
+
+		/// A type action (docs/writing-a-node-type.md#actions): checked against the type's declarations and arguments,
+		/// then a trigger's counter moved, or a call posted to its loop as outside work.
+		void invoke(std::string_view action, const NodeSettings& args, NodeActions::ActionAnswered& answered) {
+			// Held, not borrowed: a call runs later on its loop, after a change in place may have dropped this config.
+			std::shared_ptr<const NodeConfig> held = config_ && config_->config ? config_->config : queued_;
+			const NodeConfig* declared = held.get();
+			const NodePhase phase = aggregate_.health().phase;
+			const auto refuse = [&](ActionRefusal refusal) { answered(std::unexpected(std::move(refusal))); };
+			const auto notRunning = [&] { refuse({.code = ActionRefusal::Code::notRunning, .phase = phase}); };
+			if (declared == nullptr) return notRunning();
+			const std::span<const ActionDeclaration> actions = declared->actionsDeclared();
+			const auto found = std::ranges::find(actions, action, &ActionDeclaration::name);
+			if (found == actions.end()) return refuse({.code = ActionRefusal::Code::unknownAction});
+			const auto index = static_cast<std::size_t>(found - actions.begin());
+			if (found->target == ActionDeclaration::Target::code) {
+				// A trigger takes no arguments: an object with a key is refused by it, as an empty table refuses one.
+				if (args.is_object() && !args.empty())
+					return refuse({.code = ActionRefusal::Code::invalidArgs,
+					               .key = args.begin().key(),
+					               .detail = "unknown key " + args.begin().key() + " (" + std::string(action) +
+					                         " takes no arguments)"});
+				if (!config_ || !config_->realtime ||
+				    (phase != NodePhase::running && phase != NodePhase::reconfiguring))
+					return notRunning();
+				config_->realtime->trigger(found->trigger);
+				answered({});
+				return;
+			}
+			auto walked = found->table->checkArgs(args.is_null() ? NodeSettings::object() : args);
+			if (!walked) {
+				std::string text = std::move(walked.error().text);
+				if (text.starts_with("settings:")) text.replace(0, 9, "args:");
+				return refuse(
+					{.code = ActionRefusal::Code::invalidArgs, .key = std::move(walked.error().key), .detail = text});
+			}
+			if (!config_ || config_->startFailed || !config_->loopsReleased || config_->ending) return notRunning();
+			const auto slot = std::ranges::find_if(config_->loops, [&](const std::unique_ptr<LoopSlot>& loop) {
+				return loop->declared.name == found->loop;
+			});
+			if (slot == config_->loops.end()) return notRunning();
+			auto pending = std::make_shared<PendingAction>(std::move(answered));
+			pending->deadline = host_.timers.after(actionDeadline, [weak = std::weak_ptr<PendingAction>(pending)] {
+				if (auto held = weak.lock()) held->answer(std::unexpected(ActionRefusal{ActionRefusal::Code::timeout}));
+			});
+			(*slot)->postOutsideState([guard = CallGuard(host_, std::move(pending)), config = std::move(held), index,
+			                           args = std::move(*walked)](void* state) mutable {
+				std::expected<void, std::string> answer;
+				try {
+					answer = config->runCall(index, state, std::move(args));
+				} catch (const std::exception& error) {
+					guard.answer(std::unexpected(std::string("the handler threw: ") + error.what()));
+					throw; // the loop fails the node, as for any handler that throws
+				}
+				guard.answer(std::move(answer));
+			});
 		}
 
 		/// Every older node of this name is gone.
@@ -555,6 +715,7 @@ struct NodeHost::Impl {
 		AudioFormat format() const override { return host_.format; }
 		const NodeName& node() const override { return name_; }
 		const Ports& ports() const override { return ports_; }
+		RealtimeChannels* realtime() const override { return config_ ? config_->realtime.get() : nullptr; }
 		/// An engine companion (docs/writing-a-node-type.md#engine-companions), its bank's rule its shape's: a sound
 		/// card on an inside bank of either direction, an RTP receiver or a pipe receiver on an inside input bank. A
 		/// pipe receiver's FIFO is the configuration's runtime path "<bank>.fifo", named in what this returns; a host
@@ -774,6 +935,201 @@ struct NodeHost::Impl {
 			});
 		}
 
+		/// What the book tells, fanned out to the host's status listeners (a superseded node's only to those that hear
+		/// one), its diagnostics kept as the node's own, and a loss to the node while its configuration's teardown has
+		/// not begun.
+		class BookOut final : public detail::StatusBookEvents {
+		public:
+			BookOut(Node& node, Channel* channel) : node_(node), channel_(channel) {}
+			void written(const StatusWrite& write) override {
+				for (auto* listener : node_.heard()) listener->statusWritten(node_.name_, write);
+			}
+			void changed(std::span<const FieldValue> fields) override {
+				for (auto* listener : node_.heard()) listener->statusChanged(node_.name_, fields);
+			}
+			void reset(std::span<const FieldValue> fields) override {
+				for (auto* listener : node_.heard()) listener->statusReset(node_.name_, fields);
+			}
+			void raised(const RaisedEvent& event) override {
+				for (auto* listener : node_.heard()) listener->eventRaised(node_.name_, event);
+			}
+			void diagnosed(NodeDiagnostic diagnostic) override { node_.diagnose(std::move(diagnostic)); }
+			void lost(std::string detail) override {
+				if (channel_ != nullptr && !channel_->isClosing()) node_.insidesLost(std::move(detail));
+			}
+
+		private:
+			Node& node_;
+			Channel* channel_;
+		};
+		/// The status listeners that hear this node.
+		std::vector<NodeStatusListener*> heard() const {
+			std::vector<NodeStatusListener*> heard;
+			for (auto* listener : host_.statusListeners)
+				if (!superseded_ || listener->hearsSuperseded()) heard.push_back(listener);
+			return heard;
+		}
+		/// Every record `channel` holds, in order, into the book: the realtime ring's first (its log records to the
+		/// log's sinks), then the queue's, then each rt field's word sampled, its transitions since the last sample
+		/// counted, and a value the code broke its declaration with failing the node, last
+		/// (docs/architecture.md#the-realtime-channels).
+		void drainReports(Channel& channel, RealtimeChannels* realtime) {
+			if (!book_) return;
+			BookOut out(*this, &channel);
+			const auto now = host_.timers.now();
+			std::deque<detail::ReportRecord> records;
+			std::vector<std::pair<std::size_t, std::uint32_t>> transitions;
+			std::optional<RealtimeChannels::Taken> taken;
+			const NodeConfig* declared = config_ ? config_->config.get() : nullptr;
+			if (realtime != nullptr && declared != nullptr) {
+				taken = realtime->take();
+				ringRecords(channel, *declared, taken->records, records);
+			}
+			std::deque<detail::ReportRecord> queued = channel.queue().take();
+			for (detail::ReportRecord& record : queued) records.push_back(std::move(record));
+			const std::uint64_t dropped = channel.queue().takeDropped();
+			if (taken) {
+				const std::span<const StatusDeclaration* const> fields = declared->statusDeclared();
+				for (std::size_t field = 0; field < fields.size() && field < realtime->fields(); ++field) {
+					if (fields[field]->writer.kind != writer::Writer::Kind::rt) continue;
+					const std::optional<RealtimeChannels::Sampled> sampled = realtime->sample(field);
+					if (!sampled) continue;
+					records.push_back({.kind = detail::ReportRecord::Kind::status,
+					                   .index = field,
+					                   .value = detail::realtimeValue(*fields[field], sampled->bits),
+					                   .at = now,
+					                   .realtime = true});
+					transitions.emplace_back(field, sampled->transitions);
+				}
+				if (taken->broken)
+					records.push_back({.kind = detail::ReportRecord::Kind::lost,
+					                   .detail = detail::brokenRule(*taken->broken, fields, declared->eventsDeclared(),
+					                                                declared->logCodesDeclared()),
+					                   .at = now});
+				book_->realtimeDropped(taken->dropped);
+			}
+			if (records.empty() && dropped == 0 && transitions.empty()) return;
+			book_->apply(std::move(records), dropped, now, out);
+			for (const auto& [field, count] : transitions) book_->transitions(field, count, now, out);
+		}
+		/// A configuration's realtime channels, when its type's code may write any (an rt field, an event, a log code):
+		/// each rt field's word starting at the field's initial value.
+		static std::unique_ptr<RealtimeChannels> realtimeChannels(const NodeConfig& config, RealtimeBell* bell) {
+			const std::span<const StatusDeclaration* const> fields = config.statusDeclared();
+			const bool rt = std::ranges::any_of(
+				fields, [](const StatusDeclaration* field) { return field->writer.kind == writer::Writer::Kind::rt; });
+			const auto triggers = static_cast<std::size_t>(std::ranges::count(
+				config.actionsDeclared(), ActionDeclaration::Target::code, &ActionDeclaration::target));
+			if (!rt && config.eventsDeclared().empty() && config.logCodesDeclared().empty() && triggers == 0)
+				return nullptr;
+			std::vector<RealtimeChannels::Initial> initial;
+			initial.reserve(fields.size());
+			for (const StatusDeclaration* field : fields) {
+				RealtimeChannels::Initial one{.known = !field->initialUnknown};
+				switch (field->kind) {
+				case ValueKind::flag:
+					one.bits = field->initialFlag ? 1 : 0;
+					break;
+				case ValueKind::wholeNumber:
+					one.bits = std::bit_cast<std::uint64_t>(field->initialNumber);
+					break;
+				case ValueKind::decimal:
+					one.bits = std::bit_cast<std::uint64_t>(field->initialDecimal);
+					break;
+				case ValueKind::choice:
+					one.bits = field->initialChoice;
+					break;
+				case ValueKind::text:
+					one.known = false;
+					break;
+				}
+				initial.push_back(one);
+			}
+			return std::make_unique<RealtimeChannels>(std::move(initial), bell, triggers);
+		}
+		/// The ring's records as the book reads them, each stamped with its cycle's start; a log record written to the
+		/// log's sinks here, through the configuration's handle (its source the type, its topic the code).
+		void ringRecords(Channel& channel, const NodeConfig& declared, const std::vector<RealtimeRecord>& ring,
+		                 std::deque<detail::ReportRecord>& records) {
+			const std::span<const StatusDeclaration* const> fields = declared.statusDeclared();
+			const std::span<const EventDeclaration> events = declared.eventsDeclared();
+			const std::span<const LogCodeDeclaration> codes = declared.logCodesDeclared();
+			for (const RealtimeRecord& record : ring) {
+				const auto at = std::chrono::steady_clock::time_point(std::chrono::nanoseconds(record.startNs));
+				switch (record.kind) {
+				case RealtimeRecord::Kind::status:
+					if (record.index >= fields.size()) break;
+					records.push_back({.kind = detail::ReportRecord::Kind::status,
+					                   .index = record.index,
+					                   .value = detail::realtimeValue(*fields[record.index], record.values[0]),
+					                   .at = at,
+					                   .realtime = true});
+					break;
+				case RealtimeRecord::Kind::event: {
+					if (record.index >= events.size()) break;
+					const EventDeclaration& event = events[record.index];
+					std::vector<StatusValue> args;
+					for (std::size_t one = 0; one < event.args.size() && one < record.count; ++one)
+						args.push_back(detail::realtimeValue(event.args[one], record.values[one]));
+					records.push_back({.kind = detail::ReportRecord::Kind::event,
+					                   .index = record.index,
+					                   .args = std::move(args),
+					                   .at = at,
+					                   .realtime = true});
+					break;
+				}
+				case RealtimeRecord::Kind::log: {
+					if (record.index >= codes.size()) break;
+					const LogCodeDeclaration& code = codes[record.index];
+					std::vector<StatusValue> args;
+					for (std::size_t one = 0; one < code.args.size() && one < record.count; ++one)
+						args.push_back(detail::realtimeValue(code.args[one], record.values[one]));
+					channel.log(LogEntry{.level = code.level,
+					                     .source = {},
+					                     .text = detail::filledSentence(code.sentence, code.args, args),
+					                     .topic = std::string(code.code)});
+					break;
+				}
+				}
+			}
+		}
+		/// The configuration closed (or failed to start, or is leaked): its last records drained, nothing more of it
+		/// reaches the node, then the status view returns to every initial value (docs/architecture.md#status-and-events).
+		/// `repointed`: its channel is detached by its LeakedRecord's repoint instead.
+		/// Once per configuration: one that failed to start closes at the failure and again at step 5 would reset twice.
+		void closeStatus(Configuration& c, bool repointed = false) {
+			if (std::exchange(c.statusClosed, true)) return;
+			drainReports(*c.channel, c.realtime.get());
+			if (!repointed) c.channel->detach();
+			if (!book_) return;
+			BookOut out(*this, nullptr);
+			book_->reset(host_.timers.now(), out);
+		}
+
+		/// ear.claim-wait, a condition (docs/output-records.md#diagnostic): the claim of `key` waits for its holder.
+		void claimWaits(const std::string& key, const std::string& why) {
+			diagnose({.code = "ear.claim-wait",
+			          .subject = key,
+			          .condition = true,
+			          .active = true,
+			          .detail = key + " " + why});
+		}
+		/// The claim of `key` no longer waits: judged otherwise. Said only when it waited.
+		void claimWaitEnded(const std::string& key) {
+			diagnose({.code = "ear.claim-wait",
+			          .subject = key,
+			          .condition = true,
+			          .active = false,
+			          .detail = key + " no longer waits for its holder"});
+		}
+		/// Every claim that waits no longer does: its configuration's teardown began (or its change was dropped).
+		void claimWaitsEnded() {
+			std::vector<std::string> waiting;
+			for (const NodeDiagnostic& each : diagnostics_)
+				if (each.code == "ear.claim-wait" && each.active) waiting.push_back(each.subject);
+			for (const std::string& key : waiting) claimWaitEnded(key);
+		}
+
 		/// A claim of the configuration of `generation` judged (an input of its own): granted, to probe, refused, or
 		/// waiting for its holder, which is closing.
 		void claimJudged(std::uint64_t generation, const Claim& claim, detail::ClaimJudged judged) {
@@ -782,6 +1138,7 @@ struct NodeHost::Impl {
 			const auto found = std::ranges::find(config_->claims, claim, &ClaimSlot::claim);
 			if (found == config_->claims.end()) return;
 			const auto index = static_cast<std::size_t>(found - config_->claims.begin());
+			if (judged.outcome != detail::ClaimJudged::Outcome::waits) claimWaitEnded(claimKey(found->claim));
 			switch (judged.outcome) {
 			case detail::ClaimJudged::Outcome::granted:
 				itemReady(generation, found->item);
@@ -796,8 +1153,7 @@ struct NodeHost::Impl {
 				break;
 			case detail::ClaimJudged::Outcome::waits:
 				found->waitingOn = judged.why;
-				host_.diagnosed(name_, "ear.claim-wait",
-				                claimKey(found->claim) + " held by node " + judged.why + ", which is closing", {});
+				claimWaits(claimKey(found->claim), "held by node " + judged.why + ", which is closing");
 				break;
 			}
 		}
@@ -928,6 +1284,9 @@ struct NodeHost::Impl {
 			AudioFormat format() const override { return node_.host_.format; }
 			const NodeName& node() const override { return node_.name_; }
 			const Ports& ports() const override { return node_.ports_; }
+			RealtimeChannels* realtime() const override {
+				return node_.config_ ? node_.config_->realtime.get() : nullptr;
+			}
 			void postToLoop(std::size_t loop, std::move_only_function<void(void*)> work) override {
 				checked("post", [&] {
 					if (loop >= node_.config_->loops.size()) throw std::logic_error("a post to a loop not declared");
@@ -1029,9 +1388,9 @@ struct NodeHost::Impl {
 			/// clock the note rate counts on.
 			Channel(Node& node, Executor& mainLoop, Timers& timers, NodeName name, std::string type,
 			        std::vector<LogSink*> sinks)
-				: node_(&node), mainLoop_(mainLoop), completions_(std::make_shared<detail::Completions>(mainLoop)),
-				  name_(std::move(name)), type_(std::move(type)), sinks_(std::move(sinks)),
-				  gate_([&timers] { return timers.now(); }) {}
+				: node_(&node), mainLoop_(mainLoop), timers_(timers),
+				  completions_(std::make_shared<detail::Completions>(mainLoop)), name_(std::move(name)),
+				  type_(std::move(type)), sinks_(std::move(sinks)), gate_([&timers] { return timers.now(); }) {}
 			const NodeName& node() const noexcept override { return name_; }
 			/// Judged on the saying thread, so a note held back is never queued; posted under the gate's lock, so the
 			/// order notes pass the gate is the order they land in, `notes-dropped` just before the note it precedes.
@@ -1047,12 +1406,35 @@ struct NodeHost::Impl {
 					node->host_.noted(node->name_, text);
 				});
 			}
+			/// Through the queue, behind the status and events written before it (docs/architecture.md#status-and-events),
+			/// and drained at once rather than at the next tick: a loss is never paced. Never dropped by the queue's
+			/// bound; dropped on the main loop once the teardown began.
 			void lost(std::string detail) override {
-				completions_->post([self = shared_from_this(), detail = std::move(detail)]() mutable {
-					if (Node* node = self->attachedNode(); node != nullptr && !self->closing_)
-						node->insidesLost(std::move(detail));
+				queue_.push(
+					{.kind = detail::ReportRecord::Kind::lost, .detail = std::move(detail), .at = timers_.now()});
+				completions_->post([self = shared_from_this()] {
+					if (Node* node = self->attachedNode()) node->reportsDue(*self, true);
 				});
 			}
+			/// Report's writes (report.hpp): into the queue on the writer's thread, the first since the last drain
+			/// waking the main loop once. Dropped once the configuration has ended.
+			void reportStatus(std::size_t field, StatusValue value) override {
+				if (!completions_->attached()) return;
+				woken(queue_.push({.kind = detail::ReportRecord::Kind::status,
+				                   .index = field,
+				                   .value = std::move(value),
+				                   .at = timers_.now()}));
+			}
+			void reportEvent(std::size_t event, std::vector<StatusValue> args) override {
+				if (!completions_->attached()) return;
+				woken(queue_.push({.kind = detail::ReportRecord::Kind::event,
+				                   .index = event,
+				                   .args = std::move(args),
+				                   .at = timers_.now()}));
+			}
+			/// Main thread: the records written since the last take, and how many the bound dropped.
+			detail::ReportQueue& queue() noexcept { return queue_; }
+			bool isClosing() const noexcept { return closing_; }
 			/// Straight to the sinks on the calling thread, as captured output goes; the attached flag is atomic, so a
 			/// configuration that ended logs nothing, but for one entry that read the flag just before the detach
 			/// (the detach does not wait for a log in progress).
@@ -1177,6 +1559,12 @@ struct NodeHost::Impl {
 			}
 
 		private:
+			void woken(bool first) {
+				if (!first) return;
+				completions_->post([self = shared_from_this()] {
+					if (Node* node = self->attachedNode()) node->reportsDue(*self, false);
+				});
+			}
 			/// Main thread: the node, while this configuration is attached.
 			Node* attachedNode() const noexcept { return node_; }
 			Node* node_;                     // main thread only
@@ -1184,6 +1572,7 @@ struct NodeHost::Impl {
 			/// Where the reports a leaked configuration may still make are posted (its closes, its consumers' throws),
 			/// each judged where it lands: the node's while attached, else the record's if re-pointed, else dropped.
 			Executor& mainLoop_;
+			Timers& timers_; // what a report's record is stamped with
 			/// The way back to the main loop for everything else this configuration's threads tell (its handle's notes
 			/// and losses, its I/O jobs' completions), detached with node_ and never re-pointed; its attached() is node_
 			/// for the threads that cannot read it.
@@ -1193,7 +1582,8 @@ struct NodeHost::Impl {
 			const std::vector<LogSink*> sinks_;
 			std::mutex sayMutex_;
 			detail::NoteGate gate_; // sayMutex_
-			bool closing_ = false;  // main thread only
+			detail::ReportQueue queue_;
+			bool closing_ = false; // main thread only
 		};
 
 		/// Where a change's ConfigureDone answers: its configuration's Channel, so an answer that outlives the change or
@@ -1437,8 +1827,10 @@ struct NodeHost::Impl {
 				host_.inputFor(serial_, [generation = generation_, ms, name = std::string(declared.name)](Node& node) {
 					if (!node.current(generation)) return;
 					const std::array fields{DiagnosticField{"ms", ms}};
-					node.host_.diagnosed(node.name_, "ear.loop-slow",
-					                     "loop " + name + " ran one handler for " + std::to_string(ms) + " ms", fields);
+					node.diagnose({.code = "ear.loop-slow",
+					               .subject = name,
+					               .detail = "loop " + name + " ran one handler for " + std::to_string(ms) + " ms",
+					               .fields = {fields.begin(), fields.end()}});
 				});
 			}
 			/// Through the configuration's Channel, so a leaked configuration's is logged on its record.
@@ -1909,6 +2301,10 @@ struct NodeHost::Impl {
 			std::uint64_t generation = 0;
 			std::shared_ptr<const NodeConfig> config;
 			std::shared_ptr<Channel> channel;
+			// What its code writes on the realtime thread (docs/architecture.md#the-realtime-channels): freed after the
+			// code (teardown step 5); a code a change swaps in is bound to the same ones. None for a type whose code
+			// writes nothing there.
+			std::unique_ptr<RealtimeChannels> realtime;
 			std::unique_ptr<Context> context;
 			// Each declared store: a loop's state, a sink's consumer or the instance may hold it, so it goes after all
 			// of them (teardown step 5); its jobs hold only its state.
@@ -1980,6 +2376,7 @@ struct NodeHost::Impl {
 			std::vector<DeclaredLatency> latency; // what configure declared, one per path
 			LatencyPlan plan;                     // worked out at configure's return; carried with each drive
 			bool startFailed = false;     // configure failed, threw or broke a rule: nothing to make, prepare or drive
+			bool statusClosed = false;    // closeStatus ran: its records drained and the status reset, once
 			bool companionsAsked = false; // its engine companions' making is queued
 			bool readyTold = false;       // T3: the machine was told every resource is ready
 			bool prepared = false;
@@ -2129,8 +2526,9 @@ struct NodeHost::Impl {
 		/// NodeHost reaches it by the configuration's Channel alone (the Impl outlives it but on an exit through _Exit).
 		class LeakedRecord {
 		public:
-			LeakedRecord(Impl& host, NodeName name, std::unique_ptr<Configuration> config)
-				: host_(host), name_(std::move(name)), generation_(config->generation), config_(std::move(config)) {}
+			LeakedRecord(Impl& host, NodeName name, std::uint64_t serial, std::unique_ptr<Configuration> config)
+				: host_(host), name_(std::move(name)), serial_(serial), generation_(config->generation),
+				  config_(std::move(config)) {}
 			/// Main thread, once, as it is leaked: its closes land here from now on.
 			void repoint() noexcept { config_->channel->repoint(*this); }
 			void sinkClosed(std::size_t index) {
@@ -2154,7 +2552,7 @@ struct NodeHost::Impl {
 			}
 			void loopClosed(std::size_t index) {
 				host_.input([this, index] {
-					if (loopClosedIn(host_, name_, *config_, index)) carryOn();
+					if (loopClosedIn(host_, serial_, name_, *config_, index)) carryOn();
 				});
 			}
 			/// Its program was reaped (or refused): one of the closes its late close waits for.
@@ -2198,10 +2596,12 @@ struct NodeHost::Impl {
 				const auto refused = host_.refusedByLeaked.extract(generation_);
 				const std::int64_t ms = millisecondsBetween(config_->closeBegan, host_.timers.now());
 				const std::array fields{DiagnosticField{"ms", ms}};
-				host_.diagnosed(name_, "ear.close-late",
-				                "the configuration leaked at the close deadline closed " + std::to_string(ms) +
-				                    " ms after its close began" + (held ? "; its claims are released" : ""),
-				                fields);
+				host_.diagnosed(serial_, name_,
+				                {.code = "ear.close-late",
+				                 .detail = "the configuration leaked at the close deadline closed " +
+				                           std::to_string(ms) + " ms after its close began" +
+				                           (held ? "; its claims are released" : ""),
+				                 .fields = {fields.begin(), fields.end()}});
 				if (refused)
 					for (const auto& [serial, generation] : refused.mapped())
 						host_.inputFor(serial, [generation](Node& node) { node.restartRefused(generation); });
@@ -2221,6 +2621,7 @@ struct NodeHost::Impl {
 
 			Impl& host_;
 			const NodeName name_;            // a copy: the node may be gone
+			const std::uint64_t serial_;     // its node's, which keeps its diagnostics while it is not gone
 			const std::uint64_t generation_; // its claims' holder
 			std::unique_ptr<Configuration> config_;
 			bool closed_ = false;
@@ -2364,8 +2765,10 @@ struct NodeHost::Impl {
 			// configuration's threads tell is a fact, as from its silence on.
 			if (config_ && aggregate_.configuration().state() == lc::ConfigState::arming &&
 			    aggregate_.configuration().stopAsked() && aggregate_.intent() != lc::Intent::stop &&
-			    aggregate_.intent() != lc::Intent::none)
+			    aggregate_.intent() != lc::Intent::none) {
 				config_->channel->closing();
+				claimWaitsEnded();
+			}
 			// A hook that threw is a fact once its batch was carried out
 			// (docs/writing-a-node-type.md#rules-the-framework-enforces).
 			if (auto threw = std::exchange(prepareThrew_, std::nullopt))
@@ -2465,19 +2868,19 @@ struct NodeHost::Impl {
 			case Kind::fadeUnacknowledged:
 				if (!synthetic_) {
 					const std::array fields{DiagnosticField{"ms", judgedMs_}};
-					host_.diagnosed(name_, "ear.fade-unacknowledged",
-					                "the fade before its silence was not acknowledged within " +
+					diagnose({.code = "ear.fade-unacknowledged",
+					          .detail = "the fade before its silence was not acknowledged within " +
 					                    std::to_string(judgedMs_) + " ms, so the silence was taken unfaded",
-					                fields);
+					          .fields = {fields.begin(), fields.end()}});
 				}
 				break;
 			case Kind::barrierOverdue:
 				if (!synthetic_) {
 					const std::array fields{DiagnosticField{"ms", judgedMs_}};
-					host_.diagnosed(name_, "ear.barrier-overdue",
-					                "a barrier posted to the data loop did not complete within " +
+					diagnose({.code = "ear.barrier-overdue",
+					          .detail = "a barrier posted to the data loop did not complete within " +
 					                    std::to_string(judgedMs_) + " ms, so its configuration and block are leaked",
-					                fields);
+					          .fields = {fields.begin(), fields.end()}});
 				}
 				break;
 			case Kind::markWedged:
@@ -2617,8 +3020,10 @@ struct NodeHost::Impl {
 				const std::int64_t ms = millisecondsBetween(began, host_.timers.now());
 				if (std::chrono::milliseconds(ms) > hookSlowBound && hooksReportedSlow_.insert(hook.name).second) {
 					const std::array fields{DiagnosticField{"ms", ms}};
-					host_.diagnosed(name_, "ear.hook-slow",
-					                std::string(hook.name) + " ran " + std::to_string(ms) + " ms", fields);
+					diagnose({.code = "ear.hook-slow",
+					          .subject = std::string(hook.name),
+					          .detail = std::string(hook.name) + " ran " + std::to_string(ms) + " ms",
+					          .fields = {fields.begin(), fields.end()}});
 				}
 			}
 			refused_ = nullptr;
@@ -2668,6 +3073,8 @@ struct NodeHost::Impl {
 		/// unprepared, and the resources are asked for.
 		void configure() {
 			if (config_) throw std::logic_error("node " + name_ + ": a configuration began while another had not gone");
+			if (!book_)
+				book_ = std::make_unique<detail::StatusBook>(queued_->statusDeclared(), queued_->eventsDeclared());
 			config_ = std::make_unique<Configuration>();
 			Configuration& c = *config_;
 			c.generation = ++host_.generations;
@@ -2676,6 +3083,7 @@ struct NodeHost::Impl {
 			adoptPorts(); // a restart's reshape: the block, silent, takes the new ports before configure sees them
 			c.ports = ports_;
 			c.channel = std::make_shared<Channel>(*this, host_.mainLoop, host_.timers, name_, type_, host_.logSinks);
+			c.realtime = realtimeChannels(*c.config, host_.realtimeBell);
 			c.context = std::make_unique<Context>(host_.format, name_, *c.channel, c.loops);
 			c.fadedCount = ports_.outputs().size() + ports_.insideOutputs().size();
 			c.faded = std::make_unique<bool[]>(c.fadedCount);
@@ -3348,7 +3756,7 @@ struct NodeHost::Impl {
 			c.sinks.clear();
 			closeSources(); // freed at step 5, after the instance that may hold their writers
 			c.engineAsks.clear();
-			c.channel->detach();
+			closeStatus(c);
 			host_.inputFor(serial_, [generation = c.generation, fact, detail = std::move(detail)](Node& node) mutable {
 				if (!node.current(generation)) return;
 				node.feed(node.aggregate_.fault(fact, std::move(detail)));
@@ -3544,10 +3952,10 @@ struct NodeHost::Impl {
 			const std::array fields{DiagnosticField{"elapsedMs", ms}};
 			std::string keys;
 			for (const std::string& key : ch.keys) keys += (keys.empty() ? "" : ", ") + key;
-			host_.diagnosed(name_, "ear.reconfigure-fell-back",
-			                "could not apply " + keys + " in place (" + std::string(lc::fellBackName(reason)) +
+			diagnose({.code = "ear.reconfigure-fell-back",
+			          .detail = "could not apply " + keys + " in place (" + std::string(lc::fellBackName(reason)) +
 			                    "): " + detail,
-			                fields);
+			          .fields = {fields.begin(), fields.end()}});
 			feed(aggregate_.fellBack(reason, std::move(detail)));
 		}
 
@@ -3606,11 +4014,11 @@ struct NodeHost::Impl {
 						if (!node.inChange(generation, epoch) || !node.holdsWaiting()) return;
 						node.config_->change->holdGaveUp = true;
 						const std::array fields{DiagnosticField{"ms", fadeAcknowledgeBound.count()}};
-						node.host_.diagnosed(node.name_, "ear.fade-unacknowledged",
-						                     "the hold before a change in place was not acknowledged within " +
+						node.diagnose({.code = "ear.fade-unacknowledged",
+						               .detail = "the hold before a change in place was not acknowledged within " +
 						                         std::to_string(fadeAcknowledgeBound.count()) +
 						                         " ms, so the change went on",
-						                     fields);
+						               .fields = {fields.begin(), fields.end()}});
 						node.checkChangeReady();
 					});
 				});
@@ -3920,6 +4328,7 @@ struct NodeHost::Impl {
 			Configuration::Change::Added* added = addedAsking(claim);
 			if (added == nullptr || added->granted || aggregate_.configuration().state() != lc::ConfigState::changing)
 				return false;
+			if (judged.outcome != detail::ClaimJudged::Outcome::waits) claimWaitEnded(claimKey(claim));
 			switch (judged.outcome) {
 			case detail::ClaimJudged::Outcome::granted:
 				changeClaimReady(claim);
@@ -3931,8 +4340,7 @@ struct NodeHost::Impl {
 				fallBack(lc::NodeCause::FellBack::resourceRefused, claimText(claim, judged.why));
 				break;
 			case detail::ClaimJudged::Outcome::waits:
-				host_.diagnosed(name_, "ear.claim-wait",
-				                claimKey(claim) + " held by node " + judged.why + ", which is closing", {});
+				claimWaits(claimKey(claim), "held by node " + judged.why + ", which is closing");
 				break;
 			}
 			return true;
@@ -4150,8 +4558,9 @@ struct NodeHost::Impl {
 			if (retiring) {
 				const std::string companion =
 					index < c.engineAsks.size() ? c.engineAsks[index].target.engineNode : name_;
-				host_.diagnosed(name_, "ear.retiring-lost",
-				                companion + ", which a change in place replaces, was lost: " + detail, {});
+				diagnose({.code = "ear.retiring-lost",
+				          .subject = companion,
+				          .detail = companion + ", which a change in place replaces, was lost: " + detail});
 				return true;
 			}
 			if (c.change && aggregate_.configuration().state() == lc::ConfigState::changing &&
@@ -4345,12 +4754,13 @@ struct NodeHost::Impl {
 		/// changing: a newer change follows at once), ear.reconfigure-superseded says what was abandoned.
 		void dropChange() {
 			if (!config_ || !config_->change) return;
+			claimWaitsEnded();
 			Configuration::Change& ch = *config_->change;
 			if (aggregate_.configuration().state() == lc::ConfigState::changing) {
 				std::string keys;
 				for (const std::string& key : ch.keys) keys += (keys.empty() ? "" : ", ") + key;
-				host_.diagnosed(name_, "ear.reconfigure-superseded",
-				                "a newer change superseded the change of " + keys + " before its commit point", {});
+				diagnose({.code = "ear.reconfigure-superseded",
+				          .detail = "a newer change superseded the change of " + keys + " before its commit point"});
 			}
 			if (ch.code && ch.codePrepared) {
 				const MainLoopActivity::Scope activity("release", name_);
@@ -4473,6 +4883,7 @@ struct NodeHost::Impl {
 		void silence(std::uint64_t barrier) {
 			if (aggregate_.intent() != lc::Intent::stop) {
 				config_->channel->closing();
+				claimWaitsEnded();
 				closeSources();
 			}
 			if (host_.wedged) return overdueAtOnce(barrier, Bound::barrier);
@@ -4496,7 +4907,7 @@ struct NodeHost::Impl {
 			// Its claims are going: a claimant waits for step 5 rather than being refused; its own waits leave.
 			host_.claims.going(config_->generation);
 			for (SourceSlot& slot : config_->sources) slot.source->close();
-			// Its loops refuse outside work from here (slice 5's actions, a program's feed), keeping the node's own.
+			// Its loops refuse outside work from here (a type's calls, a program's feed), keeping the node's own.
 			for (const auto& slot : config_->loops)
 				if (slot->made) slot->made->closeToOthers();
 			// Its program is told to end; teardown step 3 waits for its reaping.
@@ -4753,6 +5164,7 @@ struct NodeHost::Impl {
 		void teardown() {
 			Configuration& c = *config_;
 			c.channel->closing();
+			claimWaitsEnded();
 			closeSources();
 			for (auto& companion : c.engineCompanions)
 				host_.queue(
@@ -4844,7 +5256,8 @@ struct NodeHost::Impl {
 				if (!c.loops[i]->closed) c.loops[i]->made->close(c.channel->loopClosedCall(i));
 		}
 		/// Loop `index` closed; true once every loop has (the step is then closed), with what each left armed said.
-		static bool loopClosedIn(Impl& host, const NodeName& name, Configuration& c, std::size_t index) {
+		static bool loopClosedIn(Impl& host, std::uint64_t serial, const NodeName& name, Configuration& c,
+		                         std::size_t index) {
 			if (c.loopsStep != Configuration::LoopsStep::closing || index >= c.loops.size()) return false;
 			c.loops[index]->closed = true;
 			if (!std::ranges::all_of(c.loops, [](const auto& slot) { return slot->closed; })) return false;
@@ -4853,11 +5266,13 @@ struct NodeHost::Impl {
 			for (const auto& slot : c.loops)
 				if (const std::size_t left = slot->armedLeft(); left > 0) {
 					const std::array fields{DiagnosticField{"sources", static_cast<std::int64_t>(left)}};
-					host.diagnosed(name, "ear.loop-source-left",
-					               std::to_string(left) + (left == 1 ? " source was" : " sources were") +
-					                   " still armed on loop " + std::string(slot->declared.name) +
-					                   " when the node's configuration closed",
-					               fields);
+					host.diagnosed(serial, name,
+					               {.code = "ear.loop-source-left",
+					                .subject = std::string(slot->declared.name),
+					                .detail = std::to_string(left) + (left == 1 ? " source was" : " sources were") +
+					                          " still armed on loop " + std::string(slot->declared.name) +
+					                          " when the node's configuration closed",
+					                .fields = {fields.begin(), fields.end()}});
 				}
 			return true;
 		}
@@ -4870,7 +5285,8 @@ struct NodeHost::Impl {
 		}
 		void loopClosedHeard(std::uint64_t generation, std::size_t index) {
 			host_.inputFor(serial_, [generation, index](Node& node) {
-				if (node.current(generation) && loopClosedIn(node.host_, node.name_, *node.config_, index))
+				if (node.current(generation) &&
+				    loopClosedIn(node.host_, node.serial_, node.name_, *node.config_, index))
 					node.closeLoops();
 			});
 		}
@@ -4907,7 +5323,7 @@ struct NodeHost::Impl {
 			const MainLoopActivity::Scope activity("free configuration", name_);
 			Configuration& c = *config_;
 			c.deadline.reset();
-			c.channel->detach();
+			closeStatus(c);
 			companionsEnded(); // closed (no tap or play since the barrier), so their counts are final
 			c.freeInOrder();
 			const std::uint64_t generation = c.generation;
@@ -4941,10 +5357,10 @@ struct NodeHost::Impl {
 			count(sinksOpen, "sinks");
 			count(loopsOpen, "loops");
 			count(programsOpen, "programs");
-			host_.diagnosed(name_, "ear.close-overdue",
-			                "the configuration did not close within " + std::to_string(host_.closeDeadline.count()) +
-			                    " ms and is left running (" + open + ")",
-			                {});
+			diagnose({.code = "ear.close-overdue",
+			          .detail = "the configuration did not close within " +
+			                    std::to_string(host_.closeDeadline.count()) + " ms and is left running (" + open +
+			                    ")"});
 		}
 
 		/// What its threads can reach is leaked, never freed, and the node moves on: nothing the configuration tells
@@ -4959,6 +5375,7 @@ struct NodeHost::Impl {
 			companionsEnded(); // their counts as they stand: the configuration reaches no node again
 			const bool listening = c.tearing;
 			c.storesWritable->store(false, std::memory_order_release); // a write not begun is dropped
+			closeStatus(c, listening); // a listening record's channel is re-pointed below, which detaches it
 			if (!listening) c.channel->detach();
 			// Its ports abandoned, its stores and recordings kept: what waited for them is judged now. One that listens
 			// lists the nodes its claims refuse, which its late close starts again.
@@ -4966,7 +5383,7 @@ struct NodeHost::Impl {
 			host_.claimsDecided(host_.claims.leaked(c.generation, listening));
 			// Not deleted here: the configuration's threads may still touch any of it. A listening record deletes
 			// itself once they all reported closed (LeakedRecord::closedLate); any other is never deleted.
-			auto* record = new LeakedRecord(host_, name_, std::move(config_));
+			auto* record = new LeakedRecord(host_, name_, serial_, std::move(config_));
 			if (listening) record->repoint();
 			++host_.leaked;
 		}
@@ -4988,6 +5405,8 @@ struct NodeHost::Impl {
 		std::unique_ptr<Timer> phaseTimer_;         // the phase's 2 s
 		std::unique_ptr<Timer> paceTimer_;          // the 1 s pace of a changed list
 		bool superseded_ = false;                   // a newer node of its name was added: standard output alone
+		std::vector<NodeDiagnostic> diagnostics_;   // per code and subject, kept for the node's life (diagnose)
+		std::unique_ptr<detail::StatusBook> book_;  // its status view and paces, from its first configuration
 		std::unique_ptr<Configuration> config_;     // the current configuration (at most one)
 		std::unique_ptr<PortBlock> block_;
 		bool configuring_ = false;         // inside the instance's making and configure: the contexts' calls are valid
@@ -5029,6 +5448,13 @@ struct NodeHost::Impl {
 	std::vector<NodeHealthListener*> listeners;
 	std::vector<NodeNoteListener*> noteListeners;
 	std::vector<NodeDiagnosticListener*> diagnosticListeners;
+	std::vector<NodeStatusListener*> statusListeners;
+	RealtimeBell* realtimeBell = nullptr; // what every configuration's code rings (ringWith); none: the tick alone
+	/// The status tick (docs/architecture.md#status-and-events): at most one per statusTickPace, armed only when a node
+	/// has records waiting or something due.
+	std::unique_ptr<Timer> statusTimer;
+	std::chrono::steady_clock::time_point statusTimerAt{};
+	std::optional<std::chrono::steady_clock::time_point> lastStatusTick; // none before the first
 	std::vector<EngineDiagnosticListener*> engineListeners;
 	std::vector<NodeCountsListener*> countsListeners;
 	std::vector<NodeCompanionsListener*> companionListeners;
@@ -5237,6 +5663,23 @@ struct NodeHost::Impl {
 		return *reply;
 	}
 
+	/// A type action: refused stopping during stopAll and unknown-node for a name no wanted node has; else the wanted
+	/// node judges it, in an input of its own.
+	void invoke(const NodeName& name, std::string_view action, const NodeSettings& args,
+	            NodeActions::ActionAnswered answered) {
+		if (handling || inItem || flushing)
+			throw std::logic_error("an action on node " + name + " inside NodeHost's own input: a wiring bug");
+		if (stopRequested) return answered(std::unexpected(ActionRefusal{ActionRefusal::Code::stopping}));
+		Node* node = wantedOrNull(name);
+		bool judged = false;
+		if (node != nullptr)
+			inputFor(node->serial(), [&](Node& wanted) {
+				judged = true;
+				wanted.invoke(action, args, answered);
+			});
+		if (!judged) answered(std::unexpected(ActionRefusal{ActionRefusal::Code::unknownNode}));
+	}
+
 	void companionsChanged(const NodeName& node, std::span<const CompanionView> companions) {
 		for (auto* listener : companionListeners) listener->companionsChanged(node, companions);
 	}
@@ -5253,9 +5696,45 @@ struct NodeHost::Impl {
 		for (auto* listener : internalErrorListeners) listener->internalError(error);
 	}
 
-	void diagnosed(const NodeName& node, std::string_view code, const std::string& detail,
-	               std::span<const DiagnosticField> fields) {
-		for (auto* listener : diagnosticListeners) listener->nodeDiagnostic(node, code, detail, fields);
+	/// A node's records wait: the tick is armed, if it is not, for 33 ms after the last (docs/architecture.md#status-and-events).
+	void statusDirty() { armStatusTick(std::nullopt); }
+	void armStatusTick(std::optional<std::chrono::steady_clock::time_point> due) {
+		const auto now = timers.now();
+		auto at = lastStatusTick ? *lastStatusTick + statusTickPace : now;
+		if (due && *due > at) at = *due;
+		if (statusTimer && at >= statusTimerAt) return; // one sooner is armed
+		statusTimerAt = at;
+		const auto delay =
+			at > now ? std::chrono::ceil<std::chrono::milliseconds>(at - now) : std::chrono::milliseconds(0);
+		statusTimer = timers.after(delay, [this] {
+			statusTimer.reset();
+			tickStatus();
+		});
+	}
+	/// Every node's records drained and its book ticked, in arrival order; armed again for what a book still has due.
+	void tickStatus() {
+		const auto now = timers.now();
+		lastStatusTick = now;
+		std::optional<std::chrono::steady_clock::time_point> due;
+		for (const auto& node : nodes) {
+			if (node->removed()) continue;
+			node->statusTick(now);
+			if (const auto next = node->statusDue(); next && (!due || *next < *due)) due = next;
+		}
+		if (due) armStatusTick(due);
+	}
+
+	/// A diagnostic about the node of `serial`, kept on it while it is not gone (Node::diagnose), else told only to the
+	/// listeners that hear a superseded node, as said once.
+	void diagnosed(std::uint64_t serial, const NodeName& name, NodeDiagnostic diagnostic) {
+		if (Node* node = find(serial); node != nullptr && !node->removed())
+			return node->diagnose(std::move(diagnostic));
+		diagnostic.at = timers.now();
+		toldDiagnostic(name, diagnostic, true);
+	}
+	void toldDiagnostic(const NodeName& name, const NodeDiagnostic& diagnostic, bool superseded) {
+		for (auto* listener : diagnosticListeners)
+			if (!superseded || listener->hearsSuperseded()) listener->nodeDiagnostic(name, diagnostic);
 	}
 
 	/// A barrier of `node` did not complete within `ms`: the data loop runs no invoke. Said once; then every node
@@ -5326,6 +5805,23 @@ void NodeHost::subscribeDiagnostics(NodeDiagnosticListener& listener) {
 	impl_->diagnosticListeners.push_back(&listener);
 }
 
+void NodeHost::subscribeStatus(NodeStatusListener& listener) { impl_->statusListeners.push_back(&listener); }
+
+void NodeHost::ringWith(RealtimeBell& bell) { impl_->realtimeBell = &bell; }
+
+void NodeHost::realtimeRung() { impl_->statusDirty(); }
+
+void NodeHost::drainStatus() {
+	impl_->statusTimer.reset();
+	impl_->tickStatus();
+}
+
+std::vector<FieldValue> NodeHost::statusOf(const NodeName& node) const {
+	for (auto it = impl_->nodes.rbegin(); it != impl_->nodes.rend(); ++it)
+		if ((*it)->name() == node && !(*it)->removed()) return (*it)->status();
+	return {};
+}
+
 void NodeHost::subscribeEngineDiagnostics(EngineDiagnosticListener& listener) {
 	impl_->engineListeners.push_back(&listener);
 }
@@ -5384,6 +5880,11 @@ LifecycleReply NodeHost::restart(const NodeName& node, OperationJudged judged) {
 	return impl_->operate(node, &NodeAggregate::restart, std::move(judged));
 }
 
+void NodeHost::invoke(const NodeName& node, std::string_view action, const NodeSettings& args,
+                      ActionAnswered answered) {
+	impl_->invoke(node, action, args, std::move(answered));
+}
+
 void NodeHost::stopAll(GraphClosed, std::move_only_function<void()> allGone) {
 	if (impl_->stopRequested) throw std::logic_error("stopAll() was called twice");
 	impl_->stopRequested = true;
@@ -5413,6 +5914,38 @@ std::vector<CompanionView> NodeHost::companionsOf(const NodeName& node) const {
 	for (auto it = impl_->nodes.rbegin(); it != impl_->nodes.rend(); ++it)
 		if ((*it)->name() == node && !(*it)->removed()) return (*it)->companions();
 	return {};
+}
+
+std::vector<NodeDiagnostic> NodeHost::diagnosticsOf(const NodeName& node) const {
+	for (auto it = impl_->nodes.rbegin(); it != impl_->nodes.rend(); ++it)
+		if ((*it)->name() == node && !(*it)->removed()) return (*it)->diagnostics();
+	return {};
+}
+
+namespace {
+std::string framesCounted(std::uint64_t frames) {
+	return std::to_string(frames) + (frames == 1 ? " frame" : " frames");
+}
+} // namespace
+
+void NodeHost::companionFramesLost(const NodeName& node, const CompanionView& companion, std::uint64_t frames,
+                                   std::uint64_t totalFrames) {
+	const bool sink = companion.kind == CompanionKind::sink;
+	NodeDiagnostic diagnostic{.code = sink ? "ear.sink-dropped" : "ear.source-shortfall",
+	                          .subject = companion.name,
+	                          .detail = sink ? companion.name + " dropped " + framesCounted(frames) +
+	                                               " its ring had no room for; " + std::to_string(totalFrames) +
+	                                               " since it was made"
+	                                         : companion.name + " played " + framesCounted(frames) +
+	                                               " short while its writer was not idle; " +
+	                                               std::to_string(totalFrames) + " since it was made",
+	                          .texts = {DiagnosticText{"companion", companion.name}},
+	                          .fields = {DiagnosticField{"frames", static_cast<std::int64_t>(frames)},
+	                                     DiagnosticField{"totalFrames", static_cast<std::int64_t>(totalFrames)}}};
+	for (auto it = impl_->nodes.rbegin(); it != impl_->nodes.rend(); ++it)
+		if ((*it)->name() == node && !(*it)->removed()) return (*it)->diagnose(std::move(diagnostic));
+	diagnostic.at = impl_->timers.now();
+	impl_->toldDiagnostic(node, diagnostic, true);
 }
 
 std::vector<CompanionView> NodeHost::spanCompanions(std::uint64_t span) const {

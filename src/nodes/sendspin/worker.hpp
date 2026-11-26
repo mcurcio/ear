@@ -15,8 +15,8 @@
 #include "connection_watch.hpp"
 #include "ear/core/lifecycle.hpp"
 #include "ear/core/loop.hpp"
-#include "ear/core/node_handle.hpp"
 #include "ear/core/node_type.hpp"
+#include "ear/core/report.hpp"
 #include "ear/core/source.hpp"
 #include "ear/core/store.hpp"
 #include "ear/mdns/advertiser.hpp"
@@ -26,6 +26,7 @@
 #include "sendspin/source_role.h"
 #include "sendspin_clock.hpp"
 #include "settings.hpp"
+#include "spec.hpp"
 #include "to_server.hpp"
 namespace ear::nodes::sendspin {
 /// The lead a player reports (spec "required_lead_time_ms": at least what still plays after a stream/clear): all a
@@ -83,7 +84,7 @@ private:
 /// What the worker's state is made with, in configure (on the main loop): references the configuration keeps until
 /// teardown step 5, after the state is destroyed.
 struct WorkerParts {
-	NodeHandle& handle;   // the configuration's: notes and losses
+	Report<spec> report;  // the configuration's: its status, events and losses
 	Store& keys;          // the key file, open and trusted once the node is configured
 	SendspinClock& clock; // what the library's sync thread writes through, and the stream's end told to
 	SourceWriter& writer; // the source's: its size, and the writer's idle
@@ -129,7 +130,7 @@ public:
 	std::size_t on_audio_write(std::uint8_t* data, std::size_t length, std::uint32_t timeout_ms) override;
 	void on_stream_start() override;
 	void on_stream_end() override;
-	// SendspinClientListener. The worker. Pairing is the connection's domain: notes, never node states.
+	// SendspinClientListener. The worker. Pairing is the connection's domain: status and events, never node states.
 	void on_pairing_succeeded(const std::string& server_id) override;
 	void on_pairing_failed(const std::string& server_id, ::sendspin::SendspinPairAbortReason reason) override;
 	void on_display_pairing_code(const std::string& code, ::sendspin::SendspinPairingCodeFormat format) override;
@@ -144,8 +145,8 @@ public:
 private:
 	void tick();
 	void startClient();
-	/// Makes and starts a client of settings_ over keyStore_, says its id, and listens or watches the dial: nothing, or
-	/// why it did not start.
+	/// Makes and starts a client of settings_ over keyStore_, writes its id and how it is reached, and listens or watches
+	/// the dial: nothing, or why it did not start.
 	std::optional<std::string> runClient();
 	/// The paused sink's hand-over: the old client goes, the new one comes.
 	void replaceClient(SendspinSettings next, ConfigureDone done);
@@ -154,8 +155,10 @@ private:
 	void turn();
 	/// A loss: the tick stops, and the framework tears the node down (its state destroyed, the client with it).
 	void fail(std::string detail);
+	/// The connection's fields once no server is connected: dialling or listening, as the settings say.
+	void unconnected();
 
-	NodeHandle& handle_;
+	Report<spec> report_;
 	Store& keys_;
 	SendspinClock& clock_;
 	SourceWriter& writer_;
@@ -167,7 +170,6 @@ private:
 	std::vector<float> scratch_;                        // the sync thread's; a ring's worth of floats
 	std::atomic<bool> streamAsked_{false};              // the stream's format is the one the node listed
 	bool streaming_ = false;                            // worker only
-	bool saidDialling_ = false;                         // worker only
 	std::unique_ptr<Timer> tick_;                       // worker only
 	std::optional<ConnectionWatch> watch_;              // worker only, once the client started
 	std::unique_ptr<ear::mdns::Advertiser> advertiser_; // worker only

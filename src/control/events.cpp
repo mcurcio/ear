@@ -94,16 +94,56 @@ json encodeGraphCounts(const GraphCounts& counts, std::uint64_t lostMs) {
 	return {{"cycles", counts.cycles}, {"cutCycles", counts.cutCycles}, {"stalls", counts.stalls}, {"lostMs", lostMs}};
 }
 
-/// A node as snapshots and node.added carry it: its spec, its ports, its health, its counters, its companions and
-/// `disabled` when true.
+/// A status value: null, true or false, a number, a string.
+json encodeValue(const StatusValue& value) {
+	if (std::holds_alternative<std::monostate>(value)) return nullptr;
+	if (const auto* flag = std::get_if<bool>(&value)) return *flag;
+	if (const auto* number = std::get_if<std::int64_t>(&value)) return *number;
+	if (const auto* decimal = std::get_if<double>(&value)) return *decimal;
+	return std::get<std::string>(value);
+}
+
+/// {"<field>": value, ...} in declaration order (the vendored nlohmann/json sorts keys; order is not on the wire).
+json encodeFields(std::span<const FieldValue> fields) {
+	json out = json::object();
+	for (const FieldValue& field : fields) out[std::string(field.name)] = encodeValue(field.value);
+	return out;
+}
+
+/// One node diagnostic (docs/control-port.md#node-diagnostics): {"code", "subject", "active", "count", "t", "msg", its
+/// fields, "detail"}.
+json encodeDiagnostic(const NodeName& node, const NodeDiagnostic& diagnostic, std::chrono::system_clock::time_point t) {
+	json out = {{"code", diagnostic.code},
+	            {"subject", diagnostic.subject},
+	            {"active", diagnostic.active},
+	            {"count", diagnostic.count},
+	            {"t", utcMicros(t)},
+	            {"msg", "node " + node + " " + std::string(diagnostic.code) + ": " + diagnostic.detail}};
+	for (const DiagnosticText& text : diagnostic.texts) out[std::string(text.key)] = text.value;
+	for (const DiagnosticField& field : diagnostic.fields) out[std::string(field.key)] = field.value;
+	out["detail"] = diagnostic.detail;
+	return out;
+}
+
+/// A node as snapshots and node.added carry it: its spec, its ports, its health, its counters, its companions, its
+/// status and diagnostics, and `disabled` when true.
 json encodeNodeWithHealth(const NodeSpec& node, const Ports& ports, const NodeHealth& health,
                           std::optional<std::chrono::system_clock::time_point> since, const NodeCounts& counts,
-                          std::span<const CompanionView> companions) {
+                          std::span<const CompanionView> companions, std::span<const FieldValue> status = {},
+                          std::span<const NodeDiagnostic> diagnostics = {},
+                          std::span<const std::chrono::system_clock::time_point> diagnosticsAt = {}) {
 	json entry = encodeNode(node, ports);
 	addHealth(entry, health, since);
 	if (node.disabled) entry["disabled"] = true;
 	entry["counters"] = encodeNodeCounts(counts);
 	entry["companions"] = encodeCompanions(companions);
+	entry["status"] = encodeFields(status);
+	json kept = json::array();
+	for (std::size_t at = 0; at < diagnostics.size(); ++at)
+		kept.push_back(
+			encodeDiagnostic(node.name, diagnostics[at],
+		                     at < diagnosticsAt.size() ? diagnosticsAt[at] : std::chrono::system_clock::time_point{}));
+	entry["diagnostics"] = std::move(kept);
 	return entry;
 }
 
@@ -125,8 +165,8 @@ json encodeGraph(const GraphView& view) {
 	const std::uint64_t lostMs = view.counts.lostMs(FrameClock(format.rate), format.maxBlock);
 	json nodes = json::array();
 	for (const NodeView& node : view.nodes)
-		nodes.push_back(
-			encodeNodeWithHealth(node.spec, node.ports, node.health, node.since, node.counts, node.companions));
+		nodes.push_back(encodeNodeWithHealth(node.spec, node.ports, node.health, node.since, node.counts,
+		                                     node.companions, node.status, node.diagnostics, node.diagnosticsAt));
 	json routes = json::array();
 	for (const RouteStatus& route : view.routes) routes.push_back(encodeRouteStatus(route));
 	json features = json::array();
@@ -138,6 +178,7 @@ json encodeGraph(const GraphView& view) {
 	        {"realtime", view.engine.realtime},
 	        {"scheduling", view.engine.scheduling},
 	        {"types", view.types},
+	        {"typeSchemaHash", view.typeSchemaHash},
 	        {"nodes", std::move(nodes)},
 	        {"routes", std::move(routes)},
 	        {"counters", encodeGraphCounts(view.counts, lostMs)}};
@@ -148,8 +189,8 @@ std::string encodeEvent(const GraphEvent& event) {
 		[](const auto& e) -> std::string {
 			using E = std::decay_t<decltype(e)>;
 			if constexpr (std::is_same_v<E, NodeAdded>) {
-				return encodeNotification("node.added",
-			                              encodeNodeWithHealth(e.node, e.ports, e.health, e.since, NodeCounts{}, {}));
+				return encodeNotification(
+					"node.added", encodeNodeWithHealth(e.node, e.ports, e.health, e.since, NodeCounts{}, {}, e.status));
 			} else if constexpr (std::is_same_v<E, NodeUpdated>) {
 				json params = {{"name", e.node}, {"settings", e.settings}, {"applied", outcomeName(e.applied)}};
 				if (e.disabled) params["disabled"] = true;
@@ -176,6 +217,21 @@ std::string encodeEvent(const GraphEvent& event) {
 				return encodeNotification("route.removed", encodeRoute(e.route));
 			} else if constexpr (std::is_same_v<E, RouteChanged>) {
 				return encodeNotification("route.status", encodeRouteStatus(e.status));
+			} else if constexpr (std::is_same_v<E, NodeStatusChanged>) {
+				json params = {{"name", e.node}, {"fields", encodeFields(e.fields)}};
+				if (e.reset) params["reset"] = true;
+				return encodeNotification("node.statusChanged", params);
+			} else if constexpr (std::is_same_v<E, NodeEventRaised>) {
+				return encodeNotification("node.eventRaised", {{"name", e.node},
+			                                                   {"code", e.event.code},
+			                                                   {"severity", severityName(e.event.severity)},
+			                                                   {"t", utcMicros(e.t)},
+			                                                   {"args", encodeFields(e.event.args)},
+			                                                   {"msg", e.event.msg}});
+			} else if constexpr (std::is_same_v<E, NodeDiagnosed>) {
+				json params = encodeDiagnostic(e.node, e.diagnostic, e.t);
+				params["name"] = e.node;
+				return encodeNotification("node.diagnostic", params);
 			} else if constexpr (std::is_same_v<E, NodeCompanionsChanged>) {
 				return encodeNotification("node.companionsChanged",
 			                              {{"name", e.node}, {"companions", encodeCompanions(e.companions)}});

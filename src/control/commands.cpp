@@ -130,6 +130,25 @@ std::expected<Command, RpcError> decodeAddNodeText(const json& params, const Jso
 	return AddNodeText{std::move(*text), std::move(*version)};
 }
 
+/// node.invoke: {"name", "action", "args"?}; the args pass through unchecked but for being an object: the action's
+/// table judges them (docs/control-port.md#actions).
+std::expected<Command, RpcError> decodeInvokeNode(const json& params, const JsonPointer& at) {
+	if (auto checked = requireObject(params, at, {"name", "action", "args"}); !checked) return refuse(checked.error());
+	auto name = requireName(params, at, "name");
+	if (!name) return refuse(name.error());
+	auto action = requireText(params, at, "action");
+	if (!action) return refuse(action.error());
+	if (action->empty())
+		return refuse(JsonError{(at / "action").to_string() + ": must not be empty", (at / "action").to_string()});
+	json args = nullptr;
+	if (const auto given = params.find("args"); given != params.end()) {
+		if (!given->is_object())
+			return refuse(JsonError{(at / "args").to_string() + ": must be an object", (at / "args").to_string()});
+		args = *given;
+	}
+	return InvokeNode{std::move(*name), std::move(*action), std::move(args)};
+}
+
 /// node.start, node.stop, node.restart, node.disable and node.enable: {"name"}.
 template <class Verb> std::expected<Command, RpcError> decodeNamed(const json& params, const JsonPointer& at) {
 	if (auto checked = requireObject(params, at, {"name"}); !checked) return refuse(checked.error());
@@ -195,6 +214,7 @@ constexpr Method methods[] = {
 	{"node.enable", decodeNamed<EnableNode>},
 	{"node.setText", decodeSetNodeText},
 	{"node.addText", decodeAddNodeText},
+	{"node.invoke", decodeInvokeNode},
 };
 
 RpcError encodeControlRefusal(const ControlRefusal& refusal) {
@@ -205,6 +225,14 @@ RpcError encodeControlRefusal(const ControlRefusal& refusal) {
 		data["ports"] = inUse->ports;
 		data["routes"] = encodeRoutes(inUse->routes);
 	}
+	if (const auto* unknown = std::get_if<UnknownAction>(&refusal)) data["action"] = unknown->action;
+	if (const auto* invalid = std::get_if<InvalidArgs>(&refusal)) {
+		if (!invalid->key.empty()) data["key"] = invalid->key;
+		data["detail"] = std::string(argsWords(*invalid));
+	}
+	if (const auto* notRunning = std::get_if<NotRunning>(&refusal))
+		data["phase"] = std::string(phaseName(notRunning->phase));
+	if (const auto* failed = std::get_if<ActionFailed>(&refusal)) data["detail"] = failed->detail;
 	return RpcError{commandRefused, describe(refusal), std::move(data)};
 }
 
@@ -237,8 +265,13 @@ std::expected<json, RpcError> encodeCommandResult(const CommandResult& result) {
 		return std::unexpected(encodeControlRefusal(*refusal));
 	const auto& edit = std::get<std::expected<void, CommandError>>(result);
 	if (edit) return json::object();
-	return std::unexpected(
-		RpcError{commandRefused, describe(edit.error()), {{"code", std::string(errorCode(edit.error()))}}});
+	json data = {{"code", std::string(errorCode(edit.error()))}};
+	// The key and the words apart, so a client places the refusal under its field (docs/control-port.md#error-codes).
+	if (const auto* invalid = std::get_if<InvalidSettings>(&edit.error())) {
+		if (!invalid->key.empty()) data["key"] = invalid->key;
+		data["detail"] = std::string(refusalWords(*invalid));
+	}
+	return std::unexpected(RpcError{commandRefused, describe(edit.error()), std::move(data)});
 }
 
 json encodeGraphFile(const GraphFile& file) {
@@ -299,7 +332,20 @@ std::string_view appliedName(AppliedKind kind) noexcept {
 std::string_view controlRefusalCode(const ControlRefusal& refusal) noexcept {
 	if (std::holds_alternative<NodeDisabled>(refusal)) return "node-disabled";
 	if (std::holds_alternative<PortsInUse>(refusal)) return "ports-in-use";
+	if (std::holds_alternative<UnknownAction>(refusal)) return "unknown-action";
+	if (std::holds_alternative<InvalidArgs>(refusal)) return "invalid-args";
+	if (std::holds_alternative<NotRunning>(refusal)) return "not-running";
+	if (std::holds_alternative<Restarted>(refusal)) return "restarted";
+	if (std::holds_alternative<ActionFailed>(refusal)) return "action-failed";
+	if (std::holds_alternative<ActionTimeout>(refusal)) return "action-timeout";
 	return "not-restartable";
+}
+
+std::string_view argsWords(const InvalidArgs& refusal) noexcept {
+	const std::string_view text = refusal.text;
+	if (refusal.key.empty() || !text.starts_with(refusal.key)) return text;
+	const std::string_view rest = text.substr(refusal.key.size());
+	return rest.starts_with(": ") ? rest.substr(2) : text;
 }
 
 std::string_view reasonName(NotRestartable::Reason reason) noexcept {
@@ -316,8 +362,20 @@ std::string describe(const ControlRefusal& refusal) {
 		return std::format("{} {}: {} ({} route{})", controlRefusalCode(refusal), inUse->node, ports, n,
 		                   n == 1 ? "" : "s");
 	}
+	const std::string code(controlRefusalCode(refusal));
+	if (const auto* unknown = std::get_if<UnknownAction>(&refusal))
+		return code + " " + unknown->node + ": " + unknown->action;
+	if (const auto* invalid = std::get_if<InvalidArgs>(&refusal))
+		return code + " " + invalid->node + " " + invalid->action + ": " + invalid->text;
+	if (const auto* notRunning = std::get_if<NotRunning>(&refusal))
+		return code + " " + notRunning->node + ": " + std::string(phaseName(notRunning->phase));
+	if (const auto* restarted = std::get_if<Restarted>(&refusal)) return code + " " + restarted->node;
+	if (const auto* failed = std::get_if<ActionFailed>(&refusal))
+		return failed->detail; // its text (docs/control-port.md#error-codes)
+	if (const auto* timeout = std::get_if<ActionTimeout>(&refusal))
+		return code + " " + timeout->node + " " + timeout->action;
 	const auto& lost = std::get<NotRestartable>(refusal);
-	return std::string(controlRefusalCode(refusal)) + " " + lost.node + ": " + std::string(reasonName(lost.reason));
+	return code + " " + lost.node + ": " + std::string(reasonName(lost.reason));
 }
 
 std::string_view verbName(LifecycleVerb verb) noexcept {

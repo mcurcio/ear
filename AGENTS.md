@@ -218,7 +218,7 @@ appears in a public header.
 
   ```bash
   docker build --target run --tag ear:local --file docker/Dockerfile .
-  scripts/image-smoke.sh ear:local   # what CI checks: user, no compiler, files, ear.conf, graph.get, graphFile.get
+  scripts/image-smoke.sh ear:local   # what CI checks: user, no compiler, files, ear.conf, graph.get, graphFile.get, types.get
   ```
 
 ### Vendored and fetched code

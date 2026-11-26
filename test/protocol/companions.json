@@ -22,7 +22,10 @@
           "node-text",
           "reshape",
           "node.set",
-          "dryRun"
+          "dryRun",
+          "types",
+          "status",
+          "actions"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -35,6 +38,7 @@
           "rtp",
           "white"
         ],
+        "typeSchemaHash": "fnv1a64:0123456789abcdef",
         "nodes": [
           {
             "name": "desk",
@@ -76,7 +80,9 @@
                 "bank": "from_card",
                 "ready": true
               }
-            ]
+            ],
+            "status": {},
+            "diagnostics": []
           },
           {
             "name": "fpp",
@@ -110,7 +116,9 @@
                 "bank": "from_rtp",
                 "ready": true
               }
-            ]
+            ],
+            "status": {},
+            "diagnostics": []
           },
           {
             "name": "noise",
@@ -131,7 +139,9 @@
               "repositions": 0,
               "driverChanges": 0
             },
-            "companions": []
+            "companions": [],
+            "status": {},
+            "diagnostics": []
           },
           {
             "name": "rec",
@@ -163,7 +173,9 @@
                 "ready": true,
                 "dropped": 0
               }
-            ]
+            ],
+            "status": {},
+            "diagnostics": []
           },
           {
             "name": "kitchen",
@@ -192,7 +204,9 @@
                 "bank": "from_airplay",
                 "ready": true
               }
-            ]
+            ],
+            "status": {},
+            "diagnostics": []
           }
         ],
         "routes": [],
@@ -229,7 +243,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       }
     },
     {
@@ -697,7 +713,10 @@
       "node-text",
       "reshape",
       "node.set",
-      "dryRun"
+      "dryRun",
+      "types",
+      "status",
+      "actions"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -710,6 +729,7 @@
       "rtp",
       "white"
     ],
+    "typeSchemaHash": "fnv1a64:0123456789abcdef",
     "nodes": [
       {
         "name": "desk",
@@ -751,7 +771,9 @@
             "bank": "from_card",
             "ready": true
           }
-        ]
+        ],
+        "status": {},
+        "diagnostics": []
       },
       {
         "name": "fpp",
@@ -782,7 +804,9 @@
         "reason": {
           "code": "engine-refused",
           "detail": "the RTP receiver never ran (UDP port 5004 held?)"
-        }
+        },
+        "status": {},
+        "diagnostics": []
       },
       {
         "name": "kitchen",
@@ -811,7 +835,9 @@
             "bank": "from_airplay",
             "ready": true
           }
-        ]
+        ],
+        "status": {},
+        "diagnostics": []
       },
       {
         "name": "noise",
@@ -832,7 +858,9 @@
           "repositions": 0,
           "driverChanges": 0
         },
-        "companions": []
+        "companions": [],
+        "status": {},
+        "diagnostics": []
       },
       {
         "name": "rec",
@@ -864,7 +892,9 @@
             "ready": true,
             "dropped": 0
           }
-        ]
+        ],
+        "status": {},
+        "diagnostics": []
       }
     ],
     "routes": [],

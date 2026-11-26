@@ -127,8 +127,8 @@ TEST_CASE("The frame: graph.get says protocol 1 and the lifecycle, counters, com
 	const json graph =
 		encodeGraph(ear::GraphView{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {}, {}, {}});
 	CHECK(graph["protocol"] == 1);
-	CHECK(graph["features"] ==
-	      json::array({"lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun"}));
+	CHECK(graph["features"] == json::array({"lifecycle", "counters", "companions", "node-text", "reshape", "node.set",
+	                                        "dryRun", "types", "status", "actions"}));
 }
 
 TEST_CASE("A snapshot's node carries its companion list in request order, each counter only on its kind, and [] for "
@@ -195,11 +195,13 @@ TEST_CASE("Each health member is encoded once for snapshots: state, phase, wante
 	CHECK(nodes[0] == json::parse(R"({"name":"desk","type":"card","settings":{},"inputs":[],"outputs":[],
 		"state":"stopping","phase":"stopping","since":"2026-11-09T10:00:00.010000Z","wanted":"running","blockLost":true,
 		"cause":{"kind":"restarting","restart":{"kind":"settings","keys":["card","playback"]}},"disabled":true,
-		"counters":{"missedCycles":0,"overruns":0,"repositions":0,"driverChanges":0},"companions":[]})"));
+		"counters":{"missedCycles":0,"overruns":0,"repositions":0,"driverChanges":0},"companions":[],
+		"status":{},"diagnostics":[]})"));
 	CHECK(nodes[1] == json::parse(R"({"name":"fpp","type":"rtp","settings":{},"inputs":[],"outputs":[],
 		"state":"starting","phase":"configuring","wanted":"running","blockLost":false,
 		"cause":{"kind":"settings","keys":["port"]},"waitingFor":[{"kind":"companion","name":"fpp.rtp"},{"kind":"block"}],
-		"counters":{"missedCycles":0,"overruns":0,"repositions":0,"driverChanges":0},"companions":[]})"));
+		"counters":{"missedCycles":0,"overruns":0,"repositions":0,"driverChanges":0},"companions":[],
+		"status":{},"diagnostics":[]})"));
 }
 
 TEST_CASE("Every missing, extra and mistyped key is invalid params naming its pointer", "[commands]") {
@@ -328,6 +330,7 @@ TEST_CASE("unknown-values.json starts from a snapshot ear makes", "[commands][pr
 	                      ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
 	                      health("rec", NodeState::running)});
 	view.routes.push_back({noiseToRecFl, ear::RouteMatch::linked, ""});
+	view.typeSchemaHash = ear::control::testing::fixtureTypeSchemaHash; // the control port stamps it
 	CHECK(json::parse(encodeResult(1, encodeCommandResult(view).value())) == document["messages"][0]);
 }
 
@@ -337,7 +340,7 @@ TEST_CASE("Success is {} and each refusal is errors.json's -32000 response", "[c
 	const std::vector<ear::CommandError> errors{
 		ear::InvalidName{"a.b"},
 		ear::UnknownNodeType{"pink"},
-		ear::InvalidSettings{"tape", "path: missing"},
+		ear::InvalidSettings{"tape", "path: missing", "path"},
 		ear::DuplicateNode{"noise"},
 		ear::UnknownNode{"ghost"},
 		ear::UnknownNode{"ghost"},
@@ -352,4 +355,54 @@ TEST_CASE("Success is {} and each refusal is errors.json's -32000 response", "[c
 		REQUIRE_FALSE(encoded.has_value());
 		CHECK(json::parse(encodeError(static_cast<int>(i) + 2, encoded.error())) == messages[i + 1]);
 	}
+}
+
+TEST_CASE("invalid-settings carries the key it names and the refusal in its own words, or the words alone",
+          "[commands][protocol][types]") {
+	const auto encoded = [](ear::InvalidSettings error) {
+		const auto result = encodeCommandResult(std::expected<void, ear::CommandError>(std::unexpected(error)));
+		REQUIRE_FALSE(result.has_value());
+		return result.error();
+	};
+	const auto keyed = encoded({"desk", "playback: must be a whole number of channels, 0-64", "playback"});
+	CHECK(keyed.message == "invalid-settings desk: playback: must be a whole number of channels, 0-64");
+	CHECK(keyed.data == json{{"code", "invalid-settings"},
+	                         {"key", "playback"},
+	                         {"detail", "must be a whole number of channels, 0-64"}});
+	const auto across = encoded({"desk", "playback or capture: at least one must be above 0"});
+	CHECK(across.data ==
+	      json{{"code", "invalid-settings"}, {"detail", "playback or capture: at least one must be above 0"}});
+	const auto unknown = encoded({"desk", "unknown key colour", "colour"});
+	CHECK(unknown.data == json{{"code", "invalid-settings"}, {"key", "colour"}, {"detail", "unknown key colour"}});
+}
+
+TEST_CASE("node.invoke decodes its name, action and args, and its refusals are errors.json's", "[commands][actions]") {
+	const auto trigger = decodeCommand("node.invoke", json::parse(R"({"name": "amp", "action": "reset-clip"})"));
+	CHECK(std::get<InvokeNode>(trigger.value()).node == "amp");
+	CHECK(std::get<InvokeNode>(trigger.value()).action == "reset-clip");
+	CHECK(std::get<InvokeNode>(trigger.value()).args.is_null());
+	const auto call =
+		decodeCommand("node.invoke", json::parse(R"({"name": "amp", "action": "add", "args": {"amount": 3}})"));
+	CHECK(std::get<InvokeNode>(call.value()).args == json{{"amount", 3}});
+	CHECK(invalid("node.invoke", R"({"name": "amp"})") == "/action: missing");
+	CHECK(invalid("node.invoke", R"({"name": "amp", "action": ""})") == "/action: must not be empty");
+	CHECK(invalid("node.invoke", R"({"name": "amp", "action": "add", "args": [3]})") == "/args: must be an object");
+	CHECK(invalid("node.invoke", R"({"name": "amp", "action": "add", "colour": 1})") == "/colour: unknown key");
+
+	const json messages = fixture("errors")["messages"];
+	const std::vector<ControlRefusal> refusals{
+		UnknownAction{"amp", "forget"},
+		InvalidArgs{"amp", "add", "amount: must be a whole number, 1-10", "amount"},
+		NotRunning{"amp", ear::NodePhase::stopped},
+		Restarted{"amp"},
+		ActionFailed{"amp", "add", "the count is full"},
+		ActionTimeout{"amp", "add"},
+	};
+	for (std::size_t i = 0; i < refusals.size(); ++i) {
+		INFO(i);
+		const auto encoded = encodeCommandResult(refusals[i]);
+		REQUIRE_FALSE(encoded.has_value());
+		CHECK(json::parse(encodeError(static_cast<int>(i) + 23, encoded.error())) == messages[i + 24]);
+	}
+	CHECK(argsWords(InvalidArgs{"amp", "add", "args: must be an object"}) == "args: must be an object");
 }

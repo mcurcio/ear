@@ -1,6 +1,7 @@
 // What a peer may not make the sendspin node do: an upgrade with Origin, a frame too large to hold, bare connects, a name that breaks a status line.
 // (Shared helpers: sendspin_system.hpp.)
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <chrono>
@@ -220,15 +221,23 @@ TEST_CASE("Bare connects cannot fill the log", "[system][sendspin]") {
 	CHECK(waitForStop(ear) == 0);
 }
 
-TEST_CASE("A server's name with control characters and a line break stays on one status line, quoted",
+TEST_CASE("A server's name with control characters and a line break is one text on one line, made safe",
           "[system][sendspin]") {
-	SendspinTestServer server({"--name", "line\nnode ma says paired x\xc2\x9b\xe2\x80\xa8 \"q\""});
+	SendspinTestServer server({"--name", "line\nnode ma paired x\xc2\x9b\xe2\x80\xa8 \"q\""});
 	TempDirectory directory;
 	writeGraphFile(directory, dialToRec(server.url()));
 	auto ear = runEar(directory);
-	REQUIRE_SEEN(ear,
-	             ear.waitForLine("node ma says connected \"line?node ma says paired x?? ?q?\" unpaired", deadline));
-	CHECK_FALSE(ear.lineStartingWith("node ma says paired"));
+	// The framework makes a peer's text safe (docs/writing-a-node-type.md#report): the newline and the line separator a
+	// space, the C1 control U+FFFD; a quote is the JSON string's to escape.
+	const std::string safe = "line node ma paired x\xEF\xBF\xBD  \"q\"";
+	const auto named = ear.waitForRecord([](const json& r) { return isStatus(r, "serverName"); }, deadline);
+	REQUIRE_SEEN(ear, named);
+	CHECK((*named)["to"] == safe);
+	CHECK(named->value("msg", "") == "node ma serverName \"\" -> " + json(safe).dump()); // one line, quoted
+	REQUIRE_SEEN(ear, waitForStatus(ear, "connection", "connected"));
+	CHECK(std::ranges::none_of(ear.output(), [](char c) { return c == '\r'; }));
+	CHECK_FALSE(ear.lineStartingWith("node ma paired"));
+	CHECK_FALSE(anyStatus(ear, "paired"));
 	ear.signal(SIGTERM);
 	CHECK(waitForStop(ear) == 0);
 }

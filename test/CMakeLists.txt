@@ -124,6 +124,12 @@ add_library(ear_ws_client INTERFACE)
 target_include_directories(ear_ws_client INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/support")
 target_link_libraries(ear_ws_client INTERFACE Boost::beast)
 
+# ear_allocation_count: allocations counted per thread (test/support/allocation_count.hpp), for the tests that prove a
+# realtime path allocates nothing. An object library, so its malloc replaces glibc's in each test program that links it.
+add_library(ear_allocation_count OBJECT support/allocation_count.cpp)
+target_include_directories(ear_allocation_count PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/support")
+ear_poison_raw_sleeps(ear_allocation_count "${EAR_NO_RAW_SLEEPS}" ear_sleeps)
+
 # ear_temp_folder: the tests' temporary folder (test/support/temp_folder.hpp, header-only), for every test
 # program that makes folders on disk, and WithoutFilePrivileges (without_file_privileges.hpp), for a case that needs a
 # folder it cannot write under root too (docs/testing.md#an-ordinary-users-folder).
@@ -277,7 +283,7 @@ set(ear_rate_snippets "${CMAKE_CURRENT_SOURCE_DIR}/sample_rate_exits")
 add_test(NAME ear_sample_rate_exits
 	COMMAND "${CMAKE_COMMAND}" "-DROOT=${PROJECT_SOURCE_DIR}/src" -P "${ear_rate_exits}")
 set_tests_properties(ear_sample_rate_exits PROPERTIES
-	PASS_REGULAR_EXPRESSION "sample_rate_exits: [0-9]+ files under .*, 12 listed, none takes a rate's number elsewhere")
+	PASS_REGULAR_EXPRESSION "sample_rate_exits: [0-9]+ files under .*, 13 listed, none takes a rate's number elsewhere")
 foreach(way call member_pointer own_name)
 	add_test(NAME ear_sample_rate_exits_refuses_${way}
 		COMMAND "${CMAKE_COMMAND}" "-DROOT=${ear_rate_snippets}" "-DGLOB=${way}.snippet" "-DALLOWED="

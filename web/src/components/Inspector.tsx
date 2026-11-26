@@ -10,6 +10,7 @@ import { inspectorBounds } from "../sizes";
 import { wireEnds } from "../wires";
 import { AddNodePanel } from "./AddNodePanel";
 import { EngineFactsSection } from "./EngineFacts";
+import { useEditor, useTypeSchemas } from "./hooks";
 import { NodePanel } from "./NodePanel";
 import { RoutePanel } from "./RoutePanel";
 import { Splitter } from "./Splitter";
@@ -33,6 +34,8 @@ function Subject({
   onSelect: (selection: Selection) => void;
   onRemove: (nodes: readonly string[], routes: readonly RouteEnds[]) => void;
 }) {
+  const { types } = useEditor();
+  useTypeSchemas(); // a new set of schemas draws the form
   switch (subject.kind) {
     case "graph":
       return (
@@ -53,6 +56,7 @@ function Subject({
           key={subject.node.name}
           node={subject.node}
           features={graph.features ?? []}
+          schema={types.schemaOf(graph, subject.node.type)}
           onRemove={(name) => onRemove([name], [])}
         />
       );

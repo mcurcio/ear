@@ -55,6 +55,7 @@
 #include "ear/core/source.hpp"
 #include "ear/core/store.hpp"
 #include "ear/core/type_spec.hpp"
+#include "ear/core/report.hpp"
 namespace ear {
 
 // ---- Answers ----
@@ -255,6 +256,9 @@ public:
 	virtual const NodeName& node() const = 0;
 	/// The node's ports (its config's), to bind a code written against the spec.
 	virtual const Ports& ports() const = 0;
+	/// The configuration's realtime channels (docs/architecture.md#the-realtime-channels), to bind the code to; null
+	/// for a type whose code writes nothing on the realtime thread.
+	virtual RealtimeChannels* realtime() const = 0;
 	/// An engine companion on an inside bank (docs/writing-a-node-type.md#engine-companions), its kind its shape's: a
 	/// sound card (playback on an inside output bank, `<node>.playback`, capture on an inside input bank,
 	/// `<node>.capture`: the bank's direction is the card's, and a playback card's bank is faded with the public
@@ -330,6 +334,8 @@ public:
 	virtual const NodeName& node() const = 0;
 	/// The node's ports, to bind a new code written against the spec.
 	virtual const Ports& ports() const = 0;
+	/// The configuration's realtime channels, to bind a new code to the same ones its code writes.
+	virtual RealtimeChannels* realtime() const = 0;
 	/// Work for declared loop `loop`, staged until the commit point and destroyed unrun if the change ends any other way.
 	virtual void postToLoop(std::size_t loop, std::move_only_function<void(void*)> work) = 0;
 	/// A replacement for the engine companion on `bank` (an RTP receiver or a sound card), behind a hold the framework
@@ -439,6 +445,9 @@ public:
 	/// The configuration's handle (node_handle.hpp: say, lost, log); keep it in a sink's consumer or a thread the
 	/// instance owns.
 	NodeHandle& handle() noexcept { return context_->handle(); }
+	/// The configuration's Report (docs/writing-a-node-type.md#report): its status writes and events, by the spec's
+	/// handles. Copy it into the loop states that write them.
+	Report<Spec> report() noexcept { return Report<Spec>(context_->handle()); }
 	/// `work(state)` on loop `Handle`'s thread (`work()` for a loop with no state), in post order; staged until the
 	/// node is configured (docs/writing-a-node-type.md#loops). The instance's only way to its loops' states: start()
 	/// and stop() post. A loop the spec lacks, or a function of another loop's state, does not compile.
@@ -538,7 +547,11 @@ public:
 				static_assert(static_cast<const void*>(&spec_detail::ProcessOf<decltype(&Code::process)>::spec) ==
 				                  static_cast<const void*>(&Spec),
 				              "configure answers with a code written against its own type's spec");
-				static_cast<spec_detail::BankBoundCode&>(*erased.own()).bindPorts(context_->ports());
+				static_cast<spec_detail::BankBoundCode&>(*erased.own()).bind(context_->ports(), context_->realtime());
+			} else {
+				static_assert(!spec_detail::needsCode<Spec>,
+				              "a spec with writer::rt fields, log codes or triggers answers with "
+				              "a code of its own, never a pass-through");
 			}
 			return Configured::erased(std::move(erased),
 			                          ErasedLoopState::of(LoopsOf<Spec>::template indexOf<typename States::Loop>,
@@ -744,7 +757,11 @@ public:
 			static_assert(static_cast<const void*>(&spec_detail::ProcessOf<decltype(&Code::process)>::spec) ==
 			                  static_cast<const void*>(&Spec),
 			              "configure answers with a code written against its own type's spec");
-			static_cast<spec_detail::BankBoundCode&>(*erased.own()).bindPorts(context_->ports());
+			static_cast<spec_detail::BankBoundCode&>(*erased.own()).bind(context_->ports(), context_->realtime());
+		} else {
+			static_assert(!spec_detail::needsCode<Spec>,
+			              "a spec with writer::rt fields, log codes or triggers answers with "
+			              "a code of its own, never a pass-through");
 		}
 		return Changed::erased(std::move(erased));
 	}
@@ -1062,6 +1079,15 @@ public:
 		return std::make_unique<SpecInstance<Spec, Type>>(node, settings_);
 	}
 	const CheckedOf<Spec>& settings() const noexcept { return settings_; }
+	std::span<const StatusDeclaration* const> statusDeclared() const override { return StatusOf<Spec>::declared; }
+	std::span<const EventDeclaration> eventsDeclared() const override { return EventsOf<Spec>::declared; }
+	std::span<const LogCodeDeclaration> logCodesDeclared() const override { return LogCodesOf<Spec>::declared; }
+	std::span<const ActionDeclaration> actionsDeclared() const override { return ActionsOf<Spec>::declared; }
+	std::expected<void, std::string> runCall(std::size_t action, void* state, CheckedSettings&& args) const override {
+		const spec_detail::CallRunner run = spec_detail::CallRunners<ActionsOf<Spec>>::runners.at(action);
+		if (run == nullptr) return NodeConfig::runCall(action, state, std::move(args));
+		return run(state, std::move(args));
+	}
 
 private:
 	CheckedOf<Spec> settings_;
@@ -1099,7 +1125,9 @@ template <const auto& Spec, class Type> class SpecNodeType final : public NodeTy
 	              "a type's reconfigureDeadline is 1 s to 60 s");
 
 public:
-	SpecNodeType() noexcept : NodeType(Spec.settings, StoresOf<Spec>::declared, Spec.lifecycle.reconfigureDeadline) {}
+	SpecNodeType() noexcept
+		: NodeType(Spec.settings, StoresOf<Spec>::declared, Spec.lifecycle.reconfigureDeadline, BanksOf<Spec>::declared,
+	               StatusOf<Spec>::declared, EventsOf<Spec>::declared, ActionsOf<Spec>::declared) {}
 
 private:
 	/// The table's walk passed: the class's check, a rule across settings, then the config.

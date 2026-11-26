@@ -13,6 +13,7 @@
 #include <condition_variable>
 #include <deque>
 #include <functional>
+#include <map>
 #include <thread>
 #include <cstdint>
 #include <cinttypes>
@@ -38,7 +39,9 @@
 #include "ear/pipewire/engine.hpp"
 #include "ear/pipewire/port_blocks.hpp"
 #include "ear/pipewire/sound_cards.hpp"
+#include "ear/core/node_status.hpp"
 #include "ear/testing/drive_now.hpp"
+#include "ear/testing/report_on.hpp"
 #include "cycle_judge.hpp"
 #include "engine_harness.hpp"
 #include "ear/core/latency.hpp"
@@ -370,23 +373,18 @@ private:
 	                                    {"V ", "D ", "I "}};
 };
 
-/// What the worker says, as a node's handle would be told; `stream-ended` also records the tap's cycle.
+/// What the worker reports, as the node's status view would take it: each change of a field as `<field> <value>` (a
+/// write of the value it holds is no change) and each event as `<code> <args>`; `stream none` after a stream also
+/// records the tap's cycle.
 class Notes final : public NodeHandle {
 public:
 	explicit Notes(Waiter& waiter) : waiter_(waiter) {}
 	const NodeName& node() const noexcept override { return name_; }
 	void log(LogEntry) override {}
 	void connectTap(const Tap& tap) { tap_ = &tap; }
-	void say(std::string text) override {
-		{
-			const std::scoped_lock lock(mutex_);
-			if (text == "stream-ended" && tap_ != nullptr) endedAt_ = tap_->count();
-			said_.push_back(std::move(text));
-		}
-		waiter_.wake();
-	}
-	void lost(std::string detail) override { say("LOST " + detail); }
-	bool heard(std::string_view prefix) { return lineStarting(prefix).has_value(); }
+	void lost(std::string detail) override { hear("LOST " + detail); }
+	void say(std::string text) override { hear("NOTE " + text); } // the worker writes no notes
+	bool heard(std::string_view line) { return lineStarting(line).has_value(); }
 	std::optional<std::string> lineStarting(std::string_view prefix) {
 		const std::scoped_lock lock(mutex_);
 		const auto line =
@@ -404,11 +402,41 @@ public:
 		return text;
 	}
 
+protected:
+	void reportStatus(std::size_t field, StatusValue value) override {
+		const StatusDeclaration& declared = *StatusOf<spec>::declared[field];
+		{
+			const std::scoped_lock lock(mutex_);
+			auto [last, fresh] = values_.try_emplace(field, StatusValue{});
+			if (!fresh && last->second == value) return;
+			last->second = value;
+		}
+		const std::string line = std::string(declared.name) + " " + valueText(value, declared.decimals);
+		{
+			const std::scoped_lock lock(mutex_);
+			if (line == "stream none" && tap_ != nullptr) endedAt_ = tap_->count();
+		}
+		hear(line);
+	}
+	void reportEvent(std::size_t event, std::vector<StatusValue> args) override {
+		std::string line(EventsOf<spec>::declared[event].code);
+		for (const StatusValue& arg : args) line += " " + valueText(arg);
+		hear(std::move(line));
+	}
+
 private:
+	void hear(std::string line) {
+		{
+			const std::scoped_lock lock(mutex_);
+			said_.push_back(std::move(line));
+		}
+		waiter_.wake();
+	}
 	Waiter& waiter_;
 	NodeName name_ = "kitchen";
 	std::mutex mutex_;
 	std::vector<std::string> said_;
+	std::map<std::size_t, StatusValue> values_;
 	const Tap* tap_ = nullptr;
 	std::optional<std::size_t> endedAt_;
 };
@@ -558,7 +586,7 @@ struct Rig {
 		clock().attach(source->writer());
 		loops.make();
 		worker = std::make_unique<Worker>(
-			WorkerParts{.handle = notes,
+			WorkerParts{.report = ear::testing::reportOn<spec>(notes),
 		                .keys = keys,
 		                .clock = clock(),
 		                .writer = source->writer(),
@@ -624,13 +652,13 @@ struct Rig {
 	/// here: a Judge reads each frame's from the chunk that carried it.
 	void play(double seconds) {
 		INFO("the node said:\n" << notes.all());
-		REQUIRE(waiter.until([&] { return notes.heard("connected "); }, 20s));
+		REQUIRE(waiter.until([&] { return notes.heard("connection connected"); }, 20s));
 		server.send("pair");
-		REQUIRE(waiter.until([&] { return notes.heard("pairing-code "); }, 20s));
-		std::string code = notes.lineStarting("pairing-code ")->substr(13);
+		REQUIRE(waiter.until([&] { return notes.heard("pairingCode "); }, 20s));
+		std::string code = notes.lineStarting("pairingCode ")->substr(std::string_view("pairingCode ").size());
 		std::erase(code, '-');
 		server.send("code " + code);
-		REQUIRE(waiter.until([&] { return notes.heard("connected \"ear-test-server\" paired"); }, 20s));
+		REQUIRE(waiter.until([&] { return notes.heard("paired true"); }, 20s));
 		LibraryLog::setVerbose();
 		// ear's own event: the internal clock's loop reaching the raw clock's rate. Measured over the cycles the host
 		// left alone, so a loaded host only delays it; the deadline only fails the test.
@@ -1656,7 +1684,7 @@ void judgePlanned(Rig& rig, Judge& judge) {
 	const bool judged = rig.waiter.until(
 		[&] {
 			judge.read();
-			return (judge.errors.judged >= kPlannedCycles && judge.graphDone()) || rig.notes.heard("stream-ended");
+			return (judge.errors.judged >= kPlannedCycles && judge.graphDone()) || rig.notes.heard("stream none");
 		},
 		150s);
 	INFO(describe(judge.errors));
@@ -1694,7 +1722,8 @@ TEST_CASE("On the dummy driver, audio leaves the block within 1 ms of the time f
 	Judge judge(rig, rig.log, Judge::inducedStalls());
 	INFO("the node said:\n" << rig.notes.all());
 	judgePlanned(rig, judge);
-	CHECK(rig.notes.heard("stream flac 48000 2 24"));
+	CHECK((rig.notes.heard("stream flac") && rig.notes.heard("streamRate 48000") &&
+	       rig.notes.heard("streamChannels 2") && rig.notes.heard("streamBits 24")));
 	checkSync(judge.errors);
 }
 
@@ -1712,7 +1741,8 @@ TEST_CASE("Through a following test card, audio is dated by the card's latency a
 	Judge judge(rig, rig.log, Judge::inducedStalls());
 	INFO("the node said:\n" << rig.notes.all());
 	judgePlanned(rig, judge);
-	CHECK(rig.notes.heard("stream flac 48000 2 24"));
+	CHECK((rig.notes.heard("stream flac") && rig.notes.heard("streamRate 48000") &&
+	       rig.notes.heard("streamChannels 2") && rig.notes.heard("streamBits 24")));
 	// ALSA's playback node reports at least a quantum (alsa-pcm-sink.c), and the card's latency is the same all along.
 	CHECK(judge.errors.leastDelayFrames >= kBlock);
 	CHECK(judge.errors.leastDelayFrames == judge.errors.mostDelayFrames);
@@ -1851,7 +1881,7 @@ static void judgeStall(StallKind kind, StallMade made) {
 	REQUIRE(rig.waiter.until(
 		[&] {
 			judge.read();
-			return judge.errors.judged >= judgedBefore + kPlannedCycles || rig.notes.heard("stream-ended");
+			return judge.errors.judged >= judgedBefore + kPlannedCycles || rig.notes.heard("stream none");
 		},
 		150s));
 	INFO(describe(judge.errors));
@@ -2194,7 +2224,7 @@ TEST_CASE("A starving network gap: one correction of the lost time, no silence, 
 	REQUIRE(rig.waiter.until(
 		[&] {
 			judge.read();
-			return judge.errors.judged >= judgedBefore + kPlannedCycles || rig.notes.heard("stream-ended");
+			return judge.errors.judged >= judgedBefore + kPlannedCycles || rig.notes.heard("stream none");
 		},
 		150s));
 	INFO(describe(judge.errors));

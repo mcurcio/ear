@@ -419,8 +419,8 @@ Music Assistant's audio (`sendspin` skill). All **[check]**: not run in a pod ye
   **A pod on an overlay network cannot advertise**: mDNS goes no further than its own network, so
   Music Assistant will not find it. Either give the pod `hostNetwork: true` (as for multicast RTP,
   section 6: the policy of section 4 must allow it), or give Music Assistant the URL by hand,
-  `ws://<address>:<port>/sendspin`. `says advertise-failed <detail>` means no mDNS socket opened;
-  no such line does not mean anybody heard it.
+  `ws://<address>:<port>/sendspin`. The `advertise-failed` event means no mDNS socket opened; no
+  such event does not mean anybody heard it.
 - **With `hostNetwork`:** 7777, 8928 and mDNS's 5353 (UDP, shared, `SO_REUSEPORT`) are the node's own, on
   every one of its interfaces, since a listening node has no address setting: filter 8928 and 5353 to the
   network Music Assistant is on. A peer on 8928 can still hold the node from an unpaired server by finishing the published handshake, though no longer with silent sockets, and a flood can keep servers out while it lasts (`sendspin` skill), so
@@ -433,9 +433,10 @@ Music Assistant's audio (`sendspin` skill). All **[check]**: not run in a pod ye
   use the `Recreate` strategy.
 - **Give the pod a memory limit.** One connection holds at most about 1 MiB before it proves anything, and a flood runs up to 64 sockets and threads at once, but the
   library's parsers run in the process with every audio node; a limit keeps whatever else goes wrong in this pod.
-- **Pair once.** The node prints `says pairing-code <123-456>` when Music Assistant starts an attempt;
-  the code reaches only standard output (`kubectl logs -n audio deploy/ear | grep says`), not the
-  editor. Type it there. The pairing lives in the key file, so the graph file volume must persist
+- **Pair once.** The node's `pairingCode` holds the code (`123-456`) once Music Assistant starts an
+  attempt: the editor shows it on the node, and standard output has it as a `status` record,
+  `kubectl logs -n audio deploy/ear | jq -r 'select(.kind=="status" and .field=="pairingCode" and
+  .to!="") | "\(.node) \(.to)"'`. Type it there. The pairing lives in the key file, so the graph file volume must persist
   (section 4), or every restart asks again.
 - **Pod termination** (ear stopping on SIGTERM, not `node.stop`, which keeps the connection). The node's goodbye
   runs on its own thread and is short, but an inbound half-open socket can take up to 3 s; it all has to fit

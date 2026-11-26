@@ -44,11 +44,17 @@ class MainLoopGateway final : public GraphGateway,
 							  public RouteStatusListener,
 							  public CounterListener,
 							  public NodeCompanionsListener,
+							  public NodeStatusListener,
+							  public NodeDiagnosticListener,
 							  public SnapshotStamp {
 public:
-	/// `clock` stamps each node's `since` when its phase changes.
+	/// What core's steady stamps are read against: the main loop's timers' clock.
+	using SteadyClock = std::function<std::chrono::steady_clock::time_point()>;
+	/// `clock` stamps each node's `since` when its phase changes; a status event's or diagnostic's `t` is its steady
+	/// stamp moved onto `clock` by the two clocks' difference now (`steady`, the clock NodeHost stamps on).
 	MainLoopGateway(Executor& mainLoop, Executor& control, GraphRequests& requests,
-	                WallClock clock = &std::chrono::system_clock::now); // all outlive it
+	                WallClock clock = &std::chrono::system_clock::now,
+	                SteadyClock steady = &std::chrono::steady_clock::now); // all outlive it
 	~MainLoopGateway();
 	/// requests.submit(commands, a reply that posts done(results) to `control`).
 	void run(std::vector<Command> commands, std::move_only_function<void(std::vector<CommandResult>)> done) override;
@@ -85,7 +91,15 @@ public:
 	/// holds (added, not removed since) and only when the list differs from the last one sent for it (the [] of its
 	/// node.added until then), so the two tellers never send one list twice (docs/control-port.md#companions).
 	void companionsChanged(const NodeName& node, std::span<const CompanionView> companions) override;
-	/// SnapshotStamp (main loop): each node's `since` as its last node.state carried it, for a node told of.
+	/// NodeStatusListener and NodeDiagnosticListener (feature status, docs/control-port.md#status): posted as
+	/// node.statusChanged (a reset's with `reset`), node.eventRaised and node.diagnostic, in order with the node's
+	/// health, only for a node a client holds; a superseded node's never (hearsSuperseded).
+	void statusChanged(const NodeName& node, std::span<const FieldValue> fields) override;
+	void statusReset(const NodeName& node, std::span<const FieldValue> fields) override;
+	void eventRaised(const NodeName& node, const RaisedEvent& event) override;
+	void nodeDiagnostic(const NodeName& node, const NodeDiagnostic& diagnostic) override;
+	/// SnapshotStamp (main loop): each node's `since` as its last node.state carried it, for a node told of, and each
+	/// of its diagnostics' `t`.
 	void stamp(GraphView& view) const override;
 
 private:

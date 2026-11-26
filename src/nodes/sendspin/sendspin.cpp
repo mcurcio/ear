@@ -32,7 +32,7 @@ Configured Sendspin::configure(CreateOf<spec>& cx, const Checked& s) {
 	const auto half = static_cast<std::uint32_t>(FrameClock(format.rate).frames(std::chrono::milliseconds{500}));
 	SinkControl& toServerSink = cx.attach(toServer, SinkShape{.frames = half}, worker, &Worker::toServer);
 
-	auto working = cx.state(worker, WorkerParts{.handle = node_.handle(),
+	auto working = cx.state(worker, WorkerParts{.report = node_.report(),
 	                                            .keys = cx.store(keyFile),
 	                                            .clock = clock,
 	                                            .writer = writer,

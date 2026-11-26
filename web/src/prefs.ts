@@ -6,6 +6,7 @@
 import type { PlaceKeeper, Position } from "./layout";
 import { clamp, inspectorBounds } from "./sizes";
 import { themeChoices, type ThemeChoice } from "./theme";
+import type { TypeSchemaKeeper, TypeSchemaSet } from "./types";
 
 /** What Prefs needs of window.localStorage. */
 export interface StorageLike {
@@ -28,7 +29,7 @@ export function browserStorage(): StorageLike | null {
 export const prefsPrefix = "ear-editor/1";
 
 /** What is kept per ear. */
-export type EarPref = "places" | "inspector-width" | "drawer" | "minimap";
+export type EarPref = "places" | "inspector-width" | "drawer" | "minimap" | "types";
 
 /** The theme's key: one per browser. */
 export function themeKey(): string {
@@ -80,6 +81,24 @@ export function checkDrawer(value: unknown): { open: boolean; height: number } |
 
 export function checkFlag(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
+}
+
+/**
+ * Kept type schemas (types.ts): a non-empty hash and a list of objects each with a string name and a settings list. A
+ * schema's members are ear's, taken as kept; a set that fails the check is ignored whole, and the next Graph fetches.
+ */
+export function checkTypeSchemas(value: unknown): TypeSchemaSet | undefined {
+  if (!isPlainObject(value)) return undefined;
+  const { hash, typeSchemas } = value;
+  if (typeof hash !== "string" || hash === "" || !Array.isArray(typeSchemas)) return undefined;
+  const good = typeSchemas.every(
+    (schema: unknown) =>
+      isPlainObject(schema) &&
+      typeof schema.name === "string" &&
+      Array.isArray(schema.settings) &&
+      schema.settings.every((row: unknown) => isPlainObject(row) && typeof row.key === "string"),
+  );
+  return good ? ({ hash, typeSchemas } as TypeSchemaSet) : undefined;
 }
 
 /** The most recently seen `maxPlaces` of `places`. */
@@ -178,6 +197,18 @@ export class Prefs {
   }
   setMinimap(shown: boolean): void {
     this.write(earKey(this.host, "minimap"), shown);
+  }
+
+  typeSchemas(): TypeSchemaSet | undefined {
+    return checkTypeSchemas(this.read(earKey(this.host, "types")));
+  }
+  setTypeSchemas(set: TypeSchemaSet): void {
+    this.write(earKey(this.host, "types"), { hash: set.hash, typeSchemas: set.typeSchemas });
+  }
+
+  /** types.ts's TypeStore keeps its set through this. */
+  typeSchemaKeeper(): TypeSchemaKeeper {
+    return { load: () => this.typeSchemas(), save: (set) => this.setTypeSchemas(set) };
   }
 
   private keptPlaces(): Map<string, KeptPlace> {

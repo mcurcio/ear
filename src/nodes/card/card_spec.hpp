@@ -16,10 +16,13 @@ namespace ear::nodes::card {
 
 inline constexpr std::uint32_t maxChannels = 64;
 inline constexpr auto cardRow = setting::required(
-	"card",
-	setting::text<CardId::parse>("an ALSA card id, 1-15 characters of [A-Za-z0-9_-] (as in /proc/asound/cards)"));
-inline constexpr auto playbackRow = setting::defaulted("playback", setting::number(0, maxChannels, "channels"), 0);
-inline constexpr auto captureRow = setting::defaulted("capture", setting::number(0, maxChannels, "channels"), 0);
+	"card", setting::text<CardId::parse>("an ALSA card id, 1-15 characters of [A-Za-z0-9_-] (as in /proc/asound/cards)",
+                                         {.pattern = "^[A-Za-z0-9_-]{1,15}$", .maxLength = 15}));
+// Each makes a bank's members (ports() below), so each changes the ports.
+inline constexpr auto playbackRow =
+	setting::defaulted("playback", setting::number(0, maxChannels, "channels"), 0).shapesPorts();
+inline constexpr auto captureRow =
+	setting::defaulted("capture", setting::number(0, maxChannels, "channels"), 0).shapesPorts();
 inline constexpr auto play = bank::input<"play">;
 inline constexpr auto capture = bank::output<"capture">;
 inline constexpr auto fromCard = bank::insideInput<"from_card">;

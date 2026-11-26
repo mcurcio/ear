@@ -1,0 +1,298 @@
+{
+  "description": "The feature status's node diagnostics (docs/control-port.md#node-diagnostics): a snapshot's node carries every diagnostic the node was told, one per code and subject, each with active, count (as sent: a condition's times it became active, an observation's times seen), t, msg, its fields and detail. node.diagnostic replaces the entry of the same code and subject, or joins the list. Two fields flap at once (streamRate for the second time); connection settles while streamRate stays active; an observation (ear.events-dropped) is never active and only joins the list; a code this client does not know is kept and drawn by its msg; one naming a node not held is ignored.",
+  "requests": [
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}"
+  ],
+  "messages": [
+    {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "protocol": 1,
+        "features": [
+          "lifecycle",
+          "counters",
+          "companions",
+          "node-text",
+          "reshape",
+          "node.set",
+          "dryRun",
+          "types",
+          "status",
+          "actions"
+        ],
+        "graphFrequency": 48000,
+        "blockSize": 256,
+        "realtime": false,
+        "scheduling": "SCHED_OTHER",
+        "types": [
+          "sendspin",
+          "white"
+        ],
+        "typeSchemaHash": "fnv1a64:0123456789abcdef",
+        "nodes": [
+          {
+            "name": "kitchen",
+            "type": "sendspin",
+            "settings": {
+              "name": "Kitchen"
+            },
+            "inputs": [],
+            "outputs": [
+              "from_server.left",
+              "from_server.right"
+            ],
+            "state": "running",
+            "phase": "running",
+            "since": "2026-11-08T10:00:00.000000Z",
+            "wanted": "running",
+            "blockLost": false,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": [],
+            "status": {
+              "connection": "connected",
+              "paired": false,
+              "pairingCode": "",
+              "streamRate": 0
+            },
+            "diagnostics": [
+              {
+                "code": "ear.hook-slow",
+                "subject": "configure",
+                "active": false,
+                "count": 1,
+                "t": "2026-11-08T09:59:59.500000Z",
+                "msg": "node kitchen ear.hook-slow: configure ran 31 ms",
+                "ms": 31,
+                "detail": "configure ran 31 ms"
+              }
+            ]
+          }
+        ],
+        "routes": [],
+        "counters": {
+          "cycles": 0,
+          "cutCycles": 0,
+          "stalls": 0,
+          "lostMs": 0
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.diagnostic",
+      "params": {
+        "name": "kitchen",
+        "code": "ear.status-flapping",
+        "subject": "connection",
+        "active": true,
+        "count": 1,
+        "t": "2026-11-08T10:02:11.120400Z",
+        "msg": "node kitchen ear.status-flapping: connection flapping: 14 changes in 10s",
+        "transitions": 14,
+        "windowMs": 10000,
+        "detail": "connection flapping: 14 changes in 10s"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.diagnostic",
+      "params": {
+        "name": "kitchen",
+        "code": "ear.status-flapping",
+        "subject": "streamRate",
+        "active": true,
+        "count": 2,
+        "t": "2026-11-08T10:02:11.120400Z",
+        "msg": "node kitchen ear.status-flapping: streamRate flapping: 11 changes in 10s",
+        "transitions": 11,
+        "windowMs": 10000,
+        "detail": "streamRate flapping: 11 changes in 10s"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.diagnostic",
+      "params": {
+        "name": "kitchen",
+        "code": "ear.events-dropped",
+        "subject": "",
+        "active": false,
+        "count": 1,
+        "t": "2026-11-08T10:02:12.000000Z",
+        "msg": "node kitchen ear.events-dropped: 8 events were held back by the node's event rate",
+        "heldBack": 8,
+        "detail": "8 events were held back by the node's event rate"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.diagnostic",
+      "params": {
+        "name": "kitchen",
+        "code": "ear.status-flapping",
+        "subject": "connection",
+        "active": false,
+        "count": 1,
+        "t": "2026-11-08T10:02:21.130000Z",
+        "msg": "node kitchen ear.status-flapping: connection settled: 3 changes in the last 10000 ms",
+        "transitions": 3,
+        "windowMs": 10000,
+        "detail": "connection settled: 3 changes in the last 10000 ms"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.diagnostic",
+      "params": {
+        "name": "kitchen",
+        "code": "ear.cosmic-ray",
+        "subject": "left",
+        "active": true,
+        "count": 1,
+        "t": "2026-11-08T10:02:30.000000Z",
+        "msg": "node kitchen ear.cosmic-ray: a code this client does not know",
+        "bits": 1,
+        "detail": "a code this client does not know"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.diagnostic",
+      "params": {
+        "name": "ghost",
+        "code": "ear.status-flapping",
+        "subject": "connection",
+        "active": true,
+        "count": 1,
+        "t": "2026-11-08T10:02:11.120400Z",
+        "msg": "node ghost ear.status-flapping: connection flapping: 14 changes in 10s",
+        "transitions": 14,
+        "windowMs": 10000,
+        "detail": "connection flapping: 14 changes in 10s"
+      }
+    }
+  ],
+  "graph": {
+    "protocol": 1,
+    "features": [
+      "lifecycle",
+      "counters",
+      "companions",
+      "node-text",
+      "reshape",
+      "node.set",
+      "dryRun",
+      "types",
+      "status",
+      "actions"
+    ],
+    "graphFrequency": 48000,
+    "blockSize": 256,
+    "realtime": false,
+    "scheduling": "SCHED_OTHER",
+    "types": [
+      "sendspin",
+      "white"
+    ],
+    "typeSchemaHash": "fnv1a64:0123456789abcdef",
+    "nodes": [
+      {
+        "name": "kitchen",
+        "type": "sendspin",
+        "settings": {
+          "name": "Kitchen"
+        },
+        "inputs": [],
+        "outputs": [
+          "from_server.left",
+          "from_server.right"
+        ],
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-08T10:00:00.000000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": [],
+        "status": {
+          "connection": "connected",
+          "paired": false,
+          "pairingCode": "",
+          "streamRate": 0
+        },
+        "diagnostics": [
+          {
+            "code": "ear.hook-slow",
+            "subject": "configure",
+            "active": false,
+            "count": 1,
+            "t": "2026-11-08T09:59:59.500000Z",
+            "msg": "node kitchen ear.hook-slow: configure ran 31 ms",
+            "ms": 31,
+            "detail": "configure ran 31 ms"
+          },
+          {
+            "code": "ear.status-flapping",
+            "subject": "connection",
+            "active": false,
+            "count": 1,
+            "t": "2026-11-08T10:02:21.130000Z",
+            "msg": "node kitchen ear.status-flapping: connection settled: 3 changes in the last 10000 ms",
+            "transitions": 3,
+            "windowMs": 10000,
+            "detail": "connection settled: 3 changes in the last 10000 ms"
+          },
+          {
+            "code": "ear.status-flapping",
+            "subject": "streamRate",
+            "active": true,
+            "count": 2,
+            "t": "2026-11-08T10:02:11.120400Z",
+            "msg": "node kitchen ear.status-flapping: streamRate flapping: 11 changes in 10s",
+            "transitions": 11,
+            "windowMs": 10000,
+            "detail": "streamRate flapping: 11 changes in 10s"
+          },
+          {
+            "code": "ear.events-dropped",
+            "subject": "",
+            "active": false,
+            "count": 1,
+            "t": "2026-11-08T10:02:12.000000Z",
+            "msg": "node kitchen ear.events-dropped: 8 events were held back by the node's event rate",
+            "heldBack": 8,
+            "detail": "8 events were held back by the node's event rate"
+          },
+          {
+            "code": "ear.cosmic-ray",
+            "subject": "left",
+            "active": true,
+            "count": 1,
+            "t": "2026-11-08T10:02:30.000000Z",
+            "msg": "node kitchen ear.cosmic-ray: a code this client does not know",
+            "bits": 1,
+            "detail": "a code this client does not know"
+          }
+        ]
+      }
+    ],
+    "routes": [],
+    "counters": {
+      "cycles": 0,
+      "cutCycles": 0,
+      "stalls": 0,
+      "lostMs": 0
+    }
+  }
+}

@@ -23,7 +23,6 @@
 #include <vector>
 
 #include "catch2/catch.hpp"
-#include "ear/core/node_handle.hpp"
 #include "ear/core/store.hpp"
 #include "key_store.hpp"
 #include "sendspin/client.h"
@@ -67,17 +66,6 @@ private:
 	mutable std::mutex mutex_;
 	mutable int reads_ = 0;
 	std::string text_ = emptyKeyRecord();
-};
-
-class Handle final : public NodeHandle {
-public:
-	const NodeName& node() const noexcept override { return name_; }
-	void lost(std::string) override {}
-	void log(LogEntry) override {}
-	void say(std::string) override {}
-
-private:
-	NodeName name_ = "swap";
 };
 
 /// The listeners a client needs, as the worker is: the pairing code shown, the audio taken and thrown away.
@@ -202,8 +190,7 @@ TEST_CASE("A client made again over the same key store, after the first was stop
           "[sendspin][swap]") {
 	SendspinTestServer server;
 	CountingStore store;
-	Handle handle;
-	auto opened = NodeKeyStore::open(store, handle);
+	auto opened = NodeKeyStore::open(store, [](std::string_view) {});
 	REQUIRE(opened.has_value());
 	NodeKeyStore& keys = **opened;
 	const int readsAtOpen = store.reads();
@@ -243,8 +230,7 @@ TEST_CASE("A listening client swapped for one on another port lets its port go i
 	const std::uint16_t newPort = freePort();
 	SendspinTestServer server;
 	CountingStore store;
-	Handle handle;
-	auto opened = NodeKeyStore::open(store, handle);
+	auto opened = NodeKeyStore::open(store, [](std::string_view) {});
 	REQUIRE(opened.has_value());
 	NodeKeyStore& keys = **opened;
 	Listener listener;
@@ -284,8 +270,7 @@ TEST_CASE("A client dialling a peer that took the socket and never answers the u
 	const std::uint16_t port = ntohs(address.sin_port);
 
 	CountingStore store;
-	Handle handle;
-	auto opened = NodeKeyStore::open(store, handle);
+	auto opened = NodeKeyStore::open(store, [](std::string_view) {});
 	REQUIRE(opened.has_value());
 	Listener listener;
 	auto first = makeClient(**opened, listener, std::nullopt);

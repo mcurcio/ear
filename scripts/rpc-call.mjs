@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // scripts/rpc-call.mjs <ws-url> [--until '<node> <state>'] [--timeout <s>] <method> [params-json]
+// scripts/rpc-call.mjs <ws-url> --follow [--timeout <s>] [<method> [params-json]]
 //
 // One JSON-RPC 2.0 call to ear's control port (docs/control-port.md; from protocol 1,
 // docs/control-port.md#talking-to-it), for scripts: connects to <ws-url> (for example
@@ -16,7 +17,14 @@
 // nothing older arrives after it). A reply whose applied is unchanged or retune, for a node already in
 // that state, causes no node.state, so it exits at once.
 //
-// --timeout <s> bounds the whole call: 60 s by default with --until, 10 s without.
+// --follow prints every notification, one JSON line each ({"method", "params"}), until interrupted (SIGINT
+// or SIGTERM, exit 0) or --timeout passes (exit 0): it sends <method> (graph.subscribe when none is given),
+// prints its result as the first line, then every notification after it, in the order the session sent
+// them (node.statusChanged, node.eventRaised and node.diagnostic among them).
+//
+//   node scripts/rpc-call.mjs ws://127.0.0.1:7777/rpc --follow | jq -c 'select(.method == "node.eventRaised")'
+//
+// --timeout <s> bounds the whole call: 60 s by default with --until, 10 s without; with --follow, none.
 //
 // Exit codes:
 //   0  the result came (and, with --until, the node reached the state)
@@ -26,7 +34,9 @@
 //   3  bad arguments (the usage is printed)
 //   4  no answer within --timeout, without --until
 
-const usage = "usage: rpc-call.mjs <ws-url> [--until '<node> <state>'] [--timeout <s>] <method> [params-json]";
+const usage =
+	"usage: rpc-call.mjs <ws-url> [--until '<node> <state>'] [--timeout <s>] <method> [params-json]\n" +
+	'       rpc-call.mjs <ws-url> --follow [--timeout <s>] [<method> [params-json]]';
 const badArguments = (why) => {
 	console.error(`rpc-call: ${why}`);
 	console.error(usage);
@@ -36,9 +46,11 @@ const badArguments = (why) => {
 const args = process.argv.slice(2);
 let until;
 let timeoutS;
+let follow = false;
 const positional = [];
 for (let i = 0; i < args.length; ++i) {
-	if (args[i] === '--until' || args[i] === '--timeout') {
+	if (args[i] === '--follow') follow = true;
+	else if (args[i] === '--until' || args[i] === '--timeout') {
 		const value = args[i + 1];
 		if (value === undefined || value.startsWith('--')) badArguments(`${args[i]} needs a value`);
 		if (args[i] === '--until') until = value;
@@ -46,8 +58,10 @@ for (let i = 0; i < args.length; ++i) {
 		++i;
 	} else positional.push(args[i]);
 }
-const [url, method, params, ...extra] = positional;
+const [url, givenMethod, params, ...extra] = positional;
+const method = givenMethod ?? (follow ? 'graph.subscribe' : undefined);
 if (!url || !method) badArguments('a URL and a method are needed');
+if (follow && until !== undefined) badArguments('--follow and --until do not go together');
 if (extra.length > 0) badArguments(`unexpected ${extra.join(' ')}`);
 if (timeoutS !== undefined && !(timeoutS > 0)) badArguments('--timeout must be a number of seconds above 0');
 let untilNode;
@@ -83,7 +97,28 @@ const fail = (message, code = 1) => {
 const socket = new WebSocket(url);
 socket.addEventListener('error', () => fail(`cannot talk to ${url}`));
 
-if (untilNode === undefined) {
+if (follow) {
+	// Until interrupted, or --timeout: either is the end the caller asked for.
+	const stop = () => finish(0);
+	process.on('SIGINT', stop);
+	process.on('SIGTERM', stop);
+	if (timeoutS !== undefined) setTimeout(stop, timeoutS * 1000).unref();
+	socket.addEventListener('open', () => socket.send(JSON.stringify(request)));
+	socket.addEventListener('message', (event) => {
+		if (done) return;
+		const message = JSON.parse(event.data);
+		if (message.id === request.id) {
+			if (message.error) {
+				console.error(JSON.stringify(message.error));
+				return finish(1);
+			}
+			console.log(JSON.stringify(message.result));
+			return;
+		}
+		if (message.method !== undefined) console.log(JSON.stringify({ method: message.method, params: message.params }));
+	});
+	socket.addEventListener('close', (event) => fail(`${url} closed with ${event.code}`));
+} else if (untilNode === undefined) {
 	const deadlineS = timeoutS ?? 10;
 	setTimeout(() => {
 		fail(`no answer from ${url} within ${deadlineS} s`, 4);

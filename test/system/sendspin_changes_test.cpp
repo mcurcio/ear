@@ -54,9 +54,10 @@ TEST_CASE("A sendspin node's port, name and server change in place, listening to
 	auto ear = runEar(directory);
 	REQUIRE_SEEN(ear, waitForLines(ear, runningAndLinked));
 	waitForInstance(ear, "ma", first);
-	const std::string id = *ear.lineStartingWith("node ma says id ");
+	const auto id = waitForClientId(ear);
+	REQUIRE(id);
 	SendspinTestServer server({"--dial", url(first)});
-	REQUIRE_SEEN(ear, ear.waitForLine(connectedUnpaired, deadline));
+	REQUIRE_SEEN(ear, connectedUnpaired(ear));
 	pairOnce(ear, server);
 	Rpc rpc(controlPort(ear));
 	REQUIRE(rpc.call("graph.subscribe").contains("result"));
@@ -67,36 +68,46 @@ TEST_CASE("A sendspin node's port, name and server change in place, listening to
 	const auto keyFile = directory.config() / "sendspin-ma.key";
 	std::ofstream(keyFile, std::ios::trunc) << "{ no key record";
 
+	// A change in place keeps the configuration, so its status stays (docs/architecture.md#status-and-events): no
+	// reset, and the client id, the same, is never written again; the worker rewrites what the change touched.
+	const auto sameClient = [&] {
+		CHECK(countRecords(ear, [](const json& r) { return isStatus(r, "clientId"); }) == 1);
+		CHECK(countRecords(ear, [](const json& r) { return r.value("kind", "") == "status" && r.contains("reset"); }) ==
+		      0);
+	};
+
 	// A port and a name: the old port let go, the new client listening on the new one, found again and paired with no
 	// code.
 	changeInPlace(rpc, {{"port", second}, {"name", "Kitchen"}}, json::array({"name", "port"}));
 	CHECK(ear.waitForLine("node ma reconfiguring: name, port", deadline));
-	REQUIRE_SEEN(ear, ear.waitForLine("node ma says disconnected", deadline));
-	CHECK(waitForInstance(ear, "ma", second).starts_with("ear-ma-"));
-	REQUIRE_SEEN(ear, waitForNthLine(ear, "node ma says id ", 1, deadline));
-	CHECK(*waitForNthLine(ear, "node ma says id ", 1, deadline) == id);
+	REQUIRE_SEEN(ear, waitForDisconnected(ear));
+	CHECK(waitForInstance(ear, "ma", second, 1).starts_with("ear-ma-"));
 	REQUIRE(server.waitForEvent("disconnected ", deadline));
 	CHECK(connectRefused(first));
 	server.send("dial " + url(second));
-	REQUIRE_SEEN(ear, waitForNthLine(ear, std::string(connectedPaired), 1, playDeadline));
+	REQUIRE_SEEN(ear, waitForPaired(ear, 1, playDeadline));
+	sameClient();
 
 	// Listening to dialling: the listening port let go, the same client id dialling the server, paired.
 	changeInPlace(rpc, {{"server", server.url()}, {"name", "Kitchen"}}, json::array({"port", "server"}));
-	REQUIRE_SEEN(ear, ear.waitForLine("node ma says dialling " + server.url(), deadline));
-	REQUIRE_SEEN(ear, waitForNthLine(ear, std::string(connectedPaired), 2, playDeadline));
-	CHECK(*waitForNthLine(ear, "node ma says id ", 2, deadline) == id);
+	REQUIRE_SEEN(ear, waitForDialling(ear, server.url()));
+	CHECK(lastStatus(ear, "listenPort") == json(0));
+	CHECK(lastStatus(ear, "instance") == json(""));
+	REQUIRE_SEEN(ear, waitForPaired(ear, 2, playDeadline));
+	sameClient();
 	CHECK(connectRefused(second));
 
 	// Dialling to listening, back on the first port.
 	changeInPlace(rpc, {{"port", first}}, json::array({"name", "port", "server"}));
-	REQUIRE_SEEN(ear, waitForNthLine(ear, "node ma says listening " + std::to_string(first) + " as ", 1, deadline));
-	CHECK(*waitForNthLine(ear, "node ma says id ", 3, deadline) == id);
+	waitForInstance(ear, "ma", first, 2);
+	CHECK(lastStatus(ear, "url") == json(""));
 	server.send("dial " + url(first));
-	REQUIRE_SEEN(ear, waitForNthLine(ear, std::string(connectedPaired), 3, playDeadline));
+	REQUIRE_SEEN(ear, waitForPaired(ear, 3, playDeadline));
+	sameClient();
 
 	CHECK_FALSE(ear.lineStartingWith("node ma stopping"));
 	CHECK_FALSE(ear.lineStartingWith("node ma failed"));
-	CHECK(countLines(ear, pairingCodePrefix) == 1); // paired once, at the start
+	CHECK(countPairingCodes(ear) == 1); // paired once, at the start
 	ear.signal(SIGTERM);
 	CHECK(rpc.readUntilClosed() == 1001);
 	CHECK(waitForStop(ear) == 0);

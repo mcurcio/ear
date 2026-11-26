@@ -32,6 +32,7 @@ Debian 13 (trixie) ships in the build image (`docker/Dockerfile`).
 | Sources | `sources.cpp` | `EventSources`: core's `SourceRing` (every source rule) plus the writer's wait (`poll` on an eventfd) and the clock wake's eventfd |
 | The wedge mark | `data_loop_wedge.hpp` | Once ear says the data loop is wedged, `main.cpp` marks the engine and the adapters stop calling into it (section "drive()") |
 | Main-loop executor | `main_loop_executor.cpp` | Work posted from any thread (the control port's graph calls) runs on the main loop: a mutex-guarded queue plus a `pw_loop` event source |
+| Realtime bell | `realtime_bell.cpp` | Core's `RealtimeBell`: a node's code rings it from the data loop after a cycle it wrote status, events or log codes in (at most once until the drain); a `pw_loop` event on the main loop whose dispatch calls `NodeHost::realtimeRung` (`docs/engine.md#the-realtime-bell`) |
 | Shared names | `engine_names.hpp` | The graph group's name, a card's driver priority and the internal clock's name |
 
 `main.cpp` passes `<directory of /proc/self/exe>/engine.conf`; the tests pass the source tree's

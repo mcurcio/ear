@@ -42,6 +42,7 @@
 #include "ear/config/graph_file_keeper.hpp"
 #include "ear/control/gateway.hpp"
 #include "ear/control/status_log.hpp"
+#include "ear/control/type_schemas.hpp"
 #include "ear/core/counter_watch.hpp"
 #include "ear/core/desired_graph.hpp"
 #include "ear/core/graph_view.hpp"
@@ -63,6 +64,7 @@
 #include "ear/pipewire/main_loop_executor.hpp"
 #include "ear/pipewire/pipe_receivers.hpp"
 #include "ear/pipewire/port_blocks.hpp"
+#include "ear/pipewire/realtime_bell.hpp"
 #include "ear/pipewire/rtp_receivers.hpp"
 #include "ear/pipewire/sinks.hpp"
 #include "ear/pipewire/sound_cards.hpp"
@@ -426,11 +428,20 @@ int main(int argc, char** argv) {
 	                                                      .pipeReceivers = &pipeReceivers,
 	                                                      .programs = &programs,
 	                                                      .runtimeFolder = runtime->path.string()});
+	// The realtime bell (docs/engine.md#the-realtime-bell): a node's code rings it from the data loop after a cycle it
+	// wrote in, and its dispatch arms NodeHost's tick. Made before NodeHost and freed after it, once no code runs.
+	ear::NodeHost* ringing = nullptr;
+	ear::pipewire::MainLoopRealtimeBell realtimeBell(*engine, [&ringing] {
+		if (ringing != nullptr) ringing->realtimeRung();
+	});
 	ear::NodeHost nodes(format, blocks, resources, mainLoop, mainLoop);
+	nodes.ringWith(realtimeBell);
+	ringing = &nodes;
 	const ear::GraphStatus status({format, scheduling.realtime, scheduling.detail}, catalogue, graph, nodes, reconciler,
 	                              engine.get());
 
 	ear::config::GraphFileKeeper keeper(std::move(first), *config, format, graph, status, nodes, mainLoop);
+	keeper.answerActions(nodes);
 	ear::control::MainLoopGateway gateway(mainLoop, control, keeper);
 	// The counters' reports (docs/engine.md#reporting-the-counters): read at the heartbeat, told to the wire and to
 	// standard output.
@@ -446,8 +457,9 @@ int main(int argc, char** argv) {
 	nodes.subscribe(log);
 	nodes.subscribe(gateway);
 	nodes.subscribeNotes(log);
-	// ear.close-overdue, ear.close-late, ear.claim-wait, ear.fade-unacknowledged, ear.barrier-overdue, ear.hook-slow
+	// The node diagnostics NodeHost keeps (docs/output-records.md#diagnostic), CounterWatch's companion losses among them.
 	nodes.subscribeDiagnostics(log);
+	nodes.subscribeStatus(log);            // status records and events (docs/output-records.md#status)
 	nodes.subscribeLog(log);               // a stop() that threw during a teardown; each node handle's log
 	nodes.subscribeInternalErrors(log);    // an adapter's bug NodeHost caught: ear.internal-error, then its node lost
 	nodes.subscribeEngineDiagnostics(log); // ear.data-loop-wedged, as a record with no node
@@ -456,9 +468,11 @@ int main(int argc, char** argv) {
 	nodes.subscribeCounts(counterWatch);           // where each name's counts begin and end
 	counterWatch.subscribe(gateway);               // counters.changed
 	nodes.subscribeCompanions(gateway);            // node.companionsChanged: a list's entries and readiness
+	nodes.subscribeStatus(gateway);                // node.statusChanged, node.eventRaised (docs/control-port.md#status)
+	nodes.subscribeDiagnostics(gateway);           // node.diagnostic: a node's diagnostics, its superseded node's never
 	counterWatch.subscribeCompanions(gateway);     // and its counters' moves
-	counterWatch.subscribe(
-		log); // ear.graph-lost-cycles, ear.node-missed-cycles, ear.sink-dropped, ear.source-shortfall
+	counterWatch.subscribe(log);                   // ear.graph-lost-cycles, ear.node-missed-cycles
+	counterWatch.subscribe(nodes); // ear.sink-dropped, ear.source-shortfall: kept on the node, told as its own
 	reconciler.subscribe(log);
 	reconciler.subscribe(gateway);
 	live.subscribe(reconciler);
@@ -479,7 +493,10 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 
-	auto started = ear::server::ControlPort::start(portSettings, control, gateway, blocks, bell);
+	// The node types' schemas, encoded once: types.get answers from this, and every Graph names its hash
+	// (docs/control-port.md#type-schemas).
+	auto started = ear::server::ControlPort::start(portSettings, control, gateway, blocks, bell,
+	                                               ear::control::encodeTypeSchemas(catalogue));
 	if (!started) {
 		// The keeper's thread closes its inotify descriptor, which waits on the kernel, before ear's last record.
 		keeper.stop();

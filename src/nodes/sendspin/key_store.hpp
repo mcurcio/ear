@@ -7,13 +7,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 #include <nlohmann/json.hpp>
-#include "ear/core/node_handle.hpp"
 #include "ear/core/store.hpp"
 #include "sendspin/client.h"
 namespace ear::nodes::sendspin {
@@ -27,21 +27,23 @@ std::string emptyKeyRecord();
 std::optional<std::string> whyNotKeyRecord(std::string_view text);
 class NodeKeyStore final : public ::sendspin::SendspinPersistenceProvider {
 public:
+	/// Told why a write failed (the worker raises `key-write-failed`), on the thread that wrote.
+	using WriteFailed = std::function<void(std::string_view detail)>;
 	/// The worker, before client.start(): the record the store opened and trusted. Error: the store's text is no key
 	/// record after all (the store's rule judged it: a bug), with why.
-	static std::expected<std::unique_ptr<NodeKeyStore>, std::string> open(Store& store, NodeHandle& events);
+	static std::expected<std::unique_ptr<NodeKeyStore>, std::string> open(Store& store, WriteFailed writeFailed);
 	std::optional<std::vector<std::uint8_t>> load_blob(const std::string& key) override;
-	/// Blocking (the store's replace): the worker's thread or a library thread, never the main loop. Failure:
-	/// `key-write-failed`. A write the store could not confirm within its 5 s (StoreWriteError::unconfirmed) is judged
+	/// Blocking (the store's replace): the worker's thread or a library thread, never the main loop. Failure: told to
+	/// WriteFailed. A write the store could not confirm within its 5 s (StoreWriteError::unconfirmed) is judged
 	/// by the store's text: written if it shows this record, else failed, though it may still land. The blob stays in
 	/// memory either way, so a later write that works carries it too (the library's contract: this run's state stays
 	/// authoritative).
 	bool save_blob(const std::string& key, const std::uint8_t* data, std::size_t size) override;
 
 private:
-	NodeKeyStore(Store& store, NodeHandle& events, nlohmann::json record) noexcept;
+	NodeKeyStore(Store& store, WriteFailed writeFailed, nlohmann::json record) noexcept;
 	Store& store_;
-	NodeHandle& events_;
+	WriteFailed writeFailed_;
 	nlohmann::json record_;
 };
 } // namespace ear::nodes::sendspin

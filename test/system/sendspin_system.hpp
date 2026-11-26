@@ -84,10 +84,6 @@ inline std::string listenToRec(std::uint16_t port) { return maToRec("port " + st
 
 inline ChildProcess runEar(const TempDirectory& directory) { return ChildProcess(EAR_BINARY, earArguments(directory)); }
 
-inline constexpr std::string_view connectedUnpaired = "node ma says connected \"ear-test-server\" unpaired";
-inline constexpr std::string_view connectedPaired = "node ma says connected \"ear-test-server\" paired";
-inline const std::string pairingCodePrefix = "node ma says pairing-code ";
-
 inline const std::vector<std::string> runningAndLinked{
 	"node ma running",
 	"node rec running",
@@ -125,21 +121,205 @@ inline std::size_t countLines(const ChildProcess& ear, const std::string& prefix
 	return seen;
 }
 
-/// The digits of a `says pairing-code 123-456` line.
-inline std::string digitsOf(const std::string& line) {
-	std::string digits = line.substr(pairingCodePrefix.size());
-	std::erase(digits, '-');
-	return digits;
+// What a sendspin node reports is in records (docs/node-types.md#status-and-events): its status fields as `status`
+// records, each a change (docs/output-records.md#status), and its events as `event` records. These read them.
+
+/// Whether `record` is a `status` record of `node`'s `field`.
+inline bool isStatus(const json& record, std::string_view field, std::string_view node = "ma") {
+	return record.value("kind", "") == "status" && record.value("node", "") == node &&
+	       record.value("field", "") == field;
+}
+/// Whether `record` is an `event` record of `node`'s `code`.
+inline bool isEvent(const json& record, std::string_view code, std::string_view node = "ma") {
+	return record.value("kind", "") == "event" && record.value("node", "") == node && record.value("code", "") == code;
 }
 
-/// Connected and unpaired: `pair`, then the code ear shows, until ear says it is paired on the new key.
-inline void pairOnce(ChildProcess& ear, SendspinTestServer& server) {
+/// The `index`th record (from 0) `wanted` accepts, once ear has written it. Nothing past `patience`.
+inline std::optional<json> waitForNth(ChildProcess& ear, const std::function<bool(const json&)>& wanted,
+                                      std::size_t index, std::chrono::milliseconds patience = deadline) {
+	std::size_t seen = 0; // waitForRecord offers each record once, in order
+	return ear.waitForRecord([&](const json& record) { return wanted(record) && seen++ == index; }, patience);
+}
+
+/// How many records `wanted` accepts so far.
+inline std::size_t countRecords(const ChildProcess& ear, const std::function<bool(const json&)>& wanted) {
+	return static_cast<std::size_t>(std::ranges::count_if(ear.records(), wanted));
+}
+
+/// Where the first record `wanted` accepts is among ear's records so far.
+inline std::optional<std::size_t> indexOf(const ChildProcess& ear, const std::function<bool(const json&)>& wanted) {
+	const auto& records = ear.records();
+	const auto found = std::ranges::find_if(records, wanted);
+	if (found == records.end()) return std::nullopt;
+	return static_cast<std::size_t>(found - records.begin());
+}
+
+/// A predicate: `node`'s `field` changed to `to`.
+inline std::function<bool(const json&)> statusTo(std::string field, json to, std::string node = "ma") {
+	return [field = std::move(field), to = std::move(to), node = std::move(node)](const json& record) {
+		return isStatus(record, field, node) && record.value("to", json()) == to;
+	};
+}
+/// A predicate: `node` raised `code`.
+inline std::function<bool(const json&)> eventOf(std::string code, std::string node = "ma") {
+	return [code = std::move(code), node = std::move(node)](const json& record) { return isEvent(record, code, node); };
+}
+
+/// The `index`th time `node`'s `field` changed to `to`.
+inline std::optional<json> waitForStatus(ChildProcess& ear, const std::string& field, const json& to,
+                                         std::size_t index = 0, std::chrono::milliseconds patience = deadline,
+                                         const std::string& node = "ma") {
+	return waitForNth(ear, statusTo(field, to, node), index, patience);
+}
+inline std::size_t countStatus(const ChildProcess& ear, const std::string& field, const json& to,
+                               const std::string& node = "ma") {
+	return countRecords(ear, statusTo(field, to, node));
+}
+/// Whether `node`'s `field` has changed at all.
+inline bool anyStatus(const ChildProcess& ear, const std::string& field, const std::string& node = "ma") {
+	return countRecords(ear, [&](const json& record) { return isStatus(record, field, node); }) > 0;
+}
+/// `node`'s `field` as its last record so far, or before record `before`, left it: nothing if none did (it is at its
+/// initial value).
+inline std::optional<json> lastStatus(const ChildProcess& ear, const std::string& field, const std::string& node = "ma",
+                                      std::size_t before = SIZE_MAX) {
+	std::optional<json> last;
+	const auto& records = ear.records();
+	for (std::size_t at = 0; at < records.size() && at < before; ++at) {
+		if (isStatus(records[at], field, node)) last = records[at].contains("to") ? records[at]["to"] : json();
+		if (records[at].value("kind", "") == "status" && records[at].value("node", "") == node &&
+		    records[at].value("reset", false))
+			last.reset();
+	}
+	return last;
+}
+
+/// The `index`th time `node` raised `code`.
+inline std::optional<json> waitForEvent(ChildProcess& ear, const std::string& code, std::size_t index = 0,
+                                        std::chrono::milliseconds patience = deadline, const std::string& node = "ma") {
+	return waitForNth(ear, eventOf(code, node), index, patience);
+}
+inline std::size_t countEvents(const ChildProcess& ear, const std::string& code, const std::string& node = "ma") {
+	return countRecords(ear, eventOf(code, node));
+}
+
+/// The server the tests run (sendspin_server.py) by its own name.
+inline const std::string testServerName = "ear-test-server";
+
+/// The `index`th time `node` was connected to a server, by its `connection` record, with the server's name and its
+/// pairing as the records before it left them (the worker writes both first): whether it was, within `patience`, to
+/// the test server and paired as `paired` says.
+inline bool waitForConnected(ChildProcess& ear, bool paired, std::size_t index = 0,
+                             std::chrono::milliseconds patience = deadline, const std::string& node = "ma") {
+	if (!waitForStatus(ear, "connection", "connected", index, patience, node)) return false;
+	std::size_t seen = 0;
+	const auto at = indexOf(
+		ear, [&](const json& record) { return statusTo("connection", "connected", node)(record) && seen++ == index; });
+	return lastStatus(ear, "serverName", node, *at).value_or(json("")) == testServerName &&
+	       lastStatus(ear, "paired", node, *at).value_or(json(false)) == paired;
+}
+/// The first connection, to the test server, unpaired.
+inline bool connectedUnpaired(ChildProcess& ear, std::chrono::milliseconds patience = deadline,
+                              const std::string& node = "ma") {
+	return waitForConnected(ear, false, 0, patience, node);
+}
+/// The `index`th time `node`'s connection read paired: once pairing succeeded, and at each connection after that.
+inline bool waitForPaired(ChildProcess& ear, std::size_t index = 0, std::chrono::milliseconds patience = deadline,
+                          const std::string& node = "ma") {
+	return waitForStatus(ear, "paired", true, index, patience, node).has_value();
+}
+inline std::size_t countPaired(const ChildProcess& ear, const std::string& node = "ma") {
+	return countStatus(ear, "paired", true, node);
+}
+/// A predicate: `node`'s connection lost, by its `connection` record moving from `connected`.
+inline std::function<bool(const json&)> disconnectedOf(std::string node = "ma") {
+	return [node = std::move(node)](const json& record) {
+		return isStatus(record, "connection", node) && record.value("from", json()) == "connected" &&
+		       record.value("to", json()) != "connected";
+	};
+}
+inline std::optional<json> waitForDisconnected(ChildProcess& ear, std::size_t index = 0,
+                                               std::chrono::milliseconds patience = deadline,
+                                               const std::string& node = "ma") {
+	return waitForNth(ear, disconnectedOf(node), index, patience);
+}
+inline bool everDisconnected(const ChildProcess& ear, const std::string& node = "ma") {
+	return countRecords(ear, disconnectedOf(node)) > 0;
+}
+
+/// A predicate: a code offered, by `node`'s `pairingCode` record to a code.
+inline std::function<bool(const json&)> codeOffered(std::string node = "ma") {
+	return [node = std::move(node)](const json& record) {
+		return isStatus(record, "pairingCode", node) && record.value("to", json("")) != "";
+	};
+}
+/// The `index`th code `node` offered, as it shows it (`123-456`).
+inline std::optional<std::string> waitForPairingCode(ChildProcess& ear, std::size_t index = 0,
+                                                     std::chrono::milliseconds patience = deadline,
+                                                     const std::string& node = "ma") {
+	const auto record = waitForNth(ear, codeOffered(node), index, patience);
+	if (!record) return std::nullopt;
+	return (*record)["to"].get<std::string>();
+}
+inline std::size_t countPairingCodes(const ChildProcess& ear, const std::string& node = "ma") {
+	return countRecords(ear, codeOffered(node));
+}
+/// The digits of a code as the node shows it (`123-456`).
+inline std::string digitsOf(std::string code) {
+	std::erase(code, '-');
+	return code;
+}
+
+/// `node`'s client id, once it has written it.
+inline std::optional<std::string> waitForClientId(ChildProcess& ear, std::size_t index = 0,
+                                                  std::chrono::milliseconds patience = deadline,
+                                                  const std::string& node = "ma") {
+	const auto record = waitForNth(
+		ear, [&](const json& r) { return isStatus(r, "clientId", node) && r.value("to", json("")) != ""; }, index,
+		patience);
+	if (!record) return std::nullopt;
+	return (*record)["to"].get<std::string>();
+}
+
+/// `node` dialling `url`: its `url` record, then its `connection` to `dialling`.
+inline bool waitForDialling(ChildProcess& ear, const std::string& url, std::size_t index = 0,
+                            std::chrono::milliseconds patience = deadline, const std::string& node = "ma") {
+	return waitForStatus(ear, "url", url, index, patience, node) &&
+	       waitForStatus(ear, "connection", "dialling", index, patience, node);
+}
+inline bool everDialled(const ChildProcess& ear, const std::string& node = "ma") {
+	return countStatus(ear, "connection", "dialling", node) > 0;
+}
+inline bool everListened(const ChildProcess& ear, const std::string& node = "ma") {
+	return countStatus(ear, "connection", "listening", node) > 0;
+}
+
+/// `node` playing the stream the tests ask for: FLAC 24 stereo at the graph frequency.
+inline bool streamedFlac24(const ChildProcess& ear, const std::string& node = "ma") {
+	return countStatus(ear, "stream", "flac", node) > 0 && countStatus(ear, "streamRate", graphFrequency, node) > 0 &&
+	       countStatus(ear, "streamChannels", 2, node) > 0 && countStatus(ear, "streamBits", 24, node) > 0;
+}
+/// How many streams began at `node`.
+inline std::size_t countStreams(const ChildProcess& ear, const std::string& node = "ma") {
+	return countRecords(ear, [&](const json& record) {
+		return isStatus(record, "stream", node) && record.value("to", json()) != "none";
+	});
+}
+/// How many streams ended at `node`.
+inline std::size_t countStreamEnds(const ChildProcess& ear, const std::string& node = "ma") {
+	return countStatus(ear, "stream", "none", node);
+}
+
+/// Connected and unpaired: `pair`, then the code ear shows, until its connection reads paired on the new key.
+inline void pairOnce(ChildProcess& ear, SendspinTestServer& server, const std::string& node = "ma") {
+	const std::size_t codes = countPairingCodes(ear, node);
+	const std::size_t paired = countPaired(ear, node);
 	server.send("pair");
-	const auto code = ear.waitForLineStartingWith(pairingCodePrefix, deadline);
+	const auto code = waitForPairingCode(ear, codes, deadline, node);
 	INFO("ear printed:\n" << ear.output());
 	REQUIRE(code);
 	server.send("code " + digitsOf(*code));
-	REQUIRE(ear.waitForLine(connectedPaired, deadline));
+	REQUIRE(waitForPaired(ear, paired, deadline, node));
 }
 
 /// The control port's number, once ear has said it.
@@ -183,17 +363,25 @@ inline bool connectRefused(std::uint16_t port) {
 	return refused;
 }
 
-/// The instance a listening node says it goes by, once it has said so: `ear-<node>-<first 8 of its id>`, its id's own.
-inline std::string waitForInstance(ChildProcess& ear, const std::string& node, std::uint16_t port) {
-	const std::string saying = "node " + node + " says listening " + std::to_string(port) + " as ";
-	const auto listening = ear.waitForLineStartingWith(saying, deadline);
+/// A predicate: `node` listing itself over mDNS, by its `instance` record to a name.
+inline std::function<bool(const json&)> instanceListed(std::string node = "ma") {
+	return [node = std::move(node)](const json& record) {
+		return isStatus(record, "instance", node) && record.value("to", json("")) != "";
+	};
+}
+/// The instance a listening node goes by the `index`th time it listed itself, listening on `port`:
+/// `ear-<node>-<first 8 of its id>`, its id's own.
+inline std::string waitForInstance(ChildProcess& ear, const std::string& node, std::uint16_t port,
+                                   std::size_t index = 0, std::chrono::milliseconds patience = deadline) {
+	const auto listed = waitForNth(ear, instanceListed(node), index, patience);
 	INFO("ear printed:\n" << ear.output());
-	REQUIRE(listening);
-	const auto id = ear.lineStartingWith("node " + node + " says id ");
+	REQUIRE(listed);
+	CHECK(lastStatus(ear, "listenPort", node) == json(port));
+	CHECK(lastStatus(ear, "connection", node) == json("listening"));
+	const auto id = lastStatus(ear, "clientId", node);
 	REQUIRE(id);
-	CHECK(ear.output().find(*id) < ear.output().find(*listening));
-	const std::string instance = listening->substr(saying.size());
-	CHECK(instance == "ear-" + node.substr(0, 50) + "-" + id->substr(("node " + node + " says id ").size(), 8));
+	const std::string instance = (*listed)["to"].get<std::string>();
+	CHECK(instance == "ear-" + node.substr(0, 50) + "-" + id->get<std::string>().substr(0, 8));
 	return instance;
 }
 
@@ -488,10 +676,9 @@ inline bool waitForRampFrames(const std::filesystem::path& path, std::size_t fra
 /// Ends the stream the server plays to its current client, and waits for node `node` to say so: stream/end clears what
 /// the node holds, so the WAV ends in zeros rather than in the fade a stop would make.
 inline bool endStream(ChildProcess& ear, SendspinTestServer& server, const std::string& node = "ma") {
-	const std::string ended = "node " + node + " says stream-ended";
-	const std::size_t before = countLines(ear, ended);
+	const std::size_t before = countStreamEnds(ear, node);
 	server.send("end");
-	return waitForNthLine(ear, ended, before, playDeadline).has_value();
+	return waitForStatus(ear, "stream", "none", before, playDeadline, node).has_value();
 }
 
 /// `lostSyncsUs`: what the library logged (lostSyncUs); each line accounts for one forward step of whole chunks and up to

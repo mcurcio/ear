@@ -167,3 +167,40 @@ describe("ask", () => {
     expect(editor.requests.get().inFlight).toEqual([]);
   });
 });
+
+describe("the type schemas", () => {
+  it("are asked once for the hash a Graph names, and held once ear answers", async () => {
+    const { editor, sockets } = session();
+    const socket = sockets[0]!;
+    const graph = {
+      protocol: 1,
+      features: ["types"],
+      typeSchemaHash: "fnv1a64:0123456789abcdef",
+      graphFrequency: 48000,
+      blockSize: 256,
+      realtime: false,
+      scheduling: "SCHED_OTHER",
+      types: ["white"],
+      nodes: [],
+      routes: [],
+    };
+    const subscribe = socket.sent.find((request) => request.method === "graph.subscribe")!;
+    socket.receive({ jsonrpc: "2.0", id: subscribe.id, result: graph });
+    socket.receive({ jsonrpc: "2.0", method: "route.added", params: ends }); // another text: no second ask
+    const asked = socket.sent.filter((request) => request.method === "types.get");
+    expect(asked).toHaveLength(1);
+    expect(asked[0]!.params).toStrictEqual({});
+    const white = { name: "white", settings: [], inputs: [], outputs: ["noise"], reconfigureMs: 10000 };
+    socket.receive({
+      jsonrpc: "2.0",
+      id: asked[0]!.id,
+      result: { protocol: 1, hash: graph.typeSchemaHash, typeSchemas: [white] },
+    });
+    // Held once the store is told: its listener is the event waited for.
+    await new Promise<void>((resolve) => {
+      if (editor.types.get() !== null) resolve();
+      else editor.types.subscribe(resolve);
+    });
+    expect(editor.types.schemaOf(editor.graph.get(), "white")).toStrictEqual(white);
+  });
+});

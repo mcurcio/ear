@@ -18,14 +18,14 @@ if (root === null) {
   throw new Error("index.html has no #root element");
 }
 
-const scheme = window.location.protocol === "https:" ? "wss" : "ws";
-const editor = new Editor({ url: `${scheme}://${window.location.host}/rpc` });
-editor.client.start();
-
-// What the browser keeps (docs/editor.md#what-the-browser-keeps): places and sizes per ear (this page's host), the
-// theme per browser, applied before the first render so a kept dark choice never flashes light.
+// What the browser keeps (docs/editor.md#what-the-browser-keeps): places, sizes and the type schemas per ear (this page's
+// host), the theme per browser, applied before the first render so a kept dark choice never flashes light.
 const prefs = new Prefs(browserStorage(), window.location.host);
 applyTheme(document.documentElement, prefs.theme() ?? defaultTheme);
+
+const scheme = window.location.protocol === "https:" ? "wss" : "ws";
+const editor = new Editor({ url: `${scheme}://${window.location.host}/rpc`, typeKeeper: prefs.typeSchemaKeeper() });
+editor.client.start();
 
 createRoot(root).render(
   <StrictMode>

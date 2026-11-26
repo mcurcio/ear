@@ -234,6 +234,28 @@ export interface Companion {
   shortfall?: number;
 }
 
+/** A status field's value (feature status): null while unknown, a flag, a number, or a text (a choice's value is its text). */
+export type StatusValue = null | boolean | number | string;
+/** How an event reads to an operator; not a graph file diagnostic's Severity. */
+export type EventSeverity = "info" | "warn" | "error" | (string & {});
+/**
+ * One of a node's diagnostics (feature status, docs/control-port.md#node-diagnostics), kept per code and subject: a
+ * condition is active until it ends; an observation is never active. Its code's fields ride beside the rest. A code
+ * this editor does not know is drawn by its msg.
+ */
+export interface NodeDiagnostic {
+  code: string;
+  /** What it is about: a field, a loop, a claim, a hook or a companion; "" when its code has none. */
+  subject: string;
+  active: boolean;
+  /** A condition's times it became active, an observation's times seen. */
+  count: number;
+  t: string;
+  msg: string;
+  detail?: string;
+  [field: string]: JsonValue | undefined;
+}
+
 /** A node as snapshots and node.added carry it: its spec, its public ports, its health, its counters and companions. */
 export interface GraphNode extends NodeHealth {
   name: string;
@@ -247,6 +269,10 @@ export interface GraphNode extends NodeHealth {
   counters?: NodeCounters;
   /** Feature companions: its companion list, in request order ([] in node.added, and for a node with none). */
   companions?: Companion[];
+  /** Feature status: every status field of its type at its value now (initial values in node.added). */
+  status?: { [field: string]: StatusValue };
+  /** Feature status: every diagnostic the node was told, one per code and subject ([] in node.added). */
+  diagnostics?: NodeDiagnostic[];
 }
 
 export interface GraphRoute extends RouteEnds {
@@ -270,7 +296,104 @@ export interface Graph {
   routes: GraphRoute[];
   /** Feature counters: the graph's counters, read with the rest. */
   counters?: GraphCounters;
+  /** Feature types: the hash of the node types' schemas (types.get's), opaque; fetch them once per hash. */
+  typeSchemaHash?: string;
 }
+
+// ----- The node types' schemas (feature types, docs/control-port.md#type-schemas) -----
+
+/** A setting's value kind, as the control port takes it: a rate is a whole number of Hz there. */
+export type SettingValueKind = "text" | "wholeNumber" | "flag" | (string & {});
+/** What a change to the row asks of the node: from its row's marks. */
+export type SettingChange = "inPlace" | "restart" | (string & {});
+/** Where an optional row's value comes from when absent. */
+export type DefaultFrom = "graphFrequency" | "nodeName" | (string & {});
+
+/** One setting row of a type, as types.get says it; members that do not apply are absent. */
+export interface SettingSchema {
+  key: string;
+  kind: SettingValueKind;
+  required: boolean;
+  change: SettingChange;
+  /** A change to it may change the node's ports. */
+  shapes?: true;
+  default?: JsonValue;
+  defaultFrom?: DefaultFrom;
+  /** wholeNumber: its range, and its unit when it has one. */
+  min?: number;
+  max?: number;
+  unit?: string;
+  /** text: what it must be, in the row's own words, and the hints for its control (ear stays the judge). */
+  mustBe?: string;
+  values?: string[];
+  pattern?: string;
+  maxLength?: number;
+  /** Refused when the key named is given too. */
+  onlyWithout?: string;
+  help?: string;
+}
+
+/** One status field of a type (feature status). */
+export interface StatusFieldSchema {
+  name: string;
+  kind: "flag" | "wholeNumber" | "decimal" | "choice" | "text" | (string & {});
+  /** null: it starts unknown. */
+  initial: StatusValue;
+  /** panel: only in the node's panel; box: on its box too; callout: a banner while not at its initial value. */
+  display: "panel" | "box" | "callout" | (string & {});
+  flapsAbove: { transitions: number; windowMs: number };
+  min?: number;
+  max?: number;
+  decimals?: number;
+  unit?: string;
+  values?: string[];
+  maxBytes?: number;
+  help?: string;
+}
+
+/** One event of a type (feature status): its sentence names each argument once as {name}. */
+export interface EventSchema {
+  code: string;
+  severity: EventSeverity;
+  sentence: string;
+  args: Array<{ name: string; kind: string; min?: number; max?: number; decimals?: number; values?: string[]; maxBytes?: number }>;
+}
+
+/** An action's argument: a setting row without what only a setting has (change, shapes). */
+export type ActionArgSchema = Omit<SettingSchema, "change" | "shapes">;
+
+/**
+ * One type action (feature actions, docs/control-port.md#actions): a trigger (target code, no args) or a call (target
+ * loop, its args setting rows).
+ */
+export interface ActionSchema {
+  name: string;
+  by: "type" | (string & {});
+  target: "code" | "loop" | (string & {});
+  help: string;
+  args: ActionArgSchema[];
+}
+
+/** One node type, as types.get says it. */
+export interface TypeSchema {
+  name: string;
+  settings: SettingSchema[];
+  /** The public banks' names, in declaration order. */
+  inputs: string[];
+  outputs: string[];
+  /** How long a change in place may take before it falls back to a restart. */
+  reconfigureMs: number;
+  /** Feature status: its status fields and events, in declaration order. */
+  status?: StatusFieldSchema[];
+  events?: EventSchema[];
+  /** Feature actions: its actions, in declaration order. */
+  actions?: ActionSchema[];
+}
+
+/** types.get's result: the schemas, or notModified when ifNoneMatch named the hash. */
+export type TypesResult =
+  | { protocol: number; hash: string; typeSchemas: TypeSchema[]; notModified?: undefined }
+  | { protocol: number; hash: string; notModified: true; typeSchemas?: undefined };
 
 // ----- The graph file (docs/control-port.md#the-graph-file-over-the-port) -----
 
@@ -344,6 +467,8 @@ export interface Methods {
   "graph.get": { params: undefined; result: Graph };
   "graph.subscribe": { params: undefined; result: Graph };
   "levels.subscribe": { params: undefined; result: { windowsPerSecond: number } };
+  /** Feature types: every node type's schema, or notModified when ifNoneMatch is the hash. */
+  "types.get": { params: { ifNoneMatch?: string }; result: TypesResult };
   /** disabled (feature lifecycle): written as `disabled true;` in the node's braces. */
   "node.add": { params: NodeSpec & { disabled?: boolean }; result: Record<string, never> };
   /** dropRoutes (feature reshape): the routes its new ports strand are removed in the same edit. */
@@ -385,6 +510,8 @@ export interface Methods {
   "node.restart": { params: { name: string }; result: { applied: Applied } };
   "node.disable": { params: { name: string }; result: { applied: Applied } };
   "node.enable": { params: { name: string }; result: { applied: Applied } };
+  /** Feature actions: one of the node's type actions, args an object; {} once done (docs/control-port.md#actions). */
+  "node.invoke": { params: { name: string; action: string; args?: JsonObject }; result: Record<string, never> };
 }
 export type MethodName = keyof Methods;
 
@@ -435,6 +562,22 @@ export interface Notifications {
    * or (at most once a second) a counter moved. Replaces the list; a node not held is ignored.
    */
   "node.companionsChanged": { name: string; companions: Companion[] };
+  /**
+   * Feature status: the fields changed since the node's last (merged into its status), at most 30 a second per node;
+   * with reset, every field at its initial value (replacing its status) after its configuration closed.
+   */
+  "node.statusChanged": { name: string; fields: { [field: string]: StatusValue }; reset?: true };
+  /** Feature status: an event the node raised; nothing in the graph changes. */
+  "node.eventRaised": {
+    name: string;
+    code: string;
+    severity: EventSeverity;
+    t: string;
+    args: { [arg: string]: StatusValue };
+    msg: string;
+  };
+  /** Feature status: one diagnostic, replacing the node's entry of the same code and subject, or joining its list. */
+  "node.diagnostic": { name: string } & NodeDiagnostic;
 }
 export type NotificationName = keyof Notifications;
 
@@ -471,6 +614,18 @@ export type ControlErrorCode =
   | "not-restartable"
   /** node.update without dropRoutes: its new ports drop ports routes name (data.ports, data.routes). */
   | "ports-in-use"
+  /** node.invoke (feature actions): no such action of the node's type (data.action). */
+  | "unknown-action"
+  /** node.invoke: the arguments fail the action's table (data.key, data.detail). */
+  | "invalid-args"
+  /** node.invoke: the node cannot take it now (data.phase). */
+  | "not-running"
+  /** node.invoke: the configuration was torn down before the call ran. */
+  | "restarted"
+  /** node.invoke: the handler refused; the message is its text (data.detail). */
+  | "action-failed"
+  /** node.invoke: no answer within 10 s. */
+  | "action-timeout"
   | (string & {});
 
 export const rpcErrorCodes = {
@@ -498,6 +653,16 @@ export interface RpcErrorObject {
     routes?: RouteEnds[];
     /** invalidParams. */
     pointer?: string;
+    /**
+     * invalid-settings and invalid-args: the key the refusal names (absent for a rule naming none), and the refusal in
+     * its own words; action-failed: the handler's text.
+     */
+    key?: string;
+    detail?: string;
+    /** unknown-action: the action asked for. */
+    action?: string;
+    /** not-running: the node's phase. */
+    phase?: string;
   };
 }
 
@@ -542,6 +707,7 @@ const methodSet: { [M in MethodName]: true } = {
   "graph.get": true,
   "graph.subscribe": true,
   "levels.subscribe": true,
+  "types.get": true,
   "node.add": true,
   "node.update": true,
   "node.remove": true,
@@ -558,6 +724,7 @@ const methodSet: { [M in MethodName]: true } = {
   "node.set": true,
   "node.setText": true,
   "node.addText": true,
+  "node.invoke": true,
 };
 export const methodNames = Object.keys(methodSet) as MethodName[];
 
@@ -575,6 +742,9 @@ const notificationSet: { [N in NotificationName]: true } = {
   "graphFile.changed": true,
   "counters.changed": true,
   "node.companionsChanged": true,
+  "node.statusChanged": true,
+  "node.eventRaised": true,
+  "node.diagnostic": true,
 };
 export const notificationNames = Object.keys(notificationSet) as NotificationName[];
 
@@ -599,10 +769,27 @@ const fileErrorCodeSet: { [C in FileErrorCode]: true } = {
 };
 export const fileErrorCodes = Object.keys(fileErrorCodeSet) as FileErrorCode[];
 
-const controlErrorCodeSet: { [C in "node-disabled" | "not-restartable" | "ports-in-use"]: true } = {
+const controlErrorCodeSet: {
+  [C in
+    | "node-disabled"
+    | "not-restartable"
+    | "ports-in-use"
+    | "unknown-action"
+    | "invalid-args"
+    | "not-running"
+    | "restarted"
+    | "action-failed"
+    | "action-timeout"]: true;
+} = {
   "node-disabled": true,
   "not-restartable": true,
   "ports-in-use": true,
+  "unknown-action": true,
+  "invalid-args": true,
+  "not-running": true,
+  restarted: true,
+  "action-failed": true,
+  "action-timeout": true,
 };
 export const controlErrorCodes = Object.keys(controlErrorCodeSet) as ControlErrorCode[];
 
@@ -614,6 +801,8 @@ export const nodeTextFeature = "node-text";
 export const reshapeFeature = "reshape";
 export const nodeSetFeature = "node.set";
 export const dryRunFeature = "dryRun";
+export const typesFeature = "types";
+export const actionsFeature = "actions";
 
 // ----- The conformance fixtures (test/protocol/*.json) -----
 
