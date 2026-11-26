@@ -57,8 +57,8 @@
   font-family: var(--pb-font-code);
 }
 
-/* The inspector (docs/editor.md#the-inspector): one subject on patchbay's Panel, which pads and scrolls its body, in
-   AppShell's docked inspector or its sheet. */
+/* The inspector (docs/editor.md#the-inspector): one subject, the body under AppShell's header row, in its docked
+   Panel (which pads and scrolls it) or its sheet. */
 .inspector-body h2 {
   font-size: 14px;
   margin: 0 0 6px;
@@ -74,7 +74,7 @@
   border-top: 1px solid var(--pb-line);
 }
 
-.inspector-body .pb-panel-body > .inspector-section:first-child {
+.inspector-body > .inspector-section:first-child {
   border-top: none;
   padding-top: 0;
 }

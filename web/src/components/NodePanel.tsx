@@ -1,10 +1,10 @@
-// The inspector's Node subject (docs/editor.md#the-inspector): the node's name and type, its state pill as the box
-// draws it and its line (health.ts, docs/editor.md#a-nodes-health), the lifecycle bar (Start, Stop, Restart, Disable
-// and Enable when ear has the lifecycle feature, each enabled by health.ts), its text in knobly (with the node-text
-// feature, docs/editor.md#the-node-panels-text; else its settings as JSON), its counters, its companions in words and
-// Delete. Every change is a request to ear; the canvas changes only when ear announces it. A lifecycle button is busy
-// while its own request is on its way, and a refusal shows under the bar as well as in a toast
-// (docs/editor.md#where-a-refusal-lands).
+// The inspector's Node subject (docs/editor.md#the-inspector), under the heading the shell draws (the node's name and
+// type): its state pill as the box draws it and its line (health.ts, docs/editor.md#a-nodes-health), the lifecycle bar
+// (Start, Stop, Restart, Disable and Enable when ear has the lifecycle feature, each enabled by health.ts), its text in
+// knobly (with the node-text feature, docs/editor.md#the-node-panels-text; else its settings as JSON), its counters,
+// its companions in words and Delete. Every change is a request to ear; the canvas changes only when ear announces it.
+// A lifecycle button is busy while its own request is on its way, and a refusal shows under the bar as well as in a
+// toast (docs/editor.md#where-a-refusal-lands).
 import { Button, Field } from "@mcurcio/patchbay/primitives";
 import { useEffect, useState } from "react";
 import { describeHealth, type ActionAvailability, type HealthView } from "../health";
@@ -89,9 +89,6 @@ export function NodePanel({
   return (
     <section className="inspector-section">
       <header className="inspector-node">
-        <h2>
-          {node.name} <span className="ear-node-type">{node.type}</span>
-        </h2>
         <StatePill node={node} health={health} />
         {health.line !== "" && <p className="inspector-line">{health.line}</p>}
       </header>

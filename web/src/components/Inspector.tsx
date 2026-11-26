@@ -1,9 +1,9 @@
 // The inspector (docs/editor.md#the-inspector): one subject, chosen by the selection (selection.ts): the Graph (the
 // engine facts in full, the graph's counters, the add-node form), one Node, one Route, or several with Delete for them
-// all. It is the content of AppShell's inspector, which docks and resizes it, or below the narrow width puts it in a
-// sheet (docs/editor.md#narrow-windows). Every change is a request to ear. An Add command (docs/editor.md#the-palette)
+// all. It is the body of AppShell's inspector, under the heading the shell draws from InspectorTitle; the shell docks
+// and resizes it, or below the narrow width puts it in a sheet (docs/editor.md#narrow-windows). Every change is a request to ear. An Add command (docs/editor.md#the-palette)
 // reaches the add-node form as an intent: its type chosen and the form focused.
-import { Button, Panel } from "@mcurcio/patchbay/primitives";
+import { Button } from "@mcurcio/patchbay/primitives";
 import type { Graph, RouteEnds } from "../protocol";
 import { subjectTitle, type InspectorSubject, type Selection } from "../selection";
 import { wireEnds } from "../wires";
@@ -35,7 +35,6 @@ function Subject({
     case "graph":
       return (
         <>
-          <h2>Graph</h2>
           <EngineFactsSection graph={graph} />
           <AddNodePanel
             types={graph.types}
@@ -55,16 +54,10 @@ function Subject({
         />
       );
     case "route":
-      return (
-        <>
-          <h2>Route</h2>
-          <RoutePanel route={subject.route} onSelect={onSelect} onRemove={(route) => onRemove([], [route])} />
-        </>
-      );
+      return <RoutePanel route={subject.route} onSelect={onSelect} onRemove={(route) => onRemove([], [route])} />;
     case "several":
       return (
         <section className="inspector-section">
-          <h2>{subject.text}</h2>
           <ul className="inspector-list">
             {subject.nodes.map((node) => (
               <li key={`node ${node.name}`}>{node.name}</li>
@@ -108,11 +101,21 @@ export function Inspector({
   onSelect: (selection: Selection) => void;
   onRemove: (nodes: readonly string[], routes: readonly RouteEnds[]) => void;
 }) {
-  // patchbay's Panel, whose body pads and scrolls; the shell names the region (or the sheet) "Inspector", and the
-  // panel is named by its subject.
+  // The body under the shell's one header row (InspectorTitle): a Panel's body when docked, the sheet's when narrow.
+  // The top bar's Inspector button names it in its aria-controls.
   return (
-    <Panel id="inspector" className="inspector-body" aria-label={subjectTitle(subject)}>
+    <div id="inspector" className="inspector-body">
       <Subject graph={graph} subject={subject} onSelect={onSelect} onRemove={onRemove} addIntent={addIntent} />
-    </Panel>
+    </div>
+  );
+}
+
+/** The inspector's heading, which AppShell draws as its one header row: the subject's title, a node's with its type. */
+export function InspectorTitle({ subject }: { subject: InspectorSubject }) {
+  if (subject.kind !== "node") return subjectTitle(subject);
+  return (
+    <>
+      {subject.node.name} <span className="ear-node-type">{subject.node.type}</span>
+    </>
   );
 }

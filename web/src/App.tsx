@@ -32,7 +32,7 @@ import { inspectorInitialWidth } from "./sizes";
 import { Canvas } from "./components/Canvas";
 import { drawerSlots } from "./components/Drawer";
 import { useEditor, useGraph, useGraphFile } from "./components/hooks";
-import { Inspector, type AddIntent } from "./components/Inspector";
+import { Inspector, InspectorTitle, type AddIntent } from "./components/Inspector";
 import { topBar } from "./components/TopBar";
 import { useCanvas } from "./components/useCanvas";
 import { useCommands } from "./components/useCommands";
@@ -239,6 +239,7 @@ export function App({ prefs }: { prefs: Prefs }) {
           graph === null || subject === null
             ? undefined
             : {
+                title: <InspectorTitle subject={subject} />,
                 content: (
                   <Inspector
                     graph={graph}
