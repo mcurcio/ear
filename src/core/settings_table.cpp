@@ -206,6 +206,9 @@ std::span<const SettingDeclaration> NodeType::settingKinds() const noexcept { re
 std::optional<SettingKind> NodeType::kindOf(std::string_view key) const noexcept { return table_->kindOf(key); }
 
 setting::Change NodeType::changeOf(std::string_view key) const noexcept { return table_->changeOf(key); }
+std::optional<std::uint32_t> NodeType::liveIndexOf(std::string_view key) const noexcept {
+	return table_->liveIndexOf(key);
+}
 
 std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings> NodeType::parse(const NodeName& node,
                                                                                   const NodeSettings& settings) const {

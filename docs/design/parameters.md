@@ -1,10 +1,11 @@
 # Parameters: slice 6 of the node framework
 
 Status: design; steps 6.1 (change marks and restart reasons), 6.2 (decimal rows and typed defaults), 6.3 (indexed
-families) and 6.4 (choice rows) are built and in the library docs
-([writing-a-node-type.md](../writing-a-node-type.md#change-marks), [#decimal-rows](../writing-a-node-type.md#decimal-rows),
-[#indexed-families](../writing-a-node-type.md#indexed-families), [#choice-rows](../writing-a-node-type.md#choice-rows)),
-the rest is not. Revised on 2026-11-26 against the code slices 3d (changes in place and reshapes, on
+families), 6.4 (choice rows) and 6.5 (live rows: slots, ramps, steps, live values, `io.param`) are built and in the
+library docs ([writing-a-node-type.md](../writing-a-node-type.md#change-marks), [#decimal-rows](../writing-a-node-type.md#decimal-rows),
+[#indexed-families](../writing-a-node-type.md#indexed-families), [#choice-rows](../writing-a-node-type.md#choice-rows),
+[#live-rows](../writing-a-node-type.md#live-rows), [architecture.md](../architecture.md#the-realtime-channels),
+[#live-values](../architecture.md#live-values)), the rest is not. Revised on 2026-11-26 against the code slices 3d (changes in place and reshapes, on
 `master` since v4.3.0) and 5 (the control plane, on `claude/slice-5`) built, and against the owner's rule M3 from
 `processing-nodes.md` (on `claude/admiring-hamilton-26crw1`), whose slice-6 extensions this page folds in as general
 mechanisms. Slice 6 gives a node type decimal, choice and indexed rows, rows that change **live** (ramped or stepped
@@ -80,6 +81,12 @@ Built, and used here as it is:
 - **The graph file keeper**'s edits at a value's definition (`updateNode`,
   [graph-file.md](../graph-file.md#edits-at-the-source)) and hand edits winning ([#hand-edits-win](../graph-file.md#hand-edits-win)).
 - **The editor's settings form**, its draft, dry run and Apply asking first ([editor.md](../editor.md#the-settings-form)).
+- **Live rows** (step 6.5): `.live(ramp/step)`, slots, the generation word, the advance and the snap at a drive,
+  `io.param` with `Smoothed`, `Stepped` and `forSegments`, `io.count`, `liveValue` and `liveCount`, `NodeHost`'s live
+  values and `setLive`, `h.live` ([writing-a-node-type.md](../writing-a-node-type.md#live-rows),
+  [architecture.md](../architecture.md#the-realtime-channels), [#live-values](../architecture.md#live-values)). Until
+  step 6.6 a change of a live key is planned as an in-place one, the schema says `inPlace` for it, and the live values
+  take the new settings' at the commit point and at each configuration's making.
 
 What it adds, by layer:
 
@@ -263,7 +270,7 @@ live rows add to them:
 - **Inactive is only the code's view.** Every live member up to the maximum, active or not, is seeded at configure,
   written on a retune and kept ramping by the advance, so a member that becomes active (a reshape raising `channels`,
   a live `bands` stepped up) plays its file value from its first sample.
-- The slots of a live family are made for the count row's maximum (section 6.1), so no count change, live or by reshape,
+- The slots of a live family are made for the count row's maximum ([architecture.md](../architecture.md#the-realtime-channels)), so no count change, live or by reshape,
   allocates or resizes anything.
 
 ### 4.5 Aggregates and owners
@@ -291,35 +298,9 @@ Everything extends `settings_table.hpp`, `type_spec.hpp`, `lifecycle.hpp` and `n
 
 ### 5.1 Rules, rows and marks
 
-```cpp
-namespace ear::setting {
-// Built (docs/writing-a-node-type.md#decimal-rows): Taper, DecimalHints, decimal(low, high, unit, hints), and
-// defaulted<V>(key, rule, std::type_identity_t<V>) for a whole number, a decimal and a boolean. Slice 6 adds that a
-// log taper also ramps on ln(v), that a gesture's end rounds to `decimals`, and that the code must output zeros at a
-// minIsSilence row's low.
-// Built (docs/writing-a-node-type.md#choice-rows): choice<E>(names), ChoiceRule and ChoiceIndex.
-// Built (docs/writing-a-node-type.md#indexed-families): IndexedRow<V> and indexed(key, count, rule, byDefault).
-
-struct Ramp { std::uint32_t ms; };     // 1 to 1000 ms; ramp(0) does not compile: write step
-consteval Ramp ramp(std::uint32_t ms);
-struct Step {};
-inline constexpr Step step{};
-enum class Change { restart, inPlace, live };
-}
-```
-
-- **Marks**: `.inPlace()` and `.restarts(why)` are built, one per row, required on a spec's settings and refused on
-  a call's arguments ([writing-a-node-type.md](../writing-a-node-type.md#change-marks)). Slice 6 adds `.live(ramp(ms))`
-  and `.live(step)` as the third mark, on `Row` and `IndexedRow` alike, under the same one-mark rule. `.live` needs a
-  row that always reads a value (required, defaulted or indexed) of a live kind (4.2); a ramp needs a decimal or a
-  boolean. `setting::Change` (built: `restart`, `inPlace`) gains `live`. A family in a call's arguments does not
-  compile (built).
-- **`SettingRow`** (the erased row) changes: its built `change`, `restartReason`, `byDefault`
-  (`std::optional<SettingValue>`, built as `std::variant<std::uint32_t, double, bool, ChoiceIndex>`), `indexedBy` and
-  `maxMembers` stay; the row gains `transition` (`step`, or a ramp's ms). `SettingRule`'s `ChoiceRule` and
-  `SettingKind::choice` are built.
-- **`SettingsTable`** (taking `IndexedRow`s beside `Row`s, as built) counts live members (each family's maximum): over
-  256 does not compile.
+Built ([writing-a-node-type.md](../writing-a-node-type.md#live-rows)): `.live(ramp(ms))` and `.live(step)`, the one-mark
+rule, `SettingRow::rampMs`, the count of live members and its bound of 256. Still to come: a gesture's end rounds to
+`decimals` (step 6.8), and the all-type tests hold a `minIsSilence` row's low to exact zeros (step 6.7).
 
 ### 5.2 Reading settings
 
@@ -342,54 +323,9 @@ retune's own value. So a rule across rows ("`lowHz` below `highHz`") judges what
 open on the two rows from two clients: the second to cross is refused (`tick-refused`) and the pair never plays. The
 change version reads live values through `liveValue`; it must not act on them, because the slots already did.
 
-### 5.3 What `process` gets
+### 5.3 What `process` gets, and 5.4 compile-time refusals
 
-```cpp
-template <const auto& Spec> class Io {
-public:
-	// built: operator[](bank), frames(), set, raise, log, triggered (docs/writing-a-node-type.md#reporting-from-the-code)
-	template <const auto& Row> auto param() const noexcept;                   // Smoothed for a ramp, Stepped<V> for a step
-	template <const auto& Row> auto param(std::size_t member) const noexcept; // a family's member, from 0
-};
-class Smoothed {   // one ramped member over this block, in the row's own unit; a boolean's weight 0..1
-public:
-	bool steady() const noexcept;                         // every frame is value()
-	float value() const noexcept;                         // the block's last frame
-	float operator[](std::uint32_t frame) const noexcept; // O(1), computed from the ramp, no buffer
-	float target() const noexcept;                        // the slot's latest
-};
-template <class V> class Stepped {   // one stepped member: the value for the whole block
-public:
-	V value() const noexcept;
-	bool changed() const noexcept;               // this block is the first with value()
-	V before() const noexcept;                   // the value before the last edge (value() if there was none)
-	std::uint32_t framesSince() const noexcept;  // frames since the last edge, saturating; 0 in the block of the edge
-};
-/// Calls fn(begin, end) over [0, frames) in pieces of at most `piece` frames, ending each where any ramp ends; one
-/// call when every view is steady. For codes that recompute coefficients per piece (eq: 32 frames).
-template <class Fn, class... Views>
-void forSegments(std::uint32_t frames, std::uint32_t piece, Fn&& fn, const Views&... views) noexcept;
-```
-
-The views are values the framework computed before `process` (section 6.2); `io.param` only returns them. A handle resolves to
-an index when the code is prepared, as banks do.
-
-`before` and `framesSince` live in the channels, not the code, so a crossfade survives a swap: a code swapped in two
-blocks after an edge sees `framesSince() == 2 × block` and the same `before()`, and finishes the crossfade the old code
-began. A code's crossfade is a function of (`before`, `value`, `framesSince`), never of state of its own; two edges in
-successive blocks restart it from the second edge, the `before` then being the first edge's value.
-
-### 5.4 Compile-time refusals
-
-Each a case in `src/core/tests/compile_fail/`, matched against GCC 14's wording: `live-text-row`, `live-rate-row`,
-`live-optional-row`, `ramp-whole-number`, `ramp-choice`, `ramp-zero`, `live-members-over-256`, `get-live-row`,
-`count-live-row`, `live-value-not-live`, `param-not-live`, `param-row-not-in-spec`, `param-family-without-member`,
-`param-member-of-plain-row`. That is 14 cases at about 1.3 s each (the marks', the decimals' and defaults', and the
-families' seven, `indexed-*`, `read-family-without-member`, `read-member-of-plain-row` and `action-arg-indexed`, and the choices' seven, `choice-*`, are
-built).
-
-`needsCode` and `hasChannels` (`type_spec.hpp`) count live rows, so a type with live rows always has channels and a
-`configure` that answers a pass-through for it breaks the built rule that only a code can serve what the spec declares.
+Built: [writing-a-node-type.md](../writing-a-node-type.md#live-rows) and `src/core/tests/compile_fail/live_bad.cpp`.
 
 ### 5.5 The erased side
 
@@ -496,83 +432,15 @@ public:
 `gain.cpp` is `makeNodeType<gain::spec, gain::Gain>()`; `CMakeLists.txt` is `ear_node_type(SOURCES gain.cpp TESTS
 tests/gain_test.cpp)`; `validSettings` gains `{"gain", {{{"channels", 2}, {"gainDb", -6.0}, {"trimDb.1", 0.5},
 {"invert.2", true}}}}`. Nothing else names the type. Since 130 live members (1 + 1 + 64 + 64) are made for every
-configuration, each block's advance costs one atomic load when nothing moved (section 6.2). Every row carries its mark;
+configuration, each block's advance costs one atomic load when nothing moved ([architecture.md](../architecture.md#the-realtime-channels)). Every row carries its mark;
 `gain` has no restart row.
 
 ## 6. The realtime contract
 
-### 6.1 Slots and their state live in the channels
-
-| Channel | Direction | Mechanism | Bound | On overflow |
-|---|---|---|---|---|
-| A slot (in) | main loop to code | one `std::atomic<std::uint64_t>` per live member (a decimal's bits, a whole number, a boolean 0 or 1, a choice's index), written by the main loop | 256 live members per spec, each family at its count row's maximum | — (the word holds the latest) |
-| The generation word (in) | main loop to code | one `std::atomic<std::uint64_t>`: the write count in its low 32 bits, bumped after each batch of slot writes, and the snap epoch in its high 32, bumped before a drive (section 6.4); stored (release) by the main loop, its only writer, so no read-modify-write is needed on either side | one | — |
-| Ramp and step state | the advance's alone | per member: current, target, frames left, increment (ramps); before, current and frames since the edge (steps) | as the slots | — |
-
-They are `RealtimeChannels` members beside the triggers' counters and their seen values, made with the configuration,
-kept across every stop, start, change in place and swap, freed at teardown step 5
-([architecture.md](../architecture.md#the-realtime-channels)). Storing a decimal as its 64 bits, as `rt` fields already
-are, needs no `std::atomic<double>`: the built `is_always_lock_free` assertion covers it on every target. The rule "a
-type with no `rt` field, event, log code or trigger has no channels" gains "or live row".
-
-### 6.2 The advance, before `process`
-
-`ErasedSpecCode::process` advances the views before it calls the type's `process`:
-
-1. Load the generation word (acquire). If it is the one last seen and no ramp is running, the views are as last
-   block's (every step unchanged, its `framesSince` advanced by the block): done, one load and no read-modify-write.
-2. If its snap epoch moved, every member's ramp and step state is set to its slot's value (section 6.4).
-3. Otherwise, if its write count moved, load every live member's slot (relaxed, after the acquire), start a ramp where
-   the target moved, step where a step row moved. Remember the word.
-4. Build the views `io.param` returns.
-
-It never allocates, locks, formats or makes a system call. A cycle longer than the block size does not run the code
-([engine.md](../engine.md#the-quantum-guard)), so the ramp does not advance: intended, the block writes zeros anyway.
-
-**Members of one reach** are written by the main loop in one batch before one generation bump, so they start their
-ramps in the same block, except in the rare block whose load falls inside a batch: then the rest start one block later
-(at most one block of ramp apart). A seqlock is not worth its retry loop on the realtime thread.
-
-### 6.3 The ramp's rule
-
-- **Constant time.** When a ramped member's target differs from its ramp's, a new ramp starts at the block's first
-  frame from the current value over `N = max(1, round(ms × graphFrequency / 1000))` frames; a target that moves
-  mid-ramp restarts from where it is, with a full `N`. The graph rate is fixed per process
-  ([graph-file.md](../graph-file.md#the-graph-block)), so `N` is fixed per row.
-- Frame `k` has `v0 + (t − v0) × (k + 1) / N` for `k < N`, then `t`; computed in double, given as float; `operator[]` is
-  O(1) from (v0, t, offset, N).
-- **Domain**: linear in the row's unit for `linear` and `db` tapers; on `ln(v)` for `log`; a boolean from 0 to 1. A
-  `minIsSilence` row ramps linearly in dB from its minimum (a curved fade-in, as a console's); a mute ramps its weight.
-- **Worked vector** (step 6.5's test), stated by frame so it holds at every block size: 48 000 Hz, 20 ms, `N = 960`;
-  value `-6` steady, target `-3.5` stored before frame 0. Frame 0 `-5.9973958`; frame 255 `-5.3333333`; frame 959
-  `-3.5`; frame 960 `-3.5`. At block 256, blocks 0 to 3 are not steady and block 4 is, `value() == -3.5`. A target of
-  `-12` is stored before the first block that starts at or after frame 512: at blocks of 1 and 256 that block starts at
-  frame 512, its ramp from frame 511's value (`-4.6666667`), reaching `-12` at frame 1471; at blocks of 7 it starts at
-  frame 518, from frame 517's value (`-4.6510417`), reaching `-12` at frame 1477. The harness runs all three sizes.
-
-### 6.4 The snap at a drive
-
-The first block after the configuration is driven (its first drive, or a start after a stop) starts every member at its
-slot's value with no ramp and every step unchanged. `NodeHost` bumps the snap epoch before each `drive()`, never before a swap,
-because the block cannot tell them apart (`CycleCause::drive` is set for both:
-[engine.md](../engine.md#drive-and-fade)). So slots moved while the node was stopped are taken at the next start under
-the drive's own fade-in ([architecture.md](../architecture.md#fades)); a swapped-in code goes on with every ramp where
-the old one left it. This settles the first design's contradiction (a snap at start in one section, a ramp from the
-stopped values in another) for the snap: the fade-in already hides the jump.
-
-### 6.5 Across the lifecycle
-
-| Moment | The slots |
-|---|---|
-| `configure` from empty | made with the channels, every member up to the maximum seeded from the node's live values (a held key's is the hand's) |
-| the code drives | the snap; then `start()` |
-| a retune, in any phase | the live values and the slots written at once; with no configuration, only the live values (they seed the next one) |
-| a change in place, a reshape in place, a swap | kept; the new code is bound to the same channels and each ramp and step goes on; a member a reshape makes active is already at its value |
-| a stop, a start | kept; the start snaps |
-| a restart, a failure, a removal | freed with the configuration at teardown step 5; the next configuration seeds its own |
-
-No channel is allocated, freed or resized on the realtime thread or while the code that uses it can run, and one node's
-channels are never another's.
+Built ([architecture.md](../architecture.md#the-realtime-channels), [#live-values](../architecture.md#live-values),
+[writing-a-node-type.md](../writing-a-node-type.md#live-rows)). What step 6.6 adds to it: a retune writes the live values
+and the slots at once in any phase (7.2), so a configuration is seeded from the node's live values rather than its
+config's, and a change of a live key no longer reaches the slots through the commit point.
 
 ## 7. Retunes: the plan and `NodeHost`
 
@@ -1059,7 +927,7 @@ specs and vitest's form tests read; `types.json` stays what the real ear sends.
 | 6.2 | Decimal rows, typed defaults: **built** | 6.1 | kind `decimal`; `rows.json` | writing-a-node-type.md#decimal-rows, graph-file.md, editor.md#the-settings-form |
 | 6.3 | Indexed families: **built** | 6.2 | `indexed` | the same |
 | 6.4 | Choice rows: **built** | 6.2 | kind `choice` for settings | the same |
-| 6.5 | Slots, ramps, steps, live values, `io.param` | 6.2, 6.3, 6.4 | none | writing-a-node-type.md, architecture.md#the-realtime-channels |
+| 6.5 | Slots, ramps, steps, live values, `io.param`: **built** | 6.2, 6.3, 6.4 | none | writing-a-node-type.md#live-rows, architecture.md#the-realtime-channels |
 | 6.6 | Retunes | 6.5 | feature `live` | architecture.md#restarts-and-changes-of-settings and #failures, control-port.md, output-records.md |
 | 6.7 | The `gain` type | 6.6 | `types.json` gains `gain` | node-types.md |
 | 6.8 | Gestures | 6.6 | feature `gestures` | control-port.md (#order, #per-client-limits-and-stopping: "one message in flight"), graph-file.md |
@@ -1081,20 +949,9 @@ step 6.9, with the other controls.
 [graph-file.md](../graph-file.md#settings-and-their-kinds), [control-port.md](../control-port.md#type-schemas) and
 [editor.md](../editor.md#the-settings-form) say how.
 
-**6.5 Slots, ramps, steps and live values.** `.live(ramp/step)`, the slots, the generation word and the ramp and step
-state in `RealtimeChannels`, the advance in `ErasedSpecCode::process`, `Io::param`, `Io::count`, `Smoothed`, `Stepped`
-with `before` and `framesSince`, `forSegments`, `liveValue`, `liveCount`, `get` and `count` refused on live rows,
-`hasChannels` and `needsCode` counting live rows, `NodeHost`'s live values and `setLive`, seeding every member up to
-the maximum at configure, the snap epoch before each drive, `h.live`. With no retune yet, a change of a live row is
-still planned as an in-place change (or a restart for a type with no change version); `NodeHost` writes the live
-values and the slots from the new settings at its commit point, so audio and `ear.conf` agree. Tests in
-`ear_core_tests` with a test type: section 6.3's vector frame for frame at blocks of 1, 7 and 256; a target moved
-mid-ramp; steady blocks cost one load and no read-modify-write (a counter in the test build); the snap at a first
-drive and at a start after a stop, none at a swap; a swap keeping a ramp in flight; a swap two blocks after a step
-edge seeing `framesSince() == 2 × block`; a log-taper ramp; a boolean ramp; a step's `changed()` and `before()`; an
-inactive member seeded at its file value and playing it from its first active sample; a change of a live row in place
-moving the slot; no allocation in the advance (the built counting allocator); compile-fail `live-*`, `ramp-*`,
-`get-live-row`, `count-live-row`, `live-value-not-live`, `param-*`, `live-members-over-256`.
+**6.5 Slots, ramps, steps and live values** is built: [writing-a-node-type.md](../writing-a-node-type.md#live-rows) and
+[architecture.md](../architecture.md#the-realtime-channels) say how. `h.live` moves a slot without `checkLive`, which
+step 6.6 adds to it.
 
 **6.6 Retunes** (changes the audio path: a change of live keys ramps instead of reconfiguring). `NodeOutcome::retune`,
 `NodeChange::retuned`, `changeOf`'s split, a disabled node's `stored` and a failed node not retried (7.1), and every

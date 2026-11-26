@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <span>
 #include <string>
 #include <string_view>
@@ -34,6 +35,23 @@ public:
 	void blockReady() { node_->blockReady(); }
 	void process(std::uint32_t frames = 0) { node_->process(frames); }
 	NodeOutcome change(const NodeSettings& settings) { return node_->change(settings); }
+	/// Live row `Row` of the spec now `value` (docs/writing-a-node-type.md#its-own-tests): its slot moved as a gesture
+	/// tick moves it, NodeHost::setLive at once, then settled. A value outside the row's range is a std::logic_error,
+	/// so a test cannot move a slot where no setting could. A row that is not live, or a family, does not compile.
+	template <const auto& Row> void live(typename std::remove_cvref_t<decltype(Row)>::Value value) {
+		static_assert(SettingsOf<Spec>::template listed<Row>, "live takes only its spec's rows");
+		static_assert(!setting::isIndexed<std::remove_cvref_t<decltype(Row)>>, "a family is moved by member");
+		static_assert(setting::isLive(Row.row()), "live moves a live row");
+		node_->live(Row.row().key, bitsOf<Row>(value));
+	}
+	/// Member `member` (from 0) of live family `Family` now `value`, as live.
+	template <const auto& Family>
+	void live(std::size_t member, typename std::remove_cvref_t<decltype(Family)>::Value value) {
+		static_assert(SettingsOf<Spec>::template listed<Family>, "live takes only its spec's rows");
+		static_assert(setting::isIndexed<std::remove_cvref_t<decltype(Family)>>, "only a family is moved by member");
+		static_assert(setting::isLive(Family.row()), "live moves a live row");
+		node_->live(std::string(Family.row().key) + "." + std::to_string(member + 1), bitsOf<Family>(value));
+	}
 	LifecycleReply stop() { return node_->stop(); }
 	LifecycleReply start() { return node_->start(); }
 	LifecycleReply restart() { return node_->restart(); }
@@ -202,6 +220,26 @@ public:
 	std::size_t swaps() const noexcept { return node_->swaps(); }
 
 private:
+	template <const auto& Row> static std::uint64_t bitsOf(typename std::remove_cvref_t<decltype(Row)>::Value value) {
+		using Value = typename std::remove_cvref_t<decltype(Row)>::Value;
+		const SettingRow& row = Row.row();
+		const auto outside = [&] {
+			throw std::logic_error("live(): " + std::string(row.key) + " cannot hold that value");
+		};
+		if constexpr (std::same_as<Value, double>) {
+			const auto& range = std::get<DecimalRule>(row.rule);
+			if (!(value >= range.low && value <= range.high)) outside();
+		} else if constexpr (std::same_as<Value, std::uint32_t>) {
+			const auto& range = std::get<WholeNumberRule>(row.rule);
+			if (value < range.low || value > range.high) outside();
+		} else if constexpr (std::is_enum_v<Value>) {
+			const auto& names = std::get<ChoiceRule>(row.rule);
+			for (std::uint32_t at = 0; at < names.count; ++at)
+				if (names.values[at] == static_cast<std::int64_t>(std::to_underlying(value))) return at;
+			outside();
+		}
+		return setting::liveBits(value);
+	}
 	std::unique_ptr<const NodeType> type_;
 	std::unique_ptr<NodeHarness> node_; // after the type it runs
 };

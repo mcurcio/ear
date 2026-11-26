@@ -452,6 +452,7 @@ struct NodeHost::Impl {
 		/// configured (T19).
 		void add(const NodeSpec& spec, std::shared_ptr<const NodeConfig> config, bool olderBlock, bool olderNode) {
 			ports_ = config->ports();
+			live_ = config->liveValues(); // the node's live values, seeded from its settings
 			queued_ = std::move(config);
 			// A node added on a wedged loop fails before T1, with no block.
 			feed(aggregate_.add(lc::AddFacts{.disabled = spec.disabled,
@@ -716,6 +717,7 @@ struct NodeHost::Impl {
 		const NodeName& node() const override { return name_; }
 		const Ports& ports() const override { return ports_; }
 		RealtimeChannels* realtime() const override { return config_ ? config_->realtime.get() : nullptr; }
+		std::span<const std::uint64_t> liveValues() const override { return live_; }
 		/// An engine companion (docs/writing-a-node-type.md#engine-companions), its bank's rule its shape's: a sound
 		/// card on an inside bank of either direction, an RTP receiver or a pipe receiver on an inside input bank. A
 		/// pipe receiver's FIFO is the configuration's runtime path "<bank>.fifo", named in what this returns; a host
@@ -1012,15 +1014,20 @@ struct NodeHost::Impl {
 			book_->apply(std::move(records), dropped, now, out);
 			for (const auto& [field, count] : transitions) book_->transitions(field, count, now, out);
 		}
-		/// A configuration's realtime channels, when its type's code may write any (an rt field, an event, a log code):
-		/// each rt field's word starting at the field's initial value.
-		static std::unique_ptr<RealtimeChannels> realtimeChannels(const NodeConfig& config, RealtimeBell* bell) {
+		/// A configuration's realtime channels, when its type's code may write any (an rt field, an event, a log code)
+		/// or read any (a trigger, a live row): each rt field's word starting at the field's initial value, each live
+		/// member's slot at the node's live value (docs/architecture.md#the-realtime-channels).
+		static std::unique_ptr<RealtimeChannels> realtimeChannels(const NodeConfig& config, RealtimeBell* bell,
+		                                                          SampleRate rate,
+		                                                          std::span<const std::uint64_t> live) {
 			const std::span<const StatusDeclaration* const> fields = config.statusDeclared();
 			const bool rt = std::ranges::any_of(
 				fields, [](const StatusDeclaration* field) { return field->writer.kind == writer::Writer::Kind::rt; });
 			const auto triggers = static_cast<std::size_t>(std::ranges::count(
 				config.actionsDeclared(), ActionDeclaration::Target::code, &ActionDeclaration::target));
-			if (!rt && config.eventsDeclared().empty() && config.logCodesDeclared().empty() && triggers == 0)
+			std::vector<LiveMember> members = liveMembers(config.settingRows(), rate, live);
+			if (!rt && config.eventsDeclared().empty() && config.logCodesDeclared().empty() && triggers == 0 &&
+			    members.empty())
 				return nullptr;
 			std::vector<RealtimeChannels::Initial> initial;
 			initial.reserve(fields.size());
@@ -1045,8 +1052,60 @@ struct NodeHost::Impl {
 				}
 				initial.push_back(one);
 			}
-			return std::make_unique<RealtimeChannels>(std::move(initial), bell, triggers);
+			return std::make_unique<RealtimeChannels>(std::move(initial), bell, triggers, std::move(members));
 		}
+		/// Each live member of `rows` (docs/writing-a-node-type.md#live-rows), seeded at `live`: a ramp's length is
+		/// max(1, round(ms x rate / 1000)) frames, fixed per process since the graph rate is.
+		static std::vector<LiveMember> liveMembers(std::span<const SettingRow* const> rows, SampleRate rate,
+		                                           std::span<const std::uint64_t> live) {
+			std::vector<LiveMember> members;
+			for (const SettingRow* row : rows) {
+				const std::uint32_t count = setting::liveMembers(*row);
+				if (count == 0) continue;
+				LiveMember member;
+				if (row->rampMs > 0) {
+					const auto* decimal = std::get_if<DecimalRule>(&row->rule);
+					member.move = decimal != nullptr && decimal->hints.taper == setting::Taper::log
+					                  ? LiveMember::Move::log
+					                  : LiveMember::Move::linear;
+					member.weight = std::holds_alternative<BooleanRule>(row->rule);
+					member.frames =
+						std::max<std::uint32_t>(1, static_cast<std::uint32_t>(FrameClock(rate).framesNearest(
+													   std::chrono::milliseconds(row->rampMs))));
+				}
+				for (std::uint32_t one = 0; one < count; ++one) {
+					member.bits = members.size() < live.size() ? live[members.size()] : 0;
+					members.push_back(member);
+				}
+			}
+			return members;
+		}
+		/// The node's live values moved (docs/architecture.md#live-values): each slot of its configuration that differs
+		/// is written, and the batch published once, so the code takes them in one block.
+		void writeLive() noexcept {
+			if (!config_ || !config_->realtime) return;
+			RealtimeChannels& channels = *config_->realtime;
+			bool moved = false;
+			for (std::size_t member = 0; member < channels.liveCount() && member < live_.size(); ++member) {
+				if (channels.live(member) == live_[member]) continue;
+				channels.setLive(member, live_[member]);
+				moved = true;
+			}
+			if (moved) channels.publishLive();
+		}
+
+		/// Live member `member` of the node now holds `bits`: its live values and its configuration's slots, at once,
+		/// in any phase. A member it lacks is a caller's bug: std::logic_error.
+		void setLive(std::span<const LiveWrite> writes) {
+			for (const LiveWrite& write : writes) {
+				if (write.member >= live_.size())
+					throw std::logic_error("node " + name_ + " has no live member " + std::to_string(write.member));
+				live_[write.member] = write.bits;
+			}
+			writeLive();
+		}
+		std::span<const std::uint64_t> liveNow() const noexcept { return live_; }
+
 		/// The ring's records as the book reads them, each stamped with its cycle's start; a log record written to the
 		/// log's sinks here, through the configuration's handle (its source the type, its topic the code).
 		void ringRecords(Channel& channel, const NodeConfig& declared, const std::vector<RealtimeRecord>& ring,
@@ -1287,6 +1346,7 @@ struct NodeHost::Impl {
 			RealtimeChannels* realtime() const override {
 				return node_.config_ ? node_.config_->realtime.get() : nullptr;
 			}
+			std::span<const std::uint64_t> liveValues() const override { return node_.live_; }
 			void postToLoop(std::size_t loop, std::move_only_function<void(void*)> work) override {
 				checked("post", [&] {
 					if (loop >= node_.config_->loops.size()) throw std::logic_error("a post to a loop not declared");
@@ -3083,7 +3143,9 @@ struct NodeHost::Impl {
 			adoptPorts(); // a restart's reshape: the block, silent, takes the new ports before configure sees them
 			c.ports = ports_;
 			c.channel = std::make_shared<Channel>(*this, host_.mainLoop, host_.timers, name_, type_, host_.logSinks);
-			c.realtime = realtimeChannels(*c.config, host_.realtimeBell);
+			// Until retunes are built, a configuration's live values are its config's (docs/architecture.md#live-values).
+			live_ = c.config->liveValues();
+			c.realtime = realtimeChannels(*c.config, host_.realtimeBell, host_.format.rate, live_);
 			c.context = std::make_unique<Context>(host_.format, name_, *c.channel, c.loops);
 			c.fadedCount = ports_.outputs().size() + ports_.insideOutputs().size();
 			c.faded = std::make_unique<bool[]>(c.fadedCount);
@@ -4620,6 +4682,10 @@ struct NodeHost::Impl {
 			ch.holdBound.reset();
 			c.instance->adopt(*ch.target);
 			c.config = ch.target; // the old config goes once nothing reads it: the instance reads the new one
+			// The new settings' live values reach the slots here, so the audio and the settings agree from the commit
+			// point (docs/architecture.md#live-values).
+			live_ = c.config->liveValues();
+			writeLive();
 			for (auto& [loop, work] : ch.posts) c.loops.at(loop)->postState(std::move(work));
 			c.plan = std::move(ch.plan);
 			if (ch.latency) c.latency = std::move(*ch.latency);
@@ -4862,6 +4928,9 @@ struct NodeHost::Impl {
 			// The plan configure's return checked against the ports (latencyPlan), so carrying it cannot throw.
 			block_->carryLatency(c.plan);
 			std::ranges::fill(c.held, std::uint8_t{0}); // a drive ends every hold
+			// The first block after it seats every live member at its slot, under the drive's fade-in; a swap never
+			// snaps (docs/architecture.md#the-realtime-channels).
+			if (c.realtime) c.realtime->snapLive();
 			block_->drive(DriveRequest{c.code.get(), std::span<const bool>(c.faded.get(), c.fadedCount), c.bindings,
 			                           c.sourceBindings, &c.ports},
 			              completion(barrier, &lc::NodeAggregate::driven));
@@ -5396,6 +5465,7 @@ struct NodeHost::Impl {
 		Ports ports_;
 		Ports blockPorts_;                          // the ports the block was made or last reshaped with
 		std::shared_ptr<const NodeConfig> queued_;  // the newest committed config, the next configure's
+		std::vector<std::uint64_t> live_;           // the node's live values (docs/architecture.md#live-values)
 		std::uint64_t version_ = 0;                 // queued_'s, as the aggregate compares it
 		std::optional<NodeHealth> told_;            // the health last told
 		NodePhase wantedPhase_ = NodePhase::added;  // the phase last told, whose waits are shown
@@ -5897,6 +5967,17 @@ void NodeHost::stopAll(GraphClosed, std::move_only_function<void()> allGone) {
 }
 
 std::size_t NodeHost::leaked() const noexcept { return impl_->leaked; }
+
+void NodeHost::setLive(const NodeName& node, std::span<const LiveWrite> writes) { impl_->wanted(node).setLive(writes); }
+
+std::vector<std::uint64_t> NodeHost::liveValues(const NodeName& node) const {
+	for (auto it = impl_->nodes.rbegin(); it != impl_->nodes.rend(); ++it)
+		if ((*it)->name() == node) {
+			const auto live = (*it)->liveNow();
+			return {live.begin(), live.end()};
+		}
+	return {};
+}
 
 std::optional<NodeCounts> NodeHost::spanCounts(std::uint64_t span) const {
 	for (auto it = impl_->nodes.rbegin(); it != impl_->nodes.rend(); ++it)

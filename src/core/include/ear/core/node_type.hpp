@@ -247,6 +247,12 @@ public:
 	virtual std::span<const LogCodeDeclaration> logCodesDeclared() const { return {}; }
 	/// Its actions (docs/writing-a-node-type.md#actions), in declaration order: what NodeHost's invoke finds by name.
 	virtual std::span<const ActionDeclaration> actionsDeclared() const { return {}; }
+	/// Its settings' rows, in the walk's order: what its live members are made from
+	/// (docs/writing-a-node-type.md#live-rows). Static storage; none for a type written without a spec.
+	virtual std::span<const SettingRow* const> settingRows() const { return {}; }
+	/// Every live member's value as these settings hold it, as its slot's bits (docs/architecture.md#live-values): a
+	/// family's members 1 to its maximum, active or not. What seeds the node's live values.
+	virtual std::vector<std::uint64_t> liveValues() const { return {}; }
 	/// Call `action` (its index in actionsDeclared, a call), on its loop's thread with the loop's state and the
 	/// arguments its table's walk made: the handler's answer. NodeHost calls it only for a call.
 	virtual std::expected<void, std::string> runCall(std::size_t action, void* state, CheckedSettings&& args) const;
@@ -313,6 +319,9 @@ public:
 	/// The change mark of `key`'s row, a family member's by its family (docs/writing-a-node-type.md#change-marks):
 	/// what the plan splits a change's keys by; restart for a key the type lacks.
 	setting::Change changeOf(std::string_view key) const noexcept;
+	/// Where `key`'s slot sits among the type's live members (docs/writing-a-node-type.md#live-rows); nothing for a key
+	/// that is not a live member.
+	std::optional<std::uint32_t> liveIndexOf(std::string_view key) const noexcept;
 	/// The stores every node of the type has (docs/writing-a-node-type.md#stores), from its spec, in declaration
 	/// order: the boot sweep reads them before any node exists.
 	std::span<const StoreDeclaration> stores() const noexcept { return stores_; }

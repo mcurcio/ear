@@ -237,12 +237,84 @@ family's default when absent, so a family always reads a value; it takes `.inPla
   and the editor draws a field per member ([editor.md](editor.md#the-settings-form)). A call's
   arguments ([actions](#actions)) are a fixed set of keys: a family among them does not compile.
 
+#### Live rows
+
+```cpp
+inline constexpr auto gainRow =
+	setting::defaulted("gainDb", setting::decimal(-90.0, 24.0, "dB", {.taper = setting::Taper::db}), 0.0)
+		.live(setting::ramp(20));
+inline constexpr auto muteRow = setting::defaulted("mute", setting::boolean(), false).live(setting::ramp(10));
+inline constexpr auto inputRow = setting::defaulted("input", setting::number(1, 8), 1u).live(setting::step);
+// in process:
+const Smoothed gain = io.param<gainRow>();        // dB, ramped by the framework: gain[i] for frame i
+const Smoothed mute = io.param<muteRow>();        // a weight from 0 to 1, ramped
+const Stepped<std::uint32_t> input = io.param<inputRow>(); // value(), changed(), before(), framesSince()
+```
+
+A **live** row is one only the realtime code uses and that can move between two blocks without
+touching anything else. Its value is a **slot** in the configuration's realtime channels
+([architecture.md](architecture.md#the-realtime-channels)), and the code reads it through
+`io.param`, never through the settings, so a value can move with no hook called and no new code.
+
+- **The mark.** `.live(setting::ramp(ms))` (1 to 1000 ms) on a decimal or a boolean row, or
+  `.live(setting::step)` on a decimal, whole number, boolean or choice row, as the row's one
+  [change mark](#change-marks), on plain rows and families alike. The row must always read a
+  value (required, defaulted or a family): an optional row, a text or a rate row (which name what is
+  never live), a ramp on a whole number or a choice, `ramp(0)`, a live row with `.shapesPorts()`, and
+  a type of more than 256 live members (each family counted at its count row's maximum) do not
+  compile. A live row may be a family's count row; `ports()` reads through `get`, so it can never
+  read a live row, and a live row never changes the ports.
+- **A ramp** starts at the block's first frame from the value its last frame had, over
+  `N = max(1, round(ms × graph rate / 1000))` frames, whatever the distance (constant time); a
+  target that moves mid-ramp restarts from where it is with a whole `N`. Frame `k` of a ramp from
+  `v0` to `t` is `v0 + (t − v0) × (k + 1) / N`, then `t`, computed in double and given as float.
+  It is linear in the row's unit for the `linear` and `db` tapers, on `ln v` for a `log` taper, and
+  a boolean ramps as a weight from 0 to 1 (so `1 − mute[i]` fades). `Smoothed` gives `steady()`
+  (every frame of the block is `value()`), `value()` (the block's last frame), `operator[]` of a
+  frame (O(1), from the ramp's ends: nothing is buffered) and `target()`. Worked: 48 kHz, 20 ms,
+  `N = 960`, steady at -6 and moved to -3.5 before frame 0: frame 0 is -5.9973958, frame 255
+  -5.3333333, frame 959 and after -3.5; at blocks of 256, blocks 0 to 3 are not steady and block 4
+  is.
+- **A step** is the new value for the whole of the next block. `Stepped<V>` gives `value()`,
+  `changed()` (this block is the first with it), `before()` (the value before the last edge;
+  `value()` when there was none) and `framesSince()` (frames since the edge, 0 in the block of the
+  edge, saturating; the most there are when there was none). These live in the channels, not the
+  code, so a crossfade made of (`before`, `value`, `framesSince`) and no state of the code's own
+  goes on across a swap of the code: a code swapped in two blocks after an edge sees two blocks of
+  `framesSince` and the same `before`. Two edges in successive blocks restart a crossfade from the
+  second, `before` then being the first edge's value. A choice is stepped by its name's index and
+  read back as its enumerator.
+- **`forSegments(frames, piece, fn, views...)`** calls `fn(begin, end)` in pieces of at most
+  `piece` frames, each ending where a view's ramp ends, and once over the rest of the block from
+  where every view is steady: a code that recomputes coefficients per piece (an equaliser) pays
+  for them only while something moves.
+- **Families.** `io.param<family>(c)` reads member `c` from 0. Every member up to the maximum,
+  active or not, has a slot, seeded and ramped, so a member a reshape makes active plays its value
+  from its first sample, and no count change resizes anything. `io.count<family>()` gives the
+  active members this block: the count row's stepped value when it is live, else the count the code
+  was made with (a change of that count gives a new code).
+- **Reading elsewhere.** `s.get` of a live row, `s.count` of a family whose count row is live,
+  `io.param` of a row that is not live, of a row of another spec, of a family without a member, or
+  of a plain row with one, and `s.liveValue` of a row that is not live do not compile. `check`,
+  `configure` and the change version read a live row by `s.liveValue<row>()` (a family's by
+  `s.liveValue<family>(i)`), and a family whose count row is live by `s.liveCount<family>()`: in
+  `check` at parse what was parsed, in `configure` and the change version the node's live values
+  ([architecture.md](architecture.md#live-values)). A hook must not act on a live value (the slots
+  already do) and a code must not copy one, which goes stale at its first move; only review catches
+  that.
+- **The plan.** Until retunes are built, a change of a live key is planned as a change in place
+  is (a `reconfigure`, or a restart for a type with no change version), and the type schema says
+  `inPlace` for it; its new value reaches the slot at the change's commit point.
+- A type with a live row has realtime channels and must answer with a code of its own, never a
+  pass-through.
+
 #### Change marks
 
 Every row of a spec's settings says how a change to its key is taken, with exactly one mark:
 
 | Mark | A change to the key | Schema `change` |
 |---|---|---|
+| `.live(setting::ramp(ms))`, `.live(setting::step)` | Moves a slot the code reads through `io.param` ([live rows](#live-rows)) | `inPlace`, until retunes are built |
 | `.inPlace()` | Taken while the node runs, through the type's [change version](#the-change-version) of `configure` | `inPlace` |
 | `.restarts("<why>")` | Restarts the node; `why` is one line naming what cannot change while it runs, shown beside "restarts" | `restart`, with `restartReason` |
 
@@ -261,14 +333,17 @@ in order:
    ([architecture.md](architecture.md#not-built-yet)); such a row says so
    (`card`'s `playback` and `capture`, `rtp`'s `channels`: "a companion on a resized bank cannot be
    replaced in place yet").
-2. **Can the type apply it while the node runs** (a new receiver, a replaced sink, a new code, a
+2. **Does only the realtime code use it, and can it move between two blocks without touching
+   anything else?** [Live](#live-rows): ramped when a jump would click and the code can use an
+   in-between value, stepped otherwise.
+3. **Can the type apply it while the node runs** (a new receiver, a replaced sink, a new code, a
    declared latency)? In place.
-3. Otherwise `.restarts("<why>")`. The reason must be true: a row the framework could change in
+4. Otherwise `.restarts("<why>")`. The reason must be true: a row the framework could change in
    place but whose type has no change version for it yet says so (`file`'s `path`: "file has no
    change in place yet"; `card`'s `card`: "card has no change in place yet").
 
 The marks are data in the table: the desired graph's plan reads them, and a change whose every
-changed key is marked in place is planned `reconfigure` rather than `restart`
+changed key is marked in place (or live) is planned `reconfigure` rather than `restart`
 ([architecture.md](architecture.md#restarts-and-changes-of-settings)); a change of ports is a
 reshape, in place only when every changed key is marked in place
 ([architecture.md](architecture.md#reshapes)). A settings row with no mark, a row with two (or one
@@ -1675,6 +1750,7 @@ fakes allow. Banks are named by the spec's handles.
 | `h.feed(bank, interleaved)`, `h.lastPlayed(bank)`, `h.shortfall(bank)` | A source's writer, never waiting (it takes what fits and returns the frames taken); what the last `process()` did with its ring (the `SourcePlayed` its clock was told, all zero before the first); its shortfall |
 | `h.input(bank, i)`, `h.output(bank, i)` | A port's buffer |
 | `h.stop()`, `h.start()`, `h.restart()`, `h.change(settings)`, `h.disable()`, `h.enable()`, `h.remove()`, `h->stopAll()` | The operations; `stopAll()` is ear's stop, run to the end (what the harness's destructor does) |
+| `h.live<row>(value)`, `h.live<family>(member, value)`, `h->liveValues()`, `h->liveReloads()` | A [live row](#live-rows)'s slot moved as a gesture moves it: the node's live values and its configuration's slots at once (`NodeHost::setLive`), the next block taking it; a value outside the row's range is a `std::logic_error`. The node's live values as slot bits; how many blocks the newest configuration's code loaded its slots in (a steady block loads none) |
 | `h.trigger<trigger>()`, `h.invoke<call>(args)`, `h->invoke(name, args)` | The [actions](#actions): a trigger, answered at once (an `ActionReply`); a call, its handler run by `runLoops()` before it returns (an `ActionAnswer`: `answered()`, `reply()`); by name, unchecked and without running the loops, so a test can hold a call queued (behind a restart, past its deadline) |
 | `h.phase()`, `h.health()`, `h.gone()`, `h.droppedFrames()`, `h.companionList()` | What the node shows; its companion list as a client will see it ([engine.md](engine.md#companions-in-a-nodes-list)), read now |
 | `h->unwritten()`, `h->notes()`, `h->logs()`, `h->diagnostics()`, `h->latencyPlan()`, `h->ports()` | Through `->`, the underlying `NodeHarness`; `notes()` as the main loop heard them (after the [note rate](#the-node-handle)), `logs()` every log entry attributed to the node |

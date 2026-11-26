@@ -128,6 +128,7 @@ if(BUILD_TESTS)
 		tests/graph_status_test.cpp
 		tests/latency_test.cpp
 		tests/levels_test.cpp
+		tests/live_test.cpp
 		tests/loop_test.cpp
 		tests/main_loop_activity_test.cpp
 		tests/module_run_test.cpp
@@ -315,6 +316,30 @@ if(BUILD_TESTS)
 	ear_realtime_compile_fail(report-of-other-spec "set takes only its spec's status fields")
 	ear_realtime_compile_fail(report-constructed "Report<.*>::Report\\(.*is private within this context")
 	ear_realtime_compile_fail(pass-through-with-rt "answers with a code of its own, never a pass-through")
+
+	# Live rows (docs/writing-a-node-type.md#live-rows): their marks, their reads and io.param;
+	# tests/compile_fail/live_bad.cpp says what each case is.
+	set(bad_live "${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail/live_bad.cpp")
+	ear_compile_check(ear_live_compile_fail_control "${bad_live}")
+	function(ear_live_compile_fail case regex)
+		ear_compile_fail(ear_live_compile_fail_${case} "${bad_live}" ${case} "${regex}")
+	endfunction()
+	ear_live_compile_fail(live-text-row "a live row is a decimal, whole number, boolean or choice")
+	ear_live_compile_fail(live-rate-row "a live row is a decimal, whole number, boolean or choice")
+	ear_live_compile_fail(live-optional-row "a live row always reads a value")
+	ear_live_compile_fail(ramp-whole-number "a ramp needs a decimal or a boolean row")
+	ear_live_compile_fail(ramp-choice "a ramp needs a decimal or a boolean row")
+	ear_live_compile_fail(ramp-zero "a ramp takes 1 to 1000 ms")
+	ear_live_compile_fail(live-shapes-ports "a live row never shapes the ports")
+	ear_live_compile_fail(live-and-in-place "a row has one change mark")
+	ear_live_compile_fail(live-members-over-256 "a type has at most 256 live members")
+	ear_live_compile_fail(get-live-row "a live row is read through io.param, or liveValue")
+	ear_live_compile_fail(count-live-row "a family whose count row is live is counted by liveCount")
+	ear_live_compile_fail(live-value-not-live "liveValue reads a live row")
+	ear_live_compile_fail(param-not-live "io.param reads a live row")
+	ear_live_compile_fail(param-row-not-in-spec "io.param takes only its spec's rows")
+	ear_live_compile_fail(param-family-without-member "a family is read by member")
+	ear_live_compile_fail(param-member-of-plain-row "only a family is read by member")
 
 	# A type's actions (docs/writing-a-node-type.md#actions): tests/compile_fail/action_bad.cpp says what each case is.
 	set(bad_action "${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail/action_bad.cpp")

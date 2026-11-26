@@ -248,16 +248,19 @@ template <class Fields> consteval std::size_t rtFieldCount() {
 template <const auto& Spec> inline constexpr bool writesRealtime =
 	rtFieldCount<std::remove_cvref_t<decltype(Spec.status)>>() > 0 ||
 	std::remove_cvref_t<decltype(Spec.events)>::count > 0 || std::remove_cvref_t<decltype(Spec.logCodes)>::count > 0;
+/// How many live members a spec has (docs/writing-a-node-type.md#live-rows): each a slot in its channels.
+template <const auto& Spec> inline constexpr std::uint32_t liveMembersOf =
+	std::remove_cvref_t<decltype(Spec.settings)>::liveMemberCount;
 /// Whether a spec's configurations have realtime channels: its code writes there, or it has a trigger, whose counter
-/// lives there (docs/architecture.md#the-realtime-channels).
+/// lives there, or a live row, whose slots do (docs/architecture.md#the-realtime-channels).
 template <const auto& Spec> inline constexpr bool hasChannels =
-	writesRealtime<Spec> || std::remove_cvref_t<decltype(Spec.actions)>::triggers > 0;
-/// Whether only the code could serve what a spec declares: an rt field, a log code or a trigger, which a pass-through
-/// never writes or reads.
+	writesRealtime<Spec> || std::remove_cvref_t<decltype(Spec.actions)>::triggers > 0 || liveMembersOf<Spec> > 0;
+/// Whether only the code could serve what a spec declares: an rt field, a log code, a trigger or a live row, which a
+/// pass-through never writes or reads.
 template <const auto& Spec> inline constexpr bool needsCode =
 	rtFieldCount<std::remove_cvref_t<decltype(Spec.status)>>() > 0 ||
 	std::remove_cvref_t<decltype(Spec.logCodes)>::count > 0 ||
-	std::remove_cvref_t<decltype(Spec.actions)>::triggers > 0;
+	std::remove_cvref_t<decltype(Spec.actions)>::triggers > 0 || liveMembersOf<Spec> > 0;
 /// Whether an argument list holds a text, which the realtime thread never writes.
 template <class ArgTypes> struct HasText;
 template <class... Args> struct HasText<std::tuple<Args...>> {
@@ -328,6 +331,85 @@ private:
 	std::array<MemberList, List::count> members_;
 };
 
+/// One ramped live member over this block (docs/writing-a-node-type.md#live-rows), in its row's own unit, a boolean as
+/// its weight from 0 to 1: computed from the ramp's ends and where this block sits in it, so any frame is O(1) and
+/// nothing is buffered. Frame k of a ramp of N frames from v0 to t has v0 + (t - v0) (k + 1) / N, then t; a log
+/// taper's row ramps so on its logarithm.
+class Smoothed {
+public:
+	Smoothed(const LiveState& state, const LiveMember& member, std::uint64_t position, std::uint32_t frames) noexcept
+		: from_(state.from), to_(state.to), toValue_(state.toValue), startAt_(state.startAt), endsAt_(state.endsAt),
+		  position_(position), length_(member.frames), frames_(frames), log_(member.move == LiveMember::Move::log) {}
+	/// Every frame of the block is value().
+	bool steady() const noexcept { return position_ >= endsAt_; }
+	/// The frame from which every frame of the block is the target: 0 when steady, frames() or beyond when the ramp
+	/// outlasts the block.
+	std::uint64_t steadyFrom() const noexcept { return endsAt_ > position_ ? endsAt_ - position_ : 0; }
+	/// The block's last frame.
+	float value() const noexcept { return (*this)[frames_ > 0 ? frames_ - 1 : 0]; }
+	float operator[](std::uint32_t frame) const noexcept {
+		const std::uint64_t at = position_ + frame;
+		if (at >= endsAt_) return static_cast<float>(toValue_);
+		const double v = from_ + (to_ - from_) * static_cast<double>(at - startAt_ + 1) / static_cast<double>(length_);
+		return static_cast<float>(log_ ? std::exp(v) : v);
+	}
+	/// The slot's latest value, where the ramp ends.
+	float target() const noexcept { return static_cast<float>(toValue_); }
+
+private:
+	double from_;
+	double to_;
+	double toValue_;
+	std::uint64_t startAt_;
+	std::uint64_t endsAt_;
+	std::uint64_t position_;
+	std::uint32_t length_;
+	std::uint32_t frames_;
+	bool log_;
+};
+/// One stepped live member (docs/writing-a-node-type.md#live-rows): its value for the whole block, and its last edge,
+/// which the channels keep, so a crossfade made of (before, value, framesSince) goes on across a swap of the code.
+template <class V> class Stepped {
+public:
+	Stepped(V value, V before, bool changed, std::uint32_t since) noexcept
+		: value_(value), before_(before), changed_(changed), since_(since) {}
+	V value() const noexcept { return value_; }
+	/// This block is the first with value().
+	bool changed() const noexcept { return changed_; }
+	/// The value before the last edge; value() when there was none since the node was driven.
+	V before() const noexcept { return before_; }
+	/// Frames since the last edge, 0 in the block of the edge, saturating; the most there are when there was none.
+	std::uint32_t framesSince() const noexcept { return since_; }
+	/// A step holds for the whole block (forSegments).
+	std::uint64_t steadyFrom() const noexcept { return 0; }
+
+private:
+	V value_;
+	V before_;
+	bool changed_;
+	std::uint32_t since_;
+};
+/// Calls fn(begin, end) over [0, frames) in pieces of at most `piece` frames, each ending where any view's ramp ends,
+/// and once over the rest from where every view is steady: one call when all are steady. For a code that recomputes
+/// coefficients per piece.
+template <class Fn, class... Views>
+void forSegments(std::uint32_t frames, std::uint32_t piece, Fn&& fn, const Views&... views) noexcept {
+	if (piece == 0) piece = 1;
+	std::uint32_t begin = 0;
+	while (begin < frames) {
+		const std::uint64_t steadyAt = std::max<std::uint64_t>({std::uint64_t{0}, views.steadyFrom()...});
+		if (steadyAt <= begin) {
+			fn(begin, frames);
+			return;
+		}
+		std::uint64_t end = std::min<std::uint64_t>(frames, std::uint64_t{begin} + piece);
+		for (const std::uint64_t from : std::array<std::uint64_t, sizeof...(Views)>{views.steadyFrom()...})
+			if (from > begin && from < end) end = from;
+		fn(begin, static_cast<std::uint32_t>(end));
+		begin = static_cast<std::uint32_t>(end);
+	}
+}
+
 /// One cycle's audio, by bank (docs/writing-a-node-type.md#the-code): io[bank] is the bank's members, each a span of
 /// exactly frames() samples, an output's to write (every sample), an input's to read (an unlinked input reads zeros).
 /// Only the spec's own banks are taken. The layout is resolved once, before the first cycle, so io[bank] is an index.
@@ -365,10 +447,13 @@ public:
 	/// `inputs` are inputs then inside inputs, `outputs` outputs then inside outputs, as AudioCode::process gets them;
 	/// `channels` the configuration's realtime channels (null only for a spec that writes nothing on the realtime
 	/// thread), `startNs` the cycle's start.
+	/// `counts` each family's active members by row, as the code was made with them (io.count of a family whose count
+	/// row is not live).
 	Io(const Layout& layout, std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
-	   std::uint32_t frames, RealtimeChannels* channels = nullptr, std::int64_t startNs = 0) noexcept
-		: layout_(&layout), inputs_(inputs), outputs_(outputs), frames_(frames), channels_(channels),
-		  startNs_(startNs) {}
+	   std::uint32_t frames, RealtimeChannels* channels = nullptr, std::int64_t startNs = 0,
+	   const std::uint32_t* counts = nullptr) noexcept
+		: layout_(&layout), inputs_(inputs), outputs_(outputs), frames_(frames), channels_(channels), startNs_(startNs),
+		  counts_(counts) {}
 	/// The bank's members, in order.
 	template <class Handle> std::span<const std::span<typename Handle::Sample>> operator[](Handle) const noexcept {
 		static_assert(isBankHandle<Handle>, "Io takes a bank handle");
@@ -439,7 +524,58 @@ public:
 		return channels_->triggered(ActionsOf<Spec>::template triggerIndexOf<Trigger>);
 	}
 
+	/// Live row `Row` of the spec over this block (docs/writing-a-node-type.md#live-rows): a Smoothed for a ramped row,
+	/// a Stepped of its value for a stepped one. A row that is not live, one the spec lacks, or a family without a
+	/// member does not compile.
+	template <const auto& Row> auto param() const noexcept {
+		using Table = SettingsOf<Spec>;
+		static_assert(Table::template listed<Row>, "io.param takes only its spec's rows");
+		static_assert(!setting::isIndexed<std::remove_cvref_t<decltype(Row)>>,
+		              "a family is read by member: io.param<family>(member), from 0");
+		static_assert(setting::isLive(Row.row()), "io.param reads a live row: a row that is not live is the config's");
+		return view<Row>(Table::template liveFirst<Row>);
+	}
+	/// Member `member` (from 0) of live family `Family`; a member at or above the family's maximum reads the last.
+	template <const auto& Family> auto param(std::size_t member) const noexcept {
+		using Table = SettingsOf<Spec>;
+		static_assert(Table::template listed<Family>, "io.param takes only its spec's rows");
+		static_assert(setting::isIndexed<std::remove_cvref_t<decltype(Family)>>,
+		              "only a family is read by member: io.param<row>() reads a plain row");
+		static_assert(setting::isLive(Family.row()),
+		              "io.param reads a live row: a row that is not live is the config's");
+		const std::size_t at = std::min<std::size_t>(member, Family.row().maxMembers - 1);
+		return view<Family>(Table::template liveFirst<Family> + at);
+	}
+	/// Family `Family`'s active members this block: its count row's stepped value when that row is live, else the count
+	/// the code was made with.
+	template <const auto& Family> std::uint32_t count() const noexcept {
+		using Table = SettingsOf<Spec>;
+		static_assert(Table::template listed<Family>, "io.count takes only its spec's rows");
+		static_assert(setting::isIndexed<std::remove_cvref_t<decltype(Family)>>, "io.count counts a family");
+		if constexpr (setting::isLive(Table::template countRowOf<Family>)) {
+			constexpr std::uint32_t at = Table::liveAt(Table::template countRowOf<Family>);
+			return static_cast<std::uint32_t>(channels_->liveState(at).bits);
+		} else {
+			return counts_ != nullptr ? counts_[Table::template rowIndexOf<Family>] : 0;
+		}
+	}
+
 private:
+	template <const auto& Row> auto view(std::size_t at) const noexcept {
+		const LiveState& state = channels_->liveState(at);
+		const std::uint64_t position = channels_->livePosition();
+		if constexpr (Row.row().rampMs > 0) {
+			return Smoothed(state, channels_->liveMember(at), position, frames_);
+		} else {
+			using Value = typename std::remove_cvref_t<decltype(Row)>::Value;
+			const Value value = setting::liveValueOf<Value>(Row.row(), state.bits);
+			const Value before = state.edged ? setting::liveValueOf<Value>(Row.row(), state.before) : value;
+			const std::uint64_t since = position - state.edgeAt;
+			const std::uint32_t framesSince =
+				state.edged ? static_cast<std::uint32_t>(std::min<std::uint64_t>(since, UINT32_MAX)) : UINT32_MAX;
+			return Stepped<Value>(value, before, state.edged && since == 0, framesSince);
+		}
+	}
 	template <class ArgTypes, class... Values> void put(RealtimeRecord::Kind kind, std::uint16_t index,
 	                                                    std::span<const ArgDeclaration> declared,
 	                                                    Values... values) const noexcept {
@@ -460,6 +596,7 @@ private:
 	std::uint32_t frames_;
 	RealtimeChannels* channels_;
 	std::int64_t startNs_;
+	const std::uint32_t* counts_;
 };
 
 /// One pass-through pair by handle: an input bank's ports copied to an output bank's.
@@ -482,7 +619,9 @@ template <class Code, const auto& S> struct ProcessOf<void (Code::*)(Io<S>, cons
 /// binds it to the node's ports and to its configuration's realtime channels.
 class BankBoundCode : public AudioCode {
 public:
-	virtual void bind(const Ports& ports, RealtimeChannels* channels) noexcept = 0;
+	/// `counts`: each family's active members by row, as the settings the code is made with hold them (io.count).
+	virtual void bind(const Ports& ports, RealtimeChannels* channels,
+	                  std::span<const std::uint32_t> counts) noexcept = 0;
 };
 template <const auto& Spec, class Code> class ErasedSpecCode final : public BankBoundCode {
 	// Found by name, then held to its exact signature, so a misspelt signature is refused rather than never called.
@@ -503,16 +642,19 @@ template <const auto& Spec, class Code> class ErasedSpecCode final : public Bank
 
 public:
 	explicit ErasedSpecCode(Code code) : code_(std::move(code)) {}
-	void bind(const Ports& ports, RealtimeChannels* channels) noexcept override {
+	void bind(const Ports& ports, RealtimeChannels* channels, std::span<const std::uint32_t> counts) noexcept override {
 		ports_ = &ports;
 		channels_ = channels;
+		if constexpr (SettingsOf<Spec>::rowCount > 0)
+			std::ranges::copy(counts.first(std::min(counts.size(), counts_.size())), counts_.begin());
+		else static_cast<void>(counts);
 	}
 	void prepare(const AudioFormat& format) override {
 		if (ports_ == nullptr)
 			throw std::logic_error("a code written against a spec runs only in a type made by makeNodeType");
 		if constexpr (hasChannels<Spec>) {
 			if (channels_ == nullptr || channels_->fields() != StatusOf<Spec>::count ||
-			    channels_->triggers() != ActionsOf<Spec>::triggers)
+			    channels_->triggers() != ActionsOf<Spec>::triggers || channels_->liveCount() != liveMembersOf<Spec>)
 				throw std::logic_error("a code that writes on the realtime thread runs only in a type made by "
 				                       "makeNodeType");
 		}
@@ -521,7 +663,9 @@ public:
 	}
 	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
 	             std::uint32_t frames, const GraphCycle& cycle) noexcept override {
-		code_.process(Io<Spec>(layout_, inputs, outputs, frames, channels_, cycle.startNs), cycle);
+		// The live views first (docs/architecture.md#the-realtime-channels): one load when nothing moved.
+		if constexpr (liveMembersOf<Spec> > 0) channels_->advanceLive(frames);
+		code_.process(Io<Spec>(layout_, inputs, outputs, frames, channels_, cycle.startNs, counts_.data()), cycle);
 		if constexpr (writesRealtime<Spec>) channels_->cycleEnded();
 	}
 	void release() noexcept override {
@@ -534,6 +678,7 @@ private:
 	// The configuration's, freed after the code (teardown step 5); a code swapped in is bound to the same ones.
 	RealtimeChannels* channels_ = nullptr;
 	typename Io<Spec>::Layout layout_;
+	std::array<std::uint32_t, SettingsOf<Spec>::rowCount> counts_{}; // io.count's, for the settings it was made with
 };
 } // namespace spec_detail
 

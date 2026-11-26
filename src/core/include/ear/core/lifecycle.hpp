@@ -259,6 +259,9 @@ public:
 	/// The configuration's realtime channels (docs/architecture.md#the-realtime-channels), to bind the code to; null
 	/// for a type whose code writes nothing on the realtime thread.
 	virtual RealtimeChannels* realtime() const = 0;
+	/// The node's live values (docs/architecture.md#live-values), every live member's slot bits in order: what liveValue
+	/// reads during the call.
+	virtual std::span<const std::uint64_t> liveValues() const = 0;
 	/// An engine companion on an inside bank (docs/writing-a-node-type.md#engine-companions), its kind its shape's: a
 	/// sound card (playback on an inside output bank, `<node>.playback`, capture on an inside input bank,
 	/// `<node>.capture`: the bank's direction is the card's, and a playback card's bank is faded with the public
@@ -336,6 +339,8 @@ public:
 	virtual const Ports& ports() const = 0;
 	/// The configuration's realtime channels, to bind a new code to the same ones its code writes.
 	virtual RealtimeChannels* realtime() const = 0;
+	/// As CreateContext::liveValues.
+	virtual std::span<const std::uint64_t> liveValues() const = 0;
 	/// Work for declared loop `loop`, staged until the commit point and destroyed unrun if the change ends any other way.
 	virtual void postToLoop(std::size_t loop, std::move_only_function<void(void*)> work) = 0;
 	/// A replacement for the engine companion on `bank` (an RTP receiver or a sound card), behind a hold the framework
@@ -547,10 +552,11 @@ public:
 				static_assert(static_cast<const void*>(&spec_detail::ProcessOf<decltype(&Code::process)>::spec) ==
 				                  static_cast<const void*>(&Spec),
 				              "configure answers with a code written against its own type's spec");
-				static_cast<spec_detail::BankBoundCode&>(*erased.own()).bind(context_->ports(), context_->realtime());
+				static_cast<spec_detail::BankBoundCode&>(*erased.own())
+					.bind(context_->ports(), context_->realtime(), settings_->familyCounts());
 			} else {
 				static_assert(!spec_detail::needsCode<Spec>,
-				              "a spec with writer::rt fields, log codes or triggers answers with "
+				              "a spec with writer::rt fields, log codes, triggers or live rows answers with "
 				              "a code of its own, never a pass-through");
 			}
 			return Configured::erased(std::move(erased),
@@ -717,12 +723,14 @@ public:
 
 private:
 	template <const auto&, class> friend class spec_detail::SpecInstance;
-	explicit CreateOf(CreateContext& context) noexcept : context_(&context) {}
+	CreateOf(CreateContext& context, const CheckedOf<Spec>& settings) noexcept
+		: context_(&context), settings_(&settings) {}
 	template <class Bank, class Shape> static constexpr void checkCompanion() noexcept {
 		static_assert(ownBank<Bank>, "a context takes only its spec's banks");
 		CompanionBank<Shape>::template check<Bank>();
 	}
 	CreateContext* context_;
+	const CheckedOf<Spec>* settings_; // what the code is made with: its families' counts (io.count)
 };
 
 /// configure for a change in place (docs/writing-a-node-type.md#the-change-version): holds, replacement companions and
@@ -757,10 +765,11 @@ public:
 			static_assert(static_cast<const void*>(&spec_detail::ProcessOf<decltype(&Code::process)>::spec) ==
 			                  static_cast<const void*>(&Spec),
 			              "configure answers with a code written against its own type's spec");
-			static_cast<spec_detail::BankBoundCode&>(*erased.own()).bind(context_->ports(), context_->realtime());
+			static_cast<spec_detail::BankBoundCode&>(*erased.own())
+				.bind(context_->ports(), context_->realtime(), settings_->familyCounts());
 		} else {
 			static_assert(!spec_detail::needsCode<Spec>,
-			              "a spec with writer::rt fields, log codes or triggers answers with "
+			              "a spec with writer::rt fields, log codes, triggers or live rows answers with "
 			              "a code of its own, never a pass-through");
 		}
 		return Changed::erased(std::move(erased));
@@ -902,12 +911,13 @@ public:
 
 private:
 	template <const auto&, class> friend class spec_detail::SpecInstance;
-	explicit ChangeOf(ChangeContext& context) noexcept : context_(&context) {}
+	ChangeOf(ChangeContext& context, const CheckedOf<Spec>& now) noexcept : context_(&context), settings_(&now) {}
 	template <class Bank, class Shape> static constexpr void checkCompanion() noexcept {
 		static_assert(ownBank<Bank>, "a context takes only its spec's banks");
 		CompanionBank<Shape>::template check<Bank>();
 	}
 	ChangeContext* context_;
+	const CheckedOf<Spec>* settings_; // the change's new settings, which a new code is made with (io.count)
 };
 
 // ---- The erased instance ----
@@ -1041,7 +1051,8 @@ public:
 	std::span<const LoopDeclaration> loops() const noexcept override { return LoopsOf<Spec>::declared; }
 	std::span<const StoreDeclaration> stores() const noexcept override { return StoresOf<Spec>::declared; }
 	Configured configure(CreateContext& cx) override {
-		CreateOf<Spec> create(cx);
+		CreateOf<Spec> create(cx, *settings_);
+		const LiveBinding live(settings_->settings_, cx.liveValues());
 		return type_.configure(create, *settings_);
 	}
 	bool changes() const noexcept override { return hasChange; }
@@ -1083,6 +1094,8 @@ public:
 	std::span<const EventDeclaration> eventsDeclared() const override { return EventsOf<Spec>::declared; }
 	std::span<const LogCodeDeclaration> logCodesDeclared() const override { return LogCodesOf<Spec>::declared; }
 	std::span<const ActionDeclaration> actionsDeclared() const override { return ActionsOf<Spec>::declared; }
+	std::span<const SettingRow* const> settingRows() const override { return Spec.settings.rows(); }
+	std::vector<std::uint64_t> liveValues() const override { return settings_.parsedLive(); }
 	std::expected<void, std::string> runCall(std::size_t action, void* state, CheckedSettings&& args) const override {
 		const spec_detail::CallRunner run = spec_detail::CallRunners<ActionsOf<Spec>>::runners.at(action);
 		if (run == nullptr) return NodeConfig::runCall(action, state, std::move(args));
@@ -1099,8 +1112,12 @@ private:
 template <const auto& Spec, class Type>
 Changed SpecInstance<Spec, Type>::change(ChangeContext& cx, const NodeConfig& now) {
 	if constexpr (hasChange) {
-		ChangeOf<Spec> change(cx);
-		return type_.configure(change, *settings_, static_cast<const SpecConfig<Spec, Type>&>(now).settings());
+		const CheckedOf<Spec>& next = static_cast<const SpecConfig<Spec, Type>&>(now).settings();
+		ChangeOf<Spec> change(cx, next);
+		// Both read their live rows from the node's live values (docs/writing-a-node-type.md#live-rows).
+		const LiveBinding before(settings_->settings_, cx.liveValues());
+		const LiveBinding after(next.settings_, cx.liveValues());
+		return type_.configure(change, *settings_, next);
 	} else {
 		return ErasedInstance::change(cx, now);
 	}

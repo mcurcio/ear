@@ -43,8 +43,10 @@ NodeOutcome outcomeFor(const NodeType& type, std::span<const std::string> keys, 
 	const NodeOutcome outcome = outcomeOf(wasDisabled, isDisabled);
 	if (outcome != NodeOutcome::restart) return outcome;
 	if (keys.empty()) return NodeOutcome::unchanged;
+	// Until retunes are built a live key is taken as an in-place one is: its new value reaches the slots at the change's
+	// commit point (docs/architecture.md#live-values).
 	return std::ranges::all_of(keys,
-	                           [&](const std::string& key) { return type.changeOf(key) == setting::Change::inPlace; })
+	                           [&](const std::string& key) { return type.changeOf(key) != setting::Change::restart; })
 	           ? NodeOutcome::reconfigure
 	           : NodeOutcome::restart;
 }

@@ -837,6 +837,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		const NodeName& node() const override { return create.node(); }
 		const Ports& ports() const override { return create.ports(); }
 		RealtimeChannels* realtime() const override { return create.realtime(); }
+		std::span<const std::uint64_t> liveValues() const override { return create.liveValues(); }
 		std::optional<part::Fifo> attachEngine(std::string_view bank, EngineCompanionShape shape) override {
 			return create.attachEngine(bank, std::move(shape));
 		}
@@ -871,6 +872,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		SeenInstance(Impl& h, std::unique_ptr<ErasedInstance> i) : harness(h), inner(std::move(i)) {}
 		Configured configure(CreateContext& cx) override {
 			SeenContext seen(harness, cx);
+			harness.channels = cx.realtime();
 			return inner->configure(seen);
 		}
 		std::span<const LoopDeclaration> loops() const noexcept override { return inner->loops(); }
@@ -897,6 +899,8 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		std::span<const EventDeclaration> eventsDeclared() const override { return inner->eventsDeclared(); }
 		std::span<const LogCodeDeclaration> logCodesDeclared() const override { return inner->logCodesDeclared(); }
 		std::span<const ActionDeclaration> actionsDeclared() const override { return inner->actionsDeclared(); }
+		std::span<const SettingRow* const> settingRows() const override { return inner->settingRows(); }
+		std::vector<std::uint64_t> liveValues() const override { return inner->liveValues(); }
 		std::expected<void, std::string> runCall(std::size_t action, void* state,
 		                                         CheckedSettings&& args) const override {
 			return inner->runCall(action, state, std::move(args));
@@ -1284,6 +1288,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	FakeBell bell;
 	// Last, so it goes first: its nodes' blocks, engine companions and instances tell the members above as they go.
 	std::unique_ptr<NodeHost> host;
+	RealtimeChannels* channels = nullptr; // the newest configuration's, while it lives (liveReloads)
 };
 
 NodeHarness::NodeHarness(const NodeType& type, Options options)
@@ -1514,6 +1519,21 @@ NodeCounts NodeHarness::counts() const {
 }
 
 GraphCounts NodeHarness::graphCounts() const noexcept { return impl_->cuts.counts(); }
+
+void NodeHarness::live(std::string_view key, std::uint64_t bits) {
+	impl_->requireAdded();
+	const std::optional<std::uint32_t> member = impl_->type.liveIndexOf(key);
+	if (!member) throw std::logic_error("live() of " + std::string(key) + ", which is not a live member");
+	const std::array<LiveWrite, 1> writes{LiveWrite{*member, bits}};
+	impl_->host->setLive(impl_->options.node, writes);
+	impl_->settle();
+}
+
+std::vector<std::uint64_t> NodeHarness::liveValues() const { return impl_->host->liveValues(impl_->options.node); }
+
+std::uint64_t NodeHarness::liveReloads() const noexcept {
+	return impl_->channels != nullptr ? impl_->channels->liveReloads() : 0;
+}
 
 NodeOutcome NodeHarness::change(const NodeSettings& settings) {
 	const NodeOutcome outcome = changeTo(settings);

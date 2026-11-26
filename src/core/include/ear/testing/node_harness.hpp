@@ -355,6 +355,14 @@ public:
 	/// a change that answered whenReady waits for runLoops(), which runs its continuation (and lands its token's answer).
 	/// std::logic_error for settings the type refuses.
 	NodeOutcome change(const NodeSettings& settings);
+	/// Live member `key` (a live row's key, or a family member's) now holds `bits`, as its slot holds them
+	/// (setting::liveBits): NodeHost::setLive, then settled. A key that is not a live member is a std::logic_error.
+	void live(std::string_view key, std::uint64_t bits);
+	/// The node's live values (NodeHost::liveValues).
+	std::vector<std::uint64_t> liveValues() const;
+	/// How many blocks the newest configuration's code loaded its slots in (RealtimeChannels::liveReloads): a steady
+	/// block loads none. 0 before any configuration; read only while that configuration lives.
+	std::uint64_t liveReloads() const noexcept;
 	/// With autoComplete off: every hold waiting acknowledged, as acknowledgeHolds, and a change to `settings`, as
 	/// change, queued on the main loop right behind the acknowledgements, so it runs after them and before anything
 	/// their turn posts (a change that reached the main loop while a hold's acknowledgement was on its way).

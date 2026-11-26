@@ -393,6 +393,13 @@ inline constexpr std::chrono::milliseconds waitingForPace{1'000};
 inline constexpr std::chrono::milliseconds hookSlowBound{20};
 /// The status tick's pace: at most one tick per 33 ms, all nodes together (docs/architecture.md#rates-and-bounds).
 inline constexpr std::chrono::milliseconds statusTickPace{33};
+/// One live member's new value (NodeHost::setLive): its index among the type's live members
+/// (AnySettingsTable::liveIndexOf) and its slot's bits.
+struct LiveWrite {
+	std::size_t member;
+	std::uint64_t bits;
+};
+
 class NodeHost final : public DesiredNodeListener,
 					   public NodeOperations,
 					   public NodeActions,
@@ -543,6 +550,13 @@ public:
 	/// (ear.close-late, docs/architecture.md#teardown-by-dependency) no longer counts: nothing of it runs, and it
 	/// is freed in a later turn.
 	std::size_t leaked() const noexcept;
+	/// Moves live members of wanted node `node` (docs/architecture.md#live-values): its live values and its
+	/// configuration's slots at once, published as one batch, in any phase; with no configuration only the live values,
+	/// which seed the next. Main thread. An unknown node or member is a caller's bug: std::logic_error.
+	void setLive(const NodeName& node, std::span<const LiveWrite> writes);
+	/// The newest node of name `node`'s live values, every live member's slot bits in order; none for a name no node
+	/// has.
+	std::vector<std::uint64_t> liveValues(const NodeName& node) const;
 
 private:
 	struct Impl;

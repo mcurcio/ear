@@ -461,6 +461,9 @@ never touches a queue, a lock or a clock of its own.
 | The bell | `RealtimeBell::ring()` (ear_pipewire's: [engine.md](engine.md#the-realtime-bell)), gated by one atomic exchange per configuration: rung after a `process` that wrote anything, unless it was rung since the last drain | at most once per drain, and the drain is the tick's, so at most 30 a second per node | — |
 | A broken value | the first value outside its declaration, kept once | one | the node fails `lost` with the rule |
 | A trigger (in) | one `std::atomic<std::uint32_t>` counter per trigger, moved by the main loop; beside it the last value the code saw, the code's alone ([writing-a-node-type.md](writing-a-node-type.md#actions)) | — | several invokes before a block are one |
+| A live slot (in) | one `std::atomic<std::uint64_t>` per live member (a decimal's bits, a whole number, a boolean 0 or 1, a choice's index), written by the main loop ([writing-a-node-type.md](writing-a-node-type.md#live-rows)) | 256 live members per type, each family at its count row's maximum | none: the word holds the latest |
+| The generation word (in) | one `std::atomic<std::uint64_t>`: the write count in its low 32 bits, moved after each batch of slot writes, and the snap epoch in its high 32, moved before each drive; stored with release by the main loop, its one writer, which keeps its own copy, so neither side needs a read-modify-write | one | — |
+| Ramp and step state | per member, the code's alone: a ramp's ends, first frame and last unsteady frame, a step's value, its value before its last edge and where that edge was | as the slots | — |
 
 `io.set` stores the word and, when the value differs from the last one the code wrote (its
 initial value before any), counts a transition and puts a status record in the ring. `io.raise` and
@@ -471,6 +474,43 @@ consistent fence on each side (after the clear; after the cycle's writes, before
 the two meet: either the drain reads the cycle's writes or the exchange sees the clear and rings.
 Without them a store buffer can hold the clear while the drain reads the old head, and the write is
 neither drained nor rung for until the code writes again.
+
+**The advance.** Before each `process`, the code's side of the live slots advances
+(`RealtimeChannels::advanceLive`): the block's position moves on by its frames, and the generation
+word is loaded (acquire). When it is the one last seen, that is all: one load and no
+read-modify-write, whether or not a ramp is running, since a view is computed from the ramp's ends
+and where the block sits in it. When its snap epoch moved, every member is seated at its slot with
+no ramp and every step unchanged. Otherwise every slot is loaded (relaxed, after the acquire): a
+ramped member whose slot moved starts a ramp from the value its last frame had, a stepped one has
+an edge. Positions count the frames this configuration's codes processed, so a ramp and a step's
+edge are where they are whichever code runs. It never allocates, locks, formats or makes a system
+call (`ear_core_tests` counts the allocations of 130 members moving, none). A cycle that does not
+run the code ([engine.md](engine.md#the-quantum-guard)) does not advance it: the block writes zeros
+anyway. Members written in one batch start their ramps in one block, except when the load falls
+inside the batch: then the rest start one block later. A seqlock would close that gap with a retry
+loop on the realtime thread, for at most one block of ramp.
+
+**The snap.** `NodeHost` moves the snap epoch before each drive of the code (its first, and a
+start after a stop), never before a swap, since the block cannot tell a drive from a swap
+(`CycleCause::drive` is set for both: [engine.md](engine.md#drive-and-fade)). So slots moved while
+the node was stopped or not yet driven are taken at once under the drive's own fade-in
+([fades](#fades)), and a code a change swaps in goes on with every ramp and step where the old one
+left it.
+
+#### Live values
+
+Each node keeps its **live values** in `NodeHost` (main loop): every live member's value as its slot
+holds it, one per member up to each family's maximum. They are seeded from the node's settings when
+it is added (`NodeConfig::liveValues`), seed every configuration's slots when it is made, and are
+what `s.liveValue` reads in `configure` and the change version (bound for the call:
+`CreateContext::liveValues`). They belong to the node, not to a config: `NodeHost::setLive` moves
+them and the configuration's slots at once, in any phase (with no configuration, only the live
+values), and never adopts or replaces a config.
+
+Until retunes are built a change of a live row is planned as a change in place is
+([writing-a-node-type.md](writing-a-node-type.md#live-rows)), and the live values take the new
+settings' at the change's commit point, where its slots are written in one batch, and at each
+configuration's making from its config: so the audio and the settings agree from the commit point.
 
 **The drain**, on the main loop, is part of the tick's: the bell's dispatch arms the tick as a
 queue's wake does (`NodeHost::realtimeRung`), and each node's drain reads its configuration's ring
@@ -489,8 +529,10 @@ when `configure` answers (`CreateOf::applied`), and a code a change swaps in is 
 ones (`ChangeOf::applied`), so each `rt` field keeps the value the old code last wrote. A stop and a
 start keep them; a restart, a failure or a removal drains them with the queue as the
 configuration closes, and its successor starts from new ones. One node's channels are never
-another's. A type whose code writes nothing on the realtime thread and reads no trigger (no `rt`
-field, event, log code or trigger) has none.
+another's. A live slot is kept across a stop, a start, a change in place, a reshape in place and a
+swap; each configuration's is seeded from the node's live values. A type whose code writes nothing
+on the realtime thread and reads no trigger or live row (no `rt` field, event, log code, trigger or
+live row) has none.
 
 ## Companions
 

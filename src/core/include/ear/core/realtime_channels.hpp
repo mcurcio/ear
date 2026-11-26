@@ -50,6 +50,32 @@ struct RealtimeBroken {
 	std::uint64_t bits = 0;
 };
 
+/// One live member of a configuration (docs/architecture.md#the-realtime-channels): how the code's view of it moves
+/// to a new value, and the value its slot starts at. Made by NodeHost from the type's live rows.
+struct LiveMember {
+	/// A step (the new value whole from the next block), or a ramp over `frames` on the value itself or on its
+	/// logarithm (a log taper's row).
+	enum class Move : std::uint8_t { step, linear, log };
+	Move move = Move::step;
+	bool weight = false;      // a boolean ramp: its bits 0 or 1 ramp as a weight from 0.0 to 1.0
+	std::uint32_t frames = 1; // a ramp's length, 1 or more
+	std::uint64_t bits = 0;   // the slot's first value
+};
+/// One live member as the advance last left it (docs/writing-a-node-type.md#live-rows), the code's alone: what io.param
+/// builds its view from. Positions count the frames the configuration's codes have processed since its channels were
+/// made, so a ramp or a step's edge is where it is whichever code runs.
+struct LiveState {
+	std::uint64_t bits = 0;    // the value (a step) or the ramp's target, as loaded from the slot
+	double from = 0.0;         // a ramp's start, in its domain (ln v for a log ramp)
+	double to = 0.0;           // a ramp's target, in its domain
+	double toValue = 0.0;      // the target itself
+	std::uint64_t startAt = 0; // a ramp's first frame
+	std::uint64_t endsAt = 0;  // the first frame that holds the target: at or after it the ramp is steady
+	std::uint64_t before = 0;  // a step's value before its last edge
+	std::uint64_t edgeAt = 0;  // the block a step's last edge began
+	bool edged = false;        // a step has had an edge since the last snap
+};
+
 class RealtimeChannels {
 public:
 	/// The ring's records, and how many of them a log record may find in use: past it a log record is refused, so
@@ -64,7 +90,8 @@ public:
 	/// Main loop. `fields` is one entry per status field of the spec, in declaration order; `bell` may be null (a host
 	/// with none: the tick drains what is written whenever it runs); `triggers` is how many triggers the spec has, each
 	/// a counter (docs/writing-a-node-type.md#actions).
-	RealtimeChannels(std::vector<Initial> fields, RealtimeBell* bell, std::size_t triggers = 0);
+	RealtimeChannels(std::vector<Initial> fields, RealtimeBell* bell, std::size_t triggers = 0,
+	                 std::vector<LiveMember> live = {});
 	RealtimeChannels(const RealtimeChannels&) = delete;
 	RealtimeChannels& operator=(const RealtimeChannels&) = delete;
 
@@ -127,7 +154,34 @@ public:
 		return true;
 	}
 
+	/// Before each process (docs/architecture.md#the-realtime-channels): a block of `frames` begins. One acquire load
+	/// of the generation word when nothing moved since the last block; otherwise every slot is loaded, a snap seats
+	/// every member at its slot, and a moved slot starts a ramp from the value its last frame had, or a step's edge.
+	/// Never allocates, locks or waits.
+	void advanceLive(std::uint32_t frames) noexcept;
+	/// The block's first frame, counted from the channels' making; each member's state and declaration.
+	std::uint64_t livePosition() const noexcept { return position_; }
+	const LiveState& liveState(std::size_t member) const noexcept { return state_[member]; }
+	const LiveMember& liveMember(std::size_t member) const noexcept { return members_[member]; }
+	/// How many blocks loaded the slots (the generation word had moved): a steady block loads none.
+	std::uint64_t liveReloads() const noexcept { return reloads_.load(std::memory_order_relaxed); }
+
 	// ---- The main loop's side ----
+
+	/// How many live members there are: one slot each.
+	std::size_t liveCount() const noexcept { return members_.size(); }
+	/// Live member `member`'s slot now holds `bits`; the code sees it once publishLive() follows. Wait-free.
+	void setLive(std::size_t member, std::uint64_t bits) noexcept {
+		live_[member].store(bits, std::memory_order_relaxed);
+	}
+	/// What setLive wrote since the last publish is the code's from its next block, all in that block (or, when its
+	/// load falls inside a batch, the rest one block later). The generation word's write count moves.
+	void publishLive() noexcept { storeGeneration(generation_ + 1); }
+	/// Before a drive (docs/architecture.md#the-realtime-channels): the next block seats every member at its slot, with
+	/// no ramp and every step unchanged. The generation word's snap epoch moves.
+	void snapLive() noexcept { storeGeneration((generation_ & ~std::uint64_t{0xffffffff}) + (std::uint64_t{1} << 32)); }
+	/// Live member `member`'s slot as the main loop last wrote it.
+	std::uint64_t live(std::size_t member) const noexcept { return live_[member].load(std::memory_order_relaxed); }
 
 	/// Trigger `trigger` invoked: its counter moves, wait-free; the code sees it in its next block.
 	void trigger(std::size_t trigger) noexcept { triggers_[trigger].fetch_add(1, std::memory_order_release); }
@@ -171,6 +225,22 @@ private:
 	bool brokenTaken_ = false; // main loop only
 	std::atomic<bool> pending_{false};
 	bool wrote_ = false; // the code's: it wrote in this cycle
+	/// The generation word (docs/architecture.md#the-realtime-channels): the write count in its low 32 bits, the snap
+	/// epoch in its high 32. The main loop is its one writer and keeps its own copy, so neither side needs a
+	/// read-modify-write.
+	void storeGeneration(std::uint64_t next) noexcept {
+		generation_ = next;
+		liveGeneration_.store(next, std::memory_order_release);
+	}
+	const std::vector<LiveMember> members_;
+	const std::unique_ptr<std::atomic<std::uint64_t>[]> live_; // the slots: the main loop's to write
+	std::atomic<std::uint64_t> liveGeneration_{0};
+	std::uint64_t generation_ = 0;             // main loop only: the word as it last stored it
+	const std::unique_ptr<LiveState[]> state_; // the code's
+	std::uint64_t seenGeneration_ = 0;         // the code's: the word at its last load
+	std::uint64_t position_ = 0;               // the code's: this block's first frame
+	std::uint64_t next_ = 0;                   // the code's: the next block's
+	std::atomic<std::uint64_t> reloads_{0};    // the code's to write
 	const std::size_t triggerCount_;
 	const std::unique_ptr<std::atomic<std::uint32_t>[]> triggers_; // the main loop's to move
 	const std::unique_ptr<std::uint32_t[]> seen_;                  // the code's: each counter as it last saw it

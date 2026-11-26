@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <any>
 #include <array>
+#include <bit>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -34,8 +35,22 @@ namespace setting {
 /// schema (docs/writing-a-node-type.md#the-type-schema); the type's code still reads the row as absent and applies it.
 enum class DefaultFrom { graphFrequency, nodeName };
 /// How a change to a row is taken (docs/writing-a-node-type.md#change-marks): the node restarts, for the reason the row
-/// gives (Row::restarts), or the type's change version applies it while the node runs (Row::inPlace).
-enum class Change { restart, inPlace };
+/// gives (Row::restarts), the type's change version applies it while the node runs (Row::inPlace), or it moves a slot
+/// the code reads on the realtime thread (Row::live, docs/writing-a-node-type.md#live-rows).
+enum class Change { restart, inPlace, live };
+/// A live row's ramp (docs/writing-a-node-type.md#live-rows): the code's view moves to a new value over `ms`.
+struct Ramp {
+	std::uint32_t ms;
+};
+/// A ramp over `ms`, 1 to 1000 ms; ramp(0) does not compile: a row with no ramp is stepped (setting::step).
+consteval Ramp ramp(std::uint32_t ms) {
+	if (ms == 0) throw "a ramp takes 1 to 1000 ms: a row with none is live(setting::step)";
+	if (ms > 1000) throw "a ramp takes 1 to 1000 ms";
+	return Ramp{ms};
+}
+/// A live row's step: the code sees a new value from the next block whole, and makes its own crossfade.
+struct Step {};
+inline constexpr Step step{};
 /// What a control may offer for a text row (docs/writing-a-node-type.md#the-type-schema): the whole set of values it takes
 /// (`values`, a select), an ECMAScript pattern every good value matches (`pattern`), and the most bytes a good value
 /// has (`maxLength`, 0 for none). Hints only: the row's parse function stays the judge, and the all-type tests hold
@@ -118,7 +133,7 @@ struct SettingRow {
 	SettingRule rule;
 	std::optional<SettingValue> byDefault = {};           // what the row reads when absent
 	std::string_view onlyWithout = {};                    // Row::onlyWithout's
-	setting::Change change = setting::Change::restart;    // the row's change mark: Row::inPlace or Row::restarts
+	setting::Change change = setting::Change::restart;    // the row's change mark: Row::live, inPlace or restarts
 	std::string_view restartReason = {};                  // Row::restarts's: why a change to it restarts the node
 	std::optional<setting::DefaultFrom> defaultFrom = {}; // Row::defaultFrom's: where an absent value comes from
 	bool shapesPorts = false;                             // Row::shapesPorts's: a change to it may change the ports
@@ -127,6 +142,8 @@ struct SettingRow {
 	/// and that row's high, the most members it takes. Empty and 0 for a plain row.
 	std::string_view indexedBy = {};
 	std::uint32_t maxMembers = 0;
+	/// A live row's transition (Row::live): its ramp's ms, or 0 for a step. 0 for a row that is not live.
+	std::uint32_t rampMs = 0;
 };
 namespace setting {
 /// A family member's number in `key` (docs/writing-a-node-type.md#indexed-families): `key` is `<family>.<n>`, n
@@ -144,6 +161,15 @@ constexpr std::optional<std::uint32_t> memberNumber(std::string_view key, std::s
 	}
 	return static_cast<std::uint32_t>(number);
 }
+/// Whether a row is live (Row::live), and how many live members it is: a family its maximum, a plain row one, any
+/// other row none (docs/writing-a-node-type.md#live-rows). The one count the table, the channels and NodeHost share.
+constexpr bool isLive(const SettingRow& row) noexcept { return row.change == Change::live; }
+constexpr std::uint32_t liveMembers(const SettingRow& row) noexcept {
+	if (!isLive(row)) return 0;
+	return row.maxMembers > 0 ? row.maxMembers : 1;
+}
+/// The most live members one type has: its realtime channels hold one slot each.
+inline constexpr std::uint32_t mostLiveMembers = 256;
 } // namespace setting
 
 namespace setting {
@@ -186,6 +212,21 @@ template <class E> constexpr E choiceValue(const SettingRow& row, ChoiceIndex in
 }
 /// Whether a row reads by a choice rule: by the rule, never the value's type, since a text row may read an enumeration.
 constexpr bool isChoice(const SettingRow& row) noexcept { return std::holds_alternative<ChoiceRule>(row.rule); }
+/// A live member's value as its slot holds it (docs/architecture.md#the-realtime-channels): a decimal's 64 bits, a whole
+/// number, a boolean 0 or 1, a choice's index.
+template <class V> constexpr std::uint64_t liveBits(const V& value) noexcept {
+	if constexpr (std::same_as<V, double>) return std::bit_cast<std::uint64_t>(value);
+	else if constexpr (std::same_as<V, bool>) return value ? 1 : 0;
+	else if constexpr (std::same_as<V, ChoiceIndex>) return value.index;
+	else return static_cast<std::uint64_t>(value);
+}
+/// A slot's bits read back as `row`'s value V: liveBits's inverse, a choice's index through its rule.
+template <class V> constexpr V liveValueOf(const SettingRow& row, std::uint64_t bits) noexcept {
+	if constexpr (std::same_as<V, double>) return std::bit_cast<double>(bits);
+	else if constexpr (std::same_as<V, bool>) return bits != 0;
+	else if constexpr (std::is_enum_v<V>) return choiceValue<V>(row, ChoiceIndex{static_cast<std::uint32_t>(bits)});
+	else return static_cast<V>(bits);
+}
 /// What the walk keeps for a value read as V by a row: a choice's its index, every other kind the value itself.
 template <class V, bool Choice> using SlotOf = std::conditional_t<Choice, ChoiceIndex, V>;
 /// Parse: std::optional<T>(std::string_view), T not a view. T is what the row reads. An empty mustBe does not compile,
@@ -239,18 +280,39 @@ public:
 		return row_.change != setting::Change::restart || !row_.restartReason.empty();
 	}
 	/// A change to this key may apply in place, through the type's change version of configure, while the node keeps
-	/// running (docs/writing-a-node-type.md#change-marks). A row has one mark: this or restarts.
+	/// running (docs/writing-a-node-type.md#change-marks). A row has one mark: this, live or restarts.
 	consteval Row inPlace() const {
-		if (marked()) throw "a row has one change mark: inPlace or restarts, never both and never twice";
+		if (marked()) throw "a row has one change mark: live, inPlace or restarts, never two and never twice";
 		Row mark = *this;
 		mark.row_.change = setting::Change::inPlace;
 		return mark;
 	}
+	/// A change to this key moves a slot the code reads through io.param, ramped over the ramp's ms
+	/// (docs/writing-a-node-type.md#live-rows). Only a row that always reads a value (required or defaulted) of a
+	/// decimal or a boolean (a weight from 0 to 1) is ramped; a live row never shapes the ports.
+	consteval Row live(Ramp ramp) const {
+		liveMark();
+		if (!std::holds_alternative<DecimalRule>(row_.rule) && !std::holds_alternative<BooleanRule>(row_.rule))
+			throw "a ramp needs a decimal or a boolean row: a whole number or a choice is live(setting::step)";
+		Row mark = *this;
+		mark.row_.change = setting::Change::live;
+		mark.row_.rampMs = ramp.ms;
+		return mark;
+	}
+	/// A change to this key moves a slot the code reads through io.param, whole from the next block
+	/// (docs/writing-a-node-type.md#live-rows): a decimal, whole number, boolean or choice row that always reads a
+	/// value.
+	consteval Row live(Step) const {
+		liveMark();
+		Row mark = *this;
+		mark.row_.change = setting::Change::live;
+		return mark;
+	}
 	/// A change to this key restarts the node, for `why`: one line naming what cannot change while the node runs
 	/// ("shairport-sync reads it only at start"), shown beside "restarts" (docs/writing-a-node-type.md#change-marks).
-	/// An empty reason does not compile, and a row has one mark: this or inPlace.
+	/// An empty reason does not compile, and a row has one mark: this, live or inPlace.
 	consteval Row restarts(std::string_view why) const {
-		if (marked()) throw "a row has one change mark: inPlace or restarts, never both and never twice";
+		if (marked()) throw "a row has one change mark: live, inPlace or restarts, never two and never twice";
 		if (why.empty()) throw "a restart states why: restarts takes a reason, never an empty one";
 		Row mark = *this;
 		mark.row_.restartReason = why;
@@ -260,6 +322,8 @@ public:
 	/// the editor's "changes the ports". The plan never reads it (it compares the ports before and after:
 	/// docs/architecture.md#reshapes); the all-type tests hold it to the type's ports(), both ways.
 	consteval Row shapesPorts() const {
+		if (row_.change == setting::Change::live)
+			throw "a live row never shapes the ports: ports() cannot read it (docs/writing-a-node-type.md#live-rows)";
 		Row marked = *this;
 		marked.row_.shapesPorts = true;
 		return marked;
@@ -283,6 +347,16 @@ public:
 	}
 
 private:
+	/// What every live mark checks first: one mark per row, a row that always reads a value, a kind that can be live,
+	/// and no shapesPorts.
+	consteval void liveMark() const {
+		if (marked()) throw "a row has one change mark: live, inPlace or restarts, never two and never twice";
+		if (std::holds_alternative<TextRule>(row_.rule) || std::holds_alternative<RateRule>(row_.rule))
+			throw "a live row is a decimal, whole number, boolean or choice: a text or a rate names what is never live";
+		if (!Always) throw "a live row always reads a value: required, defaulted or a family, never optional";
+		if (row_.shapesPorts)
+			throw "a live row never shapes the ports: ports() cannot read it (docs/writing-a-node-type.md#live-rows)";
+	}
 	// A throw in a consteval function is what stops the compile; the text is what the compiler shows.
 	consteval Row(std::string_view key, bool required, SettingRule rule,
 	              std::optional<SettingValue> byDefault = std::nullopt)
@@ -313,13 +387,29 @@ public:
 		return row_.change != setting::Change::restart || !row_.restartReason.empty();
 	}
 	consteval IndexedRow inPlace() const {
-		if (marked()) throw "a row has one change mark: inPlace or restarts, never both and never twice";
+		if (marked()) throw "a row has one change mark: live, inPlace or restarts, never two and never twice";
 		IndexedRow mark = *this;
 		mark.row_.change = setting::Change::inPlace;
 		return mark;
 	}
+	/// As Row's: every member a slot, made for the family's maximum, active or not.
+	consteval IndexedRow live(Ramp ramp) const {
+		if (marked()) throw "a row has one change mark: live, inPlace or restarts, never two and never twice";
+		if (!std::holds_alternative<DecimalRule>(row_.rule) && !std::holds_alternative<BooleanRule>(row_.rule))
+			throw "a ramp needs a decimal or a boolean row: a whole number or a choice is live(setting::step)";
+		IndexedRow mark = *this;
+		mark.row_.change = setting::Change::live;
+		mark.row_.rampMs = ramp.ms;
+		return mark;
+	}
+	consteval IndexedRow live(Step) const {
+		if (marked()) throw "a row has one change mark: live, inPlace or restarts, never two and never twice";
+		IndexedRow mark = *this;
+		mark.row_.change = setting::Change::live;
+		return mark;
+	}
 	consteval IndexedRow restarts(std::string_view why) const {
-		if (marked()) throw "a row has one change mark: inPlace or restarts, never both and never twice";
+		if (marked()) throw "a row has one change mark: live, inPlace or restarts, never two and never twice";
 		if (why.empty()) throw "a restart states why: restarts takes a reason, never an empty one";
 		IndexedRow mark = *this;
 		mark.row_.restartReason = why;
@@ -484,7 +574,11 @@ template <const auto&... Rows>
 class SettingsTable;
 namespace spec_detail {
 struct ArgsAccess; // action_spec.hpp: a call's checked arguments, made from what its table's walk made
+template <const auto& Spec, class Type> class SpecConfig;   // lifecycle.hpp
+template <const auto& Spec, class Type> class SpecInstance; // lifecycle.hpp
 } // namespace spec_detail
+template <const auto& Spec> class CreateOf; // lifecycle.hpp
+template <const auto& Spec> class ChangeOf; // lifecycle.hpp
 
 namespace linkage {
 template <const auto& Object> consteval std::string_view spelling() { return __PRETTY_FUNCTION__; }
@@ -512,7 +606,28 @@ private:
 		requires(setting::isRow<std::remove_cvref_t<decltype(Rows)>> && ...)
 	friend class SettingsTable;
 	friend struct spec_detail::ArgsAccess;
+	friend class LiveBinding;
 	std::vector<std::any> slots_;
+	// The node's live values (docs/writing-a-node-type.md#live-rows) while a hook of its type runs on the main loop
+	// (LiveBinding), every live member's slot bits in order; null otherwise, when liveValue reads what was parsed. The
+	// main loop alone sets and reads it, so a config other threads share is never raced on it.
+	mutable const std::uint64_t* live_ = nullptr;
+};
+/// For one call of a type's hook on the main loop: `settings` read their live rows from `live` (the node's live values,
+/// docs/architecture.md#live-values), then from what was parsed again. Empty `live` binds nothing.
+class LiveBinding {
+public:
+	LiveBinding(const CheckedSettings& settings, std::span<const std::uint64_t> live) noexcept
+		: settings_(&settings), before_(settings.live_) {
+		if (!live.empty()) settings.live_ = live.data();
+	}
+	LiveBinding(const LiveBinding&) = delete;
+	LiveBinding& operator=(const LiveBinding&) = delete;
+	~LiveBinding() { settings_->live_ = before_; }
+
+private:
+	const CheckedSettings* settings_;
+	const std::uint64_t* before_;
 };
 
 /// A table without its rows' types: all the walk needs, so the walk is not a template. Its constructor is consteval, so
@@ -551,6 +666,24 @@ public:
 	constexpr setting::Change changeOf(std::string_view key) const noexcept {
 		if (const auto found = rowOf(key)) return found->row->change;
 		return setting::Change::restart;
+	}
+	/// Where `key`'s slot sits among the type's live members (docs/writing-a-node-type.md#live-rows): live rows in the
+	/// walk's order, a family's members 1 to its maximum in order; nothing for a key that is not a live member.
+	constexpr std::optional<std::uint32_t> liveIndexOf(std::string_view key) const noexcept {
+		const auto found = rowOf(key);
+		if (!found || !setting::isLive(*found->row)) return std::nullopt;
+		std::uint32_t at = 0;
+		for (const SettingRow* row : rows_) {
+			if (row == found->row) return at + (found->member > 0 ? found->member - 1 : 0);
+			at += setting::liveMembers(*row);
+		}
+		return std::nullopt;
+	}
+	/// How many live members the type has, each family at its maximum: its channels' slots.
+	constexpr std::uint32_t liveCount() const noexcept {
+		std::uint32_t count = 0;
+		for (const SettingRow* row : rows_) count += setting::liveMembers(*row);
+		return count;
 	}
 	/// A refusal's text, and the key it names (empty for "settings: must be an object"): InvalidSettings's `key`
 	/// (docs/control-port.md#error-codes), and an action's invalid-args.
@@ -626,21 +759,110 @@ public:
 	static constexpr bool anyRowMarked = (Rows.marked() || ...);
 	/// Whether any row is an indexed family, as a call's arguments must not have (action::call).
 	static constexpr bool anyRowIndexed = (setting::isIndexed<std::remove_cvref_t<decltype(Rows)>> || ...);
+	/// The rows, and the live members (docs/writing-a-node-type.md#live-rows): each family counted at its maximum, so no
+	/// count change ever resizes the slots. Over setting::mostLiveMembers does not compile.
+	static constexpr std::size_t rowCount = sizeof...(Rows);
+	static constexpr std::uint32_t liveMemberCount = (setting::liveMembers(Rows.row()) + ... + 0u);
+	static_assert(liveMemberCount <= setting::mostLiveMembers,
+	              "a type has at most 256 live members, each family counted at its maximum");
+	/// Whether `Row` is one of these rows.
+	template <const auto& Row> static constexpr bool listed =
+		((static_cast<const void*>(&Row) == static_cast<const void*>(&Rows)) || ...);
+	/// Where `Row` sits among the rows, and where its first live member sits among the live members.
+	template <const auto& Row> static constexpr std::size_t rowIndexOf = [] {
+		constexpr std::array<const void*, sizeof...(Rows)> all{static_cast<const void*>(&Rows)...};
+		return static_cast<std::size_t>(std::ranges::find(all, static_cast<const void*>(&Row)) - all.begin());
+	}();
+	template <const auto& Row> static constexpr std::uint32_t liveFirst = [] {
+		constexpr std::array<std::uint32_t, sizeof...(Rows)> members{setting::liveMembers(Rows.row())...};
+		std::uint32_t at = 0;
+		for (std::size_t row = 0; row < rowIndexOf<Row>; ++row) at += members[row];
+		return at;
+	}();
+	/// Where `row`'s first live member sits among the live members.
+	static constexpr std::uint32_t liveAt(const SettingRow& row) noexcept {
+		std::uint32_t at = 0;
+		for (const SettingRow* one : rows_) {
+			if (one == &row) break;
+			at += setting::liveMembers(*one);
+		}
+		return at;
+	}
+	/// A family's count row.
+	template <const auto& Family> static constexpr const SettingRow& countRowOf = *[] {
+		constexpr std::array<const SettingRow*, sizeof...(Rows)> all{&Rows.row()...};
+		return *std::ranges::find(all, Family.row().indexedBy, &SettingRow::key);
+	}();
 	/// Settings this table passed. A row not listed in this table cannot be read: get's constraint fails at compile time.
 	class Checked {
-		template <const auto& Row> static constexpr bool listed =
-			((static_cast<const void*>(&Row) == static_cast<const void*>(&Rows)) || ...);
 		template <const auto& Row> static constexpr bool family =
 			setting::isIndexed<std::remove_cvref_t<decltype(Row)>>;
-		template <const auto& Row> static constexpr std::size_t slotOf() {
-			return static_cast<std::size_t>(std::ranges::find(rows_, &Row.row()) - rows_.begin());
-		}
+		template <const auto& Row> static constexpr std::size_t slotOf() { return rowIndexOf<Row>; }
 
 	public:
-		/// A plain row's value; a family is read by member (get<family>(member)).
+		/// A plain row's value; a family is read by member (get<family>(member)). A live row does not compile: its
+		/// value moves without a new config, so it is read through io.param, or liveValue in check and the change
+		/// version.
 		template <const auto& Row>
 			requires(listed<Row> && !family<Row>)
 		[[nodiscard]] typename std::remove_cvref_t<decltype(Row)>::Reads get() const {
+			static_assert(!setting::isLive(Row.row()),
+			              "a live row is read through io.param, or liveValue in check and the change version");
+			return read<Row>();
+		}
+		/// A family's member, from 0 (its key's number less 1): the file's value, or the family's default when absent,
+		/// active or not. A member at or above the family's maximum is a type bug: std::out_of_range. A live family
+		/// does not compile, as get of a live row.
+		template <const auto& Family>
+			requires(listed<Family> && family<Family>)
+		[[nodiscard]] typename std::remove_cvref_t<decltype(Family)>::Value get(std::size_t member) const {
+			static_assert(!setting::isLive(Family.row()),
+			              "a live row is read through io.param, or liveValue in check and the change version");
+			return readMember<Family>(member);
+		}
+		/// A family's active members: its count row's value. Members above it are kept, inactive. A family whose count
+		/// row is live does not compile: liveCount reads it.
+		template <const auto& Family>
+			requires(listed<Family> && family<Family>)
+		[[nodiscard]] std::uint32_t count() const {
+			static_assert(!setting::isLive(countRowOf<Family>),
+			              "a family whose count row is live is counted by liveCount, or io.count in process");
+			return parsedCount<Family>();
+		}
+		/// A live row's value as the node's live values hold it now (docs/writing-a-node-type.md#live-rows): in check
+		/// at parse, what was parsed; in configure and the change version, the node's live values. A row that is not
+		/// live does not compile: get reads it.
+		template <const auto& Row>
+			requires(listed<Row> && !family<Row>)
+		[[nodiscard]] typename std::remove_cvref_t<decltype(Row)>::Value liveValue() const {
+			static_assert(setting::isLive(Row.row()),
+			              "liveValue reads a live row: a row that is not live is read by get");
+			using Value = typename std::remove_cvref_t<decltype(Row)>::Value;
+			if (settings_.live_ == nullptr) return read<Row>();
+			return setting::liveValueOf<Value>(Row.row(), settings_.live_[liveFirst<Row>]);
+		}
+		/// A live family's member, from 0, as liveValue; at or above the maximum, std::out_of_range.
+		template <const auto& Family>
+			requires(listed<Family> && family<Family>)
+		[[nodiscard]] typename std::remove_cvref_t<decltype(Family)>::Value liveValue(std::size_t member) const {
+			static_assert(setting::isLive(Family.row()),
+			              "liveValue reads a live row: a row that is not live is read by get");
+			using Value = typename std::remove_cvref_t<decltype(Family)>::Value;
+			if (settings_.live_ == nullptr || member >= Family.row().maxMembers) return readMember<Family>(member);
+			return setting::liveValueOf<Value>(Family.row(), settings_.live_[liveFirst<Family> + member]);
+		}
+		/// The active members of a family whose count row is live, as liveValue reads that row.
+		template <const auto& Family>
+			requires(listed<Family> && family<Family>)
+		[[nodiscard]] std::uint32_t liveCount() const {
+			static_assert(setting::isLive(countRowOf<Family>),
+			              "liveCount counts a family whose count row is live: count counts the others");
+			if (settings_.live_ == nullptr) return parsedCount<Family>();
+			return static_cast<std::uint32_t>(settings_.live_[liveAt(countRowOf<Family>)]);
+		}
+
+	private:
+		template <const auto& Row> typename std::remove_cvref_t<decltype(Row)>::Reads read() const {
 			using Read = std::remove_cvref_t<decltype(Row)>;
 			using Value = typename Read::Value;
 			constexpr bool choice = setting::isChoice(Row.row());
@@ -656,11 +878,8 @@ public:
 				return slot != nullptr ? typename Read::Reads(value(*slot)) : std::nullopt;
 			}
 		}
-		/// A family's member, from 0 (its key's number less 1): the file's value, or the family's default when absent,
-		/// active or not. A member at or above the family's maximum is a type bug: std::out_of_range.
 		template <const auto& Family>
-			requires(listed<Family> && family<Family>)
-		[[nodiscard]] typename std::remove_cvref_t<decltype(Family)>::Value get(std::size_t member) const {
+		typename std::remove_cvref_t<decltype(Family)>::Value readMember(std::size_t member) const {
 			using Value = typename std::remove_cvref_t<decltype(Family)>::Value;
 			constexpr bool choice = setting::isChoice(Family.row());
 			using Slot = setting::SlotOf<Value, choice>;
@@ -675,19 +894,62 @@ public:
 				if (number == member + 1) return value(held);
 			return value(std::get<Slot>(*Family.row().byDefault));
 		}
-		/// A family's active members: its count row's value. Members above it are kept, inactive.
-		template <const auto& Family>
-			requires(listed<Family> && family<Family>)
-		[[nodiscard]] std::uint32_t count() const {
+		template <const auto& Family> std::uint32_t parsedCount() const {
 			constexpr std::size_t slot = static_cast<std::size_t>(
 				std::ranges::find(rows_, Family.row().indexedBy, &SettingRow::key) - rows_.begin());
 			return std::any_cast<std::uint32_t>(settings_.slots_[slot]);
 		}
-
-	private:
+		/// One live row's members' slot bits as parsed, appended to `out`.
+		template <const auto& Row> void appendLive(std::vector<std::uint64_t>& out) const {
+			if constexpr (setting::isLive(Row.row())) {
+				using Value = typename std::remove_cvref_t<decltype(Row)>::Value;
+				constexpr bool choice = setting::isChoice(Row.row());
+				const auto bits = [](const Value& value) {
+					if constexpr (choice) {
+						const auto& names = std::get<ChoiceRule>(Row.row().rule);
+						const auto underlying = static_cast<std::int64_t>(std::to_underlying(value));
+						for (std::uint32_t at = 0; at < names.count; ++at)
+							if (names.values[at] == underlying) return static_cast<std::uint64_t>(at);
+						return std::uint64_t{0};
+					} else {
+						return setting::liveBits(value);
+					}
+				};
+				if constexpr (family<Row>) {
+					for (std::size_t member = 0; member < Row.row().maxMembers; ++member)
+						out.push_back(bits(readMember<Row>(member)));
+				} else {
+					out.push_back(bits(read<Row>()));
+				}
+			}
+		}
+		/// Every live member's slot bits as parsed, in order: what seeds a node's live values
+		/// (NodeConfig::liveValues).
+		std::vector<std::uint64_t> parsedLive() const {
+			std::vector<std::uint64_t> out;
+			out.reserve(liveMemberCount);
+			(appendLive<Rows>(out), ...);
+			return out;
+		}
+		/// Each family's active members as parsed, by row (0 for a row that is not a family, or a family whose count
+		/// row is live): what io.count gives a code made with these settings.
+		std::array<std::uint32_t, rowCount> familyCounts() const {
+			std::array<std::uint32_t, rowCount> counts{};
+			[[maybe_unused]] const auto one = [&]<const auto & Row>() {
+				if constexpr (family<Row>) {
+					if constexpr (!setting::isLive(countRowOf<Row>)) counts[rowIndexOf<Row>] = parsedCount<Row>();
+				}
+			};
+			(one.template operator()<Rows>(), ...);
+			return counts;
+		}
 		explicit Checked(CheckedSettings settings) noexcept : settings_(std::move(settings)) {}
 		friend SettingsTable;
 		template <const auto& Spec, class Type> friend class spec_detail::SpecNodeType;
+		template <const auto& Spec, class Type> friend class spec_detail::SpecConfig;
+		template <const auto& Spec, class Type> friend class spec_detail::SpecInstance;
+		template <const auto& Spec> friend class ear::CreateOf;
+		template <const auto& Spec> friend class ear::ChangeOf;
 		friend struct spec_detail::ArgsAccess;
 		CheckedSettings settings_;
 	};
