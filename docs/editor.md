@@ -849,7 +849,9 @@ measured by the build before and after; the shell's design estimated under 15 KB
 over. The whole shell, from tokens to this, grew the script from 486.58 KB to 531.61 KB (155.24 KB to 169.68 KB
 gzipped) and the styles from 21.25 KB to 37.57 KB; the view's own fit, the segmented lifecycle bar and the theme
 icon, the palette's and the narrow top bar's fixes, and then phones and touch, brought them to 533.15 KB (170.25 KB
-gzipped) and 39.17 KB. No package was added for any of it.
+gzipped) and 39.17 KB. No package was added for any of it. patchbay was the first: with the node box, wires,
+meters and canvas tools on it, the build is 565.23 KB (181.55 KB gzipped) and 73.70 KB of styles, patchbay's own
+stylesheets among them, and Vite warns that the script is over 500 KB.
 
 React Flow (`@xyflow/react`) was chosen over Rete.js (its own editor framework) and LiteGraph
 (drawn on a canvas, which makes per-port meters custom work).
