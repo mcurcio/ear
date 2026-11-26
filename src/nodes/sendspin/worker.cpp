@@ -257,8 +257,8 @@ void Worker::startListening(std::string_view clientId) {
 		report_.raise<events::advertiseFailed>(advertiser.error());
 		return;
 	}
+	// `instance` waits for the announcement: until probing has won, the name may be another responder's.
 	advertiser_ = std::move(*advertiser);
-	report_.set<fields::instance>(instance);
 	askedInstance_ = std::move(instance);
 }
 
@@ -283,11 +283,13 @@ void Worker::turn() {
 	}
 	if (told.dial) client.connect_to(settings_.server->text());
 	if (advertiser_ == nullptr) return;
-	// Probed, then announced (docs/node-types.md#mdns): a rename only if another responder held its instance.
+	// Probed, then announced (docs/node-types.md#its-listing): `instance` is the name it holds once announced, and
+	// a rename is said only if another responder held the one it asked for.
 	auto mdns = advertiser_->turn();
-	if (mdns.announced && mdns.announced->instance != askedInstance_) {
+	if (mdns.announced) {
 		report_.set<fields::instance>(mdns.announced->instance);
-		report_.raise<events::renamed>(askedInstance_, mdns.announced->instance);
+		if (mdns.announced->instance != askedInstance_)
+			report_.raise<events::renamed>(askedInstance_, mdns.announced->instance);
 	}
 	if (mdns.failed) {
 		report_.set<fields::instance>("");

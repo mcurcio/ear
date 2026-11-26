@@ -249,7 +249,6 @@ TEST_CASE("A listening node whose instance another responder holds is listed ren
 	writeGraphFile(second, listenToRec(secondPort));
 	std::filesystem::copy_file(first.config() / "sendspin-ma.key", second.config() / "sendspin-ma.key");
 	auto ear = runEar(second);
-	CHECK(waitForInstance(ear, "ma", secondPort) == instance);
 	const auto renamed = waitForEvent(ear, "renamed", 0, playDeadline);
 	REQUIRE_SEEN(ear, renamed);
 	const std::string published = (*renamed)["args"]["published"].get<std::string>();
@@ -258,9 +257,12 @@ TEST_CASE("A listening node whose instance another responder holds is listed ren
 	CHECK(renamed->value("severity", "") == "info");
 	CHECK(renamed->value("msg", "") ==
 	      "node ma listed over mDNS as " + published + ", as another responder holds " + instance);
-	const auto listed = waitForNth(ear, instanceListed(), 1);
+	// The field names only what the node holds: the published name is its first, never the held one.
+	const auto listed = waitForNth(ear, instanceListed(), 0);
 	REQUIRE(listed);
 	CHECK((*listed)["to"] == published);
+	CHECK(lastStatus(ear, "listenPort") == json(secondPort));
+	CHECK(lastStatus(ear, "clientId") == lastStatus(holder, "clientId"));
 	CHECK(countEvents(holder, "renamed") == 0);
 	ear.signal(SIGTERM);
 	CHECK(waitForStop(ear) == 0);

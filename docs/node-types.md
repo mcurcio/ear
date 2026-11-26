@@ -297,7 +297,7 @@ touched. The node writes no `note` records.
 | `connection` | `dialling`, `listening` or `connected`; unknown until the client is made | On the node's box. Back to `dialling` or `listening` once the connection read lost for 5 s (it reads lost through a re-handshake, hence the 5 s), and at a change in place. A dialling node redials then, and every 31 s until connected, so a server back after the first redial can take up to 31 s to be heard. With `running` and silent meters, `dialling` is no server yet, not a failure |
 | `url` | text | The server it dials; `""` while it listens |
 | `listenPort` | number | The port it listens on; 0 while it dials |
-| `instance` | text | Its mDNS instance (`ear-<node, first 50 bytes>-<client id, first 8>`, or what probing renamed it to: [its listing](#its-listing)) while it listens and advertises; `""` otherwise |
+| `instance` | text | Its mDNS instance (`ear-<node, first 50 bytes>-<client id, first 8>`, or what probing renamed it to: [its listing](#its-listing)) once its listing is announced, while it listens and advertises; `""` otherwise, probing included |
 | `serverName` | text | The connected server's name, made safe by the framework, at most 64 bytes; `""` with no server |
 | `paired` | flag | The connected server is paired: only a paired one gets roles and audio. Written before `connection`, as `serverName` is, so a reader that sees `connected` has both |
 | `pairingCode` | text, a callout | The code to type into Music Assistant (`123-456`), until the library clears it or pairing succeeds; `""` otherwise |
@@ -385,13 +385,15 @@ worker:
    pairings from what it holds in memory, not from the file: the same client id (so `clientId`
    writes no record) and the same pairings, so a server it was paired with connects paired, with
    no code. It writes `url` and `listenPort`; a listening client listens and advertises
-   (`connection` `listening`, `instance`), a dialling one dials (`connection` `dialling`). Then
+   (`connection` `listening`, then `instance` once announced), a dialling one dials (`connection` `dialling`). Then
    the sink resumes and the change is made.
 
-What the operator sees for `kitchen` moving from 8928 to 8929: `node kitchen reconfiguring:
-port`, `node kitchen connection connected -> listening`, `node kitchen listenPort 8928 -> 8929`,
-`node kitchen instance ear-kitchen-<id> -> ""` and back, `node kitchen running after
-reconfiguring for 302 ms`, then a server finds it again.
+What the operator sees for `kitchen`, connected paired, moving from 8928 to 8929: `node kitchen
+reconfiguring: port`; what the old client told cleared, `node kitchen instance ear-kitchen-<id> ->
+""`, `node kitchen serverName "Music Assistant" -> ""` and `node kitchen paired true -> false`; the
+new client's `node kitchen listenPort 8928 -> 8929` and `node kitchen connection connected ->
+listening`; `node kitchen running after reconfiguring for 302 ms`; `node kitchen instance "" ->
+ear-kitchen-<id>` once its listing is announced again; then a server finds it again.
 
 - **The audio drops either way.** The connection and the stream end with the old client; the
   server streams again once it is connected to the new one.
@@ -415,7 +417,8 @@ reconfiguring for 302 ms`, then a server finds it again.
 
 A listening node's listing is `_sendspin._tcp` on its port, its TXT `path=/sendspin` and `name=<name>`, kept
 by `ear_mdns`'s `Advertiser` in the worker's state, which turns it on its 10 ms turn ([the advertiser's
-rules](#mdns)): probed first, then announced.
+rules](#mdns)): probed first, then announced, about 0.5 to 1 s after `connection` `listening`.
+`instance` is written only then, so it never names an instance another responder holds.
 
 - The instance name is `ear-<first 50 bytes of node>-<first 8 of client id>`, a DNS label's 63 bytes at
   most, stable, and unique wherever client ids are; its host label is the same made a DNS host label
