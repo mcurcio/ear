@@ -2,7 +2,7 @@
 // ready and hollow when not, and a warning mark while its counter rose in the last minute; and the node panel's list
 // of each one's detail. What each shows is companions.ts's; every state is in text, never in colour alone.
 import type { CompanionBadge } from "../companions";
-import { WarnMark } from "./WarnMark";
+import { WarnMark } from "@mcurcio/patchbay/primitives";
 
 function Dot({ badge }: { badge: CompanionBadge }) {
   return (
@@ -16,7 +16,16 @@ function Dot({ badge }: { badge: CompanionBadge }) {
 }
 
 function Mark({ badge }: { badge: CompanionBadge }) {
-  return badge.warning ? <WarnMark text={badge.warningText} /> : null;
+  return badge.warning ? <WarnMark label={badge.warningText} /> : null;
+}
+
+/** The mark alone, where its words are already in the text beside it (the detail carries the last minute's count). */
+function Glyph() {
+  return (
+    <span aria-hidden="true">
+      <WarnMark label="" />
+    </span>
+  );
 }
 
 /** The strip along the box's bottom edge; nothing when the node has no companions to draw. */
@@ -51,11 +60,7 @@ export function CompanionList({ badges }: { badges: CompanionBadge[] }) {
               {badge.ready ? "●" : "○"}
             </span>{" "}
             {badge.title}
-            {badge.warning && (
-              <span className="warn-mark" aria-hidden="true">
-                !
-              </span>
-            )}
+            {badge.warning && <Glyph />}
           </li>
         ))}
       </ul>

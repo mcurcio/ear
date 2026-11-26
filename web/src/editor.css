@@ -457,27 +457,6 @@ body,
   stroke: var(--pb-err);
 }
 
-/* The busy mark on a button whose request is on its way (docs/editor.md#requests-in-flight): an open ring that turns
-   over --pb-motion-spin; under reduced motion it stands still (below). */
-.spinner {
-  display: inline-block;
-  width: 0.8em;
-  height: 0.8em;
-  margin-right: 4px;
-  vertical-align: -0.1em;
-  box-sizing: border-box;
-  border: 2px solid currentColor;
-  border-right-color: transparent;
-  border-radius: var(--pb-radius-pill);
-  animation: spin var(--pb-motion-spin) linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 /* The inspector (docs/editor.md#the-inspector): one subject, resized by its left edge between sizes.ts's bounds, which
    sizes.test.ts holds equal. */
 .inspector {
@@ -1157,10 +1136,9 @@ body,
   color: var(--pb-muted);
 }
 
-/* The durations are already 0 under reduced motion (patchbay's tokens.css); the configuring pulse, the wires' flow and the busy
-   spinner are infinite animations, which a 0 s duration would churn rather than stop, so they stop here (the
-   spinner keeps its open ring as the busy mark). The peak tick's fall is
-   data, not decoration, and stays. */
+/* The durations are already 0 under reduced motion (patchbay's tokens.css); the configuring pulse and the wires' flow
+   are infinite animations, which a 0 s duration would churn rather than stop, so they stop here (patchbay's Spinner
+   stops its own). The peak tick's fall is data, not decoration, and stays. */
 @media (prefers-reduced-motion: reduce) {
   .phase-configuring .ear-node-pill-dot {
     animation: none;
@@ -1168,10 +1146,6 @@ body,
 
   .ear-wire-flow {
     display: none;
-  }
-
-  .spinner {
-    animation: none;
   }
 }
 
@@ -1256,19 +1230,10 @@ body,
   color: var(--pb-off);
 }
 
-/* The warning mark: something moved in the last minute (a companion's counter). */
-.warn-mark {
-  display: inline-block;
-  width: 12px;
-  height: 12px;
+/* patchbay's WarnMark (docs/editor.md#recent-marks), set a little apart from the word or dot before it. */
+.companion-badge .pb-warn-mark,
+.companion-list .pb-warn-mark {
   margin-left: 2px;
-  border-radius: var(--pb-radius-pill);
-  background: var(--pb-warn);
-  color: var(--pb-on-strong);
-  font-size: 9px;
-  font-weight: 700;
-  line-height: 12px;
-  text-align: center;
 }
 
 .companion-list h3 {
@@ -1308,10 +1273,6 @@ body,
   background: var(--pb-warn-soft);
   color: var(--pb-warn);
   font-weight: 600;
-}
-
-.badge-dropouts .warn-mark {
-  margin-left: 0;
 }
 
 .counter-table h3 {

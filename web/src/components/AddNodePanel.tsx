@@ -9,7 +9,7 @@ import { parseSettings } from "../settings";
 import { AddNodeText } from "./AddNodeText";
 import { useEditor, useGraphFile, useRequests } from "./hooks";
 import type { AddIntent } from "./Inspector";
-import { Spinner } from "./Spinner";
+import { Spinner } from "@mcurcio/patchbay/primitives";
 
 export function AddNodePanel({
   types,

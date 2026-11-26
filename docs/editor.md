@@ -224,7 +224,9 @@ does a closed connection, at once.
   never as a route.
 - **Buttons.** A lifecycle button shows a spinner and is disabled while its own request is on its way; the others
   stay as `health.ts` says. Save in the drawer and in the node box say `Saving…`, and Add in the form says
-  `Adding…`. The spinner stops turning under reduced motion and keeps its open ring.
+  `Adding…`. The spinner is patchbay's `Spinner`
+  ([its docs](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#state)), which stops turning under
+  reduced motion and keeps its open ring.
 
 ### Toasts
 
@@ -477,8 +479,8 @@ class (inside `:where()`, so they weigh no more), so patchbay's controls draw as
   16 px (text fields under a coarse pointer).
 - **Corners and motion:** 8 px on boxes, 6 px on controls and text boxes, pills fully round; 120 ms
   for hover and selection, 180 ms for what slides, `--pb-motion-pulse` (2 s, the configuring dot),
-  `--pb-motion-flow` (1 s, the wires' flow) and `--pb-motion-spin` (0.8 s, the busy spinner). The first two are 0 under
-  `prefers-reduced-motion: reduce`, which also stops the configuring pulse, the wires' flow and the spinner
+  and `--pb-motion-flow` (1 s, the wires' flow); patchbay's Spinner turns on `--pb-motion-spin` and stops itself. The
+  first two are 0 under `prefers-reduced-motion: reduce`, which also stops the configuring pulse and the wires' flow
   (`editor.css`: an infinite animation at 0 s would churn rather than stop), and leaves the peak
   tick's fall, which is data, not decoration.
 
@@ -716,7 +718,10 @@ happened in the last minute. The rules:
 
 `web/src/marks.ts` is the one rule both marks follow, companions' badges and the counters'
 (`marks.test.ts`): each reads its counters from the graph, and `GraphMoves` keeps their last values
-and rises. The mark is an "!" in a circle (`WarnMark`).
+and rises. The mark is patchbay's `WarnMark`, an "!" in a circle
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/components.md#state)): named by its words where it
+stands alone (a box's counter mark, a companion badge), and hidden from screen readers where its words are already the
+text beside it (the dropouts badge, the panel's companion list and counter tables).
 
 - **A rise is a value above the one last held** for the same counter. The first value seen (a
   snapshot's, a new node's), a value that fell and a counter seen again after the graph dropped it

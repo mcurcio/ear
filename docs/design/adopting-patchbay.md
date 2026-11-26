@@ -1,6 +1,7 @@
 # The graph editor on patchbay: what is still to build
 
-Status: designed; A1 is built (the package, the rename onto its tokens, the theme through `useTheme` and ThemeSwitch).
+Status: designed; A1 is built (the package, the rename onto its tokens, the theme through `useTheme` and ThemeSwitch),
+and A2 in part (section 3.3 marks each change built or to build).
 The graph editor (`web/`, [docs/editor.md](../editor.md)) draws with patchbay's `--pb-*` tokens and theme switch, but
 still draws its other controls itself: `web/src/components/`, its styles in `web/src/editor.css`.
 `@mcurcio/patchbay` (npm, 0.5.0) is a component library extracted from this editor: its `tokens.css` is the editor's
@@ -12,7 +13,7 @@ meters) is still only designed in patchbay; those steps wait on patchbay's relea
 | Step | What | Waits on |
 |---|---|---|
 | **A1** | The package, the rename and the theme (section 3.2): built | — |
-| **A2** | The built primitives and hooks, one area per change (section 3.3) | nothing (D2, D3, D4 given) |
+| **A2** | The built primitives and hooks, one area per change (section 3.3): in part | nothing (D2, D3, D4 given) |
 | **A3** | The node box, wires, meters and the canvas sugar (section 3.4) | patchbay's graph layer, released |
 | **A4** | Feedback, the palette and keys, the code editor (section 3.5) | patchbay's composites and hooks, released |
 | **A5** | The shell, and deleting this page (section 3.6) | patchbay's `AppShell`, released |
@@ -99,16 +100,16 @@ patchbay takes the drawing and the generic mechanics; ear keeps what knows about
 
 ### 3.3 A2: the built primitives, one area per change
 
-| Change | ear today | patchbay | Notes |
-|---|---|---|---|
-| Spinner and WarnMark | `Spinner.tsx`, `WarnMark.tsx`, raw `warn-mark` spans in `Counters.tsx` and `CompanionStrip.tsx` | Spinner, WarnMark (`label`) | |
-| Splitters | `Splitter.tsx`, `sizes.ts` dragged, keyed, clamp | Splitter, `edge="start"` | Bounds stay in `sizes.ts` until A5 |
-| Canvas tools | `CanvasTools.tsx`, a plain `role=toolbar` | ToolGroup and IconButton, inside React Flow's `<Panel>` | Roving tab stop (new); `fitPadding` still reserves 76 px for 40 px touch tools |
-| Shortcut sheet | `ShortcutSheet.tsx` on `.palette-backdrop` | Dialog | Gains a Close button and a scrim press |
-| Forms and busy buttons | AddNodeJson, AddNodeText's select, lifecycle bar, Delete, the two Saves | Field, TextInput, Select, Button `busy`, `tone="danger"` | Busy stays focusable, its words in `busyLabel` (D4) |
-| Pills, chips, facts | `StatePill.tsx`, `.chip tone-*`, EngineFactsSection's `<dl>` | Pill, Badge, KeyValue | Pill and Badge `accent` and `muted`, a filled Badge (D3) |
-| Narrow inspector | CSS-only sheet in `editor.css` | Sheet (right below 760 px, bottom below 600 px) | Workspace becomes `position: relative` |
-| Kept sizes | `prefs.ts` width, drawer, minimap | `usePersistentState` with the same keys and checks | Places stay `prefs.ts`'s |
+| Change | ear today | patchbay | Notes | Status |
+|---|---|---|---|---|
+| Spinner and WarnMark | `Spinner.tsx`, `WarnMark.tsx`, raw `warn-mark` spans in `Counters.tsx` and `CompanionStrip.tsx` | Spinner, WarnMark (`label`) | | built |
+| Splitters | `Splitter.tsx`, `sizes.ts` dragged, keyed, clamp | Splitter, `edge="start"` | Bounds stay in `sizes.ts` until A5 | to build |
+| Canvas tools | `CanvasTools.tsx`, a plain `role=toolbar` | ToolGroup and IconButton, inside React Flow's `<Panel>` | Roving tab stop (new); `fitPadding` still reserves 76 px for 40 px touch tools | to build |
+| Shortcut sheet | `ShortcutSheet.tsx` on `.palette-backdrop` | Dialog | Gains a Close button and a scrim press | to build |
+| Forms and busy buttons | AddNodeJson, AddNodeText's select, lifecycle bar, Delete, the two Saves | Field, TextInput, Select, Button `busy`, `tone="danger"` | Busy stays focusable, its words in `busyLabel` (D4) | to build |
+| Pills, chips, facts | `StatePill.tsx`, `.chip tone-*`, EngineFactsSection's `<dl>` | Pill, Badge, KeyValue | Pill and Badge `accent` and `muted`, a filled Badge (D3) | to build |
+| Narrow inspector | CSS-only sheet in `editor.css` | Sheet (right below 760 px, bottom below 600 px) | Workspace becomes `position: relative` | to build |
+| Kept sizes | `prefs.ts` width, drawer, minimap | `usePersistentState` with the same keys and checks | Places stay `prefs.ts`'s | to build |
 
 The health-to-tone map for Pill: `running` ok; `starting`, `stopping`, `unknown` warn; `failed` err; `stopped` quiet;
 `disabled` off; `reconfiguring` accent; `pulse` while configuring. The node box's stripe keeps its `--state` class until
@@ -191,6 +192,9 @@ Component behaviour is tested in patchbay (jsdom and Storybook); ear keeps logic
 
 ## 6. Open
 
+Every decision but D14 is taken (section 1). D14 is still open in patchbay's record; the shape it is leaning to is
+written down there, and nothing here waits on it.
+
 | Question | Options | Leaning | Blocks |
 |---|---|---|---|
-| D14: a library-wide words provider in patchbay | a provider; words as props | none yet | nothing: until it is decided, components take words as props, and ear passes its own where they differ |
+| D14: how a component takes its own words | one `labels` prop per component (a partial object with English defaults, replacing per-word props such as `closeLabel`, a breaking change while 0.x), with no app-wide provider for now; or a provider | one `labels` prop, no provider yet | nothing: ear overrides none of the English defaults (D5 took ThemeSwitch's words; Sheet and Dialog keep "Close"), so either answer only renames props ear does not set |

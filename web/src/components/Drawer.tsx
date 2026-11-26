@@ -4,7 +4,7 @@
 // Closed, the body is hidden but stays mounted, so the draft, the caret and the scroll are kept.
 import type { CSSProperties } from "react";
 import { drawerBounds } from "../sizes";
-import { Spinner } from "./Spinner";
+import { Spinner } from "@mcurcio/patchbay/primitives";
 import { Splitter } from "./Splitter";
 import { TextPane } from "./TextPane";
 import type { DrawerModel } from "./useDrawer";

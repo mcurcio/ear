@@ -11,7 +11,7 @@ import { isAsking } from "../requests";
 import { RpcError } from "../rpc";
 import { useEditor, useRequests } from "./hooks";
 import { KnoblyText } from "./KnoblyText";
-import { Spinner } from "./Spinner";
+import { Spinner } from "@mcurcio/patchbay/primitives";
 
 export function NodeTextBox({ node, file }: { node: string; file: GraphFile }) {
   const editor = useEditor();

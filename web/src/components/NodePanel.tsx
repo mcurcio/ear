@@ -15,7 +15,7 @@ import { CompanionList } from "./CompanionStrip";
 import { CounterTable } from "./Counters";
 import { useCompanionBadges, useEditor, useGraphFile, useNodeCounters, useRequests } from "./hooks";
 import { NodeTextBox } from "./NodeTextBox";
-import { Spinner } from "./Spinner";
+import { Spinner } from "@mcurcio/patchbay/primitives";
 import { StatePill } from "./StatePill";
 
 /** The lifecycle bar's buttons, in order, each enabled by its action in health.ts. */

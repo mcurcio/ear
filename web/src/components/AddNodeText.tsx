@@ -12,7 +12,7 @@ import { RpcError } from "../rpc";
 import { useEditor, useRequests } from "./hooks";
 import type { AddIntent } from "./Inspector";
 import { KnoblyText } from "./KnoblyText";
-import { Spinner } from "./Spinner";
+import { Spinner } from "@mcurcio/patchbay/primitives";
 
 export function AddNodeText({
   types,
