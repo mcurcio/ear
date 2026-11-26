@@ -519,3 +519,14 @@ constexpr auto hiddenRow = setting::optional("n", setting::number(0, 1));
 [[maybe_unused]] constexpr SettingsTable<hiddenRow> bad{"t"};
 } // namespace
 #endif
+
+#ifdef EAR_CASE_row_unmarked
+// Every settings row of a spec has its change mark, .inPlace() or .restarts(why)
+// (docs/writing-a-node-type.md#change-marks): here none.
+namespace type_spec_bad_unmarked {
+using namespace ear;
+constexpr auto unmarkedRow = setting::optional("n", setting::number(0, 1));
+constexpr auto unmarkedOut = bank::output<"out">;
+constexpr TypeSpec unmarkedSpec{.settings = SettingsTable<unmarkedRow>{"t"}, .banks = Banks<unmarkedOut>{}};
+} // namespace type_spec_bad_unmarked
+#endif

@@ -23,8 +23,10 @@ using namespace ear;
 
 std::optional<std::string> anyText(std::string_view text) { return std::string(text); }
 
-constexpr auto channelsRow = setting::defaulted("channels", setting::number(1, 8), 2);
-constexpr auto modeRow = setting::optional("mode", setting::text<anyText>("anything"));
+constexpr auto channelsRow =
+	setting::defaulted("channels", setting::number(1, 8), 2).restarts("a test type restarts on it");
+constexpr auto modeRow =
+	setting::optional("mode", setting::text<anyText>("anything")).restarts("a test type restarts on it");
 constexpr SettingsTable<channelsRow, modeRow> table{"probe"};
 constexpr auto in = bank::input<"in">;
 constexpr auto out = bank::output<"out">;

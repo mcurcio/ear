@@ -24,16 +24,21 @@ inline constexpr std::array<std::string_view, 2> shapes{"round", "square"};
 std::optional<std::string> anyText(std::string_view text) { return std::string(text); }
 
 inline constexpr auto deviceRow =
-	setting::required("device", setting::text<anyText>("a device", {.pattern = "^[a-z]+$", .maxLength = 8}));
+	setting::required("device", setting::text<anyText>("a device", {.pattern = "^[a-z]+$", .maxLength = 8}))
+		.restarts("the device opens once");
 inline constexpr auto shapeRow =
 	setting::optional("shape", setting::text<anyText>("round or square", {.values = shapes})).inPlace();
-inline constexpr auto countRow = setting::defaulted("count", setting::number(1, 8, "channels"), 2).shapesPorts();
+inline constexpr auto countRow = setting::defaulted("count", setting::number(1, 8, "channels"), 2)
+                                     .shapesPorts()
+                                     .restarts("the count is read at start");
 inline constexpr auto rateRow =
 	setting::optional("rate", setting::rate(ear::SampleRate::fixed<8'000>(), ear::SampleRate::fixed<96'000>()))
 		.defaultFrom(setting::DefaultFrom::graphFrequency)
 		.inPlace();
-inline constexpr auto loudRow = setting::optional("loud", setting::boolean()).help("absent: quiet");
-inline constexpr auto portRow = setting::optional("port", setting::number(1, 9)).onlyWithout(shapeRow);
+inline constexpr auto loudRow =
+	setting::optional("loud", setting::boolean()).help("absent: quiet").restarts("the volume is read at start");
+inline constexpr auto portRow =
+	setting::optional("port", setting::number(1, 9)).onlyWithout(shapeRow).restarts("the port is bound at start");
 inline constexpr auto in = ear::bank::input<"in">;
 inline constexpr auto out = ear::bank::output<"out">;
 inline constexpr auto inside = ear::bank::insideInput<"inside">;
@@ -104,16 +109,17 @@ TEST_CASE("Each row kind and mark is on the wire as the control port takes the k
 	const json schema = ear::control::encodeTypeSchema(type->schema());
 	CHECK(schema == json::parse(R"({"name": "every", "inputs": ["in"], "outputs": ["out"], "reconfigureMs": 5000,
 	  "settings": [
-	    {"key": "device", "kind": "text", "required": true, "change": "restart", "mustBe": "a device",
+	    {"key": "device", "kind": "text", "required": true, "change": "restart", "restartReason": "the device opens once", "mustBe": "a device",
 	     "pattern": "^[a-z]+$", "maxLength": 8},
 	    {"key": "shape", "kind": "text", "required": false, "change": "inPlace", "mustBe": "round or square",
 	     "values": ["round", "square"]},
-	    {"key": "count", "kind": "wholeNumber", "required": false, "change": "restart", "min": 1, "max": 8,
+	    {"key": "count", "kind": "wholeNumber", "required": false, "change": "restart", "restartReason": "the count is read at start", "min": 1, "max": 8,
 	     "unit": "channels", "default": 2, "shapes": true},
 	    {"key": "rate", "kind": "wholeNumber", "required": false, "change": "inPlace", "min": 8000, "max": 96000,
 	     "unit": "Hz", "defaultFrom": "graphFrequency"},
-	    {"key": "loud", "kind": "flag", "required": false, "change": "restart", "help": "absent: quiet"},
-	    {"key": "port", "kind": "wholeNumber", "required": false, "change": "restart", "min": 1, "max": 9,
+	    {"key": "loud", "kind": "flag", "required": false, "change": "restart", "restartReason": "the volume is read at start",
+	     "help": "absent: quiet"},
+	    {"key": "port", "kind": "wholeNumber", "required": false, "change": "restart", "restartReason": "the port is bound at start", "min": 1, "max": 9,
 	     "onlyWithout": "shape"}],
 	  "status": [], "events": [], "actions": []})"));
 }

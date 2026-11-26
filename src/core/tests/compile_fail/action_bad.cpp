@@ -24,6 +24,12 @@ constexpr auto serverRow = setting::required("server", setting::number(1, 100));
 constexpr SettingsTable<serverRow> forgetArgs{"forget"};
 constexpr auto reset = action::trigger<"reset">("clear the latch");
 constexpr auto forget = action::call<"forget", forgetArgs, worker>("forget a server");
+#ifdef EAR_CASE_action_arg_marked
+// A call's arguments never change, so none carries a change mark (docs/writing-a-node-type.md#change-marks).
+constexpr auto markedRow = setting::required("server", setting::number(1, 100)).inPlace();
+constexpr SettingsTable<markedRow> markedArgs{"marked"};
+constexpr auto marked = action::call<"marked", markedArgs, worker>("forget a server");
+#endif
 #ifdef EAR_CASE_action_named_lifecycle
 // start, stop, restart, disable and enable are the framework's requests.
 constexpr auto restartAction = action::trigger<"restart">("restart it");

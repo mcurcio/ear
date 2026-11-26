@@ -38,7 +38,9 @@ inline constexpr auto portRow = setting::required("port", setting::number(1, 655
 inline constexpr std::array<std::string_view, 2> formatNames{"L16", "L24"};
 inline constexpr auto formatRow =
 	setting::required("format", setting::text<encodingOf>(R"("L16" or "L24")", {.values = formatNames})).inPlace();
-inline constexpr auto channelsRow = setting::required("channels", setting::number(1, 64)).shapesPorts();
+inline constexpr auto channelsRow = setting::required("channels", setting::number(1, 64))
+                                        .shapesPorts()
+                                        .restarts("a companion on a resized bank cannot be replaced in place yet");
 // Absent: the graph's frequency (receiverFor below).
 inline constexpr auto rateRow =
 	setting::optional("rate", setting::rate(SampleRate::fixed<8'000>(), SampleRate::fixed<192'000>()))

@@ -18,7 +18,7 @@ namespace reshape_test {
 using namespace ear;
 
 constexpr auto channelsRow = setting::defaulted("channels", setting::number(1, 4), 2).inPlace();
-constexpr auto modeRow = setting::optional("mode", setting::number(0, 9)); // restart-only
+constexpr auto modeRow = setting::optional("mode", setting::number(0, 9)).restarts("a test type restarts on it");
 constexpr auto out = bank::output<"out">;
 
 constexpr TypeSpec spec{.settings = SettingsTable<channelsRow, modeRow>{"shaper"}, .banks = Banks<out>{}};

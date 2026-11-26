@@ -252,4 +252,13 @@ constexpr auto bad = setting::required("r", setting::number(1, 2)).onlyWithout(t
 constexpr auto bad = setting::optional("o", setting::number(1, 2)).onlyWithout(numberRow);
 #endif
 
+// One change mark per row, and a restart says why (docs/writing-a-node-type.md#change-marks).
+#ifdef EAR_CASE_two_marks
+constexpr auto bad = setting::optional("o", setting::number(1, 2)).inPlace().restarts("opened once");
+#endif
+
+#ifdef EAR_CASE_restarts_empty_reason
+constexpr auto bad = setting::optional("o", setting::number(1, 2)).restarts("");
+#endif
+
 } // namespace settings_table_bad

@@ -28,7 +28,7 @@ const card: TypeSchema = {
   outputs: ["capture"],
   reconfigureMs: 10000,
   settings: [
-    { key: "card", kind: "text", required: true, change: "restart", mustBe: "an ALSA card id", pattern: "^[A-Za-z0-9_-]{1,15}$", maxLength: 15 },
+    { key: "card", kind: "text", required: true, change: "restart", restartReason: "card has no change in place yet", mustBe: "an ALSA card id", pattern: "^[A-Za-z0-9_-]{1,15}$", maxLength: 15 },
     { key: "playback", kind: "wholeNumber", required: false, change: "restart", min: 0, max: 64, unit: "channels", default: 0, shapes: true },
     { key: "mode", kind: "text", required: false, change: "inPlace", mustBe: "fast or slow", values: ["fast", "slow"] },
     { key: "rate", kind: "wholeNumber", required: false, change: "inPlace", min: 8000, max: 192000, unit: "Hz", defaultFrom: "graphFrequency" },
@@ -64,8 +64,8 @@ describe("fields from the schema alone", () => {
       ["port", "number", ""],
       ["shape", "json", ""],
     ]);
-    expect(fields[0].hints).toStrictEqual(["restarts the node"]);
-    expect(fields[1].hints).toStrictEqual(["restarts the node", "changes the ports"]);
+    expect(fields[0].hints).toStrictEqual(["restarts the node: card has no change in place yet"]);
+    expect(fields[1].hints).toStrictEqual(["restarts the node", "changes the ports"]); // a restart with no reason given
     expect(fields[2].hints).toStrictEqual(["applies in place"]);
     expect(fields[6].hints).toStrictEqual([]); // a change this editor does not know says nothing
     expect(fields[2].options).toStrictEqual(["", "fast", "slow"]);

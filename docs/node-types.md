@@ -801,6 +801,9 @@ route kitchen:out.2 desk:play.2;
   disable or a removal stops shairport-sync (`SIGTERM`, `SIGKILL` 3 s later), reaps it, removes its
   FIFO, feed and config from ear's runtime folder (`--runtime-dir`), withdraws its listing and
   releases its port.
+- **A change of `name` or `airplay2` restarts the node**: shairport-sync reads both only at start,
+  which is the reason the type schema gives beside each (`restartReason`,
+  [control-port.md](control-port.md#type-schemas)).
 - **ear must be on the senders' network**, the same link, for its listing to reach them (and port
   7777, which has no login, is then on it too).
 - **Ports outside ear's claims:** shairport-sync's audio, control and timing ports, UDP, each picked

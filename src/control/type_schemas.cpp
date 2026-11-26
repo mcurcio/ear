@@ -32,8 +32,9 @@ std::string_view defaultFromName(setting::DefaultFrom from) noexcept {
 json encodeRow(const SettingRow& row) {
 	json out = {{"key", row.key},
 	            {"required", row.required},
-	            // From the row's marks (docs/architecture.md#restarts-and-changes-of-settings).
-	            {"change", row.inPlace ? "inPlace" : "restart"}};
+	            // From the row's change mark (docs/writing-a-node-type.md#change-marks).
+	            {"change", row.change == setting::Change::inPlace ? "inPlace" : "restart"}};
+	if (!row.restartReason.empty()) out["restartReason"] = row.restartReason;
 	std::visit(
 		[&](const auto& rule) {
 			using Rule = std::decay_t<decltype(rule)>;
@@ -132,12 +133,13 @@ json encodeEventDeclaration(const EventDeclaration& event) {
 }
 
 /// A type action as types.get says it (docs/control-port.md#actions): its arguments are setting rows, without what
-/// only a setting has (`change`, `shapes`).
+/// only a setting has (`change`, `restartReason`, `shapes`).
 json encodeAction(const ActionDeclaration& action) {
 	json args = json::array();
 	for (const SettingRow* row : action.args) {
 		json out = encodeRow(*row);
 		out.erase("change");
+		out.erase("restartReason");
 		out.erase("shapes");
 		args.push_back(std::move(out));
 	}

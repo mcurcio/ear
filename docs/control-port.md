@@ -522,7 +522,8 @@ encoding, never through the graph's keeper, so it waits on no edit.
 | Member | What |
 |---|---|
 | `kind` | What the control port takes for the key: `text` (a JSON string), `wholeNumber` (a JSON integer; a rate is one, in Hz, with `unit` `Hz`, whatever `ear.conf` writes), `flag` (JSON `true` or `false`). Open: a client draws a kind it does not know as a JSON value |
-| `change` | What a change to the key alone asks of the node: `inPlace` (its row is marked [in place](architecture.md#changes-in-place)) or `restart`. Open |
+| `change` | What a change to the key alone asks of the node, from its row's [change mark](writing-a-node-type.md#change-marks): `inPlace` (taken [in place](architecture.md#changes-in-place)) or `restart`. Open |
+| `restartReason` | A `restart` row's reason, one line: what cannot change while the node runs (`shairport-sync reads it only at start`, `card has no change in place yet`). Every built-in type's restart row has one |
 | `shapes` | `true` when a change to the key may change the node's ports ([below](#changes-of-ports)) |
 | `default` | What an absent key reads |
 | `defaultFrom` | Where an absent key's value comes from instead: `graphFrequency` or `nodeName`. Open |
@@ -537,12 +538,12 @@ encoding, never through the graph's keeper, so it waits on no edit.
 {"jsonrpc": "2.0", "id": 3, "result": {"protocol": 1, "hash": "fnv1a64:9c2e41f07a3b5d18", "typeSchemas": [
   {"name": "rtp", "inputs": [], "outputs": ["stream"], "reconfigureMs": 10000, "settings": [
     {"key": "format", "kind": "text", "required": true, "change": "inPlace", "mustBe": "\"L16\" or \"L24\"", "values": ["L16", "L24"]},
-    {"key": "channels", "kind": "wholeNumber", "required": true, "change": "restart", "min": 1, "max": 64, "shapes": true},
+    {"key": "channels", "kind": "wholeNumber", "required": true, "change": "restart", "restartReason": "a companion on a resized bank cannot be replaced in place yet", "min": 1, "max": 64, "shapes": true},
     {"key": "rate", "kind": "wholeNumber", "required": false, "change": "inPlace", "min": 8000, "max": 192000, "unit": "Hz", "defaultFrom": "graphFrequency"}]}]}}
 ```
 
 The hints come from the schema alone: a client says "applies in place" for `inPlace`, "restarts
-the node" for `restart` and "changes the ports" for `shapes`, and asks ear what an edit of several
+the node" for `restart` with its `restartReason` and "changes the ports" for `shapes`, and asks ear what an edit of several
 keys will do with a dry run ([below](#nodeset-and-dry-runs)). `types.json` holds every built-in
 type's schema and its hash, and the system tests hold the real ear to it, so a change to a type's
 rows changes that fixture in the same commit.
@@ -556,7 +557,7 @@ declaration order, `[]` for a type with none; no built-in type has one yet.
 
 - **An action**: `name` (kebab-case, never a lifecycle verb's), `by` (`type`; open), `target`
   (`code` for a trigger, `loop` for a call; open), `help`, and `args`: its arguments as setting
-  rows ([above](#type-schemas)), with no `change` or `shapes`; `[]` for a trigger, which takes
+  rows ([above](#type-schemas)), with no `change`, `restartReason` or `shapes`; `[]` for a trigger, which takes
   none.
 - **A trigger** is answered `{}` once handed to the node's code (its counter moved); the code sees
   it in its next block, and several invokes before a block are one. It is `not-running` unless
@@ -782,7 +783,7 @@ breaking change moves `protocol`; anything else is a new feature name
 | `node-set.json` | `node.set`: a merge answered `reconfigure`, `unchanged` again, `null` removing a key, a required key removed refused, a dry run of each outcome (`reconfigure`, `unchanged`, `restart`, `stored` with its ports, `reshape` naming its routes) changing nothing, a reshape refused `ports-in-use`, then with `dropRoutes` (`routesDropped`) |
 | `node-text.json` | `nodeTexts` (a comment owned, a snippet's node shared); `node.setText`: success, `file-changed`, `invalid-text` placed in the text, `ear/node-renamed`, `shared-definition`, `ear/not-one-node`; `node.addText`: success, `file-changed`, knobly's error placed in the text, `ear/not-one-node`, `duplicate-node`; the system tests send its requests to the real ear and expect its replies |
 | `errors.json` | Every refusal code and envelope error, `invalid-settings` with its `key` and `detail` |
-| `types.json` | `types.get` with no hash, a stale hash and the current one, and with an unknown member; every built-in type's schema (each row's `change`, `shapes`, `defaultFrom` and hints) and its hash; the system tests send its requests to the real ear and expect its replies |
+| `types.json` | `types.get` with no hash, a stale hash and the current one, and with an unknown member; every built-in type's schema (each row's `change`, `restartReason`, `shapes`, `defaultFrom` and hints) and its hash; the system tests send its requests to the real ear and expect its replies |
 | `levels.json` | `levels.subscribe` and `levels` |
 | `counters-changed.json` | The counters in a snapshot, `counters.changed`, one naming a node not held, and a change of ports keeping the node and its counters |
 | `companions.json` | The companion lists in a snapshot (every engine and ring kind but a source), a file node's list from `node.added` to running, a counter moving, a stop and a start (no list), a restart, an RTP receiver replaced make-before-break (the old one `retiring`), a failure past a readiness deadline, a removal (no list after `node.removed`) |

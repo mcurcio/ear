@@ -206,6 +206,8 @@ if(BUILD_TESTS)
 	ear_settings_table_compile_fail(row-read-only "discards qualifiers")
 	ear_settings_table_compile_fail(only-without-on-required "a required row cannot be onlyWithout")
 	ear_settings_table_compile_fail(only-without-a-required "cannot name a required row")
+	ear_settings_table_compile_fail(two-marks "a row has one change mark")
+	ear_settings_table_compile_fail(restarts-empty-reason "a restart states why")
 
 	# What must not compile about the latency model (docs/engine.md#latency-per-bank-pair): a delay is in series, never
 	# a path of its own; tests/compile_fail/latency_bad.cpp says what each case is.
@@ -297,6 +299,7 @@ if(BUILD_TESTS)
 	ear_action_compile_fail(action-named-lifecycle "an action is never named start, stop, restart, disable or enable")
 	ear_action_compile_fail(action-name-not-kebab "an action's name is kebab-case")
 	ear_action_compile_fail(call-loop-not-in-spec "a call names one of its spec's loops")
+	ear_action_compile_fail(action-arg-marked "a call's arguments never change, so they carry no change mark")
 	ear_action_compile_fail(call-handler-signature "a call's handler is std::expected<void, std::string> act")
 	ear_action_compile_fail(triggered-not-a-trigger "io.triggered takes a trigger")
 	ear_action_compile_fail(pass-through-with-trigger "answers with a code of its own, never a pass-through")
@@ -406,6 +409,7 @@ if(BUILD_TESTS)
 	ear_type_spec_compile_fail(post-loop-the-spec-lacks "a post names one of its spec's loops")
 	ear_type_spec_compile_fail(post-other-loop-state "a post to a loop takes a function of that loop's state")
 	ear_type_spec_compile_fail(harness-loop-the-spec-lacks "the harness takes only its spec's loops")
+	ear_type_spec_compile_fail(row-unmarked "every settings row of a spec has one change mark")
 	# Stores (docs/writing-a-node-type.md#stores): a store's rule broken (no maxBytes, more than 1 MiB, a mode beyond
 	# 0777), a suffix named wrongly or twice, a store the spec lacks (in a context or the harness), and the spec's members
 	# out of order (stores come before loops).

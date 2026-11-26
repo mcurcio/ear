@@ -414,7 +414,8 @@ text over JSON, so the toggle's other side is the node's own statement.
   `absent`; a row's `help` and its unit are beside it, and a row that is `onlyWithout` a given key
   (a draft included) is disabled, saying so.
 - **Hints from the schema alone**, beside each field: "applies in place" for `change: inPlace`,
-  "restarts the node" for `restart`, "changes the ports" for `shapes`; a `change` it does not know says
+  "restarts the node" for `restart`, followed by its `restartReason` ("restarts the node: card has no
+  change in place yet"), "changes the ports" for `shapes`; a `change` it does not know says
   nothing. A drafted key that a node changing in place is applying (`keys`) or will take next (`next`)
   also says "applies after this change".
 - **Drafts.** A field keeps what the person typed until Apply is answered or Discard; typing the

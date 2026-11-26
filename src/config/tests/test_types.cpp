@@ -34,16 +34,20 @@ struct WhiteType : NeverStarted {
 	Configured configure(CreateOf<whiteSpec>& cx, const CheckedOf<whiteSpec>& s) { return never(cx, s); }
 };
 
-constexpr auto pathRow = setting::required("path", setting::text<anyText>("text"));
+constexpr auto pathRow =
+	setting::required("path", setting::text<anyText>("text")).restarts("a test type restarts on it");
 constexpr TypeSpec fileSpec{.settings = SettingsTable<pathRow>{"file"}, .banks = Banks<record>{}};
 struct FileType : NeverStarted {
 	static Members<fileSpec> ports(const CheckedOf<fileSpec>&) { return {record(members("left", "right"))}; }
 	Configured configure(CreateOf<fileSpec>& cx, const CheckedOf<fileSpec>& s) { return never(cx, s); }
 };
 
-constexpr auto cardRow = setting::optional("card", setting::text<anyText>("text"));
-constexpr auto playbackRow = setting::defaulted("playback", setting::number(0, 64), 0);
-constexpr auto captureRow = setting::defaulted("capture", setting::number(0, 64), 0);
+constexpr auto cardRow =
+	setting::optional("card", setting::text<anyText>("text")).restarts("a test type restarts on it");
+constexpr auto playbackRow =
+	setting::defaulted("playback", setting::number(0, 64), 0).restarts("a test type restarts on it");
+constexpr auto captureRow =
+	setting::defaulted("capture", setting::number(0, 64), 0).restarts("a test type restarts on it");
 constexpr TypeSpec cardSpec{.settings = SettingsTable<cardRow, playbackRow, captureRow>{"card"},
                             .banks = Banks<play, capture>{}};
 struct CardType : NeverStarted {
@@ -54,14 +58,15 @@ struct CardType : NeverStarted {
 };
 
 constexpr auto rateRow =
-	setting::optional("rate", setting::rate(SampleRate::fixed<8'000>(), SampleRate::fixed<192'000>()));
+	setting::optional("rate", setting::rate(SampleRate::fixed<8'000>(), SampleRate::fixed<192'000>()))
+		.restarts("a test type restarts on it");
 constexpr TypeSpec rtpSpec{.settings = SettingsTable<rateRow>{"rtp"}, .banks = Banks<stream>{}};
 struct RtpType : NeverStarted {
 	static Members<rtpSpec> ports(const CheckedOf<rtpSpec>&) { return {stream(members(1))}; }
 	Configured configure(CreateOf<rtpSpec>& cx, const CheckedOf<rtpSpec>& s) { return never(cx, s); }
 };
 
-constexpr auto xRow = setting::optional("x", setting::boolean());
+constexpr auto xRow = setting::optional("x", setting::boolean()).restarts("a test type restarts on it");
 constexpr TypeSpec lampSpec{.settings = SettingsTable<xRow>{"lamp"}, .banks = Banks<>{}};
 struct LampType : NeverStarted {
 	static Members<lampSpec> ports(const CheckedOf<lampSpec>&) { return {}; }

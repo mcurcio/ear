@@ -197,6 +197,9 @@ template <class Settings, class BankList, class StoreList = Stores<>, class Loop
              isLoops<LoopList> && isStatusTable<StatusList> && isEventTable<EventList> && isActionTable<ActionList> &&
              isLogCodes<LogList>)
 struct TypeSpec {
+	static_assert(Settings::everyRowMarked,
+	              "every settings row of a spec has one change mark, .inPlace() or .restarts(why) "
+	              "(docs/writing-a-node-type.md#change-marks)");
 	static_assert(spec_detail::loopWritersKnown<StatusList, LoopList>(),
 	              "a writer::loop status field names one of its spec's loops");
 	static_assert(spec_detail::callLoopsKnown<ActionList, LoopList>(), "a call names one of its spec's loops");

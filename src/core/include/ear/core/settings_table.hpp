@@ -30,6 +30,9 @@ namespace setting {
 /// (an rtp node's sender rate), or the node's own name (a speaker's name). Documentation for controls and the type
 /// schema (docs/writing-a-node-type.md#the-type-schema); the type's code still reads the row as absent and applies it.
 enum class DefaultFrom { graphFrequency, nodeName };
+/// How a change to a row is taken (docs/writing-a-node-type.md#change-marks): the node restarts, for the reason the row
+/// gives (Row::restarts), or the type's change version applies it while the node runs (Row::inPlace).
+enum class Change { restart, inPlace };
 /// What a control may offer for a text row (docs/writing-a-node-type.md#the-type-schema): the whole set of values it takes
 /// (`values`, a select), an ECMAScript pattern every good value matches (`pattern`), and the most bytes a good value
 /// has (`maxLength`, 0 for none). Hints only: the row's parse function stays the judge, and the all-type tests hold
@@ -74,7 +77,8 @@ struct SettingRow {
 	SettingRule rule;
 	std::optional<std::uint32_t> byDefault = {};          // what the row reads when absent
 	std::string_view onlyWithout = {};                    // Row::onlyWithout's
-	bool inPlace = false;                                 // Row::inPlace's: a change to it may apply in place
+	setting::Change change = setting::Change::restart;    // the row's change mark: Row::inPlace or Row::restarts
+	std::string_view restartReason = {};                  // Row::restarts's: why a change to it restarts the node
 	std::optional<setting::DefaultFrom> defaultFrom = {}; // Row::defaultFrom's: where an absent value comes from
 	bool shapesPorts = false;                             // Row::shapesPorts's: a change to it may change the ports
 	std::string_view help = {};                           // Row::help's: one line for controls
@@ -141,12 +145,28 @@ public:
 		limited.row_.onlyWithout = above.row().key;
 		return limited;
 	}
+	/// Whether the row has its change mark, inPlace or restarts (docs/writing-a-node-type.md#change-marks): a spec's
+	/// every settings row has one, and a call's arguments none.
+	constexpr bool marked() const noexcept {
+		return row_.change != setting::Change::restart || !row_.restartReason.empty();
+	}
 	/// A change to this key may apply in place, through the type's change version of configure, while the node keeps
-	/// running (docs/writing-a-node-type.md#settings-one-table-of-typed-rows). Unmarked, a row is restart-only: a change to it restarts the node.
+	/// running (docs/writing-a-node-type.md#change-marks). A row has one mark: this or restarts.
 	consteval Row inPlace() const {
-		Row marked = *this;
-		marked.row_.inPlace = true;
-		return marked;
+		if (marked()) throw "a row has one change mark: inPlace or restarts, never both and never twice";
+		Row mark = *this;
+		mark.row_.change = setting::Change::inPlace;
+		return mark;
+	}
+	/// A change to this key restarts the node, for `why`: one line naming what cannot change while the node runs
+	/// ("shairport-sync reads it only at start"), shown beside "restarts" (docs/writing-a-node-type.md#change-marks).
+	/// An empty reason does not compile, and a row has one mark: this or inPlace.
+	consteval Row restarts(std::string_view why) const {
+		if (marked()) throw "a row has one change mark: inPlace or restarts, never both and never twice";
+		if (why.empty()) throw "a restart states why: restarts takes a reason, never an empty one";
+		Row mark = *this;
+		mark.row_.restartReason = why;
+		return mark;
 	}
 	/// A change to this key may change the node's ports: the type schema's `shapes` (docs/writing-a-node-type.md#the-type-schema),
 	/// the editor's "changes the ports". The plan never reads it (it compares the ports before and after:
@@ -282,7 +302,7 @@ public:
 	/// Whether the row of `key` is marked inPlace (Row::inPlace); false for a key the table lacks.
 	constexpr bool changesInPlace(std::string_view key) const noexcept {
 		for (const SettingRow* row : rows_)
-			if (row->key == key) return row->inPlace;
+			if (row->key == key) return row->change == setting::Change::inPlace;
 		return false;
 	}
 	/// A refusal's text, and the key it names (empty for "settings: must be an object"): InvalidSettings's `key`
@@ -339,6 +359,10 @@ class SettingsTable final : public AnySettingsTable {
 
 public:
 	consteval explicit SettingsTable(std::string_view name) : AnySettingsTable(name, rows_, kinds_) {}
+	/// Whether every row has its change mark, as a spec's settings must (TypeSpec), and whether any has one, as a call's
+	/// arguments must not (action::call): docs/writing-a-node-type.md#change-marks.
+	static constexpr bool everyRowMarked = (Rows.marked() && ...);
+	static constexpr bool anyRowMarked = (Rows.marked() || ...);
 	/// Settings this table passed. A row not listed in this table cannot be read: get's constraint fails at compile time.
 	class Checked {
 	public:

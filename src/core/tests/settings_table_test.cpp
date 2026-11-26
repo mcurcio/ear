@@ -44,9 +44,10 @@ constexpr auto dRow = setting::optional("d", goodText);
 constexpr auto aOptional = setting::optional("a", goodText);
 constexpr auto bOptional = setting::optional("b", goodText);
 constexpr auto cOptional = setting::optional("c", goodText);
-constexpr auto plainRow = setting::optional("plain", setting::number(1, 10));
-constexpr auto measuredRow = setting::defaulted("measured", setting::number(2, 20, "Hz"), 5);
-constexpr auto nameRow = setting::optional("name", goodText);
+constexpr auto plainRow = setting::optional("plain", setting::number(1, 10)).restarts("a test type restarts on it");
+constexpr auto measuredRow =
+	setting::defaulted("measured", setting::number(2, 20, "Hz"), 5).restarts("a test type restarts on it");
+constexpr auto nameRow = setting::optional("name", goodText).restarts("a test type restarts on it");
 constexpr auto bNumber = setting::required("b", setting::number(0, 9));
 constexpr auto mRow = setting::optional("m", goodText);
 constexpr auto nRow = setting::optional("n", setting::number(0, 9)).onlyWithout(mRow);
@@ -364,18 +365,38 @@ namespace settings_table_test_inplace {
 constexpr auto fixedRow = ear::setting::required("fixed", setting::number(1, 9));
 constexpr auto movingRow = ear::setting::optional("moving", setting::number(1, 9)).inPlace();
 constexpr auto limitedRow = ear::setting::optional("limited", setting::number(1, 9)).onlyWithout(movingRow).inPlace();
+constexpr auto stuckRow =
+	ear::setting::optional("stuck", setting::number(1, 9)).restarts("the device reads it at open");
 constexpr ear::SettingsTable<fixedRow, movingRow, limitedRow> inPlaceTable{"inplace"};
+constexpr ear::SettingsTable<movingRow, stuckRow> markedTable{"marked"};
+constexpr ear::SettingsTable<fixedRow, movingRow> halfMarkedTable{"half"};
+constexpr ear::SettingsTable<> emptyTable{"empty"};
 } // namespace settings_table_test_inplace
 
-TEST_CASE("A row is restart-only unless marked inPlace", "[settings_table][inPlace]") {
+TEST_CASE("A row has one change mark: inPlace, or restarts with its reason", "[settings_table][inPlace]") {
 	using namespace settings_table_test_inplace;
-	STATIC_REQUIRE_FALSE(fixedRow.row().inPlace);
-	STATIC_REQUIRE(movingRow.row().inPlace);
-	STATIC_REQUIRE(limitedRow.row().inPlace);
+	STATIC_REQUIRE_FALSE(fixedRow.marked());
+	STATIC_REQUIRE(fixedRow.row().change == setting::Change::restart);
+	STATIC_REQUIRE(fixedRow.row().restartReason.empty());
+	STATIC_REQUIRE(movingRow.marked());
+	STATIC_REQUIRE(movingRow.row().change == setting::Change::inPlace);
+	STATIC_REQUIRE(movingRow.row().restartReason.empty());
+	STATIC_REQUIRE(limitedRow.row().change == setting::Change::inPlace);
 	STATIC_REQUIRE(limitedRow.row().onlyWithout == "moving"); // the marks keep each other
+	STATIC_REQUIRE(stuckRow.marked());
+	STATIC_REQUIRE(stuckRow.row().change == setting::Change::restart);
+	STATIC_REQUIRE(stuckRow.row().restartReason == "the device reads it at open");
 	STATIC_REQUIRE_FALSE(inPlaceTable.changesInPlace("fixed"));
 	STATIC_REQUIRE(inPlaceTable.changesInPlace("moving"));
 	STATIC_REQUIRE_FALSE(inPlaceTable.changesInPlace("unknown"));
+	STATIC_REQUIRE_FALSE(markedTable.changesInPlace("stuck"));
+	// What TypeSpec requires of its settings and action::call refuses in its arguments.
+	STATIC_REQUIRE(decltype(markedTable)::everyRowMarked);
+	STATIC_REQUIRE(decltype(markedTable)::anyRowMarked);
+	STATIC_REQUIRE_FALSE(decltype(halfMarkedTable)::everyRowMarked);
+	STATIC_REQUIRE(decltype(halfMarkedTable)::anyRowMarked);
+	STATIC_REQUIRE(decltype(emptyTable)::everyRowMarked);
+	STATIC_REQUIRE_FALSE(decltype(emptyTable)::anyRowMarked);
 }
 
 namespace settings_table_test_schema {
@@ -384,7 +405,9 @@ std::optional<std::string> isSize(std::string_view text) {
 	if (text != "small" && text != "large") return std::nullopt;
 	return std::string(text);
 }
-constexpr auto countRow = setting::defaulted("count", setting::number(1, 8, "channels"), 2).shapesPorts();
+constexpr auto countRow = setting::defaulted("count", setting::number(1, 8, "channels"), 2)
+                              .shapesPorts()
+                              .restarts("a test type restarts on it");
 constexpr auto sizeRow =
 	setting::optional("size", setting::text<isSize>(R"("small" or "large")", {.values = sizes, .maxLength = 5}))
 		.inPlace();
@@ -418,7 +441,8 @@ TEST_CASE("The marks for the type schema keep each other and the row's own", "[s
 	STATIC_REQUIRE_FALSE(countRow.row().defaultFrom.has_value());
 	STATIC_REQUIRE_FALSE(sizeRow.row().shapesPorts);
 	STATIC_REQUIRE(labelRow.row().defaultFrom == setting::DefaultFrom::nodeName);
-	STATIC_REQUIRE(labelRow.row().inPlace);
+	STATIC_REQUIRE(labelRow.row().change == setting::Change::inPlace);
+	STATIC_REQUIRE(countRow.row().restartReason == "a test type restarts on it");
 	STATIC_REQUIRE(labelRow.row().shapesPorts);
 	constexpr const auto& hints = std::get<ear::TextRule>(sizeRow.row().rule).hints;
 	STATIC_REQUIRE(hints.values.size() == 2);

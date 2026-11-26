@@ -77,11 +77,14 @@ and `makeNodeType` refuse an unnamed namespace at compile time.
 ### Settings: one table of typed rows
 
 ```cpp
-inline constexpr auto cardRow = setting::required("card", setting::text<CardId::parse>("an ALSA card id, ..."));
-inline constexpr auto playbackRow = setting::defaulted("playback", setting::number(0, 64, "channels"), 0);
+inline constexpr auto cardRow = setting::required("card", setting::text<CardId::parse>("an ALSA card id, ..."))
+                                   .restarts("card has no change in place yet");
+inline constexpr auto playbackRow = setting::defaulted("playback", setting::number(0, 64, "channels"), 0)
+                                       .shapesPorts()
+                                       .restarts("a companion on a resized bank cannot be replaced in place yet");
 inline constexpr auto rateRow =
-	setting::optional("rate", setting::rate(SampleRate::fixed<8'000>(), SampleRate::fixed<192'000>()));
-inline constexpr auto portRow = setting::optional("port", setting::number(1, 65535)).onlyWithout(serverRow);
+	setting::optional("rate", setting::rate(SampleRate::fixed<8'000>(), SampleRate::fixed<192'000>())).inPlace();
+inline constexpr auto portRow = setting::optional("port", setting::number(1, 65535)).onlyWithout(serverRow).inPlace();
 ```
 
 | Row | Reads as | When absent |
@@ -99,14 +102,8 @@ inline constexpr auto portRow = setting::optional("port", setting::number(1, 655
 
 - `.onlyWithout(above)` refuses the key given together with a row above it: `<key>: only without
   "<above>"`. Neither row may be required.
-- `.inPlace()` marks a key the type can take while the node runs, through its change version of
-  `configure` (`setting::required("port", setting::number(1, 65535)).inPlace()`). Every row is
-  restart-only by default: a change to it restarts the node. The marks are data in the table: the
-  desired graph's plan reads them, and a change whose every changed key is marked is planned
-  `reconfigure` rather than `restart`
-  ([architecture.md](architecture.md#restarts-and-changes-of-settings)). A key whose value builds
-  the node's ports (a channel count) need not be marked: a change of ports is a reshape, in place only
-  when every changed key is marked ([architecture.md](architecture.md#reshapes)).
+- `.inPlace()` and `.restarts(why)` are a row's change mark ([below](#change-marks)): every row of
+  a spec's settings has exactly one.
 - `.shapesPorts()` marks a key whose value may change the node's ports (`card`'s `playback` and
   `capture`, `rtp`'s `channels`). The plan never reads it (it compares the ports themselves); the
   all-type tests hold it to the type's `ports()` both ways: a row that changes the ports for a value
@@ -132,10 +129,49 @@ inline constexpr auto portRow = setting::optional("port", setting::number(1, 655
 - A parsed value is parsed once: a text row reads as what its parse function made (a `CardId`, an
   `RtpAddress`, a path).
 
+#### Change marks
+
+Every row of a spec's settings says how a change to its key is taken, with exactly one mark:
+
+| Mark | A change to the key | Schema `change` |
+|---|---|---|
+| `.inPlace()` | Taken while the node runs, through the type's [change version](#the-change-version) of `configure` | `inPlace` |
+| `.restarts("<why>")` | Restarts the node; `why` is one line naming what cannot change while it runs, shown beside "restarts" | `restart`, with `restartReason` |
+
+```cpp
+inline constexpr auto portRow = setting::required("port", setting::number(1, 65535)).inPlace();
+inline constexpr auto nameRow = setting::optional("name", ...).restarts("shairport-sync reads it only at start");
+```
+
+Ideally every adjustment is taken without a restart, and a restart is justified: so a restart is
+never a row's default, and its reason is on the wire for the operator. Choose the mark by asking,
+in order:
+
+1. **Does it change the ports?** Mark it `.shapesPorts()` and in place: a change of ports is then a
+   reshape in place ([architecture.md](architecture.md#reshapes)). A configuration with a companion
+   on a resized bank still restarts, which is not built in place yet
+   ([architecture.md](architecture.md#not-built-yet)); such a row says so
+   (`card`'s `playback` and `capture`, `rtp`'s `channels`: "a companion on a resized bank cannot be
+   replaced in place yet").
+2. **Can the type apply it while the node runs** (a new receiver, a replaced sink, a new code, a
+   declared latency)? In place.
+3. Otherwise `.restarts("<why>")`. The reason must be true: a row the framework could change in
+   place but whose type has no change version for it yet says so (`file`'s `path`: "file has no
+   change in place yet"; `card`'s `card`: "card has no change in place yet").
+
+The marks are data in the table: the desired graph's plan reads them, and a change whose every
+changed key is marked in place is planned `reconfigure` rather than `restart`
+([architecture.md](architecture.md#restarts-and-changes-of-settings)); a change of ports is a
+reshape, in place only when every changed key is marked in place
+([architecture.md](architecture.md#reshapes)). A settings row with no mark, a row with two (or one
+twice) and a restart with an empty reason do not compile. A call's arguments
+([actions](#actions)) are rows too, but never change: a mark on one does not compile.
+
 ### The type schema
 
 `NodeType::schema()` is the type as the control port describes it: its name, its rows in the walk's
-order (each with its key, rule, required, default, `onlyWithout` and the marks above), its banks in
+order (each with its key, rule, required, default, `onlyWithout`, its [change mark](#change-marks) and its
+reason, and the marks above), its banks in
 declaration order, its in-place deadline (`.lifecycle`), and its status fields and events in
 declaration order ([status and events](#status-and-events)). Everything in it views the spec's static
 storage, so it is the same every call. Nothing but the table and the spec makes it: a type writes no
@@ -362,7 +398,7 @@ Changed configure(ChangeOf<spec>& cx, const Checked& old, const Checked& now) {
 ```
 
 A type that can take some of its settings while the node runs marks their rows `.inPlace()`
-([settings](#settings-one-table-of-typed-rows)) and writes this second `configure`. `old` is the
+([change marks](#change-marks)) and writes this second `configure`. `old` is the
 settings the configuration applies, `now` the change's target. It is called for a change whose
 every changed key is marked, on a node that has rested; any other change restarts the node
 ([architecture.md](architecture.md#changes-in-place), which says the framework's order). A new
@@ -612,7 +648,8 @@ The rules, each refused at compile time (`src/core/tests/compile_fail/action_bad
   framework's lifecycle requests ([control-port.md](control-port.md#methods)); its help is one line.
 - A call names a loop its spec lists, declared with a state, and its arguments are a
   `SettingsTable`: the same walk as settings, so a call's arguments are checked as a node's
-  settings are. `CheckedOf<table>` is what that table passed.
+  settings are. `CheckedOf<table>` is what that table passed. Its rows carry no
+  [change mark](#change-marks): arguments never change.
 - A call's handler is a member of its loop's state found by its tag, `Invoked<call>`, and held to
   exactly `std::expected<void, std::string> act(Invoked<call>, const CheckedOf<args>&)`; one per
   call, overloaded by the tag.
@@ -1432,8 +1469,9 @@ not fit: <why>`.
 ## Rules the framework enforces
 
 **At compile time**, each with its reason as the error (the cases are
-`src/core/tests/compile_fail/settings_table_bad.cpp` and `type_spec_bad.cpp`): a bad row, a key
-twice, a table not named for its folder, a spec or row in an unnamed namespace, a bank the spec
+`src/core/tests/compile_fail/settings_table_bad.cpp` and `type_spec_bad.cpp`): a bad row, a settings
+row without its [change mark](#change-marks) or with two, a restart with no reason, a mark on a call's
+argument, a key twice, a table not named for its folder, a spec or row in an unnamed namespace, a bank the spec
 lacks or a misspelt one in `Io`, `ports()` or a context, a write into an input, a backwards
 pass-through or one of no pair, a bad or doubled bank name, a `process` that may throw, a class that is final or has
 no `ports` or `configure`, a member of the wrong signature (`configure`, `start`, `stop`, `check`,
@@ -1659,8 +1697,12 @@ std::unique_ptr<const NodeType> makeToneNodeType();
 
 namespace ear::nodes::tone {
 
-inline constexpr auto frequencyRow = setting::defaulted("frequency", setting::number(1, 20000, "Hz"), 440);
-inline constexpr auto channelsRow = setting::defaulted("channels", setting::number(1, 8, "channels"), 1);
+// tone has no change version (docs/writing-a-node-type.md#the-change-version), so a change of either row restarts it.
+inline constexpr auto frequencyRow =
+	setting::defaulted("frequency", setting::number(1, 20000, "Hz"), 440).restarts("tone has no change in place yet");
+inline constexpr auto channelsRow = setting::defaulted("channels", setting::number(1, 8, "channels"), 1)
+                                        .shapesPorts()
+                                        .restarts("tone has no change in place yet");
 inline constexpr auto out = bank::output<"out">;
 inline constexpr TypeSpec spec{.settings = SettingsTable<frequencyRow, channelsRow>{"tone"}, .banks = Banks<out>{}};
 using Checked = CheckedOf<spec>;

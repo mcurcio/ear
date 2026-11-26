@@ -1,10 +1,10 @@
 {
-  "description": "The node types' schemas (feature types, docs/control-port.md#type-schemas): types.get with no hash, a stale hash and the current one (notModified), and with an unknown member (-32602); the Graph names the same hash. The schemas and the hash are the real ear's: every built-in type's rows with their change, shapes, defaultFrom and text hints. The system tests send its types.get requests to the real ear and expect these replies, so a change to any type's settings rows regenerates this file in the same commit (run out/ear and take graph.get's and types.get's results).",
+  "description": "The node types' schemas (feature types, docs/control-port.md#type-schemas): types.get with no hash, a stale hash and the current one (notModified), and with an unknown member (-32602); the Graph names the same hash. The schemas and the hash are the real ear's: every built-in type's rows with their change, a restart row's restartReason, shapes, defaultFrom and text hints. The system tests send its types.get requests to the real ear and expect these replies, so a change to any type's settings rows regenerates this file in the same commit (run out/ear and take graph.get's and types.get's results).",
   "requests": [
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"types.get\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"types.get\",\"params\":{\"ifNoneMatch\":\"fnv1a64:0123456789abcdef\"}}",
-    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"types.get\",\"params\":{\"ifNoneMatch\":\"fnv1a64:cad4a00399572da9\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"types.get\",\"params\":{\"ifNoneMatch\":\"fnv1a64:0e3155269e6a8dab\"}}",
     "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"types.get\",\"params\":{\"since\":\"yesterday\"}}"
   ],
   "messages": [
@@ -37,7 +37,7 @@
         "realtime": false,
         "routes": [],
         "scheduling": "SCHED_OTHER",
-        "typeSchemaHash": "fnv1a64:cad4a00399572da9",
+        "typeSchemaHash": "fnv1a64:0e3155269e6a8dab",
         "types": [
           "airplay",
           "card",
@@ -52,7 +52,7 @@
       "jsonrpc": "2.0",
       "id": 2,
       "result": {
-        "hash": "fnv1a64:cad4a00399572da9",
+        "hash": "fnv1a64:0e3155269e6a8dab",
         "protocol": 1,
         "typeSchemas": [
           {
@@ -71,14 +71,16 @@
                 "kind": "text",
                 "maxLength": 50,
                 "mustBe": "a speaker name: 1 to 50 bytes, no control characters, no %, @ or dot",
-                "required": false
+                "required": false,
+                "restartReason": "shairport-sync reads it only at start"
               },
               {
                 "change": "restart",
                 "help": "absent: AirPlay 1; AirPlay 2 needs nqptp beside ear",
                 "key": "airplay2",
                 "kind": "flag",
-                "required": false
+                "required": false,
+                "restartReason": "shairport-sync reads it only at start"
               }
             ],
             "status": [],
@@ -102,7 +104,8 @@
                 "maxLength": 15,
                 "mustBe": "an ALSA card id, 1-15 characters of [A-Za-z0-9_-] (as in /proc/asound/cards)",
                 "pattern": "^[A-Za-z0-9_-]{1,15}$",
-                "required": true
+                "required": true,
+                "restartReason": "card has no change in place yet"
               },
               {
                 "change": "restart",
@@ -113,7 +116,8 @@
                 "min": 0,
                 "required": false,
                 "shapes": true,
-                "unit": "channels"
+                "unit": "channels",
+                "restartReason": "a companion on a resized bank cannot be replaced in place yet"
               },
               {
                 "change": "restart",
@@ -124,7 +128,8 @@
                 "min": 0,
                 "required": false,
                 "shapes": true,
-                "unit": "channels"
+                "unit": "channels",
+                "restartReason": "a companion on a resized bank cannot be replaced in place yet"
               }
             ],
             "status": [],
@@ -144,7 +149,8 @@
                 "key": "path",
                 "kind": "text",
                 "mustBe": "a non-empty string",
-                "required": true
+                "required": true,
+                "restartReason": "file has no change in place yet"
               }
             ],
             "status": [],
@@ -194,7 +200,8 @@
                 "max": 64,
                 "min": 1,
                 "required": true,
-                "shapes": true
+                "shapes": true,
+                "restartReason": "a companion on a resized bank cannot be replaced in place yet"
               },
               {
                 "change": "inPlace",
@@ -547,7 +554,7 @@
       "jsonrpc": "2.0",
       "id": 3,
       "result": {
-        "hash": "fnv1a64:cad4a00399572da9",
+        "hash": "fnv1a64:0e3155269e6a8dab",
         "protocol": 1,
         "typeSchemas": [
           {
@@ -566,14 +573,16 @@
                 "kind": "text",
                 "maxLength": 50,
                 "mustBe": "a speaker name: 1 to 50 bytes, no control characters, no %, @ or dot",
-                "required": false
+                "required": false,
+                "restartReason": "shairport-sync reads it only at start"
               },
               {
                 "change": "restart",
                 "help": "absent: AirPlay 1; AirPlay 2 needs nqptp beside ear",
                 "key": "airplay2",
                 "kind": "flag",
-                "required": false
+                "required": false,
+                "restartReason": "shairport-sync reads it only at start"
               }
             ],
             "status": [],
@@ -597,7 +606,8 @@
                 "maxLength": 15,
                 "mustBe": "an ALSA card id, 1-15 characters of [A-Za-z0-9_-] (as in /proc/asound/cards)",
                 "pattern": "^[A-Za-z0-9_-]{1,15}$",
-                "required": true
+                "required": true,
+                "restartReason": "card has no change in place yet"
               },
               {
                 "change": "restart",
@@ -608,7 +618,8 @@
                 "min": 0,
                 "required": false,
                 "shapes": true,
-                "unit": "channels"
+                "unit": "channels",
+                "restartReason": "a companion on a resized bank cannot be replaced in place yet"
               },
               {
                 "change": "restart",
@@ -619,7 +630,8 @@
                 "min": 0,
                 "required": false,
                 "shapes": true,
-                "unit": "channels"
+                "unit": "channels",
+                "restartReason": "a companion on a resized bank cannot be replaced in place yet"
               }
             ],
             "status": [],
@@ -639,7 +651,8 @@
                 "key": "path",
                 "kind": "text",
                 "mustBe": "a non-empty string",
-                "required": true
+                "required": true,
+                "restartReason": "file has no change in place yet"
               }
             ],
             "status": [],
@@ -689,7 +702,8 @@
                 "max": 64,
                 "min": 1,
                 "required": true,
-                "shapes": true
+                "shapes": true,
+                "restartReason": "a companion on a resized bank cannot be replaced in place yet"
               },
               {
                 "change": "inPlace",
@@ -1043,7 +1057,7 @@
       "id": 4,
       "result": {
         "protocol": 1,
-        "hash": "fnv1a64:cad4a00399572da9",
+        "hash": "fnv1a64:0e3155269e6a8dab",
         "notModified": true
       }
     },
@@ -1085,7 +1099,7 @@
     "realtime": false,
     "routes": [],
     "scheduling": "SCHED_OTHER",
-    "typeSchemaHash": "fnv1a64:cad4a00399572da9",
+    "typeSchemaHash": "fnv1a64:0e3155269e6a8dab",
     "types": [
       "airplay",
       "card",

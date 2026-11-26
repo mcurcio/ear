@@ -296,7 +296,7 @@ public:
 	                                                                        const NodeSettings& settings) const;
 	/// Every key parse() accepts, each once, with its kind, in row order; the same span every call; pure.
 	std::span<const SettingDeclaration> settingKinds() const noexcept;
-	/// Whether a change to `key` may apply in place (its row marked inPlace: docs/writing-a-node-type.md#settings-one-table-of-typed-rows);
+	/// Whether a change to `key` may apply in place (its row marked inPlace: docs/writing-a-node-type.md#change-marks);
 	/// false for a key the type lacks.
 	bool changesInPlace(std::string_view key) const noexcept;
 	/// The stores every node of the type has (docs/writing-a-node-type.md#stores), from its spec, in declaration

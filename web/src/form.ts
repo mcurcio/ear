@@ -50,7 +50,8 @@ export interface FieldView {
   /** What an empty field means: the default, or where it comes from. */
   placeholder: string;
   required: boolean;
-  /** The words beside the field, from the schema alone: "applies in place", "restarts the node", "changes the ports". */
+  /** The words beside the field, from the schema alone: "applies in place", "restarts the node[: <its reason>]",
+   * "changes the ports". */
   hints: string[];
   help?: string;
   /** Disabled while this other key is given (its row's onlyWithout). */
@@ -84,7 +85,8 @@ export function shownValue(row: SettingSchema, value: JsonValue | undefined): Fi
 export function hintsOf(row: SettingSchema): string[] {
   const hints: string[] = [];
   if (row.change === "inPlace") hints.push("applies in place");
-  if (row.change === "restart") hints.push("restarts the node");
+  if (row.change === "restart")
+    hints.push(row.restartReason !== undefined ? `restarts the node: ${row.restartReason}` : "restarts the node");
   if (row.shapes === true) hints.push("changes the ports");
   return hints;
 }

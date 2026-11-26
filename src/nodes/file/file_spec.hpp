@@ -22,7 +22,8 @@ inline std::optional<std::string> nonEmpty(std::string_view value) {
 	return std::string(value);
 }
 
-inline constexpr auto pathRow = setting::required("path", setting::text<nonEmpty>("a non-empty string"));
+inline constexpr auto pathRow = setting::required("path", setting::text<nonEmpty>("a non-empty string"))
+                                    .restarts("file has no change in place yet");
 inline constexpr auto record = bank::input<"record">;
 inline constexpr auto writer = bank::insideOutput<"writer">; // the sink's bank: no route names it, never faded
 inline constexpr TypeSpec spec{.settings = SettingsTable<pathRow>{"file"}, .banks = Banks<record, writer>{}};

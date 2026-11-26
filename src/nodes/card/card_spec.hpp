@@ -9,20 +9,26 @@
 #include <cstdint>
 #include <expected>
 #include <string>
+#include <string_view>
 
 #include "ear/core/lifecycle.hpp"
 
 namespace ear::nodes::card {
 
 inline constexpr std::uint32_t maxChannels = 64;
-inline constexpr auto cardRow = setting::required(
-	"card", setting::text<CardId::parse>("an ALSA card id, 1-15 characters of [A-Za-z0-9_-] (as in /proc/asound/cards)",
-                                         {.pattern = "^[A-Za-z0-9_-]{1,15}$", .maxLength = 15}));
-// Each makes a bank's members (ports() below), so each changes the ports.
-inline constexpr auto playbackRow =
-	setting::defaulted("playback", setting::number(0, maxChannels, "channels"), 0).shapesPorts();
+inline constexpr auto cardRow =
+	setting::required("card", setting::text<CardId::parse>(
+								  "an ALSA card id, 1-15 characters of [A-Za-z0-9_-] (as in /proc/asound/cards)",
+								  {.pattern = "^[A-Za-z0-9_-]{1,15}$", .maxLength = 15}))
+		.restarts("card has no change in place yet");
+// Each makes a bank's members (ports() below), so each changes the ports; a bank with the sound card's companion
+// behind it cannot be resized in place yet (docs/architecture.md#not-built-yet).
+inline constexpr std::string_view reshapeReason = "a companion on a resized bank cannot be replaced in place yet";
+inline constexpr auto playbackRow = setting::defaulted("playback", setting::number(0, maxChannels, "channels"), 0)
+                                        .shapesPorts()
+                                        .restarts(reshapeReason);
 inline constexpr auto captureRow =
-	setting::defaulted("capture", setting::number(0, maxChannels, "channels"), 0).shapesPorts();
+	setting::defaulted("capture", setting::number(0, maxChannels, "channels"), 0).shapesPorts().restarts(reshapeReason);
 inline constexpr auto play = bank::input<"play">;
 inline constexpr auto capture = bank::output<"capture">;
 inline constexpr auto fromCard = bank::insideInput<"from_card">;

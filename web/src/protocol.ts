@@ -315,6 +315,8 @@ export interface SettingSchema {
   kind: SettingValueKind;
   required: boolean;
   change: SettingChange;
+  /** restart: why a change to it restarts the node, one line (docs/control-port.md#type-schemas). */
+  restartReason?: string;
   /** A change to it may change the node's ports. */
   shapes?: true;
   default?: JsonValue;
@@ -359,8 +361,8 @@ export interface EventSchema {
   args: Array<{ name: string; kind: string; min?: number; max?: number; decimals?: number; values?: string[]; maxBytes?: number }>;
 }
 
-/** An action's argument: a setting row without what only a setting has (change, shapes). */
-export type ActionArgSchema = Omit<SettingSchema, "change" | "shapes">;
+/** An action's argument: a setting row without what only a setting has (change, restartReason, shapes). */
+export type ActionArgSchema = Omit<SettingSchema, "change" | "restartReason" | "shapes">;
 
 /**
  * One type action (feature actions, docs/control-port.md#actions): a trigger (target code, no args) or a call (target

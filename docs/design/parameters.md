@@ -1,6 +1,7 @@
 # Parameters: slice 6 of the node framework
 
-Status: design, not built. Revised on 2026-11-26 against the code slices 3d (changes in place and reshapes, on
+Status: design; step 6.1 (change marks and restart reasons) is built and in the library docs
+([writing-a-node-type.md](../writing-a-node-type.md#change-marks)), the rest is not. Revised on 2026-11-26 against the code slices 3d (changes in place and reshapes, on
 `master` since v4.3.0) and 5 (the control plane, on `claude/slice-5`) built, and against the owner's rule M3 from
 `processing-nodes.md` (on `claude/admiring-hamilton-26crw1`), whose slice-6 extensions this page folds in as general
 mechanisms. Slice 6 gives a node type decimal, choice and indexed rows, rows that change **live** (ramped or stepped
@@ -37,7 +38,8 @@ The R and G numbers are the register the node framework's design used; M3 is `pr
 | R31 | "Only a related save" | 2026-11-08 | A save stops a gesture only when it changes the dragged value, its defining lines or its reach (8.6) |
 | R32 | "Keep last value" | 2026-11-08 | A gesture whose browser disconnects or goes silent ends as released, keeping the last value ear heard and accepted (8.5) |
 | M3 | "Ideally all adjustments are live. Node restarts should be justified." | 2026-11-25 | Every row of a new type is live, in place or a reshape in place; a row that restarts states why, on the wire too (4.2, 4.3) |
-| — | "It's all event driven" (recorded at `src/server/control_port.cpp`: "No timers: a connection stays until its peer or stop() ends it") | — | The control thread gets no timer and no socket option changes; a silent gesture is ended by a main-loop timer, where timers are built (8.5, open question O1) |
+| O1 to O12 | "ill take the recommendations" | 2026-11-26 | The owner took this page's recommendation on each of its twelve questions; section 12 records each as a decision (O1 to O12) |
+| — | "It's all event driven" (recorded at `src/server/control_port.cpp`: "No timers: a connection stays until its peer or stop() ends it") | — | The control thread gets no timer and no socket option changes; a silent gesture is ended by a main-loop timer, where timers are built (8.5, decision O1) |
 
 Ids from other pages that this page uses, in their words:
 
@@ -54,8 +56,8 @@ Ids from other pages that this page uses, in their words:
 
 Built, and used here as it is:
 
-- **Rows and the walk**: required, optional and defaulted rows of `text`, whole number, rate and boolean, `.inPlace()`,
-  `.shapesPorts()`, `.defaultFrom()`, `.help()`, the refusal's `key` and `detail`
+- **Rows and the walk**: required, optional and defaulted rows of `text`, whole number, rate and boolean, one change
+  mark per row (`.inPlace()` or `.restarts(why)`, [#change-marks](../writing-a-node-type.md#change-marks)), `.shapesPorts()`, `.defaultFrom()`, `.help()`, the refusal's `key` and `detail`
   ([writing-a-node-type.md](../writing-a-node-type.md#settings-one-table-of-typed-rows)). The boolean kind (`flag` on
   the wire) exists, so a live boolean needs only the live mark.
 - **The plan's outcomes** and `changeOf`, the one rule the plan and the type harness share
@@ -76,14 +78,14 @@ What it adds, by layer:
 
 | Layer | Adds |
 |---|---|
-| `ear_core` rows | `decimal` and `choice` rules; `defaulted` for every value kind but text and rate; indexed families; one change mark per row, required by the spec: `.live(ramp/step)`, `.inPlace()`, `.restarts(why)` |
+| `ear_core` rows | `decimal` and `choice` rules; `defaulted` for every value kind but text and rate; indexed families; the third change mark, `.live(ramp/step)` |
 | `ear_core` reads | `io.param<row>()` (a `Smoothed` or a `Stepped<V>`), `io.count<family>()`; `s.liveValue<row>()` and `s.liveCount<family>()` for `check` and the change version; `forSegments` |
 | `ear_core` realtime | Slots, ramp and step state and one generation word (writes and snaps) in `RealtimeChannels`; the advance before `process`; the snap at a drive |
 | `ear_core` plan and host | `NodeOutcome::retune`, `NodeChange::retuned`; `NodeHost`'s live values and `setLive`; retunes in every phase; `Gestures` with its silence timer |
 | `ear_config` | Decimal reading and writing; family lookups in `declaredKind`; the reach index; `OfferKind`; the related-change rule; the main-loop side's working-copy state |
 | `ear_control`, `ear_server` | Schema members; `applied: "retune"` and `retuned`; `gesture.*` and `GestureRequests`; per-session addressing; read-ahead |
 | `web` | Decimal, choice and family fields; live toggles and selects; faders and knobs; `gesture.ts` |
-| Types | `gain` (new); a mark on every built row and a reason on every built restart row |
+| Types | `gain` (new) |
 | Fixtures | `test/protocol/rows.json` (new): test types' schemas, for the row vocabulary no built type has before `gain` |
 
 ## 3. Journeys
@@ -157,7 +159,7 @@ A refusal carries its key, as built: `invalid-settings amp: gainDb: must be a nu
 
 1. **Gate on features**: `live` (retunes and `retuned`, `change: "live"`), `gestures`. Kinds `decimal` and `choice` and
    the `indexed` member need no feature: they are schema vocabulary under `types`, and every enum is open
-   ([control-port.md](../control-port.md#protocol-and-features)); open question O9 asks the owner to confirm this.
+   ([control-port.md](../control-port.md#protocol-and-features)); the owner confirmed this (decision O9).
 2. **Draw from the schema.** A row with `indexed` is a family: its members' keys are `<key>.<n>`, `n` from 1 in decimal
    with no sign and no leading zero (4.4), the one rule for mapping a `settings` key, a `retuned` entry or an
    `invalid-settings` `data.key` to the family's field. Draw members 1 to the count row's current value, and keep any
@@ -219,7 +221,7 @@ Every row of a node type has exactly one mark, and the schema's `change` says it
 | **live, stepped** | `.live(setting::step)` | The slot moves; the code sees the new value from the next block, with `changed()`, `before()` and `framesSince()` to make its own crossfade | decimal, whole number, boolean, choice | `live`, `live.transition` `step` |
 | **in place** | `.inPlace()` | The type's change version, as built ([architecture.md](../architecture.md#changes-in-place)) | every kind | `inPlace` |
 | **reshape in place** | `.inPlace().shapesPorts()` | As built ([architecture.md](../architecture.md#reshapes)); a configuration with a companion still restarts | every kind | `inPlace`, `shapes` |
-| **restart** | `.restarts("why")` | The node restarts, as built | every kind | `restart`, with `restartReason` |
+| **restart** | `.restarts("why")` | As built ([writing-a-node-type.md](../writing-a-node-type.md#change-marks)) | every kind | `restart`, with `restartReason` |
 
 A live row is never read by `ports()` (it cannot: 5.2), never shapes the ports and never reaches a loop's state: a value
 applied off the realtime thread is an in-place row the change version posts to its loop, as built. A live row may be
@@ -235,27 +237,19 @@ The modes cover `processing-nodes.md`'s needs as one mechanism each:
 | `link`, attack, release, knee, hold | live, stepped (the envelope smooths it) |
 | `select`'s `input`, `eq`'s `bands` | live, stepped (whole number); the code crossfades on `changed()` |
 | `eq`'s `type.N`, `crossover`'s `slope` | live, stepped (choice); the code crossfades on `changed()`: no longer in place "until text rows can be live" |
-| `delay`'s `ms.N`, `limiter`'s `lookaheadMs` (D11) | in place: they change the declared latency, which only the change version declares (open question O4) |
+| `delay`'s `ms.N`, `limiter`'s `lookaheadMs` (D11) | in place: they change the declared latency, which only the change version declares (decision O4) |
 | `channels`, `inputs`, `key` | reshape in place |
 
 ### 4.3 The rule for choosing a row's mode
 
-The built rule chooses between a setting, status, an event and an action
-([writing-a-node-type.md](../writing-a-node-type.md#status-and-events)). For a setting, ask in order; the first yes
-decides:
+The rule for in place and restart is built ([writing-a-node-type.md](../writing-a-node-type.md#change-marks)). Slice 6
+inserts one question as its second, after "does it change the ports?":
 
-1. **Does it change the ports?** Reshape in place, unless the configuration has a companion on a resized bank
-   (then `.restarts("<why>")`, until reshapes with companions are built: [architecture.md](../architecture.md#not-built-yet)).
-2. **Does only the realtime code use it, and can it move between two blocks without touching anything else?** Live:
-   ramped when a jump would click and the code can use an in-between value, stepped otherwise.
-3. **Can the type apply it while the node runs** (a new receiver, a replaced sink, a new code, a declared latency)?
-   In place.
-4. Otherwise `.restarts("<why>")`, the why naming what cannot change while running ("shairport-sync reads its name
-   only at start"). A spec with a restart row and no reason does not compile (5.4).
+- **Does only the realtime code use it, and can it move between two blocks without touching anything else?** Live:
+  ramped when a jump would click and the code can use an in-between value, stepped otherwise.
 
-A reason must be true. A built row the framework could already change in place, but whose type has no change version
-for it yet (`file`'s `path` and `card`'s `card`: recordings and sound cards are replaced in a change in place, as
-built), says so: "file has no change in place yet". Whether that justifies a restart under M3 is open question O6.
+The built rows' reasons stay as built: `file`'s `path` and `card`'s `card` say "has no change in place yet", which the
+owner accepted under M3 with a small follow-on slice to make both in place (decision O6).
 
 ### 4.4 Indexed families
 
@@ -272,8 +266,8 @@ defaulted whole-number row above it in the table. Several families may share one
 - **Members up to the count row's maximum are accepted**, whatever the count is now. A member above the current count
   is kept, inactive: the code does not read it, the editor greys it, and it is active again when the count rises. So
   lowering `channels` or `bands` never refuses a file that holds `trimDb.3`, and a band turned off keeps its settings.
-  A member above the maximum is `"trimDb.65: no such member (channels is at most 64)"`. Whether an inactive member
-  should also be a graph-file warning is open question O3.
+  A member above the maximum is `"trimDb.65: no such member (channels is at most 64)"`. An inactive member is not
+  a graph-file warning (decision O3).
 - **Inactive is only the code's view.** Every live member up to the maximum, active or not, is seeded at configure,
   written on a retune and kept ramping by the advance, so a member that becomes active (a reshape raising `channels`,
   a live `bands` stepped up) plays its file value from its first sample.
@@ -338,16 +332,13 @@ enum class Change { restart, inPlace, live };
 }
 ```
 
-- **Marks**, on `Row` and `IndexedRow` alike: `.live(ramp(ms))`, `.live(step)`, `.inPlace()`, `.restarts(why)`; two
-  marks, or an empty reason, do not compile. `.live` needs a row that always reads a value (required, defaulted or
-  indexed) of a live kind (4.2); a ramp needs a decimal or a boolean.
-- **Where marks are required**: `TypeSpec` asserts, as it already asserts its loop writers, that every row of its
-  `.settings` has exactly one mark and every restart a non-empty reason; an unmarked settings row does not compile
-  (`row-unmarked`). An action's argument table (`ActionTable`'s `SettingsTable`) is the other place rows appear; a
-  mark, `indexed`, or a live kind's `.live` on one does not compile (`action-arg-marked`), since arguments never
-  change and go on the wire "with no change or shapes" ([control-port.md](../control-port.md#actions)).
-- **`SettingRow`** (the erased row) changes: `bool inPlace` becomes `setting::Change change` with `restartReason`;
-  `byDefault` becomes `std::optional<SettingValue>`, `SettingValue = std::variant<std::uint32_t, double, bool,
+- **Marks**: `.inPlace()` and `.restarts(why)` are built, one per row, required on a spec's settings and refused on
+  a call's arguments ([writing-a-node-type.md](../writing-a-node-type.md#change-marks)). Slice 6 adds `.live(ramp(ms))`
+  and `.live(step)` as the third mark, on `Row` and `IndexedRow` alike, under the same one-mark rule. `.live` needs a
+  row that always reads a value (required, defaulted or indexed) of a live kind (4.2); a ramp needs a decimal or a
+  boolean. `setting::Change` (built: `restart`, `inPlace`) gains `live`. An `indexed` row in a call's arguments does
+  not compile either.
+- **`SettingRow`** (the erased row) changes: its built `change` and `restartReason` stay; `byDefault` becomes `std::optional<SettingValue>`, `SettingValue = std::variant<std::uint32_t, double, bool,
   ChoiceIndex>`; it gains `transition` (`step`, or a ramp's ms), and `indexedBy` (the count row's key) with `maxMembers`;
   `SettingRule` gains `DecimalRule` and `ChoiceRule`. `SettingKind` gains `decimal` and `choice`.
 - **`SettingsTable`** accepts `IndexedRow`s beside `Row`s (`setting::isRow` widened), checks that no plain row is named
@@ -418,10 +409,11 @@ Each a case in `src/core/tests/compile_fail/`, matched against GCC 14's wording:
 `decimal-bound-not-finite`, `decimal-default-outside`, `log-taper-nonpositive`, `db-taper-range`, `choice-empty`,
 `choice-repeated-name`, `choice-unwritable-name`, `default-text-row`, `indexed-count-below`,
 `indexed-count-not-whole`, `indexed-count-optional`, `indexed-collides-with-row`, `live-text-row`, `live-rate-row`,
-`live-optional-row`, `ramp-whole-number`, `ramp-choice`, `ramp-zero`, `two-marks`, `restarts-empty-reason`,
-`row-unmarked`, `action-arg-marked`, `live-members-over-256`, `get-live-row`, `count-live-row`, `live-value-not-live`,
-`param-not-live`, `param-row-not-in-spec`, `param-family-without-member`, `param-member-of-plain-row`, and a compiling
-case: `defaulted` with an `int` literal on a whole-number rule. That is 31 cases at about 1.3 s each.
+`live-optional-row`, `ramp-whole-number`, `ramp-choice`, `ramp-zero`, `live-members-over-256`, `get-live-row`,
+`count-live-row`, `live-value-not-live`, `param-not-live`, `param-row-not-in-spec`, `param-family-without-member`,
+`param-member-of-plain-row`, and a compiling case: `defaulted` with an `int` literal on a whole-number rule. That is 27
+cases at about 1.3 s each (the marks' four, `two-marks`, `restarts-empty-reason`, `row-unmarked` and
+`action-arg-marked`, are built).
 
 `needsCode` and `hasChannels` (`type_spec.hpp`) count live rows, so a type with live rows always has channels and a
 `configure` that answers a pass-through for it breaks the built rule that only a code can serve what the spec declares.
@@ -630,8 +622,7 @@ equal and `disabled` unchanged is the new `NodeOutcome::retune`, with two except
 - **A failed node** is not retried by a live-only change: it is a `retune` of its live values, and it stays `failed`.
   A live row touches nothing but the code's view, so it cannot be why the node failed; a drag on a failed node must
   not start it. Step 6.6 rewrites the sentence of [architecture.md](../architecture.md#failures) that lists "a change
-  of settings" among what retries a failed node to say "a change of a key that is not live". Open question O7 asks
-  the owner.
+  of settings" among what retries a failed node to say "a change of a key that is not live" (decision O7).
 
 A change of only live keys whose ports differ cannot happen (5.2); should it, the plan's port comparison makes it a
 reshape, and the all-type tests name the type.
@@ -760,7 +751,7 @@ step 6.8 pins them through the C++ binding).
 
 `node.set` on a shared definition already moves every user of it (built: `updateNode` edits the definition), which is
 G1's reach; its `param` records name every user (9.7), and from feature `live` its answer names the other nodes it
-changed (`alsoChanged`, 9.3), so the editor can say so after a click on a live switch (10.2, open question O8).
+changed (`alsoChanged`, 9.3), so the editor can say so after a click on a live switch (10.2, decision O8).
 
 ### 8.4 Reading ahead and the direct crossing
 
@@ -820,9 +811,9 @@ and already runs the status tick, and the gesture lives there:
 - `staleAfter` is a main-loop setting given to `Gestures` with the main loop's injectable clock, so the core and
   gateway tests move the clock rather than wait, and the system test passes a short value by a test-only flag.
 - **`SIGTERM`**: later begins and ends get `stopping`; open gestures are not committed (clients closed with 1001), as
-  the first design had it (G16; open question O5).
+  the first design had it (G16; decision O5).
 
-Open question O1 asks the owner to confirm the main-loop timer against the event-only alternative.
+The owner chose the main-loop timer over the event-only alternative (decision O1).
 
 ### 8.6 Refusals, collisions and related changes
 
@@ -860,13 +851,13 @@ Every change below goes in one commit with `docs/control-port.md`, `test/protoco
 
 | Feature | Step | Adds |
 |---|---|---|
-| — (under `types`) | 6.1 to 6.4 | rows' `restartReason`, kinds `decimal` and `choice`, `decimals`, `taper`, `minIsSilence`, typed `default`s, `indexed` |
+| — (under `types`) | 6.2 to 6.4 | kinds `decimal` and `choice`, `decimals`, `taper`, `minIsSilence`, typed `default`s, `indexed` |
 | `live` | 6.6 | `change: "live"` with `live`, `applied: "retune"`, `retuned`, `alsoChanged` |
 | `gestures` | 6.8 | `gesture.begin`, `change`, `end`, `cancel`; `gesture.changed`; the graph's per-node `gestures`; the new codes |
 
 Slice 5 put its new schema members under features (`status`, `actions`); this page adds the row vocabulary under none,
 since a client reads it from the schema it asked for and every enum is open, so an old client draws an unknown kind as
-JSON. Open question O9 asks the owner to accept that.
+JSON. The owner accepted that (decision O9).
 
 **An editor older than step 6.3** draws a family as one field it cannot fill (an Apply of it is `unknown key`). The
 editor ships in the image with ear and is served by it, so only third-party clients can be older, and those gate on
@@ -881,7 +872,6 @@ A row gains, as it applies:
 | `kind` | gains `decimal` (a JSON number) and `choice` (one of `values`, a string), as status fields have them |
 | `change` | gains `live`. Open, as built |
 | `live` | `{"transition": "ramp", "ms": 20}` or `{"transition": "step"}` |
-| `restartReason` | a restart row's why, one line |
 | `values` | a choice's names, in order; a closed set (a text row's `values` stay hints) |
 | `default` | now of the row's kind: a decimal, a flag, or a choice's name |
 | `min`, `max`, `unit`, `decimals`, `taper`, `minIsSilence` | a decimal's, as a decimal status field's are named ([control-port.md](../control-port.md#type-schemas)); `taper` is `linear`, `log` or `db` |
@@ -1006,7 +996,7 @@ One per abort (`cause: aborted`, `reason`, `to` absent after a related change). 
 | File | Covers |
 |---|---|
 | `rows.json` (new) | schemas of test types (not the real ear's), held by `src/control/tests/type_schemas_test.cpp` encoding test specs and read by vitest's form tests: a decimal row (6.2), a family (6.3), a choice (6.4), live ramped and stepped rows (6.6); each step extends it, so the row vocabulary has a fixture before any built type uses it |
-| `types.json` | every built row's `change` and restart row's `restartReason` (6.1); `gain`'s schema whole (6.7) |
+| `types.json` | `gain`'s schema whole (6.7); every built row's `change` and `restartReason` are built |
 | `edits.json`, `node-set.json` | a retune, a mixed reshape with `retuned`, a dry run of each; `retuned: []` on a reconfigure; a disabled node's `stored` with `retuned`; `alsoChanged` on a shared definition |
 | `gestures.json` (new) | begin with no echo to the owner and `begin` to another first; ticks (one stale); end with its order; reaches of two keys and of 64; `reach-mismatch` with `with`; `parameter-held` with `silentMs`; a silent holder released `stale`; a begin on a failed node; cancel; `tick-refused` to the owner only; an end refused `invalid-settings`, aborted `refused`; an end from another session by id (the reconnect); an unsubscribed owner getting `aborted`; aborts by a related hand edit, `graphFile.set`, `node.set`, `node.addText` and `node.setText`; `node.setText` of a held key refused; a live count retune inactivating a held member (`key-removed`); an unrelated hand edit and a route edit left open; `session-closed` after a queued end; `unknown-gesture` after an abort; `not-in-batch` for each method; `notification-only` |
 | `unknown-values.json`, `errors.json`, `snapshot.json`, `output-records.json` | this page's members, codes and records |
@@ -1106,7 +1096,7 @@ specs and vitest's form tests read; `types.json` stays what the real ear sends.
 
 | Step | What | Needs | Wire | Library docs it rewrites |
 |---|---|---|---|---|
-| 6.1 | Change marks and restart reasons | slice 5 | `restartReason`; every built row's `change` | writing-a-node-type.md (settings), control-port.md#type-schemas |
+| 6.1 | Change marks and restart reasons: **built** | slice 5 | `restartReason`; every built row's `change` | writing-a-node-type.md#change-marks, control-port.md#type-schemas |
 | 6.2 | Decimal rows, typed defaults | 6.1 | kind `decimal`; `rows.json` | writing-a-node-type.md, graph-file.md, editor.md#the-settings-form |
 | 6.3 | Indexed families | 6.2 | `indexed` | the same |
 | 6.4 | Choice rows | 6.2 | kind `choice` for settings | the same |
@@ -1116,14 +1106,8 @@ specs and vitest's form tests read; `types.json` stays what the real ear sends.
 | 6.8 | Gestures | 6.6 | feature `gestures` | control-port.md (#order, #per-client-limits-and-stopping: "one message in flight"), graph-file.md |
 | 6.9 | The editor's live controls | 6.6 (switches and selects), 6.8 (faders) | none | editor.md; deletes this page and its row in [README.md](README.md) |
 
-**6.1 Change marks and restart reasons.** `setting::Change`, `.restarts(why)`, `SettingRow::change` and `restartReason`
-replacing `inPlace`, `TypeSpec`'s assertion that every settings row has one mark and every restart a reason, marks
-refused on action arguments, the schema's `restartReason`. Every built row gets its mark, and each built restart row a
-true reason: `file` `path` and `card` `card` ("file has no change in place yet", "card has no change in place yet":
-both could be in place over built replacements, open question O6), `card` `playback` and `capture` and `rtp` `channels`
-("a companion on a resized bank cannot be replaced in place yet"), `airplay` `name` and `airplay2` ("shairport-sync
-reads it only at start"). Tests: `types.json`; compile-fail `two-marks`, `restarts-empty-reason`, `row-unmarked`,
-`action-arg-marked`.
+**6.1 Change marks and restart reasons** is built: [writing-a-node-type.md](../writing-a-node-type.md#change-marks)
+and [control-port.md](../control-port.md#type-schemas) say how.
 
 **6.2 Decimal rows and typed defaults.** `decimal`, `DecimalHints`, `defaulted<V>` (its default not deduced) for decimal
 and boolean, `SettingValue`, `SettingKind::decimal`, the walk, knobly's `number()` reader and the fixed writer,
@@ -1205,8 +1189,8 @@ reconnect's end, accessibility. Tests: `gesture.ts` against a fake client (every
 `visibilitychange`, a pointer press during a keyboard gesture continuing it, the reconnect ending by id); the tapers
 and their inverses; Backspace and `m` on a focused knob sending nothing; the hidden range input moved by its own keys
 as a gesture. Touch pointer capture on iPad Safari and Android Chrome (`lostpointercapture` after a cancelled touch)
-is the one thing vitest cannot check: open question O10 asks whether it may join the hand checks
-([testing.md](../testing.md#what-ci-does-not-prove)) or must be automated. The step deletes this page and updates
+is the one thing vitest cannot check: it joins the hand checks
+([testing.md](../testing.md#what-ci-does-not-prove)), owed once at this step (decision O10). The step deletes this page and updates
 [README.md](README.md).
 
 **When `processing-nodes.md`'s types can start.** `ear_dsp` depends on nothing here and can start now. The speaker
@@ -1229,7 +1213,7 @@ The designer's, unless marked the owner's; the owner can overturn any.
 | G4 (owner, R32) | A closed or silent session's gesture ends as released, keeping its last accepted value | The owner's answer; a refused tick was never heard as a value |
 | G5 | A committed value is rounded to the reach's `decimals` | `ear.conf` stays readable |
 | G13 | Begin is answered on the main loop from the reach index the keeper posts, and skips the session's FIFO | The second drag moves audio within a turn, even behind a held action |
-| P6.1 | One change mark per row (`live`, `inPlace`, `restarts(why)`) replacing `bool inPlace`, required by `TypeSpec` at compile time and refused on action arguments | M3 made the reason part of the row; one mark cannot contradict another; a spec already asserts over its parts |
+| P6.1 | One change mark per row (`live`, `inPlace`, `restarts(why)`) replacing `bool inPlace`, required by `TypeSpec` at compile time and refused on action arguments (built for `inPlace` and `restarts`: [writing-a-node-type.md](../writing-a-node-type.md#change-marks)) | M3 made the reason part of the row; one mark cannot contradict another; a spec already asserts over its parts |
 | P6.2 | Live values are a per-node vector in `NodeHost`, not part of a config | A retune then never adopts or replaces a config, so a change in flight keeps its target and an uncommitted end cannot revert the slots |
 | P6.3 | A live row is one 64-bit slot whatever its kind; a boolean ramps as a weight 0 to 1 | One mechanism for D7's mute and invert, no special case; the bits are the built `rt` encoding |
 | P6.4 | Two transitions, `ramp(ms)` and `step`; a crossfade is the code's, from `before`, `value` and `framesSince`, which the channels keep | Crossfades differ by type (equal-power for `select`, a filter pair for `eq`); kept in the channels they survive a swap |
@@ -1240,11 +1224,23 @@ The designer's, unless marked the owner's; the owner can overturn any.
 | P6.9 | A retune never supersedes a change in flight | A slot move must not restart a change |
 | P6.10 | The snap at every drive, none at a swap, as an epoch in the generation word | The drive fades in anyway; a swap must keep each ramp; the steady block stays one load |
 | P6.11 | Gestures only on live ramped decimals; booleans, choices and stepped rows commit by `node.set` | A toggle or a select is one click, not a drag; X5 still holds |
-| P6.12 | A silent gesture is released by a main-loop timer per gesture; the control thread and the sockets are unchanged; keep-alive ticks every 10 s | Main-loop timers are built; a socket option would close slow readers and cannot see through a proxy (open question O1) |
-| P6.13 | The row vocabulary needs no feature | A client reads it from the schema; the editor ships with ear (open question O9) |
+| P6.12 | A silent gesture is released by a main-loop timer per gesture; the control thread and the sockets are unchanged; keep-alive ticks every 10 s | Main-loop timers are built; a socket option would close slow readers and cannot see through a proxy (decision O1) |
+| P6.13 | The row vocabulary needs no feature | A client reads it from the schema; the editor ships with ear (decision O9) |
 | P6.14 | Any refusal of an end aborts the gesture; a release is built on the main loop from the last accepted value and is never left open | An open gesture after a refused end had no rule for its ticks, and a release has no owner to retry |
 | P6.15 | A gesture id is unguessable, and holding it lets any session end or cancel it | A reconnected editor can end its own orphan at once |
 | X6 | A value applied off the realtime thread is an in-place row the change version posts to its loop | Built machinery covers it |
+| O1 (owner) | A gesture whose owner fell silent is released `stale` by a 30 s main-loop timer per gesture | It keeps the control thread without timers, covers proxies and frozen tabs, never closes a slow reader, and tests with a moved clock; TCP keepalive would change every connection's lifetime and miss peers behind a proxy |
+| O2 (owner) | A release whose last tick was refused commits the last accepted value | It is what the audio plays, and R32 meant the value the person last heard |
+| O3 (owner) | An inactive family member is not a graph-file warning | The editor greys it and says why; a warning would nag about a value kept on purpose |
+| O4 (owner) | Rows that change the declared latency (`delay`'s `ms.N`, `limiter`'s `lookaheadMs`) stay in place, not live, in slice 6 | Gapless with the code's tap crossfade; latency moving on every tick would re-carry the plan each turn |
+| O5 (owner) | At `SIGTERM` open gestures are dropped, not committed (G16) | A stop is nobody's release, and the keeper refuses edits once stopping |
+| O6 (owner) | "has no change in place yet" is a true restart reason for `file`'s `path` and `card`'s `card`; a small follow-on slice makes them in place; reshapes with companions stay [not built](../architecture.md#not-built-yet) | Slice 6 is already large; `file` and `card` are low cost right after it |
+| O7 (owner) | A live-only change leaves a disabled node `stored` and does not retry a failed node | `stored` keeps its built word; a live row cannot be why a node failed, and a drag must not start one |
+| O8 (owner) | A click on a live switch or select whose value is a shared definition commits at once, then a notice names the other nodes from `alsoChanged` | One click stays one click, the notice tells the truth, and a second click undoes it |
+| O9 (owner) | Kinds `decimal` and `choice` and the `indexed` member come under no feature | They are read from a schema the client asked for, enums are open, and the editor ships with ear |
+| O10 (owner) | Touch pointer capture is a hand check owed once at step 6.9 ([testing.md](../testing.md#what-ci-does-not-prove)), not automated | Emulated touch would not show the iPad and Android behaviour it is about |
+| O11 (owner) | Two open gestures may move rows a cross-row `check` binds (`lowHz`, `highHz`), each tick checked with the other's hand value | Two hands on an EQ is normal; the check keeps the pair valid |
+| O12 (owner) | Values a node learns itself (sendspin's server volume, the AirPlay sender's volume) become live rows later, not in slice 6 | Slice 6's slots keep the main loop the one writer, and nothing here blocks a second |
 
 ## 13. Departures from the first design
 
@@ -1277,20 +1273,8 @@ The designer's, unless marked the owner's; the owner can overturn any.
 
 ## 14. Open questions for the owner
 
-| # | Question | Options | Recommendation |
-|---|---|---|---|
-| O1 | How does a gesture whose owner fell silent end? | (a) a 30 s timer per gesture on the main loop, released `stale` (designed); (b) events only: kernel TCP keepalive for dead peers and contention after 30 s for live ones; (c) WebSocket pings, a timer on the control thread | (a): it keeps the control thread without timers, covers proxies and frozen tabs, never closes a slow reader, and tests with a moved clock. (b) changes every connection's lifetime and misses peers behind a proxy |
-| O2 | When ear releases a gesture whose last tick was refused, what is committed? | (a) the last accepted value (designed); (b) abort back to `ear.conf`'s value | (a): it is what the audio plays, and R32 meant the value the person last heard |
-| O3 | Should an inactive family member (`trimDb.3` while `channels` is 2) also be a graph-file warning? | yes; no | No: the editor greys it and says why; a warning would nag about a value kept on purpose |
-| O4 | Should rows that change the declared latency (`delay`'s `ms.N`, `limiter`'s `lookaheadMs`) become live, with latency derived from settings? | live; in place (D11) | In place in slice 6: it is gapless with the code's tap crossfade, and latency moving on every tick would re-carry the plan each turn |
-| O5 | At `SIGTERM`, commit open gestures as released instead of dropping them? | commit; drop (G16) | Drop: a stop is nobody's release, and the keeper refuses edits once stopping |
-| O6 | Under M3, is "has no change in place yet" a justified restart for `file` `path` and `card` `card`, whose replacements in a change are built? And should `card` `playback`/`capture` and `rtp` `channels` get reshapes with companions? | (a) honest reasons now, a small follow-on slice for `file` and `card`; (b) make them in place inside slice 6; (c) accept the restarts | (a): slice 6 is already large; `file` and `card` are low cost right after it; reshapes with companions stay [not built](../architecture.md#not-built-yet) until a type needs them live |
-| O7 | Should a live-only change still retry a failed node, and stay `stored` on a disabled one? | (a) disabled `stored`, failed not retried (designed); (b) both as today: any change retries; (c) both `retune` | (a): `stored` keeps its built word; a live row cannot be why a node failed, and a drag must not start one |
-| O8 | A click on a live switch or select whose value is a shared definition moves the other nodes too. Commit at once? | (a) at once, then a notice naming the others from `alsoChanged` (designed); (b) a dry run and a confirmation first when shared | (a): one click stays one click, the notice tells the truth, and a second click undoes it |
-| O9 | Slice 5 put new schema members under features; may kinds `decimal`, `choice` and `indexed` come under none? | none (designed); a feature `rows` | None: they are read from a schema the client asked for, enums are open, and the editor ships with ear |
-| O10 | Touch pointer capture cannot be checked by vitest. May it be a second hand check in [testing.md](../testing.md#what-ci-does-not-prove), or must it be automated? | a hand check owed once at 6.9; a headless browser with emulated touch in CI | The hand check: emulated touch would not show the iPad and Android behaviour it is about, and it is checked once, not per release |
-| O11 | May two open gestures on one node move rows a cross-row `check` binds (`lowHz`, `highHz`)? | (a) yes, each tick checked with the other's hand value (designed); (b) refuse the second begin `parameter-held` | (a): two hands on an EQ is normal; the check keeps the pair valid |
-| O12 | Should values a node itself learns (sendspin's server volume, the AirPlay sender's volume) become live rows with a second writer? | now; later | Later: slice 6's slots keep the main loop the one writer, and nothing here blocks a second |
+None. The owner took every recommendation on 2026-11-26 ("ill take the recommendations"); section 12 records them as
+decisions O1 to O12.
 
 ## 15. Rejected alternatives
 
@@ -1329,5 +1313,5 @@ The designer's, unless marked the owner's; the owner can overturn any.
 - **130 live members** for every `gain` configuration: one load per steady block; a moving gang loads 130 words in that
   block only.
 - **Ticks run the type's `check`** on the main loop, at most once per gesture per turn.
-- **Touch capture** stays unverified until 6.9's hand check (O10).
-- **More compile-time machinery**: 31 compile-fail cases at about 1.3 s each, and every built row must carry a mark.
+- **Touch capture** stays unverified until 6.9's hand check (decision O10).
+- **More compile-time machinery**: 27 more compile-fail cases at about 1.3 s each.

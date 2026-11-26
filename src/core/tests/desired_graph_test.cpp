@@ -23,7 +23,7 @@ struct NeverStarted {
 	}
 };
 
-constexpr auto levelRow = setting::optional("level", setting::number(0, 100));
+constexpr auto levelRow = setting::optional("level", setting::number(0, 100)).restarts("a test type restarts on it");
 constexpr auto noise = bank::output<"noise">;
 constexpr auto record = bank::input<"record">;
 constexpr auto in = bank::input<"in">;
@@ -66,8 +66,10 @@ struct Upper : NeverStarted {
 /// Any text at all.
 std::optional<std::string> anyText(std::string_view text) { return std::string(text); }
 
-constexpr auto cardRow = setting::optional("card", setting::text<anyText>("text"));
-constexpr auto playbackRow = setting::defaulted("playback", setting::number(0, 64), 0);
+constexpr auto cardRow =
+	setting::optional("card", setting::text<anyText>("text")).restarts("a test type restarts on it");
+constexpr auto playbackRow =
+	setting::defaulted("playback", setting::number(0, 64), 0).restarts("a test type restarts on it");
 constexpr TypeSpec cardSpec{.settings = SettingsTable<cardRow, playbackRow>{"card"}, .banks = Banks<play>{}};
 
 /// A sound-card-like type: {"card": <text>, "playback": <n>} declares inputs play.1..play.<n>,
@@ -85,7 +87,8 @@ std::optional<std::string> throwingText(std::string_view text) {
 	return std::string(text);
 }
 
-constexpr auto modeRow = setting::optional("mode", setting::text<throwingText>("text"));
+constexpr auto modeRow =
+	setting::optional("mode", setting::text<throwingText>("text")).restarts("a test type restarts on it");
 constexpr TypeSpec faultySpec{.settings = SettingsTable<modeRow>{"faulty"}, .banks = Banks<out>{}};
 
 /// A type with bugs: its row's parse throws for "boom", and its ports for {"mode": "make"}.
@@ -100,7 +103,8 @@ struct Faulty : NeverStarted {
 
 constexpr auto portRow = setting::required("port", setting::number(1, 65535)).inPlace();
 constexpr auto gainRow = setting::optional("gain", setting::number(0, 100)).inPlace();
-constexpr auto channelsRow = setting::defaulted("channels", setting::number(1, 8), 1);
+constexpr auto channelsRow =
+	setting::defaulted("channels", setting::number(1, 8), 1).restarts("a test type restarts on it");
 constexpr TypeSpec movableSpec{.settings = SettingsTable<portRow, gainRow, channelsRow>{"movable"},
                                .banks = Banks<out>{}};
 /// "movable": port and gain change in place; channels makes its ports (outputs out.1..out.<channels>).
