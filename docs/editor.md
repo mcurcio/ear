@@ -83,8 +83,8 @@ along the bottom ([below](#the-shell)).
   How they are drawn: [below](#companions).
 - **Levels stay outside React state.** Each `levels` notification replaces a store with
   listeners per port, so at 30 messages a second only the meters and wires whose port changed
-  re-render. A meter reads the store itself and paints through refs, and keeps its peak hold in
-  its own object, so neither is React state ([below](#meters)). A closed connection makes every
+  re-render. A meter (patchbay's `Meter`) reads the store itself and paints through refs, and keeps
+  its peak hold outside React, so neither is React state ([below](#meters)). A closed connection makes every
   meter read silent and forgets every hold until new levels arrive.
 - **A lost socket reconnects** after a growing wait (1 s doubling to 30 s), failing the calls in
   flight (the requests in flight are forgotten with it; the toasts are kept), and the new socket subscribes again (graph, graph file, levels), so the editor starts
@@ -523,8 +523,7 @@ class (inside `:where()`, so they weigh no more), so patchbay's controls draw as
 **ear's own variables.** Besides the tokens, `editor.css` reads a few variables that hold no value of
 their own design, only a token picked per state or a number a component sets: `--state` (a node's
 state class picks its tone), `--wire-colour` (a wire's status class),
-`--wire-width` (`LevelEdge.tsx`), `--meter-mid-at`, `--meter-hot-at`, `--meter-rms-at` and
-`--meter-peak-at` (`Meter.tsx`), `--inspector-width` (`Inspector.tsx`), `--drawer-height`
+`--wire-width` (`LevelEdge.tsx`), `--inspector-width` (`Inspector.tsx`), `--drawer-height`
 (`Drawer.tsx`) and `--gutter-digits` (`KnoblyText.tsx`).
 
 **The theme.** It is `system` by default, following `prefers-color-scheme`. *Why:* the owner chose
@@ -628,19 +627,25 @@ Slice 5's type-schema cache is designed to use this module too ([control-plane.m
 
 ### Meters
 
-`web/src/meters.ts` holds the rules (`meters.test.ts`); `components/Meter.tsx` paints them.
+Each port's meter is patchbay's `Meter`
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.5.0/docs/graph.md#meter)), fed by the level store:
+`components/Meter.tsx` gives it the port's level and a reset, and `web/src/meters.ts` (`meters.test.ts`) its
+tooltip's words. *Why patchbay's:* the owner chose that patchbay's Meter owns the dB scale (D10, 2026-11-26); ear
+takes its defaults, which `meters.test.ts` pins to what this section says.
 
-- **The scale is unchanged:** an rms bar and a peak tick, dBFS down to -60 (`levels.ts`).
+- **The scale:** an rms bar and a peak tick, dBFS down to -60, the same floor as the wires' (`levels.ts`).
 - **Three zones.** The bar uncovers three fixed zones on that scale: `--pb-meter-low` below -18 dBFS,
   `--pb-meter-mid` from -18 to -6, `--pb-meter-hot` above.
 - **Peak hold.** The tick holds its highest peak for 1.5 s, then falls at 20 dB/s, never below the
-  live peak and never below the floor.
-- **Clip lamp.** A peak at or over 0 dBFS (linear 1) lights the meter's right end for 2 s, and the
+  live peak, and is hidden at the floor.
+- **Clip lamp.** A peak at or over 0 dBFS (linear 1) lights a square at the meter's right end for 2 s, and the
   tooltip says "clipped".
-- **Outside React.** The meter subscribes to the level store, keeps its `PeakHold` in a ref, and
-  paints the bar, the tick, the lamp and the tooltip through refs. It animates on animation frames
-  only while the tick is above the live peak or the lamp is lit. A closed connection resets the
-  hold.
+- **Its words.** The tooltip says the peak and the rms in dBFS ("peak -6.0 dBFS, rms -12.0 dBFS"), or "silent" with
+  nothing above the floor, refreshed at most four times a second while hovered. The meter is an image named for its
+  port (`<node>:<port> level` in the inspector's route panel, `<port> level` in a node box); the numbers are never announced.
+- **Outside React.** The meter subscribes to the level store and paints the bar, the tick, the lamp and the tooltip
+  through refs, animating on animation frames only while the tick is above the live peak or the lamp is lit. A
+  closed connection resets it: the bar empty, the hold and the lamp forgotten.
 - **Times** are taken on the browser's monotonic clock, as [Recent marks](#recent-marks) does.
 
 ## A node's health
@@ -786,7 +791,7 @@ port. Node.js comes from `web/.nvmrc` and the packages from `web/package-lock.js
 The tests cover the reducer against every `test/protocol` fixture, the graph file's state and the
 pane's logic (drafts, stale files, Save, refusals), the node panel's knobly box (`nodeText.ts`), the add-node
 form (`addText.ts`), the highlighting (`highlight.ts`, and that it never changes the text sent), the reconnecting client with a fake socket,
-the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (the hold, the fall, the lamp and the reset on a fake clock), the handles' cue (`connect.ts`), the box's sizes against `editor.css` (`layout.test.ts`), and the tokens and the theme's first paint (`theme.test.ts`: every `var()` names a token, and `index.html` inlines patchbay's theme script), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the sizes and the breakpoint against `editor.css` (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight and the ghosts (`requests.ts`), the toast store on patchbay's queue and a refusal's words (`notices.ts`, replaying `errors.json`), the gutter (`gutter.ts`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands as patchbay's `CommandPalette` takes and ranks them, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the key bindings as patchbay's `findShortcut` runs them (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), the wire dropped on the pane (`connect.ts`), and when the view fits itself (`fit.ts`). patchbay's modules import their own stylesheets, which Node cannot load, so `vite.config.ts` has Vitest inline the package (and blank its styles) for the tests that call its pure helpers. There is no browser test runner:
+the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (a meter's words, and patchbay's scale pinned as stated here), the handles' cue (`connect.ts`), the box's sizes against `editor.css` (`layout.test.ts`), and the tokens and the theme's first paint (`theme.test.ts`: every `var()` names a token, and `index.html` inlines patchbay's theme script), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the sizes and the breakpoint against `editor.css` (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight and the ghosts (`requests.ts`), the toast store on patchbay's queue and a refusal's words (`notices.ts`, replaying `errors.json`), the gutter (`gutter.ts`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands as patchbay's `CommandPalette` takes and ranks them, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the key bindings as patchbay's `findShortcut` runs them (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), the wire dropped on the pane (`connect.ts`), and when the view fits itself (`fit.ts`). patchbay's modules import their own stylesheets, which Node cannot load, so `vite.config.ts` has Vitest inline the package (and blank its styles) for the tests that call its pure helpers. There is no browser test runner:
 rendering is checked by eye. *Why:* a Playwright leg costs about 150 MB of browsers and a minute
 or two a CI run, while the logic sits in the reducer, client and rules, which Vitest covers
 against the same fixtures the server is tested with.

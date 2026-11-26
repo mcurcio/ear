@@ -6,7 +6,7 @@ import { wirePort } from "../levels";
 import type { GraphRoute, PortRef, RouteEnds } from "../protocol";
 import type { Selection } from "../selection";
 import { wireStatusWords, wireView } from "../wires";
-import { Meter } from "./Meter";
+import { PortMeter } from "./Meter";
 
 export function RoutePanel({
   route,
@@ -45,7 +45,7 @@ export function RoutePanel({
             key: "Level",
             value: (
               <span className="route-level">
-                <Meter node={level.node} port={level.port} />
+                <PortMeter node={level.node} port={level.port} label={`${level.node}:${level.port} level`} />
               </span>
             ),
           },

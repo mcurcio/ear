@@ -1,12 +1,13 @@
 # The graph editor on patchbay: what is still to build
 
 Status: designed; A1 is built (the package, the rename onto its tokens, the theme through `useTheme` and ThemeSwitch),
-A2 (section 3.3 marks each change), and of A4 all but the code editor (section 3.5 marks each).
+A2 (section 3.3 marks each change), of A3 the meters (section 3.4), and of A4 all but the code editor (section 3.5
+marks each).
 The graph editor (`web/`, [docs/editor.md](../editor.md)) draws with patchbay's `--pb-*` tokens, theme switch and
 built primitives and hooks (its spinner and warning mark, splitters, canvas tools, form fields and buttons, pills,
 badges and facts, narrow sheet and kept values) and composites and hooks (banners, status words, the command palette,
-the shortcut sheet, the key bindings and the toasts), but still draws its node boxes, wires, meters, code boxes and
-shell itself: `web/src/components/`, its styles in `web/src/editor.css`.
+the shortcut sheet, the key bindings and the toasts) and its graph layer's meters, but still draws its node boxes,
+wires, code boxes and shell itself: `web/src/components/`, its styles in `web/src/editor.css`.
 `@mcurcio/patchbay` (npm, 0.5.0) is a component library extracted from this editor: its `tokens.css` is the editor's
 old `theme.css` renamed, and its built primitives and hooks are generic versions of the editor's leaves. This page designs moving the
 editor onto it, one area per change, so that the editor keeps its behaviour and ear keeps everything that is not
@@ -17,7 +18,7 @@ meters) is still only designed in patchbay; those steps wait on patchbay's relea
 |---|---|---|
 | **A1** | The package, the rename and the theme (section 3.2): built | — |
 | **A2** | The built primitives and hooks, one area per change (section 3.3): built | — |
-| **A3** | The node box, wires, meters and the canvas sugar (section 3.4) | patchbay's graph layer, released |
+| **A3** | The node box, wires, meters and the canvas sugar (section 3.4): the meters built | the rest of patchbay's graph layer, released |
 | **A4** | Feedback, the palette and keys, the code editor (section 3.5): in part | the code editor waits on patchbay's CodeEditor; the rest on nothing (0.5.0) |
 | **A5** | The shell, and deleting this page (section 3.6) | patchbay's `AppShell`, released |
 
@@ -129,9 +130,10 @@ Each waits for the patchbay release carrying it.
   `GhostEdge.tsx` wraps GhostWire with its refused tone; `requests.ts` keeps a refused request one more second.
   `connect.ts`'s `handleCue` becomes `useConnectHints` over `isValidConnection`. The per-port `useLevel` path stays,
   and a profile at about 30 level messages a second shows no more rendering than today [U: checked in that change].
-- **Meters.** `Meter.tsx` becomes patchbay's Meter fed by `levels.subscribe` and `levels.get`, reset when the
-  connection closes. The dBFS scale, zones, hold, fall and clip lamp move with it: patchbay's Meter owns the scale
-  (D10), and `meters.ts` goes.
+- **Meters** (built). `Meter.tsx`'s `PortMeter` is patchbay's Meter fed by `levels.subscribe` and `levels.get`, reset
+  when the connection closes. The dBFS scale, zones, hold, fall and clip lamp moved with it at Meter's defaults:
+  patchbay's Meter owns the scale (D10). `meters.ts` keeps only what Meter does not hold, ear's tooltip words
+  ([editor.md](../editor.md#meters)); when NodeBox lands, `PortMeter` goes in each port's trailing slot.
 - **The canvas.** `Canvas.tsx` keeps its own `<ReactFlow>` (D1) and takes patchbay's sugar beside it: `CanvasTools`
   inside the flow replaces `CanvasTools.tsx`, `useAddAt` serves both quick-add paths, and `useFollowFit` replaces
   `fit.ts`. Every React Flow prop stays ear's to pass: delete stays a request (`onBeforeDelete` returns false), the
@@ -173,7 +175,7 @@ body stays mounted while closed (draft, caret and scroll kept), as now. `hooks.t
 | `prefs.test.ts` | Split in A2 (built): it reads the simple values as `usePersistentState` does, with ear's keys and checks; the hook is tested in patchbay |
 | `keys.test.ts`, `palette.test.ts` | Split in A4 (built): ear's bindings, run through patchbay's `findShortcut`, and its catalogue, handed to `rankCommands`, stay; the parsing, ranking and anchoring cases went to patchbay |
 | `notices.test.ts` | Kept in A4 (built): its queue cases run on patchbay's queue through ear's store and pin patchbay's defaults; the wording cases stay |
-| `meters.test.ts` | Split: ear's wording stays; the generic mechanics' cases go with them |
+| `meters.test.ts` | Split in A3 (built): the tooltip's words stay, and a case pins Meter's defaults to editor.md; the hold, fall, lamp and reset cases went with `PeakHold` (patchbay's Meter tests them) |
 | `fit.test.ts`, `gutter.test.ts`, `highlight.test.tsx` | Go with their modules, except `highlight.test.tsx`'s last case (what the pane, the node box and the add form send), which stays |
 | `wires.test.ts`, `connect.test.ts`, `health` and the other rule tests | Stay |
 

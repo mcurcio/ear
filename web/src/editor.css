@@ -582,52 +582,12 @@ body,
   height: 14px;
 }
 
-/* A meter (docs/editor.md#meters): the zones are fixed on the scale and the rms bar uncovers them; the tick and the
-   lamp follow the fractions Meter.tsx paints (--meter-rms-at, --meter-peak-at; not --pb-meter-peak, the tick's colour). */
-.meter {
-  --meter-rms-at: 0;
-  --meter-peak-at: 0;
-  position: relative;
+/* A port's meter is patchbay's Meter (docs/editor.md#meters); in a port row and the route panel it takes the room left
+   beside the port's name. */
+.port .port-meter,
+.route-level .port-meter {
   flex: 1;
-  height: 6px;
-  background: var(--pb-sunken);
-  border-radius: var(--pb-radius-pill);
-  overflow: hidden;
-}
-
-.meter-rms {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(
-    to right,
-    var(--pb-meter-low) var(--meter-mid-at),
-    var(--pb-meter-mid) var(--meter-mid-at) var(--meter-hot-at),
-    var(--pb-meter-hot) var(--meter-hot-at)
-  );
-  clip-path: inset(0 calc(100% - var(--meter-rms-at) * 100%) 0 0);
-}
-
-.meter-peak {
-  position: absolute;
-  top: 0;
-  left: calc(var(--meter-peak-at) * 100%);
-  width: 2px;
-  height: 100%;
-  margin-left: -2px;
-  background: var(--pb-meter-peak);
-}
-
-.meter-clip {
-  position: absolute;
-  right: 0;
-  top: 0;
-  width: 4px;
-  height: 100%;
-  background: transparent;
-}
-
-.meter[data-clipped] .meter-clip {
-  background: var(--pb-meter-hot);
+  width: auto;
 }
 
 /* Wires (docs/editor.md#wires): the colour is the status class's, the width and brightness the level's (set inline as

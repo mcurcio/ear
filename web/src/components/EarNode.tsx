@@ -21,7 +21,7 @@ import type { GraphNode } from "../protocol";
 import { CompanionStrip } from "./CompanionStrip";
 import { NodeCounterMark } from "./Counters";
 import { useCompanionBadges, useNodeCounters } from "./hooks";
-import { Meter } from "./Meter";
+import { PortMeter } from "./Meter";
 import { StatePill } from "./StatePill";
 
 /**
@@ -62,7 +62,7 @@ function Port({ node, port, direction }: { node: string; port: string; direction
         className={`handle-${cue}`}
       />
       <span className="port-name">{port}</span>
-      <Meter node={node} port={port} />
+      <PortMeter node={node} port={port} label={`${port} level`} />
     </div>
   );
 }

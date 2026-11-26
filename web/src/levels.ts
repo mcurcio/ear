@@ -1,8 +1,8 @@
 // Live audio levels, kept outside React state (docs/editor.md). Each `levels`
 // notification is a complete snapshot, so it replaces the store: a node missing from
 // it has no level and reads silent. Listeners are per port, so at 30 messages a second only the
-// meters and wires whose port changed re-render, never the whole canvas. The meter's scale is here; meters.ts draws its
-// zones and peak hold on the same scale (docs/editor.md#meters).
+// meters and wires whose port changed re-render, never the whole canvas. The wires' scale is here, the same -60 dBFS
+// floor as patchbay's Meter (docs/editor.md#meters).
 import type { Level, Notifications, PortRef } from "./protocol";
 
 export type LevelSnapshot = Notifications["levels"]["nodes"];
