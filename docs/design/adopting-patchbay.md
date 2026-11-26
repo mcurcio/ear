@@ -8,18 +8,18 @@ badges and facts, narrow sheet and kept values) and composites and hooks (banner
 the shortcut sheet, the key bindings and the toasts) and its whole graph layer (node boxes, port rows, wires, ghost
 wires, connect hints, meters, the canvas tools, quick add's `useAddAt` and the view's `useFollowFit`), but still draws
 its code boxes and shell itself: `web/src/components/`, its styles in `web/src/editor.css`.
-`@mcurcio/patchbay` (npm, 0.7.0) is a component library extracted from this editor: its `tokens.css` is the editor's
+`@mcurcio/patchbay` (npm, 0.8.0) is a component library extracted from this editor: its `tokens.css` is the editor's
 old `theme.css` renamed, and its built primitives and hooks are generic versions of the editor's leaves. This page designs moving the
 editor onto it, one area per change, so that the editor keeps its behaviour and ear keeps everything that is not
-drawing. What the editor has still to take (the code editor and the shell) waits on patchbay's releases.
+drawing. What the editor has still to take (the code editor and the shell) is released (0.8.0).
 
 | Step | What | Waits on |
 |---|---|---|
 | **A1** | The package, the rename and the theme (section 3.2): built | — |
 | **A2** | The built primitives and hooks, one area per change (section 3.3): built | — |
 | **A3** | The node box, wires, meters and the canvas sugar (section 3.4): built | — |
-| **A4** | Feedback, the palette and keys, the code editor (section 3.5): in part | the code editor waits on patchbay's CodeEditor; the rest on nothing (0.5.0) |
-| **A5** | The shell, and deleting this page (section 3.6) | patchbay's `AppShell`, released |
+| **A4** | Feedback, the palette and keys, the code editor (section 3.5): in part | nothing: CodeEditor and CodeText are released (0.8.0) |
+| **A5** | The shell, and deleting this page (section 3.6) | nothing: `AppShell` is released (0.8.0) |
 
 [V] = verified in the file named (patchbay's files by their path in its repository); [U] = unverified, with the step
 that checks it.
@@ -57,18 +57,18 @@ D15 are rasl's and change nothing here; they are listed so the numbers match pat
   Storybook): logic tests, plus tests that read `editor.css` (and patchbay's `tokens.css`) as text to hold CSS equal to
   TS constants and every `var()` to a token (`theme.test.ts`, `sizes.test.ts`, `layout.test.ts`). knobly comes from its GitHub Release tarball, pinned by
   `cmake/knobly.json` ([AGENTS.md](../../AGENTS.md), [editor.md](../editor.md#highlighting)).
-- **patchbay 0.7.0.** Peer dependencies `react` and `react-dom` `^19`, and optionally `@xyflow/react` `^12.1.0` and
+- **patchbay 0.8.0.** Peer dependencies `react` and `react-dom` `^19`, and optionally `@xyflow/react` `^12.1.0` and
   `knobly` `^1.0.0` [V: `package.json`]; ear meets every range. Subpaths `./tokens.css`, `./base.css`, `./primitives`,
-  `./hooks`, `./composites`, `./graph`, `./testing` (the brand contrast check); `./shell` resolves but exports nothing
-  yet [V: `dist/*.js`'s exports]. Every component takes its own words through one `labels` prop (D14).
+  `./hooks`, `./composites`, `./graph`, `./shell` (`AppShell`), `./testing` (the brand contrast check) [V: `dist/*.js`'s
+  exports]. Every component takes its own words through one `labels` prop (D14).
   Built: the `--pb-` tokens with a light set, a system-dark set and a chosen-dark set and React Flow's `--xy-*`
   variables mapped onto them, the type tokens (`--pb-font-*`, `--pb-text-*`, `--pb-code-size`); Button, IconButton,
   Spinner, Pill, Badge, WarnMark, KeyValue, SectionTitle, Field, TextInput, Select, Checkbox, RadioGroup, Splitter,
-  Toolbar, ToolGroup, Panel, Dialog, Sheet, ThemeSwitch; Banner, CommandPalette, DiffView, ShortcutSheet, StatusWords,
-  Toaster; Meter, NodeBox, PortRow, Wire, GhostWire, `useConnectHints`, CanvasTools, `useAddAt`, `useFollowFit`;
+  Toolbar, ToolGroup, Panel, Dialog, Sheet, ThemeSwitch; Banner, CodeEditor, CodeText, CommandPalette, DiffView,
+  ShortcutSheet, StatusWords, Toaster; AppShell; Meter, NodeBox, PortRow, Wire, GhostWire, `useConnectHints`, CanvasTools, `useAddAt`, `useFollowFit`;
   `useTheme` and `themeScript`, `usePersistentState`, `useShortcuts`, `useToasts`,
   `useMediaBreakpoint`, `useLiveValue`. It releases by semantic-release; while it is 0.x a breaking change is a minor release.
-- **The editor draws with it.** `web/package.json` pins `@mcurcio/patchbay` 0.7.0 exactly, and `npm ci` takes the
+- **The editor draws with it.** `web/package.json` pins `@mcurcio/patchbay` 0.8.0 exactly, and `npm ci` takes the
   tarball-installed knobly 1.0.0 as meeting its `^1.0.0` peer [V: `npm ls` dedupes it]. `theme.css` is gone: every
   colour in it had the same value in `tokens.css`, in light and both dark sets [V: compared before the rename], so
   the rename (`--X` → `--pb-X`, `--knobly-Y` → `--pb-code-Y`, `--code-size` → `--pb-code-size`, the faces and the 13
@@ -147,7 +147,8 @@ patchbay's graph layer carrying each is released (0.6.0).
   `useAddAt` serves both quick-add paths, `connect.ts`'s `quickAddKind` keeping ear's rule that only an output's wire
   opens it (`droppedOnPane` is gone); and `useFollowFit` in `App.tsx` replaces `fit.ts`, its key the names of the nodes
   on the canvas and its fit options ear's padding. A jump to a node (Go to, a toast's Show) stops following through
-  the hook's own `onMoveStart` with an event, as patchbay has no call to stop it. ear needs no `onFitted`: nothing
+  the hook's `stop()` (0.8.0); the hook's `onMoveStart` and `onMoveEnd` stop it only when the person's move changes the
+  view, so a click on the pane keeps following. ear needs no `onFitted`: nothing
   waits on the layout. Every React Flow prop stays ear's to pass: delete stays a request (`onBeforeDelete` returns
   false), the minimap is coloured by state class, and toasts stay mounted inside the flow so Show can fit the view.
   The three hooks' handlers reach `<ReactFlow>` through `mergeFlowProps` ([editor.md](../editor.md#the-canvas)).

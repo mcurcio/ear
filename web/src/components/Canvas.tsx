@@ -6,7 +6,7 @@
 // and the toasts at its bottom right (docs/editor.md#toasts). Quick add (docs/editor.md#adding-on-the-canvas) is
 // patchbay's useAddAt: a double-click on empty canvas (in place of React Flow's zoom) or an output's wire dropped there
 // opens the Add list at the pointer, with where the node should land; no route is asked for. The view follows the
-// graph through App's useFollowFit, whose handler is merged here with the others.
+// graph through App's useFollowFit, whose handlers are merged here with the others.
 import {
   CanvasTools,
   ConnectHints,
@@ -69,7 +69,7 @@ export const Canvas = memo(function Canvas({
   onShow: (selection: Selection) => void;
   /** Quick add: the screen point to open the Add list at, and where on the flow the node should land. */
   onQuickAdd: (at: { x: number; y: number }, place: Position) => void;
-  /** useFollowFit's handler for <ReactFlow>: the person's own move stops the view following the graph. */
+  /** useFollowFit's handlers for <ReactFlow>: the person's own move, when it changes the view, stops following. */
   follow: FollowFitFlowProps;
   /** Fit, asked for by the person: fits and follows again. */
   onFit: () => void;

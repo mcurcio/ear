@@ -129,11 +129,8 @@ export function App({ prefs }: { prefs: Prefs }) {
   const { fit } = follow;
   const followProps = follow.flowProps;
   // A jump to a node (a palette Go to, a toast's Show) is the person's own move, made by code: it stops following as
-  // the person's pan does, through useFollowFit's own handler for a move with an event.
-  const holdView = useCallback(
-    () => followProps.onMoveStart(new MouseEvent("mousemove"), flow.getViewport()),
-    [followProps, flow],
-  );
+  // the person's pan does.
+  const holdView = follow.stop;
   // As a toast's Show does.
   const goTo = useCallback(
     (name: string) => {
