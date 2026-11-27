@@ -9,6 +9,7 @@
 #include "ear/control/graph_file_state.hpp"
 #include "ear/control/lifecycle_wire.hpp"
 #include "ear/control/rpc.hpp"
+#include "ear/core/gestures.hpp"
 #include "ear/core/graph_view.hpp"
 // The control port's methods (docs/control-port.md) as typed commands.
 namespace ear::control {
@@ -75,11 +76,20 @@ struct InvokeNode {
 	std::string action;
 	NodeSettings args = nullptr;
 };
+/// A gesture's end to commit (docs/control-port.md#gestures): made on the main loop from gesture.end or a release,
+/// never decoded from the wire.
+struct CommitGesture {
+	GestureEnding ending;
+};
+/// What an end committed: gesture.end's {"value"}.
+struct GestureEnded {
+	double value;
+};
 using Command = std::variant<GetGraph, AddNode, UpdateNode, RemoveNode, AddRoute, RemoveRoute, GetGraphFile,
                              SetGraphFile, StartNode, StopNode, RestartNode, DisableNode, EnableNode, SetNodeText,
-                             AddNodeText, SetNode, InvokeNode>;
-using CommandResult =
-	std::variant<GraphView, std::expected<void, CommandError>, GraphFile, FileRefusal, Applied, ControlRefusal>;
+                             AddNodeText, SetNode, InvokeNode, CommitGesture>;
+using CommandResult = std::variant<GraphView, std::expected<void, CommandError>, GraphFile, FileRefusal, Applied,
+                                   ControlRefusal, GestureEnded>;
 /// The wire's frame (docs/control-port.md#protocol-and-features): graph.get's "protocol" and "features".
 inline constexpr int wireProtocol = 1;
 /// A node's own knobly text: nodeTexts on the GraphFile and node.setText (docs/control-port.md#a-nodes-own-text).
@@ -99,9 +109,12 @@ inline constexpr std::string_view actionsFeature = "actions";
 /// Live rows changed with no hook called: the schema's change "live", applied "retune", node.updated's and node.set's
 /// "retuned", node.set's "alsoChanged" (docs/control-port.md#retunes).
 inline constexpr std::string_view liveFeature = "live";
-inline constexpr std::array<std::string_view, 11> wireFeatures{
+/// gesture.begin, gesture.change, gesture.end, gesture.cancel, gesture.changed, the graph's per-node gestures and the
+/// code parameter-held (docs/control-port.md#gestures).
+inline constexpr std::string_view gesturesFeature = "gestures";
+inline constexpr std::array<std::string_view, 12> wireFeatures{
 	"lifecycle",   "counters",   companionsFeature, nodeTextFeature, reshapeFeature, nodeSetFeature,
-	dryRunFeature, typesFeature, "status",          actionsFeature,  liveFeature};
+	dryRunFeature, typesFeature, "status",          actionsFeature,  liveFeature,    gesturesFeature};
 /// Control thread. Named params only, decoded with graph_json. Unknown method: methodNotFound;
 /// a missing, extra or mistyped key: invalidParams whose message is the JsonError
 /// ("/from/port: missing") and whose data is {"pointer"} (the JSON pointer it names). graphFile.get and

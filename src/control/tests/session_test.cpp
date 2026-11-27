@@ -3,7 +3,10 @@
 // on the main loop and, like the keeper's main-loop side, DesiredGraph, NodeHost and the Reconciler,
 // tells the gateway each file change and graph event first. Every fixture in test/protocol is
 // replayed request by request and the session's output must equal its messages exactly.
+#include <bit>
 #include <deque>
+#include <format>
+#include <span>
 #include <fstream>
 #include <functional>
 #include <map>
@@ -15,6 +18,7 @@
 #include <vector>
 
 #include "catch2/catch.hpp"
+#include "ear/control/gestures_wire.hpp"
 #include "ear/control/rpc.hpp"
 #include "ear/control/session.hpp"
 #include "ear/core/lifecycle.hpp"
@@ -97,6 +101,7 @@ std::string describe(const Command& command) {
 			else if constexpr (std::is_same_v<C, SetNode>)
 				return "setNode " + c.node + " " + c.settings.dump() + (c.dryRun ? " dryRun" : "") +
 			           (c.dropRoutes ? " dropRoutes" : "");
+			else if constexpr (std::is_same_v<C, CommitGesture>) return "commitGesture " + c.ending.gesture;
 			else {
 				static_assert(std::is_same_v<C, SetGraphFile>);
 				return "setGraphFile " + c.version;
@@ -1811,4 +1816,181 @@ TEST_CASE("A session closed with messages in its FIFO still runs them in order, 
 	w.pump();
 	CHECK(w.graph.calls.size() == 2);
 	CHECK(out.all.empty());
+}
+
+// ---- Gestures (docs/control-port.md#gestures): the session's read-ahead, the gateway's mailbox and the hub's
+// addressing, over a real Gestures with fixed ids and a scripted keeper side ----
+
+namespace {
+
+struct SlotLive final : ear::LiveTarget {
+	std::map<std::pair<std::string, std::size_t>, double> slots;
+	double ceiling = 24.0;
+	void setLive(const ear::NodeName& node, std::span<const ear::LiveWrite> writes) override {
+		for (const auto& write : writes) slots[{node, write.member}] = std::bit_cast<double>(write.bits);
+	}
+	std::expected<void, ear::LiveRefusal> checkLive(const ear::NodeName&,
+	                                                std::span<const ear::LiveWrite> writes) const override {
+		for (const auto& write : writes)
+			if (std::bit_cast<double>(write.bits) > ceiling)
+				return std::unexpected(ear::LiveRefusal{"gainDb", "gainDb: must be a number of dB from -90 to 24"});
+		return {};
+	}
+	std::optional<std::uint64_t> committedLive(const ear::NodeName&, std::size_t) const override {
+		return std::bit_cast<std::uint64_t>(-6.0);
+	}
+};
+
+struct NoTimers final : ear::Timers {
+	struct Handle final : ear::Timer {};
+	std::unique_ptr<ear::Timer> after(std::chrono::milliseconds, std::move_only_function<void()>) override {
+		return std::make_unique<Handle>();
+	}
+	std::chrono::steady_clock::time_point now() const override { return std::chrono::steady_clock::time_point{}; }
+};
+
+/// The keeper's main-loop side, scripted: amp's gainDb (-6) is the one live ramped decimal; an end commits by telling
+/// the gateway what a retune tells, then closes the gesture.
+struct ScriptedGestures final : GestureRequests {
+	MainLoopGateway& gateway;
+	ear::Gestures& gestures;
+	ScriptedGestures(MainLoopGateway& g, ear::Gestures& s) : gateway(g), gestures(s) {}
+	GestureAnswer begin(ear::SessionToken session, const BeginGesture& begin) override {
+		if (begin.node == "porch")
+			return GestureRefused{"file-refused", "file-refused: the graph refused the newest text"};
+		if (begin.node != "amp") return CommandResult{Result{std::unexpected(ear::UnknownNode{begin.node})}};
+		if (begin.key == "trimDb.1")
+			return GestureRefused{"reach-mismatch",
+			                      "reach-mismatch amp: trimDb.1 shares its definition with rows a gesture cannot move "
+			                      "together",
+			                      {{"line", 5},
+			                       {"column", 11},
+			                       {"with", json::array({{{"name", "amp"}, {"key", "channels"}, {"why", "kind"}}})}}};
+		if (begin.key != "gainDb")
+			return GestureRefused{"not-live",
+			                      "not-live amp: " + begin.key + " is not a live ramped decimal",
+			                      {{"key", begin.key}, {"change", "inPlace"}}};
+		if (const auto held = gestures.heldAt({"amp", "gainDb"}))
+			return CommandResult{Result{std::unexpected(
+				ear::ParameterHeld{"amp", "gainDb", held->gesture, static_cast<std::uint64_t>(held->silent.count())})}};
+		const std::string id = gestures.open({session, {{{"amp", "gainDb"}, 0}}, -90.0, 24.0, 1, -6.0});
+		return GestureBegun{id, -6.0, {{"amp", "gainDb"}}, -90.0, 24.0, 1};
+	}
+	void move(ear::SessionToken session, const MoveGesture& move) override {
+		gestures.move(move.gesture, session, move.seq, move.value);
+	}
+	void end(ear::SessionToken session, const EndGesture& end,
+	         std::move_only_function<void(GestureAnswer)> reply) override {
+		auto ending = gestures.end(end.gesture, end.value, session);
+		if (!ending) return reply(GestureRefused{"unknown-gesture", "unknown-gesture " + end.gesture});
+		ear::NodeChange change{.outcome = ear::NodeOutcome::retune, .keys = {}};
+		change.retuned.push_back({"gainDb", -6.0, ending->value});
+		gateway.nodeChanged(ear::NodeSpec{"amp", "gain", {{"gainDb", ending->value}}}, nullptr, change);
+		gestures.close(ending->gesture, ending->value);
+		reply(CommandResult{GestureEnded{ending->value}});
+	}
+	GestureAnswer cancel(ear::SessionToken session, const CancelGesture& cancel) override {
+		if (!gestures.cancel(cancel.gesture, session)) return GestureRefused{"unknown-gesture", "unknown-gesture"};
+		return GestureCancelled{};
+	}
+	void sessionClosed(ear::SessionToken session) override { gestures.sessionClosed(session); }
+};
+
+/// Fixed ids, so a fixture can name them.
+std::function<std::string()> countingIds() {
+	return [n = 0]() mutable { return std::format("{:032x}", ++n); };
+}
+
+struct GestureWorld : World {
+	SlotLive live;
+	NoTimers timers;
+	ear::Gestures gestures{live, timers, ear::gestureStaleAfter, countingIds()};
+	ScriptedGestures scripted{gateway, gestures};
+	GestureWorld() {
+		gateway.answerGestures(scripted);
+		gestures.subscribe(gateway);
+		graph.view.nodes.push_back(
+			{{"amp", "gain", {{"gainDb", -6}}},
+		     ear::Ports{{{ear::Direction::input, "in", {"1"}}, {ear::Direction::output, "out", {"1"}}}},
+		     at("amp", ear::NodePhase::running)});
+	}
+};
+
+} // namespace
+
+TEST_CASE("gestures.json: a begin answered ahead of the FIFO, ticks, an end in order, refusals, a cancel",
+          "[session][protocol][gestures]") {
+	const json document = fixture("gestures");
+	GestureWorld w;
+	RecordingOutbox out;
+	std::optional<ControlSession> session;
+	w.onControl([&] { session.emplace(*w.hub, out); });
+	for (const std::string& request : requestsOf(document)) w.receive(*session, request);
+	checkMessages(out, document.at("messages"));
+	w.onControl([&] { session.reset(); });
+}
+
+TEST_CASE("A begin and its ticks go to every other subscriber, never back to the owner, an abort reaches the owner "
+          "unsubscribed, and a tick-refused only the owner",
+          "[session][gestures]") {
+	GestureWorld w;
+	RecordingOutbox ownerOut, otherOut;
+	std::optional<ControlSession> owner, other;
+	w.onControl([&] {
+		owner.emplace(*w.hub, ownerOut);
+		other.emplace(*w.hub, otherOut);
+	});
+	w.receive(*other, R"({"jsonrpc":"2.0","id":1,"method":"graph.subscribe"})");
+	w.receive(*owner, R"({"jsonrpc":"2.0","id":1,"method":"gesture.begin","params":{"name":"amp","key":"gainDb"}})");
+	const std::string id = json::parse(ownerOut.all.at(0)).at("result").at("gesture");
+	w.receive(*owner,
+	          R"({"jsonrpc":"2.0","method":"gesture.change","params":{"gesture":")" + id + R"(","seq":1,"value":-3}})");
+	w.receive(*owner,
+	          R"({"jsonrpc":"2.0","method":"gesture.change","params":{"gesture":")" + id + R"(","seq":2,"value":30}})");
+	REQUIRE(ownerOut.all.size() == 2); // the reply, then the tick-refused; never its own begin or change
+	CHECK(json::parse(ownerOut.all[1]).at("params").at("phase") == "tick-refused");
+	REQUIRE(otherOut.all.size() == 3); // its snapshot, begin, change
+	CHECK(json::parse(otherOut.all[1]).at("params").at("phase") == "begin");
+	CHECK(json::parse(otherOut.all[2]).at("params").at("value") == -3);
+	CHECK(w.live.slots.at({"amp", 0}) == -3.0);
+	// The other session cancels it by its id: both get the abort, the owner unsubscribed.
+	w.receive(*other, R"({"jsonrpc":"2.0","id":2,"method":"gesture.cancel","params":{"gesture":")" + id + R"("}})");
+	CHECK(json::parse(ownerOut.all.back()).at("params").at("phase") == "aborted");
+	CHECK(json::parse(otherOut.all.back()) == json::parse(R"({"jsonrpc":"2.0","id":2,"result":{}})"));
+	w.onControl([&] {
+		owner.reset();
+		other.reset();
+	});
+}
+
+TEST_CASE("Ticks wait in the gateway's mailbox, one main-loop task for many, and a tick read after its end is "
+          "dropped",
+          "[session][gestures]") {
+	GestureWorld w;
+	RecordingOutbox out;
+	std::optional<ControlSession> session;
+	w.onControl([&] { session.emplace(*w.hub, out); });
+	w.receive(*session, R"({"jsonrpc":"2.0","id":1,"method":"gesture.begin","params":{"name":"amp","key":"gainDb"}})");
+	const std::string id = json::parse(out.all.at(0)).at("result").at("gesture");
+	const auto tick = [&](int seq, int value) {
+		return R"({"jsonrpc":"2.0","method":"gesture.change","params":{"gesture":")" + id + R"(","seq":)" +
+		       std::to_string(seq) + R"(,"value":)" + std::to_string(value) + "}}";
+	};
+	w.onControl([&] {
+		for (int seq = 1; seq <= 100; ++seq) session->received(tick(seq, -seq / 10), [] {});
+	});
+	REQUIRE_FALSE(w.main.empty());
+	w.main.runOne();
+	CHECK(w.main.empty()); // a hundred ticks, one task
+	w.pump();
+	CHECK(w.live.slots.at({"amp", 0}) == -10.0);
+	w.onControl([&] {
+		session->received(R"({"jsonrpc":"2.0","id":2,"method":"gesture.end","params":{"gesture":")" + id + R"("}})",
+		                  [] {});
+		session->received(tick(200, -50), [] {}); // read after the end: dropped on the control thread
+	});
+	w.pump();
+	CHECK(w.live.slots.at({"amp", 0}) == -6.0); // closed: the slot on the committed value
+	CHECK(json::parse(out.all.back()).at("result").at("value") == -10);
+	w.onControl([&] { session.reset(); });
 }

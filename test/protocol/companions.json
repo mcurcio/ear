@@ -26,7 +26,8 @@
           "types",
           "status",
           "actions",
-          "live"
+          "live",
+          "gestures"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -83,7 +84,8 @@
               }
             ],
             "status": {},
-            "diagnostics": []
+            "diagnostics": [],
+            "gestures": []
           },
           {
             "name": "fpp",
@@ -119,7 +121,8 @@
               }
             ],
             "status": {},
-            "diagnostics": []
+            "diagnostics": [],
+            "gestures": []
           },
           {
             "name": "noise",
@@ -142,7 +145,8 @@
             },
             "companions": [],
             "status": {},
-            "diagnostics": []
+            "diagnostics": [],
+            "gestures": []
           },
           {
             "name": "rec",
@@ -176,7 +180,8 @@
               }
             ],
             "status": {},
-            "diagnostics": []
+            "diagnostics": [],
+            "gestures": []
           },
           {
             "name": "kitchen",
@@ -207,7 +212,8 @@
               }
             ],
             "status": {},
-            "diagnostics": []
+            "diagnostics": [],
+            "gestures": []
           }
         ],
         "routes": [],
@@ -246,7 +252,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       }
     },
     {
@@ -718,7 +725,8 @@
       "types",
       "status",
       "actions",
-      "live"
+      "live",
+      "gestures"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -775,7 +783,8 @@
           }
         ],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       },
       {
         "name": "fpp",
@@ -808,7 +817,8 @@
           "detail": "the RTP receiver never ran (UDP port 5004 held?)"
         },
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       },
       {
         "name": "kitchen",
@@ -839,7 +849,8 @@
           }
         ],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       },
       {
         "name": "noise",
@@ -862,7 +873,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       },
       {
         "name": "rec",
@@ -896,7 +908,8 @@
           }
         ],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       }
     ],
     "routes": [],

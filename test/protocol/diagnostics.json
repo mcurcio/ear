@@ -20,7 +20,8 @@
           "types",
           "status",
           "actions",
-          "live"
+          "live",
+          "gestures"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -72,7 +73,8 @@
                 "ms": 31,
                 "detail": "configure ran 31 ms"
               }
-            ]
+            ],
+            "gestures": []
           }
         ],
         "routes": [],
@@ -192,7 +194,8 @@
       "types",
       "status",
       "actions",
-      "live"
+      "live",
+      "gestures"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -286,7 +289,8 @@
             "bits": 1,
             "detail": "a code this client does not know"
           }
-        ]
+        ],
+        "gestures": []
       }
     ],
     "routes": [],

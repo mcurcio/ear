@@ -475,6 +475,16 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 		                                    .keys = {"channels"},
 		                                    .retuned = {ear::Retuned{"mute", false, true}}});
 		},
+		// A gesture's abort (docs/output-records.md#param): one record per reached key.
+		[](StatusLog& log, Lines&) {
+			log.gestureChanged(ear::GestureNote{.gesture = "g4",
+		                                        .phase = ear::GesturePhase::aborted,
+		                                        .owner = 1,
+		                                        .value = -6.0,
+		                                        .reach = {{"amp", "gainDb"}},
+		                                        .reason = "cancelled",
+		                                        .handValue = -4.25});
+		},
 		[](StatusLog& log, Lines&) { log.stopped(); },
 	};
 }
@@ -496,6 +506,30 @@ TEST_CASE("Every kind of record is the fixture's, field for field and in its ord
 		CHECK(Json::parse(lines.kept[i]) == records[i]["record"]);
 		CHECK(keyOrders(lines.kept[i], false).front() == orders[i]);
 	}
+}
+
+TEST_CASE("A gesture's end commits its param records as cause gesture, naming it, and a release with its reason",
+          "[status_log]") {
+	Lines lines;
+	StatusLog log(lines, &fixedTime, &pacedTime);
+	log.graphFileChanged(GraphFileChanged{GraphFile{"v2", "", {}, std::string("v2")}, FileChangeCause::edit, 0,
+	                                      std::string("g4"), "stale"});
+	log.nodeChanged(
+		ear::NodeSpec{"amp", "gain", {{"gainDb", -3.5}}}, nullptr,
+		ear::NodeChange{.outcome = ear::NodeOutcome::retune, .retuned = {ear::Retuned{"gainDb", -6.0, -3.5}}});
+	REQUIRE(lines.kept.size() == 2);
+	const Json param = Json::parse(lines.kept[1]);
+	CHECK(param["cause"] == "gesture");
+	CHECK(param["gesture"] == "g4");
+	CHECK(param["reason"] == "stale");
+	CHECK(param["msg"] == "node amp gainDb -6 -> -3.5");
+	log.graphFileChanged(GraphFileChanged{GraphFile{"v3", "", {}, std::string("v3")}, FileChangeCause::edit, 0});
+	log.nodeChanged(
+		ear::NodeSpec{"amp", "gain", {{"gainDb", -3}}}, nullptr,
+		ear::NodeChange{.outcome = ear::NodeOutcome::retune, .retuned = {ear::Retuned{"gainDb", -3.5, -3.0}}});
+	REQUIRE(lines.kept.size() == 4);
+	CHECK(Json::parse(lines.kept[3])["cause"] == "edit");
+	CHECK_FALSE(Json::parse(lines.kept[3]).contains("gesture"));
 }
 
 TEST_CASE("Every kind the fixture shows is made, and each record is one line", "[status_log]") {

@@ -128,7 +128,7 @@ TEST_CASE("The frame: graph.get says protocol 1 and the lifecycle, counters, com
 		encodeGraph(ear::GraphView{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {}, {}, {}});
 	CHECK(graph["protocol"] == 1);
 	CHECK(graph["features"] == json::array({"lifecycle", "counters", "companions", "node-text", "reshape", "node.set",
-	                                        "dryRun", "types", "status", "actions", "live"}));
+	                                        "dryRun", "types", "status", "actions", "live", "gestures"}));
 }
 
 TEST_CASE("A snapshot's node carries its companion list in request order, each counter only on its kind, and [] for "
@@ -196,12 +196,12 @@ TEST_CASE("Each health member is encoded once for snapshots: state, phase, wante
 		"state":"stopping","phase":"stopping","since":"2026-11-09T10:00:00.010000Z","wanted":"running","blockLost":true,
 		"cause":{"kind":"restarting","restart":{"kind":"settings","keys":["card","playback"]}},"disabled":true,
 		"counters":{"missedCycles":0,"overruns":0,"repositions":0,"driverChanges":0},"companions":[],
-		"status":{},"diagnostics":[]})"));
+		"status":{},"diagnostics":[],"gestures":[]})"));
 	CHECK(nodes[1] == json::parse(R"({"name":"fpp","type":"rtp","settings":{},"inputs":[],"outputs":[],
 		"state":"starting","phase":"configuring","wanted":"running","blockLost":false,
 		"cause":{"kind":"settings","keys":["port"]},"waitingFor":[{"kind":"companion","name":"fpp.rtp"},{"kind":"block"}],
 		"counters":{"missedCycles":0,"overruns":0,"repositions":0,"driverChanges":0},"companions":[],
-		"status":{},"diagnostics":[]})"));
+		"status":{},"diagnostics":[],"gestures":[]})"));
 }
 
 TEST_CASE("Every missing, extra and mistyped key is invalid params naming its pointer", "[commands]") {

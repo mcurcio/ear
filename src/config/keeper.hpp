@@ -54,6 +54,11 @@ private:
 	struct FirstOffer {};
 	struct DiskCheck {};
 	using Input = std::variant<FirstOffer, DiskCheck, Batch>;
+	/// A gesture's end that changes nothing in the file: closed on the main loop (docs/control-port.md#gestures).
+	struct CloseGesture {
+		std::string gesture;
+		double value;
+	};
 	/// A command answered on the main loop with no candidate, in index order with the batch's edits: a read, a
 	/// lifecycle verb (start, stop, restart) or a type action, which need no file and work while it has errors and
 	/// once stopped.
@@ -61,7 +66,7 @@ private:
 		std::size_t index;
 		std::variant<std::monostate /* GetGraph */, FileState /* GetGraphFile */,
 		             std::pair<control::LifecycleVerb, NodeName> /* StartNode, StopNode, RestartNode */,
-		             control::InvokeNode>
+		             control::InvokeNode, CloseGesture>
 			what;
 	};
 	/// How an edit's reply answers (docs/control-port.md#methods): `{}`, or by the plan's change of `node` (node.disable,
@@ -71,6 +76,8 @@ private:
 		bool detailed = false;     // node.set: retuned, alsoChanged, inPlace, ports and the routes
 		bool dryRun = false;       // planned and answered, then dropped
 		std::vector<Route> routes; // the routes removed with the change (or, for a dry run, that would be)
+		OfferKind kind = OfferKind::edit;
+		std::optional<GestureEnding> ending{}; // a gesture's end: answered with its value
 	};
 	struct Candidate {
 		GraphFileModel model;

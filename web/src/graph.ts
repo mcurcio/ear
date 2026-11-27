@@ -49,7 +49,7 @@ const protocol0Health: NodeHealth = { state: "starting", phase: "added", wanted:
  * knows (a protocol 0 ear sends no health: such a node is starting), so a member it does not know never goes stale.
  */
 function nodeOf(from: GraphNode): GraphNode {
-  const { name, type, settings, inputs, outputs, disabled, counters, companions, status, diagnostics } = from;
+  const { name, type, settings, inputs, outputs, disabled, counters, companions, status, diagnostics, gestures } = from;
   return {
     name,
     type,
@@ -62,6 +62,7 @@ function nodeOf(from: GraphNode): GraphNode {
     ...(companions !== undefined ? { companions } : {}),
     ...(status !== undefined ? { status } : {}),
     ...(diagnostics !== undefined ? { diagnostics } : {}),
+    ...(gestures !== undefined ? { gestures } : {}),
   };
 }
 
@@ -195,6 +196,29 @@ const handlers: { [N in keyof Notifications]: (graph: Graph, params: Event<N>) =
   // Merged, or with reset the whole status; a node not held is ignored.
   "node.statusChanged": (graph, { name, fields, reset }) =>
     updateNode(graph, name, (node) => ({ ...node, status: reset === true ? fields : { ...node.status, ...fields } })),
+  // Feature gestures: begin adds one per reached key, change sets their value, end and aborted remove them.
+  "gesture.changed": (graph, { gesture, phase, value, reach }) => {
+    if (phase === "begin" && reach !== undefined && value !== undefined) {
+      return reach.reduce(
+        (held, { name, key }) =>
+          updateNode(held, name, (node) => ({ ...node, gestures: [...(node.gestures ?? []), { gesture, key, value }] })),
+        graph,
+      );
+    }
+    if (phase !== "change" && phase !== "end" && phase !== "aborted") return graph;
+    if (!graph.nodes.some((node) => node.gestures?.some((held) => held.gesture === gesture))) return graph;
+    return {
+      ...graph,
+      nodes: graph.nodes.map((node) => {
+        if (!node.gestures?.some((held) => held.gesture === gesture)) return node;
+        const gestures =
+          phase === "change"
+            ? node.gestures.map((held) => (held.gesture === gesture && value !== undefined ? { ...held, value } : held))
+            : node.gestures.filter((held) => held.gesture !== gesture);
+        return { ...node, gestures };
+      }),
+    };
+  },
   // An event lives in the node's activity (activity.ts), never in the graph.
   "node.eventRaised": (graph) => graph,
   // The entry of the same code and subject replaced in place, or a new one at the end.

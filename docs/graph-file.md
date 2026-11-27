@@ -258,6 +258,8 @@ gone (removed, renamed, or of another type now) or a reached key no longer a liv
 longer active; a reached value changed after expansion (a chain's base changed elsewhere); its
 defining lines or the pairs sharing its definition changed (its reach changed). Anything else,
 route edits always among it, is not related to the gesture.
+[control-port.md](control-port.md#gestures-and-the-graph-file) says what each relation does to the
+gesture by the kind of change.
 
 ## Hand edits win
 

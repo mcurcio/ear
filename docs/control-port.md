@@ -81,7 +81,7 @@ snapshots include every edit the batch made.
 
 ## Protocol and features
 
-`graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun", "types", "status", "actions", "live"]`. An absent `protocol` is 0 (the
+`graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun", "types", "status", "actions", "live", "gestures"]`. An absent `protocol` is 0 (the
 wire before the lifecycle). The number moves only on a breaking change: removing or renaming a
 method, notification, member or code, changing a member's type, or changing an order guarantee.
 Additive growth is a new **feature** name.
@@ -105,7 +105,10 @@ Additive growth is a new **feature** name.
   `node.invoke`, each type schema's `actions` and the codes `unknown-action`, `invalid-args`,
   `not-running`, `restarted`, `action-failed` and `action-timeout` ([below](#actions)). `live` adds
   a row's `change: "live"` with its `live` member, `applied: "retune"`, `node.updated`'s and
-  `node.set`'s `retuned` and `node.set`'s `alsoChanged` ([below](#retunes)).
+  `node.set`'s `retuned` and `node.set`'s `alsoChanged` ([below](#retunes)). `gestures` adds
+  `gesture.begin`, `gesture.change`, `gesture.end`, `gesture.cancel`, `gesture.changed`, `gestures` on
+  each node of a snapshot and `node.added`, the code `parameter-held` on edits, and the codes only
+  gesture requests get ([below](#gestures)).
 - **Every enum is open.** `state`, `phase`, `cause.kind`, `waitingFor`'s `kind`, a route's `status`,
   `reason.code`, `applied`, `severity`, a companion's `kind`, a setting row's `kind`, `change` and `defaultFrom`, and
   every code may gain values, and the counters' names are an open set. Draw a value you do not know
@@ -199,6 +202,7 @@ three or four `node.state`s within milliseconds.
 | `node.disable` | `{"name"}` | `{"applied"}`: `disable` or `unchanged` (already disabled; nothing written) | `unknown-node`, `shared-definition`, `file-invalid`, `stopping` |
 | `node.enable` | `{"name"}` | `{"applied"}`: `enable` or `unchanged` | `unknown-node`, `shared-definition`, `file-invalid`, `stopping` |
 | `node.invoke` | `{"name", "action", "args"?}` (feature `actions`): one of the node's type actions, `args` an object ([below](#actions)) | `{}`: a trigger once handed to the code, a call once its handler did it | `unknown-node`, `unknown-action`, `invalid-args`, `not-running`, `restarted`, `action-failed`, `action-timeout`, `stopping` |
+| `gesture.begin`, `gesture.change`, `gesture.end`, `gesture.cancel` | feature `gestures`: [below](#gestures) | | |
 | `graphFile.get` | none | GraphFile | none |
 | `graphFile.subscribe` | none | GraphFile; then every `graphFile.changed` | none |
 | `graphFile.set` | `{"text", "version"}` | `{}` once the graph runs the text | `file-changed`, `invalid-text`, any code the graph refuses the text with, `stopping` |
@@ -242,6 +246,7 @@ edit. Their effect shows as `node.updated` (`applied` and `disabled`) and the he
 | `node.statusChanged` | `{"name", "fields", "reset"?}` | Status fields changed (at most one per node per 33 ms tick), or with `reset` a configuration closed ([below](#status)) |
 | `node.eventRaised` | `{"name", "code", "severity", "t", "args", "msg"}` | The node raised an event ([below](#status)) |
 | `node.diagnostic` | `{"name", "code", "subject", "active", "count", "t", "msg", the code's fields, "detail"}` | The framework told one of the node's diagnostics ([below](#node-diagnostics)) |
+| `gesture.changed` | `{"gesture", "phase", ...}` (feature `gestures`) | A gesture began, moved, ended or was aborted, or its tick was refused ([below](#gesturechanged)) |
 
 A client ignores an event naming a node it does not know. After `node.removed` the removed node's
 `node.state` (`stopping`, cause `removing`), `node.stopped` and `node.gone` name a node the client
@@ -278,6 +283,11 @@ sends none of the old node's health.
   come before the `node.state` its loss causes. A reset follows the closing configuration's last
   values; on a restart it comes between `stopping` and `configuring`. A stop, a start and a change
   in place send none.
+- **Gestures** ([below](#gestures)): a `gesture.begin`'s reply may overtake the replies of requests
+  queued before it on the same socket, which JSON-RPC allows (a begin reads only main-loop state);
+  its `gesture.changed` `begin` comes before its reply, in one turn. An end's `graphFile.changed`,
+  `node.updated` (`retune`), `gesture.changed` `end`, then its reply. An abort by a related change:
+  `gesture.changed` `aborted` before that change's `graphFile.changed` and events.
 - **List, then watch.** A subscriber gets every change after its snapshot and none from before it.
   `test/protocol/lifecycle.json` is a node's whole life in order.
 
@@ -423,6 +433,13 @@ Every refusal is -32000 with `data.code`. Its message is the code and what it na
 | `restarted` | `node.invoke`: the node's configuration was torn down (a restart, a failure, a removal) before the call ran | |
 | `action-failed` | `node.invoke`: the handler refused; the message is its text | `detail`: the same text |
 | `action-timeout` | `node.invoke`: the handler did not answer within 10 s; its late answer is dropped | |
+| `parameter-held` | An edit (`node.set`, `node.update`, `node.setText`, any other) or a `gesture.begin` would change a key an open gesture holds (feature `gestures`) | `gesture`, `key`, `silentMs`: since the holder's last message about it |
+| `not-live` | `gesture.begin` on a key that is not a live ramped decimal | `key`; `change` (`live` for a stepped row: send `node.set`), absent for a key the type lacks |
+| `reach-mismatch` | `gesture.begin`: the reach holds a row that is not a live ramped decimal, of another unit, or ranges that do not meet | `line`, `column` (the definition), `with`: each such pair `{name, key, why}`, `why` `kind`, `unit` or `range` |
+| `file-refused` | `gesture.begin` while the graph refused the newest text of `ear.conf` | |
+| `unknown-gesture` | `gesture.end` or `gesture.cancel` with no open gesture by that id | |
+| `not-in-batch` | Any `gesture.*` in a batch: a batch runs whole as keeper steps, and a begin and a tick are not | |
+| `notification-only` | `gesture.change` sent with an id: -32600, not -32000 | |
 
 Examples are in `test/protocol/errors.json`:
 
@@ -770,13 +787,110 @@ output (the node's `counters` say it), and so does a node's `ear.internal-error`
 reason says it), with the diagnostics that name no node. A superseded node's diagnostics never reach
 the wire; its records still reach standard output.
 
+## Gestures
+
+Feature `gestures`: a hand dragging a live ramped decimal (a fader, a knob) moves the audio at
+every tick and writes `ear.conf` once, at its end ([architecture.md](architecture.md#gestures) is
+how the main loop keeps them). A script never needs one: `node.set` moves a live row, and a
+gesture is for hands.
+
+| Method | Params | Result | Refusals (`data.code`) |
+|---|---|---|---|
+| `gesture.begin` | `{"name", "key"}` | `{"gesture", "value", "reach", "min", "max", "decimals"}` | `unknown-node`, `not-live`, `reach-mismatch`, `parameter-held`, `file-invalid`, `file-refused`, `stopping`, `not-in-batch` |
+| `gesture.change` | `{"gesture", "seq", "value"}`: a notification only | none | sent with an id: -32600 with `data.code` `notification-only`; in a batch `not-in-batch`; a refused value is `tick-refused` (below) |
+| `gesture.end` | `{"gesture", "value"?}`: no `value` ends at the last accepted | `{"value"}`, what was committed | `unknown-gesture`, `stopping`, `not-in-batch`; `invalid-settings`, `file-invalid` or the graph's codes, after which the gesture is aborted (`refused`) |
+| `gesture.cancel` | `{"gesture"}` | `{}` when sent with an id | `unknown-gesture`, `not-in-batch` |
+
+```json
+{"jsonrpc":"2.0","id":9,"method":"gesture.begin","params":{"name":"amp2","key":"trimDb.1"}}
+{"jsonrpc":"2.0","id":9,"result":{"gesture":"5d0c…","value":0,"reach":[{"name":"amp2","key":"trimDb.1"},{"name":"amp2","key":"trimDb.2"}],"min":-24,"max":24,"decimals":1}}
+{"jsonrpc":"2.0","method":"gesture.change","params":{"gesture":"5d0c…","seq":1,"value":1.5}}
+{"jsonrpc":"2.0","id":10,"method":"gesture.end","params":{"gesture":"5d0c…","value":1.5}}
+{"jsonrpc":"2.0","id":10,"result":{"value":1.5}}
+```
+
+- **The reach.** A gesture moves every pair whose value is defined where the asked pair's is
+  ([graph-file.md](graph-file.md#reaches)): `amp2`'s `trimDb.1 $trim; trimDb.2 $trim;` move
+  together. Every reached row must be a live ramped decimal of one unit whose ranges meet; `min`
+  and `max` are their intersection and `decimals` the fewest. A key the type declares and the file
+  does not give reaches only its node, at the row's default. A node with no configuration (stopped,
+  failed, disabled) can be held: its live values move and seed its next configuration.
+- **The id** is 32 hex digits, 128 random bits, never reused. Holding it is the credential: any
+  session may end or cancel a gesture by its id, so an editor that reconnected after a network drop
+  ends its old session's gesture with the id it kept. Ticks are the owner's alone.
+- **Ticks.** `seq` counts from 1 per gesture; a tick not above the last taken is dropped. Each
+  reached node judges the value: its row's range, then its type's check with the node's live
+  values, every other open gesture's hand value among them, in place, so two gestures on rows one
+  check binds never play a pair it refuses. A refused value is told to the owner as `tick-refused`
+  (at most once a second) and the last accepted value plays on. An accepted one moves every reached
+  node's slots at once.
+- **The end** commits the value (the one given, else the last accepted) rounded to `decimals`,
+  half away from zero, at its definition, every reached node in one commit (a `retune`). An end
+  equal to the committed value writes nothing and plans nothing. Any refusal of an end aborts the
+  gesture (`refused`): its slots go back to the committed value, and the client begins again.
+- **Silence.** While a hand holds a control still, repeat the last tick at least every 10 s. A
+  gesture whose owner sent nothing about it for 30 s (a frozen tab, a peer that vanished, a proxy
+  that dropped the connection) is ended by ear as released (`end` with `reason` `stale`),
+  committing its last accepted value; so is each gesture of a session that closed
+  (`session-closed`), once the requests it queued before closing have run. A key held by a silent
+  owner is refused `parameter-held` with the holder's silence in `data.silentMs`.
+- **Stopping.** From `SIGTERM` begins and ends get `stopping`; open gestures are dropped, never
+  committed, and the clients are closed with 1001.
+
+### gesture.changed
+
+```json
+{"jsonrpc":"2.0","method":"gesture.changed","params":{"gesture":"g4","phase":"begin","value":-6,"reach":[{"name":"amp","key":"gainDb"}]}}
+{"jsonrpc":"2.0","method":"gesture.changed","params":{"gesture":"g4","phase":"change","value":-4.25}}
+{"jsonrpc":"2.0","method":"gesture.changed","params":{"gesture":"g4","phase":"end","value":-3.5,"reason":"session-closed"}}
+{"jsonrpc":"2.0","method":"gesture.changed","params":{"gesture":"g4","phase":"aborted","reason":"cancelled","value":-6}}
+{"jsonrpc":"2.0","method":"gesture.changed","params":{"gesture":"g4","phase":"tick-refused","code":"invalid-settings","key":"gainDb","detail":"must be a number of dB from -90 to 24"}}
+```
+
+- One notification per gesture, never per reached key; `begin` carries the reach, and a `change`
+  at most every 33 ms, the newest.
+- **Who gets each.** The owner never gets its own `begin` or `change`; every other `graph.subscribe`
+  session does. `end` and `aborted` go to every `graph.subscribe` session and to the owner whatever
+  its subscriptions (a script that never subscribed still learns its gesture was aborted or
+  released), and to a session that ended or cancelled it by its id. `tick-refused` goes to the owner
+  alone.
+- `end`'s `reason`, when ear ended it for its owner: `session-closed`, `stale`. `aborted`'s `reason`:
+  `hand-edit`, `file-saved`, `edited`, `cancelled`, `refused`, `node-removed`, `key-removed`, with
+  `value` (what the slots returned to) but after `hand-edit`, `file-saved` and `edited`, whose
+  `node.updated` gives it. Both enums are open.
+- **The graph's `gestures`.** Each node of a snapshot, and of `node.added` (always `[]`), carries
+  `gestures`: the open gestures moving its keys, `{"gesture", "key", "value"}` with the hand's value.
+  Fold them: `begin` adds one per reached key, `change` sets their `value`, `end` and `aborted` remove
+  them, `tick-refused` changes nothing.
+
+### Gestures and the graph file
+
+| Lands during a gesture | What happens |
+|---|---|
+| A hand edit or `graphFile.set` related to it ([graph-file.md](graph-file.md#reaches)) | aborted (`hand-edit` or `file-saved`) before the change's `graphFile.changed`; the change committed; then each reached slot set to its node's new value, so the audio ramps once |
+| Another edit that changes its reach without changing a held value (`node.set` giving another node `trimDb.1 $trim`, `node.addText` of a node using `$trim`) | aborted (`edited`), before the change's events |
+| `node.set`, `node.update`, `node.setText` (any edit) changing a held key's value | refused `parameter-held` |
+| An edit of other keys of a reached node | applied, whatever its outcome: a change in place keeps the slots; a restart seeds the new configuration from the live values |
+| A committed change that makes a reached member inactive (a reshape lowering `channels`) | applied; aborted (`key-removed`) |
+| `node.remove`, a rename or a replacement of a reached node | applied; aborted (`node-removed`) |
+| `node.disable`, `node.enable`, or the reached node failing, restarting, stopping, starting | nothing: ticks move the live values, which seed its next configuration |
+| A change not related to it (route edits always) | nothing |
+| A hand edit with errors, or one the graph refuses | every open gesture aborted (`hand-edit`): no end could commit onto it |
+| A dry run | never judged |
+
+A `gesture.begin` while the newest text ear knows has errors is `file-invalid`, and while the graph
+refused it `file-refused`.
+
 ## Per-client limits and stopping
 
 - **Read ahead, run in order.** A connection reads each message as it arrives into its FIFO,
   whose messages run one at a time in order, each answered before the next runs, so replies keep
   request order. The FIFO holds 16 (the running one among them); at 16 the socket is not read until
   one is answered. A connection closed with messages in its FIFO still runs them in order, their
-  replies dropped.
+  replies dropped. Three messages skip the FIFO, taken the moment they are read: a
+  `gesture.change`, a `gesture.cancel` sent as a notification and a `gesture.begin`
+  ([above](#gestures)); a `gesture.end` or `gesture.cancel` read marks its gesture ending at once, so
+  no later tick of it is taken, then waits its turn with the session's edits.
 - At most 256 responses and notifications wait per client; one more closes the connection with
   WebSocket code 1008. Reconnect and subscribe again (the editor does, after 1 s doubling to 30 s).
   Whole graph file texts in the queue fill it sooner. Status counts like any notification, at most
@@ -831,6 +945,7 @@ breaking change moves `protocol`; anything else is a new feature name
 | `status.json` | A snapshot's status (a choice at `null`), merges, an event after the fields before it, a stop and a start keeping the status, a restart's reset between `stopping` and `configuring` and the new configuration's first fields, events and changes naming a node not held |
 | `actions.json` | `node.invoke`: a trigger and a call answered `{}`, a trigger on a stopped node `not-running` with its phase, a batch whose reply holds its action's, then every refusal an action can get |
 | `diagnostics.json` | A snapshot's diagnostics, two fields flapping at once and one settling while the other stays, `count` as sent, an observation code, a code a client does not know, one naming a node not held |
+| `gestures.json` | Gestures from the owner's side ([above](#gestures)): a begin answered with its reach and range and no `begin` back to its owner; ticks (one stale, one sent with an id refused `notification-only`); a second begin on the held key `parameter-held` with `silentMs`; a begin on a key that is not live `not-live` with `change`; a tick refused `tick-refused` to the owner; an end in order (`node.updated` `retune`, `gesture.changed` `end`, the reply with the rounded value); an end of an ended gesture `unknown-gesture`; a begin in a batch `not-in-batch`; a cancel with an id (`aborted`, `{}`) and one sent as a notification (`aborted` alone); every node's `gestures` folded |
 | `unknown-values.json` | Values, members and notifications a client does not know, taken or ignored |
 | `output-records.json` | Standard output's records ([output-records.md](output-records.md)) |
 

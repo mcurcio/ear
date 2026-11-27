@@ -253,6 +253,13 @@ void Keeper::advance(Batch batch) {
 			continue;
 		}
 		if (auto answer = take(command)) {
+			// A gesture's end that changes nothing in the file is still closed on the main loop: its slots hold the
+			// last tick.
+			if (const auto* commit = std::get_if<control::CommitGesture>(&command);
+			    commit && std::holds_alternative<control::GestureEnded>(*answer)) {
+				reads.push_back({index, CloseGesture{commit->ending.gesture, commit->ending.value}});
+				continue;
+			}
 			batch.results[index] = std::move(*answer);
 			continue;
 		}
@@ -263,7 +270,13 @@ void Keeper::advance(Batch batch) {
 		            control::FileChangeCause::edit,
 		            0,
 		            candidate_->answer.dryRun,
-		            candidate_->answer.node};
+		            candidate_->answer.node,
+		            candidate_->answer.kind};
+		if (const auto& ending = candidate_->answer.ending) {
+			offer.gesture = ending->gesture;
+			offer.gestureValue = ending->value;
+			offer.gestureReason = ending->reason;
+		}
 		const bool last = batch.next == batch.commands.size();
 		postStep(std::move(batch), std::move(reads), std::move(offer), index, candidate_->answer, last);
 		return;
@@ -278,7 +291,22 @@ std::optional<CommandResult> Keeper::take(const control::Command& command) {
 	if (const auto* set = std::get_if<control::SetGraphFile>(&command)) {
 		if (set->version != version()) return CommandResult{control::FileRefusal{control::FileChanged{}}};
 		if (workingFromText_ && set->text == working_.text()) return done();
+		answer.kind = OfferKind::fileSet;
 		edit = EditOutcome{std::optional<GraphFileModel>{working_.fresh(DiskText{set->text})}};
+	} else if (const auto* commit = std::get_if<control::CommitGesture>(&command)) {
+		// A gesture's end (docs/control-port.md#gestures): the node's settings with its key at the value, made at the
+		// definition like every edit, so every node it reaches changes in one commit.
+		const GestureEnding& ending = commit->ending;
+		if (working_.read().hasErrors()) return CommandResult{control::FileRefusal{control::FileInvalid{}}};
+		if (ending.value == ending.committed) return CommandResult{control::GestureEnded{ending.value}};
+		const auto& nodes = working_.read().wanted->nodes;
+		const auto held = std::ranges::find(nodes, ending.at.node, &NodeSpec::name);
+		if (held == nodes.end()) return refused(UnknownNode{ending.at.node});
+		NodeSettings merged = held->settings;
+		merged[ending.at.key] = ending.value;
+		answer.kind = OfferKind::gestureEnd;
+		answer.ending = ending;
+		edit = working_.updateNode(ending.at.node, merged);
 	} else if (const auto* replace = std::get_if<control::SetNodeText>(&command)) {
 		// The box's text was cut from `version` (docs/control-port.md#a-nodes-own-text): stale is file-changed first.
 		if (replace->version != version()) return CommandResult{control::FileRefusal{control::FileChanged{}}};
@@ -322,7 +350,10 @@ std::optional<CommandResult> Keeper::take(const control::Command& command) {
 		                  command);
 	}
 	if (!*edit) return refusalOf(edit->error());
-	if (!**edit) return answer.node ? CommandResult{unchangedFor(answer.detailed)} : done();
+	if (!**edit) {
+		if (answer.ending) return CommandResult{control::GestureEnded{answer.ending->value}};
+		return answer.node ? CommandResult{unchangedFor(answer.detailed)} : done();
+	}
 	GraphFileModel model = std::move(***edit);
 	// An edit's or a set's candidate that does not read cannot be planned: the text's errors answer it.
 	if (model.read().hasErrors())
@@ -376,6 +407,7 @@ void Keeper::postStep(Batch batch, std::vector<Read> reads, std::optional<Offer>
 								   return side.operate(verb.first, verb.second, stopped);
 							   },
 							   [](control::InvokeNode&) -> CommandResult { throw std::logic_error("keeper: invoke"); },
+							   [&](CloseGesture& close) { return side.closeGesture(close.gesture, close.value); },
 						   },
 			               read.what);
 		}
@@ -383,7 +415,9 @@ void Keeper::postStep(Batch batch, std::vector<Read> reads, std::optional<Offer>
 		if (offer) {
 			Judged judged = side.offer(std::move(*offer));
 			verdict = judged.verdict;
-			if (answer.node && judged.verdict == Verdict::accepted)
+			if (answer.ending && judged.verdict == Verdict::accepted)
+				batch.results[offerIndex] = CommandResult{control::GestureEnded{answer.ending->value}};
+			else if (answer.node && judged.verdict == Verdict::accepted)
 				batch.results[offerIndex] = appliedOf(answer, judged.change, std::move(judged.alsoChanged));
 			else batch.results[offerIndex] = CommandResult{std::move(judged.result)};
 		}
@@ -524,7 +558,8 @@ FileState Keeper::fileState(const GraphFileModel& model, const std::string& vers
 		if (read.format->rate != engine_.rate) pending.push_back(control::FormatKey::graphFrequency);
 		if (read.format->maxBlock != engine_.maxBlock) pending.push_back(control::FormatKey::blockSize);
 	}
-	return FileState{version, model.text(), read.diagnostics, std::move(pending), writeFailed_, read.nodeTexts};
+	return FileState{version,      model.text(),   read.diagnostics,  std::move(pending),
+	                 writeFailed_, read.nodeTexts, model.reachIndex()};
 }
 
 } // namespace ear::config

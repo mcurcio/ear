@@ -11,6 +11,7 @@ add_library(ear_control STATIC
 	companions_wire.cpp
 	events.cpp
 	gateway.cpp
+	gestures_wire.cpp
 	graph_file_state.cpp
 	graph_json.cpp
 	rpc.cpp

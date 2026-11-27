@@ -4,6 +4,7 @@
 #include "main_loop_side.hpp"
 
 #include <algorithm>
+#include <format>
 #include <cstddef>
 #include <stdexcept>
 #include <string>
@@ -219,11 +220,154 @@ void MainLoopSide::invoke(const NodeName& node, const std::string& action, const
 					 });
 }
 
+namespace {
+
+control::GestureRefused refusedWith(std::string_view code, std::string message,
+                                    nlohmann::json data = nlohmann::json::object()) {
+	return control::GestureRefused{std::string(code), std::move(message), std::move(data)};
+}
+
+std::string_view changeName(setting::Change change) {
+	switch (change) {
+	case setting::Change::live:
+		return "live";
+	case setting::Change::inPlace:
+		return "inPlace";
+	case setting::Change::restart:
+		break;
+	}
+	return "restart";
+}
+
+bool gesturable(const ReachRow& row) {
+	return row.change == setting::Change::live && row.ramped && row.decimal && row.member.has_value();
+}
+
+/// The abort reason a related change gives an open gesture, by the kind of offer (docs/control-port.md#gestures-and-the-graph-file);
+/// none for an edit that must be refused instead (a held value changed), or a change not related.
+std::optional<std::string> abortFor(OfferKind kind, Relation relation) {
+	if (relation == Relation::none) return std::nullopt;
+	if (kind == OfferKind::disk) return "hand-edit";
+	if (kind == OfferKind::fileSet) return "file-saved";
+	if (relation == Relation::nodeRemoved) return "node-removed";
+	if (relation == Relation::keyRemoved) return "key-removed";
+	if (relation == Relation::reach) return "edited";
+	return std::nullopt; // a value: refused parameter-held
+}
+
+} // namespace
+
+void MainLoopSide::holdGestures(Gestures& gestures) { gestures_ = &gestures; }
+
+control::GestureAnswer MainLoopSide::beginGesture(SessionToken session, const control::BeginGesture& begin,
+                                                  bool stopping) {
+	if (stopping || gestures_ == nullptr)
+		return control::CommandResult{std::expected<void, CommandError>{std::unexpected(Stopping{})}};
+	if (newestHasErrors_) return control::CommandResult{control::FileRefusal{control::FileInvalid{}}};
+	if (newestRefused_)
+		return refusedWith(control::fileRefusedCode, "file-refused: the graph refused the newest text of ear.conf");
+	const GestureKey asked{begin.node, begin.key};
+	const bool nodeThere = runningReach_ && std::ranges::any_of(runningReach_->entries(), [&](const ReachEntry& entry) {
+							   return entry.at.node == begin.node;
+						   });
+	if (!nodeThere)
+		return control::CommandResult{std::expected<void, CommandError>{std::unexpected(UnknownNode{begin.node})}};
+	const ReachEntry* own = runningReach_->find(asked);
+	if (own == nullptr)
+		return refusedWith(control::notLiveCode,
+		                   std::format("not-live {}: {} is not a setting of its type", begin.node, begin.key),
+		                   {{"key", begin.key}});
+	if (!gesturable(own->row))
+		return refusedWith(control::notLiveCode,
+		                   std::format("not-live {}: {} is not a live ramped decimal", begin.node, begin.key),
+		                   {{"key", begin.key}, {"change", std::string(changeName(own->row.change))}});
+	GestureOpen open{session, {}, own->row.low, own->row.high, own->row.decimals, own->value.get<double>()};
+	nlohmann::json with = nlohmann::json::array();
+	for (const GestureKey& at : runningReach_->reachOf(asked)) {
+		const ReachEntry* entry = runningReach_->find(at);
+		std::string why;
+		if (!gesturable(entry->row)) why = "kind";
+		else if (entry->row.unit != own->row.unit) why = "unit";
+		else {
+			open.low = std::max(open.low, entry->row.low);
+			open.high = std::min(open.high, entry->row.high);
+			open.decimals = std::min(open.decimals, entry->row.decimals);
+			if (open.low > open.high) why = "range";
+		}
+		if (!why.empty()) with.push_back({{"name", at.node}, {"key", at.key}, {"why", why}});
+		else open.reach.push_back(GesturePair{at, *entry->row.member});
+	}
+	if (!with.empty())
+		return refusedWith(
+			control::reachMismatchCode,
+			std::format("reach-mismatch {}: {} shares its definition with rows a gesture cannot move together",
+		                begin.node, begin.key),
+			{{"line", own->place.line}, {"column", own->place.column}, {"with", std::move(with)}});
+	for (const GesturePair& pair : open.reach)
+		if (const auto held = gestures_->heldAt(pair.at))
+			return control::CommandResult{std::expected<void, CommandError>{std::unexpected(ParameterHeld{
+				pair.at.node, pair.at.key, held->gesture, static_cast<std::uint64_t>(held->silent.count())})}};
+	control::GestureBegun begun{"", open.committed, {}, open.low, open.high, open.decimals};
+	for (const GesturePair& pair : open.reach) begun.reach.push_back(pair.at);
+	begun.gesture = gestures_->open(std::move(open));
+	return begun;
+}
+
+control::CommandResult MainLoopSide::closeGesture(const std::string& gesture, double value) {
+	if (gestures_ != nullptr) gestures_->close(gesture, value);
+	return control::GestureEnded{value};
+}
+
+/// The open gestures `offer` relates to, each with its abort reason; a held value it changes refuses it
+/// (docs/control-port.md#gestures-and-the-graph-file). Nothing for a dry run.
+std::expected<std::vector<std::pair<std::string, std::string>>, CommandError>
+MainLoopSide::relatedTo(const Offer& offer) const {
+	std::vector<std::pair<std::string, std::string>> aborts;
+	if (gestures_ == nullptr || offer.dryRun) return aborts;
+	for (const OpenGesture& open : gestures_->openGestures()) {
+		if (offer.gesture && *offer.gesture == open.gesture) continue; // its own end
+		Relation relation = Relation::none;
+		if (!offer.file.reach) relation = Relation::value; // a text with errors: no end could commit onto it
+		else if (runningReach_) relation = relationOf(*runningReach_, *offer.file.reach, open.reach);
+		if (relation == Relation::none) continue;
+		if (const auto reason = abortFor(offer.kind, relation)) {
+			aborts.emplace_back(open.gesture, *reason);
+			continue;
+		}
+		// An edit changing a held value: refused, naming the first held key it changes.
+		for (const GestureKey& at : open.reach) {
+			const ReachEntry* was = runningReach_->find(at);
+			const ReachEntry* now = offer.file.reach->find(at);
+			if (was && now && was->value != now->value)
+				if (const auto held = gestures_->heldAt(at))
+					return std::unexpected(ParameterHeld{at.node, at.key, held->gesture,
+					                                     static_cast<std::uint64_t>(held->silent.count())});
+		}
+	}
+	return aborts;
+}
+
+void MainLoopSide::abortAll(const std::string& reason) {
+	if (gestures_ == nullptr) return;
+	for (const OpenGesture& open : gestures_->openGestures()) gestures_->abort(open.gesture, reason);
+}
+
+void MainLoopSide::newest(const FileState& file) {
+	newestHasErrors_ = std::ranges::any_of(
+		file.diagnostics, [](const control::Diagnostic& d) { return d.severity == control::Severity::error; });
+}
+
 Judged MainLoopSide::offer(Offer offer) {
+	auto related = relatedTo(offer);
+	if (!related) return {Verdict::refused, std::unexpected(related.error())};
 	auto plan = graph_.plan(offer.wanted.nodes, offer.wanted.routes);
 	if (!plan) {
 		if (std::holds_alternative<Stopping>(plan.error())) return {Verdict::stopping, std::unexpected(plan.error())};
 		if (offer.cause == control::FileChangeCause::disk && !offer.dryRun) {
+			// No end could commit onto a text the graph refused: every gesture is aborted, back to what it runs.
+			abortAll("hand-edit");
+			newest(offer.file);
+			newestRefused_ = true;
 			refusal_ = Recorded{offer.file.version,
 			                    control::Refusal{plan.error(), placeOf(plan.error(), offer.wanted, offer.placements)}};
 			tell(std::move(offer.file), offer.cause, offer.droppedEdits);
@@ -244,15 +388,29 @@ Judged MainLoopSide::offer(Offer offer) {
 		}
 	// A dry run is advice: the plan's answer, and nothing more (docs/control-port.md#nodeset-and-dry-runs).
 	if (offer.dryRun) return {Verdict::accepted, {}, std::move(change), std::move(also)};
+	// Aborted before the change is told, so a client hears the abort first; the slots settle after the commit, last in
+	// the turn, so the audio ramps once, to the new value (docs/control-port.md#gestures-and-the-graph-file).
+	for (const auto& [gesture, reason] : *related)
+		gestures_->abort(gesture, reason, reason == "hand-edit" || reason == "file-saved" || reason == "edited", false);
 	running_ = offer.file.version;
-	tell(std::move(offer.file), offer.cause, offer.droppedEdits);
+	runningReach_ = offer.file.reach;
+	newest(offer.file);
+	newestRefused_ = false;
+	const std::optional<std::string> gesture = offer.kind == OfferKind::gestureEnd ? offer.gesture : std::nullopt;
+	tell(std::move(offer.file), offer.cause, offer.droppedEdits, gesture, offer.gestureReason);
 	// Planned in this turn, so the graph cannot have closed or changed since: commit cannot refuse.
 	auto committed = graph_.commit(std::move(*plan));
 	if (!committed) return {Verdict::stopping, std::unexpected(committed.error())};
+	if (gestures_ != nullptr) {
+		gestures_->settle();
+		if (gesture) gestures_->close(*gesture, offer.gestureValue);
+	}
 	return {Verdict::accepted, {}, std::move(change), std::move(also)};
 }
 
 void MainLoopSide::announce(FileState file, control::FileChangeCause cause, std::uint32_t droppedEdits) {
+	newest(file);
+	if (newestHasErrors_ && cause == control::FileChangeCause::disk) abortAll("hand-edit");
 	tell(std::move(file), cause, droppedEdits);
 }
 
@@ -281,8 +439,10 @@ void MainLoopSide::written(const std::string& version) {
 	for (auto* listener : listeners_) listener->graphFileWritten(version);
 }
 
-void MainLoopSide::tell(FileState file, control::FileChangeCause cause, std::uint32_t droppedEdits) {
-	const control::GraphFileChanged change{graphFile(std::move(file)), cause, droppedEdits};
+void MainLoopSide::tell(FileState file, control::FileChangeCause cause, std::uint32_t droppedEdits,
+                        std::optional<std::string> gesture, std::string gestureReason) {
+	const control::GraphFileChanged change{graphFile(std::move(file)), cause, droppedEdits, std::move(gesture),
+	                                       std::move(gestureReason)};
 	for (auto* listener : listeners_) listener->graphFileChanged(change);
 }
 

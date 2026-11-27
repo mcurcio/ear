@@ -52,6 +52,7 @@ struct Gestures::Impl {
 	std::chrono::milliseconds staleAfter;
 	std::vector<GestureListener*> listeners;
 	std::move_only_function<void(GestureEnding)> release;
+	std::function<std::string()> newId;
 	std::map<std::string, Gesture> open;
 	std::vector<GesturePair> unsettled;
 
@@ -124,8 +125,9 @@ struct Gestures::Impl {
 		g->ending = true;
 		g->stale.reset();
 		g->endReason = reason;
-		GestureEnding ending{g->id,   g->reach.front().at, roundedDecimal(g->accepted, g->decimals), keysOf(*g), reason,
-		                     g->owner};
+		GestureEnding ending{
+			g->id,    g->reach.front().at, roundedDecimal(g->accepted, g->decimals), keysOf(*g), reason,
+			g->owner, g->committed};
 		if (release) release(std::move(ending));
 		else abortOf(id, "refused", false, true); // nobody commits releases: never left open
 	}
@@ -150,8 +152,10 @@ struct Gestures::Impl {
 	}
 };
 
-Gestures::Gestures(LiveTarget& nodes, Timers& timers, std::chrono::milliseconds staleAfter)
-	: impl_(std::make_unique<Impl>(Impl{nodes, timers, staleAfter, {}, {}, {}, {}})) {}
+Gestures::Gestures(LiveTarget& nodes, Timers& timers, std::chrono::milliseconds staleAfter,
+                   std::function<std::string()> newId)
+	: impl_(std::make_unique<Impl>(
+		  Impl{nodes, timers, staleAfter, {}, {}, newId ? std::move(newId) : newGestureId, {}, {}})) {}
 
 Gestures::~Gestures() = default;
 
@@ -170,7 +174,7 @@ std::optional<Gestures::Held> Gestures::heldAt(const GestureKey& at) const {
 
 std::string Gestures::open(GestureOpen open) {
 	if (open.reach.empty()) throw std::logic_error("gestures: a reach holds at least its own pair");
-	std::string id = newGestureId();
+	std::string id = impl_->newId();
 	Impl::Gesture g{.id = id,
 	                .owner = open.session,
 	                .reach = std::move(open.reach),
@@ -225,7 +229,8 @@ std::expected<GestureEnding, GestureRefusal> Gestures::end(const std::string& ge
 	g->stale.reset();
 	if (by != g->owner) g->endedBy = by;
 	return GestureEnding{
-		g->id, g->reach.front().at, roundedDecimal(value.value_or(g->accepted), g->decimals), Impl::keysOf(*g), "", by};
+		g->id, g->reach.front().at, roundedDecimal(value.value_or(g->accepted), g->decimals), Impl::keysOf(*g), "",
+		by,    g->committed};
 }
 
 void Gestures::close(const std::string& gesture, double value) {

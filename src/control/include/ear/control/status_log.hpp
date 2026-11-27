@@ -15,6 +15,7 @@
 #include "ear/control/lifecycle_wire.hpp"
 #include "ear/control/requests.hpp"
 #include "ear/core/counter_watch.hpp"
+#include "ear/core/gestures.hpp"
 #include "ear/core/desired_graph.hpp"
 #include "ear/core/log.hpp"
 #include "ear/core/node_host.hpp"
@@ -99,6 +100,7 @@ class StatusLog final : public NodeHealthListener,
 						public InternalErrorListener,
 						public CounterListener,
 						public DesiredNodeListener,
+						public GestureListener,
 						public LogSink {
 public:
 	static constexpr int logBurst = 32;
@@ -128,6 +130,8 @@ public:
 	void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
 	void nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
 	void nodeChanged(const NodeSpec& node, std::shared_ptr<const NodeConfig> config, const NodeChange& change) override;
+	/// A gesture's abort: one param record per reached key, cause aborted (docs/output-records.md#param).
+	void gestureChanged(const GestureNote& note) override;
 	void nodeRemoved(const NodeName& node) override;
 	void graphFileWriteFailed(const std::string& detail);
 	void log(const LogEntry& entry) override;
@@ -183,6 +187,8 @@ private:
 	std::map<NodeName, Seen, std::less<>> superseded_; // under mutex_: superseded nodes still closing
 	std::mutex mutex_;
 	FileChangeCause lastCause_ = FileChangeCause::edit; // under mutex_: the last graph-file record's cause
+	std::optional<std::string> lastGesture_;            // under mutex_: the gesture whose end it committed
+	std::string lastGestureReason_;                     // under mutex_: that end's release reason
 	std::uint64_t seq_ = 0;
 	std::uint64_t dropped_ = 0;
 };

@@ -341,6 +341,15 @@ handler. The batch's reply is held on the main loop (the keeper's `Waiting`) unt
 answered, at once for a trigger or a refusal, later for a call, at most 10 s
 ([rates](#rates-and-bounds)), so it goes behind every event before it.
 
+**A gesture** ([control-port.md](control-port.md#gestures)) crosses to the main loop directly: the
+gateway (`GraphGateway::gesture`) hands a begin, a cancel and the newest tick of each gesture (its
+mailbox) to the keeper's `GestureRequests` there, never through the keeper's thread, so a tick moves
+the audio within a main-loop turn even behind a held action; the begin is judged from the running
+version's reach index ([graph-file.md](graph-file.md#reaches)) that every offer carries. An end, the
+owner's or a release, is resolved on the main loop (`Gestures::end`), then committed through the
+keeper as an edit (`CommitGesture`), offered as a gesture's end, and closed after its commit. Every
+offer is judged against each open gesture before its plan (`MainLoopSide::offer`).
+
 A hand edit arrives as an inotify event, is read on the keeper's thread and offered the same way
 (cause `disk`). The graph may refuse it, but the working copy still follows the disk, and the
 graph keeps running what it ran.

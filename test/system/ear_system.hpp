@@ -357,6 +357,13 @@ public:
 		}
 	}
 
+	/// Sends one notification: no id, no response.
+	void notify(const std::string& method, const json& params) {
+		ws_.send(json{{"jsonrpc", "2.0"}, {"method", method}, {"params", params}}.dump());
+	}
+	/// Ends the connection with a TCP reset, as a client that crashes would.
+	void reset() { ws_.reset(); }
+
 	/// Reads until a notification after index `from` matching `wanted` arrives (or one already did)
 	/// and returns it.
 	json waitFor(const std::function<bool(const json&)>& wanted, std::size_t from = 0) {

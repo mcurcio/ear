@@ -30,7 +30,8 @@
           "types",
           "status",
           "actions",
-          "live"
+          "live",
+          "gestures"
         ],
         "graphFrequency": 48000,
         "nodes": [],
@@ -1354,7 +1355,8 @@
       "types",
       "status",
       "actions",
-      "live"
+      "live",
+      "gestures"
     ],
     "graphFrequency": 48000,
     "nodes": [],

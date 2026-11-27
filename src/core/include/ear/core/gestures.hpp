@@ -70,6 +70,7 @@ struct GestureEnding {
 	std::vector<GestureKey> reach;
 	std::string reason; // a release's: session-closed or stale; empty for a gesture.end
 	SessionToken by;    // the session whose end it is (the owner's, for a release)
+	double committed;   // the value ear.conf gives the reach: an end equal to it writes nothing
 };
 enum class GestureRefusal { unknownGesture };
 /// One open gesture as the related-change rule reads it.
@@ -86,8 +87,9 @@ inline constexpr std::chrono::milliseconds gestureChangePace{33};
 inline constexpr std::chrono::milliseconds gestureRefusalPace{1'000};
 class Gestures {
 public:
-	/// All outlive it. `release` takes each end ear starts for an owner (the keeper commits it like gesture.end).
-	Gestures(LiveTarget& nodes, Timers& timers, std::chrono::milliseconds staleAfter = gestureStaleAfter);
+	/// All outlive it. `newId` makes each gesture's id: 128 random bits in hex unless a test gives fixed ones.
+	Gestures(LiveTarget& nodes, Timers& timers, std::chrono::milliseconds staleAfter = gestureStaleAfter,
+	         std::function<std::string()> newId = {});
 	~Gestures();
 	Gestures(const Gestures&) = delete;
 	Gestures& operator=(const Gestures&) = delete;

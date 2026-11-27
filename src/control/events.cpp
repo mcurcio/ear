@@ -131,7 +131,8 @@ json encodeNodeWithHealth(const NodeSpec& node, const Ports& ports, const NodeHe
                           std::optional<std::chrono::system_clock::time_point> since, const NodeCounts& counts,
                           std::span<const CompanionView> companions, std::span<const FieldValue> status = {},
                           std::span<const NodeDiagnostic> diagnostics = {},
-                          std::span<const std::chrono::system_clock::time_point> diagnosticsAt = {}) {
+                          std::span<const std::chrono::system_clock::time_point> diagnosticsAt = {},
+                          std::span<const NodeGesture> gestures = {}) {
 	json entry = encodeNode(node, ports);
 	addHealth(entry, health, since);
 	if (node.disabled) entry["disabled"] = true;
@@ -144,6 +145,10 @@ json encodeNodeWithHealth(const NodeSpec& node, const Ports& ports, const NodeHe
 			encodeDiagnostic(node.name, diagnostics[at],
 		                     at < diagnosticsAt.size() ? diagnosticsAt[at] : std::chrono::system_clock::time_point{}));
 	entry["diagnostics"] = std::move(kept);
+	json held = json::array();
+	for (const NodeGesture& gesture : gestures)
+		held.push_back({{"gesture", gesture.gesture}, {"key", gesture.key}, {"value", gesture.value}});
+	entry["gestures"] = std::move(held);
 	return entry;
 }
 
@@ -166,7 +171,8 @@ json encodeGraph(const GraphView& view) {
 	json nodes = json::array();
 	for (const NodeView& node : view.nodes)
 		nodes.push_back(encodeNodeWithHealth(node.spec, node.ports, node.health, node.since, node.counts,
-		                                     node.companions, node.status, node.diagnostics, node.diagnosticsAt));
+		                                     node.companions, node.status, node.diagnostics, node.diagnosticsAt,
+		                                     node.gestures));
 	json routes = json::array();
 	for (const RouteStatus& route : view.routes) routes.push_back(encodeRouteStatus(route));
 	json features = json::array();

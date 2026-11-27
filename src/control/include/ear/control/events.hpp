@@ -10,6 +10,7 @@
 #include "ear/control/companions_wire.hpp"
 #include "ear/control/graph_file_state.hpp"
 #include "ear/core/counter_watch.hpp"
+#include "ear/core/gestures.hpp"
 #include "ear/core/levels.hpp"
 #include "ear/core/node_host.hpp"
 #include "ear/core/reconciler.hpp"
@@ -98,6 +99,8 @@ class EventSink { // control thread
 public:
 	virtual void graphChanged(GraphEvent event) = 0;
 	virtual void graphFileChanged(GraphFileChanged change) = 0;
+	/// A gesture's note (feature gestures), each addressed by its phase (docs/control-port.md#gesturechanged).
+	virtual void gestureChanged(GestureNote note) { static_cast<void>(note); }
 
 protected:
 	~EventSink() = default;

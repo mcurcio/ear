@@ -269,6 +269,7 @@ std::expected<json, RpcError> encodeCommandResult(const CommandResult& result) {
 	}
 	if (const auto* refusal = std::get_if<ControlRefusal>(&result))
 		return std::unexpected(encodeControlRefusal(*refusal));
+	if (const auto* ended = std::get_if<GestureEnded>(&result)) return json{{"value", ended->value}};
 	const auto& edit = std::get<std::expected<void, CommandError>>(result);
 	if (edit) return json::object();
 	json data = {{"code", std::string(errorCode(edit.error()))}};
@@ -276,6 +277,11 @@ std::expected<json, RpcError> encodeCommandResult(const CommandResult& result) {
 	if (const auto* invalid = std::get_if<InvalidSettings>(&edit.error())) {
 		if (!invalid->key.empty()) data["key"] = invalid->key;
 		data["detail"] = std::string(refusalWords(*invalid));
+	}
+	if (const auto* held = std::get_if<ParameterHeld>(&edit.error())) {
+		data["key"] = held->key;
+		data["gesture"] = held->gesture;
+		data["silentMs"] = held->silentMs;
 	}
 	return std::unexpected(RpcError{commandRefused, describe(edit.error()), std::move(data)});
 }

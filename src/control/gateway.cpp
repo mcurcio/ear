@@ -14,6 +14,8 @@
 
 #include <algorithm>
 #include <map>
+#include <mutex>
+#include <set>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -71,6 +73,19 @@ struct MainLoopGateway::Impl {
 								 ? ago
 								 : std::chrono::steady_clock::duration::zero());
 	}
+	GestureRequests* gestures = nullptr;
+	/// Control thread: the gestures whose end or cancel was read.
+	std::set<std::string, std::less<>> ending;
+	/// The ticks not yet taken by the main loop, the newest per gesture (any thread, under its mutex).
+	struct Mailbox {
+		std::mutex mutex;
+		std::map<std::string, std::pair<SessionToken, MoveGesture>> ticks;
+		bool posted = false;
+	};
+	std::unique_ptr<Mailbox> mail = std::make_unique<Mailbox>();
+	/// Main loop: each node's open gestures as their notes said them.
+	std::unique_ptr<std::map<NodeName, std::vector<NodeGesture>, std::less<>>> onNodes =
+		std::make_unique<std::map<NodeName, std::vector<NodeGesture>, std::less<>>>();
 	/// Whether a client holds the node: added, and not removed since.
 	bool held(const NodeName& node) const { return companions->contains(node); }
 };
@@ -198,10 +213,93 @@ void MainLoopGateway::nodeDiagnostic(const NodeName& node, const NodeDiagnostic&
 	if (impl_->held(node)) impl_->post(NodeDiagnosed{node, diagnostic, impl_->onWall(diagnostic.at)});
 }
 
+void MainLoopGateway::answerGestures(GestureRequests& gestures) { impl_->gestures = &gestures; }
+
+void MainLoopGateway::gesture(GestureCommand command, SessionToken session,
+                              std::move_only_function<void(GestureAnswer)> done) {
+	Impl& impl = *impl_;
+	// The answer crosses back to the control executor; a notification's is dropped.
+	auto replyOnControl = [&control = impl.control, done = std::move(done)](GestureAnswer answer) mutable {
+		if (done)
+			control.post([done = std::move(done), answer = std::move(answer)]() mutable { done(std::move(answer)); });
+	};
+	if (auto* move = std::get_if<MoveGesture>(&command)) {
+		if (impl.ending.contains(move->gesture)) return; // its end or cancel was read: no tick after it
+		// The mailbox: the newest tick per gesture, one main-loop task for however many arrive before it runs
+		// (docs/control-port.md#gestures).
+		bool post = false;
+		{
+			const std::lock_guard lock(impl.mail->mutex);
+			impl.mail->ticks.insert_or_assign(move->gesture, std::pair{session, std::move(*move)});
+			post = !std::exchange(impl.mail->posted, true);
+		}
+		if (post)
+			impl.mainLoop.post([&impl] {
+				std::map<std::string, std::pair<SessionToken, MoveGesture>> ticks;
+				{
+					const std::lock_guard lock(impl.mail->mutex);
+					ticks.swap(impl.mail->ticks);
+					impl.mail->posted = false;
+				}
+				if (impl.gestures == nullptr) return;
+				for (auto& [id, tick] : ticks) impl.gestures->move(tick.first, tick.second);
+			});
+		return;
+	}
+	if (const auto* end = std::get_if<EndGesture>(&command)) impl.ending.insert(end->gesture);
+	if (const auto* cancel = std::get_if<CancelGesture>(&command)) impl.ending.insert(cancel->gesture);
+	impl.mainLoop.post([&impl, command = std::move(command), session, reply = std::move(replyOnControl)]() mutable {
+		if (impl.gestures == nullptr) {
+			reply(GestureRefused{std::string(unknownGestureCode), "gestures are not served", nlohmann::json::object()});
+			return;
+		}
+		if (const auto* begin = std::get_if<BeginGesture>(&command)) reply(impl.gestures->begin(session, *begin));
+		else if (const auto* cancel = std::get_if<CancelGesture>(&command))
+			reply(impl.gestures->cancel(session, *cancel));
+		else if (const auto* end = std::get_if<EndGesture>(&command))
+			impl.gestures->end(session, *end, std::move(reply));
+	});
+}
+
+void MainLoopGateway::ending(const std::string& gesture) { impl_->ending.insert(gesture); }
+
+void MainLoopGateway::sessionClosed(SessionToken session) {
+	impl_->mainLoop.post([&impl = *impl_, session] {
+		if (impl.gestures != nullptr) impl.gestures->sessionClosed(session);
+	});
+}
+
+void MainLoopGateway::gestureChanged(const GestureNote& note) {
+	// The graph's per-node gestures (docs/control-port.md#gesturechanged), kept for each snapshot's stamp.
+	auto& on = *impl_->onNodes;
+	switch (note.phase) {
+	case GesturePhase::begin:
+		for (const GestureKey& at : note.reach) on[at.node].push_back({note.gesture, at.key, note.value.value_or(0.0)});
+		break;
+	case GesturePhase::change:
+		for (auto& [node, gestures] : on)
+			for (NodeGesture& held : gestures)
+				if (held.gesture == note.gesture) held.value = note.value.value_or(held.value);
+		break;
+	case GesturePhase::end:
+	case GesturePhase::aborted:
+		for (auto it = on.begin(); it != on.end();) {
+			std::erase_if(it->second, [&](const NodeGesture& held) { return held.gesture == note.gesture; });
+			it = it->second.empty() ? on.erase(it) : std::next(it);
+		}
+		break;
+	case GesturePhase::tickRefused:
+		break;
+	}
+	impl_->toSink([note](EventSink& to) mutable { to.gestureChanged(std::move(note)); });
+}
+
 void MainLoopGateway::stamp(GraphView& view) const {
 	for (NodeView& node : view.nodes) {
 		if (const auto known = impl_->sent->find(node.spec.name); known != impl_->sent->end())
 			node.since = known->second.since;
+		if (const auto held = impl_->onNodes->find(node.spec.name); held != impl_->onNodes->end())
+			node.gestures = held->second;
 		node.diagnosticsAt.clear();
 		for (const NodeDiagnostic& diagnostic : node.diagnostics)
 			node.diagnosticsAt.push_back(impl_->onWall(diagnostic.at));

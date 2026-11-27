@@ -23,7 +23,8 @@
           "types",
           "status",
           "actions",
-          "live"
+          "live",
+          "gestures"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -64,7 +65,8 @@
               "pairingCode": "",
               "streamRate": 0
             },
-            "diagnostics": []
+            "diagnostics": [],
+            "gestures": []
           }
         ],
         "routes": [],
@@ -303,7 +305,8 @@
       "types",
       "status",
       "actions",
-      "live"
+      "live",
+      "gestures"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -344,7 +347,8 @@
           "pairingCode": "",
           "streamRate": 0
         },
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       }
     ],
     "routes": [],

@@ -50,7 +50,8 @@
           "types",
           "status",
           "actions",
-          "live"
+          "live",
+          "gestures"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -89,7 +90,8 @@
             },
             "companions": [],
             "status": {},
-            "diagnostics": []
+            "diagnostics": [],
+            "gestures": []
           },
           {
             "name": "porch",
@@ -116,7 +118,8 @@
             },
             "companions": [],
             "status": {},
-            "diagnostics": []
+            "diagnostics": [],
+            "gestures": []
           }
         ],
         "routes": [],
@@ -152,7 +155,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       }
     },
     {
@@ -650,7 +654,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       }
     },
     {
@@ -697,7 +702,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       }
     },
     {
@@ -960,7 +966,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       }
     },
     {
@@ -1130,7 +1137,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       }
     },
     {
@@ -1608,7 +1616,8 @@
       "types",
       "status",
       "actions",
-      "live"
+      "live",
+      "gestures"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -1651,7 +1660,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       },
       {
         "name": "fpp",
@@ -1680,7 +1690,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       },
       {
         "name": "porch",
@@ -1708,7 +1719,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       },
       {
         "name": "quiet",
@@ -1732,7 +1744,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       },
       {
         "name": "tape",
@@ -1758,7 +1771,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       }
     ],
     "routes": [],

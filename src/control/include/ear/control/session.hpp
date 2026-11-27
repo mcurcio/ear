@@ -51,6 +51,8 @@ public:
 	void graphChanged(GraphEvent event) override; // encoded once, to graph-subscribed sessions
 	/// Encoded once (encodeGraphFileChanged), to graphFile-subscribed sessions.
 	void graphFileChanged(GraphFileChanged change) override;
+	/// Encoded once (encodeGestureChanged), addressed by phase (docs/control-port.md#gesturechanged).
+	void gestureChanged(GestureNote note) override;
 	void levelsPublished(); // latestLevels(), encode once, sendLevels
 private:
 	struct Impl;

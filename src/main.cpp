@@ -41,6 +41,7 @@
 #include "ear/all_node_types/all_node_types.hpp"
 #include "ear/config/graph_file_keeper.hpp"
 #include "ear/control/gateway.hpp"
+#include "ear/core/gestures.hpp"
 #include "ear/control/status_log.hpp"
 #include "ear/control/type_schemas.hpp"
 #include "ear/core/counter_watch.hpp"
@@ -213,9 +214,17 @@ int main(int argc, char** argv) {
 		"the folder in which ear makes its runtime folder for programs' and pipe receivers' files (FIFOs, configs): a "
 		"fresh ear-XXXXXX, removed at stop; default: $TMPDIR or /tmp");
 
+	// For the system tests only, so not in --help: how long a gesture's owner may stay silent before ear releases it
+	// (docs/architecture.md#gestures).
+	po::options_description hidden;
+	hidden.add_options()("gesture-stale-ms", po::value<std::uint32_t>()->default_value(
+												 static_cast<std::uint32_t>(ear::gestureStaleAfter.count())));
+	po::options_description all;
+	all.add(options).add(hidden);
+
 	po::variables_map arguments;
 	try {
-		po::store(po::parse_command_line(argc, argv, options), arguments);
+		po::store(po::parse_command_line(argc, argv, all), arguments);
 		po::notify(arguments);
 	} catch (const po::unknown_option& error) {
 		// The flag the graph file's old graph_frequency had (docs/architecture.md#boot-and-stop): no compatibility is
@@ -443,6 +452,13 @@ int main(int argc, char** argv) {
 	ear::config::GraphFileKeeper keeper(std::move(first), *config, format, graph, status, nodes, mainLoop);
 	keeper.answerActions(nodes);
 	ear::control::MainLoopGateway gateway(mainLoop, control, keeper);
+	// Gestures (docs/architecture.md#gestures): on the main loop over the nodes' live values, released by the keeper.
+	ear::Gestures gestures(nodes, mainLoop,
+	                       std::chrono::milliseconds(arguments["gesture-stale-ms"].as<std::uint32_t>()));
+	keeper.holdGestures(gestures);
+	gateway.answerGestures(keeper);
+	gestures.subscribe(gateway); // gesture.changed and the graph's per-node gestures
+	gestures.subscribe(log);     // param records of aborts
 	// The counters' reports (docs/engine.md#reporting-the-counters): read at the heartbeat, told to the wire and to
 	// standard output.
 	ear::CounterWatch counterWatch(mainLoop, *engine, nodes, format);
