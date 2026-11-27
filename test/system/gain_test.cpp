@@ -33,6 +33,25 @@ bool waitForMoreNoise(const std::filesystem::path& path, std::size_t frames, std
 		4 * deadline);
 }
 
+/// Until the WAV at `path` holds a second of noise at `target` times its right channel on its left, frame after frame:
+/// the retune reached the audio and held is the event the checks need, however long a loaded host takes to get there.
+/// Every frame it read is counted in `followed`.
+bool waitForTargetHeld(const std::filesystem::path& path, float target, std::size_t& followed) {
+	std::size_t held = 0; // frames at the target in a row, a silent right one neither counted nor breaking the run
+	followed = 0;
+	return waitForWav(
+		path,
+		[&](std::span<const float> fresh, std::size_t channels) {
+			followed += fresh.size() / channels;
+			for (std::size_t at = 0; at + 1 < fresh.size(); at += channels) {
+				if (fresh[at + 1] == 0.0F) continue;
+				held = fresh[at] == fresh[at + 1] * target ? held + 1 : 0;
+			}
+			return held >= 48000;
+		},
+		4 * deadline);
+}
+
 } // namespace
 
 TEST_CASE("A node.set of gainDb mid-recording ramps the WAV's level over 20 ms with no gap and no node record",
@@ -62,8 +81,9 @@ TEST_CASE("A node.set of gainDb mid-recording ramps the WAV's level over 20 ms w
 	const json updated = rpc.waitFor([](const json& m) { return Rpc::matches(m, "node.updated", {{"name", "amp"}}); });
 	CHECK(updated["params"]["applied"] == "retune");
 	REQUIRE(process.waitForLine("node amp gainDb 0 -> -20", deadline));
-	// And a second after it: this look counts from the WAV's first noise again.
-	REQUIRE(waitForMoreNoise(wav, 24000 + 48000, followed));
+	// And a second of the WAV at the new level: this look follows the WAV from its start again.
+	const float target = std::exp2(-20.0F * 0.16609640474F);
+	REQUIRE(waitForTargetHeld(wav, target, followed));
 	const std::size_t heard = rpc.notifications.size();
 
 	REQUIRE(ear.stop(rpc) == 0);
@@ -110,7 +130,6 @@ TEST_CASE("A node.set of gainDb mid-recording ramps the WAV's level over 20 ms w
 	// until the ramp, then right × 0.1, with every frame between moving the factor one way only.
 	const std::size_t settled = std::max(first, firstLeft) + 480;
 	REQUIRE(settled + 48000 < frames);
-	const float target = std::exp2(-20.0F * 0.16609640474F);
 	std::optional<std::size_t> lastUnity;
 	std::optional<std::size_t> firstTarget;
 	for (std::size_t frame = settled; frame < frames; ++frame) {
