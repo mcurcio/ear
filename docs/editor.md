@@ -431,6 +431,14 @@ text over JSON, so the toggle's other side is the node's own statement.
   change in place yet"), "changes the ports" for `shapes`; a `change` it does not know says
   nothing. A drafted key that a node changing in place is applying (`keys`) or will take next (`next`)
   also says "applies after this change".
+- **Live switches and selects commit at once** (feature `live`). A field whose row is live and is
+  drawn as a switch or a select (`change: live`, a flag or a choice) keeps no draft: each change of it
+  is its own `node.set` of that key, sent as it is made, with no dry run and no Apply, and ear
+  [retunes](control-port.md#retunes) it with no restart. Its refusal is placed under it. When the
+  answer's `alsoChanged` names other nodes (the value is a shared definition, such as an `@set`), the
+  form says so: "also changed amp2, amp3"; a second click undoes it. *Why:* the owner took the
+  recommendation that one click stays one click and the notice tells the truth. Live numbers and
+  decimals are drafted and applied as any field until the faders come.
 - **Drafts.** A field keeps what the person typed until Apply is answered or Discard; typing the
   node's value back drops its draft. When ear's value changes under a draft (another editor, a hand
   edit), the field says "changed on ear" with "Take ear's value"; a change elsewhere leaves it

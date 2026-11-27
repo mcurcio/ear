@@ -778,7 +778,7 @@ moves it.
 |---|---|---|
 | `protocol.ts` | section 9's types; `ControlErrorCode`'s new codes | typecheck |
 | `graph.ts` | each node's `gestures`; `retuned` on `node.updated`; `gesture.changed` | vitest, every fixture |
-| `form.ts` | live rows committed at once (`asksFirst` passing `retune` and the "live" hints are built, as are families with inactive members, choices as selects and the "restarts: why" hint) | vitest, from `rows.json` until `gain` is in `types.json` |
+| `form.ts` | nothing more: live switches and selects committed at once, `asksFirst` passing `retune` and the "live" hints are built, as are families with inactive members, choices as selects and the "restarts: why" hint | vitest, from `rows.json` until `gain` is in `types.json` |
 | `rpc.ts` | `notify()`: a message with no id | vitest |
 | `gesture.ts` (new, pure) | one state machine per control (10.3), the taper mapping, the ids it holds across a reconnect | vitest, a fake client |
 | `keys.ts` | a focused fader's or knob's range input, or anything in `.nokey`, counts as a text target for the editor's shortcuts (`f`, `l`, `m`, `a`, `?`, Escape), though not for the input's own keys; today a range input is deliberately not a text target, and only the controls of 10.3 change that | vitest |
@@ -792,8 +792,7 @@ without `live`, every row is drawn as today.
 |---|---|---|
 | decimal, not live | built ([editor.md](../editor.md#the-settings-form)) | Apply |
 | live ramped decimal | a fader mapped by `taper` with a number field beside it | a gesture; the field by `node.set` on Enter |
-| live boolean | a switch | `node.set` at once; when its answer's `alsoChanged` is not empty, a notice "also changed amp2, amp3" |
-| live choice | a select | as a live boolean |
+| live boolean, live choice | a switch, a select | built: `node.set` at once, with the `alsoChanged` notice ([editor.md](../editor.md#the-settings-form)) |
 | live whole number, live stepped decimal | steppers and a number field | `node.set` on Enter or a step |
 | family | one control per member to the count row's value, those above it greyed (built: [editor.md](../editor.md#the-settings-form)); above 8 members, a compact strip behind a disclosure | as its kind |
 | restart row | as today, its hint "restarts the node: <restartReason>" | Apply, which asks first |
@@ -898,8 +897,9 @@ step 6.9, with the other controls.
 [output-records.md](../output-records.md#param) and [writing-a-node-type.md](../writing-a-node-type.md#live-rows) say
 how. Left to step 6.7, since no built type has a live row before `gain`: `edits.json` and `node-set.json` cases of a
 retune by a real type (a retune, a mixed reshape with `retuned`, a dry run of each, a disabled node's `stored` with
-`retuned`, `alsoChanged` on a shared definition; the keeper's tests hold these on a test type today). Left to the
-editor: the form's live switches and selects committed at once by `node.set`, with the `alsoChanged` notice (10.2).
+`retuned`, `alsoChanged` on a shared definition; the keeper's tests hold these on a test type today). The form's live
+switches and selects, committed at once by `node.set` with the `alsoChanged` notice, are built
+([editor.md](../editor.md#the-settings-form)).
 
 **6.7 The `gain` type.** 5.7 whole, and the all-type sweeps of 5.6 with `gain` as their first type. Tests
 (`ear_node_gain_tests`): unity, -6 dB (factor 0.5012) and mute (0) once steady; `gainDb -90` with `trimDb.1 +24` exact

@@ -1,9 +1,22 @@
 // The inspector's settings form (docs/editor.md#the-settings-form): one field per row of the node type's schema, each
 // with its draft, its hints from the schema alone and ear's refusal placed under the key it names; Apply sends the
-// drafts as one node.set, asking first when the dry run says the node restarts, reshapes or loses routes. The logic is
-// form.ts; ear judges every value.
+// drafts as one node.set, asking first when the dry run says the node restarts, reshapes or loses routes. A live flag or
+// select is sent at once by its own node.set, with no draft, and says which other nodes the same edit changed. The logic
+// is form.ts; ear judges every value.
 import { useEffect, useMemo, useState } from "react";
-import { appliesAfter, ApplyFlow, edit, fieldsOf, patchOf, takeEar, type ApplyStep, type Draft, type FieldView } from "../form";
+import {
+  alsoChangedWords,
+  appliesAfter,
+  ApplyFlow,
+  atOncePatch,
+  edit,
+  fieldsOf,
+  patchOf,
+  takeEar,
+  type ApplyStep,
+  type Draft,
+  type FieldView,
+} from "../form";
 import { refusalParts } from "../notices";
 import type { GraphNode, TypeSchema } from "../protocol";
 import { RpcError } from "../rpc";
@@ -137,7 +150,26 @@ export function SettingsForm({ node, schema, dryRun }: { node: GraphNode; schema
     if (step.kind === "applied") setDrafts(new Map());
   }, [step]);
 
-  const refusal = step.kind === "refused" && step.key !== undefined ? { key: step.key, detail: step.detail } : undefined;
+  // A live switch or select (feature live): its own node.set at once; ear retunes it with no restart.
+  const [liveNotice, setLiveNotice] = useState<string | undefined>(undefined);
+  const [liveRefusal, setLiveRefusal] = useState<{ key: string; detail: string } | undefined>(undefined);
+  const commitLive = (key: string, value: string | boolean) => {
+    const made = atOncePatch(schema, node.settings, key, value);
+    if (made === undefined) return;
+    if ("problem" in made) return setLiveRefusal({ key, detail: made.problem });
+    setLiveRefusal(undefined);
+    setLiveNotice(undefined);
+    editor
+      .ask("node.set", { name: node.name, settings: made.patch }, { placed: (error) => error instanceof RpcError })
+      .then((result) => setLiveNotice(alsoChangedWords(result)))
+      .catch((error: unknown) => {
+        const data = error instanceof RpcError ? error.data : undefined;
+        setLiveRefusal({ key: data?.key ?? key, detail: data?.detail ?? (error instanceof Error ? error.message : String(error)) });
+      });
+  };
+
+  const refusal =
+    step.kind === "refused" && step.key !== undefined ? { key: step.key, detail: step.detail } : liveRefusal;
   const fields = fieldsOf(schema, node.settings, drafts, refusal);
   const busy = step.kind === "checking" || step.kind === "sending";
   const made = patchOf(schema, node.settings, drafts);
@@ -165,12 +197,21 @@ export function SettingsForm({ node, schema, dryRun }: { node: GraphNode; schema
           })()}
         </p>
       )}
+      {liveNotice !== undefined && (
+        <p className="settings-hint settings-changed" role="status">
+          {liveNotice}
+        </p>
+      )}
       {fields.map((field) => (
         <Field
           key={field.key}
           field={field}
           node={node}
-          onChange={(value) => setDrafts((now) => edit(schema, node.settings, now, field.key, value))}
+          onChange={(value) =>
+            field.atOnce === true
+              ? commitLive(field.key, value)
+              : setDrafts((now) => edit(schema, node.settings, now, field.key, value))
+          }
           onTakeEar={() => setDrafts((now) => takeEar(now, field.key))}
         />
       ))}

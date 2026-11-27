@@ -65,6 +65,8 @@ export interface FieldView {
   member?: number;
   /** A family member above its count row's value: kept, not used (drawn greyed). */
   inactive?: boolean;
+  /** A live flag or select: a change of it is sent at once by node.set, with no draft and no Apply. */
+  atOnce?: true;
   /** Why the draft cannot be sent as it is (checked here; ear still judges), or ear's refusal placed here. */
   problem?: string;
 }
@@ -212,6 +214,7 @@ export function fieldsOf(
       field.member = member;
       if (inactive === true) field.inactive = true;
     }
+    if (commitsAtOnce(row)) field.atOnce = true;
     if (control === "select") field.options = row.required ? [...(row.values ?? [])] : ["", ...(row.values ?? [])];
     if (control === "number" || control === "decimal") {
       if (row.min !== undefined) field.min = row.min;
@@ -365,6 +368,41 @@ export function patchOf(
  */
 export function appliesAfter(node: GraphNode, key: string): boolean {
   return node.phase === "reconfiguring" && ((node.keys ?? []).includes(key) || (node.next ?? []).includes(key));
+}
+
+// ----- Live switches and selects -----
+
+/**
+ * Whether a row's field commits at once (docs/editor.md#the-settings-form): a live flag or select is one click, sent by
+ * node.set as it changes, with no draft, dry run or Apply; ear retunes it with no restart.
+ */
+export function commitsAtOnce(row: SettingSchema): boolean {
+  const control = controlOf(row);
+  return row.change === "live" && (control === "flag" || control === "select");
+}
+
+/** The node.set patch of one at-once field's new value, or its problem; undefined for a key the schema lacks. */
+export function atOncePatch(
+  schema: TypeSchema,
+  settings: JsonObject,
+  key: string,
+  value: FieldValue,
+): { patch: JsonObject } | { problem: string } | undefined {
+  const row = rowOfKey(schema, key);
+  if (row === undefined) return undefined;
+  const problem = problemOf(row, value);
+  if (problem !== undefined) return { problem };
+  return { patch: { [key]: valueOf(row, value, settings[key]) } };
+}
+
+/**
+ * The notice after a change that moved other nodes through a shared definition (node.set's alsoChanged): "also changed
+ * amp2, amp3", each node once in ear's order; undefined when it moved none.
+ */
+export function alsoChangedWords(result: SetResult): string | undefined {
+  const names: string[] = [];
+  for (const one of result.alsoChanged ?? []) if (!names.includes(one.name)) names.push(one.name);
+  return names.length > 0 ? `also changed ${names.join(", ")}` : undefined;
 }
 
 // ----- Apply asks first -----

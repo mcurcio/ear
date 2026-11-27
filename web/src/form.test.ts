@@ -8,7 +8,10 @@ import { describe, expect, it } from "vitest";
 import {
   ApplyFlow,
   appliesAfter,
+  alsoChangedWords,
   asksFirst,
+  atOncePatch,
+  commitsAtOnce,
   confirmWords,
   edit,
   fieldsOf,
@@ -356,6 +359,42 @@ describe("the row vocabulary no built-in type has yet", () => {
     expect(hints("mute")).toStrictEqual(["live, ramped"]);
     expect(hints("input")).toStrictEqual(["live"]);
     expect(hints("slope")).toStrictEqual(["live"]);
+  });
+
+  it("commits a live flag or select at once, never a live number or decimal, nor a row that is not live", () => {
+    const atOnce = (key: string) =>
+      fieldsOf(schema, { cutoffHz: 1000 }, none).find((field) => field.key === key)?.atOnce === true;
+    expect(["mute", "slope", "gainDb", "input", "on", "shape"].map(atOnce)).toStrictEqual([
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+    ]);
+    expect(schema.settings.filter(commitsAtOnce).map((row) => row.key)).toStrictEqual(["mute", "slope"]);
+    expect(atOncePatch(schema, { cutoffHz: 1000 }, "mute", true)).toStrictEqual({ patch: { mute: true } });
+    expect(atOncePatch(schema, { cutoffHz: 1000 }, "slope", "steep")).toStrictEqual({ patch: { slope: "steep" } });
+    expect(atOncePatch(schema, { cutoffHz: 1000 }, "slope", "flat")).toStrictEqual({
+      problem: 'must be one of "gentle" and "steep"',
+    });
+    expect(atOncePatch(schema, { cutoffHz: 1000 }, "ghost", true)).toBeUndefined();
+  });
+
+  it("names the other nodes a live change moved through a shared definition, each once", () => {
+    expect(alsoChangedWords({ applied: "retune", retuned: ["mute"], alsoChanged: [] })).toBeUndefined();
+    expect(alsoChangedWords({ applied: "retune" })).toBeUndefined();
+    expect(
+      alsoChangedWords({
+        applied: "retune",
+        retuned: ["mute"],
+        alsoChanged: [
+          { name: "amp2", key: "mute" },
+          { name: "amp2", key: "gainDb" },
+          { name: "amp3", key: "mute" },
+        ],
+      }),
+    ).toBe("also changed amp2, amp3");
   });
 
   it("draws an absent flag at its default, and sends one set against it", () => {
