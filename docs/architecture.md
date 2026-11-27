@@ -796,8 +796,10 @@ through `LiveTarget` (NodeHost), and never the file.
   whose check refuses has every open gesture on it aborted `crossed` and set back with them (a hand
   of `lowHz` at 2000 that was valid only beside a held `highHz` of 5000 goes back when that one is
   cancelled). Likewise a change retuning keys no gesture holds is checked, before it commits, with
-  its new values and the hands in place (`abortCrossing`): the gestures on a node it would cross are
-  aborted `crossed` and set back first. So a pair the check refuses never plays.
+  its new values and the hands in place (`abortCrossing`), a hand the same change aborted counted at
+  its committed value, where its slots go once the change committed: the gestures on a node it
+  would cross are aborted `crossed` and set back first. So a pair the check refuses never plays,
+  and a hand that is leaving never aborts another.
 - **A release** is an end ear starts for an owner that is gone: its session closed
   (`session-closed`), or it sent nothing about the gesture for `staleAfter` (30 s by default,
   `gestureStaleAfter`; `stale`). Each gesture arms one main-loop timer (`Timers::after`, on the

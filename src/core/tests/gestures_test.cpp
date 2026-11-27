@@ -2,6 +2,7 @@
 // the main loop's clock moved by the test. Over a fake live target for the rules, and over a real NodeHost in the type
 // harness for the type's check with two hands in place and for the slots an end or an abort leaves.
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cctype>
 #include <cmath>
@@ -339,7 +340,9 @@ inline constexpr auto lowRow =
 	setting::defaulted("lowHz", setting::decimal(20.0, 20000.0, "Hz"), 100.0).live(setting::ramp(20));
 inline constexpr auto highRow =
 	setting::defaulted("highHz", setting::decimal(20.0, 20000.0, "Hz"), 1000.0).live(setting::ramp(20));
-inline constexpr SettingsTable<lowRow, highRow> bandTable{"band"};
+inline constexpr auto midRow =
+	setting::defaulted("midHz", setting::decimal(20.0, 20000.0, "Hz"), 100.0).live(setting::ramp(20));
+inline constexpr SettingsTable<lowRow, highRow, midRow> bandTable{"band"};
 inline constexpr auto out = bank::output<"out">;
 inline constexpr TypeSpec bandSpec{.settings = bandTable, .banks = Banks<out>{}};
 struct BandCode {
@@ -352,6 +355,7 @@ struct Band {
 	static Members<bandSpec> ports(const CheckedOf<bandSpec>&) { return {out(members(1))}; }
 	static std::expected<void, std::string> check(const CheckedOf<bandSpec>& s) {
 		if (s.liveValue<lowRow>() >= s.liveValue<highRow>()) return std::unexpected("lowHz: must be below highHz");
+		if (s.liveValue<midRow>() >= s.liveValue<highRow>()) return std::unexpected("midHz: must be below highHz");
 		return {};
 	}
 	Configured configure(CreateOf<bandSpec>& cx, const CheckedOf<bandSpec>&) { return cx.applied(BandCode{}); }
@@ -446,4 +450,34 @@ TEST_CASE("A retune crossing a held hand aborts that gesture crossed before it l
 	CHECK(f.gestures->openGestures().empty());
 	CHECK(f.notes.last().reason == "crossed");
 	CHECK(f.liveAt("lowHz") == 100.0);
+}
+
+TEST_CASE("A hand a related change aborted counts at its committed value in that change's crossing check",
+          "[gestures]") {
+	OverHost f;
+	const std::string high = f.begin(1, "highHz", 1000.0);
+	const std::string low = f.begin(2, "lowHz", 100.0);
+	f.gestures->move(high, 1, 1, 900.0);
+	f.gestures->move(low, 2, 1, 800.0); // below the hand's 900
+	// A related change aborts the high hand, its slot settling only once the change committed, and retunes midHz to
+	// 950: above the leaving hand's 900, below the committed 1000 the slot goes back to.
+	f.gestures->abort(high, "hand-edit", true, false);
+	REQUIRE(f.liveAt("highHz") == 900.0);
+	const LiveWrite mid{bandTable.liveIndexOf("midHz").value(), bits(950.0)};
+	f.gestures->abortCrossing("node", std::span(&mid, 1));
+	CHECK(f.gestures->openGestures().size() == 1); // the low hand never crossed what will play
+	CHECK(f.liveAt("lowHz") == 800.0);
+	f.gestures->settle();
+	CHECK(f.liveAt("highHz") == 1000.0);
+	CHECK(f.liveAt("lowHz") == 800.0);
+	CHECK(f.gestures->openGestures().size() == 1);
+	// With the leaving hand's own key retuned too, the change's value is judged, never the committed one.
+	const std::string again = f.begin(1, "highHz", 1000.0);
+	f.gestures->move(again, 1, 1, 900.0);
+	f.gestures->abort(again, "hand-edit", true, false);
+	const std::array<LiveWrite, 2> both{LiveWrite{bandTable.liveIndexOf("highHz").value(), bits(700.0)},
+	                                    mid}; // 800 and 950 cross 700
+	f.gestures->abortCrossing("node", both);
+	CHECK(f.gestures->openGestures().empty());
+	CHECK(f.notes.last().reason == "crossed");
 }

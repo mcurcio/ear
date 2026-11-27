@@ -293,7 +293,16 @@ void Gestures::abort(const std::string& gesture, const std::string& reason, bool
 }
 
 void Gestures::abortCrossing(const NodeName& node, std::span<const LiveWrite> writes, const std::string& ending) {
-	if (writes.empty() || impl_->nodes.checkLive(node, writes)) return;
+	if (writes.empty()) return;
+	// A hand this change aborted still holds its slots, which settle only once it committed: each is judged at its
+	// committed value, where it goes, unless the change writes it (docs/architecture.md#gestures).
+	std::vector<LiveWrite> judged(writes.begin(), writes.end());
+	for (const GesturePair& pair : impl_->unsettled) {
+		if (pair.at.node != node || std::ranges::contains(judged, pair.member, &LiveWrite::member)) continue;
+		if (const auto committed = impl_->nodes.committedLive(node, pair.member))
+			judged.push_back(LiveWrite{pair.member, *committed});
+	}
+	if (impl_->nodes.checkLive(node, judged)) return;
 	for (const std::string& id : impl_->idsOn(node))
 		if (id != ending) impl_->abortOf(id, "crossed", false, true);
 }
