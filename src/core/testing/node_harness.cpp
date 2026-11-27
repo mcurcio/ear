@@ -1541,6 +1541,10 @@ void NodeHarness::live(std::string_view key, std::uint64_t bits) {
 
 std::vector<std::uint64_t> NodeHarness::liveValues() const { return impl_->host->liveValues(impl_->options.node); }
 
+LiveTarget& NodeHarness::liveTarget() { return *impl_->host; }
+
+Timers& NodeHarness::timers() { return impl_->clock; }
+
 std::uint64_t NodeHarness::liveReloads() const noexcept {
 	return impl_->channels != nullptr ? impl_->channels->liveReloads() : 0;
 }

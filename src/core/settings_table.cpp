@@ -200,6 +200,21 @@ std::expected<void, std::string> NodeConfig::runCall(std::size_t action, void*, 
 	throw std::logic_error("node config: action " + std::to_string(action) + " is no call of its type");
 }
 
+std::optional<std::string> setting::liveOutOfRange(const SettingRow& row, std::string_view key, std::uint64_t bits) {
+	if (const auto* decimal = std::get_if<DecimalRule>(&row.rule)) {
+		const double value = std::bit_cast<double>(bits);
+		if (std::isfinite(value) && value >= decimal->low && value <= decimal->high) return std::nullopt;
+		return notWithinRange(key, *decimal);
+	}
+	if (const auto* number = std::get_if<WholeNumberRule>(&row.rule)) {
+		if (bits >= number->low && bits <= number->high) return std::nullopt;
+		return notWithinRange(key, *number);
+	}
+	if (const auto* choice = std::get_if<ChoiceRule>(&row.rule))
+		if (bits >= choice->count) return std::string(key) + ": must be one of its names";
+	return std::nullopt;
+}
+
 std::string_view NodeType::name() const noexcept { return table_->name(); }
 
 std::span<const SettingDeclaration> NodeType::settingKinds() const noexcept { return table_->kinds(); }

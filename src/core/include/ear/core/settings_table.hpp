@@ -170,6 +170,10 @@ constexpr std::uint32_t liveMembers(const SettingRow& row) noexcept {
 }
 /// The most live members one type has: its realtime channels hold one slot each.
 inline constexpr std::uint32_t mostLiveMembers = 256;
+/// A live member's slot bits against its row's range: the walk's refusal of them as `key`'s value ("gainDb: must be a
+/// number of dB from -90 to 24"), or nothing when the walk would take them. What a gesture's tick is judged by before the
+/// type's check (docs/architecture.md#gestures).
+std::optional<std::string> liveOutOfRange(const SettingRow& row, std::string_view key, std::uint64_t bits);
 } // namespace setting
 
 namespace setting {

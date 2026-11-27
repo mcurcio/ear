@@ -360,6 +360,10 @@ public:
 	void live(std::string_view key, std::uint64_t bits);
 	/// The node's live values (NodeHost::liveValues).
 	std::vector<std::uint64_t> liveValues() const;
+	/// The harness's NodeHost as gestures move it, and the timers advance() fires: what a test drives Gestures over
+	/// the node with (docs/architecture.md#gestures).
+	LiveTarget& liveTarget();
+	Timers& timers();
 	/// How many blocks the newest configuration's code loaded its slots in (RealtimeChannels::liveReloads): a steady
 	/// block loads none. 0 before any configuration; read only while that configuration lives.
 	std::uint64_t liveReloads() const noexcept;

@@ -33,6 +33,7 @@ add_library(ear_core STATIC
 	settings_table.cpp
 	sound_card.cpp
 	recording.cpp
+	gestures.cpp
 	source_ring.cpp
 	status_book.cpp
 	status_spec.cpp
@@ -124,6 +125,7 @@ if(BUILD_TESTS)
 		tests/cycle_facts_test.cpp
 		tests/desired_graph_test.cpp
 		tests/frame_ring_test.cpp
+		tests/gestures_test.cpp
 		tests/graph_spec_test.cpp
 		tests/graph_status_test.cpp
 		tests/latency_test.cpp

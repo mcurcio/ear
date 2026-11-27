@@ -399,12 +399,38 @@ struct LiveWrite {
 	std::size_t member;
 	std::uint64_t bits;
 };
+/// Why a gesture's tick may not play (docs/architecture.md#gestures): the key it names and the refusal's whole text.
+struct LiveRefusal {
+	std::string key;
+	std::string detail;
+};
+/// The nodes' live values as a gesture moves them (docs/architecture.md#gestures): NodeHost's, a fake in a test. Main
+/// thread.
+class LiveTarget {
+public:
+	/// As NodeHost::setLive.
+	virtual void setLive(const NodeName& node, std::span<const LiveWrite> writes) = 0;
+	/// Whether wanted node `node` may play its live values with `writes` in place: each written value against its
+	/// row's range, then its type's check of its newest committed settings with those live values
+	/// (NodeConfig::checkLive). A refusal of the type's check names `writes`' first key. Nothing to refuse for a node
+	/// with no committed settings, or no wanted node of the name.
+	virtual std::expected<void, LiveRefusal> checkLive(const NodeName& node,
+	                                                   std::span<const LiveWrite> writes) const = 0;
+	/// Live member `member`'s value as wanted node `node`'s newest committed settings hold it (NodeConfig::liveValues):
+	/// what a gesture's end or abort returns the slot to; nothing when there is no wanted node of the name or it holds
+	/// no committed settings.
+	virtual std::optional<std::uint64_t> committedLive(const NodeName& node, std::size_t member) const = 0;
+
+protected:
+	~LiveTarget() = default;
+};
 
 class NodeHost final : public DesiredNodeListener,
 					   public NodeOperations,
 					   public NodeActions,
 					   public NodeCounterSource,
-					   public CounterListener {
+					   public CounterListener,
+					   public LiveTarget {
 public:
 	/// All outlive it. `mainLoop` runs on the thread that calls everything below; a run reaches it through there (its
 	/// events, its sinks' and loops' `closed`). `timers` run there too. Made on that thread, which it marks as
@@ -553,7 +579,9 @@ public:
 	/// Moves live members of wanted node `node` (docs/architecture.md#live-values): its live values and its
 	/// configuration's slots at once, published as one batch, in any phase; with no configuration only the live values,
 	/// which seed the next. Main thread. An unknown node or member is a caller's bug: std::logic_error.
-	void setLive(const NodeName& node, std::span<const LiveWrite> writes);
+	void setLive(const NodeName& node, std::span<const LiveWrite> writes) override;
+	std::expected<void, LiveRefusal> checkLive(const NodeName& node, std::span<const LiveWrite> writes) const override;
+	std::optional<std::uint64_t> committedLive(const NodeName& node, std::size_t member) const override;
 	/// The newest node of name `node`'s live values, every live member's slot bits in order; none for a name no node
 	/// has.
 	std::vector<std::uint64_t> liveValues(const NodeName& node) const;

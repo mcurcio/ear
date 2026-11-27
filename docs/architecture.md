@@ -745,6 +745,47 @@ the parsed values, which a change's new settings hold whole. `NodeConfig::checkL
 with given live values in place, the type harness's `live` calls it before it moves a slot, and a
 refusal moves nothing.
 
+#### Gestures
+
+A gesture is a drag of one live ramped decimal from the control port: begun, moved by ticks, and
+ended by a commit of `ear.conf`, an abort, or a release ear starts for its owner. Its owner is
+`Gestures` (`ear/core/gestures.hpp`), on the main loop; it writes only live values and slots,
+through `LiveTarget` (NodeHost), and never the file.
+
+- **Its reach** is every pair (node, key) whose value is defined where the asked pair's is, all
+  live ramped decimals of one unit; its range is the intersection of theirs and its `decimals` the
+  smallest. Each pair carries its slot (`NodeType::liveIndexOf`). The caller judges the reach and
+  the holds (`heldAt`) before `open`; a begin writes nothing.
+- **Its id** is 128 random bits in hex, never reused and not guessable, so holding it is the
+  credential: any session may end or cancel a gesture by its id.
+- **A tick** is taken only from its owner, while it is open and not ending, with a `seq` above
+  the last taken. Each reached node judges it first (`LiveTarget::checkLive`): the written value
+  against its row's range (`setting::liveOutOfRange`, the walk's own refusal text), then the
+  type's check of the node's newest committed settings with its live values in place, the tick's
+  value and every other open gesture's hand value among them. So two gestures on rows one check
+  binds (`lowHz` below `highHz`) are each judged with the other's hand in place, and the first to
+  cross is refused: the pair never plays. A refused tick keeps the last accepted value and is told
+  to its owner as `tick-refused`, at most once a second (`gestureRefusalPace`). An accepted one
+  writes every reached node's live values and slots at once, and its move is told at most once per
+  33 ms (`gestureChangePace`, the status tick's pace), the newest last.
+- **An end** marks the gesture ending (no tick is taken again) and gives the value to commit:
+  the one asked, else the last accepted, rounded to the reach's `decimals` half away from zero on
+  its shortest decimal text (`roundedDecimal`: `-6.05` at one place is `-6.1`). Once the commit
+  ran, or when it changed nothing, `close` sets every reached slot to its node's committed value
+  (`LiveTarget::committedLive`, the newest committed config's), since the slots held the last tick.
+- **An abort** (a cancel, a refused end, a related change of the file) sets every reached slot
+  back to its node's committed value; an abort by a change of the file settles its slots only once
+  that change committed, last in the turn, so the audio ramps once, to the new value.
+- **A release** is an end ear starts for an owner that is gone: its session closed
+  (`session-closed`), or it sent nothing about the gesture for `staleAfter` (30 s by default,
+  `gestureStaleAfter`; `stale`). Each gesture arms one main-loop timer (`Timers::after`, on the
+  main loop's clock, which a test moves), re-armed by every message of its owner about it: a tick,
+  an equal or stale one, a refused one. A release commits the last accepted value, what the slots
+  hold and so what the person last heard, never a refused tick's; when the commit is refused the
+  gesture is aborted (`refused`), so a release is never left open.
+- **At a stop** (`SIGTERM`) every open gesture is dropped: nothing is committed and nothing told,
+  since a stop is nobody's release and the keeper refuses edits once stopping.
+
 ### Changes in place
 
 A change in place applies new settings to a node's configuration without tearing it down: a

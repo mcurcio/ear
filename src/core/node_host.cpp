@@ -1116,6 +1116,7 @@ struct NodeHost::Impl {
 			writeLive();
 		}
 		std::span<const std::uint64_t> liveNow() const noexcept { return live_; }
+		const NodeConfig* committed() const noexcept { return queued_.get(); }
 		/// Where `key`'s slot sits among `rows`' live members, as AnySettingsTable::liveIndexOf finds it.
 		static std::optional<std::uint32_t> liveIndexIn(std::span<const SettingRow* const> rows, std::string_view key) {
 			std::uint32_t at = 0;
@@ -5713,6 +5714,11 @@ struct NodeHost::Impl {
 			if ((*it)->name() == name && !(*it)->removing() && !(*it)->removed()) return it->get();
 		return nullptr;
 	}
+	const Node* wantedOrNull(const NodeName& name) const {
+		for (auto it = nodes.rbegin(); it != nodes.rend(); ++it)
+			if ((*it)->name() == name && !(*it)->removing() && !(*it)->removed()) return it->get();
+		return nullptr;
+	}
 
 	/// A node added (a replace's new node too): it waits for older nodes of its name (T1, rule 1), which are
 	/// superseded from now on.
@@ -6003,6 +6009,45 @@ void NodeHost::stopAll(GraphClosed, std::move_only_function<void()> allGone) {
 std::size_t NodeHost::leaked() const noexcept { return impl_->leaked; }
 
 void NodeHost::setLive(const NodeName& node, std::span<const LiveWrite> writes) { impl_->wanted(node).setLive(writes); }
+
+std::expected<void, LiveRefusal> NodeHost::checkLive(const NodeName& node, std::span<const LiveWrite> writes) const {
+	const auto* wanted = impl_->wantedOrNull(node);
+	if (wanted == nullptr || wanted->committed() == nullptr || writes.empty()) return {};
+	const NodeConfig& config = *wanted->committed();
+	const auto rows = config.settingRows();
+	// Each write's row and key: the walk's order of live members, a family's 1 to its maximum.
+	const auto keyOf = [&](std::size_t member) -> std::pair<const SettingRow*, std::string> {
+		std::size_t at = 0;
+		for (const SettingRow* row : rows) {
+			const std::size_t count = setting::liveMembers(*row);
+			if (member < at + count)
+				return {row, row->maxMembers > 0 ? std::string(row->key) + "." + std::to_string(member - at + 1)
+				                                 : std::string(row->key)};
+			at += count;
+		}
+		return {nullptr, {}};
+	};
+	std::vector<std::uint64_t> live(wanted->liveNow().begin(), wanted->liveNow().end());
+	for (const LiveWrite& write : writes) {
+		const auto [row, key] = keyOf(write.member);
+		if (row == nullptr || write.member >= live.size())
+			throw std::logic_error("node " + node + " has no live member " + std::to_string(write.member));
+		if (auto refused = setting::liveOutOfRange(*row, key, write.bits))
+			return std::unexpected(LiveRefusal{key, *refused});
+		live[write.member] = write.bits;
+	}
+	if (auto checked = config.checkLive(live); !checked)
+		return std::unexpected(LiveRefusal{keyOf(writes.front().member).second, std::move(checked.error())});
+	return {};
+}
+
+std::optional<std::uint64_t> NodeHost::committedLive(const NodeName& node, std::size_t member) const {
+	const auto* wanted = impl_->wantedOrNull(node);
+	if (wanted == nullptr || wanted->committed() == nullptr) return std::nullopt;
+	const auto values = wanted->committed()->liveValues();
+	if (member >= values.size()) return std::nullopt;
+	return values[member];
+}
 
 std::vector<std::uint64_t> NodeHost::liveValues(const NodeName& node) const {
 	for (auto it = impl_->nodes.rbegin(); it != impl_->nodes.rend(); ++it)
