@@ -88,6 +88,16 @@ TEST_CASE("A comment added above a definition, or a route, is not related, and a
 	                 *f.index("@set $trim 0;\nnode strip a { channels 1; trimDb.1 $trim; trimDb.2 $trim; }\n"
 	                          "node strip b { gainDb -6; }\n"),
 	                 reach) == Relation::keyRemoved); // trimDb.2 inactive at one channel
+	// A member inactive already (trimDb.3 at channels' default of 2) is not removed by a change elsewhere, and its value
+	// changing is a value's change.
+	const std::vector<GestureKey> third{{"a", "trimDb.3"}};
+	CHECK(relationOf(*before, *f.index("@set $trim 0;\n" + nodes + "route a:out.1 b:in.1;\n"), third) ==
+	      Relation::none);
+	CHECK(relationOf(*before, *f.index("@set $trim 0;\n" + nodes + "node strip c;\n"), third) == Relation::none);
+	CHECK(relationOf(*before,
+	                 *f.index("@set $trim 0;\nnode strip a { trimDb.1 $trim; trimDb.2 $trim; trimDb.3 -6; }\n"
+	                          "node strip b { gainDb -6; }\n"),
+	                 third) == Relation::value);
 	// A key the file does not give: related once the file gives it, or its node line changes.
 	const std::vector<GestureKey> gain{{"a", "gainDb"}};
 	CHECK(relationOf(*before, *f.index("@set $trim 0;\n" + nodes + "route a:out.1 b:in.1;\n"), gain) == Relation::none);

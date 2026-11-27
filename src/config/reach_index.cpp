@@ -41,8 +41,10 @@ Relation relationOf(const ReachIndex& before, const ReachIndex& after, const std
 			return entry.at.node == at.node && (was == nullptr || entry.type == was->type);
 		});
 		if (!nodeThere) return Relation::nodeRemoved;
-		if (now == nullptr || !now->row.member || !now->row.active || now->row.change != setting::Change::live)
-			return Relation::keyRemoved;
+		if (now == nullptr || !now->row.member || now->row.change != setting::Change::live) return Relation::keyRemoved;
+		// Made inactive by this version: a member already inactive is still held, its live value seeding the channel a
+		// later reshape makes active (docs/control-port.md#gestures-and-the-graph-file).
+		if (!now->row.active && (was == nullptr || was->row.active)) return Relation::keyRemoved;
 		if (was == nullptr) {
 			reachChanged = true;
 			continue;

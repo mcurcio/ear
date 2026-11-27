@@ -53,7 +53,7 @@ enum class Relation {
 	value,       // a held key's value changed after expansion
 	reach,       // its defining lines or the pairs sharing its definition changed, its value did not
 	nodeRemoved, // a reached node is gone (removed, renamed, replaced by another type)
-	keyRemoved,  // a reached key is no longer the type's, no longer live, or no longer active
+	keyRemoved,  // a reached key is no longer the type's, no longer live, or made inactive
 };
 /// Pure. The first relation found over the reach's pairs, the most severe kind first: a node gone, a key gone, a
 /// value changed, else the reach changed.

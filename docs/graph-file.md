@@ -254,8 +254,8 @@ row's default when the file does not give it), and where it is defined:
 
 A text with errors has no index. The main loop keeps the running version's, and judges each later
 version against it for every open gesture (`relationOf`), in this order of severity: a reached node
-gone (removed, renamed, or of another type now) or a reached key no longer a live member, or no
-longer active; a reached value changed after expansion (a chain's base changed elsewhere); its
+gone (removed, renamed, or of another type now) or a reached key no longer a live member, or made
+inactive (a member already inactive stays held); a reached value changed after expansion (a chain's base changed elsewhere); its
 defining lines or the pairs sharing its definition changed (its reach changed). Anything else,
 route edits always among it, is not related to the gesture.
 [control-port.md](control-port.md#gestures-and-the-graph-file) says what each relation does to the

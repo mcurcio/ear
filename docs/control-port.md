@@ -814,7 +814,9 @@ gesture is for hands.
   together. Every reached row must be a live ramped decimal of one unit whose ranges meet; `min`
   and `max` are their intersection and `decimals` the fewest. A key the type declares and the file
   does not give reaches only its node, at the row's default. A node with no configuration (stopped,
-  failed, disabled) can be held: its live values move and seed its next configuration.
+  failed, disabled) can be held: its live values move and seed its next configuration. So can a
+  family's member above its count (`trimDb.3` at `channels 2`): its value plays from the first
+  sample of the channel a later reshape makes active.
 - **The id** is 32 hex digits, 128 random bits, never reused. Holding it is the credential: any
   session may end or cancel a gesture by its id, so an editor that reconnected after a network drop
   ends its old session's gesture with the id it kept. Ticks are the owner's alone.
