@@ -802,6 +802,7 @@ struct GraphFileModel::Impl {
 	std::string text;
 	std::optional<vw::document_graph> graph; // absent when ear.conf is missing or unreadable
 	GraphFileRead read;
+	std::shared_ptr<const ReachIndex> reach; // made at the first reachIndex()
 };
 
 GraphFileModel::GraphFileModel(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
@@ -871,6 +872,133 @@ EditOutcome finish(const Editing& editing, const NodeCatalogue& catalogue) {
 }
 
 } // namespace
+
+namespace {
+
+/// FNV-1a, 64 bits: the defining lines compared between two versions.
+std::uint64_t fnv1a(std::string_view text) {
+	std::uint64_t hash = 0xcbf29ce484222325ULL;
+	for (const char c : text) {
+		hash ^= static_cast<unsigned char>(c);
+		hash *= 0x100000001b3ULL;
+	}
+	return hash;
+}
+
+/// The text from the first token at or after `start` that is not a comment, a space or a line break, to `end`: a
+/// statement's own lines without the comments it owns above it (docs/graph-file.md#reaches).
+std::string_view ownLines(std::string_view text, const vl::sequence<vl::syntax::token>& tokens, std::int64_t start,
+                          std::int64_t end) {
+	for (const vl::syntax::token& token : tokens) {
+		const auto at = token.span().start().offset();
+		if (at < start) continue;
+		if (at >= end) break;
+		const auto kind = token.kind();
+		if (kind == vl::token_kind::COMMENT || kind == vl::token_kind::SPACE || kind == vl::token_kind::NEWLINE)
+			continue;
+		const auto from = static_cast<std::size_t>(at);
+		const auto to = std::min(static_cast<std::size_t>(end), text.size());
+		return from <= to ? text.substr(from, to - from) : std::string_view{};
+	}
+	return {};
+}
+
+/// A node's `node` line: its statement's own text up to its block's `{` or its `;`.
+std::string_view nodeLine(std::string_view own) {
+	const auto stop = own.find_first_of("{;");
+	return stop == std::string_view::npos ? own : own.substr(0, stop);
+}
+
+/// How many members of `row`'s family are active: its count row's value as `settings` hold it, else its default.
+std::uint32_t countOf(const NodeType& type, const SettingRow& row, const NodeSettings& settings,
+                      const std::vector<std::uint64_t>& live) {
+	for (const SettingRow* count : type.schema().settings) {
+		if (count->key != row.indexedBy) continue;
+		if (setting::isLive(*count))
+			if (const auto member = type.liveIndexOf(count->key); member && *member < live.size())
+				return static_cast<std::uint32_t>(live[*member]);
+		if (const auto given = settings.find(count->key);
+		    given != settings.end() && given->is_number_integer() && given->get<std::int64_t>() >= 0)
+			return static_cast<std::uint32_t>(given->get<std::int64_t>());
+		if (count->byDefault)
+			if (const auto* whole = std::get_if<std::uint32_t>(&*count->byDefault)) return *whole;
+		return 0;
+	}
+	return 0;
+}
+
+} // namespace
+
+std::shared_ptr<const ReachIndex> GraphFileModel::reachIndex() const {
+	if (impl_->reach || !impl_->read.wanted || !impl_->graph) return impl_->reach;
+	const std::string& text = impl_->text;
+	const Editing editing(text);
+	const auto tokens = impl_->graph->root().syntax().tokens();
+	std::vector<ReachEntry> entries;
+	for (const NodeSpec& node : impl_->read.wanted->nodes) {
+		const NodeType* type = impl_->catalogue->find(node.type);
+		if (type == nullptr) continue;
+		auto parsed = type->parse(node.name, node.settings);
+		if (!parsed) continue;
+		const std::vector<std::uint64_t> live = (*parsed)->liveValues();
+		const auto directive = editing.node(node.name);
+		if (!directive) continue;
+		// Where each key the file gives is defined.
+		struct Given {
+			std::int64_t offset;
+			control::TextPlace place;
+			std::uint64_t lines;
+		};
+		std::map<std::string, Given> given;
+		if (const auto block = directive->block())
+			for (const vr::directive& setting : *block) {
+				if (setting.values().size() != 1) continue;
+				const auto value = setting.values().at(0);
+				const vw::written_value defining = value.definition().value_or(value.written());
+				const auto statement = defining.statement().place().span();
+				given.emplace(
+					setting.name(),
+					Given{defining.place().span().start().offset(), placeOf(text, defining.place()),
+				          fnv1a(ownLines(text, tokens, statement.start().offset(), statement.end().offset()))});
+			}
+		const auto own = directive->written().place().span();
+		const std::uint64_t line = fnv1a(nodeLine(ownLines(text, tokens, own.start().offset(), own.end().offset())));
+		const control::TextPlace nodePlace = placeOf(text, directive->written().place());
+		for (const SettingRow* row : type->schema().settings) {
+			const std::uint32_t members = row->maxMembers > 0 ? row->maxMembers : 1;
+			const std::uint32_t count = row->maxMembers > 0 ? countOf(*type, *row, node.settings, live) : 1;
+			for (std::uint32_t n = 1; n <= members; ++n) {
+				const std::string key = row->maxMembers > 0 ? std::format("{}.{}", row->key, n) : std::string(row->key);
+				ReachEntry entry{.at = {node.name, key}, .type = node.type};
+				entry.row.change = row->change;
+				entry.row.ramped = setting::isLive(*row) && row->rampMs > 0;
+				if (const auto* decimal = std::get_if<DecimalRule>(&row->rule)) {
+					entry.row.decimal = true;
+					entry.row.unit = decimal->unit;
+					entry.row.low = decimal->low;
+					entry.row.high = decimal->high;
+					entry.row.decimals = decimal->hints.decimals;
+				}
+				entry.row.member = type->liveIndexOf(key);
+				entry.row.active = n <= count;
+				if (entry.row.member && *entry.row.member < live.size())
+					entry.value = type->liveValueAsSetting(key, live[*entry.row.member]);
+				else if (const auto at = node.settings.find(key); at != node.settings.end()) entry.value = *at;
+				if (const auto found = given.find(key); found != given.end()) {
+					entry.definition = found->second.offset;
+					entry.place = found->second.place;
+					entry.definingLines = found->second.lines;
+				} else {
+					entry.place = nodePlace;
+					entry.definingLines = line;
+				}
+				entries.push_back(std::move(entry));
+			}
+		}
+	}
+	impl_->reach = std::make_shared<const ReachIndex>(std::move(entries));
+	return impl_->reach;
+}
 
 EditOutcome GraphFileModel::updateNode(const NodeName& name, const NodeSettings& settings) const {
 	return guarded([&]() -> EditOutcome {

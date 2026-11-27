@@ -208,7 +208,8 @@ TEST_CASE("A closed session releases its gestures not already ending", "[gesture
 	static_cast<void>(c);
 }
 
-TEST_CASE("An end rounds to the reach's decimals and marks it ending, and a second end is unknown-gesture", "[gestures]") {
+TEST_CASE("An end rounds to the reach's decimals and marks it ending, and a second end is unknown-gesture",
+          "[gestures]") {
 	Fixture f;
 	const std::string g = f.begin();
 	f.gestures.move(g, 1, 1, -6.04);

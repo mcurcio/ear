@@ -232,6 +232,33 @@ top level) has no text of its own: replacing it would change every node it makes
 and read with the whole file, so `node card attic { card USB3; playback $ch; }` takes `$ch` from
 the `@set` above.
 
+### Reaches
+
+A gesture ([architecture.md](architecture.md#gestures)) moves every pair (node, key) whose value is
+defined at the same place in `ear.conf`: its **reach**. For each version of the text the keeper
+makes, on its thread and only once per text, a **reach index** (`GraphFileModel::reachIndex`,
+`src/config/reach_index.hpp`): for each wanted node and each key its type declares (a family's
+members 1 to its maximum), the row's facts a begin is judged by (its change mark, ramp, unit, range,
+decimals, slot and whether the member is active), the value as the node's settings hold it (the
+row's default when the file does not give it), and where it is defined:
+
+- **The definition** is knobly's for the value (`expanded_value::definition()`), else the value as
+  written, the fallback edits at the source take. So `trimDb.1 $trim; trimDb.2 $trim;` share the
+  `0` of `@set $trim 0;`, and a snippet's user and a direct user of `$trim` share it too: through a
+  `@snippet`, the definition is the end of the chain. A key the file does not give reaches only its
+  node.
+- **The defining lines** are the defining statement's text from its first token to its end,
+  hashed: the comments a statement owns are left out (knobly's statement place includes them), so
+  a comment added above `@set $trim 0;` changes nothing. A key the file does not give takes its
+  node's `node` line instead.
+
+A text with errors has no index. The main loop keeps the running version's, and judges each later
+version against it for every open gesture (`relationOf`), in this order of severity: a reached node
+gone (removed, renamed, or of another type now) or a reached key no longer a live member, or no
+longer active; a reached value changed after expansion (a chain's base changed elsewhere); its
+defining lines or the pairs sharing its definition changed (its reach changed). Anything else,
+route edits always among it, is not related to the gesture.
+
 ## Hand edits win
 
 ear watches the graph file folder (inotify: close-after-write, renames, creates, deletes).

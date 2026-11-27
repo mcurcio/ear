@@ -94,6 +94,28 @@ struct FaderType : NeverStarted {
 	Configured configure(CreateOf<faderSpec>& cx, const CheckedOf<faderSpec>& s) { return never(cx, s); }
 };
 
+constexpr auto stripChannelsRow = setting::defaulted("channels", setting::number(1, 8), 2).inPlace().shapesPorts();
+constexpr auto stripGainRow =
+	setting::defaulted("gainDb", setting::decimal(-90.0, 24.0, "dB", {.decimals = 1}), 0.0).live(setting::ramp(20));
+constexpr auto stripTrimFamily =
+	setting::indexed("trimDb", stripChannelsRow, setting::decimal(-24.0, 24.0, "dB", {.decimals = 1}), 0.0)
+		.live(setting::ramp(20));
+constexpr auto stripFreqRow =
+	setting::defaulted("freqHz", setting::decimal(20.0, 20000.0, "Hz", {.decimals = 0}), 1000.0)
+		.live(setting::ramp(20));
+constexpr auto stripLinkRow = setting::defaulted("link", setting::decimal(0.0, 1.0, ""), 0.0).live(setting::step);
+constexpr auto stripIn = bank::input<"in">;
+constexpr auto stripOut = bank::output<"out">;
+constexpr TypeSpec stripSpec{
+	.settings = SettingsTable<stripChannelsRow, stripGainRow, stripTrimFamily, stripFreqRow, stripLinkRow>{"strip"},
+	.banks = Banks<stripIn, stripOut>{}};
+struct StripType : NeverStarted {
+	static Members<stripSpec> ports(const CheckedOf<stripSpec>& s) {
+		return {stripIn(members(s.get<stripChannelsRow>())), stripOut(members(s.get<stripChannelsRow>()))};
+	}
+	Configured configure(CreateOf<stripSpec>& cx, const CheckedOf<stripSpec>& s) { return never(cx, s); }
+};
+
 } // namespace tables
 using namespace tables;
 
@@ -105,6 +127,7 @@ std::vector<std::unique_ptr<const NodeType>> testTypes() {
 	types.push_back(makeNodeType<rtpSpec, RtpType>());
 	types.push_back(makeNodeType<lampSpec, LampType>());
 	types.push_back(makeNodeType<faderSpec, FaderType>());
+	types.push_back(makeNodeType<stripSpec, StripType>());
 	return types;
 }
 
