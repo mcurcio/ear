@@ -4,12 +4,14 @@
 // (ear started with a short silence by --gesture-stale-ms); a hand edit elsewhere leaves a gesture open, and one of the
 // held value aborts it; a client reset mid-gesture, its last tick refused, leaves its last accepted value in ear.conf
 // and the WAV.
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <iterator>
 #include <optional>
 #include <span>
 #include <string>
+#include <vector>
 
 #include "ear_system.hpp"
 
@@ -33,19 +35,65 @@ bool gestureChanged(const json& message, const std::string& phase) {
 	return Rpc::matches(message, "gesture.changed", {{"phase", phase}});
 }
 
-/// The factor left/right holds over the WAV's last second, read where the noise is loud enough.
-double lastFactor(const std::filesystem::path& wav) {
-	const Wav finished = readWav(wav);
-	const std::span<const float> samples(finished.samples);
-	const std::size_t frames = samples.size() / 2;
-	double factor = std::nan("");
-	for (std::size_t frame = frames > 48000 ? frames - 48000 : 0; frame < frames; ++frame)
-		if (std::abs(samples[2 * frame + 1]) > 0.05F)
-			factor = static_cast<double>(samples[2 * frame]) / static_cast<double>(samples[2 * frame + 1]);
-	return factor;
+double factorOf(double db) { return std::pow(10.0, db / 20.0); }
+
+/// Left over right at `frame` of interleaved stereo `samples`, or nothing where the noise is too quiet to read it.
+std::optional<double> factorAt(const std::vector<float>& samples, std::size_t frame) {
+	const float right = samples[2 * frame + 1];
+	if (std::abs(right) < 0.01F) return std::nullopt;
+	return static_cast<double>(samples[2 * frame]) / static_cast<double>(right);
 }
 
-double factorOf(double db) { return std::pow(10.0, db / 20.0); }
+/// The WAV followed until a second of it has passed its first frame at `db`'s factor: the level reached and held is
+/// the event. Every frame read, interleaved. Each was written before the test asks ear to stop, so the stop's fades,
+/// which a loaded host can let into the WAV's tail (docs/architecture.md#fades), are never judged.
+std::vector<float> followUntilHeld(const std::filesystem::path& wav, double db) {
+	const double target = factorOf(db);
+	std::vector<float> samples;
+	std::optional<std::size_t> reached; // the first frame at the target
+	const bool held = waitForWav(
+		wav,
+		[&](std::span<const float> fresh, std::size_t channels) {
+			REQUIRE(channels == 2);
+			samples.insert(samples.end(), fresh.begin(), fresh.end());
+			for (std::size_t frame = samples.size() / 2 - fresh.size() / 2; !reached && frame < samples.size() / 2;
+		         ++frame)
+				if (const auto factor = factorAt(samples, frame); factor && std::abs(*factor - target) < 1e-5)
+					reached = frame;
+			return reached && samples.size() / 2 >= *reached + 48000;
+		},
+		4 * deadline);
+	INFO("frames read: " << samples.size() / 2);
+	REQUIRE(held);
+	return samples;
+}
+
+/// Past both nodes' 5 ms fade-ins (each starts at its own drive) the factor only falls, never below `db`'s, and from
+/// its first frame there stays at it: the audio ramps to each new value once, never back up to the committed 0 dB. The
+/// recording may begin at unity or already at a gesture's value.
+void checkFallsOnceTo(const std::vector<float>& samples, double db) {
+	const double target = factorOf(db);
+	const std::size_t frames = samples.size() / 2;
+	std::size_t first = 0;
+	while (first < frames && samples[2 * first + 1] == 0.0F) ++first;
+	std::size_t firstLeft = first;
+	while (firstLeft < frames && samples[2 * firstLeft] == 0.0F) ++firstLeft;
+	std::size_t frame = std::max(first, firstLeft) + 480;
+	REQUIRE(frame < frames);
+	double before = 1.0;
+	bool reached = false;
+	for (; frame < frames; ++frame) {
+		const auto factor = factorAt(samples, frame);
+		if (!factor) continue;
+		INFO("frame " << frame << " of " << frames << ", factor " << *factor);
+		reached = reached || std::abs(*factor - target) < 1e-5;
+		if (reached) REQUIRE(*factor == Approx(target).epsilon(1e-4));
+		REQUIRE(*factor <= before + 1e-5);
+		REQUIRE(*factor >= target - 1e-5);
+		before = *factor;
+	}
+	REQUIRE(reached);
+}
 
 } // namespace
 
@@ -120,16 +168,9 @@ TEST_CASE("A hand edit elsewhere leaves a gesture open, and one of the held valu
 	CHECK(aborted["params"]["reason"] == "hand-edit");
 	REQUIRE(process.waitForLine("node amp gainDb 0 -> -20", deadline));
 	const auto wav = directory.recordings() / "rec.wav";
-	REQUIRE(waitForWav(
-		wav,
-		[n = std::size_t{0}](std::span<const float> fresh, std::size_t channels) mutable {
-			n += fresh.size() / channels;
-			return n >= 96000;
-		},
-		4 * deadline));
+	checkFallsOnceTo(followUntilHeld(wav, -20.0), -20.0);
 	REQUIRE(ear.stop(holder) == 0);
 	REQUIRE(headerFinished(wav));
-	CHECK(lastFactor(wav) == Approx(factorOf(-20.0)).epsilon(1e-4));
 }
 
 TEST_CASE("A client reset mid-gesture, its last tick refused, leaves its last accepted value in ear.conf and the WAV",
@@ -161,14 +202,7 @@ TEST_CASE("A client reset mid-gesture, its last tick refused, leaves its last ac
 	const json graph = other.call("graph.get");
 	for (const json& node : graph["result"]["nodes"]) CHECK(node["gestures"].empty());
 	const auto wav = directory.recordings() / "rec.wav";
-	REQUIRE(waitForWav(
-		wav,
-		[n = std::size_t{0}](std::span<const float> fresh, std::size_t channels) mutable {
-			n += fresh.size() / channels;
-			return n >= 96000;
-		},
-		4 * deadline));
+	checkFallsOnceTo(followUntilHeld(wav, -12.0), -12.0);
 	REQUIRE(ear.stop(other) == 0);
 	REQUIRE(headerFinished(wav));
-	CHECK(lastFactor(wav) == Approx(factorOf(-12.0)).epsilon(1e-4));
 }

@@ -15,12 +15,15 @@ namespace {
 
 using namespace ear::test;
 
-/// Until the WAV at `path` holds `frames` more frames of noise on its right channel after the first one heard.
-bool waitForMoreNoise(const std::filesystem::path& path, std::size_t frames) {
+/// Until the WAV at `path` holds `frames` more frames of noise on its right channel after the first one heard. Every
+/// frame it read is counted in `followed`.
+bool waitForMoreNoise(const std::filesystem::path& path, std::size_t frames, std::size_t& followed) {
 	std::optional<std::size_t> sound;
+	followed = 0;
 	return waitForWav(
 		path,
 		[&](std::span<const float> fresh, std::size_t channels) {
+			followed += fresh.size() / channels;
 			for (std::size_t at = 1; at < fresh.size(); at += channels) {
 				if (sound) ++*sound;
 				else if (fresh[at] != 0.0F) sound = 1;
@@ -46,7 +49,8 @@ TEST_CASE("A node.set of gainDb mid-recording ramps the WAV's level over 20 ms w
 	REQUIRE(process.waitForLine(linkedLine("noise:noise.mono", "rec:record.right"), deadline));
 	REQUIRE(process.waitForLine("node amp running", deadline));
 	const auto wav = directory.recordings() / "rec.wav";
-	REQUIRE(waitForMoreNoise(wav, 24000)); // half a second at unity before the change
+	std::size_t followed = 0;
+	REQUIRE(waitForMoreNoise(wav, 24000, followed)); // half a second at unity before the change
 
 	Rpc rpc(ear.port());
 	REQUIRE(rpc.call("graph.subscribe").contains("result"));
@@ -59,7 +63,7 @@ TEST_CASE("A node.set of gainDb mid-recording ramps the WAV's level over 20 ms w
 	CHECK(updated["params"]["applied"] == "retune");
 	REQUIRE(process.waitForLine("node amp gainDb 0 -> -20", deadline));
 	// And a second after it: this look counts from the WAV's first noise again.
-	REQUIRE(waitForMoreNoise(wav, 24000 + 48000));
+	REQUIRE(waitForMoreNoise(wav, 24000 + 48000, followed));
 	const std::size_t heard = rpc.notifications.size();
 
 	REQUIRE(ear.stop(rpc) == 0);
@@ -91,14 +95,18 @@ TEST_CASE("A node.set of gainDb mid-recording ramps the WAV's level over 20 ms w
 	const Wav finished = readWav(wav);
 	REQUIRE(finished.info.channels == 2);
 	const std::span<const float> samples(finished.samples);
-	const std::size_t frames = samples.size() / 2;
+	// Only the frames read before the stop was asked: the stop fades each node out by its own drive, and on a loaded host
+	// the file node's silence can land a cycle after the gain node's fade began, so the WAV's tail may hold that fade
+	// (docs/architecture.md#fades); every frame read before the stop was written before it.
+	REQUIRE(samples.size() / 2 >= followed);
+	const std::size_t frames = followed;
 	const auto left = [&](std::size_t frame) { return samples[2 * frame]; };
 	const auto right = [&](std::size_t frame) { return samples[2 * frame + 1]; };
 	std::size_t first = 0;
 	while (first < frames && right(first) == 0.0F) ++first;
 	std::size_t firstLeft = first;
 	while (firstLeft < frames && left(firstLeft) == 0.0F) ++firstLeft;
-	// Past both nodes' 5 ms fade-ins (each starts at its own drive): from there to the end, left is right at unity
+	// Past both nodes' 5 ms fade-ins (each starts at its own drive): from there to the stop, left is right at unity
 	// until the ramp, then right × 0.1, with every frame between moving the factor one way only.
 	const std::size_t settled = std::max(first, firstLeft) + 480;
 	REQUIRE(settled + 48000 < frames);
@@ -132,7 +140,7 @@ TEST_CASE("A node.set of gainDb mid-recording ramps the WAV's level over 20 ms w
 			before = factor;
 		}
 	}
-	// No gap: the noise runs on both channels to the end, never two frames of silence in a row.
+	// No gap: the noise runs on both channels to the stop, never two frames of silence in a row.
 	for (std::size_t frame = settled; frame < frames; ++frame) {
 		INFO("frame " << frame);
 		REQUIRE_FALSE((right(frame) == 0.0F && right(frame - 1) == 0.0F));
