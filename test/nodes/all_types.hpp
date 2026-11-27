@@ -2,6 +2,7 @@
 // in memory.
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
@@ -11,6 +12,7 @@
 #include <vector>
 
 #include "ear/all_node_types/all_node_types.hpp"
+#include "ear/core/settings_table.hpp"
 
 namespace ear::test {
 
@@ -21,6 +23,8 @@ inline std::vector<std::unique_ptr<const NodeType>> allTypes() { return nodes::a
 inline const std::vector<NodeSettings>& validSettings(std::string_view type) {
 	static const std::map<std::string, std::vector<NodeSettings>, std::less<>> valid{
 		{"white", {NodeSettings::object()}},
+		// A family's key is given by a member (docs/writing-a-node-type.md#indexed-families).
+		{"gain", {{{"channels", 2}, {"gainDb", -6.0}, {"mute", false}, {"trimDb.1", 0.5}, {"invert.2", true}}}},
 		{"airplay", {{{"name", "Kitchen"}, {"airplay2", true}}}},
 		{"file", {{{"path", "a.wav"}}}},
 		{"card", {{{"card", "Pro24"}, {"playback", 2}, {"capture", 2}}}},
@@ -46,6 +50,20 @@ inline const std::vector<NodeSettings>& validSettings(std::string_view type) {
 		                         ": add them to test/nodes/all_types.hpp");
 	}
 	return found->second;
+}
+
+/// The key `settings` give row `row` of `type` by: a plain row's own key; for an indexed family, the first of its members
+/// they hold, else its first member, `<key>.1` (docs/writing-a-node-type.md#indexed-families).
+inline std::string givenKey(const NodeType& type, std::string_view row, const NodeSettings& settings) {
+	for (const SettingRow* declared : type.schema().settings) {
+		if (declared->key != row || declared->maxMembers == 0) continue;
+		for (std::uint32_t member = 1; member <= declared->maxMembers; ++member) {
+			std::string key = std::string(row) + "." + std::to_string(member);
+			if (settings.contains(key)) return key;
+		}
+		return std::string(row) + ".1";
+	}
+	return std::string(row);
 }
 
 } // namespace ear::test

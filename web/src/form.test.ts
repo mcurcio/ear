@@ -328,7 +328,13 @@ describe("every built-in type makes a form", () => {
     expect(schemas.map((schema) => schema.name)).toContain("rtp");
     for (const schema of schemas) {
       const fields = fieldsOf(schema, {}, none);
-      expect(fields.map((field) => field.key)).toStrictEqual(schema.settings.map((row) => row.key));
+      // A family is a field per member, 1 to its count row's default when nothing is set.
+      const keys = schema.settings.flatMap((row) => {
+        if (row.indexed === undefined) return [row.key];
+        const count = schema.settings.find((other) => other.key === row.indexed!.by)?.default;
+        return Array.from({ length: typeof count === "number" ? count : 0 }, (_, i) => `${row.key}.${i + 1}`);
+      });
+      expect(fields.map((field) => field.key)).toStrictEqual(keys);
       for (const field of fields) {
         expect(field.control).not.toBe("json"); // ear's kinds today are all known here
         expect(field.hints.length).toBeGreaterThan(0);

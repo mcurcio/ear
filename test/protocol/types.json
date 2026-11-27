@@ -4,7 +4,7 @@
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"types.get\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"types.get\",\"params\":{\"ifNoneMatch\":\"fnv1a64:0123456789abcdef\"}}",
-    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"types.get\",\"params\":{\"ifNoneMatch\":\"fnv1a64:0e3155269e6a8dab\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"types.get\",\"params\":{\"ifNoneMatch\":\"fnv1a64:1424bf68e505f142\"}}",
     "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"types.get\",\"params\":{\"since\":\"yesterday\"}}"
   ],
   "messages": [
@@ -38,11 +38,12 @@
         "realtime": false,
         "routes": [],
         "scheduling": "SCHED_OTHER",
-        "typeSchemaHash": "fnv1a64:0e3155269e6a8dab",
+        "typeSchemaHash": "fnv1a64:1424bf68e505f142",
         "types": [
           "airplay",
           "card",
           "file",
+          "gain",
           "rtp",
           "sendspin",
           "white"
@@ -53,10 +54,11 @@
       "jsonrpc": "2.0",
       "id": 2,
       "result": {
-        "hash": "fnv1a64:0e3155269e6a8dab",
+        "hash": "fnv1a64:1424bf68e505f142",
         "protocol": 1,
         "typeSchemas": [
           {
+            "actions": [],
             "events": [],
             "inputs": [],
             "name": "airplay",
@@ -84,10 +86,10 @@
                 "restartReason": "shairport-sync reads it only at start"
               }
             ],
-            "status": [],
-            "actions": []
+            "status": []
           },
           {
+            "actions": [],
             "events": [],
             "inputs": [
               "play"
@@ -116,9 +118,9 @@
                 "max": 64,
                 "min": 0,
                 "required": false,
+                "restartReason": "a companion on a resized bank cannot be replaced in place yet",
                 "shapes": true,
-                "unit": "channels",
-                "restartReason": "a companion on a resized bank cannot be replaced in place yet"
+                "unit": "channels"
               },
               {
                 "change": "restart",
@@ -128,15 +130,15 @@
                 "max": 64,
                 "min": 0,
                 "required": false,
+                "restartReason": "a companion on a resized bank cannot be replaced in place yet",
                 "shapes": true,
-                "unit": "channels",
-                "restartReason": "a companion on a resized bank cannot be replaced in place yet"
+                "unit": "channels"
               }
             ],
-            "status": [],
-            "actions": []
+            "status": []
           },
           {
+            "actions": [],
             "events": [],
             "inputs": [
               "record"
@@ -154,10 +156,140 @@
                 "restartReason": "file has no change in place yet"
               }
             ],
-            "status": [],
-            "actions": []
+            "status": []
           },
           {
+            "actions": [
+              {
+                "args": [],
+                "by": "type",
+                "help": "clear the clipping flag",
+                "name": "reset-clip",
+                "target": "code"
+              }
+            ],
+            "events": [
+              {
+                "args": [
+                  {
+                    "kind": "wholeNumber",
+                    "max": 64,
+                    "min": 1,
+                    "name": "channel"
+                  },
+                  {
+                    "decimals": 2,
+                    "kind": "decimal",
+                    "name": "peakDb"
+                  }
+                ],
+                "code": "clipped",
+                "sentence": "channel {channel} clipped at {peakDb} dB",
+                "severity": "warn"
+              }
+            ],
+            "inputs": [
+              "in"
+            ],
+            "name": "gain",
+            "outputs": [
+              "out"
+            ],
+            "reconfigureMs": 10000,
+            "settings": [
+              {
+                "change": "inPlace",
+                "default": 2,
+                "key": "channels",
+                "kind": "wholeNumber",
+                "max": 64,
+                "min": 1,
+                "required": false,
+                "shapes": true,
+                "unit": "channels"
+              },
+              {
+                "change": "live",
+                "decimals": 1,
+                "default": 0,
+                "key": "gainDb",
+                "kind": "decimal",
+                "live": {
+                  "ms": 20,
+                  "transition": "ramp"
+                },
+                "max": 24,
+                "min": -90,
+                "minIsSilence": true,
+                "required": false,
+                "taper": "db",
+                "unit": "dB"
+              },
+              {
+                "change": "live",
+                "default": false,
+                "key": "mute",
+                "kind": "flag",
+                "live": {
+                  "ms": 10,
+                  "transition": "ramp"
+                },
+                "required": false
+              },
+              {
+                "change": "live",
+                "decimals": 1,
+                "default": 0,
+                "indexed": {
+                  "by": "channels",
+                  "from": 1,
+                  "max": 64
+                },
+                "key": "trimDb",
+                "kind": "decimal",
+                "live": {
+                  "ms": 20,
+                  "transition": "ramp"
+                },
+                "max": 24,
+                "min": -24,
+                "required": false,
+                "taper": "linear",
+                "unit": "dB"
+              },
+              {
+                "change": "live",
+                "default": false,
+                "indexed": {
+                  "by": "channels",
+                  "from": 1,
+                  "max": 64
+                },
+                "key": "invert",
+                "kind": "flag",
+                "live": {
+                  "ms": 10,
+                  "transition": "ramp"
+                },
+                "required": false
+              }
+            ],
+            "status": [
+              {
+                "display": "panel",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "help": "an output went above full scale",
+                "initial": false,
+                "kind": "flag",
+                "name": "clipping"
+              }
+            ]
+          },
+          {
+            "actions": [],
             "events": [],
             "inputs": [],
             "name": "rtp",
@@ -201,8 +333,8 @@
                 "max": 64,
                 "min": 1,
                 "required": true,
-                "shapes": true,
-                "restartReason": "a companion on a resized bank cannot be replaced in place yet"
+                "restartReason": "a companion on a resized bank cannot be replaced in place yet",
+                "shapes": true
               },
               {
                 "change": "inPlace",
@@ -225,10 +357,10 @@
                 "unit": "milliseconds"
               }
             ],
-            "status": [],
-            "actions": []
+            "status": []
           },
           {
+            "actions": [],
             "events": [
               {
                 "args": [
@@ -533,10 +665,10 @@
                 "name": "sendingRate",
                 "unit": "Hz"
               }
-            ],
-            "actions": []
+            ]
           },
           {
+            "actions": [],
             "events": [],
             "inputs": [],
             "name": "white",
@@ -545,8 +677,7 @@
             ],
             "reconfigureMs": 10000,
             "settings": [],
-            "status": [],
-            "actions": []
+            "status": []
           }
         ]
       }
@@ -555,10 +686,11 @@
       "jsonrpc": "2.0",
       "id": 3,
       "result": {
-        "hash": "fnv1a64:0e3155269e6a8dab",
+        "hash": "fnv1a64:1424bf68e505f142",
         "protocol": 1,
         "typeSchemas": [
           {
+            "actions": [],
             "events": [],
             "inputs": [],
             "name": "airplay",
@@ -586,10 +718,10 @@
                 "restartReason": "shairport-sync reads it only at start"
               }
             ],
-            "status": [],
-            "actions": []
+            "status": []
           },
           {
+            "actions": [],
             "events": [],
             "inputs": [
               "play"
@@ -618,9 +750,9 @@
                 "max": 64,
                 "min": 0,
                 "required": false,
+                "restartReason": "a companion on a resized bank cannot be replaced in place yet",
                 "shapes": true,
-                "unit": "channels",
-                "restartReason": "a companion on a resized bank cannot be replaced in place yet"
+                "unit": "channels"
               },
               {
                 "change": "restart",
@@ -630,15 +762,15 @@
                 "max": 64,
                 "min": 0,
                 "required": false,
+                "restartReason": "a companion on a resized bank cannot be replaced in place yet",
                 "shapes": true,
-                "unit": "channels",
-                "restartReason": "a companion on a resized bank cannot be replaced in place yet"
+                "unit": "channels"
               }
             ],
-            "status": [],
-            "actions": []
+            "status": []
           },
           {
+            "actions": [],
             "events": [],
             "inputs": [
               "record"
@@ -656,10 +788,140 @@
                 "restartReason": "file has no change in place yet"
               }
             ],
-            "status": [],
-            "actions": []
+            "status": []
           },
           {
+            "actions": [
+              {
+                "args": [],
+                "by": "type",
+                "help": "clear the clipping flag",
+                "name": "reset-clip",
+                "target": "code"
+              }
+            ],
+            "events": [
+              {
+                "args": [
+                  {
+                    "kind": "wholeNumber",
+                    "max": 64,
+                    "min": 1,
+                    "name": "channel"
+                  },
+                  {
+                    "decimals": 2,
+                    "kind": "decimal",
+                    "name": "peakDb"
+                  }
+                ],
+                "code": "clipped",
+                "sentence": "channel {channel} clipped at {peakDb} dB",
+                "severity": "warn"
+              }
+            ],
+            "inputs": [
+              "in"
+            ],
+            "name": "gain",
+            "outputs": [
+              "out"
+            ],
+            "reconfigureMs": 10000,
+            "settings": [
+              {
+                "change": "inPlace",
+                "default": 2,
+                "key": "channels",
+                "kind": "wholeNumber",
+                "max": 64,
+                "min": 1,
+                "required": false,
+                "shapes": true,
+                "unit": "channels"
+              },
+              {
+                "change": "live",
+                "decimals": 1,
+                "default": 0,
+                "key": "gainDb",
+                "kind": "decimal",
+                "live": {
+                  "ms": 20,
+                  "transition": "ramp"
+                },
+                "max": 24,
+                "min": -90,
+                "minIsSilence": true,
+                "required": false,
+                "taper": "db",
+                "unit": "dB"
+              },
+              {
+                "change": "live",
+                "default": false,
+                "key": "mute",
+                "kind": "flag",
+                "live": {
+                  "ms": 10,
+                  "transition": "ramp"
+                },
+                "required": false
+              },
+              {
+                "change": "live",
+                "decimals": 1,
+                "default": 0,
+                "indexed": {
+                  "by": "channels",
+                  "from": 1,
+                  "max": 64
+                },
+                "key": "trimDb",
+                "kind": "decimal",
+                "live": {
+                  "ms": 20,
+                  "transition": "ramp"
+                },
+                "max": 24,
+                "min": -24,
+                "required": false,
+                "taper": "linear",
+                "unit": "dB"
+              },
+              {
+                "change": "live",
+                "default": false,
+                "indexed": {
+                  "by": "channels",
+                  "from": 1,
+                  "max": 64
+                },
+                "key": "invert",
+                "kind": "flag",
+                "live": {
+                  "ms": 10,
+                  "transition": "ramp"
+                },
+                "required": false
+              }
+            ],
+            "status": [
+              {
+                "display": "panel",
+                "flapsAbove": {
+                  "transitions": 10,
+                  "windowMs": 10000
+                },
+                "help": "an output went above full scale",
+                "initial": false,
+                "kind": "flag",
+                "name": "clipping"
+              }
+            ]
+          },
+          {
+            "actions": [],
             "events": [],
             "inputs": [],
             "name": "rtp",
@@ -703,8 +965,8 @@
                 "max": 64,
                 "min": 1,
                 "required": true,
-                "shapes": true,
-                "restartReason": "a companion on a resized bank cannot be replaced in place yet"
+                "restartReason": "a companion on a resized bank cannot be replaced in place yet",
+                "shapes": true
               },
               {
                 "change": "inPlace",
@@ -727,10 +989,10 @@
                 "unit": "milliseconds"
               }
             ],
-            "status": [],
-            "actions": []
+            "status": []
           },
           {
+            "actions": [],
             "events": [
               {
                 "args": [
@@ -1035,10 +1297,10 @@
                 "name": "sendingRate",
                 "unit": "Hz"
               }
-            ],
-            "actions": []
+            ]
           },
           {
+            "actions": [],
             "events": [],
             "inputs": [],
             "name": "white",
@@ -1047,8 +1309,7 @@
             ],
             "reconfigureMs": 10000,
             "settings": [],
-            "status": [],
-            "actions": []
+            "status": []
           }
         ]
       }
@@ -1058,7 +1319,7 @@
       "id": 4,
       "result": {
         "protocol": 1,
-        "hash": "fnv1a64:0e3155269e6a8dab",
+        "hash": "fnv1a64:1424bf68e505f142",
         "notModified": true
       }
     },
@@ -1101,11 +1362,12 @@
     "realtime": false,
     "routes": [],
     "scheduling": "SCHED_OTHER",
-    "typeSchemaHash": "fnv1a64:0e3155269e6a8dab",
+    "typeSchemaHash": "fnv1a64:1424bf68e505f142",
     "types": [
       "airplay",
       "card",
       "file",
+      "gain",
       "rtp",
       "sendspin",
       "white"

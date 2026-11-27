@@ -2,11 +2,14 @@
 
 Status: design; steps 6.1 (change marks and restart reasons), 6.2 (decimal rows and typed defaults), 6.3 (indexed
 families), 6.4 (choice rows), 6.5 (live rows: slots, ramps, steps, live values, `io.param`) and 6.6 (retunes, feature
-`live`) are built and in the library docs ([writing-a-node-type.md](../writing-a-node-type.md#change-marks), [#decimal-rows](../writing-a-node-type.md#decimal-rows),
+`live`) and the `gain` type with the all-type live sweeps (step 6.7, but for its system test and its fixtures' retune
+cases) are built and in the library docs ([writing-a-node-type.md](../writing-a-node-type.md#change-marks), [#decimal-rows](../writing-a-node-type.md#decimal-rows),
 [#indexed-families](../writing-a-node-type.md#indexed-families), [#choice-rows](../writing-a-node-type.md#choice-rows),
 [#live-rows](../writing-a-node-type.md#live-rows), [architecture.md](../architecture.md#the-realtime-channels),
 [#live-values](../architecture.md#live-values), [#retunes](../architecture.md#retunes),
-[control-port.md](../control-port.md#retunes), [output-records.md](../output-records.md#param)), the rest is not. Revised on 2026-11-26 against the code slices 3d (changes in place and reshapes, on
+[control-port.md](../control-port.md#retunes), [output-records.md](../output-records.md#param),
+[node-types.md](../node-types.md#gain), [writing-a-node-type.md](../writing-a-node-type.md#what-every-type-must-also-pass)),
+the rest is not. Revised on 2026-11-26 against the code slices 3d (changes in place and reshapes, on
 `master` since v4.3.0) and 5 (the control plane, on `claude/slice-5`) built, and against the owner's rule M3 from
 `processing-nodes.md` (on `claude/admiring-hamilton-26crw1`), whose slice-6 extensions this page folds in as general
 mechanisms. Slice 6 gives a node type decimal, choice and indexed rows, rows that change **live** (ramped or stepped
@@ -124,7 +127,7 @@ route noise:noise.mono amp:in.1;
 route amp:out.1 desk:play.1;
 ```
 
-`gain` (5.7) has `channels` (default 2, a reshape in place), live ramped `gainDb` and `mute`, and the live indexed
+`gain` ([node-types.md](../node-types.md#gain)) has `channels` (default 2, a reshape in place), live ramped `gainDb` and `mute`, and the live indexed
 families `trimDb.<n>` and `invert.<n>` by `channels`.
 
 ### 3.1 The operator, in the editor
@@ -304,7 +307,7 @@ Everything extends `settings_table.hpp`, `type_spec.hpp`, `lifecycle.hpp` and `n
 
 Built ([writing-a-node-type.md](../writing-a-node-type.md#live-rows)): `.live(ramp(ms))` and `.live(step)`, the one-mark
 rule, `SettingRow::rampMs`, the count of live members and its bound of 256. Still to come: a gesture's end rounds to
-`decimals` (step 6.8), and the all-type tests hold a `minIsSilence` row's low to exact zeros (step 6.7).
+`decimals` (step 6.8).
 
 ### 5.2 Reading settings
 
@@ -319,7 +322,7 @@ rule, `SettingRow::rampMs`, the count of live members and its bound of 256. Stil
 
 `ports()` reads through `get`, so it cannot read a live row, and so a retune never changes the ports. A `configure` that
 copies a `liveValue` into its code holds a value that goes stale at the first retune; only review catches that, and the
-all-type tests' live sweep (5.6) catches a code that never follows its slot.
+all-type tests' live sweep ([writing-a-node-type.md](../writing-a-node-type.md#what-every-type-must-also-pass)) catches a code that never follows its slot.
 
 `check` runs at parse as built, and with given live values in place through the built `NodeConfig::checkLive`
 ([architecture.md](../architecture.md#retunes)). Step 6.8 runs it on the main loop for every gesture tick, and the
@@ -346,95 +349,14 @@ Built: [writing-a-node-type.md](../writing-a-node-type.md#live-rows) and `src/co
 `TypeHarness`'s `h.change` answering `retune` and `h.live` running the type's check are built
 ([writing-a-node-type.md](../writing-a-node-type.md#its-own-tests)).
 
-The all-type tests ([writing-a-node-type.md](../writing-a-node-type.md#what-every-type-must-also-pass)) gain, in step
-6.7 with `gain` as the first type they cover: every live row moved to its minimum and its maximum leaves the ports
-unchanged and the node unrestarted; every ramped row ramps from its default to its maximum with every sample written;
-every `minIsSilence` row at its minimum outputs exact zeros, whatever the other live rows hold. A sweep that finds no
-registered type with a live row fails, as a guard that checks nothing does ([testing.md](../testing.md#the-rules)).
-That restart rows carry a reason is a compile-time rule (5.1), not a test.
+The all-type live sweeps, with `gain` the first type they cover, are built
+([writing-a-node-type.md](../writing-a-node-type.md#what-every-type-must-also-pass)).
 
-### 5.7 The `gain` type, whole
+### 5.7 The `gain` type
 
-```cpp
-// src/nodes/gain/gain_spec.hpp: a gain per channel, every adjustment live but the channel count (a reshape in place).
-namespace ear::nodes::gain {
-inline constexpr auto channelsRow =
-	setting::defaulted("channels", setting::number(1, 64, "channels"), 2u).shapesPorts().inPlace();
-inline constexpr auto gainRow =
-	setting::defaulted("gainDb", setting::decimal(-90.0, 24.0, "dB", {.decimals = 1, .taper = setting::Taper::db,
-	                                                                  .minIsSilence = true}), 0.0)
-		.live(setting::ramp(20));
-inline constexpr auto muteRow = setting::defaulted("mute", setting::boolean(), false).live(setting::ramp(10));
-inline constexpr auto trimRow =
-	setting::indexed("trimDb", channelsRow, setting::decimal(-24.0, 24.0, "dB", {.decimals = 1}), 0.0)
-		.live(setting::ramp(20));
-inline constexpr auto invertRow =
-	setting::indexed("invert", channelsRow, setting::boolean(), false).live(setting::ramp(10));
-inline constexpr auto in = bank::input<"in">;
-inline constexpr auto out = bank::output<"out">;
-inline constexpr auto clipping = status::flag<"clipping">(writer::rt).help("an output went above full scale");
-inline constexpr auto clipped = event::of<"clipped">(EventSeverity::warn, "channel {channel} clipped at {peakDb} dB",
-                                                     arg::number<"channel">(1, 64), arg::decimal<"peakDb">());
-inline constexpr auto resetClip = action::trigger<"reset-clip">("clear the clipping flag");
-inline constexpr TypeSpec spec{.settings = SettingsTable<channelsRow, gainRow, muteRow, trimRow, invertRow>{"gain"},
-                               .banks = Banks<in, out>{},
-                               .status = StatusTable<clipping>{},
-                               .events = EventTable<clipped>{},
-                               .actions = ActionTable<resetClip>{}};
-using Checked = CheckedOf<spec>;
-
-inline float dbToFactor(float db) noexcept { return std::exp2(db * 0.16609640474F); }
-// gainDb's minimum is silence (minIsSilence), whatever the trim adds.
-inline float gainToFactor(float db) noexcept { return db <= -90.0F ? 0.0F : dbToFactor(db); }
-
-struct GainCode {
-	bool latched = false;
-	void process(Io<spec> io, const GraphCycle&) noexcept {
-		if (io.triggered<resetClip>()) latched = false;
-		const Smoothed gain = io.param<gainRow>();
-		const Smoothed mute = io.param<muteRow>();
-		const auto ins = io[in];
-		const auto outs = io[out];
-		for (std::size_t c = 0; c < outs.size(); ++c) {
-			const Smoothed trim = io.param<trimRow>(c);
-			const Smoothed invert = io.param<invertRow>(c);
-			const auto factorAt = [&](std::uint32_t i) {
-				return gainToFactor(gain[i]) * dbToFactor(trim[i]) * (1.0F - mute[i]) * (1.0F - 2.0F * invert[i]);
-			};
-			if (gain.steady() && trim.steady() && mute.steady() && invert.steady()) {
-				const float factor = factorAt(0);
-				for (std::uint32_t i = 0; i < io.frames(); ++i) outs[c][i] = ins[c][i] * factor;
-			} else {
-				for (std::uint32_t i = 0; i < io.frames(); ++i) outs[c][i] = ins[c][i] * factorAt(i);
-			}
-			float peak = 0.0F;
-			for (const float sample : outs[c]) peak = std::max(peak, std::abs(sample));
-			if (peak > 1.0F && !latched) {
-				latched = true;
-				io.raise<clipped>(static_cast<std::int64_t>(c + 1), 20.0 * std::log10(static_cast<double>(peak)));
-			}
-		}
-		io.set<clipping>(latched);
-	}
-};
-
-class Gain {
-public:
-	static Members<spec> ports(const Checked& s) {
-		return {in(members(s.get<channelsRow>())), out(members(s.get<channelsRow>()))};
-	}
-	Configured configure(CreateOf<spec>& cx, const Checked&) { return cx.applied(GainCode{}); }
-	// Called only for a change of `channels` (its one in-place row): a code for the new ports. The latch starts clear.
-	Changed configure(ChangeOf<spec>& cx, const Checked&, const Checked&) { return cx.applied(GainCode{}); }
-};
-}
-```
-
-`gain.cpp` is `makeNodeType<gain::spec, gain::Gain>()`; `CMakeLists.txt` is `ear_node_type(SOURCES gain.cpp TESTS
-tests/gain_test.cpp)`; `validSettings` gains `{"gain", {{{"channels", 2}, {"gainDb", -6.0}, {"trimDb.1", 0.5},
-{"invert.2", true}}}}`. Nothing else names the type. Since 130 live members (1 + 1 + 64 + 64) are made for every
-configuration, each block's advance costs one atomic load when nothing moved ([architecture.md](../architecture.md#the-realtime-channels)). Every row carries its mark;
-`gain` has no restart row.
+Built ([node-types.md](../node-types.md#gain), `src/nodes/gain/gain_spec.hpp`). Since 130 live members (1 + 1 + 64 +
+64) are made for every configuration, each block's advance costs one atomic load when nothing moved
+([architecture.md](../architecture.md#the-realtime-channels)).
 
 ## 6. The realtime contract
 
@@ -658,16 +580,9 @@ A row gains, as it applies:
 | `change`, `live` | built ([control-port.md](../control-port.md#type-schemas)) |
 | `indexed` | built ([control-port.md](../control-port.md#type-schemas)); a `retuned` entry maps to its family's field by the same rule |
 
+`gain`'s schema whole is in `test/protocol/types.json`, as the real ear sends it.
+
 ```json
-{"name":"gain","inputs":["in"],"outputs":["out"],"reconfigureMs":10000,"settings":[
-  {"key":"channels","kind":"wholeNumber","required":false,"default":2,"min":1,"max":64,"unit":"channels","change":"inPlace","shapes":true},
-  {"key":"gainDb","kind":"decimal","required":false,"default":0,"min":-90,"max":24,"unit":"dB","decimals":1,"taper":"db","minIsSilence":true,"change":"live","live":{"transition":"ramp","ms":20}},
-  {"key":"mute","kind":"flag","required":false,"default":false,"change":"live","live":{"transition":"ramp","ms":10}},
-  {"key":"trimDb","kind":"decimal","required":false,"default":0,"min":-24,"max":24,"unit":"dB","decimals":1,"taper":"linear","change":"live","live":{"transition":"ramp","ms":20},"indexed":{"by":"channels","from":1,"max":64}},
-  {"key":"invert","kind":"flag","required":false,"default":false,"change":"live","live":{"transition":"ramp","ms":10},"indexed":{"by":"channels","from":1,"max":64}}],
- "status":[{"name":"clipping","kind":"flag","initial":false,"display":"panel","help":"an output went above full scale","flapsAbove":{"transitions":10,"windowMs":10000}}],
- "events":[{"code":"clipped","severity":"warn","sentence":"channel {channel} clipped at {peakDb} dB","args":[{"name":"channel","kind":"wholeNumber","min":1,"max":64},{"name":"peakDb","kind":"decimal"}]}],
- "actions":[{"name":"reset-clip","by":"type","target":"code","help":"clear the clipping flag","args":[]}]}
 {"key":"card","kind":"text","required":true,"change":"restart","restartReason":"card has no change in place yet","mustBe":"…"}
 {"key":"type.1","kind":"choice","values":["peak","lowShelf","highShelf"],"required":false,"default":"peak","change":"live","live":{"transition":"step"},"indexed":{"by":"bands","from":1,"max":16}}
 ```
@@ -765,7 +680,6 @@ moves it.
 | File | Covers |
 |---|---|
 | `rows.json` (built with its decimal rows and typed defaults: [control-port.md](../control-port.md#fixtures)) | schemas of test types (not the real ear's), held by `src/control/tests/type_schemas_test.cpp` encoding test specs and read by vitest's form tests: a family and choices (built), live ramped and stepped rows (6.6); each step extends it, so the row vocabulary has a fixture before any built type uses it |
-| `types.json` | `gain`'s schema whole (6.7); every built row's `change` and `restartReason` are built |
 | `edits.json`, `node-set.json` | `retuned: []` on every `node.updated` and `node.set` answer, `alsoChanged: []` on every `node.set` answer (built); with `gain` (6.7): a retune, a mixed reshape with `retuned`, a dry run of each; a disabled node's `stored` with `retuned`; `alsoChanged` on a shared definition |
 | `gestures.json` (new) | begin with no echo to the owner and `begin` to another first; ticks (one stale); end with its order; reaches of two keys and of 64; `reach-mismatch` with `with`; `parameter-held` with `silentMs`; a silent holder released `stale`; a begin on a failed node; cancel; `tick-refused` to the owner only; an end refused `invalid-settings`, aborted `refused`; an end from another session by id (the reconnect); an unsubscribed owner getting `aborted`; aborts by a related hand edit, `graphFile.set`, `node.set`, `node.addText` and `node.setText`; `node.setText` of a held key refused; a live count retune inactivating a held member (`key-removed`); an unrelated hand edit and a route edit left open; `session-closed` after a queued end; `unknown-gesture` after an abort; `not-in-batch` for each method; `notification-only` |
 | `unknown-values.json`, `errors.json`, `snapshot.json`, `output-records.json` | this page's members, codes and records |
@@ -870,7 +784,7 @@ specs and vitest's form tests read; `types.json` stays what the real ear sends.
 | 6.4 | Choice rows: **built** | 6.2 | kind `choice` for settings | the same |
 | 6.5 | Slots, ramps, steps, live values, `io.param`: **built** | 6.2, 6.3, 6.4 | none | writing-a-node-type.md#live-rows, architecture.md#the-realtime-channels |
 | 6.6 | Retunes: **built** | 6.5 | feature `live` | architecture.md#restarts-and-changes-of-settings and #failures, control-port.md, output-records.md |
-| 6.7 | The `gain` type | 6.6 | `types.json` gains `gain` | node-types.md |
+| 6.7 | The `gain` type: **built** but for its system test and fixture cases | 6.6 | `types.json` gains `gain` | node-types.md |
 | 6.8 | Gestures | 6.6 | feature `gestures` | control-port.md (#order, #per-client-limits-and-stopping: "one message in flight"), graph-file.md |
 | 6.9 | The editor's live controls | 6.6 (switches and selects), 6.8 (faders) | none | editor.md; deletes this page and its row in [README.md](README.md) |
 
@@ -901,13 +815,11 @@ retune by a real type (a retune, a mixed reshape with `retuned`, a dry run of ea
 switches and selects, committed at once by `node.set` with the `alsoChanged` notice, are built
 ([editor.md](../editor.md#the-settings-form)).
 
-**6.7 The `gain` type.** 5.7 whole, and the all-type sweeps of 5.6 with `gain` as their first type. Tests
-(`ear_node_gain_tests`): unity, -6 dB (factor 0.5012) and mute (0) once steady; `gainDb -90` with `trimDb.1 +24` exact
-zeros; mute's and invert's ramps stepping no more than 10 ms allows; trims per channel; the clip latch, event and
-trigger; `channels` 2 to 4 and back in place with channels 1 and 2 never silent and never `stopping`; with
-`trimDb.3 -6`, channels 2 to 4 gives channel 3 exactly -6 dB from its first sample; the all-type tests. System test:
-white noise through `gain` into a `file`; `node.set` of `gainDb` mid-recording; the WAV's level moving over 20 ms with
-no gap and no `node.state` record.
+**6.7 The `gain` type** is built, with the all-type live sweeps: [node-types.md](../node-types.md#gain) and
+[writing-a-node-type.md](../writing-a-node-type.md#what-every-type-must-also-pass) say how, and `types.json` holds its
+schema. Still to come in this step: the system test (white noise through `gain` into a `file`; `node.set` of `gainDb`
+mid-recording; the WAV's level moving over 20 ms with no gap and no `node.state` record) and the fixture cases left
+from step 6.6.
 
 **6.8 Gestures.** `Gestures` with its silence timer on the main loop's injectable clock, `GraphGateway::gesture`,
 `GestureRequests` and `MainLoopSide`'s working-copy state, the reach index with defining lines from tokens, begin on

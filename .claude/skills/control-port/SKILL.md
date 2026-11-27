@@ -76,7 +76,7 @@ use`).
   into a loop's state (`{}` when its handler did it, `action-failed` with its text, `restarted`, `action-timeout` after
   10 s). It rides the keeper's order like a verb, but the keeper never waits for a handler: the reply (a batch's too)
   is held on the main loop until the action answered, so a slow handler holds only that client's later requests. Each
-  answer writes an `action` record. No built-in type has an action yet; `types.get` lists each type's `actions`.
+  answer writes an `action` record. `gain`'s `reset-clip` trigger is the one built-in action; `types.get` lists each type's `actions`.
 - **`node.disable`, `node.enable`** are edits of the node's own `disabled` line (`node white
   noise { disabled true; }`), written behind like any edit: `node.updated` with `applied`
   (`disable`, `enable`; `stored` for a change to a disabled node) and `disabled: true` when

@@ -8,8 +8,8 @@ docs in `docs/` do.
 
 EAR ("Einstein Audio Router") is a C++23 program for Linux that runs PipeWire's audio engine inside
 its own process and builds an audio graph from its graph file, `ear.conf` (written in the knobly
-language, mcurcio/knobly). It starts the nodes the file names (`white`, `file`, `card`, `rtp`,
-`sendspin`, `airplay`), links their ports as the file's routes say, prints a JSON record for every change, and
+language, mcurcio/knobly). It starts the nodes the file names (`white`, `gain`, `file`, `card`,
+`rtp`, `sendspin`, `airplay`), links their ports as the file's routes say, prints a JSON record for every change, and
 keeps the file live: edits made through its control port (7777: a graph editor and JSON-RPC) are
 applied and written back into `ear.conf`, and hand edits are applied and shown in the editor. It
 ships as a container image published from GitHub Actions.

@@ -590,7 +590,7 @@ rows changes that fixture in the same commit.
 With the feature `actions` (`test/protocol/actions.json`), `node.invoke` runs one of a node's type
 actions: a request that changes no setting and that nothing redoes after a restart
 ([writing-a-node-type.md](writing-a-node-type.md#actions)). Each type schema carries `actions`, in
-declaration order, `[]` for a type with none; no built-in type has one yet.
+declaration order, `[]` for a type with none; `gain`'s `reset-clip` is the one built-in action.
 
 - **An action**: `name` (kebab-case, never a lifecycle verb's), `by` (`type`; open), `target`
   (`code` for a trigger, `loop` for a call; open), `help`, and `args`: its arguments as setting

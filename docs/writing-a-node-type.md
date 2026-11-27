@@ -1827,7 +1827,17 @@ harness's own record, its cycles, cut cycles and stalls.
   type through the harness: added, configured, running once every engine companion is ready, every
   output sample written, then stopped, started, restarted, disabled, enabled and removed. The
   harness runs no loop's work and fires no timer unless a test asks (`runLoops`, `advance`), so a
-  type whose loops start a network library (`sendspin`) is run with no network.
+  type whose loops start a network library (`sendspin`) is run with no network. A family's key is
+  given by any of its members (`trimDb.1`).
+- **Live rows.** Every type with a [live row](#live-rows) is swept through the harness
+  (`test/nodes/live_rows_test.cpp`), from its valid settings: each live row (a family's first
+  member and its last active one) moved to its minimum and its maximum is a retune that leaves the
+  ports, the node's phase and its code as they were (no health told, no swap), every output sample
+  written; each ramped row ramps from its default to its maximum with every output sample written,
+  in blocks that end inside the ramp; and each decimal row whose minimum is silence (`minIsSilence`)
+  gives exact zeros on every output at its minimum, whatever the other live rows hold (every one at
+  its minimum, at its maximum, or as the valid settings give it), parsed there and moved there
+  live. A sweep that finds no live row in any type fails, so the guard never checks nothing.
 - **Refusals.** Add a test case to `test/nodes/settings_refusals_test.cpp` giving each refusal's
   exact text and which of several problems is told first.
 - **The schema.** The same valid settings hold the type's schema to the type
