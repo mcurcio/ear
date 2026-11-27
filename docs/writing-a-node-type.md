@@ -340,7 +340,9 @@ in order:
    anything else?** [Live](#live-rows): ramped when a jump would click and the code can use an
    in-between value, stepped otherwise.
 3. **Can the type apply it while the node runs** (a new receiver, a replaced sink, a new code, a
-   declared latency)? In place.
+   declared latency)? In place. A row that changes the declared latency (a delay's `ms`, a
+   limiter's look-ahead) is in place even when only the code reads it: only the change version
+   declares latency, and a latency that moved on every tick would carry the plan again each turn.
 4. Otherwise `.restarts("<why>")`. The reason must be true: a row the framework could change in
    place but whose type has no change version for it yet says so (`file`'s `path`: "file has no
    change in place yet"; `card`'s `card`: "card has no change in place yet").

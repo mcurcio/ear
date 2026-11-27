@@ -795,6 +795,25 @@ through `LiveTarget` (NodeHost), and never the file.
 - **At a stop** (`SIGTERM`) every open gesture is dropped: nothing is committed and nothing told,
   since a stop is nobody's release and the keeper refuses edits once stopping.
 
+Why it is built this way:
+
+- **`ear.conf` is written once, at the end** (the owner: "commit at gesture end"). Ticks move only
+  slots, and never pass through the keeper, which may be writing: a knob behind a write would lag.
+  Values stay in the row's unit on the wire, never a normalised 0..1, since `ear.conf` and a script
+  hold the unit and the editor maps travel to it.
+- **A silent owner is ended by a main-loop timer per gesture**, not by a timer on the control
+  thread (which has none) nor by TCP keepalive: keepalive would change every connection's lifetime,
+  could reset a slow but live reader that the queue rule should close with 1008, and sees only a
+  proxy, never the browser behind it. A frozen tab or a dropped proxy falls silent just the same.
+- **A release keeps the last accepted value** (the owner's choice, "keep last value"): it is what
+  the audio plays, so what the person last heard; a refused tick was never heard.
+- **ear chooses the id**: ids chosen by clients across sessions would need a collision rule, and a
+  begin answered on the main loop is fast enough.
+- **One notification per gesture, never per reached key**: a gang of 64 trims at 30 moves a second
+  would be 1920 messages a second to each client.
+- **Gestures move only live ramped decimals**: a stepped row has no value between two to drag
+  through, and a drag of an in-place row would chop the audio into holds.
+
 ### Changes in place
 
 A change in place applies new settings to a node's configuration without tearing it down: a
@@ -1225,5 +1244,7 @@ replaced make-before-break, each new one handed over in one invoke, so a bank ne
 clock anchored to one card; serving PipeWire's socket (for a program that can only be a PipeWire client; its nodes would be engine companions, marked by the socket's peer credentials); a login on port 7777; automatic card retry and hotplug; `@include`; undo; changing the graph
 frequency or block size while ear runs; arm64 images (which wait on a port added to a running block on the data loop: [engine.md](engine.md#the-one-data-loop-and-invokes)); a fault caught at the callback boundary
 failing only the node that owns it (today it ends the process); the `sendspin` library's log lines attributed to their node;
-and the converter companion's set and tracked modes ([the timing model](#the-timing-model)). The design pages for the unbuilt slices
+and the converter companion's set and tracked modes ([the timing model](#the-timing-model)); `file`'s `path` and
+`card`'s `card` changed in place, and values a node learns itself (a `sendspin` server's volume, an AirPlay sender's) as
+live rows ([design/live-follow-ons.md](design/live-follow-ons.md)). The design pages for the unbuilt slices
 remain in `docs/design/`.

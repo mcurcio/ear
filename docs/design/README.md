@@ -12,8 +12,8 @@ the numbers too, and git keeps the pages they were on.
 
 The slices are built in this order (decided: each later slice hooks into the earlier one's states, and companions,
 built in slice 3b ([architecture.md](../architecture.md#companions)), removed primitives slice 3c would otherwise have built): 3c, 3d, then
-5, 6, 8. `processing-nodes.md`'s speaker types (on its own branch) start after step 6.6 of slice 6
-([parameters.md](parameters.md#11-order-of-work)).
+5, 6, 8. Slice 6 (parameters) is built; what it left is in `live-follow-ons.md`, and `processing-nodes.md`'s speaker
+types (on its own branch) need nothing more from it ([live-follow-ons.md](live-follow-ons.md#the-speaker-types)).
 Slice 3c is built but for the three pieces `slice-3c-remainder.md` keeps, none of which a later slice waits for. Slice 3d
 (changes in place and reshapes) is built ([architecture.md](../architecture.md#changes-in-place),
 [#reshapes](../architecture.md#reshapes)); the editor's Apply with a dry run came with slice 5's settings form
@@ -24,7 +24,7 @@ Slice 3c is built but for the three pieces `slice-3c-remainder.md` keeps, none o
 |---|---|---|---|
 | [`slice-3c-remainder.md`](slice-3c-remainder.md) | 3c | What slice 3c left unbuilt: the `sendspin` library's log lines attributed to their node by a carried patch (S3c.7), the converter companion's set and tracked modes (T5), and dropping the carried starved-floor patch | designed; S3c.7 waits on priorities, T5 on a first user, the patch's drop on evidence from both burst shapes; the rest of slice 3c is built and in the library docs |
 | [`control-plane.md`](control-plane.md) | 5 | What slice 5 left: sendspin's first action (forgetting one pairing), status coalesced in a client's queue, and what is reserved | slice 5 is built and in the library docs but for that action, which waits on its library |
-| [`parameters.md`](parameters.md) | 6 | One change mark per row (live ramped or stepped, in place, a restart with its reason: the owner's M3); slots and ramps in the realtime channels; retunes, mixed changes included; gestures ended by a main-loop timer, none on the control thread; the `gain` type; the editor's live controls and faders | designed, revised on 2026-11-26 against slices 3d and 5 as built and after review; the owner took every recommendation (O1 to O12) the same day; steps 6.1 to 6.8 (rows, families, choices, live rows, retunes, the `gain` type, gestures) are built and in the library docs; 6.9 (the editor's faders) is left |
+| [`live-follow-ons.md`](live-follow-ons.md) | 6 | What slice 6 left: `file`'s `path` and `card`'s `card` changed in place (the owner's O6), values a node learns itself as live rows (O12), and the marks `processing-nodes.md`'s speaker types take | designed in outline; slice 6 is built and in the library docs |
 | [`recovery.md`](recovery.md) | 8 | Failed nodes trying again by themselves with a backoff; `recovering` on the wire; status a companion writes | designed |
 | [`cards-and-clock.md`](cards-and-clock.md) | later | The follower watchdog and a wedged card, sound cards opened off the main loop, a clock anchored to one card, latency reported while running, the hardware checks owed | partly designed |
 

@@ -14,8 +14,8 @@ actions, triggers, calls, `node.invoke` and the editor's buttons ([writing-a-nod
 and events ([node-types.md](../node-types.md#status-and-events)); and the test of ten chatty nodes and a slowly reading
 client ([testing.md](../testing.md#the-client-queue-under-status)).
 
-Slice 6 (parameters), designed together with slice 5 on this page until slices 3d and 5 were built, is now its own
-page, [`parameters.md`](parameters.md), revised against the built code.
+Slice 6 (parameters), designed together with slice 5 on this page until slices 3d and 5 were built, is built and in
+the library docs; what it left is [`live-follow-ons.md`](live-follow-ons.md).
 
 ## The owner's words that bind what is left
 
