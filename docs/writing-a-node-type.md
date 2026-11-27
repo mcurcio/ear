@@ -77,36 +77,36 @@ and `makeNodeType` refuse an unnamed namespace at compile time.
 ### Settings: one table of typed rows
 
 ```cpp
-inline constexpr auto cardRow = setting::required("card", setting::text<CardId::parse>("an ALSA card id, ..."));
-inline constexpr auto playbackRow = setting::defaulted("playback", setting::number(0, 64, "channels"), 0);
+inline constexpr auto cardRow = setting::required("card", setting::text<CardId::parse>("an ALSA card id, ..."))
+                                   .restarts("card has no change in place yet");
+inline constexpr auto playbackRow = setting::defaulted("playback", setting::number(0, 64, "channels"), 0)
+                                       .shapesPorts()
+                                       .restarts("a companion on a resized bank cannot be replaced in place yet");
 inline constexpr auto rateRow =
-	setting::optional("rate", setting::rate(SampleRate::fixed<8'000>(), SampleRate::fixed<192'000>()));
-inline constexpr auto portRow = setting::optional("port", setting::number(1, 65535)).onlyWithout(serverRow);
+	setting::optional("rate", setting::rate(SampleRate::fixed<8'000>(), SampleRate::fixed<192'000>())).inPlace();
+inline constexpr auto portRow = setting::optional("port", setting::number(1, 65535)).onlyWithout(serverRow).inPlace();
 ```
 
 | Row | Reads as | When absent |
 |---|---|---|
 | `setting::required(key, rule)` | the value | `<key>: missing` |
 | `setting::optional(key, rule)` | `std::optional` of the value | empty |
-| `setting::defaulted(key, number, default)` | the value | the default (numbers only; a default outside the range does not compile) |
+| `setting::defaulted(key, rule, default)` | the value | the default, of the rule's kind: a whole number, a [decimal](#decimal-rows), a boolean or a [choice](#choice-rows)'s enumerator. A default outside the range, an enumerator the choice does not name, or a default on a text or rate row, does not compile. The default is not deduced, so `defaulted("playback", number(0, 64), 0)` takes the literal `0` as the rule's value |
+| `setting::indexed(key, countRow, rule, default)` | each member by its number: `s.get<row>(i)` | the default, as `defaulted`'s ([below](#indexed-families)) |
 
 | Rule | A good value | Refused with |
 |---|---|---|
 | `setting::number(low, high, unit = {})` | a JSON integer in [low, high] (not a float, bool or string) | `<key>: must be a whole number[ of <unit>], <low>-<high>` |
 | `setting::rate(low, high)` | a JSON integer of hertz in [low, high], read as a `SampleRate`; in `ear.conf` written with its unit (`44.1khz`, [graph-file.md](graph-file.md#rates)) | `<key>: must be a rate from <low> to <high> (on the control port, a whole number of Hz)`, the ends as ear writes them (`8khz`) |
+| `setting::decimal(low, high, unit = {}, hints = {})` | a finite JSON number in [low, high], an integer taken, read as `double`; in `ear.conf` a number word (`-3.5`, `0.25`, `1e3`) ([below](#decimal-rows)) | `<key>: must be a number[ of <unit>] from <low> to <high>`, the ends as ear writes a decimal (`-90`, `0.25`) |
+| `setting::choice<E>({{"peak", E::peak}, ...})` | a JSON string equal to one of its names, read as the enumeration `E`; in `ear.conf` a word or a quoted string ([below](#choice-rows)) | `<key>: must be one of "peak", "lowShelf" and "highShelf"` |
 | `setting::boolean()` | JSON `true` or `false` (not a string, number or null), read as `bool`; in `ear.conf` the bare word `true` or `false`, or a variable ([graph-file.md](graph-file.md#settings-and-their-kinds)) | `<key>: must be true or false` |
 | `setting::text<Parse>(mustBe)` | a JSON string `Parse` accepts; `Parse` is `std::optional<T>(std::string_view)`, and `T` (what the row reads) must own what it holds | `<key>: must be <mustBe>` |
 
 - `.onlyWithout(above)` refuses the key given together with a row above it: `<key>: only without
   "<above>"`. Neither row may be required.
-- `.inPlace()` marks a key the type can take while the node runs, through its change version of
-  `configure` (`setting::required("port", setting::number(1, 65535)).inPlace()`). Every row is
-  restart-only by default: a change to it restarts the node. The marks are data in the table: the
-  desired graph's plan reads them, and a change whose every changed key is marked is planned
-  `reconfigure` rather than `restart`
-  ([architecture.md](architecture.md#restarts-and-changes-of-settings)). A key whose value builds
-  the node's ports (a channel count) need not be marked: a change of ports is a reshape, in place only
-  when every changed key is marked ([architecture.md](architecture.md#reshapes)).
+- `.inPlace()` and `.restarts(why)` are a row's change mark ([below](#change-marks)): every row of
+  a spec's settings has exactly one.
 - `.shapesPorts()` marks a key whose value may change the node's ports (`card`'s `playback` and
   `capture`, `rtp`'s `channels`). The plan never reads it (it compares the ports themselves); the
   all-type tests hold it to the type's `ports()` both ways: a row that changes the ports for a value
@@ -125,24 +125,252 @@ inline constexpr auto portRow = setting::optional("port", setting::number(1, 655
   when it has neither a default nor `defaultFrom` (`sendspin`'s `server`: "absent: ear listens on port
   for the server to dial it"), which the all-type tests require, or anything `mustBe` does not say.
 - Each key once; `disabled` (the framework's key) cannot be declared; a table's name must be its
-  folder's. Each is a compile error.
+  folder's. Each is a compile error. A plain row spelt as a family's member (`trimDb.2` beside the
+  family `trimDb`) does not compile either.
 - The table is `SettingsTable<row1, row2, ...>{"<type>"}` (`SettingsTable<>{"white"}` for none).
-  It gives the type's name, its settings' kinds (text, whole number, rate or boolean, which is how
-  `ear.conf` is read and written) and the whole check, so the graph file reader cannot disagree with `parse`.
+  It gives the type's name, its settings' kinds (text, whole number, rate, boolean, decimal or choice, which is
+  how `ear.conf` is read and written: `NodeType::kindOf(key)`) and the whole check, so the graph file reader cannot disagree with `parse`.
 - A parsed value is parsed once: a text row reads as what its parse function made (a `CardId`, an
   `RtpAddress`, a path).
+
+#### Decimal rows
+
+```cpp
+inline constexpr auto levelRow =
+	setting::defaulted("levelDb", setting::decimal(-90.0, 24.0, "dB", {.decimals = 1, .taper = setting::Taper::db,
+	                                                                   .minIsSilence = true}), 0.0)
+		.inPlace();
+inline constexpr auto cutoffRow =
+	setting::required("cutoffHz", setting::decimal(20, 20'000, "Hz", {.decimals = 0, .taper = setting::Taper::log}))
+		.inPlace();
+```
+
+A decimal row reads as `double`. Its range is two finite bounds, low not above high, and its hints
+(`setting::DecimalHints`) are for controls only, never for the walk:
+
+| Hint | Default | What |
+|---|---|---|
+| `decimals` | 2 | the places a control shows |
+| `taper` | `linear` | how a control maps its travel to the value: `linear`; `log`, on the value's logarithm (a frequency), which needs a low above 0; `db`, a level, which needs a range from -60 dB or lower to 0 dB or higher |
+| `minIsSilence` | `false` | the row's low end means silence: a control shows -inf there |
+
+A bound that is not finite, low above high, a log taper with a low of 0 or less, a dB taper that
+does not reach from -60 to 0, and a default outside the range each do not compile. The walk takes
+any JSON number in the range, an integer too (`-6` is `-6.0`), and never a string or a boolean; it
+does not round, so a value with more places than `decimals` is taken as given. In `ear.conf` a
+decimal is written as the shortest text that reads back the same, in fixed notation
+([graph-file.md](graph-file.md#settings-and-their-kinds)).
+
+#### Choice rows
+
+```cpp
+enum class Shape { peak, lowShelf, highShelf };
+inline constexpr auto shapeRow =
+	setting::defaulted("shape",
+	                   setting::choice<Shape>({{"peak", Shape::peak}, {"lowShelf", Shape::lowShelf},
+	                                           {"highShelf", Shape::highShelf}}),
+	                   Shape::peak)
+		.inPlace();
+// in check, ports or configure:
+if (s.get<shapeRow>() == Shape::lowShelf) ...
+```
+
+A choice is a closed set of names, each paired with the enumerator it reads as, so a row reads as
+the enumeration itself (`Shape`, or `std::optional<Shape>` for an optional row), never as text. A
+name's index is its place in the list; the enumerators need not be in order nor start at 0. The
+walk takes a JSON string equal to one of the names exactly (no case folding, no trimming, never an
+index or a number) and refuses anything else `<key>: must be one of "peak", "lowShelf" and
+"highShelf"`, every name in declaration order. On the wire it is kind `choice` with its names as
+`values` and its default by name ([control-port.md](control-port.md#type-schemas)), so a client
+tells it from a text row's hints; in `ear.conf` it is a word or a quoted string
+([graph-file.md](graph-file.md#settings-and-their-kinds)). A choice can be an [indexed
+family](#indexed-families)'s rule and an action's argument.
+
+`E` must be an enumeration, and the set is checked at compile time: an empty set, more than 32
+names, a name given twice, one enumerator under two names (it would read back as two values), a
+name that is empty or holds a control character, and a default the set does not name each do not
+compile. The names are kept in the rule itself (`ChoiceRule`), so a row made from a braced list
+owns them; the walk keeps a value as its index (`ChoiceIndex`), which `get` maps back to its
+enumerator.
+
+#### Indexed families
+
+```cpp
+inline constexpr auto channelsRow =
+	setting::defaulted("channels", setting::number(1, 64, "channels"), 2).shapesPorts().inPlace();
+inline constexpr auto trimRow =
+	setting::indexed("trimDb", channelsRow, setting::decimal(-24.0, 24.0, "dB", {.decimals = 1}), 0.0).inPlace();
+// in ports(), configure or check:
+for (std::uint32_t c = 0; c < s.count<trimRow>(); ++c) apply(c, s.get<trimRow>(c));
+```
+
+A family is one row declaring the members `<key>.1` to `<key>.<n>`, `n` the value of its **count
+row**: a required or defaulted whole-number row above it in the table (an optional count row, one of
+another kind, one whose high is 0, and one below the family or not in its table do not compile).
+Several families may share one count row. Each member is read by the family's rule and reads the
+family's default when absent, so a family always reads a value; it takes `.inPlace()` or
+`.restarts(why)` and `.help()`, its mark every member's, and never `.shapesPorts()` or
+`.onlyWithout()`.
+
+- **One spelling per member.** A member's key is `<key>.<n>`, `n` written in decimal from 1 with no
+  sign and no leading zero (`trimDb.1`, `trimDb.12`): the one grammar, `setting::memberNumber`, by
+  which the walk, `NodeType::kindOf` and `NodeType::changeOf` find a key's row
+  (`AnySettingsTable::rowOf`). Every other spelling (`trimDb.0`, `trimDb.01`, `trimDb.+1`,
+  `trimDb.1.5`) is no member and is refused `unknown key <key>`, so one member has one spelling in
+  a JSON object and in `ear.conf`, where it is one directive name
+  ([graph-file.md](graph-file.md#settings-and-their-kinds)).
+- **Members up to the count row's maximum are taken**, whatever the count is now. One above the
+  current count is kept, inactive: the code does not use it, the editor greys it, and it is active
+  again when the count rises, so lowering a count never refuses a file that holds `trimDb.3`. One
+  above the maximum is refused `trimDb.65: no such member (channels is at most 64)`. An inactive
+  member is no graph-file warning.
+- **Reading.** `s.get<family>(i)` gives member `i` from 0 (key `<key>.<i+1>`), the file's value or
+  the default, active or not; `s.count<family>()` gives the active members, the count row's value.
+  `s.get<family>()` and `s.get<row>(i)` of a plain row do not compile; a member at or above the
+  maximum throws `std::out_of_range`, a type bug.
+- **The walk** checks a family in its place in the table, member by member in number order (not the
+  object's sorted order, which puts `trimDb.10` before `trimDb.2`); each refusal names the member's
+  full key, as `data.key` too.
+- **The plan** judges a member's change by its family's mark: a change of `trimDb.2` alone in an
+  in-place family is a `reconfigure`, in a restart family a `restart`.
+- The type schema's `indexed` says it is a family ([control-port.md](control-port.md#type-schemas)),
+  and the editor draws a field per member ([editor.md](editor.md#the-settings-form)). A call's
+  arguments ([actions](#actions)) are a fixed set of keys: a family among them does not compile.
+
+#### Live rows
+
+```cpp
+inline constexpr auto gainRow =
+	setting::defaulted("gainDb", setting::decimal(-90.0, 24.0, "dB", {.taper = setting::Taper::db}), 0.0)
+		.live(setting::ramp(20));
+inline constexpr auto muteRow = setting::defaulted("mute", setting::boolean(), false).live(setting::ramp(10));
+inline constexpr auto inputRow = setting::defaulted("input", setting::number(1, 8), 1u).live(setting::step);
+// in process:
+const Smoothed gain = io.param<gainRow>();        // dB, ramped by the framework: gain[i] for frame i
+const Smoothed mute = io.param<muteRow>();        // a weight from 0 to 1, ramped
+const Stepped<std::uint32_t> input = io.param<inputRow>(); // value(), changed(), before(), framesSince()
+```
+
+A **live** row is one only the realtime code uses and that can move between two blocks without
+touching anything else. Its value is a **slot** in the configuration's realtime channels
+([architecture.md](architecture.md#the-realtime-channels)), and the code reads it through
+`io.param`, never through the settings, so a value can move with no hook called and no new code.
+
+- **The mark.** `.live(setting::ramp(ms))` (1 to 1000 ms) on a decimal or a boolean row, or
+  `.live(setting::step)` on a decimal, whole number, boolean or choice row, as the row's one
+  [change mark](#change-marks), on plain rows and families alike. The row must always read a
+  value (required, defaulted or a family): an optional row, a text or a rate row (which name what is
+  never live), a ramp on a whole number or a choice, `ramp(0)`, a live row with `.shapesPorts()`, and
+  a type of more than 256 live members (each family counted at its count row's maximum) do not
+  compile. A live row may be a family's count row; `ports()` reads through `get`, so it can never
+  read a live row, and a live row never changes the ports.
+- **A ramp** starts at the block's first frame from the value its last frame had, over
+  `N = max(1, round(ms × graph rate / 1000))` frames, whatever the distance (constant time); a
+  target that moves mid-ramp restarts from where it is with a whole `N`. Frame `k` of a ramp from
+  `v0` to `t` is `v0 + (t − v0) × (k + 1) / N`, then `t`, computed in double and given as float.
+  It is linear in the row's unit for the `linear` and `db` tapers, on `ln v` for a `log` taper, and
+  a boolean ramps as a weight from 0 to 1 (so `1 − mute[i]` fades). `Smoothed` gives `steady()`
+  (every frame of the block is `value()`), `value()` (the block's last frame), `operator[]` of a
+  frame (O(1), from the ramp's ends: nothing is buffered) and `target()`. Worked: 48 kHz, 20 ms,
+  `N = 960`, steady at -6 and moved to -3.5 before frame 0: frame 0 is -5.9973958, frame 255
+  -5.3333333, frame 959 and after -3.5; at blocks of 256, blocks 0 to 3 are not steady and block 4
+  is.
+- **A step** is the new value for the whole of the next block. `Stepped<V>` gives `value()`,
+  `changed()` (this block is the first with it), `before()` (the value before the last edge;
+  `value()` when there was none) and `framesSince()` (frames since the edge, 0 in the block of the
+  edge, saturating; the most there are when there was none). These live in the channels, not the
+  code, so a crossfade made of (`before`, `value`, `framesSince`) and no state of the code's own
+  goes on across a swap of the code: a code swapped in two blocks after an edge sees two blocks of
+  `framesSince` and the same `before`. Two edges in successive blocks restart a crossfade from the
+  second, `before` then being the first edge's value. A choice is stepped by its name's index and
+  read back as its enumerator.
+- **`forSegments(frames, piece, fn, views...)`** calls `fn(begin, end)` in pieces of at most
+  `piece` frames, each ending where a view's ramp ends, and once over the rest of the block from
+  where every view is steady: a code that recomputes coefficients per piece (an equaliser) pays
+  for them only while something moves.
+- **Families.** `io.param<family>(c)` reads member `c` from 0. Every member up to the maximum,
+  active or not, has a slot, seeded; an active one ramps, while one above the count its code was
+  made with is held at its value with no ramp, so a member a reshape makes active plays its value
+  from its first sample (one the same edit changed too), and no count change resizes anything. `io.count<family>()` gives the
+  active members this block: the count row's stepped value when it is live, else the count the code
+  was made with (a change of that count gives a new code).
+- **Reading elsewhere.** `s.get` of a live row, `s.count` of a family whose count row is live,
+  `io.param` of a row that is not live, of a row of another spec, of a family without a member, or
+  of a plain row with one, and `s.liveValue` of a row that is not live do not compile. `check`,
+  `configure` and the change version read a live row by `s.liveValue<row>()` (a family's by
+  `s.liveValue<family>(i)`), and a family whose count row is live by `s.liveCount<family>()`: in
+  `check` at parse what was parsed, in `configure` and the change version the node's live values
+  ([architecture.md](architecture.md#live-values)). A hook must not act on a live value (the slots
+  already do) and a code must not copy one, which goes stale at its first move; only review catches
+  that.
+- **Retunes.** A change of a live key is a [retune](architecture.md#retunes): its new value
+  reaches the slot at once, with no hook called, whatever the change's other keys ask (a change in
+  place, a reshape or a restart), and in every phase. The change version never sees a live key
+  among its changed keys, so a type's change version is written for its in-place rows alone. The
+  type schema says `change: "live"` with the transition
+  ([control-port.md](control-port.md#type-schemas)).
+- A type with a live row has realtime channels and must answer with a code of its own, never a
+  pass-through.
+
+#### Change marks
+
+Every row of a spec's settings says how a change to its key is taken, with exactly one mark:
+
+| Mark | A change to the key | Schema `change` |
+|---|---|---|
+| `.live(setting::ramp(ms))`, `.live(setting::step)` | Moves a slot the code reads through `io.param` ([live rows](#live-rows)), a [retune](architecture.md#retunes) beside the change's other keys | `live`, with `live`'s `transition` (and a ramp's `ms`) |
+| `.inPlace()` | Taken while the node runs, through the type's [change version](#the-change-version) of `configure` | `inPlace` |
+| `.restarts("<why>")` | Restarts the node; `why` is one line naming what cannot change while it runs, shown beside "restarts" | `restart`, with `restartReason` |
+
+```cpp
+inline constexpr auto portRow = setting::required("port", setting::number(1, 65535)).inPlace();
+inline constexpr auto nameRow = setting::optional("name", ...).restarts("shairport-sync reads it only at start");
+```
+
+Ideally every adjustment is taken without a restart, and a restart is justified: so a restart is
+never a row's default, and its reason is on the wire for the operator. Choose the mark by asking,
+in order:
+
+1. **Does it change the ports?** Mark it `.shapesPorts()` and in place: a change of ports is then a
+   reshape in place ([architecture.md](architecture.md#reshapes)). A configuration with a companion
+   on a resized bank still restarts, which is not built in place yet
+   ([architecture.md](architecture.md#not-built-yet)); such a row says so
+   (`card`'s `playback` and `capture`, `rtp`'s `channels`: "a companion on a resized bank cannot be
+   replaced in place yet").
+2. **Does only the realtime code use it, and can it move between two blocks without touching
+   anything else?** [Live](#live-rows): ramped when a jump would click and the code can use an
+   in-between value, stepped otherwise.
+3. **Can the type apply it while the node runs** (a new receiver, a replaced sink, a new code, a
+   declared latency)? In place. A row that changes the declared latency (a delay's `ms`, a
+   limiter's look-ahead) is in place even when only the code reads it: only the change version
+   declares latency, and a latency that moved on every tick would carry the plan again each turn.
+4. Otherwise `.restarts("<why>")`. The reason must be true: a row the framework could change in
+   place but whose type has no change version for it yet says so (`file`'s `path`: "file has no
+   change in place yet"; `card`'s `card`: "card has no change in place yet").
+
+The marks are data in the table: the desired graph's plan reads them, and a change whose every
+changed key is live is planned `retune`, and one whose every other changed key is marked in place is
+planned `reconfigure` rather than `restart`, its live keys retuned beside it
+([architecture.md](architecture.md#restarts-and-changes-of-settings)); a change of ports is a
+reshape, in place only when every changed key that is not live is marked in place
+([architecture.md](architecture.md#reshapes)). A settings row with no mark, a row with two (or one
+twice) and a restart with an empty reason do not compile. A call's arguments
+([actions](#actions)) are rows too, but never change: a mark on one does not compile.
 
 ### The type schema
 
 `NodeType::schema()` is the type as the control port describes it: its name, its rows in the walk's
-order (each with its key, rule, required, default, `onlyWithout` and the marks above), its banks in
+order (each with its key, rule, required, default of its kind, `onlyWithout`, its [change mark](#change-marks) and its
+reason, a [family](#indexed-families)'s count row and maximum, and the marks above; `settingKinds()` names a family
+by its family's key), its banks in
 declaration order, its in-place deadline (`.lifecycle`), and its status fields and events in
 declaration order ([status and events](#status-and-events)). Everything in it views the spec's static
 storage, so it is the same every call. Nothing but the table and the spec makes it: a type writes no
 schema of its own.
 
 A refusal of the walk names its key (`InvalidSettings::key`: `port` for `port: must be a whole
-number, 1-65535`, the unknown key for `unknown key colour`); a refusal of the type's `check` or
+number, 1-65535`, the unknown key for `unknown key colour`, a family member's full key for `trimDb.2: must be a
+number of dB from -24 to 24`); a refusal of the type's `check` or
 `ports` names none, since a rule across settings has no one key.
 
 ### Banks: the ports
@@ -362,7 +590,7 @@ Changed configure(ChangeOf<spec>& cx, const Checked& old, const Checked& now) {
 ```
 
 A type that can take some of its settings while the node runs marks their rows `.inPlace()`
-([settings](#settings-one-table-of-typed-rows)) and writes this second `configure`. `old` is the
+([change marks](#change-marks)) and writes this second `configure`. `old` is the
 settings the configuration applies, `now` the change's target. It is called for a change whose
 every changed key is marked, on a node that has rested; any other change restarts the node
 ([architecture.md](architecture.md#changes-in-place), which says the framework's order). A new
@@ -612,7 +840,8 @@ The rules, each refused at compile time (`src/core/tests/compile_fail/action_bad
   framework's lifecycle requests ([control-port.md](control-port.md#methods)); its help is one line.
 - A call names a loop its spec lists, declared with a state, and its arguments are a
   `SettingsTable`: the same walk as settings, so a call's arguments are checked as a node's
-  settings are. `CheckedOf<table>` is what that table passed.
+  settings are. `CheckedOf<table>` is what that table passed. Its rows carry no
+  [change mark](#change-marks): arguments never change.
 - A call's handler is a member of its loop's state found by its tag, `Invoked<call>`, and held to
   exactly `std::expected<void, std::string> act(Invoked<call>, const CheckedOf<args>&)`; one per
   call, overloaded by the tag.
@@ -1432,8 +1661,9 @@ not fit: <why>`.
 ## Rules the framework enforces
 
 **At compile time**, each with its reason as the error (the cases are
-`src/core/tests/compile_fail/settings_table_bad.cpp` and `type_spec_bad.cpp`): a bad row, a key
-twice, a table not named for its folder, a spec or row in an unnamed namespace, a bank the spec
+`src/core/tests/compile_fail/settings_table_bad.cpp` and `type_spec_bad.cpp`): a bad row, a settings
+row without its [change mark](#change-marks) or with two, a restart with no reason, a mark on a call's
+argument, a key twice, a table not named for its folder, a spec or row in an unnamed namespace, a bank the spec
 lacks or a misspelt one in `Io`, `ports()` or a context, a write into an input, a backwards
 pass-through or one of no pair, a bad or doubled bank name, a `process` that may throw, a class that is final or has
 no `ports` or `configure`, a member of the wrong signature (`configure`, `start`, `stop`, `check`,
@@ -1521,12 +1751,13 @@ fakes allow. Banks are named by the spec's handles.
 | `h.blockReady()` | The block becomes ready: the code drives, the node runs |
 | `h.ready(bank)`, `h.lose(bank, detail)` | The companion on `bank` becomes ready (an engine companion told ready; a sink held by `holdSinks` begins its consumer; a sink that began or a source is ready already), or an engine companion is lost (a sink or a source is never lost by the framework: `std::logic_error`) |
 | `h->advance(ms)` | The fake clock moves on: the framework's bounds and each companion's readiness deadline fire on it |
-| `h.process(frames)` | One cycle, by the real block's own rules (`ear/core/block_rules.hpp`, `ear/core/cycle_facts.hpp`): its facts stated by `CycleAccount` ([below](#lost-cycles)), a discontinuity where they say (the first cycle, each drive's first, and where the calls below made one); each source played into its bank's input buffers first (by the same `SourceRing::play`, with its clock if it has one, its `SourceTick` carrying the playback latency its bank tells), outputs NaN-filled, the fade applied (in over 5 ms from each drive; a fade-out ramps down from the gain it has); each sink's chunk stamped with the capture latency its bank tells: what the real block works out by the same model, `workOut`, with no peer on any port ([engine.md](engine.md#latency-per-bank-pair)), and handed to its consumer at once through the same `SinkRing` |
+| `h.process(frames)` | One cycle, by the real block's own rules (`ear/core/block_rules.hpp`, `ear/core/cycle_facts.hpp`): its facts stated by `CycleAccount` ([below](#lost-cycles)), a discontinuity where they say (the first cycle, each drive's first, and where the calls below made one); each source played into its bank's input buffers first (by the same `SourceRing::play`, with its clock if it has one, its `SourceTick` carrying the playback latency its bank tells), outputs NaN-filled (a reshape's new ports, outside the code's view until the swap that brings its code, are the real block's: each output written zeros every cycle, each input never read, [engine.md](engine.md#reshapes)), the fade applied (in over 5 ms from each drive; a fade-out ramps down from the gain it has); each sink's chunk stamped with the capture latency its bank tells: what the real block works out by the same model, `workOut`, with no peer on any port ([engine.md](engine.md#latency-per-bank-pair)), and handed to its consumer at once through the same `SinkRing` |
 | `h->loseCycles(n, Lost::cut)`, `h->loseCycles(n, Lost::notScheduled)`, `h->changeDriver(id)`, `h->reposition(frames)` | Before the next `process()`: `n` graph cycles start without the block (its position and time move on by that cycle's frames; past 2^32 - 1 before one `process()`, `std::logic_error`), each cut short or each run whole without it (paused); the block runs on another driver from then on; its position moves with no cycle missed and no time gone ([below](#lost-cycles)) |
 | `h->facts()`, `h->cuts()` | The last cycle's `CycleFacts`, and the cut record the block's account reads |
 | `h.feed(bank, interleaved)`, `h.lastPlayed(bank)`, `h.shortfall(bank)` | A source's writer, never waiting (it takes what fits and returns the frames taken); what the last `process()` did with its ring (the `SourcePlayed` its clock was told, all zero before the first); its shortfall |
 | `h.input(bank, i)`, `h.output(bank, i)` | A port's buffer |
-| `h.stop()`, `h.start()`, `h.restart()`, `h.change(settings)`, `h.disable()`, `h.enable()`, `h.remove()`, `h->stopAll()` | The operations; `stopAll()` is ear's stop, run to the end (what the harness's destructor does) |
+| `h.stop()`, `h.start()`, `h.restart()`, `h.change(settings)`, `h.disable()`, `h.enable()`, `h.remove()`, `h->stopAll()` | The operations; `stopAll()` is ear's stop, run to the end (what the harness's destructor does). `h.change` answers the plan's outcome by `changeOf`, `retune` among them, and retunes a change's live keys as `NodeHost` does |
+| `h.live<row>(value)`, `h.live<family>(member, value)`, `h->liveValues()`, `h->liveReloads()` | A [live row](#live-rows)'s slot moved as a gesture moves it: the type's `check` with the node's live values and this move in place (`NodeConfig::checkLive`), then the node's live values and its configuration's slots at once (`NodeHost::setLive`), the next block taking it; a value outside the row's range, or one the check refuses, is a `std::logic_error` and moves nothing. The node's live values as slot bits; how many blocks the newest configuration's code loaded its slots in (a steady block loads none) |
 | `h.trigger<trigger>()`, `h.invoke<call>(args)`, `h->invoke(name, args)` | The [actions](#actions): a trigger, answered at once (an `ActionReply`); a call, its handler run by `runLoops()` before it returns (an `ActionAnswer`: `answered()`, `reply()`); by name, unchecked and without running the loops, so a test can hold a call queued (behind a restart, past its deadline) |
 | `h.phase()`, `h.health()`, `h.gone()`, `h.droppedFrames()`, `h.companionList()` | What the node shows; its companion list as a client will see it ([engine.md](engine.md#companions-in-a-nodes-list)), read now |
 | `h->unwritten()`, `h->notes()`, `h->logs()`, `h->diagnostics()`, `h->latencyPlan()`, `h->ports()` | Through `->`, the underlying `NodeHarness`; `notes()` as the main loop heard them (after the [note rate](#the-node-handle)), `logs()` every log entry attributed to the node |
@@ -1599,7 +1830,17 @@ harness's own record, its cycles, cut cycles and stalls.
   type through the harness: added, configured, running once every engine companion is ready, every
   output sample written, then stopped, started, restarted, disabled, enabled and removed. The
   harness runs no loop's work and fires no timer unless a test asks (`runLoops`, `advance`), so a
-  type whose loops start a network library (`sendspin`) is run with no network.
+  type whose loops start a network library (`sendspin`) is run with no network. A family's key is
+  given by any of its members (`trimDb.1`).
+- **Live rows.** Every type with a [live row](#live-rows) is swept through the harness
+  (`test/nodes/live_rows_test.cpp`), from its valid settings: each live row (a family's first
+  member and its last active one) moved to its minimum and its maximum is a retune that leaves the
+  ports, the node's phase and its code as they were (no health told, no swap), every output sample
+  written; each ramped row ramps from its default to its maximum with every output sample written,
+  in blocks that end inside the ramp; and each decimal row whose minimum is silence (`minIsSilence`)
+  gives exact zeros on every output at its minimum, whatever the other live rows hold (every one at
+  its minimum, at its maximum, or as the valid settings give it), parsed there and moved there
+  live. A sweep that finds no live row in any type fails, so the guard never checks nothing.
 - **Refusals.** Add a test case to `test/nodes/settings_refusals_test.cpp` giving each refusal's
   exact text and which of several problems is told first.
 - **The schema.** The same valid settings hold the type's schema to the type
@@ -1659,8 +1900,12 @@ std::unique_ptr<const NodeType> makeToneNodeType();
 
 namespace ear::nodes::tone {
 
-inline constexpr auto frequencyRow = setting::defaulted("frequency", setting::number(1, 20000, "Hz"), 440);
-inline constexpr auto channelsRow = setting::defaulted("channels", setting::number(1, 8, "channels"), 1);
+// tone has no change version (docs/writing-a-node-type.md#the-change-version), so a change of either row restarts it.
+inline constexpr auto frequencyRow =
+	setting::defaulted("frequency", setting::number(1, 20000, "Hz"), 440).restarts("tone has no change in place yet");
+inline constexpr auto channelsRow = setting::defaulted("channels", setting::number(1, 8, "channels"), 1)
+                                        .shapesPorts()
+                                        .restarts("tone has no change in place yet");
 inline constexpr auto out = bank::output<"out">;
 inline constexpr TypeSpec spec{.settings = SettingsTable<frequencyRow, channelsRow>{"tone"}, .banks = Banks<out>{}};
 using Checked = CheckedOf<spec>;

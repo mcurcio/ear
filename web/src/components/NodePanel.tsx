@@ -13,6 +13,7 @@ import { refusalParts, type RefusalParts } from "../notices";
 import {
   actionsFeature,
   dryRunFeature,
+  gesturesFeature,
   lifecycleFeature,
   nodeSetFeature,
   nodeTextFeature,
@@ -155,7 +156,13 @@ export function NodePanel({
         </div>
       )}
       {formable && !asText && schema !== undefined ? (
-        <SettingsForm key={node.name} node={node} schema={schema} dryRun={features.includes(dryRunFeature)} />
+        <SettingsForm
+          key={node.name}
+          node={node}
+          schema={schema}
+          dryRun={features.includes(dryRunFeature)}
+          gestures={features.includes(gesturesFeature)}
+        />
       ) : knobly ? (
         <NodeTextBox key={node.name} node={node.name} file={file.file} />
       ) : (

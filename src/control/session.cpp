@@ -11,12 +11,14 @@
 // arrive before the reply, are in the snapshots too.
 #include "ear/control/session.hpp"
 
+#include <deque>
 #include <optional>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include "ear/control/gestures_wire.hpp"
 #include "ear/control/graph_json.hpp"
 #include "ear/control/rpc.hpp"
 
@@ -32,9 +34,15 @@ struct Hub;
 struct SessionState {
 	Hub* hub;
 	Outbox* out;            // null once the session is destroyed
+	SessionToken token = 0; // its gestures' owner (docs/control-port.md#gestures)
 	bool graph = false;     // graph.subscribe answered
 	bool graphFile = false; // graphFile.subscribe answered
 	bool levels = false;
+	/// The messages read and not yet answered, the one running first (docs/control-port.md#per-client-limits-and-stopping).
+	std::deque<std::string> fifo;
+	bool running = false;
+	/// The transport's go-ahead to read the next message, held while the FIFO is full.
+	std::move_only_function<void()> resume;
 };
 
 struct Hub {
@@ -42,6 +50,7 @@ struct Hub {
 	LevelReader& levels;
 	TypeSchemas types;                                   // made at boot (docs/control-port.md#type-schemas)
 	std::vector<std::shared_ptr<SessionState>> sessions; // attach order
+	SessionToken nextToken = 1;
 
 	/// A copy: a send may close a connection and so detach its session.
 	std::vector<std::shared_ptr<SessionState>> attached() const { return sessions; }
@@ -53,6 +62,9 @@ struct Hub {
 thread_local std::unordered_map<const ControlHub*, Hub*> hubs;
 
 Message share(std::string text) { return std::make_shared<const std::string>(std::move(text)); }
+
+/// Out of its hub's list (below).
+void detach(const std::shared_ptr<SessionState>& state);
 
 /// One entry of a received message, in order: what its response will be.
 struct Slot {
@@ -74,6 +86,10 @@ std::optional<std::string> respond(const Slot& slot, const std::vector<CommandRe
 /// The responses to one message, queued in request order, then its subscriptions, then `done`.
 void answer(SessionState& state, bool batch, const std::vector<Slot>& slots, const std::vector<CommandResult>& results,
             std::move_only_function<void()>& done) {
+	if (state.out == nullptr) { // closed: its replies dropped
+		done();
+		return;
+	}
 	std::vector<std::string> responses;
 	for (const Slot& slot : slots)
 		if (auto response = respond(slot, results)) responses.push_back(std::move(*response));
@@ -99,21 +115,77 @@ struct ControlSession::Impl {
 ControlSession::ControlSession(ControlHub& hub, Outbox& out) : impl_(std::make_unique<Impl>()) {
 	const auto found = hubs.find(&hub);
 	if (found == hubs.end()) throw std::logic_error("ControlSession: its hub is not on this thread");
-	impl_->state = std::make_shared<SessionState>(SessionState{found->second, &out});
+	impl_->state = std::make_shared<SessionState>(SessionState{found->second, &out, found->second->nextToken++});
 	found->second->sessions.push_back(impl_->state);
 }
 
 ControlSession::~ControlSession() {
 	SessionState& state = *impl_->state;
-	if (state.hub != nullptr) std::erase(state.hub->sessions, impl_->state);
-	state.hub = nullptr;
 	state.out = nullptr;
+	state.resume = nullptr;
+	// Left attached while its FIFO runs on, so the hub's end still reaches it; detached once that drained.
+	if (state.fifo.empty()) detach(impl_->state);
 }
 
-void ControlSession::received(std::string text, std::move_only_function<void()> done) {
-	const std::shared_ptr<SessionState>& state = impl_->state;
+namespace {
+
+void pump(const std::shared_ptr<SessionState>& state);
+
+/// Out of its hub's list: told nothing more. Its gestures are released only now, once what it queued has run
+/// (docs/control-port.md#gestures).
+void detach(const std::shared_ptr<SessionState>& state) {
+	if (state->hub != nullptr) {
+		std::erase(state->hub->sessions, state);
+		state->hub->graph.sessionClosed(state->token);
+	}
+	state->hub = nullptr;
+}
+
+void sendIfOpen(SessionState& state, std::string text) {
+	if (state.out != nullptr) state.out->send(share(std::move(text)));
+}
+
+/// -32000 with data.code: a gesture method's own refusals before any gesture runs.
+RpcError gestureError(std::string_view code, std::string message) {
+	return RpcError{commandRefused, std::move(message), {{"code", std::string(code)}}};
+}
+
+/// A gesture request's answer to `id`, when it has one.
+void answerGesture(SessionState& state, const std::optional<RpcId>& id, const GestureAnswer& answer) {
+	if (!id) return;
+	auto encoded = encodeGestureAnswer(answer);
+	sendIfOpen(state, encoded ? encodeResult(*id, *encoded) : encodeError(*id, encoded.error()));
+}
+
+/// The gesture id of an end or a cancel, which marks it ending the moment it is read (docs/control-port.md#gestures).
+std::optional<std::string> endingOf(const GestureCommand& command) {
+	if (const auto* end = std::get_if<EndGesture>(&command)) return end->gesture;
+	if (const auto* cancel = std::get_if<CancelGesture>(&command)) return cancel->gesture;
+	return std::nullopt;
+}
+
+/// One message from the FIFO, whole: its commands to the gateway in one run(); `done` once every response to it is
+/// queued (or dropped, the session having closed).
+void run(const std::shared_ptr<SessionState>& state, std::string text, std::move_only_function<void()> done) {
 	if (state->hub == nullptr) return; // the hub has gone: the port is stopping
 	RpcMessage message = parseMessage(text);
+	if (!message.batch && message.entries.size() == 1)
+		if (auto* request = std::get_if<RpcRequest>(&message.entries.front());
+		    request != nullptr && isGestureMethod(request->method)) {
+			// An end, or a cancel sent with an id: in order with the session's other requests.
+			auto command = decodeGesture(request->method, request->params);
+			if (!command) {
+				if (request->id) sendIfOpen(*state, encodeError(*request->id, command.error()));
+				done();
+				return;
+			}
+			state->hub->graph.gesture(std::move(*command), state->token,
+			                          [state, id = request->id, done = std::move(done)](GestureAnswer answer) mutable {
+										  answerGesture(*state, id, answer);
+										  done();
+									  });
+			return;
+		}
 
 	std::vector<Slot> slots;
 	std::vector<Command> commands;
@@ -126,6 +198,10 @@ void ControlSession::received(std::string text, std::move_only_function<void()> 
 		auto refuse = [&](const RpcError& error) {
 			if (request.id) slots.push_back({Slot::Kind::fixed, request.id, encodeError(*request.id, error)});
 		};
+		if (isGestureMethod(request.method)) { // a batch runs whole as keeper steps; a begin and a tick are not
+			refuse(gestureError(notInBatchCode, "not-in-batch " + request.method));
+			continue;
+		}
 		if (request.method == "types.get") { // answered here from the encoding made at boot, without the main loop
 			auto ifNoneMatch = decodeGetTypes(request.params);
 			if (!ifNoneMatch) refuse(ifNoneMatch.error());
@@ -167,16 +243,82 @@ void ControlSession::received(std::string text, std::move_only_function<void()> 
 		answer(*state, message.batch, slots, {}, done);
 		return;
 	}
-	state->hub->graph.run(std::move(commands),
-	                      [weak = std::weak_ptr<SessionState>(state), batch = message.batch, slots = std::move(slots),
-	                       done = std::move(done)](std::vector<CommandResult> results) mutable {
-							  const auto alive = weak.lock();
-							  if (!alive || alive->out == nullptr) return; // the session closed meanwhile
-							  for (CommandResult& result : results)
-								  if (auto* view = std::get_if<GraphView>(&result))
-									  view->typeSchemaHash = alive->hub->types.hash;
-							  answer(*alive, batch, slots, results, done);
-						  });
+	// The state is kept, not watched: a session closed meanwhile still runs the rest of its FIFO in order, its replies
+	// dropped (docs/control-port.md#per-client-limits-and-stopping).
+	state->hub->graph.run(std::move(commands), [state, batch = message.batch, slots = std::move(slots),
+	                                            done = std::move(done)](std::vector<CommandResult> results) mutable {
+		if (state->out == nullptr || state->hub == nullptr) {
+			done();
+			return;
+		}
+		for (CommandResult& result : results)
+			if (auto* view = std::get_if<GraphView>(&result)) view->typeSchemaHash = state->hub->types.hash;
+		answer(*state, batch, slots, results, done);
+	});
+}
+
+/// The FIFO's front runs when none is running; once answered it leaves the FIFO, a held go-ahead is given, and the
+/// next runs.
+void pump(const std::shared_ptr<SessionState>& state) {
+	if (state->running || state->fifo.empty() || state->hub == nullptr) return;
+	state->running = true;
+	std::string text = std::move(state->fifo.front());
+	run(state, std::move(text), [state] {
+		state->running = false;
+		state->fifo.pop_front();
+		if (state->out == nullptr && state->fifo.empty()) { // closed, and the last of its FIFO has run
+			detach(state);
+			return;
+		}
+		if (state->resume && state->fifo.size() < sessionFifoBound) std::exchange(state->resume, nullptr)();
+		pump(state);
+	});
+}
+
+/// A gesture.begin, a gesture.change and a gesture.cancel sent as a notification are taken the moment they are read,
+/// ahead of the FIFO; an end or a cancel read marks its gesture ending at once, then waits its turn
+/// (docs/control-port.md#gestures). True when `text` was taken here.
+bool skipsFifo(const std::shared_ptr<SessionState>& state, const std::string& text) {
+	if (text.find("gesture.") == std::string::npos) return false; // no gesture method: the common case, unparsed
+	RpcMessage message = parseMessage(text);
+	if (message.batch || message.entries.size() != 1) return false;
+	auto* request = std::get_if<RpcRequest>(&message.entries.front());
+	if (request == nullptr || !isGestureMethod(request->method)) return false;
+	const bool tick = request->method == "gesture.change";
+	if (tick && request->id) { // a tick must never wait for a reply
+		sendIfOpen(*state, encodeError(*request->id, RpcError{invalidRequest,
+		                                                      "gesture.change is a notification",
+		                                                      {{"code", std::string(notificationOnlyCode)}}}));
+		return true;
+	}
+	const bool queued = request->method == "gesture.end" || (request->method == "gesture.cancel" && request->id);
+	auto command = decodeGesture(request->method, request->params);
+	if (!command) {
+		if (queued) return false; // refused in its turn
+		if (request->id) sendIfOpen(*state, encodeError(*request->id, command.error()));
+		return true;
+	}
+	if (const auto ending = endingOf(*command)) state->hub->graph.ending(*ending);
+	if (queued) return false;
+	std::move_only_function<void(GestureAnswer)> reply;
+	if (request->id) reply = [state, id = request->id](GestureAnswer answer) { answerGesture(*state, id, answer); };
+	state->hub->graph.gesture(std::move(*command), state->token, std::move(reply));
+	return true;
+}
+
+} // namespace
+
+void ControlSession::received(std::string text, std::move_only_function<void()> done) {
+	const std::shared_ptr<SessionState>& state = impl_->state;
+	if (state->hub == nullptr) return; // the hub has gone: the port is stopping
+	if (skipsFifo(state, text)) {
+		done();
+		return;
+	}
+	state->fifo.push_back(std::move(text));
+	if (state->fifo.size() < sessionFifoBound) done();
+	else state->resume = std::move(done);
+	pump(state);
 }
 
 struct ControlHub::Impl {
@@ -208,6 +350,35 @@ void ControlHub::graphFileChanged(GraphFileChanged change) {
 	for (const auto& session : impl_->hub.attached()) {
 		if (session->out == nullptr || !session->graphFile) continue;
 		if (!message) message = share(encodeGraphFileChanged(change));
+		session->out->send(message);
+	}
+}
+
+void ControlHub::gestureChanged(GestureNote note) {
+	// Addressed (docs/control-port.md#gesturechanged): begin and change to every graph-subscribed session but the
+	// owner; end and aborted to those and to the owner and the session that ended it, whatever their subscriptions;
+	// tick-refused to the owner alone.
+	Message message;
+	for (const auto& session : impl_->hub.attached()) {
+		if (session->out == nullptr) continue;
+		const bool owner = session->token == note.owner;
+		const bool by = note.by && session->token == *note.by;
+		bool to = false;
+		switch (note.phase) {
+		case GesturePhase::begin:
+		case GesturePhase::change:
+			to = session->graph && !owner;
+			break;
+		case GesturePhase::end:
+		case GesturePhase::aborted:
+			to = session->graph || owner || by;
+			break;
+		case GesturePhase::tickRefused:
+			to = owner;
+			break;
+		}
+		if (!to) continue;
+		if (!message) message = share(encodeGestureChanged(note));
 		session->out->send(message);
 	}
 }

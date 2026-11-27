@@ -47,7 +47,8 @@ function ArgsForm({
             </select>
           ) : (
             <input
-              type={field.control === "number" ? "number" : "text"}
+              type={field.control === "number" || field.control === "decimal" ? "number" : "text"}
+              step={field.control === "decimal" ? "any" : undefined}
               min={field.min}
               max={field.max}
               value={String(field.value)}

@@ -3,6 +3,7 @@
 // which reads back as the edited graph, or the refusal the rule names; the model it is called on never
 // changes. Pure: text in, candidates out, against the test types.
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "catch2/catch.hpp"
@@ -423,6 +424,72 @@ TEST_CASE("A boolean setting is written back as the bare word true or false, and
 		INFO(bad.dump());
 		CHECK(commandDetail(model.updateNode("a", {{"x", bad}})) == "invalid-settings a: x: expected true or false");
 	}
+}
+
+TEST_CASE("A decimal setting is written back as its shortest fixed text, and only a JSON number is",
+          "[graph_file_edit][decimal]") {
+	const Fixture f;
+	const std::string head = "graph {\n    rate 48khz;\n    block_size 256;\n}\n";
+	const auto model = f.load(head + "node lamp a { level -1; }\nnode lamp b;\n");
+	REQUIRE(model.read().wanted.has_value());
+	for (const auto& [value, written] : std::vector<std::pair<json, std::string>>{{json(-3.5), "-3.5"},
+	                                                                              {json(-6.0), "-6"},
+	                                                                              {json(-12), "-12"},
+	                                                                              {json(0.25), "0.25"},
+	                                                                              {json(-0.04), "-0.04"},
+	                                                                              {json(-0.0), "0"},
+	                                                                              {json(1e3), "1000"}}) {
+		INFO(value.dump());
+		const auto changed = candidate(model.updateNode("a", {{"level", value}}));
+		CHECK(changed.text() == head + "node lamp a { level " + written + "; }\nnode lamp b;\n");
+		// Read back as the same number.
+		CHECK(nodeIn(changed, "a").settings["level"].get<double>() == value.get<double>());
+	}
+	// The same number, whole or not, is no change: nothing to write.
+	const auto same = model.updateNode("a", {{"level", -1.0}});
+	REQUIRE(same.has_value());
+	CHECK_FALSE(same->has_value());
+	const auto added = candidate(model.updateNode("b", {{"level", 0.5}}));
+	CHECK(added.text() == head + "node lamp a { level -1; }\nnode lamp b { level 0.5; }\n");
+	for (const json& bad : {json("-3.5"), json(true), json(nullptr), json::array({1})}) {
+		INFO(bad.dump());
+		CHECK(commandDetail(model.updateNode("a", {{"level", bad}})) == "invalid-settings a: level: expected a number");
+	}
+}
+
+TEST_CASE("A choice setting is written back bare when its name is a word, quoted otherwise, and read again",
+          "[graph_file_edit][choice]") {
+	const Fixture f;
+	const std::string head = "graph {\n    rate 48khz;\n    block_size 256;\n}\n";
+	const auto model = f.load(head + "node lamp a { shape peak; }\n");
+	REQUIRE(model.read().wanted.has_value());
+	for (const auto& [name, written] : std::vector<std::pair<std::string, std::string>>{
+			 {"low shelf", "\"low shelf\""}, {"2nd", "\"2nd\""}, {"lowShelf", "lowShelf"}, {"a-b_c", "a-b_c"}}) {
+		INFO(name);
+		const auto changed = candidate(model.updateNode("a", {{"shape", name}}));
+		CHECK(changed.text() == head + "node lamp a { shape " + written + "; }\n");
+		CHECK(nodeIn(changed, "a").settings == json{{"shape", name}});
+	}
+	for (const json& bad : {json(1), json(true), json(nullptr), json::array({"peak"})}) {
+		INFO(bad.dump());
+		CHECK(commandDetail(model.updateNode("a", {{"shape", bad}})) == "invalid-settings a: shape: expected a name");
+	}
+	CHECK(commandDetail(model.updateNode("a", {{"shape", "a\x01"}})) ==
+	      "invalid-settings a: shape: holds a control character ear.conf cannot hold");
+}
+
+TEST_CASE("A family member is written back by its family's kind, added beside the others and read again",
+          "[graph_file_edit][indexed]") {
+	const Fixture f;
+	const std::string head = "graph {\n    rate 48khz;\n    block_size 256;\n}\n";
+	const auto model = f.load(head + "node lamp a { trimDb.1 0.5; }\n");
+	REQUIRE(model.read().wanted.has_value());
+	const auto changed = candidate(model.updateNode("a", {{"trimDb.1", -3.5}, {"trimDb.12", 6}, {"lit.2", true}}));
+	CHECK(changed.text() == head + "node lamp a { trimDb.1 -3.5;\nlit.2 true;\ntrimDb.12 6; }\n");
+	CHECK(nodeIn(changed, "a").settings == json{{"trimDb.1", -3.5}, {"trimDb.12", 6.0}, {"lit.2", true}});
+	CHECK(commandDetail(model.updateNode("a", {{"trimDb.2", "x"}})) ==
+	      "invalid-settings a: trimDb.2: expected a number");
+	CHECK(commandDetail(model.updateNode("a", {{"lit.1", 1}})) == "invalid-settings a: lit.1: expected true or false");
 }
 
 TEST_CASE("No edit touches the graph block", "[graph_file_model][graph-block]") {

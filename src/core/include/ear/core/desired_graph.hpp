@@ -14,28 +14,46 @@ struct WantedNode {
 };
 /// What an edit asks of a node it keeps by name (docs/architecture.md#restarts-and-changes-of-settings). Decided by
 /// `disabled`, before and after: false to true `disable`, true to false `enable`, true to true `stored`; false to false
-/// by the ports and the keys (changeOf): other ports `reshape`, no changed key `unchanged`, every changed key's row
-/// marked inPlace `reconfigure`, else `restart`.
-enum class NodeOutcome { restart, disable, enable, stored, reconfigure, reshape, unchanged };
-/// The outcome of a change of a node of `type` kept with the same type and ports: `keys` the changed keys, the
-/// `disabled` before and after. Pure.
+/// by the ports and the keys that are not live (changeOf): other ports `reshape`, no changed key `unchanged`, only live
+/// keys changed `retune`, every other changed key's row marked inPlace `reconfigure`, else `restart`. The live keys
+/// are retuned beside whatever outcome the others decide (NodeChange::retuned).
+enum class NodeOutcome { restart, disable, enable, stored, reconfigure, reshape, unchanged, retune };
+/// The outcome of a change of a node of `type` kept with the same type and ports: `keys` the changed keys (live ones
+/// among them), the `disabled` before and after. Pure.
 NodeOutcome outcomeFor(const NodeType& type, std::span<const std::string> keys, bool wasDisabled, bool isDisabled);
+/// One live key a change moves (docs/architecture.md#retunes): its key, and its value as the settings held it before
+/// and hold it now (a default when the key is not given), as the control port writes it. `from` and `to` are null
+/// when the change was made from keys alone (changeOf).
+struct Retuned {
+	std::string key;
+	NodeSettings from{};
+	NodeSettings to{};
+	std::optional<std::uint32_t> member{}; // the key's slot among its node's live members
+	std::uint64_t bits = 0;                // the slot's new bits
+
+	friend bool operator==(const Retuned&, const Retuned&) = default;
+};
 /// A node kept by name with the same type whose spec changed, told by nodeChanged: what the change asks of it, the
 /// changed keys, and, when its ports changed, the ports before and after.
 struct NodeChange {
 	NodeOutcome outcome;
-	std::vector<std::string> keys; // the settings' keys whose values differ, added and removed ones included; key order
+	/// The settings' keys whose values differ, added and removed ones included, but the live ones; key order. What the
+	/// lifecycle acts on: the only keys a health's `keys` or a restart's cause names.
+	std::vector<std::string> keys;
 	/// The ports before and after (equal unless the ports changed: a `reshape`, or a `disable`, `enable` or `stored`
 	/// whose ports changed too; docs/architecture.md#reshapes).
 	Ports oldPorts{};
 	Ports ports{};
 	/// A reshape every changed key of which changes in place: taken in place by a node whose type has a change version.
 	bool inPlace = false;
+	/// The changed keys whose rows are live, key order (docs/architecture.md#retunes): moved in the node's live values
+	/// and its slots at once, whatever the outcome.
+	std::vector<Retuned> retuned{};
 	bool portsChanged() const { return oldPorts != ports; }
 };
 /// The plan's change of a node of `type` kept by name with its type (docs/architecture.md#reshapes): outcomeFor's, but a
 /// node staying enabled whose ports differ is a `reshape`, `inPlace` when there is a changed key and every one changes
-/// in place. Pure; the plan's and the type harness's one rule.
+/// in place; the live keys go to `retuned`, the others to `keys`. Pure; the plan's and the type harness's one rule.
 NodeChange changeOf(const NodeType& type, std::vector<std::string> keys, bool wasDisabled, bool isDisabled,
                     const Ports& oldPorts, const Ports& ports);
 class DesiredNodeListener {

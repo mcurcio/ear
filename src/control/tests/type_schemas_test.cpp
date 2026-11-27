@@ -8,6 +8,7 @@
 #include <chrono>
 #include <optional>
 #include <expected>
+#include <fstream>
 #include <string>
 #include <string_view>
 
@@ -24,16 +25,21 @@ inline constexpr std::array<std::string_view, 2> shapes{"round", "square"};
 std::optional<std::string> anyText(std::string_view text) { return std::string(text); }
 
 inline constexpr auto deviceRow =
-	setting::required("device", setting::text<anyText>("a device", {.pattern = "^[a-z]+$", .maxLength = 8}));
+	setting::required("device", setting::text<anyText>("a device", {.pattern = "^[a-z]+$", .maxLength = 8}))
+		.restarts("the device opens once");
 inline constexpr auto shapeRow =
 	setting::optional("shape", setting::text<anyText>("round or square", {.values = shapes})).inPlace();
-inline constexpr auto countRow = setting::defaulted("count", setting::number(1, 8, "channels"), 2).shapesPorts();
+inline constexpr auto countRow = setting::defaulted("count", setting::number(1, 8, "channels"), 2)
+                                     .shapesPorts()
+                                     .restarts("the count is read at start");
 inline constexpr auto rateRow =
 	setting::optional("rate", setting::rate(ear::SampleRate::fixed<8'000>(), ear::SampleRate::fixed<96'000>()))
 		.defaultFrom(setting::DefaultFrom::graphFrequency)
 		.inPlace();
-inline constexpr auto loudRow = setting::optional("loud", setting::boolean()).help("absent: quiet");
-inline constexpr auto portRow = setting::optional("port", setting::number(1, 9)).onlyWithout(shapeRow);
+inline constexpr auto loudRow =
+	setting::optional("loud", setting::boolean()).help("absent: quiet").restarts("the volume is read at start");
+inline constexpr auto portRow =
+	setting::optional("port", setting::number(1, 9)).onlyWithout(shapeRow).restarts("the port is bound at start");
 inline constexpr auto in = ear::bank::input<"in">;
 inline constexpr auto out = ear::bank::output<"out">;
 inline constexpr auto inside = ear::bank::insideInput<"inside">;
@@ -54,6 +60,69 @@ struct Every {
 };
 
 } // namespace type_schemas_test
+
+// The row vocabulary no built-in type has yet: test/protocol/rows.json's schemas.
+namespace rows {
+using namespace ear;
+inline constexpr auto levelRow =
+	setting::defaulted(
+		"levelDb",
+		setting::decimal(-90.0, 24.0, "dB", {.decimals = 1, .taper = setting::Taper::db, .minIsSilence = true}), -6.0)
+		.inPlace();
+inline constexpr auto cutoffRow =
+	setting::required("cutoffHz", setting::decimal(20.0, 20'000.0, "Hz", {.decimals = 0, .taper = setting::Taper::log}))
+		.restarts("the filter is designed at start");
+inline constexpr auto spreadRow = setting::optional("spread", setting::decimal(0, 1)).inPlace();
+inline constexpr auto onRow = setting::defaulted("on", setting::boolean(), true).inPlace();
+inline constexpr auto channelsRow =
+	setting::defaulted("channels", setting::number(1, 64, "channels"), 2).shapesPorts().inPlace();
+inline constexpr auto trimFamily =
+	setting::indexed("trimDb", channelsRow, setting::decimal(-24.0, 24.0, "dB", {.decimals = 1}), 0.0).inPlace();
+inline constexpr auto invertFamily =
+	setting::indexed("invert", channelsRow, setting::boolean(), false).restarts("the polarity is set at start");
+enum class Shape { peak, lowShelf, highShelf };
+inline constexpr auto shapeRow =
+	setting::defaulted(
+		"shape",
+		setting::choice<Shape>({{"peak", Shape::peak}, {"lowShelf", Shape::lowShelf}, {"highShelf", Shape::highShelf}}),
+		Shape::peak)
+		.inPlace();
+enum class Mode { fast, twoPass };
+inline constexpr auto modeRow =
+	setting::optional("mode", setting::choice<Mode>({{"fast", Mode::fast}, {"two pass", Mode::twoPass}}))
+		.restarts("the mode is chosen at start");
+enum class Curve { linear, smooth };
+inline constexpr auto curveFamily =
+	setting::indexed("curve", channelsRow,
+                     setting::choice<Curve>({{"linear", Curve::linear}, {"smooth", Curve::smooth}}), Curve::linear)
+		.inPlace();
+inline constexpr auto gainRow =
+	setting::defaulted(
+		"gainDb",
+		setting::decimal(-90.0, 24.0, "dB", {.decimals = 1, .taper = setting::Taper::db, .minIsSilence = true}), 0.0)
+		.live(setting::ramp(20));
+inline constexpr auto muteRow = setting::defaulted("mute", setting::boolean(), false).live(setting::ramp(10));
+inline constexpr auto inputRow = setting::defaulted("input", setting::number(1, 8), 1).live(setting::step);
+enum class Slope { gentle, steep };
+inline constexpr auto slopeRow =
+	setting::defaulted("slope", setting::choice<Slope>({{"gentle", Slope::gentle}, {"steep", Slope::steep}}),
+                       Slope::gentle)
+		.live(setting::step);
+inline constexpr auto out = bank::output<"out">;
+inline constexpr TypeSpec spec{
+	.settings = SettingsTable<levelRow, cutoffRow, spreadRow, onRow, channelsRow, trimFamily, invertFamily, shapeRow,
+                              modeRow, curveFamily, gainRow, muteRow, inputRow, slopeRow>{"rows"},
+	.banks = Banks<out>{}};
+struct Rows {
+	static Members<spec> ports(const CheckedOf<spec>&) { return {out(members("mono"))}; }
+	Configured configure(CreateOf<spec>&, const CheckedOf<spec>&) {
+		return Configured::failed("not started in these tests");
+	}
+	Changed configure(ChangeOf<spec>&, const CheckedOf<spec>&, const CheckedOf<spec>&) {
+		return Changed::restart("not changed in these tests");
+	}
+};
+} // namespace rows
 
 namespace reporting {
 using namespace ear;
@@ -104,18 +173,33 @@ TEST_CASE("Each row kind and mark is on the wire as the control port takes the k
 	const json schema = ear::control::encodeTypeSchema(type->schema());
 	CHECK(schema == json::parse(R"({"name": "every", "inputs": ["in"], "outputs": ["out"], "reconfigureMs": 5000,
 	  "settings": [
-	    {"key": "device", "kind": "text", "required": true, "change": "restart", "mustBe": "a device",
+	    {"key": "device", "kind": "text", "required": true, "change": "restart", "restartReason": "the device opens once", "mustBe": "a device",
 	     "pattern": "^[a-z]+$", "maxLength": 8},
 	    {"key": "shape", "kind": "text", "required": false, "change": "inPlace", "mustBe": "round or square",
 	     "values": ["round", "square"]},
-	    {"key": "count", "kind": "wholeNumber", "required": false, "change": "restart", "min": 1, "max": 8,
+	    {"key": "count", "kind": "wholeNumber", "required": false, "change": "restart", "restartReason": "the count is read at start", "min": 1, "max": 8,
 	     "unit": "channels", "default": 2, "shapes": true},
 	    {"key": "rate", "kind": "wholeNumber", "required": false, "change": "inPlace", "min": 8000, "max": 96000,
 	     "unit": "Hz", "defaultFrom": "graphFrequency"},
-	    {"key": "loud", "kind": "flag", "required": false, "change": "restart", "help": "absent: quiet"},
-	    {"key": "port", "kind": "wholeNumber", "required": false, "change": "restart", "min": 1, "max": 9,
+	    {"key": "loud", "kind": "flag", "required": false, "change": "restart", "restartReason": "the volume is read at start",
+	     "help": "absent: quiet"},
+	    {"key": "port", "kind": "wholeNumber", "required": false, "change": "restart", "restartReason": "the port is bound at start", "min": 1, "max": 9,
 	     "onlyWithout": "shape"}],
 	  "status": [], "events": [], "actions": []})"));
+}
+
+TEST_CASE("The row vocabulary no built-in type has is on the wire as rows.json says",
+          "[types][protocol][decimal][indexed]") {
+	std::ifstream file(std::string(EAR_PROTOCOL_DIR) + "/rows.json");
+	REQUIRE(file.good());
+	const json fixture = json::parse(file);
+	const auto type = ear::makeNodeType<rows::spec, rows::Rows>();
+	const ear::TypeSchema schemas[] = {type->schema()};
+	CHECK(ear::control::encodeTypeSchemas(schemas).typeSchemas == fixture.at("typeSchemas"));
+	// A decimal default is a JSON number, whole or not; a flag's is a JSON boolean.
+	const json encoded = ear::control::encodeTypeSchema(type->schema());
+	CHECK(encoded["settings"][0]["default"].is_number_float());
+	CHECK(encoded["settings"][3]["default"].is_boolean());
 }
 
 TEST_CASE("A type's actions are on the wire in declaration order, a call's arguments as setting rows",

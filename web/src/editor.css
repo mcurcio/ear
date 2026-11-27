@@ -1430,6 +1430,11 @@ body,
   border-left-color: var(--warn);
 }
 
+/* A family member above its count: kept in ear.conf, not used (docs/editor.md#the-settings-form). */
+.settings-field-inactive {
+  opacity: 0.55;
+}
+
 .settings-field input[type="text"],
 .settings-field input[type="number"],
 .settings-field select {
@@ -1462,6 +1467,158 @@ body,
 
 .settings-confirm p {
   margin: 0 0 6px;
+}
+
+/* The live controls (docs/editor.md#live-numbers-faders-and-knobs): a fader in the form, horizontal, letting a vertical
+   swipe scroll the drawer; a knob on the box, dragged vertically, taking every touch. Each is drawn over a visually
+   hidden range input, whose focus rings the whole control. A held control is in the accent, a pending begin dims it. */
+.live-range {
+  position: relative;
+}
+
+.live-range:focus-within .live-surface {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.live-fader-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.live-fader-row .live-range {
+  flex: 1 1 auto;
+}
+
+.live-fader-row .live-number input {
+  width: 6em;
+}
+
+.live-fader .live-surface {
+  touch-action: pan-y;
+  padding: 8px 0;
+  cursor: pointer;
+}
+
+.live-track {
+  position: relative;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line-strong);
+}
+
+.live-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 2px;
+  background: var(--muted);
+}
+
+.live-thumb {
+  position: absolute;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: 50%;
+  background: var(--text);
+}
+
+.live-state-beginning .live-fill,
+.live-state-active .live-fill,
+.live-state-active .live-thumb {
+  background: var(--accent);
+}
+
+.live-pending {
+  opacity: 0.6;
+}
+
+.live-disabled .live-surface {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.live-number {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.live-number button {
+  min-width: 28px;
+}
+
+.ear-node-knobs {
+  display: flex;
+  gap: 12px;
+  padding: 4px 8px;
+}
+
+.live-knob {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.live-knob .live-surface {
+  touch-action: none;
+  cursor: ns-resize;
+  line-height: 0;
+}
+
+.live-dial-face {
+  fill: none;
+  stroke: var(--line-strong);
+  stroke-width: 3;
+}
+
+.live-dial-pointer {
+  stroke: var(--muted);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+.live-state-active .live-dial-pointer,
+.live-state-beginning .live-dial-pointer {
+  stroke: var(--accent);
+}
+
+.live-knob-words {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.live-knob-key {
+  font-family: ui-monospace, monospace;
+}
+
+/* A family above 8 members: a compact strip behind a disclosure (docs/editor.md#the-settings-form). */
+.settings-strip {
+  margin-bottom: 8px;
+}
+
+.settings-strip summary {
+  font-family: ui-monospace, monospace;
+  cursor: pointer;
+}
+
+.settings-strip-fields .settings-field {
+  margin-bottom: 4px;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .live-fader .live-surface {
+    padding: 14px 0;
+  }
+
+  .live-number button {
+    min-width: 40px;
+    min-height: 40px;
+  }
 }
 
 /* The inspector's Node subject's knobly box (docs/editor.md#the-node-panels-text): the drawer's text style; a

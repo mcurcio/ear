@@ -37,8 +37,20 @@ struct UnknownRoute {
 	Route route;
 }; // removeRoute: the route is not wanted
 struct Stopping {}; // EAR is stopping: the graph takes no more edits
+/// An edit or a gesture.begin would change a key an open gesture holds (docs/control-port.md#gestures): the key, the
+/// gesture, and how long its owner has been silent.
+struct ParameterHeld {
+	NodeName node;
+	std::string key;
+	std::string gesture;
+	std::uint64_t silentMs;
+};
+/// A gesture's end reached the graph after the gesture was aborted (docs/control-port.md#gestures): nothing commits.
+struct UnknownGesture {
+	std::string gesture;
+};
 using CommandError = std::variant<UnknownNodeType, InvalidSettings, DuplicateNode, UnknownNode, UnknownPort,
-                                  WrongDirection, InvalidName, UnknownRoute, Stopping>;
+                                  WrongDirection, InvalidName, UnknownRoute, Stopping, ParameterHeld, UnknownGesture>;
 /// "unknown-node-type" | "invalid-settings" | "duplicate-node" | "unknown-node" |
 /// "unknown-port" | "wrong-direction" | "invalid-name" | "unknown-route" | "stopping". The one
 /// home of these strings.

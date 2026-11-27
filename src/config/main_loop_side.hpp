@@ -4,6 +4,7 @@
 // mapping and the action records are docs/control-port.md#methods.
 #pragma once
 #include <cstdint>
+#include <memory>
 #include <expected>
 #include <optional>
 #include <string>
@@ -12,7 +13,9 @@
 #include "ear/control/graph_file_state.hpp"
 #include "ear/control/lifecycle_wire.hpp"
 #include "ear/control/requests.hpp"
+#include "ear/control/gestures_wire.hpp"
 #include "ear/core/desired_graph.hpp"
+#include "ear/core/gestures.hpp"
 #include "ear/core/graph_view.hpp"
 #include "ear/core/node_host.hpp"
 #include "graph_file_model.hpp"
@@ -25,7 +28,13 @@ struct FileState {
 	std::vector<control::FormatKey> pendingRestart; // the file's format against the engine's, FormatKey order
 	std::optional<std::string> writeFailed;
 	std::optional<std::vector<control::NodeText>> nodeTexts = std::nullopt; // the read's (GraphFileRead::nodeTexts)
+	/// Its reach index (docs/graph-file.md#reaches); none while the text has errors.
+	std::shared_ptr<const ReachIndex> reach = nullptr;
 };
+/// What kind of change an offer is, as the related-change rule judges an open gesture by it
+/// (docs/control-port.md#gestures-and-the-graph-file): a hand edit read from disk, a graphFile.set, any other edit, or a
+/// gesture's end.
+enum class OfferKind { disk, fileSet, edit, gestureEnd };
 struct Offer {
 	FileState file;
 	GraphSpec wanted; // plan reads only nodes and routes
@@ -37,12 +46,20 @@ struct Offer {
 	bool dryRun = false;
 	/// The node whose change the reply answers with (node.disable, node.enable, node.set).
 	std::optional<NodeName> answerFor = std::nullopt;
+	OfferKind kind = OfferKind::disk;
+	/// A gesture end's: the gesture, the value it commits, and a release's reason (docs/control-port.md#gestures).
+	std::optional<std::string> gesture = std::nullopt;
+	double gestureValue = 0.0;
+	std::string gestureReason{};
 };
 enum class Verdict { accepted, refused, stopping };
 struct Judged {
 	Verdict verdict;
 	std::expected<void, CommandError> result;
 	std::optional<NodeChange> change{}; // an accepted offer's Plan::change(answerFor)
+	/// Every other node's changed keys (its live ones among them) in that plan, in name order then key order:
+	/// node.set's alsoChanged (docs/control-port.md#retunes).
+	std::vector<control::NodeKey> alsoChanged{};
 };
 /// Where a refusal points: the named node's line; the first route naming a refused node or port;
 /// the route refused; the first node of an unknown type; the second of two nodes sharing a name. Pure.
@@ -74,7 +91,21 @@ public:
 	/// ActionListener its record and then reaches `result`. No NodeActions given: a wiring bug, std::logic_error.
 	void invoke(const NodeName& node, const std::string& action, const NodeSettings& args, bool stopping,
 	            ActionResult result);
-	/// Plan. Accepted: running = offer.file.version, listeners told graphFileChanged, commit. Refused
+	/// Main thread, before the first offer: the gestures it judges each offer against and begins
+	/// (docs/control-port.md#gestures).
+	void holdGestures(Gestures& gestures);
+	/// gesture.begin on the main loop (docs/control-port.md#gestures): stopping, file-invalid (the newest text it knows
+	/// has errors), file-refused (the graph refused it), unknown-node, not-live, reach-mismatch and parameter-held, in
+	/// that order, from the running version's reach index; else the gesture opened.
+	control::GestureAnswer beginGesture(SessionToken session, const control::BeginGesture& begin, bool stopping);
+	/// A gesture's end that changes nothing in the file: closed at `value`, answered with it; unknown-gesture when the
+	/// gesture was aborted after its end was read.
+	control::CommandResult closeGesture(const std::string& gesture, double value);
+	/// Plan. Before the plan, each open gesture the offer relates to (docs/graph-file.md#reaches): an edit changing a
+	/// held value is refused parameter-held; else, once accepted, each is aborted by its reason before the listeners
+	/// are told, and its slots settle after the commit; a refused hand edit aborts every gesture. A gesture's end
+	/// closes its gesture after the commit; one whose gesture was aborted since its end was read is refused
+	/// unknown-gesture, planned and told nothing. Accepted: running = offer.file.version, listeners told graphFileChanged, commit. Refused
 	/// with cause disk: the refusal recorded for that version (place from placeOf), listeners told.
 	/// Refused edit: nothing told. Stopping: nothing told. A dry run: planned only, accepted or refused, nothing told,
 	/// recorded or committed.
@@ -90,7 +121,12 @@ private:
 		std::string version;
 		control::Refusal refusal;
 	};
-	void tell(FileState file, control::FileChangeCause cause, std::uint32_t droppedEdits);
+	void tell(FileState file, control::FileChangeCause cause, std::uint32_t droppedEdits,
+	          std::optional<std::string> gesture = std::nullopt, std::string gestureReason = {});
+	std::expected<std::vector<std::pair<std::string, std::string>>, CommandError> relatedTo(const Offer& offer) const;
+	bool stillOpen(const std::string& gesture) const;
+	void abortAll(const std::string& reason);
+	void newest(const FileState& file);
 	void tellAction(const control::ActionRecord& record);
 	DesiredGraph& graph_;
 	const GraphReader& reader_;
@@ -101,5 +137,9 @@ private:
 	std::vector<const control::SnapshotStamp*> stamps_;
 	std::optional<std::string> running_;
 	std::optional<Recorded> refusal_;
+	Gestures* gestures_ = nullptr;
+	std::shared_ptr<const ReachIndex> runningReach_; // the running version's
+	bool newestHasErrors_ = false;                   // the newest text it was told of
+	bool newestRefused_ = false;
 };
 } // namespace ear::config

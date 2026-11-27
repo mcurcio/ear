@@ -1,7 +1,7 @@
 # ear_node_types_tests: what holds for every node type together. It links the generated list alone and names no type's
 # library; each type's own tests are in its folder, src/nodes/<type>. test/ is added before src/, so the folder list is a
 # generator expression, read when the build is generated.
-add_executable(ear_node_types_tests harness_test.cpp node_types_test.cpp settings_refusals_test.cpp)
+add_executable(ear_node_types_tests harness_test.cpp live_rows_test.cpp node_types_test.cpp settings_refusals_test.cpp)
 target_link_libraries(ear_node_types_tests PRIVATE
 	ear_all_node_types ear_type_harness ear_folder ear_temp_folder ear_catch_main)
 target_compile_definitions(ear_node_types_tests PRIVATE

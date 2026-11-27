@@ -12,6 +12,8 @@ import { GraphStore } from "./graph";
 import { GraphFileStore } from "./graphFile";
 import { LevelStore } from "./levels";
 import { Activity } from "./activity";
+import { memberNumber } from "./form";
+import { GestureControls, type GestureTimers } from "./gesture";
 import { noticeOfRefusal, noticeOfState, Notices } from "./notices";
 import type { Methods, Notifications } from "./protocol";
 import { askedOf, Requests, type Asked, type AskedMethod } from "./requests";
@@ -24,6 +26,22 @@ export interface ConnectionView {
   /** On the browser's monotonic clock: when the next socket opens, while closed and a retry is scheduled. */
   retryAt?: number;
 }
+
+/** The browser's timers and animation frames (setTimeout where there is no requestAnimationFrame). */
+const browserTimers: GestureTimers = {
+  after: (ms, run) => {
+    const timer = setTimeout(run, ms);
+    return () => clearTimeout(timer);
+  },
+  frame: (run) => {
+    if (typeof requestAnimationFrame !== "function") {
+      const timer = setTimeout(run, 16);
+      return () => clearTimeout(timer);
+    }
+    const frame = requestAnimationFrame(run);
+    return () => cancelAnimationFrame(frame);
+  },
+};
 
 export interface AskOptions {
   /** The refusals the caller shows in place (notices.ts's placedRefusal); every other becomes a toast. */
@@ -43,6 +61,8 @@ export class Editor {
   readonly notices: Notices;
   /** Each node's events and diagnostics since this page connected (activity.ts). */
   readonly activity: Activity;
+  /** Every fader's and knob's gesture (gesture.ts), kept across a reconnect so an open one ends by its id. */
+  readonly gestures: GestureControls;
   private view: ConnectionView = { status: "connecting" };
   private readonly statusListeners = new Set<() => void>();
   private readonly now: () => number;
@@ -52,9 +72,11 @@ export class Editor {
       now?: () => number;
       /** Where the type schemas are kept across reloads (prefs.ts); none: the page's life. */
       typeKeeper?: TypeSchemaKeeper;
+      /** The gestures' timers and animation frames; none: the browser's. */
+      gestureTimers?: GestureTimers;
     },
   ) {
-    const { now, typeKeeper, ...clientOptions } = options;
+    const { now, typeKeeper, gestureTimers, ...clientOptions } = options;
     this.now = now ?? (() => performance.now());
     this.types = new TypeStore(typeKeeper ?? null);
     this.requests = new Requests(this.now);
@@ -63,11 +85,38 @@ export class Editor {
     // The graph's first listeners, so a box drawn for a new graph reads that graph's moves.
     this.moves.attach(this.graph);
     this.counterMoves.attach(this.graph);
+    this.gestures = new GestureControls(
+      {
+        begin: (name, key) => this.client.call("gesture.begin", { name, key }),
+        change: (gesture, seq, value) => this.client.notify("gesture.change", { gesture, seq, value }),
+        end: (gesture, value) => this.client.call("gesture.end", value === undefined ? { gesture } : { gesture, value }),
+        cancel: (gesture) => this.client.call("gesture.cancel", { gesture }),
+      },
+      gestureTimers ?? browserTimers,
+      {
+        graph: () => this.graph.get(),
+        countRowOf: (name, key) => {
+          const graph = this.graph.get();
+          const node = graph?.nodes.find((one) => one.name === name);
+          const schema = node !== undefined && graph !== null ? this.types.schemaOf(graph, node.type) : undefined;
+          const family = schema?.settings.find(
+            (row) => row.indexed !== undefined && memberNumber(key, row.key) !== undefined,
+          );
+          if (family?.indexed === undefined) return undefined;
+          const by = family.indexed.by;
+          const count = schema?.settings.find((row) => row.key === by)?.default;
+          return { by, default: typeof count === "number" ? count : 0 };
+        },
+      },
+      (notice) => this.notices.add(notice),
+      (name, key, value) => this.send("node.set", { name, settings: { [key]: value } }),
+    );
     this.client = new RpcClient({
       ...clientOptions,
       onMessage: (message) => {
         this.graph.apply(message);
         this.file.apply(message);
+        this.gestures.apply(message);
         // A Graph naming schemas this editor does not hold: fetch them (types.ts), once per hash.
         const graph = this.graph.get();
         if (graph !== null && this.types.wanted(graph) !== undefined) {
@@ -93,6 +142,8 @@ export class Editor {
           // The calls in flight had no answer; the client rejects each, and they are forgotten here at once.
           this.requests.clear();
         }
+        // A closed connection freezes each open gesture; the next open ends it by its id (docs/editor.md#gestures-in-the-editor).
+        this.gestures.connection(status);
         this.view = { status };
         this.notify();
       },

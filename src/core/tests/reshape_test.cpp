@@ -18,7 +18,7 @@ namespace reshape_test {
 using namespace ear;
 
 constexpr auto channelsRow = setting::defaulted("channels", setting::number(1, 4), 2).inPlace();
-constexpr auto modeRow = setting::optional("mode", setting::number(0, 9)); // restart-only
+constexpr auto modeRow = setting::optional("mode", setting::number(0, 9)).restarts("a test type restarts on it");
 constexpr auto out = bank::output<"out">;
 
 constexpr TypeSpec spec{.settings = SettingsTable<channelsRow, modeRow>{"shaper"}, .banks = Banks<out>{}};
@@ -26,6 +26,7 @@ constexpr TypeSpec spec{.settings = SettingsTable<channelsRow, modeRow>{"shaper"
 /// What the type was called with, in order: "configure <channels>", "change <old>-><now>".
 std::vector<std::string> calls;
 bool keepCode = false; // the change version answers with no code
+bool holdOut = false;  // the change version holds out before its commit point
 
 /// Channel c (from 1) plays the value c on every frame, so a channel that keeps playing is one that never changes.
 struct Channels {
@@ -50,6 +51,7 @@ struct Shaper {
 	Changed configure(ChangeOf<spec>& cx, const Checked& old, const Checked& now) {
 		calls.push_back("change " + std::to_string(old.get<channelsRow>()) + "->" +
 		                std::to_string(now.get<channelsRow>()));
+		if (holdOut) cx.hold(out);
 		if (keepCode) return cx.applied();
 		return cx.applied(Channels{}); // laid out for the new ports
 	}
@@ -60,6 +62,7 @@ using Harness = testing::TypeHarness<spec, Shaper>;
 std::unique_ptr<Harness> running(testing::HarnessOptions options = {}) {
 	calls.clear();
 	keepCode = false;
+	holdOut = false;
 	auto h = std::make_unique<Harness>(std::move(options));
 	REQUIRE_FALSE(h->parse(NodeSettings::object()));
 	h->add();
@@ -114,6 +117,29 @@ TEST_CASE("A reshape in place keeps channels 1 and 2 playing while a third is ad
 	CHECK_THROWS_AS(h->output("out.3"), std::logic_error); // gone with the layout
 	CHECK(calls == std::vector<std::string>{"configure 2", "change 2->3", "change 3->2"});
 	CHECK_FALSE(told(h, NodePhase::stopping)); // never restarted
+}
+
+TEST_CASE("While the old code runs on its ports a reshape's new output is in the block, written zeros every cycle",
+          "[reshape][reconfigure]") {
+	auto owned = running(testing::HarnessOptions{.autoComplete = false});
+	auto& h = *owned;
+	for (int i = 0; i < 4; ++i) h.process();
+	holdOut = true;
+	CHECK(h.change({{"channels", 3}}) == NodeOutcome::reshape);
+	// The hold not yet acknowledged: the commit point waits, the old code runs on out.1 and out.2, and out.3 is the
+	// block's, written zeros as the real block writes them (docs/engine.md#reshapes).
+	for (int i = 0; i < 3; ++i) { // 192 frames: inside the hold's 5 ms ramp, so no cycle ends it at zero
+		h.process(64);
+		CHECK(std::ranges::all_of(h.output(out, 2).first(64), [](float sample) { return sample == 0.0F; }));
+		CHECK(h->unwritten() == 0);
+		CHECK(h.swaps() == 0);
+	}
+	h->acknowledgeHolds(); // the commit point: the swap brings the code for three
+	h.node().completeBarrier();
+	for (int i = 0; i < 4; ++i) h.process(); // past the release's ramp
+	CHECK(plays(h, 0, 1.0F));
+	CHECK(plays(h, 2, 3.0F));
+	CHECK(h.swaps() == 1);
 }
 
 TEST_CASE("A reshape with a restart-only key restarts the node behind its block, configured on the new ports",

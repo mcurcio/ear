@@ -3,10 +3,14 @@
 // on the main loop and, like the keeper's main-loop side, DesiredGraph, NodeHost and the Reconciler,
 // tells the gateway each file change and graph event first. Every fixture in test/protocol is
 // replayed request by request and the session's output must equal its messages exactly.
+#include <bit>
 #include <deque>
+#include <format>
+#include <span>
 #include <fstream>
 #include <functional>
 #include <map>
+#include <optional>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -14,6 +18,7 @@
 #include <vector>
 
 #include "catch2/catch.hpp"
+#include "ear/control/gestures_wire.hpp"
 #include "ear/control/rpc.hpp"
 #include "ear/control/session.hpp"
 #include "ear/core/lifecycle.hpp"
@@ -96,6 +101,7 @@ std::string describe(const Command& command) {
 			else if constexpr (std::is_same_v<C, SetNode>)
 				return "setNode " + c.node + " " + c.settings.dump() + (c.dryRun ? " dryRun" : "") +
 			           (c.dropRoutes ? " dropRoutes" : "");
+			else if constexpr (std::is_same_v<C, CommitGesture>) return "commitGesture " + c.ending.gesture;
 			else {
 				static_assert(std::is_same_v<C, SetGraphFile>);
 				return "setGraphFile " + c.version;
@@ -1081,7 +1087,7 @@ TEST_CASE("node-set.json: a merge of a node's settings answered with what it app
 	using Kind = ear::NodeCause::Kind;
 	const json document = fixture("node-set");
 	const auto requests = requestsOf(document);
-	REQUIRE(requests.size() == 12);
+	REQUIRE(requests.size() == 16);
 	World w;
 	const ear::Ports card1{{{ear::Direction::input, "play", {"1"}}}};
 	const ear::Ports card2{{{ear::Direction::input, "play", {"1", "2"}}}};
@@ -1089,8 +1095,16 @@ TEST_CASE("node-set.json: a merge of a node's settings answered with what it app
 	const ear::Route toDesk{{"noise", "noise.mono"}, {"desk", "play.2"}};
 	const ear::Route fppToRec{{"fpp", "stream.1"}, {"rec", "record.left"}};
 	json fpp = {{"address", "0.0.0.0"}, {"channels", 2}, {"format", "L24"}, {"latencyMs", 40}, {"port", 5004}};
-	w.graph.view = ear::GraphView{
-		{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {"card", "file", "rtp", "white"}, {}, {}};
+	// gain nodes (docs/node-types.md#gain), whose live keys are retuned: amp and amp2 share one @set for gainDb.
+	const ear::Ports gain2{{{ear::Direction::input, "in", {"1", "2"}}, {ear::Direction::output, "out", {"1", "2"}}}};
+	const ear::Ports gain4{
+		{{ear::Direction::input, "in", {"1", "2", "3", "4"}}, {ear::Direction::output, "out", {"1", "2", "3", "4"}}}};
+	w.graph.view = ear::GraphView{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"},
+	                              {"card", "file", "gain", "rtp", "white"},
+	                              {},
+	                              {}};
+	w.graph.view.nodes.push_back({{"amp", "gain", {{"gainDb", -6}}}, gain2, at("amp", NodePhase::running)});
+	w.graph.view.nodes.push_back({{"amp2", "gain", {{"gainDb", -6}}}, gain2, at("amp2", NodePhase::running)});
 	w.graph.view.nodes.push_back(
 		{{"desk", "card", {{"card", "MOTU"}, {"playback", 2}}}, card2, at("desk", NodePhase::running)});
 	w.graph.view.nodes.push_back({{"fpp", "rtp", fpp}, rtpPorts, at("fpp", NodePhase::running)});
@@ -1103,36 +1117,44 @@ TEST_CASE("node-set.json: a merge of a node's settings answered with what it app
 	w.graph.view.nodes.push_back({{"rec", "file", {{"path", "take1.wav"}}},
 	                              ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
 	                              at("rec", NodePhase::running)});
+	w.graph.view.nodes.push_back(
+		{{"spare", "gain", json::object(), true}, gain2, at("spare", NodePhase::disabled, ear::Wanted::disabled)});
 	w.graph.view.routes.push_back({toDesk, ear::RouteMatch::linked, ""});
 	w.graph.view.routes.push_back({fppToRec, ear::RouteMatch::linked, ""});
 	RecordingOutbox out;
 	ControlSession session(*w.hub, out);
 	const auto answer = [](CommandResult result) { return [result] { return result; }; };
+	// node.set's answer always carries retuned and alsoChanged (feature live), [] for none.
+	const auto set = [](Applied applied) {
+		applied.retuned.emplace();
+		applied.alsoChanged.emplace();
+		return applied;
+	};
 	const auto changing = [](ear::NodeHealth h, std::vector<std::string> keys) {
 		h.keys = std::move(keys);
 		return h;
 	};
 	// A change in place of fpp: node.updated, reconfiguring with its keys, then the reply; running after it.
 	const auto inPlace = [&](const std::string& call, json settings, std::vector<std::string> keys) {
-		w.graph.script.push_back({call, [&w, settings, keys, rtpPorts, changing]() -> CommandResult {
+		w.graph.script.push_back({call, [&w, settings, keys, rtpPorts, changing, set]() -> CommandResult {
 									  w.gateway.nodeChanged({"fpp", "rtp", settings},
 			                                                std::make_shared<Config>(rtpPorts),
 			                                                ear::NodeChange{ear::NodeOutcome::reconfigure, keys});
 									  w.told(changing(at("fpp", NodePhase::reconfiguring), keys));
-									  return Applied{AppliedKind::reconfigure};
+									  return set(Applied{AppliedKind::reconfigure});
 								  }});
 	};
 
 	w.receive(session, requests[0]); // graph.subscribe
-	w.graph.script.push_back({R"(setNode fpp {"port":5006} dryRun)", answer(Applied{AppliedKind::reconfigure})});
+	w.graph.script.push_back({R"(setNode fpp {"port":5006} dryRun)", answer(set(Applied{AppliedKind::reconfigure}))});
 	w.receive(session, requests[1]);
 	fpp["port"] = 5006;
 	inPlace(R"(setNode fpp {"port":5006})", fpp, {"port"});
 	w.receive(session, requests[2]);
 	w.onMain([&] { w.told(at("fpp", NodePhase::running)); });
-	w.graph.script.push_back({R"(setNode fpp {"port":5006})", answer(Applied{AppliedKind::unchanged})});
+	w.graph.script.push_back({R"(setNode fpp {"port":5006})", answer(set(Applied{AppliedKind::unchanged}))});
 	w.receive(session, requests[3]);
-	w.graph.script.push_back({R"(setNode fpp {"port":5006} dryRun)", answer(Applied{AppliedKind::unchanged})});
+	w.graph.script.push_back({R"(setNode fpp {"port":5006} dryRun)", answer(set(Applied{AppliedKind::unchanged}))});
 	w.receive(session, requests[4]);
 	fpp.erase("latencyMs");
 	inPlace(R"(setNode fpp {"latencyMs":null})", fpp, {"latencyMs"});
@@ -1141,39 +1163,39 @@ TEST_CASE("node-set.json: a merge of a node's settings answered with what it app
 	w.graph.script.push_back({R"(setNode rec {"path":null})",
 	                          answer(Result(std::unexpected(ear::InvalidSettings{"rec", "path: missing", "path"})))});
 	w.receive(session, requests[6]);
-	w.graph.script.push_back({R"(setNode rec {"path":"take2.wav"} dryRun)", answer(Applied{AppliedKind::restart})});
+	w.graph.script.push_back(
+		{R"(setNode rec {"path":"take2.wav"} dryRun)", answer(set(Applied{AppliedKind::restart}))});
 	w.receive(session, requests[7]);
 	w.graph.script.push_back(
 		{R"(setNode porch {"playback":4} dryRun)",
-	     answer(Applied{AppliedKind::stored, std::nullopt, ear::PortsMoved{{"play.3", "play.4"}, {}}, std::nullopt,
-	                    std::vector<ear::Route>{}})});
+	     answer(set(Applied{AppliedKind::stored, std::nullopt, ear::PortsMoved{{"play.3", "play.4"}, {}}, std::nullopt,
+	                        std::vector<ear::Route>{}}))});
 	w.receive(session, requests[8]);
 	const ear::PortsMoved moved = ear::portsMoved(card2, card1);
 	w.graph.script.push_back(
 		{R"(setNode desk {"playback":1} dryRun)",
-	     answer(Applied{AppliedKind::reshape, false, moved, std::nullopt, std::vector<ear::Route>{toDesk}})});
+	     answer(set(Applied{AppliedKind::reshape, false, moved, std::nullopt, std::vector<ear::Route>{toDesk}}))});
 	w.receive(session, requests[9]);
 	w.graph.script.push_back(
 		{R"(setNode desk {"playback":1})", answer(ControlRefusal{PortsInUse{"desk", {"play.2"}, {toDesk}}})});
 	w.receive(session, requests[10]);
 	ear::NodeCause reshape{Kind::reshape, std::nullopt, {"playback"}};
 	reshape.ports = moved;
-	w.graph.script.push_back({R"(setNode desk {"playback":1} dropRoutes)", [&]() -> CommandResult {
-								  w.gateway.routeRemoved(toDesk);
-								  w.gateway.nodeChanged({"desk", "card", {{"card", "MOTU"}, {"playback", 1}}},
-		                                                std::make_shared<Config>(card1),
-		                                                ear::NodeChange{.outcome = ear::NodeOutcome::reshape,
-		                                                                .keys = {"playback"},
-		                                                                .oldPorts = card2,
-		                                                                .ports = card1});
-								  ear::NodeCause restarting = reshape;
-								  restarting.kind = Kind::restarting;
-								  restarting.restart = Kind::reshape;
-								  auto stopping = at("desk", NodePhase::stopping);
-								  stopping.cause = restarting;
-								  w.told(stopping);
-								  return Applied{AppliedKind::reshape, false, moved, std::vector<ear::Route>{toDesk}};
-							  }});
+	w.graph.script.push_back(
+		{R"(setNode desk {"playback":1} dropRoutes)", [&]() -> CommandResult {
+			 w.gateway.routeRemoved(toDesk);
+			 w.gateway.nodeChanged(
+				 {"desk", "card", {{"card", "MOTU"}, {"playback", 1}}}, std::make_shared<Config>(card1),
+				 ear::NodeChange{
+					 .outcome = ear::NodeOutcome::reshape, .keys = {"playback"}, .oldPorts = card2, .ports = card1});
+			 ear::NodeCause restarting = reshape;
+			 restarting.kind = Kind::restarting;
+			 restarting.restart = Kind::reshape;
+			 auto stopping = at("desk", NodePhase::stopping);
+			 stopping.cause = restarting;
+			 w.told(stopping);
+			 return set(Applied{AppliedKind::reshape, false, moved, std::vector<ear::Route>{toDesk}});
+		 }});
 	w.receive(session, requests[11]);
 	w.onMain([&] {
 		auto configuring = at("desk", NodePhase::configuring);
@@ -1183,6 +1205,60 @@ TEST_CASE("node-set.json: a merge of a node's settings answered with what it app
 		w.told(at("desk", NodePhase::starting));
 		w.told(at("desk", NodePhase::running));
 	});
+
+	// Retunes (docs/control-port.md#retunes): a dry run, then the edit of a value two nodes share, each node.updated
+	// with retuned and the answer naming the other in alsoChanged; no node.state follows.
+	const std::vector<ear::control::NodeKey> amp2Too{{"amp2", "gainDb"}};
+	const auto retuned = [](Applied applied, std::vector<std::string> keys,
+	                        std::vector<ear::control::NodeKey> also = {}) {
+		applied.retuned = std::move(keys);
+		applied.alsoChanged = std::move(also);
+		return applied;
+	};
+	w.graph.script.push_back(
+		{R"(setNode amp {"gainDb":-3.5} dryRun)", answer(retuned(Applied{AppliedKind::retune}, {"gainDb"}, amp2Too))});
+	w.receive(session, requests[12]);
+	w.graph.script.push_back({R"(setNode amp {"gainDb":-3.5})", [&]() -> CommandResult {
+								  for (const char* name : {"amp", "amp2"})
+									  w.gateway.nodeChanged({name, "gain", {{"gainDb", -3.5}}},
+			                                                std::make_shared<Config>(gain2),
+			                                                ear::NodeChange{.outcome = ear::NodeOutcome::retune,
+			                                                                .keys = {},
+			                                                                .oldPorts = gain2,
+			                                                                .ports = gain2,
+			                                                                .retuned = {{"gainDb", -6, -3.5}}});
+								  return retuned(Applied{AppliedKind::retune}, {"gainDb"}, amp2Too);
+							  }});
+	w.receive(session, requests[13]);
+	// A reshape in place with a trim retuned beside it: reconfiguring names channels alone.
+	const ear::PortsMoved grown = ear::portsMoved(gain2, gain4);
+	w.graph.script.push_back(
+		{R"(setNode amp {"channels":4,"trimDb.3":-1.5})", [&]() -> CommandResult {
+			 w.gateway.nodeChanged({"amp", "gain", {{"channels", 4}, {"gainDb", -3.5}, {"trimDb.3", -1.5}}},
+		                           std::make_shared<Config>(gain4),
+		                           ear::NodeChange{.outcome = ear::NodeOutcome::reshape,
+		                                           .keys = {"channels"},
+		                                           .oldPorts = gain2,
+		                                           .ports = gain4,
+		                                           .inPlace = true,
+		                                           .retuned = {{"trimDb.3", 0, -1.5}}});
+			 w.told(changing(at("amp", NodePhase::reconfiguring), {"channels"}));
+			 return retuned(Applied{AppliedKind::reshape, true, grown, std::vector<ear::Route>{}}, {"trimDb.3"});
+		 }});
+	w.receive(session, requests[14]);
+	w.onMain([&] { w.told(at("amp", NodePhase::running)); });
+	// A disabled node's change of a live key: stored, retuned, played from its enable.
+	w.graph.script.push_back({R"(setNode spare {"mute":true})", [&]() -> CommandResult {
+								  w.gateway.nodeChanged({"spare", "gain", {{"mute", true}}, true},
+		                                                std::make_shared<Config>(gain2),
+		                                                ear::NodeChange{.outcome = ear::NodeOutcome::stored,
+		                                                                .keys = {},
+		                                                                .oldPorts = gain2,
+		                                                                .ports = gain2,
+		                                                                .retuned = {{"mute", false, true}}});
+								  return retuned(Applied{AppliedKind::stored}, {"mute"});
+							  }});
+	w.receive(session, requests[15]);
 	checkMessages(out, document["messages"]);
 	CHECK(w.graph.script.empty());
 }
@@ -1372,7 +1448,7 @@ TEST_CASE("A batch's subscribe snapshot holds the batch's own changes", "[sessio
 	CHECK(json::parse(out.all[1])["method"] == "node.state");
 }
 
-TEST_CASE("Responses keep request order, notifications get none, and done follows the responses", "[session]") {
+TEST_CASE("Responses keep request order, notifications get none, and done lets the next be read at once", "[session]") {
 	World w;
 	RecordingOutbox out;
 	ControlSession session(*w.hub, out);
@@ -1396,10 +1472,10 @@ TEST_CASE("Responses keep request order, notifications get none, and done follow
 							 queuedAtDone = out.all.size();
 						 });
 	});
-	CHECK(done == 0); // its commands are on the main loop
+	CHECK(done == 1); // read ahead: the FIFO has room, though its commands are on the main loop
+	CHECK(queuedAtDone == 0);
 	w.pump();
 	CHECK(done == 1);
-	CHECK(queuedAtDone == 1);
 	CHECK(w.graph.script.empty()); // the notification node.add ran
 	REQUIRE(out.all.size() == 1);
 	CHECK(json::parse(out.all[0]) == json::parse(R"([
@@ -1467,7 +1543,7 @@ TEST_CASE("A session closed while its command is on the main loop drops the repl
 	w.pump();
 	CHECK(w.graph.script.empty()); // the command still ran
 	CHECK(out.all.empty());
-	CHECK(done == 0);
+	CHECK(done == 1); // the transport's go-ahead came as it was read, before the close
 }
 
 TEST_CASE("companions.json: each node's list in the snapshot, node.added's [], each list told in order with the health "
@@ -1701,4 +1777,220 @@ TEST_CASE("types.get is answered by the hub in its place in a batch, never throu
 	REQUIRE(out.all.size() == 2);
 	CHECK(json::parse(out.all[1])["result"]["hash"] == hash);
 	CHECK(w.graph.calls.size() == 1); // answered on the control thread alone
+}
+
+TEST_CASE("A session reads ahead: up to 16 messages wait in its FIFO and run one at a time, the 16th holding the "
+          "transport's next read until one is answered",
+          "[session]") {
+	World w;
+	RecordingOutbox out;
+	std::optional<ControlSession> session;
+	w.onControl([&] { session.emplace(*w.hub, out); });
+	int done = 0;
+	w.onControl([&] {
+		for (int id = 1; id <= 16; ++id)
+			session->received(R"({"jsonrpc":"2.0","id":)" + std::to_string(id) + R"(,"method":"graph.get"})",
+			                  [&done] { ++done; });
+	});
+	CHECK(done == 15); // the 16th fills the FIFO: the transport reads nothing more until one is answered
+	CHECK(w.graph.calls.empty());
+	w.main.runOne(); // the first message's read, and only it: the next waits for its answer
+	CHECK(w.graph.calls.size() == 1);
+	w.pump();
+	CHECK(done == 16);
+	REQUIRE(out.all.size() == 16);
+	for (int id = 1; id <= 16; ++id) CHECK(json::parse(out.all[id - 1]).at("id") == id); // in order
+	w.onControl([&] { session.reset(); });
+}
+
+TEST_CASE("A session closed with messages in its FIFO still runs them in order, its replies dropped", "[session]") {
+	World w;
+	RecordingOutbox out;
+	std::optional<ControlSession> session;
+	w.onControl([&] { session.emplace(*w.hub, out); });
+	w.onControl([&] {
+		session->received(R"({"jsonrpc":"2.0","id":1,"method":"graph.get"})", [] {});
+		session->received(R"({"jsonrpc":"2.0","id":2,"method":"graph.get"})", [] {});
+		session.reset();
+	});
+	w.pump();
+	CHECK(w.graph.calls.size() == 2);
+	CHECK(out.all.empty());
+}
+
+// ---- Gestures (docs/control-port.md#gestures): the session's read-ahead, the gateway's mailbox and the hub's
+// addressing, over a real Gestures with fixed ids and a scripted keeper side ----
+
+namespace {
+
+struct SlotLive final : ear::LiveTarget {
+	std::map<std::pair<std::string, std::size_t>, double> slots;
+	double ceiling = 24.0;
+	void setLive(const ear::NodeName& node, std::span<const ear::LiveWrite> writes) override {
+		for (const auto& write : writes) slots[{node, write.member}] = std::bit_cast<double>(write.bits);
+	}
+	std::expected<void, ear::LiveRefusal> checkLive(const ear::NodeName&,
+	                                                std::span<const ear::LiveWrite> writes) const override {
+		for (const auto& write : writes)
+			if (std::bit_cast<double>(write.bits) > ceiling)
+				return std::unexpected(ear::LiveRefusal{"gainDb", "gainDb: must be a number of dB from -90 to 24"});
+		return {};
+	}
+	std::optional<std::uint64_t> committedLive(const ear::NodeName&, std::size_t) const override {
+		return std::bit_cast<std::uint64_t>(-6.0);
+	}
+};
+
+struct NoTimers final : ear::Timers {
+	struct Handle final : ear::Timer {};
+	std::unique_ptr<ear::Timer> after(std::chrono::milliseconds, std::move_only_function<void()>) override {
+		return std::make_unique<Handle>();
+	}
+	std::chrono::steady_clock::time_point now() const override { return std::chrono::steady_clock::time_point{}; }
+};
+
+/// The keeper's main-loop side, scripted: amp's gainDb (-6) is the one live ramped decimal; an end commits by telling
+/// the gateway what a retune tells, then closes the gesture.
+struct ScriptedGestures final : GestureRequests {
+	MainLoopGateway& gateway;
+	ear::Gestures& gestures;
+	ScriptedGestures(MainLoopGateway& g, ear::Gestures& s) : gateway(g), gestures(s) {}
+	GestureAnswer begin(ear::SessionToken session, const BeginGesture& begin) override {
+		if (begin.node == "porch")
+			return GestureRefused{"file-refused", "file-refused: the graph refused the newest text of ear.conf"};
+		if (begin.node != "amp") return CommandResult{Result{std::unexpected(ear::UnknownNode{begin.node})}};
+		if (begin.key == "trimDb.1")
+			return GestureRefused{"reach-mismatch",
+			                      "reach-mismatch amp: trimDb.1 shares its definition with rows a gesture cannot move "
+			                      "together",
+			                      {{"line", 5},
+			                       {"column", 11},
+			                       {"with", json::array({{{"name", "amp"}, {"key", "channels"}, {"why", "kind"}}})}}};
+		if (begin.key != "gainDb")
+			return GestureRefused{"not-live",
+			                      "not-live amp: " + begin.key + " is not a live ramped decimal",
+			                      {{"key", begin.key}, {"change", "inPlace"}}};
+		if (const auto held = gestures.heldAt({"amp", "gainDb"}))
+			return CommandResult{Result{std::unexpected(
+				ear::ParameterHeld{"amp", "gainDb", held->gesture, static_cast<std::uint64_t>(held->silent.count())})}};
+		const std::string id = gestures.open({session, {{{"amp", "gainDb"}, 0}}, -90.0, 24.0, 1, -6.0});
+		return GestureBegun{id, -6.0, {{"amp", "gainDb"}}, -90.0, 24.0, 1};
+	}
+	void move(ear::SessionToken session, const MoveGesture& move) override {
+		gestures.move(move.gesture, session, move.seq, move.value);
+	}
+	void end(ear::SessionToken session, const EndGesture& end,
+	         std::move_only_function<void(GestureAnswer)> reply) override {
+		auto ending = gestures.end(end.gesture, end.value, session);
+		if (!ending) return reply(GestureRefused{"unknown-gesture", "unknown-gesture " + end.gesture});
+		ear::NodeChange change{.outcome = ear::NodeOutcome::retune, .keys = {}};
+		change.retuned.push_back({"gainDb", -6.0, ending->value});
+		gateway.nodeChanged(ear::NodeSpec{"amp", "gain", {{"gainDb", ending->value}}}, nullptr, change);
+		gestures.close(ending->gesture, ending->value);
+		reply(CommandResult{GestureEnded{ending->value}});
+	}
+	GestureAnswer cancel(ear::SessionToken session, const CancelGesture& cancel) override {
+		if (!gestures.cancel(cancel.gesture, session)) return GestureRefused{"unknown-gesture", "unknown-gesture"};
+		return GestureCancelled{};
+	}
+	void sessionClosed(ear::SessionToken session) override { gestures.sessionClosed(session); }
+};
+
+/// Fixed ids, so a fixture can name them.
+std::function<std::string()> countingIds() {
+	return [n = 0]() mutable { return std::format("{:032x}", ++n); };
+}
+
+struct GestureWorld : World {
+	SlotLive live;
+	NoTimers timers;
+	ear::Gestures gestures{live, timers, ear::gestureStaleAfter, countingIds()};
+	ScriptedGestures scripted{gateway, gestures};
+	GestureWorld() {
+		gateway.answerGestures(scripted);
+		gestures.subscribe(gateway);
+		graph.view.nodes.push_back(
+			{{"amp", "gain", {{"gainDb", -6}}},
+		     ear::Ports{{{ear::Direction::input, "in", {"1"}}, {ear::Direction::output, "out", {"1"}}}},
+		     at("amp", ear::NodePhase::running)});
+	}
+};
+
+} // namespace
+
+TEST_CASE("gestures.json: a begin answered ahead of the FIFO, ticks, an end in order, refusals, a cancel",
+          "[session][protocol][gestures]") {
+	const json document = fixture("gestures");
+	GestureWorld w;
+	RecordingOutbox out;
+	std::optional<ControlSession> session;
+	w.onControl([&] { session.emplace(*w.hub, out); });
+	for (const std::string& request : requestsOf(document)) w.receive(*session, request);
+	checkMessages(out, document.at("messages"));
+	w.onControl([&] { session.reset(); });
+}
+
+TEST_CASE("A begin and its ticks go to every other subscriber, never back to the owner, an abort reaches the owner "
+          "unsubscribed, and a tick-refused only the owner",
+          "[session][gestures]") {
+	GestureWorld w;
+	RecordingOutbox ownerOut, otherOut;
+	std::optional<ControlSession> owner, other;
+	w.onControl([&] {
+		owner.emplace(*w.hub, ownerOut);
+		other.emplace(*w.hub, otherOut);
+	});
+	w.receive(*other, R"({"jsonrpc":"2.0","id":1,"method":"graph.subscribe"})");
+	w.receive(*owner, R"({"jsonrpc":"2.0","id":1,"method":"gesture.begin","params":{"name":"amp","key":"gainDb"}})");
+	const std::string id = json::parse(ownerOut.all.at(0)).at("result").at("gesture");
+	w.receive(*owner,
+	          R"({"jsonrpc":"2.0","method":"gesture.change","params":{"gesture":")" + id + R"(","seq":1,"value":-3}})");
+	w.receive(*owner,
+	          R"({"jsonrpc":"2.0","method":"gesture.change","params":{"gesture":")" + id + R"(","seq":2,"value":30}})");
+	REQUIRE(ownerOut.all.size() == 2); // the reply, then the tick-refused; never its own begin or change
+	CHECK(json::parse(ownerOut.all[1]).at("params").at("phase") == "tick-refused");
+	REQUIRE(otherOut.all.size() == 3); // its snapshot, begin, change
+	CHECK(json::parse(otherOut.all[1]).at("params").at("phase") == "begin");
+	CHECK(json::parse(otherOut.all[2]).at("params").at("value") == -3);
+	CHECK(w.live.slots.at({"amp", 0}) == -3.0);
+	// The other session cancels it by its id: both get the abort, the owner unsubscribed.
+	w.receive(*other, R"({"jsonrpc":"2.0","id":2,"method":"gesture.cancel","params":{"gesture":")" + id + R"("}})");
+	CHECK(json::parse(ownerOut.all.back()).at("params").at("phase") == "aborted");
+	CHECK(json::parse(otherOut.all.back()) == json::parse(R"({"jsonrpc":"2.0","id":2,"result":{}})"));
+	w.onControl([&] {
+		owner.reset();
+		other.reset();
+	});
+}
+
+TEST_CASE("Ticks wait in the gateway's mailbox, one main-loop task for many, and a tick read after its end is "
+          "dropped",
+          "[session][gestures]") {
+	GestureWorld w;
+	RecordingOutbox out;
+	std::optional<ControlSession> session;
+	w.onControl([&] { session.emplace(*w.hub, out); });
+	w.receive(*session, R"({"jsonrpc":"2.0","id":1,"method":"gesture.begin","params":{"name":"amp","key":"gainDb"}})");
+	const std::string id = json::parse(out.all.at(0)).at("result").at("gesture");
+	const auto tick = [&](int seq, int value) {
+		return R"({"jsonrpc":"2.0","method":"gesture.change","params":{"gesture":")" + id + R"(","seq":)" +
+		       std::to_string(seq) + R"(,"value":)" + std::to_string(value) + "}}";
+	};
+	w.onControl([&] {
+		for (int seq = 1; seq <= 100; ++seq) session->received(tick(seq, -seq / 10), [] {});
+	});
+	REQUIRE_FALSE(w.main.empty());
+	w.main.runOne();
+	CHECK(w.main.empty()); // a hundred ticks, one task
+	w.pump();
+	CHECK(w.live.slots.at({"amp", 0}) == -10.0);
+	w.onControl([&] {
+		session->received(R"({"jsonrpc":"2.0","id":2,"method":"gesture.end","params":{"gesture":")" + id + R"("}})",
+		                  [] {});
+		session->received(tick(200, -50), [] {}); // read after the end: dropped on the control thread
+	});
+	w.pump();
+	CHECK(w.live.slots.at({"amp", 0}) == -6.0); // closed: the slot on the committed value
+	CHECK(json::parse(out.all.back()).at("result").at("value") == -10);
+	w.onControl([&] { session.reset(); });
 }

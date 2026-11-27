@@ -11,6 +11,7 @@
 #include <vector>
 #include "ear/control/requests.hpp"
 #include "ear/core/desired_graph.hpp"
+#include "ear/core/gestures.hpp"
 #include "ear/core/executor.hpp"
 #include "ear/core/graph_view.hpp"
 #include "ear/core/node_host.hpp"
@@ -31,7 +32,7 @@ private:
 	std::unique_ptr<Impl> impl_;
 	explicit FirstLoad(std::unique_ptr<Impl> impl) noexcept;
 };
-class GraphFileKeeper final : public control::GraphRequests {
+class GraphFileKeeper final : public control::GraphRequests, public control::GestureRequests {
 public:
 	/// Main thread, at boot. Never fails for the file's content. folder and catalogue outlive the result.
 	static FirstLoad load(const folder::ConfinedFolder& folder, const NodeCatalogue& catalogue);
@@ -53,12 +54,28 @@ public:
 	std::expected<void, std::string> start();
 	void submit(std::vector<control::Command> commands,
 	            control::BatchReply reply) override; // posts Keeper::request
-	void stop(); // main loop, after DesiredGraph::close(): posts Keeper::stop, then ends the folder watch and closes it
+	/// Main thread, before start(): the gestures it begins, commits and judges every offer against, and commits the
+	/// releases of (docs/control-port.md#gestures).
+	void holdGestures(Gestures& gestures);
+	/// GestureRequests, on the main loop (docs/control-port.md#gestures). An end, a gesture.end's or a release's, is a
+	/// keeper step like an edit: its value at the definition, one commit; any refusal of it aborts the gesture
+	/// (`refused`) before the reply.
+	control::GestureAnswer begin(SessionToken session, const control::BeginGesture& begin) override;
+	void move(SessionToken session, const control::MoveGesture& move) override;
+	void end(SessionToken session, const control::EndGesture& end,
+	         std::move_only_function<void(control::GestureAnswer)> reply) override;
+	control::GestureAnswer cancel(SessionToken session, const control::CancelGesture& cancel) override;
+	void sessionClosed(SessionToken session) override;
+	/// Main loop, after DesiredGraph::close(): every gesture dropped, never committed, and later begins and ends refused
+	/// stopping; posts Keeper::stop, then ends the folder watch and closes it.
+	void stop();
 	/// Main thread, after the main loop returned: stops and joins the thread (the last write runs
 	/// first). Returns the last write's failure, for standard output.
 	std::optional<std::string> join();
 
 private:
+	/// An end to commit through the keeper: its reply (none for a release), the gesture aborted on any refusal.
+	void commit(GestureEnding ending, std::move_only_function<void(control::GestureAnswer)> reply);
 	struct Impl;
 	std::unique_ptr<Impl> impl_;
 };

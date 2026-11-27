@@ -44,6 +44,7 @@ UTF-8 becomes U+FFFD.
 | `log` | `node` or `unattributed: true`, `level`, `source`, `topic`?, `text`, `cut`?, `heldBack`? | `[node <name> ]<source>[ <topic>] <level>: <text>` |
 | `diagnostic` | `node`?, `code`, `subject`?, `active`, `count` (with a node), the code's fields, `detail` | below |
 | `action` | `node`, `action`, `result`, `detail`? | below |
+| `param` | `node`, `key`, `from`, `to`, `cause`; a gesture's `gesture` and `reason` | `node <name> <key> <from> -> <to>`; an abort's `node <name> <key> gesture <id> aborted (<reason>): back to <to>` |
 | `exit` | `status`, `reason` | `ear: <reason>` (`ear: stopped` at a clean stop) |
 
 The order at boot: `engine` (how the audio thread is scheduled), then `control`, then the first
@@ -235,6 +236,30 @@ node <name> <action> refused: <code>[ (<detail>)]
 
 `node.disable` and `node.enable` write no `action` record: they are edits, and their `graph-file`
 record says so.
+
+### `param`
+
+A live key a committed change moved ([architecture.md](architecture.md#retunes)): one record per
+node and retuned key, a change of live keys alone and a mixed change's live keys alike, written
+after the change's `graph-file` record and before the `node` records the change's other keys cause.
+`cause` is that `graph-file` record's: `edit` for an edit through the control port (`graphFile.set`
+included), `disk` for `ear.conf` changed on disk. `from` and `to` are the key's value as the
+settings held it before and hold it now (its default when not given), as the control port writes
+it: a decimal as `ear.conf` writes it (`-6`, `-3.5`), a flag `true` or `false`, a whole number, a
+choice's name. A node a shared definition moved has its own record. A retune causes no `node`
+record.
+
+A gesture's end ([control-port.md](control-port.md#gestures)) commits as `cause` `gesture` with
+its `gesture` id, and a release ear ended for its owner also with its `reason` (`session-closed`,
+`stale`). A gesture's abort writes one record per reached key, `cause` `aborted` with `gesture` and
+`reason`: `from` is the value the hand left in the slots and `to` the value they went back to,
+absent after a related change of the file (`hand-edit`, `file-saved`, `edited`), whose own records
+say it. A tick writes nothing.
+
+```
+node amp gainDb -6 -> -3.5
+node amp gainDb gesture 0f3a… aborted (cancelled): back to -6
+```
 
 ### `exit`
 

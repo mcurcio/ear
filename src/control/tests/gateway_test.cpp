@@ -327,9 +327,9 @@ TEST_CASE("node.added carries the spec's health and a disabled node's disabled, 
 	CHECK(first["params"]["state"] == "disabled");
 	CHECK(first["params"]["since"] == "2026-11-09T10:00:00.000000Z");
 	CHECK(json::parse(f.sink.seen[2])["params"] ==
-	      json::parse(R"({"name":"q","settings":{},"applied":"stored","disabled":true})"));
+	      json::parse(R"({"name":"q","settings":{},"applied":"stored","disabled":true,"retuned":[]})"));
 	CHECK(json::parse(f.sink.seen[3])["params"] ==
-	      json::parse(R"({"name":"q","settings":{"k":2},"applied":"enable"})"));
+	      json::parse(R"({"name":"q","settings":{"k":2},"applied":"enable","retuned":[]})"));
 }
 
 TEST_CASE("A snapshot's since is stamped when the graph is read: the one its phase had then, whatever follows",

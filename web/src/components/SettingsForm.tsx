@@ -1,31 +1,56 @@
 // The inspector's settings form (docs/editor.md#the-settings-form): one field per row of the node type's schema, each
 // with its draft, its hints from the schema alone and ear's refusal placed under the key it names; Apply sends the
-// drafts as one node.set, asking first when the dry run says the node restarts, reshapes or loses routes. The logic is
-// form.ts; ear judges every value.
+// drafts as one node.set, asking first when the dry run says the node restarts, reshapes or loses routes. A live flag or
+// select is sent at once by its own node.set, with no draft, and says which other nodes the same edit changed. The logic
+// is form.ts; ear judges every value.
 import { useEffect, useMemo, useState } from "react";
-import { appliesAfter, ApplyFlow, edit, fieldsOf, patchOf, takeEar, type ApplyStep, type Draft, type FieldView } from "../form";
+import {
+  alsoChangedWords,
+  appliesAfter,
+  ApplyFlow,
+  atOncePatch,
+  edit,
+  fieldsOf,
+  groupsOf,
+  patchOf,
+  stripSummary,
+  takeEar,
+  type ApplyStep,
+  type Draft,
+  type FieldView,
+} from "../form";
 import { refusalParts } from "../notices";
-import type { GraphNode, TypeSchema } from "../protocol";
+import type { GraphNode, JsonObject, TypeSchema } from "../protocol";
 import { RpcError } from "../rpc";
 import { useEditor } from "./hooks";
+import { Fader, LiveNumber, useLiveDisabled } from "./LiveControls";
 import { Spinner } from "./Spinner";
 
 function Field({
   field,
   node,
+  liveDisabled,
   onChange,
+  onLive,
   onTakeEar,
 }: {
   field: FieldView;
   node: GraphNode;
+  /** Why the live controls are disabled now, if they are. */
+  liveDisabled: string | undefined;
   onChange: (value: string | boolean) => void;
+  onLive: (key: string, patch: JsonObject) => void;
   onTakeEar: () => void;
 }) {
   const id = `setting-${node.name}-${field.key}`;
-  const disabled = field.disabledBy !== undefined;
+  const isLive = field.atOnce === true || field.live !== undefined;
+  const disabled = field.disabledBy !== undefined || (isLive && liveDisabled !== undefined);
   const words = [...field.hints];
   if (field.drafted && appliesAfter(node, field.key)) words.push("applies after this change");
   const control = (() => {
+    if (field.live === "fader") return <Fader node={node} field={field} disabledReason={liveDisabled} onCommit={onLive} />;
+    if (field.live === "enter")
+      return <LiveNumber node={node} field={field} disabledReason={liveDisabled} onCommit={onLive} />;
     switch (field.control) {
       case "flag":
         return (
@@ -62,6 +87,21 @@ function Field({
             onChange={(event) => onChange(event.target.value)}
           />
         );
+      case "decimal":
+        return (
+          <input
+            id={id}
+            type="number"
+            inputMode="decimal"
+            step="any"
+            min={field.min}
+            max={field.max}
+            placeholder={field.placeholder}
+            value={String(field.value)}
+            disabled={disabled}
+            onChange={(event) => onChange(event.target.value)}
+          />
+        );
       default:
         return (
           <input
@@ -77,14 +117,17 @@ function Field({
     }
   })();
   return (
-    <div className={`settings-field${field.drafted ? " settings-field-drafted" : ""}`}>
+    <div
+      className={`settings-field${field.drafted ? " settings-field-drafted" : ""}${field.inactive === true ? " settings-field-inactive" : ""}`}
+    >
       <label htmlFor={id}>
         {field.key}
         {field.unit !== undefined && <span className="settings-unit"> ({field.unit})</span>}
         {field.required && <span className="settings-required"> required</span>}
       </label>
       {control}
-      {disabled && <p className="settings-hint">only without {field.disabledBy}</p>}
+      {field.disabledBy !== undefined && <p className="settings-hint">only without {field.disabledBy}</p>}
+      {isLive && field.live !== "fader" && liveDisabled !== undefined && <p className="settings-hint">{liveDisabled}</p>}
       {words.length > 0 && <p className="settings-hint">{words.join(" · ")}</p>}
       {field.help !== undefined && <p className="settings-hint">{field.help}</p>}
       {field.changedOnEar && (
@@ -100,8 +143,20 @@ function Field({
   );
 }
 
-export function SettingsForm({ node, schema, dryRun }: { node: GraphNode; schema: TypeSchema; dryRun: boolean }) {
+export function SettingsForm({
+  node,
+  schema,
+  dryRun,
+  gestures = false,
+}: {
+  node: GraphNode;
+  schema: TypeSchema;
+  dryRun: boolean;
+  /** Feature gestures: live ramped decimals are faders. */
+  gestures?: boolean;
+}) {
   const editor = useEditor();
+  const liveDisabled = useLiveDisabled();
   const [drafts, setDrafts] = useState<ReadonlyMap<string, Draft>>(new Map());
   const [step, setStep] = useState<ApplyStep>({ kind: "idle" });
   // Refusals are placed here, under their key or at the top, so only a lost answer is also a toast.
@@ -120,8 +175,31 @@ export function SettingsForm({ node, schema, dryRun }: { node: GraphNode; schema
     if (step.kind === "applied") setDrafts(new Map());
   }, [step]);
 
-  const refusal = step.kind === "refused" && step.key !== undefined ? { key: step.key, detail: step.detail } : undefined;
-  const fields = fieldsOf(schema, node.settings, drafts, refusal);
+  // A live switch or select (feature live): its own node.set at once; ear retunes it with no restart.
+  const [liveNotice, setLiveNotice] = useState<string | undefined>(undefined);
+  const [liveRefusal, setLiveRefusal] = useState<{ key: string; detail: string } | undefined>(undefined);
+  const commitLive = (key: string, value: string | boolean) => {
+    const made = atOncePatch(schema, node.settings, key, value);
+    if (made === undefined) return;
+    if ("problem" in made) return setLiveRefusal({ key, detail: made.problem });
+    sendLive(key, made.patch);
+  };
+  // A live change from the form leaves the other fields' drafts as they are (docs/editor.md#the-settings-form).
+  const sendLive = (key: string, patch: JsonObject) => {
+    setLiveRefusal(undefined);
+    setLiveNotice(undefined);
+    editor
+      .ask("node.set", { name: node.name, settings: patch }, { placed: (error) => error instanceof RpcError })
+      .then((result) => setLiveNotice(alsoChangedWords(result)))
+      .catch((error: unknown) => {
+        const data = error instanceof RpcError ? error.data : undefined;
+        setLiveRefusal({ key: data?.key ?? key, detail: data?.detail ?? (error instanceof Error ? error.message : String(error)) });
+      });
+  };
+
+  const refusal =
+    step.kind === "refused" && step.key !== undefined ? { key: step.key, detail: step.detail } : liveRefusal;
+  const fields = fieldsOf(schema, node.settings, drafts, refusal, { gestures });
   const busy = step.kind === "checking" || step.kind === "sending";
   const made = patchOf(schema, node.settings, drafts);
   const canApply = drafts.size > 0 && "patch" in made && !busy && step.kind !== "confirm";
@@ -148,15 +226,36 @@ export function SettingsForm({ node, schema, dryRun }: { node: GraphNode; schema
           })()}
         </p>
       )}
-      {fields.map((field) => (
-        <Field
-          key={field.key}
-          field={field}
-          node={node}
-          onChange={(value) => setDrafts((now) => edit(schema, node.settings, now, field.key, value))}
-          onTakeEar={() => setDrafts((now) => takeEar(now, field.key))}
-        />
-      ))}
+      {liveNotice !== undefined && (
+        <p className="settings-hint settings-changed" role="status">
+          {liveNotice}
+        </p>
+      )}
+      {groupsOf(fields).map((group) => {
+        const drawn = group.fields.map((field) => (
+          <Field
+            key={field.key}
+            field={field}
+            node={node}
+            liveDisabled={liveDisabled}
+            onChange={(value) =>
+              field.atOnce === true
+                ? commitLive(field.key, value)
+                : setDrafts((now) => edit(schema, node.settings, now, field.key, value))
+            }
+            onLive={sendLive}
+            onTakeEar={() => setDrafts((now) => takeEar(now, field.key))}
+          />
+        ));
+        if (!group.strip) return drawn;
+        // Above 8 members a family is a compact strip behind a disclosure (docs/editor.md#the-settings-form).
+        return (
+          <details key={`strip-${group.family ?? ""}`} className="settings-strip">
+            <summary>{stripSummary(group)}</summary>
+            <div className="settings-strip-fields">{drawn}</div>
+          </details>
+        );
+      })}
       {step.kind === "confirm" ? (
         <div className="banner banner-warn settings-confirm" role="alertdialog" aria-label="Apply asks first">
           <p>{step.words}</p>

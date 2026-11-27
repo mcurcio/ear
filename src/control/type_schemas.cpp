@@ -6,6 +6,8 @@
 #include <array>
 #include <cstdint>
 #include <format>
+#include <span>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -29,11 +31,29 @@ std::string_view defaultFromName(setting::DefaultFrom from) noexcept {
 	return "nodeName";
 }
 
+std::string_view taperName(setting::Taper taper) noexcept {
+	switch (taper) {
+	case setting::Taper::linear:
+		return "linear";
+	case setting::Taper::log:
+		return "log";
+	case setting::Taper::db:
+		return "db";
+	}
+	return "linear";
+}
+
 json encodeRow(const SettingRow& row) {
 	json out = {{"key", row.key},
 	            {"required", row.required},
-	            // From the row's marks (docs/architecture.md#restarts-and-changes-of-settings).
-	            {"change", row.inPlace ? "inPlace" : "restart"}};
+	            // From the row's change mark (docs/writing-a-node-type.md#change-marks).
+	            {"change", row.change == setting::Change::restart ? "restart"
+	                       : setting::isLive(row)                 ? "live"
+	                                                              : "inPlace"}};
+	if (!row.restartReason.empty()) out["restartReason"] = row.restartReason;
+	// A live row's transition (docs/control-port.md#type-schemas): a ramp and its length, or a step.
+	if (setting::isLive(row))
+		out["live"] = row.rampMs > 0 ? json{{"transition", "ramp"}, {"ms", row.rampMs}} : json{{"transition", "step"}};
 	std::visit(
 		[&](const auto& rule) {
 			using Rule = std::decay_t<decltype(rule)>;
@@ -50,6 +70,20 @@ json encodeRow(const SettingRow& row) {
 				out["unit"] = "Hz";
 			} else if constexpr (std::is_same_v<Rule, BooleanRule>) {
 				out["kind"] = "flag";
+			} else if constexpr (std::is_same_v<Rule, DecimalRule>) {
+				// Named as a decimal status field's are (docs/control-port.md#type-schemas).
+				out["kind"] = "decimal";
+				out["min"] = rule.low;
+				out["max"] = rule.high;
+				if (!rule.unit.empty()) out["unit"] = rule.unit;
+				out["decimals"] = rule.hints.decimals;
+				out["taper"] = taperName(rule.hints.taper);
+				if (rule.hints.minIsSilence) out["minIsSilence"] = true;
+			} else if constexpr (std::is_same_v<Rule, ChoiceRule>) {
+				// A closed set, as a choice status field's (docs/control-port.md#type-schemas).
+				out["kind"] = "choice";
+				const std::span<const std::string_view> names = rule.taken();
+				out["values"] = json(std::vector<std::string_view>(names.begin(), names.end()));
 			} else {
 				out["kind"] = "text";
 				out["mustBe"] = rule.mustBe;
@@ -63,11 +97,22 @@ json encodeRow(const SettingRow& row) {
 			}
 		},
 		row.rule);
-	if (row.byDefault) out["default"] = *row.byDefault;
+	if (row.byDefault) {
+		std::visit(
+			[&](const auto value) {
+				// A choice's default by its name.
+				if constexpr (std::is_same_v<decltype(value), const ChoiceIndex>)
+					out["default"] = std::get<ChoiceRule>(row.rule).names[value.index];
+				else out["default"] = value;
+			},
+			*row.byDefault);
+	}
 	if (row.defaultFrom) out["defaultFrom"] = defaultFromName(*row.defaultFrom);
 	if (!row.onlyWithout.empty()) out["onlyWithout"] = row.onlyWithout;
 	if (!row.help.empty()) out["help"] = row.help;
 	if (row.shapesPorts) out["shapes"] = true;
+	// A family: its members' keys are <key>.<n>, n from 1 to its count row's high (docs/control-port.md#type-schemas).
+	if (row.maxMembers > 0) out["indexed"] = {{"by", row.indexedBy}, {"from", 1}, {"max", row.maxMembers}};
 	return out;
 }
 
@@ -132,12 +177,13 @@ json encodeEventDeclaration(const EventDeclaration& event) {
 }
 
 /// A type action as types.get says it (docs/control-port.md#actions): its arguments are setting rows, without what
-/// only a setting has (`change`, `shapes`).
+/// only a setting has (`change`, `restartReason`, `shapes`).
 json encodeAction(const ActionDeclaration& action) {
 	json args = json::array();
 	for (const SettingRow* row : action.args) {
 		json out = encodeRow(*row);
 		out.erase("change");
+		out.erase("restartReason");
 		out.erase("shapes");
 		args.push_back(std::move(out));
 	}

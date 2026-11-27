@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include "ear/control/commands.hpp"
+#include "ear/control/gestures_wire.hpp"
 #include "ear/control/graph_file_state.hpp"
 namespace ear::control {
 /// What stamps an instant on the wire (`since`) and on standard output (`t`): the system clock, or a test's.
@@ -23,6 +24,23 @@ public:
 
 protected:
 	~GraphRequests() = default;
+};
+/// Where gesture requests go on the main loop (feature gestures, docs/control-port.md#gestures): the graph file keeper
+/// implements them over Gestures (docs/architecture.md#gestures). Main loop only; each answers with what the request is
+/// answered with.
+class GestureRequests {
+public:
+	virtual GestureAnswer begin(SessionToken session, const BeginGesture& begin) = 0;
+	virtual void move(SessionToken session, const MoveGesture& move) = 0;
+	/// `reply` runs once on the main loop: once the end committed, after its events, or at once when it is refused.
+	virtual void end(SessionToken session, const EndGesture& end,
+	                 std::move_only_function<void(GestureAnswer)> reply) = 0;
+	virtual GestureAnswer cancel(SessionToken session, const CancelGesture& cancel) = 0;
+	/// A session closed and what it queued has run: its gestures are released.
+	virtual void sessionClosed(SessionToken session) = 0;
+
+protected:
+	~GestureRequests() = default;
 };
 /// Told on the main loop, before the node and route events a change causes.
 class GraphFileListener {

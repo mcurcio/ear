@@ -87,12 +87,18 @@ TEST_CASE("counters.changed and a change of ports' node.updated encode as counte
 
 TEST_CASE("node.updated says disabled only when true, and each outcome by its name", "[events][lifecycle]") {
 	const json disabled = encoded(NodeUpdated{"porch", json::object(), true, ear::NodeOutcome::disable});
-	CHECK(disabled["params"] == json::parse(R"({"name":"porch","settings":{},"applied":"disable","disabled":true})"));
+	CHECK(disabled["params"] ==
+	      json::parse(R"({"name":"porch","settings":{},"applied":"disable","disabled":true,"retuned":[]})"));
 	CHECK(encoded(NodeUpdated{"porch", json::object(), false, ear::NodeOutcome::enable})["params"] ==
-	      json::parse(R"({"name":"porch","settings":{},"applied":"enable"})"));
+	      json::parse(R"({"name":"porch","settings":{},"applied":"enable","retuned":[]})"));
 	CHECK(outcomeName(ear::NodeOutcome::restart) == "restart");
 	CHECK(outcomeName(ear::NodeOutcome::stored) == "stored");
 	CHECK(outcomeName(ear::NodeOutcome::reshape) == "reshape");
+	CHECK(outcomeName(ear::NodeOutcome::retune) == "retune");
+	NodeUpdated retuned{"amp", {{"gainDb", -12}}, false, ear::NodeOutcome::retune};
+	retuned.retuned = {"gainDb"};
+	CHECK(encoded(retuned)["params"] ==
+	      json::parse(R"({"name":"amp","settings":{"gainDb":-12},"applied":"retune","retuned":["gainDb"]})"));
 }
 
 TEST_CASE("Every lifecycle.json notification is one of these encoders' and every reply one of encodeCommandResult's",

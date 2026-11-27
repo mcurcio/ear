@@ -58,8 +58,12 @@ std::string_view causeName(FileChangeCause cause) noexcept; // "edit" | "disk" |
 struct GraphFileChanged {
 	GraphFile file;
 	FileChangeCause cause;
-	std::uint32_t droppedEdits;
-}; // > 0 only with disk
+	std::uint32_t droppedEdits; // > 0 only with disk
+	/// The gesture whose end the change commits, and a release's reason: standard output's param records' cause
+	/// (docs/output-records.md#param). Never on the wire.
+	std::optional<std::string> gesture = std::nullopt;
+	std::string gestureReason{};
+};
 struct FileChanged {}; // graphFile.set, node.setText: version is stale
 struct InvalidText {
 	std::vector<Diagnostic> diagnostics;

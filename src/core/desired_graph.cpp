@@ -4,6 +4,7 @@
 // fixed order (docs/graph-file.md); every change is told to the observers first, then to
 // the subscribers (rule 4), and close() shuts it to edits before the node framework stops (rule 5).
 #include "ear/core/desired_graph.hpp"
+#include "ear/core/settings_table.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -42,7 +43,12 @@ NodeOutcome outcomeFor(const NodeType& type, std::span<const std::string> keys, 
 	const NodeOutcome outcome = outcomeOf(wasDisabled, isDisabled);
 	if (outcome != NodeOutcome::restart) return outcome;
 	if (keys.empty()) return NodeOutcome::unchanged;
-	return std::ranges::all_of(keys, [&](const std::string& key) { return type.changesInPlace(key); })
+	// Live keys are retuned beside the outcome the others decide (docs/architecture.md#retunes).
+	const auto notLive = [&](const std::string& key) { return type.changeOf(key) != setting::Change::live; };
+	if (std::ranges::none_of(keys, notLive)) return NodeOutcome::retune;
+	return std::ranges::all_of(
+			   keys,
+			   [&](const std::string& key) { return !notLive(key) || type.changeOf(key) == setting::Change::inPlace; })
 	           ? NodeOutcome::reconfigure
 	           : NodeOutcome::restart;
 }
@@ -50,13 +56,23 @@ NodeOutcome outcomeFor(const NodeType& type, std::span<const std::string> keys, 
 NodeChange changeOf(const NodeType& type, std::vector<std::string> keys, bool wasDisabled, bool isDisabled,
                     const Ports& oldPorts, const Ports& ports) {
 	NodeOutcome outcome = outcomeFor(type, keys, wasDisabled, isDisabled);
+	std::vector<Retuned> retuned;
+	std::vector<std::string> others;
+	for (std::string& key : keys) {
+		if (type.changeOf(key) == setting::Change::live) retuned.push_back(Retuned{std::move(key)});
+		else others.push_back(std::move(key));
+	}
 	bool inPlace = false;
 	if (oldPorts != ports && !wasDisabled && !isDisabled) {
 		inPlace = outcome == NodeOutcome::reconfigure;
 		outcome = NodeOutcome::reshape;
 	}
-	return NodeChange{
-		.outcome = outcome, .keys = std::move(keys), .oldPorts = oldPorts, .ports = ports, .inPlace = inPlace};
+	return NodeChange{.outcome = outcome,
+	                  .keys = std::move(others),
+	                  .oldPorts = oldPorts,
+	                  .ports = ports,
+	                  .inPlace = inPlace,
+	                  .retuned = std::move(retuned)};
 }
 
 namespace {
@@ -224,9 +240,23 @@ std::expected<Plan, CommandError> DesiredGraph::plan(std::span<const NodeSpec> n
 		if (next.spec.type == held.spec.type) {
 			// The catalogue parsed the node, so its type is there. Its routes still wanted name ports the new ports
 			// declare (checked above), so they are kept.
-			NodeChange change =
-				changeOf(*impl_->catalogue.find(next.spec.type), changedKeys(held.spec.settings, next.spec.settings),
-			             held.spec.disabled, next.spec.disabled, held.config->ports(), next.config->ports());
+			const NodeType& type = *impl_->catalogue.find(next.spec.type);
+			NodeChange change = changeOf(type, changedKeys(held.spec.settings, next.spec.settings), held.spec.disabled,
+			                             next.spec.disabled, held.config->ports(), next.config->ports());
+			// Each retuned key's value before and after, as the settings hold it (its default when not given): what
+			// standard output's param record says (docs/output-records.md#param).
+			if (!change.retuned.empty()) {
+				const std::vector<std::uint64_t> was = held.config->liveValues();
+				const std::vector<std::uint64_t> now = next.config->liveValues();
+				for (Retuned& retune : change.retuned) {
+					const std::optional<std::uint32_t> at = type.liveIndexOf(retune.key);
+					if (!at || *at >= was.size() || *at >= now.size()) continue;
+					retune.from = type.liveValueAsSetting(retune.key, was[*at]);
+					retune.to = type.liveValueAsSetting(retune.key, now[*at]);
+					retune.member = *at;
+					retune.bits = now[*at];
+				}
+			}
 			changes->outcomes.emplace_back(name, change.outcome);
 			changes->nodesChanged.push_back(Plan::Impl::Changed{next.spec, next.config, std::move(change)});
 		} else {

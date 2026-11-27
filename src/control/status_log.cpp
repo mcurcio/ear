@@ -3,12 +3,14 @@
 #include "ear/control/status_log.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <format>
 #include <utility>
 
 #include <nlohmann/json.hpp>
 
 #include "ear/control/graph_json.hpp"
+#include "ear/core/decimal_text.hpp"
 
 namespace ear::control {
 
@@ -519,7 +521,66 @@ void StatusLog::graphFileChanged(const GraphFileChanged& change) {
 
 	std::string msg;
 	for (const std::string& line : graphFileLines(change)) msg += (msg.empty() ? "" : "\n") + line;
+	{
+		const std::lock_guard lock(mutex_);
+		lastCause_ = change.cause;
+		lastGesture_ = change.gesture;
+		lastGestureReason_ = change.gestureReason;
+	}
 	emit("graph-file", std::move(fields), std::move(msg));
+}
+
+void StatusLog::nodeAdded(const NodeSpec&, std::shared_ptr<const NodeConfig>) {}
+void StatusLog::nodeUpdated(const NodeSpec&, std::shared_ptr<const NodeConfig>) {}
+void StatusLog::nodeRemoved(const NodeName&) {}
+
+void StatusLog::nodeChanged(const NodeSpec& node, std::shared_ptr<const NodeConfig>, const NodeChange& change) {
+	if (change.retuned.empty()) return;
+	FileChangeCause cause;
+	std::optional<std::string> gesture;
+	std::string reason;
+	{
+		const std::lock_guard lock(mutex_);
+		cause = lastCause_;
+		gesture = lastGesture_;
+		reason = lastGestureReason_;
+	}
+	// A decimal as ear.conf writes it (-6, -3.5), every other value as its JSON.
+	const auto text = [](const NodeSettings& value) {
+		if (value.is_number_float() && std::isfinite(value.get<double>())) return decimalText(value.get<double>());
+		return json(value);
+	};
+	for (const Retuned& retune : change.retuned) {
+		const std::string from = text(retune.from);
+		const std::string to = text(retune.to);
+		// A gesture's end commits as cause gesture, naming it, and a release with its reason.
+		Fields fields{{"node", json(node.name)},
+		              {"key", json(retune.key)},
+		              {"from", from},
+		              {"to", to},
+		              {"cause", gesture ? json(std::string("gesture")) : json(causeName(cause))}};
+		if (gesture) fields.emplace_back("gesture", json(*gesture));
+		if (gesture && !reason.empty()) fields.emplace_back("reason", json(reason));
+		emit("param", std::move(fields), std::format("node {} {} {} -> {}", node.name, retune.key, from, to));
+	}
+}
+
+void StatusLog::gestureChanged(const GestureNote& note) {
+	if (note.phase != GesturePhase::aborted) return;
+	const auto text = [](double value) { return std::isfinite(value) ? decimalText(value) : std::string("null"); };
+	for (const GestureKey& at : note.reach) {
+		const std::string from = text(note.handValue.value_or(0.0));
+		Fields fields{{"node", json(at.node)}, {"key", json(at.key)}, {"from", from}};
+		std::string msg = std::format("node {} {} gesture {} aborted ({})", at.node, at.key, note.gesture, note.reason);
+		if (note.value) {
+			fields.emplace_back("to", text(*note.value));
+			msg += ": back to " + text(*note.value);
+		}
+		fields.emplace_back("cause", json(std::string("aborted")));
+		fields.emplace_back("gesture", json(note.gesture));
+		fields.emplace_back("reason", json(note.reason));
+		emit("param", std::move(fields), std::move(msg));
+	}
 }
 
 void StatusLog::graphFileWritten(const std::string& version) {

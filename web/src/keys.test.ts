@@ -60,6 +60,11 @@ describe("the shortcuts", () => {
     }
     expect(isTextTarget({ tagName: "BUTTON" })).toBe(false);
     expect(isTextTarget(null)).toBe(false);
+    // A live control's hidden range input, and anything else inside .nokey, is a text target for the shortcuts.
+    const inside = (selector: string) => (selector === ".nokey" ? {} : null);
+    expect(isTextTarget({ tagName: "INPUT", type: "range", closest: inside })).toBe(true);
+    expect(isTextTarget({ tagName: "DIV", closest: inside })).toBe(true);
+    expect(isTextTarget({ tagName: "INPUT", type: "range", closest: () => null })).toBe(false);
   });
 
   it("labels follow the platform", () => {

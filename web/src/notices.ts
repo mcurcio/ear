@@ -6,7 +6,7 @@
 // place, and what a toast's Show selects. Slice 5's node events are designed to feed this same queue by its rule
 // (docs/editor.md#toasts), so NoticeInput is plain words, a severity and a subject.
 import { edgeId } from "./connect";
-import { rpcErrorCodes, type Graph, type Notifications, type RouteEnds } from "./protocol";
+import { rpcErrorCodes, type Graph, type JsonObject, type Notifications, type RouteEnds } from "./protocol";
 import { describeAsked, type Asked } from "./requests";
 import { ConnectionClosedError, RpcError } from "./rpc";
 import type { Selection } from "./selection";
@@ -31,6 +31,8 @@ export interface NoticeInput {
   verb: string;
   detail: string;
   subject?: NoticeSubject;
+  /** A gesture's notice: one button that sets the value the hand left again, by node.set ("Set -3.5 dB again"). */
+  again?: { label: string; name: string; settings: JsonObject };
 }
 
 export interface Notice extends NoticeInput {

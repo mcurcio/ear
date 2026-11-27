@@ -14,7 +14,8 @@ add_library(ear_config STATIC
 	keeper_thread.cpp
 	knobly_implementation.cpp
 	main_loop_side.cpp
-	place.cpp)
+	place.cpp
+	reach_index.cpp)
 # Header set and its standalone compile check: see src/core/CMakeLists.txt.
 target_sources(ear_config PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/config/graph_file_keeper.hpp)
@@ -32,6 +33,7 @@ if(BUILD_TESTS)
 		tests/keeper_thread_test.cpp
 		tests/main_loop_side_test.cpp
 		tests/place_test.cpp
+		tests/reach_index_test.cpp
 		tests/test_types.cpp)
 	target_include_directories(ear_config_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 	target_link_libraries(ear_config_tests PRIVATE ear_config knobly::knobly ear_catch_main ear_temp_folder)

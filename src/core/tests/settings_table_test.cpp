@@ -8,6 +8,7 @@
 #include <concepts>
 #include <cstdint>
 #include <expected>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -44,9 +45,10 @@ constexpr auto dRow = setting::optional("d", goodText);
 constexpr auto aOptional = setting::optional("a", goodText);
 constexpr auto bOptional = setting::optional("b", goodText);
 constexpr auto cOptional = setting::optional("c", goodText);
-constexpr auto plainRow = setting::optional("plain", setting::number(1, 10));
-constexpr auto measuredRow = setting::defaulted("measured", setting::number(2, 20, "Hz"), 5);
-constexpr auto nameRow = setting::optional("name", goodText);
+constexpr auto plainRow = setting::optional("plain", setting::number(1, 10)).restarts("a test type restarts on it");
+constexpr auto measuredRow =
+	setting::defaulted("measured", setting::number(2, 20, "Hz"), 5).restarts("a test type restarts on it");
+constexpr auto nameRow = setting::optional("name", goodText).restarts("a test type restarts on it");
 constexpr auto bNumber = setting::required("b", setting::number(0, 9));
 constexpr auto mRow = setting::optional("m", goodText);
 constexpr auto nRow = setting::optional("n", setting::number(0, 9)).onlyWithout(mRow);
@@ -69,6 +71,22 @@ constexpr auto quietRow = setting::optional("quiet", setting::boolean());
 constexpr SettingsTable<loudRow, quietRow> booleans{"t"};
 static_assert(booleans.kinds()[0].key == "loud" && booleans.kinds()[0].kind == boolean);
 static_assert(booleans.kinds()[1].kind == boolean);
+constexpr auto levelRow = setting::defaulted(
+	"levelDb", setting::decimal(-90.0, 24.0, "dB", {.decimals = 1, .taper = setting::Taper::db, .minIsSilence = true}),
+	-6.0);
+constexpr auto ratioRow = setting::required("ratio", setting::decimal(1, 20));
+constexpr auto spreadRow = setting::optional("spread", setting::decimal(0.0, 1.0));
+constexpr auto onRow = setting::defaulted("on", setting::boolean(), true);
+constexpr SettingsTable<levelRow, ratioRow, spreadRow, onRow> decimals{"t"};
+static_assert(decimals.kinds()[0].key == "levelDb" && decimals.kinds()[0].kind == decimal);
+static_assert(decimals.kinds()[3].kind == boolean);
+static_assert(decimals.kindOf("ratio") == decimal && !decimals.kindOf("absent"));
+// A default is of its rule's kind, and an int literal still makes a whole number's.
+static_assert(levelRow.row().byDefault == ear::SettingValue(-6.0));
+static_assert(onRow.row().byDefault == ear::SettingValue(true));
+static_assert(measuredRow.row().byDefault == ear::SettingValue(5u));
+static_assert(std::get<ear::DecimalRule>(levelRow.row().rule).hints.taper == setting::Taper::db);
+static_assert(std::get<ear::DecimalRule>(ratioRow.row().rule).hints.decimals == 2); // the hints' own defaults
 
 // The table is a constant, and so is what it declares.
 static_assert(numbers.kinds().size() == 3);
@@ -240,6 +258,42 @@ TEST_CASE("A boolean is JSON true or false, read as bool", "[settings-table]") {
 	CHECK(refusal(booleans, NodeSettings::object()) == "loud: missing");
 }
 
+TEST_CASE("A decimal is a finite JSON number within the row's range, an integer taken, read as double",
+          "[settings-table][decimal]") {
+	const auto checked = decimals.check(NodeSettings{{"ratio", 4}});
+	REQUIRE(checked.has_value());
+	static_assert(std::same_as<decltype(checked->get<levelRow>()), double>);
+	static_assert(std::same_as<decltype(checked->get<spreadRow>()), std::optional<double>>);
+	static_assert(std::same_as<decltype(checked->get<onRow>()), bool>);
+	CHECK(checked->get<levelRow>() == -6.0); // its default
+	CHECK(checked->get<ratioRow>() == 4.0);  // an integer, taken
+	CHECK_FALSE(checked->get<spreadRow>().has_value());
+	CHECK(checked->get<onRow>()); // a boolean's default
+	const auto given = decimals.check(parsed(R"({"levelDb": -3.5, "ratio": 1e1, "spread": 0.25, "on": false})"));
+	REQUIRE(given.has_value());
+	CHECK(given->get<levelRow>() == -3.5);
+	CHECK(given->get<ratioRow>() == 10.0);
+	CHECK(given->get<spreadRow>() == std::optional<double>(0.25));
+	CHECK_FALSE(given->get<onRow>());
+	for (const std::string_view good : {"-90", "24", "-90.0", "0", "-0.0", "23.99"}) {
+		INFO(good);
+		CHECK(decimals.check(NodeSettings{{"ratio", 1}, {"levelDb", parsed(good)}}).has_value());
+	}
+	for (const std::string_view bad : {"-90.001", "24.5", R"("-3.5")", "true", "null", "[]", "{}"}) {
+		INFO(bad);
+		CHECK(refusal(decimals, {{"ratio", 1}, {"levelDb", parsed(bad)}}) ==
+		      "levelDb: must be a number of dB from -90 to 24");
+	}
+	CHECK(refusal(decimals, {{"ratio", 0.5}}) == "ratio: must be a number from 1 to 20");
+	CHECK(refusal(decimals, {{"ratio", 1}, {"spread", 1.5}}) == "spread: must be a number from 0 to 1");
+	// Built in C++, not parsed: JSON text cannot spell either.
+	CHECK(refusal(decimals, {{"ratio", std::numeric_limits<double>::quiet_NaN()}}) ==
+	      "ratio: must be a number from 1 to 20");
+	CHECK(refusal(decimals, {{"ratio", std::numeric_limits<double>::infinity()}}) ==
+	      "ratio: must be a number from 1 to 20");
+	CHECK(refusal(decimals, NodeSettings::object()) == "ratio: missing");
+}
+
 TEST_CASE("kinds() is every key once, in row order", "[settings-table]") {
 	std::vector<std::string_view> keys;
 	for (const auto& [key, kind] : three.kinds()) keys.push_back(key);
@@ -364,18 +418,38 @@ namespace settings_table_test_inplace {
 constexpr auto fixedRow = ear::setting::required("fixed", setting::number(1, 9));
 constexpr auto movingRow = ear::setting::optional("moving", setting::number(1, 9)).inPlace();
 constexpr auto limitedRow = ear::setting::optional("limited", setting::number(1, 9)).onlyWithout(movingRow).inPlace();
+constexpr auto stuckRow =
+	ear::setting::optional("stuck", setting::number(1, 9)).restarts("the device reads it at open");
 constexpr ear::SettingsTable<fixedRow, movingRow, limitedRow> inPlaceTable{"inplace"};
+constexpr ear::SettingsTable<movingRow, stuckRow> markedTable{"marked"};
+constexpr ear::SettingsTable<fixedRow, movingRow> halfMarkedTable{"half"};
+constexpr ear::SettingsTable<> emptyTable{"empty"};
 } // namespace settings_table_test_inplace
 
-TEST_CASE("A row is restart-only unless marked inPlace", "[settings_table][inPlace]") {
+TEST_CASE("A row has one change mark: inPlace, or restarts with its reason", "[settings_table][inPlace]") {
 	using namespace settings_table_test_inplace;
-	STATIC_REQUIRE_FALSE(fixedRow.row().inPlace);
-	STATIC_REQUIRE(movingRow.row().inPlace);
-	STATIC_REQUIRE(limitedRow.row().inPlace);
+	STATIC_REQUIRE_FALSE(fixedRow.marked());
+	STATIC_REQUIRE(fixedRow.row().change == setting::Change::restart);
+	STATIC_REQUIRE(fixedRow.row().restartReason.empty());
+	STATIC_REQUIRE(movingRow.marked());
+	STATIC_REQUIRE(movingRow.row().change == setting::Change::inPlace);
+	STATIC_REQUIRE(movingRow.row().restartReason.empty());
+	STATIC_REQUIRE(limitedRow.row().change == setting::Change::inPlace);
 	STATIC_REQUIRE(limitedRow.row().onlyWithout == "moving"); // the marks keep each other
-	STATIC_REQUIRE_FALSE(inPlaceTable.changesInPlace("fixed"));
-	STATIC_REQUIRE(inPlaceTable.changesInPlace("moving"));
-	STATIC_REQUIRE_FALSE(inPlaceTable.changesInPlace("unknown"));
+	STATIC_REQUIRE(stuckRow.marked());
+	STATIC_REQUIRE(stuckRow.row().change == setting::Change::restart);
+	STATIC_REQUIRE(stuckRow.row().restartReason == "the device reads it at open");
+	STATIC_REQUIRE(inPlaceTable.changeOf("fixed") == setting::Change::restart);
+	STATIC_REQUIRE(inPlaceTable.changeOf("moving") == setting::Change::inPlace);
+	STATIC_REQUIRE(inPlaceTable.changeOf("unknown") == setting::Change::restart);
+	STATIC_REQUIRE(markedTable.changeOf("stuck") == setting::Change::restart);
+	// What TypeSpec requires of its settings and action::call refuses in its arguments.
+	STATIC_REQUIRE(decltype(markedTable)::everyRowMarked);
+	STATIC_REQUIRE(decltype(markedTable)::anyRowMarked);
+	STATIC_REQUIRE_FALSE(decltype(halfMarkedTable)::everyRowMarked);
+	STATIC_REQUIRE(decltype(halfMarkedTable)::anyRowMarked);
+	STATIC_REQUIRE(decltype(emptyTable)::everyRowMarked);
+	STATIC_REQUIRE_FALSE(decltype(emptyTable)::anyRowMarked);
 }
 
 namespace settings_table_test_schema {
@@ -384,7 +458,9 @@ std::optional<std::string> isSize(std::string_view text) {
 	if (text != "small" && text != "large") return std::nullopt;
 	return std::string(text);
 }
-constexpr auto countRow = setting::defaulted("count", setting::number(1, 8, "channels"), 2).shapesPorts();
+constexpr auto countRow = setting::defaulted("count", setting::number(1, 8, "channels"), 2)
+                              .shapesPorts()
+                              .restarts("a test type restarts on it");
 constexpr auto sizeRow =
 	setting::optional("size", setting::text<isSize>(R"("small" or "large")", {.values = sizes, .maxLength = 5}))
 		.inPlace();
@@ -414,11 +490,12 @@ struct Schemed {
 TEST_CASE("The marks for the type schema keep each other and the row's own", "[settings-table][schema]") {
 	using namespace settings_table_test_schema;
 	STATIC_REQUIRE(countRow.row().shapesPorts);
-	STATIC_REQUIRE(countRow.row().byDefault == 2u);
+	STATIC_REQUIRE(countRow.row().byDefault == ear::SettingValue(2u));
 	STATIC_REQUIRE_FALSE(countRow.row().defaultFrom.has_value());
 	STATIC_REQUIRE_FALSE(sizeRow.row().shapesPorts);
 	STATIC_REQUIRE(labelRow.row().defaultFrom == setting::DefaultFrom::nodeName);
-	STATIC_REQUIRE(labelRow.row().inPlace);
+	STATIC_REQUIRE(labelRow.row().change == setting::Change::inPlace);
+	STATIC_REQUIRE(countRow.row().restartReason == "a test type restarts on it");
 	STATIC_REQUIRE(labelRow.row().shapesPorts);
 	constexpr const auto& hints = std::get<ear::TextRule>(sizeRow.row().rule).hints;
 	STATIC_REQUIRE(hints.values.size() == 2);
@@ -465,4 +542,198 @@ TEST_CASE("A refusal of the walk names its key, and one of the type's check name
 	const auto byCheck = keyOf({{"plain", 3}});
 	refuse = false;
 	CHECK(byCheck == std::pair<std::string, std::string>{"", "check says no to 3"});
+}
+
+namespace settings_table_test_families {
+using namespace settings_table_test;
+using ear::NodeSettings;
+constexpr auto bandsRow = setting::defaulted("bands", setting::number(0, 16), 2).inPlace();
+constexpr auto trimFamily =
+	setting::indexed("trimDb", bandsRow, setting::decimal(-24.0, 24.0, "dB", {.decimals = 1}), 0.0).inPlace();
+constexpr auto onFamily =
+	setting::indexed("on", bandsRow, setting::boolean(), true).restarts("a test type restarts on it");
+constexpr auto stepFamily =
+	setting::indexed("step", bandsRow, setting::number(1, 9), 1).inPlace().help("one step per band");
+constexpr auto zetaRow = setting::optional("zeta", setting::number(0, 9)).inPlace();
+constexpr SettingsTable<bandsRow, trimFamily, onFamily, stepFamily, zetaRow> families{"families"};
+using Checked = decltype(families)::Checked;
+
+// A member's one spelling: <family>.<n>, n in decimal from 1, no sign and no leading zero.
+static_assert(ear::setting::memberNumber("trimDb.1", "trimDb") == 1u);
+static_assert(ear::setting::memberNumber("trimDb.12", "trimDb") == 12u);
+static_assert(!ear::setting::memberNumber("trimDb.0", "trimDb"));
+static_assert(!ear::setting::memberNumber("trimDb.01", "trimDb"));
+static_assert(!ear::setting::memberNumber("trimDb.+1", "trimDb"));
+static_assert(!ear::setting::memberNumber("trimDb.1.5", "trimDb"));
+static_assert(!ear::setting::memberNumber("trimDb.", "trimDb"));
+static_assert(!ear::setting::memberNumber("trimDb", "trimDb"));
+static_assert(!ear::setting::memberNumber("trimDbx.1", "trimDb"));
+static_assert(ear::setting::memberNumber("trimDb.99999999999", "trimDb") == std::numeric_limits<std::uint32_t>::max());
+// The row knows its count row and its maximum; the lookups go by the grammar.
+static_assert(trimFamily.row().indexedBy == "bands" && trimFamily.row().maxMembers == 16);
+static_assert(trimFamily.row().byDefault == ear::SettingValue(0.0) && !trimFamily.row().required);
+static_assert(bandsRow.row().maxMembers == 0 && bandsRow.row().indexedBy.empty());
+static_assert(families.rowOf("trimDb.12")->row == &trimFamily.row() && families.rowOf("trimDb.12")->member == 12);
+static_assert(families.rowOf("zeta")->row == &zetaRow.row() && families.rowOf("zeta")->member == 0);
+static_assert(!families.rowOf("trimDb") && !families.rowOf("trimDb.17") && !families.rowOf("trimDb.01"));
+static_assert(families.kindOf("trimDb.16") == decimal && families.kindOf("on.1") == boolean);
+static_assert(families.kindOf("step.3") == wholeNumber && !families.kindOf("on.17"));
+static_assert(families.changeOf("trimDb.2") == setting::Change::inPlace);
+static_assert(families.changeOf("on.2") == setting::Change::restart);
+static_assert(families.kinds()[1].key == "trimDb" && families.kinds()[1].kind == decimal); // by its family's key
+static_assert(decltype(families)::anyRowIndexed && !decltype(numbers)::anyRowIndexed);
+static_assert(decltype(families)::everyRowMarked);
+
+std::string told(const NodeSettings& settings) { return refusal(families, settings); }
+Checked read(const NodeSettings& settings) {
+	auto checked = families.check(settings);
+	REQUIRE(checked.has_value());
+	return std::move(*checked);
+}
+} // namespace settings_table_test_families
+
+TEST_CASE("A family's members read their values, or the family's default when absent", "[settings-table][indexed]") {
+	using namespace settings_table_test_families;
+	const Checked none = read(NodeSettings::object());
+	CHECK(none.count<trimFamily>() == 2);
+	CHECK(none.get<trimFamily>(0) == 0.0);
+	CHECK(none.get<onFamily>(15));
+	CHECK(none.get<stepFamily>(3) == 1);
+	const Checked some = read({{"bands", 3}, {"trimDb.1", -3.5}, {"trimDb.3", 6}, {"on.2", false}, {"step.16", 9}});
+	CHECK(some.count<trimFamily>() == 3);
+	CHECK(some.count<onFamily>() == 3);
+	CHECK(some.get<trimFamily>(0) == -3.5);
+	CHECK(some.get<trimFamily>(1) == 0.0);
+	CHECK(some.get<trimFamily>(2) == 6.0);
+	CHECK_FALSE(some.get<onFamily>(1));
+	CHECK(some.get<onFamily>(0));
+	CHECK(some.get<stepFamily>(15) == 9);
+	CHECK_THROWS_AS(some.get<trimFamily>(16), std::out_of_range); // member 17: above the maximum, a type bug
+}
+
+TEST_CASE("Members above the count are taken and kept, inactive, and members above the maximum are refused",
+          "[settings-table][indexed]") {
+	using namespace settings_table_test_families;
+	const Checked kept = read({{"bands", 1}, {"trimDb.5", -6}, {"trimDb.16", 24}});
+	CHECK(kept.count<trimFamily>() == 1);
+	CHECK(kept.get<trimFamily>(4) == -6.0);
+	CHECK(kept.get<trimFamily>(15) == 24.0);
+	CHECK(read({{"bands", 0}, {"on.1", false}}).count<onFamily>() == 0);
+	CHECK(told({{"trimDb.17", 0}}) == "trimDb.17: no such member (bands is at most 16)");
+	CHECK(told({{"on.99999999999", true}}) == "on.99999999999: no such member (bands is at most 16)");
+	const auto refused = families.checkArgs({{"step.17", 1}});
+	REQUIRE_FALSE(refused.has_value());
+	CHECK(refused.error().key == "step.17");
+}
+
+TEST_CASE("Every other spelling of a member is an unknown key, and unknown keys beside a family are unknown",
+          "[settings-table][indexed]") {
+	using namespace settings_table_test_families;
+	for (const char* key : {"trimDb.0", "trimDb.01", "trimDb.+1", "trimDb.1.5", "trimDb.", "trimDb", "trimDb.-1",
+	                        "trimDb.1x", "trimDb-1", "TrimDb.1"}) {
+		INFO(key);
+		CHECK(told({{key, 0}}) == std::string("unknown key ") + key);
+	}
+	CHECK(told({{"trimDb.1", 0}, {"other", 1}}) == "unknown key other");
+	const auto refused = families.checkArgs({{"trimDb.2", 0}, {"trimDb.02", 0}});
+	REQUIRE_FALSE(refused.has_value());
+	CHECK(refused.error().key == "trimDb.02");
+}
+
+TEST_CASE("A family walks in its place, member by member in number order, each refusal naming the member",
+          "[settings-table][indexed]") {
+	using namespace settings_table_test_families;
+	// The object's own order is "trimDb.10" before "trimDb.2"; the walk's is by number.
+	CHECK(told({{"trimDb.10", "x"}, {"trimDb.2", 99}}) == "trimDb.2: must be a number of dB from -24 to 24");
+	CHECK(told({{"trimDb.10", "x"}}) == "trimDb.10: must be a number of dB from -24 to 24");
+	// Rows in table order: the count row, then each family, then the plain row after them.
+	CHECK(told({{"bands", 17}, {"trimDb.1", "x"}}) == "bands: must be a whole number, 0-16");
+	CHECK(told({{"zeta", 99}, {"on.4", 1}}) == "on.4: must be true or false");
+	CHECK(told({{"zeta", 99}, {"step.4", 0}}) == "step.4: must be a whole number, 1-9");
+	CHECK(told({{"zeta", 99}, {"step.4", 2}}) == "zeta: must be a whole number, 0-9");
+	const auto refused = families.checkArgs({{"on.3", "yes"}});
+	REQUIRE_FALSE(refused.has_value());
+	CHECK(refused.error().key == "on.3");
+	CHECK(refused.error().text == "on.3: must be true or false");
+}
+
+// Choice rows (docs/writing-a-node-type.md#choice-rows): a closed set of names, each read as its enumerator.
+namespace settings_table_test_choices {
+using namespace settings_table_test;
+enum class Shape { peak, lowShelf, highShelf };
+// Enumerators need not be in order, nor start at 0: a name's index is its place in the list, its value its own.
+enum class Mode : std::uint8_t { twoPass = 7, fast = 2 };
+constexpr auto shapeRow =
+	setting::defaulted(
+		"shape",
+		setting::choice<Shape>({{"peak", Shape::peak}, {"lowShelf", Shape::lowShelf}, {"highShelf", Shape::highShelf}}),
+		Shape::lowShelf)
+		.inPlace();
+constexpr auto modeRow =
+	setting::optional("mode", setting::choice<Mode>({{"two pass", Mode::twoPass}, {"fast", Mode::fast}})).inPlace();
+constexpr auto pickRow = setting::required("pick", setting::choice<Shape>({{"peak", Shape::peak}})).inPlace();
+constexpr auto bandsRow = setting::defaulted("bands", setting::number(0, 4), 2).inPlace();
+constexpr auto typeFamily =
+	setting::indexed(
+		"type", bandsRow,
+		setting::choice<Shape>({{"peak", Shape::peak}, {"lowShelf", Shape::lowShelf}, {"highShelf", Shape::highShelf}}),
+		Shape::peak)
+		.inPlace();
+constexpr SettingsTable<shapeRow, modeRow, pickRow, bandsRow, typeFamily> choices{"t"};
+using Checked = decltype(choices)::Checked;
+
+static_assert(choices.kinds()[0].kind == choice && choices.kindOf("mode") == choice);
+static_assert(choices.kindOf("type.4") == choice && !choices.kindOf("type.5"));
+static_assert(shapeRow.row().byDefault == ear::SettingValue(ear::ChoiceIndex{1})); // by its place: lowShelf
+static_assert(typeFamily.row().byDefault == ear::SettingValue(ear::ChoiceIndex{0}));
+static_assert(std::get<ear::ChoiceRule>(modeRow.row().rule).count == 2);
+static_assert(std::get<ear::ChoiceRule>(modeRow.row().rule).taken()[0] == "two pass");
+static_assert(std::get<ear::ChoiceRule>(modeRow.row().rule).values[0] == 7);
+
+Checked read(const NodeSettings& settings) {
+	auto checked = choices.check(settings);
+	REQUIRE(checked.has_value());
+	return std::move(*checked);
+}
+} // namespace settings_table_test_choices
+
+TEST_CASE("A choice is one of its names, read as its enumerator", "[settings-table][choice]") {
+	using namespace settings_table_test_choices;
+	const Checked none = read({{"pick", "peak"}});
+	static_assert(std::same_as<decltype(none.get<shapeRow>()), Shape>);
+	static_assert(std::same_as<decltype(none.get<modeRow>()), std::optional<Mode>>);
+	static_assert(std::same_as<decltype(none.get<typeFamily>(0)), Shape>);
+	CHECK(none.get<shapeRow>() == Shape::lowShelf); // its default
+	CHECK_FALSE(none.get<modeRow>().has_value());
+	CHECK(none.get<pickRow>() == Shape::peak);
+	CHECK(none.get<typeFamily>(3) == Shape::peak); // a member's default
+	const Checked given = read({{"shape", "highShelf"},
+	                            {"mode", "two pass"},
+	                            {"pick", "peak"},
+	                            {"type.2", "lowShelf"},
+	                            {"type.4", "highShelf"}});
+	CHECK(given.get<shapeRow>() == Shape::highShelf);
+	CHECK(given.get<modeRow>() == Mode::twoPass);
+	CHECK(given.get<typeFamily>(0) == Shape::peak);
+	CHECK(given.get<typeFamily>(1) == Shape::lowShelf);
+	CHECK(given.get<typeFamily>(3) == Shape::highShelf);
+	CHECK(read({{"pick", "peak"}, {"mode", "fast"}}).get<modeRow>() == Mode::fast);
+}
+
+TEST_CASE("A choice refuses anything but one of its names, and names them", "[settings-table][choice]") {
+	using namespace settings_table_test_choices;
+	// Exactly as declared: no case folding, no trimming, never its index or its enumerator's value.
+	for (const std::string_view bad :
+	     {R"("Peak")", R"(" peak")", R"("")", "0", "1", "true", "null", "[]", R"(["peak"])"}) {
+		INFO(bad);
+		CHECK(refusal(choices, {{"pick", "peak"}, {"shape", parsed(bad)}}) ==
+		      R"(shape: must be one of "peak", "lowShelf" and "highShelf")");
+	}
+	CHECK(refusal(choices, {{"pick", "peak"}, {"mode", 7}}) == R"(mode: must be one of "two pass" and "fast")");
+	CHECK(refusal(choices, {{"pick", "lowShelf"}}) == R"(pick: must be one of "peak")");
+	CHECK(refusal(choices, NodeSettings::object()) == "pick: missing");
+	const auto refused = choices.checkArgs({{"pick", "peak"}, {"type.3", "notch"}});
+	REQUIRE_FALSE(refused.has_value());
+	CHECK(refused.error().key == "type.3");
+	CHECK(refused.error().text == R"(type.3: must be one of "peak", "lowShelf" and "highShelf")");
 }

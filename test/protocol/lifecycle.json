@@ -49,7 +49,9 @@
           "dryRun",
           "types",
           "status",
-          "actions"
+          "actions",
+          "live",
+          "gestures"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -88,7 +90,8 @@
             },
             "companions": [],
             "status": {},
-            "diagnostics": []
+            "diagnostics": [],
+            "gestures": []
           },
           {
             "name": "porch",
@@ -115,7 +118,8 @@
             },
             "companions": [],
             "status": {},
-            "diagnostics": []
+            "diagnostics": [],
+            "gestures": []
           }
         ],
         "routes": [],
@@ -151,7 +155,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       }
     },
     {
@@ -358,7 +363,8 @@
           "playback": 2
         },
         "disabled": true,
-        "applied": "disable"
+        "applied": "disable",
+        "retuned": []
       }
     },
     {
@@ -415,7 +421,8 @@
           "card": "USB2",
           "playback": 2
         },
-        "applied": "enable"
+        "applied": "enable",
+        "retuned": []
       }
     },
     {
@@ -519,7 +526,8 @@
           "card": "USB3",
           "playback": 2
         },
-        "applied": "restart"
+        "applied": "restart",
+        "retuned": []
       }
     },
     {
@@ -646,7 +654,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       }
     },
     {
@@ -693,7 +702,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       }
     },
     {
@@ -956,7 +966,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       }
     },
     {
@@ -1126,7 +1137,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       }
     },
     {
@@ -1242,7 +1254,8 @@
           "format": "L24",
           "port": 5006
         },
-        "applied": "reconfigure"
+        "applied": "reconfigure",
+        "retuned": []
       }
     },
     {
@@ -1319,7 +1332,8 @@
           "format": "L24",
           "port": 5008
         },
-        "applied": "reconfigure"
+        "applied": "reconfigure",
+        "retuned": []
       }
     },
     {
@@ -1353,7 +1367,8 @@
           "format": "L16",
           "port": 5008
         },
-        "applied": "reconfigure"
+        "applied": "reconfigure",
+        "retuned": []
       }
     },
     {
@@ -1495,7 +1510,8 @@
           "play.2",
           "play.3"
         ],
-        "outputs": []
+        "outputs": [],
+        "retuned": []
       }
     },
     {
@@ -1599,7 +1615,9 @@
       "dryRun",
       "types",
       "status",
-      "actions"
+      "actions",
+      "live",
+      "gestures"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -1642,7 +1660,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       },
       {
         "name": "fpp",
@@ -1671,7 +1690,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       },
       {
         "name": "porch",
@@ -1699,7 +1719,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       },
       {
         "name": "quiet",
@@ -1723,7 +1744,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       },
       {
         "name": "tape",
@@ -1749,7 +1771,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       }
     ],
     "routes": [],

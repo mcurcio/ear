@@ -15,6 +15,8 @@
 #include "ear/control/lifecycle_wire.hpp"
 #include "ear/control/requests.hpp"
 #include "ear/core/counter_watch.hpp"
+#include "ear/core/gestures.hpp"
+#include "ear/core/desired_graph.hpp"
 #include "ear/core/log.hpp"
 #include "ear/core/node_host.hpp"
 #include "ear/core/reconciler.hpp"
@@ -56,6 +58,8 @@ using PaceClock = std::function<std::chrono::steady_clock::time_point()>;
 ///                         graph-file dropped <n> edits
 ///                         graph-file pending-restart <graphFrequency|blockSize>...
 ///                         graph-file write-failed <detail>
+///   param               node <n> <key> <from> -> <to>   (docs/output-records.md#param: a live key a committed change
+///                       retuned, with "node", "key", "from", "to" and "cause", told after its graph-file record)
 ///   graph-file-written  graph-file written <version>
 ///   graph-file-write-failed  graph-file write-failed <detail>   (the last write's, as ear exits)
 ///   log                 [node <n> ]<source>[ <topic>] <level>: <text>
@@ -95,6 +99,8 @@ class StatusLog final : public NodeHealthListener,
 						public ActionListener,
 						public InternalErrorListener,
 						public CounterListener,
+						public DesiredNodeListener,
+						public GestureListener,
 						public LogSink {
 public:
 	static constexpr int logBurst = 32;
@@ -119,6 +125,14 @@ public:
 	void routeChanged(const RouteStatus& status) override;
 	void graphFileChanged(const GraphFileChanged& change) override;
 	void graphFileWritten(const std::string& version) override;
+	/// The desired graph's changes, observed: one param record per retuned key (docs/output-records.md#param), its
+	/// cause the graph-file record's told just before the commit. Nothing else of the graph is written from here.
+	void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
+	void nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
+	void nodeChanged(const NodeSpec& node, std::shared_ptr<const NodeConfig> config, const NodeChange& change) override;
+	/// A gesture's abort: one param record per reached key, cause aborted (docs/output-records.md#param).
+	void gestureChanged(const GestureNote& note) override;
+	void nodeRemoved(const NodeName& node) override;
 	void graphFileWriteFailed(const std::string& detail);
 	void log(const LogEntry& entry) override;
 	void actionAnswered(const ActionRecord& record) override;
@@ -172,6 +186,9 @@ private:
 	std::map<NodeName, Seen, std::less<>> nodes_;      // under mutex_
 	std::map<NodeName, Seen, std::less<>> superseded_; // under mutex_: superseded nodes still closing
 	std::mutex mutex_;
+	FileChangeCause lastCause_ = FileChangeCause::edit; // under mutex_: the last graph-file record's cause
+	std::optional<std::string> lastGesture_;            // under mutex_: the gesture whose end it committed
+	std::string lastGestureReason_;                     // under mutex_: that end's release reason
 	std::uint64_t seq_ = 0;
 	std::uint64_t dropped_ = 0;
 };

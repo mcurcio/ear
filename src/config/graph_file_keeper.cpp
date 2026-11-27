@@ -54,6 +54,8 @@ struct GraphFileKeeper::Impl {
 	Keeper keeper;
 	std::unique_ptr<KeeperThread> thread;
 	bool joined = false;
+	Gestures* gestures = nullptr;
+	bool stopping = false; // main loop
 };
 
 FirstLoad GraphFileKeeper::load(const folder::ConfinedFolder& folder, const NodeCatalogue& catalogue) {
@@ -100,7 +102,61 @@ void GraphFileKeeper::submit(std::vector<control::Command> commands, control::Ba
 	});
 }
 
+void GraphFileKeeper::holdGestures(Gestures& gestures) {
+	impl_->gestures = &gestures;
+	impl_->side.holdGestures(gestures);
+	gestures.releaseThrough([this](GestureEnding ending) { commit(std::move(ending), nullptr); });
+}
+
+void GraphFileKeeper::commit(GestureEnding ending, std::move_only_function<void(control::GestureAnswer)> reply) {
+	std::vector<control::Command> commands;
+	const std::string id = ending.gesture;
+	commands.emplace_back(control::CommitGesture{std::move(ending)});
+	submit(std::move(commands),
+	       [this, id, reply = std::move(reply)](std::vector<control::CommandResult> results) mutable {
+			   control::CommandResult result = std::move(results.at(0));
+			   // Any refusal of an end aborts its gesture, so a release is never left open (docs/architecture.md#gestures).
+			   if (!std::holds_alternative<control::GestureEnded>(result) && impl_->gestures != nullptr)
+				   impl_->gestures->abort(id, "refused");
+			   if (reply) reply(control::GestureAnswer{std::move(result)});
+		   });
+}
+
+control::GestureAnswer GraphFileKeeper::begin(SessionToken session, const control::BeginGesture& begin) {
+	return impl_->side.beginGesture(session, begin, impl_->stopping);
+}
+
+void GraphFileKeeper::move(SessionToken session, const control::MoveGesture& move) {
+	if (impl_->gestures != nullptr && !impl_->stopping)
+		impl_->gestures->move(move.gesture, session, move.seq, move.value);
+}
+
+void GraphFileKeeper::end(SessionToken session, const control::EndGesture& end,
+                          std::move_only_function<void(control::GestureAnswer)> reply) {
+	if (impl_->stopping || impl_->gestures == nullptr)
+		return reply(control::CommandResult{std::expected<void, CommandError>{std::unexpected(Stopping{})}});
+	auto ending = impl_->gestures->end(end.gesture, end.value, session);
+	if (!ending)
+		return reply(control::GestureRefused{std::string(control::unknownGestureCode), "unknown-gesture " + end.gesture,
+		                                     nlohmann::json::object()});
+	commit(std::move(*ending), std::move(reply));
+}
+
+control::GestureAnswer GraphFileKeeper::cancel(SessionToken session, const control::CancelGesture& cancel) {
+	if (impl_->gestures == nullptr || !impl_->gestures->cancel(cancel.gesture, session))
+		return control::GestureRefused{std::string(control::unknownGestureCode), "unknown-gesture " + cancel.gesture,
+		                               nlohmann::json::object()};
+	return control::GestureCancelled{};
+}
+
+void GraphFileKeeper::sessionClosed(SessionToken session) {
+	if (impl_->gestures != nullptr && !impl_->stopping) impl_->gestures->sessionClosed(session);
+}
+
 void GraphFileKeeper::stop() {
+	// A stop is nobody's release: open gestures are dropped, not committed (docs/architecture.md#gestures).
+	impl_->stopping = true;
+	if (impl_->gestures != nullptr) impl_->gestures->drop();
 	if (!impl_->thread) return;
 	impl_->thread->post([&keeper = impl_->keeper] { keeper.stop(); });
 	impl_->thread->unwatch(); // a stopped keeper takes no disk event; its descriptor's close overlaps the nodes' stop

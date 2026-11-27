@@ -15,6 +15,7 @@
 #include "ear/core/graph_spec.hpp"
 #include "ear/core/node_catalogue.hpp"
 #include "ear/core/node_type.hpp"
+#include "reach_index.hpp"
 namespace ear::config {
 inline constexpr std::string_view rootDocument = "ear.conf";
 /// The most of ear.conf ear reads (the disk refuses a larger file) and so the most it keeps: a text
@@ -111,6 +112,9 @@ public:
 	/// The public ports the wanted node of this name has, as its type's parse makes them (pure: the keeper's thread
 	/// may ask); std::nullopt when there is no such node or its settings do not parse.
 	std::optional<Ports> portsOf(const NodeName& node) const;
+	/// The reach index of this version (docs/graph-file.md#reaches), made once and kept: none while the text has
+	/// errors.
+	std::shared_ptr<const ReachIndex> reachIndex() const;
 	/// node.setText (docs/control-port.md#a-nodes-own-text): `text`, with the whitespace around it dropped, replaces the
 	/// node's own statement (its byte range, owned comments included), and every other byte of the file is kept.
 	/// UnknownNode; SharedDefinition at the statement when it is not the node's own (it sits in a snippet or makes

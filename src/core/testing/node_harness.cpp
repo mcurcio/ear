@@ -204,6 +204,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		void reshape(const Ports& next) override {
 			harness.blockPorts = next;
 			if (harness.driven == nullptr) harness.buffers(next);
+			else harness.layAdded();
 		}
 		void fadeOut(std::move_only_function<void()> done) override {
 			harness.fade.fadeOut();
@@ -837,6 +838,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		const NodeName& node() const override { return create.node(); }
 		const Ports& ports() const override { return create.ports(); }
 		RealtimeChannels* realtime() const override { return create.realtime(); }
+		std::span<const std::uint64_t> liveValues() const override { return create.liveValues(); }
 		std::optional<part::Fifo> attachEngine(std::string_view bank, EngineCompanionShape shape) override {
 			return create.attachEngine(bank, std::move(shape));
 		}
@@ -871,6 +873,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		SeenInstance(Impl& h, std::unique_ptr<ErasedInstance> i) : harness(h), inner(std::move(i)) {}
 		Configured configure(CreateContext& cx) override {
 			SeenContext seen(harness, cx);
+			harness.channels = cx.realtime();
 			return inner->configure(seen);
 		}
 		std::span<const LoopDeclaration> loops() const noexcept override { return inner->loops(); }
@@ -897,6 +900,11 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		std::span<const EventDeclaration> eventsDeclared() const override { return inner->eventsDeclared(); }
 		std::span<const LogCodeDeclaration> logCodesDeclared() const override { return inner->logCodesDeclared(); }
 		std::span<const ActionDeclaration> actionsDeclared() const override { return inner->actionsDeclared(); }
+		std::span<const SettingRow* const> settingRows() const override { return inner->settingRows(); }
+		std::vector<std::uint64_t> liveValues() const override { return inner->liveValues(); }
+		std::expected<void, std::string> checkLive(std::span<const std::uint64_t> live) const override {
+			return inner->checkLive(live);
+		}
 		std::expected<void, std::string> runCall(std::size_t action, void* state,
 		                                         CheckedSettings&& args) const override {
 			return inner->runCall(action, state, std::move(args));
@@ -1094,6 +1102,34 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		outputNames = std::move(outs);
 		view = ports;
 		laidOut = true;
+		layAdded();
+	}
+	/// The ports the block has beyond its code's view (a reshape's new ones, until the swap that brings their code): as
+	/// the real block's layout, each output written zeros every cycle and each input never read
+	/// (docs/engine.md#reshapes). Kept by name while the view stays.
+	void layAdded() {
+		const auto beyond = [](std::initializer_list<const std::vector<PortName>*> lists,
+		                       const std::vector<PortName>& viewed) {
+			std::vector<PortName> names;
+			for (const auto* list : lists)
+				for (const PortName& name : *list)
+					if (std::ranges::find(viewed, name) == viewed.end()) names.push_back(name);
+			return names;
+		};
+		const auto kept = [&](const std::vector<PortName>& names, const std::vector<PortName>& wasNames,
+		                      std::vector<std::vector<float>>& was) {
+			std::vector<std::vector<float>> next(names.size(), std::vector<float>(options.format.maxBlock, 0.0F));
+			for (std::size_t i = 0; i < names.size(); ++i)
+				if (const auto found = std::ranges::find(wasNames, names[i]); found != wasNames.end())
+					next[i] = std::move(was[static_cast<std::size_t>(found - wasNames.begin())]);
+			was = std::move(next);
+		};
+		auto ins = beyond({&blockPorts.inputs(), &blockPorts.insideInputs()}, inputNames);
+		auto outs = beyond({&blockPorts.outputs(), &blockPorts.insideOutputs()}, outputNames);
+		kept(ins, addedInputNames, addedInputs);
+		kept(outs, addedOutputNames, addedOutputs);
+		addedInputNames = std::move(ins);
+		addedOutputNames = std::move(outs);
 	}
 	/// What the real block with no peers tells on output port `output` (outputs then insideOutputs; its capture latency)
 	/// and on input port `input` (its playback latency): workOut's, as the plan was last carried
@@ -1273,6 +1309,11 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	std::vector<PortName> outputNames;
 	std::vector<std::vector<float>> inputs;
 	std::vector<std::vector<float>> outputs;
+	/// The block's ports beyond the view (layAdded): their buffers, outside what the code is handed.
+	std::vector<PortName> addedInputNames;
+	std::vector<PortName> addedOutputNames;
+	std::vector<std::vector<float>> addedInputs;
+	std::vector<std::vector<float>> addedOutputs;
 	std::vector<float> lastGain;
 	std::uint32_t lastFrames = 0;
 	/// The realtime bell the node's code rings after a cycle it wrote in: counted, and told to NodeHost once process()
@@ -1284,6 +1325,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	FakeBell bell;
 	// Last, so it goes first: its nodes' blocks, engine companions and instances tell the members above as they go.
 	std::unique_ptr<NodeHost> host;
+	RealtimeChannels* channels = nullptr; // the newest configuration's, while it lives (liveReloads)
 };
 
 NodeHarness::NodeHarness(const NodeType& type, Options options)
@@ -1457,6 +1499,7 @@ void NodeHarness::process(std::uint32_t frames) {
 	if (h.driven != nullptr) h.driven->process(in, out, frames, cycle);
 	else
 		for (auto& span : out) std::ranges::fill(span, 0.0F);
+	for (auto& buffer : h.addedOutputs) std::fill_n(buffer.begin(), frames, 0.0F); // as the real block writes them
 	// The fade, by the real block's own rule.
 	const BlockFade::Applied faded = h.fade.apply(out, h.fadeMask, frames);
 	for (std::size_t o = 0; o < out.size(); ++o) h.lastGain[o] = h.fadeMask[o] != 0 ? faded.lastGain : 1.0F;
@@ -1514,6 +1557,32 @@ NodeCounts NodeHarness::counts() const {
 }
 
 GraphCounts NodeHarness::graphCounts() const noexcept { return impl_->cuts.counts(); }
+
+void NodeHarness::live(std::string_view key, std::uint64_t bits) {
+	impl_->requireAdded();
+	const std::optional<std::uint32_t> member = impl_->type.liveIndexOf(key);
+	if (!member) throw std::logic_error("live() of " + std::string(key) + ", which is not a live member");
+	// As a retune is judged (docs/architecture.md#retunes): the type's check with the node's live values, this one
+	// moved; a refusal fails the test.
+	std::vector<std::uint64_t> candidate = impl_->host->liveValues(impl_->options.node);
+	if (*member >= candidate.size()) throw std::logic_error("live() of " + std::string(key) + ": no such slot");
+	candidate[*member] = bits;
+	if (auto checked = impl_->config->checkLive(candidate); !checked)
+		throw std::logic_error("live() of " + std::string(key) + " refused by the type's check: " + checked.error());
+	const std::array<LiveWrite, 1> writes{LiveWrite{*member, bits}};
+	impl_->host->setLive(impl_->options.node, writes);
+	impl_->settle();
+}
+
+std::vector<std::uint64_t> NodeHarness::liveValues() const { return impl_->host->liveValues(impl_->options.node); }
+
+LiveTarget& NodeHarness::liveTarget() { return *impl_->host; }
+
+Timers& NodeHarness::timers() { return impl_->clock; }
+
+std::uint64_t NodeHarness::liveReloads() const noexcept {
+	return impl_->channels != nullptr ? impl_->channels->liveReloads() : 0;
+}
 
 NodeOutcome NodeHarness::change(const NodeSettings& settings) {
 	const NodeOutcome outcome = changeTo(settings);
@@ -1651,10 +1720,14 @@ const std::vector<SeenDiagnostic>& NodeHarness::diagnostics() const noexcept { r
 const std::vector<SeenInternalError>& NodeHarness::internalErrors() const noexcept { return impl_->internalErrorList; }
 
 std::span<float> NodeHarness::input(std::string_view port) {
+	if (const auto added = std::ranges::find(impl_->addedInputNames, port); added != impl_->addedInputNames.end())
+		return impl_->addedInputs.at(static_cast<std::size_t>(added - impl_->addedInputNames.begin()));
 	return impl_->inputs.at(Impl::indexOf(impl_->inputNames, port));
 }
 
 std::span<const float> NodeHarness::output(std::string_view port) const {
+	if (const auto added = std::ranges::find(impl_->addedOutputNames, port); added != impl_->addedOutputNames.end())
+		return impl_->addedOutputs.at(static_cast<std::size_t>(added - impl_->addedOutputNames.begin()));
 	return impl_->outputs.at(Impl::indexOf(impl_->outputNames, port));
 }
 

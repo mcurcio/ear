@@ -3,6 +3,12 @@
 // judges; ear.conf is a real file in a temp folder (FolderGraphFileDisk), so both collisions come from a hand edit made
 // between explicit steps. One fake disk gives the write failures a real folder cannot give cheaply.
 #include <algorithm>
+#include <bit>
+#include <chrono>
+#include <fstream>
+#include <iterator>
+#include <map>
+#include <memory>
 #include <deque>
 #include <functional>
 #include <optional>
@@ -11,6 +17,7 @@
 #include <vector>
 
 #include "catch2/catch.hpp"
+#include "ear/core/gestures.hpp"
 #include "keeper.hpp"
 #include "keeper_support.hpp"
 #include "test_types.hpp"
@@ -889,6 +896,46 @@ TEST_CASE("node.set merges into the node's settings, null removing a key, and an
 	CHECK(f.log.lines == Lines{"reply"});
 }
 
+TEST_CASE("node.set of a live key is a retune, naming its retuned keys and the other nodes a shared definition moved",
+          "[keeper][node-set][live]") {
+	const std::string faders = R"(graph {
+    rate 48khz;
+    block_size 256;
+}
+@set $g -6;
+node fader a { gainDb $g; }
+node fader b { gainDb $g; }
+node fader c;
+)";
+	Fixture f("node_set_live", faders);
+	f.start();
+	auto results = f.run({control::SetNode{"a", {{"gainDb", -3.5}}, true}});
+	const control::Applied& dry = answered(results[0]);
+	CHECK(dry.kind == control::AppliedKind::retune);
+	CHECK(dry.retuned == std::vector<std::string>{"gainDb"});
+	CHECK(dry.alsoChanged == std::vector<control::NodeKey>{{"b", "gainDb"}});
+	CHECK(f.graphFile().text == faders); // a dry run changes nothing
+
+	results = f.run({control::SetNode{"a", {{"gainDb", -3.5}}}});
+	const control::Applied& shared = answered(results[0]);
+	CHECK(shared.kind == control::AppliedKind::retune);
+	CHECK(shared.retuned == std::vector<std::string>{"gainDb"});
+	CHECK(shared.alsoChanged == std::vector<control::NodeKey>{{"b", "gainDb"}});
+	CHECK(f.lastChange().file.text.find("@set $g -3.5;") != std::string::npos);
+
+	results = f.run({control::SetNode{"c", {{"mute", true}, {"gainDb", -1}}}});
+	const control::Applied& own = answered(results[0]);
+	CHECK(own.kind == control::AppliedKind::retune);
+	CHECK(own.retuned == std::vector<std::string>{"gainDb", "mute"});
+	CHECK(own.alsoChanged == std::vector<control::NodeKey>{});
+
+	results = f.run({control::SetNode{"c", {{"mute", true}}}});
+	const control::Applied& same = answered(results[0]);
+	CHECK(same.kind == control::AppliedKind::unchanged);
+	CHECK(same.retuned == std::vector<std::string>{});
+	CHECK(same.alsoChanged == std::vector<control::NodeKey>{});
+}
+
 TEST_CASE("node.set refuses a required key removed, an unknown node and settings that are not an object",
           "[keeper][node-set]") {
 	Fixture f("node_set_refused");
@@ -1012,4 +1059,318 @@ TEST_CASE("An action answered at once is answered in its batch's last step, its 
 	results = f.run({control::InvokeNode{"rec", "reset", nullptr}});
 	CHECK(f.log.lines == Lines{"action rec reset stopping", "reply"});
 	CHECK(code(results[0]) == "stopping");
+}
+
+// ---- Gestures through the keeper (docs/control-port.md#gestures, docs/graph-file.md#reaches) ----
+
+namespace {
+
+/// Main-loop timers on a clock the test moves.
+struct GestureTimers final : ear::Timers {
+	struct Armed {
+		std::chrono::milliseconds at;
+		std::move_only_function<void()> due;
+		bool cancelled = false;
+	};
+	struct Handle final : ear::Timer {
+		std::shared_ptr<Armed> armed;
+		explicit Handle(std::shared_ptr<Armed> a) : armed(std::move(a)) {}
+		~Handle() override { armed->cancelled = true; }
+	};
+	std::chrono::milliseconds clock{0};
+	std::vector<std::shared_ptr<Armed>> armed;
+	std::unique_ptr<ear::Timer> after(std::chrono::milliseconds delay, std::move_only_function<void()> due) override {
+		auto timer = std::make_shared<Armed>(Armed{clock + delay, std::move(due)});
+		armed.push_back(timer);
+		return std::make_unique<Handle>(timer);
+	}
+	std::chrono::steady_clock::time_point now() const override { return std::chrono::steady_clock::time_point{clock}; }
+	void advance(std::chrono::milliseconds by) {
+		clock += by;
+		auto due = armed;
+		for (const auto& timer : due)
+			if (!timer->cancelled && timer->due && timer->at <= clock) {
+				auto run = std::move(timer->due);
+				timer->due = nullptr;
+				run();
+			}
+	}
+};
+
+/// Live values written per node and member; every check passes but what `refuses` refuses.
+struct GestureLive final : ear::LiveTarget {
+	std::map<std::pair<NodeName, std::size_t>, double> slots;
+	std::map<std::pair<NodeName, std::size_t>, double> committed;
+	std::function<bool(const GestureLive&, const NodeName&, std::span<const ear::LiveWrite>)> refuses;
+	void setLive(const NodeName& node, std::span<const ear::LiveWrite> writes) override {
+		for (const ear::LiveWrite& write : writes) slots[{node, write.member}] = std::bit_cast<double>(write.bits);
+	}
+	std::expected<void, ear::LiveRefusal> checkLive(const NodeName& node,
+	                                                std::span<const ear::LiveWrite> writes) const override {
+		if (refuses && refuses(*this, node, writes)) return std::unexpected(ear::LiveRefusal{"trimDb.1", "crossed"});
+		return {};
+	}
+	std::optional<std::uint64_t> committedLive(const NodeName& node, std::size_t member) const override {
+		const auto found = committed.find({node, member});
+		if (found == committed.end()) return std::nullopt;
+		return std::bit_cast<std::uint64_t>(found->second);
+	}
+};
+
+struct GestureNotes final : ear::GestureListener {
+	std::vector<ear::GestureNote> told;
+	void gestureChanged(const ear::GestureNote& note) override { told.push_back(note); }
+	const ear::GestureNote& last() const { return told.back(); }
+};
+
+const std::string gestureText = "graph {\n    rate 48khz;\n    block_size 256;\n}\n@set $trim 0;\n"
+								"node strip amp { gainDb -6; trimDb.1 $trim; trimDb.2 $trim; }\n"
+								"node strip amp2 { gainDb -6; }\n";
+
+struct GestureFixture : Fixture {
+	GestureTimers timers;
+	GestureLive live;
+	GestureNotes notes;
+	std::vector<ear::GestureEnding> released;
+	ear::Gestures gestures{live, timers};
+	explicit GestureFixture(const std::string& name) : Fixture(name, gestureText) {
+		side.holdGestures(gestures);
+		gestures.subscribe(notes);
+		gestures.releaseThrough([this](ear::GestureEnding ending) { released.push_back(std::move(ending)); });
+		start();
+	}
+	control::GestureAnswer begin(const NodeName& node, const std::string& key, ear::SessionToken session = 1) {
+		return side.beginGesture(session, control::BeginGesture{node, key}, false);
+	}
+	std::string begun(const NodeName& node, const std::string& key, ear::SessionToken session = 1) {
+		auto answer = begin(node, key, session);
+		REQUIRE(std::holds_alternative<control::GestureBegun>(answer));
+		return std::get<control::GestureBegun>(answer).gesture;
+	}
+	CommandResult commit(ear::GestureEnding ending) {
+		auto results = run({control::CommitGesture{std::move(ending)}});
+		REQUIRE(results.size() == 1);
+		return results[0];
+	}
+	std::string text() const {
+		std::ifstream in(file, std::ios::binary);
+		return {std::istreambuf_iterator<char>(in), {}};
+	}
+	std::string refusedCode(const control::GestureAnswer& answer) const {
+		if (const auto* refused = std::get_if<control::GestureRefused>(&answer)) return refused->code;
+		if (const auto* result = std::get_if<CommandResult>(&answer)) return code(*result);
+		return "";
+	}
+};
+
+} // namespace
+
+TEST_CASE("A begin reaches every pair sharing the definition, refuses what it cannot move, and holds the pair",
+          "[keeper][gestures]") {
+	GestureFixture f("keeper-gesture-begin");
+	auto answer = f.begin("amp", "trimDb.1");
+	REQUIRE(std::holds_alternative<control::GestureBegun>(answer));
+	const auto& begun = std::get<control::GestureBegun>(answer);
+	CHECK(begun.reach == std::vector<ear::GestureKey>{{"amp", "trimDb.1"}, {"amp", "trimDb.2"}});
+	CHECK(begun.min == -24.0);
+	CHECK(begun.max == 24.0);
+	CHECK(begun.decimals == 1);
+	CHECK(begun.value == 0.0);
+	CHECK(begun.gesture.size() == 32);
+	CHECK(f.refusedCode(f.begin("amp", "trimDb.2", 2)) == "parameter-held");
+	CHECK(f.refusedCode(f.begin("amp", "link")) == "not-live"); // a stepped row: node.set moves it
+	CHECK(std::get<control::GestureRefused>(f.begin("amp", "link")).data.at("change") == "live");
+	CHECK(f.refusedCode(f.begin("amp", "channels")) == "not-live");
+	CHECK(f.refusedCode(f.begin("nope", "gainDb")) == "unknown-node");
+	CHECK(f.refusedCode(f.side.beginGesture(1, {"amp", "gainDb"}, true)) == "stopping");
+	CHECK(f.refusedCode(f.begin("amp2", "freqHz")) == ""); // a key the file does not give: its node alone
+}
+
+TEST_CASE("A begin on a definition another unit or row shares is reach-mismatch, naming each pair and why",
+          "[keeper][gestures]") {
+	GestureFixture f("keeper-gesture-mismatch");
+	f.set(gestureText + "@set $x 20;\nnode strip c { gainDb $x; freqHz $x; }\n", f.graphFile().version);
+	const auto answer = f.begin("c", "gainDb");
+	REQUIRE(f.refusedCode(answer) == "reach-mismatch");
+	const auto& data = std::get<control::GestureRefused>(answer).data;
+	CHECK(data.at("with") == json::array({{{"name", "c"}, {"key", "freqHz"}, {"why", "unit"}}}));
+	CHECK(data.at("line") == 8);
+}
+
+TEST_CASE("An end commits its value at the definition in one commit, rounded, and closes the gesture",
+          "[keeper][gestures]") {
+	GestureFixture f("keeper-gesture-end");
+	const std::string g = f.begun("amp", "trimDb.1");
+	f.gestures.move(g, 1, 1, 1.46);
+	auto ending = f.gestures.end(g, std::nullopt, 1);
+	REQUIRE(ending);
+	CHECK(ending->value == 1.5);
+	const CommandResult result = f.commit(*ending);
+	REQUIRE(std::holds_alternative<control::GestureEnded>(result));
+	CHECK(std::get<control::GestureEnded>(result).value == 1.5);
+	CHECK(f.lastChange().gesture == g);
+	f.free();
+	CHECK(f.text().find("@set $trim 1.5;") != std::string::npos);
+	CHECK(f.notes.last().phase == ear::GesturePhase::end);
+	CHECK(f.gestures.openGestures().empty());
+}
+
+TEST_CASE("An end equal to the committed value writes nothing and still closes the gesture at it",
+          "[keeper][gestures]") {
+	GestureFixture f("keeper-gesture-unchanged");
+	const std::string version = f.graphFile().version;
+	const std::string g = f.begun("amp", "gainDb");
+	f.gestures.move(g, 1, 1, -6.04);
+	const CommandResult result = f.commit(*f.gestures.end(g, std::nullopt, 1));
+	REQUIRE(std::holds_alternative<control::GestureEnded>(result));
+	CHECK(std::get<control::GestureEnded>(result).value == -6.0);
+	CHECK(f.graphFile().version == version);
+	CHECK(f.notes.last().phase == ear::GesturePhase::end);
+}
+
+TEST_CASE("An edit changing a held value is parameter-held, and one changing only its reach aborts it edited",
+          "[keeper][gestures]") {
+	GestureFixture f("keeper-gesture-edits");
+	const std::string g = f.begun("amp", "trimDb.1");
+	CHECK(code(f.update("amp", {{"gainDb", -6}, {"trimDb.1", 3}, {"trimDb.2", 0}})) == "parameter-held");
+	CHECK(f.gestures.openGestures().size() == 1);
+	CHECK(ok(f.update("amp", {{"gainDb", -3}, {"trimDb.1", 0}, {"trimDb.2", 0}}))); // another key: applied
+	CHECK(f.gestures.openGestures().size() == 1);
+	CHECK(ok(f.update("amp2", {{"gainDb", -6}, {"trimDb.1", 0}}))); // a literal 0: not the definition
+	CHECK(f.gestures.openGestures().size() == 1);
+	CHECK(ok(f.set(f.graphFile().text + "route amp:out.1 amp2:in.1;\n", f.graphFile().version))); // unrelated
+	CHECK(f.gestures.openGestures().size() == 1);
+	CHECK(ok(f.run({control::AddNodeText{"node strip c { trimDb.1 $trim; }", f.graphFile().version}}).at(0)));
+	CHECK(f.gestures.openGestures().empty());
+	CHECK(f.notes.last().phase == ear::GesturePhase::aborted);
+	CHECK(f.notes.last().reason == "edited");
+	CHECK_FALSE(f.notes.last().value);
+}
+
+TEST_CASE("A related graphFile.set aborts file-saved, a related hand edit hand-edit, and removals name themselves",
+          "[keeper][gestures]") {
+	GestureFixture f("keeper-gesture-files");
+	std::string g = f.begun("amp", "gainDb");
+	auto file = f.graphFile();
+	CHECK(ok(f.set(replaced(file.text, "node strip amp { gainDb -6;", "node strip amp { gainDb -9;"), file.version)));
+	CHECK(f.notes.last().reason == "file-saved");
+
+	g = f.begun("amp", "gainDb");
+	std::ofstream(f.file, std::ios::binary) << replaced(f.graphFile().text, "gainDb -9;", "gainDb -10;");
+	f.diskEvent();
+	CHECK(f.notes.last().reason == "hand-edit");
+
+	g = f.begun("amp2", "gainDb");
+	CHECK(ok(f.run({control::RemoveNode{"amp2"}}).at(0)));
+	CHECK(f.notes.last().reason == "node-removed");
+	CHECK(f.notes.last().value == -6.0);
+
+	g = f.begun("amp", "trimDb.2");
+	// A change of ports lowering channels: trimDb.2 is kept in ear.conf, inactive.
+	CHECK(ok(f.update("amp", {{"gainDb", -10}, {"channels", 1}, {"trimDb.1", 0}, {"trimDb.2", 0}})));
+	CHECK(f.notes.last().reason == "key-removed");
+	static_cast<void>(g);
+}
+
+TEST_CASE("A hand edit with errors aborts every gesture, and a begin is then file-invalid", "[keeper][gestures]") {
+	GestureFixture f("keeper-gesture-typo");
+	f.begun("amp", "gainDb");
+	std::ofstream(f.file, std::ios::binary) << f.graphFile().text << "node strip {\n";
+	f.diskEvent();
+	CHECK(f.notes.last().phase == ear::GesturePhase::aborted);
+	CHECK(f.notes.last().reason == "hand-edit");
+	CHECK(f.refusedCode(f.begin("amp", "gainDb")) == "file-invalid");
+}
+
+TEST_CASE(
+	"A hand edit the graph refuses aborts every gesture, a begin is file-refused, and a fixed reach mismatch shows",
+	"[keeper][gestures]") {
+	GestureFixture f("keeper-gesture-refused-hand");
+	const std::string g = f.begun("amp", "gainDb");
+	f.gestures.move(g, 1, 1, -3.0);
+	// A route to a port amp does not have, which knobly reads and the graph refuses.
+	std::ofstream(f.file, std::ios::binary) << f.graphFile().text << "route amp:nope amp2:in.1;\n";
+	f.diskEvent();
+	REQUIRE(f.lastChange().file.refusal.has_value());
+	REQUIRE_FALSE(f.notes.told.empty());
+	CHECK(f.notes.last().phase == ear::GesturePhase::aborted);
+	CHECK(f.notes.last().reason == "hand-edit");
+	CHECK(f.gestures.openGestures().empty());
+	const auto refused = f.begin("amp2", "gainDb");
+	REQUIRE(f.refusedCode(refused) == "file-refused");
+	// The wording test/protocol/gestures.json gives.
+	CHECK(std::get<control::GestureRefused>(refused).message ==
+	      "file-refused: the graph refused the newest text of ear.conf");
+	CHECK(std::get<control::GestureRefused>(refused).data == json::object());
+
+	// Fixed by hand, with trimDb.1 sharing its definition with channels: the begin judges the text the graph now runs.
+	std::ofstream(f.file, std::ios::binary) << "graph {\n    rate 48khz;\n    block_size 256;\n}\n@set $n 2;\n"
+											   "node strip amp { channels $n; trimDb.1 $n; }\n";
+	f.diskEvent();
+	REQUIRE_FALSE(f.lastChange().file.refusal.has_value());
+	const auto mismatch = f.begin("amp", "trimDb.1");
+	REQUIRE(f.refusedCode(mismatch) == "reach-mismatch");
+	const auto& refusal = std::get<control::GestureRefused>(mismatch);
+	CHECK(refusal.message ==
+	      "reach-mismatch amp: trimDb.1 shares its definition with rows a gesture cannot move together");
+	CHECK(refusal.data == json{{"line", 5},
+	                           {"column", 9},
+	                           {"with", json::array({{{"name", "amp"}, {"key", "channels"}, {"why", "kind"}}})}});
+	CHECK(f.refusedCode(f.begin("amp", "gainDb")) == ""); // its own default: amp alone
+}
+
+TEST_CASE("An end read before its gesture was aborted commits nothing: the abort won and the end is unknown-gesture",
+          "[keeper][gestures]") {
+	GestureFixture f("keeper-gesture-aborted-end");
+	// A hand edit read while the end waited for the keeper: the hand edit's value stays, in the file and the slots.
+	std::string g = f.begun("amp", "gainDb");
+	f.gestures.move(g, 1, 1, -3.5);
+	auto ending = f.gestures.end(g, std::nullopt, 1);
+	REQUIRE(ending);
+	std::ofstream(f.file, std::ios::binary) << replaced(f.graphFile().text, "gainDb -6;", "gainDb -10;");
+	f.diskEvent();
+	CHECK(f.notes.last().reason == "hand-edit");
+	const std::string version = f.graphFile().version;
+	CHECK(code(f.commit(*ending)) == "unknown-gesture");
+	CHECK(f.graphFile().version == version);
+	CHECK(f.graphFile().text.find("node strip amp { gainDb -10;") != std::string::npos);
+	CHECK(f.notes.last().phase == ear::GesturePhase::aborted);
+
+	// A cancel by its id while the end waited: nothing commits, the value it ends at included.
+	g = f.begun("amp", "gainDb");
+	f.gestures.move(g, 1, 1, -2.0);
+	ending = f.gestures.end(g, std::nullopt, 1);
+	REQUIRE(ending);
+	REQUIRE(f.gestures.cancel(g, 2));
+	CHECK(code(f.commit(*ending)) == "unknown-gesture");
+	CHECK(f.graphFile().version == version);
+	CHECK(f.notes.last().reason == "cancelled");
+
+	// An end at the committed value, cancelled first: not closed, so no end is told.
+	g = f.begun("amp", "gainDb");
+	ending = f.gestures.end(g, std::nullopt, 1);
+	REQUIRE(ending);
+	REQUIRE(f.gestures.cancel(g, 2));
+	CHECK(code(f.commit(*ending)) == "unknown-gesture");
+	CHECK(f.notes.last().phase == ear::GesturePhase::aborted);
+}
+
+TEST_CASE("A retune the type's check refuses beside a held hand aborts that gesture crossed before the change commits",
+          "[keeper][gestures]") {
+	GestureFixture f("keeper-gesture-crossing");
+	// A check binding amp's gainDb and trimDb.1: trimDb.1 at 3 refused while a hand holds gainDb at -2.
+	f.live.refuses = [](const GestureLive& live, const NodeName& node, std::span<const ear::LiveWrite> writes) {
+		const bool held = std::ranges::any_of(
+			live.slots, [&](const auto& slot) { return slot.first.first == node && slot.second == -2.0; });
+		return held && std::ranges::any_of(
+						   writes, [](const ear::LiveWrite& w) { return std::bit_cast<double>(w.bits) == 3.0; });
+	};
+	const std::string g = f.begun("amp", "gainDb");
+	f.gestures.move(g, 1, 1, -2.0);
+	CHECK(applied(f.run({control::SetNode{"amp", {{"trimDb.1", 2}}}}).at(0)) == "retune"); // no cross: it goes on
+	CHECK(f.gestures.openGestures().size() == 1);
+	CHECK(applied(f.run({control::SetNode{"amp", {{"trimDb.1", 3}}}}).at(0)) == "retune");
+	CHECK(f.gestures.openGestures().empty());
+	CHECK(f.notes.last().phase == ear::GesturePhase::aborted);
+	CHECK(f.notes.last().reason == "crossed");
 }

@@ -16,20 +16,41 @@ namespace ear::control {
 /// A lifecycle request's `applied` (docs/control-port.md#methods): node.start (start, retry, unchanged), node.stop
 /// (stop, unchanged), node.restart (restart, retry, unchanged), node.disable (disable, unchanged), node.enable (enable,
 /// unchanged), and an edit's outcome where it is answered (node.disable, node.enable, node.set: `reconfigure`,
-/// `reshape` and `stored` among them, docs/control-port.md#methods); the one list of names has one home.
-enum class AppliedKind { start, stop, restart, retry, disable, enable, stored, unchanged, reconfigure, reshape };
-/// "start" | "stop" | "restart" | "retry" | "disable" | "enable" | "stored" | "unchanged" | "reconfigure" | "reshape":
-/// the one home of these strings.
+/// `reshape`, `stored` and `retune` among them, docs/control-port.md#methods); the one list of names has one home.
+enum class AppliedKind {
+	start,
+	stop,
+	restart,
+	retry,
+	disable,
+	enable,
+	stored,
+	unchanged,
+	reconfigure,
+	reshape,
+	retune
+};
+/// "start" | "stop" | "restart" | "retry" | "disable" | "enable" | "stored" | "unchanged" | "reconfigure" | "reshape" |
+/// "retune": the one home of these strings.
 std::string_view appliedName(AppliedKind kind) noexcept;
+/// One key of one node: an entry of node.set's `alsoChanged` (docs/control-port.md#retunes).
+struct NodeKey {
+	NodeName name;
+	std::string key;
+	friend bool operator==(const NodeKey&, const NodeKey&) = default;
+};
 /// A request's result: {"applied": appliedName(kind)}, and for a change of the node's ports
 /// (docs/control-port.md#changes-of-ports) "inPlace" (a reshape's), "ports" and the routes it removed ("routesDropped"),
-/// or, for a dry run, would remove ("routes").
+/// or, for a dry run, would remove ("routes"); node.set's also "retuned" (its live keys moved) and "alsoChanged" (the
+/// other nodes' keys the same edit changed, through a shared definition: docs/control-port.md#retunes).
 struct Applied {
 	AppliedKind kind;
 	std::optional<bool> inPlace{};
 	std::optional<PortsMoved> ports{};
 	std::optional<std::vector<Route>> routesDropped{};
 	std::optional<std::vector<Route>> routes{};
+	std::optional<std::vector<std::string>> retuned{};
+	std::optional<std::vector<NodeKey>> alsoChanged{};
 	friend bool operator==(const Applied&, const Applied&) = default;
 };
 

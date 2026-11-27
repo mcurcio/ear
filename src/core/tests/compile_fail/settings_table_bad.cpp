@@ -4,6 +4,7 @@
 #include <any>
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -29,12 +30,38 @@ constexpr SettingsTable<otherRow> otherTable{"o"};
 
 using Checked = decltype(table)::Checked;
 
+// The control also holds defaults that must compile: an int literal on a whole number's and on a decimal's rule, the
+// default not deduced from it.
+constexpr auto intDefault = setting::defaulted("i", setting::number(0, 64, "channels"), 0);
+constexpr auto decimalIntDefault = setting::defaulted("g", setting::decimal(-90, 24, "dB"), 0);
+constexpr auto flagDefault = setting::defaulted("f", setting::boolean(), false);
+static_assert(intDefault.row().byDefault == SettingValue(0u) &&
+              decimalIntDefault.row().byDefault == SettingValue(0.0) &&
+              flagDefault.row().byDefault == SettingValue(false));
+
 // The control: checked settings read the only way there is, each row as what it is.
 std::string good(const Checked& settings) {
 	const std::uint32_t number = settings.get<numberRow>();
 	const std::optional<std::string> text = settings.get<textRow>();
 	return std::string(text.value_or("none")) + std::to_string(number);
 }
+
+// The control holds a family too, read by member and counted (docs/writing-a-node-type.md#indexed-families).
+constexpr auto countRow = setting::defaulted("c", setting::number(1, 8), 2).inPlace();
+constexpr auto familyRow = setting::indexed("f", countRow, setting::decimal(-1, 1), 0).inPlace();
+constexpr SettingsTable<countRow, familyRow> familyTable{"f"};
+double goodFamily(const decltype(familyTable)::Checked& settings) {
+	return settings.get<familyRow>(0) + settings.count<familyRow>();
+}
+
+// The control holds a choice too, read as its enumeration, its default named by an enumerator
+// (docs/writing-a-node-type.md#choice-rows).
+enum class Shape { peak, shelf };
+constexpr auto choiceRow =
+	setting::defaulted("s", setting::choice<Shape>({{"peak", Shape::peak}, {"low shelf", Shape::shelf}}), Shape::shelf)
+		.inPlace();
+constexpr SettingsTable<choiceRow> choiceTable{"c"};
+Shape goodChoice(const decltype(choiceTable)::Checked& settings) { return settings.get<choiceRow>(); }
 
 #ifdef EAR_CASE_key_empty
 constexpr auto bad = setting::required("", setting::number(1, 2));
@@ -98,8 +125,53 @@ inline constexpr std::array<std::string_view, 2> withEmpty{"a", ""};
 constexpr auto bad = setting::text<anyText>("anything", {.values = withEmpty});
 #endif
 
-#ifdef EAR_CASE_default_on_text
-constexpr auto bad = setting::defaulted("k", setting::text<anyText>("anything"), 1);
+// A text or a rate is required or optional: its absence has no one value a default could name.
+#ifdef EAR_CASE_default_text_row
+constexpr auto bad = setting::defaulted("k", setting::text<anyText>("anything"), std::string("x"));
+#endif
+
+// A text row is refused by its rule, whatever its parse returns: one that reads a bool or a whole number has no default
+// either.
+#ifdef EAR_CASE_default_text_row_bool
+std::optional<bool> yesNo(std::string_view text) { return text == "yes"; }
+constexpr auto bad = setting::defaulted("k", setting::text<yesNo>("yes or no"), true);
+#endif
+
+#ifdef EAR_CASE_default_text_row_whole
+std::optional<std::uint32_t> anyCount(std::string_view) { return 1u; }
+constexpr auto bad = setting::defaulted("k", setting::text<anyCount>("a count"), 1u);
+#endif
+
+#ifdef EAR_CASE_indexed_text_family
+std::optional<bool> yesNo(std::string_view text) { return text == "yes"; }
+constexpr auto bad = setting::indexed("e", countRow, setting::text<yesNo>("yes or no"), true);
+#endif
+
+#ifdef EAR_CASE_default_rate_row
+constexpr auto bad = setting::defaulted("k", setting::rate(SampleRate::fixed<8'000>(), SampleRate::fixed<96'000>()),
+                                        SampleRate::fixed<48'000>());
+#endif
+
+#ifdef EAR_CASE_decimal_low_above_high
+constexpr auto bad = setting::decimal(2.0, 1.0);
+#endif
+
+#ifdef EAR_CASE_decimal_bound_not_finite
+constexpr auto bad = setting::decimal(0.0, std::numeric_limits<double>::infinity());
+#endif
+
+#ifdef EAR_CASE_decimal_default_outside
+constexpr auto bad = setting::defaulted("k", setting::decimal(0.0, 1.0), 1.5);
+#endif
+
+// A log taper maps travel on ln(v): 0 and below have none.
+#ifdef EAR_CASE_log_taper_nonpositive
+constexpr auto bad = setting::decimal(0.0, 20'000.0, "Hz", {.taper = setting::Taper::log});
+#endif
+
+// A dB taper draws a level from near silence to unity at least.
+#ifdef EAR_CASE_db_taper_range
+constexpr auto bad = setting::decimal(-20.0, 6.0, "dB", {.taper = setting::Taper::db});
 #endif
 
 #ifdef EAR_CASE_default_on_required
@@ -250,6 +322,85 @@ constexpr auto bad = setting::required("r", setting::number(1, 2)).onlyWithout(t
 
 #ifdef EAR_CASE_only_without_a_required
 constexpr auto bad = setting::optional("o", setting::number(1, 2)).onlyWithout(numberRow);
+#endif
+
+// One change mark per row, and a restart says why (docs/writing-a-node-type.md#change-marks).
+#ifdef EAR_CASE_two_marks
+constexpr auto bad = setting::optional("o", setting::number(1, 2)).inPlace().restarts("opened once");
+#endif
+
+#ifdef EAR_CASE_restarts_empty_reason
+constexpr auto bad = setting::optional("o", setting::number(1, 2)).restarts("");
+#endif
+
+// Indexed families (docs/writing-a-node-type.md#indexed-families).
+#ifdef EAR_CASE_indexed_count_below
+constexpr auto laterCount = setting::defaulted("later", setting::number(1, 8), 2).inPlace();
+constexpr auto earlyFamily = setting::indexed("e", laterCount, setting::number(0, 9), 0).inPlace();
+constexpr SettingsTable<earlyFamily, laterCount> bad{"t"};
+#endif
+
+#ifdef EAR_CASE_indexed_count_not_whole
+constexpr auto flagCount = setting::defaulted("c", setting::boolean(), true);
+constexpr auto bad = setting::indexed("e", flagCount, setting::number(0, 9), 0);
+#endif
+
+#ifdef EAR_CASE_indexed_count_high_zero
+constexpr auto zeroCount = setting::defaulted("z", setting::number(0, 0), 0);
+constexpr auto bad = setting::indexed("e", zeroCount, setting::number(0, 9), 0);
+#endif
+
+#ifdef EAR_CASE_indexed_count_optional
+constexpr auto bad = setting::indexed("e", optionalNumberRow, setting::number(0, 9), 0);
+#endif
+
+#ifdef EAR_CASE_indexed_collides_with_row
+constexpr auto memberSpelled = setting::optional("f.2", setting::number(0, 9)).inPlace();
+constexpr SettingsTable<countRow, familyRow, memberSpelled> bad{"t"};
+#endif
+
+#ifdef EAR_CASE_read_family_without_member
+double bad(const decltype(familyTable)::Checked& settings) { return settings.get<familyRow>(); }
+#endif
+
+#ifdef EAR_CASE_read_member_of_plain_row
+std::uint32_t bad(const Checked& settings) { return settings.get<numberRow>(0); }
+#endif
+
+// Choice rows (docs/writing-a-node-type.md#choice-rows).
+#ifdef EAR_CASE_choice_empty
+constexpr auto bad = setting::choice<Shape>({});
+#endif
+
+#ifdef EAR_CASE_choice_repeated_name
+constexpr auto bad = setting::choice<Shape>({{"peak", Shape::peak}, {"peak", Shape::shelf}});
+#endif
+
+#ifdef EAR_CASE_choice_repeated_value
+constexpr auto bad = setting::choice<Shape>({{"peak", Shape::peak}, {"top", Shape::peak}});
+#endif
+
+#ifdef EAR_CASE_choice_unwritable_name
+constexpr auto bad = setting::choice<Shape>({{"peak", Shape::peak}, {"shelf\x01", Shape::shelf}});
+#endif
+
+#ifdef EAR_CASE_choice_too_many
+enum class Many : int {};
+constexpr auto bad = setting::choice<Many>(
+	{{"a", Many{0}},  {"b", Many{1}},  {"c", Many{2}},  {"d", Many{3}},  {"e", Many{4}},  {"f", Many{5}},
+     {"g", Many{6}},  {"h", Many{7}},  {"i", Many{8}},  {"j", Many{9}},  {"k", Many{10}}, {"l", Many{11}},
+     {"m", Many{12}}, {"n", Many{13}}, {"o", Many{14}}, {"p", Many{15}}, {"q", Many{16}}, {"r", Many{17}},
+     {"s", Many{18}}, {"t", Many{19}}, {"u", Many{20}}, {"v", Many{21}}, {"w", Many{22}}, {"x", Many{23}},
+     {"y", Many{24}}, {"z", Many{25}}, {"A", Many{26}}, {"B", Many{27}}, {"C", Many{28}}, {"D", Many{29}},
+     {"E", Many{30}}, {"F", Many{31}}, {"G", Many{32}}});
+#endif
+
+#ifdef EAR_CASE_choice_default_unnamed
+constexpr auto bad = setting::defaulted("k", setting::choice<Shape>({{"peak", Shape::peak}}), Shape::shelf);
+#endif
+
+#ifdef EAR_CASE_choice_not_enum
+constexpr auto bad = setting::choice<int>({{"one", 1}});
 #endif
 
 } // namespace settings_table_bad

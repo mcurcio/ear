@@ -248,13 +248,51 @@ TEST_CASE("Airplay's refusals, in order", "[nodes][settings]") {
 	CHECK(says("airplay", R"({"name":"","zeta":1})") == "unknown key zeta");
 }
 
+TEST_CASE("Gain's refusals, in order", "[nodes][settings]") {
+	constexpr std::string_view gainText = "gainDb: must be a number of dB from -90 to 24";
+	constexpr std::string_view gainChannelsText = "channels: must be a whole number of channels, 1-64";
+	for (const std::string_view bad : {"null", "true", "3", R"("x")", "[]"}) {
+		CHECK(says("gain", bad) ==
+		      R"(settings: must be an object with optional "channels", "gainDb", "mute", "trimDb" and "invert")");
+	}
+	CHECK(says("gain", "{}") == accepted);
+	CHECK(says("gain", R"({"level":1})") == "unknown key level");
+	CHECK(says("gain", with("channels", "0")) == gainChannelsText);
+	CHECK(says("gain", with("channels", "65")) == gainChannelsText);
+	for (const std::string_view bad : notAWholeNumber) CHECK(says("gain", with("channels", bad)) == gainChannelsText);
+	CHECK(says("gain", with("gainDb", "-90.5")) == gainText);
+	CHECK(says("gain", with("gainDb", "24.01")) == gainText);
+	CHECK(says("gain", with("gainDb", R"("-6")")) == gainText);
+	CHECK(says("gain", with("gainDb", "true")) == gainText);
+	CHECK(says("gain", with("gainDb", "null")) == gainText);
+	CHECK(says("gain", with("gainDb", "-90")) == accepted);
+	CHECK(says("gain", with("gainDb", "24")) == accepted);
+	CHECK(says("gain", with("gainDb", "-3.25")) == accepted);
+	CHECK(says("gain", with("mute", "1")) == "mute: must be true or false");
+	CHECK(says("gain", with("trimDb.1", "-24.5")) == "trimDb.1: must be a number of dB from -24 to 24");
+	CHECK(says("gain", with("trimDb.64", "24")) == accepted);
+	CHECK(says("gain", with("trimDb.65", "0")) == "trimDb.65: no such member (channels is at most 64)");
+	CHECK(says("gain", with("trimDb.0", "0")) == "unknown key trimDb.0");
+	CHECK(says("gain", with("trimDb.01", "0")) == "unknown key trimDb.01");
+	CHECK(says("gain", with("trimDb", "0")) == "unknown key trimDb");
+	CHECK(says("gain", with("invert.2", R"("yes")")) == "invert.2: must be true or false");
+	// A member above the count is kept, inactive: never refused.
+	CHECK(says("gain", R"({"channels":1,"trimDb.3":-6,"invert.64":true})") == accepted);
+	// Several problems: the first in order is told, members in number order.
+	CHECK(says("gain", R"({"channels":0,"gainDb":99})") == gainChannelsText);
+	CHECK(says("gain", R"({"gainDb":99,"mute":3})") == gainText);
+	CHECK(says("gain", R"({"trimDb.10":99,"trimDb.2":99})") == "trimDb.2: must be a number of dB from -24 to 24");
+	CHECK(says("gain", R"({"invert.1":0,"trimDb.1":99})") == "trimDb.1: must be a number of dB from -24 to 24");
+	CHECK(says("gain", R"({"gainDb":99,"zeta":1})") == "unknown key zeta");
+}
+
 // Removing a type leaves its refusals here: a failure naming it, never a crash that hides the other tests' results.
 TEST_CASE("A refusal asked of a type that is gone fails, naming it", "[nodes][settings][!shouldfail]") {
 	CHECK(answer("gone", NodeSettings::object()) == accepted);
 }
 
 TEST_CASE("Unknown keys are told in the object's sorted order, not as written", "[nodes][settings]") {
-	for (const std::string_view type : {"file", "card", "rtp", "sendspin"}) {
+	for (const std::string_view type : {"file", "card", "rtp", "sendspin", "gain"}) {
 		CHECK(says(type, R"({"zeta":1,"alpha":2})") == "unknown key alpha");
 	}
 }
@@ -268,15 +306,24 @@ TEST_CASE("Each type's setting kinds are what its parse checks", "[nodes][settin
 		CHECK(answer(name, good) == accepted);
 		CHECK(type->settingKinds().data() == type->settingKinds().data());
 		for (const auto& [key, kind] : type->settingKinds()) {
-			const std::string spelled(key);
+			const std::string spelled = ear::test::givenKey(*type, key, good);
 			INFO(spelled);
 			NodeSettings bad = good;
-			bad[spelled] = kind == ear::SettingKind::text ? NodeSettings(5) : NodeSettings("5");
+			const bool string = kind == ear::SettingKind::text || kind == ear::SettingKind::choice;
+			bad[spelled] = string ? NodeSettings(5) : NodeSettings("5");
 			const std::string told = answer(name, bad);
 			CHECK(told.starts_with(spelled + ": must be "));
 			if (kind == ear::SettingKind::wholeNumber) {
 				bad[spelled] = 5.5;
 				CHECK(answer(name, bad).starts_with(spelled + ": must be a whole number"));
+			}
+			if (kind == ear::SettingKind::choice) { // a string, and only one of its names
+				bad[spelled] = "not one of its names";
+				CHECK(answer(name, bad).starts_with(spelled + ": must be one of "));
+			}
+			if (kind == ear::SettingKind::decimal) { // a JSON number, never a boolean
+				bad[spelled] = true;
+				CHECK(answer(name, bad).starts_with(spelled + ": must be a number"));
 			}
 			if (kind == ear::SettingKind::rate) { // a whole number of Hz on the wire, never ear.conf's unit form
 				bad[spelled] = "48khz";

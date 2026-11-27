@@ -10,6 +10,7 @@
 #include "ear/control/companions_wire.hpp"
 #include "ear/control/graph_file_state.hpp"
 #include "ear/core/counter_watch.hpp"
+#include "ear/core/gestures.hpp"
 #include "ear/core/levels.hpp"
 #include "ear/core/node_host.hpp"
 #include "ear/core/reconciler.hpp"
@@ -56,6 +57,7 @@ struct NodeUpdated {
 	bool disabled;
 	NodeOutcome applied;
 	std::optional<NodeReshaped> reshaped{}; // its ports changed
+	std::vector<std::string> retuned{};     // its live keys moved, key order (docs/control-port.md#retunes)
 };
 struct NodeRemoved {
 	NodeName node;
@@ -97,12 +99,15 @@ class EventSink { // control thread
 public:
 	virtual void graphChanged(GraphEvent event) = 0;
 	virtual void graphFileChanged(GraphFileChanged change) = 0;
+	/// A gesture's note (feature gestures), each addressed by its phase (docs/control-port.md#gesturechanged).
+	virtual void gestureChanged(GestureNote note) { static_cast<void>(note); }
 
 protected:
 	~EventSink() = default;
 };
 std::string encodeEvent(const GraphEvent& event); // one notification
-/// node.updated's `applied`: "restart" | "reconfigure" | "reshape" | "disable" | "enable" | "stored" | "unchanged".
+/// node.updated's `applied`: "restart" | "reconfigure" | "reshape" | "disable" | "enable" | "stored" | "unchanged" |
+/// "retune".
 std::string_view outcomeName(NodeOutcome outcome) noexcept;
 std::string encodeLevels(std::span<const NodeLevels> levels); // one "levels" notification
 /// One "graphFile.changed" notification: the GraphFile JSON (encodeGraphFile) plus "cause", plus

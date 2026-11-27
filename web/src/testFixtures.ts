@@ -16,6 +16,7 @@ import unknownValues from "../../test/protocol/unknown-values.json";
 import status from "../../test/protocol/status.json";
 import diagnostics from "../../test/protocol/diagnostics.json";
 import actions from "../../test/protocol/actions.json";
+import gestures from "../../test/protocol/gestures.json";
 import type { ProtocolFixture, ServerMessage, ServerText } from "./protocol";
 import type { SocketEvents, SocketLike } from "./rpc";
 
@@ -36,6 +37,7 @@ export const fixtures = {
   status,
   diagnostics,
   actions,
+  gestures,
 } as unknown as {
   snapshot: ProtocolFixture;
   edits: ProtocolFixture;
@@ -52,6 +54,7 @@ export const fixtures = {
   status: ProtocolFixture;
   diagnostics: ProtocolFixture;
   actions: ProtocolFixture;
+  gestures: ProtocolFixture;
 };
 
 /** A fixture's server texts as the messages the client hands on, a batch's in its order. */

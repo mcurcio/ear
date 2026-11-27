@@ -2,24 +2,31 @@
 // marked when ear changes under them, the merge patch, and Apply asking first against a fake client
 // (docs/control-port.md#nodeset-and-dry-runs): a reconfigure sent at once, a restart and a reshape asking first,
 // dropRoutes sent exactly when the dry run named routes, a ports-in-use refusal asking again, a refusal placed by
-// data.key. Every built-in type's schema in types.json makes a form.
+// data.key. Every built-in type's schema in types.json makes a form, and so does rows.json's row vocabulary (decimals,
+// typed defaults, indexed families and choices) that no built-in type has yet.
 import { describe, expect, it } from "vitest";
 import {
   ApplyFlow,
   appliesAfter,
+  alsoChangedWords,
   asksFirst,
+  atOncePatch,
+  commitsAtOnce,
   confirmWords,
   edit,
   fieldsOf,
+  memberNumber,
   patchOf,
+  rowOfKey,
   takeEar,
   type ApplyStep,
   type Draft,
   type SetClient,
 } from "./form";
-import type { GraphNode, Methods, RouteEnds, SetResult, TypeSchema, TypesResult } from "./protocol";
+import type { GraphNode, JsonObject, Methods, RouteEnds, SetResult, TypeSchema, TypesResult } from "./protocol";
 import { RpcError } from "./rpc";
 import { fixtures, messagesOf } from "./testFixtures";
+import rowsFixture from "../../test/protocol/rows.json";
 
 /** A card-like type: a required text with a pattern, two whole numbers that shape the ports, an in-place select. */
 const card: TypeSchema = {
@@ -28,7 +35,7 @@ const card: TypeSchema = {
   outputs: ["capture"],
   reconfigureMs: 10000,
   settings: [
-    { key: "card", kind: "text", required: true, change: "restart", mustBe: "an ALSA card id", pattern: "^[A-Za-z0-9_-]{1,15}$", maxLength: 15 },
+    { key: "card", kind: "text", required: true, change: "restart", restartReason: "card has no change in place yet", mustBe: "an ALSA card id", pattern: "^[A-Za-z0-9_-]{1,15}$", maxLength: 15 },
     { key: "playback", kind: "wholeNumber", required: false, change: "restart", min: 0, max: 64, unit: "channels", default: 0, shapes: true },
     { key: "mode", kind: "text", required: false, change: "inPlace", mustBe: "fast or slow", values: ["fast", "slow"] },
     { key: "rate", kind: "wholeNumber", required: false, change: "inPlace", min: 8000, max: 192000, unit: "Hz", defaultFrom: "graphFrequency" },
@@ -64,8 +71,8 @@ describe("fields from the schema alone", () => {
       ["port", "number", ""],
       ["shape", "json", ""],
     ]);
-    expect(fields[0].hints).toStrictEqual(["restarts the node"]);
-    expect(fields[1].hints).toStrictEqual(["restarts the node", "changes the ports"]);
+    expect(fields[0].hints).toStrictEqual(["restarts the node: card has no change in place yet"]);
+    expect(fields[1].hints).toStrictEqual(["restarts the node", "changes the ports"]); // a restart with no reason given
     expect(fields[2].hints).toStrictEqual(["applies in place"]);
     expect(fields[6].hints).toStrictEqual([]); // a change this editor does not know says nothing
     expect(fields[2].options).toStrictEqual(["", "fast", "slow"]);
@@ -229,6 +236,7 @@ describe("Apply asks first", () => {
     expect(confirmWords("fpp", { applied: "reshape", inPlace: true })).toBe("Changes fpp's ports.");
     expect(asksFirst({ applied: "unchanged" })).toBe(false);
     expect(asksFirst({ applied: "stored" })).toBe(false);
+    expect(asksFirst({ applied: "retune", retuned: ["gainDb"], alsoChanged: [] })).toBe(false); // a slot moved
     expect(asksFirst({ applied: "teleport" })).toBe(true); // an outcome this editor does not know asks
   });
 
@@ -302,7 +310,9 @@ describe("Apply asks first", () => {
     for (const result of results) {
       const routes = result.routes ?? [];
       const stops = result.applied === "restart" || (result.applied === "reshape" && result.inPlace !== true);
-      expect(asksFirst(result)).toBe(!["reconfigure", "unchanged", "stored"].includes(result.applied) || routes.length > 0);
+      expect(asksFirst(result)).toBe(
+        !["reconfigure", "unchanged", "stored", "retune"].includes(result.applied) || routes.length > 0,
+      );
       if (stops && routes.length === 0) expect(confirmWords("n", result)).toBe("Restarts n: its audio stops for a moment.");
     }
   });
@@ -318,11 +328,252 @@ describe("every built-in type makes a form", () => {
     expect(schemas.map((schema) => schema.name)).toContain("rtp");
     for (const schema of schemas) {
       const fields = fieldsOf(schema, {}, none);
-      expect(fields.map((field) => field.key)).toStrictEqual(schema.settings.map((row) => row.key));
+      // A family is a field per member, 1 to its count row's default when nothing is set.
+      const keys = schema.settings.flatMap((row) => {
+        if (row.indexed === undefined) return [row.key];
+        const count = schema.settings.find((other) => other.key === row.indexed!.by)?.default;
+        return Array.from({ length: typeof count === "number" ? count : 0 }, (_, i) => `${row.key}.${i + 1}`);
+      });
+      expect(fields.map((field) => field.key)).toStrictEqual(keys);
       for (const field of fields) {
         expect(field.control).not.toBe("json"); // ear's kinds today are all known here
         expect(field.hints.length).toBeGreaterThan(0);
       }
     }
+  });
+});
+
+describe("the row vocabulary no built-in type has yet", () => {
+  const schema = (rowsFixture as unknown as { typeSchemas: TypeSchema[] }).typeSchemas[0];
+
+  it("draws rows.json's decimals as decimal fields with their range, unit and typed default", () => {
+    const fields = fieldsOf(schema, { cutoffHz: 1000 }, none).slice(0, 4);
+    expect(fields.map((field) => [field.key, field.control, field.value])).toStrictEqual([
+      ["levelDb", "decimal", ""],
+      ["cutoffHz", "decimal", "1000"],
+      ["spread", "decimal", ""],
+      ["on", "flag", true],
+    ]);
+    expect([fields[0].min, fields[0].max, fields[0].unit]).toStrictEqual([-90, 24, "dB"]);
+    expect(fields.map((field) => field.placeholder)).toStrictEqual(["default -6 dB", "required", "absent", "default true"]);
+    expect(fields[1].hints).toStrictEqual(["restarts the node: the filter is designed at start"]);
+  });
+
+  it("says a live row's transition beside it (feature live)", () => {
+    const hints = (key: string) => fieldsOf(schema, { cutoffHz: 1000 }, none).find((field) => field.key === key)?.hints;
+    expect(hints("gainDb")).toStrictEqual(["live, ramped"]);
+    expect(hints("mute")).toStrictEqual(["live, ramped"]);
+    expect(hints("input")).toStrictEqual(["live"]);
+    expect(hints("slope")).toStrictEqual(["live"]);
+  });
+
+  it("commits a live flag or select at once, never a live number or decimal, nor a row that is not live", () => {
+    const atOnce = (key: string) =>
+      fieldsOf(schema, { cutoffHz: 1000 }, none).find((field) => field.key === key)?.atOnce === true;
+    expect(["mute", "slope", "gainDb", "input", "on", "shape"].map(atOnce)).toStrictEqual([
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+    ]);
+    expect(schema.settings.filter(commitsAtOnce).map((row) => row.key)).toStrictEqual(["mute", "slope"]);
+    expect(atOncePatch(schema, { cutoffHz: 1000 }, "mute", true)).toStrictEqual({ patch: { mute: true } });
+    expect(atOncePatch(schema, { cutoffHz: 1000 }, "slope", "steep")).toStrictEqual({ patch: { slope: "steep" } });
+    expect(atOncePatch(schema, { cutoffHz: 1000 }, "slope", "flat")).toStrictEqual({
+      problem: 'must be one of "gentle" and "steep"',
+    });
+    expect(atOncePatch(schema, { cutoffHz: 1000 }, "ghost", true)).toBeUndefined();
+  });
+
+  it("names the other nodes a live change moved through a shared definition, each once", () => {
+    expect(alsoChangedWords({ applied: "retune", retuned: ["mute"], alsoChanged: [] })).toBeUndefined();
+    expect(alsoChangedWords({ applied: "retune" })).toBeUndefined();
+    expect(
+      alsoChangedWords({
+        applied: "retune",
+        retuned: ["mute"],
+        alsoChanged: [
+          { name: "amp2", key: "mute" },
+          { name: "amp2", key: "gainDb" },
+          { name: "amp3", key: "mute" },
+        ],
+      }),
+    ).toBe("also changed amp2, amp3");
+  });
+
+  it("draws an absent flag at its default, and sends one set against it", () => {
+    const settings = { cutoffHz: 1000 };
+    const on = (fields: ReturnType<typeof fieldsOf>) => fields.find((field) => field.key === "on")?.value;
+    expect(on(fieldsOf(schema, { ...settings, on: false }, none))).toBe(false);
+    const off = edit(schema, settings, none, "on", false);
+    expect(on(fieldsOf(schema, settings, off))).toBe(false);
+    expect(patchOf(schema, settings, off)).toStrictEqual({ patch: { on: false } });
+    // Back at what absence reads: nothing to send.
+    expect(edit(schema, settings, off, "on", true).size).toBe(0);
+    // A flag defaulted false, as before: checked is sent, unchecked again is no edit.
+    const inverted = edit(schema, settings, none, "invert.1", true);
+    expect(patchOf(schema, settings, inverted)).toStrictEqual({ patch: { "invert.1": true } });
+    expect(edit(schema, settings, inverted, "invert.1", false).size).toBe(0);
+  });
+
+  it("checks a decimal in ear's words: a number, an integer taken, within the range", () => {
+    for (const good of ["-3.5", "-6", "0", "24", "-90", " 1e1 ", "0.25"]) {
+      const drafts = edit(schema, { cutoffHz: 1000 }, none, "levelDb", good);
+      expect(fieldsOf(schema, { cutoffHz: 1000 }, drafts)[0].problem).toBeUndefined();
+    }
+    for (const bad of ["-90.5", "25", "abc", "-.5", "1.", "1e400", "--1", "Infinity"]) {
+      const drafts = edit(schema, { cutoffHz: 1000 }, none, "levelDb", bad);
+      expect(fieldsOf(schema, { cutoffHz: 1000 }, drafts)[0].problem).toBe("must be a number of dB from -90 to 24");
+    }
+    const spread = edit(schema, { cutoffHz: 1000 }, none, "spread", "2");
+    expect(fieldsOf(schema, { cutoffHz: 1000 }, spread)[2].problem).toBe("must be a number from 0 to 1");
+  });
+
+  it("sends a decimal as a JSON number, and an emptied optional one as null", () => {
+    let drafts = edit(schema, { cutoffHz: 1000, spread: 0.5 }, none, "levelDb", "-3.5");
+    drafts = edit(schema, { cutoffHz: 1000, spread: 0.5 }, drafts, "cutoffHz", "440");
+    drafts = edit(schema, { cutoffHz: 1000, spread: 0.5 }, drafts, "spread", "");
+    expect(patchOf(schema, { cutoffHz: 1000, spread: 0.5 }, drafts)).toStrictEqual({
+      patch: { levelDb: -3.5, cutoffHz: 440, spread: null },
+    });
+  });
+});
+
+describe("choices", () => {
+  const schema = (rowsFixture as unknown as { typeSchemas: TypeSchema[] }).typeSchemas[0];
+  const field = (key: string, settings = { cutoffHz: 1000 } as JsonObject, drafts = none) =>
+    fieldsOf(schema, settings, drafts).find((one) => one.key === key);
+
+  it("draws a choice as a select of its names, an optional one with absent first", () => {
+    const shape = field("shape");
+    expect([shape?.control, shape?.value, shape?.placeholder, shape?.options]).toStrictEqual([
+      "select",
+      "",
+      "default peak",
+      ["", "peak", "lowShelf", "highShelf"],
+    ]);
+    expect(field("shape", { cutoffHz: 1000, shape: "highShelf" })?.value).toBe("highShelf");
+    const mode = field("mode");
+    expect([mode?.options, mode?.placeholder, mode?.hints]).toStrictEqual([
+      ["", "fast", "two pass"],
+      "absent",
+      ["restarts the node: the mode is chosen at start"],
+    ]);
+    const member = field("curve.2");
+    expect([member?.control, member?.options, member?.family, member?.placeholder]).toStrictEqual([
+      "select",
+      ["", "linear", "smooth"],
+      "curve",
+      "default linear",
+    ]);
+  });
+
+  it("sends a name as it is, and an emptied optional choice as null", () => {
+    const settings = { cutoffHz: 1000, mode: "fast" };
+    let drafts = edit(schema, settings, none, "shape", "lowShelf");
+    drafts = edit(schema, settings, drafts, "mode", "");
+    drafts = edit(schema, settings, drafts, "curve.1", "smooth");
+    expect(patchOf(schema, settings, drafts)).toStrictEqual({
+      patch: { shape: "lowShelf", mode: null, "curve.1": "smooth" },
+    });
+    expect(patchOf(schema, settings, edit(schema, settings, none, "mode", "two pass"))).toStrictEqual({
+      patch: { mode: "two pass" },
+    });
+  });
+
+  it("refuses anything but one of its names, in ear's words", () => {
+    for (const bad of ["Peak", " peak", "notch"]) {
+      const drafts = edit(schema, { cutoffHz: 1000 }, none, "shape", bad);
+      expect(field("shape", { cutoffHz: 1000 }, drafts)?.problem).toBe(
+        'must be one of "peak", "lowShelf" and "highShelf"',
+      );
+    }
+    const mode = edit(schema, { cutoffHz: 1000 }, none, "mode", "slow");
+    expect(field("mode", { cutoffHz: 1000 }, mode)?.problem).toBe('must be one of "fast" and "two pass"');
+  });
+});
+
+describe("indexed families", () => {
+  const schema = (rowsFixture as unknown as { typeSchemas: TypeSchema[] }).typeSchemas[0];
+  const familyKeys = (fields: ReturnType<typeof fieldsOf>) =>
+    fields.filter((field) => field.family !== undefined).map((field) => [field.key, field.inactive === true]);
+
+  it("draws members 1 to the count row's value, each with its family's rule and default", () => {
+    const fields = fieldsOf(schema, { cutoffHz: 1000 }, none);
+    expect(familyKeys(fields)).toStrictEqual([
+      ["trimDb.1", false],
+      ["trimDb.2", false],
+      ["invert.1", false],
+      ["invert.2", false],
+      ["curve.1", false],
+      ["curve.2", false],
+    ]);
+    const trim = fields.find((field) => field.key === "trimDb.2");
+    expect([trim?.control, trim?.min, trim?.max, trim?.unit, trim?.placeholder, trim?.family, trim?.member]).toStrictEqual(
+      ["decimal", -24, 24, "dB", "default 0 dB", "trimDb", 2],
+    );
+    expect(fields.find((field) => field.key === "invert.1")?.hints).toStrictEqual([
+      "restarts the node: the polarity is set at start",
+    ]);
+  });
+
+  it("follows the count, the node's and a draft's, and keeps a member above it, greyed", () => {
+    const settings = { cutoffHz: 1000, channels: 1, "trimDb.3": -6 };
+    const fields = fieldsOf(schema, settings, none);
+    expect(familyKeys(fields)).toStrictEqual([
+      ["trimDb.1", false],
+      ["trimDb.2", true],
+      ["trimDb.3", true],
+      ["invert.1", false],
+      ["curve.1", false],
+    ]);
+    const kept = fields.find((field) => field.key === "trimDb.3");
+    expect(kept?.value).toBe("-6");
+    expect(kept?.hints[0]).toBe("kept; not used while channels is 1");
+    const raised = edit(schema, settings, none, "channels", "3");
+    expect(familyKeys(fieldsOf(schema, settings, raised)).filter(([, inactive]) => inactive)).toStrictEqual([]);
+  });
+
+  it("keeps the node's count while the count's draft is not yet a whole number, and a cleared one reads the default", () => {
+    const settings = { cutoffHz: 1000, channels: 4 };
+    for (const typing of ["4.", "-", "4x"]) {
+      const drafts = edit(schema, settings, none, "channels", typing);
+      const trims = familyKeys(fieldsOf(schema, settings, drafts)).filter(([key]) => String(key).startsWith("trimDb."));
+      expect(trims, typing).toStrictEqual([
+        ["trimDb.1", false],
+        ["trimDb.2", false],
+        ["trimDb.3", false],
+        ["trimDb.4", false],
+      ]);
+    }
+    const cleared = edit(schema, settings, none, "channels", "");
+    const trims = familyKeys(fieldsOf(schema, settings, cleared)).filter(([key]) => String(key).startsWith("trimDb."));
+    expect(trims).toStrictEqual([
+      ["trimDb.1", false],
+      ["trimDb.2", false],
+    ]);
+  });
+
+  it("edits and sends a member by its full key, and places ear's refusal under it", () => {
+    const settings = { cutoffHz: 1000 };
+    let drafts = edit(schema, settings, none, "trimDb.2", "1.5");
+    drafts = edit(schema, settings, drafts, "invert.1", true);
+    expect(patchOf(schema, settings, drafts)).toStrictEqual({ patch: { "trimDb.2": 1.5, "invert.1": true } });
+    const bad = edit(schema, settings, none, "trimDb.1", "30");
+    expect(patchOf(schema, settings, bad)).toStrictEqual({
+      problems: new Map([["trimDb.1", "must be a number of dB from -24 to 24"]]),
+    });
+    const fields = fieldsOf(schema, settings, none, { key: "trimDb.2", detail: "must be a number of dB from -24 to 24" });
+    expect(fields.find((field) => field.key === "trimDb.2")?.problem).toBe("must be a number of dB from -24 to 24");
+  });
+
+  it("maps a key to its family only by the one spelling, within the maximum", () => {
+    for (const key of ["trimDb.0", "trimDb.01", "trimDb.+1", "trimDb.1.5", "trimDb.65", "trimDb", "trimDb-1"])
+      expect(rowOfKey(schema, key)).toBeUndefined();
+    expect(rowOfKey(schema, "trimDb.64")?.key).toBe("trimDb.64");
+    expect(memberNumber("invert.12", "invert")).toBe(12);
+    expect(edit(schema, {}, none, "trimDb.0", "1").size).toBe(0);
   });
 });

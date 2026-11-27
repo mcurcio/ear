@@ -120,12 +120,25 @@ setting's range is its type's.
 ### Settings and their kinds
 
 Each setting is read and written as the kind its node type declares: **text** (a bare word or a
-quoted string), a **whole number**, a **rate** ([rates](#rates)), or a **boolean**. A rate setting is written
+quoted string), a **whole number**, a **rate** ([rates](#rates)), a **boolean**, a **decimal**, or a **choice**. A rate setting is written
 with its unit in `ear.conf` and is a whole number of hertz in the node's settings on the control
 port (`rate 44.1khz;` is `"rate": 44100`); an edit that changes it writes ear's form, and one that
 does not leaves its spelling as written. A boolean setting is the bare word `true` or `false` in
 `ear.conf`, or a variable holding one, read as `disabled` is (a quoted `"true"` is knobly's wrong-kind
-error), and JSON `true` or `false` on the control port; an edit writes it bare. A key the type does not declare is invalid settings. The
+error), and JSON `true` or `false` on the control port; an edit writes it bare. A decimal setting
+is a number word, read with knobly's number reader (`-3.5`, `-6`, `0.25`, `1e3`, or a variable
+holding one; `-.5` and `1.` are not number words, knobly's E4004), and any JSON number on the
+control port; an edit writes the shortest text in fixed notation that reads back as the same
+number (`-3.5`, `-6` for `-6.0`, `1000` for `1e3`, `0` for a negative zero), never rounding it. Its
+range, like a rate's, is the type's to judge, not the reader's. A choice setting is one of its
+row's names ([writing-a-node-type.md](writing-a-node-type.md#choice-rows)), read as text is (a bare
+word, a quoted string or a variable: `shape lowShelf;`, `shape "two pass";`) and a JSON string on
+the control port; an edit writes it bare when it is a word that starts with a letter (letters,
+digits, `_` and `-`), and quoted otherwise (`"two pass"`, `"2nd"`). Which names it takes is the
+type's to judge too: `shape 2;` reads as the text `"2"`, never a number, and the type refuses it. A member of an indexed family
+(`trimDb.1 0.5;`, [writing-a-node-type.md](writing-a-node-type.md#indexed-families)) is one
+directive name with a `.`, read and written as its family's kind; another spelling (`trimDb.01`) or
+a member above the family's maximum is no member, read as text for the type to refuse. A key the type does not declare is invalid settings. The
 keys, ranges and defaults of each type are in [node-types.md](node-types.md). A text setting, node
 name or port holding a control character other than newline, tab and carriage return cannot be
 written in `ear.conf` and is refused.
@@ -218,6 +231,35 @@ top level) has no text of its own: replacing it would change every node it makes
 `node.addText` is the same for a new node: its statement is appended where `node.add` appends one,
 and read with the whole file, so `node card attic { card USB3; playback $ch; }` takes `$ch` from
 the `@set` above.
+
+### Reaches
+
+A gesture ([architecture.md](architecture.md#gestures)) moves every pair (node, key) whose value is
+defined at the same place in `ear.conf`: its **reach**. For each version of the text the keeper
+makes, on its thread and only once per text, a **reach index** (`GraphFileModel::reachIndex`,
+`src/config/reach_index.hpp`): for each wanted node and each key its type declares (a family's
+members 1 to its maximum), the row's facts a begin is judged by (its change mark, ramp, unit, range,
+decimals, slot and whether the member is active), the value as the node's settings hold it (the
+row's default when the file does not give it), and where it is defined:
+
+- **The definition** is knobly's for the value (`expanded_value::definition()`), else the value as
+  written, the fallback edits at the source take. So `trimDb.1 $trim; trimDb.2 $trim;` share the
+  `0` of `@set $trim 0;`, and a snippet's user and a direct user of `$trim` share it too: through a
+  `@snippet`, the definition is the end of the chain. A key the file does not give reaches only its
+  node.
+- **The defining lines** are the defining statement's text from its first token to its end,
+  hashed: the comments a statement owns are left out (knobly's statement place includes them), so
+  a comment added above `@set $trim 0;` changes nothing. A key the file does not give takes its
+  node's `node` line instead.
+
+A text with errors has no index. The main loop keeps the running version's, and judges each later
+version against it for every open gesture (`relationOf`), in this order of severity: a reached node
+gone (removed, renamed, or of another type now) or a reached key no longer a live member, or made
+inactive (a member already inactive stays held); a reached value changed after expansion (a chain's base changed elsewhere); its
+defining lines or the pairs sharing its definition changed (its reach changed). Anything else,
+route edits always among it, is not related to the gesture.
+[control-port.md](control-port.md#gestures-and-the-graph-file) says what each relation does to the
+gesture by the kind of change.
 
 ## Hand edits win
 

@@ -76,15 +76,19 @@ private:
 	std::string text_;
 };
 
+// Why a change to either row restarts the node (docs/node-types.md#airplay).
+inline constexpr std::string_view startOnly = "shairport-sync reads it only at start";
 // Absent: the node's name (SpeakerName::defaultFor).
 inline constexpr auto nameRow =
 	setting::optional("name",
                       setting::text<SpeakerName::parse>(
 						  "a speaker name: 1 to 50 bytes, no control characters, no %, @ or dot", {.maxLength = 50}))
-		.defaultFrom(setting::DefaultFrom::nodeName);
+		.defaultFrom(setting::DefaultFrom::nodeName)
+		.restarts(startOnly);
 /// AirPlay 2 instead of AirPlay 1 (docs/node-types.md#airplay): the operator runs nqptp beside ear. Absent: false.
-inline constexpr auto airplay2Row =
-	setting::optional("airplay2", setting::boolean()).help("absent: AirPlay 1; AirPlay 2 needs nqptp beside ear");
+inline constexpr auto airplay2Row = setting::optional("airplay2", setting::boolean())
+                                        .help("absent: AirPlay 1; AirPlay 2 needs nqptp beside ear")
+                                        .restarts(startOnly);
 inline constexpr auto out = bank::output<"out">;
 inline constexpr auto fromAirplay = bank::insideInput<"from_airplay">;
 class Reports;

@@ -385,6 +385,74 @@ TEST_CASE("A boolean setting is read as knobly's boolean, bare or through a vari
 	}
 }
 
+TEST_CASE("A decimal setting is read with knobly's number reader, bare or through a variable, into a JSON number",
+          "[graph_file_model][decimal]") {
+	const Fixture f;
+	const auto model = f.load(formatLines + "@set $v -12.25;\n"
+	                                        "node lamp a { level -3.5; }\nnode lamp b { level -6; }\n"
+	                                        "node lamp c { level 0.25; }\nnode lamp d { level 1e3; }\n"
+	                                        "node lamp e { level $v; }\n");
+	CHECK(model.read().diagnostics.empty());
+	REQUIRE(model.read().wanted.has_value());
+	const auto& nodes = model.read().wanted->nodes;
+	CHECK(nodes[0].settings == json{{"level", -3.5}});
+	CHECK(nodes[1].settings == json{{"level", -6.0}});
+	CHECK(nodes[1].settings["level"].is_number());
+	CHECK(nodes[2].settings == json{{"level", 0.25}});
+	CHECK(nodes[3].settings == json{{"level", 1000.0}}); // out of the row's range: read, for the plan to refuse
+	CHECK(nodes[4].settings == json{{"level", -12.25}});
+	SECTION("-.5 and 1. are no number words: knobly's E4004 on the value, and nothing is read") {
+		const auto bad = f.load(formatLines + "node lamp a { level -.5; }\nnode lamp b { level 1.; }\n");
+		CHECK(placed(bad.read()) == std::vector<Placed>{{"E4004", 5, 21}, {"E4004", 6, 21}});
+		CHECK_FALSE(bad.read().wanted.has_value());
+	}
+	SECTION("a quoted number is knobly's wrong kind") {
+		const auto quoted = f.load(formatLines + "node lamp a { level \"-3.5\"; }\n");
+		CHECK(placed(quoted.read()) == std::vector<Placed>{{"E4002", 5, 21}});
+		CHECK_FALSE(quoted.read().wanted.has_value());
+	}
+}
+
+TEST_CASE("A choice setting is read as a word or a quoted string, and which names it takes is the plan's",
+          "[graph_file_model][choice]") {
+	const Fixture f;
+	const auto model = f.load(formatLines + "@set $s peak;\n"
+	                                        "node lamp a { shape peak; }\nnode lamp b { shape \"low shelf\"; }\n"
+	                                        "node lamp c { shape $s; }\nnode lamp d { shape notch; }\n"
+	                                        "node lamp e { shape 2; }\n");
+	CHECK(model.read().diagnostics.empty());
+	REQUIRE(model.read().wanted.has_value());
+	const auto& nodes = model.read().wanted->nodes;
+	CHECK(nodes[0].settings == json{{"shape", "peak"}});
+	CHECK(nodes[1].settings == json{{"shape", "low shelf"}});
+	CHECK(nodes[2].settings == json{{"shape", "peak"}});
+	CHECK(nodes[3].settings == json{{"shape", "notch"}}); // no name of the row: read, for the plan to refuse
+	CHECK(nodes[4].settings == json{{"shape", "2"}});     // a word, read as its text, never a number
+}
+
+TEST_CASE("A family member is read by its family's kind, its dotted key one directive name",
+          "[graph_file_model][indexed]") {
+	const Fixture f;
+	const auto model = f.load(formatLines + "@set $t -1.5;\n"
+	                                        "node lamp a { bulbs 3; trimDb.1 0.5; trimDb.12 $t; lit.2 true; }\n");
+	CHECK(model.read().diagnostics.empty());
+	REQUIRE(model.read().wanted.has_value());
+	const auto& settings = model.read().wanted->nodes[0].settings;
+	CHECK(settings == json{{"bulbs", 3}, {"trimDb.1", 0.5}, {"trimDb.12", -1.5}, {"lit.2", true}});
+	CHECK(settings["trimDb.1"].is_number_float());
+	SECTION("a spelling that is no member is read as text, for the plan to refuse as an unknown key") {
+		const auto other = f.load(formatLines + "node lamp a { trimDb.01 \"x\"; trimDb.17 \"y\"; }\n");
+		CHECK(other.read().diagnostics.empty());
+		REQUIRE(other.read().wanted.has_value());
+		CHECK(other.read().wanted->nodes[0].settings == json{{"trimDb.01", "x"}, {"trimDb.17", "y"}});
+	}
+	SECTION("a member's value of the wrong kind is knobly's wrong kind") {
+		const auto quoted = f.load(formatLines + "node lamp a { trimDb.1 \"0.5\"; }\n");
+		CHECK(placed(quoted.read()) == std::vector<Placed>{{"E4002", 5, 24}});
+		CHECK_FALSE(quoted.read().wanted.has_value());
+	}
+}
+
 TEST_CASE("A rate setting is read with its unit into a JSON number of Hz, and its range is the plan's",
           "[graph_file_model][graph-block]") {
 	const Fixture f;

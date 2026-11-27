@@ -26,6 +26,22 @@ public:
 	/// run()'s replies arrive in the order they happened on the main loop. `sink` outlives the
 	/// gateway's control executor.
 	virtual void watch(EventSink& sink) = 0;
+	/// Control thread (feature gestures, docs/control-port.md#gestures): one gesture request of `session`. A tick goes
+	/// through a mailbox holding the newest per gesture, one main-loop task however many arrive before it runs; a tick
+	/// for a gesture whose end or cancel was read is dropped here. A begin, an end and a cancel reach the main loop's
+	/// GestureRequests in order with everything posted before them. `done` runs on the control executor with the
+	/// answer; none for a notification.
+	virtual void gesture(GestureCommand command, SessionToken session,
+	                     std::move_only_function<void(GestureAnswer)> done) {
+		static_cast<void>(command);
+		static_cast<void>(session);
+		static_cast<void>(done);
+	}
+	/// Control thread: an end or a cancel for `gesture` was read (it may still wait in its session's FIFO); its later
+	/// ticks are dropped here.
+	virtual void ending(const std::string& gesture) { static_cast<void>(gesture); }
+	/// Control thread: a session closed and what it queued has run; its gestures are released.
+	virtual void sessionClosed(SessionToken session) { static_cast<void>(session); }
 
 protected:
 	~GraphGateway() = default;
@@ -46,6 +62,7 @@ class MainLoopGateway final : public GraphGateway,
 							  public NodeCompanionsListener,
 							  public NodeStatusListener,
 							  public NodeDiagnosticListener,
+							  public GestureListener,
 							  public SnapshotStamp {
 public:
 	/// What core's steady stamps are read against: the main loop's timers' clock.
@@ -59,6 +76,14 @@ public:
 	/// requests.submit(commands, a reply that posts done(results) to `control`).
 	void run(std::vector<Command> commands, std::move_only_function<void(std::vector<CommandResult>)> done) override;
 	void watch(EventSink& sink) override;
+	/// Main thread, before the first gesture request: who answers them on the main loop (the graph file keeper).
+	void answerGestures(GestureRequests& gestures);
+	void gesture(GestureCommand command, SessionToken session,
+	             std::move_only_function<void(GestureAnswer)> done) override;
+	void ending(const std::string& gesture) override;
+	void sessionClosed(SessionToken session) override;
+	/// GestureListener (main loop): posted as gesture.changed, and kept per node for each snapshot's `gestures`.
+	void gestureChanged(const GestureNote& note) override;
 	void graphFileChanged(const GraphFileChanged& change) override; // posted to sink->graphFileChanged
 	void graphFileWritten(const std::string& version) override;     // nothing: a status line only
 	/// node.added with the spec's health, `since` stamped, and zero counters: a node added counts from zero.
@@ -98,8 +123,8 @@ public:
 	void statusReset(const NodeName& node, std::span<const FieldValue> fields) override;
 	void eventRaised(const NodeName& node, const RaisedEvent& event) override;
 	void nodeDiagnostic(const NodeName& node, const NodeDiagnostic& diagnostic) override;
-	/// SnapshotStamp (main loop): each node's `since` as its last node.state carried it, for a node told of, and each
-	/// of its diagnostics' `t`.
+	/// SnapshotStamp (main loop): each node's `since` as its last node.state carried it, for a node told of, each
+	/// of its diagnostics' `t`, and the open gestures moving its keys.
 	void stamp(GraphView& view) const override;
 
 private:

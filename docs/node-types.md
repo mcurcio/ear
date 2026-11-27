@@ -1,6 +1,6 @@
 # Node types
 
-ear has six built-in node types. Each is its own library in `src/nodes/<type>/`, declared by one
+ear has seven built-in node types. Each is its own library in `src/nodes/<type>/`, declared by one
 settings table and one list of port banks ([writing-a-node-type.md](writing-a-node-type.md)).
 Settings are written in a node's braces in `ear.conf` ([graph-file.md](graph-file.md)) or sent as
 JSON on the control port; the refusal texts below are exactly what `invalid-settings` carries.
@@ -12,6 +12,7 @@ How every node starts, stops, fails and restarts is the framework's, the same fo
 | Type | Inputs | Outputs | Inside banks (no route can name them) |
 |---|---|---|---|
 | `white` | none | `noise.mono` | none |
+| `gain` | `in.1`..`in.N` | `out.1`..`out.N` | none |
 | `file` | `record.left`, `record.right` | none | `writer` (its sink) |
 | `card` | `play.1`..`play.N` (audio going to the card) | `capture.1`..`capture.M` | `to_card`, `from_card` |
 | `rtp` | none | `stream.1`..`stream.N` | `from_rtp` |
@@ -36,6 +37,45 @@ block is ready.
 ```conf
 node white noise;
 ```
+
+## `gain`
+
+A gain per channel: `out.N` is `in.N` scaled, every adjustment live but the channel count.
+
+```conf
+node gain amp { gainDb -6; }
+node gain amp2 { channels 4; gainDb -6; trimDb.3 -1.5; invert.2 true; }
+```
+
+| Key | Kind | Rule | Default | Change | Refused with |
+|---|---|---|---|---|---|
+| `channels` | whole number | 1 to 64 | 2 | in place, changes the ports | `channels: must be a whole number of channels, 1-64` |
+| `gainDb` | decimal | -90 to 24 dB; -90 is silence | 0 | live, ramped over 20 ms | `gainDb: must be a number of dB from -90 to 24` |
+| `mute` | boolean | | `false` | live, ramped over 10 ms | `mute: must be true or false` |
+| `trimDb.1`..`trimDb.64` | decimal, a family by `channels` | -24 to 24 dB, on top of `gainDb` | 0 | live, ramped over 20 ms | `trimDb.<n>: must be a number of dB from -24 to 24` |
+| `invert.1`..`invert.64` | boolean, a family by `channels` | the channel's polarity | `false` | live, ramped over 10 ms | `invert.<n>: must be true or false` |
+
+- **The factor.** Channel `c`'s is `10^(gainDb/20) × 10^(trimDb.c/20) × (1 − mute) × (1 − 2 × invert.c)`, each live
+  value as its ramp has it on that frame ([writing-a-node-type.md](writing-a-node-type.md#live-rows)): a ramped boolean
+  is a weight from 0 to 1, so `mute` fades to silence over 10 ms and `invert.c` swings the channel from 1 through 0 to
+  -1 over 10 ms, never a click. `gainDb` at -90 is exact zeros whatever the trim adds (its row's `minIsSilence`, which a
+  control shows as -inf); anywhere else it is the plain factor, so -6 dB is 0.5012.
+- **Live.** A change of `gainDb`, `mute`, a trim or an inversion, by `node.set`, `node.update`, a hand edit or an
+  edit through the editor, is a [retune](architecture.md#retunes): its new value reaches the code at once, ramped, with
+  no hook called, no restart and no `node` record; `node.updated` says `applied: "retune"` and names the keys in
+  `retuned`, and standard output writes one `param` record per key
+  ([output-records.md](output-records.md#param)).
+- **Channels in place.** A change of `channels` is a [reshape in place](architecture.md#reshapes): the channels kept
+  play on with no gap and the node never stops; the type's change version gives a code for the new ports, its clip
+  latch clear. A trim or inversion is taken for every member up to 64, whatever `channels` is; one above the count is
+  kept, inactive, and plays its value from the first sample of the channel a later reshape makes active (`trimDb.3 -6`
+  with `channels 2`, then `channels 4`: channel 3 is -6 dB from its first sample, with no ramp from 0 dB). A trim above
+  64 is refused `trimDb.65: no such member (channels is at most 64)`.
+- **Clipping.** The status flag `clipping` turns true the first block an output goes above full scale and stays true
+  (latched) until the action `reset-clip` clears it; the event `clipped` (`warn`, "channel {channel} clipped at {peakDb}
+  dB", the first channel over and its peak) is raised once per latch. It never limits: what is above full scale is
+  passed on.
+- It acquires nothing, so it runs as soon as its block is ready. It has no restart row.
 
 ## `file`
 
@@ -729,7 +769,7 @@ takes up to 3 s.
   `aiosendspin`, Music Assistant's pinned server.
 
 Not built: actions (forgetting one server's pairing waits on the protocol library, which has no
-way to forget one pairing: [control-plane.md](design/control-plane.md#11-the-cut-buildable-steps)),
+way to forget one pairing: [control-plane.md](design/control-plane.md#sendspins-first-action)),
 volume and mute, line sense, IPv6, `wss://`,
 several servers at once, choosing the advertised interface, RFC 6762 probing, more than stereo; a
 pairing hold that survives a restart (the 20 rounds are counted in the library's memory, so any
@@ -801,6 +841,9 @@ route kitchen:out.2 desk:play.2;
   disable or a removal stops shairport-sync (`SIGTERM`, `SIGKILL` 3 s later), reaps it, removes its
   FIFO, feed and config from ear's runtime folder (`--runtime-dir`), withdraws its listing and
   releases its port.
+- **A change of `name` or `airplay2` restarts the node**: shairport-sync reads both only at start,
+  which is the reason the type schema gives beside each (`restartReason`,
+  [control-port.md](control-port.md#type-schemas)).
 - **ear must be on the senders' network**, the same link, for its listing to reach them (and port
   7777, which has no login, is then on it too).
 - **Ports outside ear's claims:** shairport-sync's audio, control and timing ports, UDP, each picked

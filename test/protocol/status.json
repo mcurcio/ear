@@ -22,7 +22,9 @@
           "dryRun",
           "types",
           "status",
-          "actions"
+          "actions",
+          "live",
+          "gestures"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -63,7 +65,8 @@
               "pairingCode": "",
               "streamRate": 0
             },
-            "diagnostics": []
+            "diagnostics": [],
+            "gestures": []
           }
         ],
         "routes": [],
@@ -301,7 +304,9 @@
       "dryRun",
       "types",
       "status",
-      "actions"
+      "actions",
+      "live",
+      "gestures"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -342,7 +347,8 @@
           "pairingCode": "",
           "streamRate": 0
         },
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       }
     ],
     "routes": [],

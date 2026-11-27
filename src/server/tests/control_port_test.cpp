@@ -4,6 +4,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <deque>
@@ -24,6 +25,7 @@
 #include <unistd.h>
 
 #include "catch2/catch.hpp"
+#include "ear/control/gestures_wire.hpp"
 #include "ear/control/rpc.hpp"
 #include "ear/core/node_status.hpp"
 #include "ear/server/control_port.hpp"
@@ -110,6 +112,7 @@ public:
 				if (std::holds_alternative<ear::control::GetGraph>(command)) results.emplace_back(view);
 				else results.emplace_back(std::expected<void, ear::CommandError>{});
 			}
+			logged("answered");
 			control_.post(
 				[done = std::move(done), results = std::move(results)]() mutable { done(std::move(results)); });
 		});
@@ -117,6 +120,33 @@ public:
 
 	void watch(ear::control::EventSink& sink) override {
 		mainLoop_.post([this, &sink] { sink_ = &sink; });
+	}
+
+	/// Control thread: each gesture request, `ending` and `sessionClosed` is logged as it reaches the gateway; an end
+	/// is answered at once with its value, as the keeper's commit answers it.
+	void gesture(ear::control::GestureCommand command, ear::SessionToken,
+	             std::move_only_function<void(ear::control::GestureAnswer)> done) override {
+		if (const auto* move = std::get_if<ear::control::MoveGesture>(&command))
+			logged("tick " + std::to_string(move->seq));
+		else if (const auto* end = std::get_if<ear::control::EndGesture>(&command)) logged("end " + end->gesture);
+		else logged("other gesture request");
+		if (done)
+			control_.post([done = std::move(done)]() mutable {
+				done(ear::control::CommandResult{ear::control::GestureEnded{-6.0}});
+			});
+	}
+	void ending(const std::string& gesture) override { logged("ending " + gesture); }
+	void sessionClosed(ear::SessionToken) override { logged("session closed"); }
+
+	/// Until the log holds `entry`; the client's deadline only fails the test.
+	void waitForLog(const std::string& entry) {
+		std::unique_lock lock(logMutex_);
+		REQUIRE(logged_.wait_for(lock, std::chrono::seconds(10),
+		                         [&] { return std::ranges::find(log, entry) != log.end(); }));
+	}
+	std::vector<std::string> logSoFar() {
+		const std::scoped_lock lock(logMutex_);
+		return log;
 	}
 
 	/// A graph event, as the main loop would send it.
@@ -132,9 +162,20 @@ public:
 	std::promise<void> release;
 
 private:
+	void logged(std::string entry) {
+		{
+			const std::scoped_lock lock(logMutex_);
+			log.push_back(std::move(entry));
+		}
+		logged_.notify_all();
+	}
+
 	FakeMainLoop& mainLoop_;
 	ear::Executor& control_;
 	ear::control::EventSink* sink_ = nullptr; // main loop only
+	std::mutex logMutex_;
+	std::condition_variable logged_;
+	std::vector<std::string> log; // guarded by logMutex_
 };
 
 class FakeLevels final : public ear::LevelReader {
@@ -536,6 +577,39 @@ TEST_CASE("stop() closes every client with 1001 while a request is on the main l
 	CHECK(token.use_count() == 1); // destroyed unrun
 	CHECK_FALSE(ranAfterStop);
 	fixture.port->stop(); // idempotent
+}
+
+TEST_CASE("Ticks reach the gateway while a node.invoke is held, and an end queued behind it runs after it, then the "
+          "close",
+          "[control-port][gestures]") {
+	Fixture fixture;
+	const std::string id(32, 'a');
+	{
+		WsClient client(fixture.number());
+		fixture.gateway.hold = true;
+		client.send(json{{"jsonrpc", "2.0"},
+		                 {"id", 1},
+		                 {"method", "node.invoke"},
+		                 {"params", {{"name", "amp"}, {"action", "reset-clip"}}}}
+		                .dump());
+		fixture.gateway.held.get_future().wait(); // the invoke runs, its answer held
+		for (int seq = 1; seq <= 3; ++seq)
+			client.send(json{{"jsonrpc", "2.0"},
+			                 {"method", "gesture.change"},
+			                 {"params", {{"gesture", id}, {"seq", seq}, {"value", -6 - seq}}}}
+			                .dump());
+		fixture.gateway.waitForLog("tick 3"); // each tick skips the FIFO the invoke holds
+		client.send(
+			json{{"jsonrpc", "2.0"}, {"id", 2}, {"method", "gesture.end"}, {"params", {{"gesture", id}}}}.dump());
+		fixture.gateway.waitForLog("ending " + id); // marked ending as it is read, then queued behind the invoke
+		client.reset();
+	}
+	CHECK(fixture.gateway.logSoFar() == std::vector<std::string>{"tick 1", "tick 2", "tick 3", "ending " + id});
+	fixture.gateway.release.set_value();
+	// The closed session still runs what it queued, in order, its replies dropped; only then are its gestures released.
+	fixture.gateway.waitForLog("session closed");
+	CHECK(fixture.gateway.logSoFar() == std::vector<std::string>{"tick 1", "tick 2", "tick 3", "ending " + id,
+	                                                             "answered", "end " + id, "session closed"});
 }
 
 TEST_CASE("The level bell sends levels subscribers one complete snapshot", "[control-port]") {

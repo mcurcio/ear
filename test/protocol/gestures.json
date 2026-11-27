@@ -1,0 +1,356 @@
+{
+  "description": "Gestures (feature gestures, docs/control-port.md#gestures), as the owner sees them: a begin answered with its reach, range and decimals and no begin sent back to its owner; ticks (one stale) moving nothing on its wire, one sent with an id refused notification-only; a second begin on the held key parameter-held with silentMs; a begin on a key that is not live not-live with change, on a reach that cannot move together reach-mismatch, while the graph refused the newest text file-refused; a tick above the range tick-refused to the owner; an end committed in order (node.updated retune, gesture.changed end, the reply with the value rounded to one place); an end of an ended gesture unknown-gesture; a begin in a batch not-in-batch; a cancel with an id (aborted, then {}) and one sent as a notification (aborted alone); the graph's gestures folded",
+  "requests": [
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
+    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"gesture.begin\",\"params\":{\"name\":\"amp\",\"key\":\"gainDb\"}}",
+    "{\"jsonrpc\":\"2.0\",\"method\":\"gesture.change\",\"params\":{\"gesture\":\"00000000000000000000000000000001\",\"seq\":1,\"value\":-4.25}}",
+    "{\"jsonrpc\":\"2.0\",\"method\":\"gesture.change\",\"params\":{\"gesture\":\"00000000000000000000000000000001\",\"seq\":1,\"value\":-2}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"gesture.change\",\"params\":{\"gesture\":\"00000000000000000000000000000001\",\"seq\":2,\"value\":-2}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"gesture.begin\",\"params\":{\"name\":\"amp\",\"key\":\"gainDb\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"gesture.begin\",\"params\":{\"name\":\"amp\",\"key\":\"channels\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"gesture.begin\",\"params\":{\"name\":\"amp\",\"key\":\"trimDb.1\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"gesture.begin\",\"params\":{\"name\":\"porch\",\"key\":\"gainDb\"}}",
+    "{\"jsonrpc\":\"2.0\",\"method\":\"gesture.change\",\"params\":{\"gesture\":\"00000000000000000000000000000001\",\"seq\":3,\"value\":30}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"gesture.end\",\"params\":{\"gesture\":\"00000000000000000000000000000001\",\"value\":-3.46}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"gesture.end\",\"params\":{\"gesture\":\"00000000000000000000000000000001\"}}",
+    "[{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"gesture.begin\",\"params\":{\"name\":\"amp\",\"key\":\"gainDb\"}}]",
+    "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"gesture.begin\",\"params\":{\"name\":\"amp\",\"key\":\"gainDb\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"gesture.cancel\",\"params\":{\"gesture\":\"00000000000000000000000000000002\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"gesture.begin\",\"params\":{\"name\":\"amp\",\"key\":\"gainDb\"}}",
+    "{\"jsonrpc\":\"2.0\",\"method\":\"gesture.cancel\",\"params\":{\"gesture\":\"00000000000000000000000000000003\"}}"
+  ],
+  "messages": [
+    {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "blockSize": 256,
+        "counters": {
+          "cutCycles": 0,
+          "cycles": 0,
+          "lostMs": 0,
+          "stalls": 0
+        },
+        "features": [
+          "lifecycle",
+          "counters",
+          "companions",
+          "node-text",
+          "reshape",
+          "node.set",
+          "dryRun",
+          "types",
+          "status",
+          "actions",
+          "live",
+          "gestures"
+        ],
+        "graphFrequency": 48000,
+        "nodes": [
+          {
+            "blockLost": false,
+            "companions": [],
+            "counters": {
+              "driverChanges": 0,
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0
+            },
+            "diagnostics": [],
+            "gestures": [],
+            "inputs": [
+              "in.1"
+            ],
+            "name": "amp",
+            "outputs": [
+              "out.1"
+            ],
+            "phase": "running",
+            "settings": {
+              "gainDb": -6
+            },
+            "state": "running",
+            "status": {},
+            "type": "gain",
+            "wanted": "running"
+          }
+        ],
+        "protocol": 1,
+        "realtime": false,
+        "routes": [],
+        "scheduling": "",
+        "typeSchemaHash": "fnv1a64:0123456789abcdef",
+        "types": []
+      }
+    },
+    {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": {
+        "decimals": 1,
+        "gesture": "00000000000000000000000000000001",
+        "max": 24.0,
+        "min": -90.0,
+        "reach": [
+          {
+            "key": "gainDb",
+            "name": "amp"
+          }
+        ],
+        "value": -6.0
+      }
+    },
+    {
+      "error": {
+        "code": -32600,
+        "data": {
+          "code": "notification-only"
+        },
+        "message": "gesture.change is a notification"
+      },
+      "id": 3,
+      "jsonrpc": "2.0"
+    },
+    {
+      "error": {
+        "code": -32000,
+        "data": {
+          "code": "parameter-held",
+          "gesture": "00000000000000000000000000000001",
+          "key": "gainDb",
+          "silentMs": 0
+        },
+        "message": "parameter-held amp gainDb: a gesture holds it"
+      },
+      "id": 4,
+      "jsonrpc": "2.0"
+    },
+    {
+      "error": {
+        "code": -32000,
+        "data": {
+          "change": "inPlace",
+          "code": "not-live",
+          "key": "channels"
+        },
+        "message": "not-live amp: channels is not a live ramped decimal"
+      },
+      "id": 5,
+      "jsonrpc": "2.0"
+    },
+    {
+      "error": {
+        "code": -32000,
+        "data": {
+          "code": "reach-mismatch",
+          "column": 11,
+          "line": 5,
+          "with": [
+            {
+              "key": "channels",
+              "name": "amp",
+              "why": "kind"
+            }
+          ]
+        },
+        "message": "reach-mismatch amp: trimDb.1 shares its definition with rows a gesture cannot move together"
+      },
+      "id": 6,
+      "jsonrpc": "2.0"
+    },
+    {
+      "error": {
+        "code": -32000,
+        "data": {
+          "code": "file-refused"
+        },
+        "message": "file-refused: the graph refused the newest text of ear.conf"
+      },
+      "id": 7,
+      "jsonrpc": "2.0"
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "gesture.changed",
+      "params": {
+        "code": "invalid-settings",
+        "detail": "must be a number of dB from -90 to 24",
+        "gesture": "00000000000000000000000000000001",
+        "key": "gainDb",
+        "phase": "tick-refused"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.updated",
+      "params": {
+        "applied": "retune",
+        "name": "amp",
+        "retuned": [
+          "gainDb"
+        ],
+        "settings": {
+          "gainDb": -3.5
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "gesture.changed",
+      "params": {
+        "gesture": "00000000000000000000000000000001",
+        "phase": "end",
+        "value": -3.5
+      }
+    },
+    {
+      "id": 8,
+      "jsonrpc": "2.0",
+      "result": {
+        "value": -3.5
+      }
+    },
+    {
+      "error": {
+        "code": -32000,
+        "data": {
+          "code": "unknown-gesture"
+        },
+        "message": "unknown-gesture 00000000000000000000000000000001"
+      },
+      "id": 9,
+      "jsonrpc": "2.0"
+    },
+    [
+      {
+        "error": {
+          "code": -32000,
+          "data": {
+            "code": "not-in-batch"
+          },
+          "message": "not-in-batch gesture.begin"
+        },
+        "id": 10,
+        "jsonrpc": "2.0"
+      }
+    ],
+    {
+      "id": 11,
+      "jsonrpc": "2.0",
+      "result": {
+        "decimals": 1,
+        "gesture": "00000000000000000000000000000002",
+        "max": 24.0,
+        "min": -90.0,
+        "reach": [
+          {
+            "key": "gainDb",
+            "name": "amp"
+          }
+        ],
+        "value": -6.0
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "gesture.changed",
+      "params": {
+        "gesture": "00000000000000000000000000000002",
+        "phase": "aborted",
+        "reason": "cancelled",
+        "value": -6.0
+      }
+    },
+    {
+      "id": 12,
+      "jsonrpc": "2.0",
+      "result": {}
+    },
+    {
+      "id": 13,
+      "jsonrpc": "2.0",
+      "result": {
+        "decimals": 1,
+        "gesture": "00000000000000000000000000000003",
+        "max": 24.0,
+        "min": -90.0,
+        "reach": [
+          {
+            "key": "gainDb",
+            "name": "amp"
+          }
+        ],
+        "value": -6.0
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "gesture.changed",
+      "params": {
+        "gesture": "00000000000000000000000000000003",
+        "phase": "aborted",
+        "reason": "cancelled",
+        "value": -6.0
+      }
+    }
+  ],
+  "graph": {
+    "blockSize": 256,
+    "counters": {
+      "cutCycles": 0,
+      "cycles": 0,
+      "lostMs": 0,
+      "stalls": 0
+    },
+    "features": [
+      "lifecycle",
+      "counters",
+      "companions",
+      "node-text",
+      "reshape",
+      "node.set",
+      "dryRun",
+      "types",
+      "status",
+      "actions",
+      "live",
+      "gestures"
+    ],
+    "graphFrequency": 48000,
+    "nodes": [
+      {
+        "blockLost": false,
+        "companions": [],
+        "counters": {
+          "driverChanges": 0,
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0
+        },
+        "diagnostics": [],
+        "gestures": [],
+        "inputs": [
+          "in.1"
+        ],
+        "name": "amp",
+        "outputs": [
+          "out.1"
+        ],
+        "phase": "running",
+        "settings": {
+          "gainDb": -3.5
+        },
+        "state": "running",
+        "status": {},
+        "type": "gain",
+        "wanted": "running"
+      }
+    ],
+    "protocol": 1,
+    "realtime": false,
+    "routes": [],
+    "scheduling": "",
+    "typeSchemaHash": "fnv1a64:0123456789abcdef",
+    "types": []
+  }
+}

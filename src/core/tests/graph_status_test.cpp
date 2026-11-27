@@ -29,7 +29,7 @@ struct NullConsumer final : SinkConsumer {
 	void finish() override {}
 };
 
-constexpr auto seedRow = setting::optional("seed", setting::number(0, 100));
+constexpr auto seedRow = setting::optional("seed", setting::number(0, 100)).restarts("a test type restarts on it");
 constexpr auto noise = bank::output<"noise">;
 constexpr auto record = bank::input<"record">;
 constexpr auto tap = bank::insideOutput<"tap">;

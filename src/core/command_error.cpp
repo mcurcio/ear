@@ -26,6 +26,8 @@ std::string_view errorCode(const CommandError& error) noexcept {
 			else if constexpr (std::is_same_v<E, WrongDirection>) return "wrong-direction";
 			else if constexpr (std::is_same_v<E, InvalidName>) return "invalid-name";
 			else if constexpr (std::is_same_v<E, UnknownRoute>) return "unknown-route";
+			else if constexpr (std::is_same_v<E, ParameterHeld>) return "parameter-held";
+			else if constexpr (std::is_same_v<E, UnknownGesture>) return "unknown-gesture";
 			else {
 				static_assert(std::is_same_v<E, Stopping>);
 				return "stopping";
@@ -55,6 +57,9 @@ std::string describe(const CommandError& error) {
 			else if constexpr (std::is_same_v<E, UnknownPort>) return std::format("{} {}", code, portText(e.port));
 			else if constexpr (std::is_same_v<E, WrongDirection> || std::is_same_v<E, UnknownRoute>)
 				return std::format("{} {}", code, routeText(e.route));
+			else if constexpr (std::is_same_v<E, ParameterHeld>)
+				return std::format("{} {} {}: a gesture holds it", code, e.node, e.key);
+			else if constexpr (std::is_same_v<E, UnknownGesture>) return std::format("{} {}", code, e.gesture);
 			else {
 				static_assert(std::is_same_v<E, Stopping>);
 				return std::string(code);

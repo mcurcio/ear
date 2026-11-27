@@ -25,7 +25,7 @@ using namespace ear;
 
 constexpr auto gainRow = setting::optional("gain", setting::number(0, 100)).inPlace();
 constexpr auto levelRow = setting::optional("level", setting::number(0, 100)).inPlace();
-constexpr auto sizeRow = setting::defaulted("size", setting::number(1, 4), 1); // restart-only
+constexpr auto sizeRow = setting::defaulted("size", setting::number(1, 4), 1).restarts("a test type restarts on it");
 constexpr auto in = bank::input<"in">;
 constexpr auto out = bank::output<"out">;
 constexpr auto side = bank::output<"side">;

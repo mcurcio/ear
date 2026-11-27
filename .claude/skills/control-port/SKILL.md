@@ -76,7 +76,7 @@ use`).
   into a loop's state (`{}` when its handler did it, `action-failed` with its text, `restarted`, `action-timeout` after
   10 s). It rides the keeper's order like a verb, but the keeper never waits for a handler: the reply (a batch's too)
   is held on the main loop until the action answered, so a slow handler holds only that client's later requests. Each
-  answer writes an `action` record. No built-in type has an action yet; `types.get` lists each type's `actions`.
+  answer writes an `action` record. `gain`'s `reset-clip` trigger is the one built-in action; `types.get` lists each type's `actions`.
 - **`node.disable`, `node.enable`** are edits of the node's own `disabled` line (`node white
   noise { disabled true; }`), written behind like any edit: `node.updated` with `applied`
   (`disable`, `enable`; `stored` for a change to a disabled node) and `disabled: true` when
@@ -206,15 +206,19 @@ will not be real time". So:
   replies, file changes and events back from the main loop to the control thread in one ordered
   stream. So a change's notification always comes before the statuses it causes, and a
   subscriber gets no event from before its snapshot.
-- One message in flight per connection: the next is read only after every reply to this one is
-  queued. A batch runs in order, each request as its own step through the keeper (an edit is
+- Read ahead, run in order: each message is read as it arrives into the session's FIFO
+  (`ControlSession`, 16 with the running one; at 16 the socket is not read until one is answered),
+  and its messages run one at a time, each answered before the next runs; a closed session still
+  runs what it queued, replies dropped. A batch runs in order, each request as its own step through the keeper (an edit is
   judged and committed before the next is taken); consecutive reads are answered in one
   main-loop turn, and the reply comes in the turn of the batch's last step. A batch is not
   atomic: a refused edit does not undo the ones before it. Put subscribes last so their
   snapshots include the batch's edits.
 - At most 256 responses and notifications wait per client. One more closes it with WebSocket
   code 1008; the client reconnects and subscribes again (the editor does, after 1 s doubling to
-  30 s).
+  30 s). The editor's `rpc.ts` sends a gesture's ticks with `notify()`, no id; its `gesture.ts`
+  keeps each held gesture's id across the reconnect and ends it from the new socket
+  (`docs/editor.md#gestures-in-the-editor`).
 - Levels never queue. The realtime thread rings the level bell (an eventfd) once per window;
   the control thread reads `latestLevels()`, encodes once and gives each levels subscriber the
   newest snapshot, replacing one not yet written (each is complete, so nothing is lost).

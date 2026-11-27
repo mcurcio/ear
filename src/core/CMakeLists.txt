@@ -24,6 +24,7 @@ add_library(ear_core STATIC
 	pass_through.cpp
 	realtime_channels.cpp
 	program.cpp
+	decimal_text.cpp
 	rate_text.cpp
 	ports.cpp
 	readiness.cpp
@@ -32,6 +33,7 @@ add_library(ear_core STATIC
 	settings_table.cpp
 	sound_card.cpp
 	recording.cpp
+	gestures.cpp
 	source_ring.cpp
 	status_book.cpp
 	status_spec.cpp
@@ -71,6 +73,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/node_type.hpp
 	include/ear/core/pass_through.hpp
 	include/ear/core/program.hpp
+	include/ear/core/decimal_text.hpp
 	include/ear/core/rate_text.hpp
 	include/ear/core/ready_events.hpp
 	include/ear/core/realtime_channels.hpp
@@ -122,10 +125,12 @@ if(BUILD_TESTS)
 		tests/cycle_facts_test.cpp
 		tests/desired_graph_test.cpp
 		tests/frame_ring_test.cpp
+		tests/gestures_test.cpp
 		tests/graph_spec_test.cpp
 		tests/graph_status_test.cpp
 		tests/latency_test.cpp
 		tests/levels_test.cpp
+		tests/live_test.cpp
 		tests/loop_test.cpp
 		tests/main_loop_activity_test.cpp
 		tests/module_run_test.cpp
@@ -135,11 +140,13 @@ if(BUILD_TESTS)
 		tests/note_gate_test.cpp
 		tests/ports_test.cpp
 		tests/program_test.cpp
+		tests/decimal_text_test.cpp
 		tests/rate_text_test.cpp
 		tests/readiness_test.cpp
 		tests/realtime_test.cpp
 		tests/report_test.cpp
 		tests/reconfigure_test.cpp
+		tests/retune_test.cpp
 		tests/reshape_test.cpp
 		tests/reconciler_test.cpp
 		tests/rtp_receiver_test.cpp
@@ -176,7 +183,16 @@ if(BUILD_TESTS)
 	ear_settings_table_compile_fail(number-without-range "too few arguments")
 	ear_settings_table_compile_fail(number-with-mustBe "too many arguments")
 	ear_settings_table_compile_fail(default-outside-range "byDefault is outside its range")
-	ear_settings_table_compile_fail(default-on-text "could not convert")
+	ear_settings_table_compile_fail(default-text-row "only a whole number, decimal, boolean or choice row takes a default")
+	ear_settings_table_compile_fail(default-text-row-bool "only a whole number, decimal, boolean or choice row takes a default")
+	ear_settings_table_compile_fail(default-text-row-whole "only a whole number, decimal, boolean or choice row takes a default")
+	ear_settings_table_compile_fail(indexed-text-family "only a whole number, decimal, boolean or choice row takes a default")
+	ear_settings_table_compile_fail(default-rate-row "only a whole number, decimal, boolean or choice row takes a default")
+	ear_settings_table_compile_fail(decimal-low-above-high "a decimal's low is above its high")
+	ear_settings_table_compile_fail(decimal-bound-not-finite "a decimal's bounds are finite numbers")
+	ear_settings_table_compile_fail(decimal-default-outside "a decimal's byDefault is outside its range")
+	ear_settings_table_compile_fail(log-taper-nonpositive "a log taper's low is above 0")
+	ear_settings_table_compile_fail(db-taper-range "a dB taper reaches from -60 dB or lower")
 	ear_settings_table_compile_fail(default-from-on-required "only an optional row takes defaultFrom")
 	ear_settings_table_compile_fail(default-from-on-defaulted "only an optional row takes defaultFrom")
 	ear_settings_table_compile_fail(text-hint-empty-value "a text setting's values are never empty")
@@ -206,6 +222,22 @@ if(BUILD_TESTS)
 	ear_settings_table_compile_fail(row-read-only "discards qualifiers")
 	ear_settings_table_compile_fail(only-without-on-required "a required row cannot be onlyWithout")
 	ear_settings_table_compile_fail(only-without-a-required "cannot name a required row")
+	ear_settings_table_compile_fail(two-marks "a row has one change mark")
+	ear_settings_table_compile_fail(restarts-empty-reason "a restart states why")
+	ear_settings_table_compile_fail(indexed-count-below "a family's count row is a row above it in its table")
+	ear_settings_table_compile_fail(indexed-count-not-whole "a family's count row is a whole number")
+	ear_settings_table_compile_fail(indexed-count-high-zero "a family's count row reaches 1 or more")
+	ear_settings_table_compile_fail(indexed-count-optional "a family's count row always reads a value")
+	ear_settings_table_compile_fail(indexed-collides-with-row "a row's key is a family member's spelling")
+	ear_settings_table_compile_fail(read-family-without-member "no matching function for call to .*get<")
+	ear_settings_table_compile_fail(read-member-of-plain-row "no matching function for call to .*get<")
+	ear_settings_table_compile_fail(choice-empty "a choice names one value or more")
+	ear_settings_table_compile_fail(choice-repeated-name "a choice names a value twice")
+	ear_settings_table_compile_fail(choice-repeated-value "a choice names one enumerator twice")
+	ear_settings_table_compile_fail(choice-unwritable-name "a choice's name is a word or a string ear.conf can hold")
+	ear_settings_table_compile_fail(choice-too-many "a choice holds at most 32 names")
+	ear_settings_table_compile_fail(choice-default-unnamed "a choice's byDefault is an enumerator it names")
+	ear_settings_table_compile_fail(choice-not-enum "no matching function for call to 'choice<int>")
 
 	# What must not compile about the latency model (docs/engine.md#latency-per-bank-pair): a delay is in series, never
 	# a path of its own; tests/compile_fail/latency_bad.cpp says what each case is.
@@ -288,6 +320,30 @@ if(BUILD_TESTS)
 	ear_realtime_compile_fail(report-constructed "Report<.*>::Report\\(.*is private within this context")
 	ear_realtime_compile_fail(pass-through-with-rt "answers with a code of its own, never a pass-through")
 
+	# Live rows (docs/writing-a-node-type.md#live-rows): their marks, their reads and io.param;
+	# tests/compile_fail/live_bad.cpp says what each case is.
+	set(bad_live "${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail/live_bad.cpp")
+	ear_compile_check(ear_live_compile_fail_control "${bad_live}")
+	function(ear_live_compile_fail case regex)
+		ear_compile_fail(ear_live_compile_fail_${case} "${bad_live}" ${case} "${regex}")
+	endfunction()
+	ear_live_compile_fail(live-text-row "a live row is a decimal, whole number, boolean or choice")
+	ear_live_compile_fail(live-rate-row "a live row is a decimal, whole number, boolean or choice")
+	ear_live_compile_fail(live-optional-row "a live row always reads a value")
+	ear_live_compile_fail(ramp-whole-number "a ramp needs a decimal or a boolean row")
+	ear_live_compile_fail(ramp-choice "a ramp needs a decimal or a boolean row")
+	ear_live_compile_fail(ramp-zero "a ramp takes 1 to 1000 ms")
+	ear_live_compile_fail(live-shapes-ports "a live row never shapes the ports")
+	ear_live_compile_fail(live-and-in-place "a row has one change mark")
+	ear_live_compile_fail(live-members-over-256 "a type has at most 256 live members")
+	ear_live_compile_fail(get-live-row "a live row is read through io.param, or liveValue")
+	ear_live_compile_fail(count-live-row "a family whose count row is live is counted by liveCount")
+	ear_live_compile_fail(live-value-not-live "liveValue reads a live row")
+	ear_live_compile_fail(param-not-live "io.param reads a live row")
+	ear_live_compile_fail(param-row-not-in-spec "io.param takes only its spec's rows")
+	ear_live_compile_fail(param-family-without-member "a family is read by member")
+	ear_live_compile_fail(param-member-of-plain-row "only a family is read by member")
+
 	# A type's actions (docs/writing-a-node-type.md#actions): tests/compile_fail/action_bad.cpp says what each case is.
 	set(bad_action "${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail/action_bad.cpp")
 	ear_compile_check(ear_action_compile_fail_control "${bad_action}")
@@ -297,6 +353,8 @@ if(BUILD_TESTS)
 	ear_action_compile_fail(action-named-lifecycle "an action is never named start, stop, restart, disable or enable")
 	ear_action_compile_fail(action-name-not-kebab "an action's name is kebab-case")
 	ear_action_compile_fail(call-loop-not-in-spec "a call names one of its spec's loops")
+	ear_action_compile_fail(action-arg-marked "a call's arguments never change, so they carry no change mark")
+	ear_action_compile_fail(action-arg-indexed "a call's arguments are a fixed set of keys: no indexed family")
 	ear_action_compile_fail(call-handler-signature "a call's handler is std::expected<void, std::string> act")
 	ear_action_compile_fail(triggered-not-a-trigger "io.triggered takes a trigger")
 	ear_action_compile_fail(pass-through-with-trigger "answers with a code of its own, never a pass-through")
@@ -406,6 +464,7 @@ if(BUILD_TESTS)
 	ear_type_spec_compile_fail(post-loop-the-spec-lacks "a post names one of its spec's loops")
 	ear_type_spec_compile_fail(post-other-loop-state "a post to a loop takes a function of that loop's state")
 	ear_type_spec_compile_fail(harness-loop-the-spec-lacks "the harness takes only its spec's loops")
+	ear_type_spec_compile_fail(row-unmarked "every settings row of a spec has one change mark")
 	# Stores (docs/writing-a-node-type.md#stores): a store's rule broken (no maxBytes, more than 1 MiB, a mode beyond
 	# 0777), a suffix named wrongly or twice, a store the spec lacks (in a context or the harness), and the spec's members
 	# out of order (stores come before loops).

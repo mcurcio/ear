@@ -26,7 +26,9 @@
           "dryRun",
           "types",
           "status",
-          "actions"
+          "actions",
+          "live",
+          "gestures"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -59,7 +61,8 @@
             },
             "companions": [],
             "status": {},
-            "diagnostics": []
+            "diagnostics": [],
+            "gestures": []
           },
           {
             "name": "rec",
@@ -84,7 +87,8 @@
             },
             "companions": [],
             "status": {},
-            "diagnostics": []
+            "diagnostics": [],
+            "gestures": []
           }
         ],
         "routes": [
@@ -132,7 +136,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       }
     },
     {
@@ -240,7 +245,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       }
     },
     {
@@ -334,7 +340,8 @@
         "settings": {
           "path": "y.wav"
         },
-        "applied": "restart"
+        "applied": "restart",
+        "retuned": []
       }
     },
     {
@@ -494,7 +501,9 @@
       "dryRun",
       "types",
       "status",
-      "actions"
+      "actions",
+      "live",
+      "gestures"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -528,7 +537,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       },
       {
         "name": "rec",
@@ -554,7 +564,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       },
       {
         "name": "tape",
@@ -584,7 +595,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       }
     ],
     "routes": [

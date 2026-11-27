@@ -83,7 +83,13 @@ template <spec_detail::Name N, const auto& Args, auto LoopH>
 consteval Call<N, Args, LoopH> call(std::string_view help) {
 	static_assert(std::derived_from<std::remove_cvref_t<decltype(Args)>, AnySettingsTable>,
 	              "a call's arguments are a SettingsTable");
+	static_assert(
+		!std::remove_cvref_t<decltype(Args)>::anyRowMarked,
+		"a call's arguments never change, so they carry no change mark (docs/writing-a-node-type.md#change-marks)");
 	static_assert(isLoopHandle<decltype(LoopH)>, "a call names a loop handle");
+	static_assert(!std::remove_cvref_t<decltype(Args)>::anyRowIndexed,
+	              "a call's arguments are a fixed set of keys: no indexed family "
+	              "(docs/writing-a-node-type.md#indexed-families)");
 	static_assert(decltype(LoopH)::stateful, "a call goes to a loop declared with a state");
 	return Call<N, Args, LoopH>(help);
 }

@@ -20,7 +20,9 @@
           "dryRun",
           "types",
           "status",
-          "actions"
+          "actions",
+          "live",
+          "gestures"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -57,7 +59,8 @@
             },
             "companions": [],
             "status": {},
-            "diagnostics": []
+            "diagnostics": [],
+            "gestures": []
           },
           {
             "name": "rec",
@@ -82,7 +85,8 @@
             },
             "companions": [],
             "status": {},
-            "diagnostics": []
+            "diagnostics": [],
+            "gestures": []
           }
         ],
         "routes": [],
@@ -164,7 +168,8 @@
           "play.3",
           "play.4"
         ],
-        "outputs": []
+        "outputs": [],
+        "retuned": []
       }
     },
     {
@@ -205,7 +210,9 @@
       "dryRun",
       "types",
       "status",
-      "actions"
+      "actions",
+      "live",
+      "gestures"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -244,7 +251,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       },
       {
         "name": "rec",
@@ -269,7 +277,8 @@
         },
         "companions": [],
         "status": {},
-        "diagnostics": []
+        "diagnostics": [],
+        "gestures": []
       }
     ],
     "routes": [],

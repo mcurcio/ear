@@ -72,6 +72,7 @@ export type Applied =
   | "unchanged"
   | "reconfigure"
   | "reshape"
+  | "retune"
   | (string & {});
 
 export interface FailureReason {
@@ -136,9 +137,17 @@ export interface NodeHealth {
   next?: string[];
 }
 
+/** One key of one node: an entry of node.set's alsoChanged. */
+export interface NodeKey {
+  name: string;
+  key: string;
+}
+
 /**
  * node.set's answer: what the plan applied, and when the node's ports change, whether a reshape is in place, the ports
- * added and removed, and the routes it removed (routesDropped) or, for a dry run, would remove (routes).
+ * added and removed, and the routes it removed (routesDropped) or, for a dry run, would remove (routes). Feature live:
+ * always the live keys it moved (retuned, [] for none) and the other nodes' keys the same edit changed through a shared
+ * definition (alsoChanged, [] for none).
  */
 export interface SetResult {
   applied: Applied;
@@ -146,6 +155,8 @@ export interface SetResult {
   ports?: PortsMoved;
   routesDropped?: RouteEnds[];
   routes?: RouteEnds[];
+  retuned?: string[];
+  alsoChanged?: NodeKey[];
 }
 
 /** A change of a node's ports (feature reshape): whole port names. */
@@ -273,7 +284,25 @@ export interface GraphNode extends NodeHealth {
   status?: { [field: string]: StatusValue };
   /** Feature status: every diagnostic the node was told, one per code and subject ([] in node.added). */
   diagnostics?: NodeDiagnostic[];
+  /** Feature gestures: the open gestures moving its keys, with the hand's value ([] in node.added). */
+  gestures?: NodeGesture[];
 }
+
+/** One open gesture moving a node's key (feature gestures, docs/control-port.md#gestures). */
+export interface NodeGesture {
+  gesture: string;
+  key: string;
+  value: number;
+}
+
+/** One node's key, a gesture's reach's pair. */
+export interface NodeKeyRef {
+  name: string;
+  key: string;
+}
+
+/** gesture.changed's phase (open). */
+export type GesturePhase = "begin" | "change" | "end" | "aborted" | "tick-refused" | (string & {});
 
 export interface GraphRoute extends RouteEnds {
   status: RouteStatusName;
@@ -302,10 +331,20 @@ export interface Graph {
 
 // ----- The node types' schemas (feature types, docs/control-port.md#type-schemas) -----
 
-/** A setting's value kind, as the control port takes it: a rate is a whole number of Hz there. */
-export type SettingValueKind = "text" | "wholeNumber" | "flag" | (string & {});
+/**
+ * A setting's value kind, as the control port takes it: a rate is a whole number of Hz there; a decimal any JSON number;
+ * a choice one of its row's `values`, a string.
+ */
+export type SettingValueKind = "text" | "wholeNumber" | "decimal" | "flag" | "choice" | (string & {});
+/** How a decimal's control maps its travel to the value: evenly, on the logarithm, or as a level in dB. */
+export type DecimalTaper = "linear" | "log" | "db" | (string & {});
 /** What a change to the row asks of the node: from its row's marks. */
-export type SettingChange = "inPlace" | "restart" | (string & {});
+export type SettingChange = "live" | "inPlace" | "restart" | (string & {});
+/** A live row's transition (feature live): a ramp over ms, or a step to the next block. */
+export interface LiveTransition {
+  transition: "ramp" | "step" | (string & {});
+  ms?: number;
+}
 /** Where an optional row's value comes from when absent. */
 export type DefaultFrom = "graphFrequency" | "nodeName" | (string & {});
 
@@ -315,15 +354,27 @@ export interface SettingSchema {
   kind: SettingValueKind;
   required: boolean;
   change: SettingChange;
+  /** restart: why a change to it restarts the node, one line (docs/control-port.md#type-schemas). */
+  restartReason?: string;
+  /** live (feature live): how the code takes a new value. */
+  live?: LiveTransition;
   /** A change to it may change the node's ports. */
   shapes?: true;
+  /** What an absent key reads, of the row's kind: a whole number, a decimal, a flag, or a choice's name. */
   default?: JsonValue;
   defaultFrom?: DefaultFrom;
-  /** wholeNumber: its range, and its unit when it has one. */
+  /** wholeNumber and decimal: its range, and its unit when it has one. */
   min?: number;
   max?: number;
   unit?: string;
-  /** text: what it must be, in the row's own words, and the hints for its control (ear stays the judge). */
+  /** decimal: the places a control shows, its taper, and whether `min` is silence (shown as -inf). */
+  decimals?: number;
+  taper?: DecimalTaper;
+  minIsSilence?: true;
+  /**
+   * text: what it must be, in the row's own words, and the hints for its control (ear stays the judge). `values` is a
+   * text row's hints, or a choice's closed set of names in declaration order: the only values it takes.
+   */
   mustBe?: string;
   values?: string[];
   pattern?: string;
@@ -331,6 +382,11 @@ export interface SettingSchema {
   /** Refused when the key named is given too. */
   onlyWithout?: string;
   help?: string;
+  /**
+   * An indexed family (docs/control-port.md#type-schemas): its members' keys are `<key>.<n>`, n in decimal from `from`
+   * (1) to `max`, no sign and no leading zero; members above the count row's (`by`) value are kept, inactive.
+   */
+  indexed?: { by: string; from: number; max: number };
 }
 
 /** One status field of a type (feature status). */
@@ -359,8 +415,8 @@ export interface EventSchema {
   args: Array<{ name: string; kind: string; min?: number; max?: number; decimals?: number; values?: string[]; maxBytes?: number }>;
 }
 
-/** An action's argument: a setting row without what only a setting has (change, shapes). */
-export type ActionArgSchema = Omit<SettingSchema, "change" | "shapes">;
+/** An action's argument: a setting row without what only a setting has (change, restartReason, shapes). */
+export type ActionArgSchema = Omit<SettingSchema, "change" | "restartReason" | "live" | "shapes" | "indexed">;
 
 /**
  * One type action (feature actions, docs/control-port.md#actions): a trigger (target code, no args) or a call (target
@@ -512,6 +568,16 @@ export interface Methods {
   "node.enable": { params: { name: string }; result: { applied: Applied } };
   /** Feature actions: one of the node's type actions, args an object; {} once done (docs/control-port.md#actions). */
   "node.invoke": { params: { name: string; action: string; args?: JsonObject }; result: Record<string, never> };
+  /** Feature gestures (docs/control-port.md#gestures): a drag of a live ramped decimal, answered ahead of queued requests. */
+  "gesture.begin": {
+    params: { name: string; key: string };
+    result: { gesture: string; value: number; reach: NodeKeyRef[]; min: number; max: number; decimals: number };
+  };
+  /** A notification only: sent with an id it is refused notification-only. */
+  "gesture.change": { params: { gesture: string; seq: number; value: number }; result: never };
+  /** No value: the last accepted. The value committed. */
+  "gesture.end": { params: { gesture: string; value?: number }; result: { value: number } };
+  "gesture.cancel": { params: { gesture: string }; result: Record<string, never> };
 }
 export type MethodName = keyof Methods;
 
@@ -532,6 +598,8 @@ export interface Notifications {
     settings: JsonObject;
     applied?: Applied;
     disabled?: true;
+    /** Feature live: the live keys the change moved, family members by their full key ([] for none). */
+    retuned?: string[];
     inPlace?: boolean;
     ports?: PortsMoved;
     inputs?: string[];
@@ -578,6 +646,21 @@ export interface Notifications {
   };
   /** Feature status: one diagnostic, replacing the node's entry of the same code and subject, or joining its list. */
   "node.diagnostic": { name: string } & NodeDiagnostic;
+  /**
+   * Feature gestures: one gesture's phase. begin carries the reach; end's reason (session-closed, stale) when ear ended
+   * it for its owner; aborted's reason, and value but after hand-edit, file-saved and edited; tick-refused only to the
+   * owner, with the refusal (docs/control-port.md#gesturechanged).
+   */
+  "gesture.changed": {
+    gesture: string;
+    phase: GesturePhase;
+    value?: number;
+    reach?: NodeKeyRef[];
+    reason?: string;
+    code?: string;
+    key?: string;
+    detail?: string;
+  };
 }
 export type NotificationName = keyof Notifications;
 
@@ -593,7 +676,9 @@ export type CommandErrorCode =
   | "unknown-port"
   | "wrong-direction"
   | "unknown-route"
-  | "stopping";
+  | "stopping"
+  /** Feature gestures: an edit or a begin would change a key an open gesture holds (data.gesture, key, silentMs). */
+  | "parameter-held";
 
 /** data.code of a refused graph file edit (-32000). */
 export type FileErrorCode =
@@ -626,6 +711,18 @@ export type ControlErrorCode =
   | "action-failed"
   /** node.invoke: no answer within 10 s. */
   | "action-timeout"
+  /** gesture.begin (feature gestures): the key is not a live ramped decimal (data.key, data.change). */
+  | "not-live"
+  /** gesture.begin: the reach holds rows a gesture cannot move together (data.line, column, with). */
+  | "reach-mismatch"
+  /** gesture.begin: the graph refused the newest text of ear.conf. */
+  | "file-refused"
+  /** gesture.end, gesture.cancel: no open gesture by that id. */
+  | "unknown-gesture"
+  /** any gesture.* in a batch. */
+  | "not-in-batch"
+  /** gesture.change sent with an id (-32600). */
+  | "notification-only"
   | (string & {});
 
 export const rpcErrorCodes = {
@@ -663,6 +760,11 @@ export interface RpcErrorObject {
     action?: string;
     /** not-running: the node's phase. */
     phase?: string;
+    /** parameter-held (feature gestures): the holding gesture and how long its owner has been silent. */
+    gesture?: string;
+    silentMs?: number;
+    /** not-live: the key's change mark, absent for a key its type lacks. */
+    change?: SettingChange;
   };
 }
 
@@ -725,6 +827,10 @@ const methodSet: { [M in MethodName]: true } = {
   "node.setText": true,
   "node.addText": true,
   "node.invoke": true,
+  "gesture.begin": true,
+  "gesture.change": true,
+  "gesture.end": true,
+  "gesture.cancel": true,
 };
 export const methodNames = Object.keys(methodSet) as MethodName[];
 
@@ -745,6 +851,7 @@ const notificationSet: { [N in NotificationName]: true } = {
   "node.statusChanged": true,
   "node.eventRaised": true,
   "node.diagnostic": true,
+  "gesture.changed": true,
 };
 export const notificationNames = Object.keys(notificationSet) as NotificationName[];
 
@@ -758,6 +865,7 @@ const commandErrorCodeSet: { [C in CommandErrorCode]: true } = {
   "wrong-direction": true,
   "unknown-route": true,
   stopping: true,
+  "parameter-held": true,
 };
 export const commandErrorCodes = Object.keys(commandErrorCodeSet) as CommandErrorCode[];
 
@@ -779,7 +887,13 @@ const controlErrorCodeSet: {
     | "not-running"
     | "restarted"
     | "action-failed"
-    | "action-timeout"]: true;
+    | "action-timeout"
+    | "not-live"
+    | "reach-mismatch"
+    | "file-refused"
+    | "unknown-gesture"
+    | "not-in-batch"
+    | "notification-only"]: true;
 } = {
   "node-disabled": true,
   "not-restartable": true,
@@ -790,6 +904,12 @@ const controlErrorCodeSet: {
   restarted: true,
   "action-failed": true,
   "action-timeout": true,
+  "not-live": true,
+  "reach-mismatch": true,
+  "file-refused": true,
+  "unknown-gesture": true,
+  "not-in-batch": true,
+  "notification-only": true,
 };
 export const controlErrorCodes = Object.keys(controlErrorCodeSet) as ControlErrorCode[];
 
@@ -803,6 +923,8 @@ export const nodeSetFeature = "node.set";
 export const dryRunFeature = "dryRun";
 export const typesFeature = "types";
 export const actionsFeature = "actions";
+export const liveFeature = "live";
+export const gesturesFeature = "gestures";
 
 // ----- The conformance fixtures (test/protocol/*.json) -----
 

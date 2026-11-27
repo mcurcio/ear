@@ -23,7 +23,7 @@ struct NeverStarted {
 	}
 };
 
-constexpr auto levelRow = setting::optional("level", setting::number(0, 100));
+constexpr auto levelRow = setting::optional("level", setting::number(0, 100)).restarts("a test type restarts on it");
 constexpr auto noise = bank::output<"noise">;
 constexpr auto record = bank::input<"record">;
 constexpr auto in = bank::input<"in">;
@@ -66,8 +66,10 @@ struct Upper : NeverStarted {
 /// Any text at all.
 std::optional<std::string> anyText(std::string_view text) { return std::string(text); }
 
-constexpr auto cardRow = setting::optional("card", setting::text<anyText>("text"));
-constexpr auto playbackRow = setting::defaulted("playback", setting::number(0, 64), 0);
+constexpr auto cardRow =
+	setting::optional("card", setting::text<anyText>("text")).restarts("a test type restarts on it");
+constexpr auto playbackRow =
+	setting::defaulted("playback", setting::number(0, 64), 0).restarts("a test type restarts on it");
 constexpr TypeSpec cardSpec{.settings = SettingsTable<cardRow, playbackRow>{"card"}, .banks = Banks<play>{}};
 
 /// A sound-card-like type: {"card": <text>, "playback": <n>} declares inputs play.1..play.<n>,
@@ -85,7 +87,8 @@ std::optional<std::string> throwingText(std::string_view text) {
 	return std::string(text);
 }
 
-constexpr auto modeRow = setting::optional("mode", setting::text<throwingText>("text"));
+constexpr auto modeRow =
+	setting::optional("mode", setting::text<throwingText>("text")).restarts("a test type restarts on it");
 constexpr TypeSpec faultySpec{.settings = SettingsTable<modeRow>{"faulty"}, .banks = Banks<out>{}};
 
 /// A type with bugs: its row's parse throws for "boom", and its ports for {"mode": "make"}.
@@ -100,10 +103,18 @@ struct Faulty : NeverStarted {
 
 constexpr auto portRow = setting::required("port", setting::number(1, 65535)).inPlace();
 constexpr auto gainRow = setting::optional("gain", setting::number(0, 100)).inPlace();
-constexpr auto channelsRow = setting::defaulted("channels", setting::number(1, 8), 1);
-constexpr TypeSpec movableSpec{.settings = SettingsTable<portRow, gainRow, channelsRow>{"movable"},
-                               .banks = Banks<out>{}};
-/// "movable": port and gain change in place; channels makes its ports (outputs out.1..out.<channels>).
+constexpr auto channelsRow =
+	setting::defaulted("channels", setting::number(1, 8), 1).restarts("a test type restarts on it");
+constexpr auto levelFamily = setting::indexed("level", channelsRow, setting::number(0, 100), 50).inPlace();
+constexpr auto holdFamily =
+	setting::indexed("hold", channelsRow, setting::boolean(), false).restarts("a test type restarts on it");
+constexpr auto trimRow = setting::defaulted("trim", setting::decimal(-24.0, 24.0, "dB"), 0.0).live(setting::ramp(20));
+constexpr auto mixFamily = setting::indexed("mix", channelsRow, setting::boolean(), false).live(setting::step);
+constexpr TypeSpec movableSpec{
+	.settings = SettingsTable<portRow, gainRow, channelsRow, levelFamily, holdFamily, trimRow, mixFamily>{"movable"},
+	.banks = Banks<out>{}};
+/// "movable": port, gain and each level.<n> change in place; channels makes its ports (outputs
+/// out.1..out.<channels>); each hold.<n> restarts it; trim and each mix.<n> are live.
 struct Movable : NeverStarted {
 	static Members<movableSpec> ports(const CheckedOf<movableSpec>& settings) {
 		return {out(members(settings.get<channelsRow>()))};
@@ -592,10 +603,12 @@ struct ChangeRecorder final : DesiredNodeListener, DesiredRouteListener {
 		log.push_back("nodeUpdated " + node.name);
 	}
 	void nodeChanged(const NodeSpec& node, std::shared_ptr<const NodeConfig>, const NodeChange& change) override {
-		static constexpr const char* names[] = {"restart",     "disable", "enable",   "stored",
-		                                        "reconfigure", "reshape", "unchanged"};
+		static constexpr const char* names[] = {"restart",     "disable", "enable",    "stored",
+		                                        "reconfigure", "reshape", "unchanged", "retune"};
 		std::string keys;
 		for (const auto& key : change.keys) keys += " " + key;
+		for (const auto& retune : change.retuned)
+			keys += " ~" + retune.key + " " + retune.from.dump() + "->" + retune.to.dump();
 		std::string ports;
 		if (change.portsChanged())
 			ports = " ports " + std::to_string(change.oldPorts.inputs().size() + change.oldPorts.outputs().size()) +
@@ -791,11 +804,64 @@ TEST_CASE("A change whose every key is marked inPlace is a reconfigure, and one 
 		CHECK_FALSE(changeOf(type, {}, false, false, one, two).inPlace);
 		CHECK(changeOf(type, {"gain"}, true, true, one, two).outcome == NodeOutcome::stored);
 	}
+	SECTION("a family member's change is planned by its family's mark") {
+		CHECK(planned(movable({{"port", 5004}, {"level.1", 10}})) == Outcomes{{"fpp", NodeOutcome::reconfigure}});
+		CHECK(recorder.log == Log{"nodeChanged fpp reconfigure level.1"});
+		// A member above the count is kept and planned alike: inactive is only the code's view.
+		CHECK(planned(movable({{"port", 5004}, {"level.1", 10}, {"level.8", 20}})) ==
+		      Outcomes{{"fpp", NodeOutcome::reconfigure}});
+		CHECK(planned(movable({{"port", 5004}, {"level.1", 10}, {"level.8", 20}, {"hold.2", true}})) ==
+		      Outcomes{{"fpp", NodeOutcome::restart}});
+		const NodeType& type = *catalogue.find("movable");
+		CHECK(type.changeOf("level.8") == setting::Change::inPlace);
+		CHECK(type.changeOf("hold.1") == setting::Change::restart);
+		CHECK(type.changeOf("level.9") == setting::Change::restart); // above the maximum: no member
+		CHECK(type.kindOf("hold.3") == SettingKind::boolean);
+		CHECK_FALSE(type.kindOf("level.01").has_value());
+	}
+	SECTION("live keys are retuned beside the outcome the others decide, and alone they are a retune") {
+		CHECK(planned(movable({{"port", 5004}, {"trim", -3.5}})) == Outcomes{{"fpp", NodeOutcome::retune}});
+		CHECK(recorder.log == Log{"nodeChanged fpp retune ~trim 0.0->-3.5"});
+		recorder.log.clear();
+		CHECK(planned(movable({{"port", 5006}, {"trim", -3.5}, {"mix.1", true}})) ==
+		      Outcomes{{"fpp", NodeOutcome::reconfigure}});
+		CHECK(recorder.log == Log{"nodeChanged fpp reconfigure port ~mix.1 false->true"});
+		recorder.log.clear();
+		// A mixed change of ports: the reshape its other keys ask (a restart: channels restarts), the live key beside it.
+		CHECK(planned(movable({{"port", 5006}, {"channels", 2}, {"trim", 1}, {"mix.1", true}})) ==
+		      Outcomes{{"fpp", NodeOutcome::reshape}});
+		CHECK(recorder.log == Log{"nodeChanged fpp reshape channels ~trim -3.5->1.0 ports 1->2"});
+		recorder.log.clear();
+		CHECK(planned(movable({{"port", 5006}, {"channels", 2}, {"trim", 1}, {"mix.1", true}, {"hold.1", true}})) ==
+		      Outcomes{{"fpp", NodeOutcome::restart}});
+		recorder.log.clear();
+		// A disabled node stays stored, its live keys retuned: they seed the configuration its enable makes.
+		CHECK(planned(movable({{"port", 5006}, {"channels", 2}, {"trim", 1}, {"mix.1", true}, {"hold.1", true}},
+		                      true)) == Outcomes{{"fpp", NodeOutcome::disable}});
+		recorder.log.clear();
+		CHECK(planned(movable({{"port", 5006}, {"channels", 2}, {"trim", 2}, {"mix.1", true}, {"hold.1", true}},
+		                      true)) == Outcomes{{"fpp", NodeOutcome::stored}});
+		CHECK(recorder.log == Log{"nodeChanged fpp stored disabled ~trim 1.0->2.0"});
+		const NodeType& type = *catalogue.find("movable");
+		const Ports one = type.parse("fpp", {{"port", 5004}}).value()->ports();
+		const NodeChange mixed = changeOf(type, {"gain", "mix.2", "trim"}, false, false, one, one);
+		CHECK(mixed.outcome == NodeOutcome::reconfigure);
+		CHECK(mixed.keys == std::vector<std::string>{"gain"});
+		REQUIRE(mixed.retuned.size() == 2);
+		CHECK(mixed.retuned[0].key == "mix.2");
+		CHECK(mixed.retuned[1].key == "trim");
+		CHECK(changeOf(type, {"trim"}, false, false, one, one).keys.empty());
+		CHECK(type.liveValueAsSetting("mix.2", 1) == json(true));
+		CHECK(type.liveValueAsSetting("gain", 1).is_null());
+	}
 	SECTION("outcomeFor is the plan's rule: no key is unchanged, an unknown key is restart-only") {
 		const NodeType& type = *catalogue.find("movable");
 		CHECK(outcomeFor(type, std::vector<std::string>{"gain"}, false, false) == NodeOutcome::reconfigure);
 		CHECK(outcomeFor(type, std::vector<std::string>{}, false, false) == NodeOutcome::unchanged);
 		CHECK(outcomeFor(type, std::vector<std::string>{"gain", "volume"}, false, false) == NodeOutcome::restart);
 		CHECK(outcomeFor(type, std::vector<std::string>{"gain"}, true, true) == NodeOutcome::stored);
+		CHECK(outcomeFor(type, std::vector<std::string>{"trim", "mix.3"}, false, false) == NodeOutcome::retune);
+		CHECK(outcomeFor(type, std::vector<std::string>{"trim"}, true, true) == NodeOutcome::stored);
+		CHECK(outcomeFor(type, std::vector<std::string>{"trim", "hold.1"}, false, false) == NodeOutcome::restart);
 	}
 }

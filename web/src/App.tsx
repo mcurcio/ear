@@ -31,6 +31,7 @@ import { useCanvas } from "./components/useCanvas";
 import { useCommands } from "./components/useCommands";
 import { useDrawer } from "./components/useDrawer";
 import { useShortcuts } from "./components/useShortcuts";
+import { useReleaseOnBlur } from "./components/LiveControls";
 
 /** The open palette: all commands or only Add; for quick add, the screen point it opens at and the node's place. */
 interface PaletteOpen {
@@ -51,6 +52,8 @@ export function App({ prefs }: { prefs: Prefs }) {
   const fileState = useGraphFile();
   const flow = useReactFlow();
   const [mac] = useState(() => isMac(platform()));
+  // A window that loses the focus or is hidden lets go of every held fader and knob (docs/editor.md#gestures-in-the-editor).
+  useReleaseOnBlur();
 
   const [theme, setTheme] = useState<ThemeChoice>(() => prefs.theme() ?? defaultTheme);
   useEffect(() => {

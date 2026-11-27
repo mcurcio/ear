@@ -60,7 +60,7 @@ Each C++ package lives in `src/<package>/` with its own `CMakeLists.txt`, public
 | `ear_core` (`src/core`) | The desired graph (`DesiredGraph`: the one judge of every change, `plan` then `commit`); the node type contract (`NodeType`, settings tables, `TypeSpec`, the type's class and its contexts); the node framework (`NodeHost`, the node lifecycle machines, health, `NodeOperations`, the pass-through, companions, latency plans, the claim registry); the reconciler (route links and route status); levels; the graph read (`GraphStatus`); `FrameRing`. Beside it, for tests only, `ear_type_harness` (`ear/testing/`) | Any PipeWire call, socket, thread or file access. nlohmann/json is its only dependency |
 | `ear_runtime` (`src/runtime`) | The threads the node framework runs work on, behind `ear_core`'s interfaces: the I/O thread (`IoThread`, core's `IoExecutor`), the one thread for blocking work; the nodes' loops (`Loops`, core's `LoopAdapter`: the strand pool and each dedicated loop's thread) ([threads](#threads)); and the nodes' stores on disk (`ConfinedStores`, core's `StoreAdapter`, over the graph file folder) with the boot sweep of every declared store ([writing-a-node-type.md](writing-a-node-type.md#stores)); and the kernel's word on a port a claim names (`KernelPortProbe`, core's `PortProbe`, [writing-a-node-type.md](writing-a-node-type.md#claims)); and the processes under the nodes' programs (`Programs`, core's `ProgramAdapter`, on the `ear-programs` thread, which also reaps every orphan ear inherits: [writing-a-node-type.md](writing-a-node-type.md#programs)) | Policy (what a job means is its caller's; staging, a loop's state and the sources it left, when a store is narrowed, trusted or written, and who holds a claim, are `NodeHost`'s); PipeWire. No node type links it |
 | `ear_folder` (`src/folder`) | `ConfinedFolder`: a folder held open from boot, every path resolved beneath it by the kernel (`openat2` with `RESOLVE_BENEATH`); files replaced only if unchanged (`renameat2(RENAME_EXCHANGE)`); `requireApart`, the boot check that no two folders overlap | Following `..`, absolute paths or (for the graph file) any symlink |
-| `ear_node_white`, `ear_node_file`, `ear_node_card`, `ear_node_rtp`, `ear_node_sendspin`, `ear_node_airplay` (`src/nodes/<type>`) | One built-in node type each ([node-types.md](node-types.md)) | Another node type; PipeWire or the framework's threads (only `ear_core`'s interfaces: no type links `ear_pipewire`, `ear_runtime`, `ear_control`, `ear_config` or `ear_server`) |
+| `ear_node_white`, `ear_node_gain`, `ear_node_file`, `ear_node_card`, `ear_node_rtp`, `ear_node_sendspin`, `ear_node_airplay` (`src/nodes/<type>`) | One built-in node type each ([node-types.md](node-types.md)) | Another node type; PipeWire or the framework's threads (only `ear_core`'s interfaces: no type links `ear_pipewire`, `ear_runtime`, `ear_control`, `ear_config` or `ear_server`) |
 | `ear_all_node_types` (`src/all_node_types`) | `allNodeTypes()`, the one list of node types, generated at configure from the folders in `src/nodes/` | Naming a type by hand |
 | `ear_pipewire` (`src/pipewire`) | The in-process engine and the adapters that implement `ear_core`'s interfaces: port blocks, links, live ports, sinks, sources, engine companions (sound cards, module-run converters: RTP receivers and pipe receivers), the main-loop executor, the engine's log ([engine.md](engine.md)); the callback boundary every C callback ear gives PipeWire goes through ([below](#the-callback-boundary)) | Policy; a C callback registered outside the boundary |
 | `ear_mdns` (`src/mdns`) | A node's mDNS listing (`Advertiser`, its `Listing` and `listingRefused`): one DNS-SD service instance probed, renamed on a clash, announced, answered and said goodbye to over its own socket on port 5353, run on whichever loop of the node type keeps it ([node-types.md](node-types.md#mdns)); mjansson/mdns, privately. Its waits (RFC 6762's protocol time) are a timerfd of its own behind its descriptor, an epoll its owner's loop watches | A thread; anything of ear's |
@@ -341,6 +341,15 @@ handler. The batch's reply is held on the main loop (the keeper's `Waiting`) unt
 answered, at once for a trigger or a refusal, later for a call, at most 10 s
 ([rates](#rates-and-bounds)), so it goes behind every event before it.
 
+**A gesture** ([control-port.md](control-port.md#gestures)) crosses to the main loop directly: the
+gateway (`GraphGateway::gesture`) hands a begin, a cancel and the newest tick of each gesture (its
+mailbox) to the keeper's `GestureRequests` there, never through the keeper's thread, so a tick moves
+the audio within a main-loop turn even behind a held action; the begin is judged from the running
+version's reach index ([graph-file.md](graph-file.md#reaches)) that every offer carries. An end, the
+owner's or a release, is resolved on the main loop (`Gestures::end`), then committed through the
+keeper as an edit (`CommitGesture`), offered as a gesture's end, and closed after its commit. Every
+offer is judged against each open gesture before its plan (`MainLoopSide::offer`).
+
 A hand edit arrives as an inotify event, is read on the keeper's thread and offered the same way
 (cause `disk`). The graph may refuse it, but the working copy still follows the disk, and the
 graph keeps running what it ran.
@@ -461,6 +470,9 @@ never touches a queue, a lock or a clock of its own.
 | The bell | `RealtimeBell::ring()` (ear_pipewire's: [engine.md](engine.md#the-realtime-bell)), gated by one atomic exchange per configuration: rung after a `process` that wrote anything, unless it was rung since the last drain | at most once per drain, and the drain is the tick's, so at most 30 a second per node | — |
 | A broken value | the first value outside its declaration, kept once | one | the node fails `lost` with the rule |
 | A trigger (in) | one `std::atomic<std::uint32_t>` counter per trigger, moved by the main loop; beside it the last value the code saw, the code's alone ([writing-a-node-type.md](writing-a-node-type.md#actions)) | — | several invokes before a block are one |
+| A live slot (in) | one `std::atomic<std::uint64_t>` per live member (a decimal's bits, a whole number, a boolean 0 or 1, a choice's index), written by the main loop ([writing-a-node-type.md](writing-a-node-type.md#live-rows)) | 256 live members per type, each family at its count row's maximum | none: the word holds the latest |
+| The generation word (in) | one `std::atomic<std::uint64_t>`: the write count in its low 32 bits, moved after each batch of slot writes, and the snap epoch in its high 32, moved before each drive; stored with release by the main loop, its one writer, which keeps its own copy, so neither side needs a read-modify-write | one | — |
+| Ramp and step state | per member, the code's alone: a ramp's ends, first frame and last unsteady frame, a step's value, its value before its last edge and where that edge was | as the slots | — |
 
 `io.set` stores the word and, when the value differs from the last one the code wrote (its
 initial value before any), counts a transition and puts a status record in the ring. `io.raise` and
@@ -471,6 +483,44 @@ consistent fence on each side (after the clear; after the cycle's writes, before
 the two meet: either the drain reads the cycle's writes or the exchange sees the clear and rings.
 Without them a store buffer can hold the clear while the drain reads the old head, and the write is
 neither drained nor rung for until the code writes again.
+
+**The advance.** Before each `process`, the code's side of the live slots advances
+(`RealtimeChannels::advanceLive`): the block's position moves on by its frames, and the generation
+word is loaded (acquire). When it is the one last seen, that is all: one load and no
+read-modify-write, whether or not a ramp is running, since a view is computed from the ramp's ends
+and where the block sits in it. When its snap epoch moved, every member is seated at its slot with
+no ramp and every step unchanged. Otherwise every slot is loaded (relaxed, after the acquire): a
+ramped member whose slot moved starts a ramp from the value its last frame had, a stepped one has
+an edge. A family's member above the count the code was made with is idle: seated at its slot
+whenever it moves, never ramped, and seated again in the first block it is active (a new code's
+first block loads every slot whatever the generation), so a channel a reshape makes active plays
+its value from its first sample even when the same change moved it. Positions count the frames
+this configuration's codes processed, so a ramp and a step's edge are where they are whichever
+code runs. It never allocates, locks, formats or makes a system
+call (`ear_core_tests` counts the allocations of 130 members moving, none). A cycle that does not
+run the code ([engine.md](engine.md#the-quantum-guard)) does not advance it: the block writes zeros
+anyway. Members written in one batch start their ramps in one block, except when the load falls
+inside the batch: then the rest start one block later. A seqlock would close that gap with a retry
+loop on the realtime thread, for at most one block of ramp.
+
+**The snap.** `NodeHost` moves the snap epoch before each drive of the code (its first, and a
+start after a stop), never before a swap, since the block cannot tell a drive from a swap
+(`CycleCause::drive` is set for both: [engine.md](engine.md#drive-and-fade)). So slots moved while
+the node was stopped or not yet driven are taken at once under the drive's own fade-in
+([fades](#fades)), and a code a change swaps in goes on with every ramp and step where the old one
+left it.
+
+#### Live values
+
+Each node keeps its **live values** in `NodeHost` (main loop): every live member's value as its slot
+holds it, one per member up to each family's maximum. They are seeded from the node's settings when
+it is added (`NodeConfig::liveValues`), seed every configuration's slots when it is made (never
+from that configuration's config, whose own may be older), and are what `s.liveValue` reads in
+`configure` and the change version (bound for the call: `CreateContext::liveValues`). They belong
+to the node, not to a config: `NodeHost::setLive` moves them and the configuration's slots at once,
+in any phase (with no configuration, only the live values), and never adopts or replaces a config.
+A [retune](#retunes) is what moves them from the graph file; a change's commit point writes no slot,
+since a change's keys are never live.
 
 **The drain**, on the main loop, is part of the tick's: the bell's dispatch arms the tick as a
 queue's wake does (`NodeHost::realtimeRung`), and each node's drain reads its configuration's ring
@@ -489,8 +539,10 @@ when `configure` answers (`CreateOf::applied`), and a code a change swaps in is 
 ones (`ChangeOf::applied`), so each `rt` field keeps the value the old code last wrote. A stop and a
 start keep them; a restart, a failure or a removal drains them with the queue as the
 configuration closes, and its successor starts from new ones. One node's channels are never
-another's. A type whose code writes nothing on the realtime thread and reads no trigger (no `rt`
-field, event, log code or trigger) has none.
+another's. A live slot is kept across a stop, a start, a change in place, a reshape in place and a
+swap; each configuration's is seeded from the node's live values. A type whose code writes nothing
+on the realtime thread and reads no trigger or live row (no `rt` field, event, log code, trigger or
+live row) has none.
 
 ## Companions
 
@@ -661,13 +713,121 @@ of a node's ports (a card's channel count) keeps the node and its block, reshape
 and added again. A change to a disabled node is stored for when it is enabled.
 
 The desired graph's plan says what each edit asks of a node it keeps by name (`NodeOutcome`, told
-through `nodeChanged` with a `NodeChange`): `disable`, `enable` or `stored` by its `disabled`
-before and after; otherwise `reshape` when its ports differ, `unchanged` when no key does (nothing
-is done or told), `reconfigure` when every changed key's row is marked in place
-([writing-a-node-type.md](writing-a-node-type.md#settings-one-table-of-typed-rows)), else
-`restart`. A `reconfigure` is taken in place when the type has a change version
-([below](#changes-in-place)), else as a restart. `changeOf` (`desired_graph.hpp`) is the one rule,
-the plan's and the type harness's.
+through `nodeChanged` with a `NodeChange`). It first splits the changed keys by their rows' marks
+([writing-a-node-type.md](writing-a-node-type.md#change-marks)): the **live** keys go to
+`NodeChange::retuned` and are [retuned](#retunes) beside whatever outcome the others decide; the
+outcome is then `disable`, `enable` or `stored` by its `disabled` before and after; otherwise
+`reshape` when its ports differ, `unchanged` when no key does (nothing is done or told), `retune`
+when only live keys do, `reconfigure` when every other changed key's row is marked in place, else
+`restart` (every other row is marked to restart, with the reason the type schema carries). A family
+member's key (`trimDb.2`) is judged by its family's mark (`NodeType::changeOf(key)`, through the
+table's one key lookup: [writing-a-node-type.md](writing-a-node-type.md#indexed-families)). A
+`reconfigure` is taken in place when the type has a change version ([below](#changes-in-place)),
+else as a restart. `NodeChange::keys` holds only the keys that are not live, so a live key never
+appears in a health's `keys` or `next` or a restart's cause. `changeOf` (`desired_graph.hpp`) is
+the one rule, the plan's and the type harness's.
+
+#### Retunes
+
+A change of live keys moves values only the code reads, so it is taken with no hook called, no
+reconfiguring and no health told: `NodeHost` writes the node's [live values](#live-values) and then
+its configuration's slots at once, in the turn the plan is committed and in any phase, before it
+takes the outcome the other keys decide. The values come from the change's new config
+(`NodeConfig::liveValues`), member by member for the keys retuned, so a member another key's move
+set is kept. A retune never adopts or replaces a config: the configuration keeps the config it was
+made or changed with, and the newest is kept for the next configure.
+
+| Phase | The retuned keys | The outcome (the other keys) |
+|---|---|---|
+| `running`, `stopped` | live values and slots move | as built |
+| `reconfiguring`, before the commit point | live values and slots move; the change and its target are untouched | a `retune` never supersedes the change in flight; any other outcome as built |
+| `reconfiguring`, committing | live values and slots move | as built: waits for the invoke |
+| not yet rested, `failed`, disabled | live values move, and the slots of a configuration it has; they seed the next | a `retune` restarts nothing, skips no wait and retries no failure; a disabled node's change of live keys alone is `stored` and starts nothing |
+| a restart in flight | live values move, and the old configuration's slots, heard through its fade-out; the new one is seeded from them | as built |
+
+So a fallback, a supersession or a stop of a change cannot revert a retune: each configuration is
+seeded from the live values, and the commit point writes no slot. A live row can never be why a
+node failed (it touches nothing but the code's view), so a change of live keys alone does not
+retry a failed node, and a fader's drag cannot start one. A loop's state and companions are not
+told of a retune. Its records are standard output's `param` records
+([output-records.md](output-records.md#param)); on the wire it is `applied: "retune"` with
+`retuned` ([control-port.md](control-port.md#retunes)).
+
+**Checking a retune.** A type's `check` reads live rows through `liveValue`. At parse it judges
+the parsed values, which a change's new settings hold whole. `NodeConfig::checkLive(live)` runs it
+with given live values in place, the type harness's `live` calls it before it moves a slot, and a
+refusal moves nothing.
+
+#### Gestures
+
+A gesture is a drag of one live ramped decimal from the control port: begun, moved by ticks, and
+ended by a commit of `ear.conf`, an abort, or a release ear starts for its owner. Its owner is
+`Gestures` (`ear/core/gestures.hpp`), on the main loop; it writes only live values and slots,
+through `LiveTarget` (NodeHost), and never the file.
+
+- **Its reach** is every pair (node, key) whose value is defined where the asked pair's is, all
+  live ramped decimals of one unit; its range is the intersection of theirs and its `decimals` the
+  smallest. Each pair carries its slot (`NodeType::liveIndexOf`). The caller judges the reach and
+  the holds (`heldAt`) before `open`; a begin writes nothing.
+- **Its id** is 128 random bits in hex, never reused and not guessable, so holding it is the
+  credential: any session may end or cancel a gesture by its id.
+- **A tick** is taken only from its owner, while it is open and not ending, with a `seq` above
+  the last taken. Each reached node judges it first (`LiveTarget::checkLive`): the written value
+  against its row's range (`setting::liveOutOfRange`, the walk's own refusal text), then the
+  type's check of the node's newest committed settings with its live values in place, the tick's
+  value and every other open gesture's hand value among them. So two gestures on rows one check
+  binds (`lowHz` below `highHz`) are each judged with the other's hand in place, and the first to
+  cross is refused: the pair never plays. A refused tick keeps the last accepted value and is told
+  to its owner as `tick-refused`, at most once a second (`gestureRefusalPace`). An accepted one
+  writes every reached node's live values and slots at once, and its move is told at most once per
+  33 ms (`gestureChangePace`, the status tick's pace), the newest last.
+- **An end** marks the gesture ending (no tick is taken again) and gives the value to commit:
+  the one asked, else the last accepted, rounded to the reach's `decimals` half away from zero on
+  its shortest decimal text (`roundedDecimal`: `-6.05` at one place is `-6.1`). Once the commit
+  ran, or when it changed nothing, `close` sets every reached slot to its node's committed value
+  (`LiveTarget::committedLive`, the newest committed config's), since the slots held the last tick.
+  An ending gesture can still be aborted (a related change, a cancel by its id) while its end waits
+  for the keeper; the abort wins, so the end commits nothing: it is refused `unknown-gesture`.
+- **An abort** (a cancel, a refused end, a related change of the file) sets every reached slot
+  back to its node's committed value; an abort by a change of the file settles its slots only once
+  that change committed, last in the turn, so the audio ramps once, to the new value.
+- **No pair crosses when a hand leaves.** Wherever slots go back to committed values (an abort, a
+  cancel, a close), each node is first checked with them back and every other hand in place; a node
+  whose check refuses has every open gesture on it aborted `crossed` and set back with them (a hand
+  of `lowHz` at 2000 that was valid only beside a held `highHz` of 5000 goes back when that one is
+  cancelled). Likewise a change retuning keys no gesture holds is checked, before it commits, with
+  its new values and the hands in place (`abortCrossing`), a hand the same change aborted counted at
+  its committed value, where its slots go once the change committed: the gestures on a node it
+  would cross are aborted `crossed` and set back first. So a pair the check refuses never plays,
+  and a hand that is leaving never aborts another.
+- **A release** is an end ear starts for an owner that is gone: its session closed
+  (`session-closed`), or it sent nothing about the gesture for `staleAfter` (30 s by default,
+  `gestureStaleAfter`; `stale`). Each gesture arms one main-loop timer (`Timers::after`, on the
+  main loop's clock, which a test moves), re-armed by every message of its owner about it: a tick,
+  an equal or stale one, a refused one. A release commits the last accepted value, what the slots
+  hold and so what the person last heard, never a refused tick's; when the commit is refused the
+  gesture is aborted (`refused`), so a release is never left open.
+- **At a stop** (`SIGTERM`) every open gesture is dropped: nothing is committed and nothing told,
+  since a stop is nobody's release and the keeper refuses edits once stopping.
+
+Why it is built this way:
+
+- **`ear.conf` is written once, at the end** (the owner: "commit at gesture end"). Ticks move only
+  slots, and never pass through the keeper, which may be writing: a knob behind a write would lag.
+  Values stay in the row's unit on the wire, never a normalised 0..1, since `ear.conf` and a script
+  hold the unit and the editor maps travel to it.
+- **A silent owner is ended by a main-loop timer per gesture**, not by a timer on the control
+  thread (which has none) nor by TCP keepalive: keepalive would change every connection's lifetime,
+  could reset a slow but live reader that the queue rule should close with 1008, and sees only a
+  proxy, never the browser behind it. A frozen tab or a dropped proxy falls silent just the same.
+- **A release keeps the last accepted value** (the owner's choice, "keep last value"): it is what
+  the audio plays, so what the person last heard; a refused tick was never heard.
+- **ear chooses the id**: ids chosen by clients across sessions would need a collision rule, and a
+  begin answered on the main loop is fast enough.
+- **One notification per gesture, never per reached key**: a gang of 64 trims at 30 moves a second
+  would be 1920 messages a second to each client.
+- **Gestures move only live ramped decimals**: a stepped row has no value between two to drag
+  through, and a drag of an in-place row would chop the audio into holds.
 
 ### Changes in place
 
@@ -818,17 +978,17 @@ the block does it). The plan's `NodeChange` carries the ports before and after.
   drive names them), with the new outputs written zeros, until the commit's swap brings the code for
   the new ports; the ports that go leave the engine once that swap completed. A hold names a bank the
   running code has. The change version must give a code: one that does not fails the node `lost`,
-  "configure changed the ports in place and gave no code for them". No built-in type reshapes in
-  place; `reshape_test.cpp` proves it with a test type, channels 1 and 2 playing on through a third
-  added and removed.
+  "configure changed the ports in place and gave no code for them". `gain`'s `channels` reshapes in
+  place ([node-types.md](node-types.md#gain)); `reshape_test.cpp` proves the machine with a test type,
+  channels 1 and 2 playing on through a third added and removed.
 - **On the wire** a change of ports is `node.updated` with `applied: "reshape"`, `inPlace` and the
   ports added and removed ([control-port.md](control-port.md#changes-of-ports)).
 
 ### Failures
 
 A failure tears the node's configuration down at once and keeps its block and routes; the node
-stays `failed` until asked (`node.start` or `node.restart`, which retry it, a change of settings,
-or its removal). Recovery that retries by itself is not built yet.
+stays `failed` until asked (`node.start` or `node.restart`, which retry it, a change of a key that
+is not live ([retunes](#retunes)), or its removal). Recovery that retries by itself is not built yet.
 
 | Code | When |
 |---|---|
@@ -845,7 +1005,11 @@ Every node with an output fades its outputs in over 5 ms at every start, and out
 every planned silence: a stop, a restart, a disable, a removal and a failure. A card's playback
 bank fades too, so its speakers never click; a sink's bank (a `file` node's) is never faded, so a
 recording keeps the exact samples of every cycle its code ran, and a node whose only outputs are
-sinks' banks is silenced at once, with no fade before. A lost block cannot be faded. A change in
+sinks' banks is silenced at once, with no fade before. A lost block cannot be faded. At ear's
+stop each node's fade-out or silence is a request of its own, posted in one main-loop turn, and the data
+loop may run cycles between them: a recording can end with the fade-outs of the nodes before it,
+and on a loaded host with a cycle or more of the silence after them, so a test judges a recording's
+level on the frames it read before it asked ear to stop. A change in
 place holds outputs silent the same way, a second gain after the fade: each held output fades to
 zero over 5 ms, stays there, and fades back in at the change's end
 ([engine.md](engine.md#holds-and-swaps)).
@@ -1099,5 +1263,7 @@ replaced make-before-break, each new one handed over in one invoke, so a bank ne
 clock anchored to one card; serving PipeWire's socket (for a program that can only be a PipeWire client; its nodes would be engine companions, marked by the socket's peer credentials); a login on port 7777; automatic card retry and hotplug; `@include`; undo; changing the graph
 frequency or block size while ear runs; arm64 images (which wait on a port added to a running block on the data loop: [engine.md](engine.md#the-one-data-loop-and-invokes)); a fault caught at the callback boundary
 failing only the node that owns it (today it ends the process); the `sendspin` library's log lines attributed to their node;
-and the converter companion's set and tracked modes ([the timing model](#the-timing-model)). The design pages for the unbuilt slices
+and the converter companion's set and tracked modes ([the timing model](#the-timing-model)); `file`'s `path` and
+`card`'s `card` changed in place, and values a node learns itself (a `sendspin` server's volume, an AirPlay sender's) as
+live rows ([design/live-follow-ons.md](design/live-follow-ons.md)). The design pages for the unbuilt slices
 remain in `docs/design/`.

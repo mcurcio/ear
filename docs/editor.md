@@ -70,8 +70,8 @@ along the bottom ([below](#the-shell)).
   sinks right, following the routes). A place the person dragged a node to, and where a quick add
   put it, is kept in the browser's `localStorage` per ear and never sent to ear
   ([below](#what-the-browser-keeps)). Tidy lays every node out again, in the browser only.
-- **Shortcuts never take a text field's keys.** Inside an input, textarea or select every single
-  key is the text's ([below](#shortcuts)).
+- **Shortcuts never take a text field's keys.** Inside an input, textarea or select, or a live
+  control, every single key is the text's or the control's ([below](#shortcuts)).
 - **The counters are kept as sent.** With the `counters` feature the graph store keeps the
   graph's counters and each node's whole, from the snapshot and `node.added`, and replaces those a
   `counters.changed` names ([control-port.md](control-port.md#counters)); an unknown counter is
@@ -152,9 +152,9 @@ Home and End) between 280 and 560 px. It shows one subject, chosen by the select
 A name or route the graph does not hold is ignored, so the inspector shows only what ear announced.
 Delete asks `node.remove` for each node and `route.remove` only for routes between kept nodes, as
 the delete key does. The add-node form lives only in the Graph subject, so selecting something
-drops a half-typed statement; a new template is written when it shows again. Slice 5's status list
-is designed to land in the Node subject, under the settings form
-([control-plane.md](design/control-plane.md#8-the-editor)).
+drops a half-typed statement; a new template is written when it shows again. The live controls
+(faders, switches, selects and live numbers) are in the Node subject's settings form
+([below](#live-numbers-faders-and-knobs)).
 
 ### The drawer
 
@@ -200,6 +200,11 @@ unfolding is a resize, so the layout follows it and the view fits itself again u
   covers the drawer, and pads its top bar, sides and drawer by the safe-area insets, so a notch, the rounded corners
   and the home indicator never cover a control.
 
+A box's knob takes every touch (`touch-action: none`) and a form's fader only a horizontal one (`pan-y`), and a
+touch the browser takes back ends the gesture ([faders and knobs](#faders-and-knobs)); the hand check on an iPad and
+an Android phone is owed ([testing.md](testing.md#what-ci-does-not-prove)). The steppers beside a live number are
+40 px for a finger.
+
 Hover tooltips (a meter's dBFS, a badge's drop count) do not exist on a touch screen; the inspector shows the
 selected node's or route's facts in words instead. Checked in Chromium's touch emulation at both sizes, not yet on
 the device ([Developing it](#developing-it)).
@@ -244,6 +249,8 @@ right; they replace the one error banner.
   counts up ("×3") instead of stacking.
 - **Announced.** A refusal is a `role="alert"` toast, anything else `role="status"`.
 - **Show.** A toast for a node or route ear holds has Show, which selects it and pans to it.
+- **Set again.** A gesture's notice that ear let go of a value the person held has a button that
+  sets it again by `node.set` ("Set -3.5 dB again", [below](#gestures-in-the-editor)).
 - **Kept.** A closed connection clears none, so a reconnect drops nothing the person has not seen.
 
 A change in place that could not finish raises a warning toast of its own, about its node, from the `node.state` that
@@ -323,8 +330,11 @@ everywhere, since they type nothing, so `⌘S` saves the drawer's draft while ty
 even with the focus in the node panel's box. While the palette or the sheet is open, only `⌘K` and Escape act.
 *Why that filter:* React Flow 12.12.0 skips input, select, textarea, contenteditable and anything inside `.nokey`
 for Delete by the same rule (its `isInputDOMNode`, checked in the pinned package), so its keys and the editor's
-coexist with the focus in the inspector's text. Slice 6's knobs are designed to carry `nodrag`, `nowheel`, `nopan`
-and `nokey` ([control-plane.md](design/control-plane.md#83-gestures-from-pointer-and-keyboard)).
+coexist with the focus in the inspector's text. Anything inside `.nokey` counts as a text field for the shortcuts too:
+a fader's or knob's hidden range input is there ([below](#faders-and-knobs)), so with one focused `F`, `L`, `M`, `A`,
+`?` and Escape are not shortcuts and Delete and Backspace remove nothing; the input's own keys (arrows, Page Up and
+Down, Home, End, Escape) move it or cancel its gesture. A range input outside `.nokey` (none today) is not a text
+field.
 
 ## Adding a node
 
@@ -406,24 +416,51 @@ text over JSON, so the toggle's other side is the node's own statement.
 - **Schemas once per hash.** `web/src/types.ts` (`types.test.ts`) holds the set the Graph's
   `typeSchemaHash` names, fetched with the held hash as `ifNoneMatch`, and kept per ear
   ([above](#what-the-browser-keeps)). Until it holds that set the panel shows the text box.
-- **One field per row**, in the table's order: a select for a text with `values` (an optional one
-  starts with its absent choice), a text field (checked against `pattern` and `maxLength` as typed),
-  a number field with the range for a whole number (a rate in Hz), a checkbox for a flag, and a JSON
-  field for a kind the editor does not know. An empty field's placeholder says what absent means: the
+- **One field per row**, in the table's order: a select for a choice (kind `choice`: its names and
+  nothing else, sent as the name; a name not among them says "must be one of "peak", "lowShelf" and
+  "highShelf"" in ear's words) and for a text with `values` (an optional one of either starts with its
+  absent choice), a text field (checked against `pattern` and `maxLength` as typed),
+  a number field with the range for a whole number (a rate in Hz), a decimal field with its range and
+  unit for a decimal (it takes any number in the range, an integer too, with as many places as typed,
+  and says "must be a number of dB from -90 to 24" in ear's words otherwise; it is sent as a JSON
+  number), a checkbox for a flag (an absent one drawn at its default; set against the default it is sent, and set back
+  to what absence reads it is no edit), and a JSON field for a kind the editor does not know. An empty field's placeholder says what absent means: the
   default (`default 0 channels`), where it comes from (`the graph's frequency`, `the node's name`), or
   `absent`; a row's `help` and its unit are beside it, and a row that is `onlyWithout` a given key
   (a draft included) is disabled, saying so.
-- **Hints from the schema alone**, beside each field: "applies in place" for `change: inPlace`,
-  "restarts the node" for `restart`, "changes the ports" for `shapes`; a `change` it does not know says
+- **An indexed family** (`indexed`, [control-port.md](control-port.md#type-schemas)) is one field per
+  member, `<key>.1` to its count row's value (a whole-number draft of the count row included; a draft still being
+  typed, `4.`, keeps the node's value, and a cleared one reads the default), each
+  drawn by the family's kind and range with the family's default as its placeholder. A member above
+  the count that the node or a draft gives is drawn too, greyed, its hint first: "kept; not used
+  while channels is 2". A key is mapped to its family's field only by the member grammar (`trimDb.01`
+  is no member), for drafts, the patch and ear's refusal's `data.key` alike. A family drawing more
+  than 8 members is a compact strip behind a disclosure ("trimDb.1 to trimDb.16, 16 members"),
+  closed until opened, so a 64-channel `gain` does not bury the fields after it (`form.ts`'s
+  `groupsOf`).
+- **Hints from the schema alone**, beside each field: "live, ramped" for `change: live` with a ramp
+  and "live" for one with a step, "applies in place" for `change: inPlace`,
+  "restarts the node" for `restart`, followed by its `restartReason` ("restarts the node: card has no
+  change in place yet"), "changes the ports" for `shapes`; a `change` it does not know says
   nothing. A drafted key that a node changing in place is applying (`keys`) or will take next (`next`)
   also says "applies after this change".
+- **Live switches and selects commit at once** (feature `live`). A field whose row is live and is
+  drawn as a switch or a select (`change: live`, a flag or a choice) keeps no draft: each change of it
+  is its own `node.set` of that key, sent as it is made, with no dry run and no Apply, and ear
+  [retunes](control-port.md#retunes) it with no restart. Its refusal is placed under it. When the
+  answer's `alsoChanged` names other nodes (the value is a shared definition, such as an `@set`), the
+  form says so: "also changed amp2, amp3"; a second click undoes it. *Why:* the owner took the
+  recommendation that one click stays one click and the notice tells the truth. Live numbers and
+  decimals keep no draft either ([below](#live-numbers-faders-and-knobs)): a live ramped decimal is a
+  fader with the gestures feature, and every other live number a field sent on Enter or a step. A
+  live change from the form leaves the other fields' drafts as they are.
 - **Drafts.** A field keeps what the person typed until Apply is answered or Discard; typing the
   node's value back drops its draft. When ear's value changes under a draft (another editor, a hand
   edit), the field says "changed on ear" with "Take ear's value"; a change elsewhere leaves it
   alone. The fields without a draft follow ear.
 - **Apply asks first** (feature `dryRun`). Apply sends the drafted keys as one `node.set` merge
-  patch (an emptied optional field removes its key) with `dryRun: true`. `reconfigure`, `unchanged`
-  and `stored` are then sent at once, since nothing stops; `restart`, `reshape`, an answer naming
+  patch (an emptied optional field removes its key) with `dryRun: true`. `retune`, `reconfigure`,
+  `unchanged` and `stored` are then sent at once, since nothing stops; `restart`, `reshape`, an answer naming
   routes, or an outcome the editor does not know show what will happen first ("Restarts desk: its
   audio stops for a moment.", "Restarts desk and removes 1 route: kitchen:from.left → desk:play.2",
   "Changes fpp's ports.") with Apply and Cancel. The confirmed send carries `dropRoutes: true` exactly
@@ -435,6 +472,129 @@ text over JSON, so the toggle's other side is the node's own statement.
 - **Refusals in place.** A value outside the hints is refused before sending, under its field. ear's
   refusal is shown under the field its `data.key` names, in `data.detail`'s words, or at the form's
   top when it names none; it raises no toast (a lost answer still does).
+
+## Live numbers, faders and knobs
+
+A row whose schema says `change: live` ([control-port.md](control-port.md#retunes)) is moved
+while the node plays, with no restart and no Apply: ear [retunes](architecture.md#retunes) it.
+`web/src/form.ts` decides each field's control from the schema alone, `web/src/live.ts`
+(`live.test.ts`) when the controls are disabled and whose value they show, `web/src/taper.ts`
+(`taper.test.ts`) the fader's mapping, `web/src/gesture.ts` (`gesture.test.ts`) the drag, and
+`components/LiveControls.tsx` draws them. Nothing here names a node type.
+
+| Row | Control | Commits |
+|---|---|---|
+| decimal or whole number, not live | a number field ([above](#the-settings-form)) | Apply |
+| live ramped decimal, with feature `gestures` | a fader mapped by its `taper`, with a number field beside it | a gesture ([below](#gestures-in-the-editor)); the field by `node.set` on Enter |
+| live flag, live choice | a switch, a select | `node.set` at once, with the `alsoChanged` notice ([above](#the-settings-form)) |
+| live whole number, live stepped decimal, and a live ramped decimal without `gestures` | steppers (− and +) and a number field | `node.set` on Enter or a step |
+| family | one control per member, as its kind; above 8 members a compact strip behind a disclosure ([above](#the-settings-form)) | as its kind |
+| restart row | as before, its hint "restarts the node: <restartReason>" | Apply, which asks first |
+
+*Why only ramped decimals drag:* a stepped row has no value between two to drag through, and a
+switch or a select is one click, not a drag; a gesture moves only live ramped decimals
+([control-port.md](control-port.md#gestures)).
+
+- **The box's knobs.** With `gestures`, a node box draws a knob, under its header, for each live
+  ramped decimal outside a family when its type has one or two of them (`gain`: `gainDb`), with the
+  key and its value in words. A type with three or more draws none: its form has them.
+- **Following ear.** A control shows its own gesture's value while the person holds it, else the
+  hand of another editor holding it (the graph's per-node `gestures`), else the node's value, else
+  the row's default. A held field's number shows the hand's value at the row's places; a live
+  number's typed text is the person's until Enter sends it or the field loses the focus (then it
+  shows ear's again).
+- **Disabled.** Every live control is disabled while the connection is not open, while `ear.conf`
+  has errors and while the graph refused it (no edit could commit then), saying which beside it; a
+  fader or knob another editor holds is disabled, "held by another editor". A refused `node.set`
+  of a live number is placed under its field, as a switch's is.
+
+### Faders and knobs
+
+The form's faders are horizontal and follow the pointer: a press puts the value under it. A box's
+knob is dragged vertically, 200 px the whole travel (Shift 2000 px). Double-click or Alt-click sets
+the row's default as one gesture (begun and ended at once; on a click's end still on its way, after
+it). The arrow keys begin a gesture on the first press and step 1% of the travel (Shift 0.1%), Page
+Up and Down 10%, Home and End the ends; it ends 400 ms after the last key or when the control loses
+the focus. The wheel moves only a focused control, 1% a notch, and then never scrolls the page.
+
+| Taper | Value at travel `t` (0..1) |
+|---|---|
+| `linear` | `min + t × (max − min)` |
+| `log` | `min × (max / min)^t`, only when `min` is above 0 |
+| `db` | piecewise linear through (0, min), (0.10, -60), (0.25, -40), (0.45, -20), (0.60, -10), (0.75, 0), (1, max), only when `min` is below -60 and `max` above 0 |
+
+A row whose taper cannot be drawn as asked maps linearly, and a `dB` unit does not imply the `db`
+taper (`trimDb`, from -24 to +24, is `linear`). The value is shown at the row's `decimals` with its
+unit, and as `-inf dB` at a `minIsSilence` min. What a fader sends is unrounded; ear rounds the end
+to the reach's `decimals`.
+
+- **Accessible.** Each fader and knob is drawn over a visually hidden native `<input
+  type="range">` (0 to 1000 in thousandths of the travel, a step of 10), which takes the focus and
+  the keys and carries `aria-valuetext` ("-3.5 dB", "-inf dB"), so a touch screen reader
+  (VoiceOver, TalkBack) adjusts it by a swipe, which it cannot do for a custom `role="slider"`; an
+  assistive change is a gesture begun, stepped and ended as the arrow keys' is. The focus rings the
+  whole control.
+- **On the canvas.** A box's knobs carry React Flow's `nodrag`, `nowheel`, `nopan` and `nokey`
+  classes and `touch-action: none`, so a drag on one moves the knob, never the box or the view. The
+  form's faders carry `nokey` and `touch-action: pan-y`, so a vertical swipe that starts on one
+  scrolls the drawer and a horizontal one drags.
+- **Pointer capture.** A press captures the pointer; its release, `pointercancel` and
+  `lostpointercapture` all end the gesture, so a touch the browser takes over (a scroll, a system
+  gesture) ends it at the value shown. That a cancelled touch really fires `lostpointercapture` on
+  iPad Safari and Android Chrome is checked by hand ([testing.md](testing.md#what-ci-does-not-prove)).
+
+### Gestures in the editor
+
+`gesture.ts` keeps one machine per node and key for the editor session (`editor.ts` holds them),
+so a gesture's id outlives the box or form that began it, and the box's knob and the form's fader
+of one key are one control. Its timers and animation frames come in from outside, so `gesture.test.ts`
+moves them by hand. Each server text reaches the machines after the graph took it; `rpc.ts`'s
+`notify()` sends a tick as a JSON-RPC notification, with no id.
+
+| State | Input | Sends | Next |
+|---|---|---|---|
+| idle | press, or first key | `gesture.begin` | beginning (intent: hold) |
+| beginning | 200 ms with no reply | — | beginning, shown pending (dimmed) |
+| beginning | move | nothing (keeps the newest) | beginning |
+| beginning | release / Escape | nothing yet | beginning (intent: end / cancel) |
+| beginning | reply, intent hold | the kept value as tick 1, if it moved | active |
+| beginning | reply, intent end | `gesture.end`, with the shown value if it moved | ending |
+| beginning | reply, intent cancel | `gesture.cancel` | idle |
+| beginning | refusal | — | idle; snaps back; a toast names the code (`parameter-held` says how long the holder has been silent); `not-live` with `change` `live` sends the field's `node.set` of the moved value instead |
+| beginning | connection lost | — | idle; an answer arriving after it is cancelled |
+| active | move | `gesture.change` (notification), at most one per animation frame, the newest | active |
+| active | 10 s with no tick | the last tick again (the begin's value if it never moved) | active |
+| active | press or key on the same control (a pointer during a keyboard gesture, or the reverse) | nothing: the same gesture goes on; the keys' 400 ms end waits while the pointer holds | active |
+| active | release, `pointercancel`, `lostpointercapture`, the focus lost, window `blur`, `visibilitychange` to hidden | `gesture.end` with the shown value (none if it never moved) | ending |
+| active | Escape | `gesture.cancel` | idle |
+| ending | reply | — | idle; shows the committed value |
+| ending | refusal | — | idle; ear aborted it (`refused`); the committed value; a toast with the refusal |
+| any | `aborted` for its id | — | aborted until the release (or the keys' end), then idle; a toast |
+| any | `end` with a `reason` | — | idle; the committed value; a toast |
+| any but ending | `end` with no `reason` (another session ended it by its id) | — | idle; the committed value; a toast (its own end's `end`, while ending, waits for the reply) |
+| active, ending | connection lost | — | frozen, the id and shown value kept, "Connection lost while you held amp gainDb; ear keeps the last value it heard." under the control |
+| frozen | reconnected | `gesture.end` with the kept id and shown value, from the new session | ending |
+
+The notices are toasts about the node ([above](#toasts)), each a warning (polite) but a refusal:
+
+| Why | Says |
+|---|---|
+| `hand-edit`, `file-saved` | "ear.conf was edited by hand (was saved from the text pane) and changed amp gainDb while you held it; it now says -10.0 dB.", with **Set -3.5 dB again** |
+| `edited` | "Another editor changed what shares amp2 trimDb.1 while you held it.", with Set again |
+| `key-removed` | "amp2's channels is now 2, so trimDb.3, which you held, is not used." |
+| `node-removed` | "amp was removed while you held gainDb." |
+| `crossed` | "Another change left it outside what amp allows beside its other values; it stays -6.0 dB." |
+| `cancelled` (by another session, by the id) | "Another editor cancelled it; it stays -6.0 dB." |
+| an end refused | "was not committed (invalid-settings): … ; it stays -6.0 dB." |
+| `stale` | "ear heard nothing about amp gainDb for 30 s and kept -3.5 dB." |
+| `session-closed` | "Connection lost while you held amp gainDb; ear kept -3.5 dB." |
+| ended by another session, by the id | "Another connection ended it; ear kept -3.5 dB." |
+| the reconnect's end finding it gone (`unknown-gesture`) | "ear had already let go of it, keeping -3.5 dB." |
+
+*Why some notices wait:* ear tells `aborted` for a hand edit, a save or an edit before the change's
+`node.updated` ([control-port.md](control-port.md#gestures-and-the-graph-file)), so the words that
+need the new value wait for the node's `node.updated`, at most 1 s. **Set again** sends `node.set`
+of the value the hand left and dismisses the toast; ear judges it like any edit.
 
 ## Highlighting
 
@@ -574,6 +734,9 @@ the page's life), and checks every value on read, ignoring a bad one. `main.tsx`
   handle under the pointer grows.
 - **Selection** is a 2 px `--accent` ring outside the border with the lifted shadow. Hover lifts
   the shadow alone.
+- **Knobs.** With the `gestures` feature, a knob under the header for each live ramped decimal
+  outside a family, when the type has one or two ([live numbers, faders and
+  knobs](#live-numbers-faders-and-knobs)).
 - **A change of ports redraws the box in place.** `node.updated` with its new `inputs` and
   `outputs` ([control-port.md](control-port.md#changes-of-ports)) changes the node the editor holds,
   not a new one: the box keeps its place, a surviving handle keeps its wires (the routes were never

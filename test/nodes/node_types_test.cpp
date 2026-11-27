@@ -18,9 +18,9 @@
 #include "ear/core/settings_table.hpp"
 
 // Each found; the whole list is the next test's to prove against the folders, and sendspin is the last test's.
-TEST_CASE("The built-in node types are white, file, card and rtp", "[builtin]") {
+TEST_CASE("The built-in node types are white, file, card, rtp and gain", "[builtin]") {
 	const ear::NodeCatalogue catalogue(ear::test::allTypes());
-	for (const std::string_view name : {"white", "file", "card", "rtp"}) {
+	for (const std::string_view name : {"white", "file", "card", "rtp", "gain"}) {
 		INFO(name);
 		CHECK(catalogue.find(name) != nullptr);
 	}
@@ -51,14 +51,22 @@ TEST_CASE("Each built-in type declares every key once, and a value of each decla
 			INFO(key);
 			const std::string spelled(key);
 			CHECK(std::ranges::none_of(keys, [&](const auto& seen) { return seen.first == spelled; }));
-			const auto giving = std::ranges::find_if(valid, [&](const auto& one) { return one.contains(spelled); });
+			// A family is given by any member.
+			const auto giving = std::ranges::find_if(
+				valid, [&](const auto& one) { return one.contains(ear::test::givenKey(*type, key, one)); });
 			REQUIRE(giving != valid.end());
-			CHECK((kind == ear::SettingKind::text) == giving->at(spelled).is_string());
+			CHECK((kind == ear::SettingKind::text || kind == ear::SettingKind::choice) ==
+			      giving->at(ear::test::givenKey(*type, key, *giving)).is_string());
 			keys.emplace_back(key, kind);
 		}
 	}
 	using enum ear::SettingKind;
 	CHECK(declared["white"].empty());
+	CHECK(declared["gain"] == std::vector<std::pair<std::string, ear::SettingKind>>{{"channels", wholeNumber},
+	                                                                                {"gainDb", decimal},
+	                                                                                {"mute", boolean},
+	                                                                                {"trimDb", decimal},
+	                                                                                {"invert", boolean}});
 	CHECK(declared["airplay"] ==
 	      std::vector<std::pair<std::string, ear::SettingKind>>{{"name", text}, {"airplay2", boolean}});
 	CHECK(declared["file"] == std::vector<std::pair<std::string, ear::SettingKind>>{{"path", text}});
@@ -84,8 +92,8 @@ std::optional<ear::Ports> portsOf(const ear::NodeType& type, const ear::NodeSett
 }
 
 /// Other values a row can take, to change one key of valid settings at a time: a whole number's ends, middle and
-/// neighbours, a rate's ends, a boolean's other value, a text row's offered values, the value every other valid
-/// object gives it, and absence for a row that is not required.
+/// neighbours, a rate's ends, a decimal's ends and middle, a boolean's other value, a choice's every name, a text row's
+/// offered values, the value every other valid object gives it, and absence for a row that is not required.
 std::vector<std::optional<ear::NodeSettings>> otherValues(const ear::SettingRow& row,
                                                           const std::vector<ear::NodeSettings>& valid) {
 	std::vector<std::optional<ear::NodeSettings>> values;
@@ -97,15 +105,22 @@ std::vector<std::optional<ear::NodeSettings>> otherValues(const ear::SettingRow&
 	} else if (const auto* rate = std::get_if<ear::RateRule>(&row.rule)) {
 		values.emplace_back(rate->low.hz());
 		values.emplace_back(rate->high.hz());
+	} else if (const auto* decimal = std::get_if<ear::DecimalRule>(&row.rule)) {
+		values.emplace_back(decimal->low);
+		values.emplace_back(decimal->high);
+		values.emplace_back((decimal->low + decimal->high) / 2);
 	} else if (std::holds_alternative<ear::BooleanRule>(row.rule)) {
 		values.emplace_back(true);
 		values.emplace_back(false);
+	} else if (const auto* choice = std::get_if<ear::ChoiceRule>(&row.rule)) {
+		for (const std::string_view name : choice->taken()) values.emplace_back(std::string(name));
 	} else {
 		for (const std::string_view value : std::get<ear::TextRule>(row.rule).hints.values)
 			values.emplace_back(std::string(value));
 	}
+	const std::string key = row.maxMembers > 0 ? std::string(row.key) + ".1" : std::string(row.key);
 	for (const ear::NodeSettings& one : valid)
-		if (const auto given = one.find(row.key); given != one.end()) values.emplace_back(*given);
+		if (const auto given = one.find(key); given != one.end()) values.emplace_back(*given);
 	if (!row.required) values.emplace_back(std::nullopt);
 	return values;
 }
@@ -161,7 +176,8 @@ TEST_CASE("Each built-in type's schema holds to its ports and its parse", "[buil
 			const ear::SettingRow& row = *schema.settings[at];
 			INFO(row.key);
 			CHECK(row.key == type->settingKinds()[at].key);
-			const std::string key(row.key);
+			// A family's first member stands for it: the family's own key is no key a settings object holds.
+			const std::string key = row.maxMembers > 0 ? std::string(row.key) + ".1" : std::string(row.key);
 			bool changedPorts = false;
 			for (const ear::NodeSettings& settings : valid) {
 				const auto before = portsOf(*type, settings);

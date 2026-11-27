@@ -1297,10 +1297,57 @@
       }
     },
     {
-      "case": "a stop has done all ear does: every node removed, the control port closed, ear.conf's last write made; ear's last record before it exits 0",
+      "case": "a live key a committed change retuned (docs/output-records.md#param): one record per node and key, after the change's graph-file record, its cause that record's (edit, disk); from and to as the settings held them, a decimal as ear.conf writes it",
       "record": {
         "v": 1,
         "seq": 115,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "param",
+        "node": "amp",
+        "key": "gainDb",
+        "from": -6,
+        "to": -3.5,
+        "cause": "disk",
+        "msg": "node amp gainDb -6 -> -3.5"
+      }
+    },
+    {
+      "case": "a mixed change's live key: retuned beside the change its other keys ask, a flag's values as true and false",
+      "record": {
+        "v": 1,
+        "seq": 116,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "param",
+        "node": "amp",
+        "key": "mute",
+        "from": false,
+        "to": true,
+        "cause": "disk",
+        "msg": "node amp mute false -> true"
+      }
+    },
+    {
+      "case": "a gesture's abort (docs/output-records.md#param): one record per reached key, cause aborted with its gesture and reason, from the value the hand left and to what the slots went back to",
+      "record": {
+        "v": 1,
+        "seq": 117,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "param",
+        "node": "amp",
+        "key": "gainDb",
+        "from": -4.25,
+        "to": -6,
+        "cause": "aborted",
+        "gesture": "g4",
+        "reason": "cancelled",
+        "msg": "node amp gainDb gesture g4 aborted (cancelled): back to -6"
+      }
+    },
+    {
+      "case": "a stop has done all ear does: every node removed, the control port closed, ear.conf's last write made; ear's last record before it exits 0",
+      "record": {
+        "v": 1,
+        "seq": 118,
         "t": "2026-11-07T17:42:03.512094Z",
         "kind": "exit",
         "status": 0,

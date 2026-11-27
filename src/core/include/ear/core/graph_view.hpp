@@ -20,6 +20,13 @@ struct EngineView {
 /// (docs/engine.md#companions-in-a-nodes-list; empty before it is configured), its status view (every field of its
 /// type, at its initial value before NodeHost knows it) and its node diagnostics (docs/control-port.md#node-diagnostics),
 /// each with when it was said, which the gateway fills in.
+/// An open gesture moving one of a node's keys (docs/control-port.md#gestures): its id, the key, the hand's value.
+struct NodeGesture {
+	std::string gesture;
+	std::string key;
+	double value;
+	friend bool operator==(const NodeGesture&, const NodeGesture&) = default;
+};
 struct NodeView {
 	NodeSpec spec;
 	Ports ports; // public only (inside lists empty)
@@ -30,6 +37,7 @@ struct NodeView {
 	std::vector<FieldValue> status{};
 	std::vector<NodeDiagnostic> diagnostics{};
 	std::vector<std::chrono::system_clock::time_point> diagnosticsAt{}; // one per diagnostic, stamped by the gateway
+	std::vector<NodeGesture> gestures{};                                // stamped by the gateway
 };
 /// Every field of these declarations at its initial value: a node's status before NodeHost knows it.
 std::vector<FieldValue> initialStatus(std::span<const StatusDeclaration* const> fields);
