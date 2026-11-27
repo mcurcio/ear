@@ -125,6 +125,7 @@ void MainLoopGateway::nodeUpdated(const NodeSpec& node, std::shared_ptr<const No
 
 void MainLoopGateway::nodeChanged(const NodeSpec& node, std::shared_ptr<const NodeConfig>, const NodeChange& change) {
 	NodeUpdated updated{node.name, node.settings, node.disabled, change.outcome};
+	for (const Retuned& retune : change.retuned) updated.retuned.push_back(retune.key);
 	// A change of ports keeps the node, its block and the links of the ports it keeps (docs/architecture.md#reshapes):
 	// the client redraws its handles in place (docs/control-port.md#notifications).
 	if (change.portsChanged())

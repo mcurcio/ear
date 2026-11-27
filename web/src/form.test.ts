@@ -233,6 +233,7 @@ describe("Apply asks first", () => {
     expect(confirmWords("fpp", { applied: "reshape", inPlace: true })).toBe("Changes fpp's ports.");
     expect(asksFirst({ applied: "unchanged" })).toBe(false);
     expect(asksFirst({ applied: "stored" })).toBe(false);
+    expect(asksFirst({ applied: "retune", retuned: ["gainDb"], alsoChanged: [] })).toBe(false); // a slot moved
     expect(asksFirst({ applied: "teleport" })).toBe(true); // an outcome this editor does not know asks
   });
 
@@ -306,7 +307,9 @@ describe("Apply asks first", () => {
     for (const result of results) {
       const routes = result.routes ?? [];
       const stops = result.applied === "restart" || (result.applied === "reshape" && result.inPlace !== true);
-      expect(asksFirst(result)).toBe(!["reconfigure", "unchanged", "stored"].includes(result.applied) || routes.length > 0);
+      expect(asksFirst(result)).toBe(
+        !["reconfigure", "unchanged", "stored", "retune"].includes(result.applied) || routes.length > 0,
+      );
       if (stops && routes.length === 0) expect(confirmWords("n", result)).toBe("Restarts n: its audio stops for a moment.");
     }
   });
@@ -345,6 +348,14 @@ describe("the row vocabulary no built-in type has yet", () => {
     expect([fields[0].min, fields[0].max, fields[0].unit]).toStrictEqual([-90, 24, "dB"]);
     expect(fields.map((field) => field.placeholder)).toStrictEqual(["default -6 dB", "required", "absent", "default true"]);
     expect(fields[1].hints).toStrictEqual(["restarts the node: the filter is designed at start"]);
+  });
+
+  it("says a live row's transition beside it (feature live)", () => {
+    const hints = (key: string) => fieldsOf(schema, { cutoffHz: 1000 }, none).find((field) => field.key === key)?.hints;
+    expect(hints("gainDb")).toStrictEqual(["live, ramped"]);
+    expect(hints("mute")).toStrictEqual(["live, ramped"]);
+    expect(hints("input")).toStrictEqual(["live"]);
+    expect(hints("slope")).toStrictEqual(["live"]);
   });
 
   it("draws an absent flag at its default, and sends one set against it", () => {

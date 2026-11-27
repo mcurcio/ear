@@ -72,6 +72,7 @@ export type Applied =
   | "unchanged"
   | "reconfigure"
   | "reshape"
+  | "retune"
   | (string & {});
 
 export interface FailureReason {
@@ -136,9 +137,17 @@ export interface NodeHealth {
   next?: string[];
 }
 
+/** One key of one node: an entry of node.set's alsoChanged. */
+export interface NodeKey {
+  name: string;
+  key: string;
+}
+
 /**
  * node.set's answer: what the plan applied, and when the node's ports change, whether a reshape is in place, the ports
- * added and removed, and the routes it removed (routesDropped) or, for a dry run, would remove (routes).
+ * added and removed, and the routes it removed (routesDropped) or, for a dry run, would remove (routes). Feature live:
+ * always the live keys it moved (retuned, [] for none) and the other nodes' keys the same edit changed through a shared
+ * definition (alsoChanged, [] for none).
  */
 export interface SetResult {
   applied: Applied;
@@ -146,6 +155,8 @@ export interface SetResult {
   ports?: PortsMoved;
   routesDropped?: RouteEnds[];
   routes?: RouteEnds[];
+  retuned?: string[];
+  alsoChanged?: NodeKey[];
 }
 
 /** A change of a node's ports (feature reshape): whole port names. */
@@ -310,7 +321,12 @@ export type SettingValueKind = "text" | "wholeNumber" | "decimal" | "flag" | "ch
 /** How a decimal's control maps its travel to the value: evenly, on the logarithm, or as a level in dB. */
 export type DecimalTaper = "linear" | "log" | "db" | (string & {});
 /** What a change to the row asks of the node: from its row's marks. */
-export type SettingChange = "inPlace" | "restart" | (string & {});
+export type SettingChange = "live" | "inPlace" | "restart" | (string & {});
+/** A live row's transition (feature live): a ramp over ms, or a step to the next block. */
+export interface LiveTransition {
+  transition: "ramp" | "step" | (string & {});
+  ms?: number;
+}
 /** Where an optional row's value comes from when absent. */
 export type DefaultFrom = "graphFrequency" | "nodeName" | (string & {});
 
@@ -322,6 +338,8 @@ export interface SettingSchema {
   change: SettingChange;
   /** restart: why a change to it restarts the node, one line (docs/control-port.md#type-schemas). */
   restartReason?: string;
+  /** live (feature live): how the code takes a new value. */
+  live?: LiveTransition;
   /** A change to it may change the node's ports. */
   shapes?: true;
   /** What an absent key reads, of the row's kind: a whole number, a decimal, a flag, or a choice's name. */
@@ -380,7 +398,7 @@ export interface EventSchema {
 }
 
 /** An action's argument: a setting row without what only a setting has (change, restartReason, shapes). */
-export type ActionArgSchema = Omit<SettingSchema, "change" | "restartReason" | "shapes" | "indexed">;
+export type ActionArgSchema = Omit<SettingSchema, "change" | "restartReason" | "live" | "shapes" | "indexed">;
 
 /**
  * One type action (feature actions, docs/control-port.md#actions): a trigger (target code, no args) or a call (target
@@ -552,6 +570,8 @@ export interface Notifications {
     settings: JsonObject;
     applied?: Applied;
     disabled?: true;
+    /** Feature live: the live keys the change moved, family members by their full key ([] for none). */
+    retuned?: string[];
     inPlace?: boolean;
     ports?: PortsMoved;
     inputs?: string[];
@@ -823,6 +843,7 @@ export const nodeSetFeature = "node.set";
 export const dryRunFeature = "dryRun";
 export const typesFeature = "types";
 export const actionsFeature = "actions";
+export const liveFeature = "live";
 
 // ----- The conformance fixtures (test/protocol/*.json) -----
 

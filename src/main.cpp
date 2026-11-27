@@ -452,6 +452,7 @@ int main(int argc, char** argv) {
 	// before the node.state it causes.
 	graph.observe(static_cast<ear::DesiredNodeListener&>(gateway));
 	graph.observe(static_cast<ear::DesiredRouteListener&>(gateway));
+	graph.observe(static_cast<ear::DesiredNodeListener&>(log)); // param records (docs/output-records.md#param)
 	graph.subscribe(nodes);
 	graph.subscribe(reconciler);
 	nodes.subscribe(log);

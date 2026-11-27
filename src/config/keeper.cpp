@@ -61,18 +61,38 @@ control::AppliedKind kindOf(NodeOutcome outcome) {
 		return control::AppliedKind::reconfigure;
 	case NodeOutcome::reshape:
 		return control::AppliedKind::reshape;
+	case NodeOutcome::retune:
+		return control::AppliedKind::retune;
 	case NodeOutcome::unchanged:
 		break;
 	}
 	return control::AppliedKind::unchanged;
 }
 
+/// node.set's answer when it changes nothing: unchanged, with its empty retuned and alsoChanged
+/// (docs/control-port.md#retunes); a disable's or an enable's, unchanged alone.
+control::Applied unchangedFor(bool detailed) {
+	control::Applied applied{control::AppliedKind::unchanged};
+	if (detailed) {
+		applied.retuned.emplace();
+		applied.alsoChanged.emplace();
+	}
+	return applied;
+}
+
 /// An accepted disable's, enable's or set's answer from the plan's change of its node (docs/control-port.md#methods): no
-/// change is unchanged; node.set's carries, when the ports change, whether a reshape is in place, the ports added and
+/// change is unchanged; node.set's carries the live keys it retuned and the other nodes' keys it changed
+/// (docs/control-port.md#retunes), and, when the ports change, whether a reshape is in place, the ports added and
 /// removed and the routes it removed (or, dry, would remove).
-template <class Answer> CommandResult appliedOf(const Answer& answer, const std::optional<NodeChange>& change) {
-	if (!change) return control::Applied{control::AppliedKind::unchanged};
+template <class Answer> CommandResult appliedOf(const Answer& answer, const std::optional<NodeChange>& change,
+                                                std::vector<control::NodeKey> alsoChanged) {
+	if (!change) return unchangedFor(answer.detailed);
 	control::Applied applied{kindOf(change->outcome)};
+	if (answer.detailed) {
+		applied.retuned.emplace();
+		for (const Retuned& retune : change->retuned) applied.retuned->push_back(retune.key);
+		applied.alsoChanged = std::move(alsoChanged);
+	}
 	if (answer.detailed && change->portsChanged()) {
 		if (change->outcome == NodeOutcome::reshape) applied.inPlace = change->inPlace;
 		applied.ports = portsMoved(change->oldPorts, change->ports);
@@ -302,7 +322,7 @@ std::optional<CommandResult> Keeper::take(const control::Command& command) {
 		                  command);
 	}
 	if (!*edit) return refusalOf(edit->error());
-	if (!**edit) return answer.node ? CommandResult{control::Applied{control::AppliedKind::unchanged}} : done();
+	if (!**edit) return answer.node ? CommandResult{unchangedFor(answer.detailed)} : done();
 	GraphFileModel model = std::move(***edit);
 	// An edit's or a set's candidate that does not read cannot be planned: the text's errors answer it.
 	if (model.read().hasErrors())
@@ -364,7 +384,7 @@ void Keeper::postStep(Batch batch, std::vector<Read> reads, std::optional<Offer>
 			Judged judged = side.offer(std::move(*offer));
 			verdict = judged.verdict;
 			if (answer.node && judged.verdict == Verdict::accepted)
-				batch.results[offerIndex] = appliedOf(answer, judged.change);
+				batch.results[offerIndex] = appliedOf(answer, judged.change, std::move(judged.alsoChanged));
 			else batch.results[offerIndex] = CommandResult{std::move(judged.result)};
 		}
 		std::optional<Batch> rest;

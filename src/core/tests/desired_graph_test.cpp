@@ -108,11 +108,13 @@ constexpr auto channelsRow =
 constexpr auto levelFamily = setting::indexed("level", channelsRow, setting::number(0, 100), 50).inPlace();
 constexpr auto holdFamily =
 	setting::indexed("hold", channelsRow, setting::boolean(), false).restarts("a test type restarts on it");
-constexpr TypeSpec movableSpec{.settings =
-                                   SettingsTable<portRow, gainRow, channelsRow, levelFamily, holdFamily>{"movable"},
-                               .banks = Banks<out>{}};
+constexpr auto trimRow = setting::defaulted("trim", setting::decimal(-24.0, 24.0, "dB"), 0.0).live(setting::ramp(20));
+constexpr auto mixFamily = setting::indexed("mix", channelsRow, setting::boolean(), false).live(setting::step);
+constexpr TypeSpec movableSpec{
+	.settings = SettingsTable<portRow, gainRow, channelsRow, levelFamily, holdFamily, trimRow, mixFamily>{"movable"},
+	.banks = Banks<out>{}};
 /// "movable": port, gain and each level.<n> change in place; channels makes its ports (outputs
-/// out.1..out.<channels>); each hold.<n> restarts it.
+/// out.1..out.<channels>); each hold.<n> restarts it; trim and each mix.<n> are live.
 struct Movable : NeverStarted {
 	static Members<movableSpec> ports(const CheckedOf<movableSpec>& settings) {
 		return {out(members(settings.get<channelsRow>()))};
@@ -601,10 +603,12 @@ struct ChangeRecorder final : DesiredNodeListener, DesiredRouteListener {
 		log.push_back("nodeUpdated " + node.name);
 	}
 	void nodeChanged(const NodeSpec& node, std::shared_ptr<const NodeConfig>, const NodeChange& change) override {
-		static constexpr const char* names[] = {"restart",     "disable", "enable",   "stored",
-		                                        "reconfigure", "reshape", "unchanged"};
+		static constexpr const char* names[] = {"restart",     "disable", "enable",    "stored",
+		                                        "reconfigure", "reshape", "unchanged", "retune"};
 		std::string keys;
 		for (const auto& key : change.keys) keys += " " + key;
+		for (const auto& retune : change.retuned)
+			keys += " ~" + retune.key + " " + retune.from.dump() + "->" + retune.to.dump();
 		std::string ports;
 		if (change.portsChanged())
 			ports = " ports " + std::to_string(change.oldPorts.inputs().size() + change.oldPorts.outputs().size()) +
@@ -815,11 +819,49 @@ TEST_CASE("A change whose every key is marked inPlace is a reconfigure, and one 
 		CHECK(type.kindOf("hold.3") == SettingKind::boolean);
 		CHECK_FALSE(type.kindOf("level.01").has_value());
 	}
+	SECTION("live keys are retuned beside the outcome the others decide, and alone they are a retune") {
+		CHECK(planned(movable({{"port", 5004}, {"trim", -3.5}})) == Outcomes{{"fpp", NodeOutcome::retune}});
+		CHECK(recorder.log == Log{"nodeChanged fpp retune ~trim 0.0->-3.5"});
+		recorder.log.clear();
+		CHECK(planned(movable({{"port", 5006}, {"trim", -3.5}, {"mix.1", true}})) ==
+		      Outcomes{{"fpp", NodeOutcome::reconfigure}});
+		CHECK(recorder.log == Log{"nodeChanged fpp reconfigure port ~mix.1 false->true"});
+		recorder.log.clear();
+		// A mixed change of ports: the reshape its other keys ask (a restart: channels restarts), the live key beside it.
+		CHECK(planned(movable({{"port", 5006}, {"channels", 2}, {"trim", 1}, {"mix.1", true}})) ==
+		      Outcomes{{"fpp", NodeOutcome::reshape}});
+		CHECK(recorder.log == Log{"nodeChanged fpp reshape channels ~trim -3.5->1.0 ports 1->2"});
+		recorder.log.clear();
+		CHECK(planned(movable({{"port", 5006}, {"channels", 2}, {"trim", 1}, {"mix.1", true}, {"hold.1", true}})) ==
+		      Outcomes{{"fpp", NodeOutcome::restart}});
+		recorder.log.clear();
+		// A disabled node stays stored, its live keys retuned: they seed the configuration its enable makes.
+		CHECK(planned(movable({{"port", 5006}, {"channels", 2}, {"trim", 1}, {"mix.1", true}, {"hold.1", true}},
+		                      true)) == Outcomes{{"fpp", NodeOutcome::disable}});
+		recorder.log.clear();
+		CHECK(planned(movable({{"port", 5006}, {"channels", 2}, {"trim", 2}, {"mix.1", true}, {"hold.1", true}},
+		                      true)) == Outcomes{{"fpp", NodeOutcome::stored}});
+		CHECK(recorder.log == Log{"nodeChanged fpp stored disabled ~trim 1.0->2.0"});
+		const NodeType& type = *catalogue.find("movable");
+		const Ports one = type.parse("fpp", {{"port", 5004}}).value()->ports();
+		const NodeChange mixed = changeOf(type, {"gain", "mix.2", "trim"}, false, false, one, one);
+		CHECK(mixed.outcome == NodeOutcome::reconfigure);
+		CHECK(mixed.keys == std::vector<std::string>{"gain"});
+		REQUIRE(mixed.retuned.size() == 2);
+		CHECK(mixed.retuned[0].key == "mix.2");
+		CHECK(mixed.retuned[1].key == "trim");
+		CHECK(changeOf(type, {"trim"}, false, false, one, one).keys.empty());
+		CHECK(type.liveValueAsSetting("mix.2", 1) == json(true));
+		CHECK(type.liveValueAsSetting("gain", 1).is_null());
+	}
 	SECTION("outcomeFor is the plan's rule: no key is unchanged, an unknown key is restart-only") {
 		const NodeType& type = *catalogue.find("movable");
 		CHECK(outcomeFor(type, std::vector<std::string>{"gain"}, false, false) == NodeOutcome::reconfigure);
 		CHECK(outcomeFor(type, std::vector<std::string>{}, false, false) == NodeOutcome::unchanged);
 		CHECK(outcomeFor(type, std::vector<std::string>{"gain", "volume"}, false, false) == NodeOutcome::restart);
 		CHECK(outcomeFor(type, std::vector<std::string>{"gain"}, true, true) == NodeOutcome::stored);
+		CHECK(outcomeFor(type, std::vector<std::string>{"trim", "mix.3"}, false, false) == NodeOutcome::retune);
+		CHECK(outcomeFor(type, std::vector<std::string>{"trim"}, true, true) == NodeOutcome::stored);
+		CHECK(outcomeFor(type, std::vector<std::string>{"trim", "hold.1"}, false, false) == NodeOutcome::restart);
 	}
 }

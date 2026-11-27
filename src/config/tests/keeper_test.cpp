@@ -889,6 +889,46 @@ TEST_CASE("node.set merges into the node's settings, null removing a key, and an
 	CHECK(f.log.lines == Lines{"reply"});
 }
 
+TEST_CASE("node.set of a live key is a retune, naming its retuned keys and the other nodes a shared definition moved",
+          "[keeper][node-set][live]") {
+	const std::string faders = R"(graph {
+    rate 48khz;
+    block_size 256;
+}
+@set $g -6;
+node fader a { gainDb $g; }
+node fader b { gainDb $g; }
+node fader c;
+)";
+	Fixture f("node_set_live", faders);
+	f.start();
+	auto results = f.run({control::SetNode{"a", {{"gainDb", -3.5}}, true}});
+	const control::Applied& dry = answered(results[0]);
+	CHECK(dry.kind == control::AppliedKind::retune);
+	CHECK(dry.retuned == std::vector<std::string>{"gainDb"});
+	CHECK(dry.alsoChanged == std::vector<control::NodeKey>{{"b", "gainDb"}});
+	CHECK(f.graphFile().text == faders); // a dry run changes nothing
+
+	results = f.run({control::SetNode{"a", {{"gainDb", -3.5}}}});
+	const control::Applied& shared = answered(results[0]);
+	CHECK(shared.kind == control::AppliedKind::retune);
+	CHECK(shared.retuned == std::vector<std::string>{"gainDb"});
+	CHECK(shared.alsoChanged == std::vector<control::NodeKey>{{"b", "gainDb"}});
+	CHECK(f.lastChange().file.text.find("@set $g -3.5;") != std::string::npos);
+
+	results = f.run({control::SetNode{"c", {{"mute", true}, {"gainDb", -1}}}});
+	const control::Applied& own = answered(results[0]);
+	CHECK(own.kind == control::AppliedKind::retune);
+	CHECK(own.retuned == std::vector<std::string>{"gainDb", "mute"});
+	CHECK(own.alsoChanged == std::vector<control::NodeKey>{});
+
+	results = f.run({control::SetNode{"c", {{"mute", true}}}});
+	const control::Applied& same = answered(results[0]);
+	CHECK(same.kind == control::AppliedKind::unchanged);
+	CHECK(same.retuned == std::vector<std::string>{});
+	CHECK(same.alsoChanged == std::vector<control::NodeKey>{});
+}
+
 TEST_CASE("node.set refuses a required key removed, an unknown node and settings that are not an object",
           "[keeper][node-set]") {
 	Fixture f("node_set_refused");

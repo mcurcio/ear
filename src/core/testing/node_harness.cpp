@@ -901,6 +901,9 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		std::span<const ActionDeclaration> actionsDeclared() const override { return inner->actionsDeclared(); }
 		std::span<const SettingRow* const> settingRows() const override { return inner->settingRows(); }
 		std::vector<std::uint64_t> liveValues() const override { return inner->liveValues(); }
+		std::expected<void, std::string> checkLive(std::span<const std::uint64_t> live) const override {
+			return inner->checkLive(live);
+		}
 		std::expected<void, std::string> runCall(std::size_t action, void* state,
 		                                         CheckedSettings&& args) const override {
 			return inner->runCall(action, state, std::move(args));
@@ -1524,6 +1527,13 @@ void NodeHarness::live(std::string_view key, std::uint64_t bits) {
 	impl_->requireAdded();
 	const std::optional<std::uint32_t> member = impl_->type.liveIndexOf(key);
 	if (!member) throw std::logic_error("live() of " + std::string(key) + ", which is not a live member");
+	// As a retune is judged (docs/architecture.md#retunes): the type's check with the node's live values, this one
+	// moved; a refusal fails the test.
+	std::vector<std::uint64_t> candidate = impl_->host->liveValues(impl_->options.node);
+	if (*member >= candidate.size()) throw std::logic_error("live() of " + std::string(key) + ": no such slot");
+	candidate[*member] = bits;
+	if (auto checked = impl_->config->checkLive(candidate); !checked)
+		throw std::logic_error("live() of " + std::string(key) + " refused by the type's check: " + checked.error());
 	const std::array<LiveWrite, 1> writes{LiveWrite{*member, bits}};
 	impl_->host->setLive(impl_->options.node, writes);
 	impl_->settle();

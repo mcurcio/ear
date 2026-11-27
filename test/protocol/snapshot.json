@@ -20,7 +20,8 @@
           "dryRun",
           "types",
           "status",
-          "actions"
+          "actions",
+          "live"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -231,7 +232,8 @@
           "dryRun",
           "types",
           "status",
-          "actions"
+          "actions",
+          "live"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -440,7 +442,8 @@
       "dryRun",
       "types",
       "status",
-      "actions"
+      "actions",
+      "live"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,

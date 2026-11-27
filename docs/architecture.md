@@ -501,16 +501,13 @@ left it.
 
 Each node keeps its **live values** in `NodeHost` (main loop): every live member's value as its slot
 holds it, one per member up to each family's maximum. They are seeded from the node's settings when
-it is added (`NodeConfig::liveValues`), seed every configuration's slots when it is made, and are
-what `s.liveValue` reads in `configure` and the change version (bound for the call:
-`CreateContext::liveValues`). They belong to the node, not to a config: `NodeHost::setLive` moves
-them and the configuration's slots at once, in any phase (with no configuration, only the live
-values), and never adopts or replaces a config.
-
-Until retunes are built a change of a live row is planned as a change in place is
-([writing-a-node-type.md](writing-a-node-type.md#live-rows)), and the live values take the new
-settings' at the change's commit point, where its slots are written in one batch, and at each
-configuration's making from its config: so the audio and the settings agree from the commit point.
+it is added (`NodeConfig::liveValues`), seed every configuration's slots when it is made (never
+from that configuration's config, whose own may be older), and are what `s.liveValue` reads in
+`configure` and the change version (bound for the call: `CreateContext::liveValues`). They belong
+to the node, not to a config: `NodeHost::setLive` moves them and the configuration's slots at once,
+in any phase (with no configuration, only the live values), and never adopts or replaces a config.
+A [retune](#retunes) is what moves them from the graph file; a change's commit point writes no slot,
+since a change's keys are never live.
 
 **The drain**, on the main loop, is part of the tick's: the bell's dispatch arms the tick as a
 queue's wake does (`NodeHost::realtimeRung`), and each node's drain reads its configuration's ring
@@ -703,15 +700,50 @@ of a node's ports (a card's channel count) keeps the node and its block, reshape
 and added again. A change to a disabled node is stored for when it is enabled.
 
 The desired graph's plan says what each edit asks of a node it keeps by name (`NodeOutcome`, told
-through `nodeChanged` with a `NodeChange`): `disable`, `enable` or `stored` by its `disabled`
-before and after; otherwise `reshape` when its ports differ, `unchanged` when no key does (nothing
-is done or told), `reconfigure` when every changed key's row is marked in place
-([writing-a-node-type.md](writing-a-node-type.md#change-marks)), else `restart` (every other row
-is marked to restart, with the reason the type schema carries). A family member's key (`trimDb.2`)
-is judged by its family's mark (`NodeType::changeOf(key)`, through the table's one key lookup:
-[writing-a-node-type.md](writing-a-node-type.md#indexed-families)). A `reconfigure` is taken in place when the type has a change version
-([below](#changes-in-place)), else as a restart. `changeOf` (`desired_graph.hpp`) is the one rule,
-the plan's and the type harness's.
+through `nodeChanged` with a `NodeChange`). It first splits the changed keys by their rows' marks
+([writing-a-node-type.md](writing-a-node-type.md#change-marks)): the **live** keys go to
+`NodeChange::retuned` and are [retuned](#retunes) beside whatever outcome the others decide; the
+outcome is then `disable`, `enable` or `stored` by its `disabled` before and after; otherwise
+`reshape` when its ports differ, `unchanged` when no key does (nothing is done or told), `retune`
+when only live keys do, `reconfigure` when every other changed key's row is marked in place, else
+`restart` (every other row is marked to restart, with the reason the type schema carries). A family
+member's key (`trimDb.2`) is judged by its family's mark (`NodeType::changeOf(key)`, through the
+table's one key lookup: [writing-a-node-type.md](writing-a-node-type.md#indexed-families)). A
+`reconfigure` is taken in place when the type has a change version ([below](#changes-in-place)),
+else as a restart. `NodeChange::keys` holds only the keys that are not live, so a live key never
+appears in a health's `keys` or `next` or a restart's cause. `changeOf` (`desired_graph.hpp`) is
+the one rule, the plan's and the type harness's.
+
+#### Retunes
+
+A change of live keys moves values only the code reads, so it is taken with no hook called, no
+reconfiguring and no health told: `NodeHost` writes the node's [live values](#live-values) and then
+its configuration's slots at once, in the turn the plan is committed and in any phase, before it
+takes the outcome the other keys decide. The values come from the change's new config
+(`NodeConfig::liveValues`), member by member for the keys retuned, so a member another key's move
+set is kept. A retune never adopts or replaces a config: the configuration keeps the config it was
+made or changed with, and the newest is kept for the next configure.
+
+| Phase | The retuned keys | The outcome (the other keys) |
+|---|---|---|
+| `running`, `stopped` | live values and slots move | as built |
+| `reconfiguring`, before the commit point | live values and slots move; the change and its target are untouched | a `retune` never supersedes the change in flight; any other outcome as built |
+| `reconfiguring`, committing | live values and slots move | as built: waits for the invoke |
+| not yet rested, `failed`, disabled | live values move, and the slots of a configuration it has; they seed the next | a `retune` restarts nothing, skips no wait and retries no failure; a disabled node's change of live keys alone is `stored` and starts nothing |
+| a restart in flight | live values move, and the old configuration's slots, heard through its fade-out; the new one is seeded from them | as built |
+
+So a fallback, a supersession or a stop of a change cannot revert a retune: each configuration is
+seeded from the live values, and the commit point writes no slot. A live row can never be why a
+node failed (it touches nothing but the code's view), so a change of live keys alone does not
+retry a failed node, and a fader's drag cannot start one. A loop's state and companions are not
+told of a retune. Its records are standard output's `param` records
+([output-records.md](output-records.md#param)); on the wire it is `applied: "retune"` with
+`retuned` ([control-port.md](control-port.md#retunes)).
+
+**Checking a retune.** A type's `check` reads live rows through `liveValue`. At parse it judges
+the parsed values, which a change's new settings hold whole. `NodeConfig::checkLive(live)` runs it
+with given live values in place, the type harness's `live` calls it before it moves a slot, and a
+refusal moves nothing.
 
 ### Changes in place
 
@@ -871,8 +903,8 @@ the block does it). The plan's `NodeChange` carries the ports before and after.
 ### Failures
 
 A failure tears the node's configuration down at once and keeps its block and routes; the node
-stays `failed` until asked (`node.start` or `node.restart`, which retry it, a change of settings,
-or its removal). Recovery that retries by itself is not built yet.
+stays `failed` until asked (`node.start` or `node.restart`, which retry it, a change of a key that
+is not live ([retunes](#retunes)), or its removal). Recovery that retries by itself is not built yet.
 
 | Code | When |
 |---|---|

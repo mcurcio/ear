@@ -20,7 +20,8 @@
           "dryRun",
           "types",
           "status",
-          "actions"
+          "actions",
+          "live"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -164,7 +165,8 @@
           "play.3",
           "play.4"
         ],
-        "outputs": []
+        "outputs": [],
+        "retuned": []
       }
     },
     {
@@ -205,7 +207,8 @@
       "dryRun",
       "types",
       "status",
-      "actions"
+      "actions",
+      "live"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,

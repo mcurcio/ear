@@ -68,7 +68,7 @@ private:
 	/// node.enable; node.set with its ports and routes too, and as a dry run, never kept).
 	struct Answer {
 		std::optional<NodeName> node{};
-		bool detailed = false;     // node.set: inPlace, ports and the routes
+		bool detailed = false;     // node.set: retuned, alsoChanged, inPlace, ports and the routes
 		bool dryRun = false;       // planned and answered, then dropped
 		std::vector<Route> routes; // the routes removed with the change (or, for a dry run, that would be)
 	};

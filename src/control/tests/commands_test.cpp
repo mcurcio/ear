@@ -128,7 +128,7 @@ TEST_CASE("The frame: graph.get says protocol 1 and the lifecycle, counters, com
 		encodeGraph(ear::GraphView{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {}, {}, {}});
 	CHECK(graph["protocol"] == 1);
 	CHECK(graph["features"] == json::array({"lifecycle", "counters", "companions", "node-text", "reshape", "node.set",
-	                                        "dryRun", "types", "status", "actions"}));
+	                                        "dryRun", "types", "status", "actions", "live"}));
 }
 
 TEST_CASE("A snapshot's node carries its companion list in request order, each counter only on its kind, and [] for "

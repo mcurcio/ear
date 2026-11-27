@@ -253,6 +253,13 @@ public:
 	/// Every live member's value as these settings hold it, as its slot's bits (docs/architecture.md#live-values): a
 	/// family's members 1 to its maximum, active or not. What seeds the node's live values.
 	virtual std::vector<std::uint64_t> liveValues() const { return {}; }
+	/// The type's check (docs/writing-a-node-type.md#the-class) of these settings with `live` as
+	/// their live values, every live member's slot bits in order: what a retune of the node's live values must pass
+	/// (docs/architecture.md#retunes). Its refusal's text; nothing to refuse for a type with no check.
+	virtual std::expected<void, std::string> checkLive(std::span<const std::uint64_t> live) const {
+		static_cast<void>(live);
+		return {};
+	}
 	/// Call `action` (its index in actionsDeclared, a call), on its loop's thread with the loop's state and the
 	/// arguments its table's walk made: the handler's answer. NodeHost calls it only for a call.
 	virtual std::expected<void, std::string> runCall(std::size_t action, void* state, CheckedSettings&& args) const;
@@ -322,6 +329,9 @@ public:
 	/// Where `key`'s slot sits among the type's live members (docs/writing-a-node-type.md#live-rows); nothing for a key
 	/// that is not a live member.
 	std::optional<std::uint32_t> liveIndexOf(std::string_view key) const noexcept;
+	/// A live member's slot bits as `key`'s value on the control port and in ear.conf's JSON (a decimal a number, a
+	/// boolean true or false, a whole number, a choice its name); null for a key that is not a live member.
+	NodeSettings liveValueAsSetting(std::string_view key, std::uint64_t bits) const;
 	/// The stores every node of the type has (docs/writing-a-node-type.md#stores), from its spec, in declaration
 	/// order: the boot sweep reads them before any node exists.
 	std::span<const StoreDeclaration> stores() const noexcept { return stores_; }

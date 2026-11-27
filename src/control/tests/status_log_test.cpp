@@ -462,6 +462,19 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 			log.nodeDiagnostic("kitchen", said("ear.status-flapping", "connection flapping: 14 changes in 10s", fields,
 		                                       "connection", true, 2));
 		},
+		// A live key a committed change retuned (docs/output-records.md#param): its cause the graph-file record's last
+		// told (a disk change, above); a decimal as ear.conf writes it.
+		[](StatusLog& log, Lines&) {
+			log.nodeChanged(
+				ear::NodeSpec{"amp", "gain", {{"gainDb", -3.5}}}, nullptr,
+				ear::NodeChange{.outcome = ear::NodeOutcome::retune, .retuned = {ear::Retuned{"gainDb", -6.0, -3.5}}});
+		},
+		[](StatusLog& log, Lines&) {
+			log.nodeChanged(ear::NodeSpec{"amp", "gain", {{"mute", true}}}, nullptr,
+		                    ear::NodeChange{.outcome = ear::NodeOutcome::reconfigure,
+		                                    .keys = {"channels"},
+		                                    .retuned = {ear::Retuned{"mute", false, true}}});
+		},
 		[](StatusLog& log, Lines&) { log.stopped(); },
 	};
 }
@@ -491,7 +504,7 @@ TEST_CASE("Every kind the fixture shows is made, and each record is one line", "
 	for (const Json& entry : records) kinds.insert(entry["record"]["kind"].get<std::string>());
 	CHECK(kinds == std::set<std::string>{"engine", "control", "node", "note", "route", "graph-file",
 	                                     "graph-file-written", "graph-file-write-failed", "log", "exit", "diagnostic",
-	                                     "action", "status", "event"});
+	                                     "action", "status", "event", "param"});
 	Lines lines;
 	StatusLog log(lines, &fixedTime, &pacedTime);
 	for (const auto& call : fixtureCalls()) call(log, lines);

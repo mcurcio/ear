@@ -302,9 +302,12 @@ touching anything else. Its value is a **slot** in the configuration's realtime 
   ([architecture.md](architecture.md#live-values)). A hook must not act on a live value (the slots
   already do) and a code must not copy one, which goes stale at its first move; only review catches
   that.
-- **The plan.** Until retunes are built, a change of a live key is planned as a change in place
-  is (a `reconfigure`, or a restart for a type with no change version), and the type schema says
-  `inPlace` for it; its new value reaches the slot at the change's commit point.
+- **Retunes.** A change of a live key is a [retune](architecture.md#retunes): its new value
+  reaches the slot at once, with no hook called, whatever the change's other keys ask (a change in
+  place, a reshape or a restart), and in every phase. The change version never sees a live key
+  among its changed keys, so a type's change version is written for its in-place rows alone. The
+  type schema says `change: "live"` with the transition
+  ([control-port.md](control-port.md#type-schemas)).
 - A type with a live row has realtime channels and must answer with a code of its own, never a
   pass-through.
 
@@ -314,7 +317,7 @@ Every row of a spec's settings says how a change to its key is taken, with exact
 
 | Mark | A change to the key | Schema `change` |
 |---|---|---|
-| `.live(setting::ramp(ms))`, `.live(setting::step)` | Moves a slot the code reads through `io.param` ([live rows](#live-rows)) | `inPlace`, until retunes are built |
+| `.live(setting::ramp(ms))`, `.live(setting::step)` | Moves a slot the code reads through `io.param` ([live rows](#live-rows)), a [retune](architecture.md#retunes) beside the change's other keys | `live`, with `live`'s `transition` (and a ramp's `ms`) |
 | `.inPlace()` | Taken while the node runs, through the type's [change version](#the-change-version) of `configure` | `inPlace` |
 | `.restarts("<why>")` | Restarts the node; `why` is one line naming what cannot change while it runs, shown beside "restarts" | `restart`, with `restartReason` |
 
@@ -343,9 +346,10 @@ in order:
    change in place yet"; `card`'s `card`: "card has no change in place yet").
 
 The marks are data in the table: the desired graph's plan reads them, and a change whose every
-changed key is marked in place (or live) is planned `reconfigure` rather than `restart`
+changed key is live is planned `retune`, and one whose every other changed key is marked in place is
+planned `reconfigure` rather than `restart`, its live keys retuned beside it
 ([architecture.md](architecture.md#restarts-and-changes-of-settings)); a change of ports is a
-reshape, in place only when every changed key is marked in place
+reshape, in place only when every changed key that is not live is marked in place
 ([architecture.md](architecture.md#reshapes)). A settings row with no mark, a row with two (or one
 twice) and a restart with an empty reason do not compile. A call's arguments
 ([actions](#actions)) are rows too, but never change: a mark on one does not compile.
@@ -1749,8 +1753,8 @@ fakes allow. Banks are named by the spec's handles.
 | `h->facts()`, `h->cuts()` | The last cycle's `CycleFacts`, and the cut record the block's account reads |
 | `h.feed(bank, interleaved)`, `h.lastPlayed(bank)`, `h.shortfall(bank)` | A source's writer, never waiting (it takes what fits and returns the frames taken); what the last `process()` did with its ring (the `SourcePlayed` its clock was told, all zero before the first); its shortfall |
 | `h.input(bank, i)`, `h.output(bank, i)` | A port's buffer |
-| `h.stop()`, `h.start()`, `h.restart()`, `h.change(settings)`, `h.disable()`, `h.enable()`, `h.remove()`, `h->stopAll()` | The operations; `stopAll()` is ear's stop, run to the end (what the harness's destructor does) |
-| `h.live<row>(value)`, `h.live<family>(member, value)`, `h->liveValues()`, `h->liveReloads()` | A [live row](#live-rows)'s slot moved as a gesture moves it: the node's live values and its configuration's slots at once (`NodeHost::setLive`), the next block taking it; a value outside the row's range is a `std::logic_error`. The node's live values as slot bits; how many blocks the newest configuration's code loaded its slots in (a steady block loads none) |
+| `h.stop()`, `h.start()`, `h.restart()`, `h.change(settings)`, `h.disable()`, `h.enable()`, `h.remove()`, `h->stopAll()` | The operations; `stopAll()` is ear's stop, run to the end (what the harness's destructor does). `h.change` answers the plan's outcome by `changeOf`, `retune` among them, and retunes a change's live keys as `NodeHost` does |
+| `h.live<row>(value)`, `h.live<family>(member, value)`, `h->liveValues()`, `h->liveReloads()` | A [live row](#live-rows)'s slot moved as a gesture moves it: the type's `check` with the node's live values and this move in place (`NodeConfig::checkLive`), then the node's live values and its configuration's slots at once (`NodeHost::setLive`), the next block taking it; a value outside the row's range, or one the check refuses, is a `std::logic_error` and moves nothing. The node's live values as slot bits; how many blocks the newest configuration's code loaded its slots in (a steady block loads none) |
 | `h.trigger<trigger>()`, `h.invoke<call>(args)`, `h->invoke(name, args)` | The [actions](#actions): a trigger, answered at once (an `ActionReply`); a call, its handler run by `runLoops()` before it returns (an `ActionAnswer`: `answered()`, `reply()`); by name, unchecked and without running the loops, so a test can hold a call queued (behind a restart, past its deadline) |
 | `h.phase()`, `h.health()`, `h.gone()`, `h.droppedFrames()`, `h.companionList()` | What the node shows; its companion list as a client will see it ([engine.md](engine.md#companions-in-a-nodes-list)), read now |
 | `h->unwritten()`, `h->notes()`, `h->logs()`, `h->diagnostics()`, `h->latencyPlan()`, `h->ports()` | Through `->`, the underlying `NodeHarness`; `notes()` as the main loop heard them (after the [note rate](#the-node-handle)), `logs()` every log entry attributed to the node |

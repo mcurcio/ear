@@ -96,9 +96,12 @@ inline constexpr std::string_view dryRunFeature = "dryRun";
 inline constexpr std::string_view typesFeature = "types";
 /// node.invoke and each type schema's actions (docs/control-port.md#actions).
 inline constexpr std::string_view actionsFeature = "actions";
-inline constexpr std::array<std::string_view, 10> wireFeatures{
-	"lifecycle",    "counters",    companionsFeature, nodeTextFeature, reshapeFeature,
-	nodeSetFeature, dryRunFeature, typesFeature,      "status",        actionsFeature};
+/// Live rows changed with no hook called: the schema's change "live", applied "retune", node.updated's and node.set's
+/// "retuned", node.set's "alsoChanged" (docs/control-port.md#retunes).
+inline constexpr std::string_view liveFeature = "live";
+inline constexpr std::array<std::string_view, 11> wireFeatures{
+	"lifecycle",   "counters",   companionsFeature, nodeTextFeature, reshapeFeature, nodeSetFeature,
+	dryRunFeature, typesFeature, "status",          actionsFeature,  liveFeature};
 /// Control thread. Named params only, decoded with graph_json. Unknown method: methodNotFound;
 /// a missing, extra or mistyped key: invalidParams whose message is the JsonError
 /// ("/from/port: missing") and whose data is {"pointer"} (the JSON pointer it names). graphFile.get and

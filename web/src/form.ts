@@ -92,6 +92,7 @@ export function shownValue(row: SettingSchema, value: JsonValue | undefined): Fi
 /** The words beside a field (docs/editor.md#the-settings-form); a `change` this editor does not know says nothing. */
 export function hintsOf(row: SettingSchema): string[] {
   const hints: string[] = [];
+  if (row.change === "live") hints.push(row.live?.transition === "ramp" ? "live, ramped" : "live");
   if (row.change === "inPlace") hints.push("applies in place");
   if (row.change === "restart")
     hints.push(row.restartReason !== undefined ? `restarts the node: ${row.restartReason}` : "restarts the node");
@@ -389,7 +390,7 @@ export type ApplyStep =
 /** Whether a dry run's answer needs the person's yes: a restart, a reshape, routes removed, or an outcome unknown. */
 export function asksFirst(result: SetResult): boolean {
   if ((result.routes ?? []).length > 0) return true;
-  return !["reconfigure", "unchanged", "stored"].includes(result.applied);
+  return !["reconfigure", "unchanged", "stored", "retune"].includes(result.applied);
 }
 
 /** The question for a dry run's answer: "Restarts desk: its audio stops for a moment.", or the routes it removes. */

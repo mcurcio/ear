@@ -43,6 +43,9 @@ struct Judged {
 	Verdict verdict;
 	std::expected<void, CommandError> result;
 	std::optional<NodeChange> change{}; // an accepted offer's Plan::change(answerFor)
+	/// Every other node's changed keys (its live ones among them) in that plan, in name order then key order:
+	/// node.set's alsoChanged (docs/control-port.md#retunes).
+	std::vector<control::NodeKey> alsoChanged{};
 };
 /// Where a refusal points: the named node's line; the first route naming a refused node or port;
 /// the route refused; the first node of an unknown type; the second of two nodes sharing a name. Pure.

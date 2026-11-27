@@ -26,7 +26,8 @@
           "dryRun",
           "types",
           "status",
-          "actions"
+          "actions",
+          "live"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -334,7 +335,8 @@
         "settings": {
           "path": "y.wav"
         },
-        "applied": "restart"
+        "applied": "restart",
+        "retuned": []
       }
     },
     {
@@ -494,7 +496,8 @@
       "dryRun",
       "types",
       "status",
-      "actions"
+      "actions",
+      "live"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,

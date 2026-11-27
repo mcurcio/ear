@@ -284,17 +284,16 @@ TEST_CASE("A start after a stop takes what the slots were moved to while stopped
 	CHECK(h->liveValues().at(table.liveIndexOf("level").value()) == std::bit_cast<std::uint64_t>(-20.0));
 }
 
-TEST_CASE("A change of a live row in place moves its slot at the commit point, and a swap keeps the ramp going",
-          "[live]") {
+TEST_CASE("A retune moves its slot with no new code, and a swap by a change in place keeps the ramp going", "[live]") {
 	Harness h;
 	running(h);
-	REQUIRE(h.change({{"level", -3.5}}) == NodeOutcome::reconfigure);
-	REQUIRE(h.swaps() == 1);
+	REQUIRE(h.change({{"level", -3.5}}) == NodeOutcome::retune);
+	REQUIRE(h.swaps() == 0);
 	std::vector<double> frames = levelOver(h, 256, 256);
 	CHECK(frames[0] == Approx(-5.9973958).margin(1e-6));
 	// A change of another key swaps in a new code; the slots are unchanged, so the ramp goes on where it was.
 	REQUIRE(h.change({{"level", -3.5}, {"tag", 1}}) == NodeOutcome::reconfigure);
-	REQUIRE(h.swaps() == 2);
+	REQUIRE(h.swaps() == 1);
 	const std::vector<double> after = levelOver(h, 768, 256);
 	frames.insert(frames.end(), after.begin(), after.end());
 	for (std::uint32_t k = 0; k < frames.size(); ++k) {
@@ -306,14 +305,14 @@ TEST_CASE("A change of a live row in place moves its slot at the commit point, a
 TEST_CASE("A swap two blocks after a step's edge sees framesSince of two blocks and the same before", "[live]") {
 	Harness h;
 	running(h);
-	// The edge comes from a change of the setting, so the commit point that writes it is the change's.
-	REQUIRE(h.change({{"pick", 4}}) == NodeOutcome::reconfigure);
-	REQUIRE(h.swaps() == 1);
+	// The edge comes from a retune of the setting, which writes the slot at once.
+	REQUIRE(h.change({{"pick", 4}}) == NodeOutcome::retune);
+	REQUIRE(h.swaps() == 0);
 	h.process(256);
 	CHECK(written(h, pick, 2) == 1.0F);
 	h.process(256);
 	REQUIRE(h.change({{"pick", 4}, {"tag", 7}}) == NodeOutcome::reconfigure);
-	REQUIRE(h.swaps() == 2);
+	REQUIRE(h.swaps() == 1);
 	h.process(256);
 	CHECK(written(h, pick, 3) == 512.0F);
 	CHECK(written(h, pick, 1) == 1.0F);
@@ -353,8 +352,8 @@ TEST_CASE("liveValue reads the node's live values in configure and the parsed on
 	REQUIRE(h.change({{"level", -9.0}, {"trim.3", 2.0}, {"tag", 1}}) == NodeOutcome::reconfigure);
 	CHECK(changeSawLevel == -1.5);
 	CHECK(changeSawTrim == 7.0);
-	// Until retunes are built the commit point takes the settings' values again.
-	CHECK(h->liveValues().at(table.liveIndexOf("level").value()) == std::bit_cast<std::uint64_t>(-9.0));
+	// A change's commit point writes no slot: its keys are never live (docs/architecture.md#retunes).
+	CHECK(h->liveValues().at(table.liveIndexOf("level").value()) == std::bit_cast<std::uint64_t>(-1.5));
 }
 
 TEST_CASE("The advance and the views allocate nothing, with 130 members moving", "[live]") {

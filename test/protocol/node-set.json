@@ -30,7 +30,8 @@
           "dryRun",
           "types",
           "status",
-          "actions"
+          "actions",
+          "live"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -210,7 +211,9 @@
       "jsonrpc": "2.0",
       "id": 2,
       "result": {
-        "applied": "reconfigure"
+        "applied": "reconfigure",
+        "retuned": [],
+        "alsoChanged": []
       }
     },
     {
@@ -225,7 +228,8 @@
           "latencyMs": 40,
           "port": 5006
         },
-        "applied": "reconfigure"
+        "applied": "reconfigure",
+        "retuned": []
       }
     },
     {
@@ -247,7 +251,9 @@
       "jsonrpc": "2.0",
       "id": 3,
       "result": {
-        "applied": "reconfigure"
+        "applied": "reconfigure",
+        "retuned": [],
+        "alsoChanged": []
       }
     },
     {
@@ -266,14 +272,18 @@
       "jsonrpc": "2.0",
       "id": 4,
       "result": {
-        "applied": "unchanged"
+        "applied": "unchanged",
+        "retuned": [],
+        "alsoChanged": []
       }
     },
     {
       "jsonrpc": "2.0",
       "id": 5,
       "result": {
-        "applied": "unchanged"
+        "applied": "unchanged",
+        "retuned": [],
+        "alsoChanged": []
       }
     },
     {
@@ -287,7 +297,8 @@
           "format": "L24",
           "port": 5006
         },
-        "applied": "reconfigure"
+        "applied": "reconfigure",
+        "retuned": []
       }
     },
     {
@@ -309,7 +320,9 @@
       "jsonrpc": "2.0",
       "id": 6,
       "result": {
-        "applied": "reconfigure"
+        "applied": "reconfigure",
+        "retuned": [],
+        "alsoChanged": []
       }
     },
     {
@@ -341,7 +354,9 @@
       "jsonrpc": "2.0",
       "id": 8,
       "result": {
-        "applied": "restart"
+        "applied": "restart",
+        "retuned": [],
+        "alsoChanged": []
       }
     },
     {
@@ -356,7 +371,9 @@
           ],
           "removed": []
         },
-        "routes": []
+        "routes": [],
+        "retuned": [],
+        "alsoChanged": []
       }
     },
     {
@@ -382,7 +399,9 @@
               "port": "play.2"
             }
           }
-        ]
+        ],
+        "retuned": [],
+        "alsoChanged": []
       }
     },
     {
@@ -445,7 +464,8 @@
         "inputs": [
           "play.1"
         ],
-        "outputs": []
+        "outputs": [],
+        "retuned": []
       }
     },
     {
@@ -496,7 +516,9 @@
               "port": "play.2"
             }
           }
-        ]
+        ],
+        "retuned": [],
+        "alsoChanged": []
       }
     },
     {
@@ -570,7 +592,8 @@
       "dryRun",
       "types",
       "status",
-      "actions"
+      "actions",
+      "live"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,

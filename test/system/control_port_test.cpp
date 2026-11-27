@@ -268,7 +268,7 @@ TEST_CASE("node.stop and node.start through the control port edit nothing, and w
 	REQUIRE(snapshot.contains("result"));
 	CHECK(snapshot["result"]["protocol"] == 1);
 	CHECK(snapshot["result"]["features"] == json::array({"lifecycle", "counters", "companions", "node-text", "reshape",
-	                                                     "node.set", "dryRun", "types", "status", "actions"}));
+	                                                     "node.set", "dryRun", "types", "status", "actions", "live"}));
 	CHECK(snapshot["result"]["nodes"][0]["phase"] == "running");
 	CHECK(snapshot["result"]["nodes"][0]["wanted"] == "running");
 
@@ -363,7 +363,7 @@ TEST_CASE("A file node's sink is in its companion list: ready while it records, 
 	INFO("snapshot: " << snapshot.dump());
 	REQUIRE(snapshot.contains("result"));
 	CHECK(snapshot["result"]["features"] == json::array({"lifecycle", "counters", "companions", "node-text", "reshape",
-	                                                     "node.set", "dryRun", "types", "status", "actions"}));
+	                                                     "node.set", "dryRun", "types", "status", "actions", "live"}));
 	const json& nodes = snapshot["result"]["nodes"];
 	REQUIRE(nodes.size() == 2);
 	CHECK(nodes[0]["name"] == "noise");

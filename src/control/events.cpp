@@ -194,6 +194,7 @@ std::string encodeEvent(const GraphEvent& event) {
 			} else if constexpr (std::is_same_v<E, NodeUpdated>) {
 				json params = {{"name", e.node}, {"settings", e.settings}, {"applied", outcomeName(e.applied)}};
 				if (e.disabled) params["disabled"] = true;
+				params["retuned"] = e.retuned; // feature live: always, [] for none (docs/control-port.md#retunes)
 				if (e.reshaped) {
 					if (e.applied == NodeOutcome::reshape) params["inPlace"] = e.reshaped->inPlace;
 					params["ports"] = encodePortsMoved(e.reshaped->ports);
@@ -262,6 +263,8 @@ std::string_view outcomeName(NodeOutcome outcome) noexcept {
 		return "reshape";
 	case NodeOutcome::unchanged:
 		return "unchanged";
+	case NodeOutcome::retune:
+		return "retune";
 	}
 	return "restart";
 }

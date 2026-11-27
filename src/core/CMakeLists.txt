@@ -144,6 +144,7 @@ if(BUILD_TESTS)
 		tests/realtime_test.cpp
 		tests/report_test.cpp
 		tests/reconfigure_test.cpp
+		tests/retune_test.cpp
 		tests/reshape_test.cpp
 		tests/reconciler_test.cpp
 		tests/rtp_receiver_test.cpp

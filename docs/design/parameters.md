@@ -1,11 +1,12 @@
 # Parameters: slice 6 of the node framework
 
 Status: design; steps 6.1 (change marks and restart reasons), 6.2 (decimal rows and typed defaults), 6.3 (indexed
-families), 6.4 (choice rows) and 6.5 (live rows: slots, ramps, steps, live values, `io.param`) are built and in the
-library docs ([writing-a-node-type.md](../writing-a-node-type.md#change-marks), [#decimal-rows](../writing-a-node-type.md#decimal-rows),
+families), 6.4 (choice rows), 6.5 (live rows: slots, ramps, steps, live values, `io.param`) and 6.6 (retunes, feature
+`live`) are built and in the library docs ([writing-a-node-type.md](../writing-a-node-type.md#change-marks), [#decimal-rows](../writing-a-node-type.md#decimal-rows),
 [#indexed-families](../writing-a-node-type.md#indexed-families), [#choice-rows](../writing-a-node-type.md#choice-rows),
 [#live-rows](../writing-a-node-type.md#live-rows), [architecture.md](../architecture.md#the-realtime-channels),
-[#live-values](../architecture.md#live-values)), the rest is not. Revised on 2026-11-26 against the code slices 3d (changes in place and reshapes, on
+[#live-values](../architecture.md#live-values), [#retunes](../architecture.md#retunes),
+[control-port.md](../control-port.md#retunes), [output-records.md](../output-records.md#param)), the rest is not. Revised on 2026-11-26 against the code slices 3d (changes in place and reshapes, on
 `master` since v4.3.0) and 5 (the control plane, on `claude/slice-5`) built, and against the owner's rule M3 from
 `processing-nodes.md` (on `claude/admiring-hamilton-26crw1`), whose slice-6 extensions this page folds in as general
 mechanisms. Slice 6 gives a node type decimal, choice and indexed rows, rows that change **live** (ramped or stepped
@@ -84,9 +85,12 @@ Built, and used here as it is:
 - **Live rows** (step 6.5): `.live(ramp/step)`, slots, the generation word, the advance and the snap at a drive,
   `io.param` with `Smoothed`, `Stepped` and `forSegments`, `io.count`, `liveValue` and `liveCount`, `NodeHost`'s live
   values and `setLive`, `h.live` ([writing-a-node-type.md](../writing-a-node-type.md#live-rows),
-  [architecture.md](../architecture.md#the-realtime-channels), [#live-values](../architecture.md#live-values)). Until
-  step 6.6 a change of a live key is planned as an in-place one, the schema says `inPlace` for it, and the live values
-  take the new settings' at the commit point and at each configuration's making.
+  [architecture.md](../architecture.md#the-realtime-channels), [#live-values](../architecture.md#live-values)).
+- **Retunes** (step 6.6): the plan's split of live keys into `NodeChange::retuned`, `NodeOutcome::retune`, a disabled
+  node's `stored` and a failed node not retried, `NodeHost` by phase, configurations seeded from the live values,
+  `NodeConfig::checkLive` and `h.live` running it, feature `live` (`change: "live"` with `live`, `applied: "retune"`,
+  `retuned`, `alsoChanged`) and the `param` record ([architecture.md](../architecture.md#retunes),
+  [control-port.md](../control-port.md#retunes), [output-records.md](../output-records.md#param)).
 
 What it adds, by layer:
 
@@ -317,9 +321,10 @@ rule, `SettingRow::rampMs`, the count of live members and its bound of 256. Stil
 copies a `liveValue` into its code holds a value that goes stale at the first retune; only review catches that, and the
 all-type tests' live sweep (5.6) catches a code that never follows its slot.
 
-`check` runs at parse as built, and on the main loop for every gesture tick and every retune (`NodeType::checkLive`),
-on the node's settings with its live values in place: every open gesture's hand value of that node, and the tick's or
-retune's own value. So a rule across rows ("`lowHz` below `highHz`") judges what will play, even with two gestures
+`check` runs at parse as built, and with given live values in place through the built `NodeConfig::checkLive`
+([architecture.md](../architecture.md#retunes)). Step 6.8 runs it on the main loop for every gesture tick, and the
+parse of every edit, on the node's settings with its live values in place: every open gesture's hand value of that
+node, and the tick's own value. So a rule across rows ("`lowHz` below `highHz`") judges what will play, even with two gestures
 open on the two rows from two clients: the second to cross is refused (`tick-refused`) and the pair never plays. The
 change version reads live values through `liveValue`; it must not act on them, because the slots already did.
 
@@ -330,20 +335,16 @@ Built: [writing-a-node-type.md](../writing-a-node-type.md#live-rows) and `src/co
 ### 5.5 The erased side
 
 - **One lookup for a key**: `AnySettingsTable::rowOf(key)` is built, and with it the walk, `NodeType::changeOf(key)`
-  and `NodeType::kindOf(key)` ([writing-a-node-type.md](../writing-a-node-type.md#indexed-families)); `checkLive`
-  (6.5, 6.6) finds a key's row through it too.
+  and `NodeType::kindOf(key)` ([writing-a-node-type.md](../writing-a-node-type.md#indexed-families)); a gesture's
+  `checkLive` (6.8) finds a key's slot through `NodeType::liveIndexOf`.
 - **`NodeType::schema()`** sends the rows as 9.2 shows; `NodeConfig::liveValues()` gives each live member's parsed
   value, every member up to the maximum, which seeds a node's live values when it is added and is compared by the plan
   to find retuned keys; after that the live values, not the config, are what slots and `liveValue` read (4.5).
 
 ### 5.6 The harness and the all-type tests
 
-`TypeHarness` (built: [writing-a-node-type.md](../writing-a-node-type.md#its-own-tests)) gains:
-
-| Call | Does |
-|---|---|
-| `h.change(settings)` (built) | now also answers `retune`, and the `retuned` keys of a mixed change |
-| `h.live<row>(value)`, `h.live<family>(member, value)` | moves a slot as a gesture tick does: `checkLive`, then `setLive`; a refusal fails the test |
+`TypeHarness`'s `h.change` answering `retune` and `h.live` running the type's check are built
+([writing-a-node-type.md](../writing-a-node-type.md#its-own-tests)).
 
 The all-type tests ([writing-a-node-type.md](../writing-a-node-type.md#what-every-type-must-also-pass)) gain, in step
 6.7 with `gain` as the first type they cover: every live row moved to its minimum and its maximum leaves the ports
@@ -438,60 +439,14 @@ configuration, each block's advance costs one atomic load when nothing moved ([a
 ## 6. The realtime contract
 
 Built ([architecture.md](../architecture.md#the-realtime-channels), [#live-values](../architecture.md#live-values),
-[writing-a-node-type.md](../writing-a-node-type.md#live-rows)). What step 6.6 adds to it: a retune writes the live values
-and the slots at once in any phase (7.2), so a configuration is seeded from the node's live values rather than its
-config's, and a change of a live key no longer reaches the slots through the commit point.
+[#retunes](../architecture.md#retunes), [writing-a-node-type.md](../writing-a-node-type.md#live-rows)).
 
 ## 7. Retunes: the plan and `NodeHost`
 
-### 7.1 The plan's rule
-
-`changeOf` ([architecture.md](../architecture.md#restarts-and-changes-of-settings)) splits the changed keys by
-`rowOf(key)`'s change: the **live** keys go to a new `NodeChange::retuned`; the outcome is decided from the others as
-built (`reconfigure`, `reshape`, `restart`, `stored`, `disable`, `enable`), and a change with only live keys, the ports
-equal and `disabled` unchanged is the new `NodeOutcome::retune`, with two exceptions that keep the built words:
-
-- **A disabled node** that stays disabled gives `stored` as built, with its live keys in `retuned`: its live values
-  move and seed the configuration made at enable.
-- **A failed node** is not retried by a live-only change: it is a `retune` of its live values, and it stays `failed`.
-  A live row touches nothing but the code's view, so it cannot be why the node failed; a drag on a failed node must
-  not start it. Step 6.6 rewrites the sentence of [architecture.md](../architecture.md#failures) that lists "a change
-  of settings" among what retries a failed node to say "a change of a key that is not live" (decision O7).
-
-A change of only live keys whose ports differ cannot happen (5.2); should it, the plan's port comparison makes it a
-reshape, and the all-type tests name the type.
-
-So a mixed change (`{"channels": 4, "trimDb.2": null}`) is the reshape its non-live keys ask for, with `trimDb.2`
-retuned beside it, and the change version never sees a change it has to apply to a live key.
-
-### 7.2 `NodeHost`, by phase
-
-`nodeChanged` with `retuned` keys writes the node's live values and then those slots through `NodeHost::setLive` at
-once, in the same turn, whatever the outcome and phase, then handles the outcome as built. A retune never calls
-`adopt` and never replaces a config: the instance's config keeps its parsed live values, which nothing reads after the
-node's live values are seeded (4.5). So a change in flight keeps the target config it was made against, as the built
-contract promises, and a change that ends uncommitted leaves nothing behind the slots.
-
-| Phase | The retuned keys | The outcome (non-live keys) |
-|---|---|---|
-| `running`, `stopped` | live values and slots move | as built |
-| `reconfiguring` (`changing`, before the commit point) | live values and slots move; the change and its target are untouched | a `retune` never supersedes the change in flight; any other outcome as built |
-| `committing` | live values and slots move | as built: waits for the invoke |
-| not yet rested, `recovering`, `failed`, disabled | live values move, and the slots of a configuration it has; they seed the next | `retune` restarts nothing, skips no recovery and retries no failure; any other as built |
-| a restart in flight | live values move, and the old configuration's slots (heard through its fade-out); the new one seeds from the live values | as built |
-
-A fallback, a supersession or a stop of a change seeds or keeps slots from the live values, so none of them can revert
-a retune. A loop's state and companions are not told of a retune.
-
-A key a gesture holds is never retuned by an edit: the edit is refused `parameter-held` (8.6) before the plan.
-
-### 7.3 On the wire and on standard output
-
-`node.updated` and `node.set`'s answer carry `applied` (`retune` for a change of live keys only) and, for a session
-with feature `live`, always `retuned` (the live keys moved; `[]` for none, as `routesDropped` is), dry runs included
-(9.3). Live keys never appear in `node.state`'s `keys` or `next`, nor in a restart cause's `keys`: those name what the
-lifecycle acted on. No `node.state` follows a retune. Standard output has one `param` record per retuned node and key
-(9.7).
+Built ([architecture.md](../architecture.md#retunes), [control-port.md](../control-port.md#retunes),
+[output-records.md](../output-records.md#param)). What step 6.8 adds: a key a gesture holds is never retuned by an
+edit (the edit is refused `parameter-held`, 8.6, before the plan), and the parse's `check` of an edit runs with every
+open gesture's hand value in place (5.2).
 
 ## 8. Gestures: the keeper path
 
@@ -686,7 +641,7 @@ Every change below goes in one commit with `docs/control-port.md`, `test/protoco
 | Feature | Step | Adds |
 |---|---|---|
 | — (under `types`) | 6.2 to 6.4 (built) | kinds `decimal` and `choice`, `decimals`, `taper` and `minIsSilence`, typed `default`s, `indexed`: all built ([control-port.md](../control-port.md#type-schemas)) |
-| `live` | 6.6 | `change: "live"` with `live`, `applied: "retune"`, `retuned`, `alsoChanged` |
+| `live` | 6.6 (built) | `change: "live"` with `live`, `applied: "retune"`, `retuned`, `alsoChanged`: built ([control-port.md](../control-port.md#retunes)) |
 | `gestures` | 6.8 | `gesture.begin`, `change`, `end`, `cancel`; `gesture.changed`; the graph's per-node `gestures`; the new codes |
 
 Slice 5 put its new schema members under features (`status`, `actions`); this page adds the row vocabulary under none,
@@ -700,8 +655,7 @@ A row gains, as it applies:
 | Member | What |
 |---|---|
 | `kind` | `decimal` and `choice` are built ([control-port.md](../control-port.md#type-schemas)) |
-| `change` | gains `live`. Open, as built |
-| `live` | `{"transition": "ramp", "ms": 20}` or `{"transition": "step"}` |
+| `change`, `live` | built ([control-port.md](../control-port.md#type-schemas)) |
 | `indexed` | built ([control-port.md](../control-port.md#type-schemas)); a `retuned` entry maps to its family's field by the same rule |
 
 ```json
@@ -720,20 +674,8 @@ A row gains, as it applies:
 
 ### 9.3 `node.set`, `node.update` and `node.updated`
 
-`applied` gains `retune`; for a session with `live`, the answer and `node.updated` always carry `retuned` (the live
-keys moved, family members by their full key; `[]` for none), and the answer carries `alsoChanged` (the other nodes a
-shared definition moved, `[{"name","key"}]`, `[]` for none). A disabled node's live change is `stored` with its
-`retuned`; a failed node's is `retune` (7.1). Both requests refuse `parameter-held` from feature `gestures` on.
-
-```json
-{"jsonrpc":"2.0","id":11,"method":"node.set","params":{"name":"amp","settings":{"gainDb":-12},"dryRun":true}}
-{"jsonrpc":"2.0","id":11,"result":{"applied":"retune","retuned":["gainDb"],"alsoChanged":[]}}
-{"jsonrpc":"2.0","method":"node.updated","params":{"name":"amp","type":"gain","settings":{"gainDb":-12},"applied":"retune","retuned":["gainDb"]}}
-```
-
-`test/protocol/unknown-values.json` already holds an `applied` of `retune` with an invented phase, as an unknown value a
-client must survive; the fixture's description is rewritten to say `retune` is known from `live` on, and its unknown
-value becomes another.
+Built ([control-port.md](../control-port.md#retunes)). Step 6.8 adds: both requests refuse `parameter-held` from
+feature `gestures` on.
 
 ### 9.4 Gesture requests
 
@@ -812,11 +754,11 @@ A new kind, with `v`, `seq`, `t`, `kind`, its fields and `msg` ([output-records.
 {"v":1,"seq":125,"t":"2026-11-08T10:03:40.000300Z","kind":"param","node":"amp","key":"gainDb","from":-4.25,"to":-6,"cause":"aborted","gesture":"g4","reason":"cancelled","msg":"node amp gainDb gesture g4 aborted (cancelled): back to -6"}
 ```
 
-One per reached node and retuned key at each committed live change, with the built causes' words
-([control-port.md](../control-port.md#the-graph-file-over-the-port)): `edit` for any edit through the control port (`graphFile.set`
-included), `disk` for `ear.conf` changed on disk, and `gesture` for a gesture's end; a mixed change's live keys too.
-One per abort (`cause: aborted`, `reason`, `to` absent after a related change). A release is `cause: gesture` with
-`reason`. `from` is the node's live value before.
+The record and its causes `edit` and `disk` are built ([output-records.md](../output-records.md#param)). Step 6.8
+adds the cause `gesture` for a gesture's end, with `gesture`; one record per abort (`cause: aborted`, `reason`, `to`
+absent after a related change, `from` the live value the hand left); a release is `cause: gesture` with `reason`. A
+committed record's `from` is the value the settings held before, which is the node's live value whenever no gesture
+moves it.
 
 ### 9.8 Fixtures
 
@@ -824,7 +766,7 @@ One per abort (`cause: aborted`, `reason`, `to` absent after a related change). 
 |---|---|
 | `rows.json` (built with its decimal rows and typed defaults: [control-port.md](../control-port.md#fixtures)) | schemas of test types (not the real ear's), held by `src/control/tests/type_schemas_test.cpp` encoding test specs and read by vitest's form tests: a family and choices (built), live ramped and stepped rows (6.6); each step extends it, so the row vocabulary has a fixture before any built type uses it |
 | `types.json` | `gain`'s schema whole (6.7); every built row's `change` and `restartReason` are built |
-| `edits.json`, `node-set.json` | a retune, a mixed reshape with `retuned`, a dry run of each; `retuned: []` on a reconfigure; a disabled node's `stored` with `retuned`; `alsoChanged` on a shared definition |
+| `edits.json`, `node-set.json` | `retuned: []` on every `node.updated` and `node.set` answer, `alsoChanged: []` on every `node.set` answer (built); with `gain` (6.7): a retune, a mixed reshape with `retuned`, a dry run of each; a disabled node's `stored` with `retuned`; `alsoChanged` on a shared definition |
 | `gestures.json` (new) | begin with no echo to the owner and `begin` to another first; ticks (one stale); end with its order; reaches of two keys and of 64; `reach-mismatch` with `with`; `parameter-held` with `silentMs`; a silent holder released `stale`; a begin on a failed node; cancel; `tick-refused` to the owner only; an end refused `invalid-settings`, aborted `refused`; an end from another session by id (the reconnect); an unsubscribed owner getting `aborted`; aborts by a related hand edit, `graphFile.set`, `node.set`, `node.addText` and `node.setText`; `node.setText` of a held key refused; a live count retune inactivating a held member (`key-removed`); an unrelated hand edit and a route edit left open; `session-closed` after a queued end; `unknown-gesture` after an abort; `not-in-batch` for each method; `notification-only` |
 | `unknown-values.json`, `errors.json`, `snapshot.json`, `output-records.json` | this page's members, codes and records |
 
@@ -836,7 +778,7 @@ One per abort (`cause: aborted`, `reason`, `to` absent after a related change). 
 |---|---|---|
 | `protocol.ts` | section 9's types; `ControlErrorCode`'s new codes | typecheck |
 | `graph.ts` | each node's `gestures`; `retuned` on `node.updated`; `gesture.changed` | vitest, every fixture |
-| `form.ts` | live rows committed at once; `asksFirst` passing `retune`, `confirmWords` for it (families with inactive members, choices as selects and the "restarts: why" hint are built) | vitest, from `rows.json` until `gain` is in `types.json` |
+| `form.ts` | live rows committed at once (`asksFirst` passing `retune` and the "live" hints are built, as are families with inactive members, choices as selects and the "restarts: why" hint) | vitest, from `rows.json` until `gain` is in `types.json` |
 | `rpc.ts` | `notify()`: a message with no id | vitest |
 | `gesture.ts` (new, pure) | one state machine per control (10.3), the taper mapping, the ids it holds across a reconnect | vitest, a fake client |
 | `keys.ts` | a focused fader's or knob's range input, or anything in `.nokey`, counts as a text target for the editor's shortcuts (`f`, `l`, `m`, `a`, `?`, Escape), though not for the input's own keys; today a range input is deliberately not a text target, and only the controls of 10.3 change that | vitest |
@@ -928,7 +870,7 @@ specs and vitest's form tests read; `types.json` stays what the real ear sends.
 | 6.3 | Indexed families: **built** | 6.2 | `indexed` | the same |
 | 6.4 | Choice rows: **built** | 6.2 | kind `choice` for settings | the same |
 | 6.5 | Slots, ramps, steps, live values, `io.param`: **built** | 6.2, 6.3, 6.4 | none | writing-a-node-type.md#live-rows, architecture.md#the-realtime-channels |
-| 6.6 | Retunes | 6.5 | feature `live` | architecture.md#restarts-and-changes-of-settings and #failures, control-port.md, output-records.md |
+| 6.6 | Retunes: **built** | 6.5 | feature `live` | architecture.md#restarts-and-changes-of-settings and #failures, control-port.md, output-records.md |
 | 6.7 | The `gain` type | 6.6 | `types.json` gains `gain` | node-types.md |
 | 6.8 | Gestures | 6.6 | feature `gestures` | control-port.md (#order, #per-client-limits-and-stopping: "one message in flight"), graph-file.md |
 | 6.9 | The editor's live controls | 6.6 (switches and selects), 6.8 (faders) | none | editor.md; deletes this page and its row in [README.md](README.md) |
@@ -950,21 +892,14 @@ step 6.9, with the other controls.
 [editor.md](../editor.md#the-settings-form) say how.
 
 **6.5 Slots, ramps, steps and live values** is built: [writing-a-node-type.md](../writing-a-node-type.md#live-rows) and
-[architecture.md](../architecture.md#the-realtime-channels) say how. `h.live` moves a slot without `checkLive`, which
-step 6.6 adds to it.
+[architecture.md](../architecture.md#the-realtime-channels) say how.
 
-**6.6 Retunes** (changes the audio path: a change of live keys ramps instead of reconfiguring). `NodeOutcome::retune`,
-`NodeChange::retuned`, `changeOf`'s split, a disabled node's `stored` and a failed node not retried (7.1), and every
-switch on `NodeOutcome` and its wire word: `src/config/keeper.cpp`'s `kindOf` into `control::AppliedKind` and
-`appliedName` (`lifecycle_wire.hpp` gains `retune`), `src/core/node_host.cpp`'s `change()`, `src/control/gateway.cpp`,
-`src/control/events.cpp`, `src/core/testing/node_harness.cpp`, `web/src/protocol.ts`, and the tests that name outcomes.
-`NodeHost` by 7.2's table, `applied: "retune"`, `retuned` and `alsoChanged`, feature `live`, the `param` record,
-`checkLive` on retunes, the form's live switches and selects by `node.set`, `asksFirst` passing `retune`, `rows.json`'s
-live rows. Tests: a retune plan; a mixed reconfigure and a mixed reshape with `retuned`; a retune during `changing`
-followed by a supersession, a stop and a fallback, each checking `liveValue` against the slots and `ear.conf`; a
-retune during `committing`; a retune of a failed node (still `failed`, slots of none) and of a disabled node
-(`stored`, seeded at enable); a retune raising a live count whose new member plays its file value; slots seeded on
-restart; `edits.json`, `node-set.json`, `unknown-values.json`'s rewrite.
+**6.6 Retunes** is built: [architecture.md](../architecture.md#retunes), [control-port.md](../control-port.md#retunes),
+[output-records.md](../output-records.md#param) and [writing-a-node-type.md](../writing-a-node-type.md#live-rows) say
+how. Left to step 6.7, since no built type has a live row before `gain`: `edits.json` and `node-set.json` cases of a
+retune by a real type (a retune, a mixed reshape with `retuned`, a dry run of each, a disabled node's `stored` with
+`retuned`, `alsoChanged` on a shared definition; the keeper's tests hold these on a test type today). Left to the
+editor: the form's live switches and selects committed at once by `node.set`, with the `alsoChanged` notice (10.2).
 
 **6.7 The `gain` type.** 5.7 whole, and the all-type sweeps of 5.6 with `gain` as their first type. Tests
 (`ear_node_gain_tests`): unity, -6 dB (factor 0.5012) and mute (0) once steady; `gainDb -90` with `trimDb.1 +24` exact

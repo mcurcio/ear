@@ -86,6 +86,14 @@ struct LampType : NeverStarted {
 	Configured configure(CreateOf<lampSpec>& cx, const CheckedOf<lampSpec>& s) { return never(cx, s); }
 };
 
+constexpr auto gainRow = setting::defaulted("gainDb", setting::decimal(-90.0, 24.0, "dB"), 0.0).live(setting::ramp(20));
+constexpr auto muteRow = setting::defaulted("mute", setting::boolean(), false).live(setting::ramp(10));
+constexpr TypeSpec faderSpec{.settings = SettingsTable<gainRow, muteRow>{"fader"}, .banks = Banks<>{}};
+struct FaderType : NeverStarted {
+	static Members<faderSpec> ports(const CheckedOf<faderSpec>&) { return {}; }
+	Configured configure(CreateOf<faderSpec>& cx, const CheckedOf<faderSpec>& s) { return never(cx, s); }
+};
+
 } // namespace tables
 using namespace tables;
 
@@ -96,6 +104,7 @@ std::vector<std::unique_ptr<const NodeType>> testTypes() {
 	types.push_back(makeNodeType<cardSpec, CardType>());
 	types.push_back(makeNodeType<rtpSpec, RtpType>());
 	types.push_back(makeNodeType<lampSpec, LampType>());
+	types.push_back(makeNodeType<faderSpec, FaderType>());
 	return types;
 }
 

@@ -96,10 +96,23 @@ inline constexpr auto curveFamily =
 	setting::indexed("curve", channelsRow,
                      setting::choice<Curve>({{"linear", Curve::linear}, {"smooth", Curve::smooth}}), Curve::linear)
 		.inPlace();
+inline constexpr auto gainRow =
+	setting::defaulted(
+		"gainDb",
+		setting::decimal(-90.0, 24.0, "dB", {.decimals = 1, .taper = setting::Taper::db, .minIsSilence = true}), 0.0)
+		.live(setting::ramp(20));
+inline constexpr auto muteRow = setting::defaulted("mute", setting::boolean(), false).live(setting::ramp(10));
+inline constexpr auto inputRow = setting::defaulted("input", setting::number(1, 8), 1).live(setting::step);
+enum class Slope { gentle, steep };
+inline constexpr auto slopeRow =
+	setting::defaulted("slope", setting::choice<Slope>({{"gentle", Slope::gentle}, {"steep", Slope::steep}}),
+                       Slope::gentle)
+		.live(setting::step);
 inline constexpr auto out = bank::output<"out">;
-inline constexpr TypeSpec spec{.settings = SettingsTable<levelRow, cutoffRow, spreadRow, onRow, channelsRow, trimFamily,
-                                                         invertFamily, shapeRow, modeRow, curveFamily>{"rows"},
-                               .banks = Banks<out>{}};
+inline constexpr TypeSpec spec{
+	.settings = SettingsTable<levelRow, cutoffRow, spreadRow, onRow, channelsRow, trimFamily, invertFamily, shapeRow,
+                              modeRow, curveFamily, gainRow, muteRow, inputRow, slopeRow>{"rows"},
+	.banks = Banks<out>{}};
 struct Rows {
 	static Members<spec> ports(const CheckedOf<spec>&) { return {out(members("mono"))}; }
 	Configured configure(CreateOf<spec>&, const CheckedOf<spec>&) {

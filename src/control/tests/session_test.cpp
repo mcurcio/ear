@@ -1108,31 +1108,37 @@ TEST_CASE("node-set.json: a merge of a node's settings answered with what it app
 	RecordingOutbox out;
 	ControlSession session(*w.hub, out);
 	const auto answer = [](CommandResult result) { return [result] { return result; }; };
+	// node.set's answer always carries retuned and alsoChanged (feature live), [] for none.
+	const auto set = [](Applied applied) {
+		applied.retuned.emplace();
+		applied.alsoChanged.emplace();
+		return applied;
+	};
 	const auto changing = [](ear::NodeHealth h, std::vector<std::string> keys) {
 		h.keys = std::move(keys);
 		return h;
 	};
 	// A change in place of fpp: node.updated, reconfiguring with its keys, then the reply; running after it.
 	const auto inPlace = [&](const std::string& call, json settings, std::vector<std::string> keys) {
-		w.graph.script.push_back({call, [&w, settings, keys, rtpPorts, changing]() -> CommandResult {
+		w.graph.script.push_back({call, [&w, settings, keys, rtpPorts, changing, set]() -> CommandResult {
 									  w.gateway.nodeChanged({"fpp", "rtp", settings},
 			                                                std::make_shared<Config>(rtpPorts),
 			                                                ear::NodeChange{ear::NodeOutcome::reconfigure, keys});
 									  w.told(changing(at("fpp", NodePhase::reconfiguring), keys));
-									  return Applied{AppliedKind::reconfigure};
+									  return set(Applied{AppliedKind::reconfigure});
 								  }});
 	};
 
 	w.receive(session, requests[0]); // graph.subscribe
-	w.graph.script.push_back({R"(setNode fpp {"port":5006} dryRun)", answer(Applied{AppliedKind::reconfigure})});
+	w.graph.script.push_back({R"(setNode fpp {"port":5006} dryRun)", answer(set(Applied{AppliedKind::reconfigure}))});
 	w.receive(session, requests[1]);
 	fpp["port"] = 5006;
 	inPlace(R"(setNode fpp {"port":5006})", fpp, {"port"});
 	w.receive(session, requests[2]);
 	w.onMain([&] { w.told(at("fpp", NodePhase::running)); });
-	w.graph.script.push_back({R"(setNode fpp {"port":5006})", answer(Applied{AppliedKind::unchanged})});
+	w.graph.script.push_back({R"(setNode fpp {"port":5006})", answer(set(Applied{AppliedKind::unchanged}))});
 	w.receive(session, requests[3]);
-	w.graph.script.push_back({R"(setNode fpp {"port":5006} dryRun)", answer(Applied{AppliedKind::unchanged})});
+	w.graph.script.push_back({R"(setNode fpp {"port":5006} dryRun)", answer(set(Applied{AppliedKind::unchanged}))});
 	w.receive(session, requests[4]);
 	fpp.erase("latencyMs");
 	inPlace(R"(setNode fpp {"latencyMs":null})", fpp, {"latencyMs"});
@@ -1141,39 +1147,39 @@ TEST_CASE("node-set.json: a merge of a node's settings answered with what it app
 	w.graph.script.push_back({R"(setNode rec {"path":null})",
 	                          answer(Result(std::unexpected(ear::InvalidSettings{"rec", "path: missing", "path"})))});
 	w.receive(session, requests[6]);
-	w.graph.script.push_back({R"(setNode rec {"path":"take2.wav"} dryRun)", answer(Applied{AppliedKind::restart})});
+	w.graph.script.push_back(
+		{R"(setNode rec {"path":"take2.wav"} dryRun)", answer(set(Applied{AppliedKind::restart}))});
 	w.receive(session, requests[7]);
 	w.graph.script.push_back(
 		{R"(setNode porch {"playback":4} dryRun)",
-	     answer(Applied{AppliedKind::stored, std::nullopt, ear::PortsMoved{{"play.3", "play.4"}, {}}, std::nullopt,
-	                    std::vector<ear::Route>{}})});
+	     answer(set(Applied{AppliedKind::stored, std::nullopt, ear::PortsMoved{{"play.3", "play.4"}, {}}, std::nullopt,
+	                        std::vector<ear::Route>{}}))});
 	w.receive(session, requests[8]);
 	const ear::PortsMoved moved = ear::portsMoved(card2, card1);
 	w.graph.script.push_back(
 		{R"(setNode desk {"playback":1} dryRun)",
-	     answer(Applied{AppliedKind::reshape, false, moved, std::nullopt, std::vector<ear::Route>{toDesk}})});
+	     answer(set(Applied{AppliedKind::reshape, false, moved, std::nullopt, std::vector<ear::Route>{toDesk}}))});
 	w.receive(session, requests[9]);
 	w.graph.script.push_back(
 		{R"(setNode desk {"playback":1})", answer(ControlRefusal{PortsInUse{"desk", {"play.2"}, {toDesk}}})});
 	w.receive(session, requests[10]);
 	ear::NodeCause reshape{Kind::reshape, std::nullopt, {"playback"}};
 	reshape.ports = moved;
-	w.graph.script.push_back({R"(setNode desk {"playback":1} dropRoutes)", [&]() -> CommandResult {
-								  w.gateway.routeRemoved(toDesk);
-								  w.gateway.nodeChanged({"desk", "card", {{"card", "MOTU"}, {"playback", 1}}},
-		                                                std::make_shared<Config>(card1),
-		                                                ear::NodeChange{.outcome = ear::NodeOutcome::reshape,
-		                                                                .keys = {"playback"},
-		                                                                .oldPorts = card2,
-		                                                                .ports = card1});
-								  ear::NodeCause restarting = reshape;
-								  restarting.kind = Kind::restarting;
-								  restarting.restart = Kind::reshape;
-								  auto stopping = at("desk", NodePhase::stopping);
-								  stopping.cause = restarting;
-								  w.told(stopping);
-								  return Applied{AppliedKind::reshape, false, moved, std::vector<ear::Route>{toDesk}};
-							  }});
+	w.graph.script.push_back(
+		{R"(setNode desk {"playback":1} dropRoutes)", [&]() -> CommandResult {
+			 w.gateway.routeRemoved(toDesk);
+			 w.gateway.nodeChanged(
+				 {"desk", "card", {{"card", "MOTU"}, {"playback", 1}}}, std::make_shared<Config>(card1),
+				 ear::NodeChange{
+					 .outcome = ear::NodeOutcome::reshape, .keys = {"playback"}, .oldPorts = card2, .ports = card1});
+			 ear::NodeCause restarting = reshape;
+			 restarting.kind = Kind::restarting;
+			 restarting.restart = Kind::reshape;
+			 auto stopping = at("desk", NodePhase::stopping);
+			 stopping.cause = restarting;
+			 w.told(stopping);
+			 return set(Applied{AppliedKind::reshape, false, moved, std::vector<ear::Route>{toDesk}});
+		 }});
 	w.receive(session, requests[11]);
 	w.onMain([&] {
 		auto configuring = at("desk", NodePhase::configuring);

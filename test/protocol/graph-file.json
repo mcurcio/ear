@@ -90,7 +90,8 @@
           "dryRun",
           "types",
           "status",
-          "actions"
+          "actions",
+          "live"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -309,7 +310,8 @@
         "settings": {
           "path": "take2.wav"
         },
-        "applied": "restart"
+        "applied": "restart",
+        "retuned": []
       }
     },
     {
@@ -514,7 +516,8 @@
         "settings": {
           "path": "take3.wav"
         },
-        "applied": "restart"
+        "applied": "restart",
+        "retuned": []
       }
     },
     {
@@ -589,7 +592,8 @@
         "settings": {
           "path": "take2.wav"
         },
-        "applied": "restart"
+        "applied": "restart",
+        "retuned": []
       }
     },
     {
@@ -687,7 +691,8 @@
           "play.3",
           "play.4"
         ],
-        "outputs": []
+        "outputs": [],
+        "retuned": []
       }
     },
     {
@@ -714,7 +719,8 @@
           "play.3",
           "play.4"
         ],
-        "outputs": []
+        "outputs": [],
+        "retuned": []
       }
     },
     {
@@ -983,7 +989,8 @@
         "settings": {
           "path": "take3.wav"
         },
-        "applied": "restart"
+        "applied": "restart",
+        "retuned": []
       }
     },
     {
@@ -1124,7 +1131,8 @@
         "settings": {
           "path": "take2.wav"
         },
-        "applied": "restart"
+        "applied": "restart",
+        "retuned": []
       }
     },
     {
@@ -1200,7 +1208,8 @@
         "settings": {
           "path": "take4.wav"
         },
-        "applied": "restart"
+        "applied": "restart",
+        "retuned": []
       }
     },
     [
@@ -1224,7 +1233,8 @@
             "dryRun",
             "types",
             "status",
-            "actions"
+            "actions",
+            "live"
           ],
           "graphFrequency": 48000,
           "blockSize": 256,
@@ -1400,7 +1410,8 @@
             "dryRun",
             "types",
             "status",
-            "actions"
+            "actions",
+            "live"
           ],
           "graphFrequency": 48000,
           "blockSize": 256,
@@ -1691,7 +1702,8 @@
       "dryRun",
       "types",
       "status",
-      "actions"
+      "actions",
+      "live"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,

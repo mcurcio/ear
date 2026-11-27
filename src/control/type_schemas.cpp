@@ -46,10 +46,14 @@ std::string_view taperName(setting::Taper taper) noexcept {
 json encodeRow(const SettingRow& row) {
 	json out = {{"key", row.key},
 	            {"required", row.required},
-	            // From the row's change mark (docs/writing-a-node-type.md#change-marks). A live row is changed as an
-	            // in-place one is until retunes are built (docs/architecture.md#live-values), and says so.
-	            {"change", row.change == setting::Change::restart ? "restart" : "inPlace"}};
+	            // From the row's change mark (docs/writing-a-node-type.md#change-marks).
+	            {"change", row.change == setting::Change::restart ? "restart"
+	                       : setting::isLive(row)                 ? "live"
+	                                                              : "inPlace"}};
 	if (!row.restartReason.empty()) out["restartReason"] = row.restartReason;
+	// A live row's transition (docs/control-port.md#type-schemas): a ramp and its length, or a step.
+	if (setting::isLive(row))
+		out["live"] = row.rampMs > 0 ? json{{"transition", "ramp"}, {"ms", row.rampMs}} : json{{"transition", "step"}};
 	std::visit(
 		[&](const auto& rule) {
 			using Rule = std::decay_t<decltype(rule)>;

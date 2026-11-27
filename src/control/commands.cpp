@@ -259,6 +259,12 @@ std::expected<json, RpcError> encodeCommandResult(const CommandResult& result) {
 		if (applied->ports) out["ports"] = encodePortsMoved(*applied->ports);
 		if (applied->routesDropped) out["routesDropped"] = encodeRoutes(*applied->routesDropped);
 		if (applied->routes) out["routes"] = encodeRoutes(*applied->routes);
+		if (applied->retuned) out["retuned"] = *applied->retuned;
+		if (applied->alsoChanged) {
+			json also = json::array();
+			for (const NodeKey& each : *applied->alsoChanged) also.push_back({{"name", each.name}, {"key", each.key}});
+			out["alsoChanged"] = std::move(also);
+		}
 		return out;
 	}
 	if (const auto* refusal = std::get_if<ControlRefusal>(&result))
@@ -325,6 +331,8 @@ std::string_view appliedName(AppliedKind kind) noexcept {
 		return "reconfigure";
 	case AppliedKind::reshape:
 		return "reshape";
+	case AppliedKind::retune:
+		return "retune";
 	}
 	return "unchanged";
 }

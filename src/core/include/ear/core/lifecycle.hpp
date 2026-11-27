@@ -1096,6 +1096,15 @@ public:
 	std::span<const ActionDeclaration> actionsDeclared() const override { return ActionsOf<Spec>::declared; }
 	std::span<const SettingRow* const> settingRows() const override { return Spec.settings.rows(); }
 	std::vector<std::uint64_t> liveValues() const override { return settings_.parsedLive(); }
+	std::expected<void, std::string> checkLive(std::span<const std::uint64_t> live) const override {
+		// The class's check, its live rows read from `live` (makeConfig held it to its signature at parse).
+		if constexpr (requires { &Type::check; }) {
+			const LiveBinding bound(settings_.settings_, live);
+			return Type::check(settings_);
+		} else {
+			return {};
+		}
+	}
 	std::expected<void, std::string> runCall(std::size_t action, void* state, CheckedSettings&& args) const override {
 		const spec_detail::CallRunner run = spec_detail::CallRunners<ActionsOf<Spec>>::runners.at(action);
 		if (run == nullptr) return NodeConfig::runCall(action, state, std::move(args));

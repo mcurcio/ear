@@ -469,7 +469,17 @@ struct NodeHost::Impl {
 		/// reshape: a restart, or in place (docs/architecture.md#reshapes); unchanged: nothing.
 		void change(std::shared_ptr<const NodeConfig> config, const NodeChange& change) {
 			if (change.outcome == NodeOutcome::unchanged) return; // nothing changes, nothing is told
+			// The live keys move the node's live values and its configuration's slots at once, in any phase, before
+			// the outcome is taken; a configuration made later is seeded from them (docs/architecture.md#retunes).
+			if (!change.retuned.empty()) retune(*config, change.retuned);
 			const bool lost = aggregate_.block().state() == lc::BlockState::lost;
+			// A retune, or a disabled node's stored change of live keys alone, is no change of the lifecycle's: the
+			// newest settings are kept for the next configure, and nothing is superseded, restarted or retried.
+			if (change.outcome == NodeOutcome::retune ||
+			    (change.outcome == NodeOutcome::stored && change.keys.empty() && !change.portsChanged())) {
+				if (!lost) queued_ = std::move(config);
+				return;
+			}
 			queued_ = lost ? nullptr : std::move(config);
 			++version_;
 			// A restart's cause is a reshape when the newest ports differ from the configuration's
@@ -478,6 +488,7 @@ struct NodeHost::Impl {
 			if (config_ && config_->config && queued_) moved = portsMoved(config_->config->ports(), queued_->ports());
 			switch (change.outcome) {
 			case NodeOutcome::unchanged: // returned above
+			case NodeOutcome::retune:
 				break;
 			case NodeOutcome::reconfigure: {
 				// In place only for a type with a change version: without one the change restarts as any other, with
@@ -1105,6 +1116,31 @@ struct NodeHost::Impl {
 			writeLive();
 		}
 		std::span<const std::uint64_t> liveNow() const noexcept { return live_; }
+		/// Where `key`'s slot sits among `rows`' live members, as AnySettingsTable::liveIndexOf finds it.
+		static std::optional<std::uint32_t> liveIndexIn(std::span<const SettingRow* const> rows, std::string_view key) {
+			std::uint32_t at = 0;
+			for (const SettingRow* row : rows) {
+				if (setting::isLive(*row)) {
+					if (row->maxMembers == 0 && row->key == key) return at;
+					if (const auto member = setting::memberNumber(key, row->key);
+					    row->maxMembers > 0 && member && *member <= row->maxMembers)
+						return at + *member - 1;
+				}
+				at += setting::liveMembers(*row);
+			}
+			return std::nullopt;
+		}
+		/// The keys a change retunes: each one's value as `config` holds it, into the live values and the slots
+		/// (docs/architecture.md#retunes).
+		void retune(const NodeConfig& config, std::span<const Retuned> retuned) {
+			const std::vector<std::uint64_t> values = config.liveValues();
+			std::vector<LiveWrite> writes;
+			writes.reserve(retuned.size());
+			for (const Retuned& key : retuned)
+				if (const auto member = liveIndexIn(config.settingRows(), key.key); member && *member < values.size())
+					writes.push_back(LiveWrite{*member, values[*member]});
+			setLive(writes);
+		}
 
 		/// The ring's records as the book reads them, each stamped with its cycle's start; a log record written to the
 		/// log's sinks here, through the configuration's handle (its source the type, its topic the code).
@@ -3143,8 +3179,8 @@ struct NodeHost::Impl {
 			adoptPorts(); // a restart's reshape: the block, silent, takes the new ports before configure sees them
 			c.ports = ports_;
 			c.channel = std::make_shared<Channel>(*this, host_.mainLoop, host_.timers, name_, type_, host_.logSinks);
-			// Until retunes are built, a configuration's live values are its config's (docs/architecture.md#live-values).
-			live_ = c.config->liveValues();
+			// Seeded from the node's live values, which every retune moved, never from the config, whose own may be
+			// older (docs/architecture.md#live-values).
 			c.realtime = realtimeChannels(*c.config, host_.realtimeBell, host_.format.rate, live_);
 			c.context = std::make_unique<Context>(host_.format, name_, *c.channel, c.loops);
 			c.fadedCount = ports_.outputs().size() + ports_.insideOutputs().size();
@@ -4682,10 +4718,8 @@ struct NodeHost::Impl {
 			ch.holdBound.reset();
 			c.instance->adopt(*ch.target);
 			c.config = ch.target; // the old config goes once nothing reads it: the instance reads the new one
-			// The new settings' live values reach the slots here, so the audio and the settings agree from the commit
-			// point (docs/architecture.md#live-values).
-			live_ = c.config->liveValues();
-			writeLive();
+			// A change's keys are never live: its retuned keys reached the slots when it was told
+			// (docs/architecture.md#retunes), so the commit writes no slot.
 			for (auto& [loop, work] : ch.posts) c.loops.at(loop)->postState(std::move(work));
 			c.plan = std::move(ch.plan);
 			if (ch.latency) c.latency = std::move(*ch.latency);

@@ -81,7 +81,7 @@ snapshots include every edit the batch made.
 
 ## Protocol and features
 
-`graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun", "types", "status", "actions"]`. An absent `protocol` is 0 (the
+`graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters", "companions", "node-text", "reshape", "node.set", "dryRun", "types", "status", "actions", "live"]`. An absent `protocol` is 0 (the
 wire before the lifecycle). The number moves only on a breaking change: removing or renaming a
 method, notification, member or code, changing a member's type, or changing an order guarantee.
 Additive growth is a new **feature** name.
@@ -103,7 +103,9 @@ Additive growth is a new **feature** name.
   `node.statusChanged`, `node.eventRaised` and `node.diagnostic` ([below](#status),
   [below](#node-diagnostics)), and each type schema's `status` and `events`. `actions` adds
   `node.invoke`, each type schema's `actions` and the codes `unknown-action`, `invalid-args`,
-  `not-running`, `restarted`, `action-failed` and `action-timeout` ([below](#actions)).
+  `not-running`, `restarted`, `action-failed` and `action-timeout` ([below](#actions)). `live` adds
+  a row's `change: "live"` with its `live` member, `applied: "retune"`, `node.updated`'s and
+  `node.set`'s `retuned` and `node.set`'s `alsoChanged` ([below](#retunes)).
 - **Every enum is open.** `state`, `phase`, `cause.kind`, `waitingFor`'s `kind`, a route's `status`,
   `reason.code`, `applied`, `severity`, a companion's `kind`, a setting row's `kind`, `change` and `defaultFrom`, and
   every code may gain values, and the counters' names are an open set. Draw a value you do not know
@@ -187,7 +189,7 @@ three or four `node.state`s within milliseconds.
 | `types.get` | `{"ifNoneMatch"?}` (feature `types`) | `{"protocol", "hash", "typeSchemas"}`, or `{"protocol", "hash", "notModified": true}` when `ifNoneMatch` is the hash ([below](#type-schemas)) | none |
 | `node.add` | `{"name", "type", "settings"?, "disabled"?}` | `{}` | `invalid-name`, `unknown-node-type`, `invalid-settings`, `duplicate-node`, `file-invalid`, `invalid-text`, `stopping` |
 | `node.update` | `{"name", "settings", "dropRoutes"?}`: the node's whole new settings; `dropRoutes` (feature `reshape`) removes the routes its new ports strand ([below](#changes-of-ports)) | `{}` | `unknown-node`, `invalid-settings`, `shared-definition`, `file-invalid`, `invalid-text`, `ports-in-use`, `stopping` |
-| `node.set` | `{"name", "settings", "dryRun"?, "dropRoutes"?}` (feature `node.set`; `dryRun`, feature `dryRun`): `settings` merged into the node's ([below](#nodeset-and-dry-runs)) | `{"applied"}`, and when its ports change `inPlace` (a reshape's), `ports` and `routesDropped` (a dry run: `routes`) | `unknown-node`, `invalid-settings`, `shared-definition`, `file-invalid`, `invalid-text`, `ports-in-use`, the graph's codes, `stopping` |
+| `node.set` | `{"name", "settings", "dryRun"?, "dropRoutes"?}` (feature `node.set`; `dryRun`, feature `dryRun`): `settings` merged into the node's ([below](#nodeset-and-dry-runs)) | `{"applied"}`, `retuned` and `alsoChanged` (feature `live`: [below](#retunes)), and when its ports change `inPlace` (a reshape's), `ports` and `routesDropped` (a dry run: `routes`) | `unknown-node`, `invalid-settings`, `shared-definition`, `file-invalid`, `invalid-text`, `ports-in-use`, the graph's codes, `stopping` |
 | `node.remove` | `{"name"}` | `{}` | `unknown-node`, `shared-definition`, `file-invalid`, `invalid-text`, `stopping` |
 | `route.add` | `{"from": {"node", "port"}, "to": {"node", "port"}}` | `{}` | `unknown-node`, `unknown-port`, `wrong-direction`, `file-invalid`, `invalid-text`, `stopping` |
 | `route.remove` | `{"from", "to"}` | `{}` | `unknown-route`, `shared-definition`, `file-invalid`, `invalid-text`, `stopping` |
@@ -226,7 +228,7 @@ edit. Their effect shows as `node.updated` (`applied` and `disabled`) and the he
 | Notification | Params | When |
 |---|---|---|
 | `node.added` | the node as in the Graph, with its health (`phase` `added`, or `disabled` for a node added disabled), its `counters` (zero) and `"companions": []` | A node was added |
-| `node.updated` | `{"name", "settings", "applied", "disabled"?}`, and when its ports changed (feature `reshape`) `"ports": {"added", "removed"}` with its new `inputs` and `outputs`, and on a reshape `inPlace` ([below](#changes-of-ports)); `applied`: `restart`, `reconfigure` (every changed key's row is marked in place: [architecture.md](architecture.md#restarts-and-changes-of-settings)), `reshape` (its ports changed), `disable`, `enable` or `stored` (a change to a node that stays disabled). It is the plan's outcome, never rewritten by what the node then does: a node that cannot take it in place restarts, which `node.state` shows | A node's settings or `disabled` changed |
+| `node.updated` | `{"name", "settings", "applied", "disabled"?, "retuned"}` (`retuned`, feature `live`: the live keys the change moved, `[]` for none: [below](#retunes)), and when its ports changed (feature `reshape`) `"ports": {"added", "removed"}` with its new `inputs` and `outputs`, and on a reshape `inPlace` ([below](#changes-of-ports)); `applied`: `restart`, `reconfigure` (every changed key's row that is not live is marked in place: [architecture.md](architecture.md#restarts-and-changes-of-settings)), `retune` (only live keys changed), `reshape` (its ports changed), `disable`, `enable` or `stored` (a change to a node that stays disabled). It is the plan's outcome, never rewritten by what the node then does: a node that cannot take it in place restarts, which `node.state` shows | A node's settings or `disabled` changed |
 | `node.removed` | `{"name"}` | A node was removed (after `route.removed` for its routes). The client drops the node now |
 | `node.state` | `{"name"}` and every health member | Any health member changed |
 | `node.stopped` | `{"name", "droppedFrames"}` | Deprecated (removed at protocol 2): everything the node made is gone |
@@ -470,7 +472,8 @@ settings merged, made at the source like every edit, and refused as one: removin
 `invalid-settings`, settings that are not an object too.
 
 - **It answers with what it applied**: `{"applied"}`, the plan's outcome for the node at the commit
-  (`reconfigure`, `restart`, `reshape`, `stored`, `unchanged`), never rewritten by what the node then
+  (`retune`, `reconfigure`, `restart`, `reshape`, `stored`, `unchanged`), with `retuned` and
+  `alsoChanged` ([below](#retunes)), never rewritten by what the node then
   does: a node not yet rested takes any change as a restart, and a type may take a change in place
   as one; `node.state` (`stopping` with cause `restarting`) says what happened. When the node's
   ports change it also carries `inPlace` (on a reshape), `ports` (`{"added", "removed"}`) and
@@ -488,7 +491,37 @@ settings merged, made at the source like every edit, and refused as one: removin
 
 ```json
 {"jsonrpc": "2.0", "id": 10, "method": "node.set", "params": {"name": "desk", "settings": {"playback": 1}, "dryRun": true}}
-{"jsonrpc": "2.0", "id": 10, "result": {"applied": "reshape", "inPlace": false, "ports": {"added": [], "removed": ["play.2"]}, "routes": [{"from": {"node": "noise", "port": "noise.mono"}, "to": {"node": "desk", "port": "play.2"}}]}}
+{"jsonrpc": "2.0", "id": 10, "result": {"applied": "reshape", "inPlace": false, "ports": {"added": [], "removed": ["play.2"]}, "routes": [{"from": {"node": "noise", "port": "noise.mono"}, "to": {"node": "desk", "port": "play.2"}}], "retuned": [], "alsoChanged": []}}
+```
+
+### Retunes
+
+With the feature `live`, a row marked live ([writing-a-node-type.md](writing-a-node-type.md#live-rows))
+says `change: "live"` in its schema, and a change of it is a **retune**
+([architecture.md](architecture.md#retunes)): its value moves in the node's audio at once (ramped
+or stepped, as the row's `live` says), with no hook called, no restart and no `node.state`.
+
+- **The outcome is the other keys'.** A change of live keys alone is `applied: "retune"`; a change
+  of live keys beside others is the outcome the others ask (`reconfigure`, `reshape`, `restart`),
+  its live keys retuned beside it. A disabled node's change stays `stored`, its live keys retuned
+  (they play from its enable). A failed node's change of live keys alone is a `retune` and leaves
+  it `failed`: only a change of a key that is not live retries it.
+- **`retuned`**: on every `node.updated` and every `node.set` answer, dry runs included, the live
+  keys the change moved, a family's members by their full key (`trimDb.2`), in key order; `[]` for
+  none, as `routesDropped` is. A live key never appears in a health's `keys` or `next`, or in a
+  restart cause's `keys`: those name what the lifecycle acted on, so no `node.state` follows a
+  retune.
+- **`alsoChanged`**: on every `node.set` answer, the other nodes' keys the same edit changed, each
+  `{"name", "key"}` in name then key order, `[]` for none. An edit is made at the value's
+  definition ([graph-file.md](graph-file.md#edits-at-the-source)), so a `node.set` of a value
+  defined by an `@set` changes every node that uses it; a client clicking a live switch says so
+  from this list.
+- Standard output has a `param` record per retuned node and key ([output-records.md](output-records.md#param)).
+
+```json
+{"jsonrpc": "2.0", "id": 11, "method": "node.set", "params": {"name": "amp", "settings": {"gainDb": -12}, "dryRun": true}}
+{"jsonrpc": "2.0", "id": 11, "result": {"applied": "retune", "retuned": ["gainDb"], "alsoChanged": []}}
+{"jsonrpc": "2.0", "method": "node.updated", "params": {"name": "amp", "settings": {"gainDb": -12}, "applied": "retune", "retuned": ["gainDb"]}}
 ```
 
 ## Type schemas
@@ -522,7 +555,8 @@ encoding, never through the graph's keeper, so it waits on no edit.
 | Member | What |
 |---|---|
 | `kind` | What the control port takes for the key: `text` (a JSON string), `wholeNumber` (a JSON integer; a rate is one, in Hz, with `unit` `Hz`, whatever `ear.conf` writes), `decimal` (a JSON number, an integer taken), `flag` (JSON `true` or `false`), `choice` (a JSON string, one of `values`, as a choice status field's is). Open: a client draws a kind it does not know as a JSON value. A kind needs no feature: a client reads it from the schema it asked for |
-| `change` | What a change to the key alone asks of the node, from its row's [change mark](writing-a-node-type.md#change-marks): `inPlace` (taken [in place](architecture.md#changes-in-place)) or `restart`. Open |
+| `change` | What a change to the key alone asks of the node, from its row's [change mark](writing-a-node-type.md#change-marks): `live` (feature `live`: a [retune](#retunes)), `inPlace` (taken [in place](architecture.md#changes-in-place)) or `restart`. Open |
+| `live` | A `live` row's transition: `{"transition": "ramp", "ms": 20}` (the code's view ramps over `ms`) or `{"transition": "step"}` (the next block takes the new value). Open |
 | `restartReason` | A `restart` row's reason, one line: what cannot change while the node runs (`shairport-sync reads it only at start`, `card has no change in place yet`). Every built-in type's restart row has one |
 | `shapes` | `true` when a change to the key may change the node's ports ([below](#changes-of-ports)) |
 | `default` | What an absent key reads, of the row's kind: a whole number, a decimal, a flag, or a choice's name |
@@ -545,7 +579,7 @@ encoding, never through the graph's keeper, so it waits on no edit.
     {"key": "rate", "kind": "wholeNumber", "required": false, "change": "inPlace", "min": 8000, "max": 192000, "unit": "Hz", "defaultFrom": "graphFrequency"}]}]}}
 ```
 
-The hints come from the schema alone: a client says "applies in place" for `inPlace`, "restarts
+The hints come from the schema alone: a client says "live" for `live`, "applies in place" for `inPlace`, "restarts
 the node" for `restart` with its `restartReason` and "changes the ports" for `shapes`, and asks ear what an edit of several
 keys will do with a dry run ([below](#nodeset-and-dry-runs)). `types.json` holds every built-in
 type's schema and its hash, and the system tests hold the real ear to it, so a change to a type's

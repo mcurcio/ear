@@ -56,6 +56,7 @@ struct NodeUpdated {
 	bool disabled;
 	NodeOutcome applied;
 	std::optional<NodeReshaped> reshaped{}; // its ports changed
+	std::vector<std::string> retuned{};     // its live keys moved, key order (docs/control-port.md#retunes)
 };
 struct NodeRemoved {
 	NodeName node;
@@ -102,7 +103,8 @@ protected:
 	~EventSink() = default;
 };
 std::string encodeEvent(const GraphEvent& event); // one notification
-/// node.updated's `applied`: "restart" | "reconfigure" | "reshape" | "disable" | "enable" | "stored" | "unchanged".
+/// node.updated's `applied`: "restart" | "reconfigure" | "reshape" | "disable" | "enable" | "stored" | "unchanged" |
+/// "retune".
 std::string_view outcomeName(NodeOutcome outcome) noexcept;
 std::string encodeLevels(std::span<const NodeLevels> levels); // one "levels" notification
 /// One "graphFile.changed" notification: the GraphFile JSON (encodeGraphFile) plus "cause", plus

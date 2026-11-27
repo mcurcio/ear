@@ -5,6 +5,7 @@
 #include "ear/core/rate_text.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <stdexcept>
 #include <string>
@@ -208,6 +209,22 @@ std::optional<SettingKind> NodeType::kindOf(std::string_view key) const noexcept
 setting::Change NodeType::changeOf(std::string_view key) const noexcept { return table_->changeOf(key); }
 std::optional<std::uint32_t> NodeType::liveIndexOf(std::string_view key) const noexcept {
 	return table_->liveIndexOf(key);
+}
+
+NodeSettings NodeType::liveValueAsSetting(std::string_view key, std::uint64_t bits) const {
+	const auto found = table_->rowOf(key);
+	if (!found || !setting::isLive(*found->row)) return nullptr;
+	return std::visit(
+		[&](const auto& rule) -> NodeSettings {
+			using R = std::decay_t<decltype(rule)>;
+			if constexpr (std::is_same_v<R, DecimalRule>) return std::bit_cast<double>(bits);
+			else if constexpr (std::is_same_v<R, BooleanRule>) return bits != 0;
+			else if constexpr (std::is_same_v<R, ChoiceRule>)
+				return bits < rule.count ? NodeSettings(std::string(rule.names[bits])) : NodeSettings(nullptr);
+			else if constexpr (std::is_same_v<R, WholeNumberRule>) return static_cast<std::uint32_t>(bits);
+			else return nullptr; // text and rate rows are never live
+		},
+		found->row->rule);
 }
 
 std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings> NodeType::parse(const NodeName& node,

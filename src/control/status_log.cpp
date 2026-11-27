@@ -3,12 +3,14 @@
 #include "ear/control/status_log.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <format>
 #include <utility>
 
 #include <nlohmann/json.hpp>
 
 #include "ear/control/graph_json.hpp"
+#include "ear/core/decimal_text.hpp"
 
 namespace ear::control {
 
@@ -519,7 +521,40 @@ void StatusLog::graphFileChanged(const GraphFileChanged& change) {
 
 	std::string msg;
 	for (const std::string& line : graphFileLines(change)) msg += (msg.empty() ? "" : "\n") + line;
+	{
+		const std::lock_guard lock(mutex_);
+		lastCause_ = change.cause;
+	}
 	emit("graph-file", std::move(fields), std::move(msg));
+}
+
+void StatusLog::nodeAdded(const NodeSpec&, std::shared_ptr<const NodeConfig>) {}
+void StatusLog::nodeUpdated(const NodeSpec&, std::shared_ptr<const NodeConfig>) {}
+void StatusLog::nodeRemoved(const NodeName&) {}
+
+void StatusLog::nodeChanged(const NodeSpec& node, std::shared_ptr<const NodeConfig>, const NodeChange& change) {
+	if (change.retuned.empty()) return;
+	FileChangeCause cause;
+	{
+		const std::lock_guard lock(mutex_);
+		cause = lastCause_;
+	}
+	// A decimal as ear.conf writes it (-6, -3.5), every other value as its JSON.
+	const auto text = [](const NodeSettings& value) {
+		if (value.is_number_float() && std::isfinite(value.get<double>())) return decimalText(value.get<double>());
+		return json(value);
+	};
+	for (const Retuned& retune : change.retuned) {
+		const std::string from = text(retune.from);
+		const std::string to = text(retune.to);
+		emit("param",
+		     {{"node", json(node.name)},
+		      {"key", json(retune.key)},
+		      {"from", from},
+		      {"to", to},
+		      {"cause", json(causeName(cause))}},
+		     std::format("node {} {} {} -> {}", node.name, retune.key, from, to));
+	}
 }
 
 void StatusLog::graphFileWritten(const std::string& version) {

@@ -425,7 +425,8 @@ text over JSON, so the toggle's other side is the node's own statement.
   the count that the node or a draft gives is drawn too, greyed, its hint first: "kept; not used
   while channels is 2". A key is mapped to its family's field only by the member grammar (`trimDb.01`
   is no member), for drafts, the patch and ear's refusal's `data.key` alike.
-- **Hints from the schema alone**, beside each field: "applies in place" for `change: inPlace`,
+- **Hints from the schema alone**, beside each field: "live, ramped" for `change: live` with a ramp
+  and "live" for one with a step, "applies in place" for `change: inPlace`,
   "restarts the node" for `restart`, followed by its `restartReason` ("restarts the node: card has no
   change in place yet"), "changes the ports" for `shapes`; a `change` it does not know says
   nothing. A drafted key that a node changing in place is applying (`keys`) or will take next (`next`)
@@ -435,8 +436,8 @@ text over JSON, so the toggle's other side is the node's own statement.
   edit), the field says "changed on ear" with "Take ear's value"; a change elsewhere leaves it
   alone. The fields without a draft follow ear.
 - **Apply asks first** (feature `dryRun`). Apply sends the drafted keys as one `node.set` merge
-  patch (an emptied optional field removes its key) with `dryRun: true`. `reconfigure`, `unchanged`
-  and `stored` are then sent at once, since nothing stops; `restart`, `reshape`, an answer naming
+  patch (an emptied optional field removes its key) with `dryRun: true`. `retune`, `reconfigure`,
+  `unchanged` and `stored` are then sent at once, since nothing stops; `restart`, `reshape`, an answer naming
   routes, or an outcome the editor does not know show what will happen first ("Restarts desk: its
   audio stops for a moment.", "Restarts desk and removes 1 route: kitchen:from.left → desk:play.2",
   "Changes fpp's ports.") with Apply and Cancel. The confirmed send carries `dropRoutes: true` exactly
