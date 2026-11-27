@@ -571,6 +571,7 @@ moves them by hand. Each server text reaches the machines after the graph took i
 | ending | refusal | — | idle; ear aborted it (`refused`); the committed value; a toast with the refusal |
 | any | `aborted` for its id | — | aborted until the release (or the keys' end), then idle; a toast |
 | any | `end` with a `reason` | — | idle; the committed value; a toast |
+| any but ending | `end` with no `reason` (another session ended it by its id) | — | idle; the committed value; a toast (its own end's `end`, while ending, waits for the reply) |
 | active, ending | connection lost | — | frozen, the id and shown value kept, "Connection lost while you held amp gainDb; ear keeps the last value it heard." under the control |
 | frozen | reconnected | `gesture.end` with the kept id and shown value, from the new session | ending |
 
@@ -586,6 +587,7 @@ The notices are toasts about the node ([above](#toasts)), each a warning (polite
 | an end refused | "was not committed (invalid-settings): … ; it stays -6.0 dB." |
 | `stale` | "ear heard nothing about amp gainDb for 30 s and kept -3.5 dB." |
 | `session-closed` | "Connection lost while you held amp gainDb; ear kept -3.5 dB." |
+| ended by another session, by the id | "Another connection ended it; ear kept -3.5 dB." |
 | the reconnect's end finding it gone (`unknown-gesture`) | "ear had already let go of it, keeping -3.5 dB." |
 
 *Why some notices wait:* ear tells `aborted` for a hand edit, a save or an edit before the change's

@@ -231,10 +231,12 @@ export class GestureControl {
       else this.close();
       return;
     }
-    if (params.phase === "end" && params.reason !== undefined) {
+    // An end with a reason is ear's release; one with none while this control is not ending is another session's,
+    // by the id (docs/editor.md#gestures-in-the-editor). This control's own end is closed by its reply.
+    if (params.phase === "end" && (params.reason !== undefined || state !== "ending")) {
       ++this.token;
       this.stopTimers();
-      this.endNotice(params.reason, params.value);
+      this.endNotice(params.reason ?? "ended", params.value);
       this.close();
     }
   }
@@ -452,7 +454,9 @@ export class GestureControl {
         ? `ear heard nothing about ${this.what()} for 30 s and kept ${kept}.`
         : reason === "session-closed"
           ? `Connection lost while you held ${this.what()}; ear kept ${kept}.`
-          : `ear ended it and kept ${kept}.`;
+          : reason === "ended"
+            ? `Another connection ended it; ear kept ${kept}.`
+            : `ear ended it and kept ${kept}.`;
     this.side.notify({ severity: "info", code: reason, what: this.what(), verb: "was let go", detail, subject });
   }
 

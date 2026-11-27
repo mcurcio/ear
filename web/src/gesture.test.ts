@@ -482,6 +482,28 @@ describe("a gesture", () => {
     });
   });
 
+  it("any: end with no reason (another session ended it by its id) goes idle with ear's kept value", async () => {
+    const h = await active();
+    h.control.move(-3.5);
+    h.frame();
+    h.changed({ gesture: "g1", phase: "end", value: -3.5 });
+    expect(h.control.get().state).toBe("idle");
+    expect(h.controls.holding("g1")).toBeUndefined();
+    expect(h.notices[0]).toMatchObject({ code: "ended", detail: "Another connection ended it; ear kept -3.5 dB." });
+  });
+
+  it("ending: its own end's note waits for the reply", async () => {
+    const h = await active();
+    h.control.move(-3.5);
+    h.control.release();
+    h.changed({ gesture: "g1", phase: "end", value: -3.5 });
+    expect(h.control.get().state).toBe("ending");
+    h.ends[0]!.resolve({ value: -3.5 });
+    await settle();
+    expect(h.control.get()).toEqual({ state: "idle", pending: false });
+    expect(h.notices).toHaveLength(0);
+  });
+
   it("any: another gesture's id changes nothing", async () => {
     const h = await active();
     h.changed({ gesture: "g2", phase: "aborted", reason: "hand-edit" });
