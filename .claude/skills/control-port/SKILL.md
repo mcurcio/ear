@@ -206,8 +206,10 @@ will not be real time". So:
   replies, file changes and events back from the main loop to the control thread in one ordered
   stream. So a change's notification always comes before the statuses it causes, and a
   subscriber gets no event from before its snapshot.
-- One message in flight per connection: the next is read only after every reply to this one is
-  queued. A batch runs in order, each request as its own step through the keeper (an edit is
+- Read ahead, run in order: each message is read as it arrives into the session's FIFO
+  (`ControlSession`, 16 with the running one; at 16 the socket is not read until one is answered),
+  and its messages run one at a time, each answered before the next runs; a closed session still
+  runs what it queued, replies dropped. A batch runs in order, each request as its own step through the keeper (an edit is
   judged and committed before the next is taken); consecutive reads are answered in one
   main-loop turn, and the reply comes in the turn of the batch's last step. A batch is not
   atomic: a refused edit does not undo the ones before it. Put subscribes last so their

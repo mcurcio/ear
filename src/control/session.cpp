@@ -11,6 +11,7 @@
 // arrive before the reply, are in the snapshots too.
 #include "ear/control/session.hpp"
 
+#include <deque>
 #include <optional>
 #include <stdexcept>
 #include <unordered_map>
@@ -35,6 +36,11 @@ struct SessionState {
 	bool graph = false;     // graph.subscribe answered
 	bool graphFile = false; // graphFile.subscribe answered
 	bool levels = false;
+	/// The messages read and not yet answered, the one running first (docs/control-port.md#per-client-limits-and-stopping).
+	std::deque<std::string> fifo;
+	bool running = false;
+	/// The transport's go-ahead to read the next message, held while the FIFO is full.
+	std::move_only_function<void()> resume;
 };
 
 struct Hub {
@@ -53,6 +59,9 @@ struct Hub {
 thread_local std::unordered_map<const ControlHub*, Hub*> hubs;
 
 Message share(std::string text) { return std::make_shared<const std::string>(std::move(text)); }
+
+/// Out of its hub's list (below).
+void detach(const std::shared_ptr<SessionState>& state);
 
 /// One entry of a received message, in order: what its response will be.
 struct Slot {
@@ -74,6 +83,10 @@ std::optional<std::string> respond(const Slot& slot, const std::vector<CommandRe
 /// The responses to one message, queued in request order, then its subscriptions, then `done`.
 void answer(SessionState& state, bool batch, const std::vector<Slot>& slots, const std::vector<CommandResult>& results,
             std::move_only_function<void()>& done) {
+	if (state.out == nullptr) { // closed: its replies dropped
+		done();
+		return;
+	}
 	std::vector<std::string> responses;
 	for (const Slot& slot : slots)
 		if (auto response = respond(slot, results)) responses.push_back(std::move(*response));
@@ -105,13 +118,25 @@ ControlSession::ControlSession(ControlHub& hub, Outbox& out) : impl_(std::make_u
 
 ControlSession::~ControlSession() {
 	SessionState& state = *impl_->state;
-	if (state.hub != nullptr) std::erase(state.hub->sessions, impl_->state);
-	state.hub = nullptr;
 	state.out = nullptr;
+	state.resume = nullptr;
+	// Left attached while its FIFO runs on, so the hub's end still reaches it; detached once that drained.
+	if (state.fifo.empty()) detach(impl_->state);
 }
 
-void ControlSession::received(std::string text, std::move_only_function<void()> done) {
-	const std::shared_ptr<SessionState>& state = impl_->state;
+namespace {
+
+void pump(const std::shared_ptr<SessionState>& state);
+
+/// Out of its hub's list: told nothing more.
+void detach(const std::shared_ptr<SessionState>& state) {
+	if (state->hub != nullptr) std::erase(state->hub->sessions, state);
+	state->hub = nullptr;
+}
+
+/// One message from the FIFO, whole: its commands to the gateway in one run(); `done` once every response to it is
+/// queued (or dropped, the session having closed).
+void run(const std::shared_ptr<SessionState>& state, std::string text, std::move_only_function<void()> done) {
 	if (state->hub == nullptr) return; // the hub has gone: the port is stopping
 	RpcMessage message = parseMessage(text);
 
@@ -167,16 +192,47 @@ void ControlSession::received(std::string text, std::move_only_function<void()> 
 		answer(*state, message.batch, slots, {}, done);
 		return;
 	}
-	state->hub->graph.run(std::move(commands),
-	                      [weak = std::weak_ptr<SessionState>(state), batch = message.batch, slots = std::move(slots),
-	                       done = std::move(done)](std::vector<CommandResult> results) mutable {
-							  const auto alive = weak.lock();
-							  if (!alive || alive->out == nullptr) return; // the session closed meanwhile
-							  for (CommandResult& result : results)
-								  if (auto* view = std::get_if<GraphView>(&result))
-									  view->typeSchemaHash = alive->hub->types.hash;
-							  answer(*alive, batch, slots, results, done);
-						  });
+	// The state is kept, not watched: a session closed meanwhile still runs the rest of its FIFO in order, its replies
+	// dropped (docs/control-port.md#per-client-limits-and-stopping).
+	state->hub->graph.run(std::move(commands), [state, batch = message.batch, slots = std::move(slots),
+	                                            done = std::move(done)](std::vector<CommandResult> results) mutable {
+		if (state->out == nullptr || state->hub == nullptr) {
+			done();
+			return;
+		}
+		for (CommandResult& result : results)
+			if (auto* view = std::get_if<GraphView>(&result)) view->typeSchemaHash = state->hub->types.hash;
+		answer(*state, batch, slots, results, done);
+	});
+}
+
+/// The FIFO's front runs when none is running; once answered it leaves the FIFO, a held go-ahead is given, and the
+/// next runs.
+void pump(const std::shared_ptr<SessionState>& state) {
+	if (state->running || state->fifo.empty() || state->hub == nullptr) return;
+	state->running = true;
+	std::string text = std::move(state->fifo.front());
+	run(state, std::move(text), [state] {
+		state->running = false;
+		state->fifo.pop_front();
+		if (state->out == nullptr && state->fifo.empty()) { // closed, and the last of its FIFO has run
+			detach(state);
+			return;
+		}
+		if (state->resume && state->fifo.size() < sessionFifoBound) std::exchange(state->resume, nullptr)();
+		pump(state);
+	});
+}
+
+} // namespace
+
+void ControlSession::received(std::string text, std::move_only_function<void()> done) {
+	const std::shared_ptr<SessionState>& state = impl_->state;
+	if (state->hub == nullptr) return; // the hub has gone: the port is stopping
+	state->fifo.push_back(std::move(text));
+	if (state->fifo.size() < sessionFifoBound) done();
+	else state->resume = std::move(done);
+	pump(state);
 }
 
 struct ControlHub::Impl {

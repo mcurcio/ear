@@ -8,6 +8,9 @@
 // The protocol per connection (control thread only; docs/control-port.md).
 namespace ear::control {
 using Message = std::shared_ptr<const std::string>; // encoded once, shared by every client
+/// The most messages a session holds read and not yet answered, the running one among them
+/// (docs/control-port.md#per-client-limits-and-stopping).
+inline constexpr std::size_t sessionFifoBound = 16;
 /// Implemented by the transport.
 class Outbox {
 public:
@@ -26,8 +29,10 @@ class ControlSession {
 public:
 	ControlSession(ControlHub& hub, Outbox& out); // attaches
 	~ControlSession();                            // detaches; later replies for it are dropped
-	/// One text message. Its commands go to the gateway in one run(); `done` runs once all its
-	/// responses are queued (the transport reads the next message only then).
+	/// One text message, read as it arrived. It joins the session's FIFO, whose messages run one at a time in order,
+	/// each one's commands in one gateway run(); `done` runs once the FIFO has room for another (at once, or once one
+	/// is answered while it holds sessionFifoBound): the transport reads the next message only then. A session
+	/// destroyed with messages in its FIFO still runs them in order, their replies dropped.
 	void received(std::string text, std::move_only_function<void()> done);
 
 private:

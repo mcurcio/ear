@@ -237,7 +237,7 @@ private:
 		}
 		std::string text = beast::buffers_to_string(buffer_.data());
 		buffer_.consume(buffer_.size());
-		// One message in flight: the next is read once every response to this one is queued.
+		// Read ahead: the next is read once the session's FIFO has room (docs/control-port.md#per-client-limits-and-stopping).
 		session_->received(std::move(text), [weak = weak_from_this()] {
 			if (const auto self = weak.lock(); self && !self->closing_) self->read();
 		});

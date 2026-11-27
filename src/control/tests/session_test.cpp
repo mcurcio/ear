@@ -7,6 +7,7 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <optional>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -1442,7 +1443,7 @@ TEST_CASE("A batch's subscribe snapshot holds the batch's own changes", "[sessio
 	CHECK(json::parse(out.all[1])["method"] == "node.state");
 }
 
-TEST_CASE("Responses keep request order, notifications get none, and done follows the responses", "[session]") {
+TEST_CASE("Responses keep request order, notifications get none, and done lets the next be read at once", "[session]") {
 	World w;
 	RecordingOutbox out;
 	ControlSession session(*w.hub, out);
@@ -1466,10 +1467,10 @@ TEST_CASE("Responses keep request order, notifications get none, and done follow
 							 queuedAtDone = out.all.size();
 						 });
 	});
-	CHECK(done == 0); // its commands are on the main loop
+	CHECK(done == 1); // read ahead: the FIFO has room, though its commands are on the main loop
+	CHECK(queuedAtDone == 0);
 	w.pump();
 	CHECK(done == 1);
-	CHECK(queuedAtDone == 1);
 	CHECK(w.graph.script.empty()); // the notification node.add ran
 	REQUIRE(out.all.size() == 1);
 	CHECK(json::parse(out.all[0]) == json::parse(R"([
@@ -1537,7 +1538,7 @@ TEST_CASE("A session closed while its command is on the main loop drops the repl
 	w.pump();
 	CHECK(w.graph.script.empty()); // the command still ran
 	CHECK(out.all.empty());
-	CHECK(done == 0);
+	CHECK(done == 1); // the transport's go-ahead came as it was read, before the close
 }
 
 TEST_CASE("companions.json: each node's list in the snapshot, node.added's [], each list told in order with the health "
@@ -1771,4 +1772,43 @@ TEST_CASE("types.get is answered by the hub in its place in a batch, never throu
 	REQUIRE(out.all.size() == 2);
 	CHECK(json::parse(out.all[1])["result"]["hash"] == hash);
 	CHECK(w.graph.calls.size() == 1); // answered on the control thread alone
+}
+
+TEST_CASE("A session reads ahead: up to 16 messages wait in its FIFO and run one at a time, the 16th holding the "
+          "transport's next read until one is answered",
+          "[session]") {
+	World w;
+	RecordingOutbox out;
+	std::optional<ControlSession> session;
+	w.onControl([&] { session.emplace(*w.hub, out); });
+	int done = 0;
+	w.onControl([&] {
+		for (int id = 1; id <= 16; ++id)
+			session->received(R"({"jsonrpc":"2.0","id":)" + std::to_string(id) + R"(,"method":"graph.get"})",
+			                  [&done] { ++done; });
+	});
+	CHECK(done == 15); // the 16th fills the FIFO: the transport reads nothing more until one is answered
+	CHECK(w.graph.calls.empty());
+	w.main.runOne(); // the first message's read, and only it: the next waits for its answer
+	CHECK(w.graph.calls.size() == 1);
+	w.pump();
+	CHECK(done == 16);
+	REQUIRE(out.all.size() == 16);
+	for (int id = 1; id <= 16; ++id) CHECK(json::parse(out.all[id - 1]).at("id") == id); // in order
+	w.onControl([&] { session.reset(); });
+}
+
+TEST_CASE("A session closed with messages in its FIFO still runs them in order, its replies dropped", "[session]") {
+	World w;
+	RecordingOutbox out;
+	std::optional<ControlSession> session;
+	w.onControl([&] { session.emplace(*w.hub, out); });
+	w.onControl([&] {
+		session->received(R"({"jsonrpc":"2.0","id":1,"method":"graph.get"})", [] {});
+		session->received(R"({"jsonrpc":"2.0","id":2,"method":"graph.get"})", [] {});
+		session.reset();
+	});
+	w.pump();
+	CHECK(w.graph.calls.size() == 2);
+	CHECK(out.all.empty());
 }

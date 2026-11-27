@@ -772,8 +772,11 @@ the wire; its records still reach standard output.
 
 ## Per-client limits and stopping
 
-- One message in flight per connection: the next is read only after every reply to this one is
-  queued.
+- **Read ahead, run in order.** A connection reads each message as it arrives into its FIFO,
+  whose messages run one at a time in order, each answered before the next runs, so replies keep
+  request order. The FIFO holds 16 (the running one among them); at 16 the socket is not read until
+  one is answered. A connection closed with messages in its FIFO still runs them in order, their
+  replies dropped.
 - At most 256 responses and notifications wait per client; one more closes the connection with
   WebSocket code 1008. Reconnect and subscribe again (the editor does, after 1 s doubling to 30 s).
   Whole graph file texts in the queue fill it sooner. Status counts like any notification, at most
