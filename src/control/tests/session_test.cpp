@@ -1081,7 +1081,7 @@ TEST_CASE("node-set.json: a merge of a node's settings answered with what it app
 	using Kind = ear::NodeCause::Kind;
 	const json document = fixture("node-set");
 	const auto requests = requestsOf(document);
-	REQUIRE(requests.size() == 12);
+	REQUIRE(requests.size() == 16);
 	World w;
 	const ear::Ports card1{{{ear::Direction::input, "play", {"1"}}}};
 	const ear::Ports card2{{{ear::Direction::input, "play", {"1", "2"}}}};
@@ -1089,8 +1089,16 @@ TEST_CASE("node-set.json: a merge of a node's settings answered with what it app
 	const ear::Route toDesk{{"noise", "noise.mono"}, {"desk", "play.2"}};
 	const ear::Route fppToRec{{"fpp", "stream.1"}, {"rec", "record.left"}};
 	json fpp = {{"address", "0.0.0.0"}, {"channels", 2}, {"format", "L24"}, {"latencyMs", 40}, {"port", 5004}};
-	w.graph.view = ear::GraphView{
-		{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"}, {"card", "file", "rtp", "white"}, {}, {}};
+	// gain nodes (docs/node-types.md#gain), whose live keys are retuned: amp and amp2 share one @set for gainDb.
+	const ear::Ports gain2{{{ear::Direction::input, "in", {"1", "2"}}, {ear::Direction::output, "out", {"1", "2"}}}};
+	const ear::Ports gain4{
+		{{ear::Direction::input, "in", {"1", "2", "3", "4"}}, {ear::Direction::output, "out", {"1", "2", "3", "4"}}}};
+	w.graph.view = ear::GraphView{{{ear::SampleRate::fixed<48000>(), 256}, false, "SCHED_OTHER"},
+	                              {"card", "file", "gain", "rtp", "white"},
+	                              {},
+	                              {}};
+	w.graph.view.nodes.push_back({{"amp", "gain", {{"gainDb", -6}}}, gain2, at("amp", NodePhase::running)});
+	w.graph.view.nodes.push_back({{"amp2", "gain", {{"gainDb", -6}}}, gain2, at("amp2", NodePhase::running)});
 	w.graph.view.nodes.push_back(
 		{{"desk", "card", {{"card", "MOTU"}, {"playback", 2}}}, card2, at("desk", NodePhase::running)});
 	w.graph.view.nodes.push_back({{"fpp", "rtp", fpp}, rtpPorts, at("fpp", NodePhase::running)});
@@ -1103,6 +1111,8 @@ TEST_CASE("node-set.json: a merge of a node's settings answered with what it app
 	w.graph.view.nodes.push_back({{"rec", "file", {{"path", "take1.wav"}}},
 	                              ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
 	                              at("rec", NodePhase::running)});
+	w.graph.view.nodes.push_back(
+		{{"spare", "gain", json::object(), true}, gain2, at("spare", NodePhase::disabled, ear::Wanted::disabled)});
 	w.graph.view.routes.push_back({toDesk, ear::RouteMatch::linked, ""});
 	w.graph.view.routes.push_back({fppToRec, ear::RouteMatch::linked, ""});
 	RecordingOutbox out;
@@ -1189,6 +1199,60 @@ TEST_CASE("node-set.json: a merge of a node's settings answered with what it app
 		w.told(at("desk", NodePhase::starting));
 		w.told(at("desk", NodePhase::running));
 	});
+
+	// Retunes (docs/control-port.md#retunes): a dry run, then the edit of a value two nodes share, each node.updated
+	// with retuned and the answer naming the other in alsoChanged; no node.state follows.
+	const std::vector<ear::control::NodeKey> amp2Too{{"amp2", "gainDb"}};
+	const auto retuned = [](Applied applied, std::vector<std::string> keys,
+	                        std::vector<ear::control::NodeKey> also = {}) {
+		applied.retuned = std::move(keys);
+		applied.alsoChanged = std::move(also);
+		return applied;
+	};
+	w.graph.script.push_back(
+		{R"(setNode amp {"gainDb":-3.5} dryRun)", answer(retuned(Applied{AppliedKind::retune}, {"gainDb"}, amp2Too))});
+	w.receive(session, requests[12]);
+	w.graph.script.push_back({R"(setNode amp {"gainDb":-3.5})", [&]() -> CommandResult {
+								  for (const char* name : {"amp", "amp2"})
+									  w.gateway.nodeChanged({name, "gain", {{"gainDb", -3.5}}},
+			                                                std::make_shared<Config>(gain2),
+			                                                ear::NodeChange{.outcome = ear::NodeOutcome::retune,
+			                                                                .keys = {},
+			                                                                .oldPorts = gain2,
+			                                                                .ports = gain2,
+			                                                                .retuned = {{"gainDb", -6, -3.5}}});
+								  return retuned(Applied{AppliedKind::retune}, {"gainDb"}, amp2Too);
+							  }});
+	w.receive(session, requests[13]);
+	// A reshape in place with a trim retuned beside it: reconfiguring names channels alone.
+	const ear::PortsMoved grown = ear::portsMoved(gain2, gain4);
+	w.graph.script.push_back(
+		{R"(setNode amp {"channels":4,"trimDb.3":-1.5})", [&]() -> CommandResult {
+			 w.gateway.nodeChanged({"amp", "gain", {{"channels", 4}, {"gainDb", -3.5}, {"trimDb.3", -1.5}}},
+		                           std::make_shared<Config>(gain4),
+		                           ear::NodeChange{.outcome = ear::NodeOutcome::reshape,
+		                                           .keys = {"channels"},
+		                                           .oldPorts = gain2,
+		                                           .ports = gain4,
+		                                           .inPlace = true,
+		                                           .retuned = {{"trimDb.3", 0, -1.5}}});
+			 w.told(changing(at("amp", NodePhase::reconfiguring), {"channels"}));
+			 return retuned(Applied{AppliedKind::reshape, true, grown, std::vector<ear::Route>{}}, {"trimDb.3"});
+		 }});
+	w.receive(session, requests[14]);
+	w.onMain([&] { w.told(at("amp", NodePhase::running)); });
+	// A disabled node's change of a live key: stored, retuned, played from its enable.
+	w.graph.script.push_back({R"(setNode spare {"mute":true})", [&]() -> CommandResult {
+								  w.gateway.nodeChanged({"spare", "gain", {{"mute", true}}, true},
+		                                                std::make_shared<Config>(gain2),
+		                                                ear::NodeChange{.outcome = ear::NodeOutcome::stored,
+		                                                                .keys = {},
+		                                                                .oldPorts = gain2,
+		                                                                .ports = gain2,
+		                                                                .retuned = {{"mute", false, true}}});
+								  return retuned(Applied{AppliedKind::stored}, {"mute"});
+							  }});
+	w.receive(session, requests[15]);
 	checkMessages(out, document["messages"]);
 	CHECK(w.graph.script.empty());
 }

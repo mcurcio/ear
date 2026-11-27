@@ -2,8 +2,7 @@
 
 Status: design; steps 6.1 (change marks and restart reasons), 6.2 (decimal rows and typed defaults), 6.3 (indexed
 families), 6.4 (choice rows), 6.5 (live rows: slots, ramps, steps, live values, `io.param`) and 6.6 (retunes, feature
-`live`) and the `gain` type with the all-type live sweeps (step 6.7, but for its system test and its fixtures' retune
-cases) are built and in the library docs ([writing-a-node-type.md](../writing-a-node-type.md#change-marks), [#decimal-rows](../writing-a-node-type.md#decimal-rows),
+`live`) and the `gain` type with the all-type live sweeps (step 6.7) are built and in the library docs ([writing-a-node-type.md](../writing-a-node-type.md#change-marks), [#decimal-rows](../writing-a-node-type.md#decimal-rows),
 [#indexed-families](../writing-a-node-type.md#indexed-families), [#choice-rows](../writing-a-node-type.md#choice-rows),
 [#live-rows](../writing-a-node-type.md#live-rows), [architecture.md](../architecture.md#the-realtime-channels),
 [#live-values](../architecture.md#live-values), [#retunes](../architecture.md#retunes),
@@ -680,7 +679,6 @@ moves it.
 | File | Covers |
 |---|---|
 | `rows.json` (built with its decimal rows and typed defaults: [control-port.md](../control-port.md#fixtures)) | schemas of test types (not the real ear's), held by `src/control/tests/type_schemas_test.cpp` encoding test specs and read by vitest's form tests: a family and choices (built), live ramped and stepped rows (6.6); each step extends it, so the row vocabulary has a fixture before any built type uses it |
-| `edits.json`, `node-set.json` | `retuned: []` on every `node.updated` and `node.set` answer, `alsoChanged: []` on every `node.set` answer (built); with `gain` (6.7): a retune, a mixed reshape with `retuned`, a dry run of each; a disabled node's `stored` with `retuned`; `alsoChanged` on a shared definition |
 | `gestures.json` (new) | begin with no echo to the owner and `begin` to another first; ticks (one stale); end with its order; reaches of two keys and of 64; `reach-mismatch` with `with`; `parameter-held` with `silentMs`; a silent holder released `stale`; a begin on a failed node; cancel; `tick-refused` to the owner only; an end refused `invalid-settings`, aborted `refused`; an end from another session by id (the reconnect); an unsubscribed owner getting `aborted`; aborts by a related hand edit, `graphFile.set`, `node.set`, `node.addText` and `node.setText`; `node.setText` of a held key refused; a live count retune inactivating a held member (`key-removed`); an unrelated hand edit and a route edit left open; `session-closed` after a queued end; `unknown-gesture` after an abort; `not-in-batch` for each method; `notification-only` |
 | `unknown-values.json`, `errors.json`, `snapshot.json`, `output-records.json` | this page's members, codes and records |
 
@@ -784,7 +782,7 @@ specs and vitest's form tests read; `types.json` stays what the real ear sends.
 | 6.4 | Choice rows: **built** | 6.2 | kind `choice` for settings | the same |
 | 6.5 | Slots, ramps, steps, live values, `io.param`: **built** | 6.2, 6.3, 6.4 | none | writing-a-node-type.md#live-rows, architecture.md#the-realtime-channels |
 | 6.6 | Retunes: **built** | 6.5 | feature `live` | architecture.md#restarts-and-changes-of-settings and #failures, control-port.md, output-records.md |
-| 6.7 | The `gain` type: **built** but for its system test and fixture cases | 6.6 | `types.json` gains `gain` | node-types.md |
+| 6.7 | The `gain` type: **built** | 6.6 | `types.json` gains `gain` | node-types.md |
 | 6.8 | Gestures | 6.6 | feature `gestures` | control-port.md (#order, #per-client-limits-and-stopping: "one message in flight"), graph-file.md |
 | 6.9 | The editor's live controls | 6.6 (switches and selects), 6.8 (faders) | none | editor.md; deletes this page and its row in [README.md](README.md) |
 
@@ -809,17 +807,13 @@ step 6.9, with the other controls.
 
 **6.6 Retunes** is built: [architecture.md](../architecture.md#retunes), [control-port.md](../control-port.md#retunes),
 [output-records.md](../output-records.md#param) and [writing-a-node-type.md](../writing-a-node-type.md#live-rows) say
-how. Left to step 6.7, since no built type has a live row before `gain`: `edits.json` and `node-set.json` cases of a
-retune by a real type (a retune, a mixed reshape with `retuned`, a dry run of each, a disabled node's `stored` with
-`retuned`, `alsoChanged` on a shared definition; the keeper's tests hold these on a test type today). The form's live
+how; `node-set.json` holds its retune cases by `gain` nodes (step 6.7). The form's live
 switches and selects, committed at once by `node.set` with the `alsoChanged` notice, are built
 ([editor.md](../editor.md#the-settings-form)).
 
-**6.7 The `gain` type** is built, with the all-type live sweeps: [node-types.md](../node-types.md#gain) and
-[writing-a-node-type.md](../writing-a-node-type.md#what-every-type-must-also-pass) say how, and `types.json` holds its
-schema. Still to come in this step: the system test (white noise through `gain` into a `file`; `node.set` of `gainDb`
-mid-recording; the WAV's level moving over 20 ms with no gap and no `node.state` record) and the fixture cases left
-from step 6.6.
+**6.7 The `gain` type** is built, with the all-type live sweeps, its system test and `node-set.json`'s retunes:
+[node-types.md](../node-types.md#gain), [writing-a-node-type.md](../writing-a-node-type.md#what-every-type-must-also-pass)
+and [testing.md](../testing.md#what-each-test-program-proves) say how, and `types.json` holds its schema.
 
 **6.8 Gestures.** `Gestures` with its silence timer on the main loop's injectable clock, `GraphGateway::gesture`,
 `GestureRequests` and `MainLoopSide`'s working-copy state, the reach index with defining lines from tokens, begin on

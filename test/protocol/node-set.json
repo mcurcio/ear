@@ -1,5 +1,5 @@
 {
-  "description": "node.set (features node.set and dryRun, docs/control-port.md#nodeset-and-dry-runs): a JSON merge patch of a node's settings, made at the source, answered at the commit with what the plan applied. A dry run of each outcome (reconfigure, unchanged, restart, stored, reshape) answers it and changes nothing, tells no one and writes nothing; the real edit of the same settings is judged afresh. A key set: reconfigure (node.updated, reconfiguring with its keys, the reply, running); the same again: unchanged, and no event. null removes a key (latencyMs, which then reads its default); removing a required key is invalid-settings with the type's missing. A change of ports on a disabled node: stored, with its ports. A reshape: its dry run names the route it would remove (routes); the real edit without dropRoutes is refused ports-in-use naming every such route; with dropRoutes the route.removed, node.updated with its ports, the restart (cause reshape), and the reply with inPlace, ports and routesDropped, all in one commit.",
+  "description": "node.set (features node.set and dryRun, docs/control-port.md#nodeset-and-dry-runs): a JSON merge patch of a node's settings, made at the source, answered at the commit with what the plan applied. A dry run of each outcome (reconfigure, unchanged, restart, stored, reshape) answers it and changes nothing, tells no one and writes nothing; the real edit of the same settings is judged afresh. A key set: reconfigure (node.updated, reconfiguring with its keys, the reply, running); the same again: unchanged, and no event. null removes a key (latencyMs, which then reads its default); removing a required key is invalid-settings with the type's missing. A change of ports on a disabled node: stored, with its ports. A reshape: its dry run names the route it would remove (routes); the real edit without dropRoutes is refused ports-in-use naming every such route; with dropRoutes the route.removed, node.updated with its ports, the restart (cause reshape), and the reply with inPlace, ports and routesDropped, all in one commit. Retunes of gain nodes (feature live): a dry run and the edit of a gainDb two nodes share by one @set, each node.updated applied retune with retuned and no node.state, the answer naming the other node in alsoChanged; a reshape in place with a trim retuned beside it, reconfiguring naming channels alone; a disabled node's change of mute stored, with retuned.",
   "requests": [
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"node.set\",\"params\":{\"name\":\"fpp\",\"settings\":{\"port\":5006},\"dryRun\":true}}",
@@ -12,7 +12,11 @@
     "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"node.set\",\"params\":{\"name\":\"porch\",\"settings\":{\"playback\":4},\"dryRun\":true}}",
     "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"node.set\",\"params\":{\"name\":\"desk\",\"settings\":{\"playback\":1},\"dryRun\":true}}",
     "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"node.set\",\"params\":{\"name\":\"desk\",\"settings\":{\"playback\":1}}}",
-    "{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"node.set\",\"params\":{\"name\":\"desk\",\"settings\":{\"playback\":1},\"dropRoutes\":true}}"
+    "{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"node.set\",\"params\":{\"name\":\"desk\",\"settings\":{\"playback\":1},\"dropRoutes\":true}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"node.set\",\"params\":{\"name\":\"amp\",\"settings\":{\"gainDb\":-3.5},\"dryRun\":true}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":14,\"method\":\"node.set\",\"params\":{\"name\":\"amp\",\"settings\":{\"gainDb\":-3.5}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":15,\"method\":\"node.set\",\"params\":{\"name\":\"amp\",\"settings\":{\"channels\":4,\"trimDb.3\":-1.5}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":16,\"method\":\"node.set\",\"params\":{\"name\":\"spare\",\"settings\":{\"mute\":true}}}"
   ],
   "messages": [
     {
@@ -40,11 +44,68 @@
         "types": [
           "card",
           "file",
+          "gain",
           "rtp",
           "white"
         ],
         "typeSchemaHash": "fnv1a64:0123456789abcdef",
         "nodes": [
+          {
+            "name": "amp",
+            "type": "gain",
+            "settings": {
+              "gainDb": -6
+            },
+            "inputs": [
+              "in.1",
+              "in.2"
+            ],
+            "outputs": [
+              "out.1",
+              "out.2"
+            ],
+            "state": "running",
+            "phase": "running",
+            "wanted": "running",
+            "blockLost": false,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": [],
+            "status": {},
+            "diagnostics": []
+          },
+          {
+            "name": "amp2",
+            "type": "gain",
+            "settings": {
+              "gainDb": -6
+            },
+            "inputs": [
+              "in.1",
+              "in.2"
+            ],
+            "outputs": [
+              "out.1",
+              "out.2"
+            ],
+            "state": "running",
+            "phase": "running",
+            "wanted": "running",
+            "blockLost": false,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": [],
+            "status": {},
+            "diagnostics": []
+          },
           {
             "name": "desk",
             "type": "card",
@@ -164,6 +225,33 @@
             "phase": "running",
             "wanted": "running",
             "blockLost": false,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            },
+            "companions": [],
+            "status": {},
+            "diagnostics": []
+          },
+          {
+            "name": "spare",
+            "type": "gain",
+            "settings": {},
+            "inputs": [
+              "in.1",
+              "in.2"
+            ],
+            "outputs": [
+              "out.1",
+              "out.2"
+            ],
+            "state": "disabled",
+            "phase": "disabled",
+            "wanted": "disabled",
+            "blockLost": false,
+            "disabled": true,
             "counters": {
               "missedCycles": 0,
               "overruns": 0,
@@ -578,6 +666,179 @@
         "wanted": "running",
         "blockLost": false
       }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 13,
+      "result": {
+        "applied": "retune",
+        "retuned": [
+          "gainDb"
+        ],
+        "alsoChanged": [
+          {
+            "name": "amp2",
+            "key": "gainDb"
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.updated",
+      "params": {
+        "name": "amp",
+        "settings": {
+          "gainDb": -3.5
+        },
+        "applied": "retune",
+        "retuned": [
+          "gainDb"
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.updated",
+      "params": {
+        "name": "amp2",
+        "settings": {
+          "gainDb": -3.5
+        },
+        "applied": "retune",
+        "retuned": [
+          "gainDb"
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 14,
+      "result": {
+        "applied": "retune",
+        "retuned": [
+          "gainDb"
+        ],
+        "alsoChanged": [
+          {
+            "name": "amp2",
+            "key": "gainDb"
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.updated",
+      "params": {
+        "name": "amp",
+        "settings": {
+          "channels": 4,
+          "gainDb": -3.5,
+          "trimDb.3": -1.5
+        },
+        "applied": "reshape",
+        "inPlace": true,
+        "ports": {
+          "added": [
+            "in.3",
+            "in.4",
+            "out.3",
+            "out.4"
+          ],
+          "removed": []
+        },
+        "inputs": [
+          "in.1",
+          "in.2",
+          "in.3",
+          "in.4"
+        ],
+        "outputs": [
+          "out.1",
+          "out.2",
+          "out.3",
+          "out.4"
+        ],
+        "retuned": [
+          "trimDb.3"
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "amp",
+        "state": "reconfiguring",
+        "phase": "reconfiguring",
+        "since": "2026-11-09T10:00:00.090000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "keys": [
+          "channels"
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 15,
+      "result": {
+        "applied": "reshape",
+        "inPlace": true,
+        "ports": {
+          "added": [
+            "in.3",
+            "in.4",
+            "out.3",
+            "out.4"
+          ],
+          "removed": []
+        },
+        "routesDropped": [],
+        "retuned": [
+          "trimDb.3"
+        ],
+        "alsoChanged": []
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "amp",
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.100000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.updated",
+      "params": {
+        "name": "spare",
+        "settings": {
+          "mute": true
+        },
+        "applied": "stored",
+        "retuned": [
+          "mute"
+        ],
+        "disabled": true
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 16,
+      "result": {
+        "applied": "stored",
+        "retuned": [
+          "mute"
+        ],
+        "alsoChanged": []
+      }
     }
   ],
   "graph": {
@@ -602,11 +863,75 @@
     "types": [
       "card",
       "file",
+      "gain",
       "rtp",
       "white"
     ],
     "typeSchemaHash": "fnv1a64:0123456789abcdef",
     "nodes": [
+      {
+        "name": "amp",
+        "type": "gain",
+        "settings": {
+          "channels": 4,
+          "gainDb": -3.5,
+          "trimDb.3": -1.5
+        },
+        "inputs": [
+          "in.1",
+          "in.2",
+          "in.3",
+          "in.4"
+        ],
+        "outputs": [
+          "out.1",
+          "out.2",
+          "out.3",
+          "out.4"
+        ],
+        "since": "2026-11-09T10:00:00.100000Z",
+        "state": "running",
+        "phase": "running",
+        "wanted": "running",
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": [],
+        "status": {},
+        "diagnostics": []
+      },
+      {
+        "name": "amp2",
+        "type": "gain",
+        "settings": {
+          "gainDb": -3.5
+        },
+        "inputs": [
+          "in.1",
+          "in.2"
+        ],
+        "outputs": [
+          "out.1",
+          "out.2"
+        ],
+        "state": "running",
+        "phase": "running",
+        "wanted": "running",
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": [],
+        "status": {},
+        "diagnostics": []
+      },
       {
         "name": "desk",
         "type": "card",
@@ -726,6 +1051,35 @@
         "phase": "running",
         "wanted": "running",
         "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        },
+        "companions": [],
+        "status": {},
+        "diagnostics": []
+      },
+      {
+        "name": "spare",
+        "type": "gain",
+        "settings": {
+          "mute": true
+        },
+        "inputs": [
+          "in.1",
+          "in.2"
+        ],
+        "outputs": [
+          "out.1",
+          "out.2"
+        ],
+        "state": "disabled",
+        "phase": "disabled",
+        "wanted": "disabled",
+        "blockLost": false,
+        "disabled": true,
         "counters": {
           "missedCycles": 0,
           "overruns": 0,
