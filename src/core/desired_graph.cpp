@@ -253,6 +253,8 @@ std::expected<Plan, CommandError> DesiredGraph::plan(std::span<const NodeSpec> n
 					if (!at || *at >= was.size() || *at >= now.size()) continue;
 					retune.from = type.liveValueAsSetting(retune.key, was[*at]);
 					retune.to = type.liveValueAsSetting(retune.key, now[*at]);
+					retune.member = *at;
+					retune.bits = now[*at];
 				}
 			}
 			changes->outcomes.emplace_back(name, change.outcome);

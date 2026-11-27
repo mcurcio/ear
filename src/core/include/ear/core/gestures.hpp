@@ -124,7 +124,14 @@ public:
 	/// settle(); with `settleNow`, at once. Nothing for an id that is not open.
 	void abort(const std::string& gesture, const std::string& reason, bool toldByChange = false, bool settleNow = true);
 	/// Every slot an abort left unsettled set to its node's committed value: last in a turn that committed a change.
+	/// Wherever slots go back to committed values (an abort, a cancel, a close, a settle), a node whose check then
+	/// refuses another open gesture's hand has every open gesture on it aborted `crossed` and set back too.
 	void settle();
+	/// A change about to retune `node`'s live members to `writes` (each member's new committed bits): when the node's
+	/// check refuses its live values with them in place, an open gesture's hand crossing them, every open gesture on
+	/// the node is aborted `crossed` and its slots set back at once, before the change commits; `ending`, the gesture
+	/// whose end the change is, is kept.
+	void abortCrossing(const NodeName& node, std::span<const LiveWrite> writes, const std::string& ending = {});
 	/// gesture.cancel from `by`: aborted, reason cancelled. unknownGesture when no open gesture has the id.
 	std::expected<void, GestureRefusal> cancel(const std::string& gesture, SessionToken by);
 	/// The session closed: each of its gestures not ending is released (session-closed).

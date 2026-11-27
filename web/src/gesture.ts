@@ -502,6 +502,12 @@ export class GestureControl {
       case "refused":
         this.side.notify({ ...base, severity: "error", detail: `ear refused its end; it stays ${this.text(this.committed)}.` });
         return;
+      case "crossed":
+        this.side.notify({
+          ...base,
+          detail: `Another change left it outside what ${this.name} allows beside its other values; it stays ${this.text(this.committed)}.`,
+        });
+        return;
       default:
         this.side.notify({ ...base, detail: `ear stopped it (${reason}).` });
     }

@@ -1097,14 +1097,17 @@ struct GestureTimers final : ear::Timers {
 	}
 };
 
-/// Live values written per node and member; every check passes.
+/// Live values written per node and member; every check passes but what `refuses` refuses.
 struct GestureLive final : ear::LiveTarget {
 	std::map<std::pair<NodeName, std::size_t>, double> slots;
 	std::map<std::pair<NodeName, std::size_t>, double> committed;
+	std::function<bool(const GestureLive&, const NodeName&, std::span<const ear::LiveWrite>)> refuses;
 	void setLive(const NodeName& node, std::span<const ear::LiveWrite> writes) override {
 		for (const ear::LiveWrite& write : writes) slots[{node, write.member}] = std::bit_cast<double>(write.bits);
 	}
-	std::expected<void, ear::LiveRefusal> checkLive(const NodeName&, std::span<const ear::LiveWrite>) const override {
+	std::expected<void, ear::LiveRefusal> checkLive(const NodeName& node,
+	                                                std::span<const ear::LiveWrite> writes) const override {
+		if (refuses && refuses(*this, node, writes)) return std::unexpected(ear::LiveRefusal{"trimDb.1", "crossed"});
 		return {};
 	}
 	std::optional<std::uint64_t> committedLive(const NodeName& node, std::size_t member) const override {
@@ -1313,4 +1316,24 @@ TEST_CASE("An end read before its gesture was aborted commits nothing: the abort
 	REQUIRE(f.gestures.cancel(g, 2));
 	CHECK(code(f.commit(*ending)) == "unknown-gesture");
 	CHECK(f.notes.last().phase == ear::GesturePhase::aborted);
+}
+
+TEST_CASE("A retune the type's check refuses beside a held hand aborts that gesture crossed before the change commits",
+          "[keeper][gestures]") {
+	GestureFixture f("keeper-gesture-crossing");
+	// A check binding amp's gainDb and trimDb.1: trimDb.1 at 3 refused while a hand holds gainDb at -2.
+	f.live.refuses = [](const GestureLive& live, const NodeName& node, std::span<const ear::LiveWrite> writes) {
+		const bool held = std::ranges::any_of(
+			live.slots, [&](const auto& slot) { return slot.first.first == node && slot.second == -2.0; });
+		return held && std::ranges::any_of(
+						   writes, [](const ear::LiveWrite& w) { return std::bit_cast<double>(w.bits) == 3.0; });
+	};
+	const std::string g = f.begun("amp", "gainDb");
+	f.gestures.move(g, 1, 1, -2.0);
+	CHECK(applied(f.run({control::SetNode{"amp", {{"trimDb.1", 2}}}}).at(0)) == "retune"); // no cross: it goes on
+	CHECK(f.gestures.openGestures().size() == 1);
+	CHECK(applied(f.run({control::SetNode{"amp", {{"trimDb.1", 3}}}}).at(0)) == "retune");
+	CHECK(f.gestures.openGestures().empty());
+	CHECK(f.notes.last().phase == ear::GesturePhase::aborted);
+	CHECK(f.notes.last().reason == "crossed");
 }

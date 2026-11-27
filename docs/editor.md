@@ -583,6 +583,7 @@ The notices are toasts about the node ([above](#toasts)), each a warning (polite
 | `edited` | "Another editor changed what shares amp2 trimDb.1 while you held it.", with Set again |
 | `key-removed` | "amp2's channels is now 2, so trimDb.3, which you held, is not used." |
 | `node-removed` | "amp was removed while you held gainDb." |
+| `crossed` | "Another change left it outside what amp allows beside its other values; it stays -6.0 dB." |
 | `cancelled` (by another session, by the id) | "Another editor cancelled it; it stays -6.0 dB." |
 | an end refused | "was not committed (invalid-settings): … ; it stays -6.0 dB." |
 | `stale` | "ear heard nothing about amp gainDb for 30 s and kept -3.5 dB." |

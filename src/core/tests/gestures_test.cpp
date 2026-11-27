@@ -356,3 +356,41 @@ TEST_CASE("Over NodeHost an abort returns the slot to the committed settings' va
 	REQUIRE(f.gestures->cancel(low, 1));
 	CHECK(f.liveAt("lowHz") == 100.0);
 }
+
+TEST_CASE(
+	"A hand valid only beside another hand is aborted crossed with it when that one goes back, so no pair crosses",
+	"[gestures]") {
+	OverHost f;
+	const std::string low = f.begin(1, "lowHz", 100.0);
+	const std::string high = f.begin(2, "highHz", 1000.0);
+	f.gestures->move(high, 2, 1, 5000.0);
+	f.gestures->move(low, 1, 1, 2000.0); // above the committed highHz, below the hand's
+	REQUIRE(f.liveAt("lowHz") == 2000.0);
+	REQUIRE(f.gestures->cancel(high, 2));
+	CHECK(f.liveAt("highHz") == 1000.0);
+	CHECK(f.liveAt("lowHz") == 100.0);
+	REQUIRE(f.notes.count(GesturePhase::aborted) == 2);
+	CHECK(f.notes.last().gesture == low);
+	CHECK(f.notes.last().reason == "crossed");
+	CHECK(f.notes.last().value == 100.0);
+	CHECK(f.gestures->openGestures().empty());
+}
+
+TEST_CASE("A retune crossing a held hand aborts that gesture crossed before it lands, and one that does not keeps it",
+          "[gestures]") {
+	OverHost f;
+	const std::string low = f.begin(1, "lowHz", 100.0);
+	f.gestures->move(low, 1, 1, 800.0);
+	const std::uint32_t highMember = bandTable.liveIndexOf("highHz").value();
+	const LiveWrite clear{highMember, bits(900.0)};
+	f.gestures->abortCrossing("node", std::span(&clear, 1));
+	CHECK(f.gestures->openGestures().size() == 1);
+	CHECK(f.liveAt("lowHz") == 800.0);
+	const LiveWrite crossing{highMember, bits(500.0)};
+	f.gestures->abortCrossing("node", std::span(&crossing, 1), low); // its own end's change keeps it
+	CHECK(f.gestures->openGestures().size() == 1);
+	f.gestures->abortCrossing("node", std::span(&crossing, 1));
+	CHECK(f.gestures->openGestures().empty());
+	CHECK(f.notes.last().reason == "crossed");
+	CHECK(f.liveAt("lowHz") == 100.0);
+}

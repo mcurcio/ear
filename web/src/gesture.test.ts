@@ -504,6 +504,16 @@ describe("a gesture", () => {
     expect(h.notices).toHaveLength(0);
   });
 
+  it("any: crossed says another change left it outside what the node allows", async () => {
+    const h = await active();
+    h.changed({ gesture: "g1", phase: "aborted", reason: "crossed", value: -6 });
+    expect(h.control.get().state).toBe("aborted");
+    expect(h.notices[0]).toMatchObject({
+      code: "crossed",
+      detail: "Another change left it outside what amp allows beside its other values; it stays -6.0 dB.",
+    });
+  });
+
   it("any: another gesture's id changes nothing", async () => {
     const h = await active();
     h.changed({ gesture: "g2", phase: "aborted", reason: "hand-edit" });

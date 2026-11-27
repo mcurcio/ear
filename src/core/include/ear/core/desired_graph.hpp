@@ -28,6 +28,9 @@ struct Retuned {
 	std::string key;
 	NodeSettings from{};
 	NodeSettings to{};
+	std::optional<std::uint32_t> member{}; // the key's slot among its node's live members
+	std::uint64_t bits = 0;                // the slot's new bits
+
 	friend bool operator==(const Retuned&, const Retuned&) = default;
 };
 /// A node kept by name with the same type whose spec changed, told by nodeChanged: what the change asks of it, the

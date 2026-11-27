@@ -406,6 +406,18 @@ Judged MainLoopSide::offer(Offer offer) {
 	// the turn, so the audio ramps once, to the new value (docs/control-port.md#gestures-and-the-graph-file).
 	for (const auto& [gesture, reason] : *related)
 		gestures_->abort(gesture, reason, reason == "hand-edit" || reason == "file-saved" || reason == "edited", false);
+	// A retune of keys no gesture holds can still cross a hand on its node a check binds (lowHz below a held highHz):
+	// those gestures are aborted crossed and set back first (docs/architecture.md#gestures).
+	if (gestures_ != nullptr)
+		for (const auto& [name, outcome] : plan->outcomes()) {
+			const std::optional<NodeChange> moved = plan->change(name);
+			if (!moved || moved->retuned.empty()) continue;
+			std::vector<LiveWrite> writes;
+			for (const Retuned& retune : moved->retuned)
+				if (retune.member) writes.push_back(LiveWrite{*retune.member, retune.bits});
+			gestures_->abortCrossing(name, writes,
+			                         offer.kind == OfferKind::gestureEnd && offer.gesture ? *offer.gesture : "");
+		}
 	running_ = offer.file.version;
 	runningReach_ = offer.file.reach;
 	newest(offer.file);

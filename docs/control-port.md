@@ -857,7 +857,9 @@ gesture is for hands.
   released), and to a session that ended or cancelled it by its id. `tick-refused` goes to the owner
   alone.
 - `end`'s `reason`, when ear ended it for its owner: `session-closed`, `stale`. `aborted`'s `reason`:
-  `hand-edit`, `file-saved`, `edited`, `cancelled`, `refused`, `node-removed`, `key-removed`, with
+  `hand-edit`, `file-saved`, `edited`, `cancelled`, `refused`, `crossed` (its hand no longer passes
+  its node's check beside the other values: [below](#gestures-and-the-graph-file)), `node-removed`,
+  `key-removed`, with
   `value` (what the slots returned to) but after `hand-edit`, `file-saved` and `edited`, whose
   `node.updated` gives it. Both enums are open.
 - **The graph's `gestures`.** Each node of a snapshot, and of `node.added` (always `[]`), carries
@@ -873,6 +875,7 @@ gesture is for hands.
 | Another edit that changes its reach without changing a held value (`node.set` giving another node `trimDb.1 $trim`, `node.addText` of a node using `$trim`) | aborted (`edited`), before the change's events |
 | `node.set`, `node.update`, `node.setText` (any edit) changing a held key's value | refused `parameter-held` |
 | An edit of other keys of a reached node | applied, whatever its outcome: a change in place keeps the slots; a restart seeds the new configuration from the live values |
+| A change retuning other keys of a reached node to values its type's check refuses beside the hand, or another gesture's abort or cancel leaving the hand crossing the committed values (`lowHz` held above a `highHz` that goes back) | applied; aborted (`crossed`) and set back first, so the pair never plays |
 | A committed change that makes a reached member inactive (a reshape lowering `channels`) | applied; aborted (`key-removed`) |
 | `node.remove`, a rename or a replacement of a reached node | applied; aborted (`node-removed`) |
 | `node.disable`, `node.enable`, or the reached node failing, restarting, stopping, starting | nothing: ticks move the live values, which seed its next configuration |

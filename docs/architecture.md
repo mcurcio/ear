@@ -787,6 +787,13 @@ through `LiveTarget` (NodeHost), and never the file.
 - **An abort** (a cancel, a refused end, a related change of the file) sets every reached slot
   back to its node's committed value; an abort by a change of the file settles its slots only once
   that change committed, last in the turn, so the audio ramps once, to the new value.
+- **No pair crosses when a hand leaves.** Wherever slots go back to committed values (an abort, a
+  cancel, a close), each node is first checked with them back and every other hand in place; a node
+  whose check refuses has every open gesture on it aborted `crossed` and set back with them (a hand
+  of `lowHz` at 2000 that was valid only beside a held `highHz` of 5000 goes back when that one is
+  cancelled). Likewise a change retuning keys no gesture holds is checked, before it commits, with
+  its new values and the hands in place (`abortCrossing`): the gestures on a node it would cross are
+  aborted `crossed` and set back first. So a pair the check refuses never plays.
 - **A release** is an end ear starts for an owner that is gone: its session closed
   (`session-closed`), or it sent nothing about the gesture for `staleAfter` (30 s by default,
   `gestureStaleAfter`; `stale`). Each gesture arms one main-loop timer (`Timers::after`, on the

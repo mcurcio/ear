@@ -110,14 +110,47 @@ struct Gestures::Impl {
 					if (again->changePending) tellChange(*again);
 				});
 	}
-	/// Every slot of `reach` set to its node's committed value; a node gone or with none is skipped.
-	void settle(const std::vector<GesturePair>& reach) {
+	/// Each node of `reach` with its pairs' committed values, in reach order; a node gone or with none is skipped.
+	std::vector<std::pair<NodeName, std::vector<LiveWrite>>>
+	committedWrites(const std::vector<GesturePair>& reach) const {
+		std::vector<std::pair<NodeName, std::vector<LiveWrite>>> out;
 		for (const GesturePair& pair : reach) {
 			const auto committed = nodes.committedLive(pair.at.node, pair.member);
 			if (!committed) continue;
-			const LiveWrite write{pair.member, *committed};
-			nodes.setLive(pair.at.node, std::span(&write, 1));
+			auto it = std::ranges::find(out, pair.at.node, &std::pair<NodeName, std::vector<LiveWrite>>::first);
+			if (it == out.end()) {
+				out.emplace_back(pair.at.node, std::vector<LiveWrite>{});
+				it = std::prev(out.end());
+			}
+			it->second.push_back(LiveWrite{pair.member, *committed});
 		}
+		return out;
+	}
+	/// The open gestures moving a key of `node`.
+	std::vector<std::string> idsOn(const NodeName& node) const {
+		std::vector<std::string> ids;
+		for (const auto& [id, g] : open)
+			if (std::ranges::any_of(g.reach, [&](const GesturePair& pair) { return pair.at.node == node; }))
+				ids.push_back(id);
+		return ids;
+	}
+	/// Every slot of `reach` set to its node's committed value. A node whose check refuses its live values with them
+	/// back (another open gesture's hand valid only beside the hand leaving) first has every open gesture on it
+	/// aborted `crossed`, their slots set back with these, so no pair the check refuses plays
+	/// (docs/architecture.md#gestures).
+	void settle(std::vector<GesturePair> reach) {
+		for (bool grew = true; grew;) {
+			grew = false;
+			for (const auto& [node, writes] : committedWrites(reach)) {
+				if (nodes.checkLive(node, writes)) continue;
+				for (const std::string& id : idsOn(node))
+					if (auto more = takeAborted(id, "crossed", false, std::nullopt)) {
+						reach.insert(reach.end(), more->begin(), more->end());
+						grew = true;
+					}
+			}
+		}
+		for (const auto& [node, writes] : committedWrites(reach)) nodes.setLive(node, writes);
 	}
 	void releaseOf(const std::string& id, const std::string& reason) {
 		Gesture* g = find(id);
@@ -133,8 +166,16 @@ struct Gestures::Impl {
 	}
 	void abortOf(const std::string& id, const std::string& reason, bool toldByChange, bool settleNow,
 	             std::optional<SessionToken> by = std::nullopt) {
+		auto reach = takeAborted(id, reason, toldByChange, by);
+		if (!reach) return;
+		if (settleNow) settle(std::move(*reach));
+		else unsettled.insert(unsettled.end(), reach->begin(), reach->end());
+	}
+	/// The gesture gone from the open ones and its abort told; its reach, still to settle. None when it is not open.
+	std::optional<std::vector<GesturePair>> takeAborted(const std::string& id, const std::string& reason,
+	                                                    bool toldByChange, std::optional<SessionToken> by) {
 		const auto found = open.find(id);
-		if (found == open.end()) return;
+		if (found == open.end()) return std::nullopt;
 		Gesture g = std::move(found->second);
 		open.erase(found);
 		GestureNote note{.gesture = g.id,
@@ -147,8 +188,7 @@ struct Gestures::Impl {
 		else if (g.endedBy) note.by = g.endedBy;
 		if (!toldByChange) note.value = g.committed;
 		tell(note);
-		if (settleNow) settle(g.reach);
-		else unsettled.insert(unsettled.end(), g.reach.begin(), g.reach.end());
+		return std::move(g.reach);
 	}
 };
 
@@ -250,6 +290,12 @@ void Gestures::close(const std::string& gesture, double value) {
 
 void Gestures::abort(const std::string& gesture, const std::string& reason, bool toldByChange, bool settleNow) {
 	impl_->abortOf(gesture, reason, toldByChange, settleNow);
+}
+
+void Gestures::abortCrossing(const NodeName& node, std::span<const LiveWrite> writes, const std::string& ending) {
+	if (writes.empty() || impl_->nodes.checkLive(node, writes)) return;
+	for (const std::string& id : impl_->idsOn(node))
+		if (id != ending) impl_->abortOf(id, "crossed", false, true);
 }
 
 void Gestures::settle() {
