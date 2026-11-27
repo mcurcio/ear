@@ -239,6 +239,59 @@ TEST_CASE("An end by another session is told to both, and a refused release abor
 	CHECK(f.live.at("amp") == -6.0);
 }
 
+TEST_CASE("A release whose commit is refused tells no end, then its abort refused at the committed value, and is gone",
+          "[gestures]") {
+	Fixture f;
+	const std::string g = f.begin(1);
+	f.gestures.move(g, 1, 1, -2.0);
+	REQUIRE(f.live.at("amp") == -2.0);
+	f.notes.told.clear();
+	f.gestures.sessionClosed(1);
+	REQUIRE(f.releases.size() == 1);
+	CHECK(f.releases[0].reason == "session-closed");
+	CHECK(f.releases[0].value == -2.0);
+	// Released, its commit not yet answered: nothing told, the hand still playing and held.
+	CHECK(f.notes.told.empty());
+	CHECK(f.live.at("amp") == -2.0);
+	CHECK(f.gestures.heldAt({"amp", "gainDb"}));
+	// The keeper refuses the commit and aborts it (GraphFileKeeper::commit): one note, the abort, and no end ever.
+	f.gestures.abort(g, "refused");
+	REQUIRE(f.notes.told.size() == 1);
+	CHECK(f.notes.last().phase == GesturePhase::aborted);
+	CHECK(f.notes.last().reason == "refused");
+	CHECK(f.notes.last().owner == SessionToken{1});
+	CHECK_FALSE(f.notes.last().by);
+	CHECK(f.notes.last().value == -6.0);
+	CHECK(f.notes.last().handValue == -2.0);
+	CHECK(f.live.at("amp") == -6.0);
+	CHECK_FALSE(f.gestures.heldAt({"amp", "gainDb"}));
+	CHECK(f.gestures.openGestures().empty());
+	// The commit's answer, had it come after all, closes nothing; its stale timer fires nothing.
+	f.gestures.close(g, -2.0);
+	f.timers.advance(gestureStaleAfter);
+	CHECK(f.notes.told.size() == 1);
+	CHECK(f.releases.size() == 1);
+	CHECK(f.live.at("amp") == -6.0);
+}
+
+TEST_CASE("With nobody to commit releases, a release aborts refused at once", "[gestures]") {
+	FakeTimers timers;
+	FakeLive live;
+	live.live["amp"] = {bits(-6.0)};
+	live.committed["amp"] = {bits(-6.0)};
+	Notes notes;
+	Gestures gestures{live, timers};
+	gestures.subscribe(notes);
+	const std::string g = gestures.open(GestureOpen{1, {{{"amp", "gainDb"}, 0}}, -90.0, 24.0, 1, -6.0});
+	gestures.move(g, 1, 1, -2.0);
+	gestures.sessionClosed(1);
+	CHECK(notes.last().phase == GesturePhase::aborted);
+	CHECK(notes.last().reason == "refused");
+	CHECK(notes.count(GesturePhase::end) == 0);
+	CHECK(live.at("amp") == -6.0);
+	CHECK(gestures.openGestures().empty());
+}
+
 TEST_CASE("Cancel aborts at once, and an abort told by a change settles its slots only at settle()", "[gestures]") {
 	Fixture f;
 	const std::string a = f.begin(1);

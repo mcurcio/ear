@@ -1857,7 +1857,7 @@ struct ScriptedGestures final : GestureRequests {
 	ScriptedGestures(MainLoopGateway& g, ear::Gestures& s) : gateway(g), gestures(s) {}
 	GestureAnswer begin(ear::SessionToken session, const BeginGesture& begin) override {
 		if (begin.node == "porch")
-			return GestureRefused{"file-refused", "file-refused: the graph refused the newest text"};
+			return GestureRefused{"file-refused", "file-refused: the graph refused the newest text of ear.conf"};
 		if (begin.node != "amp") return CommandResult{Result{std::unexpected(ear::UnknownNode{begin.node})}};
 		if (begin.key == "trimDb.1")
 			return GestureRefused{"reach-mismatch",

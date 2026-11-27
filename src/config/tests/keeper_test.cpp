@@ -1282,6 +1282,43 @@ TEST_CASE("A hand edit with errors aborts every gesture, and a begin is then fil
 	CHECK(f.refusedCode(f.begin("amp", "gainDb")) == "file-invalid");
 }
 
+TEST_CASE(
+	"A hand edit the graph refuses aborts every gesture, a begin is file-refused, and a fixed reach mismatch shows",
+	"[keeper][gestures]") {
+	GestureFixture f("keeper-gesture-refused-hand");
+	const std::string g = f.begun("amp", "gainDb");
+	f.gestures.move(g, 1, 1, -3.0);
+	// A route to a port amp does not have, which knobly reads and the graph refuses.
+	std::ofstream(f.file, std::ios::binary) << f.graphFile().text << "route amp:nope amp2:in.1;\n";
+	f.diskEvent();
+	REQUIRE(f.lastChange().file.refusal.has_value());
+	REQUIRE_FALSE(f.notes.told.empty());
+	CHECK(f.notes.last().phase == ear::GesturePhase::aborted);
+	CHECK(f.notes.last().reason == "hand-edit");
+	CHECK(f.gestures.openGestures().empty());
+	const auto refused = f.begin("amp2", "gainDb");
+	REQUIRE(f.refusedCode(refused) == "file-refused");
+	// The wording test/protocol/gestures.json gives.
+	CHECK(std::get<control::GestureRefused>(refused).message ==
+	      "file-refused: the graph refused the newest text of ear.conf");
+	CHECK(std::get<control::GestureRefused>(refused).data == json::object());
+
+	// Fixed by hand, with trimDb.1 sharing its definition with channels: the begin judges the text the graph now runs.
+	std::ofstream(f.file, std::ios::binary) << "graph {\n    rate 48khz;\n    block_size 256;\n}\n@set $n 2;\n"
+											   "node strip amp { channels $n; trimDb.1 $n; }\n";
+	f.diskEvent();
+	REQUIRE_FALSE(f.lastChange().file.refusal.has_value());
+	const auto mismatch = f.begin("amp", "trimDb.1");
+	REQUIRE(f.refusedCode(mismatch) == "reach-mismatch");
+	const auto& refusal = std::get<control::GestureRefused>(mismatch);
+	CHECK(refusal.message ==
+	      "reach-mismatch amp: trimDb.1 shares its definition with rows a gesture cannot move together");
+	CHECK(refusal.data == json{{"line", 5},
+	                           {"column", 9},
+	                           {"with", json::array({{{"name", "amp"}, {"key", "channels"}, {"why", "kind"}}})}});
+	CHECK(f.refusedCode(f.begin("amp", "gainDb")) == ""); // its own default: amp alone
+}
+
 TEST_CASE("An end read before its gesture was aborted commits nothing: the abort won and the end is unknown-gesture",
           "[keeper][gestures]") {
 	GestureFixture f("keeper-gesture-aborted-end");

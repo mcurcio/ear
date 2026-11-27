@@ -164,7 +164,7 @@
         "data": {
           "code": "file-refused"
         },
-        "message": "file-refused: the graph refused the newest text"
+        "message": "file-refused: the graph refused the newest text of ear.conf"
       },
       "id": 7,
       "jsonrpc": "2.0"

@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "catch2/catch.hpp"
+#include "ear/core/gestures.hpp"
 #include "ear/core/lifecycle.hpp"
 #include "ear/testing/type_harness.hpp"
 
@@ -268,6 +269,36 @@ TEST_CASE("A retune of a failed node moves its live values and does not retry it
 	CHECK(configures == 2);
 	h.process(256);
 	CHECK(allAt(h, level, -12.0));
+}
+
+TEST_CASE("A gesture on a failed node moves its live values without a retry, and the retry plays the hand",
+          "[retune][gestures]") {
+	reset();
+	Harness h;
+	REQUIRE_FALSE(h.parse({{"fail", true}}));
+	h.add();
+	h.blockReady();
+	REQUIRE(h.phase() == "failed");
+	Gestures gestures(h->liveTarget(), h->timers());
+	const std::uint32_t member = table.liveIndexOf("level").value();
+	const std::string g = gestures.open(GestureOpen{1, {{{"node", "level"}, member}}, -90.0, 24.0, 1, -6.0});
+	gestures.move(g, 1, 1, -12.0);
+	CHECK(h.phase() == "failed");
+	CHECK(configures == 1);
+	CHECK(liveLevel(h) == bits(-12.0));
+	// Another key's change retries it, seeded from the live values: the hand plays from the first block.
+	REQUIRE(h.change(NodeSettings::object()) == NodeOutcome::restart);
+	REQUIRE(h.phase() == "running");
+	CHECK(configures == 2);
+	h.process(256);
+	CHECK(allAt(h, level, -12.0));
+	gestures.move(g, 1, 2, -9.0);
+	pastRamp(h);
+	CHECK(allAt(h, level, -9.0));
+	// Cancelled: back to the committed -6.
+	REQUIRE(gestures.cancel(g, 1));
+	pastRamp(h);
+	CHECK(allAt(h, level, -6.0));
 }
 
 TEST_CASE("A live change of a disabled node is stored, and its enable is seeded from it", "[retune]") {
