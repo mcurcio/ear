@@ -69,7 +69,8 @@ TEST_CASE("A snippet's user and a direct user of its variable share one reach", 
 	CHECK(sorted(index->reachOf({"a", "trimDb.1"})) == std::vector<GestureKey>{{"a", "trimDb.1"}, {"b", "trimDb.1"}});
 }
 
-TEST_CASE("A comment added above a definition, or a route, is not related, and a changed definition is", "[reach_index]") {
+TEST_CASE("A comment added above a definition, or a route, is not related, and a changed definition is",
+          "[reach_index]") {
 	Fixture f;
 	const std::string nodes = "node strip a { trimDb.1 $trim; trimDb.2 $trim; }\nnode strip b { gainDb -6; }\n";
 	const auto before = f.index("@set $trim 0;\n" + nodes);
