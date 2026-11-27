@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <vector>
 namespace ear {
 /// Wakes the main loop from the realtime thread (docs/architecture.md#the-realtime-channels): ring() is realtime-safe and never
@@ -74,6 +75,7 @@ struct LiveState {
 	std::uint64_t before = 0;  // a step's value before its last edge
 	std::uint64_t edgeAt = 0;  // the block a step's last edge began
 	bool edged = false;        // a step has had an edge since the last snap
+	bool idle = false;         // above its family's count at the last advance: seated, never ramped
 };
 
 class RealtimeChannels {
@@ -158,7 +160,12 @@ public:
 	/// of the generation word when nothing moved since the last block; otherwise every slot is loaded, a snap seats
 	/// every member at its slot, and a moved slot starts a ramp from the value its last frame had, or a step's edge.
 	/// Never allocates, locks or waits.
-	void advanceLive(std::uint32_t frames) noexcept;
+	void advanceLive(std::uint32_t frames) noexcept { advanceLive(frames, {}, false); }
+	/// As above, for a code whose `idle` members (one flag per member; empty for none) are above their family's count:
+	/// each is seated at its slot, never ramped, and a member idle at the last advance and active now is seated too, so
+	/// a channel a reshape makes active plays its value from its first sample (docs/writing-a-node-type.md#live-rows).
+	/// `fresh`: the code's first block, whose members are loaded whatever the generation.
+	void advanceLive(std::uint32_t frames, std::span<const std::uint8_t> idle, bool fresh) noexcept;
 	/// The block's first frame, counted from the channels' making; each member's state and declaration.
 	std::uint64_t livePosition() const noexcept { return position_; }
 	const LiveState& liveState(std::size_t member) const noexcept { return state_[member]; }

@@ -289,8 +289,9 @@ touching anything else. Its value is a **slot** in the configuration's realtime 
   where every view is steady: a code that recomputes coefficients per piece (an equaliser) pays
   for them only while something moves.
 - **Families.** `io.param<family>(c)` reads member `c` from 0. Every member up to the maximum,
-  active or not, has a slot, seeded and ramped, so a member a reshape makes active plays its value
-  from its first sample, and no count change resizes anything. `io.count<family>()` gives the
+  active or not, has a slot, seeded; an active one ramps, while one above the count its code was
+  made with is held at its value with no ramp, so a member a reshape makes active plays its value
+  from its first sample (one the same edit changed too), and no count change resizes anything. `io.count<family>()` gives the
   active members this block: the count row's stepped value when it is live, else the count the code
   was made with (a change of that count gives a new code).
 - **Reading elsewhere.** `s.get` of a live row, `s.count` of a family whose count row is live,

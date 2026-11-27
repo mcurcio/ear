@@ -648,6 +648,21 @@ public:
 		if constexpr (SettingsOf<Spec>::rowCount > 0)
 			std::ranges::copy(counts.first(std::min(counts.size(), counts_.size())), counts_.begin());
 		else static_cast<void>(counts);
+		if constexpr (liveMembersOf<Spec> > 0) {
+			// Each family's members above the count this code was made with: held at their values, never ramped, so
+			// one a later reshape makes active plays its value from its first sample (docs/writing-a-node-type.md#live-rows).
+			idle_.fill(0);
+			std::size_t at = 0;
+			std::size_t index = 0;
+			for (const SettingRow* row : Spec.settings.rows()) {
+				const std::uint32_t members = setting::liveMembers(*row);
+				if (row->maxMembers > 0 && index < counts_.size() && counts_[index] > 0)
+					for (std::size_t member = counts_[index]; member < members; ++member) idle_[at + member] = 1;
+				at += members;
+				++index;
+			}
+			fresh_ = true;
+		}
 	}
 	void prepare(const AudioFormat& format) override {
 		if (ports_ == nullptr)
@@ -664,7 +679,7 @@ public:
 	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
 	             std::uint32_t frames, const GraphCycle& cycle) noexcept override {
 		// The live views first (docs/architecture.md#the-realtime-channels): one load when nothing moved.
-		if constexpr (liveMembersOf<Spec> > 0) channels_->advanceLive(frames);
+		if constexpr (liveMembersOf<Spec> > 0) channels_->advanceLive(frames, idle_, std::exchange(fresh_, false));
 		code_.process(Io<Spec>(layout_, inputs, outputs, frames, channels_, cycle.startNs, counts_.data()), cycle);
 		if constexpr (writesRealtime<Spec>) channels_->cycleEnded();
 	}
@@ -679,6 +694,8 @@ private:
 	RealtimeChannels* channels_ = nullptr;
 	typename Io<Spec>::Layout layout_;
 	std::array<std::uint32_t, SettingsOf<Spec>::rowCount> counts_{}; // io.count's, for the settings it was made with
+	std::array<std::uint8_t, liveMembersOf<Spec>> idle_{};           // the live members above their family's count
+	bool fresh_ = false;                                             // no block processed since bind
 };
 } // namespace spec_detail
 

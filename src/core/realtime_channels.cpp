@@ -39,20 +39,23 @@ RealtimeChannels::RealtimeChannels(std::vector<Initial> fields, RealtimeBell* be
 	}
 }
 
-void RealtimeChannels::advanceLive(std::uint32_t frames) noexcept {
+void RealtimeChannels::advanceLive(std::uint32_t frames, std::span<const std::uint8_t> idle, bool fresh) noexcept {
 	position_ = next_;
 	next_ = position_ + frames;
 	const std::uint64_t now = liveGeneration_.load(std::memory_order_acquire);
-	if (now == seenGeneration_) return; // the steady block: one load, nothing written but the positions
+	if (now == seenGeneration_ && !fresh) return; // the steady block: one load, nothing written but the positions
 	const bool snap = (now >> 32) != (seenGeneration_ >> 32);
+	if (now != seenGeneration_) reloads_.store(reloads_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
 	seenGeneration_ = now;
-	reloads_.store(reloads_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
 	for (std::size_t member = 0; member < members_.size(); ++member) {
 		const std::uint64_t bits = live_[member].load(std::memory_order_relaxed);
 		LiveState& state = state_[member];
 		const LiveMember& declared = members_[member];
-		if (snap) {
-			seat(state, declared, bits);
+		const bool idleNow = member < idle.size() && idle[member] != 0;
+		// An idle member, and one just made active, sit at their value: no code heard a ramp of it.
+		if (snap || idleNow || state.idle) {
+			if (snap || bits != state.bits || state.idle != idleNow) seat(state, declared, bits);
+			state.idle = idleNow;
 			continue;
 		}
 		if (bits == state.bits) continue;

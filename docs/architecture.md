@@ -491,8 +491,12 @@ read-modify-write, whether or not a ramp is running, since a view is computed fr
 and where the block sits in it. When its snap epoch moved, every member is seated at its slot with
 no ramp and every step unchanged. Otherwise every slot is loaded (relaxed, after the acquire): a
 ramped member whose slot moved starts a ramp from the value its last frame had, a stepped one has
-an edge. Positions count the frames this configuration's codes processed, so a ramp and a step's
-edge are where they are whichever code runs. It never allocates, locks, formats or makes a system
+an edge. A family's member above the count the code was made with is idle: seated at its slot
+whenever it moves, never ramped, and seated again in the first block it is active (a new code's
+first block loads every slot whatever the generation), so a channel a reshape makes active plays
+its value from its first sample even when the same change moved it. Positions count the frames
+this configuration's codes processed, so a ramp and a step's edge are where they are whichever
+code runs. It never allocates, locks, formats or makes a system
 call (`ear_core_tests` counts the allocations of 130 members moving, none). A cycle that does not
 run the code ([engine.md](engine.md#the-quantum-guard)) does not advance it: the block writes zeros
 anyway. Members written in one batch start their ramps in one block, except when the load falls

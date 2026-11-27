@@ -250,6 +250,20 @@ TEST_CASE("A trim written for an inactive channel plays from that channel's firs
 	CHECK(plays(h, 0, 0.5F));
 }
 
+TEST_CASE("A trim and an inversion changed with the channels that make them active play from their first sample",
+          "[gain][reshape]") {
+	Harness h({.format = format});
+	running(h, NodeSettings::object());
+	feed(h, 0.5F);
+	h.process(); // the 2-channel code, with trimDb.3 and invert.4 inactive at their defaults
+	CHECK(h.change({{"channels", 4}, {"trimDb.3", -6.0}, {"invert.4", true}}) == ear::NodeOutcome::reshape);
+	feed(h, 0.5F);
+	h.process();
+	CHECK(plays(h, 2, 0.5F * gain::dbToFactor(-6.0F))); // no ramp from 0 dB
+	CHECK(plays(h, 3, -0.5F));                          // no swing through zero
+	CHECK(plays(h, 0, 0.5F));
+}
+
 TEST_CASE("A change of channels and gainDb together reshapes in place with gainDb retuned beside it",
           "[gain][reshape]") {
 	Harness h({.format = format});
