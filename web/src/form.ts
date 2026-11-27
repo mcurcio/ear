@@ -67,6 +67,16 @@ export interface FieldView {
   inactive?: boolean;
   /** A live flag or select: a change of it is sent at once by node.set, with no draft and no Apply. */
   atOnce?: true;
+  /**
+   * A live number (docs/editor.md#live-numbers-faders-and-knobs), with no draft: "fader", a live ramped decimal with
+   * the gestures feature, dragged as a gesture with a number field beside it; "enter", any other live whole number or
+   * decimal, steppers and a number field sent by node.set on Enter or a step.
+   */
+  live?: "fader" | "enter";
+  /** A live "enter" field's step: 1 for a whole number, one of its last places for a decimal. */
+  step?: number;
+  /** The row the field reads (a family member's with its own key), for a live control's taper and words. */
+  row?: SettingSchema;
   /** Why the draft cannot be sent as it is (checked here; ear still judges), or ear's refusal placed here. */
   problem?: string;
 }
@@ -186,12 +196,32 @@ function expandedRows(
   return expanded;
 }
 
+/** What the form draws by the features ear has: faders only with gestures. */
+export interface FormOptions {
+  gestures?: boolean;
+}
+
+/**
+ * Whether a row is dragged as a gesture: a live ramped decimal (docs/control-port.md#gestures), the only rows a
+ * gesture moves; a stepped one has no value between two to drag through.
+ */
+export function isFaderRow(row: SettingSchema): boolean {
+  return row.change === "live" && row.live?.transition === "ramp" && row.kind === "decimal";
+}
+
+/** How a live row's number is drawn, by the features: undefined for a row that is not a live number. */
+export function liveNumberOf(row: SettingSchema, options: FormOptions): "fader" | "enter" | undefined {
+  if (row.change !== "live" || (row.kind !== "decimal" && row.kind !== "wholeNumber")) return undefined;
+  return isFaderRow(row) && options.gestures === true ? "fader" : "enter";
+}
+
 /** The fields of `schema` over the node's `settings`, with `drafts`; `refusal` is ear's last, placed under its key. */
 export function fieldsOf(
   schema: TypeSchema,
   settings: JsonObject,
   drafts: Drafts,
   refusal?: { key: string; detail: string },
+  options: FormOptions = {},
 ): FieldView[] {
   return expandedRows(schema, settings, drafts).map(({ row, family, member, inactive, count }) => {
     const draft = drafts.get(row.key);
@@ -215,6 +245,12 @@ export function fieldsOf(
       if (inactive === true) field.inactive = true;
     }
     if (commitsAtOnce(row)) field.atOnce = true;
+    const live = liveNumberOf(row, options);
+    if (live !== undefined) {
+      field.live = live;
+      field.row = row;
+      field.step = row.kind === "wholeNumber" ? 1 : 10 ** -(row.decimals ?? 2);
+    }
     if (control === "select") field.options = row.required ? [...(row.values ?? [])] : ["", ...(row.values ?? [])];
     if (control === "number" || control === "decimal") {
       if (row.min !== undefined) field.min = row.min;
@@ -229,6 +265,36 @@ export function fieldsOf(
     else if (refusal !== undefined && refusal.key === row.key) field.problem = refusal.detail;
     return field;
   });
+}
+
+/** A family drawn behind a disclosure, as a compact strip, above this many members. */
+export const stripAbove = 8;
+
+/** The fields in groups: each plain field alone, each family's members together, a strip when above stripAbove. */
+export interface FieldGroup {
+  /** The family's key, for a family's members. */
+  family?: string;
+  fields: FieldView[];
+  /** Drawn as a compact strip behind a disclosure. */
+  strip: boolean;
+}
+
+export function groupsOf(fields: FieldView[]): FieldGroup[] {
+  const groups: FieldGroup[] = [];
+  for (const field of fields) {
+    const last = groups[groups.length - 1];
+    if (field.family !== undefined && last?.family === field.family) last.fields.push(field);
+    else groups.push(field.family !== undefined ? { family: field.family, fields: [field], strip: false } : { fields: [field], strip: false });
+  }
+  for (const group of groups) group.strip = group.family !== undefined && group.fields.length > stripAbove;
+  return groups;
+}
+
+/** A strip's disclosure: "trimDb.1 to trimDb.16, 16 members". */
+export function stripSummary(group: FieldGroup): string {
+  const first = group.fields[0]?.key ?? "";
+  const last = group.fields[group.fields.length - 1]?.key ?? "";
+  return `${first} to ${last}, ${group.fields.length} members`;
 }
 
 /** Whether `key` will be given once the drafts are applied. */
@@ -393,6 +459,34 @@ export function atOncePatch(
   const problem = problemOf(row, value);
   if (problem !== undefined) return { problem };
   return { patch: { [key]: valueOf(row, value, settings[key]) } };
+}
+
+/**
+ * The node.set patch of a live number's typed text (Enter, or a step), or its problem; an empty field removes the key.
+ * Undefined for a key the schema lacks.
+ */
+export function liveNumberPatch(
+  schema: TypeSchema,
+  key: string,
+  text: string,
+): { patch: JsonObject } | { problem: string } | undefined {
+  const row = rowOfKey(schema, key);
+  if (row === undefined) return undefined;
+  const problem = problemOf(row, text);
+  if (problem !== undefined) return { problem };
+  return { patch: { [key]: text.trim() === "" ? null : Number(text.trim()) } };
+}
+
+/** A live number stepped by `by` steps from `value` (the node's), within its range, at the step's places. */
+export function steppedValue(field: FieldView, value: string, by: number): string {
+  const step = field.step ?? 1;
+  const current = Number(value.trim() === "" ? (field.row?.default ?? field.min ?? 0) : value.trim());
+  const base = Number.isFinite(current) ? current : 0;
+  let next = Math.round((base + by * step) / step) * step;
+  if (field.min !== undefined && next < field.min) next = field.min;
+  if (field.max !== undefined && next > field.max) next = field.max;
+  const places = step >= 1 ? 0 : Math.round(-Math.log10(step));
+  return next.toFixed(places);
 }
 
 /**

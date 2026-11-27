@@ -760,6 +760,11 @@ export interface RpcErrorObject {
     action?: string;
     /** not-running: the node's phase. */
     phase?: string;
+    /** parameter-held (feature gestures): the holding gesture and how long its owner has been silent. */
+    gesture?: string;
+    silentMs?: number;
+    /** not-live: the key's change mark, absent for a key its type lacks. */
+    change?: SettingChange;
   };
 }
 

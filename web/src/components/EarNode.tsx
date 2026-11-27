@@ -4,7 +4,8 @@
 // what it waits for (health.ts, docs/editor.md#a-nodes-health); then one row per port, inputs on the left and outputs
 // on the right, each with its handle and its level meter, in every phase; and along its bottom edge the strip of its
 // companions' badges (companions.ts, docs/editor.md#companions), outside every handle. While a wire is drawn each
-// handle takes its cue from connect.ts's handleCue, the drop rule itself.
+// handle takes its cue from connect.ts's handleCue, the drop rule itself. With the gestures feature, a knob for each
+// live ramped decimal outside a family when the type has one or two (docs/editor.md#live-numbers-faders-and-knobs).
 // React Flow's useConnection is a drag in progress; hooks.ts's is the editor's socket.
 import {
   Handle,
@@ -18,10 +19,12 @@ import { useEffect, useState } from "react";
 import { boxStatus, diagnosticBadges } from "../activity";
 import { handleCue, handleId } from "../connect";
 import { describeHealth, startingLineDelayMs } from "../health";
-import type { GraphNode } from "../protocol";
+import { boxKnobRows } from "../live";
+import { gesturesFeature, type GraphNode } from "../protocol";
 import { CompanionStrip } from "./CompanionStrip";
 import { NodeCounterMark } from "./Counters";
-import { useCompanionBadges, useNodeCounters, useNodeSchema } from "./hooks";
+import { useCompanionBadges, useGraph, useNodeCounters, useNodeSchema } from "./hooks";
+import { Knob, useLiveDisabled } from "./LiveControls";
 import { Meter } from "./Meter";
 import { StatePill } from "./StatePill";
 
@@ -77,8 +80,12 @@ export function EarNode({ id, data: { node }, selected }: NodeProps<EarFlowNode>
   useEffect(() => updateInternals(id), [id, portsKey, updateInternals]);
   const companions = useCompanionBadges(node);
   const { mark } = useNodeCounters(node);
-  const status = boxStatus(node, useNodeSchema(node));
+  const schema = useNodeSchema(node);
+  const status = boxStatus(node, schema);
   const badges = diagnosticBadges(node);
+  // Feature gestures: a knob for each live ramped decimal outside a family, when the type has one or two.
+  const knobs = useGraph()?.features?.includes(gesturesFeature) === true ? boxKnobRows(schema) : [];
+  const liveDisabled = useLiveDisabled();
   return (
     <div className={`ear-node ${health.styleClass} phase-${node.phase}${selected ? " selected" : ""}`}>
       <div className="ear-node-header">
@@ -119,6 +126,13 @@ export function EarNode({ id, data: { node }, selected }: NodeProps<EarFlowNode>
           </ul>
         )}
       </div>
+      {knobs.length > 0 && (
+        <div className="ear-node-knobs nodrag nowheel nopan nokey">
+          {knobs.map((row) => (
+            <Knob key={row.key} node={node} row={row} disabledReason={liveDisabled} />
+          ))}
+        </div>
+      )}
       <div className="ear-node-ports">
         <div className="ports-in">
           {node.inputs.map((port) => (

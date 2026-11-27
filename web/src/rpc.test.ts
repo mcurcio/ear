@@ -138,7 +138,58 @@ describe("the rpc client", () => {
   });
 });
 
+describe("notifications from the client", () => {
+  it("notify sends a message with no id, which nothing waits on", () => {
+    const { client, socket } = connectedClient();
+    client.notify("gesture.change", { gesture: "g1", seq: 1, value: -3 });
+    const sent = socket.sent.at(-1)!;
+    expect(sent).toStrictEqual({ jsonrpc: "2.0", method: "gesture.change", params: { gesture: "g1", seq: 1, value: -3 } });
+    expect("id" in sent).toBe(false);
+  });
+
+  it("notify while closed sends nothing and throws nothing", () => {
+    const { client, socket } = connectedClient();
+    socket.drop();
+    client.notify("gesture.change", { gesture: "g1", seq: 1, value: -3 });
+    expect(socket.sent.map((request) => request.method)).toEqual(subscriptions);
+  });
+});
+
 describe("the editor session", () => {
+  it("sends a gesture's begin and end as calls and its ticks as notifications, and ends it by its id after a reconnect", async () => {
+    const h = harness();
+    const frames: Array<() => void> = [];
+    const editor = new Editor({
+      ...h.options,
+      gestureTimers: { after: () => () => {}, frame: (run) => (frames.push(run), () => {}) },
+    });
+    editor.client.start();
+    const first = h.sockets[0]!;
+    first.accept();
+    const row = { min: -90, max: 24, taper: "db" as const, unit: "dB", decimals: 1 };
+    const control = editor.gestures.control("amp", "gainDb", row);
+    control.press();
+    const begin = first.sent.at(-1)!;
+    expect(begin).toMatchObject({ method: "gesture.begin", params: { name: "amp", key: "gainDb" } });
+    first.receive({ jsonrpc: "2.0", id: begin.id, result: { gesture: "g1", value: -6, reach: [], min: -90, max: 24, decimals: 1 } });
+    await new Promise((done) => setTimeout(done, 0));
+    control.move(-3);
+    for (const run of frames.splice(0)) run();
+    const tick = first.sent.at(-1)!;
+    expect(tick).toStrictEqual({ jsonrpc: "2.0", method: "gesture.change", params: { gesture: "g1", seq: 1, value: -3 } });
+    first.drop();
+    expect(control.get().state).toBe("frozen");
+    h.waits[0]!.retry();
+    const second = h.sockets[1]!;
+    second.accept();
+    const end = second.sent.find((request) => request.method === "gesture.end")!;
+    expect(end.id).toBeTypeOf("number");
+    expect(end.params).toStrictEqual({ gesture: "g1", value: -3 });
+    second.receive({ jsonrpc: "2.0", id: end.id, result: { value: -3 } });
+    await new Promise((done) => setTimeout(done, 0));
+    expect(control.get().state).toBe("idle");
+  });
+
   it("replaces the graph with the new connection's snapshot after a reconnect", () => {
     const h = harness();
     const editor = new Editor(h.options);

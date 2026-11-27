@@ -383,87 +383,10 @@ Built: [control-port.md](../control-port.md#gestures), [#error-codes](../control
 
 ## 10. The editor
 
-### 10.1 Stores
-
-| Module | Gains | Tested by |
-|---|---|---|
-| `protocol.ts` | section 9's types; `ControlErrorCode`'s new codes | typecheck |
-| `graph.ts` | each node's `gestures`; `retuned` on `node.updated`; `gesture.changed` | vitest, every fixture |
-| `form.ts` | nothing more: live switches and selects committed at once, `asksFirst` passing `retune` and the "live" hints are built, as are families with inactive members, choices as selects and the "restarts: why" hint | vitest, from `rows.json` until `gain` is in `types.json` |
-| `rpc.ts` | `notify()`: a message with no id | vitest |
-| `gesture.ts` (new, pure) | one state machine per control (10.3), the taper mapping, the ids it holds across a reconnect | vitest, a fake client |
-| `keys.ts` | a focused fader's or knob's range input, or anything in `.nokey`, counts as a text target for the editor's shortcuts (`f`, `l`, `m`, `a`, `?`, Escape), though not for the input's own keys; today a range input is deliberately not a text target, and only the controls of 10.3 change that | vitest |
-
-Nothing in `web/` names a node type. Without `gestures`, live decimals are number fields committed by `node.set`;
-without `live`, every row is drawn as today.
-
-### 10.2 How each row renders
-
-| Row | Control | Commits |
-|---|---|---|
-| decimal, not live | built ([editor.md](../editor.md#the-settings-form)) | Apply |
-| live ramped decimal | a fader mapped by `taper` with a number field beside it | a gesture; the field by `node.set` on Enter |
-| live boolean, live choice | a switch, a select | built: `node.set` at once, with the `alsoChanged` notice ([editor.md](../editor.md#the-settings-form)) |
-| live whole number, live stepped decimal | steppers and a number field | `node.set` on Enter or a step |
-| family | one control per member to the count row's value, those above it greyed (built: [editor.md](../editor.md#the-settings-form)); above 8 members, a compact strip behind a disclosure | as its kind |
-| restart row | as today, its hint "restarts the node: <restartReason>" | Apply, which asks first |
-
-The box shows a knob for each live ramped decimal that is not in a family when the type has one or two (`gain`:
-`gainDb`). Live controls follow the server except one the operator holds; they are disabled while the graph file has
-errors or was refused and while the connection is not open. A live change from the form does not touch the draft of
-the other fields.
-
-### 10.3 `gesture.ts`
-
-| State | Input | Sends | Next |
-|---|---|---|---|
-| idle | press, or first key | `gesture.begin` | beginning (intent: hold) |
-| beginning | 200 ms with no reply | — | beginning, shown pending |
-| beginning | move | nothing (keeps the newest) | beginning |
-| beginning | release / Escape | nothing yet | beginning (intent: end / cancel) |
-| beginning | reply, intent hold | the kept value as tick 1 | active |
-| beginning | reply, intent end | `gesture.end` with the shown value | ending |
-| beginning | reply, intent cancel | `gesture.cancel` | idle |
-| beginning | refusal | — | idle; snaps back; a notice names the code (`not-live` with `change` `live`: the field's `node.set` instead) |
-| active | move | `gesture.change` (`notify`), at most one per animation frame | active |
-| active | 10 s with no move | the last tick again | active |
-| active | press or key on the same control (pointer during a keyboard gesture, or the reverse) | nothing: the same gesture goes on | active |
-| active | release, `pointercancel`, `lostpointercapture`, window `blur` or `visibilitychange` to hidden | `gesture.end` with the shown value | ending |
-| active | Escape | `gesture.cancel` | idle |
-| ending | reply | — | idle; shows the committed value |
-| ending | refusal | — | idle; ear aborted it (`refused`); the committed value; notice |
-| any | `aborted` for its id | — | aborted until release, then idle; notice |
-| any | `end` with a `reason` | — | idle; the committed value; notice |
-| any | connection lost | — | frozen, the id and shown value kept |
-| frozen | reconnected | `gesture.end` with the kept id and shown value, from the new session | ending |
-
-The pointer and keyboard mapping is the first design's, unchanged:
-
-| Taper | Value at travel `t` (0..1) |
-|---|---|
-| `linear` | `min + t × (max − min)` |
-| `log` | `min × (max / min)^t` |
-| `db` | piecewise linear through (0, min), (0.10, -60), (0.25, -40), (0.45, -20), (0.60, -10), (0.75, 0), (1, max) |
-
-A `dB` unit does not imply the `db` taper: a row outside its bounds (`trimDb` from -24 to +24) maps linearly. Fader
-drag follows the pointer; knob drag is vertical, 200 px the whole travel (Shift 2000 px); double-click or Alt-click
-begins and ends at the default; arrow keys begin on the first press, tick 1% (Shift 0.1%) and end 400 ms after the last
-key or on blur; Page Up/Down 10%, Home/End the ends; the wheel only on a focused control. Every control on a box carries
-React Flow's `nodrag`, `nowheel`, `nopan` and `nokey` and `touch-action: none` ([editor.md](../editor.md#shortcuts),
-[#phones-and-touch](../editor.md#phones-and-touch)). The form's faders are horizontal and carry `touch-action: pan-y`,
-so a vertical swipe that starts on one scrolls the drawer and a horizontal one drags. Each fader and knob is drawn over a
-visually hidden native `<input type="range">`, which takes focus and the keys and carries `aria-valuetext` ("-3.5 dB",
-"-inf dB"), so a touch screen reader (VoiceOver, TalkBack) can adjust it by swipe, which it cannot do for a custom
-`role="slider"`; an assistive change is a gesture begun, ticked and ended as the arrow keys' are. Held by another
-editor, the input is disabled with the reason (and the holder's silence from `silentMs`); a polite live region
-announces aborts.
-
-Notices for the owner's own gesture: `hand-edit` "ear.conf was edited by hand and changed amp gainDb while you held it;
-it now says -10." [Set -3.5 again]; `file-saved` the same from the text pane; `edited` "Another editor changed what
-shares amp2 trimDb.1 while you held it."; `node-removed`; `key-removed` "amp2 now has 2 channels, so trimDb.3, which you
-held, is not used."; `refused` the end's refusal; `stale` "ear heard nothing about amp gainDb for 30 s and kept -3.5.";
-a socket lost mid-drag "Connection lost while you held amp gainDb; ear keeps the last value it heard." until the
-reconnect's end answers.
+Built (step 6.9): [editor.md](../editor.md#live-numbers-faders-and-knobs) (each row's control, the box's knobs,
+[#faders-and-knobs](../editor.md#faders-and-knobs) the tapers, keys and accessibility,
+[#gestures-in-the-editor](../editor.md#gestures-in-the-editor) `gesture.ts`'s states and notices), with the touch
+hand check owed ([testing.md](../testing.md#what-ci-does-not-prove)).
 
 ## 11. Order of work
 

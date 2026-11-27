@@ -622,4 +622,20 @@ engine tests above, but not yet end to end:
   4. Stop it on the phone: ear says `node den says idle`.
 - **nqptp against a real PTP clock.** The tests' nqptp runs with no sender, so it keeps no clock; that
   shairport-sync stays in time with a real sender's clock is part of the hand check.
+- **Touch pointer capture on a fader and a knob.** vitest drives `gesture.ts` with every release a
+  browser can send ([editor.md](editor.md#gestures-in-the-editor)), but not the browsers themselves:
+  that a touch the browser takes back fires `pointercancel` or `lostpointercapture` (so the gesture
+  ends at the value shown) is checked by hand, once, on iPad Safari and Android Chrome. Emulated touch
+  would not show what those two do (the owner's decision of 2026-11-26). Owed since the faders were
+  built:
+  1. Open the editor from the device on an ear with a `gain` node routed to a `file` node.
+  2. Drag the box's `gainDb` knob up and down: the box and the view do not move; release: the editor
+     shows the value and ear prints a `param` record (cause `gesture`).
+  3. Start a drag on the knob and, without lifting, swipe on to the page's edge or call up the
+     system's gesture (Control Centre, the app switcher): the gesture ends at the shown value (a
+     `param` record), and the knob is not left held (no "held by another editor" in a second tab).
+  4. In the inspector, swipe vertically across a `trimDb` fader: the drawer scrolls and the value
+     does not change; swipe horizontally: it drags.
+  5. With VoiceOver (iPad) or TalkBack (Android) on, focus a fader and swipe up and down: it reads
+     "-3.5 dB" and so on, and each adjustment is committed (a `param` record).
 - **Grouping in an iPhone's AirPlay list** (one speaker among several AirPlay 2 speakers) is not tried.

@@ -29,15 +29,22 @@ export interface TargetLike {
   type?: string;
   isContentEditable?: boolean;
   readOnly?: boolean;
+  /** An element's own: the nearest ancestor (itself included) that `selector` matches, or null. */
+  closest?: (selector: string) => unknown;
 }
 
-/** The input types a person types text into; a checkbox, button or range is not one. */
+/** The input types a person types text into; a checkbox, button or range is not one (a live control's is, by .nokey). */
 const textInputTypes = new Set(["", "text", "search", "url", "tel", "email", "password", "number"]);
 
-/** An input of a text kind (no type counts as text), a textarea, a select, or contenteditable. */
+/**
+ * An input of a text kind (no type counts as text), a textarea, a select, contenteditable, or anything inside `.nokey`:
+ * a live control's hidden range input is there, so its arrows, Home, End and Escape stay its own
+ * (docs/editor.md#faders-and-knobs), and React Flow skips its Delete and Backspace by the same class.
+ */
 export function isTextTarget(target: TargetLike | null): boolean {
   if (target === null) return false;
   if (target.isContentEditable === true) return true;
+  if (typeof target.closest === "function" && target.closest(".nokey") !== null) return true;
   const tag = (target.tagName ?? "").toUpperCase();
   if (tag === "TEXTAREA" || tag === "SELECT") return true;
   if (tag === "INPUT") return textInputTypes.has((target.type ?? "").toLowerCase());

@@ -216,7 +216,9 @@ will not be real time". So:
   snapshots include the batch's edits.
 - At most 256 responses and notifications wait per client. One more closes it with WebSocket
   code 1008; the client reconnects and subscribes again (the editor does, after 1 s doubling to
-  30 s).
+  30 s). The editor's `rpc.ts` sends a gesture's ticks with `notify()`, no id; its `gesture.ts`
+  keeps each held gesture's id across the reconnect and ends it from the new socket
+  (`docs/editor.md#gestures-in-the-editor`).
 - Levels never queue. The realtime thread rings the level bell (an eventfd) once per window;
   the control thread reads `latestLevels()`, encodes once and gives each levels subscriber the
   newest snapshot, replacing one not yet written (each is complete, so nothing is lost).

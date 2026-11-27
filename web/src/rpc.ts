@@ -118,6 +118,17 @@ export class RpcClient {
     });
   }
 
+  /**
+   * Sends `method` as a notification: no id, so ear answers nothing (a gesture's tick, docs/control-port.md#gestures).
+   * Not open: dropped, as a notification has no answer to fail.
+   */
+  notify<M extends MethodName>(method: M, ...params: ParamsOf<M>): void {
+    const socket = this.socket;
+    if (!this.open || socket === null) return;
+    const message = params.length === 0 ? { jsonrpc: "2.0", method } : { jsonrpc: "2.0", method, params: params[0] };
+    socket.send(JSON.stringify(message));
+  }
+
   private connect(): void {
     this.options.onStatus("connecting");
     // Events from a socket this client has let go of are ignored.
