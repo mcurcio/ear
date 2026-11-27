@@ -74,7 +74,9 @@ struct MainLoopGateway::Impl {
 								 : std::chrono::steady_clock::duration::zero());
 	}
 	GestureRequests* gestures = nullptr;
-	/// Control thread: the gestures whose end or cancel was read.
+	/// Control thread: the gestures whose end or cancel was read and not yet answered. Once one is answered its gesture
+	/// is closed, aborted or was never open, and the main loop drops any later tick of it, so its id goes: the set holds
+	/// only the ends and cancels in flight, whatever ids a client makes up.
 	std::set<std::string, std::less<>> ending;
 	/// The ticks not yet taken by the main loop, the newest per gesture (any thread, under its mutex).
 	struct Mailbox {
@@ -218,10 +220,18 @@ void MainLoopGateway::answerGestures(GestureRequests& gestures) { impl_->gesture
 void MainLoopGateway::gesture(GestureCommand command, SessionToken session,
                               std::move_only_function<void(GestureAnswer)> done) {
 	Impl& impl = *impl_;
-	// The answer crosses back to the control executor; a notification's is dropped.
-	auto replyOnControl = [&control = impl.control, done = std::move(done)](GestureAnswer answer) mutable {
-		if (done)
-			control.post([done = std::move(done), answer = std::move(answer)]() mutable { done(std::move(answer)); });
+	std::optional<std::string> ended;
+	if (const auto* end = std::get_if<EndGesture>(&command)) ended = end->gesture;
+	if (const auto* cancel = std::get_if<CancelGesture>(&command)) ended = cancel->gesture;
+	// The answer crosses back to the control executor (a notification's is dropped), and an end's or a cancel's id
+	// leaves `ending` there, behind it.
+	auto replyOnControl = [&impl, ended, done = std::move(done)](GestureAnswer answer) mutable {
+		if (!done && !ended) return;
+		impl.control.post(
+			[&impl, ended = std::move(ended), done = std::move(done), answer = std::move(answer)]() mutable {
+				if (ended) impl.ending.erase(*ended);
+				if (done) done(std::move(answer));
+			});
 	};
 	if (auto* move = std::get_if<MoveGesture>(&command)) {
 		if (impl.ending.contains(move->gesture)) return; // its end or cancel was read: no tick after it
@@ -246,8 +256,7 @@ void MainLoopGateway::gesture(GestureCommand command, SessionToken session,
 			});
 		return;
 	}
-	if (const auto* end = std::get_if<EndGesture>(&command)) impl.ending.insert(end->gesture);
-	if (const auto* cancel = std::get_if<CancelGesture>(&command)) impl.ending.insert(cancel->gesture);
+	if (ended) impl.ending.insert(*ended);
 	impl.mainLoop.post([&impl, command = std::move(command), session, reply = std::move(replyOnControl)]() mutable {
 		if (impl.gestures == nullptr) {
 			reply(GestureRefused{std::string(unknownGestureCode), "gestures are not served", nlohmann::json::object()});
