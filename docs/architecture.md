@@ -782,6 +782,8 @@ through `LiveTarget` (NodeHost), and never the file.
   its shortest decimal text (`roundedDecimal`: `-6.05` at one place is `-6.1`). Once the commit
   ran, or when it changed nothing, `close` sets every reached slot to its node's committed value
   (`LiveTarget::committedLive`, the newest committed config's), since the slots held the last tick.
+  An ending gesture can still be aborted (a related change, a cancel by its id) while its end waits
+  for the keeper; the abort wins, so the end commits nothing: it is refused `unknown-gesture`.
 - **An abort** (a cancel, a refused end, a related change of the file) sets every reached slot
   back to its node's committed value; an abort by a change of the file settles its slots only once
   that change committed, last in the turn, so the audio ramps once, to the new value.

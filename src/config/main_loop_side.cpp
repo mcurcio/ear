@@ -64,6 +64,7 @@ std::optional<control::TextPlace> placeOf(const CommandError& error, const Graph
 			return firstRoute(wanted, placements, [&](const Route& r) { return r == e.route; });
 		},
 		[](const Stopping&) { return std::optional<control::TextPlace>{}; },
+		[](const UnknownGesture&) { return std::optional<control::TextPlace>{}; },
 		// Every other refusal names one node (InvalidName, InvalidSettings, ...): its line.
 		[&]<class E>(const E& e) -> std::optional<control::TextPlace>
 			requires requires(const E& x) { x.node; }
@@ -313,8 +314,17 @@ control::GestureAnswer MainLoopSide::beginGesture(SessionToken session, const co
 	return begun;
 }
 
+bool MainLoopSide::stillOpen(const std::string& gesture) const {
+	return gestures_ != nullptr && std::ranges::any_of(gestures_->openGestures(), [&](const OpenGesture& open) {
+			   return open.gesture == gesture;
+		   });
+}
+
 control::CommandResult MainLoopSide::closeGesture(const std::string& gesture, double value) {
-	if (gestures_ != nullptr) gestures_->close(gesture, value);
+	// Aborted after its end was read (a related change, a cancel by its id): the abort was told, so nothing closes.
+	if (!stillOpen(gesture))
+		return control::CommandResult{std::expected<void, CommandError>{std::unexpected(UnknownGesture{gesture})}};
+	gestures_->close(gesture, value);
 	return control::GestureEnded{value};
 }
 
@@ -358,6 +368,10 @@ void MainLoopSide::newest(const FileState& file) {
 }
 
 Judged MainLoopSide::offer(Offer offer) {
+	// An end whose gesture was aborted while the end waited for the keeper (docs/control-port.md#gestures-and-the-graph-file):
+	// the abort won and was told, so its value never commits over what aborted it.
+	if (offer.kind == OfferKind::gestureEnd && offer.gesture && !stillOpen(*offer.gesture))
+		return {Verdict::refused, std::unexpected(CommandError{UnknownGesture{*offer.gesture}})};
 	auto related = relatedTo(offer);
 	if (!related) return {Verdict::refused, std::unexpected(related.error())};
 	auto plan = graph_.plan(offer.wanted.nodes, offer.wanted.routes);

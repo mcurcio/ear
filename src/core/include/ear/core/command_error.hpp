@@ -45,8 +45,12 @@ struct ParameterHeld {
 	std::string gesture;
 	std::uint64_t silentMs;
 };
+/// A gesture's end reached the graph after the gesture was aborted (docs/control-port.md#gestures): nothing commits.
+struct UnknownGesture {
+	std::string gesture;
+};
 using CommandError = std::variant<UnknownNodeType, InvalidSettings, DuplicateNode, UnknownNode, UnknownPort,
-                                  WrongDirection, InvalidName, UnknownRoute, Stopping, ParameterHeld>;
+                                  WrongDirection, InvalidName, UnknownRoute, Stopping, ParameterHeld, UnknownGesture>;
 /// "unknown-node-type" | "invalid-settings" | "duplicate-node" | "unknown-node" |
 /// "unknown-port" | "wrong-direction" | "invalid-name" | "unknown-route" | "stopping". The one
 /// home of these strings.

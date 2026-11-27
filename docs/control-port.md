@@ -437,7 +437,7 @@ Every refusal is -32000 with `data.code`. Its message is the code and what it na
 | `not-live` | `gesture.begin` on a key that is not a live ramped decimal | `key`; `change` (`live` for a stepped row: send `node.set`), absent for a key the type lacks |
 | `reach-mismatch` | `gesture.begin`: the reach holds a row that is not a live ramped decimal, of another unit, or ranges that do not meet | `line`, `column` (the definition), `with`: each such pair `{name, key, why}`, `why` `kind`, `unit` or `range` |
 | `file-refused` | `gesture.begin` while the graph refused the newest text of `ear.conf` | |
-| `unknown-gesture` | `gesture.end` or `gesture.cancel` with no open gesture by that id | |
+| `unknown-gesture` | `gesture.end` or `gesture.cancel` with no open gesture by that id, or a `gesture.end` whose gesture was aborted before its end committed | |
 | `not-in-batch` | Any `gesture.*` in a batch: a batch runs whole as keeper steps, and a begin and a tick are not | |
 | `notification-only` | `gesture.change` sent with an id: -32600, not -32000 | |
 
@@ -877,6 +877,7 @@ gesture is for hands.
 | A change not related to it (route edits always) | nothing |
 | A hand edit with errors, or one the graph refuses | every open gesture aborted (`hand-edit`): no end could commit onto it |
 | A dry run | never judged |
+| Any of these aborting a gesture whose `gesture.end` was read but not yet committed | the abort wins: the end commits nothing and is answered `unknown-gesture` |
 
 A `gesture.begin` while the newest text ear knows has errors is `file-invalid`, and while the graph
 refused it `file-refused`.

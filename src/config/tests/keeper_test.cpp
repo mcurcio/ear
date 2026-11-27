@@ -1278,3 +1278,39 @@ TEST_CASE("A hand edit with errors aborts every gesture, and a begin is then fil
 	CHECK(f.notes.last().reason == "hand-edit");
 	CHECK(f.refusedCode(f.begin("amp", "gainDb")) == "file-invalid");
 }
+
+TEST_CASE("An end read before its gesture was aborted commits nothing: the abort won and the end is unknown-gesture",
+          "[keeper][gestures]") {
+	GestureFixture f("keeper-gesture-aborted-end");
+	// A hand edit read while the end waited for the keeper: the hand edit's value stays, in the file and the slots.
+	std::string g = f.begun("amp", "gainDb");
+	f.gestures.move(g, 1, 1, -3.5);
+	auto ending = f.gestures.end(g, std::nullopt, 1);
+	REQUIRE(ending);
+	std::ofstream(f.file, std::ios::binary) << replaced(f.graphFile().text, "gainDb -6;", "gainDb -10;");
+	f.diskEvent();
+	CHECK(f.notes.last().reason == "hand-edit");
+	const std::string version = f.graphFile().version;
+	CHECK(code(f.commit(*ending)) == "unknown-gesture");
+	CHECK(f.graphFile().version == version);
+	CHECK(f.graphFile().text.find("node strip amp { gainDb -10;") != std::string::npos);
+	CHECK(f.notes.last().phase == ear::GesturePhase::aborted);
+
+	// A cancel by its id while the end waited: nothing commits, the value it ends at included.
+	g = f.begun("amp", "gainDb");
+	f.gestures.move(g, 1, 1, -2.0);
+	ending = f.gestures.end(g, std::nullopt, 1);
+	REQUIRE(ending);
+	REQUIRE(f.gestures.cancel(g, 2));
+	CHECK(code(f.commit(*ending)) == "unknown-gesture");
+	CHECK(f.graphFile().version == version);
+	CHECK(f.notes.last().reason == "cancelled");
+
+	// An end at the committed value, cancelled first: not closed, so no end is told.
+	g = f.begun("amp", "gainDb");
+	ending = f.gestures.end(g, std::nullopt, 1);
+	REQUIRE(ending);
+	REQUIRE(f.gestures.cancel(g, 2));
+	CHECK(code(f.commit(*ending)) == "unknown-gesture");
+	CHECK(f.notes.last().phase == ear::GesturePhase::aborted);
+}

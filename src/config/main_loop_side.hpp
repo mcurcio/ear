@@ -98,12 +98,14 @@ public:
 	/// has errors), file-refused (the graph refused it), unknown-node, not-live, reach-mismatch and parameter-held, in
 	/// that order, from the running version's reach index; else the gesture opened.
 	control::GestureAnswer beginGesture(SessionToken session, const control::BeginGesture& begin, bool stopping);
-	/// A gesture's end that changes nothing in the file: closed at `value`, answered with it.
+	/// A gesture's end that changes nothing in the file: closed at `value`, answered with it; unknown-gesture when the
+	/// gesture was aborted after its end was read.
 	control::CommandResult closeGesture(const std::string& gesture, double value);
 	/// Plan. Before the plan, each open gesture the offer relates to (docs/graph-file.md#reaches): an edit changing a
 	/// held value is refused parameter-held; else, once accepted, each is aborted by its reason before the listeners
 	/// are told, and its slots settle after the commit; a refused hand edit aborts every gesture. A gesture's end
-	/// closes its gesture after the commit. Accepted: running = offer.file.version, listeners told graphFileChanged, commit. Refused
+	/// closes its gesture after the commit; one whose gesture was aborted since its end was read is refused
+	/// unknown-gesture, planned and told nothing. Accepted: running = offer.file.version, listeners told graphFileChanged, commit. Refused
 	/// with cause disk: the refusal recorded for that version (place from placeOf), listeners told.
 	/// Refused edit: nothing told. Stopping: nothing told. A dry run: planned only, accepted or refused, nothing told,
 	/// recorded or committed.
@@ -122,6 +124,7 @@ private:
 	void tell(FileState file, control::FileChangeCause cause, std::uint32_t droppedEdits,
 	          std::optional<std::string> gesture = std::nullopt, std::string gestureReason = {});
 	std::expected<std::vector<std::pair<std::string, std::string>>, CommandError> relatedTo(const Offer& offer) const;
+	bool stillOpen(const std::string& gesture) const;
 	void abortAll(const std::string& reason);
 	void newest(const FileState& file);
 	void tellAction(const control::ActionRecord& record);
