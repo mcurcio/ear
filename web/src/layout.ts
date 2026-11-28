@@ -137,6 +137,11 @@ export class Places {
     this.pending = hint;
   }
 
+  /** The hint held for the next node, until a node takes or drops it (docs/editor.md#adding-on-the-canvas). */
+  held(): PlaceHint | null {
+    return this.pending;
+  }
+
   /**
    * Tidy (docs/editor.md#the-canvas): every node laid out again as on first placement, every known place forgotten,
    * the kept ones too; moves are the browser's, nothing is sent.

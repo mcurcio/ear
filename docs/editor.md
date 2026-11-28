@@ -30,7 +30,7 @@ along the bottom ([below](#the-shell)).
   and block size ("48 kHz · 256 frames", from `graphFrequency` in hertz) and realtime, or a "not
   realtime" badge, and a dropouts badge while the host cut cycles in the last minute; the inspector
   holds the graph's counters and the selected node's ([below](#counters)). A request on its way shows while it is
-  (a dashed ghost wire, a spinner on its button, `Saving…` and `Adding…`), and a refusal becomes a toast at the
+  (a dashed ghost wire, a ghost box where a quick add will land, a spinner on its button, `Saving…` and `Adding…`), and a refusal becomes a toast at the
   canvas's bottom right, or lands where it was asked ([below](#feedback)).
 - **Keyboard and palette:** Cmd+K (Ctrl+K off macOS) opens a command palette for going to a node, adding, the
   lifecycle calls, removing, `ear.conf`'s actions, the view and the theme; `?` lists the shortcuts
@@ -339,6 +339,16 @@ does a closed connection, at once.
   it). It is hidden once `route.added` draws the route, and goes on the reply. A refused one is GhostWire's
   `refused` tone, `--pb-err` at full opacity, for 1 s (`requests.ts`, timed on the monotonic clock) before it goes. *Why:* the owner chose a ghost while a route request is in flight, drawn as a request and
   never as a route.
+- **The ghost node.** While a node add (`node.add` or `node.addText`) is on its way and quick add holds a place for
+  it ([Adding on the canvas](#adding-on-the-canvas)), patchbay's `GhostNode`
+  ([its docs](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/graph.md#ghostnode)) stands there: a dashed
+  `--pb-quiet` outline, faint, titled by the name the place is held for (the template's name), else the name
+  `node.add` asks for, else "New node", with "Adding…" under it (`requests.ts`'s `ghostNode`). It takes no pointer and
+  cannot be selected, focused, deleted, dragged or connected, and is hidden from screen readers, as the busy Add button
+  says the add is on its way. It goes on the reply, refused or not; a refusal's reason stays in the form or a toast.
+  An add with no place (the `A` key, the palette's `Add`) draws none, as dagre places that node only once ear
+  announces it. While it shows, the empty canvas's hint does not. *Why:* patchbay's model for an add on its way in the
+  apply-at-once model (owner, 2026-11-27: "pending" is a request sent and not yet answered).
 - **Buttons.** Every button that sends a request is patchbay's `Button` with `busy` while its own request is on its
   way: a spinner, `aria-busy`, and presses ignored, but it stays focusable, so the focus is never lost mid-request
   ([patchbay's](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/components.md#actions)). Save in the drawer and

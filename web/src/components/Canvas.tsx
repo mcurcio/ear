@@ -14,10 +14,12 @@ import {
   ConnectHints,
   ConnectStatus,
   EmptyCanvasHint,
+  GhostNode,
   mergeFlowProps,
   useAddAt,
   useConnectHints,
   type FollowFitFlowProps,
+  type GhostNodeNode,
   type OnAddAt,
 } from "@mcurcio/patchbay/graph";
 import {
@@ -27,25 +29,31 @@ import {
   useReactFlow,
   type Connection,
   type OnBeforeDelete,
+  type OnNodesChange,
 } from "@xyflow/react";
 import { memo, useCallback, useMemo } from "react";
 import { canConnect, quickAddKind } from "../connect";
 import { describeHealth } from "../health";
 import { shortcutKeys } from "../keys";
 import { quickPlace, type Position } from "../layout";
+import { ghostNode } from "../requests";
 import type { RouteEnds } from "../protocol";
 import type { Selection } from "../selection";
 import { EarNode, type EarFlowNode } from "./EarNode";
 import { GhostEdge } from "./GhostEdge";
 import { LevelEdge, type LevelFlowEdge } from "./LevelEdge";
+import { useRequests } from "./hooks";
 import { Toasts } from "./Toasts";
 import type { CanvasEdge, CanvasModel } from "./useCanvas";
 
-const nodeTypes = { ear: EarNode };
+const nodeTypes = { ear: EarNode, ghost: GhostNode };
+
+/** A box on the canvas: one of ear's nodes, or the ghost of an add on its way. */
+type CanvasNode = EarFlowNode | GhostNodeNode;
 const edgeTypes = { level: LevelEdge, ghost: GhostEdge };
 
 /** A minimap box takes its node's state class, so editor.css colours it from --state. */
-const minimapClass = (node: EarFlowNode) => describeHealth(node.data.node).styleClass;
+const minimapClass = (node: CanvasNode) => (node.type === "ear" ? describeHealth(node.data.node).styleClass : "");
 
 /** The tools' keys (docs/editor.md#shortcuts), shown on them; keys.ts binds them. */
 const toolKeys = { fit: "f", tidy: "l", minimap: "m" };
@@ -102,8 +110,28 @@ export const Canvas = memo(function Canvas({
     [hints.flowProps, addAt.flowProps, follow],
   );
 
+  // An add on its way, where quick add holds its place (docs/editor.md#requests-in-flight): a request, never a node, so
+  // it cannot be selected, focused, deleted, dragged or connected. useCanvas's state does not hold it, so React Flow's
+  // changes for it (its measured size) find no node there and change nothing.
+  const ghost = ghostNode(useRequests(), canvas.hinted);
+  const nodes = useMemo<CanvasNode[]>(() => {
+    if (ghost === null) return canvas.nodes;
+    const box: GhostNodeNode = {
+      id: "ghost:add",
+      type: "ghost",
+      position: ghost.position,
+      data: { title: ghost.title, line: "Adding…" },
+      selectable: false,
+      focusable: false,
+      deletable: false,
+      draggable: false,
+      connectable: false,
+    };
+    return [...canvas.nodes, box];
+  }, [canvas.nodes, ghost?.title, ghost?.position.x, ghost?.position.y]);
+
   // The delete key asks ear to remove the selection and deletes nothing itself; a ghost is a request, never a route.
-  const onBeforeDelete = useCallback<OnBeforeDelete<EarFlowNode, CanvasEdge>>(
+  const onBeforeDelete = useCallback<OnBeforeDelete<CanvasNode, CanvasEdge>>(
     async ({ nodes, edges }) => {
       onRemove(
         nodes.map((node) => node.id),
@@ -116,14 +144,14 @@ export const Canvas = memo(function Canvas({
 
   return (
     <ConnectHints value={hints.value}>
-      <ReactFlow<EarFlowNode, CanvasEdge>
+      <ReactFlow<CanvasNode, CanvasEdge>
         {...flowProps}
         className={canvas.tidying ? "tidying" : undefined}
-        nodes={canvas.nodes}
+        nodes={nodes}
         edges={canvas.edges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
-        onNodesChange={canvas.onNodesChange}
+        onNodesChange={canvas.onNodesChange as OnNodesChange<CanvasNode>}
         onEdgesChange={canvas.onEdgesChange}
         onConnect={onConnect}
         onBeforeDelete={onBeforeDelete}
@@ -131,7 +159,7 @@ export const Canvas = memo(function Canvas({
         deleteKeyCode={["Delete", "Backspace"]}
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
-        <CanvasTools<EarFlowNode>
+        <CanvasTools<CanvasNode>
           onFit={onFit}
           onViewMove={onHoldView}
           onTidy={canvas.tidy}
@@ -141,7 +169,7 @@ export const Canvas = memo(function Canvas({
           keyShortcuts={toolKeys}
         />
         <ConnectStatus value={hints.value} refused={hints.refused} />
-        <EmptyCanvasHint empty={empty} keys={shortcutKeys.add}>
+        <EmptyCanvasHint empty={empty && ghost === null} keys={shortcutKeys.add}>
           <p>This graph has no nodes yet.</p>
         </EmptyCanvasHint>
         <Toasts
