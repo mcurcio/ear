@@ -21,7 +21,7 @@ along the bottom ([below](#the-shell)).
   flow, a refused one says `refused` at its midpoint, and hovering a wire names its two ends
   ([below](#wires)).
 - **Editing:** a drag from an output to an input adds a route (any other drag is refused before
-  it reaches ear); while a wire is drawn, every handle it can be dropped on grows in the ok colour and the
+  it reaches ear, and each port in the inspector has a "Connect to" choice that does the same from the keyboard); while a wire is drawn, every handle it can be dropped on grows in the ok colour and the
   rest turn grey ([below](#the-node-box)); the delete key removes the selected wire or node; the inspector
   adds nodes from a statement in knobly (its Graph subject, [below](#adding-a-node)), edits the
   selected node's own text in knobly (its Node subject, [below](#the-node-panels-text)), both as
@@ -221,7 +221,8 @@ subject, chosen by the selection (`selection.ts`, `selection.test.ts`):
 - nothing selected: **Graph**: the engine facts in full (patchbay's `KeyValue`, a wrong or newer fact in the err
   or warn tone), the graph's counters and the add-node form;
 - one node: **Node**: its name and type, its state pill as the box draws it, its line, the
-  lifecycle bar (one segmented row; a refusal shown under it as well as in a toast), its knobly box (or JSON settings), its counters, its companions and Delete;
+  lifecycle bar (one segmented row; a refusal shown under it as well as in a toast), its knobly box (or JSON settings), its ports
+  with a "Connect to" choice each ([below](#connecting-from-the-keyboard)), its counters, its companions and Delete;
 - one route: **Route**: from and to as `node:port` buttons that select that node, its status in
   words, its level meter (a `KeyValue` too) and Remove;
 - several: a count ("3 nodes, 2 routes") and Delete for them all.
@@ -232,6 +233,21 @@ the delete key does. The add-node form lives only in the Graph subject, so selec
 drops a half-typed statement; a new template is written when it shows again. Slice 5's settings
 form and status list are designed to land in the Node subject, under the lifecycle bar and its refusal line
 ([control-plane.md](design/control-plane.md#8-the-editor)).
+
+#### Connecting from the keyboard
+
+The Node subject lists the node's ports under "Ports", its inputs then its outputs, each a patchbay `Select` named
+"Connect input `<port>` to" or "Connect output `<port>` to" (`components/PortConnect.tsx`). Its choices are the
+ports a wire from that port could be dropped on, as `node:port` in the graph's order: `connect.ts`'s `portTargets`
+asks patchbay's `connectTargets`
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/graph.md#connecttargets)) with the canvas's own
+rule, `canConnect`, so the list never offers what a drag would refuse, and leaves out the far ends of the routes the
+graph already holds from or to that port (`connect.test.ts`). Choosing one sends `route.add`, as a drop does: its
+ghost wire shows on the canvas while the request is on its way, the route appears on `route.added`, a refusal is a
+toast, and the choice goes back to "Connect to…". A port with nothing to join says "Nothing to connect to" and is
+disabled. Moving a node from the keyboard is React Flow's own (Enter selects the focused node, the arrow keys move it),
+and the place is kept as a drag's is. *Why:* the owner chose a "Connect to" choice per port in the inspector, listing
+the ports the app's rule accepts, as the keyboard's way to connect, over the palette (2026-11-27).
 
 ### The drawer
 

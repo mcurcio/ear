@@ -4,8 +4,8 @@
 // handle whose id says its direction, so the rule needs nothing but the handles. It is patchbay's useConnectHints's
 // rule (canConnect), so the hints on the handles while a wire is drawn and the drop itself are judged by one rule
 // (docs/editor.md#the-node-box), and a hint never promises what the drop refuses.
-import type { CanConnect, PortSide } from "@mcurcio/patchbay/graph";
-import type { PortRef, RouteEnds } from "./protocol";
+import { connectTargets, type CanConnect, type ConnectCandidate, type PortSide } from "@mcurcio/patchbay/graph";
+import type { Graph, PortRef, RouteEnds } from "./protocol";
 
 export type Direction = "in" | "out";
 
@@ -64,4 +64,41 @@ export const canConnect: CanConnect = (from, to) =>
 export function quickAddKind(from?: { side: PortSide }): "pane" | "wire" | null {
   if (from === undefined) return "pane";
   return from.side === "output" ? "wire" : null;
+}
+
+/** One choice of the inspector's "Connect to" (docs/editor.md#the-inspector): the route it asks for, named by its far end. */
+export interface PortTarget {
+  /** The route's edge id, unique in the list: the option's value. */
+  key: string;
+  /** The far end as `node:port`. */
+  label: string;
+  ends: RouteEnds;
+}
+
+type Candidate = ConnectCandidate & { node: string; port: string };
+
+/**
+ * The ports one port may be joined to, for the inspector's "Connect to": patchbay's connectTargets over every port in
+ * the graph by canConnect (the drag's and the drop's own rule), in the graph's order, less the far ends of the routes
+ * the graph already holds from or to it, which a choice would only ask for again.
+ */
+export function portTargets(graph: Graph, node: string, direction: Direction, port: string): PortTarget[] {
+  const candidates: Candidate[] = [];
+  for (const n of graph.nodes) {
+    for (const p of n.inputs) candidates.push({ nodeId: n.name, handleId: handleId("in", p), side: "input", node: n.name, port: p });
+    for (const p of n.outputs)
+      candidates.push({ nodeId: n.name, handleId: handleId("out", p), side: "output", node: n.name, port: p });
+  }
+  const self = { nodeId: node, handleId: handleId(direction, port) };
+  const { accepted } = connectTargets(self, direction === "in" ? "input" : "output", candidates, canConnect);
+  const held = new Set(graph.routes.map(edgeId));
+  const here: PortRef = { node, port };
+  const targets: PortTarget[] = [];
+  for (const target of accepted) {
+    const there: PortRef = { node: target.node, port: target.port };
+    const ends: RouteEnds = direction === "in" ? { from: there, to: here } : { from: here, to: there };
+    if (held.has(edgeId(ends))) continue;
+    targets.push({ key: edgeId(ends), label: `${target.node}:${target.port}`, ends });
+  }
+  return targets;
 }

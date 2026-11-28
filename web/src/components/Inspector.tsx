@@ -48,6 +48,7 @@ function Subject({
       return (
         <NodePanel
           key={subject.node.name}
+          graph={graph}
           node={subject.node}
           features={graph.features ?? []}
           onRemove={(name) => onRemove([name], [])}

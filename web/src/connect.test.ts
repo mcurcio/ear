@@ -7,9 +7,11 @@ import {
   handleId,
   isValidConnection,
   parseHandleId,
+  portTargets,
   quickAddKind,
   routeFromConnection,
 } from "./connect";
+import type { Graph } from "./protocol";
 import { fixtures } from "./testFixtures";
 
 const out = (port: string) => handleId("out", port);
@@ -109,5 +111,37 @@ describe("quickAddKind", () => {
     expect(quickAddKind()).toBe("pane");
     expect(quickAddKind({ side: "output" })).toBe("wire");
     expect(quickAddKind({ side: "input" })).toBeNull();
+  });
+});
+
+// The inspector's "Connect to" (docs/editor.md#the-inspector): the ports on the other side that canConnect accepts, by
+// patchbay's connectTargets, less the far ends of routes the graph already holds.
+describe("a port's Connect to", () => {
+  const graph = {
+    nodes: [
+      { name: "noise", inputs: [], outputs: ["noise.mono"] },
+      { name: "fx", inputs: ["in"], outputs: ["out"] },
+      { name: "rec", inputs: ["record.left", "record.right"], outputs: [] },
+    ],
+    routes: [{ from: { node: "noise", port: "noise.mono" }, to: { node: "rec", port: "record.left" }, status: "linked" }],
+  } as unknown as Graph;
+
+  it("lists every input from an output, in the graph's order, less the routes held", () => {
+    const targets = portTargets(graph, "noise", "out", "noise.mono");
+    expect(targets.map((t) => t.label)).toEqual(["fx:in", "rec:record.right"]);
+    expect(targets[0]!.ends).toEqual({ from: { node: "noise", port: "noise.mono" }, to: { node: "fx", port: "in" } });
+    expect(new Set(targets.map((t) => t.key)).size).toBe(targets.length);
+  });
+
+  it("lists every output from an input, its own node's included, with the route from the output to it", () => {
+    const targets = portTargets(graph, "fx", "in", "in");
+    expect(targets.map((t) => t.label)).toEqual(["noise:noise.mono", "fx:out"]);
+    expect(targets[1]!.ends).toEqual({ from: { node: "fx", port: "out" }, to: { node: "fx", port: "in" } });
+    expect(targets[1]!.key).toBe(edgeId(targets[1]!.ends));
+  });
+
+  it("offers nothing when every candidate is already routed", () => {
+    const one = { nodes: graph.nodes.slice(0, 1).concat([graph.nodes[2]!]), routes: graph.routes } as unknown as Graph;
+    expect(portTargets(one, "rec", "in", "record.left")).toEqual([]);
   });
 });
