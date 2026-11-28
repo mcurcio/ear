@@ -102,7 +102,7 @@ model; nothing of ear's look was kept for its own sake.
 |---|---|
 | Colours, radii, shadows, durations, faces and type sizes ([below](#tokens-and-themes)) | The words: `shell.ts`, `drawer.ts`, `pane.ts`, `notices.ts`'s refusal wording, `health.ts`'s, `meters.ts`'s tooltip |
 | The shell's layout, sheets, splitters and bounds; buttons, pills, badges, facts, fields, banners, status words, the palette, the shortcut sheet, the toasts, the code editor and its diagnostics' list | The rules: `health.ts`, `companions.ts`, `counters.ts`, `marks.ts`, `selection.ts`, `requests.ts`, `wires.ts` (as the adapter onto Wire's props), `connect.ts`'s `canConnect` |
-| The node box, port rows, wires, ghost wires, connect hints, meters, the canvas tools, `useAddAt`, `useFollowFit` | The protocol, the session and its stores: `protocol.ts`, `rpc.ts`, `editor.ts`, `graph.ts`, `graphFile.ts`, `levels.ts` |
+| The node box, port rows, wires, ghost wires, connect hints and the connect status line, meters, the canvas tools, the empty canvas's hint, `useAddAt`, `useFollowFit` | The protocol, the session and its stores: `protocol.ts`, `rpc.ts`, `editor.ts`, `graph.ts`, `graphFile.ts`, `levels.ts` |
 | Kept values and the theme (`usePersistentState`, `useTheme`), key labels and matching (`useShortcuts`), palette ranking, the toast queue's mechanics, knobly highlighting | Storage keys and checks (`prefs.ts`), the command catalogue (`palette.ts`), the key bindings (`keys.ts`), first placement (`layout.ts`, dagre), the subject the inspector shows, Escape's order among ear's own surfaces |
 
 - **ear's own `<ReactFlow>`.** There is no canvas wrapper: `Canvas.tsx` renders React Flow's `<ReactFlow>` and adds
@@ -181,13 +181,28 @@ has the concept (2026-11-26).
   bottom right ([below](#toasts)).
 - **The view follows the graph** (patchbay's `useFollowFit` in `App.tsx`): it fits once the boxes are measured, and
   again whenever the nodes on the canvas (its key, their names) or the canvas's size change (a node added, the drawer
-  opened), until the person pans or zooms (a press that moves nothing, as a click to deselect, keeps it following), or
-  jumps to a node (a palette `Go to` or a toast's Show, which stop it through the hook's `stop()`). Fit (the tool, `F`, the palette) fits and follows again. Every fit leaves a tenth of the canvas on three
+  opened), until the person moves the view by any input: a pan, a wheel or a pinch on the canvas (a press that moves
+  nothing, as a click to deselect, keeps it following), a zoom tool, a drag or a wheel on the minimap (`CanvasTools`'
+  `onViewMove`), or a jump to a node (a palette `Go to` or a toast's Show); all but the first reach the hook's `stop()`. Fit (the tool, `F`, the palette) fits and follows again. Every fit leaves a tenth of the canvas on three
   sides and 76 px at the bottom, so the tools, at their touch size, never cover a box. *Why:* a single fit at React
   Flow's first measurement fitted boxes not yet laid out and clipped the graph, and a view that follows the graph is
-  what a person expects until they move it themselves.
+  what a person expects until they move it themselves; any view move the person asks for stops it, and only Fit
+  follows again (owner, 2026-11-27).
 - **Quick add.** A double-click on empty canvas opens quick add instead of zooming, as does an output's wire dropped
   there ([below](#adding-on-the-canvas)).
+- **The connect status line.** patchbay's `ConnectStatus`
+  ([its docs](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/graph.md#connectstatus)), bottom centre: while a
+  wire is drawn it says why the port under the pointer refuses it, and after a drop the rule refused, "Not connected"
+  and why, until the next drag; its words come from the same `useConnectHints` as the hints and the drop check, in one
+  polite status region. ear's rule (`connect.ts`'s `canConnect`) refuses only a drop on the drag's own side, which is
+  no candidate, so today it never speaks; a refusal of ear's own (`route.add` refused) is the ghost wire's and a toast's
+  ([Feedback](#feedback)). *Why:* the owner's rule that no fact is only in a tooltip (2026-11-27): the status line is
+  where a port's refusal is in words.
+- **The empty canvas.** While ear's graph holds no node, patchbay's `EmptyCanvasHint`
+  ([its docs](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/graph.md#emptycanvashint)) sits top centre: "This
+  graph has no nodes yet.", then patchbay's words for the add gestures ("Double-click to add a node, or press A", or
+  "Double-tap" on a touch screen). It takes no pointer, so a double-click on it still adds, and it is not a live
+  region; it goes with the first node. Nothing shows before ear's first snapshot.
 
 Toasts sit at its bottom right ([below](#toasts)), and a route request on its way is a ghost wire
 ([below](#requests-in-flight)).

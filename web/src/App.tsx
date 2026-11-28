@@ -275,6 +275,7 @@ export function App({ prefs }: { prefs: Prefs }) {
           follow={followProps}
           onFit={fit}
           onHoldView={holdView}
+          empty={graph !== null && graph.nodes.length === 0}
         />
       </AppShell>
       <CommandPalette

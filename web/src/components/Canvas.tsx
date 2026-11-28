@@ -2,14 +2,18 @@
 // them (useCanvas), a drag from an output to an input as a route request (its handles' hints while drawn from
 // patchbay's useConnectHints over connect.ts's rule, docs/editor.md#the-node-box), the delete key as removal requests
 // that delete nothing themselves, the ghost wires of route requests on their way (docs/editor.md#requests-in-flight),
-// a quiet dot grid, patchbay's CanvasTools with the minimap when shown (its boxes in their state's token, editor.css),
-// and the toasts at its bottom right (docs/editor.md#toasts). Quick add (docs/editor.md#adding-on-the-canvas) is
+// a quiet dot grid, patchbay's CanvasTools with the minimap when shown (its boxes in their state's token, editor.css;
+// a zoom tool or a move on the minimap stops the view following), patchbay's ConnectStatus at its bottom centre
+// (why a port refuses a wire, from the same rule), patchbay's EmptyCanvasHint while ear's graph has no node, and the
+// toasts at its bottom right (docs/editor.md#toasts). Quick add (docs/editor.md#adding-on-the-canvas) is
 // patchbay's useAddAt: a double-click on empty canvas (in place of React Flow's zoom) or an output's wire dropped there
 // opens the Add list at the pointer, with where the node should land; no route is asked for. The view follows the
 // graph through App's useFollowFit, whose handlers are merged here with the others.
 import {
   CanvasTools,
   ConnectHints,
+  ConnectStatus,
+  EmptyCanvasHint,
   mergeFlowProps,
   useAddAt,
   useConnectHints,
@@ -27,6 +31,7 @@ import {
 import { memo, useCallback, useMemo } from "react";
 import { canConnect, quickAddKind } from "../connect";
 import { describeHealth } from "../health";
+import { shortcutKeys } from "../keys";
 import { quickPlace, type Position } from "../layout";
 import type { RouteEnds } from "../protocol";
 import type { Selection } from "../selection";
@@ -58,6 +63,7 @@ export const Canvas = memo(function Canvas({
   follow,
   onFit,
   onHoldView,
+  empty,
 }: {
   canvas: CanvasModel;
   onConnect: (connection: Connection) => void;
@@ -73,8 +79,10 @@ export const Canvas = memo(function Canvas({
   follow: FollowFitFlowProps;
   /** Fit, asked for by the person: fits and follows again. */
   onFit: () => void;
-  /** The person moved the view by other means (a toast's Show): stop following. */
+  /** The person moved the view by other means (a toast's Show, a zoom tool, the minimap): stop following. */
   onHoldView: () => void;
+  /** ear's graph is here and holds no node (and no add is on its way): the empty canvas's hint shows. */
+  empty: boolean;
 }) {
   const { flowToScreenPosition } = useReactFlow();
   const onAddAt = useCallback<OnAddAt>(
@@ -125,12 +133,17 @@ export const Canvas = memo(function Canvas({
         <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
         <CanvasTools<EarFlowNode>
           onFit={onFit}
+          onViewMove={onHoldView}
           onTidy={canvas.tidy}
           minimap={minimap}
           onMinimap={onToggleMinimap}
           minimapNodeClassName={minimapClass}
           keyShortcuts={toolKeys}
         />
+        <ConnectStatus value={hints.value} refused={hints.refused} />
+        <EmptyCanvasHint empty={empty} keys={shortcutKeys.add}>
+          <p>This graph has no nodes yet.</p>
+        </EmptyCanvasHint>
         <Toasts
           onShow={(selection) => {
             // Show moves the view to the toast's subject: the person's own move.
