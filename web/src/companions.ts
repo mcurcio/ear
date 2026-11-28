@@ -71,6 +71,11 @@ function drawnList(node: GraphNode): Companion[] {
   return node.companions ?? [];
 }
 
+/** Whether the node's box draws a companion strip in its footer: it has companions, and is neither failed nor disabled. */
+export function hasCompanionStrip(node: GraphNode): boolean {
+  return drawnList(node).length > 0;
+}
+
 /** Each node's companions' counters, by node and then by companion; an engine kind has none. */
 function companionCounters(graph: GraphState): HeldValues {
   const values: HeldValues = new Map();

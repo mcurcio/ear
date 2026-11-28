@@ -1,36 +1,52 @@
-// The graph editor's shell (docs/editor.md#the-shell): the top bar, the canvas with the inspector on its right, and the
-// full-width ear.conf drawer along the bottom; below the narrow width the inspector is a sheet over the canvas. Nodes
+// The graph editor's shell (docs/editor.md#the-shell): patchbay's AppShell, with the top bar, the canvas with the
+// inspector on its right, and the full-width ear.conf drawer along the bottom; below the narrow width the inspector is
+// a sheet over the canvas. Nodes
 // and wires are exactly what ear announced; dragging a wire between ports, the inspector, the drawer's Save, the
 // delete key and the command palette's commands send requests (through the session's ask, so each shows while on its
 // way and a refusal becomes a toast, docs/editor.md#feedback), and the canvas changes when ear's events arrive. The
 // shortcuts and the palette (docs/editor.md#the-palette-and-the-keyboard) and quick add on the canvas
 // (docs/editor.md#adding-on-the-canvas) are held here. Node places, the selection, the sizes and the theme are the
 // browser's own; places, sizes, the minimap and the theme outlive the page (docs/editor.md#what-the-browser-keeps).
+import { CommandPalette, ShortcutSheet } from "@mcurcio/patchbay/composites";
+import {
+  detectPlatform,
+  keyLabel,
+  useMediaBreakpoint,
+  usePersistentState,
+  useShortcuts,
+  useTheme,
+} from "@mcurcio/patchbay/hooks";
+import { useFollowFit } from "@mcurcio/patchbay/graph";
+import { AppShell } from "@mcurcio/patchbay/shell";
 import { useReactFlow, type Connection } from "@xyflow/react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { freeName } from "./addText";
 import { routeFromConnection } from "./connect";
-import { isMac, keyLabel, type ShortcutAction } from "./keys";
+import { shortcutKeys, shortcutLines, shortcutTable, type ShortcutAction } from "./keys";
 import type { PlaceHint, Position } from "./layout";
-import type { Command, PaletteScope } from "./palette";
-import type { Prefs } from "./prefs";
+import { paletteItems, type PaletteScope } from "./palette";
+import { checkFlag, checkWidth, themeKey, type Prefs } from "./prefs";
 import { nodeTextFeature, type RouteEnds } from "./protocol";
 import { nothingSelected, removals, selectionKey, subjectOf } from "./selection";
-import { inspectorWidth, narrowQuery } from "./sizes";
-import { applyTheme, defaultTheme, type ThemeChoice } from "./theme";
+import { inspectorInitialWidth } from "./sizes";
 import { Canvas } from "./components/Canvas";
-import { fitPadding } from "./components/CanvasTools";
-import { AutoFit } from "./fit";
-import { Drawer } from "./components/Drawer";
-import { useEditor, useGraph, useGraphFile, useMediaQuery } from "./components/hooks";
-import { Inspector, type AddIntent } from "./components/Inspector";
-import { Palette } from "./components/Palette";
-import { ShortcutSheet } from "./components/ShortcutSheet";
-import { TopBar } from "./components/TopBar";
+import { drawerSlots } from "./components/Drawer";
+import { useEditor, useGraph, useGraphFile } from "./components/hooks";
+import { Inspector, InspectorTitle, type AddIntent } from "./components/Inspector";
+import { topBar } from "./components/TopBar";
 import { useCanvas } from "./components/useCanvas";
 import { useCommands } from "./components/useCommands";
 import { useDrawer } from "./components/useDrawer";
-import { useShortcuts } from "./components/useShortcuts";
+
+/**
+ * Fit's padding, the same for the view's own fit, the Fit tool, F and the palette's Fit view: a tenth of the canvas on
+ * three sides, and at the bottom room for the canvas tools (at their tallest, on a touch screen) so they never cover a
+ * box.
+ */
+/** No graph yet: no routes, one array so the canvas's rule is not made again. */
+const noRoutes: readonly RouteEnds[] = [];
+
+const fitPadding = { top: "10%", right: "10%", bottom: "76px", left: "10%" } as const;
 
 /** The open palette: all commands or only Add; for quick add, the screen point it opens at and the node's place. */
 interface PaletteOpen {
@@ -39,36 +55,35 @@ interface PaletteOpen {
   place?: Position;
 }
 
-/** navigator.userAgentData is not in every browser, nor in TypeScript's DOM types. */
-function platform(): string {
-  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
-  return nav.userAgentData?.platform ?? nav.platform ?? "";
-}
-
 export function App({ prefs }: { prefs: Prefs }) {
   const editor = useEditor();
   const graph = useGraph();
   const fileState = useGraphFile();
   const flow = useReactFlow();
-  const [mac] = useState(() => isMac(platform()));
+  const [platform] = useState(detectPlatform);
 
-  const [theme, setTheme] = useState<ThemeChoice>(() => prefs.theme() ?? defaultTheme);
-  useEffect(() => {
-    applyTheme(document.documentElement, theme);
-    prefs.setTheme(theme);
-  }, [prefs, theme]);
+  // The theme is patchbay's useTheme under ear's own key (docs/editor.md#tokens-and-themes); index.html's inline
+  // script applies a kept choice before the first paint.
+  const [theme, setTheme] = useTheme({ key: themeKey() });
 
   const [keeper] = useState(() => prefs.placeKeeper());
   const canvas = useCanvas(graph, keeper);
   const drawer = useDrawer(fileState, prefs);
-  const [inspectorPx, setInspectorPx] = useState<number>(() => prefs.inspectorWidth() ?? inspectorWidth.initial);
-  useEffect(() => prefs.setInspectorWidth(inspectorPx), [prefs, inspectorPx]);
-  const [minimap, setMinimap] = useState(() => prefs.minimap() ?? false);
-  useEffect(() => prefs.setMinimap(minimap), [prefs, minimap]);
+  // Kept per ear by patchbay's usePersistentState, under prefs.ts's keys and checks (docs/editor.md#what-the-browser-keeps).
+  const kept = { storage: prefs.storage };
+  const [inspectorPx, setInspectorPx] = usePersistentState(
+    prefs.key("inspector-width"),
+    inspectorInitialWidth,
+    checkWidth,
+    kept,
+  );
+  const [minimap, setMinimap] = usePersistentState(prefs.key("minimap"), false, checkFlag, kept);
   const toggleMinimap = useCallback(() => setMinimap((shown) => !shown), []);
 
-  // Below the narrow width the inspector is a sheet: it opens on a selection and closes on Escape or the canvas.
-  const narrow = useMediaQuery(narrowQuery);
+  // Below the narrow width AppShell draws the inspector as a sheet: it opens on a selection and closes on Escape, its
+  // close button or the canvas; below the phone width it rises from the bottom. Docked, it is always open.
+  const { width } = useMediaBreakpoint();
+  const narrow = width !== "wide";
   const [sheetOpen, setSheetOpen] = useState(false);
   const key = selectionKey(canvas.selection);
   useEffect(() => {
@@ -111,20 +126,23 @@ export function App({ prefs }: { prefs: Prefs }) {
     canvas.hint(null);
   }, [onGraph, canvas.hint]);
 
-  // The view fits by itself until the person moves it (fit.ts); Fit lets it go again, a jump to a node holds it.
-  const [autoFit] = useState(() => new AutoFit());
-  const fit = useCallback(() => {
-    autoFit.release();
-    void flow.fitView({ padding: fitPadding });
-  }, [autoFit, flow]);
+  // The view follows the graph (patchbay's useFollowFit, docs/editor.md#the-canvas): it fits again whenever the nodes
+  // on the canvas or its size change, until the person moves it; Fit follows again, a jump to a node stops it.
+  const nodeIds = canvas.nodes.map((node) => node.id).join("\n");
+  const follow = useFollowFit({ key: nodeIds, fitOptions: { padding: fitPadding } });
+  const { fit } = follow;
+  const followProps = follow.flowProps;
+  // A jump to a node (a palette Go to, a toast's Show) is the person's own move, made by code: it stops following as
+  // the person's pan does.
+  const holdView = follow.stop;
   // As a toast's Show does.
   const goTo = useCallback(
     (name: string) => {
       canvas.select({ nodes: [name], routes: [] });
-      autoFit.hold();
+      holdView();
       void flow.fitView({ nodes: [{ id: name }], padding: 0.4, duration: 180 });
     },
-    [autoFit, canvas.select, flow],
+    [holdView, canvas.select, flow],
   );
 
   // An Add command: the Graph subject's form with that type's template; quick add's place is kept as a hint for the
@@ -168,13 +186,23 @@ export function App({ prefs }: { prefs: Prefs }) {
     (at: { x: number; y: number }, place: Position) => setPalette({ scope: "add", at, place }),
     [],
   );
-  const onRun = useCallback((command: Command) => run(command.action, palette?.place), [run, palette]);
+  // A right-click or a long-press (docs/editor.md#adding-on-the-canvas): every command at the point, the pressed node
+  // selected first so its commands lead; an Add from empty canvas lands there.
+  const onContext = useCallback(
+    (at: { x: number; y: number }, node: string | undefined, place: Position) => {
+      if (node !== undefined) canvas.select({ nodes: [node], routes: [] });
+      setPalette({ scope: "all", at, place: node === undefined ? place : undefined });
+    },
+    [canvas.select],
+  );
+  const place = palette?.place;
+  const items = useMemo(() => paletteItems(commands, (action) => run(action, place)), [commands, run, place]);
+  const closePalette = useCallback(() => setPalette(null), []);
 
-  // The shortcuts (docs/editor.md#shortcuts). While the palette or the sheet is open only the palette's toggle and
-  // Escape act; the palette handles its own Escape.
-  useShortcuts(mac, (action: ShortcutAction) => {
-    const modal = palette !== null || shortcutSheet;
-    if (modal && action !== "palette" && action !== "escape") return;
+  // The shortcuts (docs/editor.md#shortcuts), on patchbay's useShortcuts. While the palette is open only its toggle
+  // acts (the palette handles its own Escape and Tab); while the shortcut sheet is open none do, since its Dialog owns
+  // the keys and the focus.
+  const onShortcut = (action: ShortcutAction) => {
     switch (action) {
       case "palette":
         return setPalette((open) => (open !== null ? null : { scope: "all" }));
@@ -196,29 +224,57 @@ export function App({ prefs }: { prefs: Prefs }) {
       case "shortcuts":
         return setShortcutSheet(true);
       case "escape":
-        if (palette !== null) return setPalette(null);
-        if (shortcutSheet) return setShortcutSheet(false);
         if (narrow && sheetOpen) return setSheetOpen(false);
         if (key !== "") canvas.select(nothingSelected);
         return;
     }
-  });
+  };
+  useShortcuts(shortcutTable(onShortcut, { palette: palette !== null }), { enabled: !shortcutSheet, platform });
 
   return (
-    <div className="app" data-narrow={narrow || undefined} data-sheet={sheetOpen ? "open" : "closed"}>
+    <>
       <h1 className="visually-hidden">EAR graph editor</h1>
-      <TopBar
-        graph={graph}
-        theme={theme}
-        onTheme={setTheme}
-        drawer={drawerToggle}
-        narrow={narrow}
-        sheetOpen={sheetOpen}
-        onToggleSheet={() => setSheetOpen((open) => !open)}
-        onPalette={() => setPalette({ scope: "all" })}
-        paletteLabel={keyLabel("palette", mac)}
-      />
-      <div className="workspace">
+      <AppShell
+        className="app"
+        topBar={topBar({
+          graph,
+          theme,
+          onTheme: setTheme,
+          drawer: drawerToggle,
+          width,
+          sheetOpen,
+          onToggleSheet: () => setSheetOpen((open) => !open),
+          onPalette: () => setPalette({ scope: "all" }),
+          paletteLabel: keyLabel(shortcutKeys.palette, { platform }),
+        })}
+        inspector={
+          graph === null || subject === null
+            ? undefined
+            : {
+                title: <InspectorTitle subject={subject} />,
+                content: (
+                  <Inspector
+                    graph={graph}
+                    subject={subject}
+                    addIntent={addIntent}
+                    onSelect={canvas.select}
+                    onRemove={onRemove}
+                  />
+                ),
+                open: !narrow || sheetOpen,
+                onOpen: setSheetOpen,
+                width: inspectorPx,
+                onWidth: setInspectorPx,
+              }
+        }
+        drawer={drawer === null ? undefined : drawerSlots(drawer)}
+        labels={{
+          drawer: "ear.conf",
+          resizeDrawer: "Resize ear.conf",
+          showDrawer: "Show ear.conf",
+          hideDrawer: "Hide ear.conf",
+        }}
+      >
         <Canvas
           canvas={canvas}
           onConnect={onConnect}
@@ -228,33 +284,30 @@ export function App({ prefs }: { prefs: Prefs }) {
           onToggleMinimap={toggleMinimap}
           onShow={canvas.select}
           onQuickAdd={onQuickAdd}
-          autoFit={autoFit}
+          onContext={onContext}
+          follow={followProps}
           onFit={fit}
+          onHoldView={holdView}
+          empty={graph !== null && graph.nodes.length === 0}
+          routes={graph?.routes ?? noRoutes}
         />
-        {graph !== null && subject !== null && (
-          <Inspector
-            graph={graph}
-            subject={subject}
-            addIntent={addIntent}
-            width={inspectorPx}
-            onResize={setInspectorPx}
-            onSelect={canvas.select}
-            onRemove={onRemove}
-          />
-        )}
-      </div>
-      {drawer !== null && <Drawer drawer={drawer} />}
-      {palette !== null && (
-        <Palette
-          commands={commands}
-          at={palette.at}
-          placeholder={palette.scope === "add" ? "Add a node of type…" : "Type a command or a node's name"}
-          mac={mac}
-          onRun={onRun}
-          onClose={() => setPalette(null)}
-        />
-      )}
-      {shortcutSheet && <ShortcutSheet mac={mac} onClose={() => setShortcutSheet(false)} />}
-    </div>
+      </AppShell>
+      <CommandPalette
+        open={palette !== null}
+        onClose={closePalette}
+        commands={items}
+        at={palette?.at}
+        labels={{ placeholder: palette?.scope === "add" ? "Add a node of type…" : "Type a command or a node's name" }}
+        platform={platform}
+      />
+      <ShortcutSheet
+        open={shortcutSheet}
+        onClose={() => setShortcutSheet(false)}
+        shortcuts={shortcutLines}
+        platform={platform}
+      >
+        Single keys act only when the focus is not in a text field.
+      </ShortcutSheet>
+    </>
   );
 }

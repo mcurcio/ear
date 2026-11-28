@@ -7,6 +7,7 @@ import {
   askedOf,
   describeAsked,
   ghostRefusedMs,
+  ghostNode,
   ghostWires,
   isAsking,
   lifecycleAsked,
@@ -230,5 +231,30 @@ describe("the ghost wires", () => {
     requests.end(removal, "refused");
     expect(ghostWires(requests.get(), [])).toEqual([]);
     expect(requests.get().refused).toEqual([]);
+  });
+});
+
+describe("the ghost node", () => {
+  const place = { x: 10, y: 20 };
+
+  it("stands where quick add holds a place, only while an add is on its way", () => {
+    const requests = new Requests(() => 0);
+    expect(ghostNode(requests.get(), { name: "white1", position: place })).toBeNull();
+    const token = requests.begin({ method: "node.addText" });
+    expect(ghostNode(requests.get(), { name: "white1", position: place })).toEqual({ title: "white1", position: place });
+    expect(ghostNode(requests.get(), null)).toBeNull();
+    requests.end(token, "refused");
+    expect(ghostNode(requests.get(), { name: "white1", position: place })).toBeNull();
+  });
+
+  it("takes node.add's name when the place is held for no name, and says New node for a text add", () => {
+    const requests = new Requests(() => 0);
+    requests.begin({ method: "node.start", node: "noise" });
+    expect(ghostNode(requests.get(), { name: null, position: place })).toBeNull();
+    const json = requests.begin({ method: "node.add", node: "desk" });
+    expect(ghostNode(requests.get(), { name: null, position: place })?.title).toBe("desk");
+    requests.end(json, "answered");
+    requests.begin({ method: "node.addText" });
+    expect(ghostNode(requests.get(), { name: null, position: place })?.title).toBe("New node");
   });
 });

@@ -1,9 +1,10 @@
 // The requests this editor sent and ear has not answered yet, each with what asked for it, pure
 // (docs/editor.md#requests-in-flight). ear still draws every result (docs/editor.md#its-rules): what is kept here
-// draws only the request (a ghost wire, a spinner, Saving… and Adding…), never what it asks for. A reply clears a
+// draws only the request (a ghost wire, a ghost node, a spinner, Saving… and Adding…), never what it asks for. A reply clears a
 // request and a closed connection clears them all at once; a refused route request is kept for a second more, so
 // its ghost can turn the error colour before it goes. Times are on the monotonic clock, as marks.ts's are.
 import { edgeId } from "./connect";
+import type { PlaceHint, Position } from "./layout";
 import type { Methods, RouteEnds } from "./protocol";
 import { wireEnds } from "./wires";
 
@@ -175,6 +176,27 @@ export function ghostWires(view: RequestsView, routes: readonly RouteEnds[]): Gh
   }
   for (const ghost of view.refused) ghosts.push({ id: `ghost:${ghost.token}`, ends: ghost.ends, refused: true });
   return ghosts;
+}
+
+/** An add's ghost node (docs/editor.md#requests-in-flight): where it stands and what it is called. */
+export interface GhostNode {
+  title: string;
+  position: Position;
+}
+
+/**
+ * The ghost of a node add on its way: only while quick add's hint holds a place for it (an add with no place is laid
+ * out by dagre once ear announces it, so there is nowhere to draw it before), titled by the name the place is held for,
+ * else the name node.add asks for, else "New node" (node.addText's name is in its text, which the editor never reads).
+ */
+export function ghostNode(view: RequestsView, hint: PlaceHint | null): GhostNode | null {
+  if (hint === null) return null;
+  let add: Asked | undefined;
+  for (const request of view.inFlight)
+    if (request.asked.method === "node.add" || request.asked.method === "node.addText") add = request.asked;
+  if (add === undefined) return null;
+  const asked = "node" in add ? add.node : null;
+  return { title: hint.name ?? asked ?? "New node", position: hint.position };
 }
 
 const lifecycleMethods = new Set<string>(Object.keys(lifecycleLabels));

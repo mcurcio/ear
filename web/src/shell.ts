@@ -8,7 +8,7 @@ import type { Graph } from "./protocol";
 /** The newest protocol this editor knows (docs/control-port.md#protocol-and-features): a higher one shows a chip. */
 export const knownProtocol = 1;
 
-/** A state token's tone, as editor.css's tone-* classes draw it. */
+/** A state token's tone: a Pill's or Badge's (patchbay), or a drawer word's tone-* class in editor.css. */
 export type Tone = "ok" | "warn" | "err" | "muted";
 
 export interface Pill {

@@ -16,7 +16,7 @@ import type { GhostFlowEdge } from "./GhostEdge";
 import { useEditor, useExpiry, useRequests } from "./hooks";
 import type { LevelFlowEdge } from "./LevelEdge";
 
-/** How long Tidy's slide lasts: theme.css's --motion-slow (0 under reduced motion, where the CSS does not slide). */
+/** How long Tidy's slide lasts: patchbay's --pb-motion-slow (0 under reduced motion, where the CSS does not slide). */
 const tidyMs = 180;
 
 /** A route's wire, or a route request's ghost. */
@@ -36,6 +36,8 @@ export interface CanvasModel {
   tidying: boolean;
   /** Quick add's placement hint (docs/editor.md#adding-on-the-canvas); null drops it. */
   hint: (hint: PlaceHint | null) => void;
+  /** The hint held until a node arriving takes it or drops it: where an add on its way draws its ghost. */
+  hinted: PlaceHint | null;
 }
 
 /**
@@ -59,6 +61,7 @@ export function useCanvas(graph: GraphState, keeper?: PlaceKeeper): CanvasModel 
   const [selectedEdges, setSelectedEdges] = useState<ReadonlySet<string>>(new Set());
   const [places] = useState(() => new Places(keeper));
   const [tidying, setTidying] = useState(false);
+  const [hinted, setHinted] = useState<PlaceHint | null>(null);
   const tidyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const { requests } = useEditor();
   const asked = useRequests();
@@ -66,6 +69,8 @@ export function useCanvas(graph: GraphState, keeper?: PlaceKeeper): CanvasModel 
   useExpiry(requests.nextChange(), expireGhosts);
 
   useEffect(() => setNodes((previous) => syncNodes(previous, graph, places)), [graph, places]);
+  // Read once the new nodes are drawn, since placing them is what takes or drops the hint.
+  useEffect(() => setHinted(places.held()), [nodes, places]);
   useEffect(() => () => clearTimeout(tidyTimer.current), []);
 
   const edges = useMemo<CanvasEdge[]>(() => {
@@ -95,7 +100,6 @@ export function useCanvas(graph: GraphState, keeper?: PlaceKeeper): CanvasModel 
         focusable: false,
         deletable: false,
         interactionWidth: 0,
-        className: "ear-ghost-edge",
         data: { refused },
       }),
     );
@@ -150,10 +154,16 @@ export function useCanvas(graph: GraphState, keeper?: PlaceKeeper): CanvasModel 
     tidyTimer.current = setTimeout(() => setTidying(false), tidyMs);
   }, [places]);
 
-  const hint = useCallback((next: PlaceHint | null) => places.hint(next), [places]);
+  const hint = useCallback(
+    (next: PlaceHint | null) => {
+      places.hint(next);
+      setHinted(next);
+    },
+    [places],
+  );
 
   return useMemo(
-    () => ({ nodes, edges, onNodesChange, onEdgesChange, selection, select, tidy, tidying, hint }),
-    [nodes, edges, onNodesChange, onEdgesChange, selection, select, tidy, tidying, hint],
+    () => ({ nodes, edges, onNodesChange, onEdgesChange, selection, select, tidy, tidying, hint, hinted }),
+    [nodes, edges, onNodesChange, onEdgesChange, selection, select, tidy, tidying, hint, hinted],
   );
 }

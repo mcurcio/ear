@@ -3,6 +3,9 @@
 // following the routes. Only nodes without a place get one; a place the user dragged a node to, or where quick add put
 // it, is kept in the browser through prefs.ts (docs/editor.md#what-the-browser-keeps), never sent to ear.
 import { Graph as LayoutGraph, layout } from "@dagrejs/dagre";
+import { NODE_HEADER, NODE_PAD, NODE_ROW, NODE_WIDTH, nodeBoxSize, type NodePorts } from "@mcurcio/patchbay/graph";
+import { hasCompanionStrip } from "./companions";
+import { describeHealth } from "./health";
 import type { Graph, GraphNode } from "./protocol";
 
 export interface Position {
@@ -10,19 +13,25 @@ export interface Position {
   y: number;
 }
 
-/** A box's width: editor.css's .ear-node width, which layout.test.ts holds equal (docs/editor.md#the-node-box). */
-export const nodeWidth = 220;
 /**
- * The header's three rows (the title 18, the state pill 20, the health line 16, its padding 12 and border 1), rounded
- * up: dagre needs only an estimate, while the width is exact.
+ * How a box lays out its ports: stacked, the inputs' rows and then the outputs', each the box's width, as side by side
+ * a port's name and its meter (Meter is at least 48 px) do not fit in half of it (docs/editor.md#the-node-box).
  */
-export const headerHeight = 68;
-/** A port row's height: editor.css's .port height, which layout.test.ts holds equal. */
-export const portHeight = 22;
+export const nodePorts: NodePorts = "stacked";
 
-/** A node box's size on the canvas: one row per port on its longer side. */
+/**
+ * A node box's size on the canvas, by patchbay's one formula (docs/editor.md#the-node-box): its ports stacked, a
+ * line while the node has one to say (as shown once its phase is due one) and a footer while it has a companion strip.
+ * The line and the strip come and go after placement, which keeps the place; dagre needs only that estimate.
+ */
 export function nodeSize(node: GraphNode): { width: number; height: number } {
-  return { width: nodeWidth, height: headerHeight + portHeight * Math.max(1, node.inputs.length, node.outputs.length) };
+  return nodeBoxSize({
+    inputs: node.inputs.length,
+    outputs: node.outputs.length,
+    ports: nodePorts,
+    line: describeHealth(node).line !== "",
+    footer: hasCompanionStrip(node),
+  });
 }
 
 /**
@@ -128,6 +137,11 @@ export class Places {
     this.pending = hint;
   }
 
+  /** The hint held for the next node, until a node takes or drops it (docs/editor.md#adding-on-the-canvas). */
+  held(): PlaceHint | null {
+    return this.pending;
+  }
+
   /**
    * Tidy (docs/editor.md#the-canvas): every node laid out again as on first placement, every known place forgotten,
    * the kept ones too; moves are the browser's, nothing is sent.
@@ -151,9 +165,9 @@ export class Places {
 /**
  * Where quick add puts a node (docs/editor.md#adding-on-the-canvas), at `point` on the flow: from a double-click on
  * the pane the box centred on it with its header there; from an output's wire dropped there the box's left edge (its
- * inputs) at the point, its first port row at the point's height.
+ * inputs) at the point, its first port row's middle at the point's height (a new node has no line yet).
  */
 export function quickPlace(point: Position, from: "pane" | "wire"): Position {
-  if (from === "pane") return { x: point.x - nodeWidth / 2, y: point.y - headerHeight / 2 };
-  return { x: point.x, y: point.y - headerHeight - portHeight / 2 };
+  if (from === "pane") return { x: point.x - NODE_WIDTH / 2, y: point.y - NODE_HEADER / 2 };
+  return { x: point.x, y: point.y - NODE_HEADER - NODE_PAD - NODE_ROW / 2 };
 }

@@ -1,17 +1,15 @@
-// The toast queue (docs/editor.md#toasts) on a fake monotonic clock, and a refusal's words, replaying errors.json's
-// tracked requests with their answers.
+// The session's toasts (docs/editor.md#toasts) on patchbay's queue and a fake monotonic clock, keyed by code and
+// subject, and a refusal's words, replaying errors.json's tracked requests with their answers.
+import { toastDefaults } from "@mcurcio/patchbay/hooks";
 import { describe, expect, it } from "vitest";
 import { edgeId } from "./connect";
 import {
-  coalesceMs,
-  noticeMs,
   noticeOfRefusal,
   noticeOfState,
   Notices,
   placedRefusal,
   refusalParts,
   showOf,
-  shownNotices,
   trimCode,
   type NoticeInput,
 } from "./notices";
@@ -56,8 +54,12 @@ function refusalOf(id: number): NoticeInput {
   return noticeOfRefusal(asked, new RpcError(request.error));
 }
 
+const noticeMs = toastDefaults.duration;
+const coalesceMs = toastDefaults.coalesceWindow;
+
 describe("the toast queue", () => {
   it("keeps a notice for 8 s on the monotonic clock", () => {
+    expect(noticeMs).toBe(8000);
     let clock = 1000;
     const notices = new Notices(() => clock);
     notices.add(input("node-disabled", "porch"));
@@ -74,6 +76,7 @@ describe("the toast queue", () => {
   });
 
   it("counts up the same code for the same subject within 5 s, moved to the newest", () => {
+    expect(coalesceMs).toBe(5000);
     let clock = 0;
     const notices = new Notices(() => clock);
     notices.add(input("node-disabled", "porch"));
@@ -103,17 +106,18 @@ describe("the toast queue", () => {
   });
 
   it("shows the newest four, oldest first, and folds the rest into a count", () => {
+    expect(toastDefaults.visible).toBe(4);
     let clock = 0;
     const notices = new Notices(() => clock);
     for (const code of ["a", "b", "c", "d", "e", "f"]) {
       clock += 10;
       notices.add(input(code));
     }
-    let { shown, more } = shownNotices(notices.get());
+    let { shown, more } = notices.get();
     expect(shown.map((notice) => notice.code)).toEqual(["c", "d", "e", "f"]);
     expect(more).toBe(2);
     notices.dismiss(shown[1]!.id);
-    ({ shown, more } = shownNotices(notices.get()));
+    ({ shown, more } = notices.get());
     expect(shown.map((notice) => notice.code)).toEqual(["b", "c", "e", "f"]);
     expect(more).toBe(1);
   });
@@ -134,6 +138,16 @@ describe("the toast queue", () => {
     notices.hold(false);
     expect(notices.nextExpiry()).toBe(noticeMs + (noticeMs + 2000 - 1000));
     expect(notices.get().heldSince).toBeUndefined();
+  });
+
+  it("draws a refusal as an err toast and a warning as a warn one, in its words, keyed by code and subject", () => {
+    const notices = new Notices(() => 0);
+    notices.add({ ...input("unknown-port", "rec"), detail: "rec:FX" });
+    notices.add({ ...input("not-connected"), severity: "warning", verb: "had no answer" });
+    expect(notices.get().notices.map(({ tone, text, key }) => ({ tone, text, key }))).toStrictEqual([
+      { tone: "err", text: "Start rec refused: unknown-port rec:FX", key: "unknown-port\nnode rec" },
+      { tone: "warn", text: "save ear.conf had no answer: not-connected", key: "not-connected\n" },
+    ]);
   });
 
   it("is the same object between changes, and tells its listeners on each", () => {

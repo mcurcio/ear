@@ -1,7 +1,10 @@
-// The editor's shortcuts, pure (docs/editor.md#shortcuts): which shortcut a key event is, by platform (Mod is Command
-// on a Mac and Ctrl elsewhere) and by whether the focus is in a text field, and the shortcut sheet's rows. Single keys
-// and Escape act only outside a text field, where every key is the text's; the three chords act everywhere, since
-// they type nothing. React Flow's Delete and Backspace stay its own, filtered by the same rule.
+// The editor's key bindings (docs/editor.md#shortcuts): which key does what, as patchbay's key strings (Mod is
+// Command on Apple platforms and Ctrl elsewhere), which of them act while the focus is in a text field, and the
+// shortcut sheet's lines. patchbay's useShortcuts reads the table and its keyLabel draws the keys; single keys and
+// Escape never act in a text field there, and the three chords opt in, since they type nothing. React Flow's Delete and
+// Backspace stay its own, filtered by the same rule.
+import type { ShortcutLine } from "@mcurcio/patchbay/composites";
+import type { Shortcut } from "@mcurcio/patchbay/hooks";
 
 export type ShortcutAction =
   | "palette"
@@ -14,95 +17,71 @@ export type ShortcutAction =
   | "shortcuts"
   | "escape";
 
-/** What shortcutOf reads of a KeyboardEvent. */
-export interface KeyLike {
-  key: string;
-  metaKey: boolean;
-  ctrlKey: boolean;
-  altKey: boolean;
-  shiftKey: boolean;
-}
-
-/** What isTextTarget reads of an element. */
-export interface TargetLike {
-  tagName?: string;
-  type?: string;
-  isContentEditable?: boolean;
-  readOnly?: boolean;
-}
-
-/** The input types a person types text into; a checkbox, button or range is not one. */
-const textInputTypes = new Set(["", "text", "search", "url", "tel", "email", "password", "number"]);
-
-/** An input of a text kind (no type counts as text), a textarea, a select, or contenteditable. */
-export function isTextTarget(target: TargetLike | null): boolean {
-  if (target === null) return false;
-  if (target.isContentEditable === true) return true;
-  const tag = (target.tagName ?? "").toUpperCase();
-  if (tag === "TEXTAREA" || tag === "SELECT") return true;
-  if (tag === "INPUT") return textInputTypes.has((target.type ?? "").toLowerCase());
-  return false;
-}
-
-/** Whether a platform string (navigator's) is Apple's, where Mod is Command. */
-export function isMac(platform: string): boolean {
-  return /mac|iphone|ipad|ipod/i.test(platform);
-}
-
-const chords: Record<string, ShortcutAction> = { k: "palette", e: "drawer", s: "save" };
-const singles: Record<string, ShortcutAction> = { f: "fit", l: "tidy", m: "minimap", a: "add", "?": "shortcuts" };
-
-/**
- * The shortcut a key is, or undefined. Mod+K, Mod+E and Mod+S (no Alt) act in a text field too; Escape and the single
- * keys (with no modifier but Shift, which `?` needs on most layouts) only outside one.
- */
-export function shortcutOf(event: KeyLike, mac: boolean, inText: boolean): ShortcutAction | undefined {
-  const key = event.key.toLowerCase();
-  const mod = mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
-  if (mod && !event.altKey) return chords[key];
-  if (event.metaKey || event.ctrlKey || event.altKey || inText) return undefined;
-  if (event.key === "Escape") return "escape";
-  return singles[key];
-}
-
-const letters: Record<Exclude<ShortcutAction, "palette" | "drawer" | "save">, string> = {
+/** Each action's key, as useShortcuts and keyLabel read it. */
+export const shortcutKeys: Record<ShortcutAction, string> = {
+  palette: "Mod+K",
+  drawer: "Mod+E",
+  save: "Mod+S",
   fit: "F",
   tidy: "L",
   minimap: "M",
   add: "A",
   shortcuts: "?",
-  escape: "Esc",
+  escape: "Escape",
 };
 
-/** A shortcut's key as the platform writes it: "⌘K" or "Ctrl+K", "F", "?", "Esc". */
-export function keyLabel(action: ShortcutAction, mac: boolean): string {
-  switch (action) {
-    case "palette":
-    case "drawer":
-    case "save": {
-      const letter = { palette: "K", drawer: "E", save: "S" }[action];
-      return mac ? `⌘${letter}` : `Ctrl+${letter}`;
-    }
-    default:
-      return letters[action];
-  }
-}
+/** The chords, which act in a text field too. */
+const chords: ReadonlySet<ShortcutAction> = new Set(["palette", "drawer", "save"]);
 
-/** The shortcut sheet's rows, in its order; "delete" is React Flow's own key. */
-export const shortcutRows: readonly { action: ShortcutAction | "delete"; does: string }[] = [
-  { action: "palette", does: "Command palette" },
-  { action: "add", does: "Add a node" },
-  { action: "drawer", does: "Show or hide ear.conf" },
-  { action: "save", does: "Save ear.conf's draft" },
-  { action: "fit", does: "Fit the view" },
-  { action: "tidy", does: "Tidy the layout" },
-  { action: "minimap", does: "Show or hide the minimap" },
-  { action: "shortcuts", does: "These shortcuts" },
-  { action: "escape", does: "Close the palette or this sheet, or clear the selection" },
-  { action: "delete", does: "Remove the selection (asks ear)" },
+/** What still acts while the palette is open: its toggle (the palette handles its own Escape). */
+const overPalette: ReadonlySet<ShortcutAction> = new Set(["palette"]);
+
+/** The table's order; the first binding a press matches runs. */
+const order: readonly ShortcutAction[] = [
+  "palette",
+  "drawer",
+  "save",
+  "fit",
+  "tidy",
+  "minimap",
+  "add",
+  "shortcuts",
+  "escape",
 ];
 
-/** A row's keys: keyLabel's, or "Delete / Backspace". */
-export function rowKeys(action: ShortcutAction | "delete", mac: boolean): string {
-  return action === "delete" ? "Delete / Backspace" : keyLabel(action, mac);
+/**
+ * The editor's bindings for useShortcuts, each running `run` with its action. While the palette is open only its
+ * toggle acts; useShortcuts is turned off whole while the shortcut sheet is open (patchbay's Dialog owns its keys).
+ */
+export function shortcutTable(
+  run: (action: ShortcutAction, event: KeyboardEvent) => void,
+  state: { palette: boolean },
+): Shortcut[] {
+  return order.map((action) => ({
+    keys: shortcutKeys[action],
+    run: (event: KeyboardEvent) => run(action, event),
+    inTextFields: chords.has(action),
+    enabled: !state.palette || overPalette.has(action),
+  }));
 }
+
+/** The groups the shortcut sheet lists its lines under, in its order. */
+export type ShortcutGroup = "Commands" | "View" | "Selection";
+
+/** The shortcut sheet's lines, in its order; Delete and Backspace are React Flow's own keys. */
+export const shortcutLines: readonly (ShortcutLine & { group: ShortcutGroup })[] = [
+  { keys: shortcutKeys.palette, label: "Command palette", group: "Commands" },
+  { keys: shortcutKeys.add, label: "Add a node", group: "Commands" },
+  { keys: shortcutKeys.drawer, label: "Show or hide ear.conf", group: "Commands" },
+  { keys: shortcutKeys.save, label: "Save ear.conf's draft", group: "Commands" },
+  { keys: shortcutKeys.shortcuts, label: "These shortcuts", group: "Commands" },
+  { keys: shortcutKeys.fit, label: "Fit the view", group: "View" },
+  { keys: shortcutKeys.tidy, label: "Tidy the layout", group: "View" },
+  { keys: shortcutKeys.minimap, label: "Show or hide the minimap", group: "View" },
+  {
+    keys: shortcutKeys.escape,
+    label: "Close the palette or the inspector's sheet, or clear the selection",
+    group: "Selection",
+  },
+  { keys: ["Delete", "Backspace"], label: "Remove the selection (asks ear)", group: "Selection" },
+];

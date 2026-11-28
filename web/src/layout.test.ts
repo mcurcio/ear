@@ -1,48 +1,48 @@
 // First placement: unplaced nodes get a dagre position, sources left of their sinks; a node the
 // user placed keeps its position.
 import { describe, expect, it } from "vitest";
-import { reduce, type GraphState } from "./graph";
-import editorCss from "./editor.css?raw";
 import {
-  Places,
-  headerHeight,
-  nodeSize,
-  nodeWidth,
-  placeNodes,
-  portHeight,
-  quickPlace,
-  type PlaceKeeper,
-  type Position,
-} from "./layout";
+  NODE_FOOTER,
+  NODE_HEADER,
+  NODE_LINE,
+  NODE_PAD,
+  NODE_ROW,
+  NODE_WIDTH,
+  nodeBoxSize,
+} from "@mcurcio/patchbay/graph";
+import { reduce, type GraphState } from "./graph";
+import { Places, nodePorts, nodeSize, placeNodes, quickPlace, type PlaceKeeper, type Position } from "./layout";
 import type { Graph, GraphNode } from "./protocol";
 import { fixtures, messagesOf } from "./testFixtures";
 
 const graph = fixtures.snapshot.graph;
 
+// The box is patchbay's NodeBox, so its size is patchbay's exported geometry (docs/editor.md#the-node-box).
 describe("a box's size", () => {
-  const node = (inputs: number, outputs: number): GraphNode => ({
-    ...graph.nodes[0]!,
+  const running = graph.nodes.find((node) => node.state === "running" && (node.companions ?? []).length === 0)!;
+  const node = (inputs: number, outputs: number, over: Partial<GraphNode> = {}): GraphNode => ({
+    ...running,
     inputs: Array.from({ length: inputs }, (_, i) => `in.${i + 1}`),
     outputs: Array.from({ length: outputs }, (_, i) => `out.${i + 1}`),
+    ...over,
   });
 
-  it("is 220 px wide, one row per port on its longer side", () => {
-    expect(nodeWidth).toBe(220);
-    expect(nodeSize(node(4, 1))).toStrictEqual({ width: 220, height: headerHeight + 4 * portHeight });
-    expect(nodeSize(node(0, 0))).toStrictEqual({ width: 220, height: headerHeight + portHeight });
+  it("is NodeBox's, its ports stacked: one row per port, the inputs' and then the outputs'", () => {
+    expect(nodePorts).toBe("stacked");
+    expect(nodeSize(node(4, 1))).toStrictEqual({ width: NODE_WIDTH, height: NODE_HEADER + 2 * NODE_PAD + 5 * NODE_ROW });
+    expect(nodeSize(node(2, 3))).toStrictEqual(
+      nodeBoxSize({ inputs: 2, outputs: 3, ports: "stacked", line: false, footer: false }),
+    );
+    expect(nodeSize(node(0, 0))).toStrictEqual({ width: NODE_WIDTH, height: NODE_HEADER });
   });
 
-  it("is the box's CSS", () => {
-    const css = editorCss.replace(/\/\*[\s\S]*?\*\//g, "");
-    const declaration = (selector: string, property: string): string => {
-      const rule = new RegExp(`(?:^|\\})\\s*${selector.replace(/[.]/g, "\\.")}\\s*\\{([^}]*)\\}`).exec(css);
-      if (rule === null) throw new Error(`editor.css has no ${selector} rule`);
-      const value = new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;]+)`).exec(rule[1]!);
-      if (value === null) throw new Error(`editor.css's ${selector} rule has no ${property}`);
-      return value[1]!.trim();
-    };
-    expect(declaration(".ear-node", "width")).toBe(`${nodeWidth}px`);
-    expect(declaration(".port", "height")).toBe(`${portHeight}px`);
+  it("counts the line and the companions' footer when the box draws them", () => {
+    const failed = node(1, 1, { state: "failed", phase: "failed", reason: { code: "x", detail: "it broke" } });
+    expect(nodeSize(failed).height).toBe(NODE_HEADER + NODE_LINE + 2 * NODE_PAD + 2 * NODE_ROW);
+    const companion = { name: "rec.writer", kind: "sink", ready: true } as NonNullable<GraphNode["companions"]>[number];
+    expect(nodeSize(node(1, 0, { companions: [companion] })).height).toBe(
+      NODE_HEADER + 2 * NODE_PAD + NODE_ROW + NODE_FOOTER,
+    );
   });
 });
 
@@ -51,7 +51,7 @@ describe("the first layout", () => {
     const positions = placeNodes(graph, new Map());
     expect([...positions.keys()].sort()).toEqual(graph.nodes.map((node) => node.name));
     for (const route of graph.routes) {
-      expect(positions.get(route.from.node)!.x + nodeWidth).toBeLessThan(positions.get(route.to.node)!.x);
+      expect(positions.get(route.from.node)!.x + NODE_WIDTH).toBeLessThan(positions.get(route.to.node)!.x);
     }
   });
 
@@ -203,9 +203,9 @@ describe("kept places", () => {
 
   it("quickPlace", () => {
     const point = { x: 400, y: 300 };
-    expect(quickPlace(point, "pane")).toStrictEqual({ x: 400 - nodeWidth / 2, y: 300 - headerHeight / 2 });
+    expect(quickPlace(point, "pane")).toStrictEqual({ x: 400 - NODE_WIDTH / 2, y: 300 - NODE_HEADER / 2 });
     const wire = quickPlace(point, "wire");
     expect(wire.x).toBe(400);
-    expect(wire.y + headerHeight + portHeight / 2).toBe(300);
+    expect(wire.y + NODE_HEADER + NODE_PAD + NODE_ROW / 2).toBe(300);
   });
 });

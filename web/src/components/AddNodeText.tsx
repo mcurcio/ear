@@ -1,18 +1,18 @@
 // The add-node form in knobly (docs/editor.md#adding-a-node): a type list that writes a template, the statement in the
-// pane's textarea style, its diagnostics under it (a click puts the caret there) and Add (node.addText). The logic is
+// pane's CodeEditor, its diagnostics under it in patchbay's DiagnosticList (a row's
+// press puts the caret there) and Add (node.addText). The logic is
 // addText.ts; ear judges every text. Add says Adding… while its request is on its way
 // (docs/editor.md#requests-in-flight).
+import { Banner, CodeEditor, DiagnosticList } from "@mcurcio/patchbay/composites";
+import { Button, Field, Select } from "@mcurcio/patchbay/primitives";
 import { useEffect, useReducer, useRef, useState } from "react";
 import { addFrom, addReduce, addRequest, canAdd } from "../addText";
 import { placedRefusal } from "../notices";
-import { offsetOf } from "../pane";
 import type { GraphFile, RpcErrorCode } from "../protocol";
 import { isAsking } from "../requests";
 import { RpcError } from "../rpc";
 import { useEditor, useRequests } from "./hooks";
 import type { AddIntent } from "./Inspector";
-import { KnoblyText } from "./KnoblyText";
-import { Spinner } from "./Spinner";
 
 export function AddNodeText({
   types,
@@ -68,55 +68,36 @@ export function AddNodeText({
       });
   };
 
-  const goTo = (line: number, column: number) => {
-    const area = text.current;
-    if (area === null) return;
-    const offset = offsetOf(area.value, line, column);
-    area.focus();
-    area.setSelectionRange(offset, offset);
-  };
 
   const lines = Math.min(12, Math.max(3, form.text.split("\n").length + 1));
 
   return (
     <section className="inspector-section node-text">
       <h2>Add a node</h2>
-      <label>
-        Type{" "}
-        <select value={chosenType} onChange={(event) => setType(event.target.value)}>
+      <Field label="Type">
+        <Select font="code" value={chosenType} onChange={(event) => setType(event.target.value)}>
           {types.map((t) => (
             <option key={t}>{t}</option>
           ))}
-        </select>
-      </label>
+        </Select>
+      </Field>
       <label htmlFor="add-node-text">Its text in ear.conf</label>
       {form.raced && (
-        <div className="banner banner-warn" role="status">
-          ear.conf changed while adding; press Add again
-        </div>
+        <Banner tone="warn">ear.conf changed while adding; press Add again</Banner>
       )}
-      <KnoblyText
+      <CodeEditor
         id="add-node-text"
         ref={text}
         rows={lines}
+        language="knobly"
         value={form.text}
-        onEdit={(typed) => dispatch({ kind: "edit", text: typed })}
+        onChange={(typed) => dispatch({ kind: "edit", text: typed })}
+        diagnostics={form.errors}
       />
-      {form.errors.length > 0 && (
-        <ul className="diagnostics">
-          {form.errors.map((diagnostic, index) => (
-            <li key={index} className={`diagnostic diagnostic-${diagnostic.severity}`}>
-              <button type="button" onClick={() => goTo(diagnostic.line, diagnostic.column)}>
-                {diagnostic.line}:{diagnostic.column} {diagnostic.code} {diagnostic.message}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      <button type="button" disabled={adding || !canAdd(form)} aria-busy={adding || undefined} onClick={add}>
-        {adding && <Spinner />}
-        {adding ? "Adding…" : "Add"}
-      </button>
+      <DiagnosticList diagnostics={form.errors} editor={text} />
+      <Button busy={adding} busyLabel="Adding…" disabled={!adding && !canAdd(form)} onClick={add}>
+        Add
+      </Button>
     </section>
   );
 }

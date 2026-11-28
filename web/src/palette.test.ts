@@ -1,9 +1,12 @@
 // The command palette's logic (docs/editor.md#the-palette): the commands offered per feature set and phase, replaying
-// the lifecycle and unknown-values fixtures through the reducer; the ranking; the anchored popover's clamp.
+// the lifecycle and unknown-values fixtures through the reducer, and the commands as patchbay's palette takes and
+// ranks them (its ranking and placement are patchbay's, tested there).
+import { rankCommands } from "@mcurcio/patchbay/composites";
 import { describe, expect, it } from "vitest";
 import { reduce, type GraphState } from "./graph";
 import { describeHealth } from "./health";
-import { anchoredAt, commandsOf, matchLabel, rank, shownCommands, type Command, type PaletteContext } from "./palette";
+import { shortcutKeys } from "./keys";
+import { commandsOf, paletteItems, type Command, type CommandAction, type PaletteContext } from "./palette";
 import type { Graph, GraphNode } from "./protocol";
 import { nothingSelected, type Selection } from "./selection";
 import { fixtures, messagesOf } from "./testFixtures";
@@ -180,41 +183,30 @@ describe("the commands", () => {
   });
 });
 
-describe("the ranking", () => {
-  const commands = (...names: string[]): Command[] =>
-    names.map((label) => ({ id: label, label, group: "View", action: { kind: "fit" } }));
-
-  it("matches a subsequence, case-insensitively, ignoring spaces", () => {
-    expect(matchLabel("fv", "Fit view")?.marks).toStrictEqual([0, 4]);
-    expect(matchLabel("xyz", "Fit view")).toBeNull();
-    expect(matchLabel("GO REC", "Go to rec")).not.toBeNull();
-    const all = commands("Go to rec", "Fit view", "Add file");
-    expect(rank(all, "").map((ranked) => ranked.command)).toStrictEqual(all);
-    expect(rank(all, "   ").map((ranked) => ranked.command)).toStrictEqual(all);
+describe("patchbay's palette", () => {
+  it("takes every command in order, with its key and hint, and runs its action", () => {
+    const rec = snapshot.nodes.find((node) => node.name === "rec")!;
+    const commands = commandsOf(context(snapshot, { selection: { nodes: [rec.name], routes: [] } }));
+    const ran: CommandAction[] = [];
+    const items = paletteItems(commands, (action) => ran.push(action));
+    expect(items.map((item) => item.id)).toStrictEqual(commands.map((command) => command.id));
+    expect(items.map((item) => item.group)).toStrictEqual(commands.map((command) => command.group));
+    expect(items.map((item) => item.hint)).toStrictEqual(commands.map((command) => command.hint));
+    const fit = items.find((item) => item.id === "view:fit")!;
+    expect(fit.keys).toBe(shortcutKeys.fit);
+    expect(items.find((item) => item.id === `go:${rec.name}`)!.keys).toBeUndefined();
+    fit.run();
+    expect(ran).toStrictEqual([{ kind: "fit" }]);
   });
 
-  it("ranks word starts and runs above scattered matches", () => {
-    const desk = rank(commands("Restart desk", "Start desk", "Stop desk"), "st desk").map((r) => r.command.label);
-    expect(desk.indexOf("Restart desk")).toBe(2);
-    expect(rank(commands("Go to recorder", "Go to rec"), "rec").map((r) => r.command.label)).toStrictEqual([
-      "Go to rec",
-      "Go to recorder",
-    ]);
-    const tie = commands("Go to aaa", "Go to bbb");
-    expect(rank(tie, "go").map((r) => r.command)).toStrictEqual(tie);
-    const many = commands(...Array.from({ length: 80 }, (_, i) => `Go to n${i}`));
-    expect(rank(many, "go")).toHaveLength(shownCommands);
-    expect(shownCommands).toBe(50);
-  });
-});
-
-describe("the anchored popover", () => {
-  const box = { width: 320, height: 360 };
-  const viewport = { width: 1000, height: 800 };
-
-  it("keeps the popover inside the window", () => {
-    expect(anchoredAt({ x: 990, y: 790 }, box, viewport)).toStrictEqual({ left: 1000 - 8 - 320, top: 800 - 8 - 360 });
-    expect(anchoredAt({ x: 100, y: 200 }, box, viewport)).toStrictEqual({ left: 100, top: 200 });
-    expect(anchoredAt({ x: 100, y: 200 }, box, { width: 200, height: 200 })).toStrictEqual({ left: 8, top: 8 });
+  it("is ranked by patchbay: the selection's group first with nothing typed, the best match first with a query", () => {
+    const selection: Selection = { nodes: ["rec"], routes: [] };
+    const items = paletteItems(commandsOf(context(snapshot, { selection })), () => {});
+    expect(rankCommands(items, "")[0]!.group).toBe("Selected");
+    const fit = rankCommands(items, "fv");
+    expect(fit[0]!.items[0]!.command.label).toBe("Fit view");
+    expect(fit[0]!.items[0]!.indices).toStrictEqual([0, 4]);
+    expect(rankCommands(items, "go rec")[0]!.items[0]!.command.label).toBe("Go to rec");
+    expect(rankCommands(items, "xyzzy")).toStrictEqual([]);
   });
 });

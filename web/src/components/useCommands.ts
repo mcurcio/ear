@@ -2,12 +2,12 @@
 // builds them; here an action becomes a request to ear (lifecycle and removal, through the session's ask, so a
 // refusal is a toast and a spinner shows in the inspector while it is on its way) or a change of the browser's own
 // view. Nothing here draws a result: ear announces it.
+import type { ThemeChoice } from "@mcurcio/patchbay/hooks";
 import { useCallback, useMemo } from "react";
 import type { Position } from "../layout";
 import { commandsOf, type Command, type CommandAction, type PaletteScope } from "../palette";
 import type { Graph, RouteEnds } from "../protocol";
 import type { Selection } from "../selection";
-import type { ThemeChoice } from "../theme";
 import { useEditor } from "./hooks";
 import type { DrawerModel } from "./useDrawer";
 

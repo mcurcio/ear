@@ -1,22 +1,28 @@
-// The toast queue, pure (docs/editor.md#toasts): a notice is added, the same code for the same subject within 5 s
-// counts up instead of stacking, at most four show with the older folded into "and n more", and each lasts 8 s on the
-// browser's monotonic clock (as marks.ts times its minute), none expiring while the toasts are held (hovered or
-// focused). A closed connection clears nothing here, so a reconnect drops nothing the person has not seen. Also here:
-// a refusal in words (`route noise:noise.mono → rec:FX refused: unknown-port rec:FX`), which refusals a form shows in
-// place, and what a toast's Show selects. Slice 5's node events are designed to feed this same queue by its rule
-// (docs/editor.md#toasts), so NoticeInput is plain words, a severity and a subject.
+// The editor's toasts (docs/editor.md#toasts): the session's store over patchbay's toast queue (its addToast,
+// holdToasts, expireToasts and visibleToasts), so the session raises a toast outside React and patchbay's Toaster
+// draws it. patchbay's model sets the rules (D11): a toast lasts 8 s on the browser's monotonic clock, the same key
+// within 5 s counts up instead of stacking, the newest four show, and none expires while held. ear keys a toast by its
+// code and its subject, and keeps a closed connection from clearing any, so a reconnect drops nothing the person has
+// not seen. Also here: a refusal in words (`route noise:noise.mono → rec:FX refused: unknown-port rec:FX`), which
+// refusals a form shows in place, and what a toast's Show selects. Slice 5's node events are designed to feed this
+// same queue by its rule (docs/editor.md#toasts), so NoticeInput is plain words, a severity and a subject.
+import {
+  addToast,
+  dismissToast,
+  emptyToastQueue,
+  expireToasts,
+  holdToasts,
+  nextToastExpiry,
+  visibleToasts,
+  type Toast,
+  type ToastQueue,
+  type ToastTone,
+} from "@mcurcio/patchbay/hooks";
 import { edgeId } from "./connect";
 import { rpcErrorCodes, type Graph, type Notifications, type RouteEnds } from "./protocol";
 import { describeAsked, type Asked } from "./requests";
 import { ConnectionClosedError, RpcError } from "./rpc";
 import type { Selection } from "./selection";
-
-/** How long a toast lasts unheld. */
-export const noticeMs = 8000;
-/** The same code for the same subject within this counts up. */
-export const coalesceMs = 5000;
-/** The most toasts shown at once. */
-export const shownNoticeCap = 4;
 
 export type NoticeSeverity = "error" | "warning" | "info";
 
@@ -33,22 +39,21 @@ export interface NoticeInput {
   subject?: NoticeSubject;
 }
 
-export interface Notice extends NoticeInput {
-  id: number;
-  /** How many times it was added within coalesceMs of the last. */
-  count: number;
-  lastAt: number;
-  expiresAt: number;
-}
+/** A toast in the queue (its id, count, lastAt and expiresAt patchbay's) with the words it was last added with. */
+export type Notice = Toast & NoticeInput;
 
 export interface NoticesView {
-  /** Oldest first. */
+  /** Every toast, oldest first. */
   notices: readonly Notice[];
+  /** The newest four, oldest first: the ones the Toaster draws. */
+  shown: readonly Notice[];
+  /** How many older ones fold into "and n more". */
+  more: number;
   /** While held: since when. */
   heldSince?: number;
 }
 
-const noNotices: NoticesView = Object.freeze({ notices: Object.freeze([]) });
+const noNotices: NoticesView = Object.freeze({ notices: Object.freeze([]), shown: Object.freeze([]), more: 0 });
 
 /** The key two notices coalesce by: the code and the subject. */
 export function noticeKey(code: string, subject?: NoticeSubject): string {
@@ -56,60 +61,50 @@ export function noticeKey(code: string, subject?: NoticeSubject): string {
   return subject.kind === "node" ? `${code}\nnode ${subject.node}` : `${code}\nroute ${edgeId(subject.ends)}`;
 }
 
+/**
+ * A severity as patchbay's toast tones: a refusal is an `err` toast (read at once), the rest status; info is a tone
+ * patchbay does not know, so it is drawn neutrally.
+ */
+export const toneOf: Record<NoticeSeverity, ToastTone> = { error: "err", warning: "warn", info: "info" };
+
+/** A notice in plain words, the toast's text in the queue; the Toaster draws the code in monospace. */
+export function noticeWords(input: NoticeInput): string {
+  return `${input.what} ${input.verb}: ${input.code}${input.detail === "" ? "" : ` ${input.detail}`}`;
+}
+
 export class Notices {
+  private queue: ToastQueue = emptyToastQueue;
+  /** Each toast's words as last added, by its id. */
+  private inputs = new Map<number, NoticeInput>();
   private view: NoticesView = noNotices;
-  private next = 1;
   private readonly listeners = new Set<() => void>();
 
   constructor(private readonly now: () => number = () => performance.now()) {}
 
   add(input: NoticeInput): void {
-    const now = this.now();
-    const key = noticeKey(input.code, input.subject);
-    const same = this.view.notices.find(
-      (notice) => noticeKey(notice.code, notice.subject) === key && now - notice.lastAt < coalesceMs,
-    );
-    const rest = same === undefined ? this.view.notices : this.view.notices.filter((notice) => notice !== same);
-    const added: Notice =
-      same === undefined
-        ? { ...input, id: this.next++, count: 1, lastAt: now, expiresAt: now + noticeMs }
-        : { ...same, ...input, count: same.count + 1, lastAt: now, expiresAt: now + noticeMs };
-    this.set({ ...this.view, notices: [...rest, added] });
+    const toast = { tone: toneOf[input.severity], text: noticeWords(input), key: noticeKey(input.code, input.subject) };
+    const next = addToast(this.queue, toast, this.now());
+    this.inputs.set(next.toasts.at(-1)!.id, input);
+    this.set(next);
   }
 
   dismiss(id: number): void {
-    const notices = this.view.notices.filter((notice) => notice.id !== id);
-    if (notices.length !== this.view.notices.length) this.set({ ...this.view, notices });
+    this.set(dismissToast(this.queue, id));
   }
 
   /** Held (hovered or focused), no toast expires; let go, each expiry moves on by the time held. */
   hold(held: boolean): void {
-    const { heldSince } = this.view;
-    if (held) {
-      if (heldSince === undefined) this.set({ ...this.view, heldSince: this.now() });
-      return;
-    }
-    if (heldSince === undefined) return;
-    const by = this.now() - heldSince;
-    this.set({ notices: this.view.notices.map((notice) => ({ ...notice, expiresAt: notice.expiresAt + by })) });
+    this.set(holdToasts(this.queue, held, this.now()));
   }
 
   /** Drops the toasts whose time is over; nothing while held. */
   expire(): void {
-    if (this.view.heldSince !== undefined) return;
-    const now = this.now();
-    const notices = this.view.notices.filter((notice) => notice.expiresAt > now);
-    if (notices.length !== this.view.notices.length) this.set({ ...this.view, notices });
+    this.set(expireToasts(this.queue, this.now()));
   }
 
   /** When the soonest toast expires; undefined while held or with none. */
   nextExpiry(): number | undefined {
-    if (this.view.heldSince !== undefined) return undefined;
-    let soonest: number | undefined;
-    for (const { expiresAt } of this.view.notices) {
-      if (soonest === undefined || expiresAt < soonest) soonest = expiresAt;
-    }
-    return soonest;
+    return nextToastExpiry(this.queue);
   }
 
   /** The same object until a change, as useSyncExternalStore needs. */
@@ -122,16 +117,19 @@ export class Notices {
     return () => this.listeners.delete(listener);
   }
 
-  private set(view: NoticesView): void {
+  private set(queue: ToastQueue): void {
+    if (queue === this.queue) return;
+    this.queue = queue;
+    const notice = (toast: Toast): Notice => ({ ...this.inputs.get(toast.id)!, ...toast });
+    const notices = queue.toasts.map(notice);
+    const ids = new Set(queue.toasts.map((toast) => toast.id));
+    for (const id of this.inputs.keys()) if (!ids.has(id)) this.inputs.delete(id);
+    const { shown, more } = visibleToasts(queue);
+    const view: NoticesView = { notices, shown: shown.map(notice), more };
+    if (queue.heldSince !== undefined) view.heldSince = queue.heldSince;
     this.view = view;
     for (const listener of [...this.listeners]) listener();
   }
-}
-
-/** The newest shownNoticeCap toasts, oldest first, and how many older ones fold into "and n more". */
-export function shownNotices(view: NoticesView): { shown: readonly Notice[]; more: number } {
-  const more = Math.max(0, view.notices.length - shownNoticeCap);
-  return { shown: view.notices.slice(more), more };
 }
 
 /** A refusal's words: the verb, the code (in monospace) and the rest of ear's message. */

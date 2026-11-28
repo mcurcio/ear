@@ -15,8 +15,11 @@ export default defineConfig({
   test: {
     // Until the first test file lands (web/src/protocol.test.ts), an empty run passes.
     passWithNoTests: true,
-    // Vitest blanks every stylesheet by default, even one imported "?raw"; theme.test.ts reads these two as text
-    // (docs/editor.md#tokens-and-themes).
-    css: { include: [/\/src\/(theme|editor)\.css/] },
+    // Vitest blanks every stylesheet by default, even one imported "?raw"; theme.test.ts reads editor.css and
+    // patchbay's tokens.css as text (docs/editor.md#tokens-and-themes).
+    css: { include: [/\/src\/editor\.css/, /\/@mcurcio\/patchbay\/dist\/tokens\.css/] },
+    // patchbay's component modules import their own stylesheets, which Node cannot load; inlined, Vite takes the
+    // imports (and blanks them), so the logic tests can call patchbay's pure helpers (rankCommands, findShortcut).
+    server: { deps: { inline: [/@mcurcio\/patchbay/] } },
   },
 });

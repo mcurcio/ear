@@ -10,19 +10,19 @@ Vitest); it shares no code with the C++, only the wire format and the fixtures i
 The page is a top bar, the canvas with an inspector on its right, and a full-width `ear.conf` drawer
 along the bottom ([below](#the-shell)).
 
-- **Nodes** are 220 px boxes ([below](#the-node-box)): a stripe down the left edge and a pill (a
-  dot and the word) in the state's colour, the type as a small label beside the name, the line
-  that says why the node is silent or what it waits for ([below](#a-nodes-health)), and beside the
-  pill a warning mark while the node lost cycles in the last minute ([below](#counters)). Then one
-  row per port, inputs on the left and outputs on the right, each with its handle and a live level
-  meter ([below](#meters)), and along the bottom edge a badge per companion ([below](#companions)).
+- **Nodes** are patchbay's 240 px node boxes ([below](#the-node-box)): a stripe down the left edge and a pill (a
+  dot and the word) in the state's colour, the type under the name, the line that says why the node is silent or
+  what it waits for ([below](#a-nodes-health)), and beside the pill a warning mark while the node lost cycles in the
+  last minute ([below](#counters)). Then one row per port, the inputs' with their handles on the left and then the
+  outputs' with theirs on the right, each with a live level meter ([below](#meters)), and in the footer a badge per
+  companion ([below](#companions)).
 - **Routes** are wires coloured by status (`linked`, `pending`, `refused`) and drawn by their
   from port's level: louder is thicker and brighter. A linked wire carrying signal shows a slow
   flow, a refused one says `refused` at its midpoint, and hovering a wire names its two ends
   ([below](#wires)).
-- **Editing:** a drag from an output to an input adds a route (any other drag is refused before
-  it reaches ear); while a wire is drawn, every handle it can be dropped on is ringed and the rest
-  dimmed ([below](#the-node-box)); the delete key removes the selected wire or node; the inspector
+- **Editing:** a drag from an output to an input adds a route (any other drag, and one that would
+  ask for a route the graph already holds, is refused before it reaches ear, and each port in the inspector has a "Connect to" choice that does the same from the keyboard); while a wire is drawn, every handle it can be dropped on grows in the ok colour and the
+  rest turn grey ([below](#the-node-box)); the delete key removes the selected wire or node; the inspector
   adds nodes from a statement in knobly (its Graph subject, [below](#adding-a-node)), edits the
   selected node's own text in knobly (its Node subject, [below](#the-node-panels-text)), both as
   JSON settings from an ear without `node-text`, and offers Start, Stop, Restart, Disable and
@@ -30,17 +30,18 @@ along the bottom ([below](#the-shell)).
   and block size ("48 kHz · 256 frames", from `graphFrequency` in hertz) and realtime, or a "not
   realtime" badge, and a dropouts badge while the host cut cycles in the last minute; the inspector
   holds the graph's counters and the selected node's ([below](#counters)). A request on its way shows while it is
-  (a dashed ghost wire, a spinner on its button, `Saving…` and `Adding…`), and a refusal becomes a toast at the
+  (a dashed ghost wire, a ghost box where a quick add will land, a spinner on its button, `Saving…` and `Adding…`), and a refusal becomes a toast at the
   canvas's bottom right, or lands where it was asked ([below](#feedback)).
 - **Keyboard and palette:** Cmd+K (Ctrl+K off macOS) opens a command palette for going to a node, adding, the
   lifecycle calls, removing, `ear.conf`'s actions, the view and the theme; `?` lists the shortcuts
   ([below](#the-palette-and-the-keyboard)).
 - **Adding on the canvas:** a double-click on empty canvas, or an output's wire dropped there, opens a type list at
-  the pointer, and the new node lands where it was asked for ([below](#adding-on-the-canvas)).
+  the pointer, and the new node lands where it was asked for; a right-click (a long-press on a touch screen) opens the
+  whole palette there ([below](#adding-on-the-canvas)).
 - **Kept in the browser:** node places, the inspector's width, the drawer's height and open state, the minimap and
   the theme survive a reload ([below](#what-the-browser-keeps)).
-- **The ear.conf drawer** holds the pane: `ear.conf`, highlighted ([below](#highlighting)), with a gutter with
-  line numbers and a dot on each line a diagnostic names ([below](#the-drawers-gutter)), its diagnostics (a click
+- **The ear.conf drawer** holds the pane: `ear.conf` in patchbay's code editor, highlighted, with line numbers and a
+  mark on each line a diagnostic names ([below](#highlighting)), its diagnostics listed under it (a click
   puts the caret there) and Save (`graphFile.set`, based on the version
   the draft started from). Banners say
   when the graph refused the file, a write failed, editor edits were dropped by a hand edit, or a
@@ -83,67 +84,151 @@ along the bottom ([below](#the-shell)).
   How they are drawn: [below](#companions).
 - **Levels stay outside React state.** Each `levels` notification replaces a store with
   listeners per port, so at 30 messages a second only the meters and wires whose port changed
-  re-render. A meter reads the store itself and paints through refs, and keeps its peak hold in
-  its own object, so neither is React state ([below](#meters)). A closed connection makes every
+  re-render. A meter (patchbay's `Meter`) reads the store itself and paints through refs, and keeps
+  its peak hold outside React, so neither is React state ([below](#meters)). A closed connection makes every
   meter read silent and forgets every hold until new levels arrive.
 - **A lost socket reconnects** after a growing wait (1 s doubling to 30 s), failing the calls in
   flight (the requests in flight are forgotten with it; the toasts are kept), and the new socket subscribes again (graph, graph file, levels), so the editor starts
   over from a fresh snapshot.
 
+## What patchbay draws
+
+The editor draws with `@mcurcio/patchbay` (npm), a component library extracted from this editor: its tokens and
+themes, primitives, composites, shell, graph layer and UI hooks. *Why:* the owner's principle (2026-11-26): "build
+the correct model on patchbay primitives. Ear and rasl UIs are not precious to me. They should be reworked when
+patchbay has a matching concept." Where the editor differed from patchbay in look or behaviour, it took patchbay's
+model; nothing of ear's look was kept for its own sake.
+
+| patchbay's (drawn from props) | ear's |
+|---|---|
+| Colours, radii, shadows, durations, faces and type sizes ([below](#tokens-and-themes)) | The words: `shell.ts`, `drawer.ts`, `pane.ts`, `notices.ts`'s refusal wording, `health.ts`'s, `meters.ts`'s tooltip |
+| The shell's layout, sheets, splitters and bounds; buttons, pills, badges, facts, fields, banners, status words, the palette, the shortcut sheet, the toasts, the code editor and its diagnostics' list | The rules: `health.ts`, `companions.ts`, `counters.ts`, `marks.ts`, `selection.ts`, `requests.ts`, `wires.ts` (as the adapter onto Wire's props), `connect.ts`'s `connectRule` |
+| The node box, port rows, wires, ghost wires, connect hints and the connect status line, meters, the canvas tools, the empty canvas's hint, `useAddAt`, `useFollowFit` | The protocol, the session and its stores: `protocol.ts`, `rpc.ts`, `editor.ts`, `graph.ts`, `graphFile.ts`, `levels.ts` |
+| Kept values and the theme (`usePersistentState`, `useTheme`), key labels and matching (`useShortcuts`), palette ranking, the toast queue's mechanics, knobly highlighting | Storage keys and checks (`prefs.ts`), the command catalogue (`palette.ts`), the key bindings (`keys.ts`), first placement (`layout.ts`, dagre), the subject the inspector shows, Escape's order among ear's own surfaces |
+
+- **ear's own `<ReactFlow>`.** There is no canvas wrapper: `Canvas.tsx` renders React Flow's `<ReactFlow>` and adds
+  patchbay's pieces beside it ([The canvas](#the-canvas)), so every React Flow prop stays ear's (owner, 2026-11-25).
+- **Words.** Every patchbay component takes the words it supplies itself (visible text and accessible names)
+  through one `labels` prop, a partial object with English defaults (owner, 2026-11-26), with no app-wide provider.
+  ear sets three: the palette's placeholder, the meters' tooltip (`labels.title`) and AppShell's drawer words
+  (`ear.conf`, "Show ear.conf", "Hide ear.conf", "Resize ear.conf"); every other word is patchbay's default.
+- **The pin.** `web/package.json` pins `@mcurcio/patchbay` exactly, and every bump is its own `build(deps)` change
+  (a patch release of ear). Its links here name the release pinned.
+- **What ear still draws itself,** each because patchbay has no matching concept: the counters' tables
+  (`Counters.tsx`, a plain table), the lifecycle bar's segmented row (patchbay's Buttons in ear's row), the route panel's `node:port` buttons, the JSON settings textareas for an ear without `node-text` (a schema
+  form waits for slice 5's type schema; the owner deferred patchbay's), the inspector's several-selected list, the
+  companions' list in the node panel, the minimap's state colours and the wordmark. `editor.css` gives these plain
+  controls ear's base rules, which pass by every `pb-` element.
+- **Tests.** Component behaviour is tested in patchbay (jsdom and Storybook); ear keeps logic tests, plus the tests
+  that hold `editor.css` and `index.html` to patchbay's exports ([Developing it](#developing-it)).
+
 ## The shell
 
-`App.tsx` composes it: `TopBar`, `Canvas` (with `CanvasTools`), `Inspector` and `Drawer`, with the
-canvas's state in `useCanvas` and the drawer's in `useDrawer`, so the top bar and the drawer's
-header read one status.
+The layout is patchbay's `AppShell`
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/components.md#appshell)): the top bar, the canvas,
+the inspector at its right and the drawer along the bottom, the narrow and phone layouts, the splitters and the
+sizes' bounds, filling the screen. `App.tsx` fills its slots with ear's: the top bar's slots from `TopBar.tsx`'s
+`topBar`, `Canvas` (with patchbay's `CanvasTools`) as its child, `Inspector.tsx`'s `InspectorTitle` as the
+inspector's title and `Inspector` as its content, and the
+drawer's header and pane from `Drawer.tsx`'s `drawerSlots`, with the canvas's state in `useCanvas` and the drawer's in
+`useDrawer`, so the top bar and the drawer's header read one status. AppShell keeps no data: the inspector's width,
+the drawer's height and whether each is open are ear's, kept per ear ([What the browser keeps](#what-the-browser-keeps)).
+*Why patchbay's:* the owner's principle is to take patchbay's model where it has the concept (2026-11-26).
 
 ### The top bar
 
-44 px across the top, holding what is about the whole graph and never about a selection, from left
-to right:
+AppShell's bar, 44 px across the top, holding what is about the whole graph and never about a selection, from left
+to right in its four slots:
 
-- the wordmark (hidden below 600 px);
-- the connection pill: `live`, `connecting…` or `lost: retrying in 4 s`, a word beside its dot,
-  the seconds counted down to the client's next socket, as `rpc.ts` tells the editor (`onRetry`);
-- the engine chip: the rate and block size, then `realtime` or the "not realtime" badge, its
-  tooltip the scheduling;
-- the dropouts badge ([Counters](#counters));
-- a `protocol N` chip while ear speaks a newer protocol than this editor's, its tooltip saying
+- the brand: the wordmark (dropped below 600 px);
+- the status: the connection pill, `live` (ok), `connecting…` (warn) or `lost: retrying in 4 s` (err), a word beside its dot,
+  the seconds counted down to the client's next socket, as `rpc.ts` tells the editor (`onRetry`), in a status
+  region so a change is read out;
+- the start, taking the free width and cut short at its end: the engine chip, a muted badge: the rate and block size, then `realtime` or the "not realtime" badge, filled in
+  the error tone so it stands out, its tooltip the scheduling;
+- the dropouts badge, in the warn tone ([Counters](#counters));
+- a `protocol N` badge in the warn tone while ear speaks a newer protocol than this editor's, its tooltip saying
   some of it is not shown;
-- on the right, the palette button, its key (`⌘K` or `Ctrl+K`) as its text
+- the end: the palette button, its key (`⌘K` or `Ctrl+K`) as its text
   ([below](#the-palette)), the theme switch and the `ear.conf` toggle with the drawer's status words as a
-  chip;
-- below 900 px, an Inspector button ([below](#narrow-windows)).
+  badge in the first word's tone;
+- below 760 px, an Inspector button ([below](#narrow-windows)).
 
-`shell.ts` holds the words (`shell.test.ts`).
+`shell.ts` holds the words and their tones (`shell.test.ts`). The palette, `ear.conf` and Inspector buttons are
+patchbay's `Button`, as tall as the theme switch beside them. The pill is patchbay's `Pill` and the chips its
+`Badge` ([its docs](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/components.md#state)), which colour the word
+and the dot, or the text and the edge, in the tone.
 
 ### The canvas
 
-It fills the rest, a quiet dot grid in the theme's colours. React Flow's `Controls` give way to one
-floating tool group, bottom left: zoom out, zoom in, fit, tidy and the minimap toggle. Tidy lays
-every node out again with dagre, as on first placement, and they slide there over
-`--motion-slow` (180 ms); moves are the browser's, so nothing is sent (`layout.ts`'s `relayout`), and the new
-places are kept ([below](#what-the-browser-keeps)). The minimap is React Flow's `MiniMap`, off by default, its boxes
-in their state's token. Fit, tidy and the minimap are also `F`, `L` and `M` ([below](#shortcuts)), which the tools'
-titles carry, and the palette's `Fit view`, `Tidy layout` and `Show minimap`. A double-click on empty canvas opens
-quick add instead of zooming ([below](#adding-on-the-canvas)). The view fits itself (`fit.ts`, `fit.test.ts`) once the
-boxes are measured, and again whenever the nodes on the canvas or its size change (a node added, the drawer opened),
-until the person pans, zooms or jumps to a node (a palette `Go to` or a toast's Show); Fit lets it fit itself again.
-*Why:* a single fit at React Flow's first measurement fitted boxes not yet laid out and clipped the graph, and a view
-that follows the graph is what a person expects until they move it themselves. Toasts sit at its bottom right
-([below](#toasts)), and a route request on its way is a ghost wire ([below](#requests-in-flight)).
+It fills the rest, a quiet dot grid in the theme's colours. `components/Canvas.tsx` renders React Flow's own
+`<ReactFlow>`, so every React Flow prop stays ear's to pass, and adds patchbay's canvas pieces beside it, each
+handing its handlers to `<ReactFlow>` through `mergeFlowProps`
+([patchbay's](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/graph.md#canvastools)). *Why:* the owner chose no
+canvas wrapper, patchbay's sugar beside the app's own `<ReactFlow>` (2026-11-25), and patchbay's model where it
+has the concept (2026-11-26).
+
+- **The tools.** patchbay's `CanvasTools`, bottom left in React Flow's `Panel`: zoom in, zoom out, fit the view, tidy
+  the layout and the minimap, in patchbay's words and glyphs. The group is one Tab stop, the arrow keys, Home and End
+  move between its tools, and the minimap tool is pressed while the minimap shows; 28 px tools, 40 px on touch. Zoom
+  and the fit move over `--pb-motion-slow` (180 ms, at once under reduced motion). Fit, tidy and the minimap are also
+  `F`, `L` and `M` ([below](#shortcuts)), which the tools' tooltips and `aria-keyshortcuts` carry, and the palette's
+  `Fit view`, `Tidy layout` and `Show minimap`.
+- **Tidy** lays every node out again with dagre, as on first placement, and they slide there over
+  `--pb-motion-slow`; moves are the browser's, so nothing is sent (`layout.ts`'s `relayout`), and the new places are
+  kept ([below](#what-the-browser-keeps)).
+- **The minimap** is React Flow's `MiniMap` as `CanvasTools` draws it, off by default, framed by patchbay, its boxes in
+  their state's token; `editor.css` lifts it from patchbay's bottom right to the top right, as the toasts are at the
+  bottom right ([below](#toasts)).
+- **The view follows the graph** (patchbay's `useFollowFit` in `App.tsx`): it fits once the boxes are measured, and
+  again whenever the nodes on the canvas (its key, their names) or the canvas's size change (a node added, the drawer
+  opened), until the person moves the view by any input: a pan, a wheel or a pinch on the canvas (a press that moves
+  nothing, as a click to deselect, keeps it following), a zoom tool, a drag or a wheel on the minimap (`CanvasTools`'
+  `onViewMove`), or a jump to a node (a palette `Go to` or a toast's Show); all but the first reach the hook's `stop()`. Fit (the tool, `F`, the palette) fits and follows again. Every fit leaves a tenth of the canvas on three
+  sides and 76 px at the bottom, so the tools, at their touch size, never cover a box. *Why:* a single fit at React
+  Flow's first measurement fitted boxes not yet laid out and clipped the graph, and a view that follows the graph is
+  what a person expects until they move it themselves; any view move the person asks for stops it, and only Fit
+  follows again (owner, 2026-11-27).
+- **Quick add.** A double-click on empty canvas opens quick add instead of zooming, as does an output's wire dropped
+  there ([below](#adding-on-the-canvas)).
+- **The connect status line.** patchbay's `ConnectStatus`
+  ([its docs](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/graph.md#connectstatus)), bottom centre: while a
+  wire is drawn it says why the port under the pointer refuses it, and after a drop the rule refused, "Not connected"
+  and why, until the next drag; its words come from the same `useConnectHints` as the hints and the drop check, in one
+  polite status region. ear's rule (`connect.ts`'s `connectRule`) refuses a drop on the drag's own side, which is no
+  candidate and so never spoken of, and a route the graph already holds, with the words "Already connected": over a
+  port already routed to the drag's origin the line says "Already connected", and after a drop there "Not connected:
+  Already connected". Everything else is ear's to refuse after the drop: a refusal of ear's own (`route.add` refused)
+  is the ghost wire's and a toast's ([Feedback](#feedback)). *Why:* the owner's rule that no fact is only in a tooltip
+  (2026-11-27): the status line is where a port's refusal is in words; and the owner chose the one refusal the editor
+  can judge alone, a route that already exists, as the drag's (2026-11-28).
+- **The empty canvas.** While ear's graph holds no node, patchbay's `EmptyCanvasHint`
+  ([its docs](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/graph.md#emptycanvashint)) sits top centre: "This
+  graph has no nodes yet.", then patchbay's words for the add gestures ("Double-click to add a node, or press A", or
+  "Double-tap" on a touch screen). It takes no pointer, so a double-click on it still adds, and it is not a live
+  region; it goes with the first node. Nothing shows before ear's first snapshot.
+
+Toasts sit at its bottom right ([below](#toasts)), and a route request on its way is a ghost wire
+([below](#requests-in-flight)).
 
 ### The inspector
 
-On the right, 320 px, dragged by its left edge (or, focused, its separator with the arrow keys,
-Home and End) between 280 and 560 px. It shows one subject, chosen by the selection
-(`selection.ts`, `selection.test.ts`):
+AppShell's inspector, on the right, 320 px at first (`sizes.ts`), resized between 280 and 560 px by the splitter on
+its left edge (dragged, or focused and moved by the arrow keys, Home and End; its keys, drag and 36 px touch hit area
+are patchbay's). On a wide window it is always open. AppShell draws its one header row from the subject's title
+(`InspectorTitle`: "Graph", the node's name with its type, "Route", or the count, `selection.ts`'s `subjectTitle`),
+as patchbay's `Panel`, which pads and scrolls the body, inside the shell's region named "Inspector"; the body is
+`Inspector.tsx`'s `Inspector`. *Why:* one header row in the docked panel and the narrow sheet alike, the subject's
+title beside the sheet's close button rather than a row of its own under it (owner, 2026-11-26). It shows one
+subject, chosen by the selection (`selection.ts`, `selection.test.ts`):
 
-- nothing selected: **Graph**: the engine facts in full, the graph's counters and the add-node
-  form;
+- nothing selected: **Graph**: the engine facts in full (patchbay's `KeyValue`, a wrong or newer fact in the err
+  or warn tone), the graph's counters and the add-node form;
 - one node: **Node**: its name and type, its state pill as the box draws it, its line, the
-  lifecycle bar (one segmented row; a refusal shown under it as well as in a toast), its knobly box (or JSON settings), its counters, its companions and Delete;
+  lifecycle bar (one segmented row; a refusal shown under it as well as in a toast), its knobly box (or JSON settings), its ports
+  with a "Connect to" choice each ([below](#connecting-from-the-keyboard)), its counters, its companions and Delete;
 - one route: **Route**: from and to as `node:port` buttons that select that node, its status in
-  words, its level meter and Remove;
+  words, its level meter (a `KeyValue` too) and Remove;
 - several: a count ("3 nodes, 2 routes") and Delete for them all.
 
 A name or route the graph does not hold is ignored, so the inspector shows only what ear announced.
@@ -153,30 +238,66 @@ drops a half-typed statement; a new template is written when it shows again. Sli
 form and status list are designed to land in the Node subject, under the lifecycle bar and its refusal line
 ([control-plane.md](design/control-plane.md#8-the-editor)).
 
+#### Connecting from the keyboard
+
+The Node subject lists the node's ports under "Ports", its inputs then its outputs, each a patchbay `Select` named
+"Connect input `<port>` to" or "Connect output `<port>` to" (`components/PortConnect.tsx`). Its choices are the
+ports a wire from that port could be dropped on, as `node:port` in the graph's order: `connect.ts`'s `portTargets`
+asks patchbay's `connectTargets`
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/graph.md#connecttargets)) with the canvas's own
+rule, `connectRule`, so the list never offers what a drag would refuse: it is the rule's accepted list alone, and the
+rule refuses the routes the graph already holds from or to that port, so the list and the drag cannot disagree
+(`connect.test.ts`). Choosing one sends `route.add`, as a drop does: its
+ghost wire shows on the canvas while the request is on its way, the route appears on `route.added`, a refusal is a
+toast, and the choice goes back to "Connect to…". A port with nothing to join says "Nothing to connect to" and is
+disabled. Moving a node from the keyboard is React Flow's own (Enter selects the focused node, the arrow keys move it),
+and the place is kept as a drag's is. *Why:* the owner chose a "Connect to" choice per port in the inspector, listing
+the ports the app's rule accepts, as the keyboard's way to connect, over the palette (2026-11-27).
+
 ### The drawer
 
-Full width along the bottom, holding the pane whole. Its 32 px header stays when the drawer is
-closed and says in words what the file needs, most urgent first: `refused`, `write failed`,
+AppShell's drawer, full width along the bottom, holding the pane whole. Its header (AppShell's, 44 px) stays when
+the drawer is closed: `ear.conf`, then in words what the file needs, most urgent first: `refused`, `write failed`,
 `stale: reload`, `unsaved`, `n errors` or `applies at restart` (`drawer.ts`, `drawer.test.ts`),
-with Save beside them, which says `Saving…` while its request is on its way. The header's toggle, and the top bar's, opens and closes it. It opens by
+with Save beside them, which says `Saving…` while its request is on its way. The words are patchbay's
+`StatusWords` ([its docs](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/components.md#news-and-state)): each in its
+tone (`applies at restart` in the neutral one), a dot between two, the row one polite live region, kept to one line
+and cut short before Save. The pane's banners above the text (the file changed under the draft, with Reload; ear
+refused the file; a write failed; editor edits were dropped, with a close button; a setting applies at restart) are
+patchbay's `Banner`, as are the node box's stale banner and the add form's: a stripe and a soft surface in the tone,
+its words read through the hidden live regions inside it, an error's at once (an alert) and the others' when the
+reader is free (a status), so a banner shown with its words is read as well as one whose words change. The shell's chevron button at the header's end ("Show ear.conf" or "Hide ear.conf"), and the top bar's `ear.conf`
+toggle, open and close it. It opens by
 itself only when ear refuses the file or a write fails, each newly (the same refusal sent again
 does not reopen it), or when a Save is refused; never on a hand edit. *Why a drawer:* the owner
 chose a full-width bottom drawer over a third column, so lines need not scroll sideways and the
-canvas keeps its width for a left-to-right graph. Its body is dragged by its top edge between
-120 px and 70 % of the window. The text has a gutter ([below](#the-drawers-gutter)). Closing it hides the body but keeps it, with the draft, the caret
-and the scroll. The inspector and the drawer never move each other's content.
+canvas keeps its width for a left-to-right graph. It is resized by the shell's splitter on its top edge, its height (320 px at first,
+`sizes.ts`) the whole drawer's, header included, drawn between 120 px and 70 % of the window as the window is: a
+height kept from a taller window comes back there. The text fills the body ([below](#highlighting)). Closing it hides the body but AppShell keeps it mounted, with the draft, the
+caret and the scroll. The inspector and the drawer never move each other's content.
 
 ### Narrow windows
 
-Below 760 px the inspector is a sheet over the canvas's right edge. It opens when something is
-selected or from the top bar's Inspector button, and closes on Escape (after the palette and the shortcut sheet,
-before the selection: [Shortcuts](#shortcuts)) or a click on the canvas. 760 rather than a laptop-sized width keeps
-it docked on a foldable phone unfolded (about 890 px wide) and on a tablet in portrait, where the canvas is still
-480 px wide. The drawer keeps its place. Below 600 px (a phone in portrait) the sheet rises from the bottom instead,
-at most 62 % of the workspace and scrolling inside, so the graph stays in sight above it; and the top bar drops the
-wordmark and the engine chip (the Graph subject holds the same facts), the theme switch shows only its icon (its
-label still names the choice) and the `ear.conf` toggle its glyph, so its buttons fit beside the connection pill.
-`sizes.ts` holds the bounds and the breakpoint, and `sizes.test.ts` holds `editor.css` to them.
+Below 760 px AppShell draws the inspector as patchbay's `Sheet` over the canvas's right edge (its inline end), with one
+header row: the subject's title, which names the sheet, beside its close button ([The inspector](#the-inspector)), at
+the width kept for the docked inspector (within 280 to 560 px and 48 px short of the canvas) and not resized. `App.tsx` holds whether it is open: it opens
+when something is selected or from the top bar's Inspector button, and closes on its close button, Escape (before the
+selection: [Shortcuts](#shortcuts)) or a click on the canvas; it is not
+modal, so the canvas stays live, and closing it with the focus inside gives the focus back. Escape with the focus
+inside the sheet is the sheet's own and closes it, even from a text field (patchbay's model). 760 rather than a
+laptop-sized width keeps it docked on a foldable phone unfolded (about 890 px wide) and on a tablet in portrait, where
+the canvas is still 480 px wide. The drawer keeps its place. Below 600 px (a phone in portrait) the sheet rises from
+the bottom instead, the full width and at most 62 % of the workspace, scrolling inside, so the graph stays in sight
+above it; and the top bar drops the wordmark and the engine chip (the Graph subject holds the same facts),
+patchbay's theme switch shows only its icon (its label still names the choice) and the `ear.conf` toggle drops its glyph,
+so its buttons fit beside the connection pill. AppShell picks docked, right or bottom from patchbay's
+`useMediaBreakpoint` (wide, narrow below 760 px, phone below 600 px:
+[its docs](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/components.md#usemediabreakpoint)), which `App.tsx`
+reads too for the Inspector button and the wordmark, and `editor.css` hides the engine chip and the toggle's glyph
+and grows the targets by the same queries (patchbay's `mediaQueries`); `sizes.test.ts` holds `editor.css`'s queries
+to them and `sizes.ts`'s first sizes to AppShell's bounds. Crossing 760 px moves the inspector between the region and
+the sheet, which draws its content afresh: a half-typed add-node statement is dropped, as when the selection
+changes.
 
 ### Phones and touch
 
@@ -186,14 +307,14 @@ unfolding is a resize, so the layout follows it and the view fits itself again u
 ([The canvas](#the-canvas)). For a finger (`(hover: none) and (pointer: coarse)` in `editor.css`):
 
 - **No zoom on focus.** Every text field, the code boxes included, is 16 px, as iOS Safari zooms the page when a
-  smaller field takes the focus. The code size is one token, `--code-size`, shared by the textarea, its highlighted
-  copy and the drawer's gutter, so their glyphs still line up ([Highlighting](#highlighting)).
-- **Targets a finger finds.** The top bar's buttons are at least 36 px tall, the canvas tools and the lifecycle bar
-  40 px. A port handle's hit area is as tall as its port row (so a neighbouring port stays its own) and reaches
-  16 px further out each side, so a wire starts from a fingertip; React Flow's pan and pinch zoom work as they do.
+  smaller field takes the focus. The code size is one patchbay token, `--pb-code-size` (16 px under a coarse pointer), shared by patchbay's code
+  editor's textarea, its highlighted copy and its gutter, so their glyphs still line up ([Highlighting](#highlighting)).
+- **Targets a finger finds.** The top bar's buttons are at least 36 px tall (patchbay's Button and ThemeSwitch under a coarse pointer), the canvas tools and the lifecycle bar
+  40 px. A port handle's hit area grows under a coarse pointer (patchbay's PortRow,
+  [above](#the-node-box)), so a wire starts from a fingertip; React Flow's pan and pinch zoom work as they do.
 - **No keyboard.** The palette button shows a search icon instead of its key. The palette, the inspector's buttons
   and the drawer's Save do everything a shortcut does.
-- **The whole screen.** The page asks for `viewport-fit=cover`; the shell fills `100dvh`, so Safari's toolbar never
+- **The whole screen.** The page asks for `viewport-fit=cover`; AppShell fills `100dvh`, so Safari's toolbar never
   covers the drawer, and pads its top bar, sides and drawer by the safe-area insets, so a notch, the rounded corners
   and the home indicator never cover a control.
 
@@ -216,31 +337,55 @@ show in place.
 what asked for it: a route's two ends, a node's name and the button, or the drawer or form. A reply clears it, and so
 does a closed connection, at once.
 
-- **The ghost wire.** While a route request is on its way, a ghost wire joins the two handles
-  (`components/GhostEdge.tsx`): a thin dashed `--muted` line, with no status colour, no meter and no tooltip, which
-  cannot be selected, focused or deleted (Delete never sends `route.remove` for it). It is hidden once
-  `route.added` draws the route, and goes on the reply. A refused one turns `--err` for 1 s (timed on the monotonic
-  clock) before it goes. *Why:* the owner chose a ghost while a route request is in flight, drawn as a request and
+- **The ghost wire.** While a route request is on its way, a ghost wire joins the two handles: patchbay's
+  `GhostWire` ([its docs](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/graph.md#ghostwire),
+  `components/GhostEdge.tsx`), a thin dashed `--pb-quiet` line, dimmed, with no status colour, no meter and no
+  tooltip, which takes no pointer and cannot be selected, focused or deleted (Delete never sends `route.remove` for
+  it). It is hidden once `route.added` draws the route, and goes on the reply. A refused one is GhostWire's
+  `refused` tone, `--pb-err` at full opacity, for 1 s (`requests.ts`, timed on the monotonic clock) before it goes. *Why:* the owner chose a ghost while a route request is in flight, drawn as a request and
   never as a route.
-- **Buttons.** A lifecycle button shows a spinner and is disabled while its own request is on its way; the others
-  stay as `health.ts` says. Save in the drawer and in the node box say `Saving…`, and Add in the form says
-  `Adding…`. The spinner stops turning under reduced motion and keeps its open ring.
+- **The ghost node.** While a node add (`node.add` or `node.addText`) is on its way and quick add holds a place for
+  it ([Adding on the canvas](#adding-on-the-canvas)), patchbay's `GhostNode`
+  ([its docs](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/graph.md#ghostnode)) stands there: a dashed
+  `--pb-quiet` outline, faint, titled by the name the place is held for (the template's name), else the name
+  `node.add` asks for, else "New node", with "Adding…" under it (`requests.ts`'s `ghostNode`). It takes no pointer and
+  cannot be selected, focused, deleted, dragged or connected, and is hidden from screen readers, as the busy Add button
+  says the add is on its way. It goes on the reply, refused or not; a refusal's reason stays in the form or a toast.
+  An add with no place (the `A` key, the palette's `Add`) draws none, as dagre places that node only once ear
+  announces it. While it shows, the empty canvas's hint does not. *Why:* patchbay's model for an add on its way in the
+  apply-at-once model (owner, 2026-11-27: "pending" is a request sent and not yet answered).
+- **Buttons.** Every button that sends a request is patchbay's `Button` with `busy` while its own request is on its
+  way: a spinner, `aria-busy`, and presses ignored, but it stays focusable, so the focus is never lost mid-request
+  ([patchbay's](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/components.md#actions)). Save in the drawer and
+  in the node box show `Saving…` beside the spinner, and Add in the form `Adding…` (their `busyLabel`, announced
+  politely); a lifecycle button keeps its word under the spinner, so the segmented row's widths hold. A button is
+  disabled only while idle: a lifecycle button as `health.ts` says, Save and Add while there is nothing to send.
+  Delete and Remove are `tone="danger"`. *Why:* the owner chose patchbay's model, focusable while busy
+  (2026-11-26), over ear's old disabled button that dropped the focus. The spinner stops turning under reduced motion
+  and keeps its open ring.
 
 ### Toasts
 
-`web/src/notices.ts` (`notices.test.ts`) is the queue and `components/Toasts.tsx` draws it in the canvas's bottom
-right; they replace the one error banner.
+`web/src/notices.ts` (`notices.test.ts`) is the session's store over patchbay's toast queue, so a refusal made
+outside React (the session's `ask`, a `node.state`) is a toast, and `components/Toasts.tsx` draws it with patchbay's
+`Toaster`, inline in a React Flow panel at the canvas's bottom right so Show can move the view
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/components.md#news-and-state); the queue:
+[`useToasts`](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/components.md#usetoasts)). *Why patchbay's:* the
+owner chose patchbay's toast model (2026-11-26); ear keeps the words, the key and Show.
 
 - **What a toast says.** A refusal says what was asked and why, with the code in monospace
   (`route noise:noise.mono → rec:FX refused: unknown-port rec:FX`). A call the closed connection left unanswered says
   `had no answer: not-connected`, one toast for all of them. JSON settings that do not parse say `not sent:
-  invalid-json` with the parse's words, a code of the editor's own that ear never sends.
-- **How long.** A toast lasts 8 s on the monotonic clock, and none expires while the toasts are hovered or focused;
-  Dismiss, or Escape on a focused toast, closes one.
-- **How many.** At most four show; older ones fold into "and n more". The same code for the same subject within 5 s
-  counts up ("×3") instead of stacking.
-- **Announced.** A refusal is a `role="alert"` toast, anything else `role="status"`.
-- **Show.** A toast for a node or route ear holds has Show, which selects it and pans to it.
+  invalid-json` with the parse's words, a code of the editor's own that ear never sends. A refusal is an `err` toast,
+  an unanswered call or a fallback a `warn` one.
+- **The queue's rules, patchbay's defaults.** A toast lasts 8 s on the monotonic clock, and none expires while the
+  toasts are hovered or focused; at most four show, older ones folded into "and n more". ear keys a toast by its code
+  and its subject, so the same code for the same subject within 5 s counts up ("×3") instead of stacking.
+- **The Toaster's.** Its Dismiss button (patchbay's close glyph, named "Dismiss"), or Escape on a focused toast,
+  closes one, and the focus moves to its neighbour. Each is
+  read once from a live region beside the stack (a refusal at once, anything else when the reader is free), not again
+  when it is drawn again.
+- **Show.** A toast for a node or route ear holds has Show, which selects it and pans to it, then dismisses the toast.
 - **Kept.** A closed connection clears none, so a reconnect drops nothing the person has not seen.
 
 A change in place that could not finish raises a warning toast of its own, about its node, from the `node.state` that
@@ -255,23 +400,15 @@ designed to feed this queue
 refused route shows on its ghost and in a toast. A lifecycle refusal shows under the inspector's lifecycle bar and in
 a toast. Everything else is a toast. A refused Save still opens the drawer.
 
-### The drawer's gutter
-
-`web/src/gutter.ts` (`gutter.test.ts`) gives each line the textarea shows its number, and a dot on each line a
-diagnostic names: `--err`, else `--warn`, and neutral for a severity this editor does not know. A line past the end
-marks the last line. Hovering a dot shows its messages, and a click puts the caret there, as the list under the text
-does; the list stays the keyboard's and screen readers' way in, as the gutter is hidden from them. The gutter is a
-second `pre` beside the box, never inside it, following the textarea's vertical scroll with the same font, size,
-line height and top inset, so [Highlighting](#highlighting)'s rules are untouched. Only the drawer has one.
-
 ## The palette and the keyboard
 
 ### The palette
 
 `web/src/palette.ts` (`palette.test.ts`) builds the palette's commands from the graph, the selection, the features
-and the shell's state, so a command ear cannot take is never offered; `components/Palette.tsx` draws it and
-`components/useCommands.ts` turns each into its request or its change of view. Cmd+K (Ctrl+K off macOS) or the top
-bar's button opens it, centred near the top of the window. Its commands:
+and the shell's state, so a command ear cannot take is never offered, and hands them to patchbay's `CommandPalette`
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/components.md#commands-and-keys)), which draws, ranks
+and places them; `components/useCommands.ts` turns each into its request or its change of view. Cmd+K (Ctrl+K off
+macOS) or the top bar's button opens it, centred near the top of the window. Its commands:
 
 | Command | Does |
 |---|---|
@@ -285,24 +422,26 @@ bar's button opens it, centred near the top of the window. Its commands:
 | `Keyboard shortcuts` | the shortcut sheet ([below](#shortcuts)) |
 
 With nothing typed, the selection's commands come first (each selected node's lifecycle calls and Remove, then each
-selected route's Remove), then Go to, Add, `ear.conf`'s, the view's, and every other node's and route's. An option
-shows its group, its hint and, where it has one, its key. A long hint is cut short, its whole text in its tooltip,
-so the command's own words always keep their width.
+selected route's Remove), then Go to, Add, `ear.conf`'s, the view's, and every other node's and route's, each under
+its group's heading. An option shows its hint (a lifecycle command's why) as a quieter second line and, where it has
+one, its key. Its one word of ear's own is the field's placeholder, "Type a command or a node's name" (for
+quick add, "Add a node of type…"), given through the palette's `labels`; every other word is patchbay's default.
 
-- **Ranking.** A subsequence match on the label: every typed character, case-insensitive and ignoring spaces, must
-  appear in order. A character at a word start scores most and one right after the previous match next; a gap
-  between two matches costs a little. Ties go to the shorter label, then the list's order; at most 50 are shown.
-- **A combobox.** It is a WAI-ARIA combobox over a listbox in a modal dialog: the arrows move (wrapping), Page Up and
-  Page Down move by 8, Enter or a click runs one, Escape, Tab or a click outside closes it, and the matched letters
-  are marked. The keys it handles never reach the editor's shortcuts, and focus goes back where it was when it closes.
-  Hand-written, no package.
+- **patchbay's palette.** Matching, ranking, the marked letters, the keys (the arrows, Page Up and Page Down, Home and
+  End, Enter; Escape, Tab, a press outside or the focus leaving close it) and where it sits are `CommandPalette`'s:
+  a query's letters in order in a label, word starts and runs scoring most, each group's matches best first and the
+  groups by their best; the focus stays in its field and goes back where it was when it closes. *Why:* the owner chose
+  patchbay's model for the palette (2026-11-26), Tab closing it as a combobox's list closes and each item having a
+  hint line; its ranking and grouping replace ear's own, which listed at most 50 in one ranked list.
 - **Nothing of its own.** Everything it does is a request ear judges, drawn when ear announces it
   ([above](#its-rules)), or a change of the browser's own view.
 
 ### Shortcuts
 
-`web/src/keys.ts` (`keys.test.ts`) maps a key to a shortcut, by the platform and by whether the focus is in a text
-field; `components/useShortcuts.ts` is the one listener, and `components/ShortcutSheet.tsx` the sheet `?` opens.
+`web/src/keys.ts` (`keys.test.ts`) is the editor's table of bindings, in patchbay's key strings (`Mod+K`), and the
+shortcut sheet's lines; patchbay's `useShortcuts` binds the table on the window and its `ShortcutSheet`, the dialog `?`
+opens, lists the lines in three groups (Commands, View, Selection) with the keys drawn for the platform
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/components.md#useshortcuts)).
 
 | Key | Does |
 |---|---|
@@ -312,26 +451,30 @@ field; `components/useShortcuts.ts` is the one listener, and `components/Shortcu
 | `F`, `L`, `M` | fit the view, tidy the layout, show or hide the minimap |
 | `A` | the palette, with only its `Add` commands; the node is then laid out as any other |
 | `?` | the shortcut sheet |
-| Escape | closes the palette, else the shortcut sheet, else the narrow inspector's sheet, else clears the selection |
+| Escape | closes the narrow inspector's sheet, else clears the selection; the palette and the shortcut sheet close on their own Escape |
 | Delete, Backspace | React Flow's: removes the selection, asking ear ([above](#the-inspector)) |
 
-Single keys and Escape act only when the focus is not in a text field (an input of a text kind, a textarea, a select
-or contenteditable) and with no modifier but Shift (which `?` needs on most layouts). The three chords act
-everywhere, since they type nothing, so `⌘S` saves the drawer's draft while typing in it; it saves only that draft,
-even with the focus in the node panel's box. While the palette or the sheet is open, only `⌘K` and Escape act.
-*Why that filter:* React Flow 12.12.0 skips input, select, textarea, contenteditable and anything inside `.nokey`
-for Delete by the same rule (its `isInputDOMNode`, checked in the pinned package), so its keys and the editor's
-coexist with the focus in the inspector's text. Slice 6's knobs are designed to carry `nodrag`, `nowheel`, `nopan`
-and `nokey` ([control-plane.md](design/control-plane.md#83-gestures-from-pointer-and-keyboard)).
+Single keys and Escape act only when the focus is not in a text field (an input of a text kind, a textarea, a select,
+contenteditable, or anything inside `.nokey`) and with no modifier but the Shift a character needs (`?`); a key must
+match its modifiers exactly, so `⌘⇧K` is not `⌘K`. The three chords opt in to acting in a text field, since they type
+nothing, so `⌘S` saves the drawer's draft while typing in it; it saves only that draft, even with the focus in the
+node panel's box. While the palette is open only `⌘K` acts (closing it); while the shortcut sheet is open none do, as
+its dialog holds the focus and Escape, its close button or a press on the scrim closes it. *Why that filter:* it is
+patchbay's keyboard model (2026-11-26), and React Flow 12.12.0 skips input, select, textarea, contenteditable and
+anything inside `.nokey` for Delete by the same rule (its `isInputDOMNode`, checked in the pinned package), so its
+keys and the editor's coexist with the focus in the inspector's text. Slice 6's knobs are designed to carry `nodrag`,
+`nowheel`, `nopan` and `nokey` ([control-plane.md](design/control-plane.md#83-gestures-from-pointer-and-keyboard)).
 
 ## Adding a node
 
 `web/src/addText.ts` is the add-node form's logic (`addText.test.ts` replays `node-text.json`'s
 refusals through it); `components/AddNodeText.tsx` draws it. With the `node-text` feature the form
-takes a whole statement, `node <type> <name> { ... }`, in the drawer's textarea style, and Add sends
+takes a whole statement, `node <type> <name> { ... }`, in a code editor as the drawer's is, and Add sends
 `node.addText` ([control-port.md](control-port.md#a-nodes-own-text)): ear appends it where
 `node.add` would, reads it with the whole file (so `$ch` and `@use card_out MOTU;` work as by
-hand), and places its diagnostics in the form's text. The rules:
+hand), and places its diagnostics in the form's text. Its type list is patchbay's `Field` and `Select`; an ear
+without the feature gets the JSON form instead (`AddNodePanel.tsx`): a name (`TextInput`), the type list and the
+settings as JSON, each in a `Field`, which names its control and spaces the form. The rules:
 
 - **A template per type.** Choosing a type writes `node <type> <name> {\n}`, the name the type's
   word and the first number no node holds (`file1`, `white2`); the block starts empty, since a
@@ -346,8 +489,10 @@ hand), and places its diagnostics in the form's text. The rules:
 ## Adding on the canvas
 
 - **Quick add.** A double-click on empty canvas (in place of React Flow's zoom), or a wire from an output dropped on
-  empty canvas (`connect.ts`'s `droppedOnPane`), opens the palette's `Add` commands at the pointer, kept inside the
-  window. Choosing a type opens the inspector's add-node form with its template, as `Add <type>` does; ear still
+  empty canvas where no handle took it, opens the palette's `Add` commands at the pointer, kept inside the window.
+  Both are patchbay's `useAddAt`
+  ([its docs](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/graph.md#useaddat)), which finds the place on the
+  flow; `connect.ts`'s `quickAddKind` keeps ear's rule that a wire from an input opens nothing. Choosing a type opens the inspector's add-node form with its template, as `Add <type>` does; ear still
   judges the text, and the node still appears only on `node.added`.
 - **Placement hints.** The pointer's place is kept for the template's name (with no template, the JSON form, for
   the next node added). When `node.added` brings that name, `Places` puts it there (`layout.ts`'s `quickPlace`: the
@@ -355,6 +500,14 @@ hand), and places its diagnostics in the form's text. The rules:
   dagre, even over a kept place. A node arriving under another name (the person renamed it) drops the hint, as does
   selecting something (which drops the form, [above](#the-inspector)), and that node is laid out as before. A
   typed draft is never overwritten by the template ([above](#adding-a-node)).
+- **The palette at a point.** A right-click, or a long-press on a touch screen (500 ms without moving), on a node or
+  on empty canvas opens the whole palette at that point instead of the browser's menu: patchbay's `useContextAt`
+  ([its docs](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/graph.md#usecontextat)), which times the
+  long-press, as iOS sends no contextmenu, and swallows the click its lift makes. On a node, that node is selected
+  first, so its commands (its lifecycle calls, Remove) lead the list; on empty canvas the selection stays, and an
+  `Add <type>` chosen there lands at the point, as quick add's does. A handle, a wire or a panel keeps the browser's
+  menu. Its keyboard path is `⌘K`, whose commands act on the selection. *Why:* patchbay's model: there is no context
+  menu of its own, the palette opens at the point ([U66](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/ux-rules.md#the-view-and-the-canvas)).
 - **No route is asked.** A wire dropped on empty canvas places the node at the drop, and the person draws the wire.
   *Why:* the owner chose that a wire dropped there asks for no route: it would be a second request the person did
   not see, and a type's first input is not always the one they mean.
@@ -368,7 +521,7 @@ through it); `components/NodeTextBox.tsx` draws it. The node panel is the inspec
 ([above](#the-inspector)). With the `node-text` feature
 ([control-port.md](control-port.md#a-nodes-own-text)) the inspector's Node subject holds its
 statement as `ear.conf` has it, units, `@use` lines, `$variables` and the comments it owns included
-(`# the take` above `node file rec { path "take1.wav"; }`), in the drawer's textarea style, with Save
+(`# the take` above `node file rec { path "take1.wav"; }`), in a code editor as the drawer's is, with Save
 and its diagnostics under it. *Why:* asked why the box was raw JSON when knobly is the canonical raw
 language, the owner chose the node's own knobly statement, checked by ear's reader and replacing
 only that statement. The rules:
@@ -387,40 +540,44 @@ only that statement. The rules:
   `file-changed`, the box goes stale ("rec changed in ear.conf; reload") and keeps the draft until
   the person reloads.
 - **Read-only when it cannot be replaced.** A node written in a snippet (`shared`) shows that
-  statement on the sunken surface, its label saying "(read-only)", with where it is and that the pane
+  statement read-only, on the code editor's read-only surface, its label saying "(read-only)", with where it is and that the pane
   edits it; while `ear.conf` has errors there are no `nodeTexts` and the box says to fix them in
   the pane. Neither offers Save. The text keeps its full contrast: it is never dimmed.
 
 ## Highlighting
 
-The pane, the node panel's box and the add-node form draw their knobly highlighted, in one component,
-`components/KnoblyText.tsx`, over the pure `web/src/highlight.ts`. *Why display only:* the owner
-decided that ear's C++ reader stays the one judge of an edit and the source of every diagnostic, so
-the browser's knobly never accepts, refuses or diagnoses a text. The rules:
+The pane, the node panel's box and the add-node form are patchbay's `CodeEditor` with `language="knobly"`
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/components.md#code)): a native textarea holding the
+text, the caret, the selection and every edit, a highlighted copy of what it shows drawn behind it, line numbers in a
+gutter beside it, and a mark on each line a diagnostic names. How it draws, highlights, marks, indents and reads its
+diagnostics is patchbay's, at its defaults: ear passes it the text, the edit handler, its diagnostics and, for the
+node box and the add form, `rows`, and sets none of its words. *Why display only:* the owner decided that ear's C++
+reader stays the one judge of an edit and the source of every diagnostic, so the browser's knobly never accepts,
+refuses or diagnoses a text. What ear keeps:
 
-- **The textarea holds everything.** Each box is still a plain textarea: the text, the caret, the
-  selection, every edit, and so the diagnostics' caret placement, the CRLF handling, the drafts'
-  stale and dirty logic and what Save and Add send are as above. Its glyphs are transparent; a
-  highlighted copy of what it shows is drawn behind it (a `pre`, hidden from screen readers) with
-  the same font, size, line height, padding, border and tabs and no wrapping, and follows its
-  scroll. No editor library is added. The drawer's gutter sits beside the box, not in it
-  ([above](#the-drawers-gutter)). Under forced colours (Windows high contrast) the copy is
-  hidden and the textarea draws its text in the system's colours.
-- **The copy is what the textarea shows.** A textarea holds `\n` only, so the copy is the value
-  with each `\r\n` and lone `\r` as `\n`; the value itself is never changed. `highlight.test.tsx`
-  checks that the runs drawn join to exactly that text and that the textarea, the pane's Save, the
-  box's Save and Add get the caller's text unchanged, CRLF and non-ASCII text included.
-- **knobly's classes, the editor's palette.** Each token is drawn by knobly's highlight class
-  (`directive`, `keyword`, `word`, `variable`, `number`, `string`, `comment`, `punctuation`,
-  `space`, `error`), each a token (`--knobly-directive`, ...) in `theme.css`, light and dark
-  ([below](#tokens-and-themes)), each shade at 4.5:1 or better on the box's surface and on the
-  read-only one in both themes, which `theme.test.ts` checks. A class this
-  editor does not know is drawn plainly. An `error` span is a token that does not lex (a stray
-  character, an unterminated string), never a diagnostic: those are ear's, listed under the box.
+- **The diagnostics are ear's.** Each box hands `CodeEditor` the diagnostics ear placed in its text (the pane's
+  `shownDiagnostics`, the box's and the form's `errors`), as they come off the wire: knobly's and ear's codes, a
+  severity it may not know (drawn with patchbay's neutral mark). They are marked in the gutter and under the text and
+  read with the textarea, and are also listed under the box by patchbay's `DiagnosticList`
+  ([its docs](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/components.md#code)): a count ("No problems", "2
+  problems") in a polite status line that is there from the start, then a row per diagnostic in CodeEditor's own words
+  ("Line 3, column 5: error unknown-type: …") after its severity's mark, each a button that puts the caret at its
+  place, as a press on a gutter mark does. *Why patchbay's:* the owner's principle (2026-11-26); it replaced ear's own
+  plain list (`3:5 unknown-type …`), so what a gutter mark's tooltip says is written out in the same words where
+  touch and the keyboard reach it (owner, 2026-11-27: no fact only in a tooltip). An `error` span in the highlighting is a token that does
+  not lex (a stray character, an unterminated string), never a diagnostic.
+- **What is sent is the text as typed.** A textarea holds `\n` only, so a CRLF file is shown, and edited, with
+  `\n`; the drafts' stale and dirty logic and what Save and Add send are as above, and an unedited draft is never
+  changed. `sent.test.ts` checks that the pane's Save, the box's Save and Add send the caller's text unchanged, CRLF
+  and non-ASCII text included.
+- **The drawer's box fills its body**, which the drawer's splitter sizes, so its own resize corner is off
+  (`editor.css`'s `.text-pane-code`); it is named "ear.conf" for screen readers. The node box and the add form size
+  by `rows` (3 to 12, the text's lines and one more) and keep the corner. A read-only node box is drawn on the code
+  editor's read-only surface, never dimmed.
 
 **The package.** `knobly/highlight` from knobly's first release, v1.0.0 (MIT): a scanner generated
-from knobly's grammar, with no parser runtime; with `KnoblyText` it adds about 3.4 KB to the
-editor's script (1.5 KB gzipped) and 2 KB to its styles.
+from knobly's grammar, with no parser runtime. patchbay's `CodeEditor` imports it the first time a box is drawn, so
+the build puts it in a chunk of its own (2.56 KB, 1.15 KB gzipped) and a box shows plain text until it has loaded.
 `web/package.json` names the release's npm tarball by URL,
 `https://github.com/mcurcio/knobly/releases/download/v1.0.0/knobly-1.0.0.tgz`, and
 `web/package-lock.json` records its SHA-512, so `npm ci` installs exactly that file, from npm's
@@ -433,66 +590,104 @@ holds none of it.
 That URL and SHA-512 are copies of knobly's one pin, `cmake/knobly.json`, which ear's reader is
 built from too: one version for both, checked and moved as
 [AGENTS.md](../AGENTS.md#build-run-and-test) says. The highlighter tokenises by knobly's grammar,
-so with one version on both sides it matches what ear's reader parses.
+so with one version on both sides it matches what ear's reader parses. patchbay takes knobly as an optional peer
+(`^1.0.0` in 0.8.0); npm counts the tarball's 1.0.0 as meeting it (`npm ls knobly` shows one copy, deduped), and a
+knobly bump through `scripts/knobly-pin.mjs` must stay inside that range.
 
 ## Tokens and themes
 
-`web/src/theme.css` holds every colour, radius, shadow and duration the editor draws with, as
-custom properties on `:root`, and is loaded before `editor.css`. `editor.css`, the components (the
-wires' status colours are `editor.css`'s wire classes) and the knobly tokens use only these, and React Flow's
-own variables (`--xy-*`) are pointed at them, so its canvas, dot grid and minimap follow the theme
-without its `colorMode` prop (which would fight `data-theme`). The values live in `theme.css`
-alone; the groups:
+The editor draws with patchbay's tokens (`@mcurcio/patchbay`, pinned exactly in `web/package.json`):
+every colour, radius, shadow, duration, face and type size in `editor.css` and the components is a
+`--pb-*` custom property from its `tokens.css`, and ear defines none of its own. patchbay documents
+the tokens, their light and dark values and the contrast rules on
+[its tokens page](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/tokens.md#the-tokens); this
+section says only how ear uses them.
 
-- **Surfaces:** `--surface` the canvas, `--raised` boxes, panels and controls, `--sunken` meter
-  tracks, badges and read-only text; `--line` and `--line-strong` the borders and the dot grid.
-- **Text:** `--text`, `--muted` (type labels, the health line, counter labels), `--accent`
-  (selection, focus) and `--on-strong` (text on a filled chip: the "not realtime" badge, the
-  warning mark).
-- **States:** `--ok` running, linked and ready; `--warn` starting, stopping, pending, an unknown
-  state and the warning mark; `--err` failed, refused and the diagnostics' errors; `--quiet`
-  stopped; `--off` disabled and a companion not ready. Asked-for silence is never `--err`
+**The order the styles load.** `main.tsx` loads React Flow's `style.css`, then
+`@mcurcio/patchbay/tokens.css` and patchbay's optional `base.css` (the page's box sizing, body colours and type, and
+the accent focus ring), then `editor.css`. patchbay's tokens point React Flow's own
+variables (`--xy-*`) at them on `.react-flow`, after React Flow's defaults, so its canvas, dot grid
+and minimap follow the theme without its `colorMode` prop (which would fight `data-theme`).
+A patchbay component brings its own stylesheet (importing `@mcurcio/patchbay/primitives` loads
+`primitives.css`), and `editor.css`'s rules for ear's own buttons pass by any element with a `pb-`
+class (inside `:where()`, so they weigh no more), so patchbay's controls draw as patchbay draws them.
+
+**What ear draws with which.**
+
+- **Surfaces:** `--pb-surface` the canvas, `--pb-raised` boxes, panels and controls, `--pb-sunken` meter
+  tracks, badges and read-only text; `--pb-line` and `--pb-line-strong` the borders and the dot grid.
+- **Text:** `--pb-text`, `--pb-muted` (type labels, the health line, counter labels), `--pb-accent`
+  (selection, focus, the reconfiguring pill) and `--pb-on-strong` (text on a filled badge: the "not realtime" badge,
+  the warning mark).
+- **States:** `--pb-ok` running, linked and ready; `--pb-warn` starting, stopping, an unknown
+  state and the warning mark; `--pb-err` failed, refused and the diagnostics' errors; `--pb-quiet`
+  stopped and a pending route; `--pb-off` disabled and a companion not ready. Asked-for silence is never `--pb-err`
   ([above](#a-nodes-health)).
-- **Soft surfaces** under banners and the dropouts badge (`--warn-soft`, `--err-soft`), the
-  meters' (`--meter-low`, `--meter-mid`, `--meter-hot`, `--meter-peak`), the shadows (`--shadow`,
-  `--shadow-lifted`) and the knobly tokens ([above](#highlighting)).
-- **Tones:** the classes `tone-ok`, `tone-warn`, `tone-err` and `tone-muted` colour the
-  connection pill's dot, the top bar's chips and the drawer's status words from the state tokens.
+- **Soft surfaces** under banners and the dropouts badge (`--pb-warn-soft`, `--pb-err-soft`), the
+  meters' (`--pb-meter-low`, `--pb-meter-mid`, `--pb-meter-hot`, `--pb-meter-peak`), the shadows
+  (`--pb-shadow`, `--pb-shadow-lifted`) and the code tokens (`--pb-code-*`, [above](#highlighting)).
+- **Tones:** patchbay's `Pill`, `Badge` and `KeyValue` take a tone by name; the classes `tone-ok`, `tone-warn`,
+  `tone-err` and `tone-muted` colour the drawer's status words from the state tokens.
+- **Type:** `--pb-font-ui` and `--pb-text-md` (13 px) for the page, `--pb-text-sm` (12 px) for
+  small text, `--pb-font-code` for code, names and numbers as sent, and `--pb-code-size` for the
+  code boxes and the gutter ([Phones and touch](#phones-and-touch)). The other sizes stay
+  literal, as patchbay has no token for them: 15 px (the wordmark, the
+  palette's field, the shortcut sheet's title), 14 px (the inspector's title), 11 px (the node box's
+  health line and port rows), 10 px (the type label, a companion's badge) and
+  16 px (text fields under a coarse pointer).
 - **Corners and motion:** 8 px on boxes, 6 px on controls and text boxes, pills fully round; 120 ms
-  for hover and selection, 180 ms for what slides, `--motion-pulse` (2 s, the configuring dot),
-  `--motion-flow` (1 s, the wires' flow) and `--motion-spin` (0.8 s, the busy spinner). The first two are 0 under
-  `prefers-reduced-motion: reduce`, which also stops the configuring pulse, the wires' flow and the spinner
-  (`editor.css`: an infinite animation at 0 s would churn rather than stop), and leaves the peak
+  for hover and selection, 180 ms for what slides, `--pb-motion-pulse` (2 s, the configuring dot),
+  and `--pb-motion-flow` (1 s, the wires' flow); patchbay's Spinner turns on `--pb-motion-spin` and stops itself. The
+  first two are 0 under `prefers-reduced-motion: reduce`, which also stops the configuring pulse and hides the wires'
+  flow (patchbay's Pill and Wire: an infinite animation at 0 s would churn rather than stop), and leaves the peak
   tick's fall, which is data, not decoration.
 
-**The theme.** It is `system` by default, following `prefers-color-scheme`. *Why:* the owner chose
-that the editor follows the system until the person chooses. The switch cycles system, light and
-dark and writes `data-theme="light"` or `"dark"` on `<html>`; system removes the attribute.
-`web/src/theme.ts` is its logic, and `index.html`'s `color-scheme` meta lets the first paint follow
-the system before the styles arrive. The switch sits in the top bar ([above](#the-top-bar)), and
-the palette has a `Theme:` command for each other choice ([above](#the-palette)); the choice is kept per browser
-([What the browser keeps](#what-the-browser-keeps)) and applied before the first render.
+**ear's own variables.** Besides the tokens, `editor.css` reads a few variables that hold no value of
+their own design, only a token picked per state: `--state` (a node's state class picks its tone, for its minimap
+box).
 
-**Contrast is a test.** `theme.test.ts` reads `theme.css` and fails naming the theme and the pair
-when any text, state, on-strong or knobly token falls below 4.5:1 on a surface it is drawn on, in
-either theme. It also fails when the two copies of the dark set (the system's and the chosen one)
-differ, when a colour lacks its dark value, or when `editor.css` or a component holds a colour of
-its own. A failing pair changes the value, not the rule. The dark set is written twice rather than
-with `light-dark()`, because the build's CSS minifier may rewrite that function. Vitest blanks
-stylesheets by default, so `vite.config.ts` lets it read these two as text.
+**The theme.** It is `system` by default, following `prefers-color-scheme`. *Why:* the owner chose
+that the editor follows the system until the person chooses. It is patchbay's: `App.tsx` holds the
+choice with `useTheme` under ear's own key (`themeKey()` in `prefs.ts`, `ear-editor/1/theme`), which
+writes `data-theme="light"` or `"dark"` on `<html>` (system removes it) and keeps the choice, and the
+top bar draws patchbay's ThemeSwitch, with its words ([above](#the-top-bar)). The switch's cycle,
+tooltip and label are patchbay's, documented with
+[its hooks](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/components.md#usetheme). The palette has a
+`Theme:` command for each other choice ([above](#the-palette)).
+
+**No flash on the first paint.** `index.html` inlines patchbay's `themeScript(themeKey())` in its
+`<head>`, before any stylesheet or module, so a kept light or dark choice is on `<html>` before the
+page draws; `theme.test.ts` holds the inlined text equal to what patchbay generates for ear's key.
+Without a kept choice, `index.html`'s `color-scheme` meta lets the first paint follow the system.
+*Why:* the owner chose patchbay's script and its wording for the switch (2026-11-26).
+
+**Tokens are a test.** `theme.test.ts` reads `editor.css`, every source in `web/src` but the tests,
+and patchbay's `tokens.css`, and fails naming the file and the name when a `var()` names neither a
+patchbay token nor one of ear's own variables (a missed rename would otherwise draw nothing,
+silently), when `editor.css` declares any other variable, or when `editor.css` or a component holds
+a colour of its own. Contrast is patchbay's to keep: its tokens test fails when a text, state, on-strong
+or code token falls below 4.5:1 on a surface it is drawn on, in either theme, or when its two copies
+of the dark set differ. Vitest blanks stylesheets by default, so `vite.config.ts` lets it read
+`editor.css` and `tokens.css` as text.
 
 Forced colours keep the system's colours, as [Highlighting](#highlighting) says.
 
 ## What the browser keeps
 
-`web/src/prefs.ts` (`prefs.test.ts`) is the only module that touches the browser's storage. It uses `localStorage`,
-every read and write in `try` (so a private window, blocked storage or a full one keeps an editor that remembers for
-the page's life), and checks every value on read, ignoring a bad one. `main.tsx` makes one for the page.
+`web/src/prefs.ts` (`prefs.test.ts`) holds ear's keys and the check of every kept value, and keeps the node places;
+patchbay keeps the rest under those keys: the inspector's width and the minimap (`App.tsx`) and the drawer
+(`useDrawer.ts`) are its `usePersistentState`, the theme its `useTheme`
+([its hooks](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/components.md#usepersistentstate)). All of it is
+in `localStorage` as JSON, every read and write in `try` (so a private window, blocked storage or a full one keeps an
+editor that remembers for the page's life), and every value is checked on read, a bad one ignored in favour of the
+default; a value is written only when the person changes it. `main.tsx` makes one `Prefs` for the page.
 
 - **Per ear**, keyed by the page's `location.host` (`ear-editor/1/<host>/…`): node places, the inspector's width
-  (clamped to its bounds), the drawer's height (clamped to the window) and whether it is open, and the minimap.
-- **Per browser** (`ear-editor/1/theme`): the theme, applied before the first render, so a kept dark choice never
-  flashes light.
+  (clamped to AppShell's bounds), the drawer's height (as set: AppShell draws it within the window as it is) and
+  whether it is open, and the minimap.
+- **Per browser** (`ear-editor/1/theme`): the theme, kept by patchbay's `useTheme` as JSON (as `prefs.ts` kept it
+  before, so a choice made then still holds) and applied by `index.html`'s inline script before the first paint, so
+  a kept dark choice never flashes light ([Tokens and themes](#tokens-and-themes)).
 - **Places** are written when a drag ends (or a keyboard move), when new nodes are placed and on Tidy (which forgets
   the absent ones too), never on a state change. A name not in the graph keeps its place for 30 days from when it
   was last seen, timed on the wall clock (it outlives the page; every other editor clock is monotonic), so a node
@@ -506,74 +701,113 @@ Slice 5's type-schema cache is designed to use this module too ([control-plane.m
 
 ### The node box
 
-`components/EarNode.tsx` draws it; the handles' rule is `web/src/connect.ts`'s `handleCue`.
+`components/EarNode.tsx` draws it with patchbay's `NodeBox`, one `PortRow` per port
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/graph.md#nodebox)); ear gives it the words, the
+tone and the handle ids, and the handles' rule is `web/src/connect.ts`'s `connectRule`. *Why patchbay's:* the owner's
+principle is to take patchbay's model where it has the concept (2026-11-26), and its geometry is exported so layout
+code sizes boxes by it (owner, 2026-11-26: NodeBox's geometry as exported constants, mirrored by tokens a brand
+may not change).
 
-- **The state is a stripe and a pill.** A 4 px stripe down the box's left edge and a pill (a dot
-  and the word, with a failure's code in monospace) take the state's token: `--ok` running,
-  `--warn` starting, stopping and an unknown state, `--err` failed, `--quiet` stopped, `--off`
-  disabled. The word is always there, so the state is never colour alone. A failed box also has an
-  `--err` border. A disabled one has a dashed border and a hatched stripe, and its text stays at
-  full contrast. `configuring` pulses the dot only, never the text, and not at all under reduced
-  motion.
-- **The type label** is the type's word as sent, in `--muted`. Nothing in `web/` names a node type,
-  so there are no per-type icons or colours.
-- **220 px wide.** `layout.ts`'s `nodeWidth` and `portHeight` are the box's CSS width and port-row
-  height, which `layout.test.ts` holds equal. `headerHeight` is dagre's estimate of the three
-  header rows. Port names are monospace and numbers use tabular figures.
-- **Handles** are a 10 px dot with a 20 px hit area. While a wire is drawn, `handleCue` rings in
-  `--accent` every handle a drop on would make a route and dims every other: from an output, every
-  input; from an input, every output (the editor accepts a drag from either end). It is
-  `isValidConnection`'s own rule, so the ring never promises what the drop refuses. The ringed
-  handle under the pointer grows.
-- **Selection** is a 2 px `--accent` ring outside the border with the lifted shadow. Hover lifts
-  the shadow alone.
+- **The state is a stripe and a pill.** NodeBox's 4 px stripe down the box's left edge and a pill in its status slot
+  (patchbay's `Pill`: a dot and the word, with a failure's code after it in monospace, `StatePill.tsx`) take the
+  state's tone (`health.ts`'s `stateTone`): ok running, warn starting, stopping and an unknown state, err failed,
+  quiet stopped, off disabled, and the accent reconfiguring. The word is always there, so the state is never colour
+  alone. A failed box (`failed`) has an `--pb-err` border and its header on `--pb-err-soft`, its line in `--pb-err`. A
+  disabled one (`disabled`) has a dashed border, a hatched stripe and muted words. `configuring` pulses the dot only,
+  never the text, and not at all under reduced motion (the Pill's `pulse`).
+- **The name and the type.** The name is the box's title, cut with an ellipsis and whole in its tooltip; the type is
+  its subtitle, the type's word as sent, in `--pb-muted`. Nothing in `web/` names a node type, so there are no
+  per-type icons or colours.
+- **The line** under the header is `health.ts`'s ([below](#a-nodes-health)), and the box has none while there is
+  nothing to say.
+- **The ports are stacked:** the inputs' rows, their handles on the left edge, then the outputs', theirs on the right,
+  each row the box's width with the port's name toward its handle and its meter ([below](#meters)) in PortRow's
+  trailing slot. Side by side, a name and a meter (at least 48 px) do not fit in half the box.
+- **Its size is patchbay's.** The box is NodeBox's default width, `NODE_WIDTH` (240 px); `layout.ts`'s `nodeSize` is
+  patchbay's `nodeBoxSize` for its ports, its line (as `health.ts` would show it) and its footer (while it has a
+  companion strip), which dagre places by, and quick add places by `NODE_HEADER`, `NODE_PAD` and `NODE_ROW`.
+  `layout.test.ts` checks both against those exports. A line or strip that comes or goes later changes the box's
+  height, not its place.
+- **Handles** are PortRow's: a dot with a larger hit area, both patchbay's sizes (`HANDLE_SIZE`, `HANDLE_HIT`; the hit
+  area larger again under a coarse pointer). Each handle's id is `connect.ts`'s `handleId` (`in:<port>`,
+  `out:<port>`), passed through unchanged.
+- **Hints while a wire is drawn** are patchbay's `useConnectHints`
+  ([its docs](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/graph.md#useconnecthints)) over `connect.ts`'s
+  `connectRule` over the graph's routes, handed to every PortRow by `<ConnectHints>` around the canvas: the handle the drag started at is
+  `origin` (ringed in `--pb-accent`), every handle on the other side a drop on would make a route `ok` (grown, in
+  `--pb-ok`) and every other there `no` (in `--pb-off`, its row muted); the handles on the drag's own side show
+  nothing. From an output every input accepts but those it is already routed to, from an input every output but
+  those already routed to it (the editor accepts a drag from either end); a held route's port is `no` with the reason
+  "Already connected", which the status line says ([above](#the-canvas)). React Flow's own check on the drop is the same hook's, so a hint never promises what the drop refuses. The
+  hints change at a drag's start and end only, so a pointer move redraws no box. *Why patchbay's:* the owner's
+  principle (2026-11-26); before it, ear also marked the drag's own side `no`.
+- **Selection** is NodeBox's 2 px `--pb-accent` outline outside the border.
 - **A change of ports redraws the box in place.** `node.updated` with its new `inputs` and
   `outputs` ([control-port.md](control-port.md#changes-of-ports)) changes the node the editor holds,
-  not a new one: the box keeps its place, a surviving handle keeps its wires (the routes were never
-  removed, so they never go `pending`), a new handle comes unwired, and the counters and marks go
-  on.
+  not a new one: the box keeps its place, NodeBox has React Flow measure its handles again, a surviving handle keeps
+  its wires (the routes were never removed, so they never go `pending`), a new handle comes unwired, and the counters
+  and marks go on.
 
 ### Wires
 
-`web/src/wires.ts` holds the rules (`wires.test.ts`); `components/LevelEdge.tsx` draws them.
+Each route is patchbay's `Wire` ([its docs](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/graph.md#wire)):
+`components/LevelEdge.tsx` gives it what `web/src/wires.ts`'s `wireData` (`wires.test.ts`) makes of the route and its
+from port's level. *Why patchbay's:* the owner's principle is to take patchbay's model where it has the concept
+(2026-11-26).
 
-- **Colour by status, size by level.** Colour comes from the status class over `--ok`, `--warn`
-  and `--err`; an unknown status is drawn as pending. Width is 1.5 px plus 5 px at full scale, and
-  1.5 px more when selected. Opacity is 0.45 plus 0.55 at full scale. Every status but `linked` is
-  dashed and still.
-- **The flow.** A linked wire whose from port's rms is above the -60 dBFS floor shows a dash moving
-  from the output to the input at a fixed speed (`--motion-flow`). It means "signal", not how
-  loud. There is none under reduced motion, and none on pending, refused or an unknown status.
-  Not measured yet: the moving dash's cost at 30 level messages a second on a 20-wire graph. It
-  is owed in a browser's performance panel on the system test's graph; if it costs, the flow is
-  drawn only on the selected and hovered wires (`wires.ts`'s `flowing`).
-- **The status in words.** A refused wire carries `refused` at its midpoint (React Flow's
-  `EdgeLabelRenderer`). A status this editor does not know carries its own word, in `--muted`.
-- **Hover** thickens the wire by 1 px. Its tooltip names the two ends
-  (`noise:noise.mono → rec:record.right`) and, for a refused route, ear's detail.
+- **Colour by status.** Its tone is one of Wire's: `ok` for linked (`--pb-ok`), `quiet` for pending (`--pb-quiet`) and
+  `refused` (`--pb-err`); a status this editor does not know is drawn as pending. A pending route is one ear holds and
+  has not linked yet, a live state, so it is a dashed `Wire` in the quiet tone; patchbay's word "pending" is for a
+  request on its way, which is a ghost wire ([Requests in flight](#requests-in-flight)). *Why:* the owner kept
+  patchbay's grey for pending routes rather than an ear colour of its own (2026-11-26), and kept "pending" for a
+  request sent and not yet answered (2026-11-27), so patchbay 0.10.0 dropped Wire's own `pending` tone; patchbay 0.11.0 made `--pb-quiet` a slate grey, apart from the accent a selected wire is drawn in (owner, 2026-11-28). The Route
+  subject's words for those three statuses take the same colours. Selected, the wire is `--pb-accent` whatever its
+  status.
+- **Size by level.** Its emphasis is the from port's rms on the meters' scale (`levels.ts`'s `meterFraction`, the
+  -60 dBFS floor): 1.5 px to 3.5 px wide and from 45 % to full opacity. Every status but `linked` is dashed.
+- **The flow.** A linked wire whose from port's rms is above the floor shows dots moving from the output to the
+  input at a fixed speed (`--pb-motion-flow`). It means "signal", not how loud. There is none under reduced motion,
+  and none on pending, refused or an unknown status.
+- **The level without a rebuild.** A level message (about 30 a second) redraws each wire whose from port it moves,
+  and only that: Wire keeps its path, its flow and its hit path, and takes the level as a CSS variable on its group,
+  so a new level restyles the stroke and never rebuilds the path. Measured in headless Chromium on the `snapshot`
+  fixture's graph at 30 level messages a second, against ear's own wire before it: no path's `d` changed either way,
+  the style changes on the edges over 3 s fell from 635 to 270, the layouts over 5 s from 338 to 198, and script
+  time from 93 ms to 81 ms.
+- **The status in words.** A refused wire carries `refused` at its midpoint, and a status this editor does not know
+  its own word, on Wire's label.
+- **The tooltip**, on the wire's hit path, names the two ends (`noise:noise.mono → rec:record.right`) and, for a
+  refused route, ear's detail.
 
 ### Meters
 
-`web/src/meters.ts` holds the rules (`meters.test.ts`); `components/Meter.tsx` paints them.
+Each port's meter is patchbay's `Meter`
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/graph.md#meter)), fed by the level store:
+`components/Meter.tsx` gives it the port's level and a reset, and `web/src/meters.ts` (`meters.test.ts`) its
+tooltip's words. *Why patchbay's:* the owner chose that patchbay's Meter owns the dB scale (2026-11-26); ear
+takes its defaults, which `meters.test.ts` pins to what this section says.
 
-- **The scale is unchanged:** an rms bar and a peak tick, dBFS down to -60 (`levels.ts`).
-- **Three zones.** The bar uncovers three fixed zones on that scale: `--meter-low` below -18 dBFS,
-  `--meter-mid` from -18 to -6, `--meter-hot` above.
+- **The scale:** an rms bar and a peak tick, dBFS down to -60, the same floor as the wires' (`levels.ts`).
+- **Three zones.** The bar uncovers three fixed zones on that scale: `--pb-meter-low` below -18 dBFS,
+  `--pb-meter-mid` from -18 to -6, `--pb-meter-hot` above.
 - **Peak hold.** The tick holds its highest peak for 1.5 s, then falls at 20 dB/s, never below the
-  live peak and never below the floor.
-- **Clip lamp.** A peak at or over 0 dBFS (linear 1) lights the meter's right end for 2 s, and the
+  live peak, and is hidden at the floor.
+- **Clip lamp.** A peak at or over 0 dBFS (linear 1) lights a square at the meter's right end for 2 s, and the
   tooltip says "clipped".
-- **Outside React.** The meter subscribes to the level store, keeps its `PeakHold` in a ref, and
-  paints the bar, the tick, the lamp and the tooltip through refs. It animates on animation frames
-  only while the tick is above the live peak or the lamp is lit. A closed connection resets the
-  hold.
+- **Its words.** The tooltip, ear's through the meter's `labels.title`, says the peak and the rms in dBFS ("peak -6.0
+  dBFS, rms -12.0 dBFS", each number written by patchbay's `formatMeterDb`, one decimal, as Meter's own tooltip
+  writes it), or "silent" with nothing above the floor, refreshed at most four times a second while hovered. The meter is an image named for its
+  port (`<node>:<port> level` in the inspector's route panel, `<port> level` in a node box); the numbers are never announced.
+- **Outside React.** The meter subscribes to the level store and paints the bar, the tick, the lamp and the tooltip
+  through refs, animating on animation frames only while the tick is above the live peak or the lamp is lit. A
+  closed connection resets it: the bar empty, the hold and the lamp forgotten.
 - **Times** are taken on the browser's monotonic clock, as [Recent marks](#recent-marks) does.
 
 ## A node's health
 
 `web/src/health.ts` is the one place that turns a node's health members
-([control-port.md](control-port.md#node-health)) into the box's pill word, stripe style, line and enabled
-buttons; its tests cover every phase. The rules it follows:
+([control-port.md](control-port.md#node-health)) into the box's pill word and tone (the stripe's too), the minimap's state class, line and
+enabled buttons; its tests cover every phase. The rules it follows:
 
 - **Silence the operator asked for is never drawn as a fault.** `stopped` ("stopped until Start or
   a restart of ear") and `disabled` ("disabled in ear.conf") each have their own quiet style, apart
@@ -604,11 +838,12 @@ through the reducer into the badges drawn. *Why badges:* asked what the editor s
 hidden helpers, the owner chose small badges in the node's box, one per helper, its kind and a dot
 for ready, its drop count on hover; never boxes or handles of their own. The rules:
 
-- **A badge per companion,** in list order, along the box's bottom edge under the ports: its kind
-  as a short word (`card-playback` "card out", `card-capture` "card in", `rtp-receiver` "rtp",
-  `sink`, `source`) and a dot, filled (●) when `ready`, hollow (○) with dimmed text when not. A
-  kind this editor does not know is drawn by its own text, in the same neutral style. No list, or
-  an empty one, draws no strip (`white`, `sendspin`, a node from an ear without the feature).
+- **A badge per companion,** in list order, in the box's footer under the ports (NodeBox's `footer`), each
+  patchbay's `Badge`: its kind as a short word (`card-playback` "card out", `card-capture` "card in", `rtp-receiver`
+  "rtp", `sink`, `source`) and a dot, filled (●) in the ok tone when `ready`, hollow (○) in the off tone when not. A
+  kind this editor does not know is drawn by its own text, in the same style. The footer is one row and cuts badges
+  that do not fit. No list, or an empty one, draws no strip and no footer (`white`, `sendspin`, a node from an ear
+  without the feature).
 - **Totals in words.** The badge's tooltip and the node panel's "Companions" list give each one's
   name, word, bank, readiness and the total its counter carries since its configuration made it
   ("rec.writer (sink on writer): ready; 4096 frames dropped since it was made"; a source's
@@ -659,7 +894,7 @@ happened in the last minute. The rules:
   unknown counter may count anything (a total like `cycles`), so it is shown and never marked.
 - **A node's mark sits after its state word** in the box's header, while one of its own loss
   counters rose in the last minute: what happened to that node beyond the graph's losses. It is
-  apart from the companion strip at the box's bottom edge, whose badges mark their own counters
+  apart from the companion strip in the box's footer, whose badges mark their own counters
   (a sink's drops), so a mark in the header is the node's and one in the strip a helper's. Its
   tooltip gives the last minute's and the totals in words ("In the last minute: overran 1 time.
   Since it was added: missed 33 cycles, overran 3 times."). The graph's cuts never mark a node:
@@ -682,7 +917,10 @@ happened in the last minute. The rules:
 
 `web/src/marks.ts` is the one rule both marks follow, companions' badges and the counters'
 (`marks.test.ts`): each reads its counters from the graph, and `GraphMoves` keeps their last values
-and rises. The mark is an "!" in a circle (`WarnMark`).
+and rises. The mark is patchbay's `WarnMark`, an "!" in a circle
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.11.0/docs/components.md#state)): named by its words where it
+stands alone (a box's counter mark, a companion badge), and hidden from screen readers where its words are already the
+text beside it (the dropouts badge, the panel's companion list and counter tables).
 
 - **A rise is a value above the one last held** for the same counter. The first value seen (a
   snapshot's, a new node's), a value that fell and a counter seen again after the graph dropped it
@@ -708,8 +946,8 @@ port. Node.js comes from `web/.nvmrc` and the packages from `web/package-lock.js
 
 The tests cover the reducer against every `test/protocol` fixture, the graph file's state and the
 pane's logic (drafts, stale files, Save, refusals), the node panel's knobly box (`nodeText.ts`), the add-node
-form (`addText.ts`), the highlighting (`highlight.ts`, and that it never changes the text sent), the reconnecting client with a fake socket,
-the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (the hold, the fall, the lamp and the reset on a fake clock), the handles' cue (`connect.ts`), the box's sizes against `editor.css` (`layout.test.ts`), and the theme (`theme.ts`, and the contrast of every pair in both themes in `theme.test.ts`), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the sizes and the breakpoint against `editor.css` (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight and the ghosts (`requests.ts`), the toast queue and a refusal's words (`notices.ts`, replaying `errors.json`), the gutter (`gutter.ts`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands and ranking, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the shortcuts (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), the wire dropped on the pane (`connect.ts`), and when the view fits itself (`fit.ts`). There is no browser test runner:
+form (`addText.ts`), what the knobly boxes send (`sent.test.ts`), the reconnecting client with a fake socket,
+the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (a meter's words, and patchbay's scale pinned as stated here), the handles' rule (`connect.ts`'s `connectRule`, with a held route's refusal), the box's sizes against patchbay's exported geometry (`layout.test.ts`), and the tokens and the theme's first paint (`theme.test.ts`: every `var()` names a token, and `index.html` inlines patchbay's theme script), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the first sizes against AppShell's bounds and `editor.css`'s queries against patchbay's (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight, the ghost wires and the ghost node (`requests.ts`), the inspector's "Connect to" choices (`connect.ts`'s `portTargets`), the toast store on patchbay's queue and a refusal's words (`notices.ts`, replaying `errors.json`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands as patchbay's `CommandPalette` takes and ranks them, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the key bindings as patchbay's `findShortcut` runs them (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), and which quick add a double-click or a dropped wire asks for (`connect.ts`'s `quickAddKind`). patchbay's modules import their own stylesheets, which Node cannot load, so `vite.config.ts` has Vitest inline the package (and blank its styles) for the tests that call its pure helpers. There is no browser test runner:
 rendering is checked by eye. *Why:* a Playwright leg costs about 150 MB of browsers and a minute
 or two a CI run, while the logic sits in the reducer, client and rules, which Vitest covers
 against the same fixtures the server is tested with.
@@ -720,7 +958,17 @@ measured by the build before and after; the shell's design estimated under 15 KB
 over. The whole shell, from tokens to this, grew the script from 486.58 KB to 531.61 KB (155.24 KB to 169.68 KB
 gzipped) and the styles from 21.25 KB to 37.57 KB; the view's own fit, the segmented lifecycle bar and the theme
 icon, the palette's and the narrow top bar's fixes, and then phones and touch, brought them to 533.15 KB (170.25 KB
-gzipped) and 39.17 KB. No package was added for any of it.
+gzipped) and 39.17 KB. No package was added for any of it. patchbay was the first: with the node box, wires,
+meters and canvas tools on it, the build is 565.23 KB (181.55 KB gzipped) and 73.70 KB of styles, patchbay's own
+stylesheets among them, and Vite warns that the script is over 500 KB. patchbay 0.8.0, whose stylesheets carry its
+code editor and shell before the editor uses them, brought them to 565.36 KB (181.58 KB gzipped) and 78.17 KB. The
+knobly boxes on its `CodeEditor` made them 569.24 KB (182.55 KB gzipped), with knobly's highlighter in its own
+2.56 KB chunk, and 75.63 KB. The shell on its `AppShell`, with patchbay's `base.css`, made them 572.17 KB (183.34 KB
+gzipped) and 77.12 KB. patchbay 0.9.0, with the inspector's one header row, made them 572.43 KB (183.43 KB gzipped)
+and 77.94 KB. patchbay 0.10.0, whose stylesheets carry its new connecting, adding and diagnostics parts before the
+editor uses them, made them 575.56 KB (184.36 KB gzipped) and 87.01 KB. Taking those parts (the diagnostics' list, the connect status
+line, the empty canvas's hint, "Connect to", the ghost node and the palette at a point) made them 582.82 KB
+(186.63 KB gzipped) and 86.74 KB. patchbay 0.11.0, with its slate `quiet` tone and empty-canvas slot, makes them 582.99 KB (186.70 KB gzipped) and 87.29 KB.
 
 React Flow (`@xyflow/react`) was chosen over Rete.js (its own editor framework) and LiteGraph
 (drawn on a canvas, which makes per-port meters custom work).

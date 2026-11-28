@@ -2,14 +2,23 @@
 // badge beside "not realtime", and the panel's tables of every total, an unknown counter by its name and number. What
 // each shows is counters.ts's; every mark has its words, never colour alone.
 import type { CounterMark, CounterRow, DropoutBadge } from "../counters";
-import { WarnMark } from "./WarnMark";
+import { Badge, WarnMark } from "@mcurcio/patchbay/primitives";
+
+/** The mark alone, where its words are the text beside it. */
+function Glyph() {
+  return (
+    <span aria-hidden="true">
+      <WarnMark label="" />
+    </span>
+  );
+}
 
 /** The box's mark: nothing unless a loss counter of the node rose in the last minute. */
 export function NodeCounterMark({ mark }: { mark: CounterMark }) {
   if (!mark.warning) return null;
   return (
     <span className="counter-mark" title={mark.title}>
-      <WarnMark text={mark.warningText} />
+      <WarnMark label={mark.warningText} />
     </span>
   );
 }
@@ -18,12 +27,10 @@ export function NodeCounterMark({ mark }: { mark: CounterMark }) {
 export function DropoutsBadge({ badge }: { badge: DropoutBadge | undefined }) {
   if (badge === undefined) return null;
   return (
-    <span className="badge-dropouts" title={badge.title}>
-      <span className="warn-mark" aria-hidden="true">
-        !
-      </span>{" "}
+    <Badge tone="warn" title={badge.title}>
+      <Glyph />
       {badge.text}
-    </span>
+    </Badge>
   );
 }
 
@@ -44,10 +51,7 @@ export function CounterTable({ heading, rows }: { heading: string; rows: Counter
               <td>
                 {row.warning && (
                   <>
-                    <span className="warn-mark" aria-hidden="true">
-                      !
-                    </span>{" "}
-                    <span className="counter-recent">{row.warningText}</span>
+                    <Glyph /> <span className="counter-recent">{row.warningText}</span>
                   </>
                 )}
               </td>

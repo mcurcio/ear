@@ -1,10 +1,12 @@
 // The connection rules between the canvas (@xyflow/react) and the wire format
 // (docs/editor.md): a drag from an output port to an input port is route.add's
-// params; any other drag is refused before it reaches the server. Each port is one React Flow
-// handle whose id says its direction, so the rule needs nothing but the handles. While a wire is drawn, the ring on the
-// handles it can be dropped on follows the same rule (handleCue, docs/editor.md#the-node-box), so the ring never
-// promises what the drop refuses.
-import type { PortRef, RouteEnds } from "./protocol";
+// params, unless the graph already holds that route; any other drag is refused before it reaches the server. Each port
+// is one React Flow handle whose id says its direction, so the rule needs only the handles and the graph's routes. It
+// is patchbay's useConnectHints's rule (connectRule), so the hints on the handles while a wire is drawn, the status
+// line, the drop itself and the inspector's "Connect to" are judged by one rule (docs/editor.md#the-node-box), and a
+// hint never promises what the drop refuses. Every other refusal is ear's, after the drop.
+import { connectTargets, type CanConnect, type ConnectCandidate, type PortSide } from "@mcurcio/patchbay/graph";
+import type { Graph, PortRef, RouteEnds } from "./protocol";
 
 export type Direction = "in" | "out";
 
@@ -51,39 +53,68 @@ export function edgeId(route: RouteEnds): string {
   return JSON.stringify([route.from.node, route.from.port, route.to.node, route.to.port]);
 }
 
-/** The end a drag in progress started from: React Flow's fromHandle (its node and handle id). */
-export interface DragStart {
-  nodeId: string;
-  id?: string | null;
-}
-
-export type HandleCue = "idle" | "origin" | "target" | "dimmed";
+/** The rule's reason for a route the graph already holds: the status line's words over that port. */
+export const alreadyConnected = "Already connected";
 
 /**
- * How a handle is drawn while a wire is drawn from `from`: idle with no drag; origin for the handle the drag started
- * at; target for every handle a drop on would make a route (isValidConnection: from an output every input, from an
- * input every output); dimmed for every other.
+ * ear's rule as useConnectHints takes it, over the routes the graph holds: `from` is the drag's source handle, `to` its
+ * target, as React Flow reports. A drag between two outputs or two inputs is refused (false), one that would ask for a
+ * route already held is refused with alreadyConnected, and any other is accepted.
  */
-export function handleCue(from: DragStart | null, node: string, handle: string): HandleCue {
-  if (from === null) return "idle";
-  if (from.nodeId === node && from.id === handle) return "origin";
-  return isValidConnection({ source: from.nodeId, sourceHandle: from.id, target: node, targetHandle: handle })
-    ? "target"
-    : "dimmed";
-}
-
-/** What droppedOnPane reads of React Flow's onConnectEnd state (its FinalConnectionState). */
-export interface DragEnd {
-  isValid: boolean | null;
-  toNode: unknown | null;
-  fromHandle: { id?: string | null } | null;
+export function connectRule(routes: readonly RouteEnds[]): CanConnect {
+  const held = new Set(routes.map(edgeId));
+  return (from, to) => {
+    const route = routeFromConnection({
+      source: from.nodeId,
+      sourceHandle: from.handleId,
+      target: to.nodeId,
+      targetHandle: to.handleId,
+    });
+    if (route === null) return false;
+    return held.has(edgeId(route)) ? alreadyConnected : true;
+  };
 }
 
 /**
- * A wire dropped on empty canvas (docs/editor.md#adding-on-the-canvas): a drag from an output that ended on no node and
- * no valid handle. A drag from an input is not one: quick add follows an output's wire.
+ * Which quick add patchbay's useAddAt asked for (docs/editor.md#adding-on-the-canvas): `pane` for a double-click on
+ * empty canvas (no `from`), `wire` for a wire from an output dropped there, and none for a wire from an input, as quick
+ * add follows an output's wire.
  */
-export function droppedOnPane(state: DragEnd): boolean {
-  if (state.isValid === true || state.toNode !== null || state.fromHandle === null) return false;
-  return parseHandleId(state.fromHandle.id)?.direction === "out";
+export function quickAddKind(from?: { side: PortSide }): "pane" | "wire" | null {
+  if (from === undefined) return "pane";
+  return from.side === "output" ? "wire" : null;
+}
+
+/** One choice of the inspector's "Connect to" (docs/editor.md#the-inspector): the route it asks for, named by its far end. */
+export interface PortTarget {
+  /** The route's edge id, unique in the list: the option's value. */
+  key: string;
+  /** The far end as `node:port`. */
+  label: string;
+  ends: RouteEnds;
+}
+
+type Candidate = ConnectCandidate & { node: string; port: string };
+
+/**
+ * The ports one port may be joined to, for the inspector's "Connect to": patchbay's connectTargets over every port in
+ * the graph by connectRule over the graph's routes (the drag's and the drop's own rule, which refuses a route already
+ * held), in the graph's order.
+ */
+export function portTargets(graph: Graph, node: string, direction: Direction, port: string): PortTarget[] {
+  const candidates: Candidate[] = [];
+  for (const n of graph.nodes) {
+    for (const p of n.inputs) candidates.push({ nodeId: n.name, handleId: handleId("in", p), side: "input", node: n.name, port: p });
+    for (const p of n.outputs)
+      candidates.push({ nodeId: n.name, handleId: handleId("out", p), side: "output", node: n.name, port: p });
+  }
+  const self = { nodeId: node, handleId: handleId(direction, port) };
+  const side = direction === "in" ? "input" : "output";
+  const { accepted } = connectTargets(self, side, candidates, connectRule(graph.routes));
+  const here: PortRef = { node, port };
+  return accepted.map((target) => {
+    const there: PortRef = { node: target.node, port: target.port };
+    const ends: RouteEnds = direction === "in" ? { from: there, to: here } : { from: here, to: there };
+    return { key: edgeId(ends), label: `${target.node}:${target.port}`, ends };
+  });
 }

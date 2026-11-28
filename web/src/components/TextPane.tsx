@@ -1,16 +1,17 @@
-// The ear.conf drawer's body (docs/editor.md#the-drawer): banners for what a person must know (the file changed under
+// The ear.conf drawer's body (docs/editor.md#the-drawer): patchbay's Banners for what a person must know (the file changed under
 // the draft, the graph refused the file, a write failed, editor edits were dropped, a setting applies only at
-// restart), the file's text, editable, with a gutter of line numbers and a dot on each line a diagnostic names
-// (docs/editor.md#the-drawers-gutter), and its diagnostics (a click puts the caret there). The pane's state and Save
+// restart), the file's text, editable, in patchbay's CodeEditor (docs/editor.md#highlighting), its gutter marking each
+// line a diagnostic names, and its diagnostics listed in patchbay's DiagnosticList (a row's press puts the caret
+// there). The pane's state and Save
 // are useDrawer's, so the drawer's header and the top bar read the same status; the logic is pane.ts and drawer.ts,
 // and ear judges every text.
-import { useMemo, useRef } from "react";
+import { Banner, CodeEditor, DiagnosticList } from "@mcurcio/patchbay/composites";
+import { Button } from "@mcurcio/patchbay/primitives";
+import { useRef } from "react";
 import { formatNames } from "../drawer";
 import type { FileNotice } from "../graphFile";
-import { gutterLines } from "../gutter";
-import { offsetOf, shownDiagnostics } from "../pane";
+import { shownDiagnostics } from "../pane";
 import { useEditor } from "./hooks";
-import { KnoblyText } from "./KnoblyText";
 import type { DrawerModel } from "./useDrawer";
 
 function place(line: number, column: number): string {
@@ -28,74 +29,50 @@ export function TextPane({ drawer }: { drawer: DrawerModel }) {
   const { file, notices } = state;
   const text = useRef<HTMLTextAreaElement>(null);
 
-  const goTo = (line: number, column: number) => {
-    const area = text.current;
-    if (area === null) return;
-    const offset = offsetOf(area.value, line, column);
-    area.focus();
-    area.setSelectionRange(offset, offset);
-  };
 
+  // Marked in the gutter and read with the text, and listed under it, where a click puts the caret.
   const diagnostics = shownDiagnostics(pane);
-  // The list under the text stays the keyboard's and screen readers' way in; the gutter is hidden from them.
-  const lines = useMemo(() => gutterLines(pane.draft, diagnostics), [pane.draft, diagnostics]);
   const pending = file.pendingRestart.map((key) => formatNames[key]);
 
   return (
     <div className="text-pane">
       {pane.stale && (
-        <div className="banner banner-warn" role="status">
-          ear.conf changed; reload{" "}
-          <button type="button" onClick={() => dispatch({ kind: "reload" })}>
-            Reload
-          </button>
-        </div>
+        <Banner
+          tone="warn"
+          actions={
+            <Button size="sm" onClick={() => dispatch({ kind: "reload" })}>
+              Reload
+            </Button>
+          }
+        >
+          ear.conf changed; reload
+        </Banner>
       )}
       {file.refusal !== undefined && (
-        <div className="banner banner-error" role="alert">
+        <Banner tone="err">
           ear refused this file
           {file.refusal.line !== undefined && ` at ${place(file.refusal.line, file.refusal.column ?? 1)}`}:{" "}
           {file.refusal.message}. The graph keeps running{" "}
           {file.running !== undefined ? `version ${file.running}` : "nothing"}.
-        </div>
+        </Banner>
       )}
-      {file.writeFailed !== undefined && (
-        <div className="banner banner-error" role="alert">
-          ear could not write ear.conf: {file.writeFailed}
-        </div>
-      )}
+      {file.writeFailed !== undefined && <Banner tone="err">ear could not write ear.conf: {file.writeFailed}</Banner>}
       {notices.map((notice, index) => (
-        <div key={index} className="banner banner-error" role="alert">
-          {noticeText(notice)}{" "}
-          <button type="button" onClick={() => store.dismiss(notice)}>
-            Dismiss
-          </button>
-        </div>
+        <Banner key={index} tone="err" onDismiss={() => store.dismiss(notice)}>
+          {noticeText(notice)}
+        </Banner>
       ))}
-      {pending.length > 0 && (
-        <div className="banner banner-warn" role="status">
-          {pending.join(" and ")} change applies at restart
-        </div>
-      )}
-      <KnoblyText
+      {pending.length > 0 && <Banner tone="warn">{pending.join(" and ")} change applies at restart</Banner>}
+      <CodeEditor
         ref={text}
-        rows={20}
+        className="text-pane-code"
+        aria-label="ear.conf"
+        language="knobly"
         value={pane.draft}
-        onEdit={(draft) => dispatch({ kind: "edit", text: draft })}
-        gutter={lines}
-        onGutterGo={goTo}
+        onChange={(draft) => dispatch({ kind: "edit", text: draft })}
+        diagnostics={diagnostics}
       />
-      {diagnostics.length > 0 && (
-        <ul className="diagnostics">
-          {diagnostics.map((diagnostic, index) => (
-            <li key={index} className={`diagnostic diagnostic-${diagnostic.severity}`}>
-              <button type="button" onClick={() => goTo(diagnostic.line, diagnostic.column)}>
-                {place(diagnostic.line, diagnostic.column)} {diagnostic.code} {diagnostic.message}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+      <DiagnosticList diagnostics={diagnostics} editor={text} />
     </div>
   );
 }

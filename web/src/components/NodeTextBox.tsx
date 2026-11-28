@@ -1,17 +1,17 @@
 // The node panel's knobly box (docs/editor.md#the-node-panels-text): the node's own statement as ear.conf has it,
-// editable, in the pane's textarea style with its diagnostics under it (a click puts the caret there) and Save
-// (node.setText), which says Saving… while its request is on its way (docs/editor.md#requests-in-flight). The logic is
-// nodeText.ts; ear judges every text.
+// editable, in patchbay's CodeEditor as the pane's is, with its diagnostics under it in patchbay's
+// DiagnosticList (a row's press puts the caret there)
+// and Save (node.setText), which says Saving… while its request is on its way
+// (docs/editor.md#requests-in-flight). The logic is nodeText.ts; ear judges every text.
+import { Banner, CodeEditor, DiagnosticList } from "@mcurcio/patchbay/composites";
+import { Button } from "@mcurcio/patchbay/primitives";
 import { useEffect, useReducer, useRef } from "react";
 import { placedRefusal } from "../notices";
 import { boxFrom, boxNote, boxReduce, canSave, saveRequest } from "../nodeText";
-import { offsetOf } from "../pane";
 import type { GraphFile, RpcErrorCode } from "../protocol";
 import { isAsking } from "../requests";
 import { RpcError } from "../rpc";
 import { useEditor, useRequests } from "./hooks";
-import { KnoblyText } from "./KnoblyText";
-import { Spinner } from "./Spinner";
 
 export function NodeTextBox({ node, file }: { node: string; file: GraphFile }) {
   const editor = useEditor();
@@ -31,13 +31,6 @@ export function NodeTextBox({ node, file }: { node: string; file: GraphFile }) {
     });
   };
 
-  const goTo = (line: number, column: number) => {
-    const area = text.current;
-    if (area === null) return;
-    const offset = offsetOf(area.value, line, column);
-    area.focus();
-    area.setSelectionRange(offset, offset);
-  };
 
   const note = boxNote(box);
   const lines = Math.min(12, Math.max(3, box.draft.split("\n").length + 1));
@@ -48,37 +41,32 @@ export function NodeTextBox({ node, file }: { node: string; file: GraphFile }) {
         Its text in ear.conf{box.base.text.kind !== "own" && " (read-only)"}
       </label>
       {box.stale && (
-        <div className="banner banner-warn" role="status">
-          {node} changed in ear.conf; reload{" "}
-          <button type="button" onClick={() => dispatch({ kind: "reload" })}>
-            Reload
-          </button>
-        </div>
+        <Banner
+          tone="warn"
+          actions={
+            <Button size="sm" onClick={() => dispatch({ kind: "reload" })}>
+              Reload
+            </Button>
+          }
+        >
+          {node} changed in ear.conf; reload
+        </Banner>
       )}
       {note !== "" && <div className="node-text-note">{note}</div>}
-      <KnoblyText
+      <CodeEditor
         id={`node-text-${node}`}
         ref={text}
         rows={lines}
+        language="knobly"
         readOnly={box.base.text.kind !== "own"}
         value={box.draft}
-        onEdit={(draft) => dispatch({ kind: "edit", text: draft })}
+        onChange={(draft) => dispatch({ kind: "edit", text: draft })}
+        diagnostics={box.errors}
       />
-      {box.errors.length > 0 && (
-        <ul className="diagnostics">
-          {box.errors.map((diagnostic, index) => (
-            <li key={index} className={`diagnostic diagnostic-${diagnostic.severity}`}>
-              <button type="button" onClick={() => goTo(diagnostic.line, diagnostic.column)}>
-                {diagnostic.line}:{diagnostic.column} {diagnostic.code} {diagnostic.message}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      <button type="button" disabled={saving || !canSave(box)} aria-busy={saving || undefined} onClick={save}>
-        {saving && <Spinner />}
-        {saving ? "Saving…" : "Save"}
-      </button>
+      <DiagnosticList diagnostics={box.errors} editor={text} />
+      <Button busy={saving} busyLabel="Saving…" disabled={!saving && !canSave(box)} onClick={save}>
+        Save
+      </Button>
     </div>
   );
 }

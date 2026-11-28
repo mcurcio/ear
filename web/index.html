@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="light dark" />
     <title>EAR</title>
+    <!-- patchbay's themeScript(themeKey()): applies a kept light or dark choice before the first paint
+         (docs/editor.md#tokens-and-themes); theme.test.ts holds it equal to what patchbay generates. -->
+    <script>try{var c=JSON.parse(localStorage.getItem("ear-editor/1/theme"));if(c==="light"||c==="dark")document.documentElement.setAttribute("data-theme",c)}catch(e){}</script>
   </head>
   <body>
     <div id="root"></div>
