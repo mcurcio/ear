@@ -36,7 +36,8 @@ along the bottom ([below](#the-shell)).
   lifecycle calls, removing, `ear.conf`'s actions, the view and the theme; `?` lists the shortcuts
   ([below](#the-palette-and-the-keyboard)).
 - **Adding on the canvas:** a double-click on empty canvas, or an output's wire dropped there, opens a type list at
-  the pointer, and the new node lands where it was asked for ([below](#adding-on-the-canvas)).
+  the pointer, and the new node lands where it was asked for; a right-click (a long-press on a touch screen) opens the
+  whole palette there ([below](#adding-on-the-canvas)).
 - **Kept in the browser:** node places, the inspector's width, the drawer's height and open state, the minimap and
   the theme survive a reload ([below](#what-the-browser-keeps)).
 - **The ear.conf drawer** holds the pane: `ear.conf` in patchbay's code editor, highlighted, with line numbers and a
@@ -495,6 +496,14 @@ settings as JSON, each in a `Field`, which names its control and spaces the form
   dagre, even over a kept place. A node arriving under another name (the person renamed it) drops the hint, as does
   selecting something (which drops the form, [above](#the-inspector)), and that node is laid out as before. A
   typed draft is never overwritten by the template ([above](#adding-a-node)).
+- **The palette at a point.** A right-click, or a long-press on a touch screen (500 ms without moving), on a node or
+  on empty canvas opens the whole palette at that point instead of the browser's menu: patchbay's `useContextAt`
+  ([its docs](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/graph.md#usecontextat)), which times the
+  long-press, as iOS sends no contextmenu, and swallows the click its lift makes. On a node, that node is selected
+  first, so its commands (its lifecycle calls, Remove) lead the list; on empty canvas the selection stays, and an
+  `Add <type>` chosen there lands at the point, as quick add's does. A handle, a wire or a panel keeps the browser's
+  menu. Its keyboard path is `⌘K`, whose commands act on the selection. *Why:* patchbay's model: there is no context
+  menu of its own, the palette opens at the point ([U66](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/ux-rules.md#the-view-and-the-canvas)).
 - **No route is asked.** A wire dropped on empty canvas places the node at the drop, and the person draws the wire.
   *Why:* the owner chose that a wire dropped there asks for no route: it would be a second request the person did
   not see, and a type's first input is not always the one they mean.
@@ -933,7 +942,7 @@ port. Node.js comes from `web/.nvmrc` and the packages from `web/package-lock.js
 The tests cover the reducer against every `test/protocol` fixture, the graph file's state and the
 pane's logic (drafts, stale files, Save, refusals), the node panel's knobly box (`nodeText.ts`), the add-node
 form (`addText.ts`), what the knobly boxes send (`sent.test.ts`), the reconnecting client with a fake socket,
-the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (a meter's words, and patchbay's scale pinned as stated here), the handles' rule (`connect.ts`'s `canConnect`), the box's sizes against patchbay's exported geometry (`layout.test.ts`), and the tokens and the theme's first paint (`theme.test.ts`: every `var()` names a token, and `index.html` inlines patchbay's theme script), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the first sizes against AppShell's bounds and `editor.css`'s queries against patchbay's (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight and the ghosts (`requests.ts`), the toast store on patchbay's queue and a refusal's words (`notices.ts`, replaying `errors.json`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands as patchbay's `CommandPalette` takes and ranks them, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the key bindings as patchbay's `findShortcut` runs them (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), and which quick add a double-click or a dropped wire asks for (`connect.ts`'s `quickAddKind`). patchbay's modules import their own stylesheets, which Node cannot load, so `vite.config.ts` has Vitest inline the package (and blank its styles) for the tests that call its pure helpers. There is no browser test runner:
+the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (a meter's words, and patchbay's scale pinned as stated here), the handles' rule (`connect.ts`'s `canConnect`), the box's sizes against patchbay's exported geometry (`layout.test.ts`), and the tokens and the theme's first paint (`theme.test.ts`: every `var()` names a token, and `index.html` inlines patchbay's theme script), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the first sizes against AppShell's bounds and `editor.css`'s queries against patchbay's (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight, the ghost wires and the ghost node (`requests.ts`), the inspector's "Connect to" choices (`connect.ts`'s `portTargets`), the toast store on patchbay's queue and a refusal's words (`notices.ts`, replaying `errors.json`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands as patchbay's `CommandPalette` takes and ranks them, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the key bindings as patchbay's `findShortcut` runs them (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), and which quick add a double-click or a dropped wire asks for (`connect.ts`'s `quickAddKind`). patchbay's modules import their own stylesheets, which Node cannot load, so `vite.config.ts` has Vitest inline the package (and blank its styles) for the tests that call its pure helpers. There is no browser test runner:
 rendering is checked by eye. *Why:* a Playwright leg costs about 150 MB of browsers and a minute
 or two a CI run, while the logic sits in the reducer, client and rules, which Vitest covers
 against the same fixtures the server is tested with.
@@ -952,7 +961,9 @@ knobly boxes on its `CodeEditor` made them 569.24 KB (182.55 KB gzipped), with k
 2.56 KB chunk, and 75.63 KB. The shell on its `AppShell`, with patchbay's `base.css`, made them 572.17 KB (183.34 KB
 gzipped) and 77.12 KB. patchbay 0.9.0, with the inspector's one header row, made them 572.43 KB (183.43 KB gzipped)
 and 77.94 KB. patchbay 0.10.0, whose stylesheets carry its new connecting, adding and diagnostics parts before the
-editor uses them, made them 575.56 KB (184.36 KB gzipped) and 87.01 KB.
+editor uses them, made them 575.56 KB (184.36 KB gzipped) and 87.01 KB. Taking those parts (the diagnostics' list, the connect status
+line, the empty canvas's hint, "Connect to", the ghost node and the palette at a point) made them 582.82 KB
+(186.63 KB gzipped) and 86.74 KB.
 
 React Flow (`@xyflow/react`) was chosen over Rete.js (its own editor framework) and LiteGraph
 (drawn on a canvas, which makes per-port meters custom work).

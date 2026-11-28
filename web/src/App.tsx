@@ -183,6 +183,15 @@ export function App({ prefs }: { prefs: Prefs }) {
     (at: { x: number; y: number }, place: Position) => setPalette({ scope: "add", at, place }),
     [],
   );
+  // A right-click or a long-press (docs/editor.md#adding-on-the-canvas): every command at the point, the pressed node
+  // selected first so its commands lead; an Add from empty canvas lands there.
+  const onContext = useCallback(
+    (at: { x: number; y: number }, node: string | undefined, place: Position) => {
+      if (node !== undefined) canvas.select({ nodes: [node], routes: [] });
+      setPalette({ scope: "all", at, place: node === undefined ? place : undefined });
+    },
+    [canvas.select],
+  );
   const place = palette?.place;
   const items = useMemo(() => paletteItems(commands, (action) => run(action, place)), [commands, run, place]);
   const closePalette = useCallback(() => setPalette(null), []);
@@ -272,6 +281,7 @@ export function App({ prefs }: { prefs: Prefs }) {
           onToggleMinimap={toggleMinimap}
           onShow={canvas.select}
           onQuickAdd={onQuickAdd}
+          onContext={onContext}
           follow={followProps}
           onFit={fit}
           onHoldView={holdView}

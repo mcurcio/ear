@@ -7,7 +7,9 @@
 // (why a port refuses a wire, from the same rule), patchbay's EmptyCanvasHint while ear's graph has no node, and the
 // toasts at its bottom right (docs/editor.md#toasts). Quick add (docs/editor.md#adding-on-the-canvas) is
 // patchbay's useAddAt: a double-click on empty canvas (in place of React Flow's zoom) or an output's wire dropped there
-// opens the Add list at the pointer, with where the node should land; no route is asked for. The view follows the
+// opens the Add list at the pointer, with where the node should land; no route is asked for. A right-click, or a
+// long-press on a touch screen, on a node or empty canvas is patchbay's useContextAt: the palette at that point, with
+// the pressed node selected so its commands come first (docs/editor.md#adding-on-the-canvas). The view follows the
 // graph through App's useFollowFit, whose handlers are merged here with the others.
 import {
   CanvasTools,
@@ -18,9 +20,11 @@ import {
   mergeFlowProps,
   useAddAt,
   useConnectHints,
+  useContextAt,
   type FollowFitFlowProps,
   type GhostNodeNode,
   type OnAddAt,
+  type OnContextAt,
 } from "@mcurcio/patchbay/graph";
 import {
   Background,
@@ -68,6 +72,7 @@ export const Canvas = memo(function Canvas({
   onToggleMinimap,
   onShow,
   onQuickAdd,
+  onContext,
   follow,
   onFit,
   onHoldView,
@@ -83,6 +88,11 @@ export const Canvas = memo(function Canvas({
   onShow: (selection: Selection) => void;
   /** Quick add: the screen point to open the Add list at, and where on the flow the node should land. */
   onQuickAdd: (at: { x: number; y: number }, place: Position) => void;
+  /**
+   * A right-click or a long-press: the screen point to open the palette at, the node pressed (none on empty canvas),
+   * and where an Add from there should land.
+   */
+  onContext: (at: { x: number; y: number }, node: string | undefined, place: Position) => void;
   /** useFollowFit's handlers for <ReactFlow>: the person's own move, when it changes the view, stops following. */
   follow: FollowFitFlowProps;
   /** Fit, asked for by the person: fits and follows again. */
@@ -102,12 +112,17 @@ export const Canvas = memo(function Canvas({
     [onQuickAdd, flowToScreenPosition],
   );
   const addAt = useAddAt(onAddAt);
+  const onContextAt = useCallback<OnContextAt>(
+    ({ point, at, node }) => onContext(at, node?.type === "ear" ? node.id : undefined, quickPlace(point, "pane")),
+    [onContext],
+  );
+  const contextAt = useContextAt(onContextAt);
 
   // The handles' hints while a wire is drawn, and the drop's own check, by one rule; quick add and following beside it.
   const hints = useConnectHints(canConnect);
   const flowProps = useMemo(
-    () => mergeFlowProps(hints.flowProps, addAt.flowProps, follow),
-    [hints.flowProps, addAt.flowProps, follow],
+    () => mergeFlowProps(hints.flowProps, addAt.flowProps, contextAt.flowProps, follow),
+    [hints.flowProps, addAt.flowProps, contextAt.flowProps, follow],
   );
 
   // An add on its way, where quick add holds its place (docs/editor.md#requests-in-flight): a request, never a node, so
