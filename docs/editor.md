@@ -101,7 +101,7 @@ model; nothing of ear's look was kept for its own sake.
 | patchbay's (drawn from props) | ear's |
 |---|---|
 | Colours, radii, shadows, durations, faces and type sizes ([below](#tokens-and-themes)) | The words: `shell.ts`, `drawer.ts`, `pane.ts`, `notices.ts`'s refusal wording, `health.ts`'s, `meters.ts`'s tooltip |
-| The shell's layout, sheets, splitters and bounds; buttons, pills, badges, facts, fields, banners, status words, the palette, the shortcut sheet, the toasts, the code editor | The rules: `health.ts`, `companions.ts`, `counters.ts`, `marks.ts`, `selection.ts`, `requests.ts`, `wires.ts` (as the adapter onto Wire's props), `connect.ts`'s `canConnect` |
+| The shell's layout, sheets, splitters and bounds; buttons, pills, badges, facts, fields, banners, status words, the palette, the shortcut sheet, the toasts, the code editor and its diagnostics' list | The rules: `health.ts`, `companions.ts`, `counters.ts`, `marks.ts`, `selection.ts`, `requests.ts`, `wires.ts` (as the adapter onto Wire's props), `connect.ts`'s `canConnect` |
 | The node box, port rows, wires, ghost wires, connect hints, meters, the canvas tools, `useAddAt`, `useFollowFit` | The protocol, the session and its stores: `protocol.ts`, `rpc.ts`, `editor.ts`, `graph.ts`, `graphFile.ts`, `levels.ts` |
 | Kept values and the theme (`usePersistentState`, `useTheme`), key labels and matching (`useShortcuts`), palette ranking, the toast queue's mechanics, knobly highlighting | Storage keys and checks (`prefs.ts`), the command catalogue (`palette.ts`), the key bindings (`keys.ts`), first placement (`layout.ts`, dagre), the subject the inspector shows, Escape's order among ear's own surfaces |
 
@@ -114,9 +114,7 @@ model; nothing of ear's look was kept for its own sake.
 - **The pin.** `web/package.json` pins `@mcurcio/patchbay` exactly, and every bump is its own `build(deps)` change
   (a patch release of ear). Its links here name the release pinned.
 - **What ear still draws itself,** each because patchbay has no matching concept: the counters' tables
-  (`Counters.tsx`, a plain table), the lifecycle bar's segmented row (patchbay's Buttons in ear's row), the
-  diagnostics listed under each knobly box (plain buttons that put the caret, as CodeEditor marks but does not list
-  them), the route panel's `node:port` buttons, the JSON settings textareas for an ear without `node-text` (a schema
+  (`Counters.tsx`, a plain table), the lifecycle bar's segmented row (patchbay's Buttons in ear's row), the route panel's `node:port` buttons, the JSON settings textareas for an ear without `node-text` (a schema
   form waits for slice 5's type schema; the owner deferred patchbay's), the inspector's several-selected list, the
   companions' list in the node panel, the minimap's state colours and the wordmark. `editor.css` gives these plain
   controls ear's base rules, which pass by every `pb-` element.
@@ -506,8 +504,13 @@ refuses or diagnoses a text. What ear keeps:
 - **The diagnostics are ear's.** Each box hands `CodeEditor` the diagnostics ear placed in its text (the pane's
   `shownDiagnostics`, the box's and the form's `errors`), as they come off the wire: knobly's and ear's codes, a
   severity it may not know (drawn with patchbay's neutral mark). They are marked in the gutter and under the text and
-  read with the textarea, and are also listed under the box as buttons, where a click puts the caret at the place
-  (`pane.ts`'s `offsetOf`), as a press on a gutter mark does. An `error` span in the highlighting is a token that does
+  read with the textarea, and are also listed under the box by patchbay's `DiagnosticList`
+  ([its docs](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/components.md#code)): a count ("No problems", "2
+  problems") in a polite status line that is there from the start, then a row per diagnostic in CodeEditor's own words
+  ("Line 3, column 5: error unknown-type: …") after its severity's mark, each a button that puts the caret at its
+  place, as a press on a gutter mark does. *Why patchbay's:* the owner's principle (2026-11-26); it replaced ear's own
+  plain list (`3:5 unknown-type …`), so what a gutter mark's tooltip says is written out in the same words where
+  touch and the keyboard reach it (owner, 2026-11-27: no fact only in a tooltip). An `error` span in the highlighting is a token that does
   not lex (a stray character, an unterminated string), never a diagnostic.
 - **What is sent is the text as typed.** A textarea holds `\n` only, so a CRLF file is shown, and edited, with
   `\n`; the drafts' stale and dirty logic and what Save and Add send are as above, and an unedited draft is never

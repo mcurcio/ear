@@ -1,15 +1,16 @@
 // The ear.conf drawer's body (docs/editor.md#the-drawer): patchbay's Banners for what a person must know (the file changed under
 // the draft, the graph refused the file, a write failed, editor edits were dropped, a setting applies only at
 // restart), the file's text, editable, in patchbay's CodeEditor (docs/editor.md#highlighting), its gutter marking each
-// line a diagnostic names, and its diagnostics listed (a click puts the caret there). The pane's state and Save
+// line a diagnostic names, and its diagnostics listed in patchbay's DiagnosticList (a row's press puts the caret
+// there). The pane's state and Save
 // are useDrawer's, so the drawer's header and the top bar read the same status; the logic is pane.ts and drawer.ts,
 // and ear judges every text.
-import { Banner, CodeEditor } from "@mcurcio/patchbay/composites";
+import { Banner, CodeEditor, DiagnosticList } from "@mcurcio/patchbay/composites";
 import { Button } from "@mcurcio/patchbay/primitives";
 import { useRef } from "react";
 import { formatNames } from "../drawer";
 import type { FileNotice } from "../graphFile";
-import { offsetOf, shownDiagnostics } from "../pane";
+import { shownDiagnostics } from "../pane";
 import { useEditor } from "./hooks";
 import type { DrawerModel } from "./useDrawer";
 
@@ -28,13 +29,6 @@ export function TextPane({ drawer }: { drawer: DrawerModel }) {
   const { file, notices } = state;
   const text = useRef<HTMLTextAreaElement>(null);
 
-  const goTo = (line: number, column: number) => {
-    const area = text.current;
-    if (area === null) return;
-    const offset = offsetOf(area.value, line, column);
-    area.focus();
-    area.setSelectionRange(offset, offset);
-  };
 
   // Marked in the gutter and read with the text, and listed under it, where a click puts the caret.
   const diagnostics = shownDiagnostics(pane);
@@ -78,17 +72,7 @@ export function TextPane({ drawer }: { drawer: DrawerModel }) {
         onChange={(draft) => dispatch({ kind: "edit", text: draft })}
         diagnostics={diagnostics}
       />
-      {diagnostics.length > 0 && (
-        <ul className="diagnostics">
-          {diagnostics.map((diagnostic, index) => (
-            <li key={index} className={`diagnostic diagnostic-${diagnostic.severity}`}>
-              <button type="button" onClick={() => goTo(diagnostic.line, diagnostic.column)}>
-                {place(diagnostic.line, diagnostic.column)} {diagnostic.code} {diagnostic.message}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+      <DiagnosticList diagnostics={diagnostics} editor={text} />
     </div>
   );
 }

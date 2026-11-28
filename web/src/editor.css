@@ -323,30 +323,6 @@
   width: auto;
 }
 
-/* The knobly boxes' diagnostics, listed under the text as buttons that put the caret at their place. */
-.diagnostics {
-  list-style: none;
-  margin: 4px 0;
-  padding: 0;
-}
-
-.diagnostic button {
-  border: none;
-  background: none;
-  padding: 1px 0;
-  text-align: left;
-  cursor: pointer;
-  font-family: var(--pb-font-code);
-}
-
-.diagnostic-error button {
-  color: var(--pb-err);
-}
-
-.diagnostic-warning button {
-  color: var(--pb-warn);
-}
-
 /* A node's companions (docs/editor.md#companions): patchbay's Badges in one row in NodeBox's footer, which cuts what
    does not fit; not ready is a hollow dot and the off tone, never colour alone. In the node panel's list the dot is
    in the ok tone. */
