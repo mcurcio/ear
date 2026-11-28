@@ -737,7 +737,8 @@ takes its defaults, which `meters.test.ts` pins to what this section says.
 - **Clip lamp.** A peak at or over 0 dBFS (linear 1) lights a square at the meter's right end for 2 s, and the
   tooltip says "clipped".
 - **Its words.** The tooltip, ear's through the meter's `labels.title`, says the peak and the rms in dBFS ("peak -6.0
-  dBFS, rms -12.0 dBFS"), or "silent" with nothing above the floor, refreshed at most four times a second while hovered. The meter is an image named for its
+  dBFS, rms -12.0 dBFS", each number written by patchbay's `formatMeterDb`, one decimal, as Meter's own tooltip
+  writes it), or "silent" with nothing above the floor, refreshed at most four times a second while hovered. The meter is an image named for its
   port (`<node>:<port> level` in the inspector's route panel, `<port> level` in a node box); the numbers are never announced.
 - **Outside React.** The meter subscribes to the level store and paints the bar, the tick, the lamp and the tooltip
   through refs, animating on animation frames only while the tick is above the live peak or the lamp is lit. A
