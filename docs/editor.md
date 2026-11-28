@@ -20,8 +20,8 @@ along the bottom ([below](#the-shell)).
   from port's level: louder is thicker and brighter. A linked wire carrying signal shows a slow
   flow, a refused one says `refused` at its midpoint, and hovering a wire names its two ends
   ([below](#wires)).
-- **Editing:** a drag from an output to an input adds a route (any other drag is refused before
-  it reaches ear, and each port in the inspector has a "Connect to" choice that does the same from the keyboard); while a wire is drawn, every handle it can be dropped on grows in the ok colour and the
+- **Editing:** a drag from an output to an input adds a route (any other drag, and one that would
+  ask for a route the graph already holds, is refused before it reaches ear, and each port in the inspector has a "Connect to" choice that does the same from the keyboard); while a wire is drawn, every handle it can be dropped on grows in the ok colour and the
   rest turn grey ([below](#the-node-box)); the delete key removes the selected wire or node; the inspector
   adds nodes from a statement in knobly (its Graph subject, [below](#adding-a-node)), edits the
   selected node's own text in knobly (its Node subject, [below](#the-node-panels-text)), both as
@@ -102,7 +102,7 @@ model; nothing of ear's look was kept for its own sake.
 | patchbay's (drawn from props) | ear's |
 |---|---|
 | Colours, radii, shadows, durations, faces and type sizes ([below](#tokens-and-themes)) | The words: `shell.ts`, `drawer.ts`, `pane.ts`, `notices.ts`'s refusal wording, `health.ts`'s, `meters.ts`'s tooltip |
-| The shell's layout, sheets, splitters and bounds; buttons, pills, badges, facts, fields, banners, status words, the palette, the shortcut sheet, the toasts, the code editor and its diagnostics' list | The rules: `health.ts`, `companions.ts`, `counters.ts`, `marks.ts`, `selection.ts`, `requests.ts`, `wires.ts` (as the adapter onto Wire's props), `connect.ts`'s `canConnect` |
+| The shell's layout, sheets, splitters and bounds; buttons, pills, badges, facts, fields, banners, status words, the palette, the shortcut sheet, the toasts, the code editor and its diagnostics' list | The rules: `health.ts`, `companions.ts`, `counters.ts`, `marks.ts`, `selection.ts`, `requests.ts`, `wires.ts` (as the adapter onto Wire's props), `connect.ts`'s `connectRule` |
 | The node box, port rows, wires, ghost wires, connect hints and the connect status line, meters, the canvas tools, the empty canvas's hint, `useAddAt`, `useFollowFit` | The protocol, the session and its stores: `protocol.ts`, `rpc.ts`, `editor.ts`, `graph.ts`, `graphFile.ts`, `levels.ts` |
 | Kept values and the theme (`usePersistentState`, `useTheme`), key labels and matching (`useShortcuts`), palette ranking, the toast queue's mechanics, knobly highlighting | Storage keys and checks (`prefs.ts`), the command catalogue (`palette.ts`), the key bindings (`keys.ts`), first placement (`layout.ts`, dagre), the subject the inspector shows, Escape's order among ear's own surfaces |
 
@@ -195,10 +195,13 @@ has the concept (2026-11-26).
   ([its docs](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/graph.md#connectstatus)), bottom centre: while a
   wire is drawn it says why the port under the pointer refuses it, and after a drop the rule refused, "Not connected"
   and why, until the next drag; its words come from the same `useConnectHints` as the hints and the drop check, in one
-  polite status region. ear's rule (`connect.ts`'s `canConnect`) refuses only a drop on the drag's own side, which is
-  no candidate, so today it never speaks; a refusal of ear's own (`route.add` refused) is the ghost wire's and a toast's
-  ([Feedback](#feedback)). *Why:* the owner's rule that no fact is only in a tooltip (2026-11-27): the status line is
-  where a port's refusal is in words.
+  polite status region. ear's rule (`connect.ts`'s `connectRule`) refuses a drop on the drag's own side, which is no
+  candidate and so never spoken of, and a route the graph already holds, with the words "Already connected": over a
+  port already routed to the drag's origin the line says "Already connected", and after a drop there "Not connected:
+  Already connected". Everything else is ear's to refuse after the drop: a refusal of ear's own (`route.add` refused)
+  is the ghost wire's and a toast's ([Feedback](#feedback)). *Why:* the owner's rule that no fact is only in a tooltip
+  (2026-11-27): the status line is where a port's refusal is in words; and the owner chose the one refusal the editor
+  can judge alone, a route that already exists, as the drag's (2026-11-28).
 - **The empty canvas.** While ear's graph holds no node, patchbay's `EmptyCanvasHint`
   ([its docs](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/graph.md#emptycanvashint)) sits top centre: "This
   graph has no nodes yet.", then patchbay's words for the add gestures ("Double-click to add a node, or press A", or
@@ -242,8 +245,9 @@ The Node subject lists the node's ports under "Ports", its inputs then its outpu
 ports a wire from that port could be dropped on, as `node:port` in the graph's order: `connect.ts`'s `portTargets`
 asks patchbay's `connectTargets`
 ([its docs](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/graph.md#connecttargets)) with the canvas's own
-rule, `canConnect`, so the list never offers what a drag would refuse, and leaves out the far ends of the routes the
-graph already holds from or to that port (`connect.test.ts`). Choosing one sends `route.add`, as a drop does: its
+rule, `connectRule`, so the list never offers what a drag would refuse: it is the rule's accepted list alone, and the
+rule refuses the routes the graph already holds from or to that port, so the list and the drag cannot disagree
+(`connect.test.ts`). Choosing one sends `route.add`, as a drop does: its
 ghost wire shows on the canvas while the request is on its way, the route appears on `route.added`, a refusal is a
 toast, and the choice goes back to "Connect to…". A port with nothing to join says "Nothing to connect to" and is
 disabled. Moving a node from the keyboard is React Flow's own (Enter selects the focused node, the arrow keys move it),
@@ -699,7 +703,7 @@ Slice 5's type-schema cache is designed to use this module too ([control-plane.m
 
 `components/EarNode.tsx` draws it with patchbay's `NodeBox`, one `PortRow` per port
 ([its docs](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/graph.md#nodebox)); ear gives it the words, the
-tone and the handle ids, and the handles' rule is `web/src/connect.ts`'s `canConnect`. *Why patchbay's:* the owner's
+tone and the handle ids, and the handles' rule is `web/src/connect.ts`'s `connectRule`. *Why patchbay's:* the owner's
 principle is to take patchbay's model where it has the concept (2026-11-26), and its geometry is exported so layout
 code sizes boxes by it (owner, 2026-11-26: NodeBox's geometry as exported constants, mirrored by tokens a brand
 may not change).
@@ -729,11 +733,12 @@ may not change).
   `out:<port>`), passed through unchanged.
 - **Hints while a wire is drawn** are patchbay's `useConnectHints`
   ([its docs](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/graph.md#useconnecthints)) over `connect.ts`'s
-  `canConnect`, handed to every PortRow by `<ConnectHints>` around the canvas: the handle the drag started at is
+  `connectRule` over the graph's routes, handed to every PortRow by `<ConnectHints>` around the canvas: the handle the drag started at is
   `origin` (ringed in `--pb-accent`), every handle on the other side a drop on would make a route `ok` (grown, in
   `--pb-ok`) and every other there `no` (in `--pb-off`, its row muted); the handles on the drag's own side show
-  nothing. From an output every input accepts, from an input every output (the editor accepts a drag from either
-  end). React Flow's own check on the drop is the same hook's, so a hint never promises what the drop refuses. The
+  nothing. From an output every input accepts but those it is already routed to, from an input every output but
+  those already routed to it (the editor accepts a drag from either end); a held route's port is `no` with the reason
+  "Already connected", which the status line says ([above](#the-canvas)). React Flow's own check on the drop is the same hook's, so a hint never promises what the drop refuses. The
   hints change at a drag's start and end only, so a pointer move redraws no box. *Why patchbay's:* the owner's
   principle (2026-11-26); before it, ear also marked the drag's own side `no`.
 - **Selection** is NodeBox's 2 px `--pb-accent` outline outside the border.
@@ -942,7 +947,7 @@ port. Node.js comes from `web/.nvmrc` and the packages from `web/package-lock.js
 The tests cover the reducer against every `test/protocol` fixture, the graph file's state and the
 pane's logic (drafts, stale files, Save, refusals), the node panel's knobly box (`nodeText.ts`), the add-node
 form (`addText.ts`), what the knobly boxes send (`sent.test.ts`), the reconnecting client with a fake socket,
-the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (a meter's words, and patchbay's scale pinned as stated here), the handles' rule (`connect.ts`'s `canConnect`), the box's sizes against patchbay's exported geometry (`layout.test.ts`), and the tokens and the theme's first paint (`theme.test.ts`: every `var()` names a token, and `index.html` inlines patchbay's theme script), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the first sizes against AppShell's bounds and `editor.css`'s queries against patchbay's (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight, the ghost wires and the ghost node (`requests.ts`), the inspector's "Connect to" choices (`connect.ts`'s `portTargets`), the toast store on patchbay's queue and a refusal's words (`notices.ts`, replaying `errors.json`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands as patchbay's `CommandPalette` takes and ranks them, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the key bindings as patchbay's `findShortcut` runs them (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), and which quick add a double-click or a dropped wire asks for (`connect.ts`'s `quickAddKind`). patchbay's modules import their own stylesheets, which Node cannot load, so `vite.config.ts` has Vitest inline the package (and blank its styles) for the tests that call its pure helpers. There is no browser test runner:
+the connection rules, levels and layout, `health.ts`, `companions.ts`, `counters.ts` and `marks.ts`, `wires.ts` (replaying the `snapshot` and `unknown-values` routes), `meters.ts` (a meter's words, and patchbay's scale pinned as stated here), the handles' rule (`connect.ts`'s `connectRule`, with a held route's refusal), the box's sizes against patchbay's exported geometry (`layout.test.ts`), and the tokens and the theme's first paint (`theme.test.ts`: every `var()` names a token, and `index.html` inlines patchbay's theme script), the shell's words (`shell.ts`: the pill's countdown, the engine and protocol chips, the facts), the first sizes against AppShell's bounds and `editor.css`'s queries against patchbay's (`sizes.ts`), the inspector's subject and Delete's requests (`selection.ts`), the drawer's words and when it opens (`drawer.ts`), the JSON settings form's parse (`settings.ts`), the wire's status words (`wires.ts`), tidy (`layout.ts`), the client's retry wait and the editor's connection view (`rpc.test.ts`, `editor.test.ts`), the requests in flight, the ghost wires and the ghost node (`requests.ts`), the inspector's "Connect to" choices (`connect.ts`'s `portTargets`), the toast store on patchbay's queue and a refusal's words (`notices.ts`, replaying `errors.json`), the session's `ask` on a fake socket (`editor.test.ts`), the palette's commands as patchbay's `CommandPalette` takes and ranks them, replaying the `lifecycle` and `unknown-values` fixtures (`palette.ts`), the key bindings as patchbay's `findShortcut` runs them (`keys.ts`), what the browser keeps, with throwing storage, bad values and the 30-day expiry (`prefs.ts`), placement hints and kept places (`layout.ts`), and which quick add a double-click or a dropped wire asks for (`connect.ts`'s `quickAddKind`). patchbay's modules import their own stylesheets, which Node cannot load, so `vite.config.ts` has Vitest inline the package (and blank its styles) for the tests that call its pure helpers. There is no browser test runner:
 rendering is checked by eye. *Why:* a Playwright leg costs about 150 MB of browsers and a minute
 or two a CI run, while the logic sits in the reducer, client and rules, which Vitest covers
 against the same fixtures the server is tested with.

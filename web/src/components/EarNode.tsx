@@ -5,7 +5,7 @@
 // nodePorts), the inputs' rows with their handles on the left and then the outputs' on the right, each a PortRow with its handle (connect.ts's handle id) and its level meter in the
 // trailing slot, in every phase; and in the footer the strip of its companions' badges (companions.ts,
 // docs/editor.md#companions), outside every handle. While a wire is drawn each PortRow takes its hint from the canvas's
-// ConnectHints (patchbay's useConnectHints over connect.ts's canConnect, the drop rule itself).
+// ConnectHints (patchbay's useConnectHints over connect.ts's connectRule, the drop rule itself).
 import { NodeBox, type PortSpec } from "@mcurcio/patchbay/graph";
 import type { Node, NodeProps } from "@xyflow/react";
 import { useEffect, useState } from "react";

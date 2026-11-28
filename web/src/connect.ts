@@ -1,9 +1,10 @@
 // The connection rules between the canvas (@xyflow/react) and the wire format
 // (docs/editor.md): a drag from an output port to an input port is route.add's
-// params; any other drag is refused before it reaches the server. Each port is one React Flow
-// handle whose id says its direction, so the rule needs nothing but the handles. It is patchbay's useConnectHints's
-// rule (canConnect), so the hints on the handles while a wire is drawn and the drop itself are judged by one rule
-// (docs/editor.md#the-node-box), and a hint never promises what the drop refuses.
+// params, unless the graph already holds that route; any other drag is refused before it reaches the server. Each port
+// is one React Flow handle whose id says its direction, so the rule needs only the handles and the graph's routes. It
+// is patchbay's useConnectHints's rule (connectRule), so the hints on the handles while a wire is drawn, the status
+// line, the drop itself and the inspector's "Connect to" are judged by one rule (docs/editor.md#the-node-box), and a
+// hint never promises what the drop refuses. Every other refusal is ear's, after the drop.
 import { connectTargets, type CanConnect, type ConnectCandidate, type PortSide } from "@mcurcio/patchbay/graph";
 import type { Graph, PortRef, RouteEnds } from "./protocol";
 
@@ -52,9 +53,27 @@ export function edgeId(route: RouteEnds): string {
   return JSON.stringify([route.from.node, route.from.port, route.to.node, route.to.port]);
 }
 
-/** ear's rule as useConnectHints takes it: `from` is the drag's source handle, `to` its target, as React Flow reports. */
-export const canConnect: CanConnect = (from, to) =>
-  isValidConnection({ source: from.nodeId, sourceHandle: from.handleId, target: to.nodeId, targetHandle: to.handleId });
+/** The rule's reason for a route the graph already holds: the status line's words over that port. */
+export const alreadyConnected = "Already connected";
+
+/**
+ * ear's rule as useConnectHints takes it, over the routes the graph holds: `from` is the drag's source handle, `to` its
+ * target, as React Flow reports. A drag between two outputs or two inputs is refused (false), one that would ask for a
+ * route already held is refused with alreadyConnected, and any other is accepted.
+ */
+export function connectRule(routes: readonly RouteEnds[]): CanConnect {
+  const held = new Set(routes.map(edgeId));
+  return (from, to) => {
+    const route = routeFromConnection({
+      source: from.nodeId,
+      sourceHandle: from.handleId,
+      target: to.nodeId,
+      targetHandle: to.handleId,
+    });
+    if (route === null) return false;
+    return held.has(edgeId(route)) ? alreadyConnected : true;
+  };
+}
 
 /**
  * Which quick add patchbay's useAddAt asked for (docs/editor.md#adding-on-the-canvas): `pane` for a double-click on
@@ -79,8 +98,8 @@ type Candidate = ConnectCandidate & { node: string; port: string };
 
 /**
  * The ports one port may be joined to, for the inspector's "Connect to": patchbay's connectTargets over every port in
- * the graph by canConnect (the drag's and the drop's own rule), in the graph's order, less the far ends of the routes
- * the graph already holds from or to it, which a choice would only ask for again.
+ * the graph by connectRule over the graph's routes (the drag's and the drop's own rule, which refuses a route already
+ * held), in the graph's order.
  */
 export function portTargets(graph: Graph, node: string, direction: Direction, port: string): PortTarget[] {
   const candidates: Candidate[] = [];
@@ -90,15 +109,12 @@ export function portTargets(graph: Graph, node: string, direction: Direction, po
       candidates.push({ nodeId: n.name, handleId: handleId("out", p), side: "output", node: n.name, port: p });
   }
   const self = { nodeId: node, handleId: handleId(direction, port) };
-  const { accepted } = connectTargets(self, direction === "in" ? "input" : "output", candidates, canConnect);
-  const held = new Set(graph.routes.map(edgeId));
+  const side = direction === "in" ? "input" : "output";
+  const { accepted } = connectTargets(self, side, candidates, connectRule(graph.routes));
   const here: PortRef = { node, port };
-  const targets: PortTarget[] = [];
-  for (const target of accepted) {
+  return accepted.map((target) => {
     const there: PortRef = { node: target.node, port: target.port };
     const ends: RouteEnds = direction === "in" ? { from: there, to: here } : { from: here, to: there };
-    if (held.has(edgeId(ends))) continue;
-    targets.push({ key: edgeId(ends), label: `${target.node}:${target.port}`, ends });
-  }
-  return targets;
+    return { key: edgeId(ends), label: `${target.node}:${target.port}`, ends };
+  });
 }

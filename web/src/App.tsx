@@ -43,6 +43,9 @@ import { useDrawer } from "./components/useDrawer";
  * three sides, and at the bottom room for the canvas tools (at their tallest, on a touch screen) so they never cover a
  * box.
  */
+/** No graph yet: no routes, one array so the canvas's rule is not made again. */
+const noRoutes: readonly RouteEnds[] = [];
+
 const fitPadding = { top: "10%", right: "10%", bottom: "76px", left: "10%" } as const;
 
 /** The open palette: all commands or only Add; for quick add, the screen point it opens at and the node's place. */
@@ -286,6 +289,7 @@ export function App({ prefs }: { prefs: Prefs }) {
           onFit={fit}
           onHoldView={holdView}
           empty={graph !== null && graph.nodes.length === 0}
+          routes={graph?.routes ?? noRoutes}
         />
       </AppShell>
       <CommandPalette

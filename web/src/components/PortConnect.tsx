@@ -1,7 +1,8 @@
 // The Node subject's ports, each with a "Connect to" choice (docs/editor.md#the-inspector): the keyboard's way to draw
 // a route, listing the ports on the other side that the canvas's own rule accepts (connect.ts's portTargets over
-// patchbay's connectTargets and canConnect), so the choice never offers what a drag would refuse. Choosing one sends
-// route.add, as a drop does; the route appears when ear announces it, and its ghost wire shows while it is on its way.
+// patchbay's connectTargets and connectRule), so the choice never offers what a drag would refuse, a route already held
+// among it. Choosing one sends route.add, as a drop does; the route appears when ear announces it, and its ghost wire
+// shows while it is on its way.
 import { Field, Select } from "@mcurcio/patchbay/primitives";
 import { portTargets, type Direction } from "../connect";
 import type { Graph, GraphNode } from "../protocol";

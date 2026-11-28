@@ -36,7 +36,7 @@ import {
   type OnNodesChange,
 } from "@xyflow/react";
 import { memo, useCallback, useMemo } from "react";
-import { canConnect, quickAddKind } from "../connect";
+import { connectRule, quickAddKind } from "../connect";
 import { describeHealth } from "../health";
 import { shortcutKeys } from "../keys";
 import { quickPlace, type Position } from "../layout";
@@ -77,6 +77,7 @@ export const Canvas = memo(function Canvas({
   onFit,
   onHoldView,
   empty,
+  routes,
 }: {
   canvas: CanvasModel;
   onConnect: (connection: Connection) => void;
@@ -101,6 +102,8 @@ export const Canvas = memo(function Canvas({
   onHoldView: () => void;
   /** ear's graph is here and holds no node (and no add is on its way): the empty canvas's hint shows. */
   empty: boolean;
+  /** The routes ear's graph holds: the connect rule refuses a drag that would ask for one again. */
+  routes: readonly RouteEnds[];
 }) {
   const { flowToScreenPosition } = useReactFlow();
   const onAddAt = useCallback<OnAddAt>(
@@ -118,8 +121,10 @@ export const Canvas = memo(function Canvas({
   );
   const contextAt = useContextAt(onContextAt);
 
-  // The handles' hints while a wire is drawn, and the drop's own check, by one rule; quick add and following beside it.
-  const hints = useConnectHints(canConnect);
+  // The handles' hints while a wire is drawn, the status line, and the drop's own check, by one rule (a new one only when
+  // the routes change); quick add and following beside it.
+  const rule = useMemo(() => connectRule(routes), [routes]);
+  const hints = useConnectHints(rule);
   const flowProps = useMemo(
     () => mergeFlowProps(hints.flowProps, addAt.flowProps, contextAt.flowProps, follow),
     [hints.flowProps, addAt.flowProps, contextAt.flowProps, follow],
