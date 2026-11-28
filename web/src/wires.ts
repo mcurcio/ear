@@ -40,11 +40,14 @@ export function wireEnds(route: RouteEnds): string {
   return `${route.from.node}:${route.from.port} → ${route.to.node}:${route.to.port}`;
 }
 
-/** Each status's tone on Wire, patchbay's route tones: an unknown one as pending's. */
+/**
+ * Each status's tone on Wire: linked ok, refused refused, and pending (ear holds the route and has not linked it; not a
+ * request on its way, which is a GhostWire) the quiet tone, dashed; an unknown status as pending's.
+ */
 const tones: Record<WireStatusClass, WireTone> = {
   "wire-linked": "ok",
-  "wire-pending": "pending",
-  "wire-unknown": "pending",
+  "wire-pending": "quiet",
+  "wire-unknown": "quiet",
   "wire-refused": "refused",
 };
 

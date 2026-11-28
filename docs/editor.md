@@ -126,7 +126,7 @@ model; nothing of ear's look was kept for its own sake.
 ## The shell
 
 The layout is patchbay's `AppShell`
-([its docs](https://github.com/mcurcio/patchbay/blob/v0.9.0/docs/components.md#appshell)): the top bar, the canvas,
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/components.md#appshell)): the top bar, the canvas,
 the inspector at its right and the drawer along the bottom, the narrow and phone layouts, the splitters and the
 sizes' bounds, filling the screen. `App.tsx` fills its slots with ear's: the top bar's slots from `TopBar.tsx`'s
 `topBar`, `Canvas` (with patchbay's `CanvasTools`) as its child, `Inspector.tsx`'s `InspectorTitle` as the
@@ -157,7 +157,7 @@ to right in its four slots:
 
 `shell.ts` holds the words and their tones (`shell.test.ts`). The palette, `ear.conf` and Inspector buttons are
 patchbay's `Button`, as tall as the theme switch beside them. The pill is patchbay's `Pill` and the chips its
-`Badge` ([its docs](https://github.com/mcurcio/patchbay/blob/v0.9.0/docs/components.md#state)), which colour the word
+`Badge` ([its docs](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/components.md#state)), which colour the word
 and the dot, or the text and the edge, in the tone.
 
 ### The canvas
@@ -165,7 +165,7 @@ and the dot, or the text and the edge, in the tone.
 It fills the rest, a quiet dot grid in the theme's colours. `components/Canvas.tsx` renders React Flow's own
 `<ReactFlow>`, so every React Flow prop stays ear's to pass, and adds patchbay's canvas pieces beside it, each
 handing its handlers to `<ReactFlow>` through `mergeFlowProps`
-([patchbay's](https://github.com/mcurcio/patchbay/blob/v0.9.0/docs/graph.md#canvastools)). *Why:* the owner chose no
+([patchbay's](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/graph.md#canvastools)). *Why:* the owner chose no
 canvas wrapper, patchbay's sugar beside the app's own `<ReactFlow>` (2026-11-25), and patchbay's model where it
 has the concept (2026-11-26).
 
@@ -226,12 +226,13 @@ AppShell's drawer, full width along the bottom, holding the pane whole. Its head
 the drawer is closed: `ear.conf`, then in words what the file needs, most urgent first: `refused`, `write failed`,
 `stale: reload`, `unsaved`, `n errors` or `applies at restart` (`drawer.ts`, `drawer.test.ts`),
 with Save beside them, which says `Saving…` while its request is on its way. The words are patchbay's
-`StatusWords` ([its docs](https://github.com/mcurcio/patchbay/blob/v0.9.0/docs/components.md#news-and-state)): each in its
+`StatusWords` ([its docs](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/components.md#news-and-state)): each in its
 tone (`applies at restart` in the neutral one), a dot between two, the row one polite live region, kept to one line
 and cut short before Save. The pane's banners above the text (the file changed under the draft, with Reload; ear
 refused the file; a write failed; editor edits were dropped, with a close button; a setting applies at restart) are
 patchbay's `Banner`, as are the node box's stale banner and the add form's: a stripe and a soft surface in the tone,
-an error one read at once (`role="alert"`) and the others when the reader is free. The shell's chevron button at the header's end ("Show ear.conf" or "Hide ear.conf"), and the top bar's `ear.conf`
+its words read through the hidden live regions inside it, an error's at once (an alert) and the others' when the
+reader is free (a status), so a banner shown with its words is read as well as one whose words change. The shell's chevron button at the header's end ("Show ear.conf" or "Hide ear.conf"), and the top bar's `ear.conf`
 toggle, open and close it. It opens by
 itself only when ear refuses the file or a write fails, each newly (the same refusal sent again
 does not reopen it), or when a Save is refused; never on a hand edit. *Why a drawer:* the owner
@@ -257,7 +258,7 @@ above it; and the top bar drops the wordmark and the engine chip (the Graph subj
 patchbay's theme switch shows only its icon (its label still names the choice) and the `ear.conf` toggle drops its glyph,
 so its buttons fit beside the connection pill. AppShell picks docked, right or bottom from patchbay's
 `useMediaBreakpoint` (wide, narrow below 760 px, phone below 600 px:
-[its docs](https://github.com/mcurcio/patchbay/blob/v0.9.0/docs/components.md#usemediabreakpoint)), which `App.tsx`
+[its docs](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/components.md#usemediabreakpoint)), which `App.tsx`
 reads too for the Inspector button and the wordmark, and `editor.css` hides the engine chip and the toggle's glyph
 and grows the targets by the same queries (patchbay's `mediaQueries`); `sizes.test.ts` holds `editor.css`'s queries
 to them and `sizes.ts`'s first sizes to AppShell's bounds. Crossing 760 px moves the inspector between the region and
@@ -303,7 +304,7 @@ what asked for it: a route's two ends, a node's name and the button, or the draw
 does a closed connection, at once.
 
 - **The ghost wire.** While a route request is on its way, a ghost wire joins the two handles: patchbay's
-  `GhostWire` ([its docs](https://github.com/mcurcio/patchbay/blob/v0.9.0/docs/graph.md#ghostwire),
+  `GhostWire` ([its docs](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/graph.md#ghostwire),
   `components/GhostEdge.tsx`), a thin dashed `--pb-quiet` line, dimmed, with no status colour, no meter and no
   tooltip, which takes no pointer and cannot be selected, focused or deleted (Delete never sends `route.remove` for
   it). It is hidden once `route.added` draws the route, and goes on the reply. A refused one is GhostWire's
@@ -311,7 +312,7 @@ does a closed connection, at once.
   never as a route.
 - **Buttons.** Every button that sends a request is patchbay's `Button` with `busy` while its own request is on its
   way: a spinner, `aria-busy`, and presses ignored, but it stays focusable, so the focus is never lost mid-request
-  ([patchbay's](https://github.com/mcurcio/patchbay/blob/v0.9.0/docs/components.md#actions)). Save in the drawer and
+  ([patchbay's](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/components.md#actions)). Save in the drawer and
   in the node box show `Saving…` beside the spinner, and Add in the form `Adding…` (their `busyLabel`, announced
   politely); a lifecycle button keeps its word under the spinner, so the segmented row's widths hold. A button is
   disabled only while idle: a lifecycle button as `health.ts` says, Save and Add while there is nothing to send.
@@ -324,8 +325,8 @@ does a closed connection, at once.
 `web/src/notices.ts` (`notices.test.ts`) is the session's store over patchbay's toast queue, so a refusal made
 outside React (the session's `ask`, a `node.state`) is a toast, and `components/Toasts.tsx` draws it with patchbay's
 `Toaster`, inline in a React Flow panel at the canvas's bottom right so Show can move the view
-([its docs](https://github.com/mcurcio/patchbay/blob/v0.9.0/docs/components.md#news-and-state); the queue:
-[`useToasts`](https://github.com/mcurcio/patchbay/blob/v0.9.0/docs/components.md#usetoasts)). *Why patchbay's:* the
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/components.md#news-and-state); the queue:
+[`useToasts`](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/components.md#usetoasts)). *Why patchbay's:* the
 owner chose patchbay's toast model (2026-11-26); ear keeps the words, the key and Show.
 
 - **What a toast says.** A refusal says what was asked and why, with the code in monospace
@@ -336,7 +337,8 @@ owner chose patchbay's toast model (2026-11-26); ear keeps the words, the key an
 - **The queue's rules, patchbay's defaults.** A toast lasts 8 s on the monotonic clock, and none expires while the
   toasts are hovered or focused; at most four show, older ones folded into "and n more". ear keys a toast by its code
   and its subject, so the same code for the same subject within 5 s counts up ("×3") instead of stacking.
-- **The Toaster's.** Dismiss, or Escape on a focused toast, closes one, and the focus moves to its neighbour. Each is
+- **The Toaster's.** Its Dismiss button (patchbay's close glyph, named "Dismiss"), or Escape on a focused toast,
+  closes one, and the focus moves to its neighbour. Each is
   read once from a live region beside the stack (a refusal at once, anything else when the reader is free), not again
   when it is drawn again.
 - **Show.** A toast for a node or route ear holds has Show, which selects it and pans to it, then dismisses the toast.
@@ -360,7 +362,7 @@ a toast. Everything else is a toast. A refused Save still opens the drawer.
 
 `web/src/palette.ts` (`palette.test.ts`) builds the palette's commands from the graph, the selection, the features
 and the shell's state, so a command ear cannot take is never offered, and hands them to patchbay's `CommandPalette`
-([its docs](https://github.com/mcurcio/patchbay/blob/v0.9.0/docs/components.md#commands-and-keys)), which draws, ranks
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/components.md#commands-and-keys)), which draws, ranks
 and places them; `components/useCommands.ts` turns each into its request or its change of view. Cmd+K (Ctrl+K off
 macOS) or the top bar's button opens it, centred near the top of the window. Its commands:
 
@@ -395,7 +397,7 @@ quick add, "Add a node of type…"), given through the palette's `labels`; every
 `web/src/keys.ts` (`keys.test.ts`) is the editor's table of bindings, in patchbay's key strings (`Mod+K`), and the
 shortcut sheet's lines; patchbay's `useShortcuts` binds the table on the window and its `ShortcutSheet`, the dialog `?`
 opens, lists the lines in three groups (Commands, View, Selection) with the keys drawn for the platform
-([its docs](https://github.com/mcurcio/patchbay/blob/v0.9.0/docs/components.md#useshortcuts)).
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/components.md#useshortcuts)).
 
 | Key | Does |
 |---|---|
@@ -445,7 +447,7 @@ settings as JSON, each in a `Field`, which names its control and spaces the form
 - **Quick add.** A double-click on empty canvas (in place of React Flow's zoom), or a wire from an output dropped on
   empty canvas where no handle took it, opens the palette's `Add` commands at the pointer, kept inside the window.
   Both are patchbay's `useAddAt`
-  ([its docs](https://github.com/mcurcio/patchbay/blob/v0.9.0/docs/graph.md#useaddat)), which finds the place on the
+  ([its docs](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/graph.md#useaddat)), which finds the place on the
   flow; `connect.ts`'s `quickAddKind` keeps ear's rule that a wire from an input opens nothing. Choosing a type opens the inspector's add-node form with its template, as `Add <type>` does; ear still
   judges the text, and the node still appears only on `node.added`.
 - **Placement hints.** The pointer's place is kept for the template's name (with no template, the JSON form, for
@@ -493,7 +495,7 @@ only that statement. The rules:
 ## Highlighting
 
 The pane, the node panel's box and the add-node form are patchbay's `CodeEditor` with `language="knobly"`
-([its docs](https://github.com/mcurcio/patchbay/blob/v0.9.0/docs/components.md#code)): a native textarea holding the
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/components.md#code)): a native textarea holding the
 text, the caret, the selection and every edit, a highlighted copy of what it shows drawn behind it, line numbers in a
 gutter beside it, and a mark on each line a diagnostic names. How it draws, highlights, marks, indents and reads its
 diagnostics is patchbay's, at its defaults: ear passes it the text, the edit handler, its diagnostics and, for the
@@ -541,7 +543,7 @@ The editor draws with patchbay's tokens (`@mcurcio/patchbay`, pinned exactly in 
 every colour, radius, shadow, duration, face and type size in `editor.css` and the components is a
 `--pb-*` custom property from its `tokens.css`, and ear defines none of its own. patchbay documents
 the tokens, their light and dark values and the contrast rules on
-[its tokens page](https://github.com/mcurcio/patchbay/blob/v0.9.0/docs/tokens.md#the-tokens); this
+[its tokens page](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/tokens.md#the-tokens); this
 section says only how ear uses them.
 
 **The order the styles load.** `main.tsx` loads React Flow's `style.css`, then
@@ -593,7 +595,7 @@ choice with `useTheme` under ear's own key (`themeKey()` in `prefs.ts`, `ear-edi
 writes `data-theme="light"` or `"dark"` on `<html>` (system removes it) and keeps the choice, and the
 top bar draws patchbay's ThemeSwitch, with its words ([above](#the-top-bar)). The switch's cycle,
 tooltip and label are patchbay's, documented with
-[its hooks](https://github.com/mcurcio/patchbay/blob/v0.9.0/docs/components.md#usetheme). The palette has a
+[its hooks](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/components.md#usetheme). The palette has a
 `Theme:` command for each other choice ([above](#the-palette)).
 
 **No flash on the first paint.** `index.html` inlines patchbay's `themeScript(themeKey())` in its
@@ -618,7 +620,7 @@ Forced colours keep the system's colours, as [Highlighting](#highlighting) says.
 `web/src/prefs.ts` (`prefs.test.ts`) holds ear's keys and the check of every kept value, and keeps the node places;
 patchbay keeps the rest under those keys: the inspector's width and the minimap (`App.tsx`) and the drawer
 (`useDrawer.ts`) are its `usePersistentState`, the theme its `useTheme`
-([its hooks](https://github.com/mcurcio/patchbay/blob/v0.9.0/docs/components.md#usepersistentstate)). All of it is
+([its hooks](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/components.md#usepersistentstate)). All of it is
 in `localStorage` as JSON, every read and write in `try` (so a private window, blocked storage or a full one keeps an
 editor that remembers for the page's life), and every value is checked on read, a bad one ignored in favour of the
 default; a value is written only when the person changes it. `main.tsx` makes one `Prefs` for the page.
@@ -643,7 +645,7 @@ Slice 5's type-schema cache is designed to use this module too ([control-plane.m
 ### The node box
 
 `components/EarNode.tsx` draws it with patchbay's `NodeBox`, one `PortRow` per port
-([its docs](https://github.com/mcurcio/patchbay/blob/v0.9.0/docs/graph.md#nodebox)); ear gives it the words, the
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/graph.md#nodebox)); ear gives it the words, the
 tone and the handle ids, and the handles' rule is `web/src/connect.ts`'s `canConnect`. *Why patchbay's:* the owner's
 principle is to take patchbay's model where it has the concept (2026-11-26), and its geometry is exported so layout
 code sizes boxes by it (owner, 2026-11-26: NodeBox's geometry as exported constants, mirrored by tokens a brand
@@ -673,7 +675,7 @@ may not change).
   area larger again under a coarse pointer). Each handle's id is `connect.ts`'s `handleId` (`in:<port>`,
   `out:<port>`), passed through unchanged.
 - **Hints while a wire is drawn** are patchbay's `useConnectHints`
-  ([its docs](https://github.com/mcurcio/patchbay/blob/v0.9.0/docs/graph.md#useconnecthints)) over `connect.ts`'s
+  ([its docs](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/graph.md#useconnecthints)) over `connect.ts`'s
   `canConnect`, handed to every PortRow by `<ConnectHints>` around the canvas: the handle the drag started at is
   `origin` (ringed in `--pb-accent`), every handle on the other side a drop on would make a route `ok` (grown, in
   `--pb-ok`) and every other there `no` (in `--pb-off`, its row muted); the handles on the drag's own side show
@@ -690,15 +692,19 @@ may not change).
 
 ### Wires
 
-Each route is patchbay's `Wire` ([its docs](https://github.com/mcurcio/patchbay/blob/v0.9.0/docs/graph.md#wire)):
+Each route is patchbay's `Wire` ([its docs](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/graph.md#wire)):
 `components/LevelEdge.tsx` gives it what `web/src/wires.ts`'s `wireData` (`wires.test.ts`) makes of the route and its
 from port's level. *Why patchbay's:* the owner's principle is to take patchbay's model where it has the concept
 (2026-11-26).
 
-- **Colour by status.** Its tone is patchbay's for a route: `ok` linked (`--pb-ok`), `pending` (`--pb-quiet`) and
-  `refused` (`--pb-err`); a status this editor does not know is drawn as pending. *Why patchbay's pending tone:* the
-  owner kept it for routes rather than an ear colour of its own (2026-11-26). The Route subject's words for
-  those three statuses take the same colours. Selected, the wire is `--pb-accent` whatever its status.
+- **Colour by status.** Its tone is one of Wire's: `ok` for linked (`--pb-ok`), `quiet` for pending (`--pb-quiet`) and
+  `refused` (`--pb-err`); a status this editor does not know is drawn as pending. A pending route is one ear holds and
+  has not linked yet, a live state, so it is a dashed `Wire` in the quiet tone; patchbay's word "pending" is for a
+  request on its way, which is a ghost wire ([Requests in flight](#requests-in-flight)). *Why:* the owner kept
+  patchbay's grey for pending routes rather than an ear colour of its own (2026-11-26), and kept "pending" for a
+  request sent and not yet answered (2026-11-27), so patchbay 0.10.0 dropped Wire's own `pending` tone. The Route
+  subject's words for those three statuses take the same colours. Selected, the wire is `--pb-accent` whatever its
+  status.
 - **Size by level.** Its emphasis is the from port's rms on the meters' scale (`levels.ts`'s `meterFraction`, the
   -60 dBFS floor): 1.5 px to 3.5 px wide and from 45 % to full opacity. Every status but `linked` is dashed.
 - **The flow.** A linked wire whose from port's rms is above the floor shows dots moving from the output to the
@@ -718,7 +724,7 @@ from port's level. *Why patchbay's:* the owner's principle is to take patchbay's
 ### Meters
 
 Each port's meter is patchbay's `Meter`
-([its docs](https://github.com/mcurcio/patchbay/blob/v0.9.0/docs/graph.md#meter)), fed by the level store:
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/graph.md#meter)), fed by the level store:
 `components/Meter.tsx` gives it the port's level and a reset, and `web/src/meters.ts` (`meters.test.ts`) its
 tooltip's words. *Why patchbay's:* the owner chose that patchbay's Meter owns the dB scale (2026-11-26); ear
 takes its defaults, which `meters.test.ts` pins to what this section says.
@@ -853,7 +859,7 @@ happened in the last minute. The rules:
 `web/src/marks.ts` is the one rule both marks follow, companions' badges and the counters'
 (`marks.test.ts`): each reads its counters from the graph, and `GraphMoves` keeps their last values
 and rises. The mark is patchbay's `WarnMark`, an "!" in a circle
-([its docs](https://github.com/mcurcio/patchbay/blob/v0.9.0/docs/components.md#state)): named by its words where it
+([its docs](https://github.com/mcurcio/patchbay/blob/v0.10.0/docs/components.md#state)): named by its words where it
 stands alone (a box's counter mark, a companion badge), and hidden from screen readers where its words are already the
 text beside it (the dropouts badge, the panel's companion list and counter tables).
 
@@ -900,7 +906,8 @@ code editor and shell before the editor uses them, brought them to 565.36 KB (18
 knobly boxes on its `CodeEditor` made them 569.24 KB (182.55 KB gzipped), with knobly's highlighter in its own
 2.56 KB chunk, and 75.63 KB. The shell on its `AppShell`, with patchbay's `base.css`, made them 572.17 KB (183.34 KB
 gzipped) and 77.12 KB. patchbay 0.9.0, with the inspector's one header row, made them 572.43 KB (183.43 KB gzipped)
-and 77.94 KB.
+and 77.94 KB. patchbay 0.10.0, whose stylesheets carry its new connecting, adding and diagnostics parts before the
+editor uses them, made them 575.56 KB (184.36 KB gzipped) and 87.01 KB.
 
 React Flow (`@xyflow/react`) was chosen over Rete.js (its own editor framework) and LiteGraph
 (drawn on a canvas, which makes per-port meters custom work).
